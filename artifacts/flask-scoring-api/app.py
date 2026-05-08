@@ -307,6 +307,143 @@ def request_log():
     })
 
 
+def fetch_stats(player=None, sport=None, prop=None, limit=10):
+    """
+    Query aggregate stats from PostgreSQL.
+    Raises on DB error so the caller can return a clear HTTP error.
+    """
+    conn = get_db_conn()
+
+    filter_conditions = []
+    filter_params = []
+    if player:
+        filter_params.append(f"%{player}%")
+        filter_conditions.append("player ILIKE %s")
+    if sport:
+        filter_params.append(sport)
+        filter_conditions.append("sport ILIKE %s")
+    if prop:
+        filter_params.append(f"%{prop}%")
+        filter_conditions.append("prop ILIKE %s")
+
+    where = ("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else ""
+    top_limit = max(1, min(int(limit), 100))
+
+    with conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+
+            cur.execute(
+                f"SELECT COUNT(*) AS total, ROUND(AVG(score)::numeric, 2) AS avg_score "
+                f"FROM scoring_requests {where}",
+                filter_params
+            )
+            overview = cur.fetchone()
+
+            cur.execute(
+                f"SELECT sport, COUNT(*) AS requests, ROUND(AVG(score)::numeric, 2) AS avg_score "
+                f"FROM scoring_requests {where} "
+                f"GROUP BY sport ORDER BY requests DESC",
+                filter_params
+            )
+            by_sport = cur.fetchall()
+
+            cur.execute(
+                f"SELECT player, sport, prop, side, line, ROUND(AVG(score)::numeric, 2) AS avg_score, COUNT(*) AS times_scored "
+                f"FROM scoring_requests {where} "
+                f"GROUP BY player, sport, prop, side, line "
+                f"ORDER BY avg_score DESC "
+                f"LIMIT %s",
+                filter_params + [top_limit]
+            )
+            top_props = cur.fetchall()
+
+            cur.execute(
+                f"SELECT timestamp, player, sport, prop, side, line, score "
+                f"FROM scoring_requests {where} "
+                f"ORDER BY timestamp DESC LIMIT %s",
+                filter_params + [top_limit]
+            )
+            recent = cur.fetchall()
+
+    conn.close()
+
+    return {
+        "total_request_count": int(overview["total"]),
+        "average_score_overall": float(overview["avg_score"]) if overview["avg_score"] is not None else None,
+        "average_score_by_sport": [
+            {
+                "sport": row["sport"],
+                "requests": int(row["requests"]),
+                "avg_score": float(row["avg_score"])
+            }
+            for row in by_sport
+        ],
+        "top_scored_props": [
+            {
+                "player": row["player"],
+                "sport": row["sport"],
+                "prop": row["prop"],
+                "side": row["side"],
+                "line": float(row["line"]),
+                "avg_score": float(row["avg_score"]),
+                "times_scored": int(row["times_scored"])
+            }
+            for row in top_props
+        ],
+        "most_recent_scored_props": [
+            {
+                "timestamp": row["timestamp"].isoformat() if hasattr(row["timestamp"], "isoformat") else str(row["timestamp"]),
+                "player": row["player"],
+                "sport": row["sport"],
+                "prop": row["prop"],
+                "side": row["side"],
+                "line": float(row["line"]),
+                "score": float(row["score"])
+            }
+            for row in recent
+        ]
+    }
+
+
+@app.route("/stats", methods=["GET"])
+@require_api_key
+def stats():
+    raw_limit = request.args.get("limit", "10")
+    try:
+        limit = max(1, min(int(raw_limit), 100))
+    except (ValueError, TypeError):
+        return jsonify({"error": "'limit' must be a positive integer"}), 422
+
+    player_filter = request.args.get("player", "").strip() or None
+    sport_filter  = request.args.get("sport",  "").strip() or None
+    prop_filter   = request.args.get("prop",   "").strip() or None
+
+    try:
+        data = fetch_stats(
+            player=player_filter,
+            sport=sport_filter,
+            prop=prop_filter,
+            limit=limit
+        )
+    except Exception as exc:
+        return jsonify({
+            "error": "Database unavailable",
+            "detail": str(exc),
+            "hint": "Ensure DATABASE_URL is set and the database is reachable"
+        }), 503
+
+    return jsonify({
+        "storage": "postgresql",
+        "filters": {
+            "player": player_filter,
+            "sport": sport_filter,
+            "prop": prop_filter,
+            "limit": limit
+        },
+        **data
+    })
+
+
 @app.route("/openapi.json", methods=["GET"])
 def openapi_schema():
     server_url = get_public_url()
@@ -387,6 +524,62 @@ def openapi_schema():
                         "401": {"description": "Missing or invalid X-API-Key"},
                         "400": {"description": "Invalid JSON body"},
                         "422": {"description": "Missing or invalid fields"}
+                    }
+                }
+            },
+            "/stats": {
+                "get": {
+                    "operationId": "getStats",
+                    "summary": "Aggregate scoring statistics",
+                    "description": (
+                        "Returns aggregate stats from the PostgreSQL request log: "
+                        "total request count, overall average score, breakdown by sport, "
+                        "top-scored props, and most recent scored props. "
+                        "Supports optional filters. Requires X-API-Key."
+                    ),
+                    "security": [{"ApiKeyAuth": []}],
+                    "parameters": [
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "description": "Max entries for top_scored_props and most_recent_scored_props (default 10, max 100)",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 10, "maximum": 100}
+                        },
+                        {
+                            "name": "player",
+                            "in": "query",
+                            "description": "Filter by player name (partial match)",
+                            "required": False,
+                            "schema": {"type": "string"}
+                        },
+                        {
+                            "name": "sport",
+                            "in": "query",
+                            "description": "Filter by sport (case-insensitive)",
+                            "required": False,
+                            "schema": {"type": "string"}
+                        },
+                        {
+                            "name": "prop",
+                            "in": "query",
+                            "description": "Filter by prop type (partial match)",
+                            "required": False,
+                            "schema": {"type": "string"}
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Stats returned successfully",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/StatsResponse"}
+                                }
+                            }
+                        },
+                        "401": {"description": "Missing or invalid X-API-Key"},
+                        "422": {"description": "Invalid query parameter"},
+                        "503": {"description": "Database unavailable"}
                     }
                 }
             },
@@ -516,6 +709,59 @@ def openapi_schema():
                         "requests": {
                             "type": "array",
                             "items": {"$ref": "#/components/schemas/LogEntry"}
+                        }
+                    }
+                },
+                "SportStat": {
+                    "type": "object",
+                    "properties": {
+                        "sport": {"type": "string", "example": "NFL"},
+                        "requests": {"type": "integer", "example": 12},
+                        "avg_score": {"type": "number", "example": 74.3}
+                    }
+                },
+                "TopProp": {
+                    "type": "object",
+                    "properties": {
+                        "player": {"type": "string", "example": "Patrick Mahomes"},
+                        "sport": {"type": "string", "example": "NFL"},
+                        "prop": {"type": "string", "example": "passing_yards"},
+                        "side": {"type": "string", "example": "over"},
+                        "line": {"type": "number", "example": 285.5},
+                        "avg_score": {"type": "number", "example": 91.2},
+                        "times_scored": {"type": "integer", "example": 3}
+                    }
+                },
+                "RecentProp": {
+                    "type": "object",
+                    "properties": {
+                        "timestamp": {"type": "string", "example": "2026-05-08T14:32:01+00:00"},
+                        "player": {"type": "string", "example": "LeBron James"},
+                        "sport": {"type": "string", "example": "NBA"},
+                        "prop": {"type": "string", "example": "points"},
+                        "side": {"type": "string", "example": "over"},
+                        "line": {"type": "number", "example": 27.5},
+                        "score": {"type": "number", "example": 68.5}
+                    }
+                },
+                "StatsResponse": {
+                    "type": "object",
+                    "properties": {
+                        "storage": {"type": "string", "example": "postgresql"},
+                        "filters": {"type": "object"},
+                        "total_request_count": {"type": "integer", "example": 42},
+                        "average_score_overall": {"type": "number", "example": 74.3},
+                        "average_score_by_sport": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/SportStat"}
+                        },
+                        "top_scored_props": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/TopProp"}
+                        },
+                        "most_recent_scored_props": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/RecentProp"}
                         }
                     }
                 }
