@@ -1,0 +1,69 @@
+## Source Access Status
+
+Available: official slate/game confirmation, probable starter confirmation, recent K logs, recent pitch-count/leash context, sportsbook-style market reference, opponent matchup context.
+Missing: fully confirmed Brewers/Yankees starting lineups at lock, umpire-specific K boost/suppressor, and a clean consensus projection feed.
+
+## Board Classification: **Limited Play — line discrepancy**
+
+Your opponent note is off: this is **Yankees @ Brewers**, not Royals @ Brewers. ESPN’s May 8 MLB schedule confirms Yankees at Brewers, and MLB’s probable-pitcher page lists **Jacob Misiorowski vs. Carlos Rodón**.
+
+## Jacob Misiorowski Pitcher Strikeouts 5.5
+
+### Final Grade: **Tier 1 — MORE 5.5 Ks, playable if this line is real**
+
+At **5.5**, I make this a playable MORE. The important caveat is market sanity: I found public-market references showing his strikeout prop around **7.5**, not 5.5, which means **5.5 may be a soft/alternate/platform-specific number**. If your book/app is truly offering 5.5 as a standard line, it is meaningfully better than the broader market number.
+
+### L5/L10 Status
+
+Misiorowski’s recent strikeout form supports the over. His 2026 game log shows K totals of **8, 9, 8, 7, 10, 2, 6**, and his last five are **8, 9, 8, 7, 10**. That is **5/5 over 5.5**, with an **8.4 average** and **8 median** by that log.
+
+Your stated **6.1 last-five average** does not match the game log I found. Even if we used 6.1, the line would still be below average, but the stronger point is that his recent median is comfortably above 5.5.
+
+### Median vs Line
+
+Line: **5.5**
+L5 median: **8**
+L5 average: about **8.4**
+Full 2026 listed-start average from the available log: about **7.1**
+
+That gives the MORE a strong median gap at this number. A 5.5 line asks for 6 strikeouts; he has cleared that in **six of seven** listed starts from the log I found.
+
+### Role / Deployment
+
+Role is stable: he is the listed Brewers starter tonight. Leash is also strong enough for this line. In his most recent outing against the Cubs, he reached **95 pitches**, struck out **eight**, and exited with a hamstring cramp rather than a performance hook. Reports after that start framed the issue as a cramp, not a serious injury, but it still adds a small volatility flag.
+
+### Matchup / Game Script
+
+The matchup is not as soft as Royals would have been. The Yankees are more dangerous and can create pitch-count stress through power and patience. That hurts his efficiency path, but it can also preserve strikeout upside because Misiorowski’s raw stuff gives him a real K ceiling.
+
+The clean path to MORE: 5+ innings, 90-ish pitch leash, 24–26 batters faced, and a strikeout rate near his current profile. The bad path: Yankees force deep counts, early traffic drives pitch count up, and he exits after 4.2–5.0 innings with only 4–5 Ks.
+
+### Market Sanity
+
+This is the biggest reason I am not calling it a full green without qualification. Public market references showing **7.5** imply that **5.5 is below market** and likely advantageous if actually available. But if your app has moved to **7.5**, the bet becomes much thinner and I would not grade it the same way.
+
+## MORE vs LESS
+
+**MORE 5.5:** Approved / Tier 1 if available.
+**LESS 5.5:** Rejected. It needs either a short leash, injury recurrence, or a Yankees contact-heavy game script. Those are possible but not the median outcome.
+
+## Probability Tier
+
+**MORE 5.5 Ks: 72–76% range**
+Confidence: **B+ / Green-lean**
+
+This is not risk-free because of the opponent quality and the minor hamstring-cramp note, but the line is low relative to his recent median, role, and market comparison.
+
+## Failure Paths
+
+The bet fails if: Yankees run up early pitch count, Brewers pull him around 80 pitches due to any physical concern, he loses command and walks hitters, or New York’s lineup shortens two-strike at-bats better than expected.
+
+## Final Card
+
+**Tier 1:** Jacob Misiorowski MORE 5.5 pitcher strikeouts
+**Tier 2:** None
+**Approved LESS Pool:** None
+**Conditional / Watch:** Misiorowski MORE only if line remains **5.5 or 6.0**
+**Rejected:** Misiorowski LESS 5.5; Misiorowski MORE 7.5 is not approved from this analysis
+
+I attempted to save the pick to the Lobby, but that external tool call failed due to a missing API key.
