@@ -38,7 +38,7 @@ def require_api_key(f):
             }), 401
 
         if not secrets_equal(provided_key, expected_key):
-            return jsonify({"error": "Invalid API key"}), 403
+            return jsonify({"error": "Invalid API key"}), 401
 
         return f(*args, **kwargs)
     return decorated
@@ -80,6 +80,7 @@ def compute_rf_score(features: dict, player: str, prop: str, side: str, line: fl
 
 
 @app.route("/", methods=["GET"])
+@app.route("/health", methods=["GET"])
 def health():
     return jsonify({
         "status": "ok",
@@ -89,7 +90,7 @@ def health():
         "disclaimer": DISCLAIMER,
         "auth": "X-API-Key header required on /random-forest-score",
         "endpoints": {
-            "health": "GET / (no auth)",
+            "health": "GET /health (no auth)",
             "score": "POST /random-forest-score (X-API-Key required)",
             "schema": "GET /openapi.json (no auth)"
         }
