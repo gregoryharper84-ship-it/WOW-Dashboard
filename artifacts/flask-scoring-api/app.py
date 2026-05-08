@@ -1,11 +1,12 @@
 import os
 import random
 import math
+from functools import wraps
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app, origins="*", allow_headers=["Content-Type", "Authorization"])
+CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
 
 DISCLAIMER = (
     "SUPPORT LAYER ONLY — This score is a statistical signal for informational "
@@ -18,6 +19,38 @@ def get_public_url() -> str:
     domains = os.environ.get("REPLIT_DOMAINS", "")
     first = domains.split(",")[0].strip() if domains else ""
     return f"https://{first}" if first else "http://localhost:8000"
+
+
+def require_api_key(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        expected_key = os.environ.get("SCORING_API_KEY", "")
+        if not expected_key:
+            return jsonify({
+                "error": "Server misconfiguration: SCORING_API_KEY is not set"
+            }), 500
+
+        provided_key = request.headers.get("X-API-Key", "").strip()
+        if not provided_key:
+            return jsonify({
+                "error": "Missing API key",
+                "hint": "Include your key in the X-API-Key request header"
+            }), 401
+
+        if not secrets_equal(provided_key, expected_key):
+            return jsonify({"error": "Invalid API key"}), 403
+
+        return f(*args, **kwargs)
+    return decorated
+
+
+def secrets_equal(a: str, b: str) -> bool:
+    if len(a) != len(b):
+        return False
+    result = 0
+    for x, y in zip(a, b):
+        result |= ord(x) ^ ord(y)
+    return result == 0
 
 
 def compute_rf_score(features: dict, player: str, prop: str, side: str, line: float) -> float:
@@ -54,15 +87,17 @@ def health():
         "version": "1.0.0",
         "label": "Support Layer Only",
         "disclaimer": DISCLAIMER,
+        "auth": "X-API-Key header required on /random-forest-score",
         "endpoints": {
-            "health": "GET /",
-            "score": "POST /random-forest-score",
-            "schema": "GET /openapi.json"
+            "health": "GET / (no auth)",
+            "score": "POST /random-forest-score (X-API-Key required)",
+            "schema": "GET /openapi.json (no auth)"
         }
     })
 
 
 @app.route("/random-forest-score", methods=["POST"])
+@require_api_key
 def random_forest_score():
     data = request.get_json(silent=True)
     if not data:
@@ -128,20 +163,22 @@ def openapi_schema():
         "servers": [
             {"url": server_url}
         ],
+        "security": [
+            {"ApiKeyAuth": []}
+        ],
         "paths": {
             "/": {
                 "get": {
                     "operationId": "healthCheck",
                     "summary": "Health check",
-                    "description": "Returns service status and available endpoints.",
+                    "description": "Returns service status and available endpoints. No auth required.",
+                    "security": [],
                     "responses": {
                         "200": {
                             "description": "Service is healthy",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/HealthResponse"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/HealthResponse"}
                                 }
                             }
                         }
@@ -155,15 +192,15 @@ def openapi_schema():
                     "description": (
                         "Accepts player prop details and optional feature signals. "
                         "Returns a support score from 0 to 100. "
+                        "Requires X-API-Key header. "
                         "SUPPORT LAYER ONLY — cannot approve bets."
                     ),
+                    "security": [{"ApiKeyAuth": []}],
                     "requestBody": {
                         "required": True,
                         "content": {
                             "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ScoreRequest"
-                                },
+                                "schema": {"$ref": "#/components/schemas/ScoreRequest"},
                                 "example": {
                                     "player": "Patrick Mahomes",
                                     "sport": "NFL",
@@ -185,23 +222,26 @@ def openapi_schema():
                             "description": "Support score returned successfully",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ScoreResponse"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/ScoreResponse"}
                                 }
                             }
                         },
-                        "400": {
-                            "description": "Invalid JSON body"
-                        },
-                        "422": {
-                            "description": "Missing or invalid fields"
-                        }
+                        "401": {"description": "Missing X-API-Key header"},
+                        "403": {"description": "Invalid API key"},
+                        "400": {"description": "Invalid JSON body"},
+                        "422": {"description": "Missing or invalid fields"}
                     }
                 }
             }
         },
         "components": {
+            "securitySchemes": {
+                "ApiKeyAuth": {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": "X-API-Key"
+                }
+            },
             "schemas": {
                 "HealthResponse": {
                     "type": "object",
@@ -256,30 +296,16 @@ def openapi_schema():
                 "ScoreResponse": {
                     "type": "object",
                     "properties": {
-                        "label": {
-                            "type": "string",
-                            "example": "Support Layer Only"
-                        },
+                        "label": {"type": "string", "example": "Support Layer Only"},
                         "score": {
                             "type": "number",
                             "description": "Support score from 0 to 100",
                             "example": 74.3
                         },
-                        "score_range": {
-                            "type": "string",
-                            "example": "0-100"
-                        },
-                        "input": {
-                            "type": "object",
-                            "description": "Echo of inputs received"
-                        },
-                        "disclaimer": {
-                            "type": "string"
-                        },
-                        "can_approve_bets": {
-                            "type": "boolean",
-                            "example": False
-                        }
+                        "score_range": {"type": "string", "example": "0-100"},
+                        "input": {"type": "object", "description": "Echo of inputs received"},
+                        "disclaimer": {"type": "string"},
+                        "can_approve_bets": {"type": "boolean", "example": False}
                     }
                 }
             }
