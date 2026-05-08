@@ -16,7 +16,7 @@ const SPORTS = ["NBA", "NFL", "MLB", "NHL", "NCAAF", "NCAAB", "Soccer", "Tennis"
 const SIDES = ["MORE", "LESS"];
 
 const SPORT_PROPS: Record<string, string[]> = {
-  NBA: ["points", "rebounds", "assists", "threes", "steals", "blocks", "turnovers", "fantasy points"],
+  NBA: ["rebounds", "assists"],
   NFL: ["passing yards", "rushing yards", "receiving yards", "touchdowns", "receptions", "completions", "interceptions", "fantasy points"],
   MLB: ["pitcher strikeouts", "hitter fantasy points", "pitcher fantasy points", "pitching outs", "plate appearances", "hits", "home runs", "RBIs", "stolen bases", "walks"],
   NHL: ["goals", "assists", "saves", "shots on goal", "points", "power play points"],
