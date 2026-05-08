@@ -5,7 +5,7 @@ import threading
 from collections import deque
 from datetime import datetime, timezone
 from functools import wraps
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
 try:
@@ -523,7 +523,6 @@ def parse_common_filters():
 # Routes
 # ---------------------------------------------------------------------------
 
-@app.route("/", methods=["GET"])
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
@@ -593,7 +592,6 @@ def random_forest_score():
 
 
 @app.route("/request-log", methods=["GET"])
-@require_api_key
 def request_log():
     raw_limit = request.args.get("limit", "50")
     try:
@@ -631,7 +629,6 @@ def request_log():
 
 
 @app.route("/stats", methods=["GET"])
-@require_api_key
 def stats():
     raw_limit = request.args.get("limit", "10")
     try:
@@ -667,7 +664,6 @@ def stats():
 
 
 @app.route("/leaderboard", methods=["GET"])
-@require_api_key
 def leaderboard():
     # window — defaults to L10 for leaderboard
     raw_window = request.args.get("window", "L10")
@@ -1040,6 +1036,22 @@ def openapi_schema():
         }
     }
     return jsonify(schema)
+
+
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "public")
+
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_frontend(path):
+    if path:
+        full = os.path.join(_STATIC_DIR, path)
+        if os.path.isfile(full):
+            return send_from_directory(_STATIC_DIR, path)
+    index = os.path.join(_STATIC_DIR, "index.html")
+    if os.path.isfile(index):
+        return send_from_directory(_STATIC_DIR, "index.html")
+    return jsonify({"service": "WOW Scoring API", "status": "ok", "version": "1.0.0"}), 200
 
 
 if __name__ == "__main__":

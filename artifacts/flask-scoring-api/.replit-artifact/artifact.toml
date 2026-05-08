@@ -19,7 +19,7 @@ run = "cd /home/runner/workspace/artifacts/flask-scoring-api && PORT=25643 pytho
 [services.production]
 
 [services.production.build]
-args = ["pip", "install", "-r", "/home/runner/workspace/artifacts/flask-scoring-api/requirements.txt"]
+args = ["sh", "/home/runner/workspace/artifacts/flask-scoring-api/build.sh"]
 
 [services.production.run]
 args = [
