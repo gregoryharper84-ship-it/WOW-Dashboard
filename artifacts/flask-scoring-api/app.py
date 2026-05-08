@@ -2,8 +2,10 @@ import os
 import random
 import math
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app, origins="*", allow_headers=["Content-Type", "Authorization"])
 
 DISCLAIMER = (
     "SUPPORT LAYER ONLY — This score is a statistical signal for informational "
@@ -12,13 +14,13 @@ DISCLAIMER = (
 )
 
 
+def get_public_url() -> str:
+    domains = os.environ.get("REPLIT_DOMAINS", "")
+    first = domains.split(",")[0].strip() if domains else ""
+    return f"https://{first}" if first else "http://localhost:8000"
+
+
 def compute_rf_score(features: dict, player: str, prop: str, side: str, line: float) -> float:
-    """
-    Lightweight simulated random-forest-style scorer.
-    Combines numeric features with deterministic seeding so the same
-    inputs always return the same score, while still distributing
-    realistically across 0-100.
-    """
     seed_str = f"{player}|{prop}|{side}|{line}"
     base_seed = sum(ord(c) for c in seed_str)
 
@@ -51,7 +53,12 @@ def health():
         "service": "WOW Sports Prop Scoring API",
         "version": "1.0.0",
         "label": "Support Layer Only",
-        "disclaimer": DISCLAIMER
+        "disclaimer": DISCLAIMER,
+        "endpoints": {
+            "health": "GET /",
+            "score": "POST /random-forest-score",
+            "schema": "GET /openapi.json"
+        }
     })
 
 
@@ -89,7 +96,7 @@ def random_forest_score():
     return jsonify({
         "label": "Support Layer Only",
         "score": score,
-        "score_range": "0–100",
+        "score_range": "0-100",
         "input": {
             "player": player,
             "sport": sport,
@@ -101,6 +108,184 @@ def random_forest_score():
         "disclaimer": DISCLAIMER,
         "can_approve_bets": False
     })
+
+
+@app.route("/openapi.json", methods=["GET"])
+def openapi_schema():
+    server_url = get_public_url()
+    schema = {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "WOW Sports Prop Scoring API",
+            "description": (
+                "Support-layer scoring API for WOW sports prop betting analysis. "
+                "Returns a statistical support score (0-100) for a given player prop. "
+                "This API is a support layer only and cannot approve, authorize, or "
+                "recommend any bet or wager."
+            ),
+            "version": "1.0.0"
+        },
+        "servers": [
+            {"url": server_url}
+        ],
+        "paths": {
+            "/": {
+                "get": {
+                    "operationId": "healthCheck",
+                    "summary": "Health check",
+                    "description": "Returns service status and available endpoints.",
+                    "responses": {
+                        "200": {
+                            "description": "Service is healthy",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/HealthResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/random-forest-score": {
+                "post": {
+                    "operationId": "scoreProp",
+                    "summary": "Score a player prop",
+                    "description": (
+                        "Accepts player prop details and optional feature signals. "
+                        "Returns a support score from 0 to 100. "
+                        "SUPPORT LAYER ONLY — cannot approve bets."
+                    ),
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ScoreRequest"
+                                },
+                                "example": {
+                                    "player": "Patrick Mahomes",
+                                    "sport": "NFL",
+                                    "prop": "passing_yards",
+                                    "side": "over",
+                                    "line": 285.5,
+                                    "features": {
+                                        "last_5_avg": 312.4,
+                                        "vs_defense_rank": 8,
+                                        "home_game": 1,
+                                        "rest_days": 7
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Support score returned successfully",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/ScoreResponse"
+                                    }
+                                }
+                            }
+                        },
+                        "400": {
+                            "description": "Invalid JSON body"
+                        },
+                        "422": {
+                            "description": "Missing or invalid fields"
+                        }
+                    }
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "HealthResponse": {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "example": "ok"},
+                        "service": {"type": "string"},
+                        "version": {"type": "string"},
+                        "label": {"type": "string"},
+                        "disclaimer": {"type": "string"}
+                    }
+                },
+                "ScoreRequest": {
+                    "type": "object",
+                    "required": ["player", "sport", "prop", "side", "line"],
+                    "properties": {
+                        "player": {
+                            "type": "string",
+                            "description": "Player full name",
+                            "example": "Patrick Mahomes"
+                        },
+                        "sport": {
+                            "type": "string",
+                            "description": "Sport identifier (e.g. NFL, NBA, MLB)",
+                            "example": "NFL"
+                        },
+                        "prop": {
+                            "type": "string",
+                            "description": "Prop type (e.g. passing_yards, points, strikeouts)",
+                            "example": "passing_yards"
+                        },
+                        "side": {
+                            "type": "string",
+                            "description": "Which side of the line (over or under)",
+                            "example": "over"
+                        },
+                        "line": {
+                            "type": "number",
+                            "description": "The prop line value",
+                            "example": 285.5
+                        },
+                        "features": {
+                            "type": "object",
+                            "description": "Optional key-value feature signals (numeric values preferred)",
+                            "additionalProperties": True,
+                            "example": {
+                                "last_5_avg": 312.4,
+                                "vs_defense_rank": 8
+                            }
+                        }
+                    }
+                },
+                "ScoreResponse": {
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "example": "Support Layer Only"
+                        },
+                        "score": {
+                            "type": "number",
+                            "description": "Support score from 0 to 100",
+                            "example": 74.3
+                        },
+                        "score_range": {
+                            "type": "string",
+                            "example": "0-100"
+                        },
+                        "input": {
+                            "type": "object",
+                            "description": "Echo of inputs received"
+                        },
+                        "disclaimer": {
+                            "type": "string"
+                        },
+                        "can_approve_bets": {
+                            "type": "boolean",
+                            "example": False
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return jsonify(schema)
 
 
 if __name__ == "__main__":
