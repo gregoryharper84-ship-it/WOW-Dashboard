@@ -375,6 +375,86 @@ def fetch_stats(player=None, sport=None, prop=None, side=None,
 
 
 # ---------------------------------------------------------------------------
+# Leaderboard query
+# ---------------------------------------------------------------------------
+
+def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
+                      window_n=10, limit=10):
+    """
+    Rank (player, sport, prop, side) combinations by average score.
+
+    For each combination, takes the latest `window_n` records (after applying
+    filters), computes aggregates, and returns them ordered by average_score
+    DESC with latest_score as tiebreaker.
+
+    `side` must already be normalized to 'MORE', 'LESS', or None.
+    """
+    conn = get_db_conn()
+
+    # Build filter conditions (no player filter — leaderboard ranks players)
+    conditions, params = build_filter_clause(
+        player=None, sport=sport, prop=prop, side=side, since=since
+    )
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    # ROW_NUMBER partitions per (player, sport, prop, side) combo, ordered
+    # most-recent-first, so rn=1 is the latest record for that combo.
+    sql = f"""
+        WITH ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY player, sport, prop, side
+                       ORDER BY timestamp DESC
+                   ) AS rn
+            FROM scoring_requests
+            {where}
+        ),
+        windowed AS (
+            SELECT * FROM ranked WHERE rn <= %s
+        )
+        SELECT
+            player,
+            sport,
+            prop,
+            side,
+            COUNT(*)                                         AS record_count,
+            ROUND(AVG(score)::numeric, 2)                   AS average_score,
+            ROUND(MAX(score)::numeric, 2)                   AS max_score,
+            ROUND(MIN(score)::numeric, 2)                   AS min_score,
+            MAX(CASE WHEN rn = 1 THEN score END)            AS latest_score,
+            MAX(timestamp)                                   AS latest_timestamp
+        FROM windowed
+        GROUP BY player, sport, prop, side
+        ORDER BY average_score DESC, latest_score DESC
+        LIMIT %s
+    """
+    with conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params + [window_n, limit])
+            rows = cur.fetchall()
+    conn.close()
+
+    return [
+        {
+            "rank":             i + 1,
+            "player":           r["player"],
+            "sport":            r["sport"],
+            "prop":             r["prop"],
+            "side":             r["side"],
+            "record_count":     int(r["record_count"]),
+            "average_score":    float(r["average_score"]) if r["average_score"] is not None else None,
+            "max_score":        float(r["max_score"]) if r["max_score"] is not None else None,
+            "min_score":        float(r["min_score"]) if r["min_score"] is not None else None,
+            "latest_score":     float(r["latest_score"]) if r["latest_score"] is not None else None,
+            "latest_timestamp": r["latest_timestamp"].isoformat()
+                                if hasattr(r["latest_timestamp"], "isoformat")
+                                else str(r["latest_timestamp"])
+        }
+        for i, r in enumerate(rows)
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Parameter parsing helpers
 # ---------------------------------------------------------------------------
 
@@ -454,11 +534,12 @@ def health():
         "disclaimer": DISCLAIMER,
         "auth": "X-API-Key header required on protected endpoints",
         "endpoints": {
-            "health":  "GET /health (no auth)",
-            "score":   "POST /random-forest-score (X-API-Key required)",
-            "log":     "GET /request-log?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
-            "stats":   "GET /stats?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
-            "schema":  "GET /openapi.json (no auth)"
+            "health":      "GET /health (no auth)",
+            "score":       "POST /random-forest-score (X-API-Key required)",
+            "log":         "GET /request-log?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
+            "stats":       "GET /stats?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
+            "leaderboard": "GET /leaderboard?window=L5|L10(default L10)&sport=...&prop=...&side=...&limit=...",
+            "schema":      "GET /openapi.json (no auth)"
         }
     })
 
@@ -582,6 +663,63 @@ def stats():
             "limit": top_limit
         },
         **data
+    })
+
+
+@app.route("/leaderboard", methods=["GET"])
+@require_api_key
+def leaderboard():
+    # window — defaults to L10 for leaderboard
+    raw_window = request.args.get("window", "L10")
+    try:
+        window_label, window_n = parse_window(raw_window)
+        # parse_window returns (None, None) for empty string; treat as default
+        if window_n is None:
+            window_label, window_n = "L10", 10
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+
+    # limit
+    try:
+        limit = max(1, min(int(request.args.get("limit", "10")), 100))
+    except (ValueError, TypeError):
+        return jsonify({"error": "'limit' must be a positive integer"}), 422
+
+    # side normalization
+    try:
+        side_norm = normalize_side(request.args.get("side", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+
+    # since
+    try:
+        since_dt = parse_since(request.args.get("since", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+
+    sport = request.args.get("sport", "").strip() or None
+    prop  = request.args.get("prop",  "").strip() or None
+
+    try:
+        entries = fetch_leaderboard(
+            sport=sport, prop=prop, side=side_norm, since=since_dt,
+            window_n=window_n, limit=limit
+        )
+    except Exception as exc:
+        return jsonify({"error": "Database unavailable", "detail": str(exc)}), 503
+
+    return jsonify({
+        "storage":      "postgresql",
+        "window":       window_label,
+        "limit":        limit,
+        "ranked_by":    "average_score DESC, latest_score DESC",
+        "filters": {
+            "sport": sport,
+            "prop":  prop,
+            "side":  side_norm,
+            "since": since_dt.isoformat() if since_dt else None
+        },
+        "leaderboard": entries
     })
 
 
@@ -722,6 +860,43 @@ def openapi_schema():
                         "503": {"description": "Database unavailable"}
                     }
                 }
+            },
+            "/leaderboard": {
+                "get": {
+                    "operationId": "getLeaderboard",
+                    "summary": "Player leaderboard by average score",
+                    "description": (
+                        "Ranks (player, sport, prop, side) combinations by average score "
+                        "within the selected window. For each combination, takes the latest "
+                        "window_n records after applying filters, computes aggregates, and "
+                        "returns them ordered by average_score DESC with latest_score as "
+                        "tiebreaker. Default window=L10. Requires X-API-Key."
+                    ),
+                    "security": [{"ApiKeyAuth": []}],
+                    "parameters": [
+                        {
+                            "name": "window",
+                            "in": "query",
+                            "description": "Per-combo window size. L5 = last 5 records, L10 = last 10. Defaults to L10.",
+                            "required": False,
+                            "schema": {"type": "string", "enum": ["L5", "L10"], "default": "L10"}
+                        },
+                        SINCE_PARAM, SPORT_PARAM, PROP_PARAM, SIDE_PARAM,
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "description": "Max leaderboard entries (default 10, max 100)",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 10, "maximum": 100}
+                        }
+                    ],
+                    "responses": {
+                        "200": {"description": "Leaderboard returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LeaderboardResponse"}}}},
+                        "401": {"description": "Missing or invalid X-API-Key"},
+                        "422": {"description": "Invalid query parameter"},
+                        "503": {"description": "Database unavailable"}
+                    }
+                }
             }
         },
         "components": {
@@ -832,6 +1007,33 @@ def openapi_schema():
                         "over_top_props": {"type": "array", "description": "Top props for over/more side", "items": {"$ref": "#/components/schemas/TopProp"}},
                         "under_top_props": {"type": "array", "description": "Top props for under/less side", "items": {"$ref": "#/components/schemas/TopProp"}},
                         "most_recent_scored_props": {"type": "array", "items": {"$ref": "#/components/schemas/RecentProp"}}
+                    }
+                },
+                "LeaderboardEntry": {
+                    "type": "object",
+                    "properties": {
+                        "rank":             {"type": "integer", "example": 1},
+                        "player":           {"type": "string",  "example": "Patrick Mahomes"},
+                        "sport":            {"type": "string",  "example": "NFL"},
+                        "prop":             {"type": "string",  "example": "passing_yards"},
+                        "side":             {"type": "string",  "example": "over"},
+                        "record_count":     {"type": "integer", "description": "Records in the window for this combo"},
+                        "average_score":    {"type": "number",  "example": 87.4},
+                        "max_score":        {"type": "number",  "example": 99.2},
+                        "min_score":        {"type": "number",  "example": 71.6},
+                        "latest_score":     {"type": "number",  "example": 93.1},
+                        "latest_timestamp": {"type": "string",  "example": "2026-05-08T19:05:59+00:00"}
+                    }
+                },
+                "LeaderboardResponse": {
+                    "type": "object",
+                    "properties": {
+                        "storage":     {"type": "string"},
+                        "window":      {"type": "string", "example": "L10"},
+                        "limit":       {"type": "integer"},
+                        "ranked_by":   {"type": "string", "example": "average_score DESC, latest_score DESC"},
+                        "filters":     {"type": "object"},
+                        "leaderboard": {"type": "array", "items": {"$ref": "#/components/schemas/LeaderboardEntry"}}
                     }
                 }
             }
