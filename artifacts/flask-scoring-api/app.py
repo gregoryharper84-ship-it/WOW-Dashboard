@@ -1110,6 +1110,17 @@ def openapi_schema():
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "public")
 
 
+@app.route("/gpt-action-schema.json", methods=["GET"])
+def gpt_action_schema():
+    import json as _json
+    schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gpt-action-schema.json")
+    with open(schema_path) as f:
+        schema = _json.load(f)
+    response = jsonify(schema)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):
