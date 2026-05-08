@@ -1,6 +1,9 @@
 import os
 import random
 import math
+import threading
+from collections import deque
+from datetime import datetime, timezone
 from functools import wraps
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -13,6 +16,9 @@ DISCLAIMER = (
     "analysis purposes. It cannot and does not approve, authorize, or recommend "
     "any bet or wager. All decisions remain solely with the user."
 )
+
+_request_log: deque = deque(maxlen=50)
+_log_lock = threading.Lock()
 
 
 def get_public_url() -> str:
@@ -79,6 +85,11 @@ def compute_rf_score(features: dict, player: str, prop: str, side: str, line: fl
     return round(score, 2)
 
 
+def append_log(entry: dict) -> None:
+    with _log_lock:
+        _request_log.appendleft(entry)
+
+
 @app.route("/", methods=["GET"])
 @app.route("/health", methods=["GET"])
 def health():
@@ -88,10 +99,11 @@ def health():
         "version": "1.0.0",
         "label": "Support Layer Only",
         "disclaimer": DISCLAIMER,
-        "auth": "X-API-Key header required on /random-forest-score",
+        "auth": "X-API-Key header required on protected endpoints",
         "endpoints": {
             "health": "GET /health (no auth)",
             "score": "POST /random-forest-score (X-API-Key required)",
+            "log": "GET /request-log (X-API-Key required)",
             "schema": "GET /openapi.json (no auth)"
         }
     })
@@ -129,6 +141,17 @@ def random_forest_score():
 
     score = compute_rf_score(features, player, prop, side, line)
 
+    append_log({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "player": player,
+        "sport": sport,
+        "prop": prop,
+        "side": side,
+        "line": line,
+        "score": score,
+        "label": "Support Layer Only"
+    })
+
     return jsonify({
         "label": "Support Layer Only",
         "score": score,
@@ -143,6 +166,19 @@ def random_forest_score():
         },
         "disclaimer": DISCLAIMER,
         "can_approve_bets": False
+    })
+
+
+@app.route("/request-log", methods=["GET"])
+@require_api_key
+def request_log():
+    with _log_lock:
+        entries = list(_request_log)
+    return jsonify({
+        "count": len(entries),
+        "limit": 50,
+        "order": "most recent first",
+        "requests": entries
     })
 
 
@@ -161,14 +197,10 @@ def openapi_schema():
             ),
             "version": "1.0.0"
         },
-        "servers": [
-            {"url": server_url}
-        ],
-        "security": [
-            {"ApiKeyAuth": []}
-        ],
+        "servers": [{"url": server_url}],
+        "security": [{"ApiKeyAuth": []}],
         "paths": {
-            "/": {
+            "/health": {
                 "get": {
                     "operationId": "healthCheck",
                     "summary": "Health check",
@@ -227,10 +259,32 @@ def openapi_schema():
                                 }
                             }
                         },
-                        "401": {"description": "Missing X-API-Key header"},
-                        "403": {"description": "Invalid API key"},
+                        "401": {"description": "Missing or invalid X-API-Key"},
                         "400": {"description": "Invalid JSON body"},
                         "422": {"description": "Missing or invalid fields"}
+                    }
+                }
+            },
+            "/request-log": {
+                "get": {
+                    "operationId": "getRequestLog",
+                    "summary": "View recent scoring requests",
+                    "description": (
+                        "Returns the 50 most recent scoring requests in reverse chronological order. "
+                        "Requires X-API-Key header. "
+                        "The API key itself is never stored in the log."
+                    ),
+                    "security": [{"ApiKeyAuth": []}],
+                    "responses": {
+                        "200": {
+                            "description": "Request log returned successfully",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/LogResponse"}
+                                }
+                            }
+                        },
+                        "401": {"description": "Missing or invalid X-API-Key"}
                     }
                 }
             }
@@ -258,39 +312,15 @@ def openapi_schema():
                     "type": "object",
                     "required": ["player", "sport", "prop", "side", "line"],
                     "properties": {
-                        "player": {
-                            "type": "string",
-                            "description": "Player full name",
-                            "example": "Patrick Mahomes"
-                        },
-                        "sport": {
-                            "type": "string",
-                            "description": "Sport identifier (e.g. NFL, NBA, MLB)",
-                            "example": "NFL"
-                        },
-                        "prop": {
-                            "type": "string",
-                            "description": "Prop type (e.g. passing_yards, points, strikeouts)",
-                            "example": "passing_yards"
-                        },
-                        "side": {
-                            "type": "string",
-                            "description": "Which side of the line (over or under)",
-                            "example": "over"
-                        },
-                        "line": {
-                            "type": "number",
-                            "description": "The prop line value",
-                            "example": 285.5
-                        },
+                        "player": {"type": "string", "example": "Patrick Mahomes"},
+                        "sport": {"type": "string", "example": "NFL"},
+                        "prop": {"type": "string", "example": "passing_yards"},
+                        "side": {"type": "string", "example": "over"},
+                        "line": {"type": "number", "example": 285.5},
                         "features": {
                             "type": "object",
-                            "description": "Optional key-value feature signals (numeric values preferred)",
                             "additionalProperties": True,
-                            "example": {
-                                "last_5_avg": 312.4,
-                                "vs_defense_rank": 8
-                            }
+                            "example": {"last_5_avg": 312.4, "vs_defense_rank": 8}
                         }
                     }
                 },
@@ -298,15 +328,36 @@ def openapi_schema():
                     "type": "object",
                     "properties": {
                         "label": {"type": "string", "example": "Support Layer Only"},
-                        "score": {
-                            "type": "number",
-                            "description": "Support score from 0 to 100",
-                            "example": 74.3
-                        },
+                        "score": {"type": "number", "example": 74.3},
                         "score_range": {"type": "string", "example": "0-100"},
-                        "input": {"type": "object", "description": "Echo of inputs received"},
+                        "input": {"type": "object"},
                         "disclaimer": {"type": "string"},
                         "can_approve_bets": {"type": "boolean", "example": False}
+                    }
+                },
+                "LogEntry": {
+                    "type": "object",
+                    "properties": {
+                        "timestamp": {"type": "string", "example": "2026-05-08T14:32:01+00:00"},
+                        "player": {"type": "string", "example": "Patrick Mahomes"},
+                        "sport": {"type": "string", "example": "NFL"},
+                        "prop": {"type": "string", "example": "passing_yards"},
+                        "side": {"type": "string", "example": "over"},
+                        "line": {"type": "number", "example": 285.5},
+                        "score": {"type": "number", "example": 74.3},
+                        "label": {"type": "string", "example": "Support Layer Only"}
+                    }
+                },
+                "LogResponse": {
+                    "type": "object",
+                    "properties": {
+                        "count": {"type": "integer", "example": 3},
+                        "limit": {"type": "integer", "example": 50},
+                        "order": {"type": "string", "example": "most recent first"},
+                        "requests": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/LogEntry"}
+                        }
                     }
                 }
             }
