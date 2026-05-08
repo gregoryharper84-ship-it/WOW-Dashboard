@@ -18,9 +18,17 @@ args = ["pip", "install", "-r", "artifacts/flask-scoring-api/requirements.txt"]
 
 [services.production.run]
 args = [
-  "sh", "-c",
-  "cd artifacts/flask-scoring-api && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60 --access-logfile -"
+  "gunicorn",
+  "--chdir", "artifacts/flask-scoring-api",
+  "app:app",
+  "--bind", "0.0.0.0:8000",
+  "--workers", "2",
+  "--timeout", "60",
+  "--access-logfile", "-"
 ]
+
+[services.production.run.env]
+PORT = "8000"
 
 [services.production.health.startup]
 path = "/health"
