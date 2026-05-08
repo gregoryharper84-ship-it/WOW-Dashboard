@@ -1183,11 +1183,11 @@ def gpt_action_schema():
 @app.route("/gpt-action-schema.yaml", methods=["GET"])
 def gpt_action_schema_yaml():
     schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gpt-action-schema.yaml")
-    with open(schema_path) as f:
-        content = f.read()
-    response = app.response_class(content, mimetype="text/yaml")
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    return response
+    return send_from_directory(
+        os.path.dirname(schema_path),
+        os.path.basename(schema_path),
+        mimetype="text/yaml"
+    )
 
 
 @app.route("/", defaults={"path": ""})
