@@ -100,7 +100,100 @@ function avatarGradient(name: string) {
   return g[name.charCodeAt(0) % g.length];
 }
 
-function PickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
+function SimplePickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
+  const isMore = isMORE(entry.side);
+  const scores = entry.scores || [];
+  const status = getStatus(entry.average_score);
+  const ss = statusStyle(status);
+
+  return (
+    <motion.div
+      data-testid={`card-pick-${entry.rank}`}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, delay: index * 0.04, ease: "easeOut" }}
+      className="bg-card border border-card-border rounded-xl overflow-hidden flex flex-col hover:border-primary/30 transition-colors duration-200"
+    >
+      {/* Header */}
+      <div className="flex items-center gap-3 px-4 pt-4 pb-3">
+        <div className={cn("w-12 h-12 rounded-xl bg-gradient-to-br flex items-center justify-center text-white font-black text-sm shrink-0", avatarGradient(entry.player))}>
+          {initials(entry.player)}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="font-black text-foreground text-sm leading-tight truncate">{entry.player}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5 uppercase tracking-wide font-medium truncate">
+            {entry.sport} · {entry.prop}
+          </p>
+        </div>
+        <div className="text-right shrink-0">
+          <p className={cn("text-3xl font-black tabular-nums leading-none", scoreNumColor(entry.average_score))}>
+            {entry.average_score.toFixed(0)}
+          </p>
+          <span className={cn("inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold mt-1", isMore ? "bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/25" : "bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25")}>
+            {isMore ? <TrendingUp size={9} /> : <TrendingDown size={9} />}
+            {entry.side}
+          </span>
+        </div>
+      </div>
+
+      {/* Status + line */}
+      <div className="flex items-center justify-between px-4 pb-3 gap-2">
+        <span className={cn("px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wide ring-1", ss.bg, ss.text, ss.ring)}>
+          {status}
+        </span>
+        <p className="text-[11px] text-muted-foreground font-medium text-right truncate">
+          {entry.latest_line != null ? entry.latest_line.toFixed(1) : "—"} {entry.prop}
+        </p>
+      </div>
+
+      <div className="h-px bg-border/60 mx-4" />
+
+      {/* Stats */}
+      <div className="grid grid-cols-4 px-4 py-3 gap-2">
+        {[
+          { label: "AVG", value: entry.average_score.toFixed(0) + "%", cls: scoreNumColor(entry.average_score) },
+          { label: "BEST", value: entry.max_score.toFixed(0) + "%", cls: scoreNumColor(entry.max_score) },
+          { label: "LATEST", value: entry.latest_score.toFixed(0) + "%", cls: scoreNumColor(entry.latest_score) },
+          { label: "PICKS", value: String(entry.record_count), cls: "text-foreground" },
+        ].map(({ label, value, cls }) => (
+          <div key={label} className="text-center">
+            <p className="text-[9px] text-muted-foreground font-semibold uppercase tracking-wide mb-1">{label}</p>
+            <p className={cn("text-xs font-black tabular-nums", cls)}>{value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Mini bar chart */}
+      {scores.length > 0 && (
+        <div className="flex items-end gap-0.5 px-4 pb-3 h-9">
+          {scores.slice(-10).map((s, i, arr) => (
+            <div
+              key={i}
+              className="flex-1 rounded-sm"
+              style={{
+                height: `${Math.max(12, s)}%`,
+                backgroundColor: s >= 80 ? "#34d399" : s >= 65 ? "#a78bfa" : s >= 50 ? "#fbbf24" : "#f87171",
+                opacity: 0.45 + (i / arr.length) * 0.55,
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Colored bottom bar */}
+      <div className="mt-auto h-1.5 bg-muted/20">
+        <motion.div
+          className={cn("h-full", ss.bar)}
+          initial={{ width: 0 }}
+          animate={{ width: `${Math.min(entry.average_score, 100)}%` }}
+          transition={{ duration: 0.8, delay: index * 0.04 + 0.2, ease: "easeOut" }}
+        />
+      </div>
+    </motion.div>
+  );
+}
+
+function MLBPickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
   const isMore = isMORE(entry.side);
   const scores = entry.scores || [];
   const status = getStatus(entry.average_score);
@@ -282,6 +375,11 @@ function PickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) 
       </div>
     </motion.div>
   );
+}
+
+function PickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
+  if (entry.sport === "MLB") return <MLBPickCard entry={entry} index={index} />;
+  return <SimplePickCard entry={entry} index={index} />;
 }
 
 export default function Lobby() {
