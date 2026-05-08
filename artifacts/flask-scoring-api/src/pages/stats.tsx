@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { motion } from "framer-motion";
-import { TrendingUp, TrendingDown, Activity } from "lucide-react";
+import { TrendingUp, TrendingDown, Activity, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface SportStat {
@@ -80,13 +80,28 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
+
 export default function Stats() {
   const [window, setWindow] = useState<"L5" | "L10">("L10");
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search, 400);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const params = new URLSearchParams({ window });
+  if (debouncedSearch.trim()) params.set("player", debouncedSearch.trim());
 
   const { data, isLoading, isError } = useQuery<StatsResponse>({
-    queryKey: ["stats", window],
+    queryKey: ["stats", window, debouncedSearch],
     queryFn: async () => {
-      const res = await fetch(`/stats?window=${window}`);
+      const res = await fetch(`/stats?${params}`);
       if (!res.ok) throw new Error("Failed to fetch stats");
       return res.json();
     },
@@ -99,25 +114,56 @@ export default function Stats() {
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-black text-foreground tracking-tight">Stats</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">Aggregate scoring analytics</p>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            {debouncedSearch.trim()
+              ? `Showing results for "${debouncedSearch.trim()}"`
+              : "Aggregate scoring analytics"}
+          </p>
         </div>
-        <div className="flex rounded-lg border border-border overflow-hidden" data-testid="toggle-window">
-          {WINDOWS.map((w) => (
-            <button
-              key={w}
-              data-testid={`button-window-${w}`}
-              onClick={() => setWindow(w)}
-              className={cn(
-                "px-3 py-1.5 text-xs font-bold transition-colors",
-                window === w ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {w}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          {/* Search */}
+          <div className="relative">
+            <Search
+              size={13}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+            />
+            <input
+              ref={inputRef}
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search player…"
+              data-testid="input-player-search"
+              className="h-8 pl-7 pr-7 text-xs bg-card border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary w-44"
+            />
+            {search && (
+              <button
+                onClick={() => { setSearch(""); inputRef.current?.focus(); }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+          {/* Window toggle */}
+          <div className="flex rounded-lg border border-border overflow-hidden" data-testid="toggle-window">
+            {WINDOWS.map((w) => (
+              <button
+                key={w}
+                data-testid={`button-window-${w}`}
+                onClick={() => setWindow(w)}
+                className={cn(
+                  "px-3 py-1.5 text-xs font-bold transition-colors",
+                  window === w ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {w}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
