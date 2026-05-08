@@ -1,0 +1,40 @@
+## Source Access Status
+
+Available: official Dodgers probable pitchers, May 8 Dodgers-Braves game info, Ohtani 2026 pitching logs, recent Ohtani start recap, weather/game environment. Engine rules applied from WOW v14.8 memory. 
+
+Missing/unconfirmed: a valid active market for **Shohei Ohtani pitcher strikeouts tonight**. I could not validate that this is a real playable pitcher-K market for tonight.
+
+## Board Classification: **NO PLAY**
+
+### Final Decision: **REJECT — do not play MORE 7.5 or LESS 7.5 tonight**
+
+The hard stop is Reality Verification: **Ohtani is not the listed Dodgers starter tonight.** The official Dodgers probable-pitcher page lists **Chris Sale vs. Emmet Sheehan** for Braves @ Dodgers on Friday, May 8 at 7:10 PM PDT. ([MLB.com][1]) DraftKings Network and True Blue LA also list **Emmet Sheehan**, not Ohtani, as the Dodgers starter. ([DraftKings Network][2])
+
+## Ohtani K Data Check
+
+Your 8.2 K/game number does **not** match the 2026 pitching-game log I found. Ohtani’s six 2026 pitching starts show: **6, 2, 10, 7, 9, 8 Ks** for **42 Ks in 37 IP**, a **7.0 K/start average**. L5 is **2, 10, 7, 9, 8**, averaging **7.2**, with a median of **8** and a 7.5-over hit rate of **3/5**. ([Baseball Almanac][3])
+
+His most recent start was May 5 at Houston: **7 IP, 8 K, 89 pitches**, which supports his current leash, but also confirms he just pitched three days before tonight’s game. ([MLB.com][4])
+
+## Matchup / Game Script
+
+Tonight’s actual matchup is Braves vs. Dodgers at Dodger Stadium. Atlanta is a dangerous offense; True Blue LA noted the Braves led the NL with **55 home runs**, with Matt Olson and Ozzie Albies hot entering the series. ([True Blue LA][5]) Weather looks playable with no delay concern, but that is irrelevant to an Ohtani K prop if he is not starting. ([OddsTrader][6])
+
+## Tiers
+
+**Tier 1:** None
+**Tier 2:** None
+**Approved LESS Pool:** None
+**Conditional / Watch:** Ohtani pitcher strikeouts next confirmed start only
+**Rejected:** Shohei Ohtani pitcher strikeouts 7.5 — **FAIL TAGS: Not listed starter, slate mismatch, market sanity failure, role invalid**
+
+## Bottom Line
+
+Even though Ohtani’s form is strong, **this is not a playable prop tonight**. Do **not** force MORE because of the average, and do **not** take LESS just because he is not starting. This is a stale/wrong-slate/void-risk market until Ohtani is officially confirmed as the starter.
+
+[1]: https://www.mlb.com/dodgers/roster/probable-pitchers "Dodgers Probable Pitchers | Los Angeles Dodgers"
+[2]: https://dknetwork.draftkings.com/2026/05/07/mlb-probable-pitchers-may-8-2026/ "MLB Probable Pitchers Today: May 8, 2026 Matchups"
+[3]: https://www.baseball-almanac.com/players/pitchinglogs.php?p=ohtansh01&y=2026 "Shohei Ohtani 2026 Game by Game Pitching Logs | Baseball Almanac"
+[4]: https://www.mlb.com/news/shohei-ohtani-allows-first-homers-of-2026 "Shohei Ohtani allows first homers of 2026"
+[5]: https://www.truebluela.com/dodgers-scores-standings/115213/braves-preview-dodger-stadium "Dodgers welcome NL-best Braves to Dodger Stadium | True Blue LA"
+[6]: https://www.oddstrader.com/mlb/matchups/atlanta-braves-vs-los-angeles-dodgers-2026-05-08-e4783617/weather/ "Live MLB Odds & Betting Lines for Today"
