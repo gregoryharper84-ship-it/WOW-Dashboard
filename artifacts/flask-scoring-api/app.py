@@ -1180,6 +1180,16 @@ def gpt_action_schema():
     return response
 
 
+@app.route("/gpt-action-schema.yaml", methods=["GET"])
+def gpt_action_schema_yaml():
+    schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gpt-action-schema.yaml")
+    with open(schema_path) as f:
+        content = f.read()
+    response = app.response_class(content, mimetype="text/yaml")
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):
