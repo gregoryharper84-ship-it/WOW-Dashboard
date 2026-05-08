@@ -1,0 +1,121 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "WOW Scoring API",
+    "description": "Score player props and save them to the WOW Lobby. Call scorePick automatically whenever you finish analyzing a prop bet.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://create-app-gregoryharper84.replit.app"
+    }
+  ],
+  "paths": {
+    "/gpt-score": {
+      "post": {
+        "operationId": "scorePick",
+        "summary": "Score a player prop pick and save it to the WOW Lobby",
+        "description": "Automatically called after analyzing any player prop. Pass the player name, sport, prop type, line value, and side (MORE/LESS). You may also include any numeric analysis values (recent average, matchup rating, injury flag, etc.) as extra fields — they are used as model features. The pick is saved to the Lobby immediately.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["player", "sport", "prop", "side", "line"],
+                "properties": {
+                  "player": {
+                    "type": "string",
+                    "description": "Full player name, e.g. 'LeBron James'"
+                  },
+                  "sport": {
+                    "type": "string",
+                    "description": "Sport name: NBA, MLB, NFL, NHL, NCAAF, NCAAB, Soccer, Tennis, Golf, MMA"
+                  },
+                  "prop": {
+                    "type": "string",
+                    "description": "Prop type, e.g. 'rebounds', 'pitcher strikeouts', 'passing yards'"
+                  },
+                  "side": {
+                    "type": "string",
+                    "enum": ["MORE", "LESS"],
+                    "description": "Pick direction — MORE (over) or LESS (under)"
+                  },
+                  "line": {
+                    "type": "number",
+                    "description": "The prop line value, e.g. 27.5"
+                  },
+                  "recent_avg": {
+                    "type": "number",
+                    "description": "Player's recent average for this stat (optional but recommended)"
+                  },
+                  "matchup_rating": {
+                    "type": "number",
+                    "description": "Matchup difficulty rating 1-10 (optional)"
+                  },
+                  "injury_flag": {
+                    "type": "number",
+                    "description": "0 = healthy, 1 = questionable, 2 = probable out (optional)"
+                  },
+                  "pace_factor": {
+                    "type": "number",
+                    "description": "Game pace or usage rate factor (optional)"
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "description": "Your own 0-100 confidence in this pick (optional)"
+                  }
+                },
+                "additionalProperties": true
+              },
+              "example": {
+                "player": "LeBron James",
+                "sport": "NBA",
+                "prop": "rebounds",
+                "side": "MORE",
+                "line": 8.5,
+                "recent_avg": 9.2,
+                "matchup_rating": 6,
+                "injury_flag": 0
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pick scored and saved to the WOW Lobby",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "player":       { "type": "string" },
+                    "sport":        { "type": "string" },
+                    "prop":         { "type": "string" },
+                    "side":         { "type": "string" },
+                    "line":         { "type": "number" },
+                    "wow_score":    { "type": "number", "description": "WOW confidence score 0-100" },
+                    "signal":       { "type": "string", "description": "Human-readable signal label" },
+                    "score_range":  { "type": "string" },
+                    "saved_to_lobby": { "type": "boolean" },
+                    "disclaimer":   { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [{ "ApiKeyAuth": [] }]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    }
+  }
+}

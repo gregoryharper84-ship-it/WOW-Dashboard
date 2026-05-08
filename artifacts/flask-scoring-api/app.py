@@ -547,6 +547,71 @@ def health():
     })
 
 
+@app.route("/gpt-score", methods=["POST"])
+@require_api_key
+def gpt_score():
+    """
+    GPT-friendly scoring endpoint. Accepts free-form analysis fields alongside
+    the required pick fields. Returns a concise response optimised for GPT to
+    read and relay to the user.
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be valid JSON"}), 400
+
+    required_fields = ["player", "sport", "prop", "side", "line"]
+    missing = [f for f in required_fields if f not in data]
+    if missing:
+        return jsonify({
+            "error": "Missing required fields",
+            "missing_fields": missing,
+            "required_fields": required_fields,
+            "hint": "side must be MORE or LESS. line is a numeric value (e.g. 27.5)."
+        }), 422
+
+    player = str(data["player"]).strip()
+    sport  = str(data["sport"]).strip().upper()
+    prop   = str(data["prop"]).strip().lower()
+    raw_side = str(data["side"]).strip().upper()
+    side = "MORE" if raw_side in ("MORE", "OVER") else "LESS"
+
+    try:
+        line = float(data["line"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "'line' must be a numeric value"}), 422
+
+    # Accept any extra keys as features (GPT analysis fields)
+    reserved = set(required_fields + ["features"])
+    features = {k: v for k, v in data.items() if k not in reserved}
+    features.update(data.get("features", {}) or {})
+
+    score = compute_rf_score(features, player, prop, side, line)
+    label = "Support Layer Only"
+    persist_request(player, sport, prop, side, line, score, label)
+
+    if score >= 80:
+        signal = "Strong Signal — high confidence edge"
+    elif score >= 65:
+        signal = "Solid Signal — moderate edge"
+    elif score >= 50:
+        signal = "Neutral Signal — slight lean"
+    else:
+        signal = "Weak Signal — no clear edge"
+
+    return jsonify({
+        "player": player,
+        "sport": sport,
+        "prop": prop,
+        "side": side,
+        "line": line,
+        "wow_score": score,
+        "signal": signal,
+        "score_range": "0-100",
+        "saved_to_lobby": True,
+        "disclaimer": DISCLAIMER,
+    })
+
+
 @app.route("/random-forest-score", methods=["POST"])
 @require_api_key
 def random_forest_score():
