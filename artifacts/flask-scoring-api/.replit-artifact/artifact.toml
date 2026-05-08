@@ -14,7 +14,7 @@ paths = ["/"]
 localPort = 25643
 
 [services.development]
-run = "cd /home/runner/workspace/artifacts/flask-scoring-api && python app.py"
+run = "cd /home/runner/workspace/artifacts/flask-scoring-api && PORT=25643 python app.py"
 
 [services.production]
 
