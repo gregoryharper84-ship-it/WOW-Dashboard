@@ -64,6 +64,10 @@
                   "confidence": {
                     "type": "number",
                     "description": "Your own 0-100 confidence in this pick (optional)"
+                  },
+                  "game_date": {
+                    "type": "string",
+                    "description": "The date the game is actually scheduled (YYYY-MM-DD). IMPORTANT: only score picks for players with a confirmed game on this date. If the player has no game today, do not call this endpoint. Defaults to today if omitted."
                   }
                 },
                 "additionalProperties": true
@@ -76,7 +80,8 @@
                 "line": 8.5,
                 "recent_avg": 9.2,
                 "matchup_rating": 6,
-                "injury_flag": 0
+                "injury_flag": 0,
+                "game_date": "2026-05-08"
               }
             }
           }

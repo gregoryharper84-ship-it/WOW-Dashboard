@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { TrendingUp, TrendingDown, Activity, RefreshCw, LayoutGrid, List } from "lucide-react";
+import { TrendingUp, TrendingDown, Activity, RefreshCw, LayoutGrid, List, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface LeaderboardEntry {
@@ -138,7 +138,7 @@ function avatarGradient(name: string) {
   return g[name.charCodeAt(0) % g.length];
 }
 
-function SimplePickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
+function SimplePickCard({ entry, index, onDelete }: { entry: LeaderboardEntry; index: number; onDelete: () => void }) {
   const isMore = isMORE(entry.side);
   const scores = entry.scores || [];
   const status = getStatus(entry.average_score);
@@ -158,7 +158,10 @@ function SimplePickCard({ entry, index }: { entry: LeaderboardEntry; index: numb
           {initials(entry.player)}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="font-black text-foreground text-sm leading-tight truncate">{entry.player}</p>
+          <div className="flex items-center gap-1">
+            <p className="font-black text-foreground text-sm leading-tight truncate">{entry.player}</p>
+            <DeleteButton entry={entry} onDelete={onDelete} />
+          </div>
           <p className="text-[11px] text-muted-foreground mt-0.5 uppercase tracking-wide font-medium truncate">
             {entry.sport} · {entry.prop}
           </p>
@@ -231,7 +234,7 @@ function SimplePickCard({ entry, index }: { entry: LeaderboardEntry; index: numb
   );
 }
 
-function DetailedPickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
+function DetailedPickCard({ entry, index, onDelete }: { entry: LeaderboardEntry; index: number; onDelete: () => void }) {
   const isMore = isMORE(entry.side);
   const scores = entry.scores || [];
   const status = getStatus(entry.average_score);
@@ -264,9 +267,12 @@ function DetailedPickCard({ entry, index }: { entry: LeaderboardEntry; index: nu
           {initials(entry.player)}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="font-black text-foreground text-sm leading-tight truncate">
-            {entry.player}
-          </p>
+          <div className="flex items-center gap-1">
+            <p className="font-black text-foreground text-sm leading-tight truncate">
+              {entry.player}
+            </p>
+            <DeleteButton entry={entry} onDelete={onDelete} />
+          </div>
           <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
             {entry.sport}
           </p>
@@ -430,16 +436,76 @@ function DetailedPickCard({ entry, index }: { entry: LeaderboardEntry; index: nu
   );
 }
 
-function PickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
-  if (entry.sport === "MLB" || entry.sport === "NBA") return <DetailedPickCard entry={entry} index={index} />;
-  return <SimplePickCard entry={entry} index={index} />;
+function DeleteButton({ entry, onDelete }: { entry: LeaderboardEntry; onDelete: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  async function handleDelete() {
+    setLoading(true);
+    try {
+      await fetch("/picks", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          player: entry.player,
+          sport: entry.sport,
+          prop: entry.prop,
+          side: entry.side,
+        }),
+      });
+      onDelete();
+    } finally {
+      setLoading(false);
+      setConfirming(false);
+    }
+  }
+
+  if (confirming) {
+    return (
+      <div className="flex items-center gap-1">
+        <button
+          onClick={handleDelete}
+          disabled={loading}
+          className="px-2 py-0.5 rounded text-[10px] font-black bg-rose-500/20 text-rose-400 ring-1 ring-rose-500/40 hover:bg-rose-500/40 transition-colors disabled:opacity-50"
+        >
+          {loading ? "…" : "Remove"}
+        </button>
+        <button
+          onClick={() => setConfirming(false)}
+          className="px-2 py-0.5 rounded text-[10px] font-bold text-muted-foreground hover:text-foreground"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => setConfirming(true)}
+      title="Remove pick"
+      className="p-1 rounded text-muted-foreground/40 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+    >
+      <Trash2 size={12} />
+    </button>
+  );
+}
+
+function PickCard({ entry, index, onDelete }: { entry: LeaderboardEntry; index: number; onDelete: () => void }) {
+  if (entry.sport === "MLB" || entry.sport === "NBA") return <DetailedPickCard entry={entry} index={index} onDelete={onDelete} />;
+  return <SimplePickCard entry={entry} index={index} onDelete={onDelete} />;
 }
 
 export default function Lobby() {
+  const queryClient = useQueryClient();
   const [window, setWindow] = useState<"L5" | "L10">("L10");
   const [sport, setSport] = useState("All");
   const [view, setView] = useState<"grid" | "list">("grid");
   const [todayOnly, setTodayOnly] = useState(true);
+
+  function handleDelete() {
+    queryClient.invalidateQueries({ queryKey: ["leaderboard"] });
+  }
 
   const params = new URLSearchParams({ window, limit: "50" });
   if (sport !== "All") params.set("sport", sport);
@@ -632,6 +698,7 @@ export default function Lobby() {
                 key={`${entry.player}-${entry.prop}-${entry.side}`}
                 entry={entry}
                 index={i}
+                onDelete={handleDelete}
               />
             ))}
           </motion.div>

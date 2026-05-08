@@ -175,11 +175,15 @@ def compute_rf_score(features: dict, player: str, prop: str, side: str, line: fl
     return round(max(0.0, min(100.0, raw + noise)), 2)
 
 
-def persist_request(player, sport, prop, side, line, score, label):
+def persist_request(player, sport, prop, side, line, score, label, game_date=None):
+    from datetime import date as _date
+    if game_date is None:
+        game_date = _date.today().isoformat()
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "player": player, "sport": sport, "prop": prop,
-        "side": side, "line": line, "score": score, "label": label
+        "side": side, "line": line, "score": score, "label": label,
+        "game_date": game_date,
     }
     try:
         conn = get_db_conn()
@@ -187,9 +191,9 @@ def persist_request(player, sport, prop, side, line, score, label):
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO scoring_requests "
-                    "(timestamp, player, sport, prop, side, line, score, label) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (entry["timestamp"], player, sport, prop, side, line, score, label)
+                    "(timestamp, player, sport, prop, side, line, score, label, game_date) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (entry["timestamp"], player, sport, prop, side, line, score, label, game_date)
                 )
         conn.close()
         return True
@@ -379,7 +383,7 @@ def fetch_stats(player=None, sport=None, prop=None, side=None,
 # ---------------------------------------------------------------------------
 
 def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
-                      window_n=10, limit=10):
+                      window_n=10, limit=10, today=False):
     """
     Rank (player, sport, prop, side) combinations by average score.
 
@@ -388,6 +392,7 @@ def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
     DESC with latest_score as tiebreaker.
 
     `side` must already be normalized to 'MORE', 'LESS', or None.
+    When `today=True`, filters to rows where game_date = today's UTC date.
     """
     conn = get_db_conn()
 
@@ -395,6 +400,8 @@ def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
     conditions, params = build_filter_clause(
         player=None, sport=sport, prop=prop, side=side, since=since
     )
+    if today:
+        conditions.append("game_date = CURRENT_DATE")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
     # ROW_NUMBER partitions per (player, sport, prop, side) combo, ordered
@@ -581,13 +588,23 @@ def gpt_score():
         return jsonify({"error": "'line' must be a numeric value"}), 422
 
     # Accept any extra keys as features (GPT analysis fields)
-    reserved = set(required_fields + ["features"])
+    reserved = set(required_fields + ["features", "game_date"])
     features = {k: v for k, v in data.items() if k not in reserved}
     features.update(data.get("features", {}) or {})
 
+    # Optional game_date — when the game is actually scheduled (YYYY-MM-DD)
+    game_date = None
+    raw_game_date = data.get("game_date")
+    if raw_game_date:
+        from datetime import date as _date
+        try:
+            game_date = str(_date.fromisoformat(str(raw_game_date)))
+        except ValueError:
+            return jsonify({"error": "'game_date' must be YYYY-MM-DD format, e.g. 2026-05-08"}), 422
+
     score = compute_rf_score(features, player, prop, side, line)
     label = "Support Layer Only"
-    persist_request(player, sport, prop, side, line, score, label)
+    persist_request(player, sport, prop, side, line, score, label, game_date=game_date)
 
     if score >= 80:
         signal = "Strong Signal — high confidence edge"
@@ -756,17 +773,16 @@ def leaderboard():
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
 
-    # since / today
+    # since
     try:
         since_dt = parse_since(request.args.get("since", ""))
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
 
-    # today=1 overrides since → start of current UTC day
-    if request.args.get("today", "0") in ("1", "true", "yes") and not since_dt:
-        since_dt = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+    # today=1 → filter by game_date = CURRENT_DATE (overrides since)
+    today_flag = request.args.get("today", "0") in ("1", "true", "yes")
+    if today_flag:
+        since_dt = None  # game_date filter takes precedence
 
     sport = request.args.get("sport", "").strip() or None
     prop  = request.args.get("prop",  "").strip() or None
@@ -774,7 +790,7 @@ def leaderboard():
     try:
         entries = fetch_leaderboard(
             sport=sport, prop=prop, side=side_norm, since=since_dt,
-            window_n=window_n, limit=limit
+            window_n=window_n, limit=limit, today=today_flag
         )
     except Exception as exc:
         return jsonify({"error": "Database unavailable", "detail": str(exc)}), 503
@@ -1114,6 +1130,43 @@ def openapi_schema():
 
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "public")
+
+
+@app.route("/picks", methods=["DELETE"])
+def delete_picks():
+    """
+    Remove all scored records for a (player, sport, prop, side) combination.
+    No API key required — this is an app-internal management endpoint.
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be valid JSON"}), 400
+
+    player = str(data.get("player", "")).strip()
+    sport  = str(data.get("sport",  "")).strip()
+    prop   = str(data.get("prop",   "")).strip()
+    side   = str(data.get("side",   "")).strip().upper()
+
+    if not all([player, sport, prop, side]):
+        return jsonify({"error": "player, sport, prop, and side are all required"}), 422
+
+    try:
+        conn = get_db_conn()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM scoring_requests "
+                    "WHERE LOWER(player) = LOWER(%s) AND sport = %s "
+                    "AND LOWER(prop) = LOWER(%s) AND side = %s",
+                    (player, sport, prop, side)
+                )
+                deleted = cur.rowcount
+        conn.close()
+    except Exception as exc:
+        return jsonify({"error": "Database error", "detail": str(exc)}), 503
+
+    return jsonify({"deleted": deleted, "player": player, "sport": sport,
+                    "prop": prop, "side": side})
 
 
 @app.route("/gpt-action-schema.json", methods=["GET"])
