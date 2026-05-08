@@ -82,6 +82,44 @@ function getWindowHits(scores: number[], n: number): { hits: number; total: numb
   return { hits, total: window.length, pct: window.length ? Math.round((hits / window.length) * 100) : 0 };
 }
 
+function getPropBadge(prop: string): string {
+  const map: Record<string, string> = {
+    // NBA
+    "rebounds": "REB", "assists": "AST", "points": "PTS",
+    "threes": "3PTM", "steals": "STL", "blocks": "BLK",
+    "turnovers": "TO", "fantasy points": "FPTS",
+    // MLB
+    "pitcher strikeouts": "K", "hitter fantasy points": "HFPTS",
+    "pitcher fantasy points": "PFPTS", "pitching outs": "OUTS",
+    "plate appearances": "PA", "hits": "H", "home runs": "HR",
+    "rbis": "RBI", "stolen bases": "SB", "walks": "BB",
+    // NFL
+    "passing yards": "PASS", "rushing yards": "RUSH",
+    "receiving yards": "REC YDS", "touchdowns": "TD",
+    "receptions": "REC", "completions": "COMP",
+    "interceptions": "INT",
+    // NHL
+    "goals": "G", "saves": "SV", "shots on goal": "SOG",
+    "power play points": "PPP",
+  };
+  return map[prop.toLowerCase()] ?? prop.toUpperCase().slice(0, 5);
+}
+
+function getPropBadgeColor(prop: string): string {
+  const p = prop.toLowerCase();
+  if (["rebounds", "reb", "pitcher strikeouts", "k", "blocks"].some(k => p.includes(k.toLowerCase())))
+    return "bg-sky-500/20 text-sky-400 ring-sky-500/30";
+  if (["assists", "ast", "home runs", "hr", "touchdowns", "td"].some(k => p.includes(k.toLowerCase())))
+    return "bg-orange-500/20 text-orange-400 ring-orange-500/30";
+  if (["points", "pts", "passing yards", "fantasy"].some(k => p.includes(k.toLowerCase())))
+    return "bg-violet-500/20 text-violet-400 ring-violet-500/30";
+  if (["threes", "3pt", "stolen bases", "sb", "steals"].some(k => p.includes(k.toLowerCase())))
+    return "bg-teal-500/20 text-teal-400 ring-teal-500/30";
+  if (["hits", "h ", "saves", "sv", "receptions"].some(k => p.includes(k.toLowerCase())))
+    return "bg-emerald-500/20 text-emerald-400 ring-emerald-500/30";
+  return "bg-amber-500/20 text-amber-400 ring-amber-500/30";
+}
+
 function initials(name: string) {
   return name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
 }
@@ -193,7 +231,7 @@ function SimplePickCard({ entry, index }: { entry: LeaderboardEntry; index: numb
   );
 }
 
-function MLBPickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
+function DetailedPickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
   const isMore = isMORE(entry.side);
   const scores = entry.scores || [];
   const status = getStatus(entry.average_score);
@@ -204,6 +242,8 @@ function MLBPickCard({ entry, index }: { entry: LeaderboardEntry; index: number 
   const l5 = getWindowHits(scores, 5);
   const l10 = getWindowHits(scores, 10);
   const edgePositive = entry.average_score >= 50;
+  const badge = getPropBadge(entry.prop);
+  const badgeColor = getPropBadgeColor(entry.prop);
 
   return (
     <motion.div
@@ -231,21 +271,34 @@ function MLBPickCard({ entry, index }: { entry: LeaderboardEntry; index: number 
             {entry.sport}
           </p>
         </div>
-        <div className="text-right shrink-0">
-          <p className={cn("text-3xl font-black tabular-nums leading-none", scoreNumColor(entry.average_score))}>
-            {entry.average_score.toFixed(0)}
-          </p>
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold mt-1",
-              isMore
-                ? "bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/25"
-                : "bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25"
+        {/* Prop badge + line */}
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className={cn("px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wide ring-1", badgeColor)}>
+              {badge}
+            </span>
+            <p className={cn("text-3xl font-black tabular-nums leading-none", scoreNumColor(entry.average_score))}>
+              {entry.average_score.toFixed(0)}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {entry.latest_line != null && (
+              <span className="text-[11px] text-muted-foreground font-semibold tabular-nums">
+                {entry.latest_line.toFixed(1)}
+              </span>
             )}
-          >
-            {isMore ? <TrendingUp size={9} /> : <TrendingDown size={9} />}
-            {entry.side}
-          </span>
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold",
+                isMore
+                  ? "bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/25"
+                  : "bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/25"
+              )}
+            >
+              {isMore ? <TrendingUp size={9} /> : <TrendingDown size={9} />}
+              {entry.side}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -378,7 +431,7 @@ function MLBPickCard({ entry, index }: { entry: LeaderboardEntry; index: number 
 }
 
 function PickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
-  if (entry.sport === "MLB") return <MLBPickCard entry={entry} index={index} />;
+  if (entry.sport === "MLB" || entry.sport === "NBA") return <DetailedPickCard entry={entry} index={index} />;
   return <SimplePickCard entry={entry} index={index} />;
 }
 
