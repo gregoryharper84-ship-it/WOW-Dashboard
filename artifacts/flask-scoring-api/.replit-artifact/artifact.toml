@@ -1,34 +1,43 @@
-kind = "api"
+kind = "web"
 previewPath = "/"
 title = "WOW Scoring API"
 version = "1.0.0"
+id = "artifacts/flask-scoring-api"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
 
 [[services]]
-localPort = 8000
-name = "WOW Scoring API"
+name = "web"
 paths = ["/"]
+localPort = 25643
 
 [services.development]
-run = "cd artifacts/flask-scoring-api && python app.py"
+run = "cd /home/runner/workspace/artifacts/flask-scoring-api && python app.py"
 
 [services.production]
 
 [services.production.build]
-args = ["pip", "install", "-r", "artifacts/flask-scoring-api/requirements.txt"]
+args = ["pip", "install", "-r", "/home/runner/workspace/artifacts/flask-scoring-api/requirements.txt"]
 
 [services.production.run]
 args = [
   "gunicorn",
-  "--chdir", "artifacts/flask-scoring-api",
+  "--chdir", "/home/runner/workspace/artifacts/flask-scoring-api",
   "app:app",
-  "--bind", "0.0.0.0:8000",
+  "--bind", "0.0.0.0:25643",
   "--workers", "2",
   "--timeout", "60",
   "--access-logfile", "-"
 ]
 
 [services.production.run.env]
-PORT = "8000"
+PORT = "25643"
 
 [services.production.health.startup]
 path = "/health"
+
+[services.env]
+PORT = "25643"
+BASE_PATH = "/"

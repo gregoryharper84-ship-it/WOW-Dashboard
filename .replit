@@ -24,13 +24,13 @@ args = "WOW Scoring API"
 name = "WOW Scoring API"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd artifacts/flask-scoring-api && python app.py"
-waitForPort = 8000
-
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd /home/runner/workspace/artifacts/flask-scoring-api && PORT=25643 python app.py"
+waitForPort = 25643
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -59,6 +59,14 @@ externalPort = 80
 [[ports]]
 localPort = 8082
 externalPort = 3001
+
+[[ports]]
+localPort = 25643
+externalPort = 3002
+
+[[ports]]
+localPort = 25644
+externalPort = 3003
 
 [nix]
 channel = "stable-25_05"
