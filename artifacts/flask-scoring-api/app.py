@@ -26,6 +26,18 @@ DISCLAIMER = (
 
 VALID_WINDOWS = {"L5": 5, "L10": 10}
 
+SIDE_MAP = {
+    "over":  "MORE",
+    "more":  "MORE",
+    "under": "LESS",
+    "less":  "LESS",
+}
+# SQL fragments that match both aliases per normalized side
+SIDE_SQL = {
+    "MORE": ("(side ILIKE 'over' OR side ILIKE 'more')", []),
+    "LESS": ("(side ILIKE 'under' OR side ILIKE 'less')", []),
+}
+
 _fallback_log: deque = deque(maxlen=50)
 _log_lock = threading.Lock()
 
@@ -77,8 +89,15 @@ def secrets_equal(a: str, b: str) -> bool:
 
 
 def build_filter_clause(player=None, sport=None, prop=None, side=None, since=None):
-    """Returns (conditions, params) for a WHERE clause."""
+    """
+    Returns (conditions, params) for a WHERE clause.
+    Apply order: since → player/sport/prop → side.
+    `side` must already be normalized to 'MORE' or 'LESS'.
+    """
     conditions, params = [], []
+    if since:
+        params.append(since)
+        conditions.append("timestamp >= %s")
     if player:
         params.append(f"%{player}%")
         conditions.append("player ILIKE %s")
@@ -89,11 +108,8 @@ def build_filter_clause(player=None, sport=None, prop=None, side=None, since=Non
         params.append(f"%{prop}%")
         conditions.append("prop ILIKE %s")
     if side:
-        params.append(side)
-        conditions.append("side ILIKE %s")
-    if since:
-        params.append(since)
-        conditions.append("timestamp >= %s")
+        side_fragment, _ = SIDE_SQL[side]
+        conditions.append(side_fragment)
     return conditions, params
 
 
@@ -217,11 +233,28 @@ def fetch_log(player=None, sport=None, prop=None, side=None,
     return [serialize_row(r) for r in rows]
 
 
+def _append_where(agg_where, extra):
+    """Safely append an extra AND condition to an existing WHERE clause (or start one)."""
+    return f"{agg_where} AND {extra}" if agg_where else f"WHERE {extra}"
+
+
+def _top_props_from(rows):
+    return [
+        {
+            "player": r["player"], "sport": r["sport"], "prop": r["prop"],
+            "side": r["side"], "line": float(r["line"]),
+            "avg_score": float(r["avg_score"]), "times_scored": int(r["times_scored"])
+        }
+        for r in rows
+    ]
+
+
 def fetch_stats(player=None, sport=None, prop=None, side=None,
                 since=None, window_n=None, top_limit=10):
     """
     Aggregate stats. When window_n is set, all aggregates operate on the
     latest N filtered records via a CTE.
+    `side` must be 'MORE', 'LESS', or None (already normalized).
     """
     conn = get_db_conn()
     conditions, params = build_filter_clause(player, sport, prop, side, since)
@@ -230,16 +263,23 @@ def fetch_stats(player=None, sport=None, prop=None, side=None,
     )
     top_n = max(1, min(int(top_limit), 100))
 
+    over_where  = _append_where(agg_where, "(side ILIKE 'over' OR side ILIKE 'more')")
+    under_where = _append_where(agg_where, "(side ILIKE 'under' OR side ILIKE 'less')")
+
     with conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
 
-            # Overview: count, avg, max, min
+            # Overview: count, avg, max, min + over/under split
             cur.execute(
                 f"{cte_sql} "
                 f"SELECT COUNT(*) AS total, "
                 f"ROUND(AVG(score)::numeric,2) AS avg_score, "
                 f"ROUND(MAX(score)::numeric,2) AS max_score, "
-                f"ROUND(MIN(score)::numeric,2) AS min_score "
+                f"ROUND(MIN(score)::numeric,2) AS min_score, "
+                f"COUNT(*) FILTER (WHERE side ILIKE 'over' OR side ILIKE 'more') AS over_count, "
+                f"COUNT(*) FILTER (WHERE side ILIKE 'under' OR side ILIKE 'less') AS under_count, "
+                f"ROUND(AVG(score) FILTER (WHERE side ILIKE 'over' OR side ILIKE 'more')::numeric, 2) AS over_avg, "
+                f"ROUND(AVG(score) FILTER (WHERE side ILIKE 'under' OR side ILIKE 'less')::numeric, 2) AS under_avg "
                 f"FROM {source} {agg_where}",
                 cte_params
             )
@@ -256,21 +296,43 @@ def fetch_stats(player=None, sport=None, prop=None, side=None,
             )
             by_sport = cur.fetchall()
 
-            # Top scored props (grouped, avg desc)
+            # Top scored props — all
             cur.execute(
                 f"{cte_sql} "
                 f"SELECT player, sport, prop, side, line, "
-                f"ROUND(AVG(score)::numeric,2) AS avg_score, "
-                f"COUNT(*) AS times_scored "
+                f"ROUND(AVG(score)::numeric,2) AS avg_score, COUNT(*) AS times_scored "
                 f"FROM {source} {agg_where} "
                 f"GROUP BY player, sport, prop, side, line "
-                f"ORDER BY avg_score DESC "
-                f"LIMIT %s",
+                f"ORDER BY avg_score DESC LIMIT %s",
                 cte_params + [top_n]
             )
             top_props = cur.fetchall()
 
-            # Most recent (for /stats summary view)
+            # Top scored props — over side
+            cur.execute(
+                f"{cte_sql} "
+                f"SELECT player, sport, prop, side, line, "
+                f"ROUND(AVG(score)::numeric,2) AS avg_score, COUNT(*) AS times_scored "
+                f"FROM {source} {over_where} "
+                f"GROUP BY player, sport, prop, side, line "
+                f"ORDER BY avg_score DESC LIMIT %s",
+                cte_params + [top_n]
+            )
+            over_top = cur.fetchall()
+
+            # Top scored props — under side
+            cur.execute(
+                f"{cte_sql} "
+                f"SELECT player, sport, prop, side, line, "
+                f"ROUND(AVG(score)::numeric,2) AS avg_score, COUNT(*) AS times_scored "
+                f"FROM {source} {under_where} "
+                f"GROUP BY player, sport, prop, side, line "
+                f"ORDER BY avg_score DESC LIMIT %s",
+                cte_params + [top_n]
+            )
+            under_top = cur.fetchall()
+
+            # Most recent
             cur.execute(
                 f"{cte_sql} "
                 f"SELECT timestamp, player, sport, prop, side, line, score "
@@ -290,18 +352,17 @@ def fetch_stats(player=None, sport=None, prop=None, side=None,
         "average_score_overall": float(overview["avg_score"]) if overview["avg_score"] is not None else None,
         "max_score": float(overview["max_score"]) if overview["max_score"] is not None else None,
         "min_score": float(overview["min_score"]) if overview["min_score"] is not None else None,
+        "over_count": int(overview["over_count"]),
+        "under_count": int(overview["under_count"]),
+        "over_average_score": float(overview["over_avg"]) if overview["over_avg"] is not None else None,
+        "under_average_score": float(overview["under_avg"]) if overview["under_avg"] is not None else None,
         "average_score_by_sport": [
             {"sport": r["sport"], "requests": int(r["requests"]), "avg_score": float(r["avg_score"])}
             for r in by_sport
         ],
-        "top_scored_props": [
-            {
-                "player": r["player"], "sport": r["sport"], "prop": r["prop"],
-                "side": r["side"], "line": float(r["line"]),
-                "avg_score": float(r["avg_score"]), "times_scored": int(r["times_scored"])
-            }
-            for r in top_props
-        ],
+        "top_scored_props":   _top_props_from(top_props),
+        "over_top_props":     _top_props_from(over_top),
+        "under_top_props":    _top_props_from(under_top),
         "most_recent_scored_props": [
             {
                 "timestamp": r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else str(r["timestamp"]),
@@ -338,25 +399,43 @@ def parse_since(raw):
         return dt
     except ValueError:
         raise ValueError(
-            f"Invalid 'since' value '{raw}'. Use ISO 8601 format, e.g. 2026-05-01 or 2026-05-01T00:00:00Z"
+            f"Invalid 'since' value '{raw}'. Use ISO 8601 format, "
+            f"e.g. 2026-05-01 or 2026-05-01T00:00:00Z"
         )
+
+
+def normalize_side(raw):
+    """
+    Returns normalized side ('MORE' or 'LESS') or None.
+    over/more → MORE, under/less → LESS. Raises ValueError on unknown values.
+    """
+    if not raw:
+        return None
+    normalized = SIDE_MAP.get(raw.strip().lower())
+    if not normalized:
+        raise ValueError(
+            f"Invalid side '{raw}'. Accepted: over, more, under, less"
+        )
+    return normalized
 
 
 def parse_common_filters():
     """
     Parse shared query params for /stats and /request-log.
     Returns a dict of parsed values or raises ValueError.
+    Filter application order: since → player/sport/prop → side → window.
     """
     window_label, window_n = parse_window(request.args.get("window", ""))
-    since_dt = parse_since(request.args.get("since", ""))
+    since_dt   = parse_since(request.args.get("since", ""))
+    side_norm  = normalize_side(request.args.get("side", ""))
     return {
-        "player": request.args.get("player", "").strip() or None,
-        "sport":  request.args.get("sport",  "").strip() or None,
-        "prop":   request.args.get("prop",   "").strip() or None,
-        "side":   request.args.get("side",   "").strip() or None,
-        "since":  since_dt,
+        "player":       request.args.get("player", "").strip() or None,
+        "sport":        request.args.get("sport",  "").strip() or None,
+        "prop":         request.args.get("prop",   "").strip() or None,
+        "side":         side_norm,
+        "since":        since_dt,
         "window_label": window_label,
-        "window_n": window_n,
+        "window_n":     window_n,
     }
 
 
@@ -527,7 +606,7 @@ SINCE_PARAM = {
 PLAYER_PARAM = {"name": "player", "in": "query", "description": "Filter by player name (partial match)", "required": False, "schema": {"type": "string"}}
 SPORT_PARAM  = {"name": "sport",  "in": "query", "description": "Filter by sport (case-insensitive)", "required": False, "schema": {"type": "string"}}
 PROP_PARAM   = {"name": "prop",   "in": "query", "description": "Filter by prop type (partial match)", "required": False, "schema": {"type": "string"}}
-SIDE_PARAM   = {"name": "side",   "in": "query", "description": "Filter by side: over or under (case-insensitive)", "required": False, "schema": {"type": "string", "enum": ["over", "under"]}}
+SIDE_PARAM   = {"name": "side",   "in": "query", "description": "Filter by side. over/more = MORE (over bets), under/less = LESS (under bets). Case-insensitive.", "required": False, "schema": {"type": "string", "enum": ["over", "more", "under", "less"]}}
 
 
 @app.route("/openapi.json", methods=["GET"])
@@ -744,8 +823,14 @@ def openapi_schema():
                         "average_score_overall": {"type": "number"},
                         "max_score": {"type": "number"},
                         "min_score": {"type": "number"},
+                        "over_count": {"type": "integer", "description": "Records with side = over/more"},
+                        "under_count": {"type": "integer", "description": "Records with side = under/less"},
+                        "over_average_score": {"type": "number", "nullable": True, "description": "Avg score for over/more records"},
+                        "under_average_score": {"type": "number", "nullable": True, "description": "Avg score for under/less records"},
                         "average_score_by_sport": {"type": "array", "items": {"$ref": "#/components/schemas/SportStat"}},
                         "top_scored_props": {"type": "array", "items": {"$ref": "#/components/schemas/TopProp"}},
+                        "over_top_props": {"type": "array", "description": "Top props for over/more side", "items": {"$ref": "#/components/schemas/TopProp"}},
+                        "under_top_props": {"type": "array", "description": "Top props for under/less side", "items": {"$ref": "#/components/schemas/TopProp"}},
                         "most_recent_scored_props": {"type": "array", "items": {"$ref": "#/components/schemas/RecentProp"}}
                     }
                 }
