@@ -55,21 +55,21 @@ interface ScoreResult {
 }
 
 function scoreColor(score: number) {
-  if (score >= 0.8) return "#34d399";
-  if (score >= 0.65) return "#a78bfa";
-  if (score >= 0.5) return "#fbbf24";
+  if (score >= 80) return "#34d399";
+  if (score >= 65) return "#a78bfa";
+  if (score >= 50) return "#fbbf24";
   return "#f87171";
 }
 
 function scoreLabel(score: number) {
-  if (score >= 0.8) return "Strong Signal";
-  if (score >= 0.65) return "Solid Signal";
-  if (score >= 0.5) return "Neutral Signal";
+  if (score >= 80) return "Strong Signal";
+  if (score >= 65) return "Solid Signal";
+  if (score >= 50) return "Neutral Signal";
   return "Weak Signal";
 }
 
 function ScoreReveal({ result }: { result: ScoreResult }) {
-  const pct = result.score * 100;
+  const pct = result.score;
   const color = scoreColor(result.score);
 
   return (
@@ -103,7 +103,7 @@ function ScoreReveal({ result }: { result: ScoreResult }) {
               strokeLinecap="round"
               strokeDasharray={`${2 * Math.PI * 42}`}
               strokeDashoffset={`${2 * Math.PI * 42}`}
-              animate={{ strokeDashoffset: `${2 * Math.PI * 42 * (1 - result.score)}` }}
+              animate={{ strokeDashoffset: `${2 * Math.PI * 42 * (1 - result.score / 100)}` }}
               transition={{ delay: 0.3, duration: 1.2, ease: "easeOut" }}
             />
           </svg>
