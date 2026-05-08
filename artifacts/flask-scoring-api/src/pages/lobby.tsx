@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { TrendingUp, TrendingDown, Activity, RefreshCw, Trophy } from "lucide-react";
+import { TrendingUp, TrendingDown, Activity, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface LeaderboardEntry {
@@ -15,7 +15,9 @@ interface LeaderboardEntry {
   max_score: number;
   min_score: number;
   latest_score: number;
+  latest_line: number | null;
   latest_timestamp: string;
+  scores: number[];
 }
 
 interface LeaderboardResponse {
@@ -33,23 +35,53 @@ function isMORE(side: string) {
 
 function scoreColor(score: number) {
   if (score >= 80) return "text-emerald-400";
-  if (score >= 65) return "text-primary";
+  if (score >= 65) return "text-violet-400";
   if (score >= 50) return "text-amber-400";
   return "text-rose-400";
 }
 
-function scoreBarColor(score: number) {
-  if (score >= 80) return "bg-emerald-400";
-  if (score >= 65) return "bg-primary";
-  if (score >= 50) return "bg-amber-400";
-  return "bg-rose-400";
+function barColor(score: number) {
+  if (score >= 80) return "#34d399";
+  if (score >= 65) return "#a78bfa";
+  if (score >= 50) return "#fbbf24";
+  return "#f87171";
 }
 
-function scoreLabel(score: number) {
-  if (score >= 80) return "Strong";
-  if (score >= 65) return "Solid";
-  if (score >= 50) return "Neutral";
-  return "Weak";
+function initials(name: string) {
+  return name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
+}
+
+function avatarGradient(name: string) {
+  const gradients = [
+    "from-violet-500/40 to-indigo-600/20",
+    "from-emerald-500/40 to-teal-600/20",
+    "from-rose-500/40 to-pink-600/20",
+    "from-amber-500/40 to-orange-600/20",
+    "from-sky-500/40 to-blue-600/20",
+    "from-fuchsia-500/40 to-purple-600/20",
+  ];
+  const idx = name.charCodeAt(0) % gradients.length;
+  return gradients[idx];
+}
+
+function MiniBarChart({ scores }: { scores: number[] }) {
+  if (!scores || scores.length === 0) return null;
+  const bars = scores.slice(-10);
+  return (
+    <div className="flex items-end gap-0.5 h-8">
+      {bars.map((s, i) => (
+        <div
+          key={i}
+          className="flex-1 rounded-sm transition-all"
+          style={{
+            height: `${Math.max(12, s)}%`,
+            backgroundColor: barColor(s),
+            opacity: 0.5 + (i / bars.length) * 0.5,
+          }}
+        />
+      ))}
+    </div>
+  );
 }
 
 function PickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) {
@@ -58,87 +90,90 @@ function PickCard({ entry, index }: { entry: LeaderboardEntry; index: number }) 
   return (
     <motion.div
       data-testid={`card-pick-${entry.rank}`}
-      initial={{ opacity: 0, y: 24 }}
+      initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, delay: index * 0.04, ease: "easeOut" }}
-      className="relative bg-card border border-card-border rounded-xl p-4 hover:border-primary/40 hover:shadow-lg hover:shadow-primary/5 transition-all duration-200 group"
+      transition={{ duration: 0.3, delay: index * 0.04, ease: "easeOut" }}
+      className="bg-card border border-card-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg hover:shadow-primary/5 transition-all duration-200"
     >
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <span
-            data-testid={`text-rank-${entry.rank}`}
-            className={cn(
-              "w-7 h-7 rounded-full flex items-center justify-center text-xs font-black shrink-0",
-              entry.rank === 1 ? "bg-amber-400/20 text-amber-400 ring-1 ring-amber-400/40" :
-              entry.rank === 2 ? "bg-slate-400/20 text-slate-300 ring-1 ring-slate-400/30" :
-              entry.rank === 3 ? "bg-orange-700/20 text-orange-400 ring-1 ring-orange-700/40" :
-              "bg-muted text-muted-foreground"
-            )}
-          >
-            {entry.rank === 1 ? <Trophy size={12} /> : entry.rank}
-          </span>
-          <div>
-            <p data-testid={`text-player-${entry.rank}`} className="text-sm font-bold text-foreground leading-none">
-              {entry.player}
-            </p>
-            <span className="text-xs text-muted-foreground">{entry.sport}</span>
-          </div>
-        </div>
-        <span
-          data-testid={`badge-side-${entry.rank}`}
+      {/* Top row */}
+      <div className="flex items-center gap-4 p-4 pb-3">
+        {/* Avatar */}
+        <div
           className={cn(
-            "flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold",
-            isMore
-              ? "bg-emerald-400/15 text-emerald-400 ring-1 ring-emerald-400/30"
-              : "bg-rose-400/15 text-rose-400 ring-1 ring-rose-400/30"
+            "w-14 h-14 rounded-xl bg-gradient-to-br flex items-center justify-center text-white font-black text-lg shrink-0 ring-1 ring-white/10",
+            avatarGradient(entry.player)
           )}
         >
-          {isMore ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-          {entry.side}
-        </span>
-      </div>
+          {initials(entry.player)}
+        </div>
 
-      <div className="mb-3">
-        <p data-testid={`text-prop-${entry.rank}`} className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
-          {entry.prop}
-        </p>
-      </div>
-
-      <div className="flex items-end justify-between mb-2">
-        <div>
-          <p className="text-xs text-muted-foreground mb-0.5">WOW Score</p>
+        {/* Name + sport/prop */}
+        <div className="flex-1 min-w-0">
           <p
-            data-testid={`text-score-${entry.rank}`}
-            className={cn("text-2xl font-black tabular-nums", scoreColor(entry.average_score))}
+            data-testid={`text-player-${entry.rank}`}
+            className="font-black text-foreground text-base leading-tight truncate"
           >
-            {entry.average_score.toFixed(1)}
-            <span className="text-sm font-semibold ml-0.5">%</span>
+            {entry.player}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5 uppercase tracking-wide font-medium truncate">
+            {entry.sport} · {entry.prop}
           </p>
         </div>
-        <div className="text-right">
-          <p className="text-xs text-muted-foreground mb-0.5">Samples</p>
-          <p className="text-sm font-bold text-foreground">{entry.record_count}</p>
+
+        {/* Line + side */}
+        <div className="text-right shrink-0">
+          <p className="text-3xl font-black tabular-nums text-foreground leading-none">
+            {entry.latest_line != null ? entry.latest_line.toFixed(1) : "—"}
+          </p>
+          <span
+            data-testid={`badge-side-${entry.rank}`}
+            className={cn(
+              "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold mt-1",
+              isMore
+                ? "bg-emerald-400/15 text-emerald-400 ring-1 ring-emerald-400/25"
+                : "bg-rose-400/15 text-rose-400 ring-1 ring-rose-400/25"
+            )}
+          >
+            {isMore ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
+            {entry.side}
+          </span>
         </div>
       </div>
 
-      <div className="space-y-1">
-        <div className="flex justify-between items-center">
-          <span className={cn("text-xs font-semibold", scoreColor(entry.average_score))}>
-            {scoreLabel(entry.average_score)}
-          </span>
-          <span className="text-xs text-muted-foreground">
-            Latest: {entry.latest_score.toFixed(1)}%
-          </span>
-        </div>
-        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-          <motion.div
-            className={cn("h-full rounded-full", scoreBarColor(entry.average_score))}
-            initial={{ width: 0 }}
-            animate={{ width: `${Math.min(entry.average_score, 100)}%` }}
-            transition={{ duration: 0.6, delay: index * 0.04 + 0.2, ease: "easeOut" }}
-          />
-        </div>
+      {/* Divider */}
+      <div className="h-px bg-border mx-4" />
+
+      {/* Stats row */}
+      <div className="grid grid-cols-4 px-4 py-3 gap-2">
+        {[
+          { label: "AVG", value: entry.average_score, isScore: true },
+          { label: "BEST", value: entry.max_score, isScore: true },
+          { label: "LATEST", value: entry.latest_score, isScore: true },
+          { label: "PICKS", value: entry.record_count, isScore: false },
+        ].map(({ label, value, isScore }) => (
+          <div key={label} className="text-center">
+            <p className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider mb-0.5">
+              {label}
+            </p>
+            <p
+              className={cn(
+                "text-sm font-black tabular-nums",
+                isScore ? scoreColor(value as number) : "text-foreground"
+              )}
+            >
+              {isScore ? `${(value as number).toFixed(0)}` : value}
+              {isScore && <span className="text-[10px] font-semibold opacity-70">%</span>}
+            </p>
+          </div>
+        ))}
       </div>
+
+      {/* Bar chart */}
+      {entry.scores && entry.scores.length > 0 && (
+        <div className="px-4 pb-4">
+          <MiniBarChart scores={entry.scores} />
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -164,6 +199,7 @@ export default function Lobby() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-black text-foreground tracking-tight">Lobby</h1>
@@ -200,6 +236,7 @@ export default function Lobby() {
         </div>
       </div>
 
+      {/* Sport filters */}
       <div className="flex gap-2 mb-6 flex-wrap" data-testid="filter-sports">
         {SPORTS.map((s) => (
           <button
@@ -218,18 +255,35 @@ export default function Lobby() {
         ))}
       </div>
 
+      {/* Loading skeleton */}
       {isLoading && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="bg-card border border-card-border rounded-xl p-4 animate-pulse">
-              <div className="h-4 bg-muted rounded mb-3 w-2/3" />
-              <div className="h-8 bg-muted rounded mb-2 w-1/2" />
-              <div className="h-2 bg-muted rounded" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="bg-card border border-card-border rounded-2xl p-4 animate-pulse space-y-3">
+              <div className="flex gap-3">
+                <div className="w-14 h-14 rounded-xl bg-muted shrink-0" />
+                <div className="flex-1 space-y-2 pt-1">
+                  <div className="h-4 bg-muted rounded w-3/4" />
+                  <div className="h-3 bg-muted rounded w-1/2" />
+                </div>
+                <div className="space-y-2">
+                  <div className="h-8 bg-muted rounded w-12" />
+                  <div className="h-4 bg-muted rounded w-12" />
+                </div>
+              </div>
+              <div className="h-px bg-muted" />
+              <div className="grid grid-cols-4 gap-2">
+                {Array.from({ length: 4 }).map((_, j) => (
+                  <div key={j} className="h-8 bg-muted rounded" />
+                ))}
+              </div>
+              <div className="h-8 bg-muted rounded" />
             </div>
           ))}
         </div>
       )}
 
+      {/* Error */}
       {isError && (
         <div data-testid="status-error" className="text-center py-20">
           <Activity size={32} className="text-muted-foreground mx-auto mb-3" />
@@ -244,6 +298,7 @@ export default function Lobby() {
         </div>
       )}
 
+      {/* Empty */}
       {!isLoading && !isError && entries.length === 0 && (
         <div data-testid="status-empty" className="text-center py-20">
           <Activity size={32} className="text-muted-foreground mx-auto mb-3" />
@@ -252,14 +307,19 @@ export default function Lobby() {
         </div>
       )}
 
+      {/* Cards grid */}
       <AnimatePresence mode="wait">
         {!isLoading && entries.length > 0 && (
           <motion.div
             key={`${window}-${sport}`}
-            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
+            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
           >
             {entries.map((entry, i) => (
-              <PickCard key={`${entry.player}-${entry.prop}-${entry.side}`} entry={entry} index={i} />
+              <PickCard
+                key={`${entry.player}-${entry.prop}-${entry.side}`}
+                entry={entry}
+                index={i}
+              />
             ))}
           </motion.div>
         )}

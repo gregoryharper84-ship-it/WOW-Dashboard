@@ -422,7 +422,9 @@ def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
             ROUND(MAX(score)::numeric, 2)                   AS max_score,
             ROUND(MIN(score)::numeric, 2)                   AS min_score,
             MAX(CASE WHEN rn = 1 THEN score END)            AS latest_score,
-            MAX(timestamp)                                   AS latest_timestamp
+            MAX(CASE WHEN rn = 1 THEN line  END)            AS latest_line,
+            MAX(timestamp)                                   AS latest_timestamp,
+            JSON_AGG(score ORDER BY timestamp ASC)          AS scores
         FROM windowed
         GROUP BY player, sport, prop, side
         ORDER BY average_score DESC, latest_score DESC
@@ -446,9 +448,11 @@ def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
             "max_score":        float(r["max_score"]) if r["max_score"] is not None else None,
             "min_score":        float(r["min_score"]) if r["min_score"] is not None else None,
             "latest_score":     float(r["latest_score"]) if r["latest_score"] is not None else None,
+            "latest_line":      float(r["latest_line"]) if r["latest_line"] is not None else None,
             "latest_timestamp": r["latest_timestamp"].isoformat()
                                 if hasattr(r["latest_timestamp"], "isoformat")
-                                else str(r["latest_timestamp"])
+                                else str(r["latest_timestamp"]),
+            "scores":           [float(s) for s in (r["scores"] or [])],
         }
         for i, r in enumerate(rows)
     ]
