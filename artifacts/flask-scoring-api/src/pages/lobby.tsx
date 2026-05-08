@@ -439,12 +439,14 @@ export default function Lobby() {
   const [window, setWindow] = useState<"L5" | "L10">("L10");
   const [sport, setSport] = useState("All");
   const [view, setView] = useState<"grid" | "list">("grid");
+  const [todayOnly, setTodayOnly] = useState(true);
 
   const params = new URLSearchParams({ window, limit: "50" });
   if (sport !== "All") params.set("sport", sport);
+  if (todayOnly) params.set("today", "1");
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery<LeaderboardResponse>({
-    queryKey: ["leaderboard", window, sport],
+    queryKey: ["leaderboard", window, sport, todayOnly],
     queryFn: async () => {
       const res = await fetch(`/leaderboard?${params}`);
       if (!res.ok) throw new Error("Failed to fetch leaderboard");
@@ -488,6 +490,20 @@ export default function Lobby() {
                 {w}
               </button>
             ))}
+          </div>
+          <div className="flex rounded-lg border border-border overflow-hidden">
+            <button
+              onClick={() => setTodayOnly(true)}
+              className={cn("px-3 py-1.5 text-xs font-bold transition-colors", todayOnly ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            >
+              Today
+            </button>
+            <button
+              onClick={() => setTodayOnly(false)}
+              className={cn("px-3 py-1.5 text-xs font-bold transition-colors", !todayOnly ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            >
+              All Time
+            </button>
           </div>
           <div className="flex rounded-lg border border-border overflow-hidden">
             <button

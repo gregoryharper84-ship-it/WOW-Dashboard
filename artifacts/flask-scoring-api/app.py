@@ -756,11 +756,17 @@ def leaderboard():
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
 
-    # since
+    # since / today
     try:
         since_dt = parse_since(request.args.get("since", ""))
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
+
+    # today=1 overrides since → start of current UTC day
+    if request.args.get("today", "0") in ("1", "true", "yes") and not since_dt:
+        since_dt = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
 
     sport = request.args.get("sport", "").strip() or None
     prop  = request.args.get("prop",  "").strip() or None
