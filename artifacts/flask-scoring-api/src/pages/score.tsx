@@ -14,7 +14,25 @@ import { cn } from "@/lib/utils";
 
 const SPORTS = ["NBA", "NFL", "MLB", "NHL", "NCAAF", "NCAAB", "Soccer", "Tennis", "Golf", "MMA"];
 const SIDES = ["MORE", "LESS"];
-const PROPS = ["points", "rebounds", "assists", "threes", "steals", "blocks", "rushing yards", "receiving yards", "touchdowns", "strikeouts", "hits", "RBIs", "saves", "goals", "assists"];
+
+const SPORT_PROPS: Record<string, string[]> = {
+  NBA: ["points", "rebounds", "assists", "threes", "steals", "blocks", "turnovers", "fantasy points"],
+  NFL: ["passing yards", "rushing yards", "receiving yards", "touchdowns", "receptions", "completions", "interceptions", "fantasy points"],
+  MLB: ["pitcher strikeouts", "hitter fantasy points", "pitcher fantasy points", "pitching outs", "plate appearances", "hits", "home runs", "RBIs", "stolen bases", "walks"],
+  NHL: ["goals", "assists", "saves", "shots on goal", "points", "power play points"],
+  NCAAF: ["passing yards", "rushing yards", "receiving yards", "touchdowns", "completions", "fantasy points"],
+  NCAAB: ["points", "rebounds", "assists", "threes", "steals", "blocks", "fantasy points"],
+  Soccer: ["goals", "assists", "shots", "shots on target", "fantasy points"],
+  Tennis: ["aces", "double faults", "games won", "sets won"],
+  Golf: ["birdies", "bogeys", "fairways hit", "greens in regulation", "putts"],
+  MMA: ["significant strikes", "takedowns", "submission attempts"],
+};
+
+const DEFAULT_PROPS = ["points", "rebounds", "assists", "touchdowns", "goals", "strikeouts", "fantasy points"];
+
+function getProps(sport: string): string[] {
+  return SPORT_PROPS[sport] ?? DEFAULT_PROPS;
+}
 
 const schema = z.object({
   player: z.string().min(2, "Player name required"),
@@ -124,6 +142,9 @@ export default function Score() {
     defaultValues: { player: "", sport: "", prop: "", side: "MORE", line: undefined },
   });
 
+  const selectedSport = form.watch("sport");
+  const availableProps = getProps(selectedSport);
+
   const mutation = useMutation({
     mutationFn: async (values: ScoreForm) => {
       const res = await fetch("/random-forest-score", {
@@ -200,7 +221,13 @@ export default function Score() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Sport</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
+                    <Select
+                      onValueChange={(val) => {
+                        field.onChange(val);
+                        form.setValue("prop", "");
+                      }}
+                      value={field.value}
+                    >
                       <FormControl>
                         <SelectTrigger data-testid="select-sport">
                           <SelectValue placeholder="Select sport" />
@@ -255,7 +282,7 @@ export default function Score() {
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {PROPS.map((p) => (
+                        {availableProps.map((p) => (
                           <SelectItem key={p} value={p}>{p}</SelectItem>
                         ))}
                       </SelectContent>
