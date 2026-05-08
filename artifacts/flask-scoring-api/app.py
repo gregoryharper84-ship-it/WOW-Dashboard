@@ -8,6 +8,13 @@ from functools import wraps
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
+try:
+    import psycopg2
+    import psycopg2.extras
+    _PSYCOPG2_AVAILABLE = True
+except ImportError:
+    _PSYCOPG2_AVAILABLE = False
+
 app = Flask(__name__)
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
 
@@ -17,7 +24,7 @@ DISCLAIMER = (
     "any bet or wager. All decisions remain solely with the user."
 )
 
-_request_log: deque = deque(maxlen=50)
+_fallback_log: deque = deque(maxlen=50)
 _log_lock = threading.Lock()
 
 
@@ -25,6 +32,16 @@ def get_public_url() -> str:
     domains = os.environ.get("REPLIT_DOMAINS", "")
     first = domains.split(",")[0].strip() if domains else ""
     return f"https://{first}" if first else "http://localhost:8000"
+
+
+def get_db_conn():
+    """Return a new psycopg2 connection or raise if unavailable."""
+    if not _PSYCOPG2_AVAILABLE:
+        raise RuntimeError("psycopg2 is not installed")
+    database_url = os.environ.get("DATABASE_URL", "")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL environment variable is not set")
+    return psycopg2.connect(database_url)
 
 
 def require_api_key(f):
@@ -85,9 +102,90 @@ def compute_rf_score(features: dict, player: str, prop: str, side: str, line: fl
     return round(score, 2)
 
 
-def append_log(entry: dict) -> None:
-    with _log_lock:
-        _request_log.appendleft(entry)
+def persist_request(player: str, sport: str, prop: str, side: str,
+                    line: float, score: float, label: str) -> bool:
+    """
+    Write one scoring record to PostgreSQL.
+    Returns True on success, False on any DB error (falls back to in-memory).
+    """
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "player": player,
+        "sport": sport,
+        "prop": prop,
+        "side": side,
+        "line": line,
+        "score": score,
+        "label": label
+    }
+    try:
+        conn = get_db_conn()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO scoring_requests
+                        (timestamp, player, sport, prop, side, line, score, label)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (entry["timestamp"], player, sport, prop, side, line, score, label)
+                )
+        conn.close()
+        return True
+    except Exception:
+        with _log_lock:
+            _fallback_log.appendleft(entry)
+        return False
+
+
+def fetch_log(player=None, sport=None, prop=None, limit=50):
+    """
+    Query PostgreSQL for recent scoring records.
+    Raises on DB error so the caller can return a clear HTTP error.
+    """
+    conn = get_db_conn()
+    conditions = []
+    params = []
+
+    if player:
+        params.append(f"%{player}%")
+        conditions.append("player ILIKE %s")
+    if sport:
+        params.append(sport)
+        conditions.append("sport ILIKE %s")
+    if prop:
+        params.append(f"%{prop}%")
+        conditions.append("prop ILIKE %s")
+
+    params.append(min(limit, 200))
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql = f"""
+        SELECT timestamp, player, sport, prop, side, line, score, label
+        FROM scoring_requests
+        {where}
+        ORDER BY timestamp DESC
+        LIMIT %s
+    """
+
+    with conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    conn.close()
+
+    return [
+        {
+            "timestamp": row["timestamp"].isoformat() if hasattr(row["timestamp"], "isoformat") else str(row["timestamp"]),
+            "player": row["player"],
+            "sport": row["sport"],
+            "prop": row["prop"],
+            "side": row["side"],
+            "line": float(row["line"]),
+            "score": float(row["score"]),
+            "label": row["label"]
+        }
+        for row in rows
+    ]
 
 
 @app.route("/", methods=["GET"])
@@ -140,20 +238,12 @@ def random_forest_score():
         return jsonify({"error": "'features' must be a JSON object (key-value pairs)"}), 422
 
     score = compute_rf_score(features, player, prop, side, line)
+    label = "Support Layer Only"
 
-    append_log({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "player": player,
-        "sport": sport,
-        "prop": prop,
-        "side": side,
-        "line": line,
-        "score": score,
-        "label": "Support Layer Only"
-    })
+    persist_request(player, sport, prop, side, line, score, label)
 
     return jsonify({
-        "label": "Support Layer Only",
+        "label": label,
         "score": score,
         "score_range": "0-100",
         "input": {
@@ -172,12 +262,47 @@ def random_forest_score():
 @app.route("/request-log", methods=["GET"])
 @require_api_key
 def request_log():
-    with _log_lock:
-        entries = list(_request_log)
+    raw_limit = request.args.get("limit", "50")
+    try:
+        limit = max(1, min(int(raw_limit), 200))
+    except (ValueError, TypeError):
+        return jsonify({"error": "'limit' must be a positive integer"}), 422
+
+    player_filter = request.args.get("player", "").strip() or None
+    sport_filter = request.args.get("sport", "").strip() or None
+    prop_filter = request.args.get("prop", "").strip() or None
+
+    try:
+        entries = fetch_log(
+            player=player_filter,
+            sport=sport_filter,
+            prop=prop_filter,
+            limit=limit
+        )
+        storage = "postgresql"
+    except Exception as exc:
+        db_err = str(exc)
+        if not _PSYCOPG2_AVAILABLE or not os.environ.get("DATABASE_URL"):
+            return jsonify({
+                "error": "Database unavailable",
+                "detail": db_err,
+                "hint": "Ensure DATABASE_URL is set and the database is reachable"
+            }), 503
+        return jsonify({
+            "error": "Database unavailable",
+            "detail": db_err
+        }), 503
+
     return jsonify({
         "count": len(entries),
-        "limit": 50,
+        "limit": limit,
         "order": "most recent first",
+        "storage": storage,
+        "filters": {
+            "player": player_filter,
+            "sport": sport_filter,
+            "prop": prop_filter
+        },
         "requests": entries
     })
 
@@ -270,11 +395,41 @@ def openapi_schema():
                     "operationId": "getRequestLog",
                     "summary": "View recent scoring requests",
                     "description": (
-                        "Returns the 50 most recent scoring requests in reverse chronological order. "
-                        "Requires X-API-Key header. "
-                        "The API key itself is never stored in the log."
+                        "Returns recent scoring requests from PostgreSQL in reverse chronological order. "
+                        "Supports optional filters by player, sport, and prop. "
+                        "Requires X-API-Key header. API keys are never stored."
                     ),
                     "security": [{"ApiKeyAuth": []}],
+                    "parameters": [
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "description": "Maximum number of records to return (default 50, max 200)",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 50, "maximum": 200}
+                        },
+                        {
+                            "name": "player",
+                            "in": "query",
+                            "description": "Filter by player name (partial match)",
+                            "required": False,
+                            "schema": {"type": "string"}
+                        },
+                        {
+                            "name": "sport",
+                            "in": "query",
+                            "description": "Filter by sport (exact match, case-insensitive)",
+                            "required": False,
+                            "schema": {"type": "string"}
+                        },
+                        {
+                            "name": "prop",
+                            "in": "query",
+                            "description": "Filter by prop type (partial match)",
+                            "required": False,
+                            "schema": {"type": "string"}
+                        }
+                    ],
                     "responses": {
                         "200": {
                             "description": "Request log returned successfully",
@@ -284,7 +439,9 @@ def openapi_schema():
                                 }
                             }
                         },
-                        "401": {"description": "Missing or invalid X-API-Key"}
+                        "401": {"description": "Missing or invalid X-API-Key"},
+                        "422": {"description": "Invalid query parameter"},
+                        "503": {"description": "Database unavailable"}
                     }
                 }
             }
@@ -354,6 +511,8 @@ def openapi_schema():
                         "count": {"type": "integer", "example": 3},
                         "limit": {"type": "integer", "example": 50},
                         "order": {"type": "string", "example": "most recent first"},
+                        "storage": {"type": "string", "example": "postgresql"},
+                        "filters": {"type": "object"},
                         "requests": {
                             "type": "array",
                             "items": {"$ref": "#/components/schemas/LogEntry"}
