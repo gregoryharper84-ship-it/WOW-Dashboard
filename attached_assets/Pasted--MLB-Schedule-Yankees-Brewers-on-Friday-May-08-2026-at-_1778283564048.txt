@@ -1,0 +1,99 @@
+## MLB Schedule
+
+* Yankees @ Brewers on Friday, May 08, 2026 at 04:40 PM PDT
+
+## Re-analysis: Jacob Misiorowski Pitcher Ks 5.5
+
+## Source Access Status
+
+Available: official starter/slate, current matchup, season K log, pitch count/leash, injury note, market comparison.
+Missing: final Yankees lineup confirmation and umpire K profile.
+
+Engine rules applied from WOW v14.8 memory. 
+
+## Board Classification: **Limited / Playable at 5.5 only**
+
+Correction: this is **Yankees @ Brewers**, not Royals @ Brewers. MLB lists **Max Fried vs. Jacob Misiorowski** at American Family Field, 7:40 PM ET. Misiorowski is confirmed as Milwaukee’s starter with **2-2, 2.84 ERA, 59 SO**. ([MLB.com][1])
+
+# Final Pick: **Jacob Misiorowski MORE 5.5 Ks**
+
+## Tier: **Tier 1 / Green-lean**
+
+This is playable **only if your line is truly 5.5**. Market sanity is favorable because several public markets/articles are discussing him at **7.5 Ks**, not 5.5. Covers shows **o7.5 -138 / u7.5 +118**, while FantasyAlarm frames the market as **7.5** and recommends avoiding that higher bar. ([Covers.com][2])
+
+## L5 / L10 Status
+
+Recent K log:
+
+| Date   |   Opp |  IP | Ks | Pitch Count |
+| ------ | ----: | --: | -: | ----------: |
+| May 1  | @ WSH | 5.1 |  8 |          85 |
+| Apr 25 |   PIT | 6.0 |  9 |          91 |
+| Apr 19 | @ MIA | 5.0 |  9 |          97 |
+| Apr 14 |   TOR | 5.1 |  5 |          76 |
+| Apr 7  | @ BOS | 5.1 | 10 |           — |
+
+L5: **8, 9, 9, 5, 10**
+L5 average: **8.2**
+L5 median: **9**
+Hit rate over 5.5: **4/5**
+Season hit rate over 5.5: **6/7** regular-season starts. ([CBS Sports][3])
+
+Your “6.1 over last 5” number is too low based on the logs I found. The correct L5 from CBS/Fox is about **8.2 Ks per start**.
+
+## Median vs Line
+
+Line: **5.5**
+L5 median: **9**
+Season K total: **59 Ks in 38 IP**, which is **13.97 K/9**. CBS/Field Level also notes that rate leads MLB/qualified NL arms and that opponents are batting only **.172** against him. ([CBS Sports][4])
+
+That is a strong median gap. He does not need ceiling form here; he just needs six strikeouts.
+
+## Role / Leash
+
+Role is stable. He is the listed starter, not an opener/bulk ambiguity. His last four pitch counts from the visible Fox log include **85, 91, 97, 76**, so the leash supports 5+ innings and enough batters faced for six Ks. ([FOX Sports][5])
+
+The only medical flag is the prior **right hamstring cramp**. He left his May 1 start after 5.1 no-hit innings and 8 Ks, but reports described it as a cramp/precaution rather than a confirmed injury. ([Reuters][6])
+
+## Matchup / Game Script
+
+This is not a soft opponent. The Yankees are dangerous, powerful, and more disciplined than the Royals. MLB notes New York entered this series with an MLB-best **26-12** record and **61 home runs**. ([MLB.com][7])
+
+The key K-pathway still exists because Misiorowski has elite raw strikeout ability. MLB’s preview says he owns a **38.1% strikeout rate**, best among qualified starters, and has struck out at least seven hitters in six outings. ([MLB.com][7])
+
+## MORE vs LESS
+
+**MORE 5.5: Approved**
+The line is low relative to his median, recent hit rate, leash, and broader market.
+
+**LESS 5.5: Rejected**
+The under needs a short outing, injury recurrence, command blowup, or extreme Yankees contact game. Those are real risks, but not the median outcome.
+
+## Probability Tier
+
+**MORE 5.5 Ks: 70–74%**
+Confidence: **B+**
+
+I would not upgrade to A-tier because the Yankees are a bad matchup for efficiency and he has recent cramp risk.
+
+## Failure Paths
+
+The bet fails if Misiorowski walks too many hitters, the Yankees force long counts, Aaron Judge/Ben Rice-type power creates early traffic, Milwaukee pulls him around 75–80 pitches because of the prior cramp, or the Yankees lineup posts an unusually contact-heavy plan.
+
+## Final Board
+
+**Tier 1:** Jacob Misiorowski MORE 5.5 Ks
+**Tier 2:** None
+**Approved LESS Pool:** None
+**Conditional / Watch:** MORE 6.5 is still playable but thinner; MORE 7.5 becomes **No Play / Avoid**
+**Rejected:** LESS 5.5; MORE 7.5 at normal pricing
+
+Bottom line: **At 5.5, I approve MORE. At 7.5, I pass.**
+
+[1]: https://www.mlb.com/probable-pitchers/2026-05-08 "Baseball Probable Pitchers | MLB.com"
+[2]: https://www.covers.com/sport/baseball/mlb/players/268207/jacob-misiorowski?utm_source=chatgpt.com "Jacob Misiorowski Projections, Prop Bets, Odds, And Stats"
+[3]: https://www.cbssports.com/mlb/players/29075709/jacob-misiorowski/game-log/ "Jacob Misiorowski, Milwaukee Brewers, SP - 2026 Game Log - MLB - CBS Sports"
+[4]: https://www.cbssports.com/mlb/news/brewers-rejuvenated-offense-takes-aim-at-max-fried-yankees/ "Brewers' rejuvenated offense takes aim at Max Fried, Yankees - CBS Sports"
+[5]: https://www.foxsports.com/mlb/jacob-misiorowski-player-game-log "Jacob Misiorowski GAME LOG | FOX Sports"
+[6]: https://www.reuters.com/sports/brewers-jacob-misiorowski-no-hits-nats-thru-5-13-leaves-with-injury--flm-2026-05-02/?utm_source=chatgpt.com "Brewers' Jacob Misiorowski no-hits Nats thru 5 1/3, leaves with cramp"
+[7]: https://www.mlb.com/news/yankees-brewers-face-off-for-first-time-since-torpedo-bat-stir "Yankees, Brewers face off for first time since torpedo bat stir"
