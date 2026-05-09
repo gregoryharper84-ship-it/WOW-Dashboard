@@ -9,28 +9,6 @@ args = ["pnpm", "store", "prune"]
 env = { "CI" = "true" }
 
 [workflows]
-runButton = "Project"
-
-[[workflows.workflow]]
-name = "Project"
-mode = "parallel"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "WOW Scoring API"
-
-[[workflows.workflow]]
-name = "WOW Scoring API"
-author = "agent"
-
-[workflows.workflow.metadata]
-outputType = "console"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd /home/runner/workspace/artifacts/flask-scoring-api && PORT=25643 python app.py"
-waitForPort = 25643
 
 [agent]
 stack = "PNPM_WORKSPACE"
