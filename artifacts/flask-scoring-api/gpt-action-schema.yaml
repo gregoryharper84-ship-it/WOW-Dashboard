@@ -71,15 +71,16 @@ paths:
                   type: number
                   description: Your own 0-100 confidence in this pick (optional)
             example:
-              player: Shohei Ohtani
+              player: Jacob Misiorowski
               sport: MLB
               prop: pitcher strikeouts
               side: MORE
-              line: 7.5
+              line: 5.5
               recent_avg: 8.2
-              matchup_rating: 7
+              matchup_rating: 6
               injury_flag: 0
-              game_date: "2026-05-08"
+              confidence: 72
+              game_date: "2026-05-09"
       responses:
         "200":
           description: Pick scored and saved to the WOW Lobby
@@ -88,6 +89,17 @@ paths:
               schema:
                 type: object
                 properties:
+                  wow_score:
+                    type: number
+                    description: WOW confidence score 0-100
+                  signal:
+                    type: string
+                    description: Human-readable signal label
+                  saved_to_lobby:
+                    type: boolean
+                  message:
+                    type: string
+                    description: Summary of the pick that was saved
                   player:
                     type: string
                   sport:
@@ -98,18 +110,6 @@ paths:
                     type: string
                   line:
                     type: number
-                  wow_score:
-                    type: number
-                    description: WOW confidence score 0-100
-                  signal:
-                    type: string
-                    description: Human-readable signal label
-                  score_range:
-                    type: string
-                  saved_to_lobby:
-                    type: boolean
-                  disclaimer:
-                    type: string
       security:
         - ApiKeyAuth: []
 
