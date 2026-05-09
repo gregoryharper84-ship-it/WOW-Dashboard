@@ -617,16 +617,15 @@ def gpt_score():
         signal = "Weak Signal — no clear edge"
 
     return jsonify({
+        "wow_score": round(score, 2),
+        "signal": signal,
+        "saved_to_lobby": True,
+        "message": f"Pick scored and saved — {player} {side} {line} {prop}",
         "player": player,
         "sport": sport,
         "prop": prop,
         "side": side,
         "line": line,
-        "wow_score": score,
-        "signal": signal,
-        "score_range": "0-100",
-        "saved_to_lobby": True,
-        "disclaimer": DISCLAIMER,
     })
 
 
