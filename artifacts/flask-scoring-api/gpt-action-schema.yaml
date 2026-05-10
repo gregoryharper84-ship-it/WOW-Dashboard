@@ -229,6 +229,12 @@ paths:
           in: query
           schema:
             type: string
+        - name: side
+          in: query
+          schema:
+            type: string
+            enum: [MORE, LESS, over, under, more, less]
+          description: "Filter by side. Normalized automatically: MORE/over/more → MORE, LESS/under/less → LESS"
         - name: limit
           in: query
           schema:
@@ -275,6 +281,12 @@ paths:
           in: query
           schema:
             type: string
+        - name: side
+          in: query
+          schema:
+            type: string
+            enum: [MORE, LESS, over, under, more, less]
+          description: "Filter by side. Normalized automatically: MORE/over/more → MORE, LESS/under/less → LESS"
       responses:
         "200":
           description: Aggregate scoring stats
@@ -318,6 +330,8 @@ paths:
           in: query
           schema:
             type: string
+            enum: [MORE, LESS, over, under, more, less]
+          description: "Filter by side. Normalized automatically: MORE/over/more → MORE, LESS/under/less → LESS"
         - name: today
           in: query
           schema:
