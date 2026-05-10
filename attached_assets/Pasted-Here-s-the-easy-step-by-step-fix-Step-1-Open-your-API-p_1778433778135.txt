@@ -1,0 +1,217 @@
+Here’s the easy step-by-step fix.
+
+## Step 1: Open your API project
+
+Open the Replit/API project that contains:
+
+```text
+/random-forest-score
+```
+
+That is the protected endpoint used by `scoreProp`.
+
+---
+
+## Step 2: Find the request model
+
+Look for a Python class that looks similar to this:
+
+```python
+class ScorePropRequest(BaseModel):
+    player: str
+    sport: str
+    prop: str
+    side: str
+    line: float
+```
+
+It might have a slightly different name, but it should contain `player`, `sport`, `prop`, `side`, and `line`.
+
+---
+
+## Step 3: Add the `features` model
+
+Above `ScorePropRequest`, add this:
+
+```python
+from typing import Optional
+from pydantic import BaseModel
+
+class Features(BaseModel):
+    l5_hit_rate: Optional[float] = None
+    l10_hit_rate: Optional[float] = None
+    median_edge: Optional[float] = None
+    market_gap: Optional[float] = None
+    role_score: Optional[float] = None
+    matchup_score: Optional[float] = None
+    line_movement_score: Optional[float] = None
+```
+
+---
+
+## Step 4: Add `features` to the main payload
+
+Change your request model to this:
+
+```python
+class ScorePropRequest(BaseModel):
+    player: str
+    sport: str
+    prop: str
+    side: str
+    line: float
+    features: Optional[Features] = None
+```
+
+This lets your API accept the full payload:
+
+```json
+{
+  "player": "LeBron James",
+  "sport": "NBA",
+  "prop": "points",
+  "side": "over",
+  "line": 25.5,
+  "features": {
+    "l5_hit_rate": 0.6,
+    "l10_hit_rate": 0.6,
+    "median_edge": 0.5,
+    "market_gap": 0.62,
+    "role_score": 0.8,
+    "matchup_score": 0.65,
+    "line_movement_score": 0.55
+  }
+}
+```
+
+---
+
+## Step 5: Make sure the API key check is working
+
+Your health check said protected endpoints require:
+
+```text
+X-API-Key
+```
+
+Your route should have something like this:
+
+```python
+from fastapi import Header, HTTPException
+
+API_KEY = "your-secret-key"
+
+@app.post("/random-forest-score")
+def score_prop(payload: ScorePropRequest, x_api_key: str = Header(None)):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    return {
+        "player": payload.player,
+        "score": 72,
+        "features_received": payload.features is not None
+    }
+```
+
+Replace `"your-secret-key"` with your actual key, or load it from your environment secrets.
+
+---
+
+## Step 6: Test it with curl
+
+Run this from your terminal:
+
+```bash
+curl -X POST "https://YOUR-REPLIT-URL/random-forest-score" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -d '{
+    "player": "LeBron James",
+    "sport": "NBA",
+    "prop": "points",
+    "side": "over",
+    "line": 25.5,
+    "features": {
+      "l5_hit_rate": 0.6,
+      "l10_hit_rate": 0.6,
+      "median_edge": 0.5,
+      "market_gap": 0.62,
+      "role_score": 0.8,
+      "matchup_score": 0.65,
+      "line_movement_score": 0.55
+    }
+  }'
+```
+
+Replace:
+
+```text
+YOUR-REPLIT-URL
+YOUR_API_KEY
+```
+
+with your real values.
+
+---
+
+## Step 7: Check the response
+
+A good response should look something like:
+
+```json
+{
+  "player": "LeBron James",
+  "score": 72,
+  "features_received": true
+}
+```
+
+The key thing is:
+
+```json
+"features_received": true
+```
+
+That confirms your API is accepting the full payload.
+
+---
+
+## Step 8: Refresh the ChatGPT Action / tool schema
+
+After the API works, open the GPT Action/tool setup and refresh the OpenAPI schema from:
+
+```text
+https://YOUR-REPLIT-URL/openapi.json
+```
+
+Until you refresh the schema, ChatGPT may still only see:
+
+```json
+{
+  "player": "...",
+  "sport": "...",
+  "prop": "...",
+  "side": "...",
+  "line": 25.5
+}
+```
+
+and not the new `features` object.
+
+---
+
+## Step 9: Retest here
+
+Once the schema is refreshed, test the same payload again. The fix is complete when the tool accepts both:
+
+```json
+"line": 25.5
+```
+
+and:
+
+```json
+"features": {...}
+```
+
+Right now, your issue is: **API is protected + tool schema does not expose `features`.**
