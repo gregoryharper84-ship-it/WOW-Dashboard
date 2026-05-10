@@ -34,8 +34,8 @@ paths:
       summary: Score a player prop pick and save it to the WOW Lobby
       description: >
         Call after analyzing any player prop. Pass player, sport, prop, side (MORE/LESS), and line.
-        Include optional numeric fields (recent_avg, matchup_rating, injury_flag, confidence) as model features.
-        Pick is saved to the Lobby immediately.
+        Include optional fields: recent_avg, l5_hit_rate, l10_hit_rate, market_gap, role_score,
+        matchup_rating, injury_flag, confidence. Pick is saved to the Lobby immediately.
       requestBody:
         required: true
         content:
@@ -88,6 +88,18 @@ paths:
                 confidence:
                   type: number
                   description: Your own 0-100 confidence in this pick (optional)
+                l5_hit_rate:
+                  type: number
+                  description: Hit rate over last 5 games as decimal 0-1, e.g. 0.8 = 4/5 (optional)
+                l10_hit_rate:
+                  type: number
+                  description: Hit rate over last 10 games as decimal 0-1 (optional)
+                market_gap:
+                  type: number
+                  description: Market alignment 0-1, where 0.75+ = strong market support for this side (optional)
+                role_score:
+                  type: number
+                  description: Role and usage stability 0-1, where 1 = locked starter/heavy usage (optional)
             example:
               player: Jacob Misiorowski
               sport: MLB
@@ -95,9 +107,13 @@ paths:
               side: MORE
               line: 5.5
               recent_avg: 8.2
+              l5_hit_rate: 0.8
+              l10_hit_rate: 0.86
+              market_gap: 0.72
+              role_score: 0.9
               matchup_rating: 6
               injury_flag: 0
-              confidence: 72
+              confidence: 74
               game_date: "2026-05-09"
       responses:
         "200":
