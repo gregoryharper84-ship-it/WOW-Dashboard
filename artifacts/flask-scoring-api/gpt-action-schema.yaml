@@ -282,6 +282,14 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  count:
+                    type: integer
+                  window:
+                    type: string
+                  stats:
+                    type: object
+                    additionalProperties: true
       security:
         - ApiKeyAuth: []
 
@@ -328,6 +336,30 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  limit:
+                    type: integer
+                  window:
+                    type: string
+                  leaderboard:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        player:
+                          type: string
+                        sport:
+                          type: string
+                        prop:
+                          type: string
+                        side:
+                          type: string
+                        average_score:
+                          type: number
+                        latest_score:
+                          type: number
+                        rank:
+                          type: integer
       security:
         - ApiKeyAuth: []
 
