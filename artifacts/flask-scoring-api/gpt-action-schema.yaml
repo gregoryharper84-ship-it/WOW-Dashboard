@@ -77,6 +77,10 @@ paths:
                 confidence:
                   type: number
                   description: Your own 0-100 confidence in this pick (optional)
+                environment:
+                  type: string
+                  enum: [test, live]
+                  description: "Default: test. Pass 'live' only for real picks you want tracked in the live Lobby."
                 features:
                   type: object
                   description: Optional nested object of analysis features (alternative to flat fields)
@@ -184,6 +188,10 @@ paths:
                   type: number
                 confidence:
                   type: number
+                environment:
+                  type: string
+                  enum: [test, live]
+                  description: "Default: test. Pass 'live' only for real picks."
       responses:
         "200":
           description: Pick scored and saved
@@ -235,6 +243,12 @@ paths:
             type: string
             enum: [MORE, LESS, over, under, more, less]
           description: "Filter by side. Normalized automatically: MORE/over/more → MORE, LESS/under/less → LESS"
+        - name: environment
+          in: query
+          schema:
+            type: string
+            enum: [test, live]
+          description: "Filter by environment. Omit to see all."
         - name: limit
           in: query
           schema:
@@ -287,6 +301,12 @@ paths:
             type: string
             enum: [MORE, LESS, over, under, more, less]
           description: "Filter by side. Normalized automatically: MORE/over/more → MORE, LESS/under/less → LESS"
+        - name: environment
+          in: query
+          schema:
+            type: string
+            enum: [test, live]
+          description: "Filter by environment. Omit to see all."
       responses:
         "200":
           description: Aggregate scoring stats
@@ -338,6 +358,12 @@ paths:
             type: integer
             enum: [0, 1]
           description: "1 = today's picks only"
+        - name: environment
+          in: query
+          schema:
+            type: string
+            enum: [test, live]
+          description: "Filter by environment. Omit to see all."
         - name: limit
           in: query
           schema:

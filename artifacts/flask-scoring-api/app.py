@@ -24,7 +24,8 @@ DISCLAIMER = (
     "any bet or wager. All decisions remain solely with the user."
 )
 
-VALID_WINDOWS = {"L5": 5, "L10": 10}
+VALID_WINDOWS    = {"L5": 5, "L10": 10}
+VALID_ENVIRONMENTS = {"test", "live"}
 
 SIDE_MAP = {
     "over":  "MORE",
@@ -98,11 +99,13 @@ def secrets_equal(a: str, b: str) -> bool:
     return result == 0
 
 
-def build_filter_clause(player=None, sport=None, prop=None, side=None, since=None):
+def build_filter_clause(player=None, sport=None, prop=None, side=None,
+                        since=None, environment=None):
     """
     Returns (conditions, params) for a WHERE clause.
-    Apply order: since → player/sport/prop → side.
+    Apply order: since → player/sport/prop → side → environment.
     `side` must already be normalized to 'MORE' or 'LESS'.
+    `environment` must already be normalized to 'test' or 'live'.
     """
     conditions, params = [], []
     if since:
@@ -120,6 +123,9 @@ def build_filter_clause(player=None, sport=None, prop=None, side=None, since=Non
     if side:
         side_fragment, _ = SIDE_SQL[side]
         conditions.append(side_fragment)
+    if environment:
+        params.append(environment)
+        conditions.append("environment = %s")
     return conditions, params
 
 
@@ -156,7 +162,8 @@ def serialize_row(row):
         "side": row["side"],
         "line": float(row["line"]),
         "score": float(row["score"]),
-        "label": row.get("label", "Support Layer Only")
+        "label": row.get("label", "Support Layer Only"),
+        "environment": row.get("environment", "test"),
     }
 
 
@@ -316,7 +323,8 @@ def compute_rf_score(features: dict, player: str, prop: str, side: str, line: fl
     return score
 
 
-def persist_request(player, sport, prop, side, line, score, label, game_date=None):
+def persist_request(player, sport, prop, side, line, score, label,
+                    game_date=None, environment="test"):
     from datetime import date as _date
     if game_date is None:
         game_date = _date.today().isoformat()
@@ -324,7 +332,7 @@ def persist_request(player, sport, prop, side, line, score, label, game_date=Non
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "player": player, "sport": sport, "prop": prop,
         "side": side, "line": line, "score": score, "label": label,
-        "game_date": game_date,
+        "game_date": game_date, "environment": environment,
     }
     try:
         conn = get_db_conn()
@@ -332,9 +340,10 @@ def persist_request(player, sport, prop, side, line, score, label, game_date=Non
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO scoring_requests "
-                    "(timestamp, player, sport, prop, side, line, score, label, game_date) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (entry["timestamp"], player, sport, prop, side, line, score, label, game_date)
+                    "(timestamp, player, sport, prop, side, line, score, label, game_date, environment) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (entry["timestamp"], player, sport, prop, side, line, score, label,
+                     game_date, environment)
                 )
         conn.close()
         return True
@@ -349,13 +358,13 @@ def persist_request(player, sport, prop, side, line, score, label, game_date=Non
 # ---------------------------------------------------------------------------
 
 def fetch_log(player=None, sport=None, prop=None, side=None,
-              since=None, window_n=None, limit=50):
+              since=None, window_n=None, limit=50, environment=None):
     """
     Query recent scoring records.
     Window (L5/L10) overrides the limit when set.
     """
     conn = get_db_conn()
-    conditions, params = build_filter_clause(player, sport, prop, side, since)
+    conditions, params = build_filter_clause(player, sport, prop, side, since, environment)
 
     if window_n is not None:
         effective_limit = window_n
@@ -395,14 +404,14 @@ def _top_props_from(rows):
 
 
 def fetch_stats(player=None, sport=None, prop=None, side=None,
-                since=None, window_n=None, top_limit=10):
+                since=None, window_n=None, top_limit=10, environment=None):
     """
     Aggregate stats. When window_n is set, all aggregates operate on the
     latest N filtered records via a CTE.
     `side` must be 'MORE', 'LESS', or None (already normalized).
     """
     conn = get_db_conn()
-    conditions, params = build_filter_clause(player, sport, prop, side, since)
+    conditions, params = build_filter_clause(player, sport, prop, side, since, environment)
     cte_sql, cte_params, source, agg_where = build_query_source(
         conditions, params, window_n
     )
@@ -524,7 +533,7 @@ def fetch_stats(player=None, sport=None, prop=None, side=None,
 # ---------------------------------------------------------------------------
 
 def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
-                      window_n=10, limit=10, today=False):
+                      window_n=10, limit=10, today=False, environment=None):
     """
     Rank (player, sport, prop, side) combinations by average score.
 
@@ -539,7 +548,8 @@ def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
 
     # Build filter conditions (no player filter — leaderboard ranks players)
     conditions, params = build_filter_clause(
-        player=None, sport=sport, prop=prop, side=side, since=since
+        player=None, sport=sport, prop=prop, side=side, since=since,
+        environment=environment
     )
     if today:
         conditions.append("game_date = CURRENT_DATE")
@@ -644,11 +654,12 @@ def parse_since(raw):
 def normalize_side(raw):
     """
     Returns normalized side ('MORE' or 'LESS') or None.
-    over/more → MORE, under/less → LESS. Raises ValueError on unknown values.
+    over/more/OVER/MORE → MORE, under/less/UNDER/LESS → LESS.
+    Raises ValueError on unknown values.
     """
     if not raw:
         return None
-    normalized = SIDE_MAP.get(raw.strip().lower())
+    normalized = SIDE_MAP.get(raw.strip().lower()) or SIDE_MAP.get(raw.strip())
     if not normalized:
         raise ValueError(
             f"Invalid side '{raw}'. Accepted: over, more, under, less"
@@ -656,15 +667,31 @@ def normalize_side(raw):
     return normalized
 
 
+def normalize_environment(raw):
+    """
+    Returns normalized environment ('test' or 'live') or None.
+    Raises ValueError on unknown values.
+    """
+    if not raw:
+        return None
+    v = raw.strip().lower()
+    if v not in VALID_ENVIRONMENTS:
+        raise ValueError(
+            f"Invalid environment '{raw}'. Accepted: test, live"
+        )
+    return v
+
+
 def parse_common_filters():
     """
     Parse shared query params for /stats and /request-log.
     Returns a dict of parsed values or raises ValueError.
-    Filter application order: since → player/sport/prop → side → window.
+    Filter application order: since → player/sport/prop → side → environment → window.
     """
     window_label, window_n = parse_window(request.args.get("window", ""))
     since_dt   = parse_since(request.args.get("since", ""))
     side_norm  = normalize_side(request.args.get("side", ""))
+    env_norm   = normalize_environment(request.args.get("environment", ""))
     return {
         "player":       request.args.get("player", "").strip() or None,
         "sport":        request.args.get("sport",  "").strip() or None,
@@ -673,6 +700,7 @@ def parse_common_filters():
         "since":        since_dt,
         "window_label": window_label,
         "window_n":     window_n,
+        "environment":  env_norm,
     }
 
 
@@ -737,7 +765,7 @@ def gpt_score():
         return jsonify({"error": "'line' must be a numeric value"}), 422
 
     # Accept any extra keys as features (GPT analysis fields)
-    reserved = set(required_fields + ["features", "game_date"])
+    reserved = set(required_fields + ["features", "game_date", "environment"])
     features = {k: v for k, v in data.items() if k not in reserved}
     features.update(data.get("features", {}) or {})
 
@@ -751,14 +779,22 @@ def gpt_score():
         except ValueError:
             return jsonify({"error": "'game_date' must be YYYY-MM-DD format, e.g. 2026-05-08"}), 422
 
+    # Optional environment — "test" (default) or "live"
+    try:
+        environment = normalize_environment(data.get("environment", "")) or "test"
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+
     score, signal, msg = compute_wow_score(features, player, prop, side, line)
-    persist_request(player, sport, prop, side, line, score, signal, game_date=game_date)
+    persist_request(player, sport, prop, side, line, score, signal,
+                    game_date=game_date, environment=environment)
 
     return jsonify({
         "wow_score": score,
         "signal": signal,
         "message": msg,
         "saved_to_lobby": True,
+        "environment": environment,
         "player": player,
         "sport": sport,
         "prop": prop,
@@ -801,7 +837,7 @@ def random_forest_score():
         return jsonify({"error": "'features' must be a JSON object (key-value pairs)"}), 422
 
     # Also accept flat extra keys as features (same as /gpt-score)
-    reserved = {"player", "sport", "prop", "side", "line", "features", "game_date"}
+    reserved = {"player", "sport", "prop", "side", "line", "features", "game_date", "environment"}
     flat_features = {k: v for k, v in data.items() if k not in reserved}
     flat_features.update(features)
 
@@ -814,8 +850,15 @@ def random_forest_score():
         except ValueError:
             return jsonify({"error": "'game_date' must be YYYY-MM-DD format"}), 422
 
+    # Optional environment — "test" (default) or "live"
+    try:
+        environment = normalize_environment(data.get("environment", "")) or "test"
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+
     score, signal, msg = compute_wow_score(flat_features, player, prop, side, line)
-    persist_request(player, sport, prop, side, line, score, signal, game_date=game_date)
+    persist_request(player, sport, prop, side, line, score, signal,
+                    game_date=game_date, environment=environment)
 
     return jsonify({
         "wow_score": score,
@@ -823,6 +866,7 @@ def random_forest_score():
         "message": msg,
         "saved_to_lobby": True,
         "can_approve_bets": False,
+        "environment": environment,
         "player": player,
         "sport": sport,
         "prop": prop,
@@ -849,7 +893,7 @@ def request_log():
         entries = fetch_log(
             player=f["player"], sport=f["sport"], prop=f["prop"],
             side=f["side"], since=f["since"],
-            window_n=f["window_n"], limit=limit
+            window_n=f["window_n"], limit=limit, environment=f["environment"]
         )
     except Exception as exc:
         return jsonify({"error": "Database unavailable", "detail": str(exc)}), 503
@@ -863,7 +907,8 @@ def request_log():
         "filters": {
             "player": f["player"], "sport": f["sport"],
             "prop": f["prop"], "side": f["side"],
-            "since": f["since"].isoformat() if f["since"] else None
+            "since": f["since"].isoformat() if f["since"] else None,
+            "environment": f["environment"],
         },
         "requests": entries
     })
@@ -886,7 +931,7 @@ def stats():
         data = fetch_stats(
             player=f["player"], sport=f["sport"], prop=f["prop"],
             side=f["side"], since=f["since"],
-            window_n=f["window_n"], top_limit=top_limit
+            window_n=f["window_n"], top_limit=top_limit, environment=f["environment"]
         )
     except Exception as exc:
         return jsonify({"error": "Database unavailable", "detail": str(exc)}), 503
@@ -898,6 +943,7 @@ def stats():
             "player": f["player"], "sport": f["sport"],
             "prop": f["prop"], "side": f["side"],
             "since": f["since"].isoformat() if f["since"] else None,
+            "environment": f["environment"],
             "limit": top_limit
         },
         **data
@@ -943,9 +989,14 @@ def leaderboard():
     prop  = request.args.get("prop",  "").strip() or None
 
     try:
+        env_norm = normalize_environment(request.args.get("environment", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+
+    try:
         entries = fetch_leaderboard(
             sport=sport, prop=prop, side=side_norm, since=since_dt,
-            window_n=window_n, limit=limit, today=today_flag
+            window_n=window_n, limit=limit, today=today_flag, environment=env_norm
         )
     except Exception as exc:
         return jsonify({"error": "Database unavailable", "detail": str(exc)}), 503
@@ -959,7 +1010,8 @@ def leaderboard():
             "sport": sport,
             "prop":  prop,
             "side":  side_norm,
-            "since": since_dt.isoformat() if since_dt else None
+            "since": since_dt.isoformat() if since_dt else None,
+            "environment": env_norm,
         },
         "leaderboard": entries
     })
