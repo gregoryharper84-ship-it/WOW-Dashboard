@@ -8,25 +8,6 @@ servers:
   - url: https://create-app-gregoryharper84.replit.app
 
 paths:
-  /health:
-    get:
-      operationId: healthCheck
-      x-openai-isConsequential: false
-      summary: Check if the WOW Scoring API is live
-      description: Returns service status. Use to verify the API is reachable before scoring.
-      responses:
-        "200":
-          description: API is live
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  service:
-                    type: string
-
   /gpt-score:
     post:
       operationId: scorePick
