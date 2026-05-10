@@ -29,8 +29,10 @@ VALID_WINDOWS = {"L5": 5, "L10": 10}
 SIDE_MAP = {
     "over":  "MORE",
     "more":  "MORE",
+    "MORE":  "MORE",
     "under": "LESS",
     "less":  "LESS",
+    "LESS":  "LESS",
 }
 # SQL fragments that match both aliases per normalized side
 SIDE_SQL = {
@@ -711,8 +713,10 @@ def gpt_score():
     player = str(data["player"]).strip()
     sport  = str(data["sport"]).strip().upper()
     prop   = str(data["prop"]).strip().lower()
-    raw_side = str(data["side"]).strip().upper()
-    side = "MORE" if raw_side in ("MORE", "OVER") else "LESS"
+    try:
+        side = normalize_side(str(data["side"]))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
 
     try:
         line = float(data["line"])
@@ -769,7 +773,10 @@ def random_forest_score():
     player = str(data["player"])
     sport  = str(data["sport"])
     prop   = str(data["prop"])
-    side   = str(data["side"])
+    try:
+        side = normalize_side(str(data["side"]))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
     features = data.get("features", {})
 
     try:
