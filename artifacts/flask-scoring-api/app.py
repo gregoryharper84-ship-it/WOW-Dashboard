@@ -30,15 +30,23 @@ SIDE_MAP = {
     "over":  "MORE",
     "more":  "MORE",
     "MORE":  "MORE",
+    "OVER":  "MORE",
     "under": "LESS",
     "less":  "LESS",
     "LESS":  "LESS",
+    "UNDER": "LESS",
 }
-# SQL fragments that match both aliases per normalized side
+# All records are normalized on write; use exact equality in SQL
 SIDE_SQL = {
-    "MORE": ("(side ILIKE 'over' OR side ILIKE 'more')", []),
-    "LESS": ("(side ILIKE 'under' OR side ILIKE 'less')", []),
+    "MORE": ("side = 'MORE'", []),
+    "LESS": ("side = 'LESS'", []),
 }
+# SQL expression to normalize any legacy value at query time (defensive)
+_SIDE_NORM_EXPR = (
+    "CASE WHEN UPPER(side) IN ('OVER','MORE')  THEN 'MORE' "
+    "     WHEN UPPER(side) IN ('UNDER','LESS') THEN 'LESS' "
+    "     ELSE side END"
+)
 
 _fallback_log: deque = deque(maxlen=50)
 _log_lock = threading.Lock()
@@ -400,8 +408,8 @@ def fetch_stats(player=None, sport=None, prop=None, side=None,
     )
     top_n = max(1, min(int(top_limit), 100))
 
-    over_where  = _append_where(agg_where, "(side ILIKE 'over' OR side ILIKE 'more')")
-    under_where = _append_where(agg_where, "(side ILIKE 'under' OR side ILIKE 'less')")
+    over_where  = _append_where(agg_where, "side = 'MORE'")
+    under_where = _append_where(agg_where, "side = 'LESS'")
 
     with conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -413,10 +421,10 @@ def fetch_stats(player=None, sport=None, prop=None, side=None,
                 f"ROUND(AVG(score)::numeric,2) AS avg_score, "
                 f"ROUND(MAX(score)::numeric,2) AS max_score, "
                 f"ROUND(MIN(score)::numeric,2) AS min_score, "
-                f"COUNT(*) FILTER (WHERE side ILIKE 'over' OR side ILIKE 'more') AS over_count, "
-                f"COUNT(*) FILTER (WHERE side ILIKE 'under' OR side ILIKE 'less') AS under_count, "
-                f"ROUND(AVG(score) FILTER (WHERE side ILIKE 'over' OR side ILIKE 'more')::numeric, 2) AS over_avg, "
-                f"ROUND(AVG(score) FILTER (WHERE side ILIKE 'under' OR side ILIKE 'less')::numeric, 2) AS under_avg "
+                f"COUNT(*) FILTER (WHERE side = 'MORE') AS over_count, "
+                f"COUNT(*) FILTER (WHERE side = 'LESS') AS under_count, "
+                f"ROUND(AVG(score) FILTER (WHERE side = 'MORE')::numeric, 2) AS over_avg, "
+                f"ROUND(AVG(score) FILTER (WHERE side = 'LESS')::numeric, 2) AS under_avg "
                 f"FROM {source} {agg_where}",
                 cte_params
             )
@@ -537,17 +545,22 @@ def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
         conditions.append("game_date = CURRENT_DATE")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    # ROW_NUMBER partitions per (player, sport, prop, side) combo, ordered
-    # most-recent-first, so rn=1 is the latest record for that combo.
+    # ROW_NUMBER partitions per (player, sport, prop, normalized_side) combo.
+    # Side is normalized in SQL defensively so any legacy values group correctly.
     sql = f"""
-        WITH ranked AS (
+        WITH normalized AS (
             SELECT *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY player, sport, prop, side
-                       ORDER BY timestamp DESC
-                   ) AS rn
+                   {_SIDE_NORM_EXPR} AS norm_side
             FROM scoring_requests
             {where}
+        ),
+        ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY player, sport, prop, norm_side
+                       ORDER BY timestamp DESC
+                   ) AS rn
+            FROM normalized
         ),
         windowed AS (
             SELECT * FROM ranked WHERE rn <= %s
@@ -556,7 +569,7 @@ def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
             player,
             sport,
             prop,
-            side,
+            norm_side                                        AS side,
             COUNT(*)                                         AS record_count,
             ROUND(AVG(score)::numeric, 2)                   AS average_score,
             ROUND(MAX(score)::numeric, 2)                   AS max_score,
@@ -566,7 +579,7 @@ def fetch_leaderboard(sport=None, prop=None, side=None, since=None,
             MAX(timestamp)                                   AS latest_timestamp,
             JSON_AGG(score ORDER BY timestamp ASC)          AS scores
         FROM windowed
-        GROUP BY player, sport, prop, side
+        GROUP BY player, sport, prop, norm_side
         ORDER BY average_score DESC, latest_score DESC
         LIMIT %s
     """
