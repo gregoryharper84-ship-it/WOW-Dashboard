@@ -154,25 +154,156 @@ def serialize_row(row):
 # Scoring
 # ---------------------------------------------------------------------------
 
+def _safe_float(val, default=None):
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_01(val, scale=10.0):
+    """Normalize a value that might be 0-1 or 0-scale to 0-1."""
+    v = _safe_float(val)
+    if v is None:
+        return None
+    return v / scale if v > 1.0 else v
+
+
+def compute_wow_score(features: dict, player: str, prop: str, side: str, line: float):
+    """
+    WOW scoring spec implementation.
+    Returns (score 0-100, signal string, message string).
+
+    Scoring philosophy: edge > volume, penalize missing/weak inputs,
+    heavily penalize conflicts. GPT handles final tier classification.
+    """
+    score = 50.0
+    positives = []
+    negatives = []
+
+    # 1. Recent hit rate — up to +15 / down to -5
+    hr = _safe_float(features.get("l5_hit_rate") or features.get("l10_hit_rate"))
+    if hr is not None:
+        if hr >= 0.80:   score += 15; positives.append("strong recent hit rate")
+        elif hr >= 0.70: score += 10; positives.append("solid hit rate")
+        elif hr >= 0.60: score += 6;  positives.append("moderate hit rate")
+        elif hr >= 0.50: score += 2
+        else:            score -= 5;  negatives.append("low recent hit rate")
+    else:
+        score -= 6; negatives.append("no hit rate data")
+
+    # 2. Median / recent average edge vs line — up to +15 / down to -20
+    recent_avg = _safe_float(features.get("recent_avg"))
+    median_edge = _safe_float(features.get("median_edge"))
+
+    if recent_avg is not None and line > 0:
+        if side == "MORE":
+            edge_pct = (recent_avg - line) / line
+        else:
+            edge_pct = (line - recent_avg) / line
+
+        if edge_pct >= 0.30:    score += 15; positives.append("strong median edge vs line")
+        elif edge_pct >= 0.15:  score += 10; positives.append("solid median edge")
+        elif edge_pct >= 0.05:  score += 5;  positives.append("slight median edge")
+        elif edge_pct >= -0.05: score += 1
+        elif edge_pct >= -0.15: score -= 10; negatives.append("recent average below line")
+        else:                   score -= 20; negatives.append("recent average well below line")
+    elif median_edge is not None:
+        me = median_edge
+        if me >= 0.50:    score += 12; positives.append("strong median edge")
+        elif me >= 0.20:  score += 6;  positives.append("positive median edge")
+        elif me >= 0.0:   score += 1
+        else:             score -= 12; negatives.append("negative median edge")
+    else:
+        score -= 8; negatives.append("no recent average data")
+
+    # 3. Market support / market gap — up to +15 / down to -20
+    mg = _safe_float(features.get("market_gap") or features.get("market_support"))
+    if mg is not None:
+        mg_n = mg / 10.0 if mg > 1.0 else mg
+        if mg_n >= 0.75:    score += 15; positives.append("strong market support")
+        elif mg_n >= 0.60:  score += 10; positives.append("market support present")
+        elif mg_n >= 0.50:  score += 4
+        elif mg_n >= 0.40:  score -= 8;  negatives.append("weak market support")
+        else:               score -= 20; negatives.append("market disagreement")
+    else:
+        score -= 4; negatives.append("no market data")
+
+    # 4. Role / usage stability — up to +10 / down to -5
+    rs = _normalize_01(features.get("role_score") or features.get("role_stability"))
+    if rs is not None:
+        if rs >= 0.80:   score += 10; positives.append("stable role")
+        elif rs >= 0.60: score += 6
+        elif rs >= 0.40: score += 2
+        else:            score -= 5;  negatives.append("role uncertainty")
+    else:
+        score -= 3
+
+    # 5. Matchup — up to +7.5 / down to -5
+    mu = _normalize_01(features.get("matchup_score") or features.get("matchup_rating"))
+    if mu is not None:
+        if mu >= 0.75:   score += 7.5; positives.append("favorable matchup")
+        elif mu >= 0.55: score += 4
+        elif mu >= 0.40: score += 1
+        else:            score -= 5; negatives.append("tough matchup")
+    else:
+        score -= 3
+
+    # 6. Line movement — up to +5 / down to -3
+    lm = _normalize_01(features.get("line_movement_score") or features.get("line_movement"))
+    if lm is not None:
+        if lm >= 0.70:   score += 5; positives.append("positive line movement")
+        elif lm >= 0.50: score += 2
+        else:            score -= 3; negatives.append("negative line movement")
+
+    # 7. Pace / usage — up to +5
+    pace = _normalize_01(features.get("pace_factor") or features.get("pace"))
+    if pace is not None:
+        if pace >= 0.70:   score += 5; positives.append("pace/usage supports prop")
+        elif pace >= 0.50: score += 2
+
+    # 8. Injury / status — heavy penalty
+    inj = _safe_float(features.get("injury_flag"))
+    if inj is not None:
+        if inj >= 2:   score -= 20; negatives.append("player likely out")
+        elif inj >= 1: score -= 12; negatives.append("injury/status concern")
+
+    # 9. GPT confidence alignment — soft adjustment
+    conf = _safe_float(features.get("confidence"))
+    if conf is not None:
+        c = conf / 100.0 if conf > 1.0 else conf
+        if c >= 0.75:   score += 4
+        elif c >= 0.60: score += 2
+        elif c < 0.40:  score -= 3
+
+    score = round(max(0.0, min(100.0, score)), 2)
+
+    # Signal label
+    if score >= 90:   signal = "Elite Signal — strong statistical edge"
+    elif score >= 80: signal = "Strong Signal — model support"
+    elif score >= 70: signal = "Playable Signal — positive edge"
+    elif score >= 60: signal = "Conditional Signal — needs validation"
+    elif score >= 50: signal = "Watchlist Signal — thin edge"
+    elif score >= 40: signal = "Weak Signal — no clear edge"
+    elif score >= 30: signal = "Negative Signal — poor support"
+    else:             signal = "Reject Signal — major red flags"
+
+    # Message
+    if positives and negatives:
+        msg = f"{signal} — {positives[0]}; penalized for {negatives[0]}"
+    elif positives:
+        msg = f"{signal} — {positives[0]} align with submitted side"
+    elif negatives:
+        msg = f"{signal} — {negatives[0]} does not support this line"
+    else:
+        msg = f"{signal} — limited input data provided"
+
+    return score, signal, msg
+
+
 def compute_rf_score(features: dict, player: str, prop: str, side: str, line: float) -> float:
-    seed_str = f"{player}|{prop}|{side}|{line}"
-    base_seed = sum(ord(c) for c in seed_str)
-
-    feature_sum, feature_count = 0.0, 0
-    for val in features.values():
-        try:
-            feature_sum += float(val)
-            feature_count += 1
-        except (TypeError, ValueError):
-            if isinstance(val, bool):
-                feature_sum += 1.0 if val else 0.0
-                feature_count += 1
-
-    feature_signal = (feature_sum / feature_count) if feature_count > 0 else 0.5
-    rng = random.Random(base_seed)
-    noise = rng.uniform(-8, 8)
-    raw = (math.tanh(feature_signal * 0.1) + 1) / 2 * 100
-    return round(max(0.0, min(100.0, raw + noise)), 2)
+    score, _, _ = compute_wow_score(features, player, prop, side, line)
+    return score
 
 
 def persist_request(player, sport, prop, side, line, score, label, game_date=None):
@@ -603,24 +734,14 @@ def gpt_score():
         except ValueError:
             return jsonify({"error": "'game_date' must be YYYY-MM-DD format, e.g. 2026-05-08"}), 422
 
-    score = compute_rf_score(features, player, prop, side, line)
-    label = "Support Layer Only"
-    persist_request(player, sport, prop, side, line, score, label, game_date=game_date)
-
-    if score >= 80:
-        signal = "Strong Signal — high confidence edge"
-    elif score >= 65:
-        signal = "Solid Signal — moderate edge"
-    elif score >= 50:
-        signal = "Neutral Signal — slight lean"
-    else:
-        signal = "Weak Signal — no clear edge"
+    score, signal, msg = compute_wow_score(features, player, prop, side, line)
+    persist_request(player, sport, prop, side, line, score, signal, game_date=game_date)
 
     return jsonify({
-        "wow_score": round(score, 2),
+        "wow_score": score,
         "signal": signal,
+        "message": msg,
         "saved_to_lobby": True,
-        "message": f"Pick scored and saved — {player} {side} {line} {prop}",
         "player": player,
         "sport": sport,
         "prop": prop,

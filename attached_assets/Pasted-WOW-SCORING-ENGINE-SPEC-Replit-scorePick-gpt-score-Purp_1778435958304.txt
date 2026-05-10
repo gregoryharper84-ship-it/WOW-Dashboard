@@ -1,0 +1,185 @@
+WOW SCORING ENGINE SPEC — Replit scorePick / gpt-score
+
+Purpose:
+The Replit API score is a statistical support layer only. It does not approve, authorize, or recommend bets. It returns a wow_score, signal, and message that the GPT uses inside the full WOW validation stack.
+
+Endpoint:
+POST /gpt-score
+
+Required payload:
+{
+  "player": string,
+  "sport": string,
+  "prop": string,
+  "side": "MORE" | "LESS",
+  "line": number,
+  "game_date": optional YYYY-MM-DD,
+  "recent_avg": optional number,
+  "matchup_rating": optional number,
+  "injury_flag": optional number,
+  "pace_factor": optional number,
+  "confidence": optional number
+}
+
+Required response:
+{
+  "wow_score": number,
+  "signal": string,
+  "message": string,
+  "saved_to_lobby": boolean,
+  "player": string,
+  "sport": string,
+  "prop": string,
+  "side": string,
+  "line": number
+}
+
+Core scoring philosophy:
+Edge > volume.
+Process > outcomes.
+Preserve candidates early.
+Prove bets at final lock.
+
+The score should reward:
+1. Recent hit rate support
+2. L10 median or recent average support
+3. Market gap / line value
+4. Stable player role
+5. Favorable matchup
+6. Positive line movement
+7. Pace / usage support
+8. Clean injury/status context
+
+The score should penalize:
+1. No confirmed game
+2. Player inactive / questionable / minutes risk
+3. Bad matchup
+4. Blowout risk
+5. Market disagreement
+6. Line inflated above consensus
+7. Low recent median
+8. Missing projection
+9. Conflicting data
+10. Weak sample support
+
+Suggested scoring weights:
+- Recent form / hit rate: 20%
+- Median edge vs line: 20%
+- Market support / market gap: 20%
+- Role / usage / minutes stability: 15%
+- Matchup and game environment: 10%
+- Line movement: 7.5%
+- Injury/status risk: 7.5%
+
+Suggested score formula:
+Start with base score = 50.
+
+Add:
++0 to +15 for strong recent hit rate
++0 to +15 for strong median/recent average edge
++0 to +15 for market support
++0 to +10 for strong role/minutes
++0 to +7.5 for favorable matchup
++0 to +5 for favorable line movement
++0 to +5 for pace/usage boost
+
+Subtract:
+-10 to -25 for injury/status concern
+-10 to -20 for no confirmed game
+-10 to -20 for market disagreement
+-10 to -20 for inflated line
+-10 to -20 for poor recent median
+-15 to -30 for conflicting data
+-5 to -15 for missing key inputs
+
+Score bands:
+90–100 = Elite Signal
+80–89 = Strong Signal
+70–79 = Playable Signal
+60–69 = Lean / Conditional Signal
+50–59 = Thin Edge / Watchlist
+40–49 = Weak Signal — no clear edge
+30–39 = Negative Signal
+0–29 = Reject Signal
+
+Important:
+The API should not output Tier 1, Tier 2, Tier 3, or Reject as the final decision.
+It should only output wow_score, signal, and message.
+The GPT performs final WOW tier classification after research.
+
+Suggested signal labels:
+90+    "Elite Signal — strong statistical edge"
+80–89  "Strong Signal — model support"
+70–79  "Playable Signal — positive edge"
+60–69  "Conditional Signal — needs validation"
+50–59  "Watchlist Signal — thin edge"
+40–49  "Weak Signal — no clear edge"
+30–39  "Negative Signal — poor support"
+0–29   "Reject Signal — major red flags"
+
+Handling missing data:
+Missing data should reduce the score but should not automatically reject.
+Example:
+- Missing matchup_rating: subtract 3–5
+- Missing recent_avg: subtract 5–10
+- Missing pace_factor: subtract 2–4
+- Missing confidence: do not reject, simply reduce certainty
+
+Handling conflicts:
+Conflicting data should heavily penalize or reject the signal.
+Examples:
+- Player inactive
+- Player has no game on game_date
+- Prop line unavailable
+- Wrong team/opponent
+- Market line far below submitted line
+
+Suggested message style:
+The message should explain why the score was given in one sentence.
+
+Examples:
+"Pick scored and saved — LeBron James MORE 25.5 points"
+"Weak Signal — recent form and market support do not clearly justify this line"
+"Strong Signal — recent average, role, and market support align with the submitted side"
+"Reject Signal — player has no confirmed game on requested date"
+
+Lobby behavior:
+If the endpoint successfully scores, save the pick to Lobby with:
+- player
+- sport
+- prop
+- side
+- line
+- wow_score
+- signal
+- message
+- timestamp
+- game_date if provided
+- saved_to_lobby = true
+
+If the API key is invalid:
+Return 401:
+{
+  "error": "Invalid API key"
+}
+
+If payload is invalid:
+Return 422:
+{
+  "error": "Invalid payload",
+  "details": "Missing required field: line"
+}
+
+If scoring succeeds:
+Return 200:
+{
+  "player": "LeBron James",
+  "sport": "NBA",
+  "prop": "points",
+  "side": "MORE",
+  "line": 25.5,
+  "wow_score": 46.52,
+  "signal": "Weak Signal — no clear edge",
+  "message": "Pick scored and saved — LeBron James MORE 25.5 points",
+  "saved_to_lobby": true
+}
