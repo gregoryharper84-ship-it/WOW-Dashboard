@@ -1,0 +1,100 @@
+Yes, that’s okay — **but I would not fully remove healthCheck unless it keeps blocking you**.
+
+What Replit is saying makes sense:
+
+```txt
+/health works from browser/Replit = backend is fine
+/health gets 403 from ChatGPT when API key header is attached = auth/proxy/schema behavior issue
+```
+
+Since `/health` is only a test endpoint, it is **not required** for Random Forest. Your real proof is whether this protected endpoint works:
+
+```txt
+POST /random-forest-score
+```
+
+GPT Actions are configured through an OpenAPI schema and auth settings, so what matters is that the schema/auth match the endpoint you actually need. ([ChatGPT][1])
+
+## Best move
+
+Tell Replit this:
+
+```txt
+Yes, remove healthCheck from the Custom GPT schema only. Keep /health in the Replit backend for browser/manual testing, but do not expose it as a GPT Action.
+
+The Custom GPT schema should only expose protected endpoints that require X-API-Key, especially:
+
+POST /random-forest-score
+GET /request-log
+GET /stats
+GET /leaderboard
+
+The main connection test should be scoreProp, not healthCheck.
+```
+
+## Why this is fine
+
+Your Random Forest connection does **not** depend on `/health`.
+
+It depends on:
+
+```txt
+scoreProp → POST /random-forest-score → returns score/label/can_approve_bets
+```
+
+So the test should be:
+
+```txt
+Call scoreProp with this exact payload and show raw response:
+
+{
+  "player": "LeBron James",
+  "sport": "NBA",
+  "prop": "points",
+  "side": "over",
+  "line": 25.5,
+  "features": {
+    "l5_hit_rate": 0.6,
+    "l10_hit_rate": 0.6,
+    "median_edge": 0.5,
+    "market_gap": 0.62,
+    "role_score": 0.8,
+    "matchup_score": 0.65,
+    "line_movement_score": 0.55
+  }
+}
+```
+
+## Important correction
+
+If Replit says “remove healthCheck from the schema,” that means:
+
+```txt
+Remove /health from the GPT Action schema
+```
+
+Not:
+
+```txt
+Delete /health from your backend
+```
+
+Keep `/health` in Replit. It’s useful for manual debugging in the browser.
+
+## Final verdict
+
+Yes — removing `healthCheck` from the GPT Action schema is acceptable.
+
+Your GPT should test Random Forest connection by calling:
+
+```txt
+scoreProp
+```
+
+not:
+
+```txt
+healthCheck
+```
+
+[1]: https://chatgpt.com/?utm_source=chatgpt.com "ChatGPT"
