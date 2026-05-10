@@ -14,11 +14,9 @@ paths:
       x-openai-isConsequential: false
       summary: Score a player prop pick and save it to the WOW Lobby
       description: >
-        Automatically called after analyzing any player prop. Pass the player
-        name, sport, prop type, line value, and side (MORE/LESS). You may also
-        include any numeric analysis values (recent average, matchup rating,
-        injury flag, etc.) as extra fields — they are used as model features.
-        The pick is saved to the Lobby immediately.
+        Call after analyzing any player prop. Pass player, sport, prop, side (MORE/LESS), and line.
+        Include optional numeric fields (recent_avg, matchup_rating, injury_flag, confidence) as model features.
+        Pick is saved to the Lobby immediately.
       requestBody:
         required: true
         content:
