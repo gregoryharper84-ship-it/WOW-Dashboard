@@ -1,0 +1,142 @@
+That response proves the GPT is still using the **wrong Action/toolset**.
+
+You’re not testing the updated Random Forest schema yet. You’re testing an older Action that exposes:
+
+```txt
+scorePick
+```
+
+But the Random Forest schema we built exposes:
+
+```txt
+scoreProp
+POST /random-forest-score
+```
+
+## What to do next
+
+### 1. Go back to your Custom GPT builder
+
+Open:
+
+```txt
+Configure → Actions
+```
+
+Look at **Available actions**.
+
+You should see:
+
+```txt
+scoreProp
+getRequestLog
+getStats
+getLeaderboard
+```
+
+If you only see:
+
+```txt
+scorePick
+```
+
+then the new schema is not the one currently active.
+
+## 2. Delete or replace the old Action
+
+Find the Action that has:
+
+```txt
+scorePick
+```
+
+or old endpoint names like:
+
+```txt
+/gpt-score
+your-repl-name.replit.app
+```
+
+Delete that Action or replace its schema.
+
+You only want the Action using:
+
+```txt
+https://create-app-gregoryharper84.replit.app
+```
+
+and:
+
+```txt
+/random-forest-score
+```
+
+## 3. Make sure the schema has this exact operation
+
+In the schema box, search for:
+
+```txt
+"operationId": "scoreProp"
+```
+
+You need to see this:
+
+```json
+"/random-forest-score": {
+  "post": {
+    "operationId": "scoreProp",
+    "x-openai-isConsequential": false,
+```
+
+If `scoreProp` is not there, the wrong schema is loaded.
+
+## 4. Save the Action
+
+After pasting/updating the schema:
+
+```txt
+1. Click Format
+2. Save
+3. Confirm no errors
+4. Confirm Available actions shows scoreProp
+```
+
+## 5. Start a new preview/chat
+
+Sometimes the preview holds onto the old tool list.
+
+After saving, refresh the GPT builder or start a new Custom GPT preview chat.
+
+Then test with:
+
+```txt
+Call scoreProp with this exact payload and show the raw response:
+
+{
+  "player": "LeBron James",
+  "sport": "NBA",
+  "prop": "points",
+  "side": "over",
+  "line": 25.5,
+  "features": {
+    "l5_hit_rate": 0.6,
+    "l10_hit_rate": 0.6,
+    "median_edge": 0.5,
+    "market_gap": 0.62,
+    "role_score": 0.8,
+    "matchup_score": 0.65,
+    "line_movement_score": 0.55
+  }
+}
+```
+
+## Correct debug should show
+
+```txt
+domain: create-app-gregoryharper84.replit.app
+path: /random-forest-score
+operation: scoreProp
+params: includes features
+```
+
+Right now your GPT saying “scoreProp unavailable” means the Action update did **not** take effect in that GPT environment yet.

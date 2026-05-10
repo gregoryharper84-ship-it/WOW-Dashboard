@@ -1,18 +1,18 @@
 openapi: 3.1.0
 info:
   title: WOW Scoring API
-  description: Score player props and save them to the WOW Lobby. Call scorePick automatically whenever you finish analyzing a prop bet.
+  description: Score player props and save them to the WOW Lobby. Call scoreProp automatically whenever you finish analyzing a prop bet.
   version: 1.0.0
 
 servers:
   - url: https://create-app-gregoryharper84.replit.app
 
 paths:
-  /gpt-score:
+  /random-forest-score:
     post:
-      operationId: scorePick
+      operationId: scoreProp
       x-openai-isConsequential: false
-      summary: Score a player prop pick and save it to the WOW Lobby
+      summary: Score a player prop and save it to the WOW Lobby
       description: >
         Call after analyzing any player prop. Pass player, sport, prop, side (MORE/LESS), and line.
         Include optional fields: recent_avg, l5_hit_rate, l10_hit_rate, market_gap, role_score,
@@ -49,14 +49,22 @@ paths:
                   description: "The prop line value, e.g. 27.5"
                 game_date:
                   type: string
-                  description: >
-                    The date the game is actually scheduled (YYYY-MM-DD).
-                    IMPORTANT: only score picks for players with a confirmed
-                    game on this date. If the player has no game today, do not
-                    call this endpoint. Defaults to today if omitted.
+                  description: "Scheduled game date YYYY-MM-DD. Only score picks for confirmed games."
                 recent_avg:
                   type: number
                   description: Player's recent average for this stat (optional but recommended)
+                l5_hit_rate:
+                  type: number
+                  description: Hit rate over last 5 games as decimal 0-1, e.g. 0.8 = 4/5 (optional)
+                l10_hit_rate:
+                  type: number
+                  description: Hit rate over last 10 games as decimal 0-1 (optional)
+                market_gap:
+                  type: number
+                  description: Market alignment 0-1, where 0.75+ = strong market support (optional)
+                role_score:
+                  type: number
+                  description: Role and usage stability 0-1, where 1 = locked starter/heavy usage (optional)
                 matchup_rating:
                   type: number
                   description: Matchup difficulty rating 1-10 (optional)
@@ -69,18 +77,11 @@ paths:
                 confidence:
                   type: number
                   description: Your own 0-100 confidence in this pick (optional)
-                l5_hit_rate:
-                  type: number
-                  description: Hit rate over last 5 games as decimal 0-1, e.g. 0.8 = 4/5 (optional)
-                l10_hit_rate:
-                  type: number
-                  description: Hit rate over last 10 games as decimal 0-1 (optional)
-                market_gap:
-                  type: number
-                  description: Market alignment 0-1, where 0.75+ = strong market support for this side (optional)
-                role_score:
-                  type: number
-                  description: Role and usage stability 0-1, where 1 = locked starter/heavy usage (optional)
+                features:
+                  type: object
+                  description: Optional nested object of analysis features (alternative to flat fields)
+                  additionalProperties:
+                    type: number
             example:
               player: Jacob Misiorowski
               sport: MLB
@@ -95,7 +96,7 @@ paths:
               matchup_rating: 6
               injury_flag: 0
               confidence: 74
-              game_date: "2026-05-09"
+              game_date: "2026-05-10"
       responses:
         "200":
           description: Pick scored and saved to the WOW Lobby
@@ -109,12 +110,14 @@ paths:
                     description: WOW confidence score 0-100
                   signal:
                     type: string
-                    description: Human-readable signal label
-                  saved_to_lobby:
-                    type: boolean
+                    description: 8-tier signal label
                   message:
                     type: string
-                    description: Summary of the pick that was saved
+                    description: One-sentence explanation of the score
+                  saved_to_lobby:
+                    type: boolean
+                  can_approve_bets:
+                    type: boolean
                   player:
                     type: string
                   sport:
@@ -125,6 +128,206 @@ paths:
                     type: string
                   line:
                     type: number
+                  features_received:
+                    type: integer
+      security:
+        - ApiKeyAuth: []
+
+  /gpt-score:
+    post:
+      operationId: scorePick
+      x-openai-isConsequential: false
+      summary: Alias for scoreProp — score a player prop and save it to the WOW Lobby
+      description: >
+        Identical to scoreProp. Call after analyzing any player prop. Pass player, sport, prop,
+        side (MORE/LESS), line, and any available analysis fields. Pick is saved to the Lobby immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - player
+                - sport
+                - prop
+                - side
+                - line
+              additionalProperties: true
+              properties:
+                player:
+                  type: string
+                sport:
+                  type: string
+                prop:
+                  type: string
+                side:
+                  type: string
+                  enum: [MORE, LESS]
+                line:
+                  type: number
+                game_date:
+                  type: string
+                recent_avg:
+                  type: number
+                l5_hit_rate:
+                  type: number
+                l10_hit_rate:
+                  type: number
+                market_gap:
+                  type: number
+                role_score:
+                  type: number
+                matchup_rating:
+                  type: number
+                injury_flag:
+                  type: number
+                confidence:
+                  type: number
+      responses:
+        "200":
+          description: Pick scored and saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wow_score:
+                    type: number
+                  signal:
+                    type: string
+                  message:
+                    type: string
+                  saved_to_lobby:
+                    type: boolean
+      security:
+        - ApiKeyAuth: []
+
+  /request-log:
+    get:
+      operationId: getRequestLog
+      x-openai-isConsequential: false
+      summary: Retrieve recent scoring history
+      description: Returns the most recent scored picks. Supports filtering by player, sport, prop, side, and window (L5 or L10).
+      parameters:
+        - name: window
+          in: query
+          schema:
+            type: string
+            enum: [L5, L10]
+          description: Return only the last 5 or 10 records
+        - name: player
+          in: query
+          schema:
+            type: string
+          description: Filter by player name (partial match)
+        - name: sport
+          in: query
+          schema:
+            type: string
+        - name: prop
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Log of recent scored picks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  requests:
+                    type: array
+                    items:
+                      type: object
+      security:
+        - ApiKeyAuth: []
+
+  /stats:
+    get:
+      operationId: getStats
+      x-openai-isConsequential: false
+      summary: Aggregate stats for scored picks
+      description: Returns hit rates, averages, and score distributions. Supports L5/L10 window and player/sport/prop filters.
+      parameters:
+        - name: window
+          in: query
+          schema:
+            type: string
+            enum: [L5, L10]
+        - name: player
+          in: query
+          schema:
+            type: string
+        - name: sport
+          in: query
+          schema:
+            type: string
+        - name: prop
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Aggregate scoring stats
+          content:
+            application/json:
+              schema:
+                type: object
+      security:
+        - ApiKeyAuth: []
+
+  /leaderboard:
+    get:
+      operationId: getLeaderboard
+      x-openai-isConsequential: false
+      summary: Top scored picks ranked by WOW score
+      description: Returns picks sorted by wow_score descending. Supports L5/L10 window, sport, prop, side filters, and today=1 for today only.
+      parameters:
+        - name: window
+          in: query
+          schema:
+            type: string
+            enum: [L5, L10]
+          default: L10
+        - name: sport
+          in: query
+          schema:
+            type: string
+        - name: prop
+          in: query
+          schema:
+            type: string
+        - name: side
+          in: query
+          schema:
+            type: string
+        - name: today
+          in: query
+          schema:
+            type: integer
+            enum: [0, 1]
+          description: "1 = today's picks only"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Ranked pick leaderboard
+          content:
+            application/json:
+              schema:
+                type: object
       security:
         - ApiKeyAuth: []
 

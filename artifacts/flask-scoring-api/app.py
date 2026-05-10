@@ -780,21 +780,35 @@ def random_forest_score():
     if not isinstance(features, dict):
         return jsonify({"error": "'features' must be a JSON object (key-value pairs)"}), 422
 
-    score = compute_rf_score(features, player, prop, side, line)
-    label = "Support Layer Only"
-    persist_request(player, sport, prop, side, line, score, label)
+    # Also accept flat extra keys as features (same as /gpt-score)
+    reserved = {"player", "sport", "prop", "side", "line", "features", "game_date"}
+    flat_features = {k: v for k, v in data.items() if k not in reserved}
+    flat_features.update(features)
+
+    game_date = None
+    raw_game_date = data.get("game_date")
+    if raw_game_date:
+        from datetime import date as _date
+        try:
+            game_date = str(_date.fromisoformat(str(raw_game_date)))
+        except ValueError:
+            return jsonify({"error": "'game_date' must be YYYY-MM-DD format"}), 422
+
+    score, signal, msg = compute_wow_score(flat_features, player, prop, side, line)
+    persist_request(player, sport, prop, side, line, score, signal, game_date=game_date)
 
     return jsonify({
-        "label": label,
-        "score": score,
-        "score_range": "0-100",
-        "input": {
-            "player": player, "sport": sport, "prop": prop,
-            "side": side, "line": line,
-            "features_received": len(features)
-        },
-        "disclaimer": DISCLAIMER,
-        "can_approve_bets": False
+        "wow_score": score,
+        "signal": signal,
+        "message": msg,
+        "saved_to_lobby": True,
+        "can_approve_bets": False,
+        "player": player,
+        "sport": sport,
+        "prop": prop,
+        "side": side,
+        "line": line,
+        "features_received": len(flat_features),
     })
 
 
