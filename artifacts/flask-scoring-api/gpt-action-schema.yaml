@@ -11,6 +11,7 @@ paths:
   /gpt-score:
     post:
       operationId: scorePick
+      x-openai-isConsequential: false
       summary: Score a player prop pick and save it to the WOW Lobby
       description: >
         Automatically called after analyzing any player prop. Pass the player
