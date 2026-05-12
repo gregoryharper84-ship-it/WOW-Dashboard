@@ -23,12 +23,17 @@ args = ["bash", "/home/runner/workspace/artifacts/flask-scoring-api/build.sh"]
 
 [services.production.run]
 args = [
-  "sh", "-c",
-  "gunicorn --chdir /home/runner/workspace/artifacts/flask-scoring-api app:app --bind 0.0.0.0:${PORT:-8080} --workers 2 --timeout 120 --access-logfile -"
+  "gunicorn",
+  "--chdir", "/home/runner/workspace/artifacts/flask-scoring-api",
+  "app:app",
+  "--bind", "0.0.0.0:25643",
+  "--workers", "2",
+  "--timeout", "120",
+  "--access-logfile", "-"
 ]
 
 [services.production.run.env]
-PORT = "8080"
+PORT = "25643"
 
 [services.production.health.startup]
 path = "/health"
