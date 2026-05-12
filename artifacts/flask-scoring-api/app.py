@@ -2,6 +2,7 @@ import os
 import random
 import math
 import threading
+import traceback
 from collections import deque
 from datetime import datetime, timezone
 from functools import wraps
@@ -17,6 +18,36 @@ except ImportError:
 
 app = Flask(__name__)
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
+
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e):
+    app.logger.exception("Unhandled server error")
+    return jsonify({
+        "ok": False,
+        "error": {
+            "type": type(e).__name__,
+            "message": str(e),
+            "trace": traceback.format_exc()[-2000:],
+        },
+        "source_access_status": {
+            "market_odds": "Failed",
+            "board_source": "Not Retrieved",
+            "l5_l10_logs": "Not Retrieved",
+            "status_lineups": "Not Retrieved",
+        },
+        "market_verified": [],
+        "model_qualified": [],
+        "conditional": [],
+        "watch": [],
+        "reject": [],
+        "data_insufficient": [{
+            "route": request.path if request else "unknown",
+            "reason": "Unhandled backend exception",
+            "status": "FAILED",
+        }],
+        "execution_notes": ["Server error occurred before full scan completed."],
+    }), 500
 
 DISCLAIMER = (
     "SUPPORT LAYER ONLY — This score is a statistical signal for informational "
@@ -708,6 +739,18 @@ def parse_common_filters():
 # Routes
 # ---------------------------------------------------------------------------
 
+@app.route("/debug/source-status", methods=["GET"])
+def debug_source_status():
+    return jsonify({
+        "ok": True,
+        "secrets": {
+            "ODDS_API_KEY":    "present" if os.getenv("ODDS_API_KEY")    else "missing",
+            "RUNDOWN_API_KEY": "present" if os.getenv("RUNDOWN_API_KEY") else "missing",
+            "SCORING_API_KEY": "present" if os.getenv("SCORING_API_KEY") else "missing",
+        }
+    })
+
+
 @app.route("/health", methods=["GET"])
 @app.route("/healthz", methods=["GET"])
 def health():
@@ -1039,7 +1082,7 @@ def wow_daily_scan():
     sports_param = data.get("sports") or None
     environment  = data.get("environment", "live")
     limit        = int(data.get("limit_per_sport", 50))
-    async_mode   = bool(data.get("async", False))
+    async_mode   = bool(data.get("async", True))   # default True — sync scan times out gunicorn workers
 
     try:
         from services.status import get_injuries  # noqa: F401 — validate imports work

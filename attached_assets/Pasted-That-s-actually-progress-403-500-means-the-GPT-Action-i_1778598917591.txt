@@ -1,0 +1,211 @@
+That’s actually progress.
+
+**403 → 500 means the GPT Action is now reaching Replit and getting past the tool-exposure/auth layer.**
+Now the problem is inside your Replit `/wow-daily-scan` backend code.
+
+The issue is no longer:
+
+* Action not exposed
+* Wrong schema
+* Missing API key
+
+Now it is:
+
+* route crashed
+* missing variable/import
+* bad API call
+* bad DB write
+* unhandled exception
+* endpoint returned HTML instead of JSON
+
+## What to check first in Replit
+
+Open **Replit → Logs / Console** and run the action again. Look for the Python traceback right after the `/wow-daily-scan` request.
+
+You want the exact error line. It will probably be something like:
+
+```text
+KeyError: ...
+NameError: ...
+TypeError: ...
+requests.exceptions...
+psycopg2...
+```
+
+## Immediate fix: make `/wow-daily-scan` always return JSON
+
+Right now it is returning default HTML:
+
+```html
+Internal Server Error
+```
+
+GPT Actions do not handle that well. Add a JSON error wrapper.
+
+If your app is Flask, add this to `main.py`:
+
+```python
+import os
+import traceback
+from flask import request, jsonify
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e):
+    app.logger.exception("Unhandled server error")
+    return jsonify({
+        "ok": False,
+        "error": {
+            "type": type(e).__name__,
+            "message": str(e),
+            "trace": traceback.format_exc()[-2000:]
+        },
+        "source_access_status": {
+            "market_odds": "Failed",
+            "board_source": "Not Retrieved",
+            "l5_l10_logs": "Not Retrieved",
+            "status_lineups": "Not Retrieved",
+            "projections": "Not Retrieved"
+        },
+        "market_verified": [],
+        "model_qualified": [],
+        "conditional": [],
+        "watch": [],
+        "reject": [],
+        "data_insufficient": [
+            {
+                "route": "wow-daily-scan",
+                "reason": "Unhandled backend exception",
+                "status": "FAILED"
+            }
+        ],
+        "execution_notes": ["Server error occurred before full scan completed."]
+    }), 500
+```
+
+Then wrap the scan route:
+
+```python
+@app.route("/wow-daily-scan", methods=["POST"])
+def wow_daily_scan():
+    try:
+        payload = request.get_json(silent=True) or {}
+
+        # Temporary smoke response to confirm route works
+        return jsonify({
+            "ok": True,
+            "run_date": payload.get("date"),
+            "mode": payload.get("mode"),
+            "source_access_status": {
+                "market_odds": "Not Called",
+                "board_source": "Not Called",
+                "l5_l10_logs": "Not Called",
+                "status_lineups": "Not Called",
+                "projections": "Not Called"
+            },
+            "execution_report": {
+                "daily_scan_executed": True,
+                "sportsbook_scan_completed": False,
+                "prizepicks_final_gate_applied": False,
+                "manual_l10_completed": False,
+                "get_events_called": False,
+                "get_event_markets_called": False,
+                "get_event_odds_called": False,
+                "rundown_backup_called": False,
+                "l5_l10_called": False,
+                "status_lineups_called": False,
+                "projections_called": False,
+                "final_approved_count": 0,
+                "model_qualified_count": 0,
+                "watch_count": 0,
+                "reject_count": 0,
+                "notes": ["Smoke test route reached successfully."]
+            },
+            "market_verified": [],
+            "model_qualified": [],
+            "conditional": [],
+            "watch": [],
+            "reject": [],
+            "data_insufficient": [],
+            "no_play": False,
+            "final_approved_picks": [],
+            "execution_notes": ["Endpoint auth and route are working."]
+        })
+
+    except Exception as e:
+        app.logger.exception("wow-daily-scan failed")
+        return jsonify({
+            "ok": False,
+            "error": {
+                "type": type(e).__name__,
+                "message": str(e),
+                "trace": traceback.format_exc()[-2000:]
+            }
+        }), 500
+```
+
+## Why I suggest the smoke response first
+
+Before running the full scan, prove the route itself works.
+
+You want GPT to return:
+
+```json
+{
+  "ok": true,
+  "execution_notes": ["Endpoint auth and route are working."]
+}
+```
+
+Once that works, replace the smoke response with the real scan steps one at a time:
+
+1. Call Odds API events.
+2. Call event markets.
+3. Call event odds.
+4. Add TheRundown backup.
+5. Add L5/L10.
+6. Add status/lineups.
+7. Add scoring/classification.
+8. Add DB save.
+
+## Most likely causes of the 500
+
+Check these in order:
+
+| Possible cause                                             | Fix                                                             |
+| ---------------------------------------------------------- | --------------------------------------------------------------- |
+| Missing import                                             | Add import in `main.py`                                         |
+| Wrong API key variable name                                | Replit has `ODDS_API_KEY`, `RUNDOWN_API_KEY`, `SCORING_API_KEY` |
+| Code expects `WOW_API_KEY` but secret is `SCORING_API_KEY` | Change code or add `WOW_API_KEY` secret                         |
+| Endpoint calls undefined function                          | Confirm function exists/imported                                |
+| External API failed and exception was not caught           | Wrap each source call                                           |
+| DB insert failed                                           | Return scan result before DB save, then debug DB                |
+| Date `"today"` not handled                                 | Convert it to actual date server-side                           |
+| Response schema mismatch                                   | Return the JSON shape from the Action schema                    |
+
+## Add this debug endpoint too
+
+```python
+@app.route("/debug/source-status", methods=["GET"])
+def debug_source_status():
+    return jsonify({
+        "ok": True,
+        "secrets": {
+            "ODDS_API_KEY": "present" if os.getenv("ODDS_API_KEY") else "missing",
+            "RUNDOWN_API_KEY": "present" if os.getenv("RUNDOWN_API_KEY") else "missing",
+            "SCORING_API_KEY": "present" if os.getenv("SCORING_API_KEY") else "missing"
+        }
+    })
+```
+
+Do not return actual key values.
+
+## Bottom line
+
+You fixed GPT Action wiring. Now Replit is crashing internally.
+
+The next clean move is:
+
+1. Add JSON error handling.
+2. Add the smoke response.
+3. Confirm GPT gets `ok: true`.
+4. Then turn the real scan back on step by step.
