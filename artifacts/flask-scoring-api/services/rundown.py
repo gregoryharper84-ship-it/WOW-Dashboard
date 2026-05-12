@@ -11,6 +11,7 @@ BASE_URL = "https://therundown-therundown-v1.p.rapidapi.com"
 
 SPORT_IDS = {
     "NBA":    4,
+    "WNBA":   8,
     "MLB":    3,
     "NFL":    2,
     "NHL":    6,

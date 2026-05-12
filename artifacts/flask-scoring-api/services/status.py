@@ -9,6 +9,7 @@ ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports"
 
 SPORT_ESPN = {
     "NBA":   ("basketball", "nba"),
+    "WNBA":  ("basketball", "wnba"),
     "MLB":   ("baseball",   "mlb"),
     "NFL":   ("football",   "nfl"),
     "NHL":   ("hockey",     "nhl"),

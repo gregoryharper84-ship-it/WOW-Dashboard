@@ -42,7 +42,7 @@ compute_wow_score = _app_module.compute_wow_score
 # -------------------------------------------------------------------
 # Sports to scan
 # -------------------------------------------------------------------
-ALL_SPORTS = ["NBA", "MLB", "NFL", "NHL", "NCAAB", "NCAAF", "Soccer", "Tennis"]
+ALL_SPORTS = ["NBA", "WNBA", "MLB", "NFL", "NHL", "NCAAB", "NCAAF", "Soccer", "Tennis"]
 
 # -------------------------------------------------------------------
 # Classification logic

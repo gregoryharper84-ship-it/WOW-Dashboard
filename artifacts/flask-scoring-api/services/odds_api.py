@@ -11,6 +11,7 @@ BASE_URL = "https://api.the-odds-api.com/v4"
 
 SPORT_KEYS = {
     "NBA":   "basketball_nba",
+    "WNBA":  "basketball_wnba",
     "MLB":   "baseball_mlb",
     "NFL":   "americanfootball_nfl",
     "NHL":   "icehockey_nhl",
@@ -22,6 +23,11 @@ SPORT_KEYS = {
 
 PLAYER_PROP_MARKETS = {
     "NBA":  [
+        "player_points", "player_rebounds", "player_assists",
+        "player_threes", "player_steals", "player_blocks",
+        "player_points_rebounds_assists",
+    ],
+    "WNBA": [
         "player_points", "player_rebounds", "player_assists",
         "player_threes", "player_steals", "player_blocks",
         "player_points_rebounds_assists",

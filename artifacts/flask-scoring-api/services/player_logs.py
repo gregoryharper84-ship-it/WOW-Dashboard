@@ -15,6 +15,7 @@ CORE_BASE   = "https://sports.core.api.espn.com/v2/sports"
 
 SPORT_LEAGUE = {
     "NBA":   ("basketball", "nba"),
+    "WNBA":  ("basketball", "wnba"),
     "MLB":   ("baseball",   "mlb"),
     "NFL":   ("football",   "nfl"),
     "NHL":   ("hockey",     "nhl"),
