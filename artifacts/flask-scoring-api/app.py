@@ -1695,6 +1695,32 @@ def openapi_schema():
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "public")
 
+# Top-level path segments that belong to the Flask API.
+# The catch-all will NEVER serve HTML for these — it returns JSON 404 instead.
+_API_PREFIXES = frozenset([
+    "scan-results", "wow-daily-scan", "random-forest-score", "gpt-score",
+    "request-log", "stats", "leaderboard", "health", "openapi", "openapi.json",
+    "debug", "picks", "gpt-action-schema.json", "gpt-action-schema.yaml",
+    "score", "scores",
+])
+
+
+@app.route("/debug/routes", methods=["GET"])
+def debug_routes():
+    """List all registered Flask routes — no auth required."""
+    routes = []
+    for rule in sorted(app.url_map.iter_rules(), key=lambda r: r.rule):
+        methods = sorted(m for m in rule.methods if m not in ("HEAD", "OPTIONS"))
+        routes.append({
+            "path":     rule.rule,
+            "methods":  methods,
+            "endpoint": rule.endpoint,
+        })
+    return jsonify({
+        "route_count": len(routes),
+        "routes": routes,
+    })
+
 
 @app.route("/picks", methods=["DELETE"])
 def delete_picks():
@@ -1757,13 +1783,29 @@ def gpt_action_schema_yaml():
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):
+    # If the top-level path segment is a known API prefix, never return HTML.
+    # This guards against the catch-all intercepting API routes that aren't
+    # deployed yet or were mis-spelled by the caller.
+    top = path.split("/")[0] if path else ""
+    if top in _API_PREFIXES:
+        return jsonify({
+            "ok": False,
+            "error": "Not found",
+            "path": f"/{path}",
+            "hint": "Check /debug/routes for all registered API endpoints.",
+        }), 404
+
+    # Static asset — serve directly if the file exists
     if path:
         full = os.path.join(_STATIC_DIR, path)
         if os.path.isfile(full):
             return send_from_directory(_STATIC_DIR, path)
+
+    # SPA fallback — serve index.html for client-side routing
     index = os.path.join(_STATIC_DIR, "index.html")
     if os.path.isfile(index):
         return send_from_directory(_STATIC_DIR, "index.html")
+
     return jsonify({"service": "WOW Scoring API", "status": "ok", "version": "1.0.0"}), 200
 
 
