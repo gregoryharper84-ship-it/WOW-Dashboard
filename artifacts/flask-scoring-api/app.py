@@ -1018,6 +1018,117 @@ def leaderboard():
 
 
 # ---------------------------------------------------------------------------
+# Daily scan routes
+# ---------------------------------------------------------------------------
+
+@app.route("/wow-daily-scan", methods=["POST"])
+@require_api_key
+def wow_daily_scan():
+    """
+    Trigger the WOW daily prop scanner.
+    Pulls live events/props, calculates L5/L10 stats, scores and classifies
+    each prop, saves results to scan_results table, and returns a summary.
+    """
+    import threading
+    try:
+        from jobs.wow_daily_scan import run_scan
+    except Exception as e:
+        return jsonify({"error": f"Scanner import failed: {e}"}), 500
+
+    data = request.get_json(silent=True) or {}
+    sports_param = data.get("sports") or None
+    environment  = data.get("environment", "live")
+    limit        = int(data.get("limit_per_sport", 50))
+    async_mode   = bool(data.get("async", False))
+
+    try:
+        from services.status import get_injuries  # noqa: F401 — validate imports work
+    except Exception as e:
+        return jsonify({"error": f"Service import failed: {e}"}), 500
+
+    if async_mode:
+        def _run():
+            try:
+                run_scan(sports=sports_param, environment=environment, limit_per_sport=limit)
+            except Exception as ex:
+                print(f"[wow_daily_scan async] error: {ex}")
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return jsonify({
+            "status": "started",
+            "message": "Scan running in background. Check /scan-results for results.",
+            "sports":  sports_param,
+            "environment": environment,
+        })
+
+    try:
+        result = run_scan(sports=sports_param, environment=environment, limit_per_sport=limit)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": "Scan failed", "detail": str(e)}), 500
+
+
+@app.route("/scan-results", methods=["GET"])
+@require_api_key
+def scan_results():
+    """
+    Retrieve persisted scan results from the database.
+    Optional filters: run_date, classification, sport, limit.
+    """
+    try:
+        from storage.results import get_scan_results, get_scan_summary
+    except Exception as e:
+        return jsonify({"error": f"Storage import failed: {e}"}), 500
+
+    run_date       = request.args.get("run_date", "").strip() or None
+    classification = request.args.get("classification", "").strip() or None
+    sport          = request.args.get("sport", "").strip() or None
+    summary_only   = request.args.get("summary", "0") in ("1", "true", "yes")
+
+    try:
+        limit = max(1, min(int(request.args.get("limit", "200")), 1000))
+    except (ValueError, TypeError):
+        return jsonify({"error": "'limit' must be a positive integer"}), 422
+
+    if not run_date:
+        from datetime import date as _date
+        run_date = _date.today().isoformat()
+
+    try:
+        summary = get_scan_summary(run_date)
+        if summary_only:
+            return jsonify({"run_date": run_date, "summary": summary})
+
+        rows = get_scan_results(
+            run_date=run_date,
+            classification=classification,
+            sport=sport,
+            limit=limit,
+        )
+        # Serialize non-JSON-native types
+        for r in rows:
+            for k, v in r.items():
+                if hasattr(v, "isoformat"):
+                    r[k] = v.isoformat()
+                elif isinstance(v, (bytes, memoryview)):
+                    r[k] = str(v)
+
+        return jsonify({
+            "run_date":  run_date,
+            "count":     len(rows),
+            "summary":   summary,
+            "filters":   {
+                "classification": classification,
+                "sport":          sport,
+                "limit":          limit,
+            },
+            "results": rows,
+        })
+    except Exception as e:
+        return jsonify({"error": "Database unavailable", "detail": str(e)}), 503
+
+
+# ---------------------------------------------------------------------------
 # OpenAPI schema
 # ---------------------------------------------------------------------------
 

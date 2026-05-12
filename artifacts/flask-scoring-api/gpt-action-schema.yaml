@@ -403,6 +403,175 @@ paths:
       security:
         - ApiKeyAuth: []
 
+  /wow-daily-scan:
+    post:
+      operationId: runDailyScan
+      x-openai-isConsequential: false
+      summary: Run the WOW daily prop scanner
+      description: >
+        Triggers the full WOW data pipeline: pulls today's events and player props from
+        The Odds API (with TheRundown as backup), fetches player game logs, calculates
+        exact-line L5/L10 hit rates and medians, pulls injury/status data, scores each
+        prop using WOW v14.8+ rules, classifies as Market Verified Approved / Model
+        Qualified / Conditional / Watch / Reject / Data Insufficient, saves all results
+        to the database, and returns a structured summary. Pass async=true for a
+        non-blocking call — then retrieve results via getScanResults.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sports:
+                  type: array
+                  items:
+                    type: string
+                  description: "Sports to scan. Default: all (NBA, MLB, NFL, NHL, NCAAB, NCAAF, Soccer, Tennis)"
+                environment:
+                  type: string
+                  enum: [test, live]
+                  description: "Default: live"
+                limit_per_sport:
+                  type: integer
+                  description: "Max props to evaluate per sport. Default: 50"
+                async:
+                  type: boolean
+                  description: "If true, starts scan in background and returns immediately. Default: false"
+      responses:
+        "200":
+          description: Scan complete — structured results returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_date:
+                    type: string
+                  run_at:
+                    type: string
+                  sports_scanned:
+                    type: array
+                    items:
+                      type: string
+                  source_access_status:
+                    type: object
+                    description: Per-sport source availability (AVAILABLE / PARTIAL / FAILED / NOT_CALLED / MISSING)
+                    additionalProperties:
+                      type: string
+                  market_verified:
+                    type: array
+                    items:
+                      type: object
+                  model_qualified:
+                    type: array
+                    items:
+                      type: object
+                  conditional:
+                    type: array
+                    items:
+                      type: object
+                  watch:
+                    type: array
+                    items:
+                      type: object
+                  reject:
+                    type: array
+                    items:
+                      type: object
+                  data_insufficient:
+                    type: array
+                    items:
+                      type: object
+                  counts:
+                    type: object
+                    properties:
+                      market_verified:
+                        type: integer
+                      model_qualified:
+                        type: integer
+                      conditional:
+                        type: integer
+                      watch:
+                        type: integer
+                      reject:
+                        type: integer
+                      data_insufficient:
+                        type: integer
+                  execution_notes:
+                    type: array
+                    items:
+                      type: string
+      security:
+        - ApiKeyAuth: []
+
+  /scan-results:
+    get:
+      operationId: getScanResults
+      x-openai-isConsequential: false
+      summary: Retrieve persisted scan results from the database
+      description: >
+        Returns scan results saved by runDailyScan. Filter by date, classification,
+        and sport. Use summary=1 to get only counts by classification without full rows.
+        Defaults to today's date if run_date is not provided.
+      parameters:
+        - name: run_date
+          in: query
+          schema:
+            type: string
+          description: "Date to retrieve results for (YYYY-MM-DD). Defaults to today."
+        - name: classification
+          in: query
+          schema:
+            type: string
+            enum:
+              - "Market Verified Approved"
+              - "Model Qualified — PrizePicks"
+              - "Conditional"
+              - "Watch"
+              - "Reject"
+              - "Data Insufficient"
+              - "No Play"
+          description: Filter by classification
+        - name: sport
+          in: query
+          schema:
+            type: string
+          description: Filter by sport
+        - name: summary
+          in: query
+          schema:
+            type: integer
+            enum: [0, 1]
+          description: "1 = return only counts by classification, no full rows"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 200
+      responses:
+        "200":
+          description: Scan results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_date:
+                    type: string
+                  count:
+                    type: integer
+                  summary:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  results:
+                    type: array
+                    items:
+                      type: object
+      security:
+        - ApiKeyAuth: []
+
 components:
   schemas: {}
   securitySchemes:
