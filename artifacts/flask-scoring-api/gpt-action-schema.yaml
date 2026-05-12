@@ -505,6 +505,125 @@ paths:
       security:
         - ApiKeyAuth: []
 
+  /scan-results/summary:
+    get:
+      operationId: getScanSummary
+      x-openai-isConsequential: false
+      summary: Get compact scan summary (use this — avoids GPT response size limits)
+      description: >
+        Returns a compact, GPT-friendly summary of the latest WOW daily scan.
+        Excludes raw event payloads, market odds arrays, and full game logs.
+        Returns only classified picks with key stats per prop.
+        Use this endpoint instead of getScanResults to stay within GPT response size limits.
+        Supports limit (default 10), category, and status filters.
+      parameters:
+        - name: run_date
+          in: query
+          schema:
+            type: string
+          description: "Date (YYYY-MM-DD). Defaults to today."
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+            maximum: 50
+          description: Max items per category (default 10, max 50)
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum:
+              - market_verified
+              - model_qualified
+              - conditional
+              - watch
+              - reject
+              - data_insufficient
+          description: Filter to a single category
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [completed, pending]
+          description: Only return results if scan matches this status
+      responses:
+        "200":
+          description: Compact scan summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: string
+                    enum: [completed, pending]
+                  run_date:
+                    type: string
+                  source_access_status:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  execution_report:
+                    type: object
+                    properties:
+                      daily_scan_executed:      {type: boolean}
+                      get_events_called:        {type: boolean}
+                      get_event_markets_called: {type: boolean}
+                      get_event_odds_called:    {type: boolean}
+                      l5_l10_called:            {type: boolean}
+                      status_lineups_called:    {type: boolean}
+                      projections_called:       {type: boolean}
+                      final_approved_count:     {type: integer}
+                      model_qualified_count:    {type: integer}
+                      watch_count:              {type: integer}
+                      reject_count:             {type: integer}
+                  counts:
+                    type: object
+                    properties:
+                      market_verified:  {type: integer}
+                      model_qualified:  {type: integer}
+                      conditional:      {type: integer}
+                      watch:            {type: integer}
+                      reject:           {type: integer}
+                      data_insufficient: {type: integer}
+                  market_verified:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  model_qualified:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  conditional:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  watch:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  reject:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  data_insufficient:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  final_approved_picks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  execution_notes:
+                    type: array
+                    items:
+                      type: string
+      security:
+        - ApiKeyAuth: []
+
   /scan-results:
     get:
       operationId: getScanResults
@@ -573,7 +692,59 @@ paths:
         - ApiKeyAuth: []
 
 components:
-  schemas: {}
+  schemas:
+    CompactProp:
+      type: object
+      description: Compact prop result for GPT consumption — no raw payloads or full arrays
+      properties:
+        player:
+          type: string
+          example: "A'ja Wilson"
+        sport:
+          type: string
+          example: WNBA
+        prop:
+          type: string
+          example: points
+        side:
+          type: string
+          enum: [MORE, LESS]
+        line:
+          type: number
+          example: 22.5
+        platform:
+          type: string
+          nullable: true
+          example: "The Odds API"
+        model_probability:
+          type: number
+          nullable: true
+          description: wow_score normalised to 0-1
+          example: 0.78
+        l5_hit_rate:
+          type: number
+          nullable: true
+          example: 0.8
+        l10_hit_rate:
+          type: number
+          nullable: true
+          example: 0.7
+        l10_median:
+          type: number
+          nullable: true
+          example: 24.5
+        final_label:
+          type: string
+          example: "Market Verified Approved"
+        reason:
+          type: string
+          example: "Strong Signal — strong recent hit rate align with submitted side"
+        failure_paths:
+          type: array
+          items:
+            type: string
+          maxItems: 3
+          example: []
   securitySchemes:
     ApiKeyAuth:
       type: apiKey

@@ -1172,6 +1172,209 @@ def scan_results():
 
 
 # ---------------------------------------------------------------------------
+# Compact prop serializer (used by /scan-results/summary)
+# ---------------------------------------------------------------------------
+
+def _compact_prop(row):
+    """
+    Serialize one scan_results DB row into a compact, GPT-safe prop dict.
+    Excludes raw event payloads, market arrays, and full game logs.
+    """
+    def _f(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    s_odds   = str(row.get("source_odds",    "") or "")
+    s_run    = str(row.get("source_rundown", "") or "")
+    s_logs   = str(row.get("source_logs",   "") or "")
+    s_status = str(row.get("source_status", "") or "")
+
+    # Platform / book source
+    if "AVAILABLE" in s_odds:
+        platform = "The Odds API"
+    elif "AVAILABLE" in s_run:
+        platform = "TheRundown"
+    else:
+        platform = None
+
+    # model_probability — wow_score normalised to 0-1
+    wow = _f(row.get("wow_score"))
+    model_prob = round(wow / 100, 4) if wow is not None else None
+
+    # failure_paths — sources that were not AVAILABLE (max 3)
+    failure_paths = []
+    for label, val in [("odds", s_odds), ("logs", s_logs), ("status", s_status)]:
+        if val and "AVAILABLE" not in val:
+            failure_paths.append(f"{label}: {val[:80]}")
+        if len(failure_paths) >= 3:
+            break
+
+    return {
+        "player":            row.get("player"),
+        "sport":             row.get("sport"),
+        "prop":              row.get("prop"),
+        "side":              row.get("side"),
+        "line":              _f(row.get("line")),
+        "platform":          platform,
+        "model_probability": model_prob,
+        "l5_hit_rate":       _f(row.get("l5_hit_rate")),
+        "l10_hit_rate":      _f(row.get("l10_hit_rate")),
+        "l10_median":        _f(row.get("l10_median")),
+        "final_label":       row.get("classification"),
+        "reason":            row.get("message"),
+        "failure_paths":     failure_paths[:3],
+    }
+
+
+@app.route("/scan-results/summary", methods=["GET"])
+@require_api_key
+def scan_results_summary():
+    """
+    Compact scan summary for GPT Actions.
+    Excludes raw event payloads, market arrays, and full game logs.
+    Returns only classified picks with essential stats per prop.
+
+    Query params:
+      run_date  — YYYY-MM-DD, defaults to today
+      limit     — max items per category (default 10, max 50)
+      category  — filter to one category key (e.g. market_verified)
+      status    — only return if scan matches this status (completed|pending)
+    """
+    try:
+        from storage.results import (
+            get_scan_summary, get_compact_scan_rows, get_scan_source_flags
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Storage import failed: {e}"}), 500
+
+    # --- params ---
+    run_date = request.args.get("run_date", "").strip() or None
+    if not run_date:
+        from datetime import date as _date
+        run_date = _date.today().isoformat()
+
+    category_param = (
+        request.args.get("category", "").strip().lower().replace(" ", "_") or None
+    )
+    status_filter = request.args.get("status", "").strip().lower() or None
+
+    try:
+        limit = max(1, min(int(request.args.get("limit", "10")), 50))
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "'limit' must be a positive integer"}), 422
+
+    # Classification name ↔ response key mapping
+    CAT_KEYS = {
+        "market_verified":   "Market Verified Approved",
+        "model_qualified":   "Model Qualified — PrizePicks",
+        "conditional":       "Conditional",
+        "watch":             "Watch",
+        "reject":            "Reject",
+        "data_insufficient": "Data Insufficient",
+    }
+    CAT_REVERSE = {v: k for k, v in CAT_KEYS.items()}
+
+    db_category = CAT_KEYS.get(category_param) if category_param else None
+
+    _empty_report = {
+        "daily_scan_executed": False, "get_events_called": False,
+        "get_event_markets_called": False, "get_event_odds_called": False,
+        "l5_l10_called": False, "status_lineups_called": False,
+        "projections_called": False,
+        "final_approved_count": 0, "model_qualified_count": 0,
+        "watch_count": 0, "reject_count": 0,
+    }
+
+    try:
+        summary_counts = get_scan_summary(run_date)
+        total_rows     = sum(summary_counts.values())
+        scan_status    = "completed" if total_rows > 0 else "pending"
+
+        # Early exit if caller requested a specific status that doesn't match
+        if status_filter and status_filter != scan_status:
+            return jsonify({
+                "ok": True, "status": scan_status, "run_date": run_date,
+                "message": f"Scan status is '{scan_status}', not '{status_filter}'",
+                "source_access_status": {},
+                "execution_report": _empty_report,
+                "counts":          {k: 0 for k in CAT_KEYS},
+                "market_verified":  [], "model_qualified": [], "conditional": [],
+                "watch":            [], "reject":          [], "data_insufficient": [],
+                "final_approved_picks": [], "execution_notes": [],
+            })
+
+        # Fetch compact rows — enough to fill every category up to limit
+        fetch_limit = (limit * len(CAT_KEYS)) if not db_category else limit
+        rows  = get_compact_scan_rows(run_date, category=db_category, limit=fetch_limit)
+        flags = get_scan_source_flags(run_date)
+
+        # Group rows by category key; already sorted wow_score DESC
+        grouped = {k: [] for k in CAT_KEYS}
+        for row in rows:
+            cat_key = CAT_REVERSE.get(row.get("classification", ""))
+            if cat_key and len(grouped[cat_key]) < limit:
+                grouped[cat_key].append(_compact_prop(row))
+
+        # Counts come from DB summary, not the sliced grouped lists
+        counts = {k: summary_counts.get(cls_name, 0) for k, cls_name in CAT_KEYS.items()}
+
+        # Source access status
+        def _avail(key):
+            return "AVAILABLE" if int(flags.get(key, 0) or 0) > 0 else "NOT_CALLED"
+
+        source_access_status = {
+            "market_odds":    _avail("odds_avail"),
+            "player_logs":    _avail("logs_avail"),
+            "injury_status":  _avail("status_avail"),
+            "rundown_backup": _avail("rundown_avail"),
+        }
+
+        # Execution report (derived from aggregated row data)
+        execution_report = {
+            "daily_scan_executed":      total_rows > 0,
+            "get_events_called":        int(flags.get("odds_called",  0) or 0) > 0,
+            "get_event_markets_called": int(flags.get("odds_called",  0) or 0) > 0,
+            "get_event_odds_called":    int(flags.get("odds_avail",   0) or 0) > 0,
+            "l5_l10_called":            int(flags.get("logs_called",  0) or 0) > 0,
+            "status_lineups_called":    int(flags.get("status_called",0) or 0) > 0,
+            "projections_called":       False,
+            "final_approved_count":     counts["market_verified"],
+            "model_qualified_count":    counts["model_qualified"],
+            "watch_count":              counts["watch"],
+            "reject_count":             counts["reject"],
+        }
+
+        # Execution notes
+        sports = [s for s in (flags.get("sports") or []) if s]
+        execution_notes = []
+        if sports:
+            execution_notes.append(f"Sports scanned: {', '.join(sorted(sports))}")
+        if total_rows > 0:
+            execution_notes.append(f"Total props evaluated: {total_rows}")
+
+        return jsonify({
+            "ok":                   True,
+            "status":               scan_status,
+            "run_date":             run_date,
+            "source_access_status": source_access_status,
+            "execution_report":     execution_report,
+            "counts":               counts,
+            "market_verified":      grouped["market_verified"],
+            "model_qualified":      grouped["model_qualified"],
+            "conditional":          grouped["conditional"],
+            "watch":                grouped["watch"],
+            "reject":               grouped["reject"],
+            "data_insufficient":    grouped["data_insufficient"],
+            "final_approved_picks": grouped["market_verified"],
+            "execution_notes":      execution_notes,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": "Database unavailable", "detail": str(e)}), 503
+
+
+# ---------------------------------------------------------------------------
 # OpenAPI schema
 # ---------------------------------------------------------------------------
 

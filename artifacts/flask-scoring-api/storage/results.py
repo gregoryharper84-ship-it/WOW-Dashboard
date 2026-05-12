@@ -128,3 +128,67 @@ def get_scan_summary(run_date=None):
     except Exception as e:
         print(f"[storage] get_scan_summary failed: {e}")
         return {}
+
+
+def get_compact_scan_rows(run_date, category=None, limit=80):
+    """
+    Fetch compact scan rows for summary display.
+    Only selects columns needed for GPT-friendly output — no raw_features, no full logs.
+    Rows are sorted by wow_score DESC so callers can slice per category.
+    """
+    try:
+        conn = get_db_conn()
+        conds = ["run_date = %s"]
+        params = [run_date]
+        if category:
+            conds.append("classification = %s")
+            params.append(category)
+        where = "WHERE " + " AND ".join(conds)
+        sql = f"""
+            SELECT player, sport, prop, side, line,
+                   wow_score, signal, message, classification,
+                   l5_hit_rate, l10_hit_rate, l10_median,
+                   source_odds, source_rundown, source_logs, source_status
+            FROM scan_results {where}
+            ORDER BY wow_score DESC NULLS LAST
+            LIMIT %s
+        """
+        with conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(sql, params + [limit])
+                rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception as e:
+        print(f"[storage] get_compact_scan_rows failed: {e}")
+        return []
+
+
+def get_scan_source_flags(run_date):
+    """
+    Aggregate source availability flags across all rows for a run_date.
+    Returns counts used to build execution_report and source_access_status.
+    """
+    try:
+        conn = get_db_conn()
+        with conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        COUNT(*) AS total,
+                        COUNT(*) FILTER (WHERE source_odds    LIKE '%%AVAILABLE%%') AS odds_avail,
+                        COUNT(*) FILTER (WHERE source_odds    NOT IN ('NOT_CALLED','')) AS odds_called,
+                        COUNT(*) FILTER (WHERE source_logs    LIKE '%%AVAILABLE%%') AS logs_avail,
+                        COUNT(*) FILTER (WHERE source_logs    NOT IN ('NOT_CALLED','')) AS logs_called,
+                        COUNT(*) FILTER (WHERE source_status  LIKE '%%AVAILABLE%%') AS status_avail,
+                        COUNT(*) FILTER (WHERE source_status  NOT IN ('NOT_CALLED','')) AS status_called,
+                        COUNT(*) FILTER (WHERE source_rundown LIKE '%%AVAILABLE%%') AS rundown_avail,
+                        ARRAY_AGG(DISTINCT sport) AS sports
+                    FROM scan_results WHERE run_date = %s
+                """, [run_date])
+                row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else {}
+    except Exception as e:
+        print(f"[storage] get_scan_source_flags failed: {e}")
+        return {}
