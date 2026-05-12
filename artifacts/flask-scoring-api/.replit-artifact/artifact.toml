@@ -19,21 +19,16 @@ run = "cd /home/runner/workspace/artifacts/flask-scoring-api && PORT=25643 pytho
 [services.production]
 
 [services.production.build]
-args = ["sh", "/home/runner/workspace/artifacts/flask-scoring-api/build.sh"]
+args = ["bash", "/home/runner/workspace/artifacts/flask-scoring-api/build.sh"]
 
 [services.production.run]
 args = [
-  "gunicorn",
-  "--chdir", "/home/runner/workspace/artifacts/flask-scoring-api",
-  "app:app",
-  "--bind", "0.0.0.0:25643",
-  "--workers", "2",
-  "--timeout", "60",
-  "--access-logfile", "-"
+  "sh", "-c",
+  "gunicorn --chdir /home/runner/workspace/artifacts/flask-scoring-api app:app --bind 0.0.0.0:${PORT:-8080} --workers 2 --timeout 120 --access-logfile -"
 ]
 
 [services.production.run.env]
-PORT = "25643"
+PORT = "8080"
 
 [services.production.health.startup]
 path = "/health"
