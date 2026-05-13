@@ -832,6 +832,9 @@ def gpt_score():
     persist_request(player, sport, prop, side, line, score, signal,
                     game_date=game_date, environment=environment)
 
+    audit_valid = bool(features.get("raw_l5")) and bool(features.get("raw_l10"))
+    invalid_reason = None if audit_valid else "L5/L10 raw rows not provided in request"
+
     return jsonify({
         "wow_score": score,
         "signal": signal,
@@ -843,6 +846,8 @@ def gpt_score():
         "prop": prop,
         "side": side,
         "line": line,
+        "audit_valid": audit_valid,
+        "invalid_reason": invalid_reason,
     })
 
 
@@ -903,6 +908,9 @@ def random_forest_score():
     persist_request(player, sport, prop, side, line, score, signal,
                     game_date=game_date, environment=environment)
 
+    audit_valid = bool(flat_features.get("raw_l5")) and bool(flat_features.get("raw_l10"))
+    invalid_reason = None if audit_valid else "L5/L10 raw rows not provided in request"
+
     return jsonify({
         "wow_score": score,
         "signal": signal,
@@ -916,6 +924,8 @@ def random_forest_score():
         "side": side,
         "line": line,
         "features_received": len(flat_features),
+        "audit_valid": audit_valid,
+        "invalid_reason": invalid_reason,
     })
 
 
@@ -1126,9 +1136,15 @@ def wow_daily_scan():
     # Synchronous mode — run scan, then return compact summary from DB
     # -----------------------------------------------------------------------
     try:
-        run_scan(sports=sports_param, environment=environment, limit_per_sport=limit)
+        scan_result = run_scan(sports=sports_param, environment=environment, limit_per_sport=limit)
     except Exception as e:
         return jsonify({"ok": False, "status": "error", "error": str(e)}), 500
+
+    # Pull coverage info from the scan result (not from DB — it's authoritative)
+    requested_sports = scan_result.get("requested_sports", sports_param or [])
+    scanned_sports   = scan_result.get("scanned_sports",   [])
+    missing_sports   = scan_result.get("missing_sports",   [])
+    scan_valid       = scan_result.get("scan_valid",       True)
 
     # Build compact response from what was just saved to the DB
     try:
@@ -1169,6 +1185,9 @@ def wow_daily_scan():
             "rundown_backup": _avail("rundown_avail"),
         }
 
+        audit_valid_count   = int(flags.get("audit_valid_count",   0) or 0)
+        audit_invalid_count = int(flags.get("audit_invalid_count", 0) or 0)
+
         execution_report = {}
         if include_exec:
             execution_report = {
@@ -1183,19 +1202,26 @@ def wow_daily_scan():
                 "model_qualified_count":    counts["model_qualified"],
                 "watch_count":              counts["watch"],
                 "reject_count":             counts["reject"],
+                "audit_valid_count":        audit_valid_count,
+                "audit_invalid_count":      audit_invalid_count,
             }
 
-        sports_scanned = [s for s in (flags.get("sports") or []) if s]
-        execution_notes = []
-        if sports_scanned:
-            execution_notes.append(f"Sports scanned: {', '.join(sorted(sports_scanned))}")
-        if total_rows > 0:
-            execution_notes.append(f"Total props evaluated: {total_rows}")
+        sports_scanned_db = [s for s in (flags.get("sports") or []) if s]
+        execution_notes = list(scan_result.get("execution_notes", []))
+        if not execution_notes:
+            if sports_scanned_db:
+                execution_notes.append(f"Sports scanned: {', '.join(sorted(sports_scanned_db))}")
+            if total_rows > 0:
+                execution_notes.append(f"Total props evaluated: {total_rows}")
 
         return jsonify({
             "ok":                   True,
             "status":               "completed",
+            "scan_valid":           scan_valid,
             "run_date":             run_date,
+            "requested_sports":     requested_sports,
+            "scanned_sports":       scanned_sports,
+            "missing_sports":       missing_sports,
             "source_access_status": source_access_status,
             "execution_report":     execution_report,
             "counts":               counts,
@@ -1328,9 +1354,13 @@ def _compact_prop(row):
         "l5_hit_rate":       _f(row.get("l5_hit_rate")),
         "l10_hit_rate":      _f(row.get("l10_hit_rate")),
         "l10_median":        _f(row.get("l10_median")),
+        "games_available":   row.get("games_available"),
+        "sample_scope":      row.get("sample_scope"),
         "final_label":       row.get("classification"),
         "reason":            row.get("message"),
         "failure_paths":     failure_paths[:3],
+        "audit_valid":       row.get("audit_valid"),
+        "invalid_reason":    row.get("invalid_reason"),
     }
 
 
@@ -1450,6 +1480,8 @@ def scan_results_summary():
             "model_qualified_count":    counts["model_qualified"],
             "watch_count":              counts["watch"],
             "reject_count":             counts["reject"],
+            "audit_valid_count":        int(flags.get("audit_valid_count",   0) or 0),
+            "audit_invalid_count":      int(flags.get("audit_invalid_count", 0) or 0),
         }
 
         # Execution notes

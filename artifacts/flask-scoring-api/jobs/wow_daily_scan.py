@@ -4,14 +4,20 @@ WOW Daily Scanner — jobs/wow_daily_scan.py
 Pipeline:
   1. Pull today's events (Odds API primary, TheRundown backup)
   2. Pull player prop markets per event
-  3. Pull ESPN player game logs
+  3. Pull ESPN player game logs → raw_l5 / raw_l10 rows
   4. Calculate L5/L10 hit rate, median, average
   5. Pull injury / status / lineup data
   6. Score each prop via compute_wow_score()
   7. Classify: Market Verified Approved / Model Qualified / Conditional /
                Watch / Reject / Data Insufficient / No Play
-  8. Save all results to scan_results table
-  9. Return structured JSON output
+     Hard gates on Market Verified Approved:
+       • raw_l5 non-empty
+       • raw_l10 non-empty
+       • sample_scope not "insufficient"
+       • manual_fallback_used=False when environment=live
+  8. Save all results to scan_results table (with raw logs + audit fields)
+  9. Return structured JSON output including:
+       requested_sports / scanned_sports / missing_sports / scan_valid
 
 Can be run standalone:  python jobs/wow_daily_scan.py
 Or called via API:      POST /wow-daily-scan
@@ -48,12 +54,24 @@ ALL_SPORTS = ["NBA", "WNBA", "MLB", "NFL", "NHL", "NCAAB", "NCAAF", "Soccer", "T
 # Classification logic
 # -------------------------------------------------------------------
 
-def classify_prop(wow_score, signal, log_status, inj_flag, sources):
+def classify_prop(
+    wow_score, signal, log_status, inj_flag, sources,
+    raw_l5=None, raw_l10=None,
+    manual_fallback_used=False, environment="live"
+):
     """
     WOW v14.8+ classification rules.
 
-    Market Verified Approved : score >= 75, injury OK, odds source AVAILABLE
-    Model Qualified          : score >= 65, logs available
+    Market Verified Approved : ALL conditions met:
+      - score >= 75
+      - injury OK (flag < 2)
+      - odds source AVAILABLE
+      - raw_l5 non-empty  (verified game-by-game data)
+      - raw_l10 non-empty (verified game-by-game data)
+      - sample_scope not "insufficient"
+      - NOT (manual_fallback_used=True AND environment=live)
+
+    Model Qualified          : score >= 65, logs available (summary only OK)
     Conditional              : score >= 55, partial data
     Watch                    : score >= 45
     Reject                   : score < 45 OR injury_flag >= 2
@@ -64,12 +82,22 @@ def classify_prop(wow_score, signal, log_status, inj_flag, sources):
     logs_ok  = "AVAILABLE" in (log_status or "")
     inj_ok   = inj_flag < 2
 
+    raw_l5_ok  = bool(raw_l5)
+    raw_l10_ok = bool(raw_l10)
+    raw_logs_ok = raw_l5_ok and raw_l10_ok
+
+    # In live environment, manual fallback contaminates the data
+    live_manual_block = manual_fallback_used and (environment == "live")
+
     if not inj_ok:
         return "Reject"
 
-    if wow_score >= 75 and odds_ok and inj_ok:
+    # Market Verified Approved requires verified raw logs — no exceptions
+    if (wow_score >= 75 and odds_ok and inj_ok
+            and raw_logs_ok and not live_manual_block):
         return "Market Verified Approved"
 
+    # Model Qualified does not require raw rows, just log availability
     if wow_score >= 65 and logs_ok:
         return "Model Qualified — PrizePicks"
 
@@ -79,7 +107,6 @@ def classify_prop(wow_score, signal, log_status, inj_flag, sources):
     if wow_score >= 45:
         return "Watch"
 
-    # Check if we truly tried everything
     any_source_available = any(
         "AVAILABLE" in str(v) for v in sources.values()
     )
@@ -112,10 +139,14 @@ def dedup_props(props):
 def run_scan(sports=None, environment="live", limit_per_sport=50):
     """
     Run the WOW daily scan for the given sports list.
-    Returns the full structured result dict.
+
+    Returns the full structured result dict including:
+      requested_sports  — what was asked for
+      scanned_sports    — sports that actually had props
+      missing_sports    — requested sports with zero props (both sources)
+      scan_valid        — True only if every requested sport had props
     """
-    if sports is None:
-        sports = ALL_SPORTS
+    requested_sports = list(sports) if sports is not None else list(ALL_SPORTS)
 
     run_date = date.today().isoformat()
     run_at   = datetime.now(timezone.utc).isoformat()
@@ -129,8 +160,9 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
     data_insufficient = []
     no_play_list     = []
     execution_notes  = []
+    scanned_sports   = []   # sports that had ≥1 prop to evaluate
 
-    for sport in sports:
+    for sport in requested_sports:
         execution_notes.append(f"--- {sport} ---")
 
         # -----------------------------------------------------------
@@ -146,8 +178,9 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 props = rundown_props
                 execution_notes.append(f"{sport}: using TheRundown backup ({len(props)} props)")
             else:
-                execution_notes.append(f"{sport}: no props available from either source")
-                continue
+                execution_notes.append(f"{sport}: no props available from either source — MISSING")
+                source_access[f"{sport}_rundown"] = rd_status
+                continue   # sport is missing — do NOT add to scanned_sports
         else:
             source_access[f"{sport}_rundown"] = "NOT_CALLED: primary succeeded"
 
@@ -155,9 +188,10 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
         if len(props) > limit_per_sport:
             props = props[:limit_per_sport]
         execution_notes.append(f"{sport}: {len(props)} unique props to evaluate")
+        scanned_sports.append(sport)
 
         # -----------------------------------------------------------
-        # Step 7: Pull injury/status data once per sport
+        # Pull injury/status data once per sport
         # -----------------------------------------------------------
         injuries_cache, inj_source = get_injuries(sport)
         source_access[f"{sport}_status"] = inj_source
@@ -168,7 +202,7 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
             mlb_pitchers, _ = get_mlb_probable_pitchers(run_date)
 
         # -----------------------------------------------------------
-        # Step 5-8: For each prop — logs, score, classify, save
+        # For each prop — logs, score, classify, save
         # -----------------------------------------------------------
         for p in props:
             player    = p.get("player", "")
@@ -180,17 +214,16 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
             if not player or not prop_key or line <= 0:
                 continue
 
-            # Step 5-6: Game logs + hit stats
+            # Game logs + hit stats (now includes raw_l5, raw_l10)
             log_stats, log_status = get_player_log_stats(sport, player, prop_key, line, side)
             source_access_log_key = f"{sport}_logs"
             prev = source_access.get(source_access_log_key, "")
-            # Promote to AVAILABLE if any player succeeded; keep best status
             if "AVAILABLE" in log_status:
                 source_access[source_access_log_key] = log_status
             elif "AVAILABLE" not in prev:
                 source_access[source_access_log_key] = log_status
 
-            # Step 7: Injury flag
+            # Injury flag
             inj_flag, inj_raw, _ = get_player_injury_flag(
                 sport, player, injuries_cache=injuries_cache
             )
@@ -205,7 +238,16 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                     })
                     continue
 
-            # Step 8: Compute WOW score
+            # Extract raw log data
+            raw_l5  = log_stats.get("raw_l5",  [])
+            raw_l10 = log_stats.get("raw_l10", [])
+            games_available     = log_stats.get("games_available", 0)
+            sample_scope        = log_stats.get("sample_scope", "insufficient")
+            cross_season_used   = log_stats.get("cross_season_used", False)
+            manual_fallback_used = log_stats.get("manual_fallback_used", False)
+            stat_log_status     = log_stats.get("log_status", "RAW_LOG_MISSING")
+
+            # Compute WOW score
             features = {
                 "l5_hit_rate":    log_stats.get("l5_hit_rate"),
                 "l10_hit_rate":   log_stats.get("l10_hit_rate"),
@@ -217,44 +259,76 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
 
             wow_score, signal, message = compute_wow_score(features, player, prop_key, side, line)
 
-            # Classify
+            # Classify (new: raw_l5/raw_l10/manual_fallback_used/environment gates)
             classification = classify_prop(
                 wow_score, signal, log_status, inj_flag,
-                {"odds": source_access.get(f"{sport}_odds", "NOT_CALLED")}
+                {"odds": source_access.get(f"{sport}_odds", "NOT_CALLED")},
+                raw_l5=raw_l5,
+                raw_l10=raw_l10,
+                manual_fallback_used=manual_fallback_used,
+                environment=environment,
             )
 
-            # Build result record
+            # Audit validity
+            live_manual_block = manual_fallback_used and environment == "live"
+            audit_valid   = bool(raw_l5) and bool(raw_l10) and not live_manual_block
+            if not audit_valid:
+                if not raw_l5:
+                    invalid_reason = "L5 raw rows not returned"
+                elif not raw_l10:
+                    invalid_reason = "L10 raw rows not returned"
+                elif live_manual_block:
+                    invalid_reason = "manual_fallback_used=true in live environment"
+                else:
+                    invalid_reason = "unknown audit failure"
+            else:
+                invalid_reason = None
+
+            # Build result record for DB
             result_row = {
-                "run_date":       run_date,
-                "sport":          sport,
-                "player":         player,
-                "prop":           prop_key,
-                "line":           line,
-                "side":           side,
-                "game_date":      game_date,
-                "wow_score":      wow_score,
-                "signal":         signal,
-                "message":        message,
-                "classification": classification,
-                "environment":    environment,
-                "source_odds":    source_access.get(f"{sport}_odds",    "NOT_CALLED"),
-                "source_rundown": source_access.get(f"{sport}_rundown", "NOT_CALLED"),
-                "source_logs":    log_status,
-                "source_status":  inj_source,
-                "l5_hit_rate":    log_stats.get("l5_hit_rate"),
-                "l10_hit_rate":   log_stats.get("l10_hit_rate"),
-                "l10_median":     log_stats.get("l10_median"),
-                "l10_avg":        log_stats.get("l10_avg"),
-                "raw_features":   features,
-                "notes":          f"injury={inj_raw}; games_found={log_stats.get('games_found', 0)}",
+                "run_date":            run_date,
+                "sport":               sport,
+                "player":              player,
+                "prop":                prop_key,
+                "line":                line,
+                "side":                side,
+                "game_date":           game_date,
+                "wow_score":           wow_score,
+                "signal":              signal,
+                "message":             message,
+                "classification":      classification,
+                "environment":         environment,
+                "source_odds":         source_access.get(f"{sport}_odds",    "NOT_CALLED"),
+                "source_rundown":      source_access.get(f"{sport}_rundown", "NOT_CALLED"),
+                "source_logs":         log_status,
+                "source_status":       inj_source,
+                "l5_hit_rate":         log_stats.get("l5_hit_rate"),
+                "l10_hit_rate":        log_stats.get("l10_hit_rate"),
+                "l10_median":          log_stats.get("l10_median"),
+                "l10_avg":             log_stats.get("l10_avg"),
+                "raw_features":        features,
+                "notes":               f"injury={inj_raw}; games_found={games_available}",
+                # New audit fields
+                "raw_l5":              raw_l5,
+                "raw_l10":             raw_l10,
+                "games_available":     games_available,
+                "sample_scope":        sample_scope,
+                "cross_season_used":   cross_season_used,
+                "manual_fallback_used": manual_fallback_used,
+                "audit_valid":         audit_valid,
+                "invalid_reason":      invalid_reason,
             }
             save_scan_result(result_row)
 
-            # Summary card (lightweight)
+            # Summary card (lightweight — no raw rows in memory list)
             card = {
                 "player": player, "sport": sport, "prop": prop_key,
                 "side": side, "line": line, "game_date": game_date,
                 "wow_score": wow_score, "signal": signal,
+                "games_available": games_available,
+                "sample_scope": sample_scope,
+                "audit_valid": audit_valid,
+                "stat_log_status": stat_log_status,
             }
 
             if classification == "Market Verified Approved":
@@ -273,6 +347,19 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 reject_list.append(card)
 
     # -----------------------------------------------------------
+    # Sport coverage validation
+    # -----------------------------------------------------------
+    missing_sports = [s for s in requested_sports if s not in scanned_sports]
+    scan_valid     = len(missing_sports) == 0
+
+    if missing_sports:
+        execution_notes.append(
+            f"SCAN INCOMPLETE — missing sports: {', '.join(missing_sports)}"
+        )
+    else:
+        execution_notes.append("SCAN COMPLETE — all requested sports had props")
+
+    # -----------------------------------------------------------
     # Build source access status summary
     # -----------------------------------------------------------
     def _summarize_sources(prefix_map):
@@ -289,7 +376,10 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
     return {
         "run_date":  run_date,
         "run_at":    run_at,
-        "sports_scanned": sports,
+        "requested_sports":  requested_sports,
+        "scanned_sports":    scanned_sports,
+        "missing_sports":    missing_sports,
+        "scan_valid":        scan_valid,
         "source_access_status": _summarize_sources(source_access),
         "source_access_detail": source_access,
         "market_verified":    market_verified,

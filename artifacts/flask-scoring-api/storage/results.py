@@ -35,14 +35,22 @@ def save_scan_result(result: dict) -> bool:
                         classification, environment,
                         source_odds, source_rundown, source_logs, source_status,
                         l5_hit_rate, l10_hit_rate, l10_median, l10_avg,
-                        raw_features, notes
+                        raw_features, notes,
+                        raw_l5, raw_l10,
+                        games_available, sample_scope,
+                        cross_season_used, manual_fallback_used,
+                        audit_valid, invalid_reason
                     ) VALUES (
                         %(run_date)s, %(sport)s, %(player)s, %(prop)s, %(line)s, %(side)s,
                         %(game_date)s, %(wow_score)s, %(signal)s, %(message)s,
                         %(classification)s, %(environment)s,
                         %(source_odds)s, %(source_rundown)s, %(source_logs)s, %(source_status)s,
                         %(l5_hit_rate)s, %(l10_hit_rate)s, %(l10_median)s, %(l10_avg)s,
-                        %(raw_features)s, %(notes)s
+                        %(raw_features)s, %(notes)s,
+                        %(raw_l5)s, %(raw_l10)s,
+                        %(games_available)s, %(sample_scope)s,
+                        %(cross_season_used)s, %(manual_fallback_used)s,
+                        %(audit_valid)s, %(invalid_reason)s
                     )
                 """, {
                     "run_date":       result.get("run_date", date.today().isoformat()),
@@ -67,6 +75,14 @@ def save_scan_result(result: dict) -> bool:
                     "l10_avg":        result.get("l10_avg"),
                     "raw_features":   json.dumps(result.get("raw_features") or {}),
                     "notes":          result.get("notes"),
+                    "raw_l5":         json.dumps(result.get("raw_l5") or []),
+                    "raw_l10":        json.dumps(result.get("raw_l10") or []),
+                    "games_available":     result.get("games_available"),
+                    "sample_scope":        result.get("sample_scope"),
+                    "cross_season_used":   result.get("cross_season_used", False),
+                    "manual_fallback_used": result.get("manual_fallback_used", False),
+                    "audit_valid":         result.get("audit_valid"),
+                    "invalid_reason":      result.get("invalid_reason"),
                 })
         conn.close()
         return True
@@ -133,8 +149,8 @@ def get_scan_summary(run_date=None):
 def get_compact_scan_rows(run_date, category=None, limit=80):
     """
     Fetch compact scan rows for summary display.
-    Only selects columns needed for GPT-friendly output — no raw_features, no full logs.
-    Rows are sorted by wow_score DESC so callers can slice per category.
+    Includes audit_valid, invalid_reason, games_available, sample_scope.
+    Sorted by wow_score DESC.
     """
     try:
         conn = get_db_conn()
@@ -148,7 +164,10 @@ def get_compact_scan_rows(run_date, category=None, limit=80):
             SELECT player, sport, prop, side, line,
                    wow_score, signal, message, classification,
                    l5_hit_rate, l10_hit_rate, l10_median,
-                   source_odds, source_rundown, source_logs, source_status
+                   source_odds, source_rundown, source_logs, source_status,
+                   games_available, sample_scope,
+                   cross_season_used, manual_fallback_used,
+                   audit_valid, invalid_reason
             FROM scan_results {where}
             ORDER BY wow_score DESC NULLS LAST
             LIMIT %s
@@ -183,6 +202,8 @@ def get_scan_source_flags(run_date):
                         COUNT(*) FILTER (WHERE source_status  LIKE '%%AVAILABLE%%') AS status_avail,
                         COUNT(*) FILTER (WHERE source_status  NOT IN ('NOT_CALLED','')) AS status_called,
                         COUNT(*) FILTER (WHERE source_rundown LIKE '%%AVAILABLE%%') AS rundown_avail,
+                        COUNT(*) FILTER (WHERE audit_valid = TRUE)  AS audit_valid_count,
+                        COUNT(*) FILTER (WHERE audit_valid = FALSE) AS audit_invalid_count,
                         ARRAY_AGG(DISTINCT sport) AS sports
                     FROM scan_results WHERE run_date = %s
                 """, [run_date])

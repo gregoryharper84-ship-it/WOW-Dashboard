@@ -1,0 +1,207 @@
+You do this inside your Replit WOW backend, not inside PrizePicks and not inside ChatGPT.
+
+Your Master memory/rules file already has the right philosophy: L5/L10 logs are part of the Data layer, projection is required for Final Approval, and missing data changes state instead of becoming approval.  ￼ The patch needs to go where the engine turns board props into scored candidates.
+
+Main places to patch
+
+1. Daily scan route/controller
+
+Find the code that powers:
+
+runWowDailyScan
+DAILY_SPORTSBOOK_SCAN
+CANDIDATE_DISCOVERY
+PRE_LOCK_REFRESH
+FINAL_LOCK
+
+This is where you add:
+
+"requested_sports": ["NBA", "MLB", "WNBA", "NHL"],
+"scanned_sports": ["MLB", "WNBA", "NHL"],
+"missing_sports": ["NBA"],
+"scan_valid": false
+
+Hard rule: if requested sport is missing, fail the scan.
+
+Search Replit for:
+
+runWowDailyScan
+sports scanned
+execution_report
+l5_l10_called
+
+⸻
+
+2. L5/L10 service
+
+Find the file/function that creates:
+
+"l5_hit_rate"
+"l10_hit_rate"
+"l10_median"
+"recent_avg"
+
+This is the most important patch.
+
+It should stop returning only summaries. It must return raw rows:
+
+"raw_l5": [
+  {
+    "date": "2026-05-01",
+    "opponent": "CLE",
+    "stat": 36,
+    "line": 39.5,
+    "hit": true
+  }
+],
+"raw_l10": [],
+"games_available": 10,
+"sample_scope": "current_season",
+"cross_season_used": false,
+"manual_fallback_used": false,
+"log_status": "RAW_LOG_VERIFIED"
+
+Search Replit for:
+
+l5
+l10
+hit_rate
+recent_avg
+median
+game_logs
+player_logs
+StatMuse
+
+⸻
+
+3. Manual L10 fallback setting
+
+Find where this parameter is handled:
+
+"run_manual_l10_if_needed": true
+
+For live slips, force it to:
+
+"run_manual_l10_if_needed": false
+
+Manual fallback can stay available only for research mode.
+
+Rule:
+
+environment=live + manual_fallback_used=true = block approval
+
+⸻
+
+4. Final approval classifier
+
+Find the code that assigns:
+
+Watch
+Conditional
+Model Qualified
+Temp Approved
+Final Approved
+Reject
+
+Patch it so Final Approved is impossible unless:
+
+raw_l5 exists
+raw_l10 exists
+sample_scope is valid
+projection exists
+PrizePicks line verified
+market checked
+status checked
+
+No projection or no raw logs = Conditional / Model Qualified only, never Final Approved.
+
+Search for:
+
+final_label
+Final Approved
+Model Qualified
+Conditional
+classification
+can_approve
+
+⸻
+
+5. scoreProp / live lobby save
+
+Find the endpoint behind:
+
+scoreProp
+scorePick
+saved_to_lobby
+
+Patch it so scoreProp can still save, but it cannot treat unverified L5/L10 as live-quality data.
+
+Add fields like:
+
+"log_status": "RAW_LOG_MISSING",
+"audit_valid": false,
+"invalid_reason": "L5/L10 raw rows not returned"
+
+And block contaminated records from leaderboard/trend learning.
+
+Search for:
+
+scoreProp
+saved_to_lobby
+request_log
+leaderboard
+getStats
+getRequestLog
+
+⸻
+
+6. Database / saved pick schema
+
+Add columns or JSON fields for:
+
+raw_l5
+raw_l10
+l5_avg
+l10_avg
+l5_median
+l10_median
+l5_hit_rate
+l10_hit_rate
+games_available
+sample_scope
+cross_season_used
+manual_fallback_used
+log_status
+audit_valid
+invalid_reason
+
+Then mark the bad previous entries:
+
+INVALIDATED — L5/L10 audit failure
+
+⸻
+
+Simplest search order in Replit
+
+Open Replit → your WOW project → global search these terms in this order:
+
+runWowDailyScan
+l5_l10_called
+run_manual_l10_if_needed
+l10_hit_rate
+scoreProp
+final_label
+saved_to_lobby
+leaderboard
+
+That will show you the exact files to edit.
+
+What not to change
+
+Do not change the whole WOW model.
+
+The broken part is the pipeline:
+
+board scan → sport ingestion → L5/L10 feature generation → approval gate
+
+The model rules are already correct. The backend just needs to enforce them.
