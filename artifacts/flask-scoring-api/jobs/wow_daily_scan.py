@@ -8,36 +8,36 @@ Pipeline:
   4. Calculate L5/L10 hit rate, median, average
   5. Pull injury / status / lineup data
   6. Score each prop via compute_wow_score()
-  7. Classify: Market Verified Approved / Model Qualified / Conditional /
-               Watch / Reject / Data Insufficient / No Play
-     Hard gates on Market Verified Approved:
-       • raw_l5 non-empty
-       • raw_l10 non-empty
-       • sample_scope not "insufficient"
-       • manual_fallback_used=False when environment=live
-  8. Save all results to scan_results table (with raw logs + audit fields)
-  9. Return structured JSON output including:
-       requested_sports / scanned_sports / missing_sports / scan_valid
+  7. Compute internal model projection (WOW v14.9.1)
+  8. Classify: Final Approved — Internal Projection /
+               Market Verified Approved / Model Qualified — PrizePicks /
+               Conditional / Watch / Reject / Data Insufficient / No Play
+  9. Save all results to scan_results table
+ 10. Return structured JSON including requested/scanned/missing sports
 
-Can be run standalone:  python jobs/wow_daily_scan.py
-Or called via API:      POST /wow-daily-scan
+Classification gates (v14.9.1):
+  Final Approved — Internal Projection:
+    score >= 75 + injury OK + raw_l5 + raw_l10 + internal projection
+    margin >= 5% + no live manual fallback
+  Market Verified Approved:
+    same as above + odds AVAILABLE + external projection (future)
+  Never 0 Final Approved solely because external projection API is missing.
 """
 
 import sys
 import os
 import json
+import statistics as _stats
 from datetime import date, datetime, timezone
 
-# Allow running from repo root or from within jobs/
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.odds_api  import fetch_all_props, SPORT_KEYS
-from services.rundown   import fetch_backup_props
+from services.odds_api   import fetch_all_props, SPORT_KEYS
+from services.rundown    import fetch_backup_props
 from services.player_logs import get_player_log_stats
-from services.status    import get_injuries, get_player_injury_flag, get_mlb_probable_pitchers
-from storage.results    import save_scan_result, get_scan_summary
+from services.status     import get_injuries, get_player_injury_flag, get_mlb_probable_pitchers
+from storage.results     import save_scan_result, get_scan_summary
 
-# Import scoring from parent app.py path
 import importlib.util
 _app_path = os.path.join(os.path.dirname(__file__), "..", "app.py")
 _spec = importlib.util.spec_from_file_location("app_module", _app_path)
@@ -50,77 +50,194 @@ compute_wow_score = _app_module.compute_wow_score
 # -------------------------------------------------------------------
 ALL_SPORTS = ["NBA", "WNBA", "MLB", "NFL", "NHL", "NCAAB", "NCAAF", "Soccer", "Tennis"]
 
+# Minimum projection margin (%) to clear the approval gate
+PROJECTION_MARGIN_THRESHOLD = 5.0
+
+
 # -------------------------------------------------------------------
-# Classification logic
+# WOW v14.9.1 — Internal model projection
+# -------------------------------------------------------------------
+
+def compute_internal_projection(log_stats, line, side):
+    """
+    Compute an internal model projection from verified L5/L10 data.
+
+    Formula:
+      base     = L10 median (most stable anchor; fallback: L10 avg)
+      trend    = (L5 avg − L10 avg) / L10 avg  →  recent momentum
+      proj     = base × (1 + trend × 0.30)     →  30 % trend weight
+      margin   = (proj − line) / line × 100     →  positive = favours MORE
+                 (line − proj) / line × 100     →  positive = favours LESS
+
+    Gate: margin must be >= PROJECTION_MARGIN_THRESHOLD (5 %) to approve.
+
+    Returns dict:
+      projection_status      — "INTERNAL" | "MISSING"
+      projection_value       — rounded projected stat value
+      projection_margin      — % clearance (positive = favourable for side)
+      projection_source      — "internal_l10_model" | None
+      final_approval_blocker — None (pass) or reason string (fail)
+    """
+    l10_median      = log_stats.get("l10_median")
+    l10_avg         = log_stats.get("l10_avg")
+    games_available = log_stats.get("games_available", 0)
+    raw_l5          = log_stats.get("raw_l5",  [])
+    raw_l10         = log_stats.get("raw_l10", [])
+
+    # Need >= 5 games plus at least one summary stat
+    if games_available < 5 or (l10_median is None and l10_avg is None):
+        return {
+            "projection_status":       "MISSING",
+            "projection_value":        None,
+            "projection_margin":       None,
+            "projection_source":       None,
+            "final_approval_blocker":  (
+                "internal projection requires >= 5 verified games with L10 median/avg; "
+                f"got {games_available} games"
+            ),
+        }
+
+    # Base anchor: L10 median preferred for stability
+    base = l10_median if l10_median is not None else l10_avg
+
+    # L5 and L10 raw values for trend calculation
+    l5_vals  = [r["stat"] for r in raw_l5]  if raw_l5  else []
+    l10_vals = [r["stat"] for r in raw_l10] if raw_l10 else []
+
+    l5_avg_val   = (sum(l5_vals)  / len(l5_vals))  if l5_vals  else (l10_avg or base)
+    l10_avg_val  = (sum(l10_vals) / len(l10_vals)) if l10_vals else (l10_avg or base)
+
+    # Trend factor: positive = recent form above baseline
+    trend_factor = 0.0
+    if l10_avg_val and l10_avg_val > 0:
+        trend_factor = (l5_avg_val - l10_avg_val) / l10_avg_val
+
+    # Blend: 70 % base + 30 % trend influence
+    projection_value = round(base * (1.0 + trend_factor * 0.30), 2)
+
+    # Margin in favour of the side
+    if line > 0:
+        margin = (
+            (projection_value - line) / line * 100 if side == "MORE"
+            else (line - projection_value) / line * 100
+        )
+        margin = round(margin, 2)
+    else:
+        margin = 0.0
+
+    # Gate check
+    if margin < PROJECTION_MARGIN_THRESHOLD:
+        blocker = (
+            f"internal projection margin {margin:.1f}% < required "
+            f"{PROJECTION_MARGIN_THRESHOLD:.0f}% "
+            f"(proj={projection_value}, line={line}, side={side})"
+        )
+    else:
+        blocker = None
+
+    return {
+        "projection_status":      "INTERNAL",
+        "projection_value":       projection_value,
+        "projection_margin":      margin,
+        "projection_source":      "internal_l10_model",
+        "final_approval_blocker": blocker,
+    }
+
+
+# -------------------------------------------------------------------
+# Classification logic (v14.9.1)
 # -------------------------------------------------------------------
 
 def classify_prop(
     wow_score, signal, log_status, inj_flag, sources,
     raw_l5=None, raw_l10=None,
-    manual_fallback_used=False, environment="live"
+    manual_fallback_used=False, environment="live",
+    projection_data=None,
 ):
     """
-    WOW v14.8+ classification rules.
+    WOW v14.9.1 — returns (classification_label, final_approval_blocker | None).
 
-    Market Verified Approved : ALL conditions met:
-      - score >= 75
-      - injury OK (flag < 2)
-      - odds source AVAILABLE
-      - raw_l5 non-empty  (verified game-by-game data)
-      - raw_l10 non-empty (verified game-by-game data)
-      - sample_scope not "insufficient"
-      - NOT (manual_fallback_used=True AND environment=live)
+    Tier 1: Market Verified Approved
+      score >= 75, injury OK, odds AVAILABLE, raw L5+L10, external projection,
+      projection margin >= 5%, no live manual fallback.
 
-    Model Qualified          : score >= 65, logs available (summary only OK)
-    Conditional              : score >= 55, partial data
-    Watch                    : score >= 45
-    Reject                   : score < 45 OR injury_flag >= 2
-    Data Insufficient        : required sources failed / missing logs
-    No Play                  : full pathway attempted, nothing passed
+    Tier 1b: Final Approved — Internal Projection
+      Same as above but uses internal model projection instead of external.
+      Does NOT require odds_ok label ("Market Verified") — only verified data.
+
+    Tier 2: Model Qualified — PrizePicks   (score >= 65, logs AVAILABLE)
+    Tier 3: Conditional                    (score >= 55)
+    Tier 4: Watch                          (score >= 45)
+    Tier 5: Reject                         (score < 45 or injury >= 2)
+    Tier 6: Data Insufficient              (no sources available)
     """
-    odds_ok  = "AVAILABLE" in (sources.get("odds",  "") or "")
-    logs_ok  = "AVAILABLE" in (log_status or "")
-    inj_ok   = inj_flag < 2
-
+    odds_ok   = "AVAILABLE" in (sources.get("odds", "") or "")
+    logs_ok   = "AVAILABLE" in (log_status or "")
+    inj_ok    = inj_flag < 2
     raw_l5_ok  = bool(raw_l5)
     raw_l10_ok = bool(raw_l10)
     raw_logs_ok = raw_l5_ok and raw_l10_ok
-
-    # In live environment, manual fallback contaminates the data
     live_manual_block = manual_fallback_used and (environment == "live")
 
-    if not inj_ok:
-        return "Reject"
-
-    # Market Verified Approved requires verified raw logs — no exceptions
-    if (wow_score >= 75 and odds_ok and inj_ok
-            and raw_logs_ok and not live_manual_block):
-        return "Market Verified Approved"
-
-    # Model Qualified does not require raw rows, just log availability
-    if wow_score >= 65 and logs_ok:
-        return "Model Qualified — PrizePicks"
-
-    if wow_score >= 55:
-        return "Conditional"
-
-    if wow_score >= 45:
-        return "Watch"
-
-    any_source_available = any(
-        "AVAILABLE" in str(v) for v in sources.values()
+    # Projection gate
+    proj = projection_data or {}
+    proj_status  = proj.get("projection_status", "MISSING")
+    proj_margin  = proj.get("projection_margin") or 0.0
+    proj_blocker = proj.get("final_approval_blocker")
+    proj_ok = (
+        proj_status in ("EXTERNAL", "INTERNAL")
+        and proj_margin >= PROJECTION_MARGIN_THRESHOLD
+        and not proj_blocker
     )
-    if not any_source_available:
-        return "Data Insufficient"
 
-    if wow_score < 45:
-        return "Reject"
+    # --- Hard reject: injury ---
+    if not inj_ok:
+        return "Reject", f"injury_flag={inj_flag} (>= 2)"
 
-    return "No Play"
+    # --- Final Approval tier ---
+    if wow_score >= 75 and inj_ok and raw_logs_ok and not live_manual_block and proj_ok:
+        if odds_ok and proj_status == "EXTERNAL":
+            # Full external verification — highest label
+            return "Market Verified Approved", None
+        # Internal projection (may still have odds_ok = True)
+        return "Final Approved — Internal Projection", None
+
+    # Build blocker reason for lower tiers
+    blocker_parts = []
+    if wow_score < 75:
+        blocker_parts.append(f"score={wow_score} < 75")
+    if not raw_l5_ok:
+        blocker_parts.append("raw_l5 missing")
+    if not raw_l10_ok:
+        blocker_parts.append("raw_l10 missing")
+    if live_manual_block:
+        blocker_parts.append("manual_fallback in live environment")
+    if not proj_ok:
+        if proj_status == "MISSING":
+            blocker_parts.append("internal projection: insufficient data")
+        elif proj_margin < PROJECTION_MARGIN_THRESHOLD:
+            blocker_parts.append(
+                f"projection margin {proj_margin:.1f}% < required "
+                f"{PROJECTION_MARGIN_THRESHOLD:.0f}%"
+            )
+    blocker = "; ".join(blocker_parts) if blocker_parts else None
+
+    if wow_score >= 65 and logs_ok:
+        return "Model Qualified — PrizePicks", blocker
+    if wow_score >= 55:
+        return "Conditional", blocker
+    if wow_score >= 45:
+        return "Watch", blocker
+
+    any_source = any("AVAILABLE" in str(v) for v in sources.values())
+    if not any_source:
+        return "Data Insufficient", blocker
+
+    return "Reject", f"score={wow_score} < 45"
 
 
 # -------------------------------------------------------------------
-# Dedup props (same player/prop/side/line from multiple bookmakers)
+# Dedup props
 # -------------------------------------------------------------------
 
 def dedup_props(props):
@@ -138,13 +255,10 @@ def dedup_props(props):
 
 def run_scan(sports=None, environment="live", limit_per_sport=50):
     """
-    Run the WOW daily scan for the given sports list.
+    Run the WOW daily scan.
 
-    Returns the full structured result dict including:
-      requested_sports  — what was asked for
-      scanned_sports    — sports that actually had props
-      missing_sports    — requested sports with zero props (both sources)
-      scan_valid        — True only if every requested sport had props
+    Returns structured result dict including:
+      requested_sports / scanned_sports / missing_sports / scan_valid
     """
     requested_sports = list(sports) if sports is not None else list(ALL_SPORTS)
 
@@ -152,35 +266,40 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
     run_at   = datetime.now(timezone.utc).isoformat()
 
     source_access = {}
-    market_verified  = []
-    model_qualified  = []
-    conditional      = []
-    watch_list       = []
-    reject_list      = []
-    data_insufficient = []
-    no_play_list     = []
-    execution_notes  = []
-    scanned_sports   = []   # sports that had ≥1 prop to evaluate
+    market_verified          = []
+    final_approved_internal  = []
+    model_qualified          = []
+    conditional              = []
+    watch_list               = []
+    reject_list              = []
+    data_insufficient        = []
+    no_play_list             = []
+    execution_notes          = []
+    scanned_sports           = []
 
     for sport in requested_sports:
         execution_notes.append(f"--- {sport} ---")
 
-        # -----------------------------------------------------------
-        # Step 1-3: Pull props (Odds API primary, Rundown backup)
-        # -----------------------------------------------------------
+        # Step 1-3: Props (Odds API primary, Rundown backup)
         props, odds_status = fetch_all_props(sport)
-        source_access[f"{sport}_odds"] = odds_status.get("props", odds_status) if isinstance(odds_status, dict) else odds_status
+        source_access[f"{sport}_odds"] = (
+            odds_status.get("props", odds_status)
+            if isinstance(odds_status, dict) else odds_status
+        )
 
         if not props:
             rundown_props, rd_status = fetch_backup_props(sport)
             source_access[f"{sport}_rundown"] = rd_status
             if rundown_props:
                 props = rundown_props
-                execution_notes.append(f"{sport}: using TheRundown backup ({len(props)} props)")
+                execution_notes.append(
+                    f"{sport}: using TheRundown backup ({len(props)} props)"
+                )
             else:
-                execution_notes.append(f"{sport}: no props available from either source — MISSING")
-                source_access[f"{sport}_rundown"] = rd_status
-                continue   # sport is missing — do NOT add to scanned_sports
+                execution_notes.append(
+                    f"{sport}: no props available from either source — MISSING"
+                )
+                continue
         else:
             source_access[f"{sport}_rundown"] = "NOT_CALLED: primary succeeded"
 
@@ -190,20 +309,13 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
         execution_notes.append(f"{sport}: {len(props)} unique props to evaluate")
         scanned_sports.append(sport)
 
-        # -----------------------------------------------------------
-        # Pull injury/status data once per sport
-        # -----------------------------------------------------------
         injuries_cache, inj_source = get_injuries(sport)
         source_access[f"{sport}_status"] = inj_source
 
-        # MLB probable pitchers
         mlb_pitchers = {}
         if sport == "MLB":
             mlb_pitchers, _ = get_mlb_probable_pitchers(run_date)
 
-        # -----------------------------------------------------------
-        # For each prop — logs, score, classify, save
-        # -----------------------------------------------------------
         for p in props:
             player    = p.get("player", "")
             prop_key  = p.get("prop", "")
@@ -214,21 +326,21 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
             if not player or not prop_key or line <= 0:
                 continue
 
-            # Game logs + hit stats (now includes raw_l5, raw_l10)
-            log_stats, log_status = get_player_log_stats(sport, player, prop_key, line, side)
-            source_access_log_key = f"{sport}_logs"
-            prev = source_access.get(source_access_log_key, "")
+            # Game logs + raw rows
+            log_stats, log_status = get_player_log_stats(
+                sport, player, prop_key, line, side
+            )
+            log_key = f"{sport}_logs"
+            prev = source_access.get(log_key, "")
             if "AVAILABLE" in log_status:
-                source_access[source_access_log_key] = log_status
+                source_access[log_key] = log_status
             elif "AVAILABLE" not in prev:
-                source_access[source_access_log_key] = log_status
+                source_access[log_key] = log_status
 
-            # Injury flag
             inj_flag, inj_raw, _ = get_player_injury_flag(
                 sport, player, injuries_cache=injuries_cache
             )
 
-            # MLB: skip if not a probable pitcher for pitching props
             if sport == "MLB" and "pitcher" in prop_key:
                 if mlb_pitchers and player.lower() not in mlb_pitchers:
                     data_insufficient.append({
@@ -238,40 +350,44 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                     })
                     continue
 
-            # Extract raw log data
-            raw_l5  = log_stats.get("raw_l5",  [])
-            raw_l10 = log_stats.get("raw_l10", [])
-            games_available     = log_stats.get("games_available", 0)
-            sample_scope        = log_stats.get("sample_scope", "insufficient")
-            cross_season_used   = log_stats.get("cross_season_used", False)
+            raw_l5               = log_stats.get("raw_l5",  [])
+            raw_l10              = log_stats.get("raw_l10", [])
+            games_available      = log_stats.get("games_available", 0)
+            sample_scope         = log_stats.get("sample_scope", "insufficient")
+            cross_season_used    = log_stats.get("cross_season_used", False)
             manual_fallback_used = log_stats.get("manual_fallback_used", False)
-            stat_log_status     = log_stats.get("log_status", "RAW_LOG_MISSING")
+            stat_log_status      = log_stats.get("log_status", "RAW_LOG_MISSING")
 
-            # Compute WOW score
+            # WOW score
             features = {
-                "l5_hit_rate":    log_stats.get("l5_hit_rate"),
-                "l10_hit_rate":   log_stats.get("l10_hit_rate"),
-                "recent_avg":     log_stats.get("l10_avg"),
-                "median_edge":    _median_edge(log_stats.get("l10_median"), line),
-                "injury_flag":    inj_flag,
+                "l5_hit_rate":  log_stats.get("l5_hit_rate"),
+                "l10_hit_rate": log_stats.get("l10_hit_rate"),
+                "recent_avg":   log_stats.get("l10_avg"),
+                "median_edge":  _median_edge(log_stats.get("l10_median"), line),
+                "injury_flag":  inj_flag,
             }
             features = {k: v for k, v in features.items() if v is not None}
+            wow_score, signal, message = compute_wow_score(
+                features, player, prop_key, side, line
+            )
 
-            wow_score, signal, message = compute_wow_score(features, player, prop_key, side, line)
+            # v14.9.1 — internal model projection
+            projection_data = compute_internal_projection(log_stats, line, side)
 
-            # Classify (new: raw_l5/raw_l10/manual_fallback_used/environment gates)
-            classification = classify_prop(
+            # Classify (returns tuple)
+            classification, final_approval_blocker = classify_prop(
                 wow_score, signal, log_status, inj_flag,
                 {"odds": source_access.get(f"{sport}_odds", "NOT_CALLED")},
                 raw_l5=raw_l5,
                 raw_l10=raw_l10,
                 manual_fallback_used=manual_fallback_used,
                 environment=environment,
+                projection_data=projection_data,
             )
 
             # Audit validity
             live_manual_block = manual_fallback_used and environment == "live"
-            audit_valid   = bool(raw_l5) and bool(raw_l10) and not live_manual_block
+            audit_valid = bool(raw_l5) and bool(raw_l10) and not live_manual_block
             if not audit_valid:
                 if not raw_l5:
                     invalid_reason = "L5 raw rows not returned"
@@ -284,7 +400,6 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
             else:
                 invalid_reason = None
 
-            # Build result record for DB
             result_row = {
                 "run_date":            run_date,
                 "sport":               sport,
@@ -308,7 +423,6 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 "l10_avg":             log_stats.get("l10_avg"),
                 "raw_features":        features,
                 "notes":               f"injury={inj_raw}; games_found={games_available}",
-                # New audit fields
                 "raw_l5":              raw_l5,
                 "raw_l10":             raw_l10,
                 "games_available":     games_available,
@@ -317,10 +431,15 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 "manual_fallback_used": manual_fallback_used,
                 "audit_valid":         audit_valid,
                 "invalid_reason":      invalid_reason,
+                # v14.9.1 projection fields
+                "projection_status":      projection_data.get("projection_status"),
+                "projection_value":       projection_data.get("projection_value"),
+                "projection_margin":      projection_data.get("projection_margin"),
+                "projection_source":      projection_data.get("projection_source"),
+                "final_approval_blocker": final_approval_blocker,
             }
             save_scan_result(result_row)
 
-            # Summary card (lightweight — no raw rows in memory list)
             card = {
                 "player": player, "sport": sport, "prop": prop_key,
                 "side": side, "line": line, "game_date": game_date,
@@ -329,10 +448,17 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 "sample_scope": sample_scope,
                 "audit_valid": audit_valid,
                 "stat_log_status": stat_log_status,
+                "projection_status":  projection_data.get("projection_status"),
+                "projection_value":   projection_data.get("projection_value"),
+                "projection_margin":  projection_data.get("projection_margin"),
+                "projection_source":  projection_data.get("projection_source"),
+                "final_approval_blocker": final_approval_blocker,
             }
 
             if classification == "Market Verified Approved":
                 market_verified.append(card)
+            elif classification == "Final Approved — Internal Projection":
+                final_approved_internal.append(card)
             elif classification == "Model Qualified — PrizePicks":
                 model_qualified.append(card)
             elif classification == "Conditional":
@@ -346,9 +472,7 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
             else:
                 reject_list.append(card)
 
-    # -----------------------------------------------------------
     # Sport coverage validation
-    # -----------------------------------------------------------
     missing_sports = [s for s in requested_sports if s not in scanned_sports]
     scan_valid     = len(missing_sports) == 0
 
@@ -359,74 +483,66 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
     else:
         execution_notes.append("SCAN COMPLETE — all requested sports had props")
 
-    # -----------------------------------------------------------
-    # Build source access status summary
-    # -----------------------------------------------------------
     def _summarize_sources(prefix_map):
         out = {}
         for key, val in prefix_map.items():
-            label = "AVAILABLE" if "AVAILABLE" in str(val) else \
-                    "PARTIAL"   if "PARTIAL"   in str(val) else \
-                    "FAILED"    if "FAILED"    in str(val) else \
-                    "MISSING"   if "MISSING"   in str(val) else \
-                    "NOT_CALLED"
+            label = (
+                "AVAILABLE"  if "AVAILABLE" in str(val) else
+                "PARTIAL"    if "PARTIAL"   in str(val) else
+                "FAILED"     if "FAILED"    in str(val) else
+                "MISSING"    if "MISSING"   in str(val) else
+                "NOT_CALLED"
+            )
             out[key] = label
         return out
+
+    total_final = len(market_verified) + len(final_approved_internal)
 
     return {
         "run_date":  run_date,
         "run_at":    run_at,
-        "requested_sports":  requested_sports,
-        "scanned_sports":    scanned_sports,
-        "missing_sports":    missing_sports,
-        "scan_valid":        scan_valid,
-        "source_access_status": _summarize_sources(source_access),
-        "source_access_detail": source_access,
-        "market_verified":    market_verified,
-        "model_qualified":    model_qualified,
-        "conditional":        conditional,
-        "watch":              watch_list,
-        "reject":             reject_list,
-        "data_insufficient":  data_insufficient,
-        "no_play":            no_play_list,
+        "requested_sports":         requested_sports,
+        "scanned_sports":           scanned_sports,
+        "missing_sports":           missing_sports,
+        "scan_valid":               scan_valid,
+        "source_access_status":     _summarize_sources(source_access),
+        "source_access_detail":     source_access,
+        "market_verified":          market_verified,
+        "final_approved_internal":  final_approved_internal,
+        "model_qualified":          model_qualified,
+        "conditional":              conditional,
+        "watch":                    watch_list,
+        "reject":                   reject_list,
+        "data_insufficient":        data_insufficient,
+        "no_play":                  no_play_list,
         "counts": {
-            "market_verified":    len(market_verified),
-            "model_qualified":    len(model_qualified),
-            "conditional":        len(conditional),
-            "watch":              len(watch_list),
-            "reject":             len(reject_list),
-            "data_insufficient":  len(data_insufficient),
-            "no_play":            len(no_play_list),
+            "market_verified":         len(market_verified),
+            "final_approved_internal": len(final_approved_internal),
+            "total_final_approved":    total_final,
+            "model_qualified":         len(model_qualified),
+            "conditional":             len(conditional),
+            "watch":                   len(watch_list),
+            "reject":                  len(reject_list),
+            "data_insufficient":       len(data_insufficient),
+            "no_play":                 len(no_play_list),
         },
         "execution_notes": execution_notes,
     }
 
 
 def _median_edge(median, line):
-    """Convert median vs line into a 0-1 normalised edge score."""
     if median is None or line is None or line == 0:
         return None
     return round((median - line) / line, 4)
 
 
-# -------------------------------------------------------------------
-# Standalone entry point
-# -------------------------------------------------------------------
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="WOW Daily Scanner")
-    parser.add_argument("--sports",  nargs="+", default=None,
-                        help="Sports to scan (default: all)")
-    parser.add_argument("--env",     default="live",
-                        choices=["test", "live"])
-    parser.add_argument("--limit",   type=int, default=50,
-                        help="Max props per sport")
+    parser.add_argument("--sports",  nargs="+", default=None)
+    parser.add_argument("--env",     default="live", choices=["test", "live"])
+    parser.add_argument("--limit",   type=int, default=50)
     args = parser.parse_args()
-
-    print(f"[WOW Scanner] Starting scan at {datetime.now(timezone.utc).isoformat()}")
-    result = run_scan(
-        sports=args.sports,
-        environment=args.env,
-        limit_per_sport=args.limit,
-    )
+    print(f"[WOW Scanner] Starting at {datetime.now(timezone.utc).isoformat()}")
+    result = run_scan(sports=args.sports, environment=args.env, limit_per_sport=args.limit)
     print(json.dumps(result, indent=2, default=str))

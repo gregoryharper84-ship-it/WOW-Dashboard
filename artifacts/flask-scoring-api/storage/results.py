@@ -39,7 +39,9 @@ def save_scan_result(result: dict) -> bool:
                         raw_l5, raw_l10,
                         games_available, sample_scope,
                         cross_season_used, manual_fallback_used,
-                        audit_valid, invalid_reason
+                        audit_valid, invalid_reason,
+                        projection_status, projection_value, projection_margin,
+                        projection_source, final_approval_blocker
                     ) VALUES (
                         %(run_date)s, %(sport)s, %(player)s, %(prop)s, %(line)s, %(side)s,
                         %(game_date)s, %(wow_score)s, %(signal)s, %(message)s,
@@ -50,7 +52,9 @@ def save_scan_result(result: dict) -> bool:
                         %(raw_l5)s, %(raw_l10)s,
                         %(games_available)s, %(sample_scope)s,
                         %(cross_season_used)s, %(manual_fallback_used)s,
-                        %(audit_valid)s, %(invalid_reason)s
+                        %(audit_valid)s, %(invalid_reason)s,
+                        %(projection_status)s, %(projection_value)s, %(projection_margin)s,
+                        %(projection_source)s, %(final_approval_blocker)s
                     )
                 """, {
                     "run_date":       result.get("run_date", date.today().isoformat()),
@@ -77,12 +81,17 @@ def save_scan_result(result: dict) -> bool:
                     "notes":          result.get("notes"),
                     "raw_l5":         json.dumps(result.get("raw_l5") or []),
                     "raw_l10":        json.dumps(result.get("raw_l10") or []),
-                    "games_available":     result.get("games_available"),
-                    "sample_scope":        result.get("sample_scope"),
-                    "cross_season_used":   result.get("cross_season_used", False),
+                    "games_available":      result.get("games_available"),
+                    "sample_scope":         result.get("sample_scope"),
+                    "cross_season_used":    result.get("cross_season_used", False),
                     "manual_fallback_used": result.get("manual_fallback_used", False),
-                    "audit_valid":         result.get("audit_valid"),
-                    "invalid_reason":      result.get("invalid_reason"),
+                    "audit_valid":          result.get("audit_valid"),
+                    "invalid_reason":       result.get("invalid_reason"),
+                    "projection_status":    result.get("projection_status"),
+                    "projection_value":     result.get("projection_value"),
+                    "projection_margin":    result.get("projection_margin"),
+                    "projection_source":    result.get("projection_source"),
+                    "final_approval_blocker": result.get("final_approval_blocker"),
                 })
         conn.close()
         return True
@@ -149,8 +158,7 @@ def get_scan_summary(run_date=None):
 def get_compact_scan_rows(run_date, category=None, limit=80):
     """
     Fetch compact scan rows for summary display.
-    Includes audit_valid, invalid_reason, games_available, sample_scope.
-    Sorted by wow_score DESC.
+    Includes audit and projection fields. Sorted by wow_score DESC.
     """
     try:
         conn = get_db_conn()
@@ -167,7 +175,9 @@ def get_compact_scan_rows(run_date, category=None, limit=80):
                    source_odds, source_rundown, source_logs, source_status,
                    games_available, sample_scope,
                    cross_season_used, manual_fallback_used,
-                   audit_valid, invalid_reason
+                   audit_valid, invalid_reason,
+                   projection_status, projection_value, projection_margin,
+                   projection_source, final_approval_blocker
             FROM scan_results {where}
             ORDER BY wow_score DESC NULLS LAST
             LIMIT %s
@@ -204,6 +214,9 @@ def get_scan_source_flags(run_date):
                         COUNT(*) FILTER (WHERE source_rundown LIKE '%%AVAILABLE%%') AS rundown_avail,
                         COUNT(*) FILTER (WHERE audit_valid = TRUE)  AS audit_valid_count,
                         COUNT(*) FILTER (WHERE audit_valid = FALSE) AS audit_invalid_count,
+                        COUNT(*) FILTER (WHERE projection_status = 'INTERNAL')  AS internal_proj_count,
+                        COUNT(*) FILTER (WHERE projection_status = 'EXTERNAL')  AS external_proj_count,
+                        COUNT(*) FILTER (WHERE projection_status = 'MISSING')   AS missing_proj_count,
                         ARRAY_AGG(DISTINCT sport) AS sports
                     FROM scan_results WHERE run_date = %s
                 """, [run_date])

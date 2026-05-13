@@ -1158,12 +1158,13 @@ def wow_daily_scan():
         flags          = get_scan_source_flags(run_date)
 
         CAT_KEYS = {
-            "market_verified":   "Market Verified Approved",
-            "model_qualified":   "Model Qualified — PrizePicks",
-            "conditional":       "Conditional",
-            "watch":             "Watch",
-            "reject":            "Reject",
-            "data_insufficient": "Data Insufficient",
+            "market_verified":         "Market Verified Approved",
+            "final_approved_internal": "Final Approved — Internal Projection",
+            "model_qualified":         "Model Qualified — PrizePicks",
+            "conditional":             "Conditional",
+            "watch":                   "Watch",
+            "reject":                  "Reject",
+            "data_insufficient":       "Data Insufficient",
         }
         CAT_REVERSE = {v: k for k, v in CAT_KEYS.items()}
 
@@ -1174,6 +1175,7 @@ def wow_daily_scan():
                 grouped[cat_key].append(_compact_prop(row))
 
         counts = {k: summary_counts.get(cls_name, 0) for k, cls_name in CAT_KEYS.items()}
+        counts["total_final_approved"] = counts["market_verified"] + counts["final_approved_internal"]
 
         def _avail(key):
             return "AVAILABLE" if int(flags.get(key, 0) or 0) > 0 else "NOT_CALLED"
@@ -1191,19 +1193,24 @@ def wow_daily_scan():
         execution_report = {}
         if include_exec:
             execution_report = {
-                "daily_scan_executed":      total_rows > 0,
-                "get_events_called":        int(flags.get("odds_called",   0) or 0) > 0,
-                "get_event_markets_called": int(flags.get("odds_called",   0) or 0) > 0,
-                "get_event_odds_called":    int(flags.get("odds_avail",    0) or 0) > 0,
-                "l5_l10_called":            int(flags.get("logs_called",   0) or 0) > 0,
-                "status_lineups_called":    int(flags.get("status_called", 0) or 0) > 0,
-                "projections_called":       False,
-                "final_approved_count":     counts["market_verified"],
-                "model_qualified_count":    counts["model_qualified"],
-                "watch_count":              counts["watch"],
-                "reject_count":             counts["reject"],
-                "audit_valid_count":        audit_valid_count,
-                "audit_invalid_count":      audit_invalid_count,
+                "daily_scan_executed":            total_rows > 0,
+                "get_events_called":              int(flags.get("odds_called",   0) or 0) > 0,
+                "get_event_markets_called":       int(flags.get("odds_called",   0) or 0) > 0,
+                "get_event_odds_called":          int(flags.get("odds_avail",    0) or 0) > 0,
+                "l5_l10_called":                  int(flags.get("logs_called",   0) or 0) > 0,
+                "status_lineups_called":          int(flags.get("status_called", 0) or 0) > 0,
+                "internal_projection_called":     True,
+                "external_projection_available":  False,
+                "final_approved_count":           counts["total_final_approved"],
+                "market_verified_count":          counts["market_verified"],
+                "final_approved_internal_count":  counts["final_approved_internal"],
+                "model_qualified_count":          counts["model_qualified"],
+                "watch_count":                    counts["watch"],
+                "reject_count":                   counts["reject"],
+                "audit_valid_count":              audit_valid_count,
+                "audit_invalid_count":            audit_invalid_count,
+                "internal_proj_count":            int(flags.get("internal_proj_count", 0) or 0),
+                "missing_proj_count":             int(flags.get("missing_proj_count",  0) or 0),
             }
 
         sports_scanned_db = [s for s in (flags.get("sports") or []) if s]
@@ -1215,24 +1222,25 @@ def wow_daily_scan():
                 execution_notes.append(f"Total props evaluated: {total_rows}")
 
         return jsonify({
-            "ok":                   True,
-            "status":               "completed",
-            "scan_valid":           scan_valid,
-            "run_date":             run_date,
-            "requested_sports":     requested_sports,
-            "scanned_sports":       scanned_sports,
-            "missing_sports":       missing_sports,
-            "source_access_status": source_access_status,
-            "execution_report":     execution_report,
-            "counts":               counts,
-            "market_verified":      grouped["market_verified"],
-            "model_qualified":      grouped["model_qualified"],
-            "conditional":          grouped["conditional"],
-            "watch":                grouped["watch"],
-            "reject":               grouped["reject"],
-            "data_insufficient":    grouped["data_insufficient"],
-            "final_approved_picks": grouped["market_verified"],
-            "execution_notes":      execution_notes,
+            "ok":                       True,
+            "status":                   "completed",
+            "scan_valid":               scan_valid,
+            "run_date":                 run_date,
+            "requested_sports":         requested_sports,
+            "scanned_sports":           scanned_sports,
+            "missing_sports":           missing_sports,
+            "source_access_status":     source_access_status,
+            "execution_report":         execution_report,
+            "counts":                   counts,
+            "market_verified":          grouped["market_verified"],
+            "final_approved_internal":  grouped["final_approved_internal"],
+            "model_qualified":          grouped["model_qualified"],
+            "conditional":              grouped["conditional"],
+            "watch":                    grouped["watch"],
+            "reject":                   grouped["reject"],
+            "data_insufficient":        grouped["data_insufficient"],
+            "final_approved_picks":     grouped["market_verified"] + grouped["final_approved_internal"],
+            "execution_notes":          execution_notes,
         })
 
     except Exception as e:
@@ -1361,6 +1369,11 @@ def _compact_prop(row):
         "failure_paths":     failure_paths[:3],
         "audit_valid":       row.get("audit_valid"),
         "invalid_reason":    row.get("invalid_reason"),
+        "projection_status":      row.get("projection_status"),
+        "projection_value":       float(row["projection_value"]) if row.get("projection_value") is not None else None,
+        "projection_margin":      float(row["projection_margin"]) if row.get("projection_margin") is not None else None,
+        "projection_source":      row.get("projection_source"),
+        "final_approval_blocker": row.get("final_approval_blocker"),
     }
 
 
@@ -1403,12 +1416,13 @@ def scan_results_summary():
 
     # Classification name ↔ response key mapping
     CAT_KEYS = {
-        "market_verified":   "Market Verified Approved",
-        "model_qualified":   "Model Qualified — PrizePicks",
-        "conditional":       "Conditional",
-        "watch":             "Watch",
-        "reject":            "Reject",
-        "data_insufficient": "Data Insufficient",
+        "market_verified":         "Market Verified Approved",
+        "final_approved_internal": "Final Approved — Internal Projection",
+        "model_qualified":         "Model Qualified — PrizePicks",
+        "conditional":             "Conditional",
+        "watch":                   "Watch",
+        "reject":                  "Reject",
+        "data_insufficient":       "Data Insufficient",
     }
     CAT_REVERSE = {v: k for k, v in CAT_KEYS.items()}
 
@@ -1418,9 +1432,12 @@ def scan_results_summary():
         "daily_scan_executed": False, "get_events_called": False,
         "get_event_markets_called": False, "get_event_odds_called": False,
         "l5_l10_called": False, "status_lineups_called": False,
-        "projections_called": False,
-        "final_approved_count": 0, "model_qualified_count": 0,
-        "watch_count": 0, "reject_count": 0,
+        "internal_projection_called": False, "external_projection_available": False,
+        "final_approved_count": 0, "market_verified_count": 0,
+        "final_approved_internal_count": 0,
+        "model_qualified_count": 0, "watch_count": 0, "reject_count": 0,
+        "audit_valid_count": 0, "audit_invalid_count": 0,
+        "internal_proj_count": 0, "missing_proj_count": 0,
     }
 
     try:
@@ -1435,10 +1452,11 @@ def scan_results_summary():
                 "message": f"Scan status is '{scan_status}', not '{status_filter}'",
                 "source_access_status": {},
                 "execution_report": _empty_report,
-                "counts":          {k: 0 for k in CAT_KEYS},
-                "market_verified":  [], "model_qualified": [], "conditional": [],
-                "watch":            [], "reject":          [], "data_insufficient": [],
-                "final_approved_picks": [], "execution_notes": [],
+                "counts":                  {k: 0 for k in CAT_KEYS},
+                "market_verified":          [], "final_approved_internal": [],
+                "model_qualified":          [], "conditional": [],
+                "watch":                    [], "reject": [], "data_insufficient": [],
+                "final_approved_picks":     [], "execution_notes": [],
             })
 
         # Fetch compact rows — enough to fill every category up to limit
@@ -1469,19 +1487,24 @@ def scan_results_summary():
 
         # Execution report (derived from aggregated row data)
         execution_report = {
-            "daily_scan_executed":      total_rows > 0,
-            "get_events_called":        int(flags.get("odds_called",  0) or 0) > 0,
-            "get_event_markets_called": int(flags.get("odds_called",  0) or 0) > 0,
-            "get_event_odds_called":    int(flags.get("odds_avail",   0) or 0) > 0,
-            "l5_l10_called":            int(flags.get("logs_called",  0) or 0) > 0,
-            "status_lineups_called":    int(flags.get("status_called",0) or 0) > 0,
-            "projections_called":       False,
-            "final_approved_count":     counts["market_verified"],
-            "model_qualified_count":    counts["model_qualified"],
-            "watch_count":              counts["watch"],
-            "reject_count":             counts["reject"],
-            "audit_valid_count":        int(flags.get("audit_valid_count",   0) or 0),
-            "audit_invalid_count":      int(flags.get("audit_invalid_count", 0) or 0),
+            "daily_scan_executed":           total_rows > 0,
+            "get_events_called":             int(flags.get("odds_called",  0) or 0) > 0,
+            "get_event_markets_called":      int(flags.get("odds_called",  0) or 0) > 0,
+            "get_event_odds_called":         int(flags.get("odds_avail",   0) or 0) > 0,
+            "l5_l10_called":                 int(flags.get("logs_called",  0) or 0) > 0,
+            "status_lineups_called":         int(flags.get("status_called",0) or 0) > 0,
+            "internal_projection_called":    True,
+            "external_projection_available": False,
+            "final_approved_count":          counts.get("total_final_approved", counts["market_verified"] + counts["final_approved_internal"]),
+            "market_verified_count":         counts["market_verified"],
+            "final_approved_internal_count": counts["final_approved_internal"],
+            "model_qualified_count":         counts["model_qualified"],
+            "watch_count":                   counts["watch"],
+            "reject_count":                  counts["reject"],
+            "audit_valid_count":             int(flags.get("audit_valid_count",   0) or 0),
+            "audit_invalid_count":           int(flags.get("audit_invalid_count", 0) or 0),
+            "internal_proj_count":           int(flags.get("internal_proj_count", 0) or 0),
+            "missing_proj_count":            int(flags.get("missing_proj_count",  0) or 0),
         }
 
         # Execution notes
@@ -1492,21 +1515,24 @@ def scan_results_summary():
         if total_rows > 0:
             execution_notes.append(f"Total props evaluated: {total_rows}")
 
+        counts["total_final_approved"] = counts["market_verified"] + counts["final_approved_internal"]
+
         return jsonify({
-            "ok":                   True,
-            "status":               scan_status,
-            "run_date":             run_date,
-            "source_access_status": source_access_status,
-            "execution_report":     execution_report,
-            "counts":               counts,
-            "market_verified":      grouped["market_verified"],
-            "model_qualified":      grouped["model_qualified"],
-            "conditional":          grouped["conditional"],
-            "watch":                grouped["watch"],
-            "reject":               grouped["reject"],
-            "data_insufficient":    grouped["data_insufficient"],
-            "final_approved_picks": grouped["market_verified"],
-            "execution_notes":      execution_notes,
+            "ok":                       True,
+            "status":                   scan_status,
+            "run_date":                 run_date,
+            "source_access_status":     source_access_status,
+            "execution_report":         execution_report,
+            "counts":                   counts,
+            "market_verified":          grouped["market_verified"],
+            "final_approved_internal":  grouped["final_approved_internal"],
+            "model_qualified":          grouped["model_qualified"],
+            "conditional":              grouped["conditional"],
+            "watch":                    grouped["watch"],
+            "reject":                   grouped["reject"],
+            "data_insufficient":        grouped["data_insufficient"],
+            "final_approved_picks":     grouped["market_verified"] + grouped["final_approved_internal"],
+            "execution_notes":          execution_notes,
         })
     except Exception as e:
         return jsonify({"ok": False, "error": "Database unavailable", "detail": str(e)}), 503
