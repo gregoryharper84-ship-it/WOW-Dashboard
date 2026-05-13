@@ -407,15 +407,16 @@ paths:
     post:
       operationId: runDailyScan
       x-openai-isConsequential: false
-      summary: Run the WOW daily prop scanner
+      summary: Run WOW daily scan and return completed results directly
       description: >
-        Triggers the full WOW data pipeline: pulls today's events and player props from
-        The Odds API (with TheRundown as backup), fetches player game logs, calculates
-        exact-line L5/L10 hit rates and medians, pulls injury/status data, scores each
-        prop using WOW v14.8+ rules, classifies as Market Verified Approved / Model
-        Qualified / Conditional / Watch / Reject / Data Insufficient, saves all results
-        to the database, and returns a structured summary. Pass async=true for a
-        non-blocking call — then retrieve results via getScanResults.
+        Runs the full WOW data pipeline synchronously: pulls today's events and player
+        props from The Odds API (TheRundown as backup), fetches ESPN player game logs,
+        calculates exact-line L5/L10 hit rates and medians, pulls injury/status data,
+        scores each prop using WOW v14.8+ rules, classifies as Market Verified Approved /
+        Model Qualified / Conditional / Watch / Reject / Data Insufficient, saves all
+        results to the database, and returns a compact classified summary directly.
+        Response shape is identical to getScanSummary. Pass async=true to run in
+        background and poll getScanSummary instead.
       requestBody:
         required: false
         content:
@@ -427,7 +428,7 @@ paths:
                   type: array
                   items:
                     type: string
-                  description: "Sports to scan. Default: all (NBA, MLB, NFL, NHL, NCAAB, NCAAF, Soccer, Tennis)"
+                  description: "Sports to scan. Default: all. Example: [\"MLB\", \"WNBA\", \"NHL\"]"
                 environment:
                   type: string
                   enum: [test, live]
@@ -435,69 +436,86 @@ paths:
                 limit_per_sport:
                   type: integer
                   description: "Max props to evaluate per sport. Default: 50"
+                include_execution_report:
+                  type: boolean
+                  description: "Include execution_report block in response. Default: true"
                 async:
                   type: boolean
-                  description: "If true, starts scan in background and returns immediately. Default: false"
+                  description: "If true, starts scan in background and returns immediately with status=started. Default: false"
+                date:
+                  type: string
+                  description: "Target date YYYY-MM-DD (accepted for compatibility, scan always uses today)"
+                mode:
+                  type: string
+                  description: "Scan mode label (accepted for compatibility)"
+                strict_board_lock:
+                  type: boolean
+                  description: "Accepted for compatibility"
+                require_prizepicks_for_final:
+                  type: boolean
+                  description: "Accepted for compatibility"
+                run_manual_l10_if_needed:
+                  type: boolean
+                  description: "Accepted for compatibility"
       responses:
         "200":
-          description: Scan complete — structured results returned
+          description: Completed scan results — compact classified summary
           content:
             application/json:
               schema:
                 type: object
                 properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: string
+                    enum: [completed, started, error]
                   run_date:
                     type: string
-                  run_at:
-                    type: string
-                  sports_scanned:
-                    type: array
-                    items:
-                      type: string
                   source_access_status:
                     type: object
-                    description: Per-sport source availability (AVAILABLE / PARTIAL / FAILED / NOT_CALLED / MISSING)
                     additionalProperties:
                       type: string
-                  market_verified:
-                    type: array
-                    items:
-                      type: object
-                  model_qualified:
-                    type: array
-                    items:
-                      type: object
-                  conditional:
-                    type: array
-                    items:
-                      type: object
-                  watch:
-                    type: array
-                    items:
-                      type: object
-                  reject:
-                    type: array
-                    items:
-                      type: object
-                  data_insufficient:
-                    type: array
-                    items:
-                      type: object
+                  execution_report:
+                    type: object
+                    additionalProperties: true
                   counts:
                     type: object
                     properties:
-                      market_verified:
-                        type: integer
-                      model_qualified:
-                        type: integer
-                      conditional:
-                        type: integer
-                      watch:
-                        type: integer
-                      reject:
-                        type: integer
-                      data_insufficient:
-                        type: integer
+                      market_verified:  {type: integer}
+                      model_qualified:  {type: integer}
+                      conditional:      {type: integer}
+                      watch:            {type: integer}
+                      reject:           {type: integer}
+                      data_insufficient: {type: integer}
+                  market_verified:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  model_qualified:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  conditional:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  watch:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  reject:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  data_insufficient:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
+                  final_approved_picks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CompactProp'
                   execution_notes:
                     type: array
                     items:

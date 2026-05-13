@@ -1,0 +1,246 @@
+Use these exact instructions for Replit.
+
+## Goal
+
+Change `/wow-daily-scan` from:
+
+```json
+{"status":"started","message":"Scan running in background"}
+```
+
+to returning the completed scan results directly.
+
+---
+
+## 1. Open Replit
+
+Open your project:
+
+```text
+create-app-gregoryharper84
+```
+
+Find the Flask backend file. It is usually one of:
+
+```text
+main.py
+app.py
+server.py
+routes.py
+```
+
+---
+
+## 2. Search for this route
+
+Search in Replit for:
+
+```python
+@app.route("/wow-daily-scan"
+```
+
+or:
+
+```python
+wow-daily-scan
+```
+
+You should find something like:
+
+```python
+@app.route("/wow-daily-scan", methods=["POST"])
+def wow_daily_scan():
+    data = request.get_json()
+    start_scan_background(data)
+    return jsonify({
+        "status": "started",
+        "message": "Scan running in background. Check /scan-results for results."
+    })
+```
+
+---
+
+## 3. Replace the route with this
+
+```python
+@app.route("/wow-daily-scan", methods=["POST"])
+def wow_daily_scan():
+    try:
+        data = request.get_json(silent=True) or {}
+
+        result = run_daily_scan(
+            date=data.get("date"),
+            mode=data.get("mode", "DAILY_SPORTSBOOK_SCAN"),
+            sports=data.get("sports", ["MLB", "NBA", "NHL"]),
+            strict_board_lock=data.get("strict_board_lock", False),
+            require_prizepicks_for_final=data.get("require_prizepicks_for_final", True),
+            run_manual_l10_if_needed=data.get("run_manual_l10_if_needed", True),
+            include_execution_report=data.get("include_execution_report", True),
+        )
+
+        if not isinstance(result, dict):
+            result = {
+                "ok": False,
+                "status": "error",
+                "message": "run_daily_scan did not return a dict",
+                "raw_result": str(result)
+            }
+
+        result.setdefault("ok", True)
+        result.setdefault("status", "completed")
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "status": "error",
+            "error": str(e)
+        }), 500
+```
+
+---
+
+## 4. If `run_daily_scan` does not exist
+
+Search for the function that currently performs the scan. It may be named:
+
+```python
+run_scan
+daily_scan
+execute_scan
+scan_daily_board
+run_wow_scan
+run_scheduled_scan
+```
+
+Then replace this part:
+
+```python
+result = run_daily_scan(...)
+```
+
+with your real scan function name.
+
+Example:
+
+```python
+result = run_wow_scan(data)
+```
+
+or:
+
+```python
+result = execute_scan(data)
+```
+
+---
+
+## 5. Make sure the scan returns this shape
+
+At the end of your scan function, return:
+
+```python
+return {
+    "ok": True,
+    "status": "completed",
+    "run_date": scan_date,
+    "source_access_status": source_access_status,
+    "execution_report": execution_report,
+    "market_verified": market_verified,
+    "model_qualified": model_qualified,
+    "conditional": conditional,
+    "watch": watch,
+    "reject": reject,
+    "data_insufficient": data_insufficient,
+    "final_approved_picks": final_approved_picks,
+    "execution_notes": execution_notes
+}
+```
+
+---
+
+## 6. Keep `/scan-results` if you want
+
+Do **not** delete `/scan-results`. It can stay as backup.
+
+But `/wow-daily-scan` should now return completed results directly.
+
+---
+
+## 7. Update GPT Action schema
+
+Replace the `/wow-daily-scan` path with:
+
+```yaml
+  /wow-daily-scan:
+    post:
+      operationId: runWowDailyScan
+      summary: Run WOW daily scan and return completed results
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Completed WOW scan results
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+```
+
+---
+
+## 8. Test in Custom GPT
+
+Call:
+
+```json
+{
+  "date": "2026-05-13",
+  "mode": "DAILY_SPORTSBOOK_SCAN",
+  "sports": ["MLB", "WNBA", "NHL", "TENNIS", "SOCCER", "MMA"],
+  "strict_board_lock": false,
+  "require_prizepicks_for_final": false,
+  "run_manual_l10_if_needed": true,
+  "include_execution_report": true
+}
+```
+
+---
+
+## 9. Success response should look like this
+
+```json
+{
+  "ok": true,
+  "status": "completed",
+  "run_date": "2026-05-13",
+  "counts": {
+    "market_verified": 0,
+    "model_qualified": 15,
+    "conditional": 3,
+    "watch": 6,
+    "reject": 133
+  },
+  "source_access_status": {
+    "injury_status": "AVAILABLE",
+    "market_odds": "AVAILABLE",
+    "player_logs": "AVAILABLE"
+  },
+  "market_verified": [],
+  "model_qualified": [],
+  "conditional": [],
+  "watch": [],
+  "reject": [],
+  "final_approved_picks": [],
+  "execution_notes": []
+}
+```
+
+That is the fix. Once `/wow-daily-scan` returns this directly, your scheduled task can summarize real props instead of only seeing “scan started.”

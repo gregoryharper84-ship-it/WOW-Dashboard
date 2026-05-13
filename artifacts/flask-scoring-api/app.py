@@ -1068,27 +1068,44 @@ def leaderboard():
 @require_api_key
 def wow_daily_scan():
     """
-    Trigger the WOW daily prop scanner.
-    Pulls live events/props, calculates L5/L10 stats, scores and classifies
-    each prop, saves results to scan_results table, and returns a summary.
+    Run the WOW daily prop scanner and return completed results directly.
+
+    Runs synchronously by default — scans all requested sports, saves full
+    results to the scan_results table, then returns a compact classified
+    summary (same shape as /scan-results/summary) so GPT stays within
+    response size limits.
+
+    Pass async=true to run in background instead (response: {status: started}).
+
+    Accepted params:
+      sports              — list of sport names (default: all)
+      environment         — "live" or "test" (default: live)
+      limit_per_sport     — max props per sport (default: 50)
+      include_execution_report — include execution_report block (default: true)
+      async               — run in background, return immediately (default: false)
+      date / mode / strict_board_lock / require_prizepicks_for_final /
+      run_manual_l10_if_needed — accepted for compatibility, ignored internally
     """
-    import threading
     try:
         from jobs.wow_daily_scan import run_scan
     except Exception as e:
-        return jsonify({"error": f"Scanner import failed: {e}"}), 500
+        return jsonify({"ok": False, "error": f"Scanner import failed: {e}"}), 500
 
     data = request.get_json(silent=True) or {}
-    sports_param = data.get("sports") or None
-    environment  = data.get("environment", "live")
-    limit        = int(data.get("limit_per_sport", 50))
-    async_mode   = bool(data.get("async", True))   # default True — sync scan times out gunicorn workers
+    sports_param  = data.get("sports") or None
+    environment   = data.get("environment", "live")
+    limit         = int(data.get("limit_per_sport", 50))
+    async_mode    = bool(data.get("async", False))   # default False — return results directly
+    include_exec  = data.get("include_execution_report", True)
 
     try:
         from services.status import get_injuries  # noqa: F401 — validate imports work
     except Exception as e:
-        return jsonify({"error": f"Service import failed: {e}"}), 500
+        return jsonify({"ok": False, "error": f"Service import failed: {e}"}), 500
 
+    # -----------------------------------------------------------------------
+    # Async mode — fire and forget, let caller poll /scan-results/summary
+    # -----------------------------------------------------------------------
     if async_mode:
         def _run():
             try:
@@ -1098,17 +1115,106 @@ def wow_daily_scan():
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         return jsonify({
-            "status": "started",
-            "message": "Scan running in background. Check /scan-results for results.",
+            "ok":      True,
+            "status":  "started",
+            "message": "Scan running in background. Poll /scan-results/summary for results.",
             "sports":  sports_param,
             "environment": environment,
         })
 
+    # -----------------------------------------------------------------------
+    # Synchronous mode — run scan, then return compact summary from DB
+    # -----------------------------------------------------------------------
     try:
-        result = run_scan(sports=sports_param, environment=environment, limit_per_sport=limit)
-        return jsonify(result)
+        run_scan(sports=sports_param, environment=environment, limit_per_sport=limit)
     except Exception as e:
-        return jsonify({"error": "Scan failed", "detail": str(e)}), 500
+        return jsonify({"ok": False, "status": "error", "error": str(e)}), 500
+
+    # Build compact response from what was just saved to the DB
+    try:
+        from storage.results import get_scan_summary, get_compact_scan_rows, get_scan_source_flags
+        from datetime import date as _date
+        run_date = _date.today().isoformat()
+
+        summary_counts = get_scan_summary(run_date)
+        total_rows     = sum(summary_counts.values())
+        rows           = get_compact_scan_rows(run_date, limit=10 * 6)
+        flags          = get_scan_source_flags(run_date)
+
+        CAT_KEYS = {
+            "market_verified":   "Market Verified Approved",
+            "model_qualified":   "Model Qualified — PrizePicks",
+            "conditional":       "Conditional",
+            "watch":             "Watch",
+            "reject":            "Reject",
+            "data_insufficient": "Data Insufficient",
+        }
+        CAT_REVERSE = {v: k for k, v in CAT_KEYS.items()}
+
+        grouped = {k: [] for k in CAT_KEYS}
+        for row in rows:
+            cat_key = CAT_REVERSE.get(row.get("classification", ""))
+            if cat_key and len(grouped[cat_key]) < 10:
+                grouped[cat_key].append(_compact_prop(row))
+
+        counts = {k: summary_counts.get(cls_name, 0) for k, cls_name in CAT_KEYS.items()}
+
+        def _avail(key):
+            return "AVAILABLE" if int(flags.get(key, 0) or 0) > 0 else "NOT_CALLED"
+
+        source_access_status = {
+            "market_odds":    _avail("odds_avail"),
+            "player_logs":    _avail("logs_avail"),
+            "injury_status":  _avail("status_avail"),
+            "rundown_backup": _avail("rundown_avail"),
+        }
+
+        execution_report = {}
+        if include_exec:
+            execution_report = {
+                "daily_scan_executed":      total_rows > 0,
+                "get_events_called":        int(flags.get("odds_called",   0) or 0) > 0,
+                "get_event_markets_called": int(flags.get("odds_called",   0) or 0) > 0,
+                "get_event_odds_called":    int(flags.get("odds_avail",    0) or 0) > 0,
+                "l5_l10_called":            int(flags.get("logs_called",   0) or 0) > 0,
+                "status_lineups_called":    int(flags.get("status_called", 0) or 0) > 0,
+                "projections_called":       False,
+                "final_approved_count":     counts["market_verified"],
+                "model_qualified_count":    counts["model_qualified"],
+                "watch_count":              counts["watch"],
+                "reject_count":             counts["reject"],
+            }
+
+        sports_scanned = [s for s in (flags.get("sports") or []) if s]
+        execution_notes = []
+        if sports_scanned:
+            execution_notes.append(f"Sports scanned: {', '.join(sorted(sports_scanned))}")
+        if total_rows > 0:
+            execution_notes.append(f"Total props evaluated: {total_rows}")
+
+        return jsonify({
+            "ok":                   True,
+            "status":               "completed",
+            "run_date":             run_date,
+            "source_access_status": source_access_status,
+            "execution_report":     execution_report,
+            "counts":               counts,
+            "market_verified":      grouped["market_verified"],
+            "model_qualified":      grouped["model_qualified"],
+            "conditional":          grouped["conditional"],
+            "watch":                grouped["watch"],
+            "reject":               grouped["reject"],
+            "data_insufficient":    grouped["data_insufficient"],
+            "final_approved_picks": grouped["market_verified"],
+            "execution_notes":      execution_notes,
+        })
+
+    except Exception as e:
+        return jsonify({
+            "ok":     False,
+            "status": "error",
+            "error":  f"Scan completed but summary failed: {e}",
+        }), 500
 
 
 @app.route("/scan-results", methods=["GET"])
