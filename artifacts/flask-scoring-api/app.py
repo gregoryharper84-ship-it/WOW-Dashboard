@@ -1251,6 +1251,246 @@ def wow_daily_scan():
         }), 500
 
 
+@app.route("/final-lock", methods=["POST"])
+@require_api_key
+def final_lock():
+    """
+    POST /final-lock — WOW v14.9.1 Final Lock gate.
+
+    Accepts per-prop inputs and runs the full approval decision tree:
+      1. status_confirmed gate   → reject on fail
+      2. line_verified gate      → reject on fail
+      3. L10 data gate           → downgrade to MODEL_QUALIFIED on fail
+      4. Projection resolution   → external if provided, else internal model
+      5. Projection margin gate  → downgrade to WATCH if margin < 5%
+      6. Market sanity gate      → downgrade to WATCH on fail
+      7. Approve: FINAL APPROVED — INTERNAL PROJECTION
+
+    Optionally saves result to scan_results table (saved_to_lobby).
+    """
+    from jobs.wow_daily_scan import compute_internal_projection
+    from storage.results import save_scan_result
+    from datetime import date
+
+    body = request.get_json(silent=True) or {}
+
+    # --- Required identity fields ---
+    player     = body.get("player", "")
+    sport      = body.get("sport",  "")
+    prop       = body.get("prop",   "")
+    side       = (body.get("side") or "MORE").upper()
+    line       = body.get("line")
+
+    if not player or not sport or not prop or line is None:
+        return jsonify({
+            "ok": False,
+            "error": "Missing required fields: player, sport, prop, line",
+        }), 422
+
+    try:
+        line = float(line)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "'line' must be a number"}), 422
+
+    # --- Gate inputs ---
+    l5_values        = body.get("l5_values")  or []
+    l10_values       = body.get("l10_values") or []
+    recent_avg       = body.get("recent_avg")
+    l10_median       = body.get("l10_median")
+    role_score       = body.get("role_score")
+    status_confirmed = body.get("status_confirmed", False)
+    line_verified    = body.get("line_verified",    False)
+    market_sanity    = body.get("market_sanity",    False)
+    market_gap       = body.get("market_gap")
+    ext_projection   = body.get("external_projection")   # numeric or null
+    environment      = body.get("environment", "live")
+
+    REQUIRED_MARGIN = 5.0
+
+    def _reject(code, detail=None):
+        return {
+            "ok":             False,
+            "classification": "REJECT",
+            "blocker_code":   code,
+            "blocker_detail": detail or code,
+            "projection_status":  None,
+            "projection_value":   None,
+            "projection_margin":  None,
+            "projection_source":  None,
+            "final_approval_blocker": code,
+            "saved_to_lobby": False,
+        }
+
+    def _downgrade(tier, code, detail=None):
+        return {
+            "ok":             True,
+            "classification": tier,
+            "blocker_code":   code,
+            "blocker_detail": detail or code,
+            "projection_status":  proj_status,
+            "projection_value":   proj_value,
+            "projection_margin":  proj_margin,
+            "projection_source":  proj_source,
+            "final_approval_blocker": code,
+            "saved_to_lobby": False,
+        }
+
+    # Projection placeholders (populated below)
+    proj_status = None
+    proj_value  = None
+    proj_margin = None
+    proj_source = None
+
+    # ---- Gate 1: Official status ----
+    if not status_confirmed:
+        return jsonify({**_reject("STATUS_NOT_CONFIRMED",
+            "Player status has not been confirmed as active/available")}), 200
+
+    # ---- Gate 2: Line verified ----
+    if not line_verified:
+        return jsonify({**_reject("LINE_NOT_VERIFIED",
+            "Line could not be verified against an active market")}), 200
+
+    # ---- Gate 3: L10 data ----
+    if not l10_values or l10_median is None:
+        proj_status = "MISSING"
+        return jsonify({**_downgrade("MODEL_QUALIFIED", "L10_UNVERIFIED",
+            "l10_values or l10_median not provided — cannot compute projection")}), 200
+
+    # ---- Gate 4: Projection resolution ----
+    log_stats = {
+        "l10_median":      l10_median,
+        "l10_avg":         recent_avg if recent_avg is not None
+                           else (sum(l10_values) / len(l10_values) if l10_values else None),
+        "games_available": len(l10_values),
+        "raw_l5":          [{"stat": float(v)} for v in l5_values],
+        "raw_l10":         [{"stat": float(v)} for v in l10_values],
+    }
+
+    if ext_projection is not None:
+        # External projection provided — use it directly
+        try:
+            proj_value = float(ext_projection)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False,
+                            "error": "'external_projection' must be a number or null"}), 422
+        proj_status = "EXTERNAL"
+        proj_source = "external_api"
+        if line > 0:
+            proj_margin = round(
+                (proj_value - line) / line * 100 if side == "MORE"
+                else (line - proj_value) / line * 100,
+                2,
+            )
+        else:
+            proj_margin = 0.0
+    else:
+        # Internal model projection
+        result = compute_internal_projection(log_stats, line, side)
+        proj_status = result["projection_status"]
+        proj_value  = result["projection_value"]
+        proj_margin = result["projection_margin"]
+        proj_source = result["projection_source"]
+
+        if proj_status == "MISSING":
+            return jsonify({**_downgrade("MODEL_QUALIFIED", "PROJECTION_MISSING",
+                result["final_approval_blocker"])}), 200
+
+    # ---- Gate 5: Projection margin ----
+    if proj_margin is None or proj_margin < REQUIRED_MARGIN:
+        thin_msg = (
+            f"projection margin {proj_margin:.1f}% < required {REQUIRED_MARGIN:.0f}%"
+            if proj_margin is not None else "projection margin unavailable"
+        )
+        return jsonify({**_downgrade("WATCH", "PROJECTION_MARGIN_TOO_THIN", thin_msg)}), 200
+
+    # ---- Gate 6: Market sanity ----
+    if not market_sanity:
+        return jsonify({**_downgrade("WATCH", "MARKET_SANITY_MISSING",
+            "Market sanity check not satisfied — line may be mispriced or stale")}), 200
+
+    # ---- All gates passed → Final Approved ----
+    classification = "FINAL APPROVED — INTERNAL PROJECTION"
+
+    # Save to lobby (scan_results table)
+    saved = False
+    try:
+        wow_score, signal, message = compute_wow_score(
+            {
+                "l5_hit_rate":  sum(1 for v in l5_values  if (v > line if side == "MORE" else v < line)) / len(l5_values)  if l5_values  else None,
+                "l10_hit_rate": sum(1 for v in l10_values if (v > line if side == "MORE" else v < line)) / len(l10_values) if l10_values else None,
+                "recent_avg":   recent_avg,
+                "median_edge":  round((l10_median - line) / line, 4) if l10_median and line else None,
+                "injury_flag":  0,
+                "role_score":   role_score,
+            },
+            player, prop, side, line,
+        )
+        save_scan_result({
+            "run_date":     date.today().isoformat(),
+            "sport":        sport,
+            "player":       player,
+            "prop":         prop,
+            "line":         line,
+            "side":         side,
+            "game_date":    date.today().isoformat(),
+            "wow_score":    wow_score,
+            "signal":       signal,
+            "message":      message,
+            "classification": classification,
+            "environment":  environment,
+            "source_odds":   "NOT_CALLED",
+            "source_rundown": "NOT_CALLED",
+            "source_logs":   "MANUAL_INPUT",
+            "source_status": "CONFIRMED" if status_confirmed else "NOT_CONFIRMED",
+            "l5_hit_rate":  log_stats["raw_l5"] and sum(1 for r in log_stats["raw_l5"]  if (r["stat"] > line if side == "MORE" else r["stat"] < line)) / len(log_stats["raw_l5"]),
+            "l10_hit_rate": log_stats["raw_l10"] and sum(1 for r in log_stats["raw_l10"] if (r["stat"] > line if side == "MORE" else r["stat"] < line)) / len(log_stats["raw_l10"]),
+            "l10_median":   l10_median,
+            "l10_avg":      log_stats["l10_avg"],
+            "raw_features": {"role_score": role_score, "market_gap": market_gap},
+            "notes":        f"final-lock endpoint; market_gap={market_gap}; role_score={role_score}",
+            "raw_l5":       log_stats["raw_l5"],
+            "raw_l10":      log_stats["raw_l10"],
+            "games_available":      len(l10_values),
+            "sample_scope":         "manual_input",
+            "cross_season_used":    False,
+            "manual_fallback_used": False,
+            "audit_valid":          True,
+            "invalid_reason":       None,
+            "projection_status":    proj_status,
+            "projection_value":     proj_value,
+            "projection_margin":    proj_margin,
+            "projection_source":    proj_source,
+            "final_approval_blocker": None,
+        })
+        saved = True
+    except Exception as save_err:
+        saved = False
+
+    return jsonify({
+        "ok":                    True,
+        "classification":        classification,
+        "player":                player,
+        "sport":                 sport,
+        "prop":                  prop,
+        "side":                  side,
+        "line":                  line,
+        "projection_status":     proj_status,
+        "projection_value":      proj_value,
+        "projection_margin":     proj_margin,
+        "projection_source":     proj_source,
+        "final_approval_blocker": None,
+        "gates_passed": {
+            "status_confirmed": True,
+            "line_verified":    True,
+            "l10_verified":     True,
+            "projection_ok":    True,
+            "market_sanity":    True,
+        },
+        "saved_to_lobby": saved,
+    }), 200
+
+
 @app.route("/scan-results", methods=["GET"])
 @require_api_key
 def scan_results():

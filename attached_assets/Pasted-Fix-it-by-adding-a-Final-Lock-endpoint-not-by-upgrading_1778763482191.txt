@@ -1,0 +1,101 @@
+Fix it by adding a **Final Lock endpoint**, not by upgrading `/score-prop`.
+
+### Add endpoint
+
+```http
+POST /final-lock
+```
+
+It should require:
+
+```json
+{
+  "player": "Test Player",
+  "sport": "NBA",
+  "prop": "assists",
+  "side": "MORE",
+  "line": 2.5,
+  "l5_values": [3,6,4,3,5],
+  "l10_values": [3,4,5,2,4,3,6,4,3,5],
+  "recent_avg": 3.9,
+  "l10_median": 4,
+  "role_score": 0.9,
+  "status_confirmed": true,
+  "line_verified": true,
+  "market_sanity": true,
+  "market_gap": 1.0,
+  "external_projection": null
+}
+```
+
+### Final Lock logic
+
+```python
+if not status_confirmed:
+    reject("STATUS_NOT_CONFIRMED")
+
+elif not line_verified:
+    reject("LINE_NOT_VERIFIED")
+
+elif not l10_values or l10_median is None:
+    downgrade("MODEL_QUALIFIED", "L10_UNVERIFIED")
+
+elif external_projection is not None:
+    projection = external_projection
+    projection_status = "EXTERNAL"
+
+else:
+    projection = compute_internal_projection(log_stats, line, side)
+    projection_status = "INTERNAL"
+
+if projection is None:
+    downgrade("MODEL_QUALIFIED", "PROJECTION_MISSING")
+
+elif projection_margin < required_margin:
+    downgrade("WATCH", "PROJECTION_MARGIN_TOO_THIN")
+
+elif not market_sanity:
+    downgrade("WATCH", "MARKET_SANITY_MISSING")
+
+else:
+    approve("FINAL APPROVED — INTERNAL PROJECTION")
+```
+
+### Test command
+
+```bash
+curl -X POST https://YOUR-REPLIT-URL/final-lock \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_KEY" \
+  -d '{
+    "player": "Test Player",
+    "sport": "NBA",
+    "prop": "assists",
+    "side": "MORE",
+    "line": 2.5,
+    "l5_values": [3,6,4,3,5],
+    "l10_values": [3,4,5,2,4,3,6,4,3,5],
+    "recent_avg": 3.9,
+    "l10_median": 4,
+    "role_score": 0.9,
+    "status_confirmed": true,
+    "line_verified": true,
+    "market_sanity": true,
+    "market_gap": 1.0,
+    "external_projection": null,
+    "environment": "test"
+  }'
+```
+
+### Pass response
+
+```json
+{
+  "classification": "FINAL APPROVED — INTERNAL PROJECTION",
+  "projection_status": "INTERNAL",
+  "projection_source": "internal_l10_model",
+  "saved_to_lobby": true
+}
+```
+
+That’s the clean fix: **scoreProp = support score**, **final-lock = actual approval gate**.
