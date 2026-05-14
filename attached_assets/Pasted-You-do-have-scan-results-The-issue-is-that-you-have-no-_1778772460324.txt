@@ -1,0 +1,150 @@
+You **do have scan results**. The issue is that you have **no final approved / Market Verified results** showing.
+
+From the last real payload:
+
+```text
+status: completed
+market_verified: 0
+model_qualified: 15
+conditional: 3
+watch: 6
+reject: 133
+data_insufficient: 0
+```
+
+So the scan worked. It found **15 Model Qualified props**, but your output layer is likely only displaying `final_approved_picks` or `market_verified`, which are empty.
+
+## Why it looks like “no results”
+
+There are three likely causes:
+
+### 1. `final_approved_picks` is empty by design
+
+Your engine separates:
+
+* `market_verified`
+* `model_qualified`
+* `conditional`
+* `watch`
+* `reject`
+* `final_approved_picks`
+
+Your schema supports all of those arrays separately. 
+
+If your frontend/daily task is only reading:
+
+```text
+final_approved_picks
+```
+
+then it will show **nothing**, even though `model_qualified` has 15 items.
+
+### 2. Model Qualified is not being promoted into the playable card
+
+Under your rules, **Market Verified** requires sportsbook/book, line, price, timestamp, implied probability, model probability, edge, and Kelly. **Model Qualified — PrizePicks** can still be valid when the board/stat path passes but sportsbook price/Kelly is unavailable. 
+
+So if the backend only treats `market_verified` as “final,” it will ignore the 15 Model Qualified props.
+
+### 3. The summary endpoint may be returning counts but not item details
+
+The scan summary gave counts, but the previous response did not list player names/props. That usually means either:
+
+```text
+/scan-results/summary
+```
+
+is returning counts only, or the GPT prompt summarized counts instead of printing arrays.
+
+## The correct interpretation
+
+Your scan result should be read like this:
+
+```text
+No Market Verified props.
+15 Model Qualified props.
+3 Conditional.
+6 Watch.
+133 Rejected.
+0 Data Insufficient.
+```
+
+That is not “no results.” That is a valid scan with a qualified pool.
+
+## What to fix in Replit
+
+Add a separate field so the frontend/GPT has a clean playable section:
+
+```json
+"playable_card": [
+  ...market_verified,
+  ...model_qualified
+]
+```
+
+Do **not** rename all Model Qualified as Market Verified. Keep the labels honest.
+
+Use this rule:
+
+```text
+playable_card = market_verified + model_qualified
+final_approved_picks = market_verified only, unless final mode explicitly allows Model Qualified as final playable props
+```
+
+Or better:
+
+```json
+{
+  "market_verified": [],
+  "model_qualified": [],
+  "playable_card": [],
+  "final_approved_picks": []
+}
+```
+
+## Test this next
+
+Call:
+
+```text
+getScanResultsSummary with category=model_qualified and limit=15
+```
+
+You want actual prop objects like:
+
+```json
+{
+  "player": "",
+  "sport": "",
+  "prop": "",
+  "side": "",
+  "line": "",
+  "final_label": "Model Qualified",
+  "reason": ""
+}
+```
+
+If that returns only counts, your summary endpoint needs to return compact item details.
+
+## Best Replit patch
+
+```text
+Update /scan-results/summary so it always returns compact item details for:
+- market_verified
+- model_qualified
+- conditional
+- watch
+- reject
+- data_insufficient
+- final_approved_picks
+
+Also add:
+- playable_card = market_verified + model_qualified
+- playable_count = len(playable_card)
+
+Limit each category to the requested limit.
+
+Each prop item should include:
+player, sport, prop, side, line, book/platform, odds, model_probability, implied_probability, edge, l5_hit_rate, l10_hit_rate, l10_median, final_label, reason, failure_paths max 3.
+```
+
+Bottom line: **the scan is producing results. Your display/final-routing layer is hiding them because it’s focused on `final_approved_picks` or `market_verified`, while the real usable pool is currently in `model_qualified`.**

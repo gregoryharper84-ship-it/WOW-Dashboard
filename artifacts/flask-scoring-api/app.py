@@ -1176,6 +1176,7 @@ def wow_daily_scan():
 
         counts = {k: summary_counts.get(cls_name, 0) for k, cls_name in CAT_KEYS.items()}
         counts["total_final_approved"] = counts["market_verified"] + counts["final_approved_internal"]
+        counts["playable_count"]       = counts["total_final_approved"] + counts["model_qualified"]
 
         def _avail(key):
             return "AVAILABLE" if int(flags.get(key, 0) or 0) > 0 else "NOT_CALLED"
@@ -1240,6 +1241,7 @@ def wow_daily_scan():
             "reject":                   grouped["reject"],
             "data_insufficient":        grouped["data_insufficient"],
             "final_approved_picks":     grouped["market_verified"] + grouped["final_approved_internal"],
+            "playable_card":            grouped["market_verified"] + grouped["final_approved_internal"] + grouped["model_qualified"],
             "execution_notes":          execution_notes,
         })
 
@@ -1696,7 +1698,8 @@ def scan_results_summary():
                 "market_verified":          [], "final_approved_internal": [],
                 "model_qualified":          [], "conditional": [],
                 "watch":                    [], "reject": [], "data_insufficient": [],
-                "final_approved_picks":     [], "execution_notes": [],
+                "final_approved_picks":     [], "playable_card": [],
+                "playable_count":           0, "execution_notes": [],
             })
 
         # Fetch compact rows — enough to fill every category up to limit
@@ -1756,6 +1759,7 @@ def scan_results_summary():
             execution_notes.append(f"Total props evaluated: {total_rows}")
 
         counts["total_final_approved"] = counts["market_verified"] + counts["final_approved_internal"]
+        counts["playable_count"]       = counts["total_final_approved"] + counts["model_qualified"]
 
         return jsonify({
             "ok":                       True,
@@ -1772,6 +1776,8 @@ def scan_results_summary():
             "reject":                   grouped["reject"],
             "data_insufficient":        grouped["data_insufficient"],
             "final_approved_picks":     grouped["market_verified"] + grouped["final_approved_internal"],
+            "playable_card":            grouped["market_verified"] + grouped["final_approved_internal"] + grouped["model_qualified"],
+            "playable_count":           counts["total_final_approved"] + counts["model_qualified"],
             "execution_notes":          execution_notes,
         })
     except Exception as e:

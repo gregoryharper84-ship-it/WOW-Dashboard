@@ -520,12 +520,14 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
             "final_approved_internal": len(final_approved_internal),
             "total_final_approved":    total_final,
             "model_qualified":         len(model_qualified),
+            "playable_count":          total_final + len(model_qualified),
             "conditional":             len(conditional),
             "watch":                   len(watch_list),
             "reject":                  len(reject_list),
             "data_insufficient":       len(data_insufficient),
             "no_play":                 len(no_play_list),
         },
+        "playable_card":   market_verified + final_approved_internal + model_qualified,
         "execution_notes": execution_notes,
     }
 
