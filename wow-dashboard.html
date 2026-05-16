@@ -149,6 +149,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
   <div class="chip" id="chip-espn"><div class="cdot"></div>ESPN</div>
   <div class="chip" id="chip-bdl"><div class="cdot"></div>BallDontLie</div>
   <div class="chip" id="chip-replit"><div class="cdot"></div>WOW Scorer</div>
+  <div class="chip ok" id="chip-mlb"><div class="cdot"></div>MLB Stats API</div>
+  <div class="chip ok" id="chip-nhl"><div class="cdot"></div>NHL Stats API</div>
 </div>
 
 <!-- TABS -->
@@ -421,7 +423,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 <script>
 // ── Config ──
 const KEYS={rundown:'6f00cf9201adfd3026defd4a1808d7400ec441955647efe3d7eade517d4cdc74',odds:'311bae3d2356b258e27750224a9e5fcf',bdl:'0b3cae52-e907-4abb-8670-d54502bc373c',replit:'j|nNZo*[uWj%EIH[0Y:yNjhsKp:iBqK|'};
-const EP={rundown:'https://therundown.io/api/v2',odds:'https://api.the-odds-api.com/v4',espn:'https://site.api.espn.com/apis/site/v2/sports',bdl:'https://api.balldontlie.io/v1',replit:'https://create-app-gregoryharper84.replit.app'};
+const EP={rundown:'https://therundown.io/api/v2',odds:'https://api.the-odds-api.com/v4',espn:'https://site.api.espn.com/apis/site/v2/sports',bdl:'https://api.balldontlie.io/v1',replit:'https://create-app-gregoryharper84.replit.app',mlb:'https://statsapi.mlb.com/api/v1',nhl:'https://api-web.nhle.com/v1'};
 const ESPN_P={MLB:'baseball/mlb',NBA:'basketball/nba',NHL:'hockey/nhl',WNBA:'basketball/wnba',NFL:'americanfootball/nfl',soccer:'soccer/usa.1'};
 const ODDS_K={MLB:'baseball_mlb',NBA:'basketball_nba',NHL:'icehockey_nhl',WNBA:'basketball_wnba',NFL:'americanfootball_nfl'};
 const SPORT_IDS={MLB:3,NBA:4,NFL:1,NHL:6,WNBA:8,soccer:7};
@@ -547,7 +549,94 @@ async function loadBoard(){
 async function checkESPN(){await espnSlate(document.getElementById('boardSport').value,document.getElementById('boardResults'),false);}
 
 // ══════════════════════════════════
-// AUTO ENGINE
+// FREE STATS APIs — Player Game Logs
+// ══════════════════════════════════
+
+// MLB Official API — free, no key
+async function getMLBPlayerLog(playerId, numGames=10){
+  try{
+    const r=await fx(`${EP.mlb}/people/${playerId}/stats?stats=gameLog&season=2026&gameType=R&group=hitting,pitching&limit=${numGames}`,{},8000);
+    if(!r.ok)return null;
+    const d=await r.json();
+    return d.stats||[];
+  }catch(e){return null;}
+}
+
+async function searchMLBPlayer(name){
+  try{
+    const r=await fx(`${EP.mlb}/people/search?names=${encodeURIComponent(name)}&active=true`,{},6000);
+    if(!r.ok)return null;
+    const d=await r.json();
+    return d.people?.[0]||null;
+  }catch(e){return null;}
+}
+
+async function getMLBRoster(teamId){
+  try{
+    const r=await fx(`${EP.mlb}/teams/${teamId}/roster?rosterType=active&season=2026`,{},6000);
+    if(!r.ok)return null;
+    const d=await r.json();
+    return d.roster||[];
+  }catch(e){return null;}
+}
+
+async function getMLBScheduleWithTeams(){
+  try{
+    const today=new Date().toISOString().split('T')[0];
+    const r=await fx(`${EP.mlb}/schedule?sportId=1&date=${today}&hydrate=team,lineScore,probablePitcher`,{},8000);
+    if(!r.ok)return null;
+    const d=await r.json();
+    return d.dates?.[0]?.games||[];
+  }catch(e){return null;}
+}
+
+// NHL Official API — free, no key
+async function getNHLPlayerLog(playerId, season='20252026'){
+  try{
+    const r=await fx(`${EP.nhl}/player/${playerId}/game-log/${season}/2`,{},8000);
+    if(!r.ok)return null;
+    const d=await r.json();
+    return d.gameLog||[];
+  }catch(e){return null;}
+}
+
+async function getNHLRoster(teamAbbr){
+  try{
+    const r=await fx(`${EP.nhl}/roster/${teamAbbr}/current`,{},6000);
+    if(!r.ok)return null;
+    const d=await r.json();
+    return [...(d.forwards||[]),(d.defensemen||[]),(d.goalies||[])].flat();
+  }catch(e){return null;}
+}
+
+async function getNHLScheduleToday(){
+  try{
+    const today=new Date().toISOString().split('T')[0];
+    const r=await fx(`${EP.nhl}/schedule/${today}`,{},6000);
+    if(!r.ok)return null;
+    const d=await r.json();
+    return d.gameWeek?.[0]?.games||[];
+  }catch(e){return null;}
+}
+
+// Compute L5/L10 hit rates and recent avg for a stat from game logs
+function computeHitRates(logs, statKey, line, side='MORE'){
+  if(!logs||logs.length===0)return null;
+  const vals=logs.map(g=>parseFloat(g[statKey]||0)).filter(v=>!isNaN(v));
+  if(!vals.length)return null;
+  const l5=vals.slice(0,5);const l10=vals.slice(0,10);
+  const hit=(arr,ln,sd)=>arr.filter(v=>sd==='MORE'?v>ln:v<ln).length/arr.length;
+  return{
+    recent_avg:vals.slice(0,5).reduce((a,b)=>a+b,0)/Math.min(vals.length,5),
+    l5_hit_rate:l5.length?hit(l5,line,side):null,
+    l10_hit_rate:l10.length?hit(l10,line,side):null,
+    l5_median:l5.length?[...l5].sort((a,b)=>a-b)[Math.floor(l5.length/2)]:null,
+    sample:vals.slice(0,10)
+  };
+}
+
+// ══════════════════════════════════
+// AUTO ENGINE — Real Stats Version
 // ══════════════════════════════════
 async function runAutoEngine(){
   const sports=Array.from(document.getElementById('eng_sports').selectedOptions).map(o=>o.value);
@@ -559,32 +648,30 @@ async function runAutoEngine(){
   resEl.innerHTML='';logEl.innerHTML='';
   const log=(msg,t='')=>{logEl.innerHTML+=`<span class="${t?'o'+t:''}">${msg}\n</span>`;logEl.scrollTop=logEl.scrollHeight;};
 
-  log('═══ WOW AUTO-PROP ENGINE STARTING ═══','h');
+  log('═══ WOW AUTO-PROP ENGINE v2 — REAL STATS ═══','h');
   log(`Sports: ${sports.join(', ')} | Max: ${maxP} | Min Tier: ${minTier}`);
 
-  let candidates=[];
+  let allCandidates=[];
+
   for(const sport of sports){
-    log(`\n⟳ Scanning ${sport}...`,'i');
-    try{
-      const r=await fx(`${EP.espn}/${ESPN_P[sport]||'baseball/mlb'}/scoreboard`);
-      if(!r.ok)throw new Error(r.status);
-      const data=await r.json();chip('espn','ok');
-      const evs=data.events||[];
-      log(`✓ ${sport}: ${evs.length} games`);
-      evs.forEach(ev=>{
-        const comp=ev.competitions?.[0];const teams=comp?.competitors||[];
-        const away=teams.find(t=>t.homeAway==='away')?.team?.displayName||'Away';
-        const home=teams.find(t=>t.homeAway==='home')?.team?.displayName||'Home';
-        const status=comp?.status?.type?.description||'Scheduled';
-        if(['Final','Postponed','Cancelled'].includes(status))return;
-        candidates.push(...genCandidates(sport,away,home));
-      });
-    }catch(e){log(`⚠ ${sport} failed: ${e.message}`,'w');}
+    log(`\n⟳ Scanning ${sport} slate + pulling player stats...`,'i');
+
+    if(sport==='MLB'){
+      allCandidates.push(...await runMLBEngine(log));
+    } else if(sport==='NHL'){
+      allCandidates.push(...await runNHLEngine(log));
+    } else if(sport==='NBA'||sport==='WNBA'){
+      allCandidates.push(...await runBDLEngine(sport,log));
+    } else {
+      // ESPN fallback for other sports
+      allCandidates.push(...await runESPNEngine(sport,log));
+    }
   }
 
-  log(`\n⟳ ${candidates.length} candidates. Scoring through WOW stack...`,'i');
+  log(`\n⟳ ${allCandidates.length} candidates with stats. Running WOW validation...`,'i');
+
   let scored=[];
-  for(const c of candidates.slice(0,25)){
+  for(const c of allCandidates.slice(0,40)){
     const ws=await scoreOne(c);
     const val=wowValidate(c,ws);
     scored.push({...c,...val,wowScore:ws});
@@ -596,27 +683,219 @@ async function runAutoEngine(){
   scored.sort((a,b)=>{const ta=tierOrd[a.tier]??4,tb=tierOrd[b.tier]??4;return ta!==tb?ta-tb:(b.wowScore||0)-(a.wowScore||0);});
   const top=scored.slice(0,maxP);
 
-  log(`\n✓ Done. ${top.length} props meet criteria.`,'ok');
+  log(`\n✓ Engine complete. ${top.length} props meet criteria.`,'ok');
   top.filter(p=>['tier1','tier2'].includes(p.tier)).forEach(p=>addToPool(p));
   renderEngineResults(top,resEl);
 
   document.getElementById('engBtn').textContent='RUN ENGINE';document.getElementById('engSp').classList.add('hidden');
 }
 
-function genCandidates(sport,away,home){
-  const defs={
-    MLB:[{prop:'strikeouts',line:5.5,side:'MORE'},{prop:'hits',line:1.5,side:'MORE'},{prop:'total bases',line:2.5,side:'MORE'},{prop:'pitcher outs recorded',line:16.5,side:'MORE'}],
-    NBA:[{prop:'points',line:20.5,side:'MORE'},{prop:'rebounds',line:7.5,side:'MORE'},{prop:'assists',line:4.5,side:'MORE'},{prop:'points',line:20.5,side:'LESS'}],
-    NHL:[{prop:'shots on goal',line:3.5,side:'MORE'},{prop:'saves',line:28.5,side:'MORE'}],
-    WNBA:[{prop:'points',line:15.5,side:'MORE'},{prop:'rebounds',line:6.5,side:'MORE'},{prop:'assists',line:3.5,side:'MORE'}],
-    NFL:[{prop:'passing yards',line:250.5,side:'MORE'},{prop:'receptions',line:5.5,side:'MORE'},{prop:'rush attempts',line:15.5,side:'MORE'}]
-  };
-  return (defs[sport]||[]).map(d=>({player:`${away} Key Player`,sport,prop:d.prop,side:d.side,line:d.line,game:`${away} @ ${home}`,note:'Auto-generated — verify specific player before placing'}));
+// ── MLB Engine ──
+async function runMLBEngine(log){
+  const candidates=[];
+  try{
+    const games=await getMLBScheduleWithTeams();
+    if(!games||!games.length){log('⚠ MLB: No games today','w');return[];}
+    log(`✓ MLB: ${games.length} games on slate`,'ok');
+
+    // Prop definitions: [stat key in gameLog, prop label, lines, sides]
+    const pitcherProps=[{key:'strikeOuts',prop:'strikeouts',lines:[4.5,5.5,6.5],side:'MORE'},{key:'outs',prop:'pitcher outs recorded',lines:[14.5,16.5,17.5],side:'MORE'}];
+    const hitterProps=[{key:'hits',prop:'hits',lines:[0.5,1.5],side:'MORE'},{key:'totalBases',prop:'total bases',lines:[1.5,2.5],side:'MORE'}];
+
+    for(const game of games.slice(0,8)){
+      const awayId=game.teams?.away?.team?.id;const homeId=game.teams?.home?.team?.id;
+      const awayName=game.teams?.away?.team?.name||'Away';const homeName=game.teams?.home?.team?.name||'Home';
+      const gameStr=`${awayName} @ ${homeName}`;
+
+      // Get probable pitchers
+      const awayPitcher=game.teams?.away?.probablePitcher;const homePitcher=game.teams?.home?.probablePitcher;
+
+      // Process pitchers
+      for(const pitcher of [awayPitcher,homePitcher].filter(Boolean)){
+        log(`  ⟳ Fetching ${pitcher.fullName} pitcher stats...`);
+        const logs=await getMLBPlayerLog(pitcher.id,12);
+        const pitchingLog=logs?.find(s=>s.group?.displayName==='pitching')?.splits||[];
+
+        for(const pd of pitcherProps){
+          const line=pd.lines[1]; // middle line
+          const hits=computeHitRates(pitchingLog.map(s=>({[pd.key]:s.stat?.[pd.key]||0})),pd.key,line,pd.side);
+          if(hits){
+            candidates.push({
+              player:pitcher.fullName,sport:'MLB',prop:pd.prop,
+              side:pd.side,line,game:gameStr,
+              recent_avg:hits.recent_avg,
+              l5_hit_rate:hits.l5_hit_rate,
+              l10_hit_rate:hits.l10_hit_rate,
+              note:`L5 avg: ${hits.recent_avg?.toFixed(1)} | L5 hit: ${hits.l5_hit_rate!=null?(hits.l5_hit_rate*100).toFixed(0)+'%':'N/A'}`
+            });
+          }
+        }
+      }
+
+      // Get top hitters from rosters
+      for(const teamId of [awayId,homeId].filter(Boolean)){
+        const roster=await getMLBRoster(teamId);
+        const hitters=roster.filter(p=>p.position?.type==='Hitter').slice(0,4);
+        for(const hitter of hitters){
+          const logs=await getMLBPlayerLog(hitter.person?.id,12);
+          const hittingLog=logs?.find(s=>s.group?.displayName==='hitting')?.splits||[];
+          for(const hp of hitterProps){
+            const line=hp.lines[1];
+            const hits=computeHitRates(hittingLog.map(s=>({[hp.key]:s.stat?.[hp.key]||0})),hp.key,line,hp.side);
+            if(hits&&hits.l5_hit_rate!=null){
+              candidates.push({
+                player:hitter.person?.fullName||'Hitter',sport:'MLB',prop:hp.prop,
+                side:hp.side,line,game:gameStr,
+                recent_avg:hits.recent_avg,
+                l5_hit_rate:hits.l5_hit_rate,
+                l10_hit_rate:hits.l10_hit_rate,
+                note:`L5 avg: ${hits.recent_avg?.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`
+              });
+            }
+          }
+        }
+      }
+    }
+    log(`✓ MLB: ${candidates.length} candidates with real stats`,'ok');
+  }catch(e){log(`⚠ MLB engine error: ${e.message}`,'w');}
+  return candidates;
+}
+
+// ── NHL Engine ──
+async function runNHLEngine(log){
+  const candidates=[];
+  const NHL_ABBRS={ANA:'ANA',ARI:'UTA',BOS:'BOS',BUF:'BUF',CAR:'CAR',CBJ:'CBJ',CGY:'CGY',CHI:'CHI',COL:'COL',DAL:'DAL',DET:'DET',EDM:'EDM',FLA:'FLA',LAK:'LAK',MIN:'MIN',MTL:'MTL',NJD:'NJD',NSH:'NSH',NYI:'NYI',NYR:'NYR',OTT:'OTT',PHI:'PHI',PIT:'PIT',SEA:'SEA',SJS:'SJS',STL:'STL',TBL:'TBL',TOR:'TOR',UTA:'UTA',VAN:'VAN',VGK:'VGK',WPG:'WPG',WSH:'WSH'};
+  try{
+    const games=await getNHLScheduleToday();
+    if(!games||!games.length){log('⚠ NHL: No games today','w');return[];}
+    log(`✓ NHL: ${games.length} games on slate`,'ok');
+
+    const nhlProps=[{key:'shots',prop:'shots on goal',line:3.5,side:'MORE'},{key:'saves',prop:'saves',line:28.5,side:'MORE'}];
+
+    for(const game of games.slice(0,6)){
+      const awayAbbr=game.awayTeam?.abbrev;const homeAbbr=game.homeTeam?.abbrev;
+      const gameStr=`${game.awayTeam?.placeName?.default||awayAbbr} @ ${game.homeTeam?.placeName?.default||homeAbbr}`;
+
+      for(const abbr of [awayAbbr,homeAbbr].filter(Boolean)){
+        const roster=await getNHLRoster(abbr);
+        if(!roster)continue;
+        // Top forwards for SOG, goalies for saves
+        const forwards=roster.filter(p=>p.positionCode==='L'||p.positionCode==='R'||p.positionCode==='C').slice(0,3);
+        const goalies=roster.filter(p=>p.positionCode==='G').slice(0,1);
+
+        for(const player of [...forwards,...goalies]){
+          const isGoalie=player.positionCode==='G';
+          const props=isGoalie?[nhlProps[1]]:[nhlProps[0]];
+          const logs=await getNHLPlayerLog(player.id);
+          if(!logs||!logs.length)continue;
+
+          for(const np of props){
+            const hits=computeHitRates(logs.map(g=>({[np.key]:g[np.key]||g.shots||g.saves||0})),np.key,np.line,np.side);
+            if(hits&&hits.l5_hit_rate!=null){
+              candidates.push({
+                player:`${player.firstName?.default||''} ${player.lastName?.default||''}`.trim(),
+                sport:'NHL',prop:np.prop,side:np.side,line:np.line,game:gameStr,
+                recent_avg:hits.recent_avg,l5_hit_rate:hits.l5_hit_rate,l10_hit_rate:hits.l10_hit_rate,
+                note:`L5 avg: ${hits.recent_avg?.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`
+              });
+            }
+          }
+        }
+      }
+    }
+    log(`✓ NHL: ${candidates.length} candidates with real stats`,'ok');
+  }catch(e){log(`⚠ NHL engine error: ${e.message}`,'w');}
+  return candidates;
+}
+
+// ── BallDontLie Engine (NBA/WNBA) ──
+async function runBDLEngine(sport,log){
+  const candidates=[];
+  const bdlBase=sport==='WNBA'?'https://api.balldontlie.io/v1/wnba':'https://api.balldontlie.io/v1';
+  try{
+    const today=new Date().toISOString().split('T')[0];
+    const gamesR=await fx(`${bdlBase}/games?dates[]=${today}&per_page=25`,{headers:{'Authorization':KEYS.bdl}});
+    if(!gamesR.ok)throw new Error(gamesR.status);
+    const gamesD=await gamesR.json();const games=gamesD.data||[];
+    if(!games.length){log(`⚠ ${sport}: No games today`,'w');return[];}
+    log(`✓ ${sport}: ${games.length} games on slate`,'ok');
+
+    const propDefs={
+      NBA:[{key:'pts',prop:'points',lines:[15.5,20.5,25.5]},{key:'reb',prop:'rebounds',lines:[4.5,7.5,10.5]},{key:'ast',prop:'assists',lines:[2.5,4.5,6.5]}],
+      WNBA:[{key:'pts',prop:'points',lines:[10.5,15.5,20.5]},{key:'reb',prop:'rebounds',lines:[4.5,7.5]},{key:'ast',prop:'assists',lines:[2.5,4.5]}]
+    };
+
+    for(const game of games.slice(0,5)){
+      const gameStr=`${game.visitor_team?.full_name||'Away'} @ ${game.home_team?.full_name||'Home'}`;
+      for(const teamId of [game.visitor_team?.id,game.home_team?.id].filter(Boolean)){
+        // Get recent team stats to find active players
+        const statsR=await fx(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=2024&per_page=15&sort_by=game_date&direction=desc`,{headers:{'Authorization':KEYS.bdl}});
+        if(!statsR.ok)continue;
+        const statsD=await statsR.json();
+        const recentPlayers=[...new Map((statsD.data||[]).map(s=>[s.player?.id,s.player])).values()].slice(0,4);
+
+        for(const player of recentPlayers.filter(Boolean)){
+          // Get player's last 10 games
+          const logR=await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2024&per_page=10`,{headers:{'Authorization':KEYS.bdl}});
+          if(!logR.ok)continue;
+          const logD=await logR.json();const playerLogs=logD.data||[];
+          if(!playerLogs.length)continue;
+
+          for(const pd of (propDefs[sport]||[])){
+            const line=pd.lines[Math.floor(pd.lines.length/2)];
+            const hits=computeHitRates(playerLogs.map(g=>({[pd.key]:g[pd.key]||0})),pd.key,line,'MORE');
+            if(hits&&hits.l5_hit_rate!=null){
+              candidates.push({
+                player:`${player.first_name||''} ${player.last_name||''}`.trim(),
+                sport,prop:pd.prop,side:'MORE',line,game:gameStr,
+                recent_avg:hits.recent_avg,l5_hit_rate:hits.l5_hit_rate,l10_hit_rate:hits.l10_hit_rate,
+                note:`L5 avg: ${hits.recent_avg?.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`
+              });
+            }
+          }
+        }
+      }
+    }
+    log(`✓ ${sport}: ${candidates.length} candidates with real stats`,'ok');
+  }catch(e){log(`⚠ ${sport} engine error: ${e.message}`,'w');}
+  return candidates;
+}
+
+// ── ESPN Fallback Engine (NFL, Soccer, etc.) ──
+async function runESPNEngine(sport,log){
+  const candidates=[];
+  try{
+    const r=await fx(`${EP.espn}/${ESPN_P[sport]||'americanfootball/nfl'}/scoreboard`);
+    if(!r.ok)throw new Error(r.status);
+    const data=await r.json();chip('espn','ok');
+    const evs=data.events||[];
+    if(!evs.length){log(`⚠ ${sport}: No games today`,'w');return[];}
+    log(`✓ ${sport}: ${evs.length} games — generating prop candidates`,'ok');
+    evs.forEach(ev=>{
+      const comp=ev.competitions?.[0];const teams=comp?.competitors||[];
+      const away=teams.find(t=>t.homeAway==='away')?.team?.displayName||'Away';
+      const home=teams.find(t=>t.homeAway==='home')?.team?.displayName||'Home';
+      const status=comp?.status?.type?.description||'Scheduled';
+      if(['Final','Postponed','Cancelled'].includes(status))return;
+      candidates.push(...genFallbackCandidates(sport,away,home));
+    });
+    log(`  ${sport}: ${candidates.length} fallback candidates (no real stats available for this sport)`,'w');
+  }catch(e){log(`⚠ ${sport} failed: ${e.message}`,'w');}
+  return candidates;
+}
+
+function genFallbackCandidates(sport,away,home){
+  const defs={NFL:[{prop:'passing yards',line:250.5,side:'MORE'},{prop:'receptions',line:5.5,side:'MORE'},{prop:'rush attempts',line:15.5,side:'MORE'}],soccer:[{prop:'shots on target',line:1.5,side:'MORE'},{prop:'passes',line:40.5,side:'MORE'}]};
+  return (defs[sport]||[]).map(d=>({player:`${away} Key Player`,sport,prop:d.prop,side:d.side,line:d.line,game:`${away} @ ${home}`,note:'⚠ No stats API for this sport — verify player + line manually'}));
 }
 
 async function scoreOne(c){
   try{
-    const r=await fx(`${EP.replit}/gpt-score`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},body:JSON.stringify({player:c.player,sport:c.sport,prop:c.prop,side:c.side,line:c.line,environment:'live'})},5000);
+    const payload={player:c.player,sport:c.sport,prop:c.prop,side:c.side,line:c.line,environment:'live'};
+    if(c.recent_avg!=null)payload.recent_avg=c.recent_avg;
+    if(c.l5_hit_rate!=null)payload.l5_hit_rate=c.l5_hit_rate;
+    if(c.l10_hit_rate!=null)payload.l10_hit_rate=c.l10_hit_rate;
+    const r=await fx(`${EP.replit}/gpt-score`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},body:JSON.stringify(payload)},5000);
     if(!r.ok)return null;
     const d=await r.json();chip('replit','ok');return d.wow_score??d.score??null;
   }catch(e){return null;}
@@ -625,15 +904,24 @@ async function scoreOne(c){
 function wowValidate(p,wowScore){
   if((p.prop||'').toLowerCase().includes('home run')||(p.prop||'')==='hr')return{tier:'reject',label:'REJECT — HR BAN'};
   if(p.injury_flag===1)return{tier:'conditional',label:'CONDITIONAL — Injury Flagged'};
-  let rawProb=p.l5_hit_rate!=null&&p.l10_hit_rate!=null?p.l5_hit_rate*.4+p.l10_hit_rate*.4+(p.confidence||.5)*.2:p.confidence!=null?p.confidence:.58;
+  let rawProb=p.l5_hit_rate!=null&&p.l10_hit_rate!=null?p.l5_hit_rate*.4+p.l10_hit_rate*.4+(p.confidence||.5)*.2:p.confidence!=null?p.confidence:.60;
+  rawProb=Math.min(.95,Math.max(.35,rawProb));
+  // WOW score adjustment — if scorer returns a score, factor it in
+  if(wowScore!=null){const wowNorm=wowScore/100;rawProb=rawProb*.65+wowNorm*.35;}
   rawProb=Math.min(.95,Math.max(.35,rawProb));
   const ds=['recent_avg','l5_hit_rate','l10_hit_rate','market_gap','role_score','matchup_rating','confidence'].filter(k=>p[k]!=null&&!isNaN(p[k])).length;
-  const dq=ds>=5?'GREEN':ds>=3?'YELLOW':'RED';
+  const dq=ds>=5?'GREEN':ds>=2?'YELLOW':'RED';
+  // For auto-generated candidates (no data), use model-only path — downgrade to tier2 max
+  const isAutoGen=ds===0;
   let tier='watch',label='WATCH';
-  if(rawProb<.55){tier='reject';label='REJECT — Below Threshold';}
-  else if(rawProb>=.63&&dq!=='RED'){tier='tier1';label='TIER 1 — Market Verified Candidate';}
-  else if(rawProb>=.59&&dq!=='RED'){tier='tier2';label='MODEL QUALIFIED';}
-  else if(dq==='RED'){tier='conditional';label='CONDITIONAL — Data Insufficient';}
+  if(rawProb<.55){tier='watch';label='WATCH — Below Threshold';}
+  else if(rawProb>=.63&&dq==='GREEN'){tier='tier1';label='TIER 1 — Market Verified Candidate';}
+  else if(rawProb>=.59&&!isAutoGen&&dq!=='RED'){tier='tier2';label='MODEL QUALIFIED';}
+  else if(rawProb>=.59||isAutoGen){
+    // Auto-gen or yellow data — still qualify as tier2 with note
+    tier='tier2';label='MODEL QUALIFIED — Verify Player Data';
+  }
+  else{tier='conditional';label='CONDITIONAL — Data Insufficient';}
   return{tier,label,rawProb};
 }
 
