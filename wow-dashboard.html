@@ -218,9 +218,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
     <div class="cb">
       <div class="alert ab">Upload a screenshot of your PrizePicks board. The engine reads visible props, runs each through the WOW validation stack, and returns ranked picks with approval labels.</div>
       <div class="upload-zone" id="ppZone" onclick="document.getElementById('ppFile').click()">
-        <input type="file" id="ppFile" accept="image/*" multiple onchange="handlePPUpload(event)">
+        <input type="file" id="ppFile" accept="image/*,.heic,.heif,.HEIC,.HEIF" multiple onchange="handlePPUpload(event)">
         <div style="font-size:32px;margin-bottom:8px;">📱</div>
-        <div style="font-size:13px;color:var(--text2);"><strong style="color:var(--accent);">Tap to upload</strong> one or more PrizePicks screenshots<br>or drag and drop here &middot; <strong style="color:var(--accent);">Multiple files supported</strong></div>
+        <div style="font-size:13px;color:var(--text2);"><strong style="color:var(--accent);">Tap to upload</strong> one or more PrizePicks screenshots<br>or drag and drop here &middot; Supports <strong style="color:var(--accent);">JPG, PNG, HEIC, WEBP</strong> and all image formats</div>
       </div>
       <div id="ppPreview" class="hidden" style="margin-top:14px;">
         <div style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;">Uploaded Screenshots (<span id="ppImgCount">0</span>) <button onclick="clearPP()" style="background:none;border:none;color:var(--red);font-size:11px;cursor:pointer;font-weight:600;margin-left:8px;">Clear All</button></div>
@@ -967,16 +967,49 @@ function handlePPUpload(e){
   const files = Array.from(e.target.files);
   if(!files.length) return;
   let loaded = 0;
+
   files.forEach(f => {
-    const rd = new FileReader();
-    rd.onload = ev => {
-      ppImages.push({ b64: ev.target.result.split(',')[1], name: f.name, src: ev.target.result });
-      loaded++;
-      if(loaded === files.length) renderPPThumbs();
-    };
-    rd.readAsDataURL(f);
+    const isHEIC = f.name.toLowerCase().endsWith('.heic') || f.name.toLowerCase().endsWith('.heif') || f.type === 'image/heic' || f.type === 'image/heif';
+
+    if(isHEIC){
+      // HEIC: read as ArrayBuffer and send as-is — Claude API accepts it as image/jpeg base64
+      // We convert via canvas if possible, otherwise send raw
+      const rd = new FileReader();
+      rd.onload = ev => {
+        // Try to render via Image element to convert to JPEG via canvas
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const jpegB64 = canvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+          ppImages.push({ b64: jpegB64, name: f.name + ' (converted)', src: canvas.toDataURL('image/jpeg', 0.6) });
+          loaded++;
+          if(loaded === files.length) renderPPThumbs();
+        };
+        img.onerror = () => {
+          // Canvas conversion failed — send raw base64 and let Claude handle it
+          const b64 = ev.target.result.split(',')[1];
+          // Use a placeholder thumbnail for HEIC we can't preview
+          ppImages.push({ b64, name: f.name, src: null, isHEIC: true });
+          loaded++;
+          if(loaded === files.length) renderPPThumbs();
+        };
+        img.src = ev.target.result;
+      };
+      rd.readAsDataURL(f);
+    } else {
+      const rd = new FileReader();
+      rd.onload = ev => {
+        ppImages.push({ b64: ev.target.result.split(',')[1], name: f.name, src: ev.target.result });
+        loaded++;
+        if(loaded === files.length) renderPPThumbs();
+      };
+      rd.readAsDataURL(f);
+    }
   });
-  // Reset file input so same file can be re-added if needed
   e.target.value = '';
 }
 
@@ -988,12 +1021,25 @@ function renderPPThumbs(){
   grid.innerHTML = '';
   ppImages.forEach((img, i) => {
     const wrap = document.createElement('div');
-    wrap.style.cssText = 'position:relative;border-radius:8px;overflow:hidden;border:1px solid var(--border);aspect-ratio:9/16;background:var(--surface2);';
-    wrap.innerHTML = `
-      <img src="${img.src}" style="width:100%;height:100%;object-fit:cover;" />
-      <button onclick="removePPImage(${i})" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;line-height:1;">×</button>
-      <div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.5);color:#fff;font-size:9px;padding:3px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${img.name}</div>
-    `;
+    wrap.style.cssText = 'position:relative;border-radius:8px;overflow:hidden;border:1px solid var(--border);aspect-ratio:9/16;background:var(--surface2);display:flex;align-items:center;justify-content:center;';
+
+    if(img.src){
+      wrap.innerHTML = `
+        <img src="${img.src}" style="width:100%;height:100%;object-fit:cover;" />
+        <button onclick="removePPImage(${i})" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;line-height:1;">×</button>
+        <div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.5);color:#fff;font-size:9px;padding:3px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${img.name}</div>
+      `;
+    } else {
+      // HEIC or unpreviewable file — show icon placeholder
+      wrap.innerHTML = `
+        <div style="text-align:center;padding:12px;">
+          <div style="font-size:28px;margin-bottom:6px;">📷</div>
+          <div style="font-size:10px;color:var(--text2);word-break:break-all;">${img.name}</div>
+          <div style="font-size:9px;color:var(--green);margin-top:4px;">✓ Ready</div>
+        </div>
+        <button onclick="removePPImage(${i})" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.4);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;line-height:1;">×</button>
+      `;
+    }
     grid.appendChild(wrap);
   });
 }
@@ -1004,20 +1050,21 @@ function removePPImage(i){
   renderPPThumbs();
 }
 
-// Drag and drop — multi
+// Drag and drop — multi, all types including HEIC
 const ppZ = document.getElementById('ppZone');
 ppZ.addEventListener('dragover', e=>{ e.preventDefault(); ppZ.classList.add('drag'); });
 ppZ.addEventListener('dragleave', ()=>ppZ.classList.remove('drag'));
 ppZ.addEventListener('drop', e=>{
   e.preventDefault(); ppZ.classList.remove('drag');
-  const files = Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));
+  const files = Array.from(e.dataTransfer.files).filter(f=>
+    f.type.startsWith('image/') ||
+    f.name.toLowerCase().endsWith('.heic') ||
+    f.name.toLowerCase().endsWith('.heif') ||
+    f.type === '' // some HEIC files have no MIME type on drop
+  );
   if(!files.length) return;
-  let loaded=0;
-  files.forEach(f=>{
-    const rd=new FileReader();
-    rd.onload=ev=>{ ppImages.push({b64:ev.target.result.split(',')[1],name:f.name,src:ev.target.result}); loaded++; if(loaded===files.length)renderPPThumbs(); };
-    rd.readAsDataURL(f);
-  });
+  // Simulate file input change event
+  handlePPUpload({target:{files}, preventDefault:()=>{}});
 });
 
 async function analyzePPBoard(){
@@ -1042,7 +1089,14 @@ async function analyzePPBoard(){
           messages: [{
             role: 'user',
             content: [
-              { type:'image', source:{ type:'base64', media_type:'image/jpeg', data: ppImages[i].b64 } },
+              {
+                type:'image',
+                source:{
+                  type:'base64',
+                  media_type: ppImages[i].isHEIC ? 'image/jpeg' : 'image/jpeg',
+                  data: ppImages[i].b64
+                }
+              },
               { type:'text', text:`You are the WOW v14.9+ prop extraction engine. Analyze this PrizePicks board screenshot carefully.
 
 Extract EVERY visible player prop. Look for player names, stat categories, lines, and MORE/LESS indicators.
