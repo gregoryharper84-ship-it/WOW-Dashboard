@@ -987,14 +987,14 @@
 // API KEYS & ENDPOINTS
 // ============================================================
 const KEYS = {
-  rundown: 'a3b56cca63dc092bc15b305c38c986a6a6d9a0c2ee7bbbd4e969e0755cf70fa8',
+  rundown: '6f00cf9201adfd3026defd4a1808d7400ec441955647efe3d7eade517d4cdc74',
   odds: '311bae3d2356b258e27750224a9e5fcf',
   bdl: '0b3cae52-e907-4abb-8670-d54502bc373c',
   replit: 'j|nNZo*[uWj%EIH[0Y:yNjhsKp:iBqK|'
 };
 
 const ENDPOINTS = {
-  rundown: 'https://therundown-therundown-v1.p.rapidapi.com',
+  rundown: 'https://therundown.io/api/v1',
   odds: 'https://api.the-odds-api.com/v4',
   espn: 'https://site.api.espn.com/apis/site/v2/sports',
   bdl: 'https://api.balldontlie.io/v1',
@@ -1066,11 +1066,10 @@ async function fetchWithTimeout(url, opts={}, ms=8000) {
 }
 
 // ============================================================
-// THERUNDOWN — Load Board
+// THERUNDOWN — Load Board (with ESPN fallback)
 // ============================================================
 async function loadBoard() {
   const sport = document.getElementById('boardSport').value;
-  const market = document.getElementById('boardMarket').value;
   const btn = document.getElementById('boardBtnText');
   const spin = document.getElementById('boardSpinner');
   btn.textContent = 'LOADING...';
@@ -1082,6 +1081,9 @@ async function loadBoard() {
   resultsDiv.innerHTML = '<div class="loading-row"><span class="spinner"></span> Fetching slate from TheRundown...</div>';
   oddsDiv.innerHTML = '';
 
+  let loaded = false;
+
+  // ── PRIMARY: TheRundown ──
   try {
     const today = new Date().toISOString().split('T')[0];
     const sportId = RUNDOWN_SPORT_IDS[sport] || 3;
@@ -1090,8 +1092,7 @@ async function loadBoard() {
       `${ENDPOINTS.rundown}/sports/${sportId}/events/${today}`,
       {
         headers: {
-          'x-rapidapi-key': KEYS.rundown,
-          'x-rapidapi-host': 'therundown-therundown-v1.p.rapidapi.com'
+          'Authorization': `Bearer ${KEYS.rundown}`
         }
       }
     );
@@ -1101,46 +1102,115 @@ async function loadBoard() {
     setChip('rundown','ok');
 
     const events = data.events || [];
-    if(events.length === 0) {
-      resultsDiv.innerHTML = '<div class="loading-row" style="color:var(--yellow)">⚠ No events found for today\'s slate</div>';
-      btn.textContent = 'LOAD SLATE'; spin.classList.add('hidden');
-      return;
+    if(events.length > 0) {
+      renderRundownSlate(events, sport, resultsDiv);
+      loaded = true;
     }
-
-    // Render games
-    resultsDiv.innerHTML = '';
-    const header = document.createElement('div');
-    header.className = 'panel-title';
-    header.style.marginBottom = '12px';
-    header.innerHTML = `TODAY'S ${sport} SLATE <span>${events.length} games</span>`;
-    resultsDiv.appendChild(header);
-
-    events.forEach(ev => {
-      const away = ev.teams_normalized?.find(t=>t.is_away) || {};
-      const home = ev.teams_normalized?.find(t=>t.is_home) || {};
-      const time = ev.event_date ? new Date(ev.event_date).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : 'TBD';
-
-      const card = document.createElement('div');
-      card.className = 'prop-card tier2';
-      card.innerHTML = `
-        <div class="prop-main">
-          <div class="prop-player">${away.name||'Away'} @ ${home.name||'Home'}</div>
-          <div class="prop-detail">${time} ET &nbsp;|&nbsp; ${ev.score?.event_status_detail||'Scheduled'}</div>
-        </div>
-        <div class="prop-meta">
-          <div class="label-badge badge-blue">${sport}</div>
-        </div>
-        <button class="btn btn-secondary btn-sm" onclick="loadGameOdds('${ev.event_id||''}','${away.name||''}','${home.name||''}')">ODDS</button>
-      `;
-      resultsDiv.appendChild(card);
-    });
-
   } catch(e) {
     setChip('rundown','fail');
-    resultsDiv.innerHTML = `<div class="loading-row" style="color:var(--red)">✗ RundownAPI Error: ${e.message}</div>`;
+    console.warn('TheRundown failed, trying ESPN fallback:', e.message);
+  }
+
+  // ── FALLBACK: ESPN ──
+  if(!loaded) {
+    resultsDiv.innerHTML = '<div class="loading-row"><span class="spinner"></span> TheRundown unavailable — loading from ESPN...</div>';
+    setChip('espn','idle');
+    try {
+      const path = ESPN_SPORT_PATHS[sport] || 'baseball/mlb';
+      const r = await fetchWithTimeout(`${ENDPOINTS.espn}/${path}/scoreboard`);
+      if(!r.ok) throw new Error(`ESPN ${r.status}`);
+      const data = await r.json();
+      setChip('espn','ok');
+
+      const events = data.events || [];
+      if(events.length === 0) {
+        resultsDiv.innerHTML = '<div class="loading-row" style="color:var(--yellow)">⚠ No events found on ESPN for today</div>';
+      } else {
+        renderESPNSlate(events, sport, resultsDiv);
+      }
+    } catch(e2) {
+      setChip('espn','fail');
+      resultsDiv.innerHTML = `<div class="loading-row" style="color:var(--red)">✗ Both TheRundown and ESPN failed. Check network or try Odds tab for game list.</div>`;
+    }
   }
 
   btn.textContent = 'LOAD SLATE'; spin.classList.add('hidden');
+}
+
+function renderRundownSlate(events, sport, resultsDiv) {
+  resultsDiv.innerHTML = '';
+  const header = document.createElement('div');
+  header.className = 'panel-title';
+  header.style.marginBottom = '12px';
+  header.innerHTML = `TODAY'S ${sport} SLATE <span>TheRundown · ${events.length} games</span>`;
+  resultsDiv.appendChild(header);
+
+  events.forEach(ev => {
+    const away = ev.teams_normalized?.find(t=>t.is_away) || {};
+    const home = ev.teams_normalized?.find(t=>t.is_home) || {};
+    const time = ev.event_date ? new Date(ev.event_date).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : 'TBD';
+    const card = document.createElement('div');
+    card.className = 'prop-card tier2';
+    card.innerHTML = `
+      <div class="prop-main">
+        <div class="prop-player">${away.name||'Away'} @ ${home.name||'Home'}</div>
+        <div class="prop-detail">${time} ET &nbsp;|&nbsp; ${ev.score?.event_status_detail||'Scheduled'}</div>
+      </div>
+      <div class="prop-meta">
+        <div class="label-badge badge-blue">${sport}</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="loadGameOdds('${ev.event_id||''}','${away.name||''}','${home.name||''}')">ODDS</button>
+    `;
+    resultsDiv.appendChild(card);
+  });
+}
+
+function renderESPNSlate(events, sport, resultsDiv) {
+  resultsDiv.innerHTML = '';
+  const header = document.createElement('div');
+  header.className = 'panel-title';
+  header.style.marginBottom = '12px';
+  header.innerHTML = `TODAY'S ${sport} SLATE <span>ESPN Fallback · ${events.length} games</span>`;
+  resultsDiv.appendChild(header);
+
+  // Notice banner
+  const notice = document.createElement('div');
+  notice.style.cssText = 'font-family:var(--mono);font-size:10px;color:var(--yellow);padding:8px 12px;border:1px solid rgba(255,214,0,0.3);margin-bottom:12px;';
+  notice.textContent = '⚠ Using ESPN fallback — scores/status shown. Click ODDS tab for live lines.';
+  resultsDiv.appendChild(notice);
+
+  events.forEach(ev => {
+    const comp = ev.competitions?.[0];
+    const teams = comp?.competitors || [];
+    const away = teams.find(t=>t.homeAway==='away') || teams[0] || {};
+    const home = teams.find(t=>t.homeAway==='home') || teams[1] || {};
+    const status = comp?.status?.type?.description || 'Scheduled';
+    const time = comp?.date ? new Date(comp.date).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : 'TBD';
+    const awayScore = away.score || '';
+    const homeScore = home.score || '';
+    const awayName = away.team?.displayName || away.team?.name || 'Away';
+    const homeName = home.team?.displayName || home.team?.name || 'Home';
+    const awayAbbr = away.team?.abbreviation || '';
+    const homeAbbr = home.team?.abbreviation || '';
+
+    const isLive = status === 'In Progress';
+    const card = document.createElement('div');
+    card.className = `prop-card ${isLive ? 'tier1' : 'tier2'}`;
+    card.innerHTML = `
+      <div class="prop-main">
+        <div class="prop-player">${awayName} @ ${homeName}</div>
+        <div class="prop-detail">
+          ${time} ET &nbsp;|&nbsp; <span style="color:${isLive?'var(--green)':'var(--text2)'}">${status}</span>
+          ${awayScore ? `&nbsp;|&nbsp; ${awayAbbr} ${awayScore} – ${homeAbbr} ${homeScore}` : ''}
+        </div>
+      </div>
+      <div class="prop-meta">
+        <div class="label-badge ${isLive?'badge-green':'badge-blue'}">${isLive?'LIVE':sport}</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="loadGameOdds('','${awayName}','${homeName}')">ODDS</button>
+    `;
+    resultsDiv.appendChild(card);
+  });
 }
 
 async function loadGameOdds(eventId, away, home) {
