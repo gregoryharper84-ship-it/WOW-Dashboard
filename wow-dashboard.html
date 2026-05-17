@@ -126,6 +126,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 ::-webkit-scrollbar{width:5px;height:5px;}
 ::-webkit-scrollbar-track{background:var(--bg);}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
+/* Hide scrollbar on tab row */
+.wow-tabs::-webkit-scrollbar{display:none;}
+.wow-tabs{scrollbar-width:none;-ms-overflow-style:none;}
 </style>
 </head>
 <body>
@@ -154,16 +157,18 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 </div>
 
 <!-- TABS -->
-<div class="tabs">
-  <button class="tab active" onclick="switchTab('engine')">🎯 Best Props</button>
-  <button class="tab" onclick="switchTab('pool')">🔄 Prop Pool</button>
-  <button class="tab" onclick="switchTab('jeremia')">🧬 Jeremia</button>
-  <button class="tab" onclick="switchTab('board')">📋 Live Board</button>
-  <button class="tab" onclick="switchTab('prizepicks')">📸 PrizePicks</button>
-  <button class="tab" onclick="switchTab('slip')">🎰 Slip Builder</button>
-  <button class="tab" onclick="switchTab('manual')">🔍 Manual</button>
-  <button class="tab" onclick="switchTab('team')">🏟 Teams</button>
-  <button class="tab" onclick="switchTab('log')">📊 Log</button>
+<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:4px;box-shadow:var(--sh);margin-bottom:14px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;">
+  <div class="wow-tabs" style="display:flex;gap:3px;min-width:max-content;">
+    <button class="tab active" onclick="switchTab('engine')">🎯 Best Props</button>
+    <button class="tab" onclick="switchTab('pool')">🔄 Prop Pool</button>
+    <button class="tab" onclick="switchTab('jeremia')">🧬 Jeremia</button>
+    <button class="tab" onclick="switchTab('prizepicks')">📸 PrizePicks</button>
+    <button class="tab" onclick="switchTab('slip')">🎰 Slips</button>
+    <button class="tab" onclick="switchTab('board')">📋 Board</button>
+    <button class="tab" onclick="switchTab('manual')">🔍 Manual</button>
+    <button class="tab" onclick="switchTab('team')">🏟 Teams</button>
+    <button class="tab" onclick="switchTab('log')">📊 Log</button>
+  </div>
 </div>
 
 <!-- ══════════════════════════════════════ -->
@@ -399,35 +404,42 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 <!-- SLIP BUILDER -->
 <!-- ══════════════════════════════════════ -->
 <div id="tab-slip" class="hidden">
-  <div class="card">
-    <div class="ch"><span class="ct">🎰 Auto Slip Builder</span><span class="badge bg-g">WOW Powered</span></div>
+
+  <!-- Settings -->
+  <div class="card" style="margin-bottom:12px;">
+    <div class="ch"><span class="ct">🎰 Slip Builder</span><span class="badge bg-g">WOW Powered</span></div>
     <div class="cb">
-      <div class="alert ab">Scans your approved props pool and builds an optimized slip — correlation checked, exposure limited, fragile-leg bans enforced.</div>
+      <div class="alert ab">Builds all slip options (2–6 picks + Jeremia) from your approved pool. <strong>Player duplication rule:</strong> a player can only appear on multiple slips if their probability is 65%+.</div>
       <div class="fr">
-        <div class="field"><label>Slip Type</label><select id="s_type"><option value="power">Power Play (2-3 legs)</option><option value="flex">Flex (4-5 legs)</option><option value="core">Core Card</option><option value="research">Research Card</option></select></div>
         <div class="field"><label>Platform</label><select id="s_plat"><option>PrizePicks</option><option>BetUS</option></select></div>
         <div class="field"><label>Target Grade</label><select id="s_grade"><option value="A">A Grade Only</option><option value="B" selected>A or B Grade</option><option value="C">Any Grade</option></select></div>
         <div class="field"><label>Sport Filter</label><select id="s_sport"><option value="all">All Sports</option><option value="MLB">MLB</option><option value="NBA">NBA</option><option value="NHL">NHL</option><option value="WNBA">WNBA</option></select></div>
       </div>
-      <div style="display:flex;gap:8px;">
-        <button class="btn btn-p" onclick="buildAutoSlip()"><span id="slipBtn">Build Slip</span><span id="slipSp" class="hidden"><div class="sp"></div></span></button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-p" onclick="buildAllSlips()"><span id="slipBtn">Build All Slips</span><span id="slipSp" class="hidden"><div class="sp"></div></span></button>
         <button class="btn btn-s btn-sm" onclick="clearSlip()">Clear</button>
-        <button class="btn btn-s btn-sm" onclick="exportSlip()">Export</button>
+        <button class="btn btn-s btn-sm" onclick="exportSlip()">Export Active</button>
       </div>
     </div>
   </div>
-  <div class="g2">
-    <div>
-      <div class="slbl">Approved Props Pool <span id="poolCount" style="font-weight:400;color:var(--text3);">(0)</span></div>
-      <div class="card" style="padding:12px;"><div id="approvedPool"><div style="text-align:center;padding:18px;color:var(--text2);font-size:13px;">Run Best Props engine or score props manually to build pool.</div></div></div>
-    </div>
-    <div>
-      <div class="slbl">Built Slip</div>
-      <div class="card" style="padding:12px;">
-        <div class="slip-zone" id="slipZone"><div style="text-align:center;padding:14px;color:var(--text2);font-size:13px;">Slip legs appear here</div></div>
-        <div id="slipGrade" style="margin-top:8px;"></div>
-        <div id="slipOut" class="hidden" style="margin-top:8px;"></div>
-      </div>
+
+  <!-- Approved pool -->
+  <div class="slbl">Approved Props Pool <span id="poolCount" style="font-weight:400;color:var(--text3);">(0)</span></div>
+  <div class="card" style="padding:12px;margin-bottom:12px;"><div id="approvedPool"><div style="text-align:center;padding:18px;color:var(--text2);font-size:13px;">Run Best Props engine, PrizePicks analysis, or Manual Prop to build pool.</div></div></div>
+
+  <!-- All slip options -->
+  <div id="allSlipOptions"></div>
+
+  <!-- Active slip being built manually -->
+  <div class="slbl" style="margin-top:16px;">Active Slip (Manual)</div>
+  <div class="card" style="padding:12px;">
+    <div class="slip-zone" id="slipZone"><div style="text-align:center;padding:14px;color:var(--text2);font-size:13px;">Add legs from pool above or from suggested slips</div></div>
+    <div id="slipGrade" style="margin-top:8px;"></div>
+    <div id="slipOut" class="hidden" style="margin-top:8px;"></div>
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <button class="btn btn-s btn-sm" onclick="gradeSlip()">Grade Slip</button>
+      <button class="btn btn-s btn-sm" onclick="clearSlip()">Clear</button>
+      <button class="btn btn-s btn-sm" onclick="exportSlip()">Export</button>
     </div>
   </div>
 </div>
@@ -776,15 +788,17 @@ document.getElementById('slateDate').textContent=new Date().toLocaleDateString('
 // ── Tabs ──
 function switchTab(n){
   ['engine','pool','jeremia','board','prizepicks','slip','manual','team','log'].forEach(t=>{
-    const el=document.getElementById('tab-'+t);if(el)el.classList.add('hidden');
+    const el=document.getElementById('tab-'+t);
+    if(el) el.classList.add('hidden');
   });
-  document.querySelectorAll('.tab').forEach(el=>el.classList.remove('active'));
-  const el=document.getElementById('tab-'+n);if(el)el.classList.remove('hidden');
-  const idx={engine:0,pool:1,jeremia:2,board:3,prizepicks:4,slip:5,manual:6,team:7,log:8};
-  const tabs=document.querySelectorAll('.tab');
-  if(tabs[idx[n]])tabs[idx[n]].classList.add('active');
-  if(n==='log'){switchPTab('clv');}
-  if(n==='pool'&&!propPool.length)refreshPropPool(true);
+  // Scope to .wow-tabs to avoid hitting sub-tabs
+  document.querySelectorAll('.wow-tabs .tab').forEach(el=>el.classList.remove('active'));
+  const target=document.getElementById('tab-'+n);
+  if(target) target.classList.remove('hidden');
+  document.querySelectorAll('.wow-tabs .tab').forEach(el=>{
+    if(el.getAttribute('onclick')===`switchTab('${n}')`) el.classList.add('active');
+  });
+  if(n==='log') switchPTab('clv');
 }
 
 // ── Chip status ──
@@ -2849,22 +2863,157 @@ async function validateAndRenderPP(props, container){
 // ══════════════════════════════════
 function addToSlipCard(p){addToPool(p);addLeg(p);switchTab('slip');}
 
-async function buildAutoSlip(){
-  const slipType=document.getElementById('s_type').value;const tgt=document.getElementById('s_grade').value;const sf=document.getElementById('s_sport').value;
-  document.getElementById('slipBtn').textContent='Building...';document.getElementById('slipSp').classList.remove('hidden');
-  let pool=[...approvedProps];if(sf!=='all')pool=pool.filter(p=>p.sport===sf);
-  if(pool.length<2){alert('Not enough approved props. Run Best Props engine first.');document.getElementById('slipBtn').textContent='Build Slip';document.getElementById('slipSp').classList.add('hidden');return;}
+// ── Build a single slip of n legs from pool ──
+function buildSlipOfSize(pool, n, tgt, usedAcrossSlips){
+  const DUPE_THRESHOLD = 0.65; // player can appear on multiple slips only if prob >= 65%
   const tierOrd={tier1:0,tier2:1,conditional:2};
-  pool.sort((a,b)=>{const ta=tierOrd[a.tier]??3,tb=tierOrd[b.tier]??3;return ta!==tb?ta-tb:(b.wowScore||0)-(a.wowScore||0);});
-  const maxL={power:3,flex:5,core:4,research:4}[slipType]||3;
-  slipLegs=[];const sc={};const used=new Set();
-  for(const p of pool){
-    if(slipLegs.length>=maxL)break;if(used.has(p.player))continue;if((sc[p.sport]||0)>=2)continue;
-    if(slipType==='power'&&tgt==='A'&&p.tier!=='tier1')continue;
-    slipLegs.push(p);used.add(p.player);sc[p.sport]=(sc[p.sport]||0)+1;
+  const sorted=[...pool].sort((a,b)=>{
+    const ta=tierOrd[a.tier]??3,tb=tierOrd[b.tier]??3;
+    return ta!==tb?ta-tb:(b.rawProb||b.wowScore||0)-(a.rawProb||a.wowScore||0);
+  });
+
+  const legs=[];const usedPlayers=new Set();const sportCounts={};
+
+  for(const p of sorted){
+    if(legs.length>=n) break;
+    // Player duplication rule: skip if already on another slip AND prob < 65%
+    if(usedAcrossSlips.has(p.player) && (p.rawProb||0) < DUPE_THRESHOLD) continue;
+    if(usedPlayers.has(p.player)) continue;
+    if((sportCounts[p.sport]||0)>=2) continue;
+    if(tgt==='A'&&p.tier!=='tier1'&&n<=3) continue;
+    // No fragile hard bans as power anchors for small slips
+    if(n<=3&&p.fragileFlags?.some(f=>f.severity==='ban_power')) continue;
+    legs.push(p);
+    usedPlayers.add(p.player);
+    sportCounts[p.sport]=(sportCounts[p.sport]||0)+1;
   }
-  renderLegs();if(slipLegs.length>=2)gradeSlip();
-  document.getElementById('slipBtn').textContent='Build Slip';document.getElementById('slipSp').classList.add('hidden');
+  return legs;
+}
+
+async function buildAllSlips(){
+  const tgt=document.getElementById('s_grade').value;
+  const sf=document.getElementById('s_sport').value;
+  document.getElementById('slipBtn').textContent='Building...';
+  document.getElementById('slipSp').classList.remove('hidden');
+
+  let pool=[...approvedProps,...propPool.filter(p=>!approvedProps.find(a=>a.player===p.player&&a.prop===p.prop))];
+  if(sf!=='all') pool=pool.filter(p=>p.sport===sf);
+
+  if(pool.length<2){
+    alert('Not enough qualified props. Run Best Props engine or Prop Pool first.');
+    document.getElementById('slipBtn').textContent='Build All Slips';
+    document.getElementById('slipSp').classList.add('hidden');
+    return;
+  }
+
+  const container=document.getElementById('allSlipOptions');
+  container.innerHTML='';
+
+  // Track which players appear across slips for duplication rule
+  const usedAcrossSlips=new Set();
+
+  // Slip configs: Power 2-4, Flex 5-6, Jeremia
+  const configs=[
+    {label:'⚡ Power 2',n:2,type:'power',icon:'⚡'},
+    {label:'🔥 Power 3',n:3,type:'power',icon:'🔥'},
+    {label:'💪 Power 4',n:4,type:'power',icon:'💪'},
+    {label:'🎲 Flex 5',n:5,type:'flex',icon:'🎲'},
+    {label:'🎯 Flex 6',n:6,type:'flex',icon:'🎯'},
+    {label:'🧬 Jeremia',n:3,type:'power',icon:'🧬',jeremia:true},
+  ];
+
+  const hdr=document.createElement('div');
+  hdr.className='slbl';
+  hdr.textContent=`All Slip Options — ${pool.length} props in pool`;
+  container.appendChild(hdr);
+
+  const dupRule=document.createElement('div');
+  dupRule.className='alert ay';
+  dupRule.style.marginBottom='12px';
+  dupRule.innerHTML='⚠ <strong>Duplication Rule:</strong> Players appearing on multiple slips must have probability ≥ 65%';
+  container.appendChild(dupRule);
+
+  for(const cfg of configs){
+    let legs;
+
+    if(cfg.jeremia){
+      // Build Jeremia-style — prioritize low-threshold assists, RA, multi-path
+      const jerPool=[...pool].filter(p=>{
+        const pl=(p.prop||'').toLowerCase();
+        // Prefer Jeremia props
+        if(pl.includes('assist')||pl.includes('rebound')||pl.includes('fantasy')||pl.includes('steals')||pl.includes('blocks')) return true;
+        // Allow points but not as primary
+        return true;
+      });
+      // Sort: volume plays first
+      jerPool.sort((a,b)=>{
+        const pl=(prop)=>(prop||'').toLowerCase();
+        const jerScore=(p)=>{
+          const prop=pl(p.prop);
+          if(prop.includes('assist')&&p.line<=2.5) return 0;
+          if(prop.includes('rebound')&&prop.includes('assist')) return 1;
+          if(prop.includes('fantasy')||prop.includes('rebound')) return 2;
+          if(prop.includes('point')) return 3;
+          return 2;
+        };
+        return jerScore(a)-jerScore(b)||(b.rawProb||0)-(a.rawProb||0);
+      });
+      legs=buildSlipOfSize(jerPool,cfg.n,tgt,usedAcrossSlips);
+    } else {
+      legs=buildSlipOfSize(pool,cfg.n,tgt,usedAcrossSlips);
+    }
+
+    if(legs.length<2) continue;
+
+    // Register players for duplication rule (only if prob < threshold)
+    legs.forEach(l=>{ if((l.rawProb||0)<0.65) usedAcrossSlips.add(l.player); });
+
+    // Grade and EV
+    const strength=gradeSlipStrength(legs.map(l=>l.rawProb||0.58),cfg.type);
+    const ev=calcPPSlipEV(legs.map(l=>l.rawProb||0.58),cfg.type,legs.length);
+
+    const card=document.createElement('div');
+    const borderColor=cfg.jeremia?'#7c3aed':strength?.color||'var(--border)';
+    card.style.cssText=`border:2px solid ${borderColor}40;border-radius:10px;padding:14px;margin-bottom:10px;background:var(--surface);`;
+
+    // Duplication indicators
+    const dupLegs=legs.filter(l=>(l.rawProb||0)>=0.65&&usedAcrossSlips.has(l.player));
+
+    card.innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div>
+          <div style="font-size:15px;font-weight:800;color:${cfg.jeremia?'#7c3aed':'var(--text)'};">${cfg.label}</div>
+          <div style="font-size:11px;color:var(--text2);">${legs.length} legs · ${cfg.type==='power'?'All must hit':'Misses allowed'}</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          ${strength?`<div style="text-align:center;padding:6px 12px;border-radius:8px;background:${strength.color}18;border:1px solid ${strength.color}40;"><div style="font-size:20px;font-weight:900;color:${strength.color};line-height:1;">${strength.score}</div><div style="font-size:10px;font-weight:700;color:${strength.color};">${strength.label}</div></div>`:''}
+          <button class="btn btn-p btn-sm" onclick="loadSuggestedSlip(${JSON.stringify(legs.map(l=>({player:l.player,sport:l.sport,prop:l.prop,side:l.side,line:l.line,tier:l.tier,rawProb:l.rawProb,wowScore:l.wowScore})))})" style="${cfg.jeremia?'background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;':''}">Use →</button>
+        </div>
+      </div>
+      ${ev?`<div style="padding:6px 10px;border-radius:6px;margin-bottom:8px;background:${ev.isPositiveEV?'var(--green-light)':'var(--red-light)'};border:1px solid ${ev.isPositiveEV?'#a7f3d0':'#fca5a5'};font-size:11px;font-family:var(--mono);color:${ev.isPositiveEV?'var(--green)':'var(--red)'};">${ev.isPositiveEV?'✓ +EV':'✗ -EV'} · ROI: ${ev.expectedROI>=0?'+':''}${(ev.expectedROI*100).toFixed(1)}% · Break-even: ${(ev.breakEven*100).toFixed(1)}% · Kelly: ${ev.recommendedBankrollPct}% bankroll · Payout: ${ev.multiplier}x</div>`:''}
+      ${legs.map((l,i)=>{
+        const isDupe=(l.rawProb||0)>=0.65&&dupLegs.includes(l);
+        const prob=l.rawProb!=null?((l.rawProb)*100).toFixed(1)+'%':'–';
+        const probColor=(l.rawProb||0)>=0.65?'var(--green)':(l.rawProb||0)>=0.59?'var(--yellow)':'var(--text2)';
+        const roleLabel=cfg.jeremia?(
+          (l.prop||'').toLowerCase().includes('assist')&&(l.line||0)<=2.5?'🎯 Core':
+          (l.prop||'').toLowerCase().includes('rebound')||((l.prop||'').toLowerCase().includes('fantasy'))?'⚓ Anchor':'🎪 Ceiling'
+        ):'';
+        return`<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);">
+          <span style="font-size:11px;color:var(--text3);min-width:16px;">${i+1}.</span>
+          ${roleLabel?`<span style="font-size:10px;font-weight:600;color:${probColor};">${roleLabel}</span>`:''}
+          <span style="font-weight:600;font-size:13px;flex:1;">${l.player}</span>
+          <span style="font-size:11px;color:var(--text2);">${l.sport} · ${l.prop} ${l.side} ${l.line}</span>
+          <span style="font-family:var(--mono);font-size:11px;font-weight:700;color:${probColor};">${prob}</span>
+          ${isDupe?`<span style="font-size:9px;background:var(--accent-light);color:var(--accent);border-radius:3px;padding:1px 4px;">65%+</span>`:''}
+        </div>`;
+      }).join('')}
+    `;
+    container.appendChild(card);
+  }
+
+  document.getElementById('slipBtn').textContent='Build All Slips';
+  document.getElementById('slipSp').classList.add('hidden');
 }
 
 function addToPool(p){if(approvedProps.find(x=>x.player===p.player&&x.prop===p.prop&&x.side===p.side))return;approvedProps.push(p);renderPool();document.getElementById('poolCount').textContent=`(${approvedProps.length})`;}
@@ -3091,11 +3240,15 @@ function save(){
 // ── Sub-tab switcher ──
 function switchPTab(name){
   ['clv','slip','learn','wow'].forEach(t=>{
-    document.getElementById(`ptab-${t}-content`).classList.add('hidden');
-    document.getElementById(`ptab-${t}`).classList.remove('active');
+    const el=document.getElementById(`ptab-${t}-content`);
+    if(el) el.classList.add('hidden');
+    const btn=document.getElementById(`ptab-${t}`);
+    if(btn) btn.classList.remove('active');
   });
-  document.getElementById(`ptab-${name}-content`).classList.remove('hidden');
-  document.getElementById(`ptab-${name}`).classList.add('active');
+  const content=document.getElementById(`ptab-${name}-content`);
+  if(content) content.classList.remove('hidden');
+  const btn=document.getElementById(`ptab-${name}`);
+  if(btn) btn.classList.add('active');
   if(name==='wow'){loadStats();loadLB();loadLog();}
   if(name==='learn') renderLearnedRules();
   if(name==='slip') renderSlipDatabase();
@@ -4122,7 +4275,7 @@ window.onload=()=>{
   renderCLVTable();
   renderSlipDatabase();
   renderLearnedRules();
-  // Start hourly prop pool refresh
+  // Pull prop pool 5 seconds after load, then every hour
   setTimeout(()=>refreshPropPool(false), 5000);
 };
 </script>
