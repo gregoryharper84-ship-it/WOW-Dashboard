@@ -181,18 +181,40 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
       <span id="engBtn">RUN ENGINE</span><span id="engSp" class="hidden"><div class="spd"></div></span>
     </button>
   </div>
-  <div class="card">
-    <div class="ch"><span class="ct">Engine Settings</span></div>
-    <div class="cb">
-      <div class="fr">
-        <div class="field"><label>Sports (hold Ctrl for multi)</label><select id="eng_sports" multiple style="height:88px;"><option value="ALL">⭐ All Sports</option><option value="MLB" selected>MLB</option><option value="NBA">NBA</option><option value="NHL">NHL</option><option value="WNBA">WNBA</option><option value="NFL">NFL</option></select></div>
-        <div class="field"><label>Platform</label><select id="eng_platform"><option value="prizepicks">PrizePicks</option><option value="betus">BetUS</option><option value="both">Both</option></select></div>
-        <div class="field"><label>Min Tier</label><select id="eng_mintier"><option value="tier1">Tier 1 Only</option><option value="tier2" selected>Tier 1 + 2</option><option value="all">All Playable</option></select></div>
-        <div class="field"><label>Max Results</label><select id="eng_max"><option value="5">Top 5</option><option value="10" selected>Top 10</option><option value="20">Top 20</option></select></div>
+    <div class="card">
+      <div class="ch"><span class="ct">Engine Settings</span></div>
+      <div class="cb">
+        <div class="fr">
+          <div class="field">
+            <label>Sports</label>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;">
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+                <input type="checkbox" id="eng_all" onchange="toggleAllSports(this)"> All
+              </label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+                <input type="checkbox" class="eng-sport-cb" value="MLB" checked> MLB
+              </label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+                <input type="checkbox" class="eng-sport-cb" value="NBA"> NBA
+              </label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+                <input type="checkbox" class="eng-sport-cb" value="NHL"> NHL
+              </label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+                <input type="checkbox" class="eng-sport-cb" value="WNBA"> WNBA
+              </label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+                <input type="checkbox" class="eng-sport-cb" value="NFL"> NFL
+              </label>
+            </div>
+          </div>
+          <div class="field"><label>Platform</label><select id="eng_platform"><option value="prizepicks">PrizePicks</option><option value="betus">BetUS</option><option value="both">Both</option></select></div>
+          <div class="field"><label>Min Tier</label><select id="eng_mintier"><option value="tier1">Tier 1 Only</option><option value="tier2" selected>Tier 1 + 2</option><option value="all">All Playable</option></select></div>
+          <div class="field"><label>Max Results</label><select id="eng_max"><option value="5">Top 5</option><option value="10" selected>Top 10</option><option value="20">Top 20</option></select></div>
+        </div>
+        <div class="alert ab">💡 Engine pulls today's slate from ESPN, generates prop candidates across selected sports, scores each through the WOW validation stack, and returns ranked results with approval tiers.</div>
       </div>
-      <div class="alert ab">💡 Engine pulls today's slate from ESPN, generates prop candidates across selected sports, scores each through the WOW validation stack, and returns ranked results with approval tiers.</div>
     </div>
-  </div>
   <div id="engStatus" class="hidden"><div class="card"><div class="cb"><div class="ob" id="engLog" style="min-height:70px;"></div></div></div></div>
   <div id="engResults"></div>
 </div>
@@ -781,6 +803,12 @@ const SPORT_IDS={MLB:3,NBA:4,NFL:1,NHL:6,WNBA:8,soccer:7};
 
 let approvedProps=[],slipLegs=[];
 
+function toggleAllSports(cb){
+  document.querySelectorAll('.eng-sport-cb').forEach(el=>{
+    el.checked=cb.checked;
+  });
+}
+
 // ── Clock ──
 setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString('en-US',{hour12:false});},1000);
 document.getElementById('slateDate').textContent=new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
@@ -997,8 +1025,8 @@ function computeHitRates(logs, statKey, line, side='MORE'){
 // ══════════════════════════════════
 async function runAutoEngine(){
   const ALL_SPORTS=['MLB','NBA','NHL','WNBA','NFL'];
-  let sports=Array.from(document.getElementById('eng_sports').selectedOptions).map(o=>o.value);
-  if(sports.includes('ALL')) sports=[...ALL_SPORTS];
+  let sports=Array.from(document.querySelectorAll('.eng-sport-cb:checked')).map(cb=>cb.value);
+  if(document.getElementById('eng_all')?.checked||sports.length===0) sports=[...ALL_SPORTS];
   const maxP=parseInt(document.getElementById('eng_max').value)||10;
   const minTier=document.getElementById('eng_mintier').value;
   document.getElementById('engBtn').textContent='Running...';document.getElementById('engSp').classList.remove('hidden');
