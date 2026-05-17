@@ -1222,98 +1222,97 @@ async function runNHLEngine(log){
 // ── BallDontLie Engine (NBA/WNBA) ──
 async function runBDLEngine(sport,log){
   const candidates=[];
-  const bdlBase=sport==='WNBA'?'https://api.balldontlie.io/v1/wnba':'https://api.balldontlie.io/v1';
-  // Use current season — NBA 2024-25 season key is 2024; WNBA 2025
-  const season=sport==='WNBA'?'2025':'2024';
-
+  const bdlBase='https://api.balldontlie.io/v1';
+  const seasons=['2025','2024'] // NBA 2025-26 season key = 2025;
   try{
     const today=new Date().toISOString().split('T')[0];
+    // Fetch today's games — includes playoffs (postseason)
     const gamesR=await fx(`${bdlBase}/games?dates[]=${today}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
     if(!gamesR.ok)throw new Error(`BDL games: ${gamesR.status}`);
-    const gamesD=await gamesR.json();const games=gamesD.data||[];
+    const gamesD=await gamesR.json();
+    let games=gamesD.data||[];
+    if(!games.length){
+      // Try postseason endpoint explicitly
+      const psR=await fx(`${bdlBase}/games?dates[]=${today}&postseason=true&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+      if(psR.ok){const psD=await psR.json();games=psD.data||[];}
+    }
     if(!games.length){log(`⚠ ${sport}: No games today — trying ESPN fallback`,'w');return runESPNEngine(sport,log);}
-    log(`✓ ${sport}: ${games.length} games on slate`,'ok');
+    log(`✓ ${sport}: ${games.length} game(s) on slate`,'ok');
 
-    const propDefs={
-      NBA:[
-        {key:'pts',prop:'points',lines:[10.5,15.5,20.5,25.5,30.5]},
-        {key:'reb',prop:'rebounds',lines:[3.5,5.5,7.5,10.5]},
-        {key:'ast',prop:'assists',lines:[1.5,3.5,5.5,7.5]},
-        {key:'stl',prop:'steals',lines:[0.5,1.5]},
-        {key:'blk',prop:'blocks',lines:[0.5,1.5]},
-        {key:'turnover',prop:'turnovers',lines:[1.5,2.5,3.5]},
-        {key:'fg3m',prop:'3-pointers made',lines:[0.5,1.5,2.5,3.5]},
-      ],
-      WNBA:[
-        {key:'pts',prop:'points',lines:[8.5,12.5,16.5,20.5]},
-        {key:'reb',prop:'rebounds',lines:[3.5,5.5,7.5]},
-        {key:'ast',prop:'assists',lines:[1.5,3.5,5.5]},
-      ]
-    };
+    const propDefs=[
+      {key:'pts',prop:'points',lines:[10.5,15.5,20.5,25.5,30.5]},
+      {key:'reb',prop:'rebounds',lines:[3.5,5.5,7.5,10.5]},
+      {key:'ast',prop:'assists',lines:[1.5,3.5,5.5,7.5]},
+      {key:'stl',prop:'steals',lines:[0.5,1.5]},
+      {key:'blk',prop:'blocks',lines:[0.5,1.5]},
+      {key:'turnover',prop:'turnovers',lines:[1.5,2.5,3.5]},
+      {key:'fg3m',prop:'3-pointers made',lines:[0.5,1.5,2.5,3.5]},
+    ];
 
     for(const game of games.slice(0,6)){
       const gameStr=`${game.visitor_team?.full_name||'Away'} @ ${game.home_team?.full_name||'Home'}`;
       for(const teamId of [game.visitor_team?.id,game.home_team?.id].filter(Boolean)){
-        // Get recent players via team stats
-        const statsR=await fx(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=${season}&per_page=20&sort_by=game_date&direction=desc`,{headers:{'Authorization':KEYS.bdl}},8000);
-        if(!statsR.ok)continue;
-        const statsD=await statsR.json();
-        // Get unique players by id, pick top 5 by minutes
-        const playerMap=new Map();
-        (statsD.data||[]).forEach(s=>{
-          if(s.player?.id&&!playerMap.has(s.player.id))playerMap.set(s.player.id,s.player);
-        });
-        const recentPlayers=[...playerMap.values()].slice(0,5);
+        let recentPlayers=[];
+        for(const season of seasons){
+          // Fetch both regular season and postseason stats
+          const statsR=await fx(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=${season}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+          if(!statsR.ok) continue;
+          const statsD=await statsR.json();
+          // Also try postseason
+          const psStatsR=await fx(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=${season}&postseason=true&per_page=15`,{headers:{'Authorization':KEYS.bdl}},8000);
+          const psData=psStatsR.ok?(await psStatsR.json()).data||[]:[];
+          const playerMap=new Map();
+          [...(statsD.data||[]),...psData].forEach(s=>{
+            if(s.player?.id&&s.player?.first_name)playerMap.set(s.player.id,s.player);
+          });
+          recentPlayers=[...playerMap.values()].slice(0,6);
+          if(recentPlayers.length)break;
+        }
+        if(!recentPlayers.length)continue;
 
-        for(const player of recentPlayers.filter(Boolean)){
-          const logR=await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=15`,{headers:{'Authorization':KEYS.bdl}},8000);
-          if(!logR.ok)continue;
-          const logD=await logR.json();
-          const playerLogs=(logD.data||[]).filter(g=>g.min&&g.min!=='0:00'&&g.min!=='00');
+        for(const player of recentPlayers){
+          let playerLogs=[];
+          for(const season of seasons){
+            // Get regular season logs
+            const logR=await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=20`,{headers:{'Authorization':KEYS.bdl}},8000);
+            // Get postseason logs
+            const psLogR=await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&postseason=true&per_page=10`,{headers:{'Authorization':KEYS.bdl}},8000);
+            const regData=logR.ok?(await logR.json()).data||[]:[];
+            const psData=psLogR.ok?(await psLogR.json()).data||[]:[];
+            // Combine — postseason games first (most recent context)
+            const combined=[...psData,...regData];
+            const filtered=combined.filter(g=>{const m=g.min;return m&&m!=='0'&&m!=='0:00'&&m!=='00'&&m!==0;});
+            if(filtered.length>=2){playerLogs=filtered;break;}
+          }
           if(playerLogs.length<2)continue;
 
-          for(const pd of (propDefs[sport]||[])){
-            // Find the line closest to their actual average
-            const vals=playerLogs.map(g=>parseFloat(g[pd.key])||0).filter(v=>v>=0);
+          const playerName=`${player.first_name||''} ${player.last_name||''}`.trim();
+          for(const pd of propDefs){
+            const vals=playerLogs.map(g=>parseFloat(g[pd.key])||0);
             if(!vals.length)continue;
             const avg=vals.reduce((s,v)=>s+v,0)/vals.length;
-
-            // Test all lines, pick the one with best hit rate
             for(const line of pd.lines){
+              if(avg<line*0.6)continue;
               const hits=computeHitRates(playerLogs.map(g=>({[pd.key]:parseFloat(g[pd.key])||0})),pd.key,line,'MORE');
               if(!hits||hits.l5_hit_rate==null)continue;
-              // Include if hit rate is meaningful OR avg clearly supports the line
-              if(hits.l5_hit_rate>=0.55||avg>line*1.1){
-                candidates.push({
-                  player:`${player.first_name||''} ${player.last_name||''}`.trim(),
-                  sport,prop:pd.prop,side:'MORE',line,game:gameStr,
-                  recent_avg:parseFloat(avg.toFixed(2)),
-                  l5_hit_rate:hits.l5_hit_rate,
-                  l10_hit_rate:hits.l10_hit_rate,
-                  raw_vals:vals.slice(0,10),
-                  l5_median:hits.l5_median,
-                  role_score:7,
-                  note:`L5 avg: ${avg.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`
-                });
-                break; // Only add best line per prop type per player
+              if(hits.l5_hit_rate>=0.53||avg>line*1.08){
+                candidates.push({player:playerName,sport,prop:pd.prop,side:'MORE',line,game:gameStr,recent_avg:parseFloat(avg.toFixed(2)),l5_hit_rate:hits.l5_hit_rate,l10_hit_rate:hits.l10_hit_rate,l5_median:hits.l5_median,raw_vals:vals.slice(0,10),role_score:7,confidence:hits.l5_hit_rate,note:`L5 avg: ${avg.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`});
+                break;
               }
             }
           }
         }
       }
     }
-    log(`✓ ${sport}: ${candidates.length} candidates with real stats`,'ok');
+    log(`✓ ${sport}: ${candidates.length} candidates found`,'ok');
   }catch(e){
-    log(`⚠ ${sport} BDL error: ${e.message} — using ESPN fallback`,'w');
+    log(`⚠ ${sport} BDL error: ${e.message} — trying ESPN fallback`,'w');
     return runESPNEngine(sport,log);
   }
-  // If BDL returned nothing useful, fall back to ESPN
-  if(!candidates.length){
-    log(`⚠ ${sport}: No BDL candidates — trying ESPN fallback`,'w');
-    return runESPNEngine(sport,log);
-  }
+  if(!candidates.length){log(`⚠ ${sport}: No candidates — trying ESPN fallback`,'w');return runESPNEngine(sport,log);}
   return candidates;
 }
+
 
 // ── ESPN Fallback Engine (NFL, Soccer, etc.) ──
 async function runESPNEngine(sport,log){
@@ -2618,12 +2617,15 @@ async function enrichWithNBAStats(prop){
     const player = sd.data?.[0];
     if(!player) return prop;
 
-    // Get last 15 game logs
-    const logR = await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2024&per_page=15`,
-      {headers:{'Authorization': KEYS.bdl}}, 8000);
-    if(!logR.ok) return prop;
-    const logD = await logR.json();
-    const logs = logD.data || [];
+    // Get last 15 game logs — include postseason
+    const [logR, psLogR] = await Promise.all([
+      fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2025&per_page=15`,{headers:{'Authorization': KEYS.bdl}}, 8000),
+      fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2025&postseason=true&per_page=10`,{headers:{'Authorization': KEYS.bdl}}, 8000),
+    ]);
+    const regData=logR.ok?(await logR.json()).data||[]:[];
+    const psData=psLogR.ok?(await psLogR.json()).data||[]:[];
+    // Postseason first — more relevant context during playoffs
+    const logs=[...psData,...regData].filter(g=>{const m=g.min;return m&&m!=='0'&&m!=='0:00'&&m!==0;});
     if(!logs.length) return prop;
 
     // Get stat key
@@ -3265,7 +3267,7 @@ async function pullStats(){
     if(!sr.ok)throw new Error(sr.status);const sd=await sr.json();const players=sd.data||[];
     if(!players.length){el.innerHTML='<span class="ow">Player not found.</span>';chip('bdl','fail');return;}
     const p=players[0];chip('bdl','ok');
-    const lr=await fx(`${EP.bdl}/stats?player_ids[]=${p.id}&per_page=10&seasons[]=2024`,{headers:{'Authorization':KEYS.bdl}});
+    const lr=await fx(`${EP.bdl}/stats?player_ids[]=${p.id}&per_page=10&seasons[]=2025`,{headers:{'Authorization':KEYS.bdl}});
     const ld=await lr.json();const logs=(ld.data||[]).slice(0,10);
     let out=`<span class="ok">✓ ${p.first_name} ${p.last_name} — ${p.team?.full_name||'FA'} | ${p.position||'?'}\n\n</span><span class="oh">L${logs.length} GAME LOG:\n</span>`;
     if(!logs.length){out+='<span class="ow">No recent logs.</span>';}
