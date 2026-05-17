@@ -2231,17 +2231,37 @@ def analyze_board():
             "error": "ANTHROPIC_API_KEY secret is not set — add it in Replit Secrets",
         }), 503
 
-    body = request.get_json(silent=True) or {}
-    image_base64 = body.get("image_base64")
-    image_url    = body.get("image_url")
-    media_type   = body.get("media_type", "image/jpeg")
-    sport_hint   = body.get("sport", "")
-    platform     = body.get("platform", "PrizePicks")
+    # Accept three formats:
+    #   1. multipart/form-data file upload  (request.files["image"])
+    #   2. JSON body with image_base64
+    #   3. JSON body with image_url
+    body       = request.get_json(silent=True) or {}
+    form       = request.form
+    image_base64 = None
+    image_url    = None
+    media_type   = body.get("media_type") or form.get("media_type", "image/jpeg")
+    sport_hint   = body.get("sport")      or form.get("sport", "")
+    platform     = body.get("platform")   or form.get("platform", "PrizePicks")
+
+    # Case 1 — file upload
+    file = request.files.get("image") or request.files.get("file") or (
+        list(request.files.values())[0] if request.files else None
+    )
+    if file:
+        import base64 as _base64
+        file_bytes   = file.read()
+        image_base64 = _base64.b64encode(file_bytes).decode("utf-8")
+        mime         = file.content_type or "image/jpeg"
+        if mime and mime != "application/octet-stream":
+            media_type = mime
+    else:
+        image_base64 = body.get("image_base64") or form.get("image_base64")
+        image_url    = body.get("image_url")    or form.get("image_url")
 
     if not image_base64 and not image_url:
         return jsonify({
             "ok": False,
-            "error": "Provide either 'image_base64' or 'image_url' in the request body",
+            "error": "Provide a file upload (field: 'image'), 'image_base64', or 'image_url'",
         }), 422
 
     # Build Claude image content block
