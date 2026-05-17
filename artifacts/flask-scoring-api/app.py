@@ -2255,8 +2255,8 @@ def analyze_board():
 
     # ── Strategy 2: JSON body (any of several field names) ───────────────────
     if not image_base64 and not image_url:
-        for key in ("image_base64", "imageBase64", "image_data", "imageData",
-                    "data", "image", "screenshot"):
+        for key in ("image_b64", "image_base64", "imageBase64", "image_data",
+                    "imageData", "data", "image", "screenshot"):
             val = body.get(key) or form.get(key)
             if val and isinstance(val, str) and len(val) > 100:
                 image_base64 = val
