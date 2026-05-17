@@ -1073,14 +1073,23 @@ async function analyzePPBoard(){
   document.getElementById('ppSp').classList.remove('hidden');
   const statusEl = document.getElementById('ppAnalyzeStatus');
   const res = document.getElementById('ppResults');
-  res.innerHTML = `<div class="alert ab"><div class="spd"></div> Sending ${ppImages.length} screenshot(s) to Claude AI for prop extraction...</div>`;
+  res.innerHTML = `<div class="alert ab"><div class="spd"></div> Sending ${ppImages.length} screenshot(s) to Replit proxy → Claude AI...</div>`;
 
   let allProps = [];
+  let anyError = false;
 
   for(let i = 0; i < ppImages.length; i++){
     statusEl.textContent = `Processing image ${i+1} of ${ppImages.length}...`;
+    res.innerHTML += `<div id="img_status_${i}" style="font-family:var(--mono);font-size:11px;color:var(--text2);padding:4px 0;">Image ${i+1}: sending to ${EP.replit}/analyze-board...</div>`;
+
     try {
-      // Route through Replit proxy — avoids CORS issues with direct Anthropic calls
+      const imgStatusEl = document.getElementById(`img_status_${i}`);
+
+      // Check image size — warn if very large
+      const b64Size = ppImages[i].b64.length;
+      const approxKB = Math.round(b64Size * 0.75 / 1024);
+      if(imgStatusEl) imgStatusEl.textContent = `Image ${i+1}: ${approxKB}KB — sending...`;
+
       const r = await fx(`${EP.replit}/analyze-board`, {
         method: 'POST',
         headers: {
@@ -1089,22 +1098,34 @@ async function analyzePPBoard(){
         },
         body: JSON.stringify({
           image_b64: ppImages[i].b64,
-          media_type: ppImages[i].isHEIC ? 'image/jpeg' : 'image/jpeg'
+          media_type: 'image/jpeg'
         })
-      }, 45000);
+      }, 60000); // 60 second timeout
+
+      const responseText = await r.text();
+      if(imgStatusEl) imgStatusEl.textContent = `Image ${i+1}: HTTP ${r.status} received`;
 
       if(!r.ok){
-        const errBody = await r.text().catch(()=>'');
-        throw new Error(`Proxy ${r.status}: ${errBody.slice(0,300)}`);
+        throw new Error(`HTTP ${r.status}: ${responseText.slice(0,400)}`);
       }
-      const d = await r.json();
-      if(!d.ok) throw new Error(d.error || 'Proxy returned error');
+
+      let d;
+      try { d = JSON.parse(responseText); }
+      catch(parseErr) { throw new Error(`JSON parse failed: ${responseText.slice(0,200)}`); }
+
+      if(!d.ok) throw new Error(`Server error: ${d.error || JSON.stringify(d).slice(0,200)}`);
+
       const props = d.props || [];
       allProps.push(...props);
-      statusEl.textContent = `Image ${i+1}: extracted ${props.length} props`;
+      if(imgStatusEl) imgStatusEl.innerHTML = `<span style="color:var(--green);">✓ Image ${i+1}: extracted ${props.length} props</span>`;
+      statusEl.textContent = `Image ${i+1}: ${props.length} props extracted`;
+
     } catch(e) {
-      statusEl.textContent = `Image ${i+1} failed: ${e.message}`;
-      res.innerHTML += `<div class="alert ar" style="margin-bottom:6px;">Image ${i+1} error: ${e.message}</div>`;
+      anyError = true;
+      const imgStatusEl = document.getElementById(`img_status_${i}`);
+      if(imgStatusEl) imgStatusEl.innerHTML = `<span style="color:var(--red);">✗ Image ${i+1} error: ${e.message}</span>`;
+      statusEl.textContent = `Image ${i+1} failed`;
+      console.error('analyzePPBoard error:', e);
     }
   }
 
@@ -1117,10 +1138,22 @@ async function analyzePPBoard(){
   });
 
   statusEl.textContent = '';
+
   if(!allProps.length){
-    res.innerHTML = `<div class="alert ay">⚠ No props extracted from ${ppImages.length} screenshot(s).<br>Make sure your screenshot shows the PrizePicks player props board clearly. The app needs to be open to the lobby/board screen with player names, stat lines, and MORE/LESS visible.<br><br>Try manual entry below or upload a clearer screenshot.</div>`;
+    if(anyError){
+      res.innerHTML += `<div class="alert ar" style="margin-top:8px;">
+        <div><strong>Connection failed.</strong> Check the error above for details.<br><br>
+        Common fixes:<br>
+        • Make sure your Replit app is running (visit ${EP.replit}/health)<br>
+        • Restart your Replit project<br>
+        • Check the /analyze-board route is in app.py<br>
+        • Verify ANTHROPIC_API_KEY secret is set in Replit</div>
+      </div>`;
+    } else {
+      res.innerHTML += `<div class="alert ay" style="margin-top:8px;">⚠ No props found in screenshot. Make sure the PrizePicks board is clearly visible with player names and lines.</div>`;
+    }
   } else {
-    res.innerHTML = `<div class="alert ag">✓ Extracted ${allProps.length} unique props from ${ppImages.length} screenshot(s). Running WOW validation...</div>`;
+    res.innerHTML += `<div class="alert ag" style="margin-top:8px;">✓ Extracted ${allProps.length} unique props. Running WOW validation...</div>`;
     await validateAndRenderPP(allProps, res);
   }
 
