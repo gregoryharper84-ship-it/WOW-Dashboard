@@ -4105,18 +4105,41 @@ function renderPropPool(){
   const side=document.getElementById('poolSideFilter')?.value||'all';
   const ms=parseInt(document.getElementById('poolMinScore')?.value||0);
   let data=[...propPool];
-  if(sf!=='all') data=data.filter(p=>p.sport===sf);
+
+  // Case-insensitive sport filter
+  if(sf!=='all') data=data.filter(p=>(p.sport||'').toUpperCase()===sf.toUpperCase());
   if(tf==='tier1') data=data.filter(p=>p.tier==='tier1');
-  if(tf==='tier2') data=data.filter(p=>['tier1','tier2'].includes(p.tier));
+  if(tf==='tier2') data=data.filter(p=>['tier1','tier2','flex'].includes(p.tier));
   if(side!=='all') data=data.filter(p=>p.side===side);
   if(ms>0) data=data.filter(p=>(p.wowScore||0)>=ms);
 
   const div=document.getElementById('poolResults');
-  if(!data.length){div.innerHTML=`<div class="alert ay">No qualified props match filters. ${propPool.length?'Adjust filters.':'Click Refresh Now to load.'}</div>`;return;}
+
+  // Sport breakdown chips
+  const sportCounts={};
+  propPool.forEach(p=>{const s=(p.sport||'?').toUpperCase();sportCounts[s]=(sportCounts[s]||0)+1;});
+  const breakdownHtml=Object.entries(sportCounts).map(([s,c])=>
+    `<span onclick="document.getElementById('poolSportFilter').value='${s}';renderPropPool();" style="cursor:pointer;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:${sf.toUpperCase()===s?'var(--accent)':'var(--surface2)'};color:${sf.toUpperCase()===s?'#fff':'var(--text2)'};border:1px solid var(--border);">${s} (${c})</span>`
+  ).join('');
+  const allChip=`<span onclick="document.getElementById('poolSportFilter').value='all';renderPropPool();" style="cursor:pointer;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:${sf==='all'?'var(--accent)':'var(--surface2)'};color:${sf==='all'?'#fff':'var(--text2)'};border:1px solid var(--border);">All (${propPool.length})</span>`;
+
+  if(!data.length){
+    div.innerHTML=`
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">${allChip}${breakdownHtml}</div>
+      <div class="alert ay">No props match the <strong>${sf==='all'?'current':''+sf}</strong> filter. ${propPool.length} total props in pool — tap a sport above to view them.</div>`;
+    return;
+  }
 
   div.innerHTML='';
+
+  // Sport chips for quick filtering
+  const chipsDiv=document.createElement('div');
+  chipsDiv.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;';
+  chipsDiv.innerHTML=allChip+breakdownHtml;
+  div.appendChild(chipsDiv);
+
   const hdr=document.createElement('div');hdr.className='slbl';
-  hdr.innerHTML=`${data.length} Slip-Qualified Props <span style="font-weight:400;color:var(--text3);">· tap MORE/LESS to select side · tap + Slip to add</span>`;
+  hdr.innerHTML=`${data.length} Props ${sf!=='all'?'('+sf+')':''} <span style="font-weight:400;color:var(--text3);">· tap MORE/LESS to select side · + Slip to add</span>`;
   div.appendChild(hdr);
 
   data.forEach(p=>{
