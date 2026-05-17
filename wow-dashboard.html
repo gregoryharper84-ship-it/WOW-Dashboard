@@ -6,7 +6,7 @@
 <title>WOW v14.9+ Command Center</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-:root{--bg:#f0f2f5;--surface:#ffffff;--surface2:#f8f9fb;--border:#e2e5ea;--border2:#d0d4dc;--accent:#1a56db;--accent-light:#e8f0fe;--green:#0e9f6e;--green-light:#e3f9f0;--yellow:#c27803;--yellow-light:#fef3c7;--red:#e02424;--red-light:#fde8e8;--orange:#d03801;--orange-light:#feecdc;--text:#1a1f2e;--text2:#6b7280;--text3:#9ca3af;--mono:'JetBrains Mono',monospace;--sans:'Inter',sans-serif;--r:10px;--sh:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06);--sh2:0 4px 6px rgba(0,0,0,.07);}
+:root{--bg:#f0f2f5;--surface:#ffffff;--surface2:#f8f9fb;--border:#e2e5ea;--border2:#d0d4dc;--accent:#1a56db;--accent-light:#e8f0fe;--green:#0e9f6e;--green-light:#e3f9f0;--yellow:#c27803;--yellow-light:#fef3c7;--red:#e02424;--red-light:#fde8e8;--orange:#d03801;--orange-light:#feecdc;--purple:#7c3aed;--purple-light:#ede9fe;--text:#1a1f2e;--text2:#6b7280;--text3:#9ca3af;--mono:'JetBrains Mono',monospace;--sans:'Inter',sans-serif;--r:10px;--sh:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06);--sh2:0 4px 6px rgba(0,0,0,.07);}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.5;min-height:100vh;}
 #app{max-width:1300px;margin:0 auto;padding:20px 16px;}
@@ -50,6 +50,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 /* BADGES */
 .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;}
 .bg-g{background:var(--green-light);color:var(--green);}
+.bg-p{background:var(--purple-light);color:var(--purple);}
+.pc.flex{border-left:3px solid var(--purple);}
 .bg-b{background:var(--accent-light);color:var(--accent);}
 .bg-y{background:var(--yellow-light);color:var(--yellow);}
 .bg-r{background:var(--red-light);color:var(--red);}
@@ -1071,7 +1073,7 @@ async function runAutoEngine(){
   const top=scored.slice(0,maxP);
 
   log(`\n✓ Engine complete. ${top.length} props meet criteria.`,'ok');
-  top.filter(p=>['tier1','tier2'].includes(p.tier)).forEach(p=>addToPool(p));
+  top.filter(p=>['tier1','tier2','flex'].includes(p.tier)).forEach(p=>addToPool(p));
   renderEngineResults(top,resEl);
 
   document.getElementById('engBtn').textContent='RUN ENGINE';document.getElementById('engSp').classList.add('hidden');
@@ -1463,12 +1465,12 @@ function validateSampleSize(vals, prop){
   const n = vals?.length || 0;
   const propLower = (prop||'').toLowerCase();
 
-  // Different minimum samples by prop volatility
+  // Minimum samples by prop type — reduced for early season realism
   let minRequired;
-  if(propLower.includes('strikeout')||propLower.includes('pitch')) minRequired = 5;  // pitcher starts
-  else if(propLower.includes('point')||propLower.includes('rebound')) minRequired = 7; // NBA high volume
-  else if(propLower.includes('shot')||propLower.includes('save')) minRequired = 6;    // NHL
-  else minRequired = 5;
+  if(propLower.includes('strikeout')||propLower.includes('pitch')) minRequired = 3;
+  else if(propLower.includes('point')||propLower.includes('rebound')) minRequired = 4;
+  else if(propLower.includes('shot')||propLower.includes('save')) minRequired = 3;
+  else minRequired = 3;
 
   const confidence = n >= minRequired * 2 ? 'HIGH' :
                      n >= minRequired ? 'MEDIUM' : 'LOW';
@@ -1659,13 +1661,14 @@ async function wowValidate(p, wowScore){
   const sampleCheck = validateSampleSize(p.raw_vals, p.prop);
   if(!sampleCheck.isValid){
     failures.push('insufficient-sample-size');
-    insights.push(sampleCheck.note);
+    if(sampleCheck.note) insights.push(sampleCheck.note);
   }
 
   // ── DATA QUALITY ──
   const ds = ['recent_avg','l5_hit_rate','l10_hit_rate','market_gap','role_score','matchup_rating','confidence']
     .filter(k=>p[k]!=null&&!isNaN(p[k])).length;
-  const dq = ds>=5?'GREEN':ds>=2?'YELLOW':'RED';
+  const dq = ds>=4?'GREEN':ds>=2?'YELLOW':'RED';
+  // isAutoGen = no enrichment data at all (engine-generated without stats)
   const isAutoGen = ds === 0;
 
   // ── RECENCY-WEIGHTED HIT RATES ──
@@ -1679,13 +1682,16 @@ async function wowValidate(p, wowScore){
   // ── BASE PROBABILITY ──
   let rawProb;
   if(weightedL5!=null && weightedL10!=null){
-    // Sample-size weighted: more weight on L10 if sample is large enough
     const l5weight = sampleCheck.n >= 10 ? 0.40 : 0.50;
     const l10weight = sampleCheck.n >= 10 ? 0.40 : 0.30;
-    rawProb = weightedL5 * l5weight + weightedL10 * l10weight + (p.confidence||0.5) * (1-l5weight-l10weight);
+    rawProb = weightedL5 * l5weight + weightedL10 * l10weight + (p.confidence||0.55) * (1-l5weight-l10weight);
+  } else if(weightedL5!=null){
+    // Only L5 available — use it with confidence fallback
+    rawProb = weightedL5 * 0.65 + (p.confidence||0.55) * 0.35;
   } else if(p.confidence!=null){
     rawProb = p.confidence;
   } else {
+    // No data — start at 0.58, let other signals adjust
     rawProb = 0.58;
   }
 
@@ -1756,8 +1762,10 @@ async function wowValidate(p, wowScore){
   }
 
   // ── SAMPLE SIZE PENALTY ──
-  if(!sampleCheck.isValid) rawProb -= 0.04;
-  else if(sampleCheck.confidence==='MEDIUM') rawProb -= 0.01;
+  // Softer penalty — small sample means uncertainty, not rejection
+  if(!sampleCheck.isValid && sampleCheck.n > 0) rawProb -= 0.02;
+  else if(!sampleCheck.isValid && sampleCheck.n === 0) rawProb -= 0.03;
+  else if(sampleCheck.confidence==='MEDIUM') rawProb -= 0.005;
 
   // ── WOW SCORER (20% weight, support only) ──
   if(wowScore!=null){
@@ -1825,19 +1833,20 @@ async function wowValidate(p, wowScore){
 
   if(badPrice){
     tier='reject'; label='REJECT — PrizePicks line significantly worse than market';
-  } else if(rawProb < 0.55){
-    tier='watch'; label='WATCH — Below 55% threshold';
-  } else if(rawProb >= 0.63 && dq==='GREEN' && !hasPowerBan && !medianFailed && sampleCheck.isValid && !badPrice){
-    tier='tier1'; label='TIER 1 — Market Verified';
-  } else if(rawProb >= 0.59 && dq!=='RED' && !hasPowerBan && !isAutoGen){
-    tier='tier2'; label='MODEL QUALIFIED';
-  } else if(hasPowerBan && rawProb >= 0.59){
+  } else if(rawProb < 0.53){
+    tier='watch'; label='WATCH — Below all break-evens';
+  } else if(rawProb >= 0.63 && dq==='GREEN' && !hasPowerBan && !medianFailed && !badPrice){
+    tier='tier1'; label='TIER 1 — Power + Flex Qualified';
+  } else if(rawProb >= 0.57 && dq!=='RED' && !hasPowerBan){
+    tier='tier2'; label='MODEL QUALIFIED — Power 2/3 + Flex';
+  } else if(hasPowerBan && rawProb >= 0.57){
     tier='tier2'; label='MODEL QUALIFIED — Flex/Research Only';
     failures.push('power-play-banned-fragile-leg');
-  } else if(rawProb >= 0.59 || isAutoGen){
-    tier='tier2'; label='MODEL QUALIFIED — Verify Data';
-  } else if(dq==='RED' || !sampleCheck.isValid){
-    tier='conditional'; label='CONDITIONAL — Insufficient Data';
+  } else if(rawProb >= 0.55){
+    // +EV on Flex 5/6 (break-evens 53.21% / 52.94%) but below Power threshold
+    tier='flex'; label='FLEX QUALIFIED — Flex 5/6 Only (not Power)';
+  } else if(rawProb >= 0.53){
+    tier='conditional'; label='CONDITIONAL — Verify Before Playing';
   } else {
     tier='watch'; label='WATCH';
   }
@@ -1861,8 +1870,8 @@ function renderEngineResults(props,container){
 
 function makePCard(p){
   const card=document.createElement('div');card.className=`pc ${p.tier||'watch'}`;
-  const bm={tier1:'bg-g',tier2:'bg-b',conditional:'bg-o',watch:'bg-y',reject:'bg-r'};
-  const lm={tier1:'TIER 1',tier2:'QUALIFIED',conditional:'CONDITIONAL',watch:'WATCH',reject:'REJECT'};
+  const bm={tier1:'bg-g',tier2:'bg-b',flex:'bg-p',conditional:'bg-o',watch:'bg-y',reject:'bg-r'};
+  const lm={tier1:'TIER 1',tier2:'QUALIFIED',flex:'FLEX ONLY',conditional:'CONDITIONAL',watch:'WATCH',reject:'REJECT'};
   const sc=p.wowScore>=70?'sh':p.wowScore>=55?'sm':'sl';
   const pObj={player:p.player,sport:p.sport,prop:p.prop,side:p.side,line:p.line,tier:p.tier,label:p.label,wowScore:p.wowScore,rawProb:p.rawProb};
 
@@ -2862,7 +2871,7 @@ async function validateAndRenderPP(props, container){
     const val = await wowValidate(enriched, ws); // now async
     const final = {...enriched, ...val, wowScore: ws};
     results.push(final);
-    if(['tier1','tier2'].includes(val.tier)) addToPool(final);
+    if(['tier1','tier2','flex'].includes(val.tier)) addToPool(final);
   }
 
   container.innerHTML = '';
@@ -2901,8 +2910,9 @@ function addToSlipCard(p){addToPool(p);addLeg(p);switchTab('slip');}
 
 // ── Build a single slip of n legs from pool ──
 function buildSlipOfSize(pool, n, tgt, usedAcrossSlips){
-  const DUPE_THRESHOLD = 0.65; // player can appear on multiple slips only if prob >= 65%
-  const tierOrd={tier1:0,tier2:1,conditional:2};
+  const DUPE_THRESHOLD = 0.65;
+  const isPowerSlip = n <= 4;
+  const tierOrd={tier1:0,tier2:1,flex:2,conditional:3};
   const sorted=[...pool].sort((a,b)=>{
     const ta=tierOrd[a.tier]??3,tb=tierOrd[b.tier]??3;
     return ta!==tb?ta-tb:(b.rawProb||b.wowScore||0)-(a.rawProb||a.wowScore||0);
@@ -2912,12 +2922,12 @@ function buildSlipOfSize(pool, n, tgt, usedAcrossSlips){
 
   for(const p of sorted){
     if(legs.length>=n) break;
-    // Player duplication rule: skip if already on another slip AND prob < 65%
     if(usedAcrossSlips.has(p.player) && (p.rawProb||0) < DUPE_THRESHOLD) continue;
     if(usedPlayers.has(p.player)) continue;
     if((sportCounts[p.sport]||0)>=2) continue;
     if(tgt==='A'&&p.tier!=='tier1'&&n<=3) continue;
-    // No fragile hard bans as power anchors for small slips
+    // FLEX-ONLY rule: flex tier (55-57%) cannot anchor Power 2/3/4
+    if(isPowerSlip && p.tier==='flex') continue;
     if(n<=3&&p.fragileFlags?.some(f=>f.severity==='ban_power')) continue;
     legs.push(p);
     usedPlayers.add(p.player);
@@ -3052,7 +3062,12 @@ async function buildAllSlips(){
   document.getElementById('slipSp').classList.add('hidden');
 }
 
-function addToPool(p){if(approvedProps.find(x=>x.player===p.player&&x.prop===p.prop&&x.side===p.side))return;approvedProps.push(p);renderPool();document.getElementById('poolCount').textContent=`(${approvedProps.length})`;}
+function addToPool(p){
+  if(approvedProps.find(x=>x.player===p.player&&x.prop===p.prop&&x.side===p.side))return;
+  if(!['tier1','tier2','flex'].includes(p.tier))return;
+  approvedProps.push(p);renderPool();
+  document.getElementById('poolCount').textContent=`(${approvedProps.length})`;
+}
 function addLeg(p){if(slipLegs.length>=6){alert('Max 6 legs');return;}if(slipLegs.find(l=>l.player===p.player&&l.prop===p.prop)){alert('Already in slip');return;}slipLegs.push(p);renderLegs();}
 function removeLeg(i){slipLegs.splice(i,1);renderLegs();}
 function clearSlip(){slipLegs=[];renderLegs();document.getElementById('slipGrade').innerHTML='';document.getElementById('slipOut').classList.add('hidden');}
@@ -3063,8 +3078,9 @@ function renderPool(){
   div.innerHTML='';
   approvedProps.forEach((p,i)=>{
     const c=document.createElement('div');c.className=`pc ${p.tier}`;c.style.marginBottom='6px';
-    const bm={tier1:'bg-g',tier2:'bg-b'};
-    c.innerHTML=`<div class="pm"><div class="pp" style="font-size:13px;">${p.player}</div><div class="pd">${p.sport} · ${p.prop} ${p.side} ${p.line}</div></div><span class="badge ${bm[p.tier]||'bg-gr'}" style="font-size:10px;">${(p.tier||'').toUpperCase()}</span><button class="btn btn-g btn-sm" onclick="addLeg(approvedProps[${i}])">+ Add</button>`;
+    const bm={tier1:'bg-g',tier2:'bg-b',flex:'bg-p',conditional:'bg-o'};
+    const lm={tier1:'TIER 1',tier2:'T2',flex:'FLEX',conditional:'COND'};
+    c.innerHTML=`<div class="pm"><div class="pp" style="font-size:13px;">${p.player}</div><div class="pd">${p.sport} · ${p.prop} ${p.side} ${p.line}${p.tier==='flex'?' <span style="font-size:10px;color:var(--purple);">Flex 5/6 only</span>':''}</div></div><span class="badge ${bm[p.tier]||'bg-gr'}" style="font-size:10px;">${lm[p.tier]||p.tier}</span><button class="btn btn-g btn-sm" onclick="addLeg(approvedProps[${i}])">+ Add</button>`;
     div.appendChild(c);
   });
 }
@@ -3075,7 +3091,7 @@ function renderLegs(){
   z.innerHTML='';
   slipLegs.forEach((leg,i)=>{
     const el=document.createElement('div');el.className='slip-leg';
-    const bm={tier1:'bg-g',tier2:'bg-b'};
+    const bm={tier1:'bg-g',tier2:'bg-b',flex:'bg-p'};
     el.innerHTML=`<div><div style="font-weight:600;font-size:13px;">${leg.player}</div><div style="font-size:11px;color:var(--text2);">${leg.sport} · ${leg.prop} ${leg.side} ${leg.line}</div></div><div style="display:flex;align-items:center;gap:8px;"><span class="badge ${bm[leg.tier]||'bg-gr'}" style="font-size:10px;">${(leg.tier||'').toUpperCase()}</span><button onclick="removeLeg(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:18px;line-height:1;">×</button></div>`;
     z.appendChild(el);
   });
@@ -3161,7 +3177,7 @@ async function scoreManual(){
   if(ws!=null)push(ws>=70?'w':ws>=55?'ok':'e',`WOW Score: ${ws}/100${ws>=70?' ⚠ TRAP AUDIT':''}`);
   if(payload.injury_flag)push('w','⚠ Injury flag active');
   push(val.tier==='tier1'||val.tier==='tier2'?'ok':val.tier==='conditional'?'w':'e',`▶ ${val.label}`);
-  if(['tier1','tier2'].includes(val.tier)){push('ok','✓ Eligible for slip — click Add to Slip');addToPool({player,sport,prop,side,line,tier:val.tier,label:val.label,wowScore:ws});}
+  if(['tier1','tier2','flex'].includes(val.tier)){push('ok','✓ Eligible for slip — click Add to Slip');addToPool({player,sport,prop,side,line,tier:val.tier,label:val.label,wowScore:ws});}
   document.getElementById('mOut').innerHTML=lines.join('\n');
   const acts=document.getElementById('mActs');acts.innerHTML='';
   if(['tier1','tier2'].includes(val.tier)){const btn=document.createElement('button');btn.className='btn btn-g btn-sm';btn.textContent='+ Add to Slip';btn.onclick=()=>{addLeg({player,sport,prop,side,line,tier:val.tier,label:val.label,wowScore:ws});switchTab('slip');};acts.appendChild(btn);}
@@ -3962,7 +3978,7 @@ async function refreshPropPool(manual=false){
       const en=await enrichProp(p);
       const ws=await scoreOne(en);
       const val=await wowValidate(en,ws);
-      if(['tier1','tier2'].includes(val.tier)){scored.push({...en,...val,wowScore:ws});addToPool({...en,...val,wowScore:ws});}
+      if(['tier1','tier2','flex'].includes(val.tier)){scored.push({...en,...val,wowScore:ws});addToPool({...en,...val,wowScore:ws});}
     }catch(e){}
   }
 
