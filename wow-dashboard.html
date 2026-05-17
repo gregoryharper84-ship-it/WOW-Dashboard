@@ -1044,27 +1044,49 @@ async function runAutoEngine(){
 
   for(const sport of sports){
     log(`\n⟳ Scanning ${sport} slate + pulling player stats...`,'i');
-
-    if(sport==='MLB'){
-      allCandidates.push(...await runMLBEngine(log));
-    } else if(sport==='NHL'){
-      allCandidates.push(...await runNHLEngine(log));
-    } else if(sport==='NBA'||sport==='WNBA'){
-      allCandidates.push(...await runBDLEngine(sport,log));
-    } else {
-      // ESPN fallback for other sports
-      allCandidates.push(...await runESPNEngine(sport,log));
+    try{
+      if(sport==='MLB'){
+        allCandidates.push(...await runMLBEngine(log));
+      } else if(sport==='NHL'){
+        // NHL season runs Oct-Jun; skip if no games
+        allCandidates.push(...await runNHLEngine(log));
+      } else if(sport==='NBA'){
+        allCandidates.push(...await runBDLEngine('NBA',log));
+      } else if(sport==='WNBA'){
+        // WNBA season May-Oct — use ESPN fallback (BDL WNBA endpoint requires paid tier)
+        allCandidates.push(...await runESPNEngine('WNBA',log));
+      } else if(sport==='NFL'){
+        // NFL season Sep-Feb; May is off-season
+        const month=new Date().getMonth()+1; // 1-12
+        if(month>=9||month<=2){
+          allCandidates.push(...await runESPNEngine('NFL',log));
+        } else {
+          log(`⚠ NFL: Off-season (${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][month-1]}) — skipping`,'w');
+        }
+      } else {
+        allCandidates.push(...await runESPNEngine(sport,log));
+      }
+    }catch(e){
+      log(`⚠ ${sport} error: ${e.message}`,'w');
     }
   }
 
   log(`\n⟳ ${allCandidates.length} candidates with stats. Running WOW validation...`,'i');
 
   let scored=[];
+  let debugLines=[];
   for(const c of allCandidates.slice(0,60)){
     const ws=await scoreOne(c);
-    const val=await wowValidate(c,ws); // must be awaited — wowValidate is async
+    const val=await wowValidate(c,ws);
     scored.push({...c,...val,wowScore:ws});
+    // Debug: show each prop's result
+    const prob=val.rawProb!=null?((val.rawProb)*100).toFixed(1)+'%':'??';
+    debugLines.push(`${val.tier==='tier1'?'✓':val.tier==='tier2'?'✓':val.tier==='flex'?'~':'✗'} ${c.player} ${c.prop} ${c.side} ${c.line} → ${prob} [${val.tier}]`);
   }
+  // Show debug summary in log
+  const passCount=scored.filter(s=>['tier1','tier2','flex'].includes(s.tier)).length;
+  log(`\n📊 Validation results (${passCount}/${scored.length} passed):`,'i');
+  debugLines.slice(0,20).forEach(l=>log(l,l.startsWith('✓')||l.startsWith('~')?'ok':''));
 
   const tierOrd={tier1:0,tier2:1,flex:2,conditional:3,watch:4,reject:5};
   const maxIdx={tier1:0,tier2:2,all:4}[minTier]??2; // tier2 now includes flex
@@ -1810,8 +1832,9 @@ async function wowValidate(p, wowScore){
   else if(!sampleCheck.isValid && sampleCheck.n === 0) rawProb -= 0.03;
   else if(sampleCheck.confidence==='MEDIUM') rawProb -= 0.005;
 
-  // ── WOW SCORER (20% weight, support only) ──
-  if(wowScore!=null){
+  // ── WOW SCORER (support only, 18% weight) ──
+  // Only blend if WOW score is valid — null score means scorer unavailable, don't penalize
+  if(wowScore!=null && !isNaN(wowScore)){
     let cappedScore = wowScore;
     fragileFlags.forEach(f=>{
       if(f.severity==='cap_64') cappedScore = Math.min(cappedScore, 64);
@@ -1822,6 +1845,10 @@ async function wowValidate(p, wowScore){
       rawProb -= 0.02;
       failures.push('probability-overconfidence-trap-audit');
     }
+  }
+  // If no WOW score, apply small uncertainty penalty only
+  else if(wowScore==null){
+    rawProb -= 0.01;
   }
 
   rawProb = Math.min(0.92, Math.max(0.32, rawProb));
