@@ -1,4 +1,6 @@
 import os
+import re
+import json
 import random
 import math
 import threading
@@ -8,6 +10,12 @@ from datetime import datetime, timezone
 from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+
+try:
+    import anthropic as _anthropic
+    _ANTHROPIC_AVAILABLE = True
+except ImportError:
+    _ANTHROPIC_AVAILABLE = False
 
 try:
     import psycopg2
@@ -2188,6 +2196,138 @@ def gpt_action_schema_yaml():
         os.path.basename(schema_path),
         mimetype="text/yaml"
     )
+
+
+@app.route("/analyze-board", methods=["POST"])
+@require_api_key
+def analyze_board():
+    """
+    POST /analyze-board
+
+    Accepts a PrizePicks (or similar sportsbook) board screenshot and uses
+    Claude vision to extract every visible player prop into structured JSON.
+
+    Body (JSON — send one of image_base64 or image_url):
+      image_base64  — base64-encoded image data (no data:// prefix)
+      image_url     — publicly accessible image URL (alternative to base64)
+      media_type    — "image/jpeg" | "image/png" | "image/webp"  (default: image/jpeg)
+      sport         — optional sport hint: "NBA", "MLB", etc.
+      platform      — optional platform hint: "PrizePicks", "Underdog", etc.
+
+    Returns:
+      ok            — true/false
+      props         — array of extracted prop objects
+      count         — number of props found
+      model         — claude model used
+      usage         — input/output token counts
+    """
+    if not _ANTHROPIC_AVAILABLE:
+        return jsonify({"ok": False, "error": "anthropic package not installed"}), 503
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({
+            "ok": False,
+            "error": "ANTHROPIC_API_KEY secret is not set — add it in Replit Secrets",
+        }), 503
+
+    body = request.get_json(silent=True) or {}
+    image_base64 = body.get("image_base64")
+    image_url    = body.get("image_url")
+    media_type   = body.get("media_type", "image/jpeg")
+    sport_hint   = body.get("sport", "")
+    platform     = body.get("platform", "PrizePicks")
+
+    if not image_base64 and not image_url:
+        return jsonify({
+            "ok": False,
+            "error": "Provide either 'image_base64' or 'image_url' in the request body",
+        }), 422
+
+    # Build Claude image content block
+    if image_base64:
+        # Strip data URL prefix if caller included it
+        if "," in image_base64:
+            image_base64 = image_base64.split(",", 1)[1]
+        image_block = {
+            "type": "image",
+            "source": {
+                "type":       "base64",
+                "media_type": media_type,
+                "data":       image_base64,
+            },
+        }
+    else:
+        image_block = {
+            "type": "image",
+            "source": {"type": "url", "url": image_url},
+        }
+
+    sport_line = f"Sport context hint: {sport_hint}\n" if sport_hint else ""
+    prompt = f"""You are a sports prop extraction assistant. Analyze this {platform} board screenshot and extract every visible player prop.
+
+{sport_line}For each prop on the board return a JSON array. Each element must have:
+- "player":    full player name (string)
+- "sport":     sport abbreviation — NBA, MLB, NFL, NHL, WNBA, etc.
+- "prop":      stat category — e.g. "points", "rebounds", "assists", "hits", "pitcher strikeouts"
+- "side":      "MORE" or "LESS" if shown, otherwise null
+- "line":      numeric line/target value (number, not string)
+- "platform":  platform name if visible, else "{platform}"
+
+Return ONLY valid JSON — a single array with no markdown fences, no explanation.
+If you cannot read the image or find no props, return [].
+
+Example:
+[
+  {{"player": "Nikola Jokic", "sport": "NBA", "prop": "rebounds", "side": "MORE", "line": 12.5, "platform": "{platform}"}},
+  {{"player": "Freddie Freeman", "sport": "MLB", "prop": "hits", "side": "MORE", "line": 1.5, "platform": "{platform}"}}
+]"""
+
+    try:
+        client = _anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=2048,
+            messages=[{
+                "role": "user",
+                "content": [
+                    image_block,
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+
+        raw_text = message.content[0].text.strip() if message.content else "[]"
+
+        # Parse JSON — fall back to regex extraction if model wrapped it
+        try:
+            props = json.loads(raw_text)
+        except json.JSONDecodeError:
+            match = re.search(r"\[.*\]", raw_text, re.DOTALL)
+            props = json.loads(match.group()) if match else []
+
+        return jsonify({
+            "ok":    True,
+            "props": props,
+            "count": len(props),
+            "model": message.model,
+            "usage": {
+                "input_tokens":  message.usage.input_tokens,
+                "output_tokens": message.usage.output_tokens,
+            },
+        })
+
+    except _anthropic.AuthenticationError:
+        return jsonify({
+            "ok": False,
+            "error": "Invalid ANTHROPIC_API_KEY — check the value in Replit Secrets",
+        }), 401
+    except _anthropic.RateLimitError:
+        return jsonify({"ok": False, "error": "Anthropic rate limit — retry shortly"}), 429
+    except _anthropic.BadRequestError as e:
+        return jsonify({"ok": False, "error": f"Bad request to Anthropic: {e}"}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/", defaults={"path": ""})
