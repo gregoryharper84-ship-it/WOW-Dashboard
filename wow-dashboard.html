@@ -156,11 +156,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
 <!-- TABS -->
 <div class="tabs">
   <button class="tab active" onclick="switchTab('engine')">🎯 Best Props</button>
+  <button class="tab" onclick="switchTab('pool')">🔄 Prop Pool</button>
+  <button class="tab" onclick="switchTab('jeremia')">🧬 Jeremia</button>
   <button class="tab" onclick="switchTab('board')">📋 Live Board</button>
   <button class="tab" onclick="switchTab('prizepicks')">📸 PrizePicks</button>
   <button class="tab" onclick="switchTab('slip')">🎰 Slip Builder</button>
-  <button class="tab" onclick="switchTab('manual')">🔍 Manual Prop</button>
-  <button class="tab" onclick="switchTab('team')">🏟 Team Bets</button>
+  <button class="tab" onclick="switchTab('manual')">🔍 Manual</button>
+  <button class="tab" onclick="switchTab('team')">🏟 Teams</button>
   <button class="tab" onclick="switchTab('log')">📊 Log</button>
 </div>
 
@@ -188,6 +190,149 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
   </div>
   <div id="engStatus" class="hidden"><div class="card"><div class="cb"><div class="ob" id="engLog" style="min-height:70px;"></div></div></div></div>
   <div id="engResults"></div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<!-- PROP POOL -->
+<!-- ══════════════════════════════════════ -->
+<div id="tab-pool" class="hidden">
+  <div class="card" style="margin-bottom:12px;">
+    <div class="ch">
+      <div>
+        <span class="ct">🔄 Live Prop Pool</span>
+        <span id="poolLastUpdate" style="font-size:11px;color:var(--text2);margin-left:10px;">Never updated</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <span id="poolCountBadge" class="badge bg-b">0 props</span>
+        <button class="btn btn-p btn-sm" onclick="refreshPropPool(true)">
+          <span id="poolRefreshBtn">Refresh Now</span>
+          <span id="poolRefreshSp" class="hidden"><div class="sp"></div></span>
+        </button>
+      </div>
+    </div>
+    <div class="cb">
+      <div class="alert ab">Pulls slip-qualified props from live sportsbook lines every hour. Only props that clear WOW validation (Tier 1 or 2) are shown. Auto-refreshes while dashboard is open.</div>
+      <div class="fr">
+        <div class="field"><label>Sports Filter</label>
+          <select id="poolSportFilter" onchange="renderPropPool()">
+            <option value="all">All Sports</option>
+            <option value="NBA">NBA</option>
+            <option value="MLB">MLB</option>
+            <option value="NHL">NHL</option>
+            <option value="WNBA">WNBA</option>
+            <option value="NFL">NFL</option>
+          </select>
+        </div>
+        <div class="field"><label>Tier Filter</label>
+          <select id="poolTierFilter" onchange="renderPropPool()">
+            <option value="all">All Tiers</option>
+            <option value="tier1">Tier 1 Only</option>
+            <option value="tier2">Tier 2+</option>
+          </select>
+        </div>
+        <div class="field"><label>Side</label>
+          <select id="poolSideFilter" onchange="renderPropPool()">
+            <option value="all">Both</option>
+            <option value="MORE">MORE Only</option>
+            <option value="LESS">LESS Only</option>
+          </select>
+        </div>
+        <div class="field"><label>Min Score</label>
+          <select id="poolMinScore" onchange="renderPropPool()">
+            <option value="0">Any Score</option>
+            <option value="55">55+</option>
+            <option value="65">65+</option>
+            <option value="70">70+</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pool progress bar -->
+  <div id="poolProgress" class="hidden card" style="margin-bottom:12px;">
+    <div class="cb" style="padding:12px;">
+      <div class="ob" id="poolLog" style="min-height:60px;max-height:120px;"></div>
+    </div>
+  </div>
+
+  <!-- Pool results -->
+  <div id="poolResults"></div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<!-- JEREMIA STYLE BUILDER -->
+<!-- ══════════════════════════════════════ -->
+<div id="tab-jeremia" class="hidden">
+  <div style="background:linear-gradient(135deg,#7c3aed 0%,#4f46e5 100%);border-radius:var(--r);padding:18px 22px;margin-bottom:14px;color:#fff;">
+    <h2 style="font-size:17px;font-weight:700;margin-bottom:4px;">🧬 Jeremia-Style Slip Builder</h2>
+    <p style="font-size:12px;opacity:.85;">Floor-first · Volume-driven · Low-threshold exploitation · Multi-path anchored · Controlled ceiling</p>
+  </div>
+
+  <div class="g2" style="margin-bottom:12px;">
+    <div class="card">
+      <div class="ch"><span class="ct">Build Settings</span></div>
+      <div class="cb">
+        <div class="fr">
+          <div class="field"><label>Slip Type</label>
+            <select id="jer_sliptype">
+              <option value="power2">Power 2</option>
+              <option value="power3" selected>Power 3</option>
+              <option value="power4">Power 4</option>
+              <option value="flex5">Flex 5</option>
+              <option value="flex6">Flex 6</option>
+            </select>
+          </div>
+          <div class="field"><label>Sport</label>
+            <select id="jer_sport">
+              <option value="NBA" selected>NBA</option>
+              <option value="WNBA">WNBA</option>
+              <option value="MLB">MLB</option>
+              <option value="NHL">NHL</option>
+              <option value="all">All Sports</option>
+            </select>
+          </div>
+          <div class="field"><label>Platform</label>
+            <select id="jer_platform">
+              <option>PrizePicks</option>
+              <option>BetUS</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="dv"><div class="dl"></div><div class="dt">Jeremia Style Rules</div><div class="dl"></div></div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_assists" checked> <span>✓ Prioritize low-threshold assist overs (0.5–2.5)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_ra" checked> <span>✓ Include rebounds+assists multi-path anchors</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_fantasy" checked> <span>✓ Allow fantasy score for stat-stuffers</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_ceiling" checked> <span>✓ 1 controlled ceiling piece allowed</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_nostar" checked> <span>🚫 No superstar 1H unders</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_nohook" checked> <span>🚫 No thin-margin hook lines</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_nofade" checked> <span>🚫 No broad stat fade attempts</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_noscoring" checked> <span>🚫 No pure scoring-only anchors</span></label>
+        </div>
+
+        <button class="btn btn-p" onclick="buildJeremiaSlip()" style="background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;">
+          <span id="jerBtn">Build Jeremia Slip</span>
+          <span id="jerSp" class="hidden"><div class="sp"></div></span>
+        </button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="ch"><span class="ct">Jeremia Style Criteria</span></div>
+      <div class="cb" style="font-size:12px;color:var(--text2);line-height:1.8;">
+        <div style="margin-bottom:8px;"><strong style="color:var(--text);">🎯 Volume + Low Threshold Core</strong><br>0.5–2.5 assist overs, low-barrier role-player stats. Probability compression — one or two events cash it.</div>
+        <div style="margin-bottom:8px;"><strong style="color:var(--text);">⚓ Multi-Path Anchors</strong><br>Rebounds+Assists, fantasy for stat-stuffers, big-man peripherals. Multiple ways to win reduces variance.</div>
+        <div style="margin-bottom:8px;"><strong style="color:var(--text);">🎪 Controlled Ceiling Piece</strong><br>1 higher-line play tied to role/usage. Controlled — not chaos. Feels risky but hits often.</div>
+        <div style="margin-bottom:8px;"><strong style="color:var(--text);">🔗 Soft Correlation</strong><br>Similar game environments, pace/flow benefit — without full same-team dependency.</div>
+        <div><strong style="color:var(--red);">🚫 Hard Avoids</strong><br>Superstar 1H unders · Thin-margin hook lines · Broad stat fades · Pure scoring anchors · HR/TD/Goal volatility</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Jeremia slip output -->
+  <div id="jeremiaOutput"></div>
 </div>
 
 <!-- ══════════════════════════════════════ -->
@@ -630,12 +775,16 @@ document.getElementById('slateDate').textContent=new Date().toLocaleDateString('
 
 // ── Tabs ──
 function switchTab(n){
-  ['engine','board','prizepicks','slip','manual','team','log'].forEach(t=>document.getElementById('tab-'+t).classList.add('hidden'));
+  ['engine','pool','jeremia','board','prizepicks','slip','manual','team','log'].forEach(t=>{
+    const el=document.getElementById('tab-'+t);if(el)el.classList.add('hidden');
+  });
   document.querySelectorAll('.tab').forEach(el=>el.classList.remove('active'));
-  document.getElementById('tab-'+n).classList.remove('hidden');
-  const idx={engine:0,board:1,prizepicks:2,slip:3,manual:4,team:5,log:6};
-  document.querySelectorAll('.tab')[idx[n]].classList.add('active');
-  if(n==='log'){ switchPTab('clv'); }
+  const el=document.getElementById('tab-'+n);if(el)el.classList.remove('hidden');
+  const idx={engine:0,pool:1,jeremia:2,board:3,prizepicks:4,slip:5,manual:6,team:7,log:8};
+  const tabs=document.querySelectorAll('.tab');
+  if(tabs[idx[n]])tabs[idx[n]].classList.add('active');
+  if(n==='log'){switchPTab('clv');}
+  if(n==='pool'&&!propPool.length)refreshPropPool(true);
 }
 
 // ── Chip status ──
@@ -2689,6 +2838,10 @@ async function validateAndRenderPP(props, container){
     return (m[a.tier]??4)-(m[b.tier]??4);
   });
   results.forEach(p => container.appendChild(makePCard(p)));
+
+  // Auto-build slip options from validated props
+  const slipSection = await buildSlipsFromProps(results);
+  if(slipSection) container.appendChild(slipSection);
 }
 
 // ══════════════════════════════════
@@ -3666,6 +3819,300 @@ function clearCLV(){
   renderCLVTable();
 }
 
+// ══════════════════════════════════════════════════════
+// PROP POOL ENGINE — Auto-refresh every hour
+// ══════════════════════════════════════════════════════
+let propPool = [];
+let propPoolTimer = null;
+
+// Slip strength grader 0-100
+function gradeSlipStrength(legProbs, slipType='power'){
+  if(!legProbs||!legProbs.length) return null;
+  const n=legProbs.length;
+  const payout=PP_PAYOUTS[slipType]?.[n];
+  if(!payout) return null;
+  const avgProb=legProbs.reduce((s,p)=>s+p,0)/legProbs.length;
+  const allHit=legProbs.reduce((prod,p)=>prod*p,1);
+  const minProb=Math.min(...legProbs);
+  const roi=allHit*payout.multiplier-1;
+  let score=0;
+  score+=Math.min(35,avgProb*52);
+  score+=Math.min(20,Math.max(0,(avgProb-payout.breakEven)*180));
+  score+=Math.min(20,minProb*24);
+  score+=Math.min(25,Math.max(0,roi*55));
+  score=Math.max(0,Math.min(100,Math.round(score)));
+  const label=score>=80?'ELITE':score>=65?'STRONG':score>=50?'MODERATE':'WEAK';
+  const color=score>=80?'var(--green)':score>=65?'var(--accent)':score>=50?'var(--yellow)':'var(--red)';
+  return{score,label,color,avgProb,allHit,roi,breakEven:payout.breakEven,legProbs};
+}
+
+async function refreshPropPool(manual=false){
+  document.getElementById('poolRefreshBtn').textContent='Pulling...';
+  document.getElementById('poolRefreshSp').classList.remove('hidden');
+  document.getElementById('poolProgress').classList.remove('hidden');
+  const logEl=document.getElementById('poolLog');
+  logEl.innerHTML='';
+  const log=(msg,t='')=>{logEl.innerHTML+=`<span class="${t?'o'+t:''}">${msg}\n</span>`;logEl.scrollTop=logEl.scrollHeight;};
+  log('⟳ Fetching live prop lines from sportsbooks...','i');
+
+  const sports=['NBA','MLB','NHL','WNBA'];
+  const raw=[];
+
+  for(const sport of sports){
+    const ok={NBA:'basketball_nba',MLB:'baseball_mlb',NHL:'icehockey_nhl',WNBA:'basketball_wnba'}[sport];
+    log(`⟳ ${sport} player props...`);
+    try{
+      const r=await fx(`${EP.odds}/sports/${ok}/player-props?apiKey=${KEYS.odds}&regions=us&oddsFormat=american`,{},10000);
+      if(!r.ok){log(`⚠ ${sport}: ${r.status}`,'w');continue;}
+      const data=await r.json();chip('odds','ok');
+      for(const game of data){
+        const gn=`${game.away_team||''}  @ ${game.home_team||''}`;
+        for(const bk of (game.bookmakers||[]).slice(0,2)){
+          for(const mkt of (bk.markets||[])){
+            const propName=mkt.key?.replace('player_','').replace(/_/g,' ')||'';
+            const outs=mkt.outcomes||[];
+            for(let i=0;i<outs.length-1;i++){
+              const ov=outs[i],un=outs[i+1];
+              if(!ov?.point||!ov?.price||!un?.price) continue;
+              const player=ov.description||ov.name;
+              if(!player) continue;
+              const nvp=noVigProb(ov.price,un.price);
+              const side=nvp.over>=nvp.under?'MORE':'LESS';
+              const prob=side==='MORE'?nvp.over:nvp.under;
+              if(prob<0.55) continue;
+              raw.push({player,sport,prop:propName,line:ov.point,side,game:gn,bookmaker:bk.title,overProb:nvp.over,underProb:nvp.under,selectedProb:prob,overOdds:ov.price,underOdds:un.price,bothSides:{more:{prob:nvp.over,odds:ov.price},less:{prob:nvp.under,odds:un.price}}});
+            }
+          }
+        }
+      }
+      log(`✓ ${sport}: ${raw.filter(p=>p.sport===sport).length} candidates`,'ok');
+    }catch(e){log(`⚠ ${sport}: ${e.message}`,'w');}
+  }
+
+  log(`\n⟳ Validating ${Math.min(raw.length,60)} props through WOW stack...`,'i');
+  const scored=[];
+  for(const p of raw.slice(0,60)){
+    try{
+      const en=await enrichProp(p);
+      const ws=await scoreOne(en);
+      const val=await wowValidate(en,ws);
+      if(['tier1','tier2'].includes(val.tier)){scored.push({...en,...val,wowScore:ws});addToPool({...en,...val,wowScore:ws});}
+    }catch(e){}
+  }
+
+  propPool=scored.sort((a,b)=>{const to={tier1:0,tier2:1};return(to[a.tier]??2)-(to[b.tier]??2)||(b.wowScore||0)-(a.wowScore||0);});
+  const now=new Date();
+  document.getElementById('poolLastUpdate').textContent=`Updated ${now.toLocaleTimeString()}`;
+  document.getElementById('poolCountBadge').textContent=`${propPool.length} qualified`;
+  log(`\n✓ Done: ${propPool.length} slip-qualified props in pool`,'ok');
+  renderPropPool();
+  document.getElementById('poolRefreshBtn').textContent='Refresh Now';
+  document.getElementById('poolRefreshSp').classList.add('hidden');
+  if(propPoolTimer) clearTimeout(propPoolTimer);
+  propPoolTimer=setTimeout(()=>refreshPropPool(false),60*60*1000);
+}
+
+function renderPropPool(){
+  const sf=document.getElementById('poolSportFilter')?.value||'all';
+  const tf=document.getElementById('poolTierFilter')?.value||'all';
+  const side=document.getElementById('poolSideFilter')?.value||'all';
+  const ms=parseInt(document.getElementById('poolMinScore')?.value||0);
+  let data=[...propPool];
+  if(sf!=='all') data=data.filter(p=>p.sport===sf);
+  if(tf==='tier1') data=data.filter(p=>p.tier==='tier1');
+  if(tf==='tier2') data=data.filter(p=>['tier1','tier2'].includes(p.tier));
+  if(side!=='all') data=data.filter(p=>p.side===side);
+  if(ms>0) data=data.filter(p=>(p.wowScore||0)>=ms);
+
+  const div=document.getElementById('poolResults');
+  if(!data.length){div.innerHTML=`<div class="alert ay">No qualified props match filters. ${propPool.length?'Adjust filters.':'Click Refresh Now to load.'}</div>`;return;}
+
+  div.innerHTML='';
+  const hdr=document.createElement('div');hdr.className='slbl';
+  hdr.innerHTML=`${data.length} Slip-Qualified Props <span style="font-weight:400;color:var(--text3);">· tap MORE/LESS to select side · tap + Slip to add</span>`;
+  div.appendChild(hdr);
+
+  data.forEach(p=>{
+    const card=document.createElement('div');card.className=`pc ${p.tier}`;
+    const bm={tier1:'bg-g',tier2:'bg-b'};
+    const sc=(p.wowScore||0)>=70?'sh':(p.wowScore||0)>=55?'sm':'sl';
+    const pObj={player:p.player,sport:p.sport,prop:p.prop,side:p.side,line:p.line,tier:p.tier,label:p.label,wowScore:p.wowScore,rawProb:p.rawProb};
+    const bothHtml=p.bothSides?`<div style="display:flex;gap:5px;margin-top:4px;">
+      <span onclick="addLegSide('${p.player}','${p.sport}','${p.prop.replace(/'/g,"\\'")}',${p.line},'MORE',${p.bothSides.more.prob},'${(p.game||'').replace(/'/g,"\\'")}',${p.overOdds})" style="cursor:pointer;padding:2px 8px;border-radius:4px;font-size:10px;font-family:var(--mono);font-weight:600;background:${p.side==='MORE'?'var(--green-light)':'var(--surface2)'};color:${p.side==='MORE'?'var(--green)':'var(--text2)'};border:1px solid ${p.side==='MORE'?'#a7f3d0':'var(--border)'};">▲ MORE ${p.overOdds>0?'+':''}${p.overOdds} (${(p.bothSides.more.prob*100).toFixed(0)}%)</span>
+      <span onclick="addLegSide('${p.player}','${p.sport}','${p.prop.replace(/'/g,"\\'")}',${p.line},'LESS',${p.bothSides.less.prob},'${(p.game||'').replace(/'/g,"\\'")}',${p.underOdds})" style="cursor:pointer;padding:2px 8px;border-radius:4px;font-size:10px;font-family:var(--mono);font-weight:600;background:${p.side==='LESS'?'var(--accent-light)':'var(--surface2)'};color:${p.side==='LESS'?'var(--accent)':'var(--text2)'};border:1px solid ${p.side==='LESS'?'#bfdbfe':'var(--border)'};">▼ LESS ${p.underOdds>0?'+':''}${p.underOdds} (${(p.bothSides.less.prob*100).toFixed(0)}%)</span>
+    </div>`:'';
+    card.innerHTML=`<div class="pm" style="min-width:0;flex:1;"><div class="pp">${p.player}</div><div class="pd">${p.sport} · ${p.prop} · line ${p.line}${p.bookmaker?' · '+p.bookmaker:''}</div>${p.recent_avg!=null?`<div style="font-size:10px;font-family:var(--mono);color:var(--text2);margin-top:2px;">L5 avg: ${parseFloat(p.recent_avg).toFixed(1)} · L5: ${p.l5_hit_rate!=null?(p.l5_hit_rate*100).toFixed(0)+'%':'–'} · L10: ${p.l10_hit_rate!=null?(p.l10_hit_rate*100).toFixed(0)+'%':'–'}</div>`:''} ${bothHtml}</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0;margin-left:8px;min-width:80px;"><span class="badge ${bm[p.tier]||'bg-gr'}">${p.tier==='tier1'?'TIER 1':'T2'}</span>${p.wowScore!=null?`<div class="ps ${sc}" style="font-size:18px;">${p.wowScore}</div>`:''}<button class="btn btn-g btn-sm" onclick='addToSlipCard(${JSON.stringify(pObj)})'>+ Slip</button></div>`;
+    div.appendChild(card);
+  });
+
+  // Suggested slips
+  buildPoolSlipOptions(data.slice(0,15));
+}
+
+function addLegSide(player,sport,prop,line,side,prob,game,odds){
+  addLeg({player,sport,prop,line,side,tier:'tier2',rawProb:prob,game,wowScore:null});
+  switchTab('slip');
+}
+
+function buildPoolSlipOptions(props){
+  const div=document.getElementById('poolResults');
+  if(!div||props.length<2) return;
+  const h=document.createElement('div');h.className='slbl';h.style.marginTop='16px';h.textContent='🎰 Suggested Slip Options from Pool';div.appendChild(h);
+  [{type:'power',n:2,label:'⚡ Power 2'},{type:'power',n:3,label:'🔥 Power 3'},{type:'flex',n:5,label:'🎲 Flex 5'}].forEach(({type,n,label})=>{
+    if(props.length<n) return;
+    const used=new Set();const legs=[];
+    for(const p of props){if(legs.length>=n)break;if(used.has(p.player))continue;legs.push(p);used.add(p.player);}
+    if(legs.length<n) return;
+    const s=gradeSlipStrength(legs.map(l=>l.rawProb||0.58),type);
+    const ev=calcPPSlipEV(legs.map(l=>l.rawProb||0.58),type,n);
+    const card=document.createElement('div');
+    card.style.cssText='border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;background:var(--surface);';
+    card.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-weight:700;font-size:14px;">${label}</span><button class="btn btn-p btn-sm" onclick="loadSuggestedSlip(${JSON.stringify(legs.map(l=>({player:l.player,sport:l.sport,prop:l.prop,side:l.side,line:l.line,tier:l.tier,rawProb:l.rawProb,wowScore:l.wowScore})))})">Use Slip →</button></div>${s?`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 10px;border-radius:6px;background:${s.color}18;border:1px solid ${s.color}40;"><div style="font-size:22px;font-weight:900;color:${s.color};line-height:1;">${s.score}/100</div><div><div style="font-size:12px;font-weight:700;color:${s.color};">${s.label}</div><div style="font-size:11px;color:var(--text2);font-family:var(--mono);">Avg: ${(s.avgProb*100).toFixed(1)}%${ev?' · ROI: '+(ev.expectedROI>=0?'+':'')+(ev.expectedROI*100).toFixed(1)+'%':''}</div></div></div>`:''} ${legs.map(l=>`<div style="display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:3px;"><span class="badge ${l.tier==='tier1'?'bg-g':'bg-b'}" style="font-size:10px;">${l.tier==='tier1'?'T1':'T2'}</span><span style="font-weight:600;">${l.player}</span><span style="color:var(--text2);">${l.prop} ${l.side} ${l.line}</span><span style="font-family:var(--mono);font-size:11px;color:${(l.rawProb||0)>=.63?'var(--green)':'var(--yellow)'};">${l.rawProb!=null?((l.rawProb)*100).toFixed(1)+'%':'–'}</span></div>`).join('')}`;
+    div.appendChild(card);
+  });
+}
+
+function loadSuggestedSlip(legs){slipLegs=[...legs];renderLegs();gradeSlip();switchTab('slip');}
+
+// Auto-build slips from PP screenshot results
+async function buildSlipsFromProps(validatedProps){
+  if(!validatedProps?.length) return null;
+  const q=validatedProps.filter(p=>['tier1','tier2'].includes(p.tier));
+  if(q.length<2) return null;
+  const wrap=document.createElement('div');wrap.style.marginTop='16px';
+  const h=document.createElement('div');h.className='slbl';h.textContent='🎰 Auto-Built Slip Options';wrap.appendChild(h);
+  [{type:'power',n:2,label:'⚡ Power 2'},{type:'power',n:3,label:'🔥 Power 3'},{type:'flex',n:5,label:'🎲 Flex 5'}].forEach(({type,n,label})=>{
+    if(q.length<n) return;
+    const sorted=[...q].sort((a,b)=>(b.rawProb||0)-(a.rawProb||0));
+    const used=new Set();const legs=[];
+    for(const p of sorted){if(legs.length>=n)break;if(used.has(p.player))continue;legs.push(p);used.add(p.player);}
+    if(legs.length<n) return;
+    const s=gradeSlipStrength(legs.map(l=>l.rawProb||0.58),type);
+    const ev=calcPPSlipEV(legs.map(l=>l.rawProb||0.58),type,n);
+    const card=document.createElement('div');
+    card.style.cssText='border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;background:var(--surface);';
+    card.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-weight:700;">${label}</span><button class="btn btn-p btn-sm" onclick="loadSuggestedSlip(${JSON.stringify(legs.map(l=>({player:l.player,sport:l.sport,prop:l.prop,side:l.side,line:l.line,tier:l.tier,rawProb:l.rawProb,wowScore:l.wowScore})))})">Use Slip →</button></div>${s?`<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;background:${s.color}18;border:1px solid ${s.color}40;margin-bottom:8px;"><div style="font-size:22px;font-weight:900;color:${s.color};">${s.score}/100</div><div><div style="font-weight:700;color:${s.color};font-size:12px;">${s.label}</div><div style="font-size:11px;color:var(--text2);font-family:var(--mono);">Avg: ${(s.avgProb*100).toFixed(1)}%${ev?' · ROI: '+(ev.expectedROI>=0?'+':'')+(ev.expectedROI*100).toFixed(1)+'%':''} · Kelly: ${ev?.recommendedBankrollPct||0}%</div></div></div>`:''} ${legs.map(l=>`<div style="display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:3px;"><span class="badge ${l.tier==='tier1'?'bg-g':'bg-b'}" style="font-size:10px;">${l.tier==='tier1'?'T1':'T2'}</span><span style="font-weight:600;">${l.player}</span><span style="color:var(--text2);">${l.prop} ${l.side} ${l.line}</span><span style="font-family:var(--mono);font-size:11px;color:${(l.rawProb||0)>=.63?'var(--green)':'var(--yellow)'};">${l.rawProb!=null?((l.rawProb)*100).toFixed(1)+'%':'–'}</span></div>`).join('')}`;
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+
+// ══════════════════════════════════
+// JEREMIA STYLE BUILDER
+// ══════════════════════════════════
+async function buildJeremiaSlip(){
+  document.getElementById('jerBtn').textContent='Building...';
+  document.getElementById('jerSp').classList.remove('hidden');
+  const sport=document.getElementById('jer_sport').value;
+  const slipTypeFull=document.getElementById('jer_sliptype').value;
+  const output=document.getElementById('jeremiaOutput');
+  output.innerHTML=`<div class="alert ab"><div class="spd"></div> Scanning ${sport} props for Jeremia-style plays...</div>`;
+  const slipType=slipTypeFull.startsWith('power')?'power':'flex';
+  const legCount=parseInt(slipTypeFull.replace('power','').replace('flex',''))||3;
+  const rules={assists:document.getElementById('jer_assists').checked,ra:document.getElementById('jer_ra').checked,fantasy:document.getElementById('jer_fantasy').checked,ceiling:document.getElementById('jer_ceiling').checked,noStar:document.getElementById('jer_nostar').checked,noHook:document.getElementById('jer_nohook').checked,noFade:document.getElementById('jer_nofade').checked,noScoring:document.getElementById('jer_noscoring').checked};
+
+  // Jeremia prop priority templates
+  const jerTemplates=[
+    {prop:'assists',lines:[0.5,1.5,2.5],priority:1,label:'🎯 Core Volume'},
+    {prop:'rebounds',lines:[4.5,5.5,6.5],priority:1,label:'🎯 Core Volume'},
+    {prop:'rebounds assists',lines:[5.5,6.5,7.5],priority:1,label:'⚓ RA Multi-Path'},
+    {prop:'fantasy points',lines:[25.5,30.5,35.5],priority:2,label:'⚓ Fantasy Anchor'},
+    {prop:'points rebounds assists',lines:[25.5,30.5],priority:2,label:'⚓ PRA Multi-Path'},
+    {prop:'steals blocks',lines:[0.5,1.5],priority:2,label:'⚓ Defensive Vol'},
+    {prop:'points',lines:[15.5,20.5,25.5],priority:3,label:'🎪 Ceiling'},
+  ].filter(t=>{
+    if(!rules.assists&&t.prop==='assists')return false;
+    if(!rules.ra&&t.prop.includes('rebounds assists'))return false;
+    if(!rules.fantasy&&t.prop==='fantasy points')return false;
+    if(!rules.ceiling&&t.priority===3)return false;
+    return true;
+  });
+
+  // Prefer pool props
+  const sportFilter=sport==='all'?['NBA','WNBA']:sport==='NBA'?['NBA','WNBA']:[sport];
+  let candidates=propPool.filter(p=>sportFilter.includes(p.sport)&&['tier1','tier2'].includes(p.tier));
+
+  if(candidates.length<legCount){
+    // Generate from ESPN slate
+    for(const sp of sportFilter){
+      try{
+        const r=await fx(`${EP.espn}/${ESPN_P[sp]||'basketball/nba'}/scoreboard`,{},6000);
+        if(!r.ok)continue;
+        const data=await r.json();chip('espn','ok');
+        (data.events||[]).forEach(ev=>{
+          const comp=ev.competitions?.[0];const teams=comp?.competitors||[];
+          const away=teams.find(t=>t.homeAway==='away')?.team?.displayName||'Away';
+          const home=teams.find(t=>t.homeAway==='home')?.team?.displayName||'Home';
+          if(['Final','Postponed','Cancelled'].includes(comp?.status?.type?.description||''))return;
+          jerTemplates.forEach(t=>{
+            const line=t.lines[1]||t.lines[0];
+            candidates.push({player:`${away} Key Player`,sport:sp,prop:t.prop,side:'MORE',line,game:`${away} @ ${home}`,jeremiaPriority:t.priority,jeremiaLabel:t.label});
+          });
+        });
+      }catch(e){}
+    }
+    // Score new candidates
+    const newScored=[];
+    for(const c of candidates.filter(p=>!p.tier).slice(0,25)){
+      const en=await enrichProp(c);const ws=await scoreOne(en);const val=await wowValidate(en,ws);
+      if(['tier1','tier2'].includes(val.tier))newScored.push({...en,...val,wowScore:ws,jeremiaPriority:c.jeremiaPriority||2,jeremiaLabel:c.jeremiaLabel||c.prop});
+    }
+    candidates=[...candidates.filter(p=>p.tier),...newScored];
+  } else {
+    candidates=candidates.map(p=>({...p,jeremiaPriority:2,jeremiaLabel:p.prop}));
+  }
+
+  // Apply Jeremia filters
+  candidates=candidates.filter(p=>{
+    const pl=(p.prop||'').toLowerCase();
+    if(rules.noScoring&&pl==='points')return false;
+    if(rules.noFade&&p.side==='LESS'&&pl.includes('point'))return false;
+    if(rules.noHook&&p.recent_avg!=null&&Math.abs(p.recent_avg-p.line)<0.5)return false;
+    return true;
+  });
+
+  // Build slip respecting structure
+  candidates.sort((a,b)=>(a.jeremiaPriority||2)-(b.jeremiaPriority||2)||(b.rawProb||0)-(a.rawProb||0));
+  const selected=[];const usedP=new Set();const spCounts={};let ceilCount=0;
+  for(const p of candidates){
+    if(selected.length>=legCount)break;
+    if(usedP.has(p.player))continue;
+    if((spCounts[p.sport]||0)>=2)continue;
+    if((p.jeremiaPriority||2)===3){if(!rules.ceiling||ceilCount>=1)continue;ceilCount++;}
+    selected.push(p);usedP.add(p.player);spCounts[p.sport]=(spCounts[p.sport]||0)+1;
+  }
+
+  if(selected.length<2){
+    output.innerHTML=`<div class="alert ay">⚠ Not enough Jeremia-style props found. Try running the Prop Pool first or selecting a broader sport filter.</div>`;
+    document.getElementById('jerBtn').textContent='Build Jeremia Slip';
+    document.getElementById('jerSp').classList.add('hidden');
+    return;
+  }
+
+  const s=gradeSlipStrength(selected.map(l=>l.rawProb||0.58),slipType);
+  const ev=calcPPSlipEV(selected.map(l=>l.rawProb||0.58),slipType,selected.length);
+  output.innerHTML='';
+
+  const hdr=document.createElement('div');
+  hdr.style.cssText='border:2px solid #7c3aed;border-radius:10px;padding:16px;margin-bottom:12px;background:linear-gradient(135deg,#7c3aed0a,#4f46e50a);';
+  hdr.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;"><div><div style="font-size:16px;font-weight:800;">🧬 ${slipTypeFull.toUpperCase()} Jeremia Slip</div><div style="font-size:12px;color:var(--text2);margin-top:2px;">${selected.length} legs · Floor-first, volume-driven</div></div>${s?`<div style="text-align:center;padding:8px 16px;border-radius:8px;background:${s.color}18;border:1px solid ${s.color}40;"><div style="font-size:28px;font-weight:900;color:${s.color};line-height:1;">${s.score}</div><div style="font-size:11px;font-weight:700;color:${s.color};">${s.label}</div></div>`:''}</div>${ev?`<div style="padding:8px 12px;border-radius:6px;background:${ev.isPositiveEV?'var(--green-light)':'var(--red-light)'};border:1px solid ${ev.isPositiveEV?'#a7f3d0':'#fca5a5'};font-size:12px;font-family:var(--mono);color:${ev.isPositiveEV?'var(--green)':'var(--red)'};">${ev.isPositiveEV?'✓ +EV':'✗ -EV'} · ROI: ${ev.expectedROI>=0?'+':''}${(ev.expectedROI*100).toFixed(1)}% · Break-even: ${(ev.breakEven*100).toFixed(1)}% · Kelly: ${ev.recommendedBankrollPct}% bankroll</div>`:''}<div style="margin-top:10px;display:flex;gap:8px;"><button class="btn btn-p btn-sm" onclick="loadSuggestedSlip(${JSON.stringify(selected.map(l=>({player:l.player,sport:l.sport,prop:l.prop,side:l.side,line:l.line,tier:l.tier,rawProb:l.rawProb,wowScore:l.wowScore})))})" style="background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;">Use This Slip</button><button class="btn btn-s btn-sm" onclick="buildJeremiaSlip()">Rebuild</button></div>`;
+  output.appendChild(hdr);
+
+  const lh=document.createElement('div');lh.className='slbl';lh.textContent='Slip Legs';output.appendChild(lh);
+  selected.forEach((p,i)=>{
+    const roleLabel=(p.jeremiaPriority||2)===1?'🎯 Core Volume':(p.jeremiaPriority||2)===2?'⚓ Multi-Path Anchor':'🎪 Ceiling';
+    const card=makePCard(p);
+    const tag=document.createElement('div');
+    tag.style.cssText=`font-size:10px;font-weight:600;color:${(p.jeremiaPriority||2)===1?'var(--green)':(p.jeremiaPriority||2)===2?'var(--accent)':'var(--yellow)'};margin-bottom:4px;`;
+    tag.textContent=`${i+1}. ${roleLabel}`;
+    card.querySelector('.pm')?.insertAdjacentElement('afterbegin',tag);
+    output.appendChild(card);
+  });
+
+  document.getElementById('jerBtn').textContent='Build Jeremia Slip';
+  document.getElementById('jerSp').classList.add('hidden');
+}
+
 // ══════════════════════════════════
 // INIT
 // ══════════════════════════════════
@@ -3675,6 +4122,8 @@ window.onload=()=>{
   renderCLVTable();
   renderSlipDatabase();
   renderLearnedRules();
+  // Start hourly prop pool refresh
+  setTimeout(()=>refreshPropPool(false), 5000);
 };
 </script>
 </body>
