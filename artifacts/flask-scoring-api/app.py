@@ -2231,37 +2231,66 @@ def analyze_board():
             "error": "ANTHROPIC_API_KEY secret is not set — add it in Replit Secrets",
         }), 503
 
-    # Accept three formats:
-    #   1. multipart/form-data file upload  (request.files["image"])
-    #   2. JSON body with image_base64
-    #   3. JSON body with image_url
-    body       = request.get_json(silent=True) or {}
-    form       = request.form
+    import base64 as _base64
+
+    body         = request.get_json(silent=True) or {}
+    form         = request.form
     image_base64 = None
     image_url    = None
     media_type   = body.get("media_type") or form.get("media_type", "image/jpeg")
     sport_hint   = body.get("sport")      or form.get("sport", "")
     platform     = body.get("platform")   or form.get("platform", "PrizePicks")
 
-    # Case 1 — file upload
-    file = request.files.get("image") or request.files.get("file") or (
-        list(request.files.values())[0] if request.files else None
-    )
+    # ── Strategy 1: any uploaded file (multipart/form-data) ──────────────────
+    file = (request.files.get("image")
+            or request.files.get("file")
+            or request.files.get("screenshot")
+            or (list(request.files.values())[0] if request.files else None))
     if file:
-        import base64 as _base64
         file_bytes   = file.read()
         image_base64 = _base64.b64encode(file_bytes).decode("utf-8")
-        mime         = file.content_type or "image/jpeg"
-        if mime and mime != "application/octet-stream":
+        mime         = (file.content_type or "").lower()
+        if mime and mime not in ("application/octet-stream", ""):
             media_type = mime
-    else:
-        image_base64 = body.get("image_base64") or form.get("image_base64")
-        image_url    = body.get("image_url")    or form.get("image_url")
+
+    # ── Strategy 2: JSON body (any of several field names) ───────────────────
+    if not image_base64 and not image_url:
+        for key in ("image_base64", "imageBase64", "image_data", "imageData",
+                    "data", "image", "screenshot"):
+            val = body.get(key) or form.get(key)
+            if val and isinstance(val, str) and len(val) > 100:
+                image_base64 = val
+                break
+
+    # ── Strategy 3: JSON image_url ────────────────────────────────────────────
+    if not image_base64:
+        for key in ("image_url", "imageUrl", "url"):
+            val = body.get(key) or form.get(key)
+            if val and isinstance(val, str) and val.startswith("http"):
+                image_url = val
+                break
+
+    # ── Strategy 4: raw binary body (Content-Type: image/*) ──────────────────
+    if not image_base64 and not image_url:
+        ct = request.content_type or ""
+        if ct.startswith("image/"):
+            raw = request.get_data()
+            if raw:
+                image_base64 = _base64.b64encode(raw).decode("utf-8")
+                media_type   = ct.split(";")[0].strip()
 
     if not image_base64 and not image_url:
+        # Return debug info so we can see exactly what arrived
         return jsonify({
-            "ok": False,
-            "error": "Provide a file upload (field: 'image'), 'image_base64', or 'image_url'",
+            "ok":    False,
+            "error": "No image found in request — see debug for what arrived",
+            "debug": {
+                "content_type":  request.content_type,
+                "files_keys":    list(request.files.keys()),
+                "form_keys":     list(form.keys()),
+                "json_keys":     list(body.keys()),
+                "data_bytes":    len(request.get_data()),
+            },
         }), 422
 
     # Build Claude image content block
