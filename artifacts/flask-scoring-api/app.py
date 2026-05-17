@@ -2298,6 +2298,22 @@ def analyze_board():
         # Strip data URL prefix if caller included it
         if "," in image_base64:
             image_base64 = image_base64.split(",", 1)[1]
+
+        # Auto-detect real media type from magic bytes — ignore what caller sent
+        try:
+            header = _base64.b64decode(image_base64[:16])
+            if header[:8] == b'\x89PNG\r\n\x1a\n':
+                media_type = "image/png"
+            elif header[:2] == b'\xff\xd8':
+                media_type = "image/jpeg"
+            elif header[:4] == b'RIFF' and header[8:12] == b'WEBP':
+                media_type = "image/webp"
+            elif header[:6] in (b'GIF87a', b'GIF89a'):
+                media_type = "image/gif"
+            # else keep whatever was set (default image/jpeg)
+        except Exception:
+            pass
+
         image_block = {
             "type": "image",
             "source": {
