@@ -1082,7 +1082,10 @@ async function analyzePPBoard(){
     try {
       const r = await fx('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
           max_tokens: 1500,
@@ -1112,15 +1115,23 @@ Extract every prop you can read clearly.` }
         })
       }, 30000);
 
-      if(!r.ok) throw new Error(`API ${r.status}`);
+      if(!r.ok){
+        const errBody = await r.text().catch(()=>'');
+        throw new Error(`API ${r.status}: ${errBody.slice(0,300)}`);
+      }
       const d = await r.json();
       const txt = d.content?.[0]?.text || '[]';
       let props = [];
-      try { props = JSON.parse(txt.replace(/```json|```/g,'').trim()); } catch(e) {}
+      try { props = JSON.parse(txt.replace(/```json|```/g,'').trim()); } catch(e) {
+        // Claude returned text but not clean JSON — try to extract array
+        const match = txt.match(/\[[\s\S]*\]/);
+        if(match) try { props = JSON.parse(match[0]); } catch(e2) {}
+      }
       allProps.push(...props);
       statusEl.textContent = `Image ${i+1}: extracted ${props.length} props`;
     } catch(e) {
       statusEl.textContent = `Image ${i+1} failed: ${e.message}`;
+      res.innerHTML += `<div class="alert ar" style="margin-bottom:6px;">Image ${i+1} error: ${e.message}</div>`;
     }
   }
 
@@ -1134,7 +1145,7 @@ Extract every prop you can read clearly.` }
 
   statusEl.textContent = '';
   if(!allProps.length){
-    res.innerHTML = `<div class="alert ay">No props detected across ${ppImages.length} screenshot(s). Try manual entry below.</div>`;
+    res.innerHTML = `<div class="alert ay">⚠ No props extracted from ${ppImages.length} screenshot(s).<br>Make sure your screenshot shows the PrizePicks player props board clearly. The app needs to be open to the lobby/board screen with player names, stat lines, and MORE/LESS visible.<br><br>Try manual entry below or upload a clearer screenshot.</div>`;
   } else {
     res.innerHTML = `<div class="alert ag">✓ Extracted ${allProps.length} unique props from ${ppImages.length} screenshot(s). Running WOW validation...</div>`;
     await validateAndRenderPP(allProps, res);
