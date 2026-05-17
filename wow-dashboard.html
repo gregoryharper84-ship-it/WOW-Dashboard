@@ -1080,53 +1080,26 @@ async function analyzePPBoard(){
   for(let i = 0; i < ppImages.length; i++){
     statusEl.textContent = `Processing image ${i+1} of ${ppImages.length}...`;
     try {
-      const r = await fx('https://api.anthropic.com/v1/messages', {
+      // Route through Replit proxy — avoids CORS issues with direct Anthropic calls
+      const r = await fx(`${EP.replit}/analyze-board`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'anthropic-dangerous-direct-browser-access': 'true'
+          'X-API-Key': KEYS.replit
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1500,
-          messages: [{
-            role: 'user',
-            content: [
-              {
-                type:'image',
-                source:{
-                  type:'base64',
-                  media_type: ppImages[i].isHEIC ? 'image/jpeg' : 'image/jpeg',
-                  data: ppImages[i].b64
-                }
-              },
-              { type:'text', text:`You are the WOW v14.9+ prop extraction engine. Analyze this PrizePicks board screenshot carefully.
-
-Extract EVERY visible player prop. Look for player names, stat categories, lines, and MORE/LESS indicators.
-
-Return ONLY a valid JSON array with no markdown, no preamble, no explanation. Each object must have:
-{"player":string,"sport":string,"prop":string,"line":number,"side":"MORE" or "LESS","game":string}
-
-If sport is not visible, infer from context (e.g. K/HR=MLB, points/rebounds=NBA).
-If game matchup is not visible, use empty string.
-Extract every prop you can read clearly.` }
-            ]
-          }]
+          image_b64: ppImages[i].b64,
+          media_type: ppImages[i].isHEIC ? 'image/jpeg' : 'image/jpeg'
         })
-      }, 30000);
+      }, 45000);
 
       if(!r.ok){
         const errBody = await r.text().catch(()=>'');
-        throw new Error(`API ${r.status}: ${errBody.slice(0,300)}`);
+        throw new Error(`Proxy ${r.status}: ${errBody.slice(0,300)}`);
       }
       const d = await r.json();
-      const txt = d.content?.[0]?.text || '[]';
-      let props = [];
-      try { props = JSON.parse(txt.replace(/```json|```/g,'').trim()); } catch(e) {
-        // Claude returned text but not clean JSON — try to extract array
-        const match = txt.match(/\[[\s\S]*\]/);
-        if(match) try { props = JSON.parse(match[0]); } catch(e2) {}
-      }
+      if(!d.ok) throw new Error(d.error || 'Proxy returned error');
+      const props = d.props || [];
       allProps.push(...props);
       statusEl.textContent = `Image ${i+1}: extracted ${props.length} props`;
     } catch(e) {
