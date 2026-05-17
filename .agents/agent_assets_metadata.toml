@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "JpCJG0333dey6hwYZU1TA"
+uri = "file://wow-server-files.zip"
+type = "unspecified"
+title = "WOW Server Files (app.py, wow_daily_scan.py, results.py, player_logs.py, requirements.txt, app.ts, index.ts)"
