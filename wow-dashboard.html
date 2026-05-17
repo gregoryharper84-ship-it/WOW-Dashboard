@@ -3937,43 +3937,76 @@ async function refreshPropPool(manual=false){
   const log=(msg,t='')=>{logEl.innerHTML+=`<span class="${t?'o'+t:''}">${msg}\n</span>`;logEl.scrollTop=logEl.scrollHeight;};
   log('⟳ Fetching live prop lines from sportsbooks...','i');
 
-  const sports=['NBA','MLB','NHL','WNBA'];
+  const sportConfigs=[
+    {sport:'MLB',key:'baseball_mlb',markets:'pitcher_strikeouts,batter_hits,batter_total_bases,batter_rbis,batter_runs_scored'},
+    {sport:'NBA',key:'basketball_nba',markets:'player_points,player_rebounds,player_assists,player_threes,player_blocks,player_steals'},
+    {sport:'NHL',key:'icehockey_nhl',markets:'player_shots_on_goal,player_goals,player_assists,player_points'},
+    {sport:'WNBA',key:'basketball_wnba',markets:'player_points,player_rebounds,player_assists'},
+  ];
+
   const raw=[];
 
-  for(const sport of sports){
-    const ok={NBA:'basketball_nba',MLB:'baseball_mlb',NHL:'icehockey_nhl',WNBA:'basketball_wnba'}[sport];
-    log(`⟳ ${sport} player props...`);
+  for(const cfg of sportConfigs){
+    log(`⟳ ${cfg.sport}: fetching today's events...`);
     try{
-      const r=await fx(`${EP.odds}/sports/${ok}/player-props?apiKey=${KEYS.odds}&regions=us&oddsFormat=american`,{},10000);
-      if(!r.ok){log(`⚠ ${sport}: ${r.status}`,'w');continue;}
-      const data=await r.json();chip('odds','ok');
-      for(const game of data){
-        const gn=`${game.away_team||''}  @ ${game.home_team||''}`;
-        for(const bk of (game.bookmakers||[]).slice(0,2)){
-          for(const mkt of (bk.markets||[])){
-            const propName=mkt.key?.replace('player_','').replace(/_/g,' ')||'';
-            const outs=mkt.outcomes||[];
-            for(let i=0;i<outs.length-1;i++){
-              const ov=outs[i],un=outs[i+1];
-              if(!ov?.point||!ov?.price||!un?.price) continue;
-              const player=ov.description||ov.name;
-              if(!player) continue;
-              const nvp=noVigProb(ov.price,un.price);
-              const side=nvp.over>=nvp.under?'MORE':'LESS';
-              const prob=side==='MORE'?nvp.over:nvp.under;
-              if(prob<0.55) continue;
-              raw.push({player,sport,prop:propName,line:ov.point,side,game:gn,bookmaker:bk.title,overProb:nvp.over,underProb:nvp.under,selectedProb:prob,overOdds:ov.price,underOdds:un.price,bothSides:{more:{prob:nvp.over,odds:ov.price},less:{prob:nvp.under,odds:un.price}}});
+      const evR=await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
+      if(!evR.ok){log(`⚠ ${cfg.sport}: events ${evR.status}`,'w');continue;}
+      const events=await evR.json();chip('odds','ok');
+      if(!events?.length){log(`⚠ ${cfg.sport}: no events today`,'w');continue;}
+      log(`✓ ${cfg.sport}: ${events.length} events found`);
+
+      for(const ev of events.slice(0,5)){
+        try{
+          const prR=await fx(
+            `${EP.odds}/sports/${cfg.key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=${cfg.markets}&oddsFormat=american`,
+            {},8000
+          );
+          if(!prR.ok) continue;
+          const prData=await prR.json();
+          const gameName=`${ev.away_team||''} @ ${ev.home_team||''}`;
+          for(const bk of (prData.bookmakers||[]).slice(0,2)){
+            for(const mkt of (bk.markets||[])){
+              const propName=mkt.key?.replace(/_/g,' ')||'';
+              const byPlayer={};
+              (mkt.outcomes||[]).forEach(o=>{
+                const player=o.description||o.name;
+                const pt=o.point;
+                const side=o.name?.toLowerCase();
+                if(!player||pt==null)return;
+                const k=`${player}|${pt}`;
+                if(!byPlayer[k])byPlayer[k]={player,line:pt,over:null,under:null};
+                if(side==='over')byPlayer[k].over=o.price;
+                if(side==='under')byPlayer[k].under=o.price;
+              });
+              Object.values(byPlayer).forEach(({player,line,over,under})=>{
+                if(over==null||under==null)return;
+                const nvp=noVigProb(over,under);
+                const side=nvp.over>=nvp.under?'MORE':'LESS';
+                const prob=side==='MORE'?nvp.over:nvp.under;
+                if(prob<0.53)return;
+                raw.push({player,sport:cfg.sport,prop:propName,line,side,game:gameName,bookmaker:bk.title,overProb:nvp.over,underProb:nvp.under,selectedProb:prob,overOdds:over,underOdds:under,bothSides:{more:{prob:nvp.over,odds:over},less:{prob:nvp.under,odds:under}}});
+              });
             }
           }
-        }
+        }catch(e){}
       }
-      log(`✓ ${sport}: ${raw.filter(p=>p.sport===sport).length} candidates`,'ok');
-    }catch(e){log(`⚠ ${sport}: ${e.message}`,'w');}
+      log(`✓ ${cfg.sport}: ${raw.filter(p=>p.sport===cfg.sport).length} candidates`,'ok');
+    }catch(e){log(`⚠ ${cfg.sport}: ${e.message}`,'w');}
   }
 
-  log(`\n⟳ Validating ${Math.min(raw.length,60)} props through WOW stack...`,'i');
+  if(!raw.length){
+    log('\n⚠ No props fetched. Check Odds API key quota or try again.','w');
+    document.getElementById('poolRefreshBtn').textContent='Refresh Now';
+    document.getElementById('poolRefreshSp').classList.add('hidden');
+    return;
+  }
+
+  const seen=new Set();
+  const deduped=raw.filter(p=>{const k=`${p.player}|${p.prop}|${p.line}`;if(seen.has(k))return false;seen.add(k);return true;});
+  log(`\n⟳ Validating ${Math.min(deduped.length,60)} props through WOW stack...`,'i');
+
   const scored=[];
-  for(const p of raw.slice(0,60)){
+  for(const p of deduped.slice(0,60)){
     try{
       const en=await enrichProp(p);
       const ws=await scoreOne(en);
@@ -3982,15 +4015,15 @@ async function refreshPropPool(manual=false){
     }catch(e){}
   }
 
-  propPool=scored.sort((a,b)=>{const to={tier1:0,tier2:1};return(to[a.tier]??2)-(to[b.tier]??2)||(b.wowScore||0)-(a.wowScore||0);});
+  propPool=scored.sort((a,b)=>{const to={tier1:0,tier2:1,flex:2};return(to[a.tier]??3)-(to[b.tier]??3)||(b.wowScore||0)-(a.wowScore||0);});
   const now=new Date();
   document.getElementById('poolLastUpdate').textContent=`Updated ${now.toLocaleTimeString()}`;
   document.getElementById('poolCountBadge').textContent=`${propPool.length} qualified`;
-  log(`\n✓ Done: ${propPool.length} slip-qualified props in pool`,'ok');
+  log(`\n✓ Done: ${propPool.length} slip-qualified props`,'ok');
   renderPropPool();
   document.getElementById('poolRefreshBtn').textContent='Refresh Now';
   document.getElementById('poolRefreshSp').classList.add('hidden');
-  if(propPoolTimer) clearTimeout(propPoolTimer);
+  if(propPoolTimer)clearTimeout(propPoolTimer);
   propPoolTimer=setTimeout(()=>refreshPropPool(false),60*60*1000);
 }
 
