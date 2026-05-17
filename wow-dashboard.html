@@ -3530,12 +3530,7 @@ function handleSlipUpload(e){
   e.target.value='';
 }
 
-const slipUpZ=document.getElementById('slipUploadZone');
-if(slipUpZ){
-  slipUpZ.addEventListener('dragover',e=>{e.preventDefault();slipUpZ.classList.add('drag');});
-  slipUpZ.addEventListener('dragleave',()=>slipUpZ.classList.remove('drag'));
-  slipUpZ.addEventListener('drop',e=>{e.preventDefault();slipUpZ.classList.remove('drag');const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/')||f.name.toLowerCase().endsWith('.heic'));if(files.length)handleSlipUpload({target:{files},preventDefault:()=>{}});});
-}
+
 
 function renderSlipThumbs(){
   document.getElementById('slipUploadPreview').classList.remove('hidden');
@@ -3890,124 +3885,6 @@ function clearLearning(){
   learnedRules=[];save();renderLearnedRules();
   document.getElementById('learningOutput').innerHTML='';
 }
-
-function logCLV(){
-  const player = document.getElementById('clv_player').value.trim();
-  const sport = document.getElementById('clv_sport').value;
-  const prop = document.getElementById('clv_prop').value.trim();
-  const line = parseFloat(document.getElementById('clv_line').value);
-  const side = document.getElementById('clv_side').value;
-  const openLine = parseFloat(document.getElementById('clv_open').value)||null;
-  const closeLine = parseFloat(document.getElementById('clv_close').value)||null;
-  const result = parseFloat(document.getElementById('clv_result').value)||null;
-  const outcome = document.getElementById('clv_outcome').value;
-  const wowScore = parseInt(document.getElementById('clv_wow').value)||null;
-  const processGrade = document.getElementById('clv_process').value;
-  const failureTag = document.getElementById('clv_tag').value;
-  const classification = document.getElementById('clv_class').value;
-
-  if(!player||!prop||isNaN(line)){alert('Player, prop, and line required');return;}
-
-  // Calculate CLV
-  let clv = null;
-  let beatClosingLine = null;
-  if(openLine!=null && closeLine!=null){
-    clv = side==='MORE' ? closeLine - openLine : openLine - closeLine;
-    beatClosingLine = side==='MORE' ? (result!=null&&result>closeLine) : (result!=null&&result<closeLine);
-  }
-
-  const entry = {
-    id: Date.now(),
-    date: new Date().toLocaleDateString(),
-    player, sport, prop, side, line,
-    openLine, closeLine, result, outcome,
-    wowScore, processGrade, failureTag,
-    classification, clv, beatClosingLine,
-    missDistance: result!=null ? Math.abs(result-line).toFixed(2) : null,
-  };
-
-  clvLog.unshift(entry);
-  try{ localStorage.setItem('wow_clv_log', JSON.stringify(clvLog.slice(0,200))); }catch(e){}
-  renderCLVTable();
-
-  // Clear fields
-  ['clv_player','clv_prop','clv_line','clv_open','clv_close','clv_result','clv_wow'].forEach(id=>{
-    const el = document.getElementById(id); if(el) el.value='';
-  });
-}
-
-function renderCLVTable(){
-  const div = document.getElementById('clvTable');
-  if(!clvLog.length){div.innerHTML='<div style="color:var(--text2);font-size:13px;padding:12px 0;">No picks logged yet.</div>';return;}
-
-  // Summary stats
-  const settled = clvLog.filter(e=>e.outcome==='win'||e.outcome==='loss');
-  const wins = settled.filter(e=>e.outcome==='win').length;
-  const winPct = settled.length ? (wins/settled.length*100).toFixed(1) : '--';
-  const goodProcess = clvLog.filter(e=>e.processGrade==='A'||e.processGrade==='B').length;
-  const clvPositive = clvLog.filter(e=>e.clv!=null&&e.clv>0).length;
-
-  let html = `
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;padding:12px;background:var(--surface2);border-radius:8px;border:1px solid var(--border);">
-      <div style="text-align:center;"><div style="font-size:20px;font-weight:700;color:var(--green)">${winPct}%</div><div style="font-size:10px;color:var(--text2);">WIN RATE</div></div>
-      <div style="text-align:center;"><div style="font-size:20px;font-weight:700;">${settled.length}</div><div style="font-size:10px;color:var(--text2);">SETTLED</div></div>
-      <div style="text-align:center;"><div style="font-size:20px;font-weight:700;color:var(--accent)">${goodProcess}</div><div style="font-size:10px;color:var(--text2);">GOOD PROCESS</div></div>
-      <div style="text-align:center;"><div style="font-size:20px;font-weight:700;color:var(--yellow)">${clvPositive}</div><div style="font-size:10px;color:var(--text2);">+CLV PICKS</div></div>
-    </div>
-    <table style="width:100%;border-collapse:collapse;font-size:11px;">
-      <thead><tr style="border-bottom:1px solid var(--border);">
-        <th style="text-align:left;padding:5px 6px;color:var(--text2);font-size:10px;">DATE</th>
-        <th style="text-align:left;padding:5px 6px;color:var(--text2);font-size:10px;">PLAYER</th>
-        <th style="text-align:left;padding:5px 6px;color:var(--text2);font-size:10px;">PROP</th>
-        <th style="text-align:center;padding:5px 6px;color:var(--text2);font-size:10px;">LINE</th>
-        <th style="text-align:center;padding:5px 6px;color:var(--text2);font-size:10px;">RESULT</th>
-        <th style="text-align:center;padding:5px 6px;color:var(--text2);font-size:10px;">OUTCOME</th>
-        <th style="text-align:center;padding:5px 6px;color:var(--text2);font-size:10px;">CLV</th>
-        <th style="text-align:center;padding:5px 6px;color:var(--text2);font-size:10px;">PROCESS</th>
-        <th style="text-align:left;padding:5px 6px;color:var(--text2);font-size:10px;">TAG</th>
-      </tr></thead><tbody>`;
-
-  clvLog.slice(0,50).forEach(e=>{
-    const outcomeColor = e.outcome==='win'?'var(--green)':e.outcome==='loss'?'var(--red)':'var(--text2)';
-    const clvColor = e.clv>0?'var(--green)':e.clv<0?'var(--red)':'var(--text2)';
-    const processColor = e.processGrade==='A'?'var(--green)':e.processGrade==='B'?'var(--yellow)':e.processGrade==='C'?'var(--orange)':'var(--red)';
-    html+=`<tr style="border-bottom:1px solid rgba(0,0,0,0.05);">
-      <td style="padding:5px 6px;color:var(--text2);">${e.date}</td>
-      <td style="padding:5px 6px;font-weight:600;">${e.player}</td>
-      <td style="padding:5px 6px;color:var(--text2);">${e.prop} ${e.side} ${e.line}</td>
-      <td style="padding:5px 6px;text-align:center;font-family:var(--mono);">${e.line}</td>
-      <td style="padding:5px 6px;text-align:center;font-family:var(--mono);">${e.result??'--'}</td>
-      <td style="padding:5px 6px;text-align:center;font-weight:700;color:${outcomeColor};">${(e.outcome||'').toUpperCase()}</td>
-      <td style="padding:5px 6px;text-align:center;font-family:var(--mono);color:${clvColor};">${e.clv!=null?(e.clv>0?'+':'')+e.clv.toFixed(1):'--'}</td>
-      <td style="padding:5px 6px;text-align:center;font-weight:700;color:${processColor};">${e.processGrade}</td>
-      <td style="padding:5px 6px;font-size:10px;color:var(--text3);">${e.failureTag||''}</td>
-    </tr>`;
-  });
-
-  html+='</tbody></table>';
-  div.innerHTML = html;
-}
-
-function exportCLV(){
-  if(!clvLog.length){alert('No picks to export');return;}
-  const headers = 'Date,Player,Sport,Prop,Side,Line,Open,Close,Result,Outcome,CLV,Beat Close,Miss Dist,WOW Score,Process,Tag,Classification\n';
-  const rows = clvLog.map(e=>
-    [e.date,e.player,e.sport,e.prop,e.side,e.line,e.openLine??'',e.closeLine??'',e.result??'',e.outcome,e.clv??'',e.beatClosingLine??'',e.missDistance??'',e.wowScore??'',e.processGrade,e.failureTag,e.classification].join(',')
-  ).join('\n');
-  const blob = new Blob([headers+rows], {type:'text/csv'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `wow_clv_${new Date().toISOString().split('T')[0]}.csv`;
-  a.click();
-}
-
-function clearCLV(){
-  if(!confirm('Clear all CLV entries? This cannot be undone.')) return;
-  clvLog = [];
-  try{ localStorage.removeItem('wow_clv_log'); }catch(e){}
-  renderCLVTable();
-}
-
 // ══════════════════════════════════════════════════════
 // PROP POOL ENGINE — Auto-refresh every hour
 // ══════════════════════════════════════════════════════
@@ -4311,6 +4188,17 @@ window.onload=()=>{
   renderCLVTable();
   renderSlipDatabase();
   renderLearnedRules();
+  // Drag/drop listeners — must be inside onload so DOM is ready
+  const slipUpZ=document.getElementById('slipUploadZone');
+  if(slipUpZ){
+    slipUpZ.addEventListener('dragover',e=>{e.preventDefault();slipUpZ.classList.add('drag');});
+    slipUpZ.addEventListener('dragleave',()=>slipUpZ.classList.remove('drag'));
+    slipUpZ.addEventListener('drop',e=>{
+      e.preventDefault();slipUpZ.classList.remove('drag');
+      const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/')||f.name.toLowerCase().endsWith('.heic'));
+      if(files.length)handleSlipUpload({target:{files}});
+    });
+  }
   // Pull prop pool 5 seconds after load, then every hour
   setTimeout(()=>refreshPropPool(false), 5000);
 };
