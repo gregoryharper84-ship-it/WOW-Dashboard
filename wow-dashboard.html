@@ -1060,16 +1060,16 @@ async function runAutoEngine(){
   log(`\n⟳ ${allCandidates.length} candidates with stats. Running WOW validation...`,'i');
 
   let scored=[];
-  for(const c of allCandidates.slice(0,40)){
+  for(const c of allCandidates.slice(0,60)){
     const ws=await scoreOne(c);
-    const val=wowValidate(c,ws);
+    const val=await wowValidate(c,ws); // must be awaited — wowValidate is async
     scored.push({...c,...val,wowScore:ws});
   }
 
-  const tierOrd={tier1:0,tier2:1,conditional:2,watch:3,reject:4};
-  const maxIdx={tier1:0,tier2:1,all:3}[minTier]??1;
-  scored=scored.filter(s=>(tierOrd[s.tier]??4)<=maxIdx);
-  scored.sort((a,b)=>{const ta=tierOrd[a.tier]??4,tb=tierOrd[b.tier]??4;return ta!==tb?ta-tb:(b.wowScore||0)-(a.wowScore||0);});
+  const tierOrd={tier1:0,tier2:1,flex:2,conditional:3,watch:4,reject:5};
+  const maxIdx={tier1:0,tier2:2,all:4}[minTier]??2; // tier2 now includes flex
+  scored=scored.filter(s=>(tierOrd[s.tier]??5)<=maxIdx);
+  scored.sort((a,b)=>{const ta=tierOrd[a.tier]??5,tb=tierOrd[b.tier]??5;return ta!==tb?ta-tb:(b.wowScore||0)-(a.wowScore||0);});
   const top=scored.slice(0,maxP);
 
   log(`\n✓ Engine complete. ${top.length} props meet criteria.`,'ok');
@@ -1201,52 +1201,95 @@ async function runNHLEngine(log){
 async function runBDLEngine(sport,log){
   const candidates=[];
   const bdlBase=sport==='WNBA'?'https://api.balldontlie.io/v1/wnba':'https://api.balldontlie.io/v1';
+  // Use current season — NBA 2024-25 season key is 2024; WNBA 2025
+  const season=sport==='WNBA'?'2025':'2024';
+
   try{
     const today=new Date().toISOString().split('T')[0];
-    const gamesR=await fx(`${bdlBase}/games?dates[]=${today}&per_page=25`,{headers:{'Authorization':KEYS.bdl}});
-    if(!gamesR.ok)throw new Error(gamesR.status);
+    const gamesR=await fx(`${bdlBase}/games?dates[]=${today}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+    if(!gamesR.ok)throw new Error(`BDL games: ${gamesR.status}`);
     const gamesD=await gamesR.json();const games=gamesD.data||[];
-    if(!games.length){log(`⚠ ${sport}: No games today`,'w');return[];}
+    if(!games.length){log(`⚠ ${sport}: No games today — trying ESPN fallback`,'w');return runESPNEngine(sport,log);}
     log(`✓ ${sport}: ${games.length} games on slate`,'ok');
 
     const propDefs={
-      NBA:[{key:'pts',prop:'points',lines:[15.5,20.5,25.5]},{key:'reb',prop:'rebounds',lines:[4.5,7.5,10.5]},{key:'ast',prop:'assists',lines:[2.5,4.5,6.5]}],
-      WNBA:[{key:'pts',prop:'points',lines:[10.5,15.5,20.5]},{key:'reb',prop:'rebounds',lines:[4.5,7.5]},{key:'ast',prop:'assists',lines:[2.5,4.5]}]
+      NBA:[
+        {key:'pts',prop:'points',lines:[10.5,15.5,20.5,25.5,30.5]},
+        {key:'reb',prop:'rebounds',lines:[3.5,5.5,7.5,10.5]},
+        {key:'ast',prop:'assists',lines:[1.5,3.5,5.5,7.5]},
+        {key:'stl',prop:'steals',lines:[0.5,1.5]},
+        {key:'blk',prop:'blocks',lines:[0.5,1.5]},
+        {key:'turnover',prop:'turnovers',lines:[1.5,2.5,3.5]},
+        {key:'fg3m',prop:'3-pointers made',lines:[0.5,1.5,2.5,3.5]},
+      ],
+      WNBA:[
+        {key:'pts',prop:'points',lines:[8.5,12.5,16.5,20.5]},
+        {key:'reb',prop:'rebounds',lines:[3.5,5.5,7.5]},
+        {key:'ast',prop:'assists',lines:[1.5,3.5,5.5]},
+      ]
     };
 
-    for(const game of games.slice(0,5)){
+    for(const game of games.slice(0,6)){
       const gameStr=`${game.visitor_team?.full_name||'Away'} @ ${game.home_team?.full_name||'Home'}`;
       for(const teamId of [game.visitor_team?.id,game.home_team?.id].filter(Boolean)){
-        // Get recent team stats to find active players
-        const statsR=await fx(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=2024&per_page=15&sort_by=game_date&direction=desc`,{headers:{'Authorization':KEYS.bdl}});
+        // Get recent players via team stats
+        const statsR=await fx(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=${season}&per_page=20&sort_by=game_date&direction=desc`,{headers:{'Authorization':KEYS.bdl}},8000);
         if(!statsR.ok)continue;
         const statsD=await statsR.json();
-        const recentPlayers=[...new Map((statsD.data||[]).map(s=>[s.player?.id,s.player])).values()].slice(0,4);
+        // Get unique players by id, pick top 5 by minutes
+        const playerMap=new Map();
+        (statsD.data||[]).forEach(s=>{
+          if(s.player?.id&&!playerMap.has(s.player.id))playerMap.set(s.player.id,s.player);
+        });
+        const recentPlayers=[...playerMap.values()].slice(0,5);
 
         for(const player of recentPlayers.filter(Boolean)){
-          // Get player's last 10 games
-          const logR=await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2024&per_page=10`,{headers:{'Authorization':KEYS.bdl}});
+          const logR=await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=15`,{headers:{'Authorization':KEYS.bdl}},8000);
           if(!logR.ok)continue;
-          const logD=await logR.json();const playerLogs=logD.data||[];
-          if(!playerLogs.length)continue;
+          const logD=await logR.json();
+          const playerLogs=(logD.data||[]).filter(g=>g.min&&g.min!=='0:00'&&g.min!=='00');
+          if(playerLogs.length<2)continue;
 
           for(const pd of (propDefs[sport]||[])){
-            const line=pd.lines[Math.floor(pd.lines.length/2)];
-            const hits=computeHitRates(playerLogs.map(g=>({[pd.key]:g[pd.key]||0})),pd.key,line,'MORE');
-            if(hits&&hits.l5_hit_rate!=null){
-              candidates.push({
-                player:`${player.first_name||''} ${player.last_name||''}`.trim(),
-                sport,prop:pd.prop,side:'MORE',line,game:gameStr,
-                recent_avg:hits.recent_avg,l5_hit_rate:hits.l5_hit_rate,l10_hit_rate:hits.l10_hit_rate,
-                note:`L5 avg: ${hits.recent_avg?.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`
-              });
+            // Find the line closest to their actual average
+            const vals=playerLogs.map(g=>parseFloat(g[pd.key])||0).filter(v=>v>=0);
+            if(!vals.length)continue;
+            const avg=vals.reduce((s,v)=>s+v,0)/vals.length;
+
+            // Test all lines, pick the one with best hit rate
+            for(const line of pd.lines){
+              const hits=computeHitRates(playerLogs.map(g=>({[pd.key]:parseFloat(g[pd.key])||0})),pd.key,line,'MORE');
+              if(!hits||hits.l5_hit_rate==null)continue;
+              // Include if hit rate is meaningful OR avg clearly supports the line
+              if(hits.l5_hit_rate>=0.55||avg>line*1.1){
+                candidates.push({
+                  player:`${player.first_name||''} ${player.last_name||''}`.trim(),
+                  sport,prop:pd.prop,side:'MORE',line,game:gameStr,
+                  recent_avg:parseFloat(avg.toFixed(2)),
+                  l5_hit_rate:hits.l5_hit_rate,
+                  l10_hit_rate:hits.l10_hit_rate,
+                  raw_vals:vals.slice(0,10),
+                  l5_median:hits.l5_median,
+                  role_score:7,
+                  note:`L5 avg: ${avg.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`
+                });
+                break; // Only add best line per prop type per player
+              }
             }
           }
         }
       }
     }
     log(`✓ ${sport}: ${candidates.length} candidates with real stats`,'ok');
-  }catch(e){log(`⚠ ${sport} engine error: ${e.message}`,'w');}
+  }catch(e){
+    log(`⚠ ${sport} BDL error: ${e.message} — using ESPN fallback`,'w');
+    return runESPNEngine(sport,log);
+  }
+  // If BDL returned nothing useful, fall back to ESPN
+  if(!candidates.length){
+    log(`⚠ ${sport}: No BDL candidates — trying ESPN fallback`,'w');
+    return runESPNEngine(sport,log);
+  }
   return candidates;
 }
 
@@ -3171,7 +3214,7 @@ async function scoreManual(){
   payload.injury_flag=parseInt(document.getElementById('m_inj').value)||0;
   let ws=null;
   try{const r=await fx(`${EP.replit}/gpt-score`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},body:JSON.stringify(payload)});if(r.ok){const d=await r.json();ws=d.wow_score??d.score??null;chip('replit','ok');}else chip('replit','fail');}catch(e){chip('replit','fail');}
-  const val=wowValidate({...payload},ws);
+  const val=await wowValidate({...payload},ws);
   const lines=[];const push=(t,m)=>lines.push(`<span class="o${t}">${m}</span>`);
   push('h',`═══ WOW v14.9+ — ${player.toUpperCase()} ═══`);push('i',`PROP: ${prop.toUpperCase()} ${side} ${line} | ${sport}`);
   if(ws!=null)push(ws>=70?'w':ws>=55?'ok':'e',`WOW Score: ${ws}/100${ws>=70?' ⚠ TRAP AUDIT':''}`);
