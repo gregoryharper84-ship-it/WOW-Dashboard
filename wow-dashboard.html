@@ -1496,6 +1496,12 @@ function comparePPvsBook(ppLine, sbookProb, side){
   if(gap < -0.05) return {status:'reject_price', adjustment:-0.07, bookProb, gap};
   return {status:'fair', adjustment:0, bookProb, gap};
 }
+
+// ══════════════════════════════════
+// RECENCY WEIGHTING
+// Weights: last 3 games 50%, games 4-7 30%, games 8-10 20%
+// ══════════════════════════════════
+function computeWeightedHitRate(vals, line, side){
   if(!vals||!vals.length) return null;
   const weights = vals.map((_,i) => {
     if(i < 3) return 0.50/Math.min(3,vals.length);
