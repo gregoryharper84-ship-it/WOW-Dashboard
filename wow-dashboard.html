@@ -4017,15 +4017,23 @@ async function refreshPropPool(manual=false){
   ];
 
   const raw=[];
+  // Get date range: today + next 2 days to catch upcoming games
+  const poolNow=new Date();
+  const dateFrom=poolNow.toISOString();
+  const dateTo=new Date(poolNow.getTime()+2*24*60*60*1000).toISOString();
 
   for(const cfg of sportConfigs){
-    log(`⟳ ${cfg.sport}: fetching today's events...`);
+    log(`⟳ ${cfg.sport}: fetching events...`);
     try{
-      const evR=await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
-      if(!evR.ok){log(`⚠ ${cfg.sport}: events ${evR.status}`,'w');continue;}
+      // Include commenceTimeFrom/To to catch upcoming games, not just live
+      const evR=await fx(
+        `${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso&commenceTimeFrom=${dateFrom}&commenceTimeTo=${dateTo}`,
+        {},8000
+      );
+      if(!evR.ok){log(`⚠ ${cfg.sport}: ${evR.status}`,'w');continue;}
       const events=await evR.json();chip('odds','ok');
-      if(!events?.length){log(`⚠ ${cfg.sport}: no events today`,'w');continue;}
-      log(`✓ ${cfg.sport}: ${events.length} events found`);
+      if(!events?.length){log(`⚠ ${cfg.sport}: no events in next 48h`,'w');continue;}
+      log(`✓ ${cfg.sport}: ${events.length} events`);
 
       for(const ev of events.slice(0,5)){
         try{
