@@ -417,6 +417,50 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14
     <div class="ch"><span class="ct">Request Log</span><span id="logCnt" style="font-size:12px;color:var(--text2);"></span><button class="btn btn-s btn-sm" onclick="loadLog()">Refresh</button></div>
     <div class="cb"><div class="ob" id="wLog" style="min-height:150px;">Loading...</div></div>
   </div>
+
+  <!-- CLV TRACKING -->
+  <div class="card" style="margin-top:12px;">
+    <div class="ch">
+      <span class="ct">📊 CLV Tracker — Postmortem Log</span>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-s btn-sm" onclick="exportCLV()">Export CSV</button>
+        <button class="btn btn-s btn-sm" onclick="clearCLV()">Clear</button>
+      </div>
+    </div>
+    <div class="cb">
+      <div class="alert ab" style="margin-bottom:12px;">Log settled picks to track CLV, process grades, and failure patterns. Per WOW: process &gt; outcome. Wins can be bad process. Losses can be good process.</div>
+      <div class="fr" style="margin-bottom:8px;">
+        <div class="field"><label>Player</label><input type="text" id="clv_player" placeholder="Player name"></div>
+        <div class="field"><label>Sport</label><select id="clv_sport"><option>MLB</option><option>NBA</option><option>NHL</option><option>WNBA</option><option>NFL</option><option>Tennis</option><option>Golf</option></select></div>
+        <div class="field"><label>Prop</label><input type="text" id="clv_prop" placeholder="strikeouts"></div>
+        <div class="field" style="max-width:70px;"><label>Line</label><input type="number" id="clv_line" step="0.5" placeholder="6.5"></div>
+        <div class="field" style="max-width:80px;"><label>Side</label><select id="clv_side"><option value="MORE">MORE</option><option value="LESS">LESS</option></select></div>
+      </div>
+      <div class="fr" style="margin-bottom:8px;">
+        <div class="field"><label>Open Line</label><input type="number" id="clv_open" step="0.5" placeholder="6.5"></div>
+        <div class="field"><label>Closing Line</label><input type="number" id="clv_close" step="0.5" placeholder="6.5"></div>
+        <div class="field"><label>Actual Result</label><input type="number" id="clv_result" step="0.5" placeholder="7.2"></div>
+        <div class="field"><label>Outcome</label><select id="clv_outcome"><option value="win">Win</option><option value="loss">Loss</option><option value="push">Push</option></select></div>
+        <div class="field"><label>WOW Score</label><input type="number" id="clv_wow" placeholder="62" min="0" max="100"></div>
+      </div>
+      <div class="fr" style="margin-bottom:12px;">
+        <div class="field"><label>Process Grade</label><select id="clv_process"><option value="A">A — Clean process</option><option value="B">B — Minor gaps</option><option value="C">C — Forced/weak</option><option value="F">F — Bad process</option></select></div>
+        <div class="field"><label>Failure Tag</label><select id="clv_tag">
+          <option value="">None</option>
+          <option>probability-overconfidence</option><option>recency-bias-trap</option>
+          <option>market-knows-more</option><option>line-move-against-model</option>
+          <option>sharp-money-conflict</option><option>repeat-failed-leg-exposure</option>
+          <option>pitching-outs-leash-risk</option><option>binary-0.5-event-risk</option>
+          <option>assist-over-role-mismatch</option><option>generic-lane-approval</option>
+          <option>player-specific-data-missing</option><option>line-not-supported-by-median</option>
+          <option>same-archetype-overstacking</option><option>micro-window-variance</option>
+        </select></div>
+        <div class="field"><label>Classification</label><select id="clv_class"><option>Core</option><option>Research</option><option>Flex</option><option>Power</option></select></div>
+      </div>
+      <button class="btn btn-p btn-sm" onclick="logCLV()">Log Pick</button>
+    </div>
+    <div id="clvTable" style="padding:0 16px 16px;"></div>
+  </div>
 </div>
 
 </div>
@@ -889,40 +933,297 @@ function genFallbackCandidates(sport,away,home){
   return (defs[sport]||[]).map(d=>({player:`${away} Key Player`,sport,prop:d.prop,side:d.side,line:d.line,game:`${away} @ ${home}`,note:'⚠ No stats API for this sport — verify player + line manually'}));
 }
 
+// ══════════════════════════════════
+// FIX #1 — FULL PAYLOAD TO REPLIT
+// FIX #3 — REDUCED WOW SCORE WEIGHT (0.20 not 0.35)
+// ══════════════════════════════════
 async function scoreOne(c){
   try{
-    const payload={player:c.player,sport:c.sport,prop:c.prop,side:c.side,line:c.line,environment:'live'};
-    if(c.recent_avg!=null)payload.recent_avg=c.recent_avg;
-    if(c.l5_hit_rate!=null)payload.l5_hit_rate=c.l5_hit_rate;
-    if(c.l10_hit_rate!=null)payload.l10_hit_rate=c.l10_hit_rate;
-    const r=await fx(`${EP.replit}/gpt-score`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},body:JSON.stringify(payload)},5000);
+    // Send FULL enriched payload — not just 3 fields
+    const payload={
+      player: c.player,
+      sport: c.sport,
+      prop: c.prop,
+      side: c.side,
+      line: c.line,
+      environment: 'live'
+    };
+    // Include every enriched field if available
+    if(c.recent_avg!=null)     payload.recent_avg     = c.recent_avg;
+    if(c.l5_hit_rate!=null)    payload.l5_hit_rate    = c.l5_hit_rate;
+    if(c.l10_hit_rate!=null)   payload.l10_hit_rate   = c.l10_hit_rate;
+    if(c.market_gap!=null)     payload.market_gap     = c.market_gap;
+    if(c.role_score!=null)     payload.role_score     = c.role_score;
+    if(c.matchup_rating!=null) payload.matchup_rating = c.matchup_rating;
+    if(c.confidence!=null)     payload.confidence     = c.confidence;
+    if(c.injury_flag!=null)    payload.injury_flag    = c.injury_flag;
+    // Pace factor for NBA/WNBA
+    if(c.pace_factor!=null)    payload.pace_factor    = c.pace_factor;
+
+    const r=await fx(`${EP.replit}/gpt-score`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},body:JSON.stringify(payload)},6000);
     if(!r.ok)return null;
     const d=await r.json();chip('replit','ok');return d.wow_score??d.score??null;
   }catch(e){return null;}
 }
 
-function wowValidate(p,wowScore){
-  if((p.prop||'').toLowerCase().includes('home run')||(p.prop||'')==='hr')return{tier:'reject',label:'REJECT — HR BAN'};
-  if(p.injury_flag===1)return{tier:'conditional',label:'CONDITIONAL — Injury Flagged'};
-  let rawProb=p.l5_hit_rate!=null&&p.l10_hit_rate!=null?p.l5_hit_rate*.4+p.l10_hit_rate*.4+(p.confidence||.5)*.2:p.confidence!=null?p.confidence:.60;
-  rawProb=Math.min(.95,Math.max(.35,rawProb));
-  // WOW score adjustment — if scorer returns a score, factor it in
-  if(wowScore!=null){const wowNorm=wowScore/100;rawProb=rawProb*.65+wowNorm*.35;}
-  rawProb=Math.min(.95,Math.max(.35,rawProb));
-  const ds=['recent_avg','l5_hit_rate','l10_hit_rate','market_gap','role_score','matchup_rating','confidence'].filter(k=>p[k]!=null&&!isNaN(p[k])).length;
-  const dq=ds>=5?'GREEN':ds>=2?'YELLOW':'RED';
-  // For auto-generated candidates (no data), use model-only path — downgrade to tier2 max
-  const isAutoGen=ds===0;
-  let tier='watch',label='WATCH';
-  if(rawProb<.55){tier='watch';label='WATCH — Below Threshold';}
-  else if(rawProb>=.63&&dq==='GREEN'){tier='tier1';label='TIER 1 — Market Verified Candidate';}
-  else if(rawProb>=.59&&!isAutoGen&&dq!=='RED'){tier='tier2';label='MODEL QUALIFIED';}
-  else if(rawProb>=.59||isAutoGen){
-    // Auto-gen or yellow data — still qualify as tier2 with note
-    tier='tier2';label='MODEL QUALIFIED — Verify Player Data';
+// ══════════════════════════════════
+// FIX #2 — RECENCY WEIGHTING
+// Weights: last 3 games 50%, games 4-7 30%, games 8-10 20%
+// ══════════════════════════════════
+function computeWeightedHitRate(vals, line, side){
+  if(!vals||!vals.length) return null;
+  const weights = vals.map((_,i) => {
+    if(i < 3) return 0.50/Math.min(3,vals.length);
+    if(i < 7) return 0.30/Math.min(4,Math.max(0,vals.length-3));
+    return 0.20/Math.min(3,Math.max(0,vals.length-7));
+  });
+  // Normalize weights to sum to 1
+  const totalW = weights.reduce((s,w)=>s+w,0);
+  let weightedHits = 0;
+  vals.forEach((v,i) => {
+    const hit = side==='MORE' ? v > line : v < line;
+    if(hit) weightedHits += weights[i]/totalW;
+  });
+  return weightedHits;
+}
+
+// ══════════════════════════════════
+// FIX #5 — FRAGILE PROP DETECTION
+// ══════════════════════════════════
+function detectFragileProp(prop, line, sport){
+  const p = (prop||'').toLowerCase();
+  const flags = [];
+
+  // May 11 Lockdown Patch bans
+  if(p.includes('1st inn') || p.includes('first inn') || p.includes('1st inning'))
+    flags.push({tag:'1st-inning-fragile', severity:'ban_power', note:'1st inning prop — Power Play ban per May 11 patch'});
+  if(line <= 0.5 && (p.includes('run') || p.includes('hit') || p.includes('score') || p.includes('walk')))
+    flags.push({tag:'binary-0.5-event', severity:'ban_stack', note:'Binary 0.5 event — ban as stacked anchor'});
+  if(p.includes('home run') || p === 'hr')
+    flags.push({tag:'hr-hard-ban', severity:'hard_ban', note:'HR props — HARD BAN'});
+  if(line >= 17.5 && (p.includes('pitch') || p.includes('outs recorded')))
+    flags.push({tag:'pitching-outs-high-line', severity:'ban_power', note:`${line}+ pitching outs — fragile high line`});
+  if(p.includes('total game') && line >= 22.5 && sport==='Tennis')
+    flags.push({tag:'tennis-games-over-22.5', severity:'cap_64', note:'Tennis total games over 22.5 — cap WOW at 64'});
+  if(p.includes('total game') && line >= 21.5 && sport==='Tennis')
+    flags.push({tag:'tennis-games-over-21.5', severity:'cap_70', note:'Tennis total games over 21.5 — cap WOW at 70'});
+  if(p.includes('assist') && line <= 0.5)
+    flags.push({tag:'binary-assist-hook', severity:'ban_stack', note:'0.5 assist hook — binary event ban'});
+  if((p.includes('ftm') || p.includes('free throw')) && line > 3)
+    flags.push({tag:'demon-ftm-risk', severity:'warn', note:'FTM over requires elite foul-drawer context'});
+
+  return flags;
+}
+
+// ══════════════════════════════════
+// FIX #6 — NBA PACE ADJUSTMENT
+// Pulls O/U total from Odds API to adjust NBA prop confidence
+// ══════════════════════════════════
+const paceCacheNBA = {};
+async function getNBAPaceFactor(game){
+  if(!game) return 1.0;
+  const key = game.toLowerCase().replace(/\s/g,'');
+  if(paceCacheNBA[key]) return paceCacheNBA[key];
+  try{
+    const r = await fx(
+      `${EP.odds}/sports/basketball_nba/odds?apiKey=${KEYS.odds}&regions=us&markets=totals&oddsFormat=american`,{},6000
+    );
+    if(!r.ok) return 1.0;
+    const data = await r.json();
+    // Find matching game
+    const awayTeam = game.split(/\s@\s|\svs\.?\s/i)[0]?.trim().split(' ').pop();
+    const match = data.find(g =>
+      g.away_team?.toLowerCase().includes(awayTeam?.toLowerCase()||'') ||
+      g.home_team?.toLowerCase().includes(awayTeam?.toLowerCase()||'')
+    );
+    if(!match) return 1.0;
+    const total = match.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.find(o=>o.name==='Over')?.point;
+    if(!total) return 1.0;
+    // League avg NBA total ~225 — pace factor scales relative to that
+    const factor = total / 225;
+    paceCacheNBA[key] = factor;
+    return factor;
+  }catch(e){ return 1.0; }
+}
+
+// ══════════════════════════════════
+// FIX #7 — OPPONENT STATS (MLB)
+// Pull opponent team batting/pitching stats for matchup rating
+// ══════════════════════════════════
+const opponentCache = {};
+async function getMLBOpponentRating(game, isPitcher){
+  if(!game) return 5;
+  const key = game + (isPitcher?'_pitch':'_hit');
+  if(opponentCache[key]) return opponentCache[key];
+  try{
+    // Extract opponent team from game string e.g. "Yankees @ Red Sox"
+    const parts = game.split(/\s@\s|\svs\.?\s/i);
+    const opponent = parts[1]?.trim() || parts[0]?.trim();
+    if(!opponent) return 5;
+
+    // Get team ID from MLB schedule
+    const today = new Date().toISOString().split('T')[0];
+    const r = await fx(`${EP.mlb}/schedule?sportId=1&date=${today}&hydrate=team`,{},6000);
+    if(!r.ok) return 5;
+    const data = await r.json();
+    const games = data.dates?.[0]?.games || [];
+
+    let teamId = null;
+    for(const g of games){
+      const awayName = g.teams?.away?.team?.name||'';
+      const homeName = g.teams?.home?.team?.name||'';
+      if(awayName.toLowerCase().includes(opponent.toLowerCase().split(' ').pop()) ||
+         homeName.toLowerCase().includes(opponent.toLowerCase().split(' ').pop())){
+        // Get the defending team
+        teamId = isPitcher ?
+          (awayName.toLowerCase().includes(opponent.toLowerCase().split(' ').pop()) ? g.teams?.away?.team?.id : g.teams?.home?.team?.id) :
+          (awayName.toLowerCase().includes(opponent.toLowerCase().split(' ').pop()) ? g.teams?.home?.team?.id : g.teams?.away?.team?.id);
+        break;
+      }
+    }
+    if(!teamId) return 5;
+
+    // Get team stats
+    const statGroup = isPitcher ? 'hitting' : 'pitching'; // vs pitcher = opponent hitting matters
+    const statR = await fx(`${EP.mlb}/teams/${teamId}/stats?stats=season&season=2026&group=${statGroup}`,{},6000);
+    if(!statR.ok) return 5;
+    const statD = await statR.json();
+    const stats = statD.stats?.[0]?.splits?.[0]?.stat;
+    if(!stats) return 5;
+
+    let rating = 5;
+    if(isPitcher){
+      // Pitcher matchup: opponent K% — higher K% = better for pitcher K prop
+      const kRate = parseFloat(stats.strikeOutRate || stats.strikeOuts / (stats.atBats||1) || 0);
+      rating = Math.min(10, Math.round(kRate * 40)); // 0.25 K rate = 10
+    } else {
+      // Hitter matchup: opponent ERA — lower ERA = worse for hitter
+      const era = parseFloat(stats.era || 4.0);
+      rating = Math.max(1, Math.min(10, Math.round(10 - era)));
+    }
+
+    opponentCache[key] = rating;
+    return rating;
+  }catch(e){ return 5; }
+}
+
+// ══════════════════════════════════
+// FIX #1-4 — FULL REWRITE: wowValidate
+// Fixes: median gate, WOW weight, recency, fragile detection, opponent
+// ══════════════════════════════════
+async function wowValidate(p, wowScore){
+  const propLower = (p.prop||'').toLowerCase();
+  const failures = [];
+
+  // ── HARD BANS ──
+  const fragileFlags = detectFragileProp(p.prop, p.line, p.sport);
+  const hardBan = fragileFlags.find(f=>f.severity==='hard_ban');
+  if(hardBan) return {tier:'reject', label:`REJECT — ${hardBan.note}`, failures:[hardBan.tag]};
+  if(p.injury_flag===1) return {tier:'conditional', label:'CONDITIONAL — Injury Flagged', failures:['injury-flag']};
+
+  // ── DATA QUALITY ──
+  const ds = ['recent_avg','l5_hit_rate','l10_hit_rate','market_gap','role_score','matchup_rating','confidence']
+    .filter(k=>p[k]!=null&&!isNaN(p[k])).length;
+  const dq = ds>=5?'GREEN':ds>=2?'YELLOW':'RED';
+  const isAutoGen = ds === 0;
+
+  // ── FIX #2: RECENCY-WEIGHTED HIT RATE ──
+  let weightedL5 = p.l5_hit_rate;
+  let weightedL10 = p.l10_hit_rate;
+  if(p.raw_vals && p.raw_vals.length >= 3){
+    weightedL5 = computeWeightedHitRate(p.raw_vals.slice(0,5), p.line, p.side);
+    weightedL10 = computeWeightedHitRate(p.raw_vals.slice(0,10), p.line, p.side);
   }
-  else{tier='conditional';label='CONDITIONAL — Data Insufficient';}
-  return{tier,label,rawProb};
+
+  // ── BASE PROBABILITY (recency-weighted) ──
+  let rawProb;
+  if(weightedL5!=null && weightedL10!=null){
+    rawProb = weightedL5*0.45 + weightedL10*0.35 + (p.confidence||0.5)*0.20;
+  } else if(p.confidence!=null){
+    rawProb = p.confidence;
+  } else {
+    rawProb = 0.60;
+  }
+
+  // ── FIX #7: PROXIMITY TO LINE ──
+  // How close is recent avg to the line — within 5% = neutral, outside = boost/penalty
+  if(p.recent_avg != null && p.line > 0){
+    const proximity = (p.recent_avg - p.line) / p.line;
+    if(p.side === 'MORE'){
+      if(proximity > 0.15) rawProb += 0.03;       // avg well above line — boost
+      else if(proximity < -0.15) rawProb -= 0.04;  // avg well below line — penalize
+    } else {
+      if(proximity < -0.15) rawProb += 0.03;       // avg well below line — boost LESS
+      else if(proximity > 0.15) rawProb -= 0.04;   // avg well above line — penalize LESS
+    }
+  }
+
+  // ── FIX #5: MEDIAN GATE ──
+  // WOW master rule: L10 median must support line
+  if(p.l5_median != null){
+    const medianSupports = p.side==='MORE' ? p.l5_median >= p.line * 0.90 : p.l5_median <= p.line * 1.10;
+    if(!medianSupports){
+      rawProb -= 0.05;
+      failures.push('line-not-supported-by-median');
+    }
+  }
+
+  // ── FIX #6: NBA PACE FACTOR ──
+  if((p.sport==='NBA'||p.sport==='WNBA') && p.pace_factor!=null){
+    const paceAdj = (p.pace_factor - 1.0) * 0.08; // 10% higher pace = +0.8% prob for scoring props
+    const scoringProp = ['point','rebound','assist','pra','fantasy'].some(k=>propLower.includes(k));
+    if(scoringProp) rawProb += paceAdj;
+  }
+
+  // ── FIX #3: WOW SCORE — SUPPORT ONLY (20% weight) ──
+  if(wowScore!=null){
+    // Apply fragile caps from May 11 patch
+    let cappedScore = wowScore;
+    fragileFlags.forEach(f=>{
+      if(f.severity==='cap_64') cappedScore = Math.min(cappedScore, 64);
+      if(f.severity==='cap_70') cappedScore = Math.min(cappedScore, 70);
+    });
+    const wowNorm = cappedScore/100;
+    rawProb = rawProb*0.80 + wowNorm*0.20; // FIX: 20% not 35%
+
+    // Trap audit: 70+ WOW triggers overconfidence review
+    if(cappedScore >= 70){
+      rawProb -= 0.02;
+      failures.push('probability-overconfidence-trap-audit');
+    }
+  }
+
+  rawProb = Math.min(0.95, Math.max(0.35, rawProb));
+
+  // ── FRAGILE POWER BAN TAGS ──
+  fragileFlags.filter(f=>f.severity==='ban_power').forEach(f=>failures.push(f.tag));
+  fragileFlags.filter(f=>f.severity==='ban_stack').forEach(f=>failures.push(f.tag));
+  fragileFlags.filter(f=>f.severity==='warn').forEach(f=>failures.push(f.tag));
+
+  // ── FINAL TIER DECISION ──
+  const hasPowerBan = fragileFlags.some(f=>f.severity==='ban_power'||f.severity==='ban_stack');
+  const medianFailed = failures.includes('line-not-supported-by-median');
+
+  let tier='watch', label='WATCH';
+
+  if(rawProb < 0.55){
+    tier='watch'; label='WATCH — Below Threshold';
+  } else if(rawProb >= 0.63 && dq==='GREEN' && !hasPowerBan && !medianFailed){
+    tier='tier1'; label='TIER 1 — Market Verified Candidate';
+  } else if(rawProb >= 0.59 && dq!=='RED' && !hasPowerBan && !isAutoGen){
+    tier='tier2'; label='MODEL QUALIFIED';
+  } else if(hasPowerBan && rawProb >= 0.59){
+    tier='tier2'; label='MODEL QUALIFIED — Flex/Research Only (Fragile)';
+    failures.push('power-play-banned-fragile-leg');
+  } else if(rawProb >= 0.59 || isAutoGen){
+    tier='tier2'; label='MODEL QUALIFIED — Verify Data';
+  } else if(dq==='RED'){
+    tier='conditional'; label='CONDITIONAL — Data Insufficient';
+  } else {
+    tier='watch'; label='WATCH';
+  }
+
+  return {tier, label, rawProb, failures, fragileFlags};
 }
 
 function renderEngineResults(props,container){
@@ -940,17 +1241,58 @@ function makePCard(p){
   const lm={tier1:'TIER 1',tier2:'QUALIFIED',conditional:'CONDITIONAL',watch:'WATCH',reject:'REJECT'};
   const sc=p.wowScore>=70?'sh':p.wowScore>=55?'sm':'sl';
   const pObj={player:p.player,sport:p.sport,prop:p.prop,side:p.side,line:p.line,tier:p.tier,label:p.label,wowScore:p.wowScore};
+
+  // Stats chips
+  let statsHtml = '';
+  if(p.recent_avg != null){
+    statsHtml += `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;">`;
+    const chips = [
+      p.recent_avg!=null ? `<span style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:10px;font-family:var(--mono);">L5 avg: <strong>${parseFloat(p.recent_avg).toFixed(1)}</strong></span>` : '',
+      p.l5_hit_rate!=null ? `<span style="background:${p.l5_hit_rate>=.6?'var(--green-light)':'var(--yellow-light)'};border-radius:4px;padding:2px 6px;font-size:10px;font-family:var(--mono);color:${p.l5_hit_rate>=.6?'var(--green)':'var(--yellow)'};">L5: <strong>${(p.l5_hit_rate*100).toFixed(0)}%</strong></span>` : '',
+      p.w_l5_hit_rate!=null&&Math.abs(p.w_l5_hit_rate-(p.l5_hit_rate||0))>0.03 ? `<span style="background:var(--accent-light);border-radius:4px;padding:2px 6px;font-size:10px;font-family:var(--mono);color:var(--accent);">Wtd: <strong>${(p.w_l5_hit_rate*100).toFixed(0)}%</strong></span>` : '',
+      p.l10_hit_rate!=null ? `<span style="background:${p.l10_hit_rate>=.6?'var(--green-light)':'var(--yellow-light)'};border-radius:4px;padding:2px 6px;font-size:10px;font-family:var(--mono);color:${p.l10_hit_rate>=.6?'var(--green)':'var(--yellow)'};">L10: <strong>${(p.l10_hit_rate*100).toFixed(0)}%</strong></span>` : '',
+      p.l5_median!=null ? `<span style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:10px;font-family:var(--mono);">Med: <strong>${p.l5_median}</strong></span>` : '',
+      p.season_avg!=null ? `<span style="background:var(--accent-light);border-radius:4px;padding:2px 6px;font-size:10px;font-family:var(--mono);color:var(--accent);">Szn: <strong>${parseFloat(p.season_avg).toFixed(1)}</strong></span>` : '',
+      p.matchup_rating!=null ? `<span style="background:${p.matchup_rating>=7?'var(--green-light)':p.matchup_rating>=4?'var(--yellow-light)':'var(--red-light)'};border-radius:4px;padding:2px 6px;font-size:10px;font-family:var(--mono);color:${p.matchup_rating>=7?'var(--green)':p.matchup_rating>=4?'var(--yellow)':'var(--red)'};">Matchup: <strong>${p.matchup_rating}/10</strong></span>` : '',
+      p.pace_factor!=null&&Math.abs(p.pace_factor-1)>0.03 ? `<span style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:10px;font-family:var(--mono);">Pace: <strong>${p.pace_factor.toFixed(2)}x</strong></span>` : '',
+    ].filter(Boolean);
+    statsHtml += chips.join('') + '</div>';
+  }
+
+  // Sparkline
+  let sparkline = '';
+  if(p.raw_vals && p.raw_vals.length){
+    const max = Math.max(...p.raw_vals, p.line*1.2, 1);
+    const bars = p.raw_vals.slice(0,10).map(v=>{
+      const h = Math.max(4, Math.round((v/max)*24));
+      const hit = p.side==='MORE'?v>p.line:v<p.line;
+      return `<div title="${v}" style="width:7px;height:${h}px;background:${hit?'var(--green)':'var(--red)'};border-radius:2px 2px 0 0;flex-shrink:0;"></div>`;
+    }).join('');
+    sparkline = `<div style="display:flex;align-items:flex-end;gap:2px;margin-top:6px;height:28px;padding-bottom:2px;border-bottom:1px solid var(--border);">${bars}<span style="font-size:9px;color:var(--text3);margin-left:4px;align-self:flex-end;">last ${p.raw_vals.slice(0,10).length}g</span><span style="font-size:9px;color:var(--text3);margin-left:auto;align-self:flex-end;">line: ${p.line}</span></div>`;
+  }
+
+  // Failure / fragile flags
+  let flagsHtml = '';
+  if(p.failures?.length || p.fragileFlags?.length){
+    const allFlags = [
+      ...(p.failures||[]).map(f=>`<span style="background:var(--red-light);color:var(--red);border-radius:3px;padding:1px 5px;font-size:9px;font-family:var(--mono);">⚠ ${f}</span>`),
+      ...(p.fragileFlags||[]).filter(f=>f.severity!=='hard_ban').map(f=>`<span style="background:var(--yellow-light);color:var(--yellow);border-radius:3px;padding:1px 5px;font-size:9px;font-family:var(--mono);">⚑ ${f.note}</span>`)
+    ];
+    if(allFlags.length) flagsHtml = `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:5px;">${allFlags.join('')}</div>`;
+  }
+
   card.innerHTML=`
-    <div class="pm">
-      <div class="pp">${p.player}</div>
+    <div class="pm" style="min-width:0;">
+      <div class="pp">${p.player}${p.mlb_position?` <span style="font-size:11px;font-weight:400;color:var(--text2);">${p.mlb_position}</span>`:''}</div>
       <div class="pd">${p.sport} · ${p.prop} ${p.side} ${p.line}${p.game?` · ${p.game}`:''}</div>
-      ${p.note?`<div style="font-size:11px;color:var(--text3);margin-top:2px;">${p.note}</div>`:''}
+      ${statsHtml}${sparkline}${flagsHtml}
     </div>
-    <div style="display:flex;align-items:center;gap:8px;">
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;margin-left:8px;">
       <span class="badge ${bm[p.tier]||'bg-gr'}">${lm[p.tier]||p.tier}</span>
-      ${p.wowScore!=null?`<div class="ps ${sc}">${p.wowScore}</div>`:''}
+      ${p.wowScore!=null?`<div class="ps ${sc}" style="font-size:18px;">${p.wowScore}</div>`:''}
+      ${p.rawProb!=null?`<div style="font-size:10px;font-family:var(--mono);color:var(--text2);">${(p.rawProb*100).toFixed(1)}%</div>`:''}
+      ${['tier1','tier2'].includes(p.tier)?`<button class="btn btn-g btn-sm" onclick='addToSlipCard(${JSON.stringify(pObj)})'>+ Slip</button>`:''}
     </div>
-    ${['tier1','tier2'].includes(p.tier)?`<button class="btn btn-g btn-sm" onclick='addToSlipCard(${JSON.stringify(pObj)})'>+ Slip</button>`:''}
   `;
   return card;
 }
@@ -1185,14 +1527,711 @@ async function analyzePPManual(){
   document.getElementById('ppManBtn').textContent='Validate All';document.getElementById('ppManSp').classList.add('hidden');
 }
 
-async function validateAndRenderPP(props,container){
-  container.innerHTML=`<div class="alert ab"><div class="spd"></div> Validating ${props.length} props...</div>`;
-  const results=[];
-  for(const p of props){const ws=await scoreOne(p);const val=wowValidate(p,ws);results.push({...p,...val,wowScore:ws});if(['tier1','tier2'].includes(val.tier))addToPool({...p,...val,wowScore:ws});}
-  container.innerHTML='';
-  const h=document.createElement('div');h.className='slbl';h.textContent=`PrizePicks Results · ${results.length} props`;container.appendChild(h);
-  results.sort((a,b)=>{const m={tier1:0,tier2:1,conditional:2,watch:3,reject:4};return(m[a.tier]??4)-(m[b.tier]??4);});
-  results.forEach(p=>container.appendChild(makePCard(p)));
+// ══════════════════════════════════
+// MLB STATS API — FULL INTEGRATION
+// ══════════════════════════════════
+const statsCache = {};
+const playerIdCache = {};
+
+// ── Player search ──
+async function mlbSearchPlayer(name){
+  if(playerIdCache[name]) return playerIdCache[name];
+  try{
+    const r = await fx(`${EP.mlb}/people/search?names=${encodeURIComponent(name)}&active=true`,{},6000);
+    if(!r.ok) return null;
+    const d = await r.json();
+    const p = d.people?.[0] || null;
+    if(p) playerIdCache[name] = p;
+    return p;
+  }catch(e){ return null; }
+}
+
+// ── Game log (hitting or pitching) ──
+async function mlbGameLog(playerId, group='pitching', season='2026', limit=15){
+  try{
+    const r = await fx(`${EP.mlb}/people/${playerId}/stats?stats=gameLog&season=${season}&gameType=R&group=${group}&limit=${limit}`,{},8000);
+    if(!r.ok) return [];
+    const d = await r.json();
+    return d.stats?.[0]?.splits || [];
+  }catch(e){ return []; }
+}
+
+// ── Season stats ──
+async function mlbSeasonStats(playerId, group='pitching', season='2026'){
+  try{
+    const r = await fx(`${EP.mlb}/people/${playerId}/stats?stats=season&season=${season}&group=${group}`,{},6000);
+    if(!r.ok) return null;
+    const d = await r.json();
+    return d.stats?.[0]?.splits?.[0]?.stat || null;
+  }catch(e){ return null; }
+}
+
+// ── Career stats ──
+async function mlbCareerStats(playerId, group='pitching'){
+  try{
+    const r = await fx(`${EP.mlb}/people/${playerId}/stats?stats=career&group=${group}`,{},6000);
+    if(!r.ok) return null;
+    const d = await r.json();
+    return d.stats?.[0]?.splits?.[0]?.stat || null;
+  }catch(e){ return null; }
+}
+
+// ── Pitcher vs batter splits ──
+async function mlbPitcherSplits(playerId, season='2026'){
+  try{
+    const r = await fx(`${EP.mlb}/people/${playerId}/stats?stats=statSplits&season=${season}&group=pitching&sitCodes=vl,vr`,{},6000);
+    if(!r.ok) return null;
+    const d = await r.json();
+    return d.stats?.[0]?.splits || [];
+  }catch(e){ return []; }
+}
+
+// ── League leaders for context ──
+async function mlbLeagueLeaders(statType='strikeouts', season='2026', limit=10){
+  try{
+    const r = await fx(`${EP.mlb}/stats/leaders?leaderCategories=${statType}&season=${season}&sportId=1&limit=${limit}`,{},6000);
+    if(!r.ok) return [];
+    const d = await r.json();
+    return d.leagueLeaders?.[0]?.leaders || [];
+  }catch(e){ return []; }
+}
+
+// ── Today's schedule with full hydration ──
+async function mlbTodaySchedule(){
+  try{
+    const today = new Date().toISOString().split('T')[0];
+    const r = await fx(
+      `${EP.mlb}/schedule?sportId=1&date=${today}&hydrate=team,lineScore,probablePitcher,decisions,weather,venue,broadcasts`,{},8000
+    );
+    if(!r.ok) return [];
+    const d = await r.json();
+    return d.dates?.[0]?.games || [];
+  }catch(e){ return []; }
+}
+
+// ── Live game feed (for in-progress games) ──
+async function mlbLiveFeed(gamePk){
+  try{
+    const r = await fx(`${EP.mlb}/../v1.1/game/${gamePk}/feed/live?fields=liveData,boxscore,players,pitchCount`,{},8000);
+    if(!r.ok) return null;
+    const d = await r.json();
+    return d.liveData || null;
+  }catch(e){ return null; }
+}
+
+// ── Standings ──
+async function mlbStandings(season='2026'){
+  try{
+    const r = await fx(`${EP.mlb}/standings?leagueId=103,104&season=${season}&standingsTypes=regularSeason`,{},6000);
+    if(!r.ok) return null;
+    const d = await r.json();
+    return d.records || [];
+  }catch(e){ return null; }
+}
+
+// ── Team roster ──
+async function mlbRoster(teamId, rosterType='active'){
+  try{
+    const r = await fx(`${EP.mlb}/teams/${teamId}/roster?rosterType=${rosterType}&season=2026`,{},6000);
+    if(!r.ok) return [];
+    const d = await r.json();
+    return d.roster || [];
+  }catch(e){ return []; }
+}
+
+// ── Venue/weather for game ──
+async function mlbVenueInfo(venueId){
+  try{
+    const r = await fx(`${EP.mlb}/venues/${venueId}?hydrate=fieldInfo,location`,{},5000);
+    if(!r.ok) return null;
+    const d = await r.json();
+    return d.venues?.[0] || null;
+  }catch(e){ return null; }
+}
+
+// ── Umpire data for game ──
+async function mlbUmpires(gamePk){
+  try{
+    const r = await fx(`${EP.mlb}/game/${gamePk}/boxscore`,{},6000);
+    if(!r.ok) return null;
+    const d = await r.json();
+    return d.officials || [];
+  }catch(e){ return []; }
+}
+
+// ── Prop type → stat key mapping (comprehensive) ──
+const MLB_STAT_KEY_MAP = {
+  // Pitching
+  'strikeout': 'strikeOuts',
+  'strikeouts': 'strikeOuts',
+  'pitcher strikeout': 'strikeOuts',
+  'ks': 'strikeOuts',
+  'k\'s': 'strikeOuts',
+  'pitcher outs recorded': 'outs',
+  'outs recorded': 'outs',
+  'pitching outs': 'outs',
+  'earned run': 'earnedRuns',
+  'earned runs': 'earnedRuns',
+  'era': 'era',
+  'walks allowed': 'baseOnBalls',
+  'hits allowed': 'hits',
+  'innings pitched': 'inningsPitched',
+  'pitches thrown': 'numberOfPitches',
+  '1st inn. pitches thrown': 'numberOfPitches',
+  '1st inning pitches thrown': 'numberOfPitches',
+  'pitches': 'numberOfPitches',
+  'whip': 'whip',
+  'batters faced': 'battersFaced',
+  'wild pitch': 'wildPitches',
+  // Hitting
+  'hit': 'hits',
+  'hits': 'hits',
+  'total base': 'totalBases',
+  'total bases': 'totalBases',
+  'home run': 'homeRuns',
+  'home runs': 'homeRuns',
+  'hr': 'homeRuns',
+  'rbi': 'rbi',
+  'rbis': 'rbi',
+  'run': 'runs',
+  'runs': 'runs',
+  'run scored': 'runs',
+  'walk': 'baseOnBalls',
+  'walks': 'baseOnBalls',
+  'stolen base': 'stolenBases',
+  'stolen bases': 'stolenBases',
+  'sb': 'stolenBases',
+  'strikeout batter': 'strikeOuts',
+  'batter strikeout': 'strikeOuts',
+  'plate appearance': 'plateAppearances',
+  'plate appearances': 'plateAppearances',
+  'pa': 'plateAppearances',
+  'at bat': 'atBats',
+  'at bats': 'atBats',
+  'double': 'doubles',
+  'doubles': 'doubles',
+  'triple': 'triples',
+  'triples': 'triples',
+  'hit by pitch': 'hitByPitch',
+  'fantasy': 'fantasyPoints',
+  'fantasy score': 'fantasyPoints',
+  'hitter fantasy': 'fantasyPoints',
+};
+
+function getMLBStatKey(propStr){
+  const lower = (propStr||'').toLowerCase();
+  for(const [key, val] of Object.entries(MLB_STAT_KEY_MAP)){
+    if(lower.includes(key)) return val;
+  }
+  return null;
+}
+
+function isPitcherProp(propStr){
+  const lower = (propStr||'').toLowerCase();
+  return ['pitch','strikeout','outs recorded','earned run','inning','whip','batter faced','wild pitch','walks allowed','hits allowed'].some(k=>lower.includes(k));
+}
+
+// ── Main enrichment function ──
+async function enrichWithMLBStats(prop){
+  if(prop.sport !== 'MLB') return prop;
+  const cacheKey = `${prop.player}|${prop.prop}|${prop.line}|${prop.side}`;
+  if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
+
+  try{
+    // 1. Find player
+    const person = await mlbSearchPlayer(prop.player);
+    if(!person) return prop;
+
+    const isPitcher = isPitcherProp(prop.prop);
+    const statGroup = isPitcher ? 'pitching' : 'hitting';
+    const statKey = getMLBStatKey(prop.prop);
+
+    // 2. Parallel fetch: game log + season stats + career stats
+    const [splits, seasonStat, careerStat] = await Promise.all([
+      mlbGameLog(person.id, statGroup, '2026', 15),
+      mlbSeasonStats(person.id, statGroup, '2026'),
+      mlbCareerStats(person.id, statGroup),
+    ]);
+
+    // 3. Also fetch pitcher splits if pitcher
+    let vsLeftRightSplits = [];
+    if(isPitcher){
+      vsLeftRightSplits = await mlbPitcherSplits(person.id, '2026');
+    }
+
+    if(!splits.length || !statKey) return prop;
+
+    // 4. Extract values from game log
+    const vals = splits
+      .map(s => {
+        let v = parseFloat(s.stat?.[statKey]);
+        // Special case: numberOfPitches may need to be first-inning only
+        // MLB API doesn't separate 1st inning pitches — use full game as proxy
+        return isNaN(v) ? null : v;
+      })
+      .filter(v => v !== null && v >= 0);
+
+    if(vals.length < 2) return prop;
+
+    const l5 = vals.slice(0,5);
+    const l10 = vals.slice(0,10);
+    const line = prop.line;
+    const side = prop.side;
+
+    const hitRate = (arr, ln, sd) => arr.length ? arr.filter(v => sd==='MORE' ? v>ln : v<ln).length / arr.length : null;
+
+    const recent_avg = l5.reduce((a,b)=>a+b,0) / l5.length;
+    const l5_hit_rate = hitRate(l5, line, side);
+    const l10_hit_rate = hitRate(l10, line, side);
+    const l5_sorted = [...l5].sort((a,b)=>a-b);
+    const l5_median = l5_sorted[Math.floor(l5.length/2)];
+
+    // 5. Matchup rating from splits
+    let matchup_rating = 5; // default neutral
+    if(vsLeftRightSplits.length){
+      // Crude matchup: if strikeout rate vs opponent handedness is above league avg
+      const avgK = vsLeftRightSplits.reduce((s,sp)=>s+(parseFloat(sp.stat?.strikeOuts||0)),0) / vsLeftRightSplits.length;
+      matchup_rating = Math.min(10, Math.round((avgK / 5) * 7));
+    }
+
+    // 6. Role score from season consistency
+    const seasonAvg = seasonStat?.[statKey] ? parseFloat(seasonStat[statKey]) : null;
+    const stdDev = vals.length > 1 ? Math.sqrt(vals.slice(0,5).reduce((s,v)=>s+Math.pow(v-recent_avg,2),0)/l5.length) : 0;
+    const consistency = Math.max(0, Math.min(1, 1 - (stdDev / (recent_avg || 1))));
+    const role_score = Math.round(consistency * 10);
+
+    // 7. Confidence: weighted combo of L5/L10 hit rates
+    const confidence = l5_hit_rate!=null && l10_hit_rate!=null
+      ? l5_hit_rate * 0.55 + l10_hit_rate * 0.45
+      : l5_hit_rate || l10_hit_rate || 0.5;
+
+    // 8. Market gap: compare recent avg vs line
+    const market_gap = recent_avg > 0 ? (recent_avg - line) / recent_avg : 0;
+
+    // 9. Build note with all available data
+    const noteparts = [];
+    if(recent_avg != null) noteparts.push(`L5 avg: ${recent_avg.toFixed(1)}`);
+    if(l5_hit_rate != null) noteparts.push(`L5 hit: ${(l5_hit_rate*100).toFixed(0)}%`);
+    if(l10_hit_rate != null) noteparts.push(`L10 hit: ${(l10_hit_rate*100).toFixed(0)}%`);
+    if(l5_median != null) noteparts.push(`Median: ${l5_median}`);
+    if(seasonAvg != null) noteparts.push(`Season avg: ${parseFloat(seasonAvg).toFixed(1)}`);
+
+    // 10. Build pitcher-specific note
+    let pitcherNote = '';
+    if(isPitcher && statKey === 'numberOfPitches'){
+      pitcherNote = ' ⚠ Note: MLB API returns full-game pitches — used as 1st inn proxy';
+    }
+
+    const enriched = {
+      recent_avg: parseFloat(recent_avg.toFixed(2)),
+      l5_hit_rate: l5_hit_rate != null ? parseFloat(l5_hit_rate.toFixed(3)) : null,
+      l10_hit_rate: l10_hit_rate != null ? parseFloat(l10_hit_rate.toFixed(3)) : null,
+      l5_median,
+      role_score,
+      matchup_rating,
+      confidence: parseFloat(confidence.toFixed(3)),
+      market_gap: parseFloat(market_gap.toFixed(3)),
+      season_avg: seasonAvg ? parseFloat(parseFloat(seasonAvg).toFixed(2)) : null,
+      career_avg: careerStat?.[statKey] ? parseFloat(parseFloat(careerStat[statKey]).toFixed(2)) : null,
+      note: noteparts.join(' | ') + pitcherNote,
+      raw_vals: vals.slice(0,10),
+      mlb_player_id: person.id,
+      mlb_position: person.primaryPosition?.abbreviation || null,
+    };
+
+    statsCache[cacheKey] = enriched;
+    return {...prop, ...enriched};
+
+  }catch(e){
+    return prop;
+  }
+}
+
+// ══════════════════════════════════
+// NBA / WNBA ENRICHMENT (BDL + NBA.com)
+// ══════════════════════════════════
+const NBA_STAT_KEY_MAP = {
+  'point': 'pts', 'points': 'pts', 'pts': 'pts',
+  'rebound': 'reb', 'rebounds': 'reb', 'reb': 'reb',
+  'assist': 'ast', 'assists': 'ast', 'ast': 'ast',
+  'steal': 'stl', 'steals': 'stl',
+  'block': 'blk', 'blocks': 'blk',
+  'turnover': 'turnover', 'turnovers': 'turnover',
+  '3-pointer': 'fg3m', '3 pointer': 'fg3m', 'three pointer': 'fg3m', 'threes': 'fg3m',
+  'free throw': 'ftm', 'free throws': 'ftm',
+  'fantasy': 'NBA_FANTASY_PTS', 'fantasy point': 'NBA_FANTASY_PTS',
+  'pra': 'pra', 'points+rebounds+assists': 'pra',
+  'pr': 'pr', 'points+rebounds': 'pr',
+  'pa': 'pa_combo', 'points+assists': 'pa_combo',
+  'minute': 'min', 'minutes': 'min',
+};
+
+async function enrichWithNBAStats(prop){
+  const sport = prop.sport;
+  const isWNBA = sport === 'WNBA';
+  const cacheKey = `${prop.player}|${prop.prop}|${prop.line}|${prop.side}`;
+  if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
+
+  try{
+    const bdlBase = isWNBA ? 'https://api.balldontlie.io/v1/wnba' : 'https://api.balldontlie.io/v1';
+
+    // Search player
+    const sr = await fx(`${bdlBase}/players?search=${encodeURIComponent(prop.player)}&per_page=5`,
+      {headers:{'Authorization': KEYS.bdl}}, 6000);
+    if(!sr.ok) return prop;
+    const sd = await sr.json();
+    const player = sd.data?.[0];
+    if(!player) return prop;
+
+    // Get last 15 game logs
+    const logR = await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2024&per_page=15`,
+      {headers:{'Authorization': KEYS.bdl}}, 8000);
+    if(!logR.ok) return prop;
+    const logD = await logR.json();
+    const logs = logD.data || [];
+    if(!logs.length) return prop;
+
+    // Get stat key
+    const propLower = (prop.prop||'').toLowerCase();
+    let statKey = null;
+    for(const [k,v] of Object.entries(NBA_STAT_KEY_MAP)){
+      if(propLower.includes(k)){ statKey=v; break; }
+    }
+    if(!statKey) return prop;
+
+    // Extract values — handle combo stats
+    const vals = logs.map(g => {
+      if(statKey === 'pra') return (g.pts||0)+(g.reb||0)+(g.ast||0);
+      if(statKey === 'pr') return (g.pts||0)+(g.reb||0);
+      if(statKey === 'pa_combo') return (g.pts||0)+(g.ast||0);
+      return parseFloat(g[statKey]||0);
+    }).filter(v => !isNaN(v));
+
+    if(vals.length < 2) return prop;
+
+    return buildEnrichedProp(prop, vals, cacheKey, {
+      position: player.position || null,
+      team: player.team?.full_name || null,
+    });
+
+  }catch(e){ return prop; }
+}
+
+// ══════════════════════════════════
+// NHL ENRICHMENT (Official NHL API)
+// ══════════════════════════════════
+const NHL_STAT_KEY_MAP = {
+  'shot': 'shots', 'shots': 'shots', 'shots on goal': 'shots', 'sog': 'shots',
+  'save': 'saves', 'saves': 'saves',
+  'goal': 'goals', 'goals': 'goals',
+  'assist': 'assists', 'assists': 'assists',
+  'point': 'points', 'points': 'points',
+  'block': 'blockedShots', 'blocks': 'blockedShots', 'blocked shot': 'blockedShots',
+  'hit': 'hits', 'hits': 'hits',
+  'toi': 'toi', 'time on ice': 'toi', 'minutes': 'toi',
+  'penalty': 'pim', 'pim': 'pim',
+  'fantasy': 'fantasyPoints',
+};
+
+async function enrichWithNHLStats(prop){
+  const cacheKey = `${prop.player}|${prop.prop}|${prop.line}|${prop.side}`;
+  if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
+  try{
+    // Search via NHL roster search — find player in today's rosters
+    const schedR = await fx(`${EP.nhl}/schedule/${new Date().toISOString().split('T')[0]}`,{},6000);
+    if(!schedR.ok) return prop;
+    const schedD = await schedR.json();
+    const games = schedD.gameWeek?.[0]?.games || [];
+
+    let foundPlayer = null;
+    for(const game of games.slice(0,8)){
+      for(const abbr of [game.awayTeam?.abbrev, game.homeTeam?.abbrev].filter(Boolean)){
+        const roster = await getNHLRoster(abbr);
+        const match = roster?.find(p =>
+          `${p.firstName?.default||''} ${p.lastName?.default||''}`.toLowerCase()
+            .includes(prop.player.toLowerCase().split(' ').pop())
+        );
+        if(match){ foundPlayer = match; break; }
+      }
+      if(foundPlayer) break;
+    }
+    if(!foundPlayer) return prop;
+
+    const logs = await getNHLPlayerLog(foundPlayer.id);
+    if(!logs?.length) return prop;
+
+    const propLower = (prop.prop||'').toLowerCase();
+    let statKey = null;
+    for(const [k,v] of Object.entries(NHL_STAT_KEY_MAP)){
+      if(propLower.includes(k)){ statKey=v; break; }
+    }
+    if(!statKey) return prop;
+
+    const vals = logs.map(g => {
+      if(statKey === 'fantasyPoints') return (g.goals||0)*6+(g.assists||0)*4+(g.shots||0)*0.9+(g.hits||0)*0.5+(g.blockedShots||0)*0.5;
+      if(statKey === 'toi'){ const t=g.toi||'0:00'; const parts=t.split(':'); return parseInt(parts[0]||0)+(parseInt(parts[1]||0)/60); }
+      return parseFloat(g[statKey]||0);
+    }).filter(v=>!isNaN(v));
+
+    if(vals.length < 2) return prop;
+
+    return buildEnrichedProp(prop, vals, cacheKey, {
+      position: foundPlayer.positionCode || null,
+    });
+  }catch(e){ return prop; }
+}
+
+// ══════════════════════════════════
+// TENNIS ENRICHMENT (ESPN public)
+// ══════════════════════════════════
+async function enrichWithTennisStats(prop){
+  const cacheKey = `${prop.player}|${prop.prop}|${prop.line}|${prop.side}`;
+  if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
+  try{
+    // ESPN tennis athlete search
+    const name = encodeURIComponent(prop.player);
+    const r = await fx(`https://site.api.espn.com/apis/site/v2/sports/tennis/atp/athletes?search=${name}&limit=5`,{},6000);
+    if(!r.ok){
+      // Try WTA
+      const r2 = await fx(`https://site.api.espn.com/apis/site/v2/sports/tennis/wta/athletes?search=${name}&limit=5`,{},6000);
+      if(!r2.ok) return prop;
+      const d2 = await r2.json();
+      return enrichTennisFromESPN(prop, d2, cacheKey);
+    }
+    const d = await r.json();
+    return enrichTennisFromESPN(prop, d, cacheKey);
+  }catch(e){ return prop; }
+}
+
+function enrichTennisFromESPN(prop, data, cacheKey){
+  const athlete = data.athletes?.[0];
+  if(!athlete) return prop;
+
+  // ESPN tennis has limited historical match stats — use ranking as proxy for role_score
+  const ranking = athlete.ranking || 100;
+  const role_score = Math.max(1, Math.round(10 - (ranking / 20)));
+
+  // For tennis props (aces, games, sets) we use ESPN stats object if available
+  const stats = athlete.statistics || {};
+  const propLower = (prop.prop||'').toLowerCase();
+
+  let recent_avg = null;
+  if(propLower.includes('ace')) recent_avg = parseFloat(stats.aces || stats.acesPerMatch || 0) || null;
+  else if(propLower.includes('game')) recent_avg = parseFloat(stats.gamesPerMatch || 0) || null;
+  else if(propLower.includes('set')) recent_avg = parseFloat(stats.setsPerMatch || 0) || null;
+  else if(propLower.includes('double fault')) recent_avg = parseFloat(stats.doubleFaults || 0) || null;
+
+  const enriched = {
+    role_score,
+    matchup_rating: role_score,
+    note: `ATP/WTA Rank: ${ranking} | ${athlete.displayName||prop.player}`,
+    ...(recent_avg != null ? {
+      recent_avg,
+      confidence: prop.side==='MORE' ? (recent_avg > prop.line ? 0.62 : 0.52) : (recent_avg < prop.line ? 0.62 : 0.52),
+    } : {}),
+  };
+  statsCache[cacheKey] = enriched;
+  return {...prop, ...enriched};
+}
+
+// ══════════════════════════════════
+// GOLF ENRICHMENT (ESPN + PGA Tour public)
+// ══════════════════════════════════
+async function enrichWithGolfStats(prop){
+  const cacheKey = `${prop.player}|${prop.prop}|${prop.line}|${prop.side}`;
+  if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
+  try{
+    // ESPN golf athlete
+    const name = encodeURIComponent(prop.player);
+    const r = await fx(`https://site.api.espn.com/apis/site/v2/sports/golf/pga/athletes?search=${name}&limit=5`,{},6000);
+    if(!r.ok) return prop;
+    const d = await r.json();
+    const athlete = d.athletes?.[0];
+    if(!athlete) return prop;
+
+    const stats = athlete.statistics || {};
+    const propLower = (prop.prop||'').toLowerCase();
+    const ranking = athlete.ranking || 100;
+    const role_score = Math.max(1, Math.round(10 - (ranking / 15)));
+
+    // Map golf prop types
+    let recent_avg = null;
+    if(propLower.includes('birdie')) recent_avg = parseFloat(stats.birdieAverage || stats.birdiesPerRound || 0) || null;
+    else if(propLower.includes('bogey')) recent_avg = parseFloat(stats.bogeyAverage || 0) || null;
+    else if(propLower.includes('stroke') || propLower.includes('score')) recent_avg = parseFloat(stats.scoringAverage || 0) || null;
+    else if(propLower.includes('driving distance')) recent_avg = parseFloat(stats.drivingDistance || 0) || null;
+    else if(propLower.includes('fairway')) recent_avg = parseFloat(stats.fairwayPct || 0) || null;
+    else if(propLower.includes('gir') || propLower.includes('green')) recent_avg = parseFloat(stats.girPct || 0) || null;
+
+    // Also try PGA Tour public leaderboard for current tournament form
+    let currentTournamentScore = null;
+    try{
+      const lbR = await fx('https://statdata.pgatour.com/r/current/leaderboard-v2.json',{},6000);
+      if(lbR.ok){
+        const lbD = await lbR.json();
+        const players = lbD.leaderboard?.players || [];
+        const match = players.find(p =>
+          (p.player_bio?.first_name+' '+p.player_bio?.last_name).toLowerCase()
+            .includes(prop.player.toLowerCase().split(' ').pop())
+        );
+        if(match) currentTournamentScore = match.total || null;
+      }
+    }catch(e){}
+
+    const enriched = {
+      role_score,
+      matchup_rating: role_score,
+      note: `World Rank: ${ranking}${currentTournamentScore!=null?' | Current tourney: '+currentTournamentScore:''}`,
+      ...(recent_avg != null ? {
+        recent_avg,
+        confidence: prop.side==='MORE' ? (recent_avg > prop.line ? 0.62 : 0.52) : (recent_avg < prop.line ? 0.62 : 0.52),
+      } : {}),
+    };
+    statsCache[cacheKey] = enriched;
+    return {...prop, ...enriched};
+  }catch(e){ return prop; }
+}
+
+// ══════════════════════════════════
+// SHARED ENRICHMENT BUILDER — with recency weighting
+// ══════════════════════════════════
+function buildEnrichedProp(prop, vals, cacheKey, extra={}){
+  const l5 = vals.slice(0,5);
+  const l10 = vals.slice(0,10);
+  const line = prop.line;
+  const side = prop.side;
+
+  // Simple hit rates (stored for display)
+  const hitRate = (arr,ln,sd) => arr.length ? arr.filter(v=>sd==='MORE'?v>ln:v<ln).length/arr.length : null;
+  const l5_hit_rate = hitRate(l5, line, side);
+  const l10_hit_rate = hitRate(l10, line, side);
+
+  // Recency-weighted hit rates (used in scoring)
+  const w_l5_hit_rate = computeWeightedHitRate(l5, line, side);
+  const w_l10_hit_rate = computeWeightedHitRate(l10, line, side);
+
+  // Averages
+  const recent_avg = l5.length ? l5.reduce((a,b)=>a+b,0)/l5.length : null;
+  const l10_avg = l10.length ? l10.reduce((a,b)=>a+b,0)/l10.length : null;
+
+  // Median
+  const l5_sorted = [...l5].sort((a,b)=>a-b);
+  const l5_median = l5_sorted[Math.floor(l5.length/2)];
+  const l10_sorted = [...l10].sort((a,b)=>a-b);
+  const l10_median = l10_sorted[Math.floor(l10.length/2)];
+
+  // Consistency / role score
+  const stdDev = l5.length>1 ? Math.sqrt(l5.reduce((s,v)=>s+Math.pow(v-(recent_avg||0),2),0)/l5.length) : 0;
+  const consistency = Math.max(0, Math.min(1, 1-(stdDev/(recent_avg||1))));
+  const role_score = Math.round(consistency*10);
+
+  // Confidence: weighted combo
+  const confidence = w_l5_hit_rate!=null&&w_l10_hit_rate!=null
+    ? w_l5_hit_rate*0.55 + w_l10_hit_rate*0.45
+    : l5_hit_rate||l10_hit_rate||0.5;
+
+  // Market gap: recent avg vs line
+  const market_gap = recent_avg!=null&&recent_avg>0 ? (recent_avg-line)/recent_avg : 0;
+
+  // Note parts
+  const noteparts = [];
+  if(recent_avg!=null) noteparts.push(`L5 avg: ${recent_avg.toFixed(1)}`);
+  if(l5_hit_rate!=null) noteparts.push(`L5 hit: ${(l5_hit_rate*100).toFixed(0)}%`);
+  if(l10_hit_rate!=null) noteparts.push(`L10 hit: ${(l10_hit_rate*100).toFixed(0)}%`);
+  if(l5_median!=null) noteparts.push(`Median: ${l5_median}`);
+  if(w_l5_hit_rate!=null&&Math.abs(w_l5_hit_rate-(l5_hit_rate||0))>0.03)
+    noteparts.push(`Wtd L5: ${(w_l5_hit_rate*100).toFixed(0)}%`);
+
+  const enriched = {
+    recent_avg: recent_avg!=null ? parseFloat(recent_avg.toFixed(2)) : null,
+    l10_avg: l10_avg!=null ? parseFloat(l10_avg.toFixed(2)) : null,
+    l5_hit_rate: l5_hit_rate!=null ? parseFloat(l5_hit_rate.toFixed(3)) : null,
+    l10_hit_rate: l10_hit_rate!=null ? parseFloat(l10_hit_rate.toFixed(3)) : null,
+    w_l5_hit_rate: w_l5_hit_rate!=null ? parseFloat(w_l5_hit_rate.toFixed(3)) : null,
+    w_l10_hit_rate: w_l10_hit_rate!=null ? parseFloat(w_l10_hit_rate.toFixed(3)) : null,
+    l5_median,
+    l10_median,
+    role_score,
+    confidence: parseFloat(confidence.toFixed(3)),
+    market_gap: parseFloat(market_gap.toFixed(3)),
+    note: noteparts.join(' | '),
+    raw_vals: vals.slice(0,10),
+    ...extra,
+  };
+  statsCache[cacheKey] = enriched;
+  return {...prop, ...enriched};
+}
+
+// ══════════════════════════════════
+// MASTER ENRICHMENT ROUTER
+// ══════════════════════════════════
+async function enrichProp(prop){
+  let enriched;
+  switch((prop.sport||'').toUpperCase()){
+    case 'MLB':    enriched = await enrichWithMLBStats(prop); break;
+    case 'NBA':    enriched = await enrichWithNBAStats(prop); break;
+    case 'WNBA':   enriched = await enrichWithNBAStats(prop); break;
+    case 'NHL':    enriched = await enrichWithNHLStats(prop); break;
+    case 'TENNIS': enriched = await enrichWithTennisStats(prop); break;
+    case 'GOLF':   enriched = await enrichWithGolfStats(prop); break;
+    default:       enriched = prop;
+  }
+
+  // FIX #6: NBA/WNBA pace factor from live totals
+  if((prop.sport==='NBA'||prop.sport==='WNBA') && prop.game){
+    enriched.pace_factor = await getNBAPaceFactor(prop.game);
+  }
+
+  // FIX #7: MLB opponent matchup rating
+  if(prop.sport==='MLB' && prop.game && enriched.mlb_player_id){
+    const isPitcher = enriched.mlb_position==='SP'||enriched.mlb_position==='RP'||
+      (prop.prop||'').toLowerCase().includes('strikeout')||
+      (prop.prop||'').toLowerCase().includes('pitch')||
+      (prop.prop||'').toLowerCase().includes('outs recorded');
+    const opponentRating = await getMLBOpponentRating(prop.game, isPitcher);
+    enriched.matchup_rating = opponentRating;
+  }
+
+  return enriched;
+}
+
+async function validateAndRenderPP(props, container){
+  const sportList = [...new Set(props.map(p=>p.sport).filter(Boolean))].join(', ');
+  container.innerHTML = `<div class="alert ab"><div class="spd"></div> Enriching ${props.length} props (${sportList}) with stats + opponent data + WOW validation...</div>`;
+
+  const results = [];
+  for(const p of props){
+    const enriched = await enrichProp(p);
+    const ws = await scoreOne(enriched);
+    const val = await wowValidate(enriched, ws); // now async
+    const final = {...enriched, ...val, wowScore: ws};
+    results.push(final);
+    if(['tier1','tier2'].includes(val.tier)) addToPool(final);
+  }
+
+  container.innerHTML = '';
+  const h = document.createElement('div');
+  h.className = 'slbl';
+  h.textContent = `PrizePicks Results · ${results.length} props`;
+  container.appendChild(h);
+
+  // Summary stats
+  const t1 = results.filter(r=>r.tier==='tier1').length;
+  const t2 = results.filter(r=>r.tier==='tier2').length;
+  const fragile = results.filter(r=>r.fragileFlags?.length>0).length;
+  if(results.length > 0){
+    const summary = document.createElement('div');
+    summary.className = 'alert ag';
+    summary.style.marginBottom = '10px';
+    summary.innerHTML = `Tier 1: <strong>${t1}</strong> · Tier 2: <strong>${t2}</strong> · Fragile flags: <strong>${fragile}</strong> · Total: ${results.length}`;
+    container.appendChild(summary);
+  }
+
+  results.sort((a,b)=>{
+    const m={tier1:0,tier2:1,conditional:2,watch:3,reject:4};
+    return (m[a.tier]??4)-(m[b.tier]??4);
+  });
+  results.forEach(p => container.appendChild(makePCard(p)));
 }
 
 // ══════════════════════════════════
@@ -1380,9 +2419,134 @@ async function loadLB(){const el=document.getElementById('wLB');try{const r=awai
 async function loadLog(){const el=document.getElementById('wLog');try{const r=await fx(`${EP.replit}/request-log?environment=live&limit=20`,{headers:{'X-API-Key':KEYS.replit}});if(!r.ok)throw new Error(r.status);const d=await r.json();chip('replit','ok');const logs=d.logs||d.entries||d;document.getElementById('logCnt').textContent=`${Array.isArray(logs)?logs.length:0} entries`;el.innerHTML=clr(JSON.stringify(logs,null,2));}catch(e){el.innerHTML=`<span class="oe">✗ ${e.message}</span>`;}}
 
 // ══════════════════════════════════
+// FIX #8 — CLV TRACKER / POSTMORTEM
+// ══════════════════════════════════
+let clvLog = JSON.parse(localStorage.getItem('wow_clv_log')||'[]');
+
+function logCLV(){
+  const player = document.getElementById('clv_player').value.trim();
+  const sport = document.getElementById('clv_sport').value;
+  const prop = document.getElementById('clv_prop').value.trim();
+  const line = parseFloat(document.getElementById('clv_line').value);
+  const side = document.getElementById('clv_side').value;
+  const openLine = parseFloat(document.getElementById('clv_open').value)||null;
+  const closeLine = parseFloat(document.getElementById('clv_close').value)||null;
+  const result = parseFloat(document.getElementById('clv_result').value)||null;
+  const outcome = document.getElementById('clv_outcome').value;
+  const wowScore = parseInt(document.getElementById('clv_wow').value)||null;
+  const processGrade = document.getElementById('clv_process').value;
+  const failureTag = document.getElementById('clv_tag').value;
+  const classification = document.getElementById('clv_class').value;
+
+  if(!player||!prop||isNaN(line)){alert('Player, prop, and line required');return;}
+
+  // Calculate CLV
+  let clv = null;
+  let beatClosingLine = null;
+  if(openLine!=null && closeLine!=null){
+    clv = side==='MORE' ? closeLine - openLine : openLine - closeLine;
+    beatClosingLine = side==='MORE' ? (result!=null&&result>closeLine) : (result!=null&&result<closeLine);
+  }
+
+  const entry = {
+    id: Date.now(),
+    date: new Date().toLocaleDateString(),
+    player, sport, prop, side, line,
+    openLine, closeLine, result, outcome,
+    wowScore, processGrade, failureTag,
+    classification, clv, beatClosingLine,
+    missDistance: result!=null ? Math.abs(result-line).toFixed(2) : null,
+  };
+
+  clvLog.unshift(entry);
+  try{ localStorage.setItem('wow_clv_log', JSON.stringify(clvLog.slice(0,200))); }catch(e){}
+  renderCLVTable();
+
+  // Clear fields
+  ['clv_player','clv_prop','clv_line','clv_open','clv_close','clv_result','clv_wow'].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.value='';
+  });
+}
+
+function renderCLVTable(){
+  const div = document.getElementById('clvTable');
+  if(!clvLog.length){div.innerHTML='<div style="color:var(--text2);font-size:13px;padding:12px 0;">No picks logged yet.</div>';return;}
+
+  // Summary stats
+  const settled = clvLog.filter(e=>e.outcome==='win'||e.outcome==='loss');
+  const wins = settled.filter(e=>e.outcome==='win').length;
+  const winPct = settled.length ? (wins/settled.length*100).toFixed(1) : '--';
+  const goodProcess = clvLog.filter(e=>e.processGrade==='A'||e.processGrade==='B').length;
+  const clvPositive = clvLog.filter(e=>e.clv!=null&&e.clv>0).length;
+
+  let html = `
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;padding:12px;background:var(--surface2);border-radius:8px;border:1px solid var(--border);">
+      <div style="text-align:center;"><div style="font-size:20px;font-weight:700;color:var(--green)">${winPct}%</div><div style="font-size:10px;color:var(--text2);">WIN RATE</div></div>
+      <div style="text-align:center;"><div style="font-size:20px;font-weight:700;">${settled.length}</div><div style="font-size:10px;color:var(--text2);">SETTLED</div></div>
+      <div style="text-align:center;"><div style="font-size:20px;font-weight:700;color:var(--accent)">${goodProcess}</div><div style="font-size:10px;color:var(--text2);">GOOD PROCESS</div></div>
+      <div style="text-align:center;"><div style="font-size:20px;font-weight:700;color:var(--yellow)">${clvPositive}</div><div style="font-size:10px;color:var(--text2);">+CLV PICKS</div></div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="border-bottom:1px solid var(--border);">
+        <th style="text-align:left;padding:5px 6px;color:var(--text2);font-size:10px;">DATE</th>
+        <th style="text-align:left;padding:5px 6px;color:var(--text2);font-size:10px;">PLAYER</th>
+        <th style="text-align:left;padding:5px 6px;color:var(--text2);font-size:10px;">PROP</th>
+        <th style="text-align:center;padding:5px 6px;color:var(--text2);font-size:10px;">LINE</th>
+        <th style="text-align:center;padding:5px 6px;color:var(--text2);font-size:10px;">RESULT</th>
+        <th style="text-align:center;padding:5px 6px;color:var(--text2);font-size:10px;">OUTCOME</th>
+        <th style="text-align:center;padding:5px 6px;color:var(--text2);font-size:10px;">CLV</th>
+        <th style="text-align:center;padding:5px 6px;color:var(--text2);font-size:10px;">PROCESS</th>
+        <th style="text-align:left;padding:5px 6px;color:var(--text2);font-size:10px;">TAG</th>
+      </tr></thead><tbody>`;
+
+  clvLog.slice(0,50).forEach(e=>{
+    const outcomeColor = e.outcome==='win'?'var(--green)':e.outcome==='loss'?'var(--red)':'var(--text2)';
+    const clvColor = e.clv>0?'var(--green)':e.clv<0?'var(--red)':'var(--text2)';
+    const processColor = e.processGrade==='A'?'var(--green)':e.processGrade==='B'?'var(--yellow)':e.processGrade==='C'?'var(--orange)':'var(--red)';
+    html+=`<tr style="border-bottom:1px solid rgba(0,0,0,0.05);">
+      <td style="padding:5px 6px;color:var(--text2);">${e.date}</td>
+      <td style="padding:5px 6px;font-weight:600;">${e.player}</td>
+      <td style="padding:5px 6px;color:var(--text2);">${e.prop} ${e.side} ${e.line}</td>
+      <td style="padding:5px 6px;text-align:center;font-family:var(--mono);">${e.line}</td>
+      <td style="padding:5px 6px;text-align:center;font-family:var(--mono);">${e.result??'--'}</td>
+      <td style="padding:5px 6px;text-align:center;font-weight:700;color:${outcomeColor};">${(e.outcome||'').toUpperCase()}</td>
+      <td style="padding:5px 6px;text-align:center;font-family:var(--mono);color:${clvColor};">${e.clv!=null?(e.clv>0?'+':'')+e.clv.toFixed(1):'--'}</td>
+      <td style="padding:5px 6px;text-align:center;font-weight:700;color:${processColor};">${e.processGrade}</td>
+      <td style="padding:5px 6px;font-size:10px;color:var(--text3);">${e.failureTag||''}</td>
+    </tr>`;
+  });
+
+  html+='</tbody></table>';
+  div.innerHTML = html;
+}
+
+function exportCLV(){
+  if(!clvLog.length){alert('No picks to export');return;}
+  const headers = 'Date,Player,Sport,Prop,Side,Line,Open,Close,Result,Outcome,CLV,Beat Close,Miss Dist,WOW Score,Process,Tag,Classification\n';
+  const rows = clvLog.map(e=>
+    [e.date,e.player,e.sport,e.prop,e.side,e.line,e.openLine??'',e.closeLine??'',e.result??'',e.outcome,e.clv??'',e.beatClosingLine??'',e.missDistance??'',e.wowScore??'',e.processGrade,e.failureTag,e.classification].join(',')
+  ).join('\n');
+  const blob = new Blob([headers+rows], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `wow_clv_${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+}
+
+function clearCLV(){
+  if(!confirm('Clear all CLV entries? This cannot be undone.')) return;
+  clvLog = [];
+  try{ localStorage.removeItem('wow_clv_log'); }catch(e){}
+  renderCLVTable();
+}
+
+// ══════════════════════════════════
 // INIT
 // ══════════════════════════════════
-window.onload=()=>{fx(`${EP.replit}/health`,{},5000).then(r=>{if(r.ok)chip('replit','ok');else chip('replit','fail');}).catch(()=>chip('replit','fail'));};
+window.onload=()=>{
+  fx(`${EP.replit}/health`,{},5000).then(r=>{if(r.ok)chip('replit','ok');else chip('replit','fail');}).catch(()=>chip('replit','fail'));
+  renderCLVTable();
+};
 </script>
 </body>
 </html>
