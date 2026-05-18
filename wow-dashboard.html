@@ -4939,15 +4939,16 @@ async function refreshPropPool(manual=false){
   const raw=[];
   // Get date range: today + next 2 days to catch upcoming games
   const poolNow=new Date();
-  const dateFrom=poolNow.toISOString();
-  const dateTo=new Date(poolNow.getTime()+2*24*60*60*1000).toISOString();
+  // Format dates as ISO strings without milliseconds (Odds API requirement)
+  const dateFrom=poolNow.toISOString().split('.')[0]+'Z';
+  const dateTo=new Date(poolNow.getTime()+48*60*60*1000).toISOString().split('.')[0]+'Z';
 
   for(const cfg of sportConfigs){
     log(`⟳ ${cfg.sport}: fetching events...`);
     try{
-      // Include commenceTimeFrom/To to catch upcoming games, not just live
+      // Fetch events — no date filter needed, API returns upcoming events by default
       const evR=await fx(
-        `${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso&commenceTimeFrom=${dateFrom}&commenceTimeTo=${dateTo}`,
+        `${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,
         {},8000
       );
       if(!evR.ok){log(`⚠ ${cfg.sport}: ${evR.status}`,'w');continue;}
