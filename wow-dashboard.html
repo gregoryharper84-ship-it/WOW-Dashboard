@@ -3980,7 +3980,7 @@ async function analyzeLLPScreenshots(){
           body: JSON.stringify({
             image_b64: llpImages[i].b64,
             media_type: 'image/jpeg',
-            prompt: 'You are the LLP (Layered Line Protocol) team betting analyst. Analyze this sports betting screenshot.\n\nLLP Tiers: Team Anchor (5%+ edge, full unit) | Team Strong (3-4.9%, 0.75u) | Team Lean (1.5-2.9%, 0.5u) | Pass (<1.5%)\n\nFor each game visible extract teams, sport, lines/odds, calculate no-vig implied probability, assess edge, assign LLP tier.\n\nReturn ONLY valid JSON: {"games":[{"away_team":"str","home_team":"str","sport":"MLB|NBA|NHL|NFL|WNBA","game_time":"str","bets":[{"type":"moneyline|spread|total","pick":"str","line":-130,"implied_prob":0.565,"edge_pct":3.2,"tier":"TEAM ANCHOR|TEAM STRONG|TEAM LEAN|PASS","unit_size":1.0,"confidence":"high|medium|low","reasoning":"2-3 sentences","flags":[]}],"best_bet":"str","context":"str"}],"summary":"str"}'
+            prompt: 'You are analyzing a sports betting odds screenshot. Extract ALL visible betting lines and games.\n\nLook for: team names, moneyline odds (e.g. -130, +110), spread lines, totals (over/under), game times, sport indicators.\n\nEven if image quality is low, extract whatever you can see. Make reasonable inferences about team names from partial text.\n\nLLP Tiers based on implied edge:\n- Team Anchor: 5%+ edge → full unit\n- Team Strong: 3-4.9% → 0.75u\n- Team Lean: 1.5-2.9% → 0.5u\n- Pass: under 1.5%\n\nFor each game, calculate no-vig probability from both sides and assign the best bet.\n\nReturn valid JSON (even if only 1 game found):\n{"games":[{"away_team":"str","home_team":"str","sport":"MLB|NBA|NHL|NFL|WNBA|Soccer","game_time":"str or null","bets":[{"type":"moneyline|spread|total","pick":"str","line":-130,"implied_prob":0.565,"edge_pct":3.2,"tier":"TEAM ANCHOR|TEAM STRONG|TEAM LEAN|PASS","unit_size":1.0,"confidence":"high|medium|low","reasoning":"str","flags":[]}],"best_bet":"str or null","context":"str"}],"summary":"str"}\n\nIf you cannot read ANY games at all, return: {"games":[],"summary":"Image too small or unclear to read odds"}'
           })
         }, 90000);
 
@@ -4013,7 +4013,7 @@ async function analyzeLLPScreenshots(){
         allGames.push(...parsed.games);
         statusEl.textContent = `Image ${i+1}: found ${parsed.games.length} game(s)`;
       } else {
-        statusEl.textContent = `Image ${i+1}: No games detected — try a clearer odds board screenshot`;
+        statusEl.textContent = `Image ${i+1}: No games detected — screenshot may be too small or compressed. Try zooming in before screenshotting.`;
       }
     }catch(e){ statusEl.textContent = `Image ${i+1} error: ${e.message}`; }
   }
@@ -4022,7 +4022,14 @@ async function analyzeLLPScreenshots(){
   outputDiv.innerHTML = '';
 
   if(!allGames.length){
-    outputDiv.innerHTML = `<div class="alert ay">⚠ No games extracted. Upload a screenshot showing odds/lines — sportsbook board, ESPN matchup screen, or similar.</div>`;
+    outputDiv.innerHTML = `<div class="alert ay">
+      ⚠ No games extracted from screenshot.<br><br>
+      <strong>Tips for best results:</strong><br>
+      • Screenshot the odds board zoomed in so team names and odds are clearly visible<br>
+      • Each game should show both team names + at least one odds number (e.g. -130)<br>
+      • Works best with: DraftKings, FanDuel, BetMGM, ESPN odds board, BetUS<br>
+      • Try cropping to just 2-3 games at a time rather than a full board
+    </div>`;
     document.getElementById('llpAnalyzeBtn').textContent = 'Analyze with LLP Model';
     document.getElementById('llpAnalyzeSp').classList.add('hidden');
     return;
