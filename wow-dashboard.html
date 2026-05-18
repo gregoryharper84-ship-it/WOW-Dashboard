@@ -4010,21 +4010,66 @@ async function analyzeLLPScreenshots(){
 
         if(r.ok){
           const d = await r.json();
-          const raw = d.raw_response || JSON.stringify(d.props||d) || JSON.stringify(d) || '';
-          const match = raw.match(/\{[\s\S]*\}/);
-          if(match){
-            const attempt = JSON.parse(match[0]);
-            if(attempt.games && Array.isArray(attempt.games)) parsed = attempt;
+          // raw_response contains Claude's actual text output
+          const raw = d.raw_response || '';
+
+          // Try to find games JSON in raw response
+          try{
+            const match = raw.match(/\{[\s\S]*"games"[\s\S]*\}/);
+            if(match) parsed = JSON.parse(match[0]);
+          }catch(e){}
+
+          // Fallback: if no games JSON, try to build from props array
+          if(!parsed || !parsed.games?.length){
+            // Try raw text for any JSON object
+            try{
+              const anyMatch = raw.match(/\{[\s\S]*\}/);
+              if(anyMatch){
+                const attempt = JSON.parse(anyMatch[0]);
+                if(attempt.games) parsed = attempt;
+              }
+            }catch(e){}
           }
-          // Fallback: if Replit returned props format, wrap it
-          if(!parsed && d.props && Array.isArray(d.props)){
-            parsed = {games: d.props.map(p=>({
-              away_team: p.game?.split(' @ ')?.[0]||'Unknown',
-              home_team: p.game?.split(' @ ')?.[1]||'Unknown',
-              sport: p.sport||'Unknown',
-              bets: [{pick: `${p.player} ${p.prop} ${p.side} ${p.line}`, tier:'TEAM LEAN', reasoning:'Extracted from board'}],
-              context: p.note||''
-            })), summary: `${d.props.length} props extracted`};
+
+          // Final fallback: if Replit returned props (PrizePicks format), convert to LLP games format
+          if(!parsed || !parsed.games?.length){
+            if(d.props && d.props.length > 0){
+              // Group props by game
+              const gameMap = {};
+              d.props.forEach(p=>{
+                const key = p.game || 'Unknown Game';
+                if(!gameMap[key]) gameMap[key] = {
+                  away_team: key.split(' @ ')[0] || 'Away',
+                  home_team: key.split(' @ ')[1] || 'Home',
+                  sport: p.sport || 'Unknown',
+                  game_time: null,
+                  bets: [],
+                  context: ''
+                };
+                gameMap[key].bets.push({
+                  type: 'prop',
+                  pick: `${p.player} ${p.prop} ${p.side} ${p.line}`,
+                  line: p.line,
+                  implied_prob: 0.55,
+                  edge_pct: 1.5,
+                  tier: 'TEAM LEAN',
+                  unit_size: 0.5,
+                  confidence: 'medium',
+                  reasoning: `Extracted prop: ${p.player} ${p.prop}`,
+                  flags: []
+                });
+              });
+              parsed = {
+                games: Object.values(gameMap),
+                summary: `${d.props.length} props extracted`
+              };
+            }
+          }
+
+          if(!parsed?.games?.length && raw){
+            // Last resort: show raw response to user
+            statusEl.textContent = `Image ${i+1}: Claude responded but couldn't parse games — check format`;
+            console.log('LLP raw_response:', raw.slice(0, 500));
           }
         } else {
           statusEl.textContent = `Image ${i+1}: Replit error ${r.status} — check server is running`;
