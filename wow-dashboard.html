@@ -3971,81 +3971,43 @@ async function analyzeLLPScreenshots(){
   for(let i = 0; i < llpImages.length; i++){
     statusEl.textContent = `Processing image ${i+1}/${llpImages.length}...`;
     try{
-      const r = await fx(`${EP.replit}/analyze-board`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json', 'X-API-Key': KEYS.replit},
-        body: JSON.stringify({
-          image_b64: llpImages[i].b64,
-          media_type: 'image/jpeg',
-          prompt: `You are the LLP (Layered Line Protocol) team betting model analyst. Analyze this sports betting screenshot and provide team bet recommendations.
-
-This could be: a sportsbook odds board, ESPN game matchup screen, live score screen, sports app, or any game/odds image.
-
-Extract all visible games and for each provide a complete LLP analysis.
-
-LLP Model Rules:
-- Team Anchor (5%+ edge): Strong bet, full unit
-- Team Strong (3-4.9% edge): Good bet, 0.75 unit  
-- Team Lean (1.5-2.9% edge): Lean, context only, 0.5 unit
-- Pass (<1.5% edge): No bet
-
-For each game visible, analyze:
-1. Teams, sport, bet type available (ML/spread/total)
-2. Lines/odds shown
-3. Implied probabilities (no-vig)
-4. Edge assessment using LLP tiers
-5. Auto-reject conditions: lineup missing, key injury, line moving against pick
-6. Blowout risk for spread/total bets
-7. Best bet recommendation with tier
-
-Return ONLY valid JSON:
-{
-  "games": [
-    {
-      "away_team": "string",
-      "home_team": "string", 
-      "sport": "MLB|NBA|NHL|NFL|WNBA",
-      "game_time": "string or null",
-      "bets": [
-        {
-          "type": "moneyline|spread|total|f5_ml|f5_total",
-          "pick": "string (e.g. Yankees ML, Over 8.5)",
-          "line": -130,
-          "implied_prob": 0.565,
-          "edge_pct": 3.2,
-          "tier": "TEAM ANCHOR|TEAM STRONG|TEAM LEAN|PASS|AUTO-REJECT",
-          "unit_size": 1.0,
-          "confidence": "high|medium|low",
-          "reasoning": "2-3 sentence explanation",
-          "flags": ["any risk flags"]
-        }
-      ],
-      "best_bet": "single best bet description or null",
-      "context": "any visible game context (pitchers, injuries, etc)"
-    }
-  ],
-  "summary": "overall summary of the board"
-}`
-        })
-      }, 90000);
-
-      if(!r.ok){ statusEl.textContent = `Image ${i+1}: error ${r.status}`; continue; }
-      const d = await r.json();
-
-      // Parse response
+      // Route through Replit proxy — never expose API key in browser
       let parsed = null;
       try{
-        const candidates = [d.raw_response, d.result, JSON.stringify(d.props||d), JSON.stringify(d)].filter(Boolean);
-        for(const c of candidates){
-          try{
-            const match = c.match(/\{[\s\S]*\}/);
-            if(match){
-              const attempt = JSON.parse(match[0]);
-              if(attempt.games && Array.isArray(attempt.games)){ parsed = attempt; break; }
-            }
-          }catch(e){}
+        const r = await fx(`${EP.replit}/analyze-board`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-API-Key': KEYS.replit},
+          body: JSON.stringify({
+            image_b64: llpImages[i].b64,
+            media_type: 'image/jpeg',
+            prompt: 'You are the LLP (Layered Line Protocol) team betting analyst. Analyze this sports betting screenshot.\n\nLLP Tiers: Team Anchor (5%+ edge, full unit) | Team Strong (3-4.9%, 0.75u) | Team Lean (1.5-2.9%, 0.5u) | Pass (<1.5%)\n\nFor each game visible extract teams, sport, lines/odds, calculate no-vig implied probability, assess edge, assign LLP tier.\n\nReturn ONLY valid JSON: {"games":[{"away_team":"str","home_team":"str","sport":"MLB|NBA|NHL|NFL|WNBA","game_time":"str","bets":[{"type":"moneyline|spread|total","pick":"str","line":-130,"implied_prob":0.565,"edge_pct":3.2,"tier":"TEAM ANCHOR|TEAM STRONG|TEAM LEAN|PASS","unit_size":1.0,"confidence":"high|medium|low","reasoning":"2-3 sentences","flags":[]}],"best_bet":"str","context":"str"}],"summary":"str"}'
+          })
+        }, 90000);
+
+        if(r.ok){
+          const d = await r.json();
+          const raw = d.raw_response || JSON.stringify(d.props||d) || JSON.stringify(d) || '';
+          const match = raw.match(/\{[\s\S]*\}/);
+          if(match){
+            const attempt = JSON.parse(match[0]);
+            if(attempt.games && Array.isArray(attempt.games)) parsed = attempt;
+          }
+          // Fallback: if Replit returned props format, wrap it
+          if(!parsed && d.props && Array.isArray(d.props)){
+            parsed = {games: d.props.map(p=>({
+              away_team: p.game?.split(' @ ')?.[0]||'Unknown',
+              home_team: p.game?.split(' @ ')?.[1]||'Unknown',
+              sport: p.sport||'Unknown',
+              bets: [{pick: `${p.player} ${p.prop} ${p.side} ${p.line}`, tier:'TEAM LEAN', reasoning:'Extracted from board'}],
+              context: p.note||''
+            })), summary: `${d.props.length} props extracted`};
+          }
+        } else {
+          statusEl.textContent = `Image ${i+1}: Replit error ${r.status} — check server is running`;
         }
-      }catch(e){}
+      } catch(e){
+        statusEl.textContent = `Image ${i+1}: ${e.message}`;
+      }
 
       if(parsed?.games?.length){
         allGames.push(...parsed.games);
