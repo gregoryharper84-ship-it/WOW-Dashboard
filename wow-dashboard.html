@@ -399,6 +399,7 @@ label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06
 
   <!-- Pool results -->
   <div id="poolResults"></div>
+  </div><!-- end .main -->
 </div>
 
 <!-- ══════════════════════════════════════ -->
@@ -553,6 +554,7 @@ label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06
       <div class="alert ab">Builds all slip options (2–6 picks + Jeremia) from your approved pool. <strong>Player duplication rule:</strong> a player can only appear on multiple slips if their probability is 65%+.</div>
       <div class="fr">
         <div class="field"><label>Platform</label><select id="s_plat"><option>PrizePicks</option><option>BetUS</option></select></div>
+        <div class="field"><label>Slip Type</label><select id="s_type"><option value="power">Power Play</option><option value="flex">Flex Play</option></select></div>
         <div class="field"><label>Target Grade</label><select id="s_grade"><option value="A">A Grade Only</option><option value="B" selected>A or B Grade</option><option value="C">Any Grade</option></select></div>
         <div class="field"><label>Sport Filter</label><select id="s_sport"><option value="all">All Sports</option><option value="MLB">MLB</option><option value="NBA">NBA</option><option value="NHL">NHL</option><option value="WNBA">WNBA</option></select></div>
       </div>
@@ -960,8 +962,6 @@ label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06
       <div class="cb"><div class="ob" id="wLog" style="min-height:150px;">Loading...</div></div>
     </div>
   </div>
-
-</div>
 
 </div>
 <script>
@@ -5288,5 +5288,6 @@ window.onload=()=>{
   setTimeout(()=>refreshPropPool(false), 5000);
 };
 </script>
+</div><!-- end #app -->
 </body>
 </html>
