@@ -2763,9 +2763,9 @@ async function analyzePPBoard(){
     try {
       const imgStatusEl = document.getElementById(`img_status_${i}`);
 
-      // Check image size — warn if very large
-      const b64Size = ppImages[i].b64.length;
-      const approxKB = Math.round(b64Size * 0.75 / 1024);
+      // Compress before sending — large screenshots cause Replit failures
+      const compressedPP = await compressImage(ppImages[i].b64, 1400);
+      const approxKB = Math.round(compressedPP.length * 0.75 / 1024);
       if(imgStatusEl) imgStatusEl.textContent = `Image ${i+1}: ${approxKB}KB — sending...`;
 
       const r = await fx(`${EP.replit}/analyze-board`, {
@@ -2775,7 +2775,7 @@ async function analyzePPBoard(){
           'X-API-Key': KEYS.replit
         },
         body: JSON.stringify({
-          image_b64: ppImages[i].b64,
+          image_b64: compressedPP,
           media_type: 'image/jpeg'
         })
       }, 60000); // 60 second timeout
@@ -3958,6 +3958,25 @@ function clearLLPUploads(){
   document.getElementById('llpImgCount').textContent = '0';
 }
 
+async function compressImage(b64, maxWidth=1200){
+  return new Promise((resolve)=>{
+    const img=new Image();
+    img.onload=()=>{
+      const canvas=document.createElement('canvas');
+      const scale=Math.min(1,maxWidth/img.width);
+      canvas.width=Math.round(img.width*scale);
+      canvas.height=Math.round(img.height*scale);
+      const ctx=canvas.getContext('2d');
+      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      // Use JPEG at 0.82 quality for good balance of size/quality
+      const compressed=canvas.toDataURL('image/jpeg',0.82).split(',')[1];
+      resolve(compressed);
+    };
+    img.onerror=()=>resolve(b64); // fallback to original if compression fails
+    img.src=`data:image/jpeg;base64,${b64}`;
+  });
+}
+
 async function analyzeLLPScreenshots(){
   if(!llpImages.length) return;
   document.getElementById('llpAnalyzeBtn').textContent = 'Analyzing...';
@@ -3971,6 +3990,11 @@ async function analyzeLLPScreenshots(){
   for(let i = 0; i < llpImages.length; i++){
     statusEl.textContent = `Processing image ${i+1}/${llpImages.length}...`;
     try{
+      // Compress large screenshots before sending to Replit
+      const compressedB64 = await compressImage(llpImages[i].b64, 1400);
+      const originalKB = Math.round(llpImages[i].b64.length * 0.75 / 1024);
+      const compressedKB = Math.round(compressedB64.length * 0.75 / 1024);
+      if(originalKB > 500) statusEl.textContent = `Image ${i+1}: compressed ${originalKB}KB → ${compressedKB}KB, sending...`;
       // Route through Replit proxy — never expose API key in browser
       let parsed = null;
       try{
@@ -3978,7 +4002,7 @@ async function analyzeLLPScreenshots(){
           method: 'POST',
           headers: {'Content-Type': 'application/json', 'X-API-Key': KEYS.replit},
           body: JSON.stringify({
-            image_b64: llpImages[i].b64,
+            image_b64: compressedB64,
             media_type: 'image/jpeg',
             prompt: 'You are analyzing a sports betting odds screenshot. Extract ALL visible betting lines and games.\n\nLook for: team names, moneyline odds (e.g. -130, +110), spread lines, totals (over/under), game times, sport indicators.\n\nEven if image quality is low, extract whatever you can see. Make reasonable inferences about team names from partial text.\n\nLLP Tiers based on implied edge:\n- Team Anchor: 5%+ edge → full unit\n- Team Strong: 3-4.9% → 0.75u\n- Team Lean: 1.5-2.9% → 0.5u\n- Pass: under 1.5%\n\nFor each game, calculate no-vig probability from both sides and assign the best bet.\n\nReturn valid JSON (even if only 1 game found):\n{"games":[{"away_team":"str","home_team":"str","sport":"MLB|NBA|NHL|NFL|WNBA|Soccer","game_time":"str or null","bets":[{"type":"moneyline|spread|total","pick":"str","line":-130,"implied_prob":0.565,"edge_pct":3.2,"tier":"TEAM ANCHOR|TEAM STRONG|TEAM LEAN|PASS","unit_size":1.0,"confidence":"high|medium|low","reasoning":"str","flags":[]}],"best_bet":"str or null","context":"str"}],"summary":"str"}\n\nIf you cannot read ANY games at all, return: {"games":[],"summary":"Image too small or unclear to read odds"}'
           })
@@ -4470,7 +4494,7 @@ async function analyzeWinningSlips(){
         method:'POST',
         headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},
         body:JSON.stringify({
-          image_b64:slipImages[i].b64,
+          image_b64: await compressImage(slipImages[i].b64, 1400),
           media_type:'image/jpeg',
           prompt:`This is a PrizePicks or sports prop betting slip screenshot. Extract every prop leg.
 
