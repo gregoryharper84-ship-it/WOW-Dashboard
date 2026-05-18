@@ -2310,9 +2310,24 @@ def analyze_board():
                 media_type = "image/webp"
             elif header[:6] in (b'GIF87a', b'GIF89a'):
                 media_type = "image/gif"
-            # else keep whatever was set (default image/jpeg)
         except Exception:
             pass
+
+        # Compress large images — phone screenshots can be 1-3 MB which causes
+        # slow/failed Anthropic calls. Resize to max 1024px and convert to JPEG.
+        try:
+            import io as _io
+            from PIL import Image as _Image
+            raw_bytes  = _base64.b64decode(image_base64)
+            if len(raw_bytes) > 400_000:          # only compress if > 400 KB
+                img = _Image.open(_io.BytesIO(raw_bytes)).convert("RGB")
+                img.thumbnail((1024, 1024), _Image.LANCZOS)
+                buf = _io.BytesIO()
+                img.save(buf, format="JPEG", quality=85, optimize=True)
+                image_base64 = _base64.b64encode(buf.getvalue()).decode("utf-8")
+                media_type   = "image/jpeg"
+        except Exception:
+            pass  # if compression fails, send the original
 
         image_block = {
             "type": "image",
@@ -2369,13 +2384,17 @@ Example:
             props = json.loads(raw_text)
         except json.JSONDecodeError:
             match = re.search(r"\[.*\]", raw_text, re.DOTALL)
-            props = json.loads(match.group()) if match else []
+            try:
+                props = json.loads(match.group()) if match else []
+            except Exception:
+                props = []
 
         return jsonify({
-            "ok":    True,
-            "props": props,
-            "count": len(props),
-            "model": message.model,
+            "ok":           True,
+            "raw_response": raw_text,   # included for dashboard compatibility
+            "props":        props,
+            "count":        len(props),
+            "model":        message.model,
             "usage": {
                 "input_tokens":  message.usage.input_tokens,
                 "output_tokens": message.usage.output_tokens,
