@@ -117,12 +117,18 @@ def require_api_key(f):
         expected_key = os.environ.get("SCORING_API_KEY", "")
         if not expected_key:
             return jsonify({"error": "Server misconfiguration: SCORING_API_KEY is not set"}), 500
+        # Strip whitespace and common encoding artifacts from both ends
         provided_key = request.headers.get("X-API-Key", "").strip()
         if not provided_key:
             return jsonify({
                 "error": "Missing API key",
                 "hint": "Include your key in the X-API-Key request header"
             }), 401
+        # Also accept key sent in Authorization: Bearer <key> as fallback
+        if not provided_key:
+            auth = request.headers.get("Authorization", "")
+            if auth.lower().startswith("bearer "):
+                provided_key = auth[7:].strip()
         if not secrets_equal(provided_key, expected_key):
             return jsonify({"error": "Invalid API key"}), 401
         return f(*args, **kwargs)
@@ -770,12 +776,13 @@ def health():
         "disclaimer": DISCLAIMER,
         "auth": "X-API-Key header required on protected endpoints",
         "endpoints": {
-            "health":      "GET /health (no auth)",
-            "score":       "POST /random-forest-score (X-API-Key required)",
-            "log":         "GET /request-log?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
-            "stats":       "GET /stats?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
-            "leaderboard": "GET /leaderboard?window=L5|L10(default L10)&sport=...&prop=...&side=...&limit=...",
-            "schema":      "GET /openapi.json (no auth)"
+            "health":         "GET /health (no auth)",
+            "score":          "POST /random-forest-score (X-API-Key required)",
+            "analyze_board":  "POST /analyze-board (X-API-Key required) — vision extraction from screenshots",
+            "log":            "GET /request-log?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
+            "stats":          "GET /stats?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
+            "leaderboard":    "GET /leaderboard?window=L5|L10(default L10)&sport=...&prop=...&side=...&limit=...",
+            "schema":         "GET /openapi.json (no auth)"
         }
     })
 
