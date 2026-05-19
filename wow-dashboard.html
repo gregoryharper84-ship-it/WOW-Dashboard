@@ -5526,6 +5526,52 @@ function clearLogSlipUploads(){
   document.getElementById('logSlipStatus').textContent = '';
 }
 
+// ── Normalize analyze-board response ──
+// Backend returns {ok, props:[...], raw_response:"..."}
+// Some parsers expect .legs — this normalizes both formats
+function parseAnalyzeBoardResponse(d){
+  if(!d) return null;
+
+  // Direct props array (primary backend format)
+  if(d.props && Array.isArray(d.props) && d.props.length){
+    return {
+      slip_result: d.slip_result || 'unknown',
+      slip_type: d.slip_type || 'unknown',
+      entry: d.entry || null,
+      to_win: d.to_win || null,
+      legs: d.props.map(p=>({
+        player: p.player || '',
+        sport: p.sport || 'MLB',
+        prop: p.prop || '',
+        line: parseFloat(p.line) || 0,
+        side: p.side || 'MORE',
+        outcome: p.outcome || 'unknown',
+        actual: p.actual ?? null,
+        game: p.game || '',
+        note: p.note || '',
+      }))
+    };
+  }
+
+  // Try raw_response JSON (Claude's text output)
+  if(d.raw_response){
+    try{
+      const match = d.raw_response.match(/\{[\s\S]*\}/);
+      if(match){
+        const parsed = JSON.parse(match[0]);
+        // Normalize legs/props field
+        if(parsed.legs) return parsed;
+        if(parsed.props) return {...parsed, legs: parsed.props};
+      }
+    }catch(e){}
+  }
+
+  // Already has legs field
+  if(d.legs && Array.isArray(d.legs) && d.legs.length) return d;
+
+  return null;
+}
+
 async function analyzeLogSlips(){
   if(!logSlipImages.length) return;
   const mode = document.querySelector('input[name="logSlipMode"]:checked')?.value || 'settled';
@@ -5554,18 +5600,13 @@ async function analyzeLogSlips(){
 
       if(r.ok){
         const d = await r.json();
-        let parsed = null;
-        try{
-          const raw = d.raw_response || JSON.stringify(d) || '';
-          const match = raw.match(/\{[\s\S]*\}/);
-          if(match) parsed = JSON.parse(match[0]);
-        }catch(e){}
+        const parsed = parseAnalyzeBoardResponse(d);
 
         if(parsed?.legs?.length){
           allExtracted.push(parsed);
           statusEl.textContent = `Image ${i+1}: ${parsed.legs.length} legs — ${isActive ? 'active slip' : parsed.slip_result||'settled'}`;
         } else {
-          statusEl.textContent = `Image ${i+1}: no legs detected`;
+          statusEl.textContent = `Image ${i+1}: no legs detected — ensure screenshot shows player names and lines clearly`;
         }
       } else {
         statusEl.textContent = `Image ${i+1}: server error ${r.status}`;
@@ -5719,50 +5760,15 @@ If no prop betting legs visible, return: {"slip_result":"unknown","legs":[],"err
 
       if(!r.ok){statusEl.textContent=`Image ${i+1}: server error ${r.status}`;continue;}
       const d=await r.json();
-
-      let parsed=null;
-      try{
-        // Replit wraps response — try multiple extraction paths
-        const candidates=[
-          d.raw_response,           // Direct raw response
-          d.result,                 // Some endpoints return result
-          JSON.stringify(d.props),  // Props array wrapper
-          JSON.stringify(d),        // Full response as string
-        ].filter(Boolean);
-
-        for(const candidate of candidates){
-          try{
-            // Find JSON object in the string
-            const match=candidate.match(/\{[\s\S]*\}/);
-            if(match){
-              const attempt=JSON.parse(match[0]);
-              // Valid if it has legs array
-              if(attempt.legs&&Array.isArray(attempt.legs)){parsed=attempt;break;}
-            }
-          }catch(e){}
-        }
-
-        // Fallback: if Replit returned props array (lobby format), convert to legs
-        if(!parsed&&d.props&&Array.isArray(d.props)&&d.props.length){
-          parsed={
-            slip_result:'unknown',
-            slip_type:'unknown',
-            legs:d.props.map(p=>({
-              player:p.player,sport:p.sport,prop:p.prop,
-              line:p.line,side:p.side,outcome:'unknown'
-            }))
-          };
-        }
-      }catch(e){}
+      const parsed = parseAnalyzeBoardResponse(d);
 
       if(parsed?.legs?.length){
         const slipResult=parsed.slip_result||'unknown';
         const legs=parsed.legs.map(l=>({...l,slip_result:slipResult,slip_type:parsed.slip_type||'unknown',source:`upload_${Date.now()}_${i}`,date:new Date().toLocaleDateString()}));
         allLegs.push(...legs);
-        statusEl.textContent=`Image ${i+1}: ${legs.length} legs found — ${slipResult} slip`;
+        statusEl.textContent=`Image ${i+1}: ${legs.length} legs — ${slipResult} slip`;
       } else {
-        const errMsg=parsed?.error||'No legs detected';
-        statusEl.textContent=`Image ${i+1}: ${errMsg}. Use manual entry below.`;
+        statusEl.textContent=`Image ${i+1}: no legs detected. Use manual entry below.`;
       }
     }catch(e){statusEl.textContent=`Image ${i+1} error: ${e.message}`;}
   }
