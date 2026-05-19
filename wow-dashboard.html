@@ -651,40 +651,58 @@ label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06
 <div id="tab-team" class="hidden">
   <div class="main">
 
-  <!-- SCREENSHOT ANALYSIS - NEW -->
+  <!-- LLP AUTO BOARD -->
   <div class="card" style="margin-bottom:12px;">
     <div class="ch">
-      <span class="ct">📸 LLP Screenshot Analyzer</span>
-      <span class="badge bg-b">AI Powered</span>
+      <div>
+        <span class="ct">🏟 LLP Team Bet Analyzer</span>
+        <span id="llpLastUpdate" style="font-size:11px;color:var(--text2);margin-left:10px;"></span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <span id="llpGameCount" class="badge bg-b">0 games</span>
+        <button class="btn btn-p btn-sm" onclick="runLLPBoard()">
+          <span id="llpRunBtn">Scan Today's Games</span>
+          <span id="llpRunSp" class="hidden"><div class="sp"></div></span>
+        </button>
+      </div>
     </div>
     <div class="cb">
-      <div class="alert ab">Upload a screenshot of any game — odds board, matchup screen, sportsbook, ESPN — and the LLP model will analyze it and provide team bet picks with tier ratings.</div>
-
-      <div class="upload-zone" id="llpUploadZone" onclick="document.getElementById('llpFile').click()" style="margin-bottom:12px;">
-        <input type="file" id="llpFile" accept="image/*,.heic,.heif" multiple onchange="handleLLPUpload(event)" style="display:none;">
-        <div style="font-size:28px;margin-bottom:6px;">🏟</div>
-        <div style="font-size:13px;color:var(--text2);text-align:center;">
-          <strong style="color:var(--accent);">Upload game screenshot</strong><br>
-          Odds board, ESPN matchup, sportsbook lines, score screen<br>
-          <span style="font-size:11px;color:var(--text3);">JPG · PNG · HEIC · WEBP</span>
+      <div class="alert ab">Pulls today's full slate from live sportsbooks, runs every game through the LLP model, and surfaces the best team bets with tier ratings.</div>
+      <div class="fr">
+        <div class="field"><label>Sport</label>
+          <select id="llp_sport">
+            <option value="all">All Sports</option>
+            <option value="MLB">MLB</option>
+            <option value="NBA">NBA</option>
+            <option value="NHL">NHL</option>
+            <option value="WNBA">WNBA</option>
+            <option value="NFL">NFL</option>
+          </select>
+        </div>
+        <div class="field"><label>Min Tier</label>
+          <select id="llp_mintier">
+            <option value="all">All Tiers</option>
+            <option value="anchor">Anchor Only</option>
+            <option value="strong">Strong+</option>
+            <option value="lean">Lean+</option>
+          </select>
+        </div>
+        <div class="field"><label>Bet Type</label>
+          <select id="llp_bettype">
+            <option value="all">All Types</option>
+            <option value="moneyline">Moneyline</option>
+            <option value="spread">Spread</option>
+            <option value="total">Total</option>
+          </select>
         </div>
       </div>
+    </div>
+  </div>
 
-      <div id="llpUploadPreview" class="hidden">
-        <div style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;margin-bottom:8px;">
-          Uploaded (<span id="llpImgCount">0</span>)
-          <button onclick="clearLLPUploads()" style="background:none;border:none;color:var(--red);font-size:11px;cursor:pointer;font-weight:600;">Clear</button>
-        </div>
-        <div id="llpThumbGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;margin-bottom:12px;"></div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <button class="btn btn-p" onclick="analyzeLLPScreenshots()">
-            <span id="llpAnalyzeBtn">Analyze with LLP Model</span>
-            <span id="llpAnalyzeSp" class="hidden"><div class="sp"></div></span>
-          </button>
-          <button class="btn btn-s btn-sm" onclick="document.getElementById('llpFile').click()">+ Add More</button>
-          <span id="llpAnalyzeStatus" style="font-size:12px;color:var(--text2);"></span>
-        </div>
-      </div>
+  <!-- LLP PROGRESS -->
+  <div id="llpProgress" class="hidden card" style="margin-bottom:12px;">
+    <div class="cb" style="padding:12px;">
+      <div class="ob" id="llpLog" style="min-height:60px;max-height:120px;"></div>
     </div>
   </div>
 
@@ -3927,10 +3945,273 @@ async function pullTeamOdds(){
 }
 
 // ══════════════════════════════════════════════════════
-// LLP SCREENSHOT ANALYZER
+// LLP AUTO BOARD — pulls live games + runs LLP model
 // ══════════════════════════════════════════════════════
-let llpImages = [];
+async function runLLPBoard(){
+  document.getElementById('llpRunBtn').textContent = 'Scanning...';
+  document.getElementById('llpRunSp').classList.remove('hidden');
+  document.getElementById('llpProgress').classList.remove('hidden');
+  const logEl = document.getElementById('llpLog');
+  logEl.innerHTML = '';
+  const log = (msg,t='') => { logEl.innerHTML += `<span class="${t?'o'+t:''}">${msg}\n</span>`; logEl.scrollTop = logEl.scrollHeight; };
 
+  const sportFilter = document.getElementById('llp_sport').value;
+  const outputDiv = document.getElementById('llpAnalysisOutput');
+  outputDiv.innerHTML = '';
+
+  const sportConfigs = [
+    {sport:'MLB', key:'baseball_mlb'},
+    {sport:'NBA', key:'basketball_nba'},
+    {sport:'NHL', key:'icehockey_nhl'},
+    {sport:'WNBA', key:'basketball_wnba'},
+  ].filter(s => sportFilter==='all' || s.sport===sportFilter);
+
+  const allGames = [];
+
+  for(const cfg of sportConfigs){
+    log(`⟳ Fetching ${cfg.sport} games...`);
+    try{
+      // Step 1: Get events
+      const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
+      if(!evR.ok){ log(`⚠ ${cfg.sport}: ${evR.status}`,'w'); continue; }
+      const events = await evR.json();
+      if(!events?.length){ log(`⚠ ${cfg.sport}: no games today`,'w'); continue; }
+      log(`✓ ${cfg.sport}: ${events.length} games`,'ok');
+
+      // Step 2: Get moneyline + totals for each game
+      for(const ev of events.slice(0,8)){
+        try{
+          const oddsR = await fx(
+            `${EP.odds}/sports/${cfg.key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
+            {}, 8000
+          );
+          if(!oddsR.ok) continue;
+          const oddsData = await oddsR.json();
+
+          const game = {
+            away_team: ev.away_team,
+            home_team: ev.home_team,
+            sport: cfg.sport,
+            game_time: ev.commence_time ? new Date(ev.commence_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null,
+            event_id: ev.id,
+            bets: [],
+            raw_bk: oddsData.bookmakers?.[0] || null
+          };
+
+          // Extract best lines from first bookmaker
+          const bk = oddsData.bookmakers?.[0];
+          if(!bk){ allGames.push(game); continue; }
+
+          for(const mkt of (bk.markets||[])){
+            if(mkt.key==='h2h'){
+              // Moneyline
+              const away = mkt.outcomes?.find(o=>o.name===ev.away_team);
+              const home = mkt.outcomes?.find(o=>o.name===ev.home_team);
+              if(away&&home){
+                const nvp = noVigProb(away.price, home.price);
+                // LLP: pick the side with edge (implied > 52%)
+                const picks = [
+                  {team:ev.away_team, prob:nvp.over, odds:away.price},
+                  {team:ev.home_team, prob:nvp.under, odds:home.price}
+                ].filter(p=>p.prob>0.52);
+
+                picks.forEach(p=>{
+                  const edge = (p.prob - 0.50) * 100;
+                  const tier = edge>=5?'TEAM ANCHOR':edge>=3?'TEAM STRONG':edge>=1.5?'TEAM LEAN':'PASS';
+                  if(tier!=='PASS') game.bets.push({
+                    type:'moneyline',
+                    pick:`${p.team} ML`,
+                    line: p.odds,
+                    implied_prob: parseFloat(p.prob.toFixed(3)),
+                    edge_pct: parseFloat(edge.toFixed(1)),
+                    tier,
+                    unit_size: tier==='TEAM ANCHOR'?1.0:tier==='TEAM STRONG'?0.75:0.5,
+                    confidence: tier==='TEAM ANCHOR'?'high':tier==='TEAM STRONG'?'medium':'low',
+                    reasoning: `${p.team} implied at ${(p.prob*100).toFixed(1)}% no-vig. Edge: +${edge.toFixed(1)}%`,
+                    flags: []
+                  });
+                });
+              }
+            } else if(mkt.key==='totals'){
+              // Game total
+              const over = mkt.outcomes?.find(o=>o.name==='Over');
+              const under = mkt.outcomes?.find(o=>o.name==='Under');
+              if(over&&under){
+                const nvp = noVigProb(over.price, under.price);
+                const side = nvp.over>=nvp.under ? {name:`Over ${over.point}`,prob:nvp.over,odds:over.price} : {name:`Under ${under.point}`,prob:nvp.under,odds:under.price};
+                const edge = (side.prob - 0.50) * 100;
+                if(edge>=1.5){
+                  const tier = edge>=5?'TEAM ANCHOR':edge>=3?'TEAM STRONG':'TEAM LEAN';
+                  game.bets.push({
+                    type:'total',
+                    pick:side.name,
+                    line: side.odds,
+                    implied_prob: parseFloat(side.prob.toFixed(3)),
+                    edge_pct: parseFloat(edge.toFixed(1)),
+                    tier,
+                    unit_size: tier==='TEAM ANCHOR'?1.0:tier==='TEAM STRONG'?0.75:0.5,
+                    confidence: tier==='TEAM ANCHOR'?'high':'medium',
+                    reasoning: `${side.name} implied at ${(side.prob*100).toFixed(1)}% no-vig.`,
+                    flags: []
+                  });
+                }
+              }
+            } else if(mkt.key==='spreads'){
+              const away = mkt.outcomes?.find(o=>o.name===ev.away_team);
+              const home = mkt.outcomes?.find(o=>o.name===ev.home_team);
+              if(away&&home){
+                const nvp = noVigProb(away.price, home.price);
+                const picks = [
+                  {team:ev.away_team, prob:nvp.over, odds:away.price, point:away.point},
+                  {team:ev.home_team, prob:nvp.under, odds:home.price, point:home.point}
+                ].filter(p=>p.prob>0.53);
+                picks.forEach(p=>{
+                  const edge = (p.prob - 0.50)*100;
+                  if(edge>=1.5){
+                    const tier = edge>=5?'TEAM ANCHOR':edge>=3?'TEAM STRONG':'TEAM LEAN';
+                    game.bets.push({
+                      type:'spread',
+                      pick:`${p.team} ${p.point>0?'+':''}${p.point}`,
+                      line: p.odds,
+                      implied_prob: parseFloat(p.prob.toFixed(3)),
+                      edge_pct: parseFloat(edge.toFixed(1)),
+                      tier,
+                      unit_size: tier==='TEAM ANCHOR'?1.0:tier==='TEAM STRONG'?0.75:0.5,
+                      confidence:'medium',
+                      reasoning:`${p.team} spread implied at ${(p.prob*100).toFixed(1)}% no-vig.`,
+                      flags:[]
+                    });
+                  }
+                });
+              }
+            }
+          }
+
+          // Set best bet
+          const sorted = [...game.bets].sort((a,b)=>b.edge_pct-a.edge_pct);
+          game.best_bet = sorted[0]?.pick || null;
+          game.summary_tier = sorted[0]?.tier || 'PASS';
+          allGames.push(game);
+        }catch(e){}
+      }
+    }catch(e){ log(`⚠ ${cfg.sport}: ${e.message}`,'w'); }
+  }
+
+  log(`\n✓ Scanned ${allGames.length} games. Running LLP model...`,'i');
+  document.getElementById('llpGameCount').textContent = `${allGames.length} games`;
+  document.getElementById('llpLastUpdate').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+
+  renderLLPBoard(allGames);
+
+  document.getElementById('llpRunBtn').textContent = 'Scan Today\'s Games';
+  document.getElementById('llpRunSp').classList.add('hidden');
+}
+
+function renderLLPBoard(allGames){
+  const outputDiv = document.getElementById('llpAnalysisOutput');
+  const tierFilter = document.getElementById('llp_mintier').value;
+  const betFilter = document.getElementById('llp_bettype').value;
+
+  const tierOrd = {'TEAM ANCHOR':0,'TEAM STRONG':1,'TEAM LEAN':2,'PASS':3};
+  const tierMin = {anchor:['TEAM ANCHOR'], strong:['TEAM ANCHOR','TEAM STRONG'], lean:['TEAM ANCHOR','TEAM STRONG','TEAM LEAN'], all:['TEAM ANCHOR','TEAM STRONG','TEAM LEAN']};
+  const allowed = tierMin[tierFilter] || tierMin.all;
+
+  // Filter games that have qualifying bets
+  let filtered = allGames.map(g=>({
+    ...g,
+    bets: g.bets.filter(b=>
+      allowed.includes(b.tier) &&
+      (betFilter==='all' || b.type===betFilter)
+    )
+  })).filter(g=>g.bets.length>0);
+
+  // Sort by best edge
+  filtered.sort((a,b)=>{
+    const aTop = Math.max(...a.bets.map(b=>b.edge_pct));
+    const bTop = Math.max(...b.bets.map(b=>b.edge_pct));
+    return bTop-aTop;
+  });
+
+  outputDiv.innerHTML = '';
+
+  if(!filtered.length){
+    outputDiv.innerHTML = `<div class="alert ay">⚠ No qualifying bets found with current filters. Try "All Tiers" to see everything, or check back when today's lines are posted.</div>`;
+    return;
+  }
+
+  // Summary
+  const anchors = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM ANCHOR').length;
+  const strongs = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM STRONG').length;
+  const leans = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM LEAN').length;
+
+  const summary = document.createElement('div');
+  summary.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;';
+  summary.innerHTML = `
+    <div style="padding:10px 16px;background:var(--green-light);border-radius:10px;border:1px solid rgba(16,185,129,0.2);text-align:center;">
+      <div style="font-size:22px;font-weight:900;color:var(--green);">${anchors}</div>
+      <div style="font-size:10px;font-weight:700;color:var(--green);text-transform:uppercase;">Anchor</div>
+    </div>
+    <div style="padding:10px 16px;background:var(--accent-light);border-radius:10px;border:1px solid rgba(59,130,246,0.2);text-align:center;">
+      <div style="font-size:22px;font-weight:900;color:var(--accent);">${strongs}</div>
+      <div style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;">Strong</div>
+    </div>
+    <div style="padding:10px 16px;background:var(--yellow-light);border-radius:10px;border:1px solid rgba(245,158,11,0.2);text-align:center;">
+      <div style="font-size:22px;font-weight:900;color:var(--yellow);">${leans}</div>
+      <div style="font-size:10px;font-weight:700;color:var(--yellow);text-transform:uppercase;">Lean</div>
+    </div>
+    <div style="padding:10px 16px;background:var(--surface2);border-radius:10px;border:1px solid var(--border);text-align:center;">
+      <div style="font-size:22px;font-weight:900;color:var(--text);">${filtered.length}</div>
+      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;">Games</div>
+    </div>
+  `;
+  outputDiv.appendChild(summary);
+
+  // Game cards
+  filtered.forEach(game=>{
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.marginBottom = '10px';
+
+    const topBet = [...game.bets].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
+    const topColor = topBet?.tier==='TEAM ANCHOR'?'var(--green)':topBet?.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
+    const topBadge = topBet?.tier==='TEAM ANCHOR'?'bg-g':topBet?.tier==='TEAM STRONG'?'bg-b':'bg-y';
+
+    card.innerHTML = `
+      <div class="ch">
+        <div>
+          <div style="font-size:14px;font-weight:700;">${game.away_team} @ ${game.home_team}</div>
+          <div style="font-size:11px;color:var(--text2);">${game.sport}${game.game_time?' · '+game.game_time:''}</div>
+        </div>
+        ${topBet?`<span class="badge ${topBadge}">${topBet.tier}</span>`:''}
+      </div>
+      <div class="cb">
+        ${game.bets.map(bet=>{
+          const tc = bet.tier==='TEAM ANCHOR'?'var(--green)':bet.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
+          const tbg = bet.tier==='TEAM ANCHOR'?'var(--green-light)':bet.tier==='TEAM STRONG'?'var(--accent-light)':'var(--yellow-light)';
+          return `<div style="padding:10px 12px;background:${tbg};border-radius:8px;border:1px solid ${tc}40;margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <div>
+                <span style="font-size:13px;font-weight:700;color:${tc};">${bet.pick}</span>
+                <span style="font-size:11px;color:var(--text2);margin-left:8px;">${bet.line>0?'+':''}${bet.line}</span>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:11px;font-weight:700;color:${tc};">${bet.tier}</div>
+                <div style="font-size:10px;color:var(--text2);">${bet.unit_size}u</div>
+              </div>
+            </div>
+            <div style="font-size:11px;font-family:var(--mono);color:${tc};">Edge: +${bet.edge_pct}% · Implied: ${(bet.implied_prob*100).toFixed(1)}%</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:3px;">${bet.reasoning}</div>
+            <button class="btn btn-s btn-sm" style="margin-top:6px;" onclick="loadLLPBetToForm('${game.sport}','${game.away_team.replace(/'/g,"\\'")}','${game.home_team.replace(/'/g,"\\'")}','${bet.pick.replace(/'/g,"\\'")}','${bet.line}')">Load to Evaluator</button>
+          </div>`;
+        }).join('')}
+      </div>
+    `;
+    outputDiv.appendChild(card);
+  });
+}
+
+// ── LLP legacy stubs (screenshot replaced by auto-fetch) ──
+let llpImages = [];
 function handleLLPUpload(e){
   const files = Array.from(e.target.files);
   if(!files.length) return;
