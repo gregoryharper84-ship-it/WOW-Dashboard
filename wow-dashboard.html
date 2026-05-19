@@ -762,7 +762,49 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 <div id="tab-team" class="hidden">
   <div class="main">
 
-  <!-- LLP AUTO BOARD -->
+  <!-- WINNERS & UPSETS -->
+  <div class="card" style="margin-bottom:12px;">
+    <div class="ch">
+      <div>
+        <span class="ct">🏆 Winners & Upsets</span>
+        <span id="wuLastUpdate" style="font-size:11px;color:var(--text2);margin-left:10px;"></span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select id="wu_sport" style="font-size:12px;padding:4px 8px;width:auto;border-radius:8px;">
+          <option value="all">All Sports</option>
+          <option value="MLB">MLB</option>
+          <option value="NBA">NBA</option>
+          <option value="NHL">NHL</option>
+          <option value="WNBA">WNBA</option>
+          <option value="Soccer">Soccer</option>
+        </select>
+        <button class="btn btn-p btn-sm" onclick="runWinnersUpsets()">
+          <span id="wuBtn">Find Winners & Upsets</span>
+          <span id="wuSp" class="hidden"><div class="sp"></div></span>
+        </button>
+      </div>
+    </div>
+    <div class="cb">
+      <div class="alert ab">Scans today's full slate, calculates no-vig probabilities, and surfaces <strong>strong favorites</strong> likely to win and <strong>underdog upset picks</strong> with meaningful edge.</div>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:120px;background:var(--green-light);border:1px solid rgba(16,185,129,0.2);border-radius:10px;padding:12px;text-align:center;">
+          <div style="font-size:22px;font-weight:900;color:var(--green);" id="wuFavCount">—</div>
+          <div style="font-size:10px;font-weight:700;color:var(--green);text-transform:uppercase;">Strong Favorites</div>
+          <div style="font-size:10px;color:var(--text2);margin-top:2px;">&gt;65% implied</div>
+        </div>
+        <div style="flex:1;min-width:120px;background:var(--purple-light);border:1px solid rgba(168,85,247,0.2);border-radius:10px;padding:12px;text-align:center;">
+          <div style="font-size:22px;font-weight:900;color:var(--purple);" id="wuUpsetCount">—</div>
+          <div style="font-size:10px;font-weight:700;color:var(--purple);text-transform:uppercase;">Upset Picks</div>
+          <div style="font-size:10px;color:var(--text2);margin-top:2px;">35-45% dog with edge</div>
+        </div>
+        <div style="flex:1;min-width:120px;background:var(--accent-light);border:1px solid rgba(59,130,246,0.2);border-radius:10px;padding:12px;text-align:center;">
+          <div style="font-size:22px;font-weight:900;color:var(--accent);" id="wuGameCount">—</div>
+          <div style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;">Games Scanned</div>
+        </div>
+      </div>
+      <div id="wuOutput"></div>
+    </div>
+  </div>
   <div class="card" style="margin-bottom:12px;">
     <div class="ch">
       <div>
@@ -2055,84 +2097,117 @@ async function runSoccerEngine(log){
 async function runTennisEngine(log){
   const candidates = [];
   try{
-    // Check health for tennis endpoint
-    const healthR = await fx(`${EP.replit}/health`,{},5000);
-    if(healthR.ok){
-      const health = await healthR.json();
-      const endpoints = health.endpoints || {};
-      if(!Object.keys(endpoints).some(k=>k.includes('tennis'))){
-        log(`⚠ Tennis: /tennis-stats not yet deployed to Replit. Add the Jeff Sackmann endpoint and redeploy.`,'w');
-        return [];
-      }
-    }
-
-    const matchesR = await fx(`${EP.replit}/tennis-stats/today`,{headers:{'X-API-Key':KEYS.replit}},8000);
-    if(!matchesR.ok){ log(`⚠ Tennis: no matches endpoint — ${matchesR.status}`,'w'); return []; }
+    const matchesR = await fx(
+      `${EP.replit}/tennis-stats/today`,
+      {headers:{'X-API-Key':KEYS.replit}}, 10000
+    );
+    if(!matchesR.ok){ log(`⚠ Tennis: /tennis-stats/today returned ${matchesR.status}`,'w'); return []; }
     const matchData = await matchesR.json();
     const matches = matchData.matches || [];
     if(!matches.length){ log(`⚠ Tennis: no matches today`,'w'); return []; }
-    log(`✓ Tennis: ${matches.length} matches`,'ok');
 
-    for(const match of matches.slice(0,8)){
-      for(const player of [match.winner_name, match.loser_name].filter(Boolean)){
+    const tours = [...new Set(matches.map(m=>m.tournament||m.tour||'Unknown'))];
+    log(`✓ Tennis: ${matches.length} matches | ${tours.join(', ')}`,'ok');
+
+    for(const match of matches.slice(0,20)){
+      const p1 = match.player1 || match.away_team || '';
+      const p2 = match.player2 || match.home_team || '';
+      const tournament = match.tournament || '';
+      const surface = match.surface || 'Hard';
+      const gameStr = `${p1} vs ${p2}${tournament?' ('+tournament+')':''}`;
+
+      for(const playerName of [p1,p2].filter(Boolean)){
         const statsR = await fx(
-          `${EP.replit}/tennis-stats?player=${encodeURIComponent(player)}`,
+          `${EP.replit}/tennis-stats?player=${encodeURIComponent(playerName)}`,
           {headers:{'X-API-Key':KEYS.replit}}, 8000
         );
         if(!statsR.ok) continue;
         const sd = await statsR.json();
-        if(!sd.ok || !sd.matches?.length) continue;
+        if(!sd.ok||!sd.matches?.length) continue;
 
-        const recent = sd.matches.slice(-10);
-        const surface = match.surface || 'Hard';
-        const bysurf = recent.filter(m=>m.surface===surface);
-        const use = bysurf.length >= 3 ? bysurf : recent;
+        const recent = sd.matches.slice(-15);
+        const surfMatches = recent.filter(m=>(m.surface||'').toLowerCase()===surface.toLowerCase());
+        const use = surfMatches.length>=4 ? surfMatches : recent;
 
-        // Aces prop
+        // ── ACES ──
         const aces = use.map(m=>{
-          const isW = (m.winner_name||'').toLowerCase()===player.toLowerCase();
-          return parseInt(isW ? m.w_ace : m.l_ace)||0;
-        });
-        if(aces.length >= 3){
+          const isW=(m.winner_name||'').toLowerCase()===playerName.toLowerCase();
+          return parseInt((isW?m.w_ace:m.l_ace)||0);
+        }).filter(v=>!isNaN(v));
+
+        if(aces.length>=3){
           const avg = aces.reduce((a,b)=>a+b,0)/aces.length;
-          for(const line of [4.5,6.5,8.5,10.5]){
+          const surfAdj = surface.toLowerCase()==='clay' ? 0.80 : 1.0;
+          const adjAvg = avg*surfAdj;
+
+          for(const line of [2.5,4.5,6.5,8.5,10.5]){
             const hr = aces.filter(v=>v>line).length/aces.length;
-            if(hr >= 0.55){
-              candidates.push({player,sport:'Tennis',prop:'aces',side:'MORE',line,
-                game:`${match.winner_name} vs ${match.loser_name}`,
-                recent_avg:parseFloat(avg.toFixed(1)),l5_hit_rate:hr,l10_hit_rate:hr,
-                raw_vals:aces,confidence:hr,role_score:7,
-                note:`Avg ${avg.toFixed(1)} aces | ${surface} | L${aces.length} hit: ${(hr*100).toFixed(0)}%`});
+            if(hr>=0.57){
+              candidates.push({player:playerName,sport:'Tennis',prop:'aces',side:'MORE',line,
+                game:gameStr,tournament,surface,recent_avg:parseFloat(adjAvg.toFixed(1)),
+                l5_hit_rate:hr,l10_hit_rate:hr,raw_vals:aces.slice(-10),confidence:hr,role_score:7,
+                note:`Avg ${avg.toFixed(1)} aces (${surface}: ${adjAvg.toFixed(1)}) | L${aces.length} hit: ${(hr*100).toFixed(0)}%`});
+              break;
+            }
+          }
+          if(surface.toLowerCase()==='clay'){
+            for(const line of [6.5,8.5,10.5]){
+              const hrL=aces.filter(v=>v<line).length/aces.length;
+              if(hrL>=0.62){
+                candidates.push({player:playerName,sport:'Tennis',prop:'aces',side:'LESS',line,
+                  game:gameStr,tournament,surface,recent_avg:parseFloat(adjAvg.toFixed(1)),
+                  l5_hit_rate:hrL,l10_hit_rate:hrL,raw_vals:aces.slice(-10),confidence:hrL,role_score:7,
+                  note:`Clay: avg ${adjAvg.toFixed(1)} aces LESS | L${aces.length} hit: ${(hrL*100).toFixed(0)}%`});
+                break;
+              }
+            }
+          }
+        }
+
+        // ── TOTAL GAMES ──
+        const totals = recent.map(m=>{
+          return (m.score||'').split(' ').reduce((sum,s)=>{
+            const p=s.replace(/\[.*?\]/g,'').split('-');
+            return sum+(parseInt(p[0])||0)+(parseInt(p[1])||0);
+          },0);
+        }).filter(t=>t>5);
+
+        if(totals.length>=4){
+          const avg=totals.reduce((a,b)=>a+b,0)/totals.length;
+          for(const line of [18.5,20.5,22.5,24.5,26.5]){
+            const hrM=totals.filter(v=>v>line).length/totals.length;
+            const hrL=totals.filter(v=>v<line).length/totals.length;
+            if(hrM>=0.60){
+              candidates.push({player:playerName,sport:'Tennis',prop:'total games',side:'MORE',line,
+                game:gameStr,tournament,surface,recent_avg:parseFloat(avg.toFixed(1)),
+                l5_hit_rate:hrM,l10_hit_rate:hrM,raw_vals:totals.slice(-10),confidence:hrM,role_score:7,
+                note:`Avg ${avg.toFixed(1)} games | L${totals.length} MORE: ${(hrM*100).toFixed(0)}%`});
+              break;
+            }
+            if(hrL>=0.60){
+              candidates.push({player:playerName,sport:'Tennis',prop:'total games',side:'LESS',line,
+                game:gameStr,tournament,surface,recent_avg:parseFloat(avg.toFixed(1)),
+                l5_hit_rate:hrL,l10_hit_rate:hrL,raw_vals:totals.slice(-10),confidence:hrL,role_score:7,
+                note:`Avg ${avg.toFixed(1)} games | L${totals.length} LESS: ${(hrL*100).toFixed(0)}%`});
               break;
             }
           }
         }
 
-        // Total games prop
-        const totals = recent.map(m=>{
-          const score = m.score||'';
-          return score.split(' ').reduce((sum,s)=>{
-            const p=s.split('-'); return sum+(parseInt(p[0])||0)+(parseInt(p[1])||0);
-          },0);
-        }).filter(t=>t>0);
-        if(totals.length >= 3){
-          const avg = totals.reduce((a,b)=>a+b,0)/totals.length;
-          for(const line of [18.5,20.5,22.5,24.5]){
-            const hrMore = totals.filter(v=>v>line).length/totals.length;
-            const hrLess = totals.filter(v=>v<line).length/totals.length;
-            if(hrMore >= 0.60){
-              candidates.push({player:`${match.winner_name} vs ${match.loser_name}`,sport:'Tennis',prop:'total games',side:'MORE',line,
-                game:`${match.winner_name} vs ${match.loser_name}`,
-                recent_avg:parseFloat(avg.toFixed(1)),l5_hit_rate:hrMore,l10_hit_rate:hrMore,
-                raw_vals:totals,confidence:hrMore,role_score:7,
-                note:`Avg ${avg.toFixed(1)} total games | L${totals.length}`});
-              break;
-            } else if(hrLess >= 0.60){
-              candidates.push({player:`${match.winner_name} vs ${match.loser_name}`,sport:'Tennis',prop:'total games',side:'LESS',line,
-                game:`${match.winner_name} vs ${match.loser_name}`,
-                recent_avg:parseFloat(avg.toFixed(1)),l5_hit_rate:hrLess,l10_hit_rate:hrLess,
-                raw_vals:totals,confidence:hrLess,role_score:7,
-                note:`Avg ${avg.toFixed(1)} total games | L${totals.length}`});
+        // ── DOUBLE FAULTS ──
+        const dfs = use.map(m=>{
+          const isW=(m.winner_name||'').toLowerCase()===playerName.toLowerCase();
+          return parseInt((isW?m.w_df:m.l_df)||0);
+        }).filter(v=>!isNaN(v));
+        if(dfs.length>=3){
+          const avg=dfs.reduce((a,b)=>a+b,0)/dfs.length;
+          for(const line of [1.5,2.5,3.5,4.5]){
+            const hrL=dfs.filter(v=>v<line).length/dfs.length;
+            if(hrL>=0.58){
+              candidates.push({player:playerName,sport:'Tennis',prop:'double faults',side:'LESS',line,
+                game:gameStr,tournament,surface,recent_avg:parseFloat(avg.toFixed(1)),
+                l5_hit_rate:hrL,l10_hit_rate:hrL,raw_vals:dfs.slice(-10),confidence:hrL,role_score:7,
+                note:`Avg ${avg.toFixed(1)} DFs | L${dfs.length} LESS: ${(hrL*100).toFixed(0)}%`});
               break;
             }
           }
@@ -2140,7 +2215,7 @@ async function runTennisEngine(log){
       }
     }
     log(`✓ Tennis: ${candidates.length} candidates`,'ok');
-  }catch(e){ log(`⚠ Tennis engine: ${e.message}`,'w'); }
+  }catch(e){ log(`⚠ Tennis: ${e.message}`,'w'); }
   return candidates;
 }
 
@@ -4557,6 +4632,251 @@ async function pullTeamOdds(){
 // ══════════════════════════════════════════════════════
 // LLP AUTO BOARD — pulls live games + runs LLP model
 // ══════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════
+// WINNERS & UPSETS ENGINE
+// Scans today's slate, finds strong favorites + upset value
+// ══════════════════════════════════════════════════════
+async function runWinnersUpsets(){
+  document.getElementById('wuBtn').textContent = 'Scanning...';
+  document.getElementById('wuSp').classList.remove('hidden');
+  const out = document.getElementById('wuOutput');
+  out.innerHTML = `<div class="alert ab"><div class="spd"></div> Scanning today's slate for winners and upsets...</div>`;
+
+  const sportFilter = document.getElementById('wu_sport').value;
+  const sportConfigs = [
+    {sport:'MLB', key:'baseball_mlb'},
+    {sport:'NBA', key:'basketball_nba'},
+    {sport:'NHL', key:'icehockey_nhl'},
+    {sport:'WNBA', key:'basketball_wnba'},
+    {sport:'Soccer', key:'soccer_usa_mls'},
+  ].filter(s => sportFilter==='all' || s.sport===sportFilter);
+
+  const favorites = [];
+  const upsets = [];
+  let totalGames = 0;
+
+  for(const cfg of sportConfigs){
+    try{
+      // Get events
+      const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
+      if(!evR.ok) continue;
+      const events = await evR.json();
+      if(!events?.length) continue;
+
+      // Get moneylines for all events
+      for(const ev of events.slice(0,10)){
+        try{
+          const oddsR = await fx(
+            `${EP.odds}/sports/${cfg.key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
+            {}, 8000
+          );
+          if(!oddsR.ok) continue;
+          const oddsData = await oddsR.json();
+          totalGames++;
+
+          const bk = oddsData.bookmakers?.[0];
+          if(!bk) continue;
+
+          const h2h = bk.markets?.find(m=>m.key==='h2h');
+          const spreads = bk.markets?.find(m=>m.key==='spreads');
+          const totals = bk.markets?.find(m=>m.key==='totals');
+
+          if(!h2h?.outcomes?.length) continue;
+
+          // Calculate no-vig probabilities
+          const awayML = h2h.outcomes.find(o=>o.name===ev.away_team)?.price;
+          const homeML = h2h.outcomes.find(o=>o.name===ev.home_team)?.price;
+          if(!awayML || !homeML) continue;
+
+          const nvp = noVigProb(awayML, homeML);
+          const awayProb = nvp.over;
+          const homeProb = nvp.under;
+
+          // Game total
+          const total = totals?.outcomes?.find(o=>o.name==='Over')?.point;
+
+          // Spread
+          const awaySpread = spreads?.outcomes?.find(o=>o.name===ev.away_team)?.point;
+          const homeSpread = spreads?.outcomes?.find(o=>o.name===ev.home_team)?.point;
+
+          const gameTime = ev.commence_time ?
+            new Date(ev.commence_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null;
+
+          const gameObj = {
+            sport: cfg.sport,
+            away: ev.away_team, home: ev.home_team,
+            awayML, homeML, awayProb, homeProb,
+            awaySpread, homeSpread, total, gameTime,
+            id: ev.id, leagueKey: cfg.key
+          };
+
+          // ── STRONG FAVORITE ──
+          // Criteria: implied prob > 65%, meaningful spread
+          const favTeam = awayProb > homeProb ? 'away' : 'home';
+          const favProb = Math.max(awayProb, homeProb);
+          const favML = favTeam==='away' ? awayML : homeML;
+          const favSpread = favTeam==='away' ? awaySpread : homeSpread;
+          const favName = favTeam==='away' ? ev.away_team : ev.home_team;
+          const dogName = favTeam==='away' ? ev.home_team : ev.away_team;
+
+          if(favProb >= 0.65){
+            favorites.push({
+              ...gameObj,
+              pick: favName,
+              dog: dogName,
+              prob: favProb,
+              ml: favML,
+              spread: favSpread,
+              edge: (favProb - 0.50) * 100,
+              confidence: favProb >= 0.75 ? 'high' : 'medium',
+              tier: favProb >= 0.75 ? 'LOCK' : 'STRONG'
+            });
+          }
+
+          // ── UPSET PICK ──
+          // Criteria: underdog 35-45% implied (meaningful chance),
+          // but look for line movement signal or situational edge
+          const dogProb = Math.min(awayProb, homeProb);
+          const dogML = favTeam==='away' ? homeML : awayML;
+          const dogSpread = favTeam==='away' ? homeSpread : awaySpread;
+          const upsetTeam = favTeam==='away' ? ev.home_team : ev.away_team;
+
+          // Upset value criteria:
+          // 1. Dog is 35-45% implied (close game masquerading as one-sided)
+          // 2. OR dog is home team (home field advantage not fully priced in)
+          // 3. OR high total (shootout = anyone can win)
+          const isHomedog = (favTeam==='away' && homeProb < awayProb);
+          const isHighTotal = total && total >= 9.0; // MLB
+          const isCloseGame = dogProb >= 0.38 && dogProb <= 0.47;
+
+          if(isCloseGame || (dogProb >= 0.32 && (isHomedog || isHighTotal))){
+            const upsetScore = Math.round(
+              dogProb * 60 +
+              (isHomedog ? 15 : 0) +
+              (isHighTotal ? 10 : 0) +
+              (isCloseGame ? 15 : 0)
+            );
+
+            if(upsetScore >= 35){
+              upsets.push({
+                ...gameObj,
+                pick: upsetTeam,
+                fav: favName,
+                prob: dogProb,
+                ml: dogML,
+                spread: dogSpread,
+                edge: upsetScore,
+                reasons: [
+                  ...(isCloseGame ? [`${(dogProb*100).toFixed(0)}% implied — closer than it looks`] : []),
+                  ...(isHomedog ? ['Home underdog — home field not fully priced'] : []),
+                  ...(isHighTotal ? [`High total O/U ${total} — offense favored, anyone can win`] : []),
+                ],
+                potential_payout: dogML > 0 ? `+${dogML}` : dogML
+              });
+            }
+          }
+        }catch(e){}
+      }
+    }catch(e){}
+  }
+
+  // Sort
+  favorites.sort((a,b) => b.prob - a.prob);
+  upsets.sort((a,b) => b.edge - a.edge);
+
+  // Update counters
+  document.getElementById('wuFavCount').textContent = favorites.length;
+  document.getElementById('wuUpsetCount').textContent = upsets.length;
+  document.getElementById('wuGameCount').textContent = totalGames;
+  document.getElementById('wuLastUpdate').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+
+  out.innerHTML = '';
+
+  if(!favorites.length && !upsets.length){
+    out.innerHTML = `<div class="alert ay">⚠ No games found. Lines may not be posted yet — check back closer to game time.</div>`;
+    document.getElementById('wuBtn').textContent = 'Find Winners & Upsets';
+    document.getElementById('wuSp').classList.add('hidden');
+    return;
+  }
+
+  // ── RENDER FAVORITES ──
+  if(favorites.length){
+    const favSection = document.createElement('div');
+    favSection.innerHTML = `<div class="slbl" style="margin-bottom:8px;">🏆 Strong Favorites (${favorites.length})</div>`;
+
+    favorites.slice(0,8).forEach(g=>{
+      const card = document.createElement('div');
+      card.style.cssText = 'padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid rgba(16,185,129,0.25);border-left:3px solid var(--green);margin-bottom:8px;';
+      const tierBadge = g.tier==='LOCK' ?
+        `<span class="badge bg-g">🔒 LOCK</span>` :
+        `<span class="badge bg-g">STRONG</span>`;
+
+      card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
+          <div>
+            <span style="font-size:13px;font-weight:700;color:var(--green);">${g.pick}</span>
+            <span style="font-size:11px;color:var(--text2);margin-left:6px;">vs ${g.dog}</span>
+            <span style="font-size:10px;color:var(--text3);margin-left:6px;">${g.sport}${g.gameTime?' · '+g.gameTime:''}</span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            ${tierBadge}
+            <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);">${(g.prob*100).toFixed(1)}%</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--text2);">
+          <span>ML: <strong style="color:var(--text);">${g.ml > 0 ? '+'+g.ml : g.ml}</strong></span>
+          ${g.spread!=null?`<span>Spread: <strong style="color:var(--text);">${g.spread > 0?'+':''}${g.spread}</strong></span>`:''}
+          ${g.total?`<span>O/U: <strong style="color:var(--text);">${g.total}</strong></span>`:''}
+          <span>Edge: <strong style="color:var(--green);">+${g.edge.toFixed(1)}%</strong></span>
+        </div>
+        <button class="btn btn-g btn-sm" style="margin-top:8px;" onclick="loadLLPBetToForm('${g.sport}','${g.away.replace(/'/g,"\\'")}','${g.home.replace(/'/g,"\\'")}','${g.pick.replace(/'/g,"\\'")} ML','${g.ml}')">Load to LLP Evaluator</button>
+      `;
+      favSection.appendChild(card);
+    });
+    out.appendChild(favSection);
+  }
+
+  // ── RENDER UPSETS ──
+  if(upsets.length){
+    const upsetSection = document.createElement('div');
+    upsetSection.style.marginTop = '16px';
+    upsetSection.innerHTML = `<div class="slbl" style="margin-bottom:8px;">💥 Upset Picks (${upsets.length})</div>`;
+
+    upsets.slice(0,6).forEach(g=>{
+      const card = document.createElement('div');
+      card.style.cssText = 'padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid rgba(168,85,247,0.25);border-left:3px solid var(--purple);margin-bottom:8px;';
+
+      card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
+          <div>
+            <span style="font-size:13px;font-weight:700;color:var(--purple);">💥 ${g.pick}</span>
+            <span style="font-size:11px;color:var(--text2);margin-left:6px;">vs ${g.fav}</span>
+            <span style="font-size:10px;color:var(--text3);margin-left:6px;">${g.sport}${g.gameTime?' · '+g.gameTime:''}</span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span class="badge bg-p">UPSET</span>
+            <span style="font-family:var(--mono);font-size:13px;font-weight:900;color:var(--purple);">${g.potential_payout}</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--text2);margin-bottom:6px;">
+          <span>Implied: <strong style="color:var(--text);">${(g.prob*100).toFixed(1)}%</strong></span>
+          ${g.spread!=null?`<span>Spread: <strong style="color:var(--text);">${g.spread > 0?'+':''}${g.spread}</strong></span>`:''}
+          ${g.total?`<span>O/U: <strong style="color:var(--text);">${g.total}</strong></span>`:''}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;">
+          ${(g.reasons||[]).map(r=>`<span style="font-size:10px;background:var(--purple-light);color:var(--purple);padding:2px 7px;border-radius:10px;">${r}</span>`).join('')}
+        </div>
+        <button class="btn btn-sm" style="background:var(--purple-light);color:var(--purple);border:1px solid rgba(168,85,247,0.3);" onclick="loadLLPBetToForm('${g.sport}','${g.away.replace(/'/g,"\\'")}','${g.home.replace(/'/g,"\\'")}','${g.pick.replace(/'/g,"\\'")} ML','${g.ml}')">Load to LLP Evaluator</button>
+      `;
+      upsetSection.appendChild(card);
+    });
+    out.appendChild(upsetSection);
+  }
+
+  document.getElementById('wuBtn').textContent = 'Find Winners & Upsets';
+  document.getElementById('wuSp').classList.add('hidden');
+}
+
 async function runLLPBoard(){
   document.getElementById('llpRunBtn').textContent = 'Scanning...';
   document.getElementById('llpRunSp').classList.remove('hidden');
