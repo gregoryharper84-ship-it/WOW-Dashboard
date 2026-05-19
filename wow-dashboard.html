@@ -324,6 +324,12 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
               <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
                 <input type="checkbox" class="eng-sport-cb" value="NFL"> NFL
               </label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+                <input type="checkbox" class="eng-sport-cb" value="Soccer"> Soccer
+              </label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+                <input type="checkbox" class="eng-sport-cb" value="Tennis"> Tennis
+              </label>
             </div>
           </div>
           <div class="field"><label>Platform</label><select id="eng_platform"><option value="prizepicks">PrizePicks</option><option value="betus">BetUS</option><option value="both">Both</option></select></div>
@@ -438,6 +444,8 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
               <option value="WNBA">WNBA</option>
               <option value="MLB">MLB</option>
               <option value="NHL">NHL</option>
+              <option value="Soccer">Soccer</option>
+              <option value="Tennis">Tennis</option>
               <option value="all">All Sports</option>
             </select>
           </div>
@@ -659,7 +667,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
           </select>
         </div>
         <div class="field"><label>Target Grade</label><select id="s_grade"><option value="A">A Grade Only</option><option value="B" selected>A or B Grade</option><option value="C">Any Grade</option></select></div>
-        <div class="field"><label>Sport Filter</label><select id="s_sport"><option value="all">All Sports</option><option value="MLB">MLB</option><option value="NBA">NBA</option><option value="NHL">NHL</option><option value="WNBA">WNBA</option></select></div>
+        <div class="field"><label>Sport Filter</label><select id="s_sport"><option value="all">All Sports</option><option value="MLB">MLB</option><option value="NBA">NBA</option><option value="NHL">NHL</option><option value="WNBA">WNBA</option><option value="Soccer">Soccer</option><option value="Tennis">Tennis</option></select></div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-p" onclick="buildAllSlips()"><span id="slipBtn">Build All Slips</span><span id="slipSp" class="hidden"><div class="sp"></div></span></button>
@@ -1009,7 +1017,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
         <div class="alert ab" style="margin-bottom:10px;">Per WOW: <strong>Process &gt; Outcome.</strong> Log every settled pick. Wins can be bad process. Losses can be good process. CLV consistency is the real edge signal.</div>
         <div class="fr">
           <div class="field"><label>Player</label><input type="text" id="clv_player" placeholder="Player name"></div>
-          <div class="field"><label>Sport</label><select id="clv_sport"><option>MLB</option><option>NBA</option><option>NHL</option><option>WNBA</option><option>NFL</option><option>Tennis</option><option>Golf</option></select></div>
+          <div class="field"><label>Sport</label><select id="clv_sport"><option>MLB</option><option>NBA</option><option>NHL</option><option>WNBA</option><option>NFL</option><option>Soccer</option><option>Tennis</option><option>Golf</option></select></div>
           <div class="field"><label>Prop Type</label><input type="text" id="clv_prop" placeholder="strikeouts"></div>
           <div class="field" style="max-width:75px;"><label>Line</label><input type="number" id="clv_line" step="0.5" placeholder="6.5"></div>
           <div class="field" style="max-width:85px;"><label>Side</label><select id="clv_side"><option value="MORE">MORE</option><option value="LESS">LESS</option></select></div>
@@ -1207,7 +1215,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 const KEYS={rundown:'6f00cf9201adfd3026defd4a1808d7400ec441955647efe3d7eade517d4cdc74',odds:'311bae3d2356b258e27750224a9e5fcf',bdl:'0b3cae52-e907-4abb-8670-d54502bc373c',replit:'j|nNZo*[uWj%EIH[0Y:yNjhsKp:iBqK|'};
 const EP={rundown:'https://therundown.io/api/v2',odds:'https://api.the-odds-api.com/v4',espn:'https://site.api.espn.com/apis/site/v2/sports',bdl:'https://api.balldontlie.io/v1',replit:'https://create-app-gregoryharper84.replit.app',mlb:'https://statsapi.mlb.com/api/v1',nhl:'https://api-web.nhle.com/v1'};
 const ESPN_P={MLB:'baseball/mlb',NBA:'basketball/nba',NHL:'hockey/nhl',WNBA:'basketball/wnba',NFL:'americanfootball/nfl',soccer:'soccer/usa.1'};
-const ODDS_K={MLB:'baseball_mlb',NBA:'basketball_nba',NHL:'icehockey_nhl',WNBA:'basketball_wnba',NFL:'americanfootball_nfl'};
+const ODDS_K={MLB:'baseball_mlb',NBA:'basketball_nba',NHL:'icehockey_nhl',WNBA:'basketball_wnba',NFL:'americanfootball_nfl',Soccer:'soccer_usa_mls',Tennis:'tennis_atp'};
 const SPORT_IDS={MLB:3,NBA:4,NFL:1,NHL:6,WNBA:8,soccer:7};
 
 let approvedProps=[],slipLegs=[];
@@ -1433,7 +1441,7 @@ function computeHitRates(logs, statKey, line, side='MORE'){
 // AUTO ENGINE — Real Stats Version
 // ══════════════════════════════════
 async function runAutoEngine(){
-  const ALL_SPORTS=['MLB','NBA','NHL','WNBA','NFL'];
+  const ALL_SPORTS=['MLB','NBA','NHL','WNBA','NFL','Soccer','Tennis'];
   let sports=Array.from(document.querySelectorAll('.eng-sport-cb:checked')).map(cb=>cb.value);
   if(document.getElementById('eng_all')?.checked||sports.length===0) sports=[...ALL_SPORTS];
   const maxP=parseInt(document.getElementById('eng_max').value)||10;
@@ -1466,6 +1474,14 @@ async function runAutoEngine(){
           'player_points,player_rebounds,player_assists',log);
         allCandidates.push(...wnbaCandidates);
         if(!wnbaCandidates.length) log(`⚠ WNBA: no props available today`,'w');
+      } else if(sport==='Soccer'){
+        const soccerC = await runOddsAPIEngine('Soccer','soccer_usa_mls','player_shots_on_target,player_passes',log);
+        allCandidates.push(...soccerC);
+        if(!soccerC.length) log('⚠ Soccer: no props available (try MLS game day)','w');
+      } else if(sport==='Tennis'){
+        const tennisC = await runOddsAPIEngine('Tennis','tennis_atp','player_games,player_aces',log);
+        allCandidates.push(...tennisC);
+        if(!tennisC.length) log('⚠ Tennis: no props available today','w');
       } else if(sport==='NFL'){
         // NFL season Sep-Feb; May is off-season
         const month=new Date().getMonth()+1; // 1-12
@@ -3691,6 +3707,55 @@ function enrichTennisFromESPN(prop, data, cacheKey){
 // ══════════════════════════════════
 // GOLF ENRICHMENT (ESPN + PGA Tour public)
 // ══════════════════════════════════
+// ── Soccer enrichment ──
+async function enrichWithSoccerStats(prop){
+  const cacheKey = `${prop.player}|${prop.prop}|${prop.line}|${prop.side}`;
+  if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
+  try{
+    // Use Odds API player props as market signal for soccer
+    const soccerKeys = ['soccer_usa_mls','soccer_epl','soccer_spain_la_liga','soccer_germany_bundesliga'];
+    for(const key of soccerKeys){
+      try{
+        const evR = await fx(`${EP.odds}/sports/${key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},5000);
+        if(!evR.ok) continue;
+        const events = await evR.json();
+        for(const ev of (events||[]).slice(0,5)){
+          const prR = await fx(`${EP.odds}/sports/${key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=player_shots_on_target,player_passes&oddsFormat=american`,{},5000);
+          if(!prR.ok) continue;
+          const prData = await prR.json();
+          for(const bk of (prData.bookmakers||[]).slice(0,1)){
+            for(const mkt of (bk.markets||[])){
+              const outs = mkt.outcomes||[];
+              const over = outs.find(o=>(o.description||'').toLowerCase().includes(prop.player.toLowerCase().split(' ').pop().toLowerCase()) && o.name?.toLowerCase()==='over' && Math.abs((o.point||0)-prop.line)<0.6);
+              const under = outs.find(o=>(o.description||'').toLowerCase().includes(prop.player.toLowerCase().split(' ').pop().toLowerCase()) && o.name?.toLowerCase()==='under' && Math.abs((o.point||0)-prop.line)<0.6);
+              if(over&&under){
+                const nvp = noVigProb(over.price, under.price);
+                const confidence = prop.side==='MORE'?nvp.over:nvp.under;
+                const enriched = {confidence, role_score:7, note:`Market: ${(confidence*100).toFixed(1)}% | ${bk.title}`};
+                statsCache[cacheKey] = enriched;
+                return {...prop, ...enriched};
+              }
+            }
+          }
+        }
+      }catch(e){}
+    }
+    // Fallback: use ESPN soccer
+    const name = encodeURIComponent(prop.player);
+    const r = await fx(`https://site.api.espn.com/apis/site/v2/sports/soccer/usa.1/athletes?search=${name}&limit=3`,{},5000);
+    if(r.ok){
+      const d = await r.json();
+      const athlete = d.athletes?.[0];
+      if(athlete){
+        const enriched = {role_score:7, confidence:0.55, note:`MLS: ${athlete.displayName||prop.player}`};
+        statsCache[cacheKey] = enriched;
+        return {...prop, ...enriched};
+      }
+    }
+  }catch(e){}
+  return prop;
+}
+
 async function enrichWithGolfStats(prop){
   const cacheKey = `${prop.player}|${prop.prop}|${prop.line}|${prop.side}`;
   if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
@@ -3825,6 +3890,8 @@ async function enrichProp(prop){
     case 'MLB':    enriched = await enrichWithMLBStats(prop); break;
     case 'NBA':    enriched = await enrichWithNBAStats(prop); break;
     case 'WNBA':   enriched = await enrichWithNBAStats(prop); break;
+    case 'Soccer': enriched = await enrichWithSoccerStats(prop); break;
+    case 'TENNIS': case 'Tennis': enriched = await enrichWithTennisStats(prop); break;
     case 'NHL':    enriched = await enrichWithNHLStats(prop); break;
     case 'TENNIS': enriched = await enrichWithTennisStats(prop); break;
     case 'GOLF':   enriched = await enrichWithGolfStats(prop); break;
@@ -5160,7 +5227,7 @@ function addTrackerLeg(){
     <div class="field"><label>Player ${i}</label><input type="text" id="tl_player_${i}" placeholder="e.g. Shohei Ohtani"></div>
     <div class="field" style="max-width:90px;"><label>Sport</label>
       <select id="tl_sport_${i}">
-        <option>MLB</option><option>NBA</option><option>NHL</option><option>WNBA</option><option>NFL</option>
+        <option>MLB</option><option>NBA</option><option>NHL</option><option>WNBA</option><option>NFL</option><option>Soccer</option><option>Tennis</option>
       </select>
     </div>
     <div class="field"><label>Prop</label><input type="text" id="tl_prop_${i}" placeholder="strikeouts"></div>
@@ -6315,6 +6382,8 @@ async function refreshPropPool(manual=false){
     {sport:'NBA',key:'basketball_nba',markets:'player_points,player_rebounds,player_assists,player_threes,player_blocks,player_steals'},
     {sport:'NHL',key:'icehockey_nhl',markets:'player_shots_on_goal,player_goals,player_assists,player_points'},
     {sport:'WNBA',key:'basketball_wnba',markets:'player_points,player_rebounds,player_assists'},
+    {sport:'Soccer',key:'soccer_usa_mls',markets:'player_shots_on_target,player_shots,player_passes'},
+    {sport:'Tennis',key:'tennis_atp',markets:'player_games,player_aces'},
   ];
 
   const raw=[];
