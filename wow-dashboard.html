@@ -5061,31 +5061,40 @@ async function runWinnersUpsets(){
 
   for(const cfg of sportConfigs){
     try{
-      // Fetch all odds in one call (more reliable on free tier than per-event)
-      const oddsR = await fx(
-        `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
-        {}, 10000
-      );
-      if(!oddsR.ok){ log(`⚠ ${cfg.sport}: odds ${oddsR.status}`,'w'); continue; }
-      const allOdds = await oddsR.json();
-      if(!allOdds?.length){ log(`⚠ ${cfg.sport}: no odds available`,'w'); continue; }
+      const freeOddsSports = ['MLB','NBA'];
+      const useBulkOdds = freeOddsSports.includes(cfg.sport);
+
+      let allOdds = [];
+      if(useBulkOdds){
+        const oddsR = await fx(
+          `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
+          {}, 10000
+        );
+        if(oddsR.ok) allOdds = await oddsR.json();
+      }
+      if(!allOdds?.length){
+        // Fall back to /events (free for all sports)
+        const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
+        if(!evR.ok){ continue; }
+        allOdds = await evR.json();
+      }
+      if(!allOdds?.length) continue;
 
       for(const oddsGame of allOdds.slice(0,12)){
         try{
-          const ev = oddsGame; // same structure
+          const ev = oddsGame;
+          const bk = ev.bookmakers?.[0];
+
+          // Events endpoint returns no bookmakers — use event data only for non-free sports
+          const awayML = bk?.markets?.find(m=>m.key==='h2h')?.outcomes?.find(o=>o.name===ev.away_team)?.price;
+          const homeML = bk?.markets?.find(m=>m.key==='h2h')?.outcomes?.find(o=>o.name===ev.home_team)?.price;
+
+          // Skip if no odds available (events-only fallback) — still count the game
           totalGames++;
+          if(!awayML || !homeML) continue;
 
-          const bk = oddsGame.bookmakers?.[0];
-          if(!bk){ continue; }
-
-          const h2h = bk.markets?.find(m=>m.key==='h2h');
-          const spreads = bk.markets?.find(m=>m.key==='spreads');
-          const totals = bk.markets?.find(m=>m.key==='totals');
-          if(!h2h?.outcomes?.length) continue;
-
-          const awayML = h2h.outcomes.find(o=>o.name===ev.away_team)?.price;
-          const homeML = h2h.outcomes.find(o=>o.name===ev.home_team)?.price;
-          if(!awayML||!homeML) continue;
+          const spreads = bk?.markets?.find(m=>m.key==='spreads');
+          const totals = bk?.markets?.find(m=>m.key==='totals');
 
           const nvp = noVigProb(awayML, homeML);
           const awayProb = nvp.over;
@@ -5106,26 +5115,20 @@ async function runWinnersUpsets(){
           const favSpread = favTeam==='away' ? awaySpread : homeSpread;
           const dogSpread = favTeam==='away' ? homeSpread : awaySpread;
           const isHomeDog = (favTeam==='away');
-          const isHighTotal = (cfg.sport==='MLB' && total >= 9.0) || (cfg.sport==='WNBA' && total >= 165);
+          const isHighTotal = (cfg.sport==='MLB' && total >= 9.0)||(cfg.sport==='WNBA' && total >= 165);
 
-          const gameCtxObj = {away:ev.away_team,home:ev.home_team,awayProb,homeProb};
-
-          // Sport-specific enrichment
           let sportCtx = {upsetEdge:0, reasons:[], favBoosts:[]};
-          if(cfg.sport==='MLB') sportCtx = await getMLBGameContext({...gameCtxObj});
-          else if(cfg.sport==='WNBA') sportCtx = await getWNBAGameContext({...gameCtxObj});
+          if(cfg.sport==='MLB') sportCtx = await getMLBGameContext({away:ev.away_team,home:ev.home_team,awayProb,homeProb});
+          else if(cfg.sport==='WNBA') sportCtx = await getWNBAGameContext({away:ev.away_team,home:ev.home_team});
           else {
-            // Generic factors
             if(isHomeDog){ sportCtx.upsetEdge+=12; sportCtx.reasons.push('Home underdog'); }
             if(isHighTotal){ sportCtx.upsetEdge+=8; sportCtx.reasons.push(`High total O/U ${total}`); }
           }
 
-          // ── STRONG FAVORITE ──
           if(favProb >= 0.62){
             favorites.push({
               sport:cfg.sport, away:ev.away_team, home:ev.home_team,
-              pick:favName, dog:dogName,
-              prob:favProb, ml:favML, spread:favSpread,
+              pick:favName, dog:dogName, prob:favProb, ml:favML, spread:favSpread,
               edge:(favProb-0.50)*100, total, gameTime,
               confidence: favProb>=0.75?'high':'medium',
               tier: favProb>=0.75?'LOCK':'STRONG',
@@ -5133,28 +5136,21 @@ async function runWinnersUpsets(){
             });
           }
 
-          // ── UPSET PICK ──
-          const baseUpsetScore = Math.round(dogProb * 60);
-          const bonusScore = sportCtx.upsetEdge +
-            (isHomeDog ? 15 : 0) +
-            (isHighTotal ? 10 : 0) +
-            (dogProb>=0.38&&dogProb<=0.47 ? 15 : 0);
-          const totalScore = baseUpsetScore + bonusScore;
-
+          const baseScore = Math.round(dogProb*60);
+          const bonusScore = sportCtx.upsetEdge+(isHomeDog?15:0)+(isHighTotal?10:0)+(dogProb>=0.38&&dogProb<=0.47?15:0);
+          const totalScore = baseScore+bonusScore;
           const upsetReasons = [
             ...(sportCtx.reasons||[]),
-            ...(isHomeDog ? ['Home underdog — home field underpriced'] : []),
-            ...(isHighTotal ? [`High total O/U ${total} — high-variance game`] : []),
-            ...(dogProb>=0.38&&dogProb<=0.47 ? [`${(dogProb*100).toFixed(0)}% implied — closer than line suggests`] : []),
+            ...(isHomeDog?['Home underdog — home field underpriced']:[]),
+            ...(isHighTotal?[`High total O/U ${total} — high-variance game`]:[]),
+            ...(dogProb>=0.38&&dogProb<=0.47?[`${(dogProb*100).toFixed(0)}% implied — closer than line suggests`]:[]),
           ];
-
-          if(totalScore >= 35 && dogProb >= 0.30 && upsetReasons.length > 0){
+          if(totalScore>=35 && dogProb>=0.30 && upsetReasons.length>0){
             upsets.push({
               sport:cfg.sport, away:ev.away_team, home:ev.home_team,
-              pick:dogName, fav:favName,
-              prob:dogProb, ml:dogML, spread:dogSpread,
+              pick:dogName, fav:favName, prob:dogProb, ml:dogML, spread:dogSpread,
               edge:totalScore, total, gameTime,
-              reasons: upsetReasons.slice(0,4),
+              reasons:upsetReasons.slice(0,4),
               potential_payout: dogML>0?`+${dogML}`:String(dogML),
             });
           }
@@ -5179,7 +5175,6 @@ async function runWinnersUpsets(){
     return;
   }
 
-  // Render favorites
   if(favorites.length){
     const sec = document.createElement('div');
     sec.innerHTML = `<div class="slbl" style="margin-bottom:8px;">🏆 Strong Favorites (${favorites.length})</div>`;
@@ -5203,13 +5198,12 @@ async function runWinnersUpsets(){
           <span>Edge: <strong style="color:var(--green);">+${g.edge.toFixed(1)}%</strong></span>
         </div>
         ${g.boosts?.length?`<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px;">${g.boosts.map(b=>`<span style="font-size:10px;background:var(--green-light);color:var(--green);padding:1px 6px;border-radius:10px;">${b}</span>`).join('')}</div>`:''}
-        <button class="btn btn-g btn-sm" onclick="loadLLPBetToForm('${g.sport}','${g.away.replace(/'/g,"\\'")}','${g.home.replace(/'/g,"\\'")}','${g.pick.replace(/'/g,"\\'")} ML','${g.ml}')">Load to LLP</button>`;
+        <button class="btn btn-g btn-sm" onclick="loadLLPBetToForm('${g.sport}','${g.away.replace(/'/g,"\'")}','${g.home.replace(/'/g,"\'")}','${g.pick.replace(/'/g,"\'")} ML','${g.ml}')">Load to LLP</button>`;
       sec.appendChild(c);
     });
     out.appendChild(sec);
   }
 
-  // Render upsets
   if(upsets.length){
     const sec = document.createElement('div');
     sec.style.marginTop='16px';
@@ -5238,7 +5232,7 @@ async function runWinnersUpsets(){
         <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;">
           ${(g.reasons||[]).map(r=>`<span style="font-size:10px;background:var(--purple-light);color:var(--purple);padding:2px 7px;border-radius:10px;">${r}</span>`).join('')}
         </div>
-        <button class="btn btn-sm" style="background:var(--purple-light);color:var(--purple);border:1px solid rgba(168,85,247,0.3);" onclick="loadLLPBetToForm('${g.sport}','${g.away.replace(/'/g,"\\'")}','${g.home.replace(/'/g,"\\'")}','${g.pick.replace(/'/g,"\\'")} ML','${g.ml}')">Load to LLP</button>`;
+        <button class="btn btn-sm" style="background:var(--purple-light);color:var(--purple);border:1px solid rgba(168,85,247,0.3);" onclick="loadLLPBetToForm('${g.sport}','${g.away.replace(/'/g,"\'")}','${g.home.replace(/'/g,"\'")}','${g.pick.replace(/'/g,"\'")} ML','${g.ml}')">Load to LLP</button>`;
       sec.appendChild(c);
     });
     out.appendChild(sec);
@@ -5319,17 +5313,27 @@ async function runLLPBoard(){
   for(const cfg of sportConfigs){
     log(`⟳ Fetching ${cfg.sport} games...`);
     try{
-      // Fetch all odds in one call — more reliable than per-event on free tier
-      const evR = await fx(
-        `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
-        {}, 10000
-      );
-      if(!evR.ok){ log(`⚠ ${cfg.sport}: odds ${evR.status}`,'w'); continue; }
-      const events = await evR.json();
+      // MLB and NBA support bulk /odds on free tier
+      // NHL, WNBA, Soccer: use /events only
+      const freeOddsSports = ['MLB','NBA'];
+      const useBulkOdds = freeOddsSports.includes(cfg.sport);
+
+      let events = [];
+      if(useBulkOdds){
+        const oddsR = await fx(
+          `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
+          {}, 10000
+        );
+        if(oddsR.ok) events = await oddsR.json();
+      }
+      // Fall back to /events if bulk odds failed or not supported
+      if(!events?.length){
+        const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
+        if(!evR.ok){ log(`⚠ ${cfg.sport}: ${evR.status}`,'w'); continue; }
+        events = await evR.json();
+      }
       if(!events?.length){ log(`⚠ ${cfg.sport}: no games today`,'w'); continue; }
       log(`✓ ${cfg.sport}: ${events.length} games`,'ok');
-
-      // Step 2: Get moneyline + totals for each game
       for(const ev of events.slice(0,8)){
         try{
           // Odds already fetched in bulk — ev IS the oddsData object
