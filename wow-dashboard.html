@@ -780,6 +780,62 @@ label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06
 <div id="tab-log" class="hidden">
   <div class="main">
 
+  <!-- ACTIVE SLIP TRACKER -->
+  <div class="card" style="margin-bottom:14px;">
+    <div class="ch">
+      <div>
+        <span class="ct">🎯 Active Slip Tracker</span>
+        <span id="trackerStatus" style="font-size:11px;color:var(--text2);margin-left:8px;"></span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <span id="activeSlipCount" class="badge bg-b">0 active</span>
+        <button class="btn btn-p btn-sm" onclick="checkAllSlips()">
+          <span id="checkBtn">Check Results</span>
+          <span id="checkSp" class="hidden"><div class="sp"></div></span>
+        </button>
+        <button class="btn btn-s btn-sm" onclick="showAddSlipModal()">+ Add Slip</button>
+      </div>
+    </div>
+    <div class="cb">
+      <div id="activeSlipsContainer">
+        <div style="text-align:center;color:var(--text2);font-size:13px;padding:14px;">No active slips. Click <strong>+ Add Slip</strong> to start tracking.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADD SLIP MODAL (inline) -->
+  <div id="addSlipModal" class="hidden card" style="margin-bottom:14px;border:2px solid var(--accent);">
+    <div class="ch">
+      <span class="ct">+ New Active Slip</span>
+      <button onclick="hideAddSlipModal()" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:18px;">×</button>
+    </div>
+    <div class="cb">
+      <div class="fr">
+        <div class="field"><label>Slip Type</label>
+          <select id="newSlip_type">
+            <option value="Power 2">Power 2</option>
+            <option value="Power 3">Power 3</option>
+            <option value="Power 4">Power 4</option>
+            <option value="Flex 5">Flex 5</option>
+            <option value="Flex 6">Flex 6</option>
+          </select>
+        </div>
+        <div class="field"><label>Entry ($)</label><input type="number" id="newSlip_entry" value="10" step="1" min="1"></div>
+        <div class="field"><label>To Win ($)</label><input type="number" id="newSlip_towin" placeholder="e.g. 50" step="0.01"></div>
+      </div>
+      <div id="newSlipLegs">
+        <!-- Legs added dynamically -->
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
+        <button class="btn btn-s btn-sm" onclick="addTrackerLeg()">+ Add Leg</button>
+        <button class="btn btn-p" onclick="saveActiveSlip()">
+          <span id="saveSlipBtn">Save & Track</span>
+        </button>
+        <button class="btn btn-s btn-sm" onclick="importFromPool()">Import from Pool</button>
+      </div>
+    </div>
+  </div>
+
   <!-- QUICK SLIP UPLOAD — top of Log tab -->
   <div class="card" style="margin-bottom:14px;">
     <div class="ch">
@@ -4927,6 +4983,487 @@ function clearCLV(){
 // ══════════════════════════════════
 // WINNING SLIPS UPLOAD
 // ══════════════════════════════════
+// ══════════════════════════════════════════════════════
+// AUTO-SETTLEMENT TRACKER
+// Monitors active slips against live scores + box scores
+// ══════════════════════════════════════════════════════
+let activeSlips = [];
+let trackerInterval = null;
+let newSlipLegCount = 0;
+
+// Load from localStorage
+try{ activeSlips = JSON.parse(localStorage.getItem('wow_active_slips')||'[]'); }catch(e){}
+
+function saveActiveSlips(){ try{ localStorage.setItem('wow_active_slips', JSON.stringify(activeSlips)); }catch(e){} }
+
+// ── UI ──
+function showAddSlipModal(){
+  document.getElementById('addSlipModal').classList.remove('hidden');
+  newSlipLegCount = 0;
+  document.getElementById('newSlipLegs').innerHTML = '';
+  addTrackerLeg(); addTrackerLeg(); // Start with 2 legs
+}
+function hideAddSlipModal(){ document.getElementById('addSlipModal').classList.add('hidden'); }
+
+function addTrackerLeg(){
+  newSlipLegCount++;
+  const i = newSlipLegCount;
+  const div = document.createElement('div');
+  div.className = 'fr';
+  div.id = `trackerLeg_${i}`;
+  div.style.alignItems = 'flex-end';
+  div.innerHTML = `
+    <div class="field"><label>Player ${i}</label><input type="text" id="tl_player_${i}" placeholder="e.g. Shohei Ohtani"></div>
+    <div class="field" style="max-width:90px;"><label>Sport</label>
+      <select id="tl_sport_${i}">
+        <option>MLB</option><option>NBA</option><option>NHL</option><option>WNBA</option><option>NFL</option>
+      </select>
+    </div>
+    <div class="field"><label>Prop</label><input type="text" id="tl_prop_${i}" placeholder="strikeouts"></div>
+    <div class="field" style="max-width:75px;"><label>Line</label><input type="number" id="tl_line_${i}" step="0.5" placeholder="6.5"></div>
+    <div class="field" style="max-width:85px;"><label>Side</label>
+      <select id="tl_side_${i}"><option value="MORE">MORE</option><option value="LESS">LESS</option></select>
+    </div>
+    <button onclick="document.getElementById('trackerLeg_${i}').remove();" style="background:none;border:none;color:var(--red);cursor:pointer;padding:0 6px;font-size:18px;margin-bottom:2px;">×</button>
+  `;
+  document.getElementById('newSlipLegs').appendChild(div);
+}
+
+function importFromPool(){
+  if(!approvedProps.length && !propPool.length){
+    alert('No props in pool. Run engine or prop pool first.');
+    return;
+  }
+  const pool = [...approvedProps, ...propPool].slice(0,6);
+  document.getElementById('newSlipLegs').innerHTML = '';
+  newSlipLegCount = 0;
+  pool.forEach(p=>{
+    newSlipLegCount++;
+    const i = newSlipLegCount;
+    const div = document.createElement('div');
+    div.className = 'fr';
+    div.id = `trackerLeg_${i}`;
+    div.style.alignItems = 'flex-end';
+    div.innerHTML = `
+      <div class="field"><label>Player ${i}</label><input type="text" id="tl_player_${i}" value="${p.player||''}"></div>
+      <div class="field" style="max-width:90px;"><label>Sport</label>
+        <select id="tl_sport_${i}">
+          <option ${p.sport==='MLB'?'selected':''}>MLB</option>
+          <option ${p.sport==='NBA'?'selected':''}>NBA</option>
+          <option ${p.sport==='NHL'?'selected':''}>NHL</option>
+          <option ${p.sport==='WNBA'?'selected':''}>WNBA</option>
+        </select>
+      </div>
+      <div class="field"><label>Prop</label><input type="text" id="tl_prop_${i}" value="${p.prop||''}"></div>
+      <div class="field" style="max-width:75px;"><label>Line</label><input type="number" id="tl_line_${i}" step="0.5" value="${p.line||''}"></div>
+      <div class="field" style="max-width:85px;"><label>Side</label>
+        <select id="tl_side_${i}">
+          <option value="MORE" ${p.side==='MORE'?'selected':''}>MORE</option>
+          <option value="LESS" ${p.side==='LESS'?'selected':''}>LESS</option>
+        </select>
+      </div>
+      <button onclick="document.getElementById('trackerLeg_${i}').remove();" style="background:none;border:none;color:var(--red);cursor:pointer;padding:0 6px;font-size:18px;margin-bottom:2px;">×</button>
+    `;
+    document.getElementById('newSlipLegs').appendChild(div);
+  });
+}
+
+function saveActiveSlip(){
+  const legs = [];
+  for(let i = 1; i <= newSlipLegCount + 10; i++){
+    const playerEl = document.getElementById(`tl_player_${i}`);
+    if(!playerEl) continue;
+    const player = playerEl.value.trim();
+    if(!player) continue;
+    legs.push({
+      player,
+      sport: document.getElementById(`tl_sport_${i}`)?.value || 'MLB',
+      prop: document.getElementById(`tl_prop_${i}`)?.value?.trim() || '',
+      line: parseFloat(document.getElementById(`tl_line_${i}`)?.value) || 0,
+      side: document.getElementById(`tl_side_${i}`)?.value || 'MORE',
+      outcome: 'pending',
+      actual: null,
+      last_checked: null,
+    });
+  }
+  if(legs.length < 2){ alert('Add at least 2 legs.'); return; }
+
+  const slip = {
+    id: Date.now(),
+    created: new Date().toLocaleString(),
+    slip_type: document.getElementById('newSlip_type').value,
+    entry: parseFloat(document.getElementById('newSlip_entry').value)||10,
+    to_win: parseFloat(document.getElementById('newSlip_towin').value)||0,
+    legs,
+    status: 'active', // active | won | lost | pushed
+    settled_at: null,
+  };
+
+  activeSlips.unshift(slip);
+  saveActiveSlips();
+  renderActiveSlips();
+  hideAddSlipModal();
+
+  // Start auto-check if not already running
+  startTrackerInterval();
+}
+
+function deleteActiveSlip(id){
+  if(!confirm('Remove this slip from tracking?')) return;
+  activeSlips = activeSlips.filter(s=>s.id!==id);
+  saveActiveSlips();
+  renderActiveSlips();
+}
+
+function settleActiveSlip(id, result){
+  const slip = activeSlips.find(s=>s.id===id);
+  if(!slip) return;
+  slip.status = result;
+  slip.settled_at = new Date().toLocaleString();
+
+  // Also save to winning slips database for learning
+  const learnSlip = {
+    id: Date.now(),
+    date: new Date().toLocaleDateString(),
+    legs: slip.legs.map(l=>({
+      player:l.player, sport:l.sport, prop:l.prop,
+      line:l.line, side:l.side,
+      outcome: l.outcome,
+      actual: l.actual,
+      slip_result: result,
+      slip_type: slip.slip_type,
+    })),
+    source: 'tracker',
+    legsCount: slip.legs.length,
+    slip_result: result,
+    slip_type: slip.slip_type,
+  };
+  winningSlips.unshift(learnSlip);
+  save(); // save CLV/slips
+
+  saveActiveSlips();
+  renderActiveSlips();
+}
+
+// ── RENDER ──
+function renderActiveSlips(){
+  const container = document.getElementById('activeSlipsContainer');
+  const count = activeSlips.filter(s=>s.status==='active').length;
+  document.getElementById('activeSlipCount').textContent = `${count} active`;
+
+  if(!activeSlips.length){
+    container.innerHTML = '<div style="text-align:center;color:var(--text2);font-size:13px;padding:14px;">No active slips. Click <strong>+ Add Slip</strong> to start tracking.</div>';
+    return;
+  }
+
+  container.innerHTML = '';
+  activeSlips.forEach(slip=>{
+    const card = document.createElement('div');
+    const isActive = slip.status === 'active';
+    const hitLegs = slip.legs.filter(l=>l.outcome==='win').length;
+    const lostLegs = slip.legs.filter(l=>l.outcome==='loss').length;
+    const pending = slip.legs.filter(l=>l.outcome==='pending').length;
+
+    const statusColor = slip.status==='won'?'var(--green)':slip.status==='lost'?'var(--red)':slip.status==='active'?'var(--accent)':'var(--text2)';
+    const statusBg = slip.status==='won'?'var(--green-light)':slip.status==='lost'?'var(--red-light)':slip.status==='active'?'var(--accent-light)':'var(--surface2)';
+
+    card.style.cssText = `border:1px solid ${statusColor}40;border-radius:10px;padding:12px 14px;margin-bottom:10px;background:var(--surface2);`;
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;flex-wrap:wrap;gap:6px;">
+        <div>
+          <span style="font-size:13px;font-weight:700;">${slip.slip_type}</span>
+          <span style="font-size:11px;color:var(--text2);margin-left:8px;">${slip.created}</span>
+          ${slip.entry?`<span style="font-size:11px;color:var(--text2);margin-left:8px;">$${slip.entry}${slip.to_win?' → $'+slip.to_win:''}</span>`:''}
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:${statusBg};color:${statusColor};text-transform:uppercase;">${slip.status}</span>
+          ${isActive?`<span style="font-size:11px;color:var(--green);">✓${hitLegs}</span><span style="font-size:11px;color:var(--red);">✗${lostLegs}</span><span style="font-size:11px;color:var(--text2);">⏳${pending}</span>`:''}
+          ${isActive?`<button class="btn btn-g btn-sm" onclick="checkSlip(${slip.id})">Check</button>`:''}
+          ${isActive?`<button class="btn btn-g btn-sm" onclick="settleActiveSlip(${slip.id},'won')" style="background:var(--green-light);color:var(--green);">Won</button>`:''}
+          ${isActive?`<button class="btn btn-s btn-sm" onclick="settleActiveSlip(${slip.id},'lost')">Lost</button>`:''}
+          <button onclick="deleteActiveSlip(${slip.id})" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;">×</button>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:5px;">
+        ${slip.legs.map((leg,li)=>{
+          const lc = leg.outcome==='win'?'var(--green)':leg.outcome==='loss'?'var(--red)':'var(--text2)';
+          const icon = leg.outcome==='win'?'✅':leg.outcome==='loss'?'❌':'⏳';
+          const checkedAgo = leg.last_checked ? `· checked ${leg.last_checked}` : '';
+          return `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--surface);border-radius:6px;border:1px solid ${lc}30;">
+            <span style="font-size:14px;flex-shrink:0;">${icon}</span>
+            <div style="flex:1;min-width:0;">
+              <span style="font-weight:600;font-size:12px;">${leg.player}</span>
+              <span style="font-size:11px;color:var(--text2);margin-left:6px;">${leg.sport} · ${leg.prop} ${leg.side} ${leg.line}</span>
+            </div>
+            ${leg.actual!=null?`<span style="font-family:var(--mono);font-size:12px;font-weight:700;color:${lc};">→ ${leg.actual}</span>`:''}
+            <span style="font-size:9px;color:var(--text3);">${checkedAgo}</span>
+          </div>`;
+        }).join('')}
+      </div>
+      ${slip.settled_at?`<div style="font-size:11px;color:var(--text2);margin-top:8px;">Settled: ${slip.settled_at}</div>`:''}
+    `;
+    container.appendChild(card);
+  });
+}
+
+// ── SCORE CHECKING ENGINE ──
+async function checkAllSlips(){
+  document.getElementById('checkBtn').textContent = 'Checking...';
+  document.getElementById('checkSp').classList.remove('hidden');
+  document.getElementById('trackerStatus').textContent = 'Checking scores...';
+
+  const activeOnes = activeSlips.filter(s=>s.status==='active');
+  let checked = 0;
+  for(const slip of activeOnes){
+    await checkSlip(slip.id);
+    checked++;
+  }
+
+  const now = new Date().toLocaleTimeString();
+  document.getElementById('trackerStatus').textContent = `Last checked: ${now}`;
+  document.getElementById('checkBtn').textContent = 'Check Results';
+  document.getElementById('checkSp').classList.add('hidden');
+}
+
+async function checkSlip(slipId){
+  const slip = activeSlips.find(s=>s.id===slipId);
+  if(!slip||slip.status!=='active') return;
+
+  for(const leg of slip.legs){
+    if(leg.outcome !== 'pending') continue; // already settled
+    try{
+      const result = await checkLegResult(leg);
+      if(result !== null){
+        leg.actual = result.actual;
+        leg.outcome = result.outcome;
+        leg.last_checked = new Date().toLocaleTimeString();
+      }
+    }catch(e){}
+  }
+
+  // Auto-settle slip if all legs are done
+  const allDone = slip.legs.every(l=>l.outcome!=='pending');
+  if(allDone){
+    const losses = slip.legs.filter(l=>l.outcome==='loss').length;
+    const isPower = slip.slip_type?.toLowerCase().includes('power');
+    if(isPower){
+      // Power: any loss = slip lost
+      slip.status = losses > 0 ? 'lost' : 'won';
+    } else {
+      // Flex: can lose some — simplified rule: lose >2 = lost for Flex 5/6
+      const maxLosses = slip.slip_type?.includes('6') ? 2 : 1;
+      slip.status = losses > maxLosses ? 'lost' : 'won';
+    }
+    slip.settled_at = new Date().toLocaleString();
+
+    // Save to learning database
+    const learnSlip = {
+      id: Date.now(),
+      date: new Date().toLocaleDateString(),
+      legs: slip.legs.map(l=>({...l, slip_result:slip.status, slip_type:slip.slip_type})),
+      source: 'auto-settled',
+      legsCount: slip.legs.length,
+      slip_result: slip.status,
+      slip_type: slip.slip_type,
+    };
+    winningSlips.unshift(learnSlip);
+    save();
+  }
+
+  saveActiveSlips();
+  renderActiveSlips();
+}
+
+async function checkLegResult(leg){
+  const prop = (leg.prop||'').toLowerCase();
+  const sport = leg.sport;
+  const player = leg.player;
+  const line = parseFloat(leg.line);
+  const side = leg.side;
+
+  try{
+    if(sport === 'MLB'){
+      return await checkMLBLeg(player, prop, line, side);
+    } else if(sport === 'NBA' || sport === 'WNBA'){
+      return await checkNBALeg(player, prop, line, side, sport);
+    } else if(sport === 'NHL'){
+      return await checkNHLLeg(player, prop, line, side);
+    } else {
+      return await checkESPNLeg(player, prop, line, side, sport);
+    }
+  }catch(e){ return null; }
+}
+
+// ── MLB Leg Checker ──
+async function checkMLBLeg(player, prop, line, side){
+  const today = new Date().toISOString().split('T')[0];
+  const schedR = await fx(`${EP.mlb}/schedule?sportId=1&date=${today}&hydrate=boxscore,probablePitcher`,{},8000);
+  if(!schedR.ok) return null;
+  const sched = await schedR.json();
+  const games = sched.dates?.[0]?.games || [];
+
+  for(const game of games){
+    if(game.status?.abstractGameState !== 'Final') continue;
+    const allPlayers = [
+      ...Object.values(game.liveData?.boxscore?.teams?.home?.players||{}),
+      ...Object.values(game.liveData?.boxscore?.teams?.away?.players||{})
+    ];
+    const found = allPlayers.find(p=>
+      p.person?.fullName?.toLowerCase().includes(player.toLowerCase().split(' ').pop().toLowerCase()) ||
+      player.toLowerCase().includes(p.person?.fullName?.toLowerCase().split(' ').pop()||'')
+    );
+    if(!found) continue;
+
+    const stats = found.stats;
+    let actual = null;
+
+    if(prop.includes('strikeout')) actual = stats?.pitching?.strikeOuts ?? stats?.batting?.strikeOuts ?? null;
+    else if(prop.includes('hit')) actual = stats?.batting?.hits ?? null;
+    else if(prop.includes('total base')) actual = stats?.batting?.totalBases ?? null;
+    else if(prop.includes('rbi')) actual = stats?.batting?.rbi ?? null;
+    else if(prop.includes('run')) actual = stats?.batting?.runs ?? null;
+    else if(prop.includes('home run')) actual = stats?.batting?.homeRuns ?? null;
+    else if(prop.includes('out')) actual = stats?.pitching?.outs ?? null;
+    else if(prop.includes('walk')) actual = (stats?.pitching?.baseOnBalls ?? stats?.batting?.baseOnBalls) ?? null;
+    else if(prop.includes('pitch')) actual = stats?.pitching?.numberOfPitches ?? null;
+
+    if(actual === null) continue;
+
+    const outcome = side==='MORE' ? (actual > line ? 'win' : 'loss') : (actual < line ? 'win' : 'loss');
+    return {actual, outcome};
+  }
+  return null; // game not final yet
+}
+
+// ── NBA/WNBA Leg Checker ──
+async function checkNBALeg(player, prop, line, side, sport){
+  const bdlBase = 'https://api.balldontlie.io/v1';
+  const today = new Date().toISOString().split('T')[0];
+  const gamesR = await fx(`${bdlBase}/games?dates[]=${today}&per_page=15`,{headers:{'Authorization':KEYS.bdl}},8000);
+  if(!gamesR.ok) return null;
+  const games = (await gamesR.json()).data||[];
+  const finalGames = games.filter(g=>g.status==='Final');
+  if(!finalGames.length) return null;
+
+  for(const game of finalGames){
+    const statsR = await fx(`${bdlBase}/stats?game_ids[]=${game.id}&per_page=30`,{headers:{'Authorization':KEYS.bdl}},8000);
+    if(!statsR.ok) continue;
+    const stats = (await statsR.json()).data||[];
+    const found = stats.find(s=>
+      s.player?.last_name?.toLowerCase()===player.toLowerCase().split(' ').pop().toLowerCase() ||
+      `${s.player?.first_name||''} ${s.player?.last_name||''}`.toLowerCase().includes(player.toLowerCase().split(' ').pop().toLowerCase())
+    );
+    if(!found) continue;
+
+    let actual = null;
+    if(prop.includes('point')) actual = found.pts;
+    else if(prop.includes('rebound')) actual = found.reb;
+    else if(prop.includes('assist')) actual = found.ast;
+    else if(prop.includes('steal')) actual = found.stl;
+    else if(prop.includes('block')) actual = found.blk;
+    else if(prop.includes('turnover')) actual = found.turnover;
+    else if(prop.includes('three')||prop.includes('3-pointer')||prop.includes('fg3')) actual = found.fg3m;
+
+    if(actual === null) continue;
+    const outcome = side==='MORE' ? (actual > line ? 'win' : 'loss') : (actual < line ? 'win' : 'loss');
+    return {actual, outcome};
+  }
+  return null;
+}
+
+// ── NHL Leg Checker ──
+async function checkNHLLeg(player, prop, line, side){
+  const today = new Date().toISOString().split('T')[0];
+  const r = await fx(`${EP.nhl}/score/${today}`,{},8000);
+  if(!r.ok) return null;
+  const data = await r.json();
+  const games = (data.games||[]).filter(g=>g.gameState==='OFF'||g.gameState==='FINAL');
+
+  for(const game of games){
+    const boxR = await fx(`${EP.nhl}/gamecenter/${game.id}/boxscore`,{},8000);
+    if(!boxR.ok) continue;
+    const box = await boxR.json();
+    const allPlayers = [
+      ...Object.values(box.playerByGameStats?.homeTeam||{}),
+      ...Object.values(box.playerByGameStats?.awayTeam||{})
+    ].flatMap(pos=>Array.isArray(pos)?pos:[]);
+
+    const found = allPlayers.find(p=>
+      p.name?.default?.toLowerCase().includes(player.toLowerCase().split(' ').pop().toLowerCase())
+    );
+    if(!found) continue;
+
+    let actual = null;
+    if(prop.includes('shot')) actual = found.shots ?? found.sog ?? null;
+    else if(prop.includes('goal')) actual = found.goals ?? null;
+    else if(prop.includes('assist')) actual = found.assists ?? null;
+    else if(prop.includes('point')) actual = (found.goals??0)+(found.assists??0);
+    else if(prop.includes('save')) actual = found.saves ?? null;
+
+    if(actual === null) continue;
+    const outcome = side==='MORE' ? (actual > line ? 'win' : 'loss') : (actual < line ? 'win' : 'loss');
+    return {actual, outcome};
+  }
+  return null;
+}
+
+// ── ESPN Box Score Fallback ──
+async function checkESPNLeg(player, prop, line, side, sport){
+  const espnPath = ESPN_P[sport];
+  if(!espnPath) return null;
+  const r = await fx(`${EP.espn}/${espnPath}/scoreboard`,{},8000);
+  if(!r.ok) return null;
+  const data = await r.json();
+  const events = (data.events||[]).filter(e=>e.status?.type?.completed);
+
+  for(const event of events){
+    const summaryR = await fx(`${EP.espn}/${espnPath}/summary?event=${event.id}`,{},8000);
+    if(!summaryR.ok) continue;
+    const summary = await summaryR.json();
+    const boxscore = summary.boxscore;
+    if(!boxscore) continue;
+
+    for(const team of (boxscore.players||[])){
+      for(const statGroup of (team.statistics||[])){
+        for(const athlete of (statGroup.athletes||[])){
+          const name = athlete.athlete?.displayName||'';
+          if(!name.toLowerCase().includes(player.toLowerCase().split(' ').pop().toLowerCase())) continue;
+          // Try to find matching stat
+          const labels = statGroup.labels||[];
+          const stats = athlete.stats||[];
+          const propKey = prop.toLowerCase();
+          let actual = null;
+          labels.forEach((lbl,i)=>{
+            const l = lbl.toLowerCase();
+            if((propKey.includes('point')&&l==='pts')||(propKey.includes('rebound')&&l==='reb')||
+               (propKey.includes('assist')&&l==='ast')||(propKey.includes('steal')&&l==='stl')||
+               (propKey.includes('block')&&l==='blk')||(propKey.includes('strikeout')&&(l==='so'||l==='k'))||
+               (propKey.includes('hit')&&l==='h')){
+              actual = parseFloat(stats[i]);
+            }
+          });
+          if(actual === null) continue;
+          const outcome = side==='MORE' ? (actual > line ? 'win' : 'loss') : (actual < line ? 'win' : 'loss');
+          return {actual, outcome};
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// ── AUTO-CHECK INTERVAL ──
+function startTrackerInterval(){
+  if(trackerInterval) return; // already running
+  // Check every 5 minutes
+  trackerInterval = setInterval(()=>{
+    const active = activeSlips.filter(s=>s.status==='active');
+    if(!active.length){ clearInterval(trackerInterval); trackerInterval=null; return; }
+    checkAllSlips();
+  }, 5 * 60 * 1000);
+}
+
+// ── Log tab - Quick slip upload (existing) ──
 // ── Log Tab Slip Upload (mirrors winning slips but at top of Log tab) ──
 let logSlipImages = [];
 
@@ -5896,6 +6433,9 @@ window.onload=()=>{
   renderCLVTable();
   renderSlipDatabase();
   renderLearnedRules();
+  renderActiveSlips();
+  // Start tracker if there are active slips
+  if(activeSlips.filter(s=>s.status==='active').length > 0) startTrackerInterval();
   // Drag/drop listeners — must be inside onload so DOM is ready
   const slipUpZ=document.getElementById('slipUploadZone');
   if(slipUpZ){
