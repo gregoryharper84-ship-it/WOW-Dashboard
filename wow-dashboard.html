@@ -216,7 +216,13 @@ label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06
 .progress-bar{height:4px;background:var(--surface3);border-radius:4px;overflow:hidden;margin-top:6px;}
 .progress-fill{height:100%;border-radius:4px;transition:width .6s ease;}
 
-/* ── MOBILE ── */
+/* Radio toggle styling for slip mode */
+input[type="radio"][name="logSlipMode"] { display:none; }
+label:has(input[type="radio"][name="logSlipMode"]:checked){
+  background:var(--accent)!important;
+  color:#fff!important;
+  border-color:var(--accent)!important;
+}
 @media(max-width:600px){
   .main{padding:12px;}
   .ch{padding:12px 14px;}
@@ -851,6 +857,21 @@ label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06
           <strong style="color:var(--accent);">Tap to upload slip screenshot</strong><br>
           <span style="font-size:11px;color:var(--text3);">Show the result screen — player names, lines, ✅/❌ outcomes visible</span>
         </div>
+      </div>
+
+      <!-- Active vs Settled toggle -->
+      <div style="display:flex;gap:8px;margin-top:10px;margin-bottom:4px;">
+        <label style="text-transform:none;font-size:12px;font-weight:600;color:var(--text2);margin:0;display:flex;align-items:center;gap:6px;">
+          <span>This slip is:</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;cursor:pointer;padding:5px 12px;border:1px solid var(--accent);border-radius:20px;background:var(--accent-light);color:var(--accent);">
+          <input type="radio" name="logSlipMode" id="logSlipModeActive" value="active" style="width:auto;">
+          ⏳ Still Active
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;cursor:pointer;padding:5px 12px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);color:var(--text2);">
+          <input type="radio" name="logSlipMode" id="logSlipModeSettled" value="settled" checked style="width:auto;">
+          ✅ Settled
+        </label>
       </div>
       <div id="logSlipPreview" class="hidden" style="margin-top:10px;">
         <div style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;margin-bottom:8px;">
@@ -5507,23 +5528,28 @@ function clearLogSlipUploads(){
 
 async function analyzeLogSlips(){
   if(!logSlipImages.length) return;
+  const mode = document.querySelector('input[name="logSlipMode"]:checked')?.value || 'settled';
+  const isActive = mode === 'active';
+
   document.getElementById('logSlipBtn').textContent = 'Analyzing...';
   document.getElementById('logSlipSp').classList.remove('hidden');
   const statusEl = document.getElementById('logSlipStatus');
-  let allLegs = [];
+  let allExtracted = [];
 
   for(let i = 0; i < logSlipImages.length; i++){
     statusEl.textContent = `Processing ${i+1}/${logSlipImages.length}...`;
     try{
       const compressedB64 = await compressImage(logSlipImages[i].b64, 800);
+
+      // Adjust prompt based on mode
+      const prompt = isActive
+        ? 'This is an ACTIVE PrizePicks slip still in progress. Extract every leg.\n\nLook for: player names, stat categories (Points/Rebounds/Assists/Strikeouts/Hits/TB etc), lines, MORE/LESS indicators. Outcomes may not be determined yet — mark them all as "pending".\n\nAlso extract: slip type (Power 2/3/4 or Flex 5/6), entry amount if visible, potential payout if visible.\n\nReturn ONLY valid JSON:\n{"slip_result":"pending","slip_type":"Power 3","entry":10,"to_win":50,"legs":[{"player":"Name","sport":"NBA|MLB|NHL|WNBA","prop":"points","line":24.5,"side":"MORE|LESS","outcome":"pending","actual":null}]}'
+        : 'This is a SETTLED PrizePicks slip. Extract every leg with its result.\n\nLook for: player names, stat categories, lines, MORE/LESS, win/loss indicators (green=win, red=loss), actual values on progress bars, overall slip result.\n\nReturn ONLY valid JSON:\n{"slip_result":"win|loss","slip_type":"Power 3","legs":[{"player":"Name","sport":"NBA|MLB|NHL|WNBA","prop":"points","line":24.5,"side":"MORE|LESS","outcome":"win|loss|unknown","actual":27}]}';
+
       const r = await fx(`${EP.replit}/analyze-board`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json', 'X-API-Key': KEYS.replit},
-        body: JSON.stringify({
-          image_b64: compressedB64,
-          media_type: 'image/jpeg',
-          prompt: 'This is a PrizePicks settled slip. Extract every leg.\n\nLook for: player names, stat categories (Points/Rebounds/Assists/Strikeouts/Hits/TB etc), lines, MORE/LESS/OVER/UNDER, result indicators (green circle/checkmark=WIN, red circle/X=LOSS), actual values shown on progress bars, overall slip result (Win/Loss badge at top).\n\nReturn ONLY valid JSON:\n{"slip_result":"win|loss|pending","slip_type":"Power 3 etc","legs":[{"player":"Name","sport":"NBA|MLB|NHL|WNBA","prop":"points","line":24.5,"side":"MORE|LESS","outcome":"win|loss|unknown","actual":27}]}'
-        })
+        body: JSON.stringify({image_b64: compressedB64, media_type: 'image/jpeg', prompt})
       }, 60000);
 
       if(r.ok){
@@ -5536,18 +5562,10 @@ async function analyzeLogSlips(){
         }catch(e){}
 
         if(parsed?.legs?.length){
-          const slipResult = parsed.slip_result || 'unknown';
-          const legs = parsed.legs.map(l=>({
-            ...l,
-            slip_result: slipResult,
-            slip_type: parsed.slip_type || 'unknown',
-            source: `log_upload_${Date.now()}_${i}`,
-            date: new Date().toLocaleDateString()
-          }));
-          allLegs.push({legs, slip_result: slipResult, slip_type: parsed.slip_type||'unknown'});
-          statusEl.textContent = `Image ${i+1}: ${legs.length} legs — ${slipResult}`;
+          allExtracted.push(parsed);
+          statusEl.textContent = `Image ${i+1}: ${parsed.legs.length} legs — ${isActive ? 'active slip' : parsed.slip_result||'settled'}`;
         } else {
-          statusEl.textContent = `Image ${i+1}: no legs detected — use manual entry below`;
+          statusEl.textContent = `Image ${i+1}: no legs detected`;
         }
       } else {
         statusEl.textContent = `Image ${i+1}: server error ${r.status}`;
@@ -5555,30 +5573,71 @@ async function analyzeLogSlips(){
     }catch(e){ statusEl.textContent = `Image ${i+1}: ${e.message}`; }
   }
 
-  if(allLegs.length){
-    allLegs.forEach(({legs, slip_result, slip_type})=>{
+  if(!allExtracted.length){
+    statusEl.textContent = 'No legs extracted. Make sure the screenshot shows the slip clearly.';
+    document.getElementById('logSlipBtn').textContent = 'Analyze & Save';
+    document.getElementById('logSlipSp').classList.add('hidden');
+    return;
+  }
+
+  if(isActive){
+    // Route to Active Slip Tracker
+    allExtracted.forEach(parsed=>{
+      const slip = {
+        id: Date.now() + Math.random(),
+        created: new Date().toLocaleString(),
+        slip_type: parsed.slip_type || 'Unknown',
+        entry: parsed.entry || 0,
+        to_win: parsed.to_win || 0,
+        legs: parsed.legs.map(l=>({
+          player: l.player||'',
+          sport: l.sport||'MLB',
+          prop: l.prop||'',
+          line: parseFloat(l.line)||0,
+          side: l.side||'MORE',
+          outcome: 'pending',
+          actual: null,
+          last_checked: null,
+        })),
+        status: 'active',
+        settled_at: null,
+      };
+      activeSlips.unshift(slip);
+    });
+    saveActiveSlips();
+    renderActiveSlips();
+    startTrackerInterval();
+    statusEl.textContent = `✓ ${allExtracted.length} active slip(s) added to tracker — auto-checking every 5 min`;
+    // Switch to show the tracker
+    switchPTab('clv'); // go to top of log tab
+  } else {
+    // Route to Learning Database
+    allExtracted.forEach(parsed=>{
       const slip = {
         id: Date.now() + Math.random(),
         date: new Date().toLocaleDateString(),
-        legs,
+        legs: parsed.legs.map(l=>({
+          ...l,
+          slip_result: parsed.slip_result||'unknown',
+          slip_type: parsed.slip_type||'unknown',
+          source: `log_upload_${Date.now()}`,
+          date: new Date().toLocaleDateString()
+        })),
         source: 'screenshot',
-        legsCount: legs.length,
-        slip_result,
-        slip_type
+        legsCount: parsed.legs.length,
+        slip_result: parsed.slip_result||'unknown',
+        slip_type: parsed.slip_type||'unknown',
       };
       winningSlips.unshift(slip);
     });
     save();
     renderSlipDatabase();
-    // Switch to Winning Slips sub-tab to show result
     switchPTab('slip');
-    statusEl.textContent = `✓ ${allLegs.length} slip(s) saved to database`;
-    logSlipImages = [];
-    document.getElementById('logSlipPreview').classList.add('hidden');
-  } else {
-    statusEl.textContent = 'No legs extracted. Make sure the screenshot shows the PrizePicks result screen clearly.';
+    statusEl.textContent = `✓ ${allExtracted.length} settled slip(s) saved to learning database`;
   }
 
+  logSlipImages = [];
+  document.getElementById('logSlipPreview').classList.add('hidden');
   document.getElementById('logSlipBtn').textContent = 'Analyze & Save';
   document.getElementById('logSlipSp').classList.add('hidden');
 }
