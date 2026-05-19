@@ -2476,19 +2476,40 @@ def _flatten_soccer_stats(s):
     }
 
 def _get_cached_player_id(conn, player_lower, leagues_to_try, season):
-    """Return (player_id, full_name) from cache or (None, None) on miss."""
+    """Return (player_id, full_name) from cache or (None, None) on miss.
+
+    Matches on three patterns in priority order:
+      1. Exact player_name_lower match (handles abbreviated names stored by populate)
+      2. Full search string anywhere in full_name  ("erling haaland" in "Erling Braut Haaland")
+      3. Last token of search string in full_name  ("haaland" in "E. Haaland")
+    """
     if not conn:
         return None, None
     try:
+        # Last word of the search (usually the surname)
+        last_token = player_lower.split()[-1] if player_lower.split() else player_lower
+        ph = ",".join(["%s"] * len(leagues_to_try))
         with conn.cursor() as cur:
-            ph = ",".join(["%s"] * len(leagues_to_try))
             cur.execute(
                 f"""SELECT player_id, full_name FROM soccer_player_cache
-                    WHERE player_name_lower = %s
-                      AND league_id IN ({ph})
+                    WHERE league_id IN ({ph})
                       AND season = %s
+                      AND (
+                          player_name_lower = %s
+                          OR LOWER(full_name) LIKE %s
+                          OR LOWER(full_name) LIKE %s
+                      )
+                    ORDER BY
+                      CASE WHEN player_name_lower = %s      THEN 0
+                           WHEN LOWER(full_name) LIKE %s    THEN 1
+                           ELSE 2 END
                     LIMIT 1""",
-                [player_lower] + leagues_to_try + [season],
+                leagues_to_try + [season,
+                 player_lower,
+                 f"%{player_lower}%",
+                 f"%{last_token}%",
+                 player_lower,
+                 f"%{player_lower}%"],
             )
             row = cur.fetchone()
             return (row[0], row[1]) if row else (None, None)
