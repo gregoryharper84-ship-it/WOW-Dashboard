@@ -5061,22 +5061,34 @@ async function runWinnersUpsets(){
 
   for(const cfg of sportConfigs){
     try{
-      const freeOddsSports = ['MLB','NBA'];
-      const useBulkOdds = freeOddsSports.includes(cfg.sport);
+      // Step 1: Get events (free)
+      const evR2 = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
+      if(!evR2.ok) continue;
+      const eventList2 = await evR2.json();
+      if(!eventList2?.length) continue;
 
+      // Step 2: Try bulk odds, then per-event, then events-only
       let allOdds = [];
-      if(useBulkOdds){
-        const oddsR = await fx(
-          `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
-          {}, 10000
-        );
-        if(oddsR.ok) allOdds = await oddsR.json();
-      }
-      if(!allOdds?.length){
-        // Fall back to /events (free for all sports)
-        const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
-        if(!evR.ok){ continue; }
-        allOdds = await evR.json();
+      const bulkR2 = await fx(
+        `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
+        {}, 10000
+      );
+      if(bulkR2.ok){
+        allOdds = await bulkR2.json();
+      } else {
+        for(const ev of eventList2.slice(0,8)){
+          try{
+            const perR = await fx(
+              `${EP.odds}/sports/${cfg.key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h&oddsFormat=american`,
+              {}, 5000
+            );
+            if(perR.ok){
+              const pd = await perR.json();
+              if(pd.bookmakers?.length) allOdds.push(pd);
+            }
+          }catch(e){}
+        }
+        if(!allOdds.length) allOdds = eventList2;
       }
       if(!allOdds?.length) continue;
 
@@ -5313,27 +5325,40 @@ async function runLLPBoard(){
   for(const cfg of sportConfigs){
     log(`⟳ Fetching ${cfg.sport} games...`);
     try{
-      // MLB and NBA support bulk /odds on free tier
-      // NHL, WNBA, Soccer: use /events only
-      const freeOddsSports = ['MLB','NBA'];
-      const useBulkOdds = freeOddsSports.includes(cfg.sport);
+      // Step 1: Get event list (free for all sports)
+      const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
+      if(!evR.ok){ log(`⚠ ${cfg.sport}: ${evR.status}`,'w'); continue; }
+      const eventList = await evR.json();
+      if(!eventList?.length){ log(`⚠ ${cfg.sport}: no games today`,'w'); continue; }
+      log(`✓ ${cfg.sport}: ${eventList.length} games`,'ok');
 
+      // Step 2: Get odds — try bulk first, fall back to per-event
       let events = [];
-      if(useBulkOdds){
-        const oddsR = await fx(
-          `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
-          {}, 10000
-        );
-        if(oddsR.ok) events = await oddsR.json();
+      const bulkR = await fx(
+        `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
+        {}, 10000
+      );
+      if(bulkR.ok){
+        events = await bulkR.json();
+      } else {
+        // Bulk odds not available (401) — try per-event for first 8 games
+        log(`  ⟳ Fetching per-event odds for ${cfg.sport}...`);
+        for(const ev of eventList.slice(0,8)){
+          try{
+            const perR = await fx(
+              `${EP.odds}/sports/${cfg.key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
+              {}, 6000
+            );
+            if(perR.ok){
+              const perData = await perR.json();
+              if(perData.bookmakers?.length) events.push(perData);
+            }
+          }catch(e){}
+        }
+        // If still empty, use events without odds (just list games)
+        if(!events.length) events = eventList;
       }
-      // Fall back to /events if bulk odds failed or not supported
-      if(!events?.length){
-        const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
-        if(!evR.ok){ log(`⚠ ${cfg.sport}: ${evR.status}`,'w'); continue; }
-        events = await evR.json();
-      }
-      if(!events?.length){ log(`⚠ ${cfg.sport}: no games today`,'w'); continue; }
-      log(`✓ ${cfg.sport}: ${events.length} games`,'ok');
+      if(!events?.length){ log(`⚠ ${cfg.sport}: no games to process`,'w'); continue; }
       for(const ev of events.slice(0,8)){
         try{
           // Odds already fetched in bulk — ev IS the oddsData object
