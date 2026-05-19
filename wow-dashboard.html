@@ -310,7 +310,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
                 <input type="checkbox" id="eng_all" onchange="toggleAllSports(this)"> All
               </label>
               <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
-                <input type="checkbox" class="eng-sport-cb" value="MLB" checked> MLB
+                <input type="checkbox" class="eng-sport-cb" value="MLB"> MLB
               </label>
               <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
                 <input type="checkbox" class="eng-sport-cb" value="NBA"> NBA
@@ -336,7 +336,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
           <div class="field"><label>Min Tier</label><select id="eng_mintier"><option value="tier1">Tier 1 Only</option><option value="tier2" selected>Tier 1 + 2</option><option value="all">All Playable</option></select></div>
           <div class="field"><label>Max Results</label><select id="eng_max"><option value="5">Top 5</option><option value="10" selected>Top 10</option><option value="20">Top 20</option></select></div>
         </div>
-        <div class="alert ab">💡 Engine pulls today's slate from ESPN, generates prop candidates across selected sports, scores each through the WOW validation stack, and returns ranked results with approval tiers.</div>
+        <div class="alert ab">💡 Engine pulls today's slate, generates prop candidates, scores each through the WOW validation stack, and returns ranked results. <strong>Soccer</strong> uses api-football.com via Replit. <strong>Tennis</strong> uses Jeff Sackmann ATP/WTA data via Replit — requires <code>/tennis-stats</code> endpoint to be deployed.</div>
       </div>
     </div>
   <div id="engStatus" class="hidden"><div class="card"><div class="cb"><div class="ob" id="engLog" style="min-height:70px;"></div></div></div></div>
@@ -1443,7 +1443,11 @@ function computeHitRates(logs, statKey, line, side='MORE'){
 async function runAutoEngine(){
   const ALL_SPORTS=['MLB','NBA','NHL','WNBA','NFL','Soccer','Tennis'];
   let sports=Array.from(document.querySelectorAll('.eng-sport-cb:checked')).map(cb=>cb.value);
-  if(document.getElementById('eng_all')?.checked||sports.length===0) sports=[...ALL_SPORTS];
+  if(document.getElementById('eng_all')?.checked) sports=[...ALL_SPORTS];
+  if(!sports.length){
+    alert('Please select at least one sport to run the engine.');
+    return;
+  }
   const maxP=parseInt(document.getElementById('eng_max').value)||10;
   const minTier=document.getElementById('eng_mintier').value;
   document.getElementById('engBtn').textContent='Running...';document.getElementById('engSp').classList.remove('hidden');
@@ -1475,13 +1479,14 @@ async function runAutoEngine(){
         allCandidates.push(...wnbaCandidates);
         if(!wnbaCandidates.length) log(`⚠ WNBA: no props available today`,'w');
       } else if(sport==='Soccer'){
-        const soccerC = await runOddsAPIEngine('Soccer','soccer_usa_mls','player_shots_on_target,player_passes',log);
-        allCandidates.push(...soccerC);
-        if(!soccerC.length) log('⚠ Soccer: no props available (try MLS game day)','w');
+        log(`⟳ Soccer: fetching fixtures + player stats via Replit...`,'i');
+        const soccerCandidates = await runSoccerEngine(log);
+        allCandidates.push(...soccerCandidates);
+        if(!soccerCandidates.length) log(`⚠ Soccer: no candidates — league may need populating (see Replit /fbref-stats/populate)`,'w');
       } else if(sport==='Tennis'){
-        const tennisC = await runOddsAPIEngine('Tennis','tennis_atp','player_games,player_aces',log);
-        allCandidates.push(...tennisC);
-        if(!tennisC.length) log('⚠ Tennis: no props available today','w');
+        log(`⟳ Tennis: fetching matches + stats via Replit...`,'i');
+        const tennisCandidates = await runTennisEngine(log);
+        allCandidates.push(...tennisCandidates);
       } else if(sport==='NFL'){
         // NFL season Sep-Feb; May is off-season
         const month=new Date().getMonth()+1; // 1-12
@@ -1939,7 +1944,206 @@ async function runOddsAPIEngine(sport, oddsKey, markets, log){
   return candidates;
 }
 
-// ── ESPN Fallback Engine (NFL, Soccer, etc.) ──
+// ── Soccer Engine — uses Replit /fbref-stats (api-football.com) ──
+async function runSoccerEngine(log){
+  const candidates = [];
+  try{
+    // Soccer prop definitions
+    const propDefs = [
+      {prop:'shots on target', lines:[0.5, 1.5, 2.5], side:'MORE', statKey:'shots.on', perGame: true},
+      {prop:'shots',           lines:[1.5, 2.5, 3.5], side:'MORE', statKey:'shots.total', perGame: true},
+      {prop:'goals',           lines:[0.5],            side:'MORE', statKey:'goals.total', perGame: true},
+      {prop:'assists',         lines:[0.5],            side:'MORE', statKey:'goals.assists', perGame: true},
+      {prop:'passes',          lines:[29.5, 39.5, 49.5, 59.5], side:'MORE', statKey:'passes.total', perGame: true},
+    ];
+
+    // Get today's soccer fixtures from Replit
+    const fixturesR = await fx(
+      `${EP.replit}/fbref-stats/fixtures?date=${new Date().toISOString().split('T')[0]}`,
+      {headers:{'X-API-Key':KEYS.replit}}, 8000
+    );
+
+    let fixtures = [];
+    if(fixturesR.ok){
+      const fd = await fixturesR.json();
+      fixtures = fd.fixtures || [];
+      log(`✓ Soccer: ${fixtures.length} fixtures today`,'ok');
+    } else {
+      // Fallback: use hardcoded leagues and try to get player stats directly
+      log(`⚠ Soccer: fixtures endpoint unavailable — trying league player stats`,'w');
+      // Generate candidates from known top players in popular leagues
+      const topPlayers = [
+        {name:'Erling Haaland', league:'epl', prop:'shots on target', line:1.5},
+        {name:'Mohamed Salah', league:'epl', prop:'shots on target', line:1.5},
+        {name:'Bukayo Saka', league:'epl', prop:'assists', line:0.5},
+      ];
+      for(const p of topPlayers){
+        const r = await fx(`${EP.replit}/fbref-stats?player=${encodeURIComponent(p.name)}&league=${p.league}`,
+          {headers:{'X-API-Key':KEYS.replit}}, 8000);
+        if(r.ok){
+          const d = await r.json();
+          if(d.ok && d.stats){
+            const enriched = await enrichWithSoccerStats({
+              player:p.name, sport:'Soccer', prop:p.prop,
+              side:'MORE', line:p.line, game:'Today'
+            });
+            if(enriched.l5_hit_rate >= 0.53){
+              candidates.push({...enriched, game:'Today'});
+            }
+          }
+        }
+      }
+      return candidates;
+    }
+
+    // For each fixture, get key players and their stats
+    for(const fixture of fixtures.slice(0,6)){
+      const gameStr = `${fixture.away||'Away'} @ ${fixture.home||'Home'}`;
+      const players = fixture.players || [];
+
+      for(const playerName of players.slice(0,8)){
+        for(const pd of propDefs){
+          const r = await fx(
+            `${EP.replit}/fbref-stats?player=${encodeURIComponent(playerName)}&league=${fixture.league||'epl'}`,
+            {headers:{'X-API-Key':KEYS.replit}}, 8000
+          );
+          if(!r.ok) continue;
+          const d = await r.json();
+          if(!d.ok || !d.stats) continue;
+
+          const stats = d.stats;
+          const apps = parseFloat(stats.games?.appearences||0);
+          if(apps < 5) continue;
+
+          // Get the per-game average for this stat
+          const statParts = pd.statKey.split('.');
+          const rawStat = parseFloat(stats[statParts[0]]?.[statParts[1]]||0);
+          const perGame = apps > 0 ? rawStat/apps : 0;
+
+          // Find optimal line
+          let bestLine = null, bestEV = -999;
+          for(const line of pd.lines){
+            const prob = pd.side==='MORE' ?
+              (perGame > line*1.15 ? 0.68 : perGame > line ? 0.58 : 0.40) :
+              (perGame < line*0.85 ? 0.68 : perGame < line ? 0.55 : 0.38);
+            const ev = prob - 0.577;
+            if(ev > bestEV){ bestEV=ev; bestLine=line; }
+          }
+
+          if(!bestLine || bestEV < 0) continue;
+
+          candidates.push({
+            player: playerName, sport:'Soccer', prop:pd.prop,
+            side:pd.side, line:bestLine, game:gameStr,
+            recent_avg: parseFloat(perGame.toFixed(2)),
+            l5_hit_rate: 0.50 + bestEV,
+            l10_hit_rate: 0.50 + bestEV,
+            raw_vals: [],
+            confidence: 0.50 + bestEV,
+            role_score: Math.min(10, Math.round(apps/4)),
+            note: `${rawStat} ${pd.prop} in ${apps} apps (${perGame.toFixed(2)}/game) | ${stats.games?.rating||'N/A'} rating`
+          });
+        }
+      }
+    }
+    log(`✓ Soccer: ${candidates.length} candidates`,'ok');
+  }catch(e){ log(`⚠ Soccer engine error: ${e.message}`,'w'); }
+  return candidates;
+}
+
+// ── Tennis Engine — uses Replit /tennis-stats (Jeff Sackmann GitHub data) ──
+async function runTennisEngine(log){
+  const candidates = [];
+  try{
+    // Check health for tennis endpoint
+    const healthR = await fx(`${EP.replit}/health`,{},5000);
+    if(healthR.ok){
+      const health = await healthR.json();
+      const endpoints = health.endpoints || {};
+      if(!Object.keys(endpoints).some(k=>k.includes('tennis'))){
+        log(`⚠ Tennis: /tennis-stats not yet deployed to Replit. Add the Jeff Sackmann endpoint and redeploy.`,'w');
+        return [];
+      }
+    }
+
+    const matchesR = await fx(`${EP.replit}/tennis-stats/today`,{headers:{'X-API-Key':KEYS.replit}},8000);
+    if(!matchesR.ok){ log(`⚠ Tennis: no matches endpoint — ${matchesR.status}`,'w'); return []; }
+    const matchData = await matchesR.json();
+    const matches = matchData.matches || [];
+    if(!matches.length){ log(`⚠ Tennis: no matches today`,'w'); return []; }
+    log(`✓ Tennis: ${matches.length} matches`,'ok');
+
+    for(const match of matches.slice(0,8)){
+      for(const player of [match.winner_name, match.loser_name].filter(Boolean)){
+        const statsR = await fx(
+          `${EP.replit}/tennis-stats?player=${encodeURIComponent(player)}`,
+          {headers:{'X-API-Key':KEYS.replit}}, 8000
+        );
+        if(!statsR.ok) continue;
+        const sd = await statsR.json();
+        if(!sd.ok || !sd.matches?.length) continue;
+
+        const recent = sd.matches.slice(-10);
+        const surface = match.surface || 'Hard';
+        const bysurf = recent.filter(m=>m.surface===surface);
+        const use = bysurf.length >= 3 ? bysurf : recent;
+
+        // Aces prop
+        const aces = use.map(m=>{
+          const isW = (m.winner_name||'').toLowerCase()===player.toLowerCase();
+          return parseInt(isW ? m.w_ace : m.l_ace)||0;
+        });
+        if(aces.length >= 3){
+          const avg = aces.reduce((a,b)=>a+b,0)/aces.length;
+          for(const line of [4.5,6.5,8.5,10.5]){
+            const hr = aces.filter(v=>v>line).length/aces.length;
+            if(hr >= 0.55){
+              candidates.push({player,sport:'Tennis',prop:'aces',side:'MORE',line,
+                game:`${match.winner_name} vs ${match.loser_name}`,
+                recent_avg:parseFloat(avg.toFixed(1)),l5_hit_rate:hr,l10_hit_rate:hr,
+                raw_vals:aces,confidence:hr,role_score:7,
+                note:`Avg ${avg.toFixed(1)} aces | ${surface} | L${aces.length} hit: ${(hr*100).toFixed(0)}%`});
+              break;
+            }
+          }
+        }
+
+        // Total games prop
+        const totals = recent.map(m=>{
+          const score = m.score||'';
+          return score.split(' ').reduce((sum,s)=>{
+            const p=s.split('-'); return sum+(parseInt(p[0])||0)+(parseInt(p[1])||0);
+          },0);
+        }).filter(t=>t>0);
+        if(totals.length >= 3){
+          const avg = totals.reduce((a,b)=>a+b,0)/totals.length;
+          for(const line of [18.5,20.5,22.5,24.5]){
+            const hrMore = totals.filter(v=>v>line).length/totals.length;
+            const hrLess = totals.filter(v=>v<line).length/totals.length;
+            if(hrMore >= 0.60){
+              candidates.push({player:`${match.winner_name} vs ${match.loser_name}`,sport:'Tennis',prop:'total games',side:'MORE',line,
+                game:`${match.winner_name} vs ${match.loser_name}`,
+                recent_avg:parseFloat(avg.toFixed(1)),l5_hit_rate:hrMore,l10_hit_rate:hrMore,
+                raw_vals:totals,confidence:hrMore,role_score:7,
+                note:`Avg ${avg.toFixed(1)} total games | L${totals.length}`});
+              break;
+            } else if(hrLess >= 0.60){
+              candidates.push({player:`${match.winner_name} vs ${match.loser_name}`,sport:'Tennis',prop:'total games',side:'LESS',line,
+                game:`${match.winner_name} vs ${match.loser_name}`,
+                recent_avg:parseFloat(avg.toFixed(1)),l5_hit_rate:hrLess,l10_hit_rate:hrLess,
+                raw_vals:totals,confidence:hrLess,role_score:7,
+                note:`Avg ${avg.toFixed(1)} total games | L${totals.length}`});
+              break;
+            }
+          }
+        }
+      }
+    }
+    log(`✓ Tennis: ${candidates.length} candidates`,'ok');
+  }catch(e){ log(`⚠ Tennis engine: ${e.message}`,'w'); }
+  return candidates;
+}
+
 async function runESPNEngine(sport,log){
   const candidates=[];
   try{
@@ -3711,49 +3915,89 @@ function enrichTennisFromESPN(prop, data, cacheKey){
 async function enrichWithSoccerStats(prop){
   const cacheKey = `${prop.player}|${prop.prop}|${prop.line}|${prop.side}`;
   if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
+
+  const propLower = (prop.prop||'').toLowerCase();
   try{
-    // Use Odds API player props as market signal for soccer
-    const soccerKeys = ['soccer_usa_mls','soccer_epl','soccer_spain_la_liga','soccer_germany_bundesliga'];
-    for(const key of soccerKeys){
-      try{
-        const evR = await fx(`${EP.odds}/sports/${key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},5000);
-        if(!evR.ok) continue;
-        const events = await evR.json();
-        for(const ev of (events||[]).slice(0,5)){
-          const prR = await fx(`${EP.odds}/sports/${key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=player_shots_on_target,player_passes&oddsFormat=american`,{},5000);
-          if(!prR.ok) continue;
-          const prData = await prR.json();
-          for(const bk of (prData.bookmakers||[]).slice(0,1)){
-            for(const mkt of (bk.markets||[])){
-              const outs = mkt.outcomes||[];
-              const over = outs.find(o=>(o.description||'').toLowerCase().includes(prop.player.toLowerCase().split(' ').pop().toLowerCase()) && o.name?.toLowerCase()==='over' && Math.abs((o.point||0)-prop.line)<0.6);
-              const under = outs.find(o=>(o.description||'').toLowerCase().includes(prop.player.toLowerCase().split(' ').pop().toLowerCase()) && o.name?.toLowerCase()==='under' && Math.abs((o.point||0)-prop.line)<0.6);
-              if(over&&under){
-                const nvp = noVigProb(over.price, under.price);
-                const confidence = prop.side==='MORE'?nvp.over:nvp.under;
-                const enriched = {confidence, role_score:7, note:`Market: ${(confidence*100).toFixed(1)}% | ${bk.title}`};
-                statsCache[cacheKey] = enriched;
-                return {...prop, ...enriched};
-              }
-            }
-          }
-        }
-      }catch(e){}
-    }
-    // Fallback: use ESPN soccer
-    const name = encodeURIComponent(prop.player);
-    const r = await fx(`https://site.api.espn.com/apis/site/v2/sports/soccer/usa.1/athletes?search=${name}&limit=3`,{},5000);
+    // Use Replit /fbref-stats endpoint (api-football.com backend)
+    const playerParam = encodeURIComponent(prop.player);
+    const r = await fx(
+      `${EP.replit}/fbref-stats?player=${playerParam}`,
+      {headers:{'X-API-Key':KEYS.replit}},
+      10000
+    );
+
     if(r.ok){
       const d = await r.json();
-      const athlete = d.athletes?.[0];
-      if(athlete){
-        const enriched = {role_score:7, confidence:0.55, note:`MLS: ${athlete.displayName||prop.player}`};
+      if(d.ok && d.stats){
+        const stats = d.stats;
+        // Map api-football stats to WOW enrichment fields
+        const goals = parseFloat(stats.goals?.total||0);
+        const assists = parseFloat(stats.goals?.assists||0);
+        const shots = parseFloat(stats.shots?.total||0);
+        const shotsOn = parseFloat(stats.shots?.on||0);
+        const passes = parseFloat(stats.passes?.total||0);
+        const passAccuracy = parseFloat(stats.passes?.accuracy||0);
+        const rating = parseFloat(stats.games?.rating||0);
+        const minutes = parseFloat(stats.games?.minutes||0);
+        const appearances = parseFloat(stats.games?.appearences||0); // note: api-football typo
+        const avgMins = appearances > 0 ? minutes/appearances : 0;
+
+        // Derive hit rates based on prop type
+        let hitRate = null;
+        let recentAvg = null;
+        let note = '';
+
+        if(propLower.includes('shot')){
+          recentAvg = shots/Math.max(appearances,1);
+          hitRate = shotsOn > 0 ? (prop.side==='MORE' ?
+            (shotsOn/appearances > prop.line ? 0.65 : 0.45) :
+            (shotsOn/appearances < prop.line ? 0.65 : 0.45)) : null;
+          note = `Shots/game: ${recentAvg.toFixed(1)} | On target: ${(shotsOn/Math.max(appearances,1)).toFixed(1)} | Rating: ${rating}`;
+        } else if(propLower.includes('pass')){
+          recentAvg = passes/Math.max(appearances,1);
+          hitRate = prop.side==='MORE' ?
+            (recentAvg > prop.line ? 0.62 : 0.42) :
+            (recentAvg < prop.line ? 0.62 : 0.42);
+          note = `Passes/game: ${recentAvg.toFixed(0)} | Accuracy: ${passAccuracy}% | ${appearances} apps`;
+        } else if(propLower.includes('goal')){
+          recentAvg = goals/Math.max(appearances,1);
+          hitRate = prop.side==='MORE' ?
+            (recentAvg > prop.line ? 0.60 : 0.40) :
+            (recentAvg < prop.line ? 0.65 : 0.40);
+          note = `Goals/game: ${recentAvg.toFixed(2)} | ${goals} goals in ${appearances} apps`;
+        } else if(propLower.includes('assist')){
+          recentAvg = assists/Math.max(appearances,1);
+          hitRate = prop.side==='MORE' ?
+            (recentAvg > prop.line ? 0.58 : 0.42) :
+            (recentAvg < prop.line ? 0.62 : 0.42);
+          note = `Assists/game: ${recentAvg.toFixed(2)} | ${assists} assists`;
+        }
+
+        // Reduce confidence for limited minutes
+        if(avgMins < 45 && hitRate) hitRate = Math.max(0.40, hitRate - 0.08);
+
+        const enriched = {
+          confidence: hitRate || 0.52,
+          l5_hit_rate: hitRate,
+          l10_hit_rate: hitRate,
+          recent_avg: recentAvg,
+          role_score: Math.min(10, Math.round((avgMins/90)*10)),
+          raw_vals: [],
+          note: note || `Rating: ${rating} | ${appearances} apps | ${avgMins.toFixed(0)} avg mins`,
+          soccer_stats: stats
+        };
         statsCache[cacheKey] = enriched;
         return {...prop, ...enriched};
+      } else if(d.error && d.error.includes('not in cache')){
+        // Player not indexed yet — return partial enrichment with note
+        return {...prop, confidence:0.52, role_score:6,
+          note:`Soccer stats pending — run /fbref-stats/populate for ${d.league||'league'} first`};
       }
     }
   }catch(e){}
-  return prop;
+
+  // Fallback — return neutral enrichment
+  return {...prop, confidence:0.52, role_score:6, note:'Soccer stats unavailable'};
 }
 
 async function enrichWithGolfStats(prop){
