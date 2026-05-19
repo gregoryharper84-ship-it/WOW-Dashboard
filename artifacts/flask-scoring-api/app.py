@@ -782,7 +782,8 @@ def health():
             "stats":          "GET /stats?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
             "leaderboard":    "GET /leaderboard?window=L5|L10(default L10)&sport=...&prop=...&side=...&limit=...",
             "schema":         "GET /openapi.json (no auth)",
-            "fbref_stats":    "GET /fbref-stats?player=...&league=... (X-API-Key required) — soccer player season stats"
+            "fbref_stats":    "GET /fbref-stats?player=...&league=... (X-API-Key required) — soccer player season stats",
+            "tennis_stats":   "GET /tennis-stats?player=...&tour=atp|wta&year=...&limit=... (X-API-Key required) — ATP/WTA match stats via JeffSackmann"
         }
     })
 
@@ -2686,6 +2687,106 @@ def fbref_stats_populate():
         "eta_seconds": eta_seconds,
         "hint":        f"Allow ~{eta_seconds}s then retry /fbref-stats?player=...&league={league}&season={season}",
     })
+
+
+@app.route("/tennis-stats", methods=["GET"])
+@require_api_key
+def tennis_stats():
+    import requests as _req, csv, io
+
+    player_name = request.args.get("player", "").strip().lower()
+    tour        = request.args.get("tour", "atp").strip().lower()   # atp | wta
+    year        = request.args.get("year", "").strip()
+    limit       = min(int(request.args.get("limit", 15)), 100)
+
+    if not player_name:
+        return jsonify({"ok": False, "error": "Missing required param: player"}), 400
+    if tour not in ("atp", "wta"):
+        return jsonify({"ok": False, "error": "tour must be 'atp' or 'wta'"}), 400
+
+    import datetime
+    current_year = datetime.date.today().year
+    years_to_try = [year] if year else [str(current_year), str(current_year - 1)]
+
+    base_url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{tour}/master"
+
+    def _int(v):
+        try:
+            return int(v) if v not in (None, "", "NA") else None
+        except (ValueError, TypeError):
+            return None
+
+    def _parse_row(row, player_lower):
+        won = player_lower in row.get("winner_name", "").lower()
+        return {
+            "date":        row.get("tourney_date"),
+            "tourney":     row.get("tourney_name"),
+            "surface":     row.get("surface"),
+            "round":       row.get("round"),
+            "winner":      row.get("winner_name"),
+            "loser":       row.get("loser_name"),
+            "score":       row.get("score"),
+            "won":         won,
+            "aces":        _int(row.get("w_ace") if won else row.get("l_ace")),
+            "dbl_faults":  _int(row.get("w_df")  if won else row.get("l_df")),
+            "serve_pts":   _int(row.get("w_svpt") if won else row.get("l_svpt")),
+            "opp_aces":    _int(row.get("l_ace")  if won else row.get("w_ace")),
+            "opp_df":      _int(row.get("l_df")   if won else row.get("w_df")),
+            "w_aces":      _int(row.get("w_ace")),
+            "l_aces":      _int(row.get("l_ace")),
+            "w_df":        _int(row.get("w_df")),
+            "l_df":        _int(row.get("l_df")),
+            "w_svpt":      _int(row.get("w_svpt")),
+            "l_svpt":      _int(row.get("l_svpt")),
+            "w_games":     _int(row.get("w_games")),
+            "l_games":     _int(row.get("l_games")),
+        }
+
+    try:
+        all_matches = []
+        fetched_years = []
+
+        for yr in years_to_try:
+            url = f"{base_url}/{tour}_matches_{yr}.csv"
+            resp = _req.get(url, timeout=10)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+
+            reader = csv.DictReader(io.StringIO(resp.text))
+            for row in reader:
+                if (player_name in row.get("winner_name", "").lower() or
+                        player_name in row.get("loser_name", "").lower()):
+                    all_matches.append(_parse_row(row, player_name))
+
+            fetched_years.append(yr)
+
+        if not fetched_years:
+            return jsonify({
+                "ok":    False,
+                "error": f"No {tour.upper()} match files found for years {years_to_try}",
+                "hint":  "Try passing year=2025 explicitly, or check the player name spelling.",
+            }), 404
+
+        recent = all_matches[-limit:]
+
+        return jsonify({
+            "ok":      True,
+            "source":  f"JeffSackmann/tennis_{tour}",
+            "player":  player_name,
+            "tour":    tour.upper(),
+            "years":   fetched_years,
+            "matches": recent,
+            "count":   len(recent),
+            "total_found": len(all_matches),
+        })
+
+    except _req.exceptions.Timeout:
+        return jsonify({"ok": False, "error": "Request to GitHub timed out"}), 504
+    except _req.exceptions.RequestException as e:
+        return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/", defaults={"path": ""})
