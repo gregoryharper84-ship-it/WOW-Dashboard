@@ -2421,102 +2421,271 @@ Example:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ── Shared helpers for soccer stats endpoints ─────────────────────────────────
+
+_SOCCER_LEAGUE_MAP = {
+    "epl": 39, "pl": 39, "premier-league": 39,
+    "ucl": 2,  "cl": 2,  "champions-league": 2,
+    "laliga": 140, "la-liga": 140, "liga": 140,
+    "bundesliga": 78,
+    "seriea": 135, "serie-a": 135,
+    "ligue1": 61,  "ligue-1": 61,
+    "mls": 253,
+    "eredivisie": 88,
+    "liga-nos": 94, "portugal": 94,
+}
+
+def _soccer_api_get(path, params, api_key):
+    import requests as _req
+    base = "https://v3.football.api-sports.io"
+    hdrs = {"x-apisports-key": api_key}
+    r = _req.get(f"{base}/{path}", headers=hdrs, params=params, timeout=15)
+    r.raise_for_status()
+    d = r.json()
+    errs = d.get("errors")
+    if errs and errs != [] and errs != {}:
+        msg = list(errs.values())[0] if isinstance(errs, dict) else str(errs)
+        raise ValueError(f"api-football: {msg}")
+    return d
+
+def _flatten_soccer_stats(s):
+    return {
+        "team":              s["team"]["name"],
+        "team_id":           s["team"]["id"],
+        "league":            s["league"]["name"],
+        "league_id":         s["league"]["id"],
+        "season":            s["league"]["season"],
+        "appearances":       s["games"]["appearences"],
+        "minutes":           s["games"]["minutes"],
+        "position":          s["games"]["position"],
+        "rating":            s["games"].get("rating"),
+        "goals":             s["goals"]["total"],
+        "assists":           s["goals"]["assists"],
+        "shots_total":       s["shots"]["total"],
+        "shots_on":          s["shots"]["on"],
+        "passes_total":      s["passes"]["total"],
+        "passes_key":        s["passes"]["key"],
+        "dribbles_attempts": s["dribbles"]["attempts"],
+        "dribbles_success":  s["dribbles"]["success"],
+        "tackles":           s["tackles"]["total"],
+        "yellow_cards":      s["cards"]["yellow"],
+        "red_cards":         s["cards"]["red"],
+        "penalties_scored":  s["penalty"]["scored"],
+        "penalties_missed":  s["penalty"]["missed"],
+    }
+
+def _get_cached_player_id(conn, player_lower, leagues_to_try, season):
+    """Return (player_id, full_name) from cache or (None, None) on miss."""
+    if not conn:
+        return None, None
+    try:
+        with conn.cursor() as cur:
+            ph = ",".join(["%s"] * len(leagues_to_try))
+            cur.execute(
+                f"""SELECT player_id, full_name FROM soccer_player_cache
+                    WHERE player_name_lower = %s
+                      AND league_id IN ({ph})
+                      AND season = %s
+                    LIMIT 1""",
+                [player_lower] + leagues_to_try + [season],
+            )
+            row = cur.fetchone()
+            return (row[0], row[1]) if row else (None, None)
+    except Exception:
+        return None, None
+
+def _write_player_cache(conn, player_lower, league_id, season, player_id, full_name):
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO soccer_player_cache
+                   (player_name_lower, league_id, season, player_id, full_name)
+                   VALUES (%s,%s,%s,%s,%s)
+                   ON CONFLICT (player_name_lower, league_id, season)
+                   DO UPDATE SET player_id=EXCLUDED.player_id,
+                                 full_name=EXCLUDED.full_name,
+                                 cached_at=NOW()""",
+                [player_lower, league_id, season, player_id, full_name],
+            )
+        conn.commit()
+    except Exception:
+        pass
+
+
 @app.route("/fbref-stats", methods=["GET"])
 @require_api_key
 def fbref_stats():
-    import requests as _req
-    from bs4 import BeautifulSoup as _BS
+    import psycopg2 as _pg
 
     player = request.args.get("player", "").strip()
     league = request.args.get("league", "").strip().lower()
+    season = request.args.get("season", "2024").strip()
 
     if not player:
         return jsonify({"ok": False, "error": "Missing required param: player"}), 400
 
-    LEAGUE_MAP = {
-        "epl": "Premier League", "pl": "Premier League",
-        "ucl": "Champions League", "cl": "Champions League",
-        "laliga": "La Liga", "liga": "La Liga",
-        "bundesliga": "Bundesliga",
-        "seriea": "Serie A", "serie_a": "Serie A",
-        "ligue1": "Ligue 1",
-        "mls": "MLS",
-    }
-    league_filter = LEAGUE_MAP.get(league) if league else None
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
 
-    _headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://fbref.com/",
-    }
+    league_id     = _SOCCER_LEAGUE_MAP.get(league)
+    leagues_to_try = [league_id] if league_id else [39, 140, 78, 135, 61]
+    player_lower  = player.lower()
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    conn   = _pg.connect(db_url) if db_url else None
 
     try:
-        # Step 1: search — FBref redirects straight to the player page on unique matches
-        search_url = "https://fbref.com/en/search/search.fcgi"
-        resp = _req.get(search_url, params={"search": player},
-                        headers=_headers, timeout=15, allow_redirects=True)
-        resp.raise_for_status()
-        soup = _BS(resp.text, "html.parser")
-        player_url = resp.url
+        # ── 1. Cache hit → 1 API call, instant ───────────────────────────────
+        cached_id, cached_name = _get_cached_player_id(conn, player_lower, leagues_to_try, season)
 
-        # If not redirected to a player page, pick the first search result
-        if "/players/" not in player_url:
-            link = soup.select_one("div.search-item-name a[href*='/players/']")
-            if not link:
-                return jsonify({"ok": False, "error": f"Player not found: {player}"}), 404
-            player_url = "https://fbref.com" + link["href"]
-            resp = _req.get(player_url, headers=_headers, timeout=15)
-            resp.raise_for_status()
-            soup = _BS(resp.text, "html.parser")
+        if cached_id:
+            data = _soccer_api_get("players", {"id": cached_id, "season": season}, api_key)
+            if not data.get("response"):
+                return jsonify({"ok": False, "error": "Player in cache but stats unavailable"}), 404
+            entry = data["response"][0]
+            cache_hit = True
+        else:
+            # ── 2. Cache miss: caller may pass a numeric ID directly ──────────
+            entry = None
+            found_league_id = None
 
-        # Canonical player name from page heading
-        h1 = soup.select_one("h1[itemprop='name'] span")
-        player_name = h1.get_text(strip=True) if h1 else player
+            if player_lower.isdigit():
+                data = _soccer_api_get("players", {"id": int(player_lower), "season": season}, api_key)
+                if data.get("response"):
+                    entry = data["response"][0]
+                    found_league_id = leagues_to_try[0]
 
-        # Step 2: parse the standard per-season stats table
-        table = soup.find("table", {"id": "stats_standard"})
-        if not table:
-            return jsonify({
-                "ok": False,
-                "error": "Standard stats table not found — player may lack season data",
-                "player": player_name,
-                "player_url": player_url,
-            }), 404
+            if not entry:
+                # ── 3. Not in cache and no ID: we can't afford a live squad
+                # scan (rate-limited to 10 req/min → up to 2 min for EPL).
+                # Return a clear error with instructions to pre-populate.
+                if conn:
+                    conn.close()
+                return jsonify({
+                    "ok":    False,
+                    "error": f"Player '{player}' not in cache yet.",
+                    "hint":  (
+                        "Call POST /fbref-stats/populate with "
+                        "{\"league\":\"epl\",\"season\":\"2024\"} "
+                        "to index all players for that league. "
+                        "This runs in the background and takes ~3 minutes. "
+                        "Alternatively pass the player's api-football numeric ID as player=<id>."
+                    ),
+                    "cache_populated": False,
+                }), 404
 
-        col_headers = [th.get_text(strip=True) for th in table.select("thead tr:last-child th")]
-        seasons = []
-        for tr in table.select("tbody tr"):
-            classes = tr.get("class", [])
-            if "partial_table" in classes or "thead" in classes:
-                continue
-            cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-            if len(cells) < 5 or not cells[0]:
-                continue
-            row = dict(zip(col_headers, cells))
-            if league_filter and league_filter.lower() not in row.get("Comp", "").lower():
-                continue
-            seasons.append(row)
+            found_league_id = found_league_id or leagues_to_try[0]
+            pid       = entry["player"]["id"]
+            full_name = (entry["player"]["firstname"] + " " + entry["player"]["lastname"]).strip()
+            _write_player_cache(conn, player_lower, found_league_id, season, pid, full_name)
+            cache_hit = False
+
+        pinfo      = entry["player"]
+        stats_list = [_flatten_soccer_stats(s) for s in entry.get("statistics", [])]
 
         return jsonify({
-            "ok": True,
-            "player": player_name,
-            "player_url": player_url,
-            "league_filter": league_filter,
-            "seasons": seasons,
-            "count": len(seasons),
+            "ok":      True,
+            "source":  "api-football",
+            "cache_hit": cache_hit,
+            "player": {
+                "id":          pinfo["id"],
+                "name":        (pinfo["firstname"] + " " + pinfo["lastname"]).strip(),
+                "age":         pinfo["age"],
+                "nationality": pinfo["nationality"],
+                "height":      pinfo["height"],
+                "weight":      pinfo["weight"],
+                "photo":       pinfo["photo"],
+            },
+            "season":        season,
+            "league_filter": league_id,
+            "stats":         stats_list,
+            "count":         len(stats_list),
         })
 
-    except _req.exceptions.Timeout:
-        return jsonify({"ok": False, "error": "FBref request timed out"}), 504
-    except _req.exceptions.RequestException as e:
-        return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route("/fbref-stats/populate", methods=["POST"])
+@require_api_key
+def fbref_stats_populate():
+    """
+    Pre-populate the soccer_player_cache for a given league+season.
+    Scans every team squad (≤20 teams, 6-second gaps to respect the
+    10 req/min rate limit). Runs synchronously — expect ~3 min for EPL.
+    Call once per league/season; all subsequent /fbref-stats lookups are instant.
+    """
+    import threading, time as _time, psycopg2 as _pg
+
+    body   = request.get_json(silent=True) or {}
+    league = body.get("league", "epl").strip().lower()
+    season = str(body.get("season", "2024")).strip()
+
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
+
+    league_id = _SOCCER_LEAGUE_MAP.get(league)
+    if not league_id:
+        known = sorted(set(_SOCCER_LEAGUE_MAP.keys()))
+        return jsonify({"ok": False, "error": f"Unknown league '{league}'", "known": known}), 400
+
+    db_url = os.environ.get("DATABASE_URL", "")
+
+    def _run_populate():
+        import time as _t
+        conn = _pg.connect(db_url) if db_url else None
+        try:
+            teams_data = _soccer_api_get("teams", {"league": league_id, "season": season}, api_key)
+            teams      = teams_data.get("response", [])
+            indexed    = 0
+            for team in teams:
+                tid   = team["team"]["id"]
+                tname = team["team"]["name"]
+                _t.sleep(6.5)          # 10 req/min → 1 req per 6s, 6.5s for safety
+                try:
+                    squad_data = _soccer_api_get("players/squads", {"team": tid}, api_key)
+                    for squad_entry in squad_data.get("response", []):
+                        for p in squad_entry.get("players", []):
+                            name_lower = p.get("name", "").lower()
+                            pid        = p["id"]
+                            full_name  = p.get("name", "")
+                            _write_player_cache(conn, name_lower, league_id, season, pid, full_name)
+                            indexed += 1
+                except Exception:
+                    pass   # skip this team on error, continue
+        finally:
+            if conn:
+                conn.close()
+
+    t = threading.Thread(target=_run_populate, daemon=True)
+    t.start()
+
+    # Estimate: 1 teams call + len(teams) squad calls @ 6.5s each
+    try:
+        teams_peek = _soccer_api_get("teams", {"league": league_id, "season": season}, api_key)
+        n_teams    = len(teams_peek.get("response", []))
+    except Exception:
+        n_teams = 20
+    eta_seconds = int(n_teams * 6.5 + 10)
+
+    return jsonify({
+        "ok":          True,
+        "message":     f"Cache population started for league '{league}' season {season}.",
+        "league_id":   league_id,
+        "season":      season,
+        "teams":       n_teams,
+        "eta_seconds": eta_seconds,
+        "hint":        f"Allow ~{eta_seconds}s then retry /fbref-stats?player=...&league={league}&season={season}",
+    })
 
 
 @app.route("/", defaults={"path": ""})
