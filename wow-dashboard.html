@@ -554,7 +554,17 @@ label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06
       <div class="alert ab">Builds all slip options (2–6 picks + Jeremia) from your approved pool. <strong>Player duplication rule:</strong> a player can only appear on multiple slips if their probability is 65%+.</div>
       <div class="fr">
         <div class="field"><label>Platform</label><select id="s_plat"><option>PrizePicks</option><option>BetUS</option></select></div>
-        <div class="field"><label>Slip Type</label><select id="s_type"><option value="power">Power Play</option><option value="flex">Flex Play</option></select></div>
+        <div class="field"><label>Slip Type</label><select id="s_type"><option value="power">Power Play</option><option value="flex">Flex Play</option><option value="both">Both</option></select></div>
+        <div class="field"><label>Number of Picks</label>
+          <select id="s_picks">
+            <option value="all">All (2–6)</option>
+            <option value="2">2-Pick Power</option>
+            <option value="3">3-Pick Power</option>
+            <option value="4">4-Pick Power</option>
+            <option value="5">5-Pick Flex</option>
+            <option value="6">6-Pick Flex</option>
+          </select>
+        </div>
         <div class="field"><label>Target Grade</label><select id="s_grade"><option value="A">A Grade Only</option><option value="B" selected>A or B Grade</option><option value="C">Any Grade</option></select></div>
         <div class="field"><label>Sport Filter</label><select id="s_sport"><option value="all">All Sports</option><option value="MLB">MLB</option><option value="NBA">NBA</option><option value="NHL">NHL</option><option value="WNBA">WNBA</option></select></div>
       </div>
@@ -770,6 +780,40 @@ label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06
 <div id="tab-log" class="hidden">
   <div class="main">
 
+  <!-- QUICK SLIP UPLOAD — top of Log tab -->
+  <div class="card" style="margin-bottom:14px;">
+    <div class="ch">
+      <span class="ct">📸 Upload Settled Slips</span>
+      <span class="badge bg-g">Wins &amp; Losses</span>
+    </div>
+    <div class="cb">
+      <div class="alert ab">Upload any settled PrizePicks slip — win or loss. The learning layer reads every leg and outcome to improve the model over time.</div>
+      <div class="upload-zone" id="logSlipUploadZone" onclick="document.getElementById('logSlipFile').click()">
+        <input type="file" id="logSlipFile" accept="image/*,.heic,.heif" multiple onchange="handleLogSlipUpload(event)" style="display:none;">
+        <div style="font-size:26px;margin-bottom:4px;">📲</div>
+        <div style="font-size:13px;color:var(--text2);text-align:center;">
+          <strong style="color:var(--accent);">Tap to upload slip screenshot</strong><br>
+          <span style="font-size:11px;color:var(--text3);">Show the result screen — player names, lines, ✅/❌ outcomes visible</span>
+        </div>
+      </div>
+      <div id="logSlipPreview" class="hidden" style="margin-top:10px;">
+        <div style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;margin-bottom:8px;">
+          Uploaded (<span id="logSlipCount">0</span>)
+          <button onclick="clearLogSlipUploads()" style="background:none;border:none;color:var(--red);font-size:11px;cursor:pointer;font-weight:600;">Clear</button>
+        </div>
+        <div id="logSlipThumbGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;margin-bottom:10px;"></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button class="btn btn-p" onclick="analyzeLogSlips()">
+            <span id="logSlipBtn">Analyze & Save</span>
+            <span id="logSlipSp" class="hidden"><div class="sp"></div></span>
+          </button>
+          <button class="btn btn-s btn-sm" onclick="document.getElementById('logSlipFile').click()">+ Add More</button>
+          <span id="logSlipStatus" style="font-size:12px;color:var(--text2);"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- SUB-TABS -->
   <div style="display:flex;gap:3px;margin-bottom:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:4px;box-shadow:var(--sh);">
     <button class="tab active" id="ptab-clv" onclick="switchPTab('clv')" style="flex:none;padding:6px 14px;">📊 CLV Log</button>
@@ -926,11 +970,23 @@ label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06
     <!-- Winning slip database -->
     <div class="card">
       <div class="ch">
-        <span class="ct">Winning Slip Database</span>
-        <span id="slipDbCount" style="font-size:12px;color:var(--text2);">0 slips</span>
+        <span class="ct">Slip Database</span>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span id="slipDbCount" style="font-size:12px;color:var(--text2);">0 slips</span>
+          <select id="slipDbFilter" onchange="renderSlipDatabase()" style="font-size:11px;padding:3px 8px;width:auto;border-radius:6px;">
+            <option value="all">All Slips</option>
+            <option value="win">Wins Only</option>
+            <option value="loss">Losses Only</option>
+            <option value="pending">Pending</option>
+          </select>
+          <button class="btn btn-g btn-sm" onclick="downloadSlipsJSON('all')" title="Download all slips as JSON for learning layer">⬇ All</button>
+          <button class="btn btn-g btn-sm" onclick="downloadSlipsJSON('win')" title="Download winning slips">⬇ Wins</button>
+          <button class="btn btn-g btn-sm" onclick="downloadSlipsJSON('loss')" title="Download losing slips">⬇ Losses</button>
+          <button class="btn btn-s btn-sm" onclick="downloadSlipsCSV()" title="Download as CSV">⬇ CSV</button>
+        </div>
       </div>
       <div id="slipDatabase" class="cb">
-        <div style="color:var(--text2);font-size:13px;text-align:center;padding:14px;">No winning slips logged yet.</div>
+        <div style="color:var(--text2);font-size:13px;text-align:center;padding:14px;">No slips logged yet.</div>
       </div>
     </div>
   </div>
@@ -1240,8 +1296,12 @@ async function runAutoEngine(){
       } else if(sport==='NBA'){
         allCandidates.push(...await runBDLEngine('NBA',log));
       } else if(sport==='WNBA'){
-        // WNBA season May-Oct — use ESPN fallback (BDL WNBA endpoint requires paid tier)
-        allCandidates.push(...await runESPNEngine('WNBA',log));
+        // WNBA — pull directly from Odds API player props (BDL WNBA requires paid tier)
+        log(`⟳ WNBA: pulling from Odds API...`,'i');
+        const wnbaCandidates = await runOddsAPIEngine('WNBA','basketball_wnba',
+          'player_points,player_rebounds,player_assists',log);
+        allCandidates.push(...wnbaCandidates);
+        if(!wnbaCandidates.length) log(`⚠ WNBA: no props available today`,'w');
       } else if(sport==='NFL'){
         // NFL season Sep-Feb; May is off-season
         const month=new Date().getMonth()+1; // 1-12
@@ -1636,6 +1696,68 @@ async function runBDLEngine(sport,log){
   return candidates;
 }
 
+
+// ── Odds API Prop Engine — for sports without dedicated stats APIs (WNBA, etc) ──
+async function runOddsAPIEngine(sport, oddsKey, markets, log){
+  const candidates = [];
+  try{
+    const evR = await fx(`${EP.odds}/sports/${oddsKey}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
+    if(!evR.ok){ log(`⚠ ${sport}: events ${evR.status}`,'w'); return []; }
+    const events = await evR.json();
+    if(!events?.length){ log(`⚠ ${sport}: no events today`,'w'); return []; }
+    log(`✓ ${sport}: ${events.length} games — fetching props...`,'ok');
+
+    for(const ev of events.slice(0,5)){
+      try{
+        const prR = await fx(
+          `${EP.odds}/sports/${oddsKey}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=${markets}&oddsFormat=american`,
+          {}, 8000
+        );
+        if(!prR.ok) continue;
+        const prData = await prR.json();
+        const gameName = `${ev.away_team} @ ${ev.home_team}`;
+
+        for(const bk of (prData.bookmakers||[]).slice(0,2)){
+          for(const mkt of (bk.markets||[])){
+            const propName = mkt.key?.replace(/_/g,' ') || '';
+            const byPlayer = {};
+            (mkt.outcomes||[]).forEach(o=>{
+              const player = o.description||o.name;
+              const pt = o.point;
+              const side = o.name?.toLowerCase();
+              if(!player||pt==null) return;
+              const k = `${player}|${pt}`;
+              if(!byPlayer[k]) byPlayer[k]={player,line:pt,over:null,under:null};
+              if(side==='over') byPlayer[k].over=o.price;
+              if(side==='under') byPlayer[k].under=o.price;
+            });
+
+            Object.values(byPlayer).forEach(({player,line,over,under})=>{
+              if(over==null||under==null) return;
+              const nvp = noVigProb(over,under);
+              const side = nvp.over>=nvp.under?'MORE':'LESS';
+              const prob = side==='MORE'?nvp.over:nvp.under;
+              if(prob<0.53) return;
+              if(line<=0.5&&prob<0.62) return; // higher bar for binary props
+              candidates.push({
+                player,sport,prop:propName,side,line,game:gameName,
+                bookmaker:bk.title,
+                overProb:nvp.over,underProb:nvp.under,selectedProb:prob,
+                overOdds:over,underOdds:under,
+                l5_hit_rate:prob,l10_hit_rate:prob,
+                recent_avg:null,raw_vals:[],
+                confidence:prob,role_score:6,
+                note:`Market implied: ${(prob*100).toFixed(1)}% | ${bk.title}`
+              });
+            });
+          }
+        }
+      }catch(e){}
+    }
+    log(`✓ ${sport}: ${candidates.length} candidates from Odds API`,'ok');
+  }catch(e){ log(`⚠ ${sport}: ${e.message}`,'w'); }
+  return candidates;
+}
 
 // ── ESPN Fallback Engine (NFL, Soccer, etc.) ──
 async function runESPNEngine(sport,log){
@@ -3642,6 +3764,8 @@ function buildSlipOfSize(pool, n, tgt, usedAcrossSlips){
 async function buildAllSlips(){
   const tgt=document.getElementById('s_grade').value;
   const sf=document.getElementById('s_sport').value;
+  const picksFilter=document.getElementById('s_picks').value;
+  const typeFilter=document.getElementById('s_type').value;
   document.getElementById('slipBtn').textContent='Building...';
   document.getElementById('slipSp').classList.remove('hidden');
 
@@ -3657,12 +3781,10 @@ async function buildAllSlips(){
 
   const container=document.getElementById('allSlipOptions');
   container.innerHTML='';
-
-  // Track which players appear across slips for duplication rule
   const usedAcrossSlips=new Set();
 
-  // Slip configs: Power 2-4, Flex 5-6, Jeremia
-  const configs=[
+  // All possible slip configs
+  const allConfigs=[
     {label:'⚡ Power 2',n:2,type:'power',icon:'⚡'},
     {label:'🔥 Power 3',n:3,type:'power',icon:'🔥'},
     {label:'💪 Power 4',n:4,type:'power',icon:'💪'},
@@ -3670,6 +3792,19 @@ async function buildAllSlips(){
     {label:'🎯 Flex 6',n:6,type:'flex',icon:'🎯'},
     {label:'🧬 Jeremia',n:3,type:'power',icon:'🧬',jeremia:true},
   ];
+
+  // Filter by Number of Picks selection
+  let configs = allConfigs;
+  if(picksFilter !== 'all'){
+    const n = parseInt(picksFilter);
+    configs = allConfigs.filter(c => c.n === n && !c.jeremia);
+    // Always include Jeremia if building 3-pick
+    if(n===3) configs.push(allConfigs.find(c=>c.jeremia));
+  }
+
+  // Filter by slip type
+  if(typeFilter === 'power') configs = configs.filter(c=>c.type==='power'||c.jeremia);
+  else if(typeFilter === 'flex') configs = configs.filter(c=>c.type==='flex');
 
   const hdr=document.createElement('div');
   hdr.className='slbl';
@@ -4792,6 +4927,125 @@ function clearCLV(){
 // ══════════════════════════════════
 // WINNING SLIPS UPLOAD
 // ══════════════════════════════════
+// ── Log Tab Slip Upload (mirrors winning slips but at top of Log tab) ──
+let logSlipImages = [];
+
+function handleLogSlipUpload(e){
+  const files = Array.from(e.target.files);
+  if(!files.length) return;
+  let loaded = 0;
+  files.forEach(f=>{
+    const rd = new FileReader();
+    rd.onload = ev=>{
+      logSlipImages.push({b64: ev.target.result.split(',')[1], name: f.name, src: ev.target.result});
+      loaded++;
+      if(loaded === files.length) renderLogSlipThumbs();
+    };
+    rd.readAsDataURL(f);
+  });
+  e.target.value = '';
+}
+
+function renderLogSlipThumbs(){
+  document.getElementById('logSlipPreview').classList.remove('hidden');
+  document.getElementById('logSlipCount').textContent = logSlipImages.length;
+  const grid = document.getElementById('logSlipThumbGrid');
+  grid.innerHTML = '';
+  logSlipImages.forEach((img,i)=>{
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:relative;border-radius:8px;overflow:hidden;border:1px solid var(--border);aspect-ratio:9/16;background:var(--surface2);';
+    wrap.innerHTML = `<img src="${img.src}" style="width:100%;height:100%;object-fit:cover;"/>
+      <button onclick="logSlipImages.splice(${i},1);renderLogSlipThumbs();" style="position:absolute;top:3px;right:3px;background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:1;">×</button>`;
+    grid.appendChild(wrap);
+  });
+}
+
+function clearLogSlipUploads(){
+  logSlipImages = [];
+  document.getElementById('logSlipPreview').classList.add('hidden');
+  document.getElementById('logSlipThumbGrid').innerHTML = '';
+  document.getElementById('logSlipCount').textContent = '0';
+  document.getElementById('logSlipStatus').textContent = '';
+}
+
+async function analyzeLogSlips(){
+  if(!logSlipImages.length) return;
+  document.getElementById('logSlipBtn').textContent = 'Analyzing...';
+  document.getElementById('logSlipSp').classList.remove('hidden');
+  const statusEl = document.getElementById('logSlipStatus');
+  let allLegs = [];
+
+  for(let i = 0; i < logSlipImages.length; i++){
+    statusEl.textContent = `Processing ${i+1}/${logSlipImages.length}...`;
+    try{
+      const compressedB64 = await compressImage(logSlipImages[i].b64, 800);
+      const r = await fx(`${EP.replit}/analyze-board`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-API-Key': KEYS.replit},
+        body: JSON.stringify({
+          image_b64: compressedB64,
+          media_type: 'image/jpeg',
+          prompt: 'This is a PrizePicks settled slip. Extract every leg.\n\nLook for: player names, stat categories (Points/Rebounds/Assists/Strikeouts/Hits/TB etc), lines, MORE/LESS/OVER/UNDER, result indicators (green circle/checkmark=WIN, red circle/X=LOSS), actual values shown on progress bars, overall slip result (Win/Loss badge at top).\n\nReturn ONLY valid JSON:\n{"slip_result":"win|loss|pending","slip_type":"Power 3 etc","legs":[{"player":"Name","sport":"NBA|MLB|NHL|WNBA","prop":"points","line":24.5,"side":"MORE|LESS","outcome":"win|loss|unknown","actual":27}]}'
+        })
+      }, 60000);
+
+      if(r.ok){
+        const d = await r.json();
+        let parsed = null;
+        try{
+          const raw = d.raw_response || JSON.stringify(d) || '';
+          const match = raw.match(/\{[\s\S]*\}/);
+          if(match) parsed = JSON.parse(match[0]);
+        }catch(e){}
+
+        if(parsed?.legs?.length){
+          const slipResult = parsed.slip_result || 'unknown';
+          const legs = parsed.legs.map(l=>({
+            ...l,
+            slip_result: slipResult,
+            slip_type: parsed.slip_type || 'unknown',
+            source: `log_upload_${Date.now()}_${i}`,
+            date: new Date().toLocaleDateString()
+          }));
+          allLegs.push({legs, slip_result: slipResult, slip_type: parsed.slip_type||'unknown'});
+          statusEl.textContent = `Image ${i+1}: ${legs.length} legs — ${slipResult}`;
+        } else {
+          statusEl.textContent = `Image ${i+1}: no legs detected — use manual entry below`;
+        }
+      } else {
+        statusEl.textContent = `Image ${i+1}: server error ${r.status}`;
+      }
+    }catch(e){ statusEl.textContent = `Image ${i+1}: ${e.message}`; }
+  }
+
+  if(allLegs.length){
+    allLegs.forEach(({legs, slip_result, slip_type})=>{
+      const slip = {
+        id: Date.now() + Math.random(),
+        date: new Date().toLocaleDateString(),
+        legs,
+        source: 'screenshot',
+        legsCount: legs.length,
+        slip_result,
+        slip_type
+      };
+      winningSlips.unshift(slip);
+    });
+    save();
+    renderSlipDatabase();
+    // Switch to Winning Slips sub-tab to show result
+    switchPTab('slip');
+    statusEl.textContent = `✓ ${allLegs.length} slip(s) saved to database`;
+    logSlipImages = [];
+    document.getElementById('logSlipPreview').classList.add('hidden');
+  } else {
+    statusEl.textContent = 'No legs extracted. Make sure the screenshot shows the PrizePicks result screen clearly.';
+  }
+
+  document.getElementById('logSlipBtn').textContent = 'Analyze & Save';
+  document.getElementById('logSlipSp').classList.add('hidden');
+}
+
 function handleSlipUpload(e){
   const files=Array.from(e.target.files);if(!files.length)return;
   let loaded=0;
@@ -4963,13 +5217,57 @@ async function learnFromManualSlip(){
   document.getElementById('slipLearnSp').classList.add('hidden');
 }
 
+function downloadSlipsJSON(filter='all'){
+  const data = filter==='all' ? winningSlips :
+               winningSlips.filter(s=>s.slip_result===filter);
+  if(!data.length){ alert(`No ${filter==='all'?'':filter+' '}slips to download.`); return; }
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `wow_slips_${filter}_${new Date().toISOString().split('T')[0]}.json`;
+  a.click();
+}
+
+function downloadSlipsCSV(){
+  if(!winningSlips.length){ alert('No slips to download.'); return; }
+  const rows = [['date','slip_result','slip_type','player','sport','prop','side','line','leg_outcome','actual']];
+  winningSlips.forEach(slip=>{
+    (slip.legs||[]).forEach(leg=>{
+      rows.push([
+        slip.date||'',
+        slip.slip_result||'',
+        slip.slip_type||'',
+        leg.player||'',
+        leg.sport||'',
+        leg.prop||'',
+        leg.side||'',
+        leg.line||'',
+        leg.outcome||'',
+        leg.actual!=null?leg.actual:''
+      ]);
+    });
+  });
+  const csv = rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `wow_slips_${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+}
+
 function renderSlipDatabase(){
   const div=document.getElementById('slipDatabase');
-  document.getElementById('slipDbCount').textContent=`${winningSlips.length} slips`;
-  if(!winningSlips.length){div.innerHTML='<div style="color:var(--text2);font-size:13px;text-align:center;padding:14px;">No slips logged yet. Upload screenshots or use manual entry above.</div>';return;}
+  const filter = document.getElementById('slipDbFilter')?.value || 'all';
+  const filtered = filter==='all' ? winningSlips : winningSlips.filter(s=>s.slip_result===filter);
+  document.getElementById('slipDbCount').textContent=`${winningSlips.length} slips (${filtered.length} shown)`;
+  if(!filtered.length){
+    div.innerHTML=`<div style="color:var(--text2);font-size:13px;text-align:center;padding:14px;">No ${filter==='all'?'':filter+' '}slips logged yet. Upload screenshots or use manual entry above.</div>`;
+    return;
+  }
 
   div.innerHTML='';
-  winningSlips.slice(0,50).forEach((slip,si)=>{
+  filtered.slice(0,50).forEach((slip,si)=>{
+    const realIdx = winningSlips.indexOf(slip);
     const winLegs=slip.legs.filter(l=>l.outcome==='win').length;
     const lossLegs=slip.legs.filter(l=>l.outcome==='loss').length;
     const slipResult=slip.slip_result||'unknown';
@@ -4989,7 +5287,7 @@ function renderSlipDatabase(){
         <div style="display:flex;gap:6px;align-items:center;">
           ${winLegs>0?`<span class="badge bg-g">${winLegs}✓</span>`:''}
           ${lossLegs>0?`<span class="badge bg-r">${lossLegs}✗</span>`:''}
-          <button onclick="winningSlips.splice(${si},1);save();renderSlipDatabase();" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;">×</button>
+          <button onclick="winningSlips.splice(${realIdx},1);save();renderSlipDatabase();" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;">×</button>
         </div>
       </div>
       <div style="display:flex;flex-direction:column;gap:5px;">
@@ -5618,6 +5916,17 @@ window.onload=()=>{
       e.preventDefault();llpUpZ.classList.remove('drag');
       const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/')||f.name.toLowerCase().endsWith('.heic'));
       if(files.length)handleLLPUpload({target:{files}});
+    });
+  }
+  // Log tab slip upload drag/drop
+  const logSlipUpZ = document.getElementById('logSlipUploadZone');
+  if(logSlipUpZ){
+    logSlipUpZ.addEventListener('dragover',e=>{e.preventDefault();logSlipUpZ.classList.add('drag');});
+    logSlipUpZ.addEventListener('dragleave',()=>logSlipUpZ.classList.remove('drag'));
+    logSlipUpZ.addEventListener('drop',e=>{
+      e.preventDefault();logSlipUpZ.classList.remove('drag');
+      const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/')||f.name.toLowerCase().endsWith('.heic'));
+      if(files.length)handleLogSlipUpload({target:{files}});
     });
   }
   // Pull prop pool 5 seconds after load, then every hour
