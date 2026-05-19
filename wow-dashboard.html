@@ -5543,8 +5543,8 @@ async function analyzeLogSlips(){
 
       // Adjust prompt based on mode
       const prompt = isActive
-        ? 'This is an ACTIVE PrizePicks slip still in progress. Extract every leg.\n\nLook for: player names, stat categories (Points/Rebounds/Assists/Strikeouts/Hits/TB etc), lines, MORE/LESS indicators. Outcomes may not be determined yet — mark them all as "pending".\n\nAlso extract: slip type (Power 2/3/4 or Flex 5/6), entry amount if visible, potential payout if visible.\n\nReturn ONLY valid JSON:\n{"slip_result":"pending","slip_type":"Power 3","entry":10,"to_win":50,"legs":[{"player":"Name","sport":"NBA|MLB|NHL|WNBA","prop":"points","line":24.5,"side":"MORE|LESS","outcome":"pending","actual":null}]}'
-        : 'This is a SETTLED PrizePicks slip. Extract every leg with its result.\n\nLook for: player names, stat categories, lines, MORE/LESS, win/loss indicators (green=win, red=loss), actual values on progress bars, overall slip result.\n\nReturn ONLY valid JSON:\n{"slip_result":"win|loss","slip_type":"Power 3","legs":[{"player":"Name","sport":"NBA|MLB|NHL|WNBA","prop":"points","line":24.5,"side":"MORE|LESS","outcome":"win|loss|unknown","actual":27}]}';
+        ? 'This is a PrizePicks slip screenshot. It may show either a single slip detail or a list of active entries.\n\nExtract every visible leg/pick.\n\nLook for:\n- Player names (e.g. "Elly De La Cruz", "Shohei Ohtani")\n- Stat lines with numbers (e.g. "1.5 Hits", "0.5 TB", "6.5 Strikeouts")\n- MORE/LESS/OVER/UNDER indicators or up/down arrows\n- Slip type label (Power Play, Flex Play, number of picks)\n- Entry amount and potential payout if visible\n- Green/yellow progress bars indicate in-progress legs\n\nMark all outcomes as "pending" since this slip is still active.\n\nReturn ONLY valid JSON:\n{"slip_result":"pending","slip_type":"Power 3","entry":10,"to_win":50,"legs":[{"player":"Name","sport":"MLB|NBA|NHL|WNBA","prop":"hits","line":1.5,"side":"MORE","outcome":"pending","actual":null}]}'
+        : 'This is a SETTLED PrizePicks slip result screen.\n\nExtract every leg with its result.\n\nLook for:\n- Player names and stat categories\n- Lines/numbers with MORE/LESS\n- Result indicators: green circle with checkmark or green progress bar filled = WIN, red circle with X or empty bar = LOSS\n- Actual stat values shown at end of progress bars\n- Overall slip result badge (Win/Loss/Profit at top)\n- Slip type (Power Play, Flex Play)\n\nReturn ONLY valid JSON:\n{"slip_result":"win|loss","slip_type":"Power 3","legs":[{"player":"Name","sport":"MLB|NBA|NHL|WNBA","prop":"hits","line":1.5,"side":"MORE","outcome":"win|loss","actual":2}]}';
 
       const r = await fx(`${EP.replit}/analyze-board`, {
         method: 'POST',
@@ -5907,13 +5907,15 @@ function renderSlipDatabase(){
 // LEARNING ENGINE
 // ══════════════════════════════════
 async function runLearningEngine(){
-  if(clvLog.length<5&&winningSlips.length<3){
-    alert('Need at least 5 logged picks or 3 winning slips to run the learning engine.');return;
+  const hasData = clvLog.length > 0 || winningSlips.length > 0 || activeSlips.filter(s=>s.status!=='active').length > 0;
+  if(!hasData){
+    alert('No data yet. Log some picks in the CLV tab or upload a settled slip first.');
+    return;
   }
   document.getElementById('learnBtn').textContent='Analyzing...';
   document.getElementById('learnSp').classList.remove('hidden');
   const outputDiv=document.getElementById('learningOutput');
-  outputDiv.innerHTML=`<div class="alert ab"><div class="spd"></div> Running learning engine — analyzing ${clvLog.length} picks + ${winningSlips.length} winning slips...</div>`;
+  outputDiv.innerHTML=`<div class="alert ab"><div class="spd"></div> Running learning engine — analyzing ${clvLog.length} picks + ${winningSlips.length} slips...</div>`;
 
   // Build comprehensive data summary for Claude
   const settled=clvLog.filter(e=>e.outcome==='win'||e.outcome==='loss');
