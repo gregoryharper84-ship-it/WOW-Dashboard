@@ -482,6 +482,93 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 
   <!-- Jeremia slip output -->
   <div id="jeremiaOutput"></div>
+
+  <!-- LESS SLIP BUILDER -->
+  <div style="background:linear-gradient(135deg,#064e3b 0%,#065f46 100%);border-radius:var(--r);padding:18px 22px;margin-top:20px;margin-bottom:14px;color:#fff;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
+      <div>
+        <h2 style="font-size:17px;font-weight:700;margin-bottom:4px;">📉 LESS Slip Builder</h2>
+        <p style="font-size:12px;opacity:.85;">Targets losing-team players, blowout dogs, fringe roster — LESS 0.5 runs/hits/PA · DNP insurance · Built from today's slate</p>
+      </div>
+      <div style="background:rgba(255,255,255,0.15);padding:6px 12px;border-radius:20px;font-size:11px;font-weight:700;">
+        $5 Flex 6 → $125 upside
+      </div>
+    </div>
+  </div>
+
+  <div class="g2" style="margin-bottom:12px;">
+    <div class="card">
+      <div class="ch"><span class="ct">⚙️ LESS Slip Settings</span></div>
+      <div class="cb">
+        <div class="fr">
+          <div class="field"><label>Slip Size</label>
+            <select id="less_size">
+              <option value="6" selected>Flex 6 (max upside)</option>
+              <option value="5">Flex 5</option>
+              <option value="4">Power 4</option>
+              <option value="3">Power 3</option>
+            </select>
+          </div>
+          <div class="field"><label>Sport</label>
+            <select id="less_sport">
+              <option value="MLB" selected>MLB</option>
+              <option value="NBA">NBA</option>
+              <option value="NHL">NHL</option>
+              <option value="WNBA">WNBA</option>
+              <option value="Soccer">Soccer</option>
+              <option value="Tennis">Tennis</option>
+              <option value="all">All Sports</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="dv"><div class="dl"></div><div class="dt">Target Prop Types</div><div class="dl"></div></div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_runs" checked> <span>⚾ MLB: Runs/Hits/TB LESS 0.5 (losing team, tough pitcher)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_pa" checked> <span>⚾ MLB: Plate Appearances LESS 4.5 (low-order, blowout risk)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_hits" checked> <span>⚾ MLB: Hits LESS 0.5 (elite pitcher matchup)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_tb" checked> <span>⚾ MLB: Total Bases LESS 0.5 (same conditions)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_nba_pts" checked> <span>🏀 NBA/WNBA: Points LESS (bench player, blowout loss)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_nba_ast" checked> <span>🏀 NBA/WNBA: Assists LESS (team losing big = no garbage assists)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_nhl_shots" checked> <span>🏒 NHL: Shots LESS 2.5 (defensive matchup, fourth liner)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_soccer_shots" checked> <span>⚽ Soccer: Shots on Target LESS 1.5 (defensive mid, away underdog)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_soccer_passes" checked> <span>⚽ Soccer: Passes LESS (low-possession team, park-the-bus)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_tennis_games" checked> <span>🎾 Tennis: Total Games LESS (big rank gap, straight sets expected)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_tennis_aces" checked> <span>🎾 Tennis: Aces LESS (clay court, defensive baseliner)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_dnp" checked> <span>🛡️ All sports: Prioritize DNP/scratch candidates (auto-win)</span></label>
+        </div>
+
+        <div class="dv"><div class="dl"></div><div class="dt">Targeting Strategy</div><div class="dl"></div></div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_dogs" checked> <span>🐶 Large underdogs (blowout = bench early, fewer events)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_loworder" checked> <span>🔻 MLB: 6-9 batting order | NBA: bench rotation (fewer mins)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_elitepitch" checked> <span>⚾ MLB: vs elite pitchers ERA &lt; 3.50</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_lowou" checked> <span>📊 Low game total (O/U &lt; 7.5 MLB · &lt; 215 NBA · &lt; 5.5 NHL · &lt; 2.25 Soccer)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_btob" checked> <span>📅 NBA: Back-to-back games (load management, reduced minutes)</span></label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_coldstreak" checked> <span>❄️ Cold streak players (0 for last 2+ games in target stat)</span></label>
+        </div>
+
+        <button class="btn" onclick="buildLESSSlip()" style="background:linear-gradient(135deg,#064e3b,#059669);border:none;color:#fff;font-weight:700;width:100%;padding:12px;">
+          <span id="lessBtn">🔍 Find Today's LESS Picks</span>
+          <span id="lessSp" class="hidden"><div class="sp"></div></span>
+        </button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="ch"><span class="ct">Why LESS Slips Work</span></div>
+      <div class="cb" style="font-size:12px;color:var(--text2);line-height:1.8;">
+        <div style="margin-bottom:8px;"><strong style="color:#6ee7b7;">🏆 Your $50 win example:</strong><br>6-pick Flex LESS. All MLB LESS props on May 18. 5/6 hit, Evan Carter DNP = auto-win. Entry $5 → $50.</div>
+        <div style="margin-bottom:8px;"><strong style="color:#6ee7b7;">💰 DNP Insurance</strong><br>Any player who doesn't start is an automatic LESS win. Targeting fringe/platoon players = built-in insurance.</div>
+        <div style="margin-bottom:8px;"><strong style="color:#6ee7b7;">📉 Blowout Protection</strong><br>Teams losing big get benched early. Lower-order hitters in blowout losses rarely score or get full plate appearances.</div>
+        <div style="margin-bottom:8px;"><strong style="color:#6ee7b7;">⚾ Game Script Logic</strong><br>Runs LESS 0.5 on a player hitting 8th for a team facing a Cy Young-caliber starter = high probability LESS.</div>
+        <div><strong style="color:var(--yellow);">⚠️ Avoid:</strong><br>Top-order hitters on strong offenses · Players in high-total games · Anyone with a recent hot hitting streak</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LESS slip output -->
+  <div id="lessOutput"></div>
 </div>
   </div><!-- end .main -->
 
@@ -4773,6 +4860,18 @@ if(!winningSlips.length){
         {player:'Victor Wembanyama',sport:'NBA',prop:'rebounds',side:'MORE',line:13.5,outcome:'win',actual:24,slip_result:'loss',slip_type:'Power 2'},
         {player:'Jalen Williams',sport:'NBA',prop:'assists',side:'MORE',line:3.5,outcome:'loss',actual:3,slip_result:'loss',slip_type:'Power 2'}
       ]
+    },
+    {
+      id: 1747630003, date:'5/18/2026', slip_result:'win', slip_type:'Flex 6',
+      source:'manual', legsCount:6,
+      legs:[
+        {player:'Gunnar Henderson',sport:'MLB',prop:'plate appearances',side:'LESS',line:4.5,outcome:'win',actual:4,slip_result:'win',slip_type:'Flex 6'},
+        {player:'Mark Vientos',sport:'MLB',prop:'runs scored',side:'LESS',line:0.5,outcome:'win',actual:0,slip_result:'win',slip_type:'Flex 6'},
+        {player:'Jeremy Peña',sport:'MLB',prop:'runs scored',side:'LESS',line:0.5,outcome:'win',actual:0,slip_result:'win',slip_type:'Flex 6'},
+        {player:'Jackson Chourio',sport:'MLB',prop:'runs scored',side:'LESS',line:0.5,outcome:'win',actual:0,slip_result:'win',slip_type:'Flex 6'},
+        {player:'Evan Carter',sport:'MLB',prop:'runs scored',side:'LESS',line:0.5,outcome:'win',actual:0,note:'Did not play — counts as under',slip_result:'win',slip_type:'Flex 6'},
+        {player:'Tyler Soderstrom',sport:'MLB',prop:'plate appearances',side:'LESS',line:4.5,outcome:'win',actual:4,slip_result:'win',slip_type:'Flex 6'}
+      ]
     }
   ];
   try{ localStorage.setItem('wow_winning_slips', JSON.stringify(winningSlips)); }catch(e){}
@@ -6421,8 +6520,624 @@ async function buildSlipsFromProps(validatedProps){
 // ══════════════════════════════════
 // JEREMIA STYLE BUILDER
 // ══════════════════════════════════
+// ══════════════════════════════════════════════════════
+// LESS SLIP BUILDER
+// Targets losing-team players, blowout dogs, DNP candidates
+// Strategy: Runs/Hits/PA LESS 0.5 on fringe players in tough spots
+// ══════════════════════════════════════════════════════
+async function buildLESSSlip(){
+  document.getElementById('lessBtn').textContent = '🔍 Scanning...';
+  document.getElementById('lessSp').classList.remove('hidden');
+  const out = document.getElementById('lessOutput');
+  out.innerHTML = `<div class="card" style="margin-bottom:12px;"><div class="cb"><div class="ob" id="lessLog" style="min-height:80px;max-height:150px;"></div></div></div>`;
+  const log = (msg,t='') => { const el=document.getElementById('lessLog'); if(el){el.innerHTML+=`<span class="${t?'o'+t:''}">${msg}\n</span>`;el.scrollTop=el.scrollHeight;}};
+
+  const sport = document.getElementById('less_sport').value;
+  const size = parseInt(document.getElementById('less_size').value);
+  const cfg = {
+    runs: document.getElementById('less_runs').checked,
+    pa: document.getElementById('less_pa').checked,
+    hits: document.getElementById('less_hits').checked,
+    tb: document.getElementById('less_tb').checked,
+    nba_pts: document.getElementById('less_nba_pts').checked,
+    nba_ast: document.getElementById('less_nba_ast').checked,
+    nhl_shots: document.getElementById('less_nhl_shots').checked,
+    soccer_shots: document.getElementById('less_soccer_shots').checked,
+    soccer_passes: document.getElementById('less_soccer_passes').checked,
+    tennis_games: document.getElementById('less_tennis_games').checked,
+    tennis_aces: document.getElementById('less_tennis_aces').checked,
+    dnp: document.getElementById('less_dnp').checked,
+    dogs: document.getElementById('less_dogs').checked,
+    loworder: document.getElementById('less_loworder').checked,
+    elitepitch: document.getElementById('less_elitepitch').checked,
+    lowou: document.getElementById('less_lowou').checked,
+    btob: document.getElementById('less_btob').checked,
+    coldstreak: document.getElementById('less_coldstreak').checked,
+  };
+
+  let candidates = [];
+  const sports = sport === 'all' ? ['MLB','NBA','NHL','WNBA','Soccer','Tennis'] : [sport];
+
+  for(const sp of sports){
+    log(`\n⟳ Scanning ${sp}...`,'i');
+    try{
+      if(sp === 'MLB') candidates.push(...await buildMLBLessCandidates(cfg, log));
+      else if(sp === 'NBA' || sp === 'WNBA') candidates.push(...await buildNBALessCandidates(sp, cfg, log));
+      else if(sp === 'NHL') candidates.push(...await buildNHLLessCandidates(cfg, log));
+      else if(sp === 'Soccer') candidates.push(...await buildSoccerLessCandidates(cfg, log));
+      else if(sp === 'Tennis') candidates.push(...await buildTennisLessCandidates(cfg, log));
+    }catch(e){ log(`⚠ ${sp}: ${e.message}`,'w'); }
+  }
+
+  if(!candidates.length){
+    out.innerHTML += `<div class="alert ay">⚠ No strong LESS candidates today. Try again after lineups are posted (usually 11am ET for MLB, 4pm ET for NBA).</div>`;
+    document.getElementById('lessBtn').textContent='🔍 Find Today\'s LESS Picks';
+    document.getElementById('lessSp').classList.add('hidden');
+    return;
+  }
+
+  log(`\n✓ ${candidates.length} total LESS candidates found`,'ok');
+
+  // Deduplicate — best score per player+prop combo, max 2 per game
+  const seen = new Set();
+  const gameCounts = {};
+  const deduped = candidates
+    .sort((a,b) => b.score - a.score)
+    .filter(c => {
+      const key = `${c.player}|${c.prop}|${c.line}`;
+      if(seen.has(key)) return false;
+      seen.add(key);
+      gameCounts[c.game] = (gameCounts[c.game]||0)+1;
+      return true;
+    });
+
+  // Build slip — top N by score, max 2 per game
+  const gamePicks = {};
+  const slip = [];
+  for(const c of deduped){
+    if(slip.length >= size) break;
+    if((gamePicks[c.game]||0) >= 2) continue;
+    slip.push(c);
+    gamePicks[c.game] = (gamePicks[c.game]||0)+1;
+  }
+
+  const slipType = size <= 4 ? `Power ${size}` : `Flex ${size}`;
+  const isFlex = size >= 5;
+  const multiplier = isFlex ? (PP_PAYOUTS.flex?.[size]?.multiplier||null) : (PP_PAYOUTS.power?.[size]?.multiplier||null);
+  const avgScore = slip.reduce((s,c)=>s+c.score,0)/slip.length;
+  const confColor = avgScore>=60?'var(--green)':avgScore>=40?'var(--yellow)':'var(--text2)';
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="ch">
+      <div>
+        <span class="ct">📉 LESS Slip — ${slipType}</span>
+        <span style="font-size:11px;color:var(--text2);margin-left:8px;">Avg confidence: <span style="color:${confColor};font-weight:700;">${avgScore.toFixed(0)}/100</span></span>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <span class="badge bg-g">LESS Strategy</span>
+        ${multiplier?`<span class="badge bg-c">${multiplier}x</span>`:''}
+      </div>
+    </div>
+    <div class="cb">
+      <div class="alert ag" style="margin-bottom:12px;">
+        💡 All LESS props. DNP = auto-win. Blowout = bench early = fewer events.
+        ${multiplier?`<strong>$5 → $${(5*multiplier).toFixed(0)} if all hit.</strong>`:''}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;">
+        ${slip.map(c=>{
+          const sportIcon = c.sport==='MLB'?'⚾':c.sport==='NBA'||c.sport==='WNBA'?'🏀':'🏒';
+          return `<div style="padding:10px 12px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--green);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
+              <div>
+                <span style="font-size:13px;font-weight:700;">${sportIcon} ${c.player}</span>
+                <span style="font-size:11px;color:var(--text2);margin-left:6px;">${c.game}</span>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:13px;font-weight:700;color:var(--green);">LESS ${c.line} ${c.prop.toUpperCase()}</div>
+                <div style="font-size:10px;color:var(--text2);">Score: ${c.score}/100</div>
+              </div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">
+              ${(c.reasons||[]).map(r=>`<span style="font-size:10px;background:var(--green-light);color:var(--green);padding:1px 6px;border-radius:10px;">${r}</span>`).join('')}
+              ${c.opp_pitcher?`<span style="font-size:10px;background:var(--accent-light);color:var(--accent);padding:1px 6px;border-radius:10px;">vs ${c.opp_pitcher}</span>`:''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-p" onclick="loadLESSToSlipBuilder(${JSON.stringify(slip).replace(/"/g,'&quot;')})">Load to Slip Builder</button>
+        <button class="btn btn-s btn-sm" onclick="addLESSToPool(${JSON.stringify(slip).replace(/"/g,'&quot;')})">+ Add to Pool</button>
+      </div>
+    </div>
+  `;
+  out.appendChild(card);
+  document.getElementById('lessBtn').textContent='🔍 Find Today\'s LESS Picks';
+  document.getElementById('lessSp').classList.add('hidden');
+}
+
+// ── MLB LESS candidates ──
+async function buildMLBLessCandidates(cfg, log){
+  const candidates = [];
+  const today = new Date().toISOString().split('T')[0];
+  const schedR = await fx(`${EP.mlb}/schedule?sportId=1&date=${today}&hydrate=probablePitcher,team`,{},8000);
+  if(!schedR.ok) throw new Error('MLB schedule unavailable');
+  const games = (await schedR.json()).dates?.[0]?.games || [];
+  if(!games.length){ log('⚠ No MLB games today','w'); return []; }
+  log(`✓ MLB: ${games.length} games`,'ok');
+
+  // Get game totals
+  const gameTotals = {};
+  try{
+    const oddsR = await fx(`${EP.odds}/sports/baseball_mlb/odds?apiKey=${KEYS.odds}&regions=us&markets=totals&oddsFormat=american&bookmakers=draftkings`,{},6000);
+    if(oddsR.ok){ (await oddsR.json()).forEach(g=>{ const t=g.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.find(o=>o.name==='Over')?.point; if(t) gameTotals[g.away_team+g.home_team]=t; }); }
+  }catch(e){}
+
+  for(const game of games){
+    const awayName=game.teams?.away?.team?.name||'';
+    const homeName=game.teams?.home?.team?.name||'';
+    const gameStr=`${awayName} @ ${homeName}`;
+    const totalKey = Object.keys(gameTotals).find(k=>k.includes(awayName.slice(0,5))||k.includes(homeName.slice(0,5)));
+    const gameTotal = totalKey?gameTotals[totalKey]:null;
+    const isLowTotal = cfg.lowou && gameTotal && gameTotal < 7.5;
+
+    const getPitcherERA = async(p)=>{ if(!p?.id) return 4.50; try{ const r=await fx(`${EP.mlb}/people/${p.id}/stats?stats=season&season=2026&group=pitching`,{},5000); if(!r.ok)return 4.50; const d=await r.json(); return parseFloat(d.stats?.[0]?.splits?.[0]?.stat?.era||4.50); }catch(e){return 4.50;} };
+    const [awayERA, homeERA] = await Promise.all([getPitcherERA(game.teams?.away?.probablePitcher), getPitcherERA(game.teams?.home?.probablePitcher)]);
+
+    for(const [teamData, oppPitcher, oppERA] of [[game.teams?.away,game.teams?.home?.probablePitcher,homeERA],[game.teams?.home,game.teams?.away?.probablePitcher,awayERA]]){
+      const roster = await getMLBRoster(teamData?.team?.id);
+      const hitters = roster.filter(p=>p.position?.type==='Hitter');
+      for(const hitter of hitters){
+        const pid=hitter.person?.id; const pname=hitter.person?.fullName||'';
+        if(!pid||!pname) continue;
+        let score=0; const reasons=[];
+        if(cfg.elitepitch && oppERA<3.50){ score+=25; reasons.push(`vs ERA ${oppERA.toFixed(2)} pitcher`); }
+        else if(oppERA<4.20){ score+=10; reasons.push(`vs ERA ${oppERA.toFixed(2)}`); }
+        if(isLowTotal){ score+=20; reasons.push(`O/U ${gameTotal}`); }
+        let battingOrder=null;
+        try{
+          const logs=await getMLBPlayerLog(pid,5);
+          const hitting=logs?.find(s=>s.group?.displayName==='hitting')?.splits||[];
+          if(hitting.length){
+            battingOrder=hitting[0]?.battingOrder?parseInt(hitting[0].battingOrder):null;
+            const recentHits=hitting.map(g=>parseInt(g.stat?.hits||0));
+            const avgHits=recentHits.reduce((a,b)=>a+b,0)/recentHits.length;
+            const recentRuns=hitting.map(g=>parseInt(g.stat?.runs||0));
+            const avgRuns=recentRuns.reduce((a,b)=>a+b,0)/recentRuns.length;
+            if(cfg.loworder && battingOrder>=6){ score+=15; reasons.push(`bats ${battingOrder}th`); }
+            if(cfg.coldstreak && recentHits.slice(0,3).filter(h=>h===0).length>=2){ score+=20; reasons.push('2+ game 0-hit streak'); }
+            if(avgRuns<0.3){ score+=15; reasons.push(`avg ${avgRuns.toFixed(2)} runs/g`); }
+            if(battingOrder&&battingOrder<=3&&avgHits>0.8) continue;
+          }
+        }catch(e){}
+        if(score<15) continue;
+        if(cfg.runs) candidates.push({player:pname,sport:'MLB',prop:'runs scored',side:'LESS',line:0.5,game:gameStr,score,reasons,opp_pitcher:oppPitcher?.fullName||'',opp_era:oppERA,game_total:gameTotal,batting_order:battingOrder});
+        if(cfg.hits) candidates.push({player:pname,sport:'MLB',prop:'hits',side:'LESS',line:0.5,game:gameStr,score,reasons,opp_pitcher:oppPitcher?.fullName||'',opp_era:oppERA});
+        if(cfg.tb) candidates.push({player:pname,sport:'MLB',prop:'total bases',side:'LESS',line:0.5,game:gameStr,score,reasons,opp_pitcher:oppPitcher?.fullName||''});
+        if(cfg.pa && battingOrder>=7) candidates.push({player:pname,sport:'MLB',prop:'plate appearances',side:'LESS',line:4.5,game:gameStr,score:score+10,reasons:[...reasons,'low-order PA risk'],opp_pitcher:oppPitcher?.fullName||''});
+      }
+    }
+  }
+  log(`✓ MLB: ${candidates.length} LESS candidates`,'ok');
+  return candidates;
+}
+
+// ── NBA/WNBA LESS candidates ──
+async function buildNBALessCandidates(sport, cfg, log){
+  const candidates = [];
+  const bdlBase = 'https://api.balldontlie.io/v1';
+  const today = new Date().toISOString().split('T')[0];
+
+  // Get today's games
+  const gamesR = await fx(`${bdlBase}/games?dates[]=${today}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+  if(!gamesR.ok) throw new Error(`BDL games ${gamesR.status}`);
+  const games = (await gamesR.json()).data||[];
+  if(!games.length){ log(`⚠ ${sport}: no games today`,'w'); return []; }
+
+  // Get game totals from Odds API
+  const gameTotals = {};
+  try{
+    const oddsKey = sport==='WNBA'?'basketball_wnba':'basketball_nba';
+    const evR = await fx(`${EP.odds}/sports/${oddsKey}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},6000);
+    if(evR.ok){
+      const events = await evR.json();
+      for(const ev of (events||[]).slice(0,8)){
+        try{
+          const oddsR = await fx(`${EP.odds}/sports/${oddsKey}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=totals&oddsFormat=american`,{},6000);
+          if(oddsR.ok){
+            const d = await oddsR.json();
+            const t = d.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.find(o=>o.name==='Over')?.point;
+            if(t) gameTotals[`${ev.away_team}${ev.home_team}`]=t;
+          }
+        }catch(e){}
+      }
+    }
+  }catch(e){}
+
+  log(`✓ ${sport}: ${games.length} games, ${Object.keys(gameTotals).length} totals loaded`,'ok');
+
+  for(const game of games.slice(0,6)){
+    const awayName = game.visitor_team?.full_name||'Away';
+    const homeName = game.home_team?.full_name||'Home';
+    const gameStr = `${awayName} @ ${homeName}`;
+    const totalKey = Object.keys(gameTotals).find(k=>k.includes(awayName.slice(0,5))||k.includes(homeName.slice(0,5)));
+    const gameTotal = totalKey?gameTotals[totalKey]:null;
+    const isLowTotal = cfg.lowou && gameTotal && gameTotal < 215;
+
+    for(const teamId of [game.visitor_team?.id, game.home_team?.id].filter(Boolean)){
+      // Get players via recent stats
+      const statsR = await fx(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=2025&per_page=20`,{headers:{'Authorization':KEYS.bdl}},8000);
+      if(!statsR.ok) continue;
+      const statsD = await statsR.json();
+      const playerMap = new Map();
+      (statsD.data||[]).forEach(s=>{ if(s.player?.id&&s.player?.first_name) playerMap.set(s.player.id,s.player); });
+      const players = [...playerMap.values()].slice(0,8);
+
+      for(const player of players){
+        let score = 0; const reasons = [];
+        if(isLowTotal){ score+=20; reasons.push(`O/U ${gameTotal}`); }
+
+        // Get recent logs
+        try{
+          const logR = await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2025&per_page=10`,{headers:{'Authorization':KEYS.bdl}},8000);
+          if(!logR.ok) continue;
+          const logs = (await logR.json()).data||[];
+          const active = logs.filter(g=>g.min&&g.min!=='0'&&g.min!=='0:00');
+          if(!active.length) continue;
+
+          // Average minutes — low minute players are LESS candidates
+          const avgMins = active.map(g=>{ const parts=(g.min||'0:00').split(':'); return parseInt(parts[0])||0; }).reduce((a,b)=>a+b,0)/active.length;
+          const avgPts = active.map(g=>parseFloat(g.pts)||0).reduce((a,b)=>a+b,0)/active.length;
+          const avgAst = active.map(g=>parseFloat(g.ast)||0).reduce((a,b)=>a+b,0)/active.length;
+
+          // Bench/rotation player
+          if(cfg.loworder && avgMins < 22){ score+=20; reasons.push(`avg ${avgMins.toFixed(0)} min/g`); }
+          if(cfg.loworder && avgMins < 15){ score+=15; reasons.push('fringe rotation'); }
+
+          // Cold streak in target stat
+          if(cfg.coldstreak){
+            const recentPts = active.slice(0,3).map(g=>parseFloat(g.pts)||0);
+            if(recentPts.filter(p=>p<5).length>=2){ score+=15; reasons.push('2+ games under 5pts'); }
+          }
+
+          const pname = `${player.first_name} ${player.last_name}`;
+
+          if(score < 15) continue;
+
+          // Points LESS
+          if(cfg.nba_pts && avgPts>0){
+            const ptLine = avgPts<10?4.5:avgPts<15?9.5:14.5;
+            candidates.push({player:pname,sport,prop:'points',side:'LESS',line:ptLine,game:gameStr,score,reasons:[...reasons,`avg ${avgPts.toFixed(1)} pts`]});
+          }
+          // Assists LESS — especially good for non-PGs in blowouts
+          if(cfg.nba_ast && avgAst<3){
+            candidates.push({player:pname,sport,prop:'assists',side:'LESS',line:1.5,game:gameStr,score:score+10,reasons:[...reasons,`avg ${avgAst.toFixed(1)} ast`]});
+          }
+        }catch(e){}
+      }
+    }
+  }
+
+  log(`✓ ${sport}: ${candidates.length} LESS candidates`,'ok');
+  return candidates;
+}
+
+// ── NHL LESS candidates ──
+async function buildNHLLessCandidates(cfg, log){
+  const candidates = [];
+  const today = new Date().toISOString().split('T')[0];
+
+  const schedR = await fx(`${EP.nhl}/schedule/now`,{},8000);
+  if(!schedR.ok) throw new Error('NHL schedule unavailable');
+  const data = await schedR.json();
+  const games = (data.gameWeek?.[0]?.games||[]).filter(g=>!g.gameState?.includes('OFF')&&!g.gameState?.includes('FINAL'));
+
+  if(!games.length){ log('⚠ NHL: no games today','w'); return []; }
+  log(`✓ NHL: ${games.length} games`,'ok');
+
+  // Get game totals
+  const gameTotals = {};
+  try{
+    const evR = await fx(`${EP.odds}/sports/icehockey_nhl/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},6000);
+    if(evR.ok){
+      const events = await evR.json();
+      for(const ev of (events||[]).slice(0,8)){
+        try{
+          const oddsR = await fx(`${EP.odds}/sports/icehockey_nhl/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=totals&oddsFormat=american`,{},6000);
+          if(oddsR.ok){
+            const d = await oddsR.json();
+            const t = d.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.find(o=>o.name==='Over')?.point;
+            if(t) gameTotals[`${ev.away_team}${ev.home_team}`]=t;
+          }
+        }catch(e){}
+      }
+    }
+  }catch(e){}
+
+  for(const game of games.slice(0,6)){
+    const awayAbbr = game.awayTeam?.abbrev||'';
+    const homeAbbr = game.homeTeam?.abbrev||'';
+    const gameStr = `${game.awayTeam?.placeName?.default||awayAbbr} @ ${game.homeTeam?.placeName?.default||homeAbbr}`;
+    const totalKey = Object.keys(gameTotals).find(k=>k.includes(awayAbbr)||k.includes(homeAbbr));
+    const gameTotal = totalKey?gameTotals[totalKey]:null;
+    const isLowTotal = cfg.lowou && gameTotal && gameTotal < 5.5;
+
+    for(const teamAbbr of [awayAbbr, homeAbbr]){
+      try{
+        const rosterR = await fx(`${EP.nhl}/roster/${teamAbbr}/current`,{},6000);
+        if(!rosterR.ok) continue;
+        const roster = await rosterR.json();
+        const allPlayers = [...(roster.forwards||[]),...(roster.defensemen||[]),...(roster.goalies||[])];
+
+        for(const player of allPlayers){
+          let score=0; const reasons=[];
+          if(isLowTotal){ score+=20; reasons.push(`O/U ${gameTotal}`); }
+
+          // Fourth liner / healthy scratch candidate
+          // Check recent game log
+          try{
+            const logR = await fx(`${EP.nhl}/player/${player.id}/game-log/now`,{},5000);
+            if(!logR.ok) continue;
+            const logD = await logR.json();
+            const recent = (logD.gameLog||[]).slice(0,5);
+            if(!recent.length) continue;
+
+            const avgShots = recent.map(g=>g.shots||0).reduce((a,b)=>a+b,0)/recent.length;
+            const avgToi = recent.map(g=>{ const t=g.toi||'0:00'; const p=t.split(':'); return parseInt(p[0])||0; }).reduce((a,b)=>a+b,0)/recent.length;
+
+            // Low TOI = likely fourth liner or healthy scratch risk
+            if(cfg.loworder && avgToi < 12){ score+=20; reasons.push(`avg ${avgToi.toFixed(0)} min TOI`); }
+            if(cfg.coldstreak && recent.slice(0,3).filter(g=>(g.shots||0)===0).length>=2){ score+=20; reasons.push('2+ games 0 shots'); }
+
+            if(score < 15) continue;
+
+            const pname = `${player.firstName?.default||''} ${player.lastName?.default||''}`.trim();
+            if(cfg.nhl_shots && avgShots < 1.5){
+              candidates.push({player:pname,sport:'NHL',prop:'shots on goal',side:'LESS',line:2.5,game:gameStr,score,reasons:[...reasons,`avg ${avgShots.toFixed(1)} shots/g`]});
+            }
+          }catch(e){}
+        }
+      }catch(e){}
+    }
+  }
+
+  log(`✓ NHL: ${candidates.length} LESS candidates`,'ok');
+  return candidates;
+}
+
+function loadLESSToSlipBuilder(slip){
+  slipLegs = slip.map(c=>({...c, tier:'tier2', rawProb:0.65}));
+  renderLegs();
+  switchTab('slip');
+}
+
+function addLESSToPool(slip){
+  slip.forEach(c=>{
+    addToPool({...c, tier:'tier2', rawProb:0.65, wowScore:c.score, l5_hit_rate:0.65});
+  });
+  switchTab('pool');
+}
+
+// ── Soccer LESS candidates ──
+async function buildSoccerLessCandidates(cfg, log){
+  const candidates = [];
+  try{
+    // Use Odds API for soccer events (MLS + major leagues)
+    const soccerKeys = ['soccer_usa_mls','soccer_epl','soccer_spain_la_liga','soccer_germany_bundesliga','soccer_italy_serie_a'];
+    let allEvents = [];
+
+    for(const key of soccerKeys){
+      try{
+        const r = await fx(`${EP.odds}/sports/${key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},6000);
+        if(r.ok){
+          const events = await r.json();
+          if(events?.length) allEvents.push(...events.map(e=>({...e, leagueKey:key})));
+        }
+      }catch(e){}
+    }
+
+    if(!allEvents.length){ log('⚠ Soccer: no events today','w'); return []; }
+    log(`✓ Soccer: ${allEvents.length} matches`,'ok');
+
+    // Get moneylines to find underdogs
+    for(const ev of allEvents.slice(0,8)){
+      try{
+        const oddsR = await fx(`${EP.odds}/sports/${ev.leagueKey}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,totals&oddsFormat=american`,{},6000);
+        if(!oddsR.ok) continue;
+        const oddsData = await oddsR.json();
+        const gameStr = `${ev.away_team} @ ${ev.home_team}`;
+
+        // Find the underdog team
+        const h2h = oddsData.bookmakers?.[0]?.markets?.find(m=>m.key==='h2h');
+        const totals = oddsData.bookmakers?.[0]?.markets?.find(m=>m.key==='totals');
+        const gameTotal = totals?.outcomes?.find(o=>o.name==='Over')?.point;
+        const isLowTotal = cfg.lowou && gameTotal && gameTotal < 2.25;
+
+        let underdogTeam = null;
+        if(h2h){
+          const away = h2h.outcomes?.find(o=>o.name===ev.away_team);
+          const home = h2h.outcomes?.find(o=>o.name===ev.home_team);
+          if(away && home){
+            // Higher odds = underdog
+            if(away.price > home.price) underdogTeam = ev.away_team;
+            else underdogTeam = ev.home_team;
+          }
+        }
+
+        // Get player props for shots/passes
+        const playerMkts = 'player_shots_on_target,player_passes';
+        try{
+          const prR = await fx(`${EP.odds}/sports/${ev.leagueKey}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=${playerMkts}&oddsFormat=american`,{},6000);
+          if(prR.ok){
+            const prData = await prR.json();
+            for(const bk of (prData.bookmakers||[]).slice(0,1)){
+              for(const mkt of (bk.markets||[])){
+                const propName = mkt.key?.replace(/_/g,' ')||'';
+                const byPlayer = {};
+                (mkt.outcomes||[]).forEach(o=>{
+                  const player = o.description||o.name;
+                  const pt = o.point;
+                  const side = o.name?.toLowerCase();
+                  if(!player||pt==null) return;
+                  const k = `${player}|${pt}`;
+                  if(!byPlayer[k]) byPlayer[k]={player,line:pt,over:null,under:null};
+                  if(side==='over') byPlayer[k].over=o.price;
+                  if(side==='under') byPlayer[k].under=o.price;
+                });
+
+                Object.values(byPlayer).forEach(({player,line,over,under})=>{
+                  if(over==null||under==null) return;
+                  const nvp = noVigProb(over, under);
+                  // Only take LESS if market agrees (under prob > 0.54)
+                  if(nvp.under < 0.54) return;
+
+                  let score = Math.round(nvp.under * 100);
+                  const reasons = [`Market: ${(nvp.under*100).toFixed(0)}% under`];
+
+                  if(isLowTotal){ score+=15; reasons.push(`low total O/U ${gameTotal}`); }
+
+                  // Underdog team bonus — away underdog gets fewer touches
+                  if(underdogTeam && gameStr.includes(underdogTeam)){
+                    score += 20;
+                    reasons.push(`${underdogTeam} is underdog`);
+                  }
+
+                  if(score < 55) return;
+
+                  if(cfg.soccer_shots && mkt.key?.includes('shot')){
+                    candidates.push({player,sport:'Soccer',prop:propName,side:'LESS',line,game:gameStr,score,reasons,game_total:gameTotal});
+                  }
+                  if(cfg.soccer_passes && mkt.key?.includes('pass')){
+                    candidates.push({player,sport:'Soccer',prop:propName,side:'LESS',line,game:gameStr,score,reasons,game_total:gameTotal});
+                  }
+                });
+              }
+            }
+          }
+        }catch(e){}
+      }catch(e){}
+    }
+
+    log(`✓ Soccer: ${candidates.length} LESS candidates`,'ok');
+  }catch(e){ log(`⚠ Soccer: ${e.message}`,'w'); }
+  return candidates;
+}
+
+// ── Tennis LESS candidates ──
+async function buildTennisLessCandidates(cfg, log){
+  const candidates = [];
+  try{
+    // Get today's tennis events from Odds API
+    const tennisKeys = ['tennis_atp_french_open','tennis_wta_french_open','tennis_atp_us_open','tennis_wta_us_open','tennis_atp','tennis_wta'];
+    let allEvents = [];
+
+    for(const key of tennisKeys){
+      try{
+        const r = await fx(`${EP.odds}/sports/${key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},5000);
+        if(r.ok){
+          const events = await r.json();
+          if(events?.length) allEvents.push(...events.map(e=>({...e, leagueKey:key})));
+        }
+      }catch(e){}
+    }
+
+    // Also check ESPN tennis scoreboard
+    if(!allEvents.length){
+      try{
+        const espnR = await fx(`${EP.espn}/tennis/atp/scoreboard`,{},6000);
+        if(espnR.ok){
+          const data = await espnR.json();
+          (data.events||[]).forEach(ev=>{
+            const comp = ev.competitions?.[0];
+            const players = comp?.competitors||[];
+            if(players.length>=2){
+              allEvents.push({
+                id: ev.id,
+                away_team: players[0]?.athlete?.displayName||'Player 1',
+                home_team: players[1]?.athlete?.displayName||'Player 2',
+                leagueKey: 'espn_tennis',
+                rankings: [players[0]?.ranking, players[1]?.ranking]
+              });
+            }
+          });
+        }
+      }catch(e){}
+    }
+
+    if(!allEvents.length){ log('⚠ Tennis: no matches today','w'); return []; }
+    log(`✓ Tennis: ${allEvents.length} matches`,'ok');
+
+    for(const ev of allEvents.slice(0,10)){
+      const gameStr = `${ev.away_team} vs ${ev.home_team}`;
+
+      // Get player props
+      if(ev.leagueKey !== 'espn_tennis'){
+        try{
+          const prR = await fx(`${EP.odds}/sports/${ev.leagueKey}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=player_games,player_aces&oddsFormat=american`,{},6000);
+          if(prR.ok){
+            const prData = await prR.json();
+            for(const bk of (prData.bookmakers||[]).slice(0,1)){
+              for(const mkt of (bk.markets||[])){
+                const byPlayer = {};
+                (mkt.outcomes||[]).forEach(o=>{
+                  const player = o.description||o.name;
+                  const pt = o.point;
+                  const side = o.name?.toLowerCase();
+                  if(!player||pt==null) return;
+                  const k = `${player}|${pt}`;
+                  if(!byPlayer[k]) byPlayer[k]={player,line:pt,over:null,under:null};
+                  if(side==='over') byPlayer[k].over=o.price;
+                  if(side==='under') byPlayer[k].under=o.price;
+                });
+
+                Object.values(byPlayer).forEach(({player,line,over,under})=>{
+                  if(over==null||under==null) return;
+                  const nvp = noVigProb(over, under);
+                  if(nvp.under < 0.56) return; // only strong unders
+
+                  let score = Math.round(nvp.under * 100);
+                  const reasons = [`Market: ${(nvp.under*100).toFixed(0)}% under`];
+
+                  // Total games LESS — big rank gap means straight sets
+                  if(cfg.tennis_games && mkt.key?.includes('game')){
+                    score += 10;
+                    reasons.push('straight sets potential');
+                    candidates.push({player,sport:'Tennis',prop:'total games',side:'LESS',line,game:gameStr,score,reasons});
+                  }
+                  // Aces LESS — clay court or defensive player
+                  if(cfg.tennis_aces && mkt.key?.includes('ace')){
+                    reasons.push('clay/defensive matchup');
+                    candidates.push({player,sport:'Tennis',prop:'aces',side:'LESS',line,game:gameStr,score,reasons});
+                  }
+                });
+              }
+            }
+          }
+        }catch(e){}
+      } else {
+        // ESPN fallback — use ranking differential
+        const [r1, r2] = ev.rankings||[999,999];
+        const rankGap = Math.abs((r1||999) - (r2||999));
+        if(cfg.tennis_games && rankGap > 30){
+          // Big rank gap = likely straight sets
+          const lowerRanked = (r1||999) > (r2||999) ? ev.away_team : ev.home_team;
+          const score = Math.min(75, 50 + Math.round(rankGap/5));
+          candidates.push({
+            player: lowerRanked, sport:'Tennis', prop:'total games', side:'LESS', line:20.5,
+            game: gameStr, score,
+            reasons:[`rank gap: ${rankGap}`, 'straight sets likely', `ranked #${Math.max(r1||999,r2||999)}`]
+          });
+        }
+      }
+    }
+
+    log(`✓ Tennis: ${candidates.length} LESS candidates`,'ok');
+  }catch(e){ log(`⚠ Tennis: ${e.message}`,'w'); }
+  return candidates;
+}
+
 async function buildJeremiaSlip(){
-  document.getElementById('jerBtn').textContent='Building...';
   document.getElementById('jerSp').classList.remove('hidden');
   const sport=document.getElementById('jer_sport').value;
   const slipTypeFull=document.getElementById('jer_sliptype').value;
