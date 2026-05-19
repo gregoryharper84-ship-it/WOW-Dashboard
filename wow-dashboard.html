@@ -1621,6 +1621,7 @@ async function runMLBEngine(log){
     };
 
     for(const game of games.slice(0,8)){
+      if(parseMLBGameState(game) !== 'upcoming') continue; // skip live/final
       const awayId=game.teams?.away?.team?.id;const homeId=game.teams?.home?.team?.id;
       const awayName=game.teams?.away?.team?.name||'Away';const homeName=game.teams?.home?.team?.name||'Home';
       const gameStr=`${awayName} @ ${homeName}`;
@@ -1774,6 +1775,7 @@ async function runNHLEngine(log){
     const nhlProps=[{key:'shots',prop:'shots on goal',line:3.5,side:'MORE'},{key:'saves',prop:'saves',line:28.5,side:'MORE'}];
 
     for(const game of games.slice(0,6)){
+      if(parseNHLGameState(game) !== 'upcoming') continue; // skip live/final
       const awayAbbr=game.awayTeam?.abbrev;const homeAbbr=game.homeTeam?.abbrev;
       const gameStr=`${game.awayTeam?.placeName?.default||awayAbbr} @ ${game.homeTeam?.placeName?.default||homeAbbr}`;
 
@@ -1846,6 +1848,7 @@ async function runBDLEngine(sport,log){
     ];
 
     for(const game of games.slice(0,4)){
+      if(parseBDLGameStatus(game) !== 'upcoming') continue; // skip live/final
       const gameStr=`${game.visitor_team?.full_name||'Away'} @ ${game.home_team?.full_name||'Home'}`;
 
       for(const teamId of [game.visitor_team?.id, game.home_team?.id].filter(Boolean)){
@@ -1966,6 +1969,30 @@ async function runBDLEngine(sport,log){
   return candidates;
 }
 
+// ── Game status utilities — only show props for games not yet started ──
+function isGameUpcoming(commenceTime){
+  if(!commenceTime) return true;
+  try{ return new Date(commenceTime) > new Date(); }catch(e){ return true; }
+}
+function parseBDLGameStatus(game){
+  const s = (game.status||'').toLowerCase();
+  if(s.includes('final')||s.includes('complete')) return 'final';
+  if(s.includes('progress')||s.includes('qtr')||s.includes('half')||s.includes('period')) return 'live';
+  return 'upcoming';
+}
+function parseMLBGameState(game){
+  const state = game.status?.abstractGameState||'';
+  if(state==='Final') return 'final';
+  if(state==='Live'||(game.status?.detailedState||'').includes('Progress')) return 'live';
+  return 'upcoming';
+}
+function parseNHLGameState(game){
+  const s = (game.gameState||game.status||'').toUpperCase();
+  if(s.includes('OFF')||s.includes('FINAL')) return 'final';
+  if(s.includes('LIVE')||s.includes('CRIT')||s.includes('PROG')) return 'live';
+  return 'upcoming';
+}
+
 // ── Odds API Prop Engine — for sports without dedicated stats APIs (WNBA, etc) ──
 async function runOddsAPIEngine(sport, oddsKey, markets, log){
   const candidates = [];
@@ -1977,6 +2004,7 @@ async function runOddsAPIEngine(sport, oddsKey, markets, log){
     log(`✓ ${sport}: ${events.length} games — fetching props...`,'ok');
 
     for(const ev of events.slice(0,5)){
+      if(!isGameUpcoming(ev.commence_time)) continue; // skip live/final
       try{
         const prR = await fx(
           `${EP.odds}/sports/${oddsKey}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=${markets}&oddsFormat=american`,
@@ -5033,23 +5061,22 @@ async function runWinnersUpsets(){
 
   for(const cfg of sportConfigs){
     try{
-      const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
-      if(!evR.ok) continue;
-      const events = await evR.json();
-      if(!events?.length) continue;
+      // Fetch all odds in one call (more reliable on free tier than per-event)
+      const oddsR = await fx(
+        `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
+        {}, 10000
+      );
+      if(!oddsR.ok){ log(`⚠ ${cfg.sport}: odds ${oddsR.status}`,'w'); continue; }
+      const allOdds = await oddsR.json();
+      if(!allOdds?.length){ log(`⚠ ${cfg.sport}: no odds available`,'w'); continue; }
 
-      for(const ev of events.slice(0,12)){
+      for(const oddsGame of allOdds.slice(0,12)){
         try{
-          const oddsR = await fx(
-            `${EP.odds}/sports/${cfg.key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
-            {}, 8000
-          );
-          if(!oddsR.ok) continue;
-          const oddsData = await oddsR.json();
+          const ev = oddsGame; // same structure
           totalGames++;
 
-          const bk = oddsData.bookmakers?.[0];
-          if(!bk) continue;
+          const bk = oddsGame.bookmakers?.[0];
+          if(!bk){ continue; }
 
           const h2h = bk.markets?.find(m=>m.key==='h2h');
           const spreads = bk.markets?.find(m=>m.key==='spreads');
@@ -5292,9 +5319,12 @@ async function runLLPBoard(){
   for(const cfg of sportConfigs){
     log(`⟳ Fetching ${cfg.sport} games...`);
     try{
-      // Step 1: Get events
-      const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
-      if(!evR.ok){ log(`⚠ ${cfg.sport}: ${evR.status}`,'w'); continue; }
+      // Fetch all odds in one call — more reliable than per-event on free tier
+      const evR = await fx(
+        `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
+        {}, 10000
+      );
+      if(!evR.ok){ log(`⚠ ${cfg.sport}: odds ${evR.status}`,'w'); continue; }
       const events = await evR.json();
       if(!events?.length){ log(`⚠ ${cfg.sport}: no games today`,'w'); continue; }
       log(`✓ ${cfg.sport}: ${events.length} games`,'ok');
@@ -5302,12 +5332,8 @@ async function runLLPBoard(){
       // Step 2: Get moneyline + totals for each game
       for(const ev of events.slice(0,8)){
         try{
-          const oddsR = await fx(
-            `${EP.odds}/sports/${cfg.key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
-            {}, 8000
-          );
-          if(!oddsR.ok) continue;
-          const oddsData = await oddsR.json();
+          // Odds already fetched in bulk — ev IS the oddsData object
+          const oddsData = ev;
 
           const game = {
             away_team: ev.away_team,
@@ -8197,7 +8223,7 @@ async function buildJeremiaSlip(){
   // Prefer pool props
   const sportFilter=sport==='all'?['NBA','WNBA','MLB','NHL','Soccer','Tennis']:
     sport==='NBA'?['NBA','WNBA']:[sport];
-  let candidates=propPool.filter(p=>sportFilter.includes(p.sport)&&['tier1','tier2'].includes(p.tier));
+  let candidates=propPool.filter(p=>sportFilter.includes(p.sport)&&['tier1','tier2','tier3'].includes(p.tier));
 
   if(candidates.length<legCount){
     output.innerHTML=`<div class="alert ab"><div class="spd"></div> Not enough props in pool — pulling live stats for ${sportFilter.join('/')}...</div>`;
@@ -8236,7 +8262,9 @@ async function buildJeremiaSlip(){
         const en=await enrichProp(c);
         const ws=await scoreOne(en);
         const val=await wowValidate(en,ws);
-        if(['tier1','tier2'].includes(val.tier)){
+        // Jeremia accepts tier1, tier2, and tier3 (flex-only qualified)
+        // Lower bar than Best Props — Jeremia is floor-first, volume strategy
+        if(['tier1','tier2','tier3'].includes(val.tier) || val.rawProb >= 0.54){
           newScored.push({
             ...en,...val,wowScore:ws,
             jeremiaPriority:c.jeremiaPriority||2,
