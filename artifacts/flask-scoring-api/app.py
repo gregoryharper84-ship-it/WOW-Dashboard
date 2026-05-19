@@ -783,7 +783,8 @@ def health():
             "leaderboard":    "GET /leaderboard?window=L5|L10(default L10)&sport=...&prop=...&side=...&limit=...",
             "schema":         "GET /openapi.json (no auth)",
             "fbref_stats":    "GET /fbref-stats?player=...&league=... (X-API-Key required) — soccer player season stats",
-            "tennis_stats":   "GET /tennis-stats?player=...&tour=atp|wta&year=...&limit=... (X-API-Key required) — ATP/WTA match stats via JeffSackmann"
+            "tennis_stats":       "GET /tennis-stats?player=...&tour=atp|wta&year=...&limit=... (X-API-Key required) — ATP/WTA match stats via JeffSackmann",
+            "tennis_stats_today": "GET /tennis-stats/today?tour=atp|wta (X-API-Key required) — today's live ATP/WTA matches from Odds API"
         }
     })
 
@@ -2804,6 +2805,96 @@ def tennis_stats():
 
     except _req.exceptions.Timeout:
         return jsonify({"ok": False, "error": "Request to GitHub timed out"}), 504
+    except _req.exceptions.RequestException as e:
+        return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/tennis-stats/today", methods=["GET"])
+@require_api_key
+def tennis_stats_today():
+    """
+    Returns today's upcoming ATP/WTA matches across all active tournaments,
+    sourced from the Odds API.  Optionally filter by tour=atp|wta.
+    """
+    import requests as _req
+    from datetime import datetime, timezone
+
+    tour_filter = request.args.get("tour", "").strip().lower()  # atp | wta | "" = both
+
+    odds_key = os.environ.get("ODDS_API_KEY", "")
+    if not odds_key:
+        return jsonify({"ok": False, "error": "ODDS_API_KEY secret not configured"}), 500
+
+    base = "https://api.the-odds-api.com/v4"
+
+    try:
+        # Step 1: get all active tennis sport keys
+        r = _req.get(f"{base}/sports", params={"apiKey": odds_key}, timeout=10)
+        r.raise_for_status()
+        all_sports = r.json()
+        tennis_sports = [
+            s for s in all_sports
+            if "tennis" in s.get("key", "").lower() and s.get("active", False)
+            and (not tour_filter or tour_filter in s.get("key", "").lower())
+        ]
+
+        if not tennis_sports:
+            return jsonify({
+                "ok": True,
+                "matches": [],
+                "count": 0,
+                "message": "No active tennis tournaments found right now.",
+            })
+
+        # Step 2: fetch events for each active tournament
+        now = datetime.now(timezone.utc)
+        all_matches = []
+
+        for sport in tennis_sports:
+            sport_key   = sport["key"]
+            sport_title = sport["title"]
+            r2 = _req.get(f"{base}/sports/{sport_key}/events",
+                          params={"apiKey": odds_key}, timeout=10)
+            if r2.status_code != 200:
+                continue
+            events = r2.json()
+            for e in events:
+                if e.get("completed"):
+                    continue
+                ct = e.get("commence_time", "")
+                # Determine tour from sport key
+                if "wta" in sport_key:
+                    tour = "WTA"
+                elif "atp" in sport_key:
+                    tour = "ATP"
+                else:
+                    tour = "Tennis"
+                all_matches.append({
+                    "event_id":      e.get("id"),
+                    "sport_key":     sport_key,
+                    "tournament":    sport_title,
+                    "tour":          tour,
+                    "commence_time": ct,
+                    "player1":       e.get("home_team"),
+                    "player2":       e.get("away_team"),
+                })
+
+        # Sort by commence_time
+        all_matches.sort(key=lambda x: x.get("commence_time", ""))
+
+        return jsonify({
+            "ok":          True,
+            "source":      "odds-api",
+            "date":        now.strftime("%Y-%m-%d"),
+            "tournaments": [s["key"] for s in tennis_sports],
+            "matches":     all_matches,
+            "count":       len(all_matches),
+        })
+
+    except _req.exceptions.Timeout:
+        return jsonify({"ok": False, "error": "Odds API request timed out"}), 504
     except _req.exceptions.RequestException as e:
         return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
     except Exception as e:
