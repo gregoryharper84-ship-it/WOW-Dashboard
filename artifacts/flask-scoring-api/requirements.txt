@@ -4,3 +4,5 @@ gunicorn>=21.2.0
 psycopg2-binary>=2.9.0
 anthropic>=0.25.0
 Pillow>=10.0.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0

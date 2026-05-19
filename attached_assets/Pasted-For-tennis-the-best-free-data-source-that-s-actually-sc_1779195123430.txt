@@ -1,0 +1,61 @@
+For tennis, the best free data source that's actually scrapable is **Jeff Sackmann's GitHub repository** — it's the gold standard dataset used by researchers and bettors worldwide:
+
+**`github.com/JeffSackmann/tennis_atp`** and **`tennis_wta`**
+
+It contains:
+- Every ATP/WTA match result since 1968
+- Player rankings (updated weekly)
+- Match stats: aces, double faults, serve %, break points, surface
+- H2H records by surface
+- All in clean CSV format, publicly accessible
+
+The issue is my server can't reach GitHub directly either — but **your Replit can**. Here's what I'd add to `app.py`:
+
+```python
+import requests, csv, io
+from flask import jsonify, request
+
+@app.route("/tennis-stats")
+def tennis_stats():
+    player_name = request.args.get("player", "").lower()
+    
+    # Jeff Sackmann ATP match data - current year
+    url = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_2026.csv"
+    try:
+        r = requests.get(url, timeout=10)
+        reader = csv.DictReader(io.StringIO(r.text))
+        matches = []
+        for row in reader:
+            if player_name in row.get("winner_name","").lower() or \
+               player_name in row.get("loser_name","").lower():
+                matches.append({
+                    "date": row.get("tourney_date"),
+                    "surface": row.get("surface"),
+                    "winner": row.get("winner_name"),
+                    "loser": row.get("loser_name"),
+                    "w_aces": row.get("w_ace"),
+                    "l_aces": row.get("l_ace"),
+                    "w_df": row.get("w_df"),
+                    "l_df": row.get("l_df"),
+                    "w_svpt": row.get("w_svpt"),
+                    "l_svpt": row.get("l_svpt"),
+                    "w_games": row.get("w_games") if "w_games" in row else None,
+                    "score": row.get("score"),
+                    "round": row.get("round"),
+                    "tourney_name": row.get("tourney_name"),
+                })
+        # Return last 15 matches
+        return jsonify({"ok": True, "player": player_name, "matches": matches[-15:]})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+```
+
+Then in the dashboard, `enrichWithTennisStats` calls `/tennis-stats?player=Sinner` and gets real match-level data — aces per match, surface-specific win rate, recent form.
+
+**For the LESS Slip Builder specifically**, the most valuable fields are:
+- `surface` — aces LESS on clay, games LESS if big rank gap on fast surface
+- `w_ace` / `l_ace` — actual aces per match to validate the line
+- `score` — sets played to calculate average total games
+- `w_svpt` / `l_svpt` — serve points to model hold rate
+
+Want me to add the Replit endpoint code and update `enrichWithTennisStats` in the dashboard to call it?
