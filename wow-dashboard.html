@@ -373,6 +373,8 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
             <option value="MLB">MLB</option>
             <option value="NHL">NHL</option>
             <option value="WNBA">WNBA</option>
+            <option value="Soccer">Soccer</option>
+            <option value="Tennis">Tennis</option>
             <option value="NFL">NFL</option>
           </select>
         </div>
@@ -829,6 +831,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
             <option value="NBA">NBA</option>
             <option value="NHL">NHL</option>
             <option value="WNBA">WNBA</option>
+            <option value="Soccer">Soccer</option>
             <option value="NFL">NFL</option>
           </select>
         </div>
@@ -1810,119 +1813,158 @@ async function runNHLEngine(log){
 async function runBDLEngine(sport,log){
   const candidates=[];
   const bdlBase='https://api.balldontlie.io/v1';
-  const seasons=['2025','2024'] // NBA 2025-26 season key = 2025;
+  // BDL season keys: 2024 = 2024-25 season (current playoffs), 2025 = 2025-26
+  const seasons=['2024','2025'];
   try{
     const today=new Date().toISOString().split('T')[0];
-    // Fetch today's games — includes playoffs (postseason)
-    const gamesR=await fx(`${bdlBase}/games?dates[]=${today}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
-    if(!gamesR.ok)throw new Error(`BDL games: ${gamesR.status}`);
-    const gamesD=await gamesR.json();
-    let games=gamesD.data||[];
-    if(!games.length){
-      // Try postseason endpoint explicitly
-      const psR=await fx(`${bdlBase}/games?dates[]=${today}&postseason=true&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
-      if(psR.ok){const psD=await psR.json();games=psD.data||[];}
+
+    // Step 1: Get today's games
+    let games=[];
+    for(const season of seasons){
+      const gR=await fx(`${bdlBase}/games?dates[]=${today}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+      if(gR.ok){
+        const gD=await gR.json();
+        if(gD.data?.length){ games=gD.data; break; }
+      }
     }
-    if(!games.length){log(`⚠ ${sport}: No games today — trying ESPN fallback`,'w');return runESPNEngine(sport,log);}
+    // Try postseason explicitly
+    if(!games.length){
+      const psR=await fx(`${bdlBase}/games?dates[]=${today}&postseason=true&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+      if(psR.ok){ const psD=await psR.json(); games=psD.data||[]; }
+    }
+    if(!games.length){ log(`⚠ ${sport}: No games today — trying ESPN fallback`,'w'); return runESPNEngine(sport,log); }
     log(`✓ ${sport}: ${games.length} game(s) on slate`,'ok');
 
     const propDefs=[
-      {key:'pts',prop:'points',lines:[10.5,15.5,20.5,25.5,30.5]},
-      {key:'reb',prop:'rebounds',lines:[3.5,5.5,7.5,10.5]},
-      {key:'ast',prop:'assists',lines:[1.5,3.5,5.5,7.5]},
-      {key:'stl',prop:'steals',lines:[0.5,1.5]},
-      {key:'blk',prop:'blocks',lines:[0.5,1.5]},
+      {key:'pts', prop:'points',    lines:[10.5,15.5,20.5,25.5,30.5,35.5]},
+      {key:'reb', prop:'rebounds',  lines:[3.5,5.5,7.5,10.5,13.5]},
+      {key:'ast', prop:'assists',   lines:[1.5,3.5,5.5,7.5,10.5]},
+      {key:'stl', prop:'steals',    lines:[0.5,1.5,2.5]},
+      {key:'blk', prop:'blocks',    lines:[0.5,1.5,2.5]},
+      {key:'fg3m',prop:'3-pointers made', lines:[0.5,1.5,2.5,3.5,4.5]},
       {key:'turnover',prop:'turnovers',lines:[1.5,2.5,3.5]},
-      {key:'fg3m',prop:'3-pointers made',lines:[0.5,1.5,2.5,3.5]},
     ];
 
-    for(const game of games.slice(0,6)){
+    for(const game of games.slice(0,4)){
       const gameStr=`${game.visitor_team?.full_name||'Away'} @ ${game.home_team?.full_name||'Home'}`;
-      for(const teamId of [game.visitor_team?.id,game.home_team?.id].filter(Boolean)){
-        let recentPlayers=[];
-        for(const season of seasons){
-          // Fetch both regular season and postseason stats
-          const statsR=await fx(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=${season}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
-          if(!statsR.ok) continue;
-          const statsD=await statsR.json();
-          // Also try postseason
-          const psStatsR=await fx(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=${season}&postseason=true&per_page=15`,{headers:{'Authorization':KEYS.bdl}},8000);
-          const psData=psStatsR.ok?(await psStatsR.json()).data||[]:[];
-          const playerMap=new Map();
-          [...(statsD.data||[]),...psData].forEach(s=>{
-            if(s.player?.id&&s.player?.first_name)playerMap.set(s.player.id,s.player);
-          });
-          recentPlayers=[...playerMap.values()].slice(0,6);
-          if(recentPlayers.length)break;
-        }
-        if(!recentPlayers.length)continue;
 
-        for(const player of recentPlayers){
+      for(const teamId of [game.visitor_team?.id, game.home_team?.id].filter(Boolean)){
+        // Step 2: Get active players via recent team game stats
+        // Use stats endpoint with game_ids from recent games — more reliable than team roster
+        let players=[];
+        for(const season of seasons){
+          // Get last 5 games for this team to find active players
+          const recentGamesR=await fx(
+            `${bdlBase}/games?team_ids[]=${teamId}&seasons[]=${season}&per_page=15`,
+            {headers:{'Authorization':KEYS.bdl}}, 8000
+          );
+          if(!recentGamesR.ok) continue;
+          const recentGames=(await recentGamesR.json()).data||[];
+          if(!recentGames.length) continue;
+
+          // Sort by date descending client-side (BDL v1 has no sort param)
+          recentGames.sort((a,b)=>new Date(b.date||0)-new Date(a.date||0));
+          const recentGameIds=recentGames.slice(0,3).map(g=>g.id).filter(Boolean);
+          if(!recentGameIds.length) continue;
+
+          const statsQuery=recentGameIds.map(id=>`game_ids[]=${id}`).join('&');
+          const statsR=await fx(
+            `${bdlBase}/stats?${statsQuery}&per_page=50`,
+            {headers:{'Authorization':KEYS.bdl}}, 8000
+          );
+          if(!statsR.ok) continue;
+          const statsData=(await statsR.json()).data||[];
+
+          // Build player map — only include players who actually played (min > 0)
+          const playerMap=new Map();
+          statsData.filter(s=>{
+            const m=s.min; const minVal=m?parseInt(String(m).split(':')[0]||0):0; return minVal>5;
+          }).forEach(s=>{
+            if(s.player?.id&&s.player?.first_name&&s.team?.id===teamId){
+              playerMap.set(s.player.id, s.player);
+            }
+          });
+          players=[...playerMap.values()].slice(0,8);
+          if(players.length>=4) break;
+        }
+
+        if(!players.length){ log(`  ⚠ No active players found for team ${teamId}`,'w'); continue; }
+
+        // Step 3: Get full game log for each player
+        for(const player of players){
           let playerLogs=[];
           for(const season of seasons){
-            // Get regular season logs
-            const logR=await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=20`,{headers:{'Authorization':KEYS.bdl}},8000);
-            // Get postseason logs
-            const psLogR=await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&postseason=true&per_page=10`,{headers:{'Authorization':KEYS.bdl}},8000);
-            const regData=logR.ok?(await logR.json()).data||[]:[];
-            const psData=psLogR.ok?(await psLogR.json()).data||[]:[];
-            // Combine — postseason games first (most recent context)
-            const combined=[...psData,...regData];
-            const filtered=combined.filter(g=>{const m=g.min;return m&&m!=='0'&&m!=='0:00'&&m!=='00'&&m!==0;});
-            if(filtered.length>=2){playerLogs=filtered;break;}
+            const logR=await fx(
+              `${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=25`,
+              {headers:{'Authorization':KEYS.bdl}}, 8000
+            );
+            const psLogR=await fx(
+              `${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&postseason=true&per_page=15`,
+              {headers:{'Authorization':KEYS.bdl}}, 8000
+            );
+            const reg=logR.ok?(await logR.json()).data||[]:[];
+            const ps=psLogR.ok?(await psLogR.json()).data||[]:[];
+            // Postseason first (most recent context during playoffs)
+            const combined=[...ps,...reg].filter(g=>{
+              const m=g.min; const mVal=m?parseInt(String(m).split(':')[0]||0):0; return mVal>5;
+            });
+            if(combined.length>=3){ playerLogs=combined; break; }
           }
-          if(playerLogs.length<2)continue;
+          if(playerLogs.length<3) continue;
 
           const playerName=`${player.first_name||''} ${player.last_name||''}`.trim();
+
+          // Step 4: Score each prop
           for(const pd of propDefs){
             const vals=playerLogs.map(g=>parseFloat(g[pd.key])||0);
             if(!vals.length) continue;
 
-            // FIX #5: Playoff weighting — postseason logs are fetched first, weight them 2x
-            const psCount = Math.min(3, vals.length); // first few are likely playoff
-            let wSum=0, wVals=0;
+            // Playoff weighting — first entries are likely playoff (fetched first)
+            const psCount=Math.min(3,vals.length);
+            let wSum=0,wVals=0;
             vals.forEach((v,i)=>{ const w=i<psCount?2.0:1.0; wVals+=v*w; wSum+=w; });
-            const weightedAvg = wSum > 0 ? wVals/wSum : vals.reduce((s,v)=>s+v,0)/vals.length;
+            const weightedAvg=wSum>0?wVals/wSum:vals.reduce((s,v)=>s+v,0)/vals.length;
 
-            // FIX #11: Test all lines, find optimal EV line
-            let bestLine=null, bestHits=null, bestEV=-999;
+            // Find optimal line
+            let bestLine=null,bestHR=null,bestEV=-999;
             for(const line of pd.lines){
-              if(weightedAvg < line*0.55) continue; // Skip clearly unreachable lines
-              const hits=computeHitRates(playerLogs.map(g=>({[pd.key]:parseFloat(g[pd.key])||0})),pd.key,line,'MORE');
-              if(!hits||hits.l5_hit_rate==null) continue;
-              // FIX #3: Min hit rate gate
-              // FIX #7: Higher bar for 0.5 props (binary risk)
-              const minRate = line <= 0.5 ? 0.62 : 0.47;
-              if(hits.l5_hit_rate < minRate) continue;
-              const ev = hits.l5_hit_rate - 0.577;
-              if(ev > bestEV){ bestEV=ev; bestLine=line; bestHits=hits; }
+              if(weightedAvg < line*0.50) continue; // clearly out of range
+              const hr=computeHitRates(playerLogs, pd.key, line, 'MORE');
+              if(!hr||hr.l5_hit_rate==null) continue;
+              const minRate=line<=0.5?0.62:0.52;
+              if(hr.l5_hit_rate<minRate) continue;
+              const ev=hr.l5_hit_rate-0.577;
+              if(ev>bestEV){ bestEV=ev; bestLine=line; bestHR=hr; }
             }
-            if(!bestLine||!bestHits) continue;
+            if(!bestLine||!bestHR) continue;
 
             candidates.push({
-              player:playerName,sport,prop:pd.prop,side:'MORE',
-              line:bestLine,game:gameStr,
+              player:playerName, sport, prop:pd.prop, side:'MORE',
+              line:bestLine, game:gameStr,
               recent_avg:parseFloat(weightedAvg.toFixed(2)),
-              l5_hit_rate:bestHits.l5_hit_rate,
-              l10_hit_rate:bestHits.l10_hit_rate,
-              l5_median:bestHits.l5_median,
+              l5_hit_rate:bestHR.l5_hit_rate,
+              l10_hit_rate:bestHR.l10_hit_rate,
+              l5_median:bestHR.l5_median,
               raw_vals:vals.slice(0,10),
-              role_score:7,confidence:bestHits.l5_hit_rate,
-              note:`L5 avg: ${weightedAvg.toFixed(1)} | L5 hit: ${(bestHits.l5_hit_rate*100).toFixed(0)}% (playoff-weighted)`
+              role_score:7, confidence:bestHR.l5_hit_rate,
+              note:`L5 avg: ${weightedAvg.toFixed(1)} | Hit: ${(bestHR.l5_hit_rate*100).toFixed(0)}% (${playerLogs.length} games)`
             });
           }
         }
       }
     }
-    log(`✓ ${sport}: ${candidates.length} candidates found`,'ok');
+
+    log(`✓ ${sport}: ${candidates.length} candidates`,'ok');
+    if(!candidates.length){
+      log(`⚠ ${sport}: 0 candidates — BDL may have limited data. Trying ESPN fallback...`,'w');
+      return runESPNEngine(sport,log);
+    }
   }catch(e){
-    log(`⚠ ${sport} BDL error: ${e.message} — trying ESPN fallback`,'w');
+    log(`⚠ ${sport} error: ${e.message} — trying ESPN fallback`,'w');
     return runESPNEngine(sport,log);
   }
-  if(!candidates.length){log(`⚠ ${sport}: No candidates — trying ESPN fallback`,'w');return runESPNEngine(sport,log);}
   return candidates;
 }
-
 
 // ── Odds API Prop Engine — for sports without dedicated stats APIs (WNBA, etc) ──
 async function runOddsAPIEngine(sport, oddsKey, markets, log){
@@ -2747,10 +2789,126 @@ async function runMLBPropAnalyst(prop){
 
     // ── STEP 3: Game environment check ──
     if(matchedGame){
-      // Try to get game total from Odds API
       const awayAbbr = matchedGame.teams?.away?.team?.abbreviation||'';
       const homeAbbr = matchedGame.teams?.home?.team?.abbreviation||'';
 
+      // ── Weather factors (wind direction + temp) ──
+      try{
+        const wx = matchedGame.weather;
+        if(wx){
+          const wind = parseInt(wx.wind||0);
+          const temp = parseInt(wx.temp||72);
+          const windDir = (wx.condition||'').toLowerCase();
+          const propLower = (prop.prop||'').toLowerCase();
+          const isHitterProp = propLower.includes('hit')||propLower.includes('base')||propLower.includes('run')||propLower.includes('rbi');
+
+          if(isHitterProp){
+            // Wind blowing out → MORE on TB/hits
+            if(wind > 15 && (windDir.includes('out') || windDir.includes('blowing out'))){
+              result.flags.push(`Wind ${wind}mph blowing OUT — ball carries, hitter MORE`);
+              result.adjustments.push({field:'rawProb', delta: prop.side==='MORE'?0.04:-0.04, reason:`Wind ${wind}mph out`});
+            }
+            // Wind blowing in → LESS
+            else if(wind > 15 && (windDir.includes('in') || windDir.includes('blowing in'))){
+              result.flags.push(`Wind ${wind}mph blowing IN — suppresses power, hitter LESS`);
+              result.adjustments.push({field:'rawProb', delta: prop.side==='LESS'?0.04:-0.04, reason:`Wind ${wind}mph in`});
+            }
+            // High wind regardless of direction = variance
+            else if(wind > 20){
+              result.flags.push(`High wind ${wind}mph — unpredictable ball flight`);
+            }
+            // Cold weather suppresses offense
+            if(temp < 45){
+              result.flags.push(`Cold ${temp}°F — dead ball, suppressed offense`);
+              result.adjustments.push({field:'rawProb', delta: prop.side==='LESS'?0.03:-0.03, reason:`Cold weather (${temp}°F)`});
+            }
+          }
+        }
+      }catch(e){}
+
+      // ── FIP vs ERA gap — better pitcher quality signal ──
+      try{
+        const oppPitcherId = matchedGame.teams?.away?.probablePitcher?.id ||
+                             matchedGame.teams?.home?.probablePitcher?.id;
+        if(oppPitcherId){
+          const pR = await fx(`${EP.mlb}/people/${oppPitcherId}/stats?stats=season&season=2026&group=pitching`,{},5000);
+          if(pR.ok){
+            const pData = await pR.json();
+            const pStats = pData.stats?.[0]?.splits?.[0]?.stat;
+            if(pStats){
+              const era = parseFloat(pStats.era||4.5);
+              const fip = parseFloat(pStats.fielding_independent_pitching||era);
+              const whip = parseFloat(pStats.whip||1.3);
+              const fipGap = era - fip;
+              const propLower = (prop.prop||'').toLowerCase();
+              const isHitterProp = propLower.includes('hit')||propLower.includes('base')||propLower.includes('run');
+
+              if(isHitterProp){
+                // ERA inflated vs FIP = pitcher has been lucky, expect regression (more hits)
+                if(fipGap > 0.8){
+                  result.flags.push(`SP ERA ${era.toFixed(2)} inflated vs FIP ${fip.toFixed(2)} — pitcher due for regression`);
+                  result.adjustments.push({field:'rawProb', delta: prop.side==='MORE'?0.03:-0.03, reason:`ERA/FIP gap +${fipGap.toFixed(2)}`});
+                }
+                // FIP inflated vs ERA = pitcher has been unlucky, better than ERA shows
+                else if(fipGap < -0.8){
+                  result.flags.push(`SP FIP ${fip.toFixed(2)} worse than ERA ${era.toFixed(2)} — pitcher regression risk`);
+                  result.adjustments.push({field:'rawProb', delta: prop.side==='LESS'?0.03:-0.03, reason:`FIP/ERA gap ${fipGap.toFixed(2)}`});
+                }
+                // High WHIP — lots of baserunners = more scoring opportunities
+                if(whip > 1.40){
+                  result.flags.push(`SP WHIP ${whip.toFixed(2)} — high walk/hit rate, favor MORE runs`);
+                  result.adjustments.push({field:'rawProb', delta: propLower.includes('run')&&prop.side==='MORE'?0.03:0, reason:`High WHIP (${whip.toFixed(2)})`});
+                }
+              }
+
+              // Pitcher strikeout props — ABS Challenge System note
+              if(propLower.includes('strikeout')||propLower.includes('k')){
+                result.flags.push('ABS Challenge System active — reduces umpire variance on K props');
+              }
+            }
+          }
+        }
+      }catch(e){}
+
+      // ── Road dog game script — runs scored props ──
+      try{
+        const propLower = (prop.prop||'').toLowerCase();
+        if(propLower.includes('run')){
+          // Get moneyline to determine if player's team is underdog
+          const evR = await fx(`${EP.odds}/sports/baseball_mlb/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},5000);
+          if(evR.ok){
+            const events = await evR.json();
+            const matchedEv = events.find(ev=>
+              ev.away_team?.toLowerCase().includes(awayAbbr.toLowerCase())||
+              ev.home_team?.toLowerCase().includes(homeAbbr.toLowerCase())
+            );
+            if(matchedEv){
+              const oddsR2 = await fx(`${EP.odds}/sports/baseball_mlb/events/${matchedEv.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h&oddsFormat=american`,{},5000);
+              if(oddsR2.ok){
+                const od = await oddsR2.json();
+                const bk = od.bookmakers?.[0];
+                const awayML = bk?.markets?.[0]?.outcomes?.find(o=>o.name===matchedEv.away_team)?.price;
+                const homeML = bk?.markets?.[0]?.outcomes?.find(o=>o.name===matchedEv.home_team)?.price;
+                if(awayML && homeML){
+                  const nvp = noVigProb(awayML, homeML);
+                  // Player's team implied prob
+                  const isAway = playerTeamSide==='away';
+                  const playerTeamProb = isAway ? nvp.over : nvp.under;
+                  if(playerTeamProb < 0.40){
+                    result.flags.push(`Player's team is ${(playerTeamProb*100).toFixed(0)}% underdog — blowout loss = fewer runs`);
+                    result.adjustments.push({field:'rawProb', delta: prop.side==='LESS'?0.04:-0.04, reason:`Team is ${(playerTeamProb*100).toFixed(0)}% dog (game script)`});
+                  } else if(playerTeamProb > 0.65 && propLower.includes('run')){
+                    result.flags.push(`Player's team ${(playerTeamProb*100).toFixed(0)}% favorite — run-scoring environment favorable`);
+                    result.adjustments.push({field:'rawProb', delta: prop.side==='MORE'?0.02:0, reason:'Heavy favorite game script'});
+                  }
+                }
+              }
+            }
+          }
+        }
+      }catch(e){}
+
+      // Try to get game total from Odds API
       try{
         const oddsR = await fx(
           `${EP.odds}/sports/baseball_mlb/odds?apiKey=${KEYS.odds}&regions=us&markets=totals&oddsFormat=american&bookmakers=draftkings`,
@@ -3858,10 +4016,100 @@ async function enrichWithNBAStats(prop){
 
     if(vals.length < 2) return prop;
 
-    return buildEnrichedProp(prop, vals, cacheKey, {
+    // ── WNBA Context Factors ──
+    let contextFlags = [];
+    let contextAdjustment = 0;
+
+    if(isWNBA){
+      try{
+        // Back-to-back detection
+        const yesterday = new Date(Date.now()-86400000).toISOString().split('T')[0].replace(/-/g,'');
+        const prevR = await fx(`${EP.espn}/basketball/wnba/scoreboard?dates=${yesterday}`,{},6000);
+        if(prevR.ok){
+          const prevData = await prevR.json();
+          const prevTeamNames = (prevData.events||[]).flatMap(ev=>
+            (ev.competitions?.[0]?.competitors||[]).map(c=>
+              (c.team?.displayName||c.team?.name||'').toLowerCase()
+            )
+          );
+          const playerTeamLower = (player.team?.full_name||'').toLowerCase();
+          const teamWords = playerTeamLower.split(' ').filter(w=>w.length>3);
+          const onB2B = teamWords.some(w=>prevTeamNames.some(t=>t.includes(w)));
+
+          if(onB2B){
+            contextFlags.push('⚠ WNBA B2B — minutes/efficiency typically drop');
+            // Points props — reduce ~8% on B2B
+            if((prop.prop||'').toLowerCase().includes('point')){
+              contextAdjustment = prop.side==='LESS' ? 0.05 : -0.05;
+              contextFlags.push('Points LESS +5% on B2B second leg');
+            }
+            // Rebounds/assists less affected but still down
+            else {
+              contextAdjustment = prop.side==='LESS' ? 0.03 : -0.03;
+            }
+          }
+        }
+
+        // WNBA 12-player roster — check for key absence context
+        // If player IS the star and is healthy, their usage may be elevated
+        const avgMins = vals.map(g=>{
+          const m = logs[vals.indexOf?.(g)||0]?.min||'0';
+          const parts = String(m).split(':');
+          return parseInt(parts[0]||0);
+        }).filter(m=>m>0);
+        const avgMinVal = avgMins.length ? avgMins.reduce((a,b)=>a+b,0)/avgMins.length : 0;
+
+        if(avgMinVal > 30){
+          contextFlags.push(`Star player: ${avgMinVal.toFixed(0)} avg min — 12-player roster, high usage`);
+          // Small boost for high-usage stars on MORE props
+          if(prop.side==='MORE') contextAdjustment += 0.02;
+        } else if(avgMinVal < 18 && avgMinVal > 0){
+          contextFlags.push(`Bench player: ${avgMinVal.toFixed(0)} avg min — rotation risk`);
+          if(prop.side==='LESS') contextAdjustment += 0.03;
+        }
+
+      }catch(e){}
+    }
+
+    // NBA playoff pace context
+    if(!isWNBA && prop.game){
+      try{
+        // High playoff leverage = stars play more → favor MORE on star props
+        const propLower = (prop.prop||'').toLowerCase();
+        if(propLower.includes('point') || propLower.includes('assist')){
+          const avgMinsVal = logs.slice(0,5).map(g=>{
+            const m=String(g.min||'0');
+            const parts=m.split(':');
+            return parseInt(parts[0]||0);
+          }).filter(m=>m>0);
+          const recentAvgMins = avgMinsVal.length ? avgMinsVal.reduce((a,b)=>a+b,0)/avgMinsVal.length : 0;
+          if(recentAvgMins > 35){
+            contextFlags.push(`High minutes load: ${recentAvgMins.toFixed(0)} avg — playoff usage elevated`);
+            if(prop.side==='MORE') contextAdjustment += 0.02;
+          }
+        }
+      }catch(e){}
+    }
+
+    const enriched = buildEnrichedProp(prop, vals, cacheKey, {
       position: player.position || null,
       team: player.team?.full_name || null,
     });
+
+    // Apply context adjustments
+    if(contextAdjustment !== 0 || contextFlags.length){
+      enriched.confidence = Math.min(0.85, Math.max(0.35,
+        (enriched.confidence||0.52) + contextAdjustment
+      ));
+      enriched.l5_hit_rate = Math.min(0.85, Math.max(0.35,
+        (enriched.l5_hit_rate||0.52) + contextAdjustment
+      ));
+      enriched.contextFlags = contextFlags;
+      if(!enriched.note) enriched.note = '';
+      enriched.note += contextFlags.length ? ' | ' + contextFlags[0] : '';
+    }
+
+    return enriched;
 
   }catch(e){ return prop; }
 }
@@ -4640,7 +4888,7 @@ async function runWinnersUpsets(){
   document.getElementById('wuBtn').textContent = 'Scanning...';
   document.getElementById('wuSp').classList.remove('hidden');
   const out = document.getElementById('wuOutput');
-  out.innerHTML = `<div class="alert ab"><div class="spd"></div> Scanning today's slate for winners and upsets...</div>`;
+  out.innerHTML = `<div class="alert ab"><div class="spd"></div> Scanning today's slate...</div>`;
 
   const sportFilter = document.getElementById('wu_sport').value;
   const sportConfigs = [
@@ -4655,16 +4903,142 @@ async function runWinnersUpsets(){
   const upsets = [];
   let totalGames = 0;
 
+  // ── MLB enrichment: FIP/WHIP over ERA, bullpen, weather, ABS ──
+  const getMLBGameContext = async (game) => {
+    const ctx = {pitcherEdge:0, upsetEdge:0, reasons:[], favBoosts:[]};
+    try{
+      const today = new Date().toISOString().split('T')[0];
+      const schedR = await fx(`${EP.mlb}/schedule?sportId=1&date=${today}&hydrate=probablePitcher,team,linescore,weather`,{},8000);
+      if(!schedR.ok) return ctx;
+      const sched = await schedR.json();
+      const games = sched.dates?.[0]?.games||[];
+
+      const awayN = (game.away||'').toLowerCase();
+      const homeN = (game.home||'').toLowerCase();
+      const matched = games.find(g=>{
+        const a=(g.teams?.away?.team?.name||'').toLowerCase();
+        const h=(g.teams?.home?.team?.name||'').toLowerCase();
+        return a.includes(awayN.slice(0,5))||h.includes(homeN.slice(0,5));
+      });
+      if(!matched) return ctx;
+
+      // Weather
+      const wx = matched.weather;
+      if(wx){
+        const wind = parseInt(wx.wind||0);
+        const temp = parseInt(wx.temp||72);
+        if(wind > 15){ ctx.upsetEdge += 10; ctx.reasons.push(`Wind ${wind}mph — high variance game`); }
+        if(temp < 45){ ctx.upsetEdge += 8; ctx.reasons.push(`Cold ${temp}°F — run suppression`); }
+        if(temp > 85 && wind < 10){ ctx.favBoosts.push(`Hot ${temp}°F, calm — hitter friendly`); }
+      }
+
+      // Probable pitcher FIP/WHIP (better than ERA)
+      const getPitcherFIP = async (pid) => {
+        if(!pid) return null;
+        try{
+          const r = await fx(`${EP.mlb}/people/${pid}/stats?stats=season&season=2026&group=pitching`,{},5000);
+          if(!r.ok) return null;
+          const d = await r.json();
+          const s = d.stats?.[0]?.splits?.[0]?.stat;
+          if(!s) return null;
+          return {
+            era: parseFloat(s.era||4.5),
+            whip: parseFloat(s.whip||1.3),
+            fip: parseFloat(s.fielding_independent_pitching||s.era||4.5),
+            strikeoutsPer9: parseFloat(s.strikeoutsPer9Inn||7),
+            walksPer9: parseFloat(s.walksPer9Inn||3),
+          };
+        }catch(e){ return null; }
+      };
+
+      const awayPitcher = matched.teams?.away?.probablePitcher;
+      const homePitcher = matched.teams?.home?.probablePitcher;
+      const [awayPStats, homePStats] = await Promise.all([
+        getPitcherFIP(awayPitcher?.id),
+        getPitcherFIP(homePitcher?.id)
+      ]);
+
+      // FIP-based edge — better predictor than ERA
+      if(awayPStats && homePStats){
+        const fipGap = awayPStats.fip - homePStats.fip;
+        if(Math.abs(fipGap) > 0.8){
+          const betterPitcher = fipGap > 0 ? game.home : game.away;
+          const worseWhip = fipGap > 0 ? awayPStats.whip : homePStats.whip;
+          ctx.favBoosts.push(`${betterPitcher} has FIP edge (${Math.abs(fipGap).toFixed(2)} gap)`);
+          if(worseWhip > 1.40){
+            ctx.upsetEdge += 12;
+            ctx.reasons.push(`Opposing SP WHIP ${worseWhip.toFixed(2)} — walks hurt`);
+          }
+        }
+      }
+
+      // Home field + divisional underdog value
+      const isHomeDog = game.homeProb < game.awayProb;
+      if(isHomeDog){
+        ctx.upsetEdge += 15;
+        ctx.reasons.push('Home underdog — home field not fully priced');
+      }
+
+      // ABS Challenge System — reduces bad-beat risk for favorites
+      ctx.favBoosts.push('ABS Challenge System active — reduces umpire variance');
+
+      // Road dog value (historically +EV)
+      const isRoadDog = game.awayProb < game.homeProb;
+      if(isRoadDog && game.awayProb >= 0.38){
+        ctx.upsetEdge += 8;
+        ctx.reasons.push('Road dog — historically undervalued in lines');
+      }
+
+    }catch(e){}
+    return ctx;
+  };
+
+  // ── WNBA enrichment: roster depth, back-to-back, pace, key absences ──
+  const getWNBAGameContext = async (game) => {
+    const ctx = {upsetEdge:0, reasons:[], favBoosts:[]};
+    try{
+      // Back-to-back detection via ESPN
+      const espnR = await fx(`${EP.espn}/basketball/wnba/scoreboard`,{},6000);
+      if(espnR.ok){
+        const espnData = await espnR.json();
+        const events = espnData.events||[];
+        // Check if either team played yesterday
+        const yesterday = new Date(Date.now()-86400000).toISOString().split('T')[0].replace(/-/g,'');
+        const prevR = await fx(`${EP.espn}/basketball/wnba/scoreboard?dates=${yesterday}`,{},6000);
+        if(prevR.ok){
+          const prevData = await prevR.json();
+          const prevTeams = (prevData.events||[]).flatMap(e=>
+            (e.competitions?.[0]?.competitors||[]).map(c=>c.team?.displayName||'')
+          );
+          const awayB2B = prevTeams.some(t=>t.toLowerCase().includes((game.away||'').toLowerCase().slice(0,6)));
+          const homeB2B = prevTeams.some(t=>t.toLowerCase().includes((game.home||'').toLowerCase().slice(0,6)));
+
+          if(awayB2B && !homeB2B){
+            ctx.upsetEdge += 18;
+            ctx.reasons.push('Away team on B2B — fatigue advantage for home');
+          } else if(homeB2B && !awayB2B){
+            ctx.upsetEdge += 15;
+            ctx.reasons.push('Home team on B2B — road team well-rested');
+          }
+        }
+      }
+
+      // Small roster impact — 12 players means 1 absence = massive swing
+      ctx.reasons.push('WNBA 12-player roster — check injury report (1 star = line shift)');
+      ctx.favBoosts.push('Track home court — strong crowds impact close games');
+
+    }catch(e){}
+    return ctx;
+  };
+
   for(const cfg of sportConfigs){
     try{
-      // Get events
       const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
       if(!evR.ok) continue;
       const events = await evR.json();
       if(!events?.length) continue;
 
-      // Get moneylines for all events
-      for(const ev of events.slice(0,10)){
+      for(const ev of events.slice(0,12)){
         try{
           const oddsR = await fx(
             `${EP.odds}/sports/${cfg.key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
@@ -4680,173 +5054,143 @@ async function runWinnersUpsets(){
           const h2h = bk.markets?.find(m=>m.key==='h2h');
           const spreads = bk.markets?.find(m=>m.key==='spreads');
           const totals = bk.markets?.find(m=>m.key==='totals');
-
           if(!h2h?.outcomes?.length) continue;
 
-          // Calculate no-vig probabilities
           const awayML = h2h.outcomes.find(o=>o.name===ev.away_team)?.price;
           const homeML = h2h.outcomes.find(o=>o.name===ev.home_team)?.price;
-          if(!awayML || !homeML) continue;
+          if(!awayML||!homeML) continue;
 
           const nvp = noVigProb(awayML, homeML);
           const awayProb = nvp.over;
           const homeProb = nvp.under;
-
-          // Game total
           const total = totals?.outcomes?.find(o=>o.name==='Over')?.point;
-
-          // Spread
           const awaySpread = spreads?.outcomes?.find(o=>o.name===ev.away_team)?.point;
           const homeSpread = spreads?.outcomes?.find(o=>o.name===ev.home_team)?.point;
-
           const gameTime = ev.commence_time ?
             new Date(ev.commence_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null;
 
-          const gameObj = {
-            sport: cfg.sport,
-            away: ev.away_team, home: ev.home_team,
-            awayML, homeML, awayProb, homeProb,
-            awaySpread, homeSpread, total, gameTime,
-            id: ev.id, leagueKey: cfg.key
-          };
-
-          // ── STRONG FAVORITE ──
-          // Criteria: implied prob > 65%, meaningful spread
           const favTeam = awayProb > homeProb ? 'away' : 'home';
           const favProb = Math.max(awayProb, homeProb);
-          const favML = favTeam==='away' ? awayML : homeML;
-          const favSpread = favTeam==='away' ? awaySpread : homeSpread;
+          const dogProb = Math.min(awayProb, homeProb);
           const favName = favTeam==='away' ? ev.away_team : ev.home_team;
           const dogName = favTeam==='away' ? ev.home_team : ev.away_team;
+          const favML = favTeam==='away' ? awayML : homeML;
+          const dogML = favTeam==='away' ? homeML : awayML;
+          const favSpread = favTeam==='away' ? awaySpread : homeSpread;
+          const dogSpread = favTeam==='away' ? homeSpread : awaySpread;
+          const isHomeDog = (favTeam==='away');
+          const isHighTotal = (cfg.sport==='MLB' && total >= 9.0) || (cfg.sport==='WNBA' && total >= 165);
 
-          if(favProb >= 0.65){
+          const gameCtxObj = {away:ev.away_team,home:ev.home_team,awayProb,homeProb};
+
+          // Sport-specific enrichment
+          let sportCtx = {upsetEdge:0, reasons:[], favBoosts:[]};
+          if(cfg.sport==='MLB') sportCtx = await getMLBGameContext({...gameCtxObj});
+          else if(cfg.sport==='WNBA') sportCtx = await getWNBAGameContext({...gameCtxObj});
+          else {
+            // Generic factors
+            if(isHomeDog){ sportCtx.upsetEdge+=12; sportCtx.reasons.push('Home underdog'); }
+            if(isHighTotal){ sportCtx.upsetEdge+=8; sportCtx.reasons.push(`High total O/U ${total}`); }
+          }
+
+          // ── STRONG FAVORITE ──
+          if(favProb >= 0.62){
             favorites.push({
-              ...gameObj,
-              pick: favName,
-              dog: dogName,
-              prob: favProb,
-              ml: favML,
-              spread: favSpread,
-              edge: (favProb - 0.50) * 100,
-              confidence: favProb >= 0.75 ? 'high' : 'medium',
-              tier: favProb >= 0.75 ? 'LOCK' : 'STRONG'
+              sport:cfg.sport, away:ev.away_team, home:ev.home_team,
+              pick:favName, dog:dogName,
+              prob:favProb, ml:favML, spread:favSpread,
+              edge:(favProb-0.50)*100, total, gameTime,
+              confidence: favProb>=0.75?'high':'medium',
+              tier: favProb>=0.75?'LOCK':'STRONG',
+              boosts: [...(sportCtx.favBoosts||[])],
             });
           }
 
           // ── UPSET PICK ──
-          // Criteria: underdog 35-45% implied (meaningful chance),
-          // but look for line movement signal or situational edge
-          const dogProb = Math.min(awayProb, homeProb);
-          const dogML = favTeam==='away' ? homeML : awayML;
-          const dogSpread = favTeam==='away' ? homeSpread : awaySpread;
-          const upsetTeam = favTeam==='away' ? ev.home_team : ev.away_team;
+          const baseUpsetScore = Math.round(dogProb * 60);
+          const bonusScore = sportCtx.upsetEdge +
+            (isHomeDog ? 15 : 0) +
+            (isHighTotal ? 10 : 0) +
+            (dogProb>=0.38&&dogProb<=0.47 ? 15 : 0);
+          const totalScore = baseUpsetScore + bonusScore;
 
-          // Upset value criteria:
-          // 1. Dog is 35-45% implied (close game masquerading as one-sided)
-          // 2. OR dog is home team (home field advantage not fully priced in)
-          // 3. OR high total (shootout = anyone can win)
-          const isHomedog = (favTeam==='away' && homeProb < awayProb);
-          const isHighTotal = total && total >= 9.0; // MLB
-          const isCloseGame = dogProb >= 0.38 && dogProb <= 0.47;
+          const upsetReasons = [
+            ...(sportCtx.reasons||[]),
+            ...(isHomeDog ? ['Home underdog — home field underpriced'] : []),
+            ...(isHighTotal ? [`High total O/U ${total} — high-variance game`] : []),
+            ...(dogProb>=0.38&&dogProb<=0.47 ? [`${(dogProb*100).toFixed(0)}% implied — closer than line suggests`] : []),
+          ];
 
-          if(isCloseGame || (dogProb >= 0.32 && (isHomedog || isHighTotal))){
-            const upsetScore = Math.round(
-              dogProb * 60 +
-              (isHomedog ? 15 : 0) +
-              (isHighTotal ? 10 : 0) +
-              (isCloseGame ? 15 : 0)
-            );
-
-            if(upsetScore >= 35){
-              upsets.push({
-                ...gameObj,
-                pick: upsetTeam,
-                fav: favName,
-                prob: dogProb,
-                ml: dogML,
-                spread: dogSpread,
-                edge: upsetScore,
-                reasons: [
-                  ...(isCloseGame ? [`${(dogProb*100).toFixed(0)}% implied — closer than it looks`] : []),
-                  ...(isHomedog ? ['Home underdog — home field not fully priced'] : []),
-                  ...(isHighTotal ? [`High total O/U ${total} — offense favored, anyone can win`] : []),
-                ],
-                potential_payout: dogML > 0 ? `+${dogML}` : dogML
-              });
-            }
+          if(totalScore >= 35 && dogProb >= 0.30 && upsetReasons.length > 0){
+            upsets.push({
+              sport:cfg.sport, away:ev.away_team, home:ev.home_team,
+              pick:dogName, fav:favName,
+              prob:dogProb, ml:dogML, spread:dogSpread,
+              edge:totalScore, total, gameTime,
+              reasons: upsetReasons.slice(0,4),
+              potential_payout: dogML>0?`+${dogML}`:String(dogML),
+            });
           }
         }catch(e){}
       }
     }catch(e){}
   }
 
-  // Sort
-  favorites.sort((a,b) => b.prob - a.prob);
-  upsets.sort((a,b) => b.edge - a.edge);
+  favorites.sort((a,b)=>b.prob-a.prob);
+  upsets.sort((a,b)=>b.edge-a.edge);
 
-  // Update counters
   document.getElementById('wuFavCount').textContent = favorites.length;
   document.getElementById('wuUpsetCount').textContent = upsets.length;
   document.getElementById('wuGameCount').textContent = totalGames;
   document.getElementById('wuLastUpdate').textContent = `Updated ${new Date().toLocaleTimeString()}`;
 
   out.innerHTML = '';
-
-  if(!favorites.length && !upsets.length){
-    out.innerHTML = `<div class="alert ay">⚠ No games found. Lines may not be posted yet — check back closer to game time.</div>`;
-    document.getElementById('wuBtn').textContent = 'Find Winners & Upsets';
+  if(!favorites.length&&!upsets.length){
+    out.innerHTML = `<div class="alert ay">⚠ No games found. Lines may not be posted yet.</div>`;
+    document.getElementById('wuBtn').textContent='Find Winners & Upsets';
     document.getElementById('wuSp').classList.add('hidden');
     return;
   }
 
-  // ── RENDER FAVORITES ──
+  // Render favorites
   if(favorites.length){
-    const favSection = document.createElement('div');
-    favSection.innerHTML = `<div class="slbl" style="margin-bottom:8px;">🏆 Strong Favorites (${favorites.length})</div>`;
-
+    const sec = document.createElement('div');
+    sec.innerHTML = `<div class="slbl" style="margin-bottom:8px;">🏆 Strong Favorites (${favorites.length})</div>`;
     favorites.slice(0,8).forEach(g=>{
-      const card = document.createElement('div');
-      card.style.cssText = 'padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid rgba(16,185,129,0.25);border-left:3px solid var(--green);margin-bottom:8px;';
-      const tierBadge = g.tier==='LOCK' ?
-        `<span class="badge bg-g">🔒 LOCK</span>` :
-        `<span class="badge bg-g">STRONG</span>`;
-
-      card.innerHTML = `
+      const c = document.createElement('div');
+      c.style.cssText='padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid rgba(16,185,129,0.25);border-left:3px solid var(--green);margin-bottom:8px;';
+      const badge = g.tier==='LOCK'?'<span class="badge bg-g">🔒 LOCK</span>':'<span class="badge bg-g">STRONG</span>';
+      c.innerHTML=`
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
           <div>
             <span style="font-size:13px;font-weight:700;color:var(--green);">${g.pick}</span>
             <span style="font-size:11px;color:var(--text2);margin-left:6px;">vs ${g.dog}</span>
             <span style="font-size:10px;color:var(--text3);margin-left:6px;">${g.sport}${g.gameTime?' · '+g.gameTime:''}</span>
           </div>
-          <div style="display:flex;gap:6px;align-items:center;">
-            ${tierBadge}
-            <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);">${(g.prob*100).toFixed(1)}%</span>
-          </div>
+          <div style="display:flex;gap:6px;align-items:center;">${badge}<span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);">${(g.prob*100).toFixed(1)}%</span></div>
         </div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--text2);">
-          <span>ML: <strong style="color:var(--text);">${g.ml > 0 ? '+'+g.ml : g.ml}</strong></span>
-          ${g.spread!=null?`<span>Spread: <strong style="color:var(--text);">${g.spread > 0?'+':''}${g.spread}</strong></span>`:''}
-          ${g.total?`<span>O/U: <strong style="color:var(--text);">${g.total}</strong></span>`:''}
+        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--text2);margin-bottom:6px;">
+          <span>ML: <strong>${g.ml>0?'+'+g.ml:g.ml}</strong></span>
+          ${g.spread!=null?`<span>Spread: <strong>${g.spread>0?'+':''}${g.spread}</strong></span>`:''}
+          ${g.total?`<span>O/U: <strong>${g.total}</strong></span>`:''}
           <span>Edge: <strong style="color:var(--green);">+${g.edge.toFixed(1)}%</strong></span>
         </div>
-        <button class="btn btn-g btn-sm" style="margin-top:8px;" onclick="loadLLPBetToForm('${g.sport}','${g.away.replace(/'/g,"\\'")}','${g.home.replace(/'/g,"\\'")}','${g.pick.replace(/'/g,"\\'")} ML','${g.ml}')">Load to LLP Evaluator</button>
-      `;
-      favSection.appendChild(card);
+        ${g.boosts?.length?`<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px;">${g.boosts.map(b=>`<span style="font-size:10px;background:var(--green-light);color:var(--green);padding:1px 6px;border-radius:10px;">${b}</span>`).join('')}</div>`:''}
+        <button class="btn btn-g btn-sm" onclick="loadLLPBetToForm('${g.sport}','${g.away.replace(/'/g,"\\'")}','${g.home.replace(/'/g,"\\'")}','${g.pick.replace(/'/g,"\\'")} ML','${g.ml}')">Load to LLP</button>`;
+      sec.appendChild(c);
     });
-    out.appendChild(favSection);
+    out.appendChild(sec);
   }
 
-  // ── RENDER UPSETS ──
+  // Render upsets
   if(upsets.length){
-    const upsetSection = document.createElement('div');
-    upsetSection.style.marginTop = '16px';
-    upsetSection.innerHTML = `<div class="slbl" style="margin-bottom:8px;">💥 Upset Picks (${upsets.length})</div>`;
-
+    const sec = document.createElement('div');
+    sec.style.marginTop='16px';
+    sec.innerHTML = `<div class="slbl" style="margin-bottom:8px;">💥 Upset Picks (${upsets.length})</div>`;
     upsets.slice(0,6).forEach(g=>{
-      const card = document.createElement('div');
-      card.style.cssText = 'padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid rgba(168,85,247,0.25);border-left:3px solid var(--purple);margin-bottom:8px;';
-
-      card.innerHTML = `
+      const c = document.createElement('div');
+      c.style.cssText='padding:12px 14px;background:var(--surface2);border-radius:10px;border:1px solid rgba(168,85,247,0.25);border-left:3px solid var(--purple);margin-bottom:8px;';
+      c.innerHTML=`
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
           <div>
             <span style="font-size:13px;font-weight:700;color:var(--purple);">💥 ${g.pick}</span>
@@ -4859,22 +5203,68 @@ async function runWinnersUpsets(){
           </div>
         </div>
         <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--text2);margin-bottom:6px;">
-          <span>Implied: <strong style="color:var(--text);">${(g.prob*100).toFixed(1)}%</strong></span>
-          ${g.spread!=null?`<span>Spread: <strong style="color:var(--text);">${g.spread > 0?'+':''}${g.spread}</strong></span>`:''}
-          ${g.total?`<span>O/U: <strong style="color:var(--text);">${g.total}</strong></span>`:''}
+          <span>Implied: <strong>${(g.prob*100).toFixed(1)}%</strong></span>
+          ${g.spread!=null?`<span>Spread: <strong>${g.spread>0?'+':''}${g.spread}</strong></span>`:''}
+          ${g.total?`<span>O/U: <strong>${g.total}</strong></span>`:''}
+          <span>Score: <strong style="color:var(--purple);">${g.edge}/100</strong></span>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;">
           ${(g.reasons||[]).map(r=>`<span style="font-size:10px;background:var(--purple-light);color:var(--purple);padding:2px 7px;border-radius:10px;">${r}</span>`).join('')}
         </div>
-        <button class="btn btn-sm" style="background:var(--purple-light);color:var(--purple);border:1px solid rgba(168,85,247,0.3);" onclick="loadLLPBetToForm('${g.sport}','${g.away.replace(/'/g,"\\'")}','${g.home.replace(/'/g,"\\'")}','${g.pick.replace(/'/g,"\\'")} ML','${g.ml}')">Load to LLP Evaluator</button>
-      `;
-      upsetSection.appendChild(card);
+        <button class="btn btn-sm" style="background:var(--purple-light);color:var(--purple);border:1px solid rgba(168,85,247,0.3);" onclick="loadLLPBetToForm('${g.sport}','${g.away.replace(/'/g,"\\'")}','${g.home.replace(/'/g,"\\'")}','${g.pick.replace(/'/g,"\\'")} ML','${g.ml}')">Load to LLP</button>`;
+      sec.appendChild(c);
     });
-    out.appendChild(upsetSection);
+    out.appendChild(sec);
   }
 
-  document.getElementById('wuBtn').textContent = 'Find Winners & Upsets';
+  document.getElementById('wuBtn').textContent='Find Winners & Upsets';
   document.getElementById('wuSp').classList.add('hidden');
+}
+
+// ── Tennis Leg Checker ──
+async function checkTennisLeg(player, prop, line, side){
+  try{
+    // Check Replit tennis-stats for completed matches
+    const r = await fx(
+      `${EP.replit}/tennis-stats/today`,
+      {headers:{'X-API-Key':KEYS.replit}}, 8000
+    );
+    if(!r.ok) return null;
+    const d = await r.json();
+    const matches = d.matches || [];
+
+    for(const match of matches){
+      const p1 = (match.player1||match.away_team||'').toLowerCase();
+      const p2 = (match.player2||match.home_team||'').toLowerCase();
+      const playerL = player.toLowerCase().split(' ').pop();
+      if(!p1.includes(playerL) && !p2.includes(playerL)) continue;
+
+      // Match must be complete
+      if(!match.score && !match.completed) continue;
+
+      const isP1 = p1.includes(playerL);
+      let actual = null;
+      const propL = prop.toLowerCase();
+
+      if(propL.includes('ace')){
+        actual = parseInt(isP1 ? match.w_ace : match.l_ace)||null;
+      } else if(propL.includes('double fault')||propL.includes('df')){
+        actual = parseInt(isP1 ? match.w_df : match.l_df)||null;
+      } else if(propL.includes('game')){
+        // Total games = sum of all sets
+        const score = match.score||'';
+        actual = score.split(' ').reduce((sum,s)=>{
+          const parts = s.replace(/\[.*?\]/g,'').split('-');
+          return sum+(parseInt(parts[0])||0)+(parseInt(parts[1])||0);
+        },0) || null;
+      }
+
+      if(actual === null) continue;
+      const outcome = side==='MORE' ? (actual > line ? 'win' : 'loss') : (actual < line ? 'win' : 'loss');
+      return {actual, outcome};
+    }
+  }catch(e){}
+  return null;
 }
 
 async function runLLPBoard(){
@@ -4894,6 +5284,7 @@ async function runLLPBoard(){
     {sport:'NBA', key:'basketball_nba'},
     {sport:'NHL', key:'icehockey_nhl'},
     {sport:'WNBA', key:'basketball_wnba'},
+    {sport:'Soccer', key:'soccer_usa_mls'},
   ].filter(s => sportFilter==='all' || s.sport===sportFilter);
 
   const allGames = [];
@@ -6063,6 +6454,12 @@ async function checkLegResult(leg){
       return await checkNBALeg(player, prop, line, side, sport);
     } else if(sport === 'NHL'){
       return await checkNHLLeg(player, prop, line, side);
+    } else if(sport === 'Soccer'){
+      // Soccer: check ESPN MLS scoreboard for final scores
+      return await checkESPNLeg(player, prop, line, side, 'Soccer');
+    } else if(sport === 'Tennis'){
+      // Tennis: check if match is complete via Replit tennis-stats
+      return await checkTennisLeg(player, prop, line, side);
     } else {
       return await checkESPNLeg(player, prop, line, side, sport);
     }
@@ -7798,33 +8195,55 @@ async function buildJeremiaSlip(){
   });
 
   // Prefer pool props
-  const sportFilter=sport==='all'?['NBA','WNBA']:sport==='NBA'?['NBA','WNBA']:[sport];
+  const sportFilter=sport==='all'?['NBA','WNBA','MLB','NHL','Soccer','Tennis']:
+    sport==='NBA'?['NBA','WNBA']:[sport];
   let candidates=propPool.filter(p=>sportFilter.includes(p.sport)&&['tier1','tier2'].includes(p.tier));
 
   if(candidates.length<legCount){
-    // Generate from ESPN slate
+    output.innerHTML=`<div class="alert ab"><div class="spd"></div> Not enough props in pool — pulling live stats for ${sportFilter.join('/')}...</div>`;
+
+    // Pull live stats using the correct engine per sport
     for(const sp of sportFilter){
       try{
-        const r=await fx(`${EP.espn}/${ESPN_P[sp]||'basketball/nba'}/scoreboard`,{},6000);
-        if(!r.ok)continue;
-        const data=await r.json();chip('espn','ok');
-        (data.events||[]).forEach(ev=>{
-          const comp=ev.competitions?.[0];const teams=comp?.competitors||[];
-          const away=teams.find(t=>t.homeAway==='away')?.team?.displayName||'Away';
-          const home=teams.find(t=>t.homeAway==='home')?.team?.displayName||'Home';
-          if(['Final','Postponed','Cancelled'].includes(comp?.status?.type?.description||''))return;
-          jerTemplates.forEach(t=>{
-            const line=t.lines[1]||t.lines[0];
-            candidates.push({player:`${away} Key Player`,sport:sp,prop:t.prop,side:'MORE',line,game:`${away} @ ${home}`,jeremiaPriority:t.priority,jeremiaLabel:t.label});
-          });
-        });
+        let engCandidates = [];
+        if(sp==='NBA' || sp==='WNBA'){
+          engCandidates = await runBDLEngine(sp, (msg)=>{});
+          // WNBA fallback to Odds API if BDL empty
+          if(!engCandidates.length && sp==='WNBA'){
+            engCandidates = await runOddsAPIEngine('WNBA','basketball_wnba',
+              'player_points,player_rebounds,player_assists', (msg)=>{});
+          }
+        } else if(sp==='MLB'){
+          engCandidates = await runMLBEngine((msg)=>{});
+        } else if(sp==='NHL'){
+          engCandidates = await runNHLEngine((msg)=>{});
+        } else if(sp==='Soccer'){
+          engCandidates = await runSoccerEngine((msg)=>{});
+        } else if(sp==='Tennis'){
+          engCandidates = await runTennisEngine((msg)=>{});
+        } else {
+          // NFL / other — ESPN fallback
+          engCandidates = await runESPNEngine(sp, (msg)=>{});
+        }
+        candidates.push(...engCandidates);
       }catch(e){}
     }
-    // Score new candidates
+
+    // Score candidates not yet validated
     const newScored=[];
-    for(const c of candidates.filter(p=>!p.tier).slice(0,25)){
-      const en=await enrichProp(c);const ws=await scoreOne(en);const val=await wowValidate(en,ws);
-      if(['tier1','tier2'].includes(val.tier))newScored.push({...en,...val,wowScore:ws,jeremiaPriority:c.jeremiaPriority||2,jeremiaLabel:c.jeremiaLabel||c.prop});
+    for(const c of candidates.filter(p=>!p.tier).slice(0,30)){
+      try{
+        const en=await enrichProp(c);
+        const ws=await scoreOne(en);
+        const val=await wowValidate(en,ws);
+        if(['tier1','tier2'].includes(val.tier)){
+          newScored.push({
+            ...en,...val,wowScore:ws,
+            jeremiaPriority:c.jeremiaPriority||2,
+            jeremiaLabel:c.jeremiaLabel||c.prop
+          });
+        }
+      }catch(e){}
     }
     candidates=[...candidates.filter(p=>p.tier),...newScored];
   } else {
@@ -7840,13 +8259,14 @@ async function buildJeremiaSlip(){
     return true;
   });
 
-  // Build slip respecting structure
+  // Build slip respecting structure — max 2 per sport (relaxed for single-sport selections)
+  const maxPerSport = sportFilter.length === 1 ? legCount : 2;
   candidates.sort((a,b)=>(a.jeremiaPriority||2)-(b.jeremiaPriority||2)||(b.rawProb||0)-(a.rawProb||0));
   const selected=[];const usedP=new Set();const spCounts={};let ceilCount=0;
   for(const p of candidates){
     if(selected.length>=legCount)break;
     if(usedP.has(p.player))continue;
-    if((spCounts[p.sport]||0)>=2)continue;
+    if((spCounts[p.sport]||0)>=maxPerSport)continue;
     if((p.jeremiaPriority||2)===3){if(!rules.ceiling||ceilCount>=1)continue;ceilCount++;}
     selected.push(p);usedP.add(p.player);spCounts[p.sport]=(spCounts[p.sport]||0)+1;
   }
@@ -7865,7 +8285,7 @@ async function buildJeremiaSlip(){
   const hdr=document.createElement('div');
   hdr.style.cssText='border:2px solid #7c3aed;border-radius:10px;padding:16px;margin-bottom:12px;background:linear-gradient(135deg,#7c3aed0a,#4f46e50a);';
   hdr.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;"><div><div style="font-size:16px;font-weight:800;">🧬 ${slipTypeFull.toUpperCase()} Jeremia Slip</div><div style="font-size:12px;color:var(--text2);margin-top:2px;">${selected.length} legs · Floor-first, volume-driven</div></div>${s?`<div style="text-align:center;padding:8px 16px;border-radius:8px;background:${s.color}18;border:1px solid ${s.color}40;"><div style="font-size:28px;font-weight:900;color:${s.color};line-height:1;">${s.score}</div><div style="font-size:11px;font-weight:700;color:${s.color};">${s.label}</div></div>`:''}</div>${ev?`<div style="padding:8px 12px;border-radius:6px;background:${ev.isPositiveEV?'var(--green-light)':'var(--red-light)'};border:1px solid ${ev.isPositiveEV?'#a7f3d0':'#fca5a5'};font-size:12px;font-family:var(--mono);color:${ev.isPositiveEV?'var(--green)':'var(--red)'};">${ev.isPositiveEV?'✓ +EV':'✗ -EV'} · ROI: ${ev.expectedROI>=0?'+':''}${(ev.expectedROI*100).toFixed(1)}% · Break-even: ${(ev.breakEven*100).toFixed(1)}% · Kelly: ${ev.recommendedBankrollPct}% bankroll</div>`:''}<div style="margin-top:10px;display:flex;gap:8px;"><button class="btn btn-p btn-sm" onclick="loadSuggestedSlip(${JSON.stringify(selected.map(l=>({player:l.player,sport:l.sport,prop:l.prop,side:l.side,line:l.line,tier:l.tier,rawProb:l.rawProb,wowScore:l.wowScore})))})" style="background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;">Use This Slip</button><button class="btn btn-s btn-sm" onclick="buildJeremiaSlip()">Rebuild</button></div>
-  </div><!-- end .main -->`;
+  </div>`;
   output.appendChild(hdr);
 
   const lh=document.createElement('div');lh.className='slbl';lh.textContent='Slip Legs';output.appendChild(lh);
