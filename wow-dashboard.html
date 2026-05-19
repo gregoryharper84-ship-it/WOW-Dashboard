@@ -4753,6 +4753,30 @@ let slipImages = [];
 // Load persisted data
 try { clvLog = JSON.parse(localStorage.getItem('wow_clv_log')||'[]'); } catch(e){}
 try { winningSlips = JSON.parse(localStorage.getItem('wow_winning_slips')||'[]'); } catch(e){}
+
+// Pre-seed confirmed real slips if database is empty
+if(!winningSlips.length){
+  winningSlips = [
+    {
+      id: 1747630001, date:'5/18/2026', slip_result:'loss', slip_type:'Power 3',
+      source:'manual', legsCount:3,
+      legs:[
+        {player:'Ryan Weathers',sport:'MLB',prop:'strikeouts',side:'MORE',line:5.5,outcome:'win',actual:7,slip_result:'loss',slip_type:'Power 3'},
+        {player:'Seth Lugo',sport:'MLB',prop:'pitcher outs recorded',side:'MORE',line:17.5,outcome:'win',actual:18,slip_result:'loss',slip_type:'Power 3'},
+        {player:'Trevor Rogers',sport:'MLB',prop:'pitcher outs recorded',side:'MORE',line:16.5,outcome:'loss',actual:11,slip_result:'loss',slip_type:'Power 3'}
+      ]
+    },
+    {
+      id: 1747630002, date:'5/18/2026', slip_result:'loss', slip_type:'Power 2',
+      source:'manual', legsCount:2,
+      legs:[
+        {player:'Victor Wembanyama',sport:'NBA',prop:'rebounds',side:'MORE',line:13.5,outcome:'win',actual:24,slip_result:'loss',slip_type:'Power 2'},
+        {player:'Jalen Williams',sport:'NBA',prop:'assists',side:'MORE',line:3.5,outcome:'loss',actual:3,slip_result:'loss',slip_type:'Power 2'}
+      ]
+    }
+  ];
+  try{ localStorage.setItem('wow_winning_slips', JSON.stringify(winningSlips)); }catch(e){}
+}
 try { learnedRules = JSON.parse(localStorage.getItem('wow_learned_rules')||'[]'); } catch(e){}
 
 function save(){ 
@@ -5532,41 +5556,60 @@ function clearLogSlipUploads(){
 function parseAnalyzeBoardResponse(d){
   if(!d) return null;
 
-  // Direct props array (primary backend format)
-  if(d.props && Array.isArray(d.props) && d.props.length){
-    return {
-      slip_result: d.slip_result || 'unknown',
-      slip_type: d.slip_type || 'unknown',
-      entry: d.entry || null,
-      to_win: d.to_win || null,
-      legs: d.props.map(p=>({
-        player: p.player || '',
-        sport: p.sport || 'MLB',
-        prop: p.prop || '',
-        line: parseFloat(p.line) || 0,
-        side: p.side || 'MORE',
-        outcome: p.outcome || 'unknown',
-        actual: p.actual ?? null,
-        game: p.game || '',
-        note: p.note || '',
-      }))
-    };
-  }
-
-  // Try raw_response JSON (Claude's text output)
+  // 1. Try raw_response FIRST — this contains Claude's full JSON with outcomes/actual values
   if(d.raw_response){
     try{
-      const match = d.raw_response.match(/\{[\s\S]*\}/);
+      const text = d.raw_response;
+      // Find the outermost JSON object
+      const match = text.match(/\{[\s\S]*\}/);
       if(match){
         const parsed = JSON.parse(match[0]);
-        // Normalize legs/props field
-        if(parsed.legs) return parsed;
-        if(parsed.props) return {...parsed, legs: parsed.props};
+        // Valid slip response has legs with player data
+        const legs = parsed.legs || parsed.props || null;
+        if(legs && Array.isArray(legs) && legs.length > 0 && legs[0].player){
+          return {
+            slip_result: parsed.slip_result || 'unknown',
+            slip_type: parsed.slip_type || 'unknown',
+            entry: parsed.entry || null,
+            to_win: parsed.to_win || null,
+            legs: legs.map(l=>({
+              player: l.player || '',
+              sport: l.sport || 'MLB',
+              prop: l.prop || '',
+              line: parseFloat(l.line) || 0,
+              side: l.side || 'MORE',
+              outcome: l.outcome || 'unknown',
+              actual: l.actual ?? null,
+            }))
+          };
+        }
       }
     }catch(e){}
   }
 
-  // Already has legs field
+  // 2. Fall back to props array (board picker format — no outcomes)
+  if(d.props && Array.isArray(d.props) && d.props.length){
+    // Only use if it looks like slip data (has outcome field or actual)
+    const hasOutcomes = d.props.some(p => p.outcome || p.actual != null);
+    if(hasOutcomes || !d.raw_response){
+      return {
+        slip_result: d.slip_result || 'unknown',
+        slip_type: d.slip_type || 'unknown',
+        legs: d.props.map(p=>({
+          player: p.player || '',
+          sport: p.sport || 'MLB',
+          prop: p.prop || '',
+          line: parseFloat(p.line) || 0,
+          side: p.side || 'MORE',
+          outcome: p.outcome || 'unknown',
+          actual: p.actual ?? null,
+          game: p.game || '',
+        }))
+      };
+    }
+  }
+
+  // 3. Direct legs field
   if(d.legs && Array.isArray(d.legs) && d.legs.length) return d;
 
   return null;
@@ -5673,10 +5716,11 @@ async function analyzeLogSlips(){
     });
     save();
     renderSlipDatabase();
-    switchPTab('slip');
+    switchPTab('slip'); // show the slip database
     statusEl.textContent = `✓ ${allExtracted.length} settled slip(s) saved to learning database`;
   }
 
+  // Always clear images after processing
   logSlipImages = [];
   document.getElementById('logSlipPreview').classList.add('hidden');
   document.getElementById('logSlipBtn').textContent = 'Analyze & Save';
@@ -5730,29 +5774,23 @@ async function analyzeWinningSlips(){
         body:JSON.stringify({
           image_b64: await compressImage(slipImages[i].b64, 800),
           media_type:'image/jpeg',
-          prompt:`This is a PrizePicks or sports prop betting slip screenshot. Extract every prop leg.
+          prompt:`This is a PrizePicks or sports prop betting slip screenshot. Extract every prop leg visible.
 
 Look for:
 - Player names and team abbreviations
 - Stat categories: TB=Total Bases, Hits, Points, Rebounds, Assists, Strikeouts etc
 - Lines/numbers next to arrows (↑ = MORE/OVER, ↓ = LESS/UNDER)
 - Result indicators per leg:
-  * Green circle with checkmark on player photo = WIN
-  * Red circle with X on player photo = LOSS  
-  * Green progress bar filled to right = WIN
-  * Red/empty progress bar = LOSS
+  * Green circle/checkmark on player photo = WIN
+  * Red circle/X on player photo = LOSS
+  * Green filled progress bar = WIN
+  * Empty or red progress bar = LOSS
   * Number shown at end of progress bar = actual result value
-- Overall slip result: "Loss" or "Win" badge at top, or trophy icon = win
-- Flex Play = some legs can lose; Power Play = all must win
-
-From this image specifically:
-- J.P. Crawford: TB MORE 0.5, progress bar shows 0 = LOSS
-- Josh Naylor: Hits MORE 0.5, red circle = LOSS, actual = 0
-- Ty France: TB MORE 0.5, green circle + bar shows 3 = WIN, actual = 3
-- Overall slip: Loss (shown at top)
+- Overall slip result badge at top (Win/Loss/Profit)
+- Slip type (Power Play/Flex Play and number of picks)
 
 Return ONLY valid JSON:
-{"slip_result":"win|loss|pending","slip_type":"Power 3 etc","legs":[{"player":"Name","sport":"NBA|MLB|NHL","prop":"points","line":24.5,"side":"MORE|LESS","outcome":"win|loss|unknown","actual":27}]}
+{"slip_result":"win|loss|pending|unknown","slip_type":"Power 3","legs":[{"player":"Full Name","sport":"NBA|MLB|NHL|WNBA","prop":"points","line":24.5,"side":"MORE|LESS","outcome":"win|loss|unknown","actual":27}]}
 
 If no prop betting legs visible, return: {"slip_result":"unknown","legs":[],"error":"No prop legs found"}`
         })
@@ -5779,10 +5817,11 @@ If no prop betting legs visible, return: {"slip_result":"unknown","legs":[],"err
   if(allLegs.length){
     const slip={id:Date.now(),date:new Date().toLocaleDateString(),legs:allLegs,source:'screenshot',legsCount:allLegs.length,slip_result:allLegs[0]?.slip_result||'unknown'};
     winningSlips.unshift(slip);save();renderSlipDatabase();
-    statusEl.textContent=`✓ Added ${allLegs.length} legs from ${slipImages.length} screenshot(s)`;
-    slipImages=[];document.getElementById('slipUploadPreview').classList.add('hidden');
+    statusEl.textContent=`✓ ${allLegs.length} legs saved from ${slipImages.length} screenshot(s)`;
+    slipImages=[];
+    document.getElementById('slipUploadPreview').classList.add('hidden');
   } else {
-    statusEl.textContent='No legs extracted. Screenshot must show a PrizePicks result screen with player names and lines visible. Use manual entry below.';
+    statusEl.textContent='No legs extracted. Make sure the screenshot shows a PrizePicks result screen with player names and lines visible.';
   }
 
   document.getElementById('slipAnalyzeBtn').textContent='Analyze & Learn';
