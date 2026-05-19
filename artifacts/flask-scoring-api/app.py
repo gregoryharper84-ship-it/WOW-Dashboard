@@ -117,18 +117,17 @@ def require_api_key(f):
         expected_key = os.environ.get("SCORING_API_KEY", "")
         if not expected_key:
             return jsonify({"error": "Server misconfiguration: SCORING_API_KEY is not set"}), 500
-        # Strip whitespace and common encoding artifacts from both ends
+        # Try X-API-Key header first, then fall back to Authorization: Bearer <key>
         provided_key = request.headers.get("X-API-Key", "").strip()
+        if not provided_key:
+            auth = request.headers.get("Authorization", "")
+            if auth.lower().startswith("bearer "):
+                provided_key = auth[7:].strip()
         if not provided_key:
             return jsonify({
                 "error": "Missing API key",
                 "hint": "Include your key in the X-API-Key request header"
             }), 401
-        # Also accept key sent in Authorization: Bearer <key> as fallback
-        if not provided_key:
-            auth = request.headers.get("Authorization", "")
-            if auth.lower().startswith("bearer "):
-                provided_key = auth[7:].strip()
         if not secrets_equal(provided_key, expected_key):
             return jsonify({"error": "Invalid API key"}), 401
         return f(*args, **kwargs)
@@ -782,7 +781,8 @@ def health():
             "log":            "GET /request-log?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
             "stats":          "GET /stats?window=L5|L10&since=...&player=...&sport=...&prop=...&side=...&limit=...",
             "leaderboard":    "GET /leaderboard?window=L5|L10(default L10)&sport=...&prop=...&side=...&limit=...",
-            "schema":         "GET /openapi.json (no auth)"
+            "schema":         "GET /openapi.json (no auth)",
+            "fbref_stats":    "GET /fbref-stats?player=...&league=... (X-API-Key required) — soccer player season stats"
         }
     })
 
@@ -2417,6 +2417,104 @@ Example:
         return jsonify({"ok": False, "error": "Anthropic rate limit — retry shortly"}), 429
     except _anthropic.BadRequestError as e:
         return jsonify({"ok": False, "error": f"Bad request to Anthropic: {e}"}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/fbref-stats", methods=["GET"])
+@require_api_key
+def fbref_stats():
+    import requests as _req
+    from bs4 import BeautifulSoup as _BS
+
+    player = request.args.get("player", "").strip()
+    league = request.args.get("league", "").strip().lower()
+
+    if not player:
+        return jsonify({"ok": False, "error": "Missing required param: player"}), 400
+
+    LEAGUE_MAP = {
+        "epl": "Premier League", "pl": "Premier League",
+        "ucl": "Champions League", "cl": "Champions League",
+        "laliga": "La Liga", "liga": "La Liga",
+        "bundesliga": "Bundesliga",
+        "seriea": "Serie A", "serie_a": "Serie A",
+        "ligue1": "Ligue 1",
+        "mls": "MLS",
+    }
+    league_filter = LEAGUE_MAP.get(league) if league else None
+
+    _headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://fbref.com/",
+    }
+
+    try:
+        # Step 1: search — FBref redirects straight to the player page on unique matches
+        search_url = "https://fbref.com/en/search/search.fcgi"
+        resp = _req.get(search_url, params={"search": player},
+                        headers=_headers, timeout=15, allow_redirects=True)
+        resp.raise_for_status()
+        soup = _BS(resp.text, "html.parser")
+        player_url = resp.url
+
+        # If not redirected to a player page, pick the first search result
+        if "/players/" not in player_url:
+            link = soup.select_one("div.search-item-name a[href*='/players/']")
+            if not link:
+                return jsonify({"ok": False, "error": f"Player not found: {player}"}), 404
+            player_url = "https://fbref.com" + link["href"]
+            resp = _req.get(player_url, headers=_headers, timeout=15)
+            resp.raise_for_status()
+            soup = _BS(resp.text, "html.parser")
+
+        # Canonical player name from page heading
+        h1 = soup.select_one("h1[itemprop='name'] span")
+        player_name = h1.get_text(strip=True) if h1 else player
+
+        # Step 2: parse the standard per-season stats table
+        table = soup.find("table", {"id": "stats_standard"})
+        if not table:
+            return jsonify({
+                "ok": False,
+                "error": "Standard stats table not found — player may lack season data",
+                "player": player_name,
+                "player_url": player_url,
+            }), 404
+
+        col_headers = [th.get_text(strip=True) for th in table.select("thead tr:last-child th")]
+        seasons = []
+        for tr in table.select("tbody tr"):
+            classes = tr.get("class", [])
+            if "partial_table" in classes or "thead" in classes:
+                continue
+            cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+            if len(cells) < 5 or not cells[0]:
+                continue
+            row = dict(zip(col_headers, cells))
+            if league_filter and league_filter.lower() not in row.get("Comp", "").lower():
+                continue
+            seasons.append(row)
+
+        return jsonify({
+            "ok": True,
+            "player": player_name,
+            "player_url": player_url,
+            "league_filter": league_filter,
+            "seasons": seasons,
+            "count": len(seasons),
+        })
+
+    except _req.exceptions.Timeout:
+        return jsonify({"ok": False, "error": "FBref request timed out"}), 504
+    except _req.exceptions.RequestException as e:
+        return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
