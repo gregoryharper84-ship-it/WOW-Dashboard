@@ -5880,13 +5880,18 @@ function renderSlipDatabase(){
     const card=document.createElement('div');
     card.style.cssText=`border:1px solid ${slipResult==='win'?'#a7f3d0':slipResult==='loss'?'#fca5a5':'var(--border)'};border-radius:8px;padding:12px 14px;margin-bottom:8px;background:var(--surface);`;
     card.innerHTML=`
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
         <div>
           <span style="font-size:16px;">${resultIcon}</span>
           <span style="font-weight:700;font-size:13px;margin-left:6px;color:${resultColor};">${slipResult.toUpperCase()}</span>
           <span style="font-size:11px;color:var(--text2);margin-left:8px;">${slip.slip_type||slip.legsCount+'-leg'} · ${slip.date} · ${slip.source}</span>
         </div>
-        <div style="display:flex;gap:6px;align-items:center;">
+        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">
+          <!-- Result override buttons -->
+          <button onclick="winningSlips[${realIdx}].slip_result='win';winningSlips[${realIdx}].legs?.forEach(l=>l.slip_result='win');save();renderSlipDatabase();" 
+            style="padding:3px 8px;border-radius:6px;border:1px solid var(--green);background:${slipResult==='win'?'var(--green)':'transparent'};color:${slipResult==='win'?'#fff':'var(--green)'};font-size:10px;font-weight:700;cursor:pointer;">W</button>
+          <button onclick="winningSlips[${realIdx}].slip_result='loss';winningSlips[${realIdx}].legs?.forEach(l=>l.slip_result='loss');save();renderSlipDatabase();"
+            style="padding:3px 8px;border-radius:6px;border:1px solid var(--red);background:${slipResult==='loss'?'var(--red)':'transparent'};color:${slipResult==='loss'?'#fff':'var(--red)'};font-size:10px;font-weight:700;cursor:pointer;">L</button>
           ${winLegs>0?`<span class="badge bg-g">${winLegs}✓</span>`:''}
           ${lossLegs>0?`<span class="badge bg-r">${lossLegs}✗</span>`:''}
           <button onclick="winningSlips.splice(${realIdx},1);save();renderSlipDatabase();" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;">×</button>
