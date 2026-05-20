@@ -2741,10 +2741,20 @@ def tennis_stats():
         except (ValueError, TypeError):
             return None
 
+    def _iso_date(raw):
+        # JeffSackmann CSVs encode dates as "YYYYMMDD" with no separators.
+        # Browsers (especially Safari) throw "The string did not match the
+        # expected pattern" on new Date("20251109"), so emit ISO-8601 instead.
+        s = str(raw or "")
+        if len(s) == 8 and s.isdigit():
+            return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+        return s or None
+
     def _parse_row(row, player_lower):
         won = player_lower in row.get("winner_name", "").lower()
         return {
-            "date":        row.get("tourney_date"),
+            "date":        _iso_date(row.get("tourney_date")),
+            "date_raw":    row.get("tourney_date"),
             "tourney":     row.get("tourney_name"),
             "surface":     row.get("surface"),
             "round":       row.get("round"),
