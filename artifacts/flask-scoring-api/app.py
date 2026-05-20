@@ -2545,12 +2545,14 @@ def _write_player_cache(conn, player_lower, league_id, season, player_id, full_n
 def fbref_stats():
     import psycopg2 as _pg
 
-    # European soccer seasons run Aug → May (api-football labels by start year).
-    # MLS runs Feb → Nov (labelled by calendar year). Default to the European
-    # season that's currently in progress: Aug-Dec → this year, Jan-Jul → last year.
+    # api-football free plan only exposes seasons 2022-2024. Cap our default
+    # at 2024 so calls don't 4xx with "Free plans do not have access to this
+    # season" even though the real-world current season is 2025+.
+    _FREE_PLAN_MAX_SEASON = 2024
     from datetime import date as _date
     _today = _date.today()
-    _default_season = str(_today.year if _today.month >= 8 else _today.year - 1)
+    _computed = _today.year if _today.month >= 8 else _today.year - 1
+    _default_season = str(min(_computed, _FREE_PLAN_MAX_SEASON))
 
     player = request.args.get("player", "").strip()
     league = request.args.get("league", "").strip().lower()
@@ -2658,66 +2660,93 @@ def fbref_stats_populate():
     """
     import threading, time as _time, psycopg2 as _pg
 
-    body   = request.get_json(silent=True) or {}
-    league = body.get("league", "epl").strip().lower()
-    season = str(body.get("season", "2024")).strip()
+    # See note in /fbref-stats: free plan caps at season 2024.
+    _FREE_PLAN_MAX_SEASON = 2024
+    from datetime import date as _date
+    _today = _date.today()
+    _computed = _today.year if _today.month >= 8 else _today.year - 1
+    _default_season = str(min(_computed, _FREE_PLAN_MAX_SEASON))
+
+    body = request.get_json(silent=True) or {}
+
+    # Accept either `league` (single, back-compat) or `leagues` (list).
+    raw_leagues = body.get("leagues")
+    if raw_leagues is None:
+        raw_leagues = [body.get("league", "epl")]
+    if isinstance(raw_leagues, str):
+        raw_leagues = [raw_leagues]
+
+    season = str(body.get("season", _default_season)).strip()
 
     api_key = os.environ.get("API_FOOTBALL_KEY", "")
     if not api_key:
         return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
 
-    league_id = _SOCCER_LEAGUE_MAP.get(league)
-    if not league_id:
-        known = sorted(set(_SOCCER_LEAGUE_MAP.keys()))
-        return jsonify({"ok": False, "error": f"Unknown league '{league}'", "known": known}), 400
+    # Resolve each requested league to its api-football id, with per-league season override.
+    # MLS uses calendar-year seasons (currently 2026), unlike European leagues.
+    resolved = []
+    unknown  = []
+    for lname in raw_leagues:
+        key = str(lname).strip().lower()
+        lid = _SOCCER_LEAGUE_MAP.get(key)
+        if not lid:
+            unknown.append(key)
+            continue
+        lseason = str(min(_today.year, _FREE_PLAN_MAX_SEASON)) if key == "mls" else season
+        resolved.append({"name": key, "id": lid, "season": lseason})
+
+    if unknown:
+        return jsonify({
+            "ok":      False,
+            "error":   f"Unknown league(s): {unknown}",
+            "known":   sorted(set(_SOCCER_LEAGUE_MAP.keys())),
+        }), 400
+    if not resolved:
+        return jsonify({"ok": False, "error": "No leagues provided"}), 400
 
     db_url = os.environ.get("DATABASE_URL", "")
 
-    def _run_populate():
+    def _run_populate_all(leagues):
         import time as _t
         conn = _pg.connect(db_url) if db_url else None
         try:
-            teams_data = _soccer_api_get("teams", {"league": league_id, "season": season}, api_key)
-            teams      = teams_data.get("response", [])
-            indexed    = 0
-            for team in teams:
-                tid   = team["team"]["id"]
-                tname = team["team"]["name"]
-                _t.sleep(6.5)          # 10 req/min → 1 req per 6s, 6.5s for safety
+            for lg in leagues:
                 try:
-                    squad_data = _soccer_api_get("players/squads", {"team": tid}, api_key)
-                    for squad_entry in squad_data.get("response", []):
-                        for p in squad_entry.get("players", []):
-                            name_lower = p.get("name", "").lower()
-                            pid        = p["id"]
-                            full_name  = p.get("name", "")
-                            _write_player_cache(conn, name_lower, league_id, season, pid, full_name)
-                            indexed += 1
-                except Exception:
-                    pass   # skip this team on error, continue
+                    teams_data = _soccer_api_get("teams", {"league": lg["id"], "season": lg["season"]}, api_key)
+                    teams = teams_data.get("response", [])
+                    app.logger.info("populate: league=%s season=%s teams=%d", lg["name"], lg["season"], len(teams))
+                    for team in teams:
+                        tid = team["team"]["id"]
+                        _t.sleep(6.5)   # 10 req/min limit → 6.5s gap for safety
+                        try:
+                            squad_data = _soccer_api_get("players/squads", {"team": tid}, api_key)
+                            for squad_entry in squad_data.get("response", []):
+                                for p in squad_entry.get("players", []):
+                                    name_lower = (p.get("name") or "").lower()
+                                    pid        = p["id"]
+                                    full_name  = p.get("name") or ""
+                                    _write_player_cache(conn, name_lower, lg["id"], lg["season"], pid, full_name)
+                        except Exception as e:
+                            app.logger.warning("populate squad failed: team=%s err=%s", tid, e)
+                except Exception as e:
+                    app.logger.warning("populate league failed: %s err=%s", lg["name"], e)
         finally:
             if conn:
                 conn.close()
 
-    t = threading.Thread(target=_run_populate, daemon=True)
+    t = threading.Thread(target=_run_populate_all, args=(resolved,), daemon=True)
     t.start()
 
-    # Estimate: 1 teams call + len(teams) squad calls @ 6.5s each
-    try:
-        teams_peek = _soccer_api_get("teams", {"league": league_id, "season": season}, api_key)
-        n_teams    = len(teams_peek.get("response", []))
-    except Exception:
-        n_teams = 20
-    eta_seconds = int(n_teams * 6.5 + 10)
+    # ETA: assume ~20 teams per league × 6.5s + 10s buffer per league.
+    eta_seconds = int(sum(20 * 6.5 + 10 for _ in resolved))
 
     return jsonify({
         "ok":          True,
-        "message":     f"Cache population started for league '{league}' season {season}.",
-        "league_id":   league_id,
-        "season":      season,
-        "teams":       n_teams,
+        "message":     f"Cache population started for {len(resolved)} league(s) sequentially.",
+        "leagues":     [{"name": l["name"], "id": l["id"], "season": l["season"]} for l in resolved],
         "eta_seconds": eta_seconds,
-        "hint":        f"Allow ~{eta_seconds}s then retry /fbref-stats?player=...&league={league}&season={season}",
+        "eta_minutes": round(eta_seconds / 60, 1),
+        "hint":        "Sequential processing respects the 10 req/min api-football rate limit.",
     })
 
 
