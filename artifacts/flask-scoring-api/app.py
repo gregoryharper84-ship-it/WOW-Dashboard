@@ -2426,6 +2426,53 @@ Example:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/claude-proxy", methods=["POST"])
+@require_api_key
+def claude_proxy():
+    """
+    Transparent proxy to Anthropic's /v1/messages API.
+
+    Exists so browser-based dashboards (e.g. GitHub Pages) can call Claude
+    without hitting CORS or exposing the API key client-side. The request
+    body is forwarded verbatim; the upstream JSON response and status code
+    are returned unchanged.
+    """
+    import requests as _req
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({
+            "ok": False,
+            "error": "ANTHROPIC_API_KEY secret is not set — add it in Replit Secrets",
+        }), 500
+
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({"ok": False, "error": "Request body must be valid JSON"}), 400
+
+    try:
+        upstream = _req.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type":      "application/json",
+                "x-api-key":         api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            json=body,
+            timeout=120,
+        )
+    except _req.Timeout:
+        return jsonify({"ok": False, "error": "Anthropic request timed out"}), 504
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Upstream call failed: {e}"}), 502
+
+    try:
+        return jsonify(upstream.json()), upstream.status_code
+    except ValueError:
+        return (upstream.text, upstream.status_code,
+                {"Content-Type": upstream.headers.get("Content-Type", "text/plain")})
+
+
 # ── Shared helpers for soccer stats endpoints ─────────────────────────────────
 
 _SOCCER_LEAGUE_MAP = {
