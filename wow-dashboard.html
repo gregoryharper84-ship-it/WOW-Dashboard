@@ -1473,22 +1473,42 @@ async function getNHLRoster(teamAbbr){
 }
 
 async function getNHLScheduleToday(){
+  // api-web.nhle.com is CORS-blocked from browser — use ESPN NHL which has proper CORS headers
   try{
-    // Local date to avoid UTC mismatch at late ET times
-    const now=new Date();
-    const localDate=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
-    const tmr=new Date(now.getTime()+86400000);
-    const tmrDate=`${tmr.getFullYear()}-${String(tmr.getMonth()+1).padStart(2,'0')}-${String(tmr.getDate()).padStart(2,'0')}`;
-    // Try today first, then tomorrow
-    for(const dateStr of [localDate, tmrDate]){
-      const r=await fx(`${EP.nhl}/schedule/${dateStr}`,{},6000);
+    const now = new Date();
+    const yyyymmdd = now.getFullYear().toString() +
+      String(now.getMonth()+1).padStart(2,'0') +
+      String(now.getDate()).padStart(2,'0');
+    // Try today + tomorrow
+    for(const dateStr of [yyyymmdd, String(parseInt(yyyymmdd)+1)]){
+      const r = await fx(
+        `${EP.espn}/hockey/nhl/scoreboard?dates=${dateStr}`, {}, 8000
+      );
       if(!r.ok) continue;
-      const d=await r.json();
-      const games=d.gameWeek?.[0]?.games||[];
-      if(games.length) return games;
+      const d = await r.json(); chip('espn','ok');
+      const events = (d.events||[]).filter(ev=>{
+        const status = ev.competitions?.[0]?.status?.type?.description||'';
+        return !['Final','Postponed','Cancelled'].includes(status);
+      });
+      if(events.length){
+        // Convert ESPN event format to NHL-like game objects for downstream use
+        return events.map(ev=>{
+          const comps = ev.competitions?.[0]?.competitors||[];
+          const away = comps.find(c=>c.homeAway==='away');
+          const home = comps.find(c=>c.homeAway==='home');
+          return {
+            _espn: true,
+            id: ev.id,
+            awayTeam:{ abbrev: away?.team?.abbreviation, id: away?.team?.id, name: away?.team?.displayName },
+            homeTeam:{ abbrev: home?.team?.abbreviation, id: home?.team?.id, name: home?.team?.displayName },
+            gameDate: ev.date,
+            gameState: 'PRE',
+          };
+        });
+      }
     }
     return [];
-  }catch(e){return null;}
+  }catch(e){ return null; }
 }
 
 // Compute L5/L10 hit rates and recent avg for a stat from game logs
@@ -1851,7 +1871,7 @@ async function runESPNWNBAEngine(log){
   try{
     // Step 1: Get today's WNBA slate from ESPN
     const scoreR = await fx(
-      `${EP.espn}/basketball/wnba/scoreboard`,{}, 8000
+      `${EP.espn}/basketball/wnba/scoreboard?dates=${new Date().toLocaleDateString('en-CA').replace(/-/g,'')}`,{}, 8000
     );
     if(!scoreR.ok){ log('⚠ WNBA: ESPN scoreboard unavailable','w'); return []; }
     const scoreD = await scoreR.json(); chip('espn','ok');
@@ -1948,6 +1968,25 @@ async function runESPNWNBAEngine(log){
   return candidates;
 }
 
+// ── BDL Rate-Limit Management ──
+// BDL free tier: aggressive 429 + 401 under load. Cache rosters per session.
+const _bdlRosterCache = {};
+const _bdlDelay = ms => new Promise(r => setTimeout(r, ms));
+async function bdlFetch(url, retries=2){
+  for(let attempt=0; attempt<=retries; attempt++){
+    const r = await fx(url, {headers:{'Authorization':KEYS.bdl}}, 10000);
+    if(r.ok) return r;
+    if(r.status === 429){
+      const wait = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
+      await _bdlDelay(wait);
+      continue;
+    }
+    if(r.status === 401) return null; // key issue — bail immediately
+    return r;
+  }
+  return null;
+}
+
 // ── BallDontLie Engine (NBA/WNBA) ──
 async function runBDLEngine(sport,log){
   const candidates=[];
@@ -1965,13 +2004,13 @@ async function runBDLEngine(sport,log){
     let games=[];
     for(const season of seasons){
       for(const dateStr of [localDate, tmrDate]){
-        const gR=await fx(`${bdlBase}/games?dates[]=${dateStr}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+        const gR=await bdlFetch(`${bdlBase}/games?dates[]=${dateStr}&per_page=25`);
         if(gR.ok){
           const gD=await gR.json();
           if(gD.data?.length){ games.push(...gD.data); }
         }
         // Try postseason explicitly
-        const psR=await fx(`${bdlBase}/games?dates[]=${dateStr}&postseason=true&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+        const psR=await bdlFetch(`${bdlBase}/games?dates[]=${dateStr}&postseason=true&per_page=25`);
         if(psR.ok){ const psD=await psR.json(); if(psD.data?.length) games.push(...psD.data); }
       }
       if(games.length) break;
@@ -1996,14 +2035,13 @@ async function runBDLEngine(sport,log){
       const gameStr=`${game.visitor_team?.full_name||'Away'} @ ${game.home_team?.full_name||'Home'}`;
 
       for(const teamId of [game.visitor_team?.id, game.home_team?.id].filter(Boolean)){
-        // Step 2: Get active players via BDL /players roster endpoint
-        // More reliable than game_ids — doesn't depend on stats being posted yet
         let players=[];
-        // BDL /players endpoint: seasons[] filter often returns empty — try without it first
-        const rosR=await fx(
-          `${bdlBase}/players?team_ids[]=${teamId}&per_page=30`,
-          {headers:{'Authorization':KEYS.bdl}}, 8000
-        );
+        const cacheKey=`${sport}_${teamId}`;
+        if(_bdlRosterCache[cacheKey]){
+          players=_bdlRosterCache[cacheKey];
+        } else {
+          await _bdlDelay(200); // throttle: 200ms between team requests
+          const rosR=await bdlFetch(`${bdlBase}/players?team_ids[]=${teamId}&per_page=30`);
         if(rosR.ok){
           const rosData=(await rosR.json()).data||[];
           players=rosData.filter(p=>p.first_name&&p.last_name).slice(0,12);
@@ -2011,10 +2049,7 @@ async function runBDLEngine(sport,log){
         // If still empty, try with season filter
         if(!players.length){
           for(const season of seasons){
-            const rosR2=await fx(
-              `${bdlBase}/players?team_ids[]=${teamId}&seasons[]=${season}&per_page=30`,
-              {headers:{'Authorization':KEYS.bdl}}, 8000
-            );
+            const rosR2=await bdlFetch(`${bdlBase}/players?team_ids[]=${teamId}&seasons[]=${season}&per_page=30`);
             if(!rosR2.ok) continue;
             const rosData2=(await rosR2.json()).data||[];
             if(rosData2.length){
@@ -2026,10 +2061,7 @@ async function runBDLEngine(sport,log){
         // Fallback: mine postseason stats for player IDs
         if(!players.length){
           for(const season of seasons){
-            const psStR=await fx(
-              `${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=${season}&postseason=true&per_page=30`,
-              {headers:{'Authorization':KEYS.bdl}}, 8000
-            );
+            const psStR=await bdlFetch(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=${season}&postseason=true&per_page=30`);
             if(!psStR.ok) continue;
             const pMap=new Map();
             ((await psStR.json()).data||[])
@@ -2039,10 +2071,13 @@ async function runBDLEngine(sport,log){
             if(players.length) break;
           }
         }
-        if(!players.length){ log(`  ⚠ No roster data for team ${teamId}`,'w'); continue; }
+        if(players.length) _bdlRosterCache[cacheKey] = players; // cache for session
+        } // end cache else
+        if(!players.length){ log(`  ⚠ No roster data for team ${teamId} (BDL 401/429)`,'w'); continue; }
 
-        // Step 3: Get full game log for each player
+        // Step 3: Get full game log for each player (throttled)
         for(const player of players){
+          await _bdlDelay(150); // 150ms between player requests
           let playerLogs=[];
           for(const season of seasons){
             const logR=await fx(
@@ -4322,8 +4357,7 @@ async function enrichWithNBAStats(prop){
     const bdlBase = isWNBA ? 'https://api.balldontlie.io/v1/wnba' : 'https://api.balldontlie.io/v1';
 
     // Search player
-    const sr = await fx(`${bdlBase}/players?search=${encodeURIComponent(prop.player)}&per_page=5`,
-      {headers:{'Authorization': KEYS.bdl}}, 6000);
+    const sr = await bdlFetch(`${bdlBase}/players?search=${encodeURIComponent(prop.player)}&per_page=5`);
     if(!sr.ok) return prop;
     const sd = await sr.json();
     const player = sd.data?.[0];
@@ -5533,7 +5567,7 @@ async function runWinnersUpsets(){
     const ctx = {upsetEdge:0, reasons:[], favBoosts:[]};
     try{
       // Back-to-back detection via ESPN
-      const espnR = await fx(`${EP.espn}/basketball/wnba/scoreboard`,{},6000);
+      const espnR = await fx(`${EP.espn}/basketball/wnba/scoreboard?dates=${new Date().toLocaleDateString('en-CA').replace(/-/g,'')}`,{},6000);
       if(espnR.ok){
         const espnData = await espnR.json();
         const events = espnData.events||[];
@@ -7117,14 +7151,14 @@ async function checkMLBLeg(player, prop, line, side){
 async function checkNBALeg(player, prop, line, side, sport){
   const bdlBase = 'https://api.balldontlie.io/v1';
   const today = new Date().toISOString().split('T')[0];
-  const gamesR = await fx(`${bdlBase}/games?dates[]=${today}&per_page=15`,{headers:{'Authorization':KEYS.bdl}},8000);
+  const gamesR = await bdlFetch(`${bdlBase}/games?dates[]=${today}&per_page=15`);
   if(!gamesR.ok) return null;
   const games = (await gamesR.json()).data||[];
   const finalGames = games.filter(g=>g.status==='Final');
   if(!finalGames.length) return null;
 
   for(const game of finalGames){
-    const statsR = await fx(`${bdlBase}/stats?game_ids[]=${game.id}&per_page=30`,{headers:{'Authorization':KEYS.bdl}},8000);
+    const statsR = await bdlFetch(`${bdlBase}/stats?game_ids[]=${game.id}&per_page=30`);
     if(!statsR.ok) continue;
     const stats = (await statsR.json()).data||[];
     const found = stats.find(s=>
@@ -8442,7 +8476,7 @@ async function buildNBALessCandidates(sport, cfg, log){
   const today = new Date().toISOString().split('T')[0];
 
   // Get today's games
-  const gamesR = await fx(`${bdlBase}/games?dates[]=${today}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+  const gamesR = await bdlFetch(`${bdlBase}/games?dates[]=${today}&per_page=25`);
   if(!gamesR.ok) throw new Error(`BDL games ${gamesR.status}`);
   const games = (await gamesR.json()).data||[];
   if(!games.length){ log(`⚠ ${sport}: no games today`,'w'); return []; }
@@ -8479,7 +8513,7 @@ async function buildNBALessCandidates(sport, cfg, log){
 
     for(const teamId of [game.visitor_team?.id, game.home_team?.id].filter(Boolean)){
       // Get players via recent stats
-      const statsR = await fx(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=2025&per_page=20`,{headers:{'Authorization':KEYS.bdl}},8000);
+      const statsR = await bdlFetch(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=2025&per_page=20`);
       if(!statsR.ok) continue;
       const statsD = await statsR.json();
       const playerMap = new Map();
@@ -8492,7 +8526,7 @@ async function buildNBALessCandidates(sport, cfg, log){
 
         // Get recent logs
         try{
-          const logR = await fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2025&per_page=10`,{headers:{'Authorization':KEYS.bdl}},8000);
+          const logR = await bdlFetch(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2025&per_page=10`);
           if(!logR.ok) continue;
           const logs = (await logR.json()).data||[];
           const active = logs.filter(g=>g.min&&g.min!=='0'&&g.min!=='0:00');
