@@ -1651,7 +1651,7 @@ async function runMLBEngine(log){
     };
 
     for(const game of games.slice(0,8)){
-      if(parseMLBGameState(game) !== 'upcoming') continue; // skip live/final
+      if(parseMLBGameState(game) === 'final') continue; // skip completed games only
       const awayId=game.teams?.away?.team?.id;const homeId=game.teams?.home?.team?.id;
       const awayName=game.teams?.away?.team?.name||'Away';const homeName=game.teams?.home?.team?.name||'Home';
       const gameStr=`${awayName} @ ${homeName}`;
@@ -1805,7 +1805,7 @@ async function runNHLEngine(log){
     const nhlProps=[{key:'shots',prop:'shots on goal',line:3.5,side:'MORE'},{key:'saves',prop:'saves',line:28.5,side:'MORE'}];
 
     for(const game of games.slice(0,6)){
-      if(parseNHLGameState(game) !== 'upcoming') continue; // skip live/final
+      if(parseNHLGameState(game) === 'final') continue; // skip completed games only
       const awayAbbr=game.awayTeam?.abbrev;const homeAbbr=game.homeTeam?.abbrev;
       const gameStr=`${game.awayTeam?.placeName?.default||awayAbbr} @ ${game.homeTeam?.placeName?.default||homeAbbr}`;
 
@@ -1885,7 +1885,7 @@ async function runBDLEngine(sport,log){
     ];
 
     for(const game of games.slice(0,4)){
-      if(parseBDLGameStatus(game) !== 'upcoming') continue; // skip live/final
+      if(parseBDLGameStatus(game) === 'final') continue; // skip completed games only
       const gameStr=`${game.visitor_team?.full_name||'Away'} @ ${game.home_team?.full_name||'Home'}`;
 
       for(const teamId of [game.visitor_team?.id, game.home_team?.id].filter(Boolean)){
