@@ -1269,6 +1269,8 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 <script>
 // ── Config ──
 const KEYS={rundown:'6f00cf9201adfd3026defd4a1808d7400ec441955647efe3d7eade517d4cdc74',odds:'311bae3d2356b258e27750224a9e5fcf',bdl:'0b3cae52-e907-4abb-8670-d54502bc373c',replit:'j|nNZo*[uWj%EIH[0Y:yNjhsKp:iBqK|'};
+function localDate(offsetDays=0){const d=new Date(Date.now()+offsetDays*86400000);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+
 const EP={rundown:'https://therundown.io/api/v2',odds:'https://api.the-odds-api.com/v4',espn:'https://site.api.espn.com/apis/site/v2/sports',bdl:'https://api.balldontlie.io/v1',replit:'https://create-app-gregoryharper84.replit.app',mlb:'https://statsapi.mlb.com/api/v1',nhl:'https://api-web.nhle.com/v1'};
 const ESPN_P={MLB:'baseball/mlb',NBA:'basketball/nba',NHL:'hockey/nhl',WNBA:'basketball/wnba',NFL:'americanfootball/nfl',soccer:'soccer/usa.1'};
 const ODDS_K={MLB:'baseball_mlb',NBA:'basketball_nba',NHL:'icehockey_nhl',WNBA:'basketball_wnba',NFL:'americanfootball_nfl',Soccer:'soccer_usa_mls',Tennis:'tennis_atp'};
@@ -1394,7 +1396,7 @@ async function loadBoard(){
   div.innerHTML=`<div class="alert ab"><div class="spd"></div> Fetching slate...</div>`;
   let ok=false;
   try{
-    const today=new Date().toISOString().split('T')[0];const sid=SPORT_IDS[sport]||3;
+    const today=localDate();const sid=SPORT_IDS[sport]||3;
     const r=await fx(`${EP.rundown}/events?key=${KEYS.rundown}&sport_id=${sid}&date=${today}`,{headers:{'X-TheRundown-Key':KEYS.rundown}});
     if(!r.ok)throw new Error(r.status);
     const data=await r.json();chip('rundown','ok');
@@ -1472,11 +1474,20 @@ async function getNHLRoster(teamAbbr){
 
 async function getNHLScheduleToday(){
   try{
-    const today=new Date().toISOString().split('T')[0];
-    const r=await fx(`${EP.nhl}/schedule/${today}`,{},6000);
-    if(!r.ok)return null;
-    const d=await r.json();
-    return d.gameWeek?.[0]?.games||[];
+    // Local date to avoid UTC mismatch at late ET times
+    const now=new Date();
+    const localDate=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    const tmr=new Date(now.getTime()+86400000);
+    const tmrDate=`${tmr.getFullYear()}-${String(tmr.getMonth()+1).padStart(2,'0')}-${String(tmr.getDate()).padStart(2,'0')}`;
+    // Try today first, then tomorrow
+    for(const dateStr of [localDate, tmrDate]){
+      const r=await fx(`${EP.nhl}/schedule/${dateStr}`,{},6000);
+      if(!r.ok) continue;
+      const d=await r.json();
+      const games=d.gameWeek?.[0]?.games||[];
+      if(games.length) return games;
+    }
+    return [];
   }catch(e){return null;}
 }
 
@@ -1531,12 +1542,16 @@ async function runAutoEngine(){
       } else if(sport==='NBA'){
         allCandidates.push(...await runBDLEngine('NBA',log));
       } else if(sport==='WNBA'){
-        // WNBA — pull directly from Odds API player props (BDL WNBA requires paid tier)
-        log(`⟳ WNBA: pulling from Odds API...`,'i');
-        const wnbaCandidates = await runOddsAPIEngine('WNBA','basketball_wnba',
-          'player_points,player_rebounds,player_assists',log);
-        allCandidates.push(...wnbaCandidates);
-        if(!wnbaCandidates.length) log(`⚠ WNBA: no props available today`,'w');
+        // WNBA — BDL first (same engine as NBA), Odds API as fallback
+        const wnbaBDL = await runBDLEngine('WNBA', log);
+        allCandidates.push(...wnbaBDL);
+        if(!wnbaBDL.length){
+          log(`⟳ WNBA: BDL empty — trying Odds API...`,'i');
+          const wnbaOdds = await runOddsAPIEngine('WNBA','basketball_wnba',
+            'player_points,player_rebounds,player_assists',log);
+          allCandidates.push(...wnbaOdds);
+          if(!wnbaOdds.length) log(`⚠ WNBA: no props found today`,'w');
+        }
       } else if(sport==='Soccer'){
         log(`⟳ Soccer: fetching fixtures + player stats via Replit...`,'i');
         const soccerCandidates = await runSoccerEngine(log);
@@ -1833,23 +1848,30 @@ async function runBDLEngine(sport,log){
   // BDL season keys: 2024 = 2024-25 season (current playoffs), 2025 = 2025-26
   const seasons=['2024','2025'];
   try{
-    const today=new Date().toISOString().split('T')[0];
+    // Use LOCAL date (not UTC) — at 11 PM ET, UTC is already "tomorrow"
+    const _now = new Date();
+    const localDate = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}-${String(_now.getDate()).padStart(2,'0')}`;
+    const tomorrowDate = new Date(_now.getTime()+86400000);
+    const tmrDate = `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth()+1).padStart(2,'0')}-${String(tomorrowDate.getDate()).padStart(2,'0')}`;
 
-    // Step 1: Get today's games
+    // Step 1: Get today's games (local date + postseason)
     let games=[];
     for(const season of seasons){
-      const gR=await fx(`${bdlBase}/games?dates[]=${today}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
-      if(gR.ok){
-        const gD=await gR.json();
-        if(gD.data?.length){ games=gD.data; break; }
+      for(const dateStr of [localDate, tmrDate]){
+        const gR=await fx(`${bdlBase}/games?dates[]=${dateStr}&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+        if(gR.ok){
+          const gD=await gR.json();
+          if(gD.data?.length){ games.push(...gD.data); }
+        }
+        // Try postseason explicitly
+        const psR=await fx(`${bdlBase}/games?dates[]=${dateStr}&postseason=true&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
+        if(psR.ok){ const psD=await psR.json(); if(psD.data?.length) games.push(...psD.data); }
       }
+      if(games.length) break;
     }
-    // Try postseason explicitly
-    if(!games.length){
-      const psR=await fx(`${bdlBase}/games?dates[]=${today}&postseason=true&per_page=25`,{headers:{'Authorization':KEYS.bdl}},8000);
-      if(psR.ok){ const psD=await psR.json(); games=psD.data||[]; }
-    }
-    if(!games.length){ log(`⚠ ${sport}: No games today — trying ESPN fallback`,'w'); return runESPNEngine(sport,log); }
+    // Deduplicate by game id
+    games = [...new Map(games.map(g=>[g.id,g])).values()];
+    if(!games.length){ log(`⚠ ${sport}: No games found (today or tomorrow)`, 'w'); return []; }
     log(`✓ ${sport}: ${games.length} game(s) on slate`,'ok');
 
     const propDefs=[
@@ -2206,7 +2228,15 @@ async function runTennisEngine(log){
         {headers:{'X-API-Key':KEYS.replit}}, 10000
       );
       if(!r.ok) continue;
-      const fd = await r.json();
+      // Guard against HTML error pages (Replit cold-starting)
+      const rawText = await r.text();
+      if(rawText.trim().startsWith('<')){
+        log(`⚠ Tennis: Replit cold-starting — retry in 30s`,'w');
+        continue;
+      }
+      let fd;
+      try{ fd = JSON.parse(rawText); }
+      catch(e){ log(`⚠ Tennis: fixtures parse error (${tour}) — ${e.message}`,'w'); continue; }
       const tourMatches = (fd.response||[]).map(f=>({
         player1:    f.players?.home?.name || '',
         player2:    f.players?.away?.name || '',
@@ -4334,7 +4364,7 @@ async function enrichWithNHLStats(prop){
   if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
   try{
     // Search via NHL roster search — find player in today's rosters
-    const schedR = await fx(`${EP.nhl}/schedule/${new Date().toISOString().split('T')[0]}`,{},6000);
+    const schedR = await fx(`${EP.nhl}/schedule/${localDate()}`,{},6000);
     if(!schedR.ok) return prop;
     const schedD = await schedR.json();
     const games = schedD.gameWeek?.[0]?.games || [];
