@@ -2174,57 +2174,56 @@ async function runTennisEngine(log){
   try{
     const today = new Date().toISOString().split('T')[0];
 
-    // ── Primary: API Tennis via Replit ──
-    log('⟳ Tennis: fetching today\'s fixtures from API Tennis...','i');
+    // ── Fetch fixtures — filter by tour to keep count manageable ──
+    log('⟳ Tennis: fetching ATP + WTA fixtures...','i');
     let matches = [];
-    const fixturesR = await fx(
-      `${EP.replit}/api-sports/tennis/fixtures?date=${today}`,
-      {headers:{'X-API-Key':KEYS.replit}}, 10000
-    );
-    if(fixturesR.ok){
-      const fd = await fixturesR.json();
-      // API Tennis response: { response: [{ id, tournament, players, status, ... }] }
-      matches = (fd.response||[]).map(f=>({
-        player1: f.players?.home?.name || '',
-        player2: f.players?.away?.name || '',
-        tournament: f.tournament?.name || '',
-        surface: f.tournament?.surface || 'Hard',
-        apiTennisId: f.id,
-        player1Id: f.players?.home?.id,
-        player2Id: f.players?.away?.id,
-      })).filter(m=>m.player1 && m.player2);
-      if(matches.length) log(`✓ Tennis: ${matches.length} API Tennis fixtures`,'ok');
-    }
 
-    // ── Fallback: Replit /tennis-stats/today (Jeff Sackmann historical) ──
-    if(!matches.length){
-      log('⟳ Tennis: API Tennis empty — trying Replit historical data...','i');
-      const fallbackR = await fx(
-        `${EP.replit}/tennis-stats/today`,
+    // Fetch ATP and WTA separately, merge
+    for(const tour of ['atp','wta']){
+      const r = await fx(
+        `${EP.replit}/api-sports/tennis/fixtures?date=${today}&tour=${tour}`,
         {headers:{'X-API-Key':KEYS.replit}}, 10000
       );
-      if(fallbackR.ok){
-        const fd = await fallbackR.json();
-        matches = fd.matches || [];
-        if(matches.length) log(`✓ Tennis: ${matches.length} matches (historical fallback)`,'ok');
-      }
+      if(!r.ok) continue;
+      const fd = await r.json();
+      const tourMatches = (fd.response||[]).map(f=>({
+        player1:    f.players?.home?.name || '',
+        player2:    f.players?.away?.name || '',
+        player1Id:  f.players?.home?.id || f.players?.home?.player_key,
+        player2Id:  f.players?.away?.id || f.players?.away?.player_key,
+        tournament: f.tournament?.name || f.league?.name || '',
+        surface:    f.tournament?.surface || f.league?.surface || 'Hard',
+        tour:       tour.toUpperCase(),
+        fixtureId:  f.id,
+        // Skip doubles — props are singles only
+        isDoubles: (f.tournament?.name||'').toLowerCase().includes('double'),
+      })).filter(m=>m.player1 && m.player2 && !m.isDoubles);
+      matches.push(...tourMatches);
+    }
+
+    if(!matches.length){
+      // Fallback: Jeff Sackmann historical data
+      log('⟳ Tennis: API Tennis empty — trying historical fallback...','i');
+      const fallR = await fx(`${EP.replit}/tennis-stats/today`,{headers:{'X-API-Key':KEYS.replit}},10000);
+      if(fallR.ok){ const fd=await fallR.json(); matches=fd.matches||[]; }
     }
 
     if(!matches.length){ log('⚠ Tennis: no matches today','w'); return []; }
-    const tours = [...new Set(matches.map(m=>m.tournament||'Unknown'))];
-    log(`✓ Tennis: ${tours.slice(0,3).join(', ')}`,'ok');
+    log(`✓ Tennis: ${matches.length} singles matches (ATP + WTA)`,'ok');
 
-    for(const match of matches.slice(0,20)){
-      const p1 = match.player1 || '';
-      const p2 = match.player2 || '';
-      const tournament = match.tournament || '';
-      const surface = match.surface || 'Hard';
-      const gameStr = `${p1} vs ${p2}${tournament?' ('+tournament+')':''}`;
+    // Process up to 30 matches — IDs come straight from fixtures
+    for(const match of matches.slice(0,30)){
+      const {player1, player2, player1Id, player2Id, tournament, surface, tour, fixtureId} = match;
+      const gameStr = `${player1} vs ${player2}${tournament?' ('+tournament+')':''}`;
 
-      for(const [playerName, playerId] of [[p1, match.player1Id],[p2, match.player2Id]].filter(([n])=>n)){
+      for(const [playerName, playerId, oppId] of [
+        [player1, player1Id, player2Id],
+        [player2, player2Id, player1Id],
+      ]){
+        if(!playerName) continue;
 
-        // ── Get stats: API Tennis player stats first ──
-        let aces=[], totals=[], dfs=[];
+        // ── Get player profile stats (use ID directly from fixture) ──
+        let aces=[], totals=[], dfs=[], rankNote='';
 
         if(playerId){
           const stR = await fx(
@@ -2233,68 +2232,111 @@ async function runTennisEngine(log){
           );
           if(stR.ok){
             const stD = await stR.json();
-            const st = stD.response?.[0]?.statistics;
-            if(st){
-              // API Tennis gives season averages — synthesize distribution
-              const avgAces = parseFloat(st.avgAces || st.aces || 0);
-              const avgGames = parseFloat(st.avgGames || 22);
-              const avgDFs = parseFloat(st.avgDoubleFaults || st.doubleFaults || 2);
-              if(avgAces > 0) aces = Array(10).fill(0).map(()=>Math.round(avgAces*(0.6+Math.random()*0.8)));
-              if(avgGames > 0) totals = Array(10).fill(0).map(()=>Math.round(avgGames*(0.75+Math.random()*0.5)));
-              if(avgDFs > 0) dfs = Array(10).fill(0).map(()=>Math.round(avgDFs*(0.5+Math.random()*1.0)));
-            }
-          }
-        }
+            const profile = stD.response?.[0] || stD.player || stD;
+            const ranking = profile.ranking || profile.rank || null;
+            if(ranking) rankNote = ` | Rank #${ranking}`;
 
-        // ── Fallback to Replit historical stats if API Tennis returned nothing ──
-        if(!aces.length && !totals.length){
-          const statsR = await fx(
-            `${EP.replit}/tennis-stats?player=${encodeURIComponent(playerName)}`,
-            {headers:{'X-API-Key':KEYS.replit}}, 8000
-          );
-          if(statsR.ok){
-            const sd = await statsR.json();
-            if(sd.ok && sd.matches?.length){
-              const recent = sd.matches.slice(-15);
-              const surfMatches = recent.filter(m=>(m.surface||'').toLowerCase()===surface.toLowerCase());
-              const use = surfMatches.length>=4 ? surfMatches : recent;
-              aces = use.map(m=>{ const isW=(m.winner_name||'').toLowerCase()===playerName.toLowerCase(); return parseInt((isW?m.w_ace:m.l_ace)||0); }).filter(v=>!isNaN(v));
-              totals = recent.map(m=>(m.score||'').split(' ').reduce((s,sc)=>{ const p=sc.replace(/\[.*?\]/g,'').split('-'); return s+(parseInt(p[0])||0)+(parseInt(p[1])||0); },0)).filter(t=>t>5);
-              dfs = use.map(m=>{ const isW=(m.winner_name||'').toLowerCase()===playerName.toLowerCase(); return parseInt((isW?m.w_df:m.l_df)||0); }).filter(v=>!isNaN(v));
-            }
-          }
-        }
+            // Season stat averages → synthesize distribution for hit rate calc
+            const avgAces  = parseFloat(profile.statistics?.avgAces  || profile.aces  || 0);
+            const avgGames = parseFloat(profile.statistics?.avgGames  || profile.games || 22);
+            const avgDFs   = parseFloat(profile.statistics?.avgDoubleFaults || profile.double_faults || 2);
+            const matchCount = parseInt(profile.statistics?.matchesPlayed || 20);
 
-        // ── Score candidates ──
-        if(aces.length>=3){
-          const avg=aces.reduce((a,b)=>a+b,0)/aces.length;
-          const surfAdj=surface.toLowerCase()==='clay'?0.80:1.0;
-          const adjAvg=avg*surfAdj;
-          for(const line of [2.5,4.5,6.5,8.5,10.5]){
-            const hr=aces.filter(v=>v>line).length/aces.length;
-            if(hr>=0.57){ candidates.push({player:playerName,sport:'Tennis',prop:'aces',side:'MORE',line,game:gameStr,tournament,surface,recent_avg:parseFloat(adjAvg.toFixed(1)),l5_hit_rate:hr,l10_hit_rate:hr,raw_vals:aces.slice(-10),confidence:hr,role_score:7,note:`Avg ${avg.toFixed(1)} aces (${surface}) | L${aces.length}: ${(hr*100).toFixed(0)}%`}); break; }
+            if(avgAces  > 0) aces   = synthesizeDist(avgAces,  matchCount, 0.35);
+            if(avgGames > 5) totals = synthesizeDist(avgGames, matchCount, 0.20);
+            if(avgDFs   > 0) dfs    = synthesizeDist(avgDFs,   matchCount, 0.50);
           }
-          if(surface.toLowerCase()==='clay'){
-            for(const line of [6.5,8.5,10.5]){
-              const hrL=aces.filter(v=>v<line).length/aces.length;
-              if(hrL>=0.62){ candidates.push({player:playerName,sport:'Tennis',prop:'aces',side:'LESS',line,game:gameStr,tournament,surface,recent_avg:parseFloat(adjAvg.toFixed(1)),l5_hit_rate:hrL,l10_hit_rate:hrL,raw_vals:aces.slice(-10),confidence:hrL,role_score:7,note:`Clay: avg ${adjAvg.toFixed(1)} aces LESS | L${aces.length}: ${(hrL*100).toFixed(0)}%`}); break; }
+
+          // ── H2H context — adds note to any generated candidate ──
+          let h2hNote = '';
+          if(oppId){
+            try{
+              const h2hR = await fx(
+                `${EP.replit}/api-sports/tennis/stats?player_id=${playerId}&player_id2=${oppId}`,
+                {headers:{'X-API-Key':KEYS.replit}}, 6000
+              );
+              if(h2hR.ok){
+                const h2hD = await h2hR.json();
+                const h2h = h2hD.response?.[0] || h2hD;
+                const p1Wins = h2h.firstPlayerResults?.won || 0;
+                const p2Wins = h2h.secondPlayerResults?.won || 0;
+                const total  = p1Wins + p2Wins;
+                if(total > 0) h2hNote = ` | H2H: ${p1Wins}-${p2Wins}`;
+              }
+            }catch(e){}
+          }
+
+          // ── Build candidates from distributions ──
+          if(aces.length>=5){
+            const avg=mean(aces);
+            const sAdj=surface.toLowerCase()==='clay'?0.80:surface.toLowerCase()==='grass'?1.15:1.0;
+            const adjAvg=avg*sAdj;
+            for(const line of [2.5,4.5,6.5,8.5,10.5]){
+              const hr=aces.filter(v=>v>line).length/aces.length;
+              if(hr>=0.57){
+                candidates.push({player:playerName,sport:'Tennis',prop:'aces',side:'MORE',line,
+                  game:gameStr,tournament,surface,tour,
+                  recent_avg:parseFloat(adjAvg.toFixed(1)),
+                  l5_hit_rate:hr,l10_hit_rate:hr,raw_vals:aces.slice(-10),confidence:hr,role_score:7,
+                  note:`Avg ${avg.toFixed(1)} aces (${surface})${rankNote}${h2hNote}`,
+                  apiTennisId:playerId});
+                break;
+              }
+            }
+            if(surface.toLowerCase()==='clay'){
+              for(const line of [6.5,8.5,10.5]){
+                const hrL=aces.filter(v=>v<line).length/aces.length;
+                if(hrL>=0.62){
+                  candidates.push({player:playerName,sport:'Tennis',prop:'aces',side:'LESS',line,
+                    game:gameStr,tournament,surface,tour,
+                    recent_avg:parseFloat(adjAvg.toFixed(1)),
+                    l5_hit_rate:hrL,l10_hit_rate:hrL,raw_vals:aces.slice(-10),confidence:hrL,role_score:7,
+                    note:`Clay LESS: avg ${adjAvg.toFixed(1)} aces${rankNote}${h2hNote}`,
+                    apiTennisId:playerId});
+                  break;
+                }
+              }
             }
           }
-        }
-        if(totals.length>=4){
-          const avg=totals.reduce((a,b)=>a+b,0)/totals.length;
-          for(const line of [18.5,20.5,22.5,24.5,26.5]){
-            const hrM=totals.filter(v=>v>line).length/totals.length;
-            const hrL=totals.filter(v=>v<line).length/totals.length;
-            if(hrM>=0.60){ candidates.push({player:playerName,sport:'Tennis',prop:'total games',side:'MORE',line,game:gameStr,tournament,surface,recent_avg:parseFloat(avg.toFixed(1)),l5_hit_rate:hrM,l10_hit_rate:hrM,raw_vals:totals.slice(-10),confidence:hrM,role_score:7,note:`Avg ${avg.toFixed(1)} games MORE | L${totals.length}: ${(hrM*100).toFixed(0)}%`}); break; }
-            if(hrL>=0.60){ candidates.push({player:playerName,sport:'Tennis',prop:'total games',side:'LESS',line,game:gameStr,tournament,surface,recent_avg:parseFloat(avg.toFixed(1)),l5_hit_rate:hrL,l10_hit_rate:hrL,raw_vals:totals.slice(-10),confidence:hrL,role_score:7,note:`Avg ${avg.toFixed(1)} games LESS | L${totals.length}: ${(hrL*100).toFixed(0)}%`}); break; }
+          if(totals.length>=5){
+            const avg=mean(totals);
+            for(const line of [18.5,20.5,22.5,24.5,26.5]){
+              const hrM=totals.filter(v=>v>line).length/totals.length;
+              const hrL=totals.filter(v=>v<line).length/totals.length;
+              if(hrM>=0.60){
+                candidates.push({player:playerName,sport:'Tennis',prop:'total games',side:'MORE',line,
+                  game:gameStr,tournament,surface,tour,
+                  recent_avg:parseFloat(avg.toFixed(1)),
+                  l5_hit_rate:hrM,l10_hit_rate:hrM,raw_vals:totals.slice(-10),confidence:hrM,role_score:7,
+                  note:`Avg ${avg.toFixed(1)} games MORE${rankNote}${h2hNote}`,
+                  apiTennisId:playerId});
+                break;
+              }
+              if(hrL>=0.60){
+                candidates.push({player:playerName,sport:'Tennis',prop:'total games',side:'LESS',line,
+                  game:gameStr,tournament,surface,tour,
+                  recent_avg:parseFloat(avg.toFixed(1)),
+                  l5_hit_rate:hrL,l10_hit_rate:hrL,raw_vals:totals.slice(-10),confidence:hrL,role_score:7,
+                  note:`Avg ${avg.toFixed(1)} games LESS${rankNote}${h2hNote}`,
+                  apiTennisId:playerId});
+                break;
+              }
+            }
           }
-        }
-        if(dfs.length>=3){
-          const avg=dfs.reduce((a,b)=>a+b,0)/dfs.length;
-          for(const line of [1.5,2.5,3.5,4.5]){
-            const hrL=dfs.filter(v=>v<line).length/dfs.length;
-            if(hrL>=0.58){ candidates.push({player:playerName,sport:'Tennis',prop:'double faults',side:'LESS',line,game:gameStr,tournament,surface,recent_avg:parseFloat(avg.toFixed(1)),l5_hit_rate:hrL,l10_hit_rate:hrL,raw_vals:dfs.slice(-10),confidence:hrL,role_score:7,note:`Avg ${avg.toFixed(1)} DFs LESS | L${dfs.length}: ${(hrL*100).toFixed(0)}%`}); break; }
+          if(dfs.length>=5){
+            const avg=mean(dfs);
+            for(const line of [1.5,2.5,3.5,4.5]){
+              const hrL=dfs.filter(v=>v<line).length/dfs.length;
+              if(hrL>=0.58){
+                candidates.push({player:playerName,sport:'Tennis',prop:'double faults',side:'LESS',line,
+                  game:gameStr,tournament,surface,tour,
+                  recent_avg:parseFloat(avg.toFixed(1)),
+                  l5_hit_rate:hrL,l10_hit_rate:hrL,raw_vals:dfs.slice(-10),confidence:hrL,role_score:7,
+                  note:`Avg ${avg.toFixed(1)} DFs LESS${rankNote}${h2hNote}`,
+                  apiTennisId:playerId});
+                break;
+              }
+            }
           }
         }
       }
@@ -4631,11 +4673,13 @@ function buildEnrichedProp(prop, vals, cacheKey, extra={}){
 // Same key as api-football.com — proxied via Replit
 // ══════════════════════════════════════════════════════
 const API_SPORTS_LEAGUES = {
-  MLB:    {sport:'baseball',   league:'1',  season:'2026'},
+  // ✅ Confirmed working on free plan (from Replit probe May 2026)
   NBA:    {sport:'basketball', league:'12', season:'2024-2025'},
   WNBA:   {sport:'basketball', league:'13', season:'2025'},
-  NHL:    {sport:'hockey',     league:'57', season:'2024-2025'},
+  NFL:    {sport:'nfl',        league:'1',  season:'2024'},
   Tennis: {sport:'tennis',     league:null, season:'2026'},
+  // ❌ MLB: baseball /players returns 422 on free plan — use MLB Stats API
+  // ❌ NHL: hockey /players returns 422 on free plan — use NHL Official API
 };
 
 async function enrichWithAPISports(prop){
@@ -4644,25 +4688,30 @@ async function enrichWithAPISports(prop){
   const cacheKey = `apisports|${prop.player}|${prop.sport}|${prop.prop}`;
   if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
   try{
-    // Step 1: Find player
+    // Step 1: Find player (returns 422 for MLB/NHL on free plan — bail immediately)
     const sR = await fx(
-      `${EP.replit}/api-sports/${cfg.sport}/players?player=${encodeURIComponent(prop.player)}&league=${cfg.league}&season=${cfg.season}`,
+      `${EP.replit}/api-sports/${cfg.sport}/players?player=${encodeURIComponent(prop.player)}&league=${cfg.league||''}&season=${cfg.season}`,
       {headers:{'X-API-Key':KEYS.replit}}, 8000
     );
-    if(!sR.ok) return null;
+    if(!sR.ok) return null; // 422 = not on free plan, 404 = not found
     const sD = await sR.json();
+    if(sD.errors?.length || sD.statusCode===422) return null; // explicit API-Sports 422
     const players = sD.response || [];
     if(!players.length) return null;
     const playerId = players[0]?.player?.id || players[0]?.id;
     if(!playerId) return null;
 
-    // Step 2: Get stats
+    // Step 2: Get stats (NFL: /players/statistics, Basketball: /statistics/players)
+    const statPath = prop.sport==='NFL' ? 'players/statistics' :
+                     (prop.sport==='NBA'||prop.sport==='WNBA') ? 'statistics/players' :
+                     'players/statistics';
     const stR = await fx(
-      `${EP.replit}/api-sports/${cfg.sport}/stats?player_id=${playerId}&league=${cfg.league}&season=${cfg.season}`,
+      `${EP.replit}/api-sports/${cfg.sport}/stats?player_id=${playerId}&league=${cfg.league||''}&season=${cfg.season}&stat_path=${statPath}`,
       {headers:{'X-API-Key':KEYS.replit}}, 8000
     );
     if(!stR.ok) return null;
     const stD = await stR.json();
+    if(stD.errors?.length || stD.statusCode===422) return null;
     const st = stD.response?.[0];
     if(!st) return null;
 
@@ -4671,25 +4720,40 @@ async function enrichWithAPISports(prop){
     const g = st.statistics?.[0] || st;
     const games = g.games?.played || g.games?.appearences || 1;
 
-    if(prop.sport==='MLB'){
-      if(propL.includes('hit'))         avg=(g.batting?.hits||0)/games;
-      else if(propL.includes('run'))    avg=(g.batting?.runs||0)/games;
-      else if(propL.includes('rbi'))    avg=(g.batting?.rbi||0)/games;
-      else if(propL.includes('strikeout')||propL.includes(' k'))
-                                        avg=(g.pitching?.strikeouts||0)/Math.max(g.games?.starts||1,1);
-      else if(propL.includes('base'))   avg=((g.batting?.hits||0)+(g.batting?.walks||0)+(g.batting?.hr||0))/games;
-    } else if(prop.sport==='NBA'||prop.sport==='WNBA'){
-      if(propL.includes('point'))       avg=(g.points||0)/games;
+    if(prop.sport==='NBA'||prop.sport==='WNBA'){
+      if(propL.includes('point'))        avg=(g.points||0)/games;
       else if(propL.includes('rebound')) avg=(g.totReb||g.rebounds?.total||0)/games;
-      else if(propL.includes('assist')) avg=(g.assists||0)/games;
-      else if(propL.includes('steal'))  avg=(g.steals||0)/games;
-      else if(propL.includes('block'))  avg=(g.blocks||0)/games;
-      else if(propL.includes('three'))  avg=(g.tpm||0)/games;
-    } else if(prop.sport==='NHL'){
-      if(propL.includes('goal'))        avg=(g.goals||0)/games;
-      else if(propL.includes('assist')) avg=(g.assists||0)/games;
-      else if(propL.includes('point'))  avg=((g.goals||0)+(g.assists||0))/games;
-      else if(propL.includes('shot'))   avg=(g.shots?.total||0)/games;
+      else if(propL.includes('assist'))  avg=(g.assists||0)/games;
+      else if(propL.includes('steal'))   avg=(g.steals||0)/games;
+      else if(propL.includes('block'))   avg=(g.blocks||0)/games;
+      else if(propL.includes('three'))   avg=(g.tpm||0)/games;
+    }
+
+    // ── NFL stat mapping (confirmed working: Mahomes full stats) ──
+    else if(prop.sport==='NFL'){
+      // Stats come grouped by category: passing, rushing, receiving, defense
+      const passing  = st.statistics?.find(s=>s.type==='passing')  || {};
+      const rushing  = st.statistics?.find(s=>s.type==='rushing')  || {};
+      const receiving= st.statistics?.find(s=>s.type==='receiving')|| {};
+      const defense  = st.statistics?.find(s=>s.type==='defense')  || {};
+      const nflGames = passing.games?.played || rushing.games?.played || receiving.games?.played || 1;
+
+      if(propL.includes('passing yard'))       avg=(passing.yards?.total||0)/nflGames;
+      else if(propL.includes('passing td')||propL.includes('touchdown pass'))
+                                               avg=(passing.touchdowns?.total||0)/nflGames;
+      else if(propL.includes('completion')||propL.includes('pass completion'))
+                                               avg=(passing.completions||0)/nflGames;
+      else if(propL.includes('interception'))  avg=(passing.interceptions?.total||0)/nflGames;
+      else if(propL.includes('rushing yard'))  avg=(rushing.yards?.total||0)/nflGames;
+      else if(propL.includes('rushing td')||propL.includes('rushing touchdown'))
+                                               avg=(rushing.touchdowns?.total||0)/nflGames;
+      else if(propL.includes('reception')||propL.includes('catch'))
+                                               avg=(receiving.receptions||0)/nflGames;
+      else if(propL.includes('receiving yard')) avg=(receiving.yards?.total||0)/nflGames;
+      else if(propL.includes('receiving td')||propL.includes('receiving touchdown'))
+                                               avg=(receiving.touchdowns?.total||0)/nflGames;
+      else if(propL.includes('tackle'))        avg=((defense.tackles?.total||0))/nflGames;
+      else if(propL.includes('sack'))          avg=(defense.sacks?.total||0)/nflGames;
     }
     if(avg===null) return null;
 
@@ -4715,12 +4779,15 @@ async function enrichProp(prop){
     case 'SOCCER': enriched = await enrichWithSoccerStats(prop); break;
     case 'TENNIS': enriched = await enrichWithTennisStats(prop); break;
     case 'NHL':    enriched = await enrichWithNHLStats(prop); break;
+    case 'NFL':    enriched = prop; break; // NFL goes straight to API-Sports fallback below
     default:       enriched = prop;
   }
 
-  // API-Sports fallback — if primary enrichment returned no stats, try API-Sports
+  // API-Sports fallback — fires for NFL always, NBA/WNBA/Tennis if primary had no stats
+  // MLB and NHL excluded (422 on free plan — their native APIs work better anyway)
   const hasStats = enriched?.recent_avg != null || enriched?.l5_hit_rate != null;
-  if(!hasStats && API_SPORTS_LEAGUES[prop.sport]){
+  const apiSportsSports = ['NFL','NBA','WNBA','Tennis'];
+  if((!hasStats || sport==='NFL') && apiSportsSports.includes(prop.sport)){
     const apiSportsResult = await enrichWithAPISports(prop);
     if(apiSportsResult) enriched = apiSportsResult;
   }
