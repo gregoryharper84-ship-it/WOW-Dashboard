@@ -1542,15 +1542,14 @@ async function runAutoEngine(){
       } else if(sport==='NBA'){
         allCandidates.push(...await runBDLEngine('NBA',log));
       } else if(sport==='WNBA'){
-        // WNBA — BDL first (same engine as NBA), Odds API as fallback
-        const wnbaBDL = await runBDLEngine('WNBA', log);
-        allCandidates.push(...wnbaBDL);
-        if(!wnbaBDL.length){
-          log(`⟳ WNBA: BDL empty — trying Odds API...`,'i');
-          const wnbaOdds = await runOddsAPIEngine('WNBA','basketball_wnba',
-            'player_points,player_rebounds,player_assists',log);
-          allCandidates.push(...wnbaOdds);
-          if(!wnbaOdds.length) log(`⚠ WNBA: no props found today`,'w');
+        // WNBA — ESPN WNBA is most reliable source (BDL/OddsAPI have coverage gaps)
+        log(`⟳ WNBA: fetching slate from ESPN...`,'i');
+        const wnbaCandidates = await runESPNWNBAEngine(log);
+        allCandidates.push(...wnbaCandidates);
+        if(!wnbaCandidates.length){
+          // Fallback to BDL
+          const wnbaBDL = await runBDLEngine('WNBA', log);
+          allCandidates.push(...wnbaBDL);
         }
       } else if(sport==='Soccer'){
         log(`⟳ Soccer: fetching fixtures + player stats via Replit...`,'i');
@@ -1845,6 +1844,110 @@ async function runNHLEngine(log){
   return candidates;
 }
 
+// ── ESPN WNBA Engine ──
+// ESPN has the best WNBA coverage — game logs, player stats, today's slate
+async function runESPNWNBAEngine(log){
+  const candidates = [];
+  try{
+    // Step 1: Get today's WNBA slate from ESPN
+    const scoreR = await fx(
+      `${EP.espn}/basketball/wnba/scoreboard`,{}, 8000
+    );
+    if(!scoreR.ok){ log('⚠ WNBA: ESPN scoreboard unavailable','w'); return []; }
+    const scoreD = await scoreR.json(); chip('espn','ok');
+    const events = (scoreD.events||[]).filter(ev=>{
+      const status = ev.competitions?.[0]?.status?.type?.description||'';
+      return !['Final','Postponed','Cancelled'].includes(status);
+    });
+    if(!events.length){ log('⚠ WNBA: No games on today\'s ESPN slate','w'); return []; }
+    log(`✓ WNBA: ${events.length} games via ESPN`,'ok');
+
+    const propDefs = [
+      {prop:'points',   statIdx:0, lines:[10.5,14.5,18.5,22.5,26.5]},
+      {prop:'rebounds', statIdx:1, lines:[3.5,5.5,7.5,9.5]},
+      {prop:'assists',  statIdx:2, lines:[1.5,3.5,5.5,7.5]},
+      {prop:'3-pointers made', statIdx:3, lines:[0.5,1.5,2.5,3.5]},
+    ];
+
+    for(const ev of events){
+      const comp = ev.competitions?.[0];
+      const teams = comp?.competitors||[];
+      const away = teams.find(t=>t.homeAway==='away');
+      const home = teams.find(t=>t.homeAway==='home');
+      const gameStr = `${away?.team?.displayName||'Away'} @ ${home?.team?.displayName||'Home'}`;
+
+      for(const team of [away, home].filter(Boolean)){
+        // Step 2: Get team roster from ESPN
+        const teamId = team.team?.id;
+        if(!teamId) continue;
+        const rostR = await fx(
+          `https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/teams/${teamId}/roster`,
+          {}, 8000
+        );
+        if(!rostR.ok) continue;
+        const rostD = await rostR.json();
+        const athletes = (rostD.athletes||[]).flatMap(g=>g.items||g.athletes||[g]).filter(a=>a.id);
+        if(!athletes.length) continue;
+
+        // Step 3: Get recent game logs for each player
+        for(const athlete of athletes.slice(0,8)){
+          const aid = athlete.id;
+          const name = athlete.fullName || `${athlete.firstName||''} ${athlete.lastName||''}`.trim();
+
+          const logR = await fx(
+            `https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba/seasons/2026/athletes/${aid}/statisticslog`,
+            {}, 8000
+          );
+          if(!logR.ok) continue;
+          const logD = await logR.json();
+
+          // ESPN stats log: entries array with splits per game
+          const entries = logD.entries||[];
+          if(entries.length < 3) continue;
+
+          // Extract per-game stats: pts, reb, ast, 3pm
+          const gameLogs = entries.slice(0,15).map(e=>{
+            const stats = e.statistics?.splits?.[0]?.stats||e.stats||[];
+            return {
+              pts:  parseFloat(stats[0]?.value||stats.find?.(s=>s.abbreviation==='PTS')?.value||0),
+              reb:  parseFloat(stats[1]?.value||stats.find?.(s=>s.abbreviation==='REB')?.value||0),
+              ast:  parseFloat(stats[2]?.value||stats.find?.(s=>s.abbreviation==='AST')?.value||0),
+              tpm:  parseFloat(stats[3]?.value||stats.find?.(s=>s.abbreviation==='3PM')?.value||0),
+              mins: parseFloat(stats.find?.(s=>s.abbreviation==='MIN')?.value||0),
+            };
+          }).filter(g=>g.mins > 5);
+
+          if(gameLogs.length < 3) continue;
+
+          for(const pd of propDefs){
+            const key = pd.prop==='points'?'pts':pd.prop==='rebounds'?'reb':pd.prop==='assists'?'ast':'tpm';
+            const vals = gameLogs.map(g=>g[key]);
+            const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+            let bestLine=null, bestHR=0;
+            for(const line of pd.lines){
+              if(avg < line*0.5) continue;
+              const hr = vals.filter(v=>v>line).length/vals.length;
+              if(hr>=0.55 && hr>bestHR){ bestHR=hr; bestLine=line; }
+            }
+            if(!bestLine) continue;
+            candidates.push({
+              player:name, sport:'WNBA', prop:pd.prop, side:'MORE',
+              line:bestLine, game:gameStr,
+              recent_avg:parseFloat(avg.toFixed(2)),
+              l5_hit_rate:bestHR, l10_hit_rate:bestHR,
+              raw_vals:vals.slice(0,10), confidence:bestHR,
+              role_score:7,
+              note:`ESPN WNBA: ${avg.toFixed(1)} avg | L${gameLogs.length}: ${(bestHR*100).toFixed(0)}%`
+            });
+          }
+        }
+      }
+    }
+    log(`✓ WNBA: ${candidates.length} candidates via ESPN`,'ok');
+  }catch(e){ log(`⚠ WNBA ESPN engine: ${e.message}`,'w'); }
+  return candidates;
+}
+
 // ── BallDontLie Engine (NBA/WNBA) ──
 async function runBDLEngine(sport,log){
   const candidates=[];
@@ -1896,16 +1999,28 @@ async function runBDLEngine(sport,log){
         // Step 2: Get active players via BDL /players roster endpoint
         // More reliable than game_ids — doesn't depend on stats being posted yet
         let players=[];
-        for(const season of seasons){
-          const rosR=await fx(
-            `${bdlBase}/players?team_ids[]=${teamId}&seasons[]=${season}&per_page=25`,
-            {headers:{'Authorization':KEYS.bdl}}, 8000
-          );
-          if(!rosR.ok) continue;
+        // BDL /players endpoint: seasons[] filter often returns empty — try without it first
+        const rosR=await fx(
+          `${bdlBase}/players?team_ids[]=${teamId}&per_page=30`,
+          {headers:{'Authorization':KEYS.bdl}}, 8000
+        );
+        if(rosR.ok){
           const rosData=(await rosR.json()).data||[];
-          if(rosData.length>=4){
-            players=rosData.filter(p=>p.first_name&&p.last_name).slice(0,10);
-            break;
+          players=rosData.filter(p=>p.first_name&&p.last_name).slice(0,12);
+        }
+        // If still empty, try with season filter
+        if(!players.length){
+          for(const season of seasons){
+            const rosR2=await fx(
+              `${bdlBase}/players?team_ids[]=${teamId}&seasons[]=${season}&per_page=30`,
+              {headers:{'Authorization':KEYS.bdl}}, 8000
+            );
+            if(!rosR2.ok) continue;
+            const rosData2=(await rosR2.json()).data||[];
+            if(rosData2.length){
+              players=rosData2.filter(p=>p.first_name&&p.last_name).slice(0,12);
+              break;
+            }
           }
         }
         // Fallback: mine postseason stats for player IDs
