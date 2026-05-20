@@ -1479,8 +1479,12 @@ async function getNHLScheduleToday(){
     const yyyymmdd = now.getFullYear().toString() +
       String(now.getMonth()+1).padStart(2,'0') +
       String(now.getDate()).padStart(2,'0');
-    // Try today + tomorrow
-    for(const dateStr of [yyyymmdd, String(parseInt(yyyymmdd)+1)]){
+    // Try today + next 4 days (playoffs have 2-3 day rest periods)
+    const _nhlDates = Array.from({length:5}, (_,i)=>{
+      const d=new Date(Date.now()+i*86400000);
+      return d.getFullYear().toString()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+    });
+    for(const dateStr of _nhlDates){
       const r = await fx(
         `${EP.espn}/hockey/nhl/scoreboard?dates=${dateStr}`, {}, 8000
       );
@@ -1869,17 +1873,24 @@ async function runNHLEngine(log){
 async function runESPNWNBAEngine(log){
   const candidates = [];
   try{
-    // Step 1: Get today's WNBA slate from ESPN
-    const scoreR = await fx(
-      `${EP.espn}/basketball/wnba/scoreboard?dates=${new Date().toLocaleDateString('en-CA').replace(/-/g,'')}`,{}, 8000
-    );
-    if(!scoreR.ok){ log('⚠ WNBA: ESPN scoreboard unavailable','w'); return []; }
-    const scoreD = await scoreR.json(); chip('espn','ok');
-    const events = (scoreD.events||[]).filter(ev=>{
-      const status = ev.competitions?.[0]?.status?.type?.description||'';
-      return !['Final','Postponed','Cancelled'].includes(status);
-    });
-    if(!events.length){ log('⚠ WNBA: No games on today\'s ESPN slate','w'); return []; }
+       // Step 1: Get WNBA slate — try today + next 4 days (rest days common in playoffs)
+    let events = [];
+    let slateDate = '';
+    for(let di=0; di<5; di++){
+      const d = new Date(Date.now()+di*86400000);
+      const yyyymmdd = d.getFullYear().toString()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+      const scoreR = await fx(`${EP.espn}/basketball/wnba/scoreboard?dates=${yyyymmdd}`,{},8000);
+      if(!scoreR.ok) continue;
+      const scoreD = await scoreR.json(); chip('espn','ok');
+      const dayEvents = (scoreD.events||[]).filter(ev=>{
+        const st = ev.competitions?.[0]?.status?.type?.description||'';
+        return !['Final','Postponed','Cancelled'].includes(st);
+      });
+      if(dayEvents.length){ events=dayEvents; slateDate=yyyymmdd; break; }
+    }
+    if(!events.length){ log('⚠ WNBA: No upcoming games in next 5 days','w'); return []; }
+    const todayStr2 = localDate().replace(/-/g,'');
+    if(slateDate !== todayStr2) log(`  ⟳ WNBA: Next games on ${slateDate.slice(0,4)}-${slateDate.slice(4,6)}-${slateDate.slice(6)}`,'i');
     log(`✓ WNBA: ${events.length} games via ESPN`,'ok');
 
     const propDefs = [
@@ -2003,7 +2014,11 @@ async function runBDLEngine(sport,log){
     // Step 1: Get today's games (local date + postseason)
     let games=[];
     for(const season of seasons){
-      for(const dateStr of [localDate, tmrDate]){
+      // Check today + next 4 days (playoffs have 2-3 day rest periods)
+    const _bdlDates=[localDate,tmrDate,
+      ...[2,3,4].map(i=>{const d=new Date(Date.now()+i*86400000);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;})
+    ];
+    for(const dateStr of _bdlDates){
         const gR=await bdlFetch(`${bdlBase}/games?dates[]=${dateStr}&per_page=25`);
         if(gR.ok){
           const gD=await gR.json();
@@ -5567,7 +5582,7 @@ async function runWinnersUpsets(){
     const ctx = {upsetEdge:0, reasons:[], favBoosts:[]};
     try{
       // Back-to-back detection via ESPN
-      const espnR = await fx(`${EP.espn}/basketball/wnba/scoreboard?dates=${new Date().toLocaleDateString('en-CA').replace(/-/g,'')}`,{},6000);
+      const espnR = await fx(`${EP.espn}/basketball/wnba/scoreboard?dates=${localDate().replace(/-/g,'')}`,{},6000);
       if(espnR.ok){
         const espnData = await espnR.json();
         const events = espnData.events||[];
