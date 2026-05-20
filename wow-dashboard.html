@@ -8520,7 +8520,41 @@ async function buildJeremiaSlip(){
 // INIT
 // ══════════════════════════════════
 window.onload=()=>{
-  fx(`${EP.replit}/health`,{},5000).then(r=>{if(r.ok)chip('replit','ok');else chip('replit','fail');}).catch(()=>chip('replit','fail'));
+  // ── Startup API health pings ──
+  // Replit
+  fx(`${EP.replit}/health`,{},5000)
+    .then(r=>{ if(r.ok) chip('replit','ok'); else chip('replit','fail'); })
+    .catch(()=>chip('replit','fail'));
+
+  // Odds API — lightweight events check
+  fx(`${EP.odds}/sports?apiKey=${KEYS.odds}`,{},5000)
+    .then(r=>{ chip('odds', r.ok?'ok':'fail'); })
+    .catch(()=>chip('odds','fail'));
+
+  // MLB Stats API
+  fx(`${EP.mlb}/sports`,{},5000)
+    .then(r=>{ chip('mlb', r.ok?'ok':'fail'); })
+    .catch(()=>chip('mlb','fail'));
+
+  // NHL Stats API
+  fx(`${EP.nhl}/schedule/now`,{},5000)
+    .then(r=>{ chip('nhl', r.ok?'ok':'fail'); })
+    .catch(()=>chip('nhl','fail'));
+
+  // ESPN scoreboard
+  fx(`${EP.espn}/baseball/mlb/scoreboard`,{},5000)
+    .then(r=>{ chip('espn', r.ok?'ok':'fail'); })
+    .catch(()=>chip('espn','fail'));
+
+  // BallDontLie — lightweight teams check
+  fx('https://api.balldontlie.io/v1/teams?per_page=1',{headers:{'Authorization':KEYS.bdl}},5000)
+    .then(r=>{ chip('bdl', r.ok?'ok':'fail'); })
+    .catch(()=>chip('bdl','fail'));
+
+  // TheRundown — use a lightweight sports endpoint
+  fx(`${EP.rundown}/sports`,{headers:{'x-rapidapi-key':KEYS.rundown}},5000)
+    .then(r=>{ chip('rundown', r.ok?'ok':'fail'); })
+    .catch(()=>chip('rundown','fail'));
   renderCLVDashboard();
   renderCLVTable();
   renderSlipDatabase();
