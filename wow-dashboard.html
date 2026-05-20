@@ -2095,9 +2095,17 @@ async function runSoccerEngine(log){
 
     let fixtures = [];
     if(fixturesR.ok){
-      const fd = await fixturesR.json();
-      fixtures = fd.fixtures || [];
-      log(`✓ Soccer: ${fixtures.length} fixtures today`,'ok');
+      // Guard against HTML error pages (Replit cold start returns HTML)
+      const rawText = await fixturesR.text();
+      if(rawText.trim().startsWith('<')){
+        log('⚠ Soccer: Replit cold-starting — retry in 30s','w');
+      } else {
+        try{
+          const fd = JSON.parse(rawText);
+          fixtures = fd.fixtures || [];
+          log(`✓ Soccer: ${fixtures.length} fixtures today`,'ok');
+        }catch(e){ log(`⚠ Soccer: fixtures parse error — ${e.message}`,'w'); }
+      }
     } else {
       // Fallback: use hardcoded leagues and try to get player stats directly
       log(`⚠ Soccer: fixtures endpoint unavailable — trying league player stats`,'w');
@@ -7785,6 +7793,12 @@ function gradeSlipStrength(legProbs, slipType='power'){
 }
 
 async function refreshPropPool(manual=false){
+  // Guard against concurrent runs
+  if(window._poolRefreshing){
+    console.log('refreshPropPool: already running, skipping');
+    return;
+  }
+  window._poolRefreshing = true;
   document.getElementById('poolRefreshBtn').textContent='Pulling...';
   document.getElementById('poolRefreshSp').classList.remove('hidden');
   document.getElementById('poolProgress').classList.remove('hidden');
@@ -7892,13 +7906,15 @@ async function refreshPropPool(manual=false){
           else if(cfg.sport==='NHL')         eng=await runNHLEngine(()=>{});
           else if(cfg.sport==='Soccer')      eng=await runSoccerEngine(()=>{});
           else if(cfg.sport==='Tennis')      eng=await runTennisEngine(()=>{});
-        }catch(e){}
+        }catch(e){ log(`  ⚠ ${cfg.sport} engine: ${e.message}`,'w'); }
         if(eng.length){
           raw.push(...eng.slice(0,20).map(c=>({
             ...c, bookmaker:'engine',
             selectedProb:c.l5_hit_rate||c.confidence||0.55
           })));
           log(`  ✓ ${cfg.sport}: ${Math.min(eng.length,20)} props from engine`,'ok');
+        } else {
+          log(`  ⚠ ${cfg.sport}: 0 props from engine (no games or stats unavailable)`,'w');
         }
       }
       if(raw.length) log(`✓ Engine fallback: ${raw.length} total props loaded`,'ok');
@@ -7909,6 +7925,7 @@ async function refreshPropPool(manual=false){
     log('\n⚠ No props available. Run Best Props engine (🎯 tab) to populate the pool directly.','w');
     document.getElementById('poolRefreshBtn').textContent='Refresh Now';
     document.getElementById('poolRefreshSp').classList.add('hidden');
+    window._poolRefreshing = false;
     return;
   }
 
@@ -7934,6 +7951,7 @@ async function refreshPropPool(manual=false){
   renderPropPool();
   document.getElementById('poolRefreshBtn').textContent='Refresh Now';
   document.getElementById('poolRefreshSp').classList.add('hidden');
+  window._poolRefreshing = false;
   if(propPoolTimer)clearTimeout(propPoolTimer);
   propPoolTimer=setTimeout(()=>refreshPropPool(false),60*60*1000);
 }
