@@ -232,6 +232,16 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
   .engine-title{font-size:18px;}
   .stat-num{font-size:22px;}
 }
+  /* Sport pill checked state — visual feedback fix (QA: pills looked unchecked after click) */
+  .eng-sport-pill { display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);transition:all .15s;user-select:none; }
+  .eng-sport-pill:has(input:checked),
+  .eng-sport-pill.pill-active { background:var(--accent)!important;border-color:var(--accent)!important;color:#fff!important; }
+  .eng-sport-pill input { display:none; }
+
+  /* Jeremia rule pill checked state */
+  .jer-rule-label { display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);transition:all .15s;user-select:none;width:fit-content; }
+  .jer-rule-label:has(input:checked),
+  .jer-rule-label.pill-active { background:var(--green-light)!important;border-color:var(--green)!important;color:var(--green)!important; }
 </style>
 </head>
 <body>
@@ -307,28 +317,28 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
           <div class="field">
             <label>Sports</label>
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;">
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+              <label class="eng-sport-pill">
                 <input type="checkbox" id="eng_all" onchange="toggleAllSports(this)"> All
               </label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+              <label class="eng-sport-pill">
                 <input type="checkbox" class="eng-sport-cb" value="MLB"> MLB
               </label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+              <label class="eng-sport-pill">
                 <input type="checkbox" class="eng-sport-cb" value="NBA"> NBA
               </label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+              <label class="eng-sport-pill">
                 <input type="checkbox" class="eng-sport-cb" value="NHL"> NHL
               </label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+              <label class="eng-sport-pill">
                 <input type="checkbox" class="eng-sport-cb" value="WNBA"> WNBA
               </label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+              <label class="eng-sport-pill">
                 <input type="checkbox" class="eng-sport-cb" value="NFL"> NFL
               </label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+              <label class="eng-sport-pill">
                 <input type="checkbox" class="eng-sport-cb" value="Soccer"> Soccer
               </label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);">
+              <label class="eng-sport-pill">
                 <input type="checkbox" class="eng-sport-cb" value="Tennis"> Tennis
               </label>
             </div>
@@ -462,14 +472,14 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 
         <div class="dv"><div class="dl"></div><div class="dt">Jeremia Style Rules</div><div class="dl"></div></div>
         <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_assists" checked> <span>✓ Prioritize low-threshold assist overs (0.5–2.5)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_ra" checked> <span>✓ Include rebounds+assists multi-path anchors</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_fantasy" checked> <span>✓ Allow fantasy score for stat-stuffers</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_ceiling" checked> <span>✓ 1 controlled ceiling piece allowed</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_nostar" checked> <span>🚫 No superstar 1H unders</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_nohook" checked> <span>🚫 No thin-margin hook lines</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_nofade" checked> <span>🚫 No broad stat fade attempts</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="jer_noscoring" checked> <span>🚫 No pure scoring-only anchors</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="jer_assists" checked> <span>✓ Prioritize low-threshold assist overs (0.5–2.5)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="jer_ra" checked> <span>✓ Include rebounds+assists multi-path anchors</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="jer_fantasy" checked> <span>✓ Allow fantasy score for stat-stuffers</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="jer_ceiling" checked> <span>✓ 1 controlled ceiling piece allowed</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="jer_nostar" checked> <span>🚫 No superstar 1H unders</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="jer_nohook" checked> <span>🚫 No thin-margin hook lines</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="jer_nofade" checked> <span>🚫 No broad stat fade attempts</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="jer_noscoring" checked> <span>🚫 No pure scoring-only anchors</span></label>
         </div>
 
         <button class="btn btn-p" onclick="buildJeremiaSlip()" style="background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;">
@@ -535,28 +545,28 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 
         <div class="dv"><div class="dl"></div><div class="dt">Target Prop Types</div><div class="dl"></div></div>
         <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_runs" checked> <span>⚾ MLB: Runs/Hits/TB LESS 0.5 (losing team, tough pitcher)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_pa" checked> <span>⚾ MLB: Plate Appearances LESS 4.5 (low-order, blowout risk)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_hits" checked> <span>⚾ MLB: Hits LESS 0.5 (elite pitcher matchup)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_tb" checked> <span>⚾ MLB: Total Bases LESS 0.5 (same conditions)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_nba_pts" checked> <span>🏀 NBA/WNBA: Points LESS (bench player, blowout loss)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_nba_ast" checked> <span>🏀 NBA/WNBA: Assists LESS (team losing big = no garbage assists)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_nhl_shots" checked> <span>🏒 NHL: Shots LESS 2.5 (defensive matchup, fourth liner)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_soccer_shots" checked> <span>⚽ Soccer: Shots on Target LESS 1.5 (defensive mid, away underdog)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_soccer_passes" checked> <span>⚽ Soccer: Passes LESS (low-possession team, park-the-bus)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_tennis_games" checked> <span>🎾 Tennis: Total Games LESS (big rank gap, straight sets expected)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_tennis_aces" checked> <span>🎾 Tennis: Aces LESS (clay court, defensive baseliner)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_dnp" checked> <span>🛡️ All sports: Prioritize DNP/scratch candidates (auto-win)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_runs" checked> <span>⚾ MLB: Runs/Hits/TB LESS 0.5 (losing team, tough pitcher)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_pa" checked> <span>⚾ MLB: Plate Appearances LESS 4.5 (low-order, blowout risk)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_hits" checked> <span>⚾ MLB: Hits LESS 0.5 (elite pitcher matchup)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_tb" checked> <span>⚾ MLB: Total Bases LESS 0.5 (same conditions)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_nba_pts" checked> <span>🏀 NBA/WNBA: Points LESS (bench player, blowout loss)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_nba_ast" checked> <span>🏀 NBA/WNBA: Assists LESS (team losing big = no garbage assists)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_nhl_shots" checked> <span>🏒 NHL: Shots LESS 2.5 (defensive matchup, fourth liner)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_soccer_shots" checked> <span>⚽ Soccer: Shots on Target LESS 1.5 (defensive mid, away underdog)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_soccer_passes" checked> <span>⚽ Soccer: Passes LESS (low-possession team, park-the-bus)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_tennis_games" checked> <span>🎾 Tennis: Total Games LESS (big rank gap, straight sets expected)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_tennis_aces" checked> <span>🎾 Tennis: Aces LESS (clay court, defensive baseliner)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_dnp" checked> <span>🛡️ All sports: Prioritize DNP/scratch candidates (auto-win)</span></label>
         </div>
 
         <div class="dv"><div class="dl"></div><div class="dt">Targeting Strategy</div><div class="dl"></div></div>
         <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_dogs" checked> <span>🐶 Large underdogs (blowout = bench early, fewer events)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_loworder" checked> <span>🔻 MLB: 6-9 batting order | NBA: bench rotation (fewer mins)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_elitepitch" checked> <span>⚾ MLB: vs elite pitchers ERA &lt; 3.50</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_lowou" checked> <span>📊 Low game total (O/U &lt; 7.5 MLB · &lt; 215 NBA · &lt; 5.5 NHL · &lt; 2.25 Soccer)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_btob" checked> <span>📅 NBA: Back-to-back games (load management, reduced minutes)</span></label>
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input type="checkbox" id="less_coldstreak" checked> <span>❄️ Cold streak players (0 for last 2+ games in target stat)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_dogs" checked> <span>🐶 Large underdogs (blowout = bench early, fewer events)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_loworder" checked> <span>🔻 MLB: 6-9 batting order | NBA: bench rotation (fewer mins)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_elitepitch" checked> <span>⚾ MLB: vs elite pitchers ERA &lt; 3.50</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_lowou" checked> <span>📊 Low game total (O/U &lt; 7.5 MLB · &lt; 215 NBA · &lt; 5.5 NHL · &lt; 2.25 Soccer)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_btob" checked> <span>📅 NBA: Back-to-back games (load management, reduced minutes)</span></label>
+          <label class="jer-rule-label"><input type="checkbox" id="less_coldstreak" checked> <span>❄️ Cold streak players (0 for last 2+ games in target stat)</span></label>
         </div>
 
         <button class="btn" onclick="buildLESSSlip()" style="background:linear-gradient(135deg,#064e3b,#059669);border:none;color:#fff;font-weight:700;width:100%;padding:12px;">
@@ -1268,7 +1278,10 @@ let approvedProps=[],slipLegs=[];
 
 function toggleAllSports(cb){
   document.querySelectorAll('.eng-sport-cb').forEach(el=>{
-    el.checked=cb.checked;
+    el.checked = cb.checked;
+    // Update pill visual state
+    const pill = el.closest('.eng-sport-pill');
+    if(pill) pill.classList.toggle('pill-active', cb.checked);
   });
 }
 
@@ -8809,6 +8822,21 @@ async function buildJeremiaSlip(){
 window.onload=()=>{
   // ── Startup API health pings ──
   // Replit
+  // ── Pill checkbox visual feedback (fallback for browsers without :has() support) ──
+  function updatePillStates(containerSelector, inputClass){
+    document.querySelectorAll(containerSelector).forEach(label=>{
+      const cb = label.querySelector('input[type="checkbox"]');
+      if(!cb) return;
+      const update = ()=>{
+        label.classList.toggle('pill-active', cb.checked);
+      };
+      cb.addEventListener('change', update);
+      update(); // set initial state
+    });
+  }
+  updatePillStates('.eng-sport-pill', 'eng-sport-cb');
+  updatePillStates('.jer-rule-label', 'jer-rule-cb');
+
   fx(`${EP.replit}/health`,{},5000)
     .then(r=>{ if(r.ok) chip('replit','ok'); else chip('replit','fail'); })
     .catch(()=>chip('replit','fail'));
