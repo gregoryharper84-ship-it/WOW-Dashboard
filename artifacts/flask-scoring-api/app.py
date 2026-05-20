@@ -785,8 +785,9 @@ def health():
             "fbref_stats":    "GET /fbref-stats?player=...&league=... (X-API-Key required) — soccer player season stats",
             "tennis_stats":       "GET /tennis-stats?player=...&tour=atp|wta&year=...&limit=... (X-API-Key required) — ATP/WTA match stats via JeffSackmann",
             "tennis_stats_today": "GET /tennis-stats/today?tour=atp|wta (X-API-Key required) — today's live ATP/WTA matches from Odds API",
-            "api_sports_players": "GET /api-sports/{baseball|basketball|hockey|nfl}/players?player=...&league=...&season=... (X-API-Key required) — search players via api-sports.io",
-            "api_sports_stats":   "GET /api-sports/{basketball|nfl}/stats?player_id=...&team=...&league=...&season=... (X-API-Key required) — season stats via api-sports.io (basketball+nfl only on free plan)"
+            "api_sports_players":        "GET /api-sports/{baseball|basketball|hockey|nfl|tennis}/players?player=... (X-API-Key required) — search players via api-sports.io",
+            "api_sports_stats":          "GET /api-sports/{basketball|nfl|tennis}/stats?player_id=...&team=...&league=...&season=... (X-API-Key required) — season stats via api-sports.io",
+            "api_sports_tennis_fixtures":"GET /api-sports/tennis/fixtures?date=YYYY-MM-DD (X-API-Key required) — tennis fixtures for a date via api-sports.io"
         }
     })
 
@@ -2818,13 +2819,13 @@ def tennis_stats():
 def api_sports_players(sport):
     """
     Search for players via api-sports.io.
-    Supported: basketball, nfl (free plan /players search works).
+    Supported: basketball, nfl, tennis (free plan /players search works).
     Baseball and hockey do not expose a /players search endpoint on the free plan.
 
     Query params:
       player  — name fragment to search (required)
       league  — league id (optional)
-      season  — season string (optional, e.g. "2022-2023" for basketball, "2023" for nfl)
+      season  — season string (optional, e.g. "2022-2023" for basketball, "2026" for tennis)
     """
     import requests as _req
 
@@ -2833,13 +2834,14 @@ def api_sports_players(sport):
         "basketball": "https://v1.basketball.api-sports.io",
         "hockey":     "https://v1.hockey.api-sports.io",
         "nfl":        "https://v1.american-football.api-sports.io",
+        "tennis":     "https://v1.tennis.api-sports.io",
     }
     sport_lower = sport.lower()
     base = BASES.get(sport_lower)
     if not base:
         return jsonify({
             "ok": False,
-            "error": f"Unknown sport '{sport}'. Supported: baseball, basketball, hockey, nfl",
+            "error": f"Unknown sport '{sport}'. Supported: baseball, basketball, hockey, nfl, tennis",
         }), 400
 
     player = request.args.get("player", "").strip()
@@ -2907,35 +2909,36 @@ def api_sports_stats(sport):
     """
     Fetch season statistics via api-sports.io.
 
-    Basketball (free plan): uses /statistics endpoint.
-      Required: team, league, season.  player_id is optional.
-    NFL (free plan): uses /players/statistics endpoint.
-      Required: player_id (numeric id from /players search). season optional.
-    Baseball / Hockey (free plan): stats endpoint not available;
-      returns a 422 with a clear explanation.
+    Basketball: uses /statistics. Required: team, league, season. player_id optional.
+    NFL:        uses /players/statistics. Required: player_id. season optional.
+    Tennis:     uses /statistics. Required: player_id. season defaults to current year.
+                  Uses param name 'player' instead of 'id'.
+    Baseball / Hockey: stats endpoint not available; returns 422.
 
     Query params:
-      player_id — numeric player id (required for nfl; optional filter for basketball)
-      team      — team id (required for basketball stats)
+      player_id — numeric player id (required for nfl + tennis; optional for basketball)
+      team      — team id (required for basketball)
       league    — league id
-      season    — season year (e.g. "2022-2023" for basketball, "2023" for nfl)
+      season    — season year (e.g. "2022-2023" for basketball, "2026" for tennis/nfl)
     """
     import requests as _req
+    from datetime import datetime as _dt
 
     BASES = {
         "baseball":   "https://v1.baseball.api-sports.io",
         "basketball": "https://v1.basketball.api-sports.io",
         "hockey":     "https://v1.hockey.api-sports.io",
         "nfl":        "https://v1.american-football.api-sports.io",
+        "tennis":     "https://v1.tennis.api-sports.io",
     }
-    # Actual endpoints confirmed on free plan:
-    #   basketball → /statistics           (requires team + league + season)
-    #   nfl        → /players/statistics   (requires player id; season optional)
-    #   baseball   → not available
-    #   hockey     → not available
-    STAT_PATHS = {
-        "basketball": "statistics",
-        "nfl":        "players/statistics",
+    # path → (endpoint, id_param_name)
+    #   basketball → /statistics           id sent as nothing (filtered by team)
+    #   nfl        → /players/statistics   id sent as 'id'
+    #   tennis     → /statistics           id sent as 'player'
+    STAT_CONFIGS = {
+        "basketball": ("statistics",        "id"),
+        "nfl":        ("players/statistics","id"),
+        "tennis":     ("statistics",        "player"),
     }
 
     sport_lower = sport.lower()
@@ -2943,16 +2946,16 @@ def api_sports_stats(sport):
     if not base:
         return jsonify({
             "ok": False,
-            "error": f"Unknown sport '{sport}'. Supported: baseball, basketball, hockey, nfl",
+            "error": f"Unknown sport '{sport}'. Supported: baseball, basketball, hockey, nfl, tennis",
         }), 400
 
-    if sport_lower not in STAT_PATHS:
+    if sport_lower not in STAT_CONFIGS:
         return jsonify({
             "ok":    False,
             "sport": sport_lower,
             "error": (
                 f"Player statistics are not available for '{sport_lower}' on the free "
-                "api-sports plan. Statistics are currently supported for: basketball, nfl."
+                "api-sports plan. Statistics are currently supported for: basketball, nfl, tennis."
             ),
         }), 422
 
@@ -2961,12 +2964,21 @@ def api_sports_stats(sport):
     league    = request.args.get("league", "").strip()
     season    = request.args.get("season", "").strip()
 
-    # NFL stats require a player_id to be meaningful
-    if sport_lower == "nfl" and not player_id:
+    stat_path, id_param = STAT_CONFIGS[sport_lower]
+
+    # Sports that need player_id to be meaningful
+    if sport_lower in ("nfl", "tennis") and not player_id:
         return jsonify({
             "ok":   False,
-            "error": "player_id is required for NFL stats. Use /api-sports/nfl/players?player=<name> to look up the id first.",
+            "error": (
+                f"player_id is required for {sport_lower.upper()} stats. "
+                f"Use /api-sports/{sport_lower}/players?player=<name> to look up the id first."
+            ),
         }), 400
+
+    # Tennis defaults season to current year if omitted
+    if sport_lower == "tennis" and not season:
+        season = str(_dt.now().year)
 
     api_key = os.environ.get("API_FOOTBALL_KEY", "")
     if not api_key:
@@ -2974,7 +2986,7 @@ def api_sports_stats(sport):
 
     params = {}
     if player_id:
-        params["id"] = player_id
+        params[id_param] = player_id   # 'id' for nfl/basketball, 'player' for tennis
     if team:
         params["team"] = team
     if league:
@@ -2983,8 +2995,7 @@ def api_sports_stats(sport):
         params["season"] = season
 
     try:
-        path = STAT_PATHS[sport_lower]
-        r = _req.get(f"{base}/{path}",
+        r = _req.get(f"{base}/{stat_path}",
                      headers={"x-apisports-key": api_key},
                      params=params, timeout=15)
         r.raise_for_status()
@@ -3019,6 +3030,61 @@ def api_sports_stats(sport):
             },
             "count": count,
             "stats": raw_response,
+        })
+    except _req.exceptions.Timeout:
+        return jsonify({"ok": False, "error": "api-sports request timed out"}), 504
+    except _req.exceptions.RequestException as e:
+        return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api-sports/tennis/fixtures", methods=["GET"])
+@require_api_key
+def api_sports_tennis_fixtures():
+    """
+    Return tennis fixtures for a given date from api-sports.io.
+    Query params:
+      date — ISO date string YYYY-MM-DD (defaults to today UTC)
+    """
+    import requests as _req
+    from datetime import datetime as _dt, timezone as _tz
+
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
+
+    date = request.args.get("date", "").strip()
+    if not date:
+        date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+
+    try:
+        r = _req.get(
+            "https://v1.tennis.api-sports.io/fixtures",
+            headers={"x-apisports-key": api_key},
+            params={"date": date},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+
+        upstream_errors = data.get("errors")
+        if upstream_errors and upstream_errors != [] and upstream_errors != {}:
+            return jsonify({
+                "ok":              False,
+                "upstream_errors": upstream_errors,
+                "hint":            "Check the date format (YYYY-MM-DD).",
+            }), 422
+
+        raw_response = data.get("response", [])
+        count = data.get("results", len(raw_response) if isinstance(raw_response, list) else 0)
+        return jsonify({
+            "ok":      True,
+            "sport":   "tennis",
+            "source":  "api-sports",
+            "date":    date,
+            "count":   count,
+            "fixtures": raw_response,
         })
     except _req.exceptions.Timeout:
         return jsonify({"ok": False, "error": "api-sports request timed out"}), 504
