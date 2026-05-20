@@ -7997,6 +7997,18 @@ async function buildSlipsFromProps(validatedProps){
 // JEREMIA STYLE BUILDER
 // ══════════════════════════════════
 // ══════════════════════════════════════════════════════
+// ── Tennis stat distribution helpers ──
+function synthesizeDist(avg, n, variance){
+  // Builds realistic game-log distribution from season average
+  // variance: 0.20=tight (games), 0.35=moderate (aces), 0.50=wide (DFs)
+  return Array.from({length:Math.min(Math.max(n,10),20)}, ()=>{
+    const v = avg * (1 - variance + Math.random() * variance * 2);
+    return Math.max(0, Math.round(v));
+  });
+}
+function mean(arr){ return arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0; }
+
+// ══════════════════════════════════════════════════════
 // LESS SLIP BUILDER
 // Targets losing-team players, blowout dogs, DNP candidates
 // Strategy: Runs/Hits/PA LESS 0.5 on fringe players in tough spots
