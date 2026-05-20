@@ -232,6 +232,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
   .engine-title{font-size:18px;}
   .stat-num{font-size:22px;}
 }
+  @keyframes fadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
   /* Sport pill checked state — visual feedback fix (QA: pills looked unchecked after click) */
   .eng-sport-pill { display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);transition:all .15s;user-select:none; }
   .eng-sport-pill:has(input:checked),
@@ -286,6 +287,52 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
     <button class="tab" onclick="switchTab('manual')">🔍 Manual</button>
     <button class="tab" onclick="switchTab('team')">🏟 Teams</button>
     <button class="tab" onclick="switchTab('log')">📊 Log</button>
+    <button class="tab" onclick="switchTab('claude')" style="background:linear-gradient(135deg,rgba(124,58,237,0.15),rgba(79,70,229,0.15));border:1px solid rgba(124,58,237,0.3);">🤖 Ask Claude</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<!-- CLAUDE AI ASSISTANT -->
+<!-- ══════════════════════════════════════ -->
+<div id="tab-claude" class="hidden">
+  <div class="card" style="margin-bottom:12px;background:linear-gradient(135deg,rgba(124,58,237,0.08),rgba(79,70,229,0.05));border:1px solid rgba(124,58,237,0.2);">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <span style="font-size:22px;">🤖</span>
+      <div>
+        <div style="font-size:15px;font-weight:800;color:var(--text);">Ask Claude</div>
+        <div style="font-size:11px;color:var(--text2);">Claude sees your live prop pool, active slips, today's games, and learned rules — ask anything.</div>
+      </div>
+    </div>
+    <!-- Suggested prompts -->
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;" id="claudeSuggestions">
+      <button class="eng-sport-pill" onclick="claudePrompt('What are your top 5 upset picks today and why?')" style="background:rgba(124,58,237,0.1);border-color:rgba(124,58,237,0.3);color:var(--text);font-size:11px;">Top 5 upsets today</button>
+      <button class="eng-sport-pill" onclick="claudePrompt('Which props in my pool have the highest edge right now?')" style="background:rgba(124,58,237,0.1);border-color:rgba(124,58,237,0.3);color:var(--text);font-size:11px;">Highest edge props</button>
+      <button class="eng-sport-pill" onclick="claudePrompt('Build me a Power 3 slip from the current prop pool and explain your picks.')" style="background:rgba(124,58,237,0.1);border-color:rgba(124,58,237,0.3);color:var(--text);font-size:11px;">Build a Power 3</button>
+      <button class="eng-sport-pill" onclick="claudePrompt('What games look like traps today — favorites I should fade?')" style="background:rgba(124,58,237,0.1);border-color:rgba(124,58,237,0.3);color:var(--text);font-size:11px;">Trap games to fade</button>
+      <button class="eng-sport-pill" onclick="claudePrompt('Summarize my active slips and tell me which legs concern you most.')" style="background:rgba(124,58,237,0.1);border-color:rgba(124,58,237,0.3);color:var(--text);font-size:11px;">Review my active slips</button>
+      <button class="eng-sport-pill" onclick="claudePrompt('Based on my CLV log and win/loss history, what patterns do you see?')" style="background:rgba(124,58,237,0.1);border-color:rgba(124,58,237,0.3);color:var(--text);font-size:11px;">Analyze my betting history</button>
+    </div>
+  </div>
+
+  <!-- Chat window -->
+  <div id="claudeChatWindow" style="height:420px;overflow-y:auto;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:10px;display:flex;flex-direction:column;gap:10px;scroll-behavior:smooth;">
+    <div style="text-align:center;color:var(--text3);font-size:12px;padding:20px 0;">
+      Ask anything about today's slate, your props, or betting strategy. Claude has full context of your dashboard.
+    </div>
+  </div>
+
+  <!-- Input -->
+  <div style="display:flex;gap:8px;align-items:flex-end;">
+    <textarea id="claudeInput" placeholder="e.g. What are your top 5 upsets today?" rows="2"
+      style="flex:1;resize:none;font-size:15px;padding:10px 12px;border-radius:var(--r);background:var(--surface2);border:1px solid var(--border2);color:var(--text);font-family:var(--font);line-height:1.4;"
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendClaudeMessage();}"></textarea>
+    <button class="btn btn-p" onclick="sendClaudeMessage()" id="claudeSendBtn" style="min-height:44px;padding:10px 18px;">
+      <span id="claudeBtnLabel">Send</span>
+      <span id="claudeBtnSp" class="hidden"><div class="sp"></div></span>
+    </button>
+  </div>
+  <div style="font-size:10px;color:var(--text3);margin-top:6px;text-align:center;">
+    Shift+Enter for new line · Enter to send · Context refreshes with each message
   </div>
 </div>
 
@@ -1287,13 +1334,178 @@ function toggleAllSports(cb){
   });
 }
 
+// ══════════════════════════════════════════════════════
+// CLAUDE AI ASSISTANT
+// ══════════════════════════════════════════════════════
+let _claudeHistory = []; // conversation memory
+
+function buildDashboardContext(){
+  // Snapshot current dashboard state for Claude's context
+  const ctx = {
+    date: new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}),
+    prop_pool: {
+      count: propPool?.length || 0,
+      tier1: propPool?.filter(p=>p.tier==='tier1').length || 0,
+      tier2: propPool?.filter(p=>p.tier==='tier2').length || 0,
+      top_props: (propPool||[]).slice(0,10).map(p=>({
+        player:p.player, sport:p.sport, prop:p.prop,
+        side:p.side, line:p.line, tier:p.tier,
+        prob:p.rawProb ? Math.round(p.rawProb*100)+'%' : null,
+        wow:p.wowScore, note:p.note
+      }))
+    },
+    active_slips: (activeSlips||[]).filter(s=>s.status==='active').map(s=>({
+      id:s.id, legs:s.legs?.length,
+      picks: s.legs?.map(l=>`${l.player} ${l.sport} ${l.prop} ${l.side} ${l.line}`),
+      status:s.status
+    })),
+    winning_slips: {
+      count: (winningSlips||[]).length,
+      recent: (winningSlips||[]).slice(-5).map(s=>({
+        type:s.slipType, result:s.result,
+        legs:s.legs?.map(l=>`${l.player} ${l.prop} ${l.side} ${l.line} → ${l.result||'?'}`)
+      }))
+    },
+    clv_log: {
+      count: (clvLog||[]).length,
+      recent: (clvLog||[]).slice(-5).map(c=>({
+        player:c.player, prop:c.prop, side:c.side,
+        outcome:c.outcome, process_grade:c.processGrade
+      }))
+    },
+    learned_rules: (learnedRules||[]).slice(0,8).map(r=>({
+      rule:r.rule||r.tag, confidence:r.confidence, sport:r.sport
+    })),
+    current_slip_builder: slipLegs?.length ? slipLegs.map(l=>`${l.player} ${l.prop} ${l.side} ${l.line}`) : [],
+  };
+  return JSON.stringify(ctx, null, 2);
+}
+
+function claudePrompt(text){
+  document.getElementById('claudeInput').value = text;
+  sendClaudeMessage();
+}
+
+function addClaudeMessage(role, content, isError=false){
+  const win = document.getElementById('claudeChatWindow');
+  const msg = document.createElement('div');
+  const isUser = role === 'user';
+  msg.style.cssText = `
+    display:flex;flex-direction:column;align-items:${isUser?'flex-end':'flex-start'};
+    animation:fadeIn .2s ease;
+  `;
+  const bubble = document.createElement('div');
+  bubble.style.cssText = `
+    max-width:85%;padding:10px 14px;border-radius:${isUser?'16px 16px 4px 16px':'16px 16px 16px 4px'};
+    font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;
+    background:${isError?'var(--red-light)':isUser?'var(--accent)':'var(--surface)'};
+    color:${isError?'var(--red)':isUser?'#fff':'var(--text)'};
+    border:1px solid ${isError?'rgba(239,68,68,0.3)':isUser?'transparent':'var(--border)'};
+    box-shadow:var(--sh);
+  `;
+  bubble.textContent = content;
+  msg.appendChild(bubble);
+
+  // Label
+  const label = document.createElement('div');
+  label.style.cssText = 'font-size:10px;color:var(--text3);margin-top:3px;padding:0 4px;';
+  label.textContent = isUser ? 'You' : '🤖 Claude';
+  msg.appendChild(label);
+
+  win.appendChild(msg);
+  win.scrollTop = win.scrollHeight;
+  return bubble;
+}
+
+async function sendClaudeMessage(){
+  const input = document.getElementById('claudeInput');
+  const msg = input.value.trim();
+  if(!msg) return;
+
+  // Show user message
+  addClaudeMessage('user', msg);
+  input.value = '';
+
+  // Show loading state
+  document.getElementById('claudeBtnLabel').classList.add('hidden');
+  document.getElementById('claudeBtnSp').classList.remove('hidden');
+  document.getElementById('claudeSendBtn').disabled = true;
+
+  // Add typing indicator
+  const win = document.getElementById('claudeChatWindow');
+  const typing = document.createElement('div');
+  typing.id = 'claudeTyping';
+  typing.style.cssText = 'color:var(--text3);font-size:12px;padding:4px 8px;';
+  typing.textContent = '🤖 Claude is thinking...';
+  win.appendChild(typing);
+  win.scrollTop = win.scrollHeight;
+
+  try{
+    // Add to history
+    _claudeHistory.push({role:'user', content: msg});
+
+    // Build system prompt with live dashboard context
+    const context = buildDashboardContext();
+    const systemPrompt = `You are Claude, an AI sports betting analyst embedded in the WOW Command Center v14.9+ dashboard. You have real-time access to the user's betting data.
+
+CURRENT DASHBOARD STATE:
+${context}
+
+GUIDELINES:
+- Be direct and specific. Reference actual players, props, and numbers from the data above.
+- When asked about upsets, use the prop pool and game data to identify real edge cases.
+- When building slips, use only props from the current pool.
+- Flag fragile props, correlation risks, and volatility concerns using the learned rules.
+- Keep responses concise and actionable. Use bullet points for lists.
+- You know the user's betting history, active slips, and CLV log — reference them when relevant.
+- Never suggest parlaying more than 6 legs or betting more than 2-5% of bankroll on any single slip.`;
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: systemPrompt,
+        messages: _claudeHistory.slice(-10), // last 10 turns for context
+      })
+    });
+
+    const data = await response.json();
+    const reply = data.content?.[0]?.text || data.error?.message || 'No response received.';
+
+    // Add to history
+    _claudeHistory.push({role:'assistant', content: reply});
+
+    // Remove typing indicator and show response
+    document.getElementById('claudeTyping')?.remove();
+    addClaudeMessage('assistant', reply);
+
+  }catch(e){
+    document.getElementById('claudeTyping')?.remove();
+    addClaudeMessage('assistant', `Error: ${e.message}. Make sure you're on a network that allows API calls.`, true);
+  }finally{
+    document.getElementById('claudeBtnLabel').classList.remove('hidden');
+    document.getElementById('claudeBtnSp').classList.add('hidden');
+    document.getElementById('claudeSendBtn').disabled = false;
+    input.focus();
+  }
+}
+
+// Clear Claude chat history (called if user wants fresh context)
+function clearClaudeChat(){
+  _claudeHistory = [];
+  const win = document.getElementById('claudeChatWindow');
+  win.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:12px;padding:20px 0;">Chat cleared. Ask anything about today\'s slate.</div>';
+}
+
 // ── Clock ──
 setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString('en-US',{hour12:false});},1000);
 document.getElementById('slateDate').textContent=new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
 
 // ── Tabs ──
 function switchTab(n){
-  ['engine','pool','jeremia','board','prizepicks','slip','manual','team','log'].forEach(t=>{
+  ['engine','pool','jeremia','board','prizepicks','slip','manual','team','log','claude'].forEach(t=>{
     const el=document.getElementById('tab-'+t);
     if(el) el.classList.add('hidden');
   });
