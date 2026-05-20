@@ -1566,9 +1566,10 @@ async function runAutoEngine(){
   const preFilteredCount = allCandidates.length - preFiltered.length;
   if(preFilteredCount > 0) log(`⟳ Pre-filter removed ${preFilteredCount} weak candidates (L5 < 40% or avg << line)`);
   for(const c of preFiltered.slice(0,60)){
-    const ws=await scoreOne(c);
-    const val=await wowValidate(c,ws);
-    scored.push({...c,...val,wowScore:ws});
+    const enriched = await enrichProp(c);
+    const ws=await scoreOne(enriched);
+    const val=await wowValidate(enriched,ws);
+    scored.push({...enriched,...val,wowScore:ws});
     // Debug: show each prop's result
     const prob=val.rawProb!=null?((val.rawProb)*100).toFixed(1)+'%':'??';
     debugLines.push(`${val.tier==='tier1'?'✓':val.tier==='tier2'?'✓':val.tier==='flex'?'~':'✗'} ${c.player} ${c.prop} ${c.side} ${c.line} → ${prob} [${val.tier}]`);
@@ -4569,36 +4570,119 @@ function buildEnrichedProp(prop, vals, cacheKey, extra={}){
 // ══════════════════════════════════
 // MASTER ENRICHMENT ROUTER
 // ══════════════════════════════════
+// ══════════════════════════════════════════════════════
+// API-SPORTS ENRICHMENT (Baseball, Basketball, Hockey)
+// Same key as api-football.com — proxied via Replit
+// ══════════════════════════════════════════════════════
+const API_SPORTS_LEAGUES = {
+  MLB:  {sport:'baseball',   league:'1',  season:'2026'},
+  NBA:  {sport:'basketball', league:'12', season:'2024-2025'},
+  WNBA: {sport:'basketball', league:'13', season:'2025'},
+  NHL:  {sport:'hockey',     league:'57', season:'2024-2025'},
+};
+
+async function enrichWithAPISports(prop){
+  const cfg = API_SPORTS_LEAGUES[prop.sport];
+  if(!cfg) return null;
+  const cacheKey = `apisports|${prop.player}|${prop.sport}|${prop.prop}`;
+  if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
+  try{
+    // Step 1: Find player
+    const sR = await fx(
+      `${EP.replit}/api-sports/${cfg.sport}/players?player=${encodeURIComponent(prop.player)}&league=${cfg.league}&season=${cfg.season}`,
+      {headers:{'X-API-Key':KEYS.replit}}, 8000
+    );
+    if(!sR.ok) return null;
+    const sD = await sR.json();
+    const players = sD.response || [];
+    if(!players.length) return null;
+    const playerId = players[0]?.player?.id || players[0]?.id;
+    if(!playerId) return null;
+
+    // Step 2: Get stats
+    const stR = await fx(
+      `${EP.replit}/api-sports/${cfg.sport}/stats?player_id=${playerId}&league=${cfg.league}&season=${cfg.season}`,
+      {headers:{'X-API-Key':KEYS.replit}}, 8000
+    );
+    if(!stR.ok) return null;
+    const stD = await stR.json();
+    const st = stD.response?.[0];
+    if(!st) return null;
+
+    const propL = (prop.prop||'').toLowerCase();
+    let avg = null;
+    const g = st.statistics?.[0] || st;
+    const games = g.games?.played || g.games?.appearences || 1;
+
+    if(prop.sport==='MLB'){
+      if(propL.includes('hit'))         avg=(g.batting?.hits||0)/games;
+      else if(propL.includes('run'))    avg=(g.batting?.runs||0)/games;
+      else if(propL.includes('rbi'))    avg=(g.batting?.rbi||0)/games;
+      else if(propL.includes('strikeout')||propL.includes(' k'))
+                                        avg=(g.pitching?.strikeouts||0)/Math.max(g.games?.starts||1,1);
+      else if(propL.includes('base'))   avg=((g.batting?.hits||0)+(g.batting?.walks||0)+(g.batting?.hr||0))/games;
+    } else if(prop.sport==='NBA'||prop.sport==='WNBA'){
+      if(propL.includes('point'))       avg=(g.points||0)/games;
+      else if(propL.includes('rebound')) avg=(g.totReb||g.rebounds?.total||0)/games;
+      else if(propL.includes('assist')) avg=(g.assists||0)/games;
+      else if(propL.includes('steal'))  avg=(g.steals||0)/games;
+      else if(propL.includes('block'))  avg=(g.blocks||0)/games;
+      else if(propL.includes('three'))  avg=(g.tpm||0)/games;
+    } else if(prop.sport==='NHL'){
+      if(propL.includes('goal'))        avg=(g.goals||0)/games;
+      else if(propL.includes('assist')) avg=(g.assists||0)/games;
+      else if(propL.includes('point'))  avg=((g.goals||0)+(g.assists||0))/games;
+      else if(propL.includes('shot'))   avg=(g.shots?.total||0)/games;
+    }
+    if(avg===null) return null;
+
+    const hr = prop.side==='MORE'?(avg>prop.line?0.58:0.44):(avg<prop.line?0.58:0.44);
+    const enriched = {
+      recent_avg:parseFloat(avg.toFixed(2)),
+      l5_hit_rate:hr, l10_hit_rate:hr, confidence:hr,
+      role_score:6, source:'api-sports',
+      note:`API-Sports: ${avg.toFixed(1)} avg | ${games} games`
+    };
+    statsCache[cacheKey] = enriched;
+    return {...prop, ...enriched};
+  }catch(e){ return null; }
+}
+
 async function enrichProp(prop){
   let enriched;
-  switch((prop.sport||'').toUpperCase()){
+  const sport = (prop.sport||'').toUpperCase();
+  switch(sport){
     case 'MLB':    enriched = await enrichWithMLBStats(prop); break;
     case 'NBA':    enriched = await enrichWithNBAStats(prop); break;
     case 'WNBA':   enriched = await enrichWithNBAStats(prop); break;
-    case 'Soccer': enriched = await enrichWithSoccerStats(prop); break;
-    case 'TENNIS': case 'Tennis': enriched = await enrichWithTennisStats(prop); break;
-    case 'NHL':    enriched = await enrichWithNHLStats(prop); break;
+    case 'SOCCER': enriched = await enrichWithSoccerStats(prop); break;
     case 'TENNIS': enriched = await enrichWithTennisStats(prop); break;
-    case 'GOLF':   enriched = await enrichWithGolfStats(prop); break;
+    case 'NHL':    enriched = await enrichWithNHLStats(prop); break;
     default:       enriched = prop;
   }
 
-  // FIX #6: NBA/WNBA pace factor from live totals
+  // API-Sports fallback — if primary enrichment returned no stats, try API-Sports
+  const hasStats = enriched?.recent_avg != null || enriched?.l5_hit_rate != null;
+  if(!hasStats && API_SPORTS_LEAGUES[prop.sport]){
+    const apiSportsResult = await enrichWithAPISports(prop);
+    if(apiSportsResult) enriched = apiSportsResult;
+  }
+
+  // NBA/WNBA pace factor
   if((prop.sport==='NBA'||prop.sport==='WNBA') && prop.game){
     enriched.pace_factor = await getNBAPaceFactor(prop.game);
   }
 
-  // FIX #7: MLB opponent matchup rating
+  // MLB opponent matchup rating
   if(prop.sport==='MLB' && prop.game && enriched.mlb_player_id){
     const isPitcher = enriched.mlb_position==='SP'||enriched.mlb_position==='RP'||
       (prop.prop||'').toLowerCase().includes('strikeout')||
       (prop.prop||'').toLowerCase().includes('pitch')||
       (prop.prop||'').toLowerCase().includes('outs recorded');
-    const opponentRating = await getMLBOpponentRating(prop.game, isPitcher);
-    enriched.matchup_rating = opponentRating;
+    enriched.matchup_rating = await getMLBOpponentRating(prop.game, isPitcher);
   }
 
-  return enriched;
+  return enriched || prop;
 }
 
 async function validateAndRenderPP(props, container){
@@ -7572,26 +7656,20 @@ async function refreshPropPool(manual=false){
   ];
 
   const raw=[];
-  // Get date range: today + next 2 days to catch upcoming games
-  const poolNow=new Date();
-  // Format dates as ISO strings without milliseconds (Odds API requirement)
-  const dateFrom=poolNow.toISOString().split('.')[0]+'Z';
-  const dateTo=new Date(poolNow.getTime()+48*60*60*1000).toISOString().split('.')[0]+'Z';
+  let anyEventsFound = false;
 
   for(const cfg of sportConfigs){
-    log(`⟳ ${cfg.sport}: fetching events...`);
+    log(`⟳ ${cfg.sport}: fetching props...`);
     try{
-      // Fetch events — no date filter needed, API returns upcoming events by default
-      const evR=await fx(
-        `${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,
-        {},8000
-      );
-      if(!evR.ok){log(`⚠ ${cfg.sport}: ${evR.status}`,'w');continue;}
+      const evR=await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
+      if(!evR.ok){log(`⚠ ${cfg.sport}: events ${evR.status}`,'w');continue;}
       const events=await evR.json();chip('odds','ok');
-      if(!events?.length){log(`⚠ ${cfg.sport}: no events in next 48h`,'w');continue;}
+      if(!events?.length){log(`⚠ ${cfg.sport}: no events`,'w');continue;}
+      anyEventsFound=true;
       log(`✓ ${cfg.sport}: ${events.length} events`);
-
+      let propsFound=0;
       for(const ev of events.slice(0,5)){
+        if(!isGameUpcoming(ev.commence_time)) continue;
         try{
           const prR=await fx(
             `${EP.odds}/sports/${cfg.key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=${cfg.markets}&oddsFormat=american`,
@@ -7620,18 +7698,38 @@ async function refreshPropPool(manual=false){
                 const side=nvp.over>=nvp.under?'MORE':'LESS';
                 const prob=side==='MORE'?nvp.over:nvp.under;
                 if(prob<0.53)return;
-                raw.push({player,sport:cfg.sport,prop:propName,line,side,game:gameName,bookmaker:bk.title,overProb:nvp.over,underProb:nvp.under,selectedProb:prob,overOdds:over,underOdds:under,bothSides:{more:{prob:nvp.over,odds:over},less:{prob:nvp.under,odds:under}}});
+                raw.push({player,sport:cfg.sport,prop:propName,line,side,game:gameName,
+                  bookmaker:bk.title,overProb:nvp.over,underProb:nvp.under,
+                  selectedProb:prob,overOdds:over,underOdds:under,
+                  bothSides:{more:{prob:nvp.over,odds:over},less:{prob:nvp.under,odds:under}}});
+                propsFound++;
               });
             }
           }
         }catch(e){}
       }
-      log(`✓ ${cfg.sport}: ${raw.filter(p=>p.sport===cfg.sport).length} candidates`,'ok');
+      if(propsFound>0) log(`✓ ${cfg.sport}: ${propsFound} props`,'ok');
+      else log(`⚠ ${cfg.sport}: player props require paid API tier — using engine`,'w');
     }catch(e){log(`⚠ ${cfg.sport}: ${e.message}`,'w');}
   }
 
+  // Engine fallback when sportsbook player props unavailable (free tier)
+  if(!raw.length && anyEventsFound){
+    log('\n⟳ Sportsbook props need paid tier. Populating from engine...','i');
+    try{
+      for(const cfg of sportConfigs.filter(c=>!['Soccer','Tennis'].includes(c.sport))){
+        let eng=[];
+        if(cfg.sport==='MLB') eng=await runMLBEngine(()=>{});
+        else if(cfg.sport==='NBA'||cfg.sport==='WNBA') eng=await runBDLEngine(cfg.sport,()=>{});
+        else if(cfg.sport==='NHL') eng=await runNHLEngine(()=>{});
+        raw.push(...eng.slice(0,15).map(c=>({...c,bookmaker:'engine',selectedProb:c.l5_hit_rate||c.confidence||0.55})));
+      }
+      if(raw.length) log(`✓ Engine fallback: ${raw.length} props loaded`,'ok');
+    }catch(e){log(`⚠ Engine fallback: ${e.message}`,'w');}
+  }
+
   if(!raw.length){
-    log('\n⚠ No props fetched. Check Odds API key quota or try again.','w');
+    log('\n⚠ No props available. Run Best Props engine (🎯 tab) to populate the pool directly.','w');
     document.getElementById('poolRefreshBtn').textContent='Refresh Now';
     document.getElementById('poolRefreshSp').classList.add('hidden');
     return;
