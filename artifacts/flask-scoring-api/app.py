@@ -2649,6 +2649,86 @@ def fbref_stats():
             conn.close()
 
 
+@app.route("/fbref-stats/fixtures", methods=["GET"])
+@require_api_key
+def fbref_stats_fixtures():
+    """
+    Return soccer fixtures for a given date across the configured leagues
+    (default: EPL + MLS).
+
+    Query params:
+      date    — YYYY-MM-DD (default today, UTC)
+      leagues — comma-separated league keys (default "epl,mls")
+
+    Response shape (mirrors /api-sports/tennis/fixtures):
+      { ok, date, count, fixtures: [
+          { fixture_id, commence_time, league, league_id, season,
+            status, venue, home_team, away_team }
+      ]}
+    """
+    from datetime import date as _date
+
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
+
+    date_str = (request.args.get("date") or _date.today().isoformat()).strip()
+
+    raw_leagues = (request.args.get("leagues") or "epl,mls").strip()
+    league_keys = [s.strip().lower() for s in raw_leagues.split(",") if s.strip()]
+
+    # Resolve requested league keys → ids; track which key each id maps back to.
+    wanted_ids = {}   # league_id → league_key
+    unknown    = []
+    for key in league_keys:
+        lid = _SOCCER_LEAGUE_MAP.get(key)
+        if lid:
+            wanted_ids[lid] = key
+        else:
+            unknown.append(key)
+
+    # api-football free plan refuses current-year `season` values but lets us
+    # query the global fixtures list with only `date`. Pull all fixtures for
+    # the date once and filter client-side by league id.
+    fixtures_out = []
+    errors = [{"league": k, "error": "unknown league key"} for k in unknown]
+
+    try:
+        data = _soccer_api_get("fixtures", {"date": date_str}, api_key)
+        upstream_errors = data.get("errors")
+        if isinstance(upstream_errors, dict) and upstream_errors:
+            errors.append({"upstream": upstream_errors})
+        for f in data.get("response", []):
+            lg = f.get("league", {}) or {}
+            lid = lg.get("id")
+            if lid not in wanted_ids:
+                continue
+            fx    = f.get("fixture", {}) or {}
+            teams = f.get("teams",   {}) or {}
+            fixtures_out.append({
+                "fixture_id":    fx.get("id"),
+                "commence_time": fx.get("date"),
+                "status":        (fx.get("status") or {}).get("short"),
+                "venue":         (fx.get("venue") or {}).get("name"),
+                "league":        wanted_ids[lid],
+                "league_id":     lid,
+                "season":        lg.get("season"),
+                "home_team":     (teams.get("home") or {}).get("name"),
+                "away_team":     (teams.get("away") or {}).get("name"),
+            })
+    except Exception as e:
+        errors.append({"fetch": str(e)})
+
+    return jsonify({
+        "ok":       True,
+        "date":     date_str,
+        "leagues":  league_keys,
+        "count":    len(fixtures_out),
+        "fixtures": fixtures_out,
+        "errors":   errors,
+    })
+
+
 @app.route("/fbref-stats/populate", methods=["POST"])
 @require_api_key
 def fbref_stats_populate():
