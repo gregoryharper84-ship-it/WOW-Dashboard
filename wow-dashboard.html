@@ -368,7 +368,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
       <div class="alert ab">Pulls slip-qualified props from live sportsbook lines every hour. Only props that clear WOW validation (Tier 1 or 2) are shown. Auto-refreshes while dashboard is open.</div>
       <div class="fr">
         <div class="field"><label>Sports Filter</label>
-          <select id="poolSportFilter" onchange="renderPropPool()">
+          <select id="poolSportFilter" onchange="refreshPropPool(true)">
             <option value="all">All Sports</option>
             <option value="NBA">NBA</option>
             <option value="MLB">MLB</option>
@@ -3211,8 +3211,14 @@ async function wowValidate(p, wowScore){
   if(p.injury_flag===1) return {tier:'conditional', label:'CONDITIONAL — Injury Flagged', failures:['injury-flag'], fragileFlags, rawProb:null, ev:null};
 
   // ── SAMPLE SIZE VALIDATION ──
-  const sampleCheck = validateSampleSize(p.raw_vals, p.prop, p.sport, p.source||p.bookmaker?'market':null);
-  if(!sampleCheck.isValid){
+  // Soccer/Tennis use market probability — no game logs needed, bypass entirely
+  const isMktSport = p.sport==='Soccer' || p.sport==='Tennis';
+  const hasMarket  = !!(p.source==='market' || p.source==='odds_api' || p.bookmaker);
+  const sampleCheck = validateSampleSize(
+    p.raw_vals, p.prop, p.sport,
+    hasMarket ? 'market' : null   // fixed operator precedence
+  );
+  if(!sampleCheck.isValid && !isMktSport){
     failures.push('insufficient-sample-size');
     if(sampleCheck.note) insights.push(sampleCheck.note);
   }
@@ -3352,9 +3358,12 @@ async function wowValidate(p, wowScore){
 
   // ── SAMPLE SIZE PENALTY ──
   // Softer penalty — small sample means uncertainty, not rejection
-  if(!sampleCheck.isValid && sampleCheck.n > 0) rawProb -= 0.02;
-  else if(!sampleCheck.isValid && sampleCheck.n === 0) rawProb -= 0.03;
-  else if(sampleCheck.confidence==='MEDIUM') rawProb -= 0.005;
+  // Soccer/Tennis are market-based — no penalty
+  if(!isMktSport){
+    if(!sampleCheck.isValid && sampleCheck.n > 0) rawProb -= 0.02;
+    else if(!sampleCheck.isValid && sampleCheck.n === 0) rawProb -= 0.03;
+    else if(sampleCheck.confidence==='MEDIUM') rawProb -= 0.005;
+  }
 
   // ── WOW SCORER (support only, 18% weight) ──
   // Only blend if WOW score is valid — null score means scorer unavailable, don't penalize
@@ -3550,7 +3559,8 @@ function makePCard(p){
 
   // ── SAMPLE SIZE WARNING ──
   let sampleHtml = '';
-  if(p.sampleCheck&&!p.sampleCheck.isValid)
+  const isMktSportCard = p.sport==='Soccer' || p.sport==='Tennis';
+  if(p.sampleCheck && !p.sampleCheck.isValid && !isMktSportCard)
     sampleHtml=`<div style="font-size:10px;color:var(--yellow);margin-top:3px;font-family:var(--mono);">${p.sampleCheck.note}</div>`;
 
   card.innerHTML=`
@@ -7768,22 +7778,42 @@ async function refreshPropPool(manual=false){
   const logEl=document.getElementById('poolLog');
   logEl.innerHTML='';
   const log=(msg,t='')=>{logEl.innerHTML+=`<span class="${t?'o'+t:''}">${msg}\n</span>`;logEl.scrollTop=logEl.scrollHeight;};
-  log('⟳ Fetching live prop lines from sportsbooks...','i');
 
-  const sportConfigs=[
-    {sport:'MLB',key:'baseball_mlb',markets:'pitcher_strikeouts,batter_hits,batter_total_bases,batter_rbis,batter_runs_scored'},
-    {sport:'NBA',key:'basketball_nba',markets:'player_points,player_rebounds,player_assists,player_threes,player_blocks,player_steals'},
-    {sport:'NHL',key:'icehockey_nhl',markets:'player_shots_on_goal,player_goals,player_assists,player_points'},
-    {sport:'WNBA',key:'basketball_wnba',markets:'player_points,player_rebounds,player_assists'},
-    {sport:'Soccer',key:'soccer_usa_mls',markets:'player_shots_on_target,player_shots,player_passes'},
-    {sport:'Tennis',key:'tennis_atp',markets:'player_games,player_aces'},
+  // ── Respect the sport filter — only fetch selected sport(s) ──
+  const selectedSport = document.getElementById('poolSportFilter')?.value || 'all';
+
+  const allSportConfigs=[
+    {sport:'MLB',   key:'baseball_mlb',   markets:'pitcher_strikeouts,batter_hits,batter_total_bases,batter_rbis,batter_runs_scored'},
+    {sport:'NBA',   key:'basketball_nba', markets:'player_points,player_rebounds,player_assists,player_threes,player_blocks,player_steals'},
+    {sport:'NHL',   key:'icehockey_nhl',  markets:'player_shots_on_goal,player_goals,player_assists,player_points'},
+    {sport:'WNBA',  key:'basketball_wnba',markets:'player_points,player_rebounds,player_assists'},
+    {sport:'Soccer',key:'soccer_usa_mls', markets:'player_shots_on_target,player_shots,player_passes'},
+    {sport:'Tennis',key:null,             markets:null, engineOnly:true},
   ];
+
+  // Filter to selected sport — if 'all', run everything
+  const sportConfigs = selectedSport==='all'
+    ? allSportConfigs
+    : allSportConfigs.filter(c=>c.sport===selectedSport);
+
+  if(selectedSport!=='all')
+    log(`⟳ Fetching ${selectedSport} props...`,'i');
+  else
+    log('⟳ Fetching live prop lines from sportsbooks...','i');
 
   const raw=[];
   let anyEventsFound = false;
 
   for(const cfg of sportConfigs){
     log(`⟳ ${cfg.sport}: fetching props...`);
+
+    // engineOnly sports skip Odds API entirely (endpoint 404 on free tier)
+    if(cfg.engineOnly){
+      log(`  ⟳ ${cfg.sport}: using engine directly (no Odds API coverage)`,'i');
+      anyEventsFound = true; // ensure engine fallback runs
+      continue;
+    }
+
     try{
       const evR=await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
       if(!evR.ok){log(`⚠ ${cfg.sport}: events ${evR.status}`,'w');continue;}
@@ -7841,14 +7871,24 @@ async function refreshPropPool(manual=false){
   if(!raw.length && anyEventsFound){
     log('\n⟳ Sportsbook props need paid tier. Populating from engine...','i');
     try{
-      for(const cfg of sportConfigs.filter(c=>!['Soccer','Tennis'].includes(c.sport))){
+      for(const cfg of sportConfigs){
         let eng=[];
-        if(cfg.sport==='MLB') eng=await runMLBEngine(()=>{});
-        else if(cfg.sport==='NBA'||cfg.sport==='WNBA') eng=await runBDLEngine(cfg.sport,()=>{});
-        else if(cfg.sport==='NHL') eng=await runNHLEngine(()=>{});
-        raw.push(...eng.slice(0,15).map(c=>({...c,bookmaker:'engine',selectedProb:c.l5_hit_rate||c.confidence||0.55})));
+        try{
+          if(cfg.sport==='MLB')              eng=await runMLBEngine(()=>{});
+          else if(cfg.sport==='NBA'||cfg.sport==='WNBA') eng=await runBDLEngine(cfg.sport,()=>{});
+          else if(cfg.sport==='NHL')         eng=await runNHLEngine(()=>{});
+          else if(cfg.sport==='Soccer')      eng=await runSoccerEngine(()=>{});
+          else if(cfg.sport==='Tennis')      eng=await runTennisEngine(()=>{});
+        }catch(e){}
+        if(eng.length){
+          raw.push(...eng.slice(0,20).map(c=>({
+            ...c, bookmaker:'engine',
+            selectedProb:c.l5_hit_rate||c.confidence||0.55
+          })));
+          log(`  ✓ ${cfg.sport}: ${Math.min(eng.length,20)} props from engine`,'ok');
+        }
       }
-      if(raw.length) log(`✓ Engine fallback: ${raw.length} props loaded`,'ok');
+      if(raw.length) log(`✓ Engine fallback: ${raw.length} total props loaded`,'ok');
     }catch(e){log(`⚠ Engine fallback: ${e.message}`,'w');}
   }
 
