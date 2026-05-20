@@ -1554,11 +1554,15 @@ async function runAutoEngine(){
         }
       } else if(sport==='Soccer'){
         log(`⟳ Soccer: fetching fixtures + player stats via Replit...`,'i');
+        // Wake up Replit before calling (free tier sleeps after inactivity)
+        try{ await fx(`${EP.replit}/health`,{headers:{'X-API-Key':KEYS.replit}},5000); }catch(e){}
         const soccerCandidates = await runSoccerEngine(log);
         allCandidates.push(...soccerCandidates);
         if(!soccerCandidates.length) log(`⚠ Soccer: no candidates — league may need populating (see Replit /fbref-stats/populate)`,'w');
       } else if(sport==='Tennis'){
         log(`⟳ Tennis: fetching matches + stats via Replit...`,'i');
+        // Wake up Replit before calling
+        try{ await fx(`${EP.replit}/health`,{headers:{'X-API-Key':KEYS.replit}},5000); }catch(e){}
         const tennisCandidates = await runTennisEngine(log);
         allCandidates.push(...tennisCandidates);
       } else if(sport==='NFL'){
@@ -1889,46 +1893,38 @@ async function runBDLEngine(sport,log){
       const gameStr=`${game.visitor_team?.full_name||'Away'} @ ${game.home_team?.full_name||'Home'}`;
 
       for(const teamId of [game.visitor_team?.id, game.home_team?.id].filter(Boolean)){
-        // Step 2: Get active players via recent team game stats
-        // Use stats endpoint with game_ids from recent games — more reliable than team roster
+        // Step 2: Get active players via BDL /players roster endpoint
+        // More reliable than game_ids — doesn't depend on stats being posted yet
         let players=[];
         for(const season of seasons){
-          // Get last 5 games for this team to find active players
-          const recentGamesR=await fx(
-            `${bdlBase}/games?team_ids[]=${teamId}&seasons[]=${season}&per_page=15`,
+          const rosR=await fx(
+            `${bdlBase}/players?team_ids[]=${teamId}&seasons[]=${season}&per_page=25`,
             {headers:{'Authorization':KEYS.bdl}}, 8000
           );
-          if(!recentGamesR.ok) continue;
-          const recentGames=(await recentGamesR.json()).data||[];
-          if(!recentGames.length) continue;
-
-          // Sort by date descending client-side (BDL v1 has no sort param)
-          recentGames.sort((a,b)=>new Date(b.date||0)-new Date(a.date||0));
-          const recentGameIds=recentGames.slice(0,3).map(g=>g.id).filter(Boolean);
-          if(!recentGameIds.length) continue;
-
-          const statsQuery=recentGameIds.map(id=>`game_ids[]=${id}`).join('&');
-          const statsR=await fx(
-            `${bdlBase}/stats?${statsQuery}&per_page=50`,
-            {headers:{'Authorization':KEYS.bdl}}, 8000
-          );
-          if(!statsR.ok) continue;
-          const statsData=(await statsR.json()).data||[];
-
-          // Build player map — only include players who actually played (min > 0)
-          const playerMap=new Map();
-          statsData.filter(s=>{
-            const m=s.min; const minVal=m?parseInt(String(m).split(':')[0]||0):0; return minVal>5;
-          }).forEach(s=>{
-            if(s.player?.id&&s.player?.first_name&&s.team?.id===teamId){
-              playerMap.set(s.player.id, s.player);
-            }
-          });
-          players=[...playerMap.values()].slice(0,8);
-          if(players.length>=4) break;
+          if(!rosR.ok) continue;
+          const rosData=(await rosR.json()).data||[];
+          if(rosData.length>=4){
+            players=rosData.filter(p=>p.first_name&&p.last_name).slice(0,10);
+            break;
+          }
         }
-
-        if(!players.length){ log(`  ⚠ No active players found for team ${teamId}`,'w'); continue; }
+        // Fallback: mine postseason stats for player IDs
+        if(!players.length){
+          for(const season of seasons){
+            const psStR=await fx(
+              `${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=${season}&postseason=true&per_page=30`,
+              {headers:{'Authorization':KEYS.bdl}}, 8000
+            );
+            if(!psStR.ok) continue;
+            const pMap=new Map();
+            ((await psStR.json()).data||[])
+              .filter(s=>{ const m=s.min; return m&&parseInt(String(m).split(':')[0]||0)>5; })
+              .forEach(s=>{ if(s.player?.id&&s.player?.first_name) pMap.set(s.player.id,s.player); });
+            players=[...pMap.values()].slice(0,10);
+            if(players.length) break;
+          }
+        }
+        if(!players.length){ log(`  ⚠ No roster data for team ${teamId}`,'w'); continue; }
 
         // Step 3: Get full game log for each player
         for(const player of players){
@@ -2215,7 +2211,9 @@ async function runSoccerEngine(log){
 async function runTennisEngine(log){
   const candidates = [];
   try{
-    const today = new Date().toISOString().split('T')[0];
+    const now2 = new Date();
+    const today = localDate(); // local date to match timezone
+    const todayFormatted = today; // YYYY-MM-DD
 
     // ── Fetch fixtures — filter by tour to keep count manageable ──
     log('⟳ Tennis: fetching ATP + WTA fixtures...','i');
@@ -2224,7 +2222,7 @@ async function runTennisEngine(log){
     // Fetch ATP and WTA separately, merge
     for(const tour of ['atp','wta']){
       const r = await fx(
-        `${EP.replit}/api-sports/tennis/fixtures?date=${today}&tour=${tour}`,
+        `${EP.replit}/api-sports/tennis/fixtures?date=${todayFormatted}&tour=${tour}`,
         {headers:{'X-API-Key':KEYS.replit}}, 10000
       );
       if(!r.ok) continue;
