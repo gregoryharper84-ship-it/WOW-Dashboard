@@ -2851,6 +2851,64 @@ def api_sports_players(sport):
     if not player:
         return jsonify({"ok": False, "error": "player query param is required"}), 400
 
+    # ── Tennis: uses api-tennis.com with TENNIS_API_KEY ───────────────────────
+    if sport_lower == "tennis":
+        tennis_key = os.environ.get("TENNIS_API_KEY", "")
+        if not tennis_key:
+            return jsonify({"ok": False, "error": "TENNIS_API_KEY secret not configured"}), 500
+        tennis_base = "https://api.api-tennis.com/tennis/"
+        try:
+            if player.isdigit():
+                # Numeric ID — direct player lookup
+                r = _req.get(tennis_base, params={"APIkey": tennis_key, "method": "get_players",
+                                                   "player_key": player}, timeout=15)
+                r.raise_for_status()
+                data = r.json()
+                results = data.get("result", []) if data.get("success") == 1 else []
+                if not isinstance(results, list):
+                    results = [results] if results else []
+            else:
+                # Name search — scan today + yesterday fixtures for matching names
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                today = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+                yest  = (_dt.now(_tz.utc) - _td(days=1)).strftime("%Y-%m-%d")
+                r = _req.get(tennis_base, params={"APIkey": tennis_key, "method": "get_fixtures",
+                                                   "date_start": yest, "date_stop": today},
+                             timeout=15)
+                r.raise_for_status()
+                fdata = r.json()
+                fixtures = fdata.get("result", []) if fdata.get("success") == 1 else []
+                seen, results = set(), []
+                q = player.lower()
+                for f in (fixtures if isinstance(fixtures, list) else []):
+                    for pk, pn in [
+                        (f.get("first_player_key"),  f.get("event_first_player")),
+                        (f.get("second_player_key"), f.get("event_second_player")),
+                    ]:
+                        if pk and pn and q in pn.lower() and pk not in seen:
+                            seen.add(pk)
+                            results.append({
+                                "player_key":  pk,
+                                "player_name": pn,
+                                "event_type":  f.get("event_type_type"),
+                                "tournament":  f.get("tournament_name"),
+                            })
+            return jsonify({
+                "ok":      True,
+                "sport":   "tennis",
+                "source":  "api-tennis.com",
+                "query":   {"player": player},
+                "count":   len(results),
+                "players": results,
+            })
+        except _req.exceptions.Timeout:
+            return jsonify({"ok": False, "error": "api-tennis.com request timed out"}), 504
+        except _req.exceptions.RequestException as e:
+            return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    # ── All other sports: api-sports.io with API_FOOTBALL_KEY ─────────────────
     api_key = os.environ.get("API_FOOTBALL_KEY", "")
     if not api_key:
         return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
@@ -2929,26 +2987,90 @@ def api_sports_stats(sport):
         "basketball": "https://v1.basketball.api-sports.io",
         "hockey":     "https://v1.hockey.api-sports.io",
         "nfl":        "https://v1.american-football.api-sports.io",
-        "tennis":     "https://v1.tennis.api-sports.io",
+        "tennis":     None,   # handled separately via api-tennis.com
     }
-    # path → (endpoint, id_param_name)
-    #   basketball → /statistics           id sent as nothing (filtered by team)
-    #   nfl        → /players/statistics   id sent as 'id'
-    #   tennis     → /statistics           id sent as 'player'
+    # basketball → /statistics (requires team+league+season)
+    # nfl        → /players/statistics (requires player id)
     STAT_CONFIGS = {
-        "basketball": ("statistics",        "id"),
-        "nfl":        ("players/statistics","id"),
-        "tennis":     ("statistics",        "player"),
+        "basketball": ("statistics",         "id"),
+        "nfl":        ("players/statistics", "id"),
     }
 
     sport_lower = sport.lower()
-    base = BASES.get(sport_lower)
-    if not base:
+    if sport_lower not in BASES:
         return jsonify({
             "ok": False,
             "error": f"Unknown sport '{sport}'. Supported: baseball, basketball, hockey, nfl, tennis",
         }), 400
 
+    player_id  = request.args.get("player_id", "").strip()
+    player_id2 = request.args.get("player_id2", "").strip()  # tennis H2H second player
+    team       = request.args.get("team", "").strip()
+    league     = request.args.get("league", "").strip()
+    season     = request.args.get("season", "").strip()
+
+    # ── Tennis: uses api-tennis.com with TENNIS_API_KEY ───────────────────────
+    if sport_lower == "tennis":
+        tennis_key = os.environ.get("TENNIS_API_KEY", "")
+        if not tennis_key:
+            return jsonify({"ok": False, "error": "TENNIS_API_KEY secret not configured"}), 500
+        if not player_id:
+            return jsonify({
+                "ok":   False,
+                "error": "player_id is required for tennis stats. "
+                         "Use /api-sports/tennis/players?player=<name> to look up the id first.",
+            }), 400
+        tennis_base = "https://api.api-tennis.com/tennis/"
+        try:
+            if player_id2:
+                # Head-to-head between two players
+                r = _req.get(tennis_base, params={
+                    "APIkey":            tennis_key,
+                    "method":            "get_H2H",
+                    "first_player_key":  player_id,
+                    "second_player_key": player_id2,
+                }, timeout=15)
+                r.raise_for_status()
+                data = r.json()
+                results = data.get("result", []) if data.get("success") == 1 else []
+                return jsonify({
+                    "ok":    True,
+                    "sport": "tennis",
+                    "source": "api-tennis.com",
+                    "mode":  "h2h",
+                    "query": {"player_id": player_id, "player_id2": player_id2},
+                    "count": len(results) if isinstance(results, list) else 1,
+                    "stats": results,
+                })
+            else:
+                # Player profile + stats/tournaments
+                r = _req.get(tennis_base, params={
+                    "APIkey":     tennis_key,
+                    "method":     "get_players",
+                    "player_key": player_id,
+                }, timeout=15)
+                r.raise_for_status()
+                data = r.json()
+                results = data.get("result", []) if data.get("success") == 1 else []
+                if not isinstance(results, list):
+                    results = [results] if results else []
+                return jsonify({
+                    "ok":    True,
+                    "sport": "tennis",
+                    "source": "api-tennis.com",
+                    "mode":  "profile",
+                    "query": {"player_id": player_id, "season": season or None},
+                    "count": len(results),
+                    "stats": results,
+                })
+        except _req.exceptions.Timeout:
+            return jsonify({"ok": False, "error": "api-tennis.com request timed out"}), 504
+        except _req.exceptions.RequestException as e:
+            return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    # ── baseball / hockey: not available on free plan ─────────────────────────
     if sport_lower not in STAT_CONFIGS:
         return jsonify({
             "ok":    False,
@@ -2959,34 +3081,23 @@ def api_sports_stats(sport):
             ),
         }), 422
 
-    player_id = request.args.get("player_id", "").strip()
-    team      = request.args.get("team", "").strip()
-    league    = request.args.get("league", "").strip()
-    season    = request.args.get("season", "").strip()
-
     stat_path, id_param = STAT_CONFIGS[sport_lower]
 
-    # Sports that need player_id to be meaningful
-    if sport_lower in ("nfl", "tennis") and not player_id:
+    if sport_lower == "nfl" and not player_id:
         return jsonify({
             "ok":   False,
-            "error": (
-                f"player_id is required for {sport_lower.upper()} stats. "
-                f"Use /api-sports/{sport_lower}/players?player=<name> to look up the id first."
-            ),
+            "error": "player_id is required for NFL stats. "
+                     "Use /api-sports/nfl/players?player=<name> to look up the id first.",
         }), 400
-
-    # Tennis defaults season to current year if omitted
-    if sport_lower == "tennis" and not season:
-        season = str(_dt.now().year)
 
     api_key = os.environ.get("API_FOOTBALL_KEY", "")
     if not api_key:
         return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
 
+    base = BASES[sport_lower]
     params = {}
     if player_id:
-        params[id_param] = player_id   # 'id' for nfl/basketball, 'player' for tennis
+        params[id_param] = player_id
     if team:
         params["team"] = team
     if league:
@@ -3001,7 +3112,6 @@ def api_sports_stats(sport):
         r.raise_for_status()
         data = r.json()
 
-        # Surface any upstream validation errors
         upstream_errors = data.get("errors")
         if upstream_errors and upstream_errors != [] and upstream_errors != {}:
             return jsonify({
@@ -3011,12 +3121,11 @@ def api_sports_stats(sport):
                 "hint": (
                     "Basketball /statistics requires: team (team id), league, and season. "
                     "Example: ?team=145&league=12&season=2022-2023. "
-                    "NFL /players/statistics requires: player_id (from /api-sports/nfl/players search). "
+                    "NFL /players/statistics requires: player_id. "
                     "Example: ?player_id=1197&season=2023"
                 ),
             }), 422
 
-        # response can be a list (multiple records) or a dict (single object like team stats)
         raw_response = data.get("response", [])
         count = data.get("results", len(raw_response) if isinstance(raw_response, list) else 1)
         return jsonify({
@@ -3043,51 +3152,67 @@ def api_sports_stats(sport):
 @require_api_key
 def api_sports_tennis_fixtures():
     """
-    Return tennis fixtures for a given date from api-sports.io.
+    Return tennis fixtures for a given date from api-tennis.com.
     Query params:
-      date — ISO date string YYYY-MM-DD (defaults to today UTC)
+      date      — ISO date YYYY-MM-DD (defaults to today UTC)
+      tour      — filter by tour: atp | wta | challenger | itf (optional, case-insensitive)
+      live_only — "true" to return only in-progress matches via get_livescore
     """
     import requests as _req
     from datetime import datetime as _dt, timezone as _tz
 
-    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    api_key = os.environ.get("TENNIS_API_KEY", "")
     if not api_key:
-        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
+        return jsonify({"ok": False, "error": "TENNIS_API_KEY secret not configured"}), 500
 
-    date = request.args.get("date", "").strip()
+    date      = request.args.get("date", "").strip()
+    tour      = request.args.get("tour", "").strip().lower()
+    live_only = request.args.get("live_only", "").strip().lower() == "true"
+
     if not date:
         date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
 
+    base = "https://api.api-tennis.com/tennis/"
+
     try:
-        r = _req.get(
-            "https://v1.tennis.api-sports.io/fixtures",
-            headers={"x-apisports-key": api_key},
-            params={"date": date},
-            timeout=15,
-        )
+        if live_only:
+            r = _req.get(base, params={"APIkey": api_key, "method": "get_livescore"}, timeout=15)
+        else:
+            r = _req.get(base, params={
+                "APIkey":     api_key,
+                "method":     "get_fixtures",
+                "date_start": date,
+                "date_stop":  date,
+            }, timeout=15)
+
         r.raise_for_status()
         data = r.json()
 
-        upstream_errors = data.get("errors")
-        if upstream_errors and upstream_errors != [] and upstream_errors != {}:
-            return jsonify({
-                "ok":              False,
-                "upstream_errors": upstream_errors,
-                "hint":            "Check the date format (YYYY-MM-DD).",
-            }), 422
+        if data.get("success") != 1:
+            errs = data.get("result", data.get("error", "Unknown error"))
+            return jsonify({"ok": False, "upstream_errors": errs}), 422
 
-        raw_response = data.get("response", [])
-        count = data.get("results", len(raw_response) if isinstance(raw_response, list) else 0)
+        fixtures = data.get("result", [])
+
+        # Optional tour filter on event_type_type (e.g. "Atp Singles", "Wta Doubles")
+        if tour and isinstance(fixtures, list):
+            fixtures = [
+                f for f in fixtures
+                if tour in f.get("event_type_type", "").lower()
+            ]
+
         return jsonify({
-            "ok":      True,
-            "sport":   "tennis",
-            "source":  "api-sports",
-            "date":    date,
-            "count":   count,
-            "fixtures": raw_response,
+            "ok":       True,
+            "sport":    "tennis",
+            "source":   "api-tennis.com",
+            "date":     date,
+            "live_only": live_only,
+            "tour_filter": tour or None,
+            "count":    len(fixtures),
+            "fixtures": fixtures,
         })
     except _req.exceptions.Timeout:
-        return jsonify({"ok": False, "error": "api-sports request timed out"}), 504
+        return jsonify({"ok": False, "error": "api-tennis.com request timed out"}), 504
     except _req.exceptions.RequestException as e:
         return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
     except Exception as e:
