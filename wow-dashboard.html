@@ -551,7 +551,18 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
   <!-- Jeremia slip output -->
   <div id="jeremiaOutput"></div>
 
-  <!-- LESS SLIP BUILDER -->
+  <!-- Odds API key status banner (shows when 401 detected) -->
+  <div id="oddsKeyBanner" class="hidden" style="background:var(--red-light);border:1px solid rgba(239,68,68,0.3);border-radius:var(--r);padding:10px 14px;margin-bottom:10px;font-size:12px;">
+    <strong style="color:var(--red);">⚠ Odds API quota exceeded or key invalid</strong><br>
+    <span style="color:var(--text2);">Teams tab (LLP/Winners & Upsets) requires valid Odds API access. 
+    <a href="https://the-odds-api.com" target="_blank" style="color:var(--accent);">Check usage →</a>
+    </span>
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+      <input id="oddsKeyInput" placeholder="Paste new API key..." 
+        style="flex:1;font-size:13px;padding:6px 10px;border-radius:6px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+      <button class="btn btn-p btn-sm" onclick="updateOddsKey()">Update Key</button>
+    </div>
+  </div>
   <div style="background:linear-gradient(135deg,#064e3b 0%,#065f46 100%);border-radius:var(--r);padding:18px 22px;margin-top:20px;margin-bottom:14px;color:#fff;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
       <div>
@@ -6139,7 +6150,11 @@ async function runLLPBoard(){
     try{
       // Step 1: Get event list (free for all sports)
       const evR = await fx(`${EP.odds}/sports/${cfg.key}/events?apiKey=${KEYS.odds}&dateFormat=iso`,{},8000);
-      if(!evR.ok){ log(`⚠ ${cfg.sport}: ${evR.status}`,'w'); continue; }
+      if(!evR.ok){
+        if(evR.status===401) handleOdds401(cfg.sport, log);
+        else log(`⚠ ${cfg.sport}: events ${evR.status}`,'w');
+        continue;
+      }
       const eventList = await evR.json();
       if(!eventList?.length){ log(`⚠ ${cfg.sport}: no games today`,'w'); continue; }
       log(`✓ ${cfg.sport}: ${eventList.length} games`,'ok');
@@ -9251,6 +9266,48 @@ async function buildJeremiaSlip(){
 // ══════════════════════════════════
 // INIT
 // ══════════════════════════════════
+
+// ── Odds API Key Update ──
+function updateOddsKey(){
+  const newKey = document.getElementById('oddsKeyInput')?.value?.trim();
+  if(!newKey || newKey.length < 20){ alert('Please enter a valid API key'); return; }
+  KEYS.odds = newKey;
+  document.getElementById('oddsKeyBanner')?.classList.add('hidden');
+  chip('odds','ok');
+  alert('Odds API key updated for this session. Re-run engines to use the new key.');
+}
+
+// Show the banner when 401 is detected
+function handleOdds401(sport, logFn){
+  chip('odds','fail');
+  document.getElementById('oddsKeyBanner')?.classList.remove('hidden');
+  logFn?.(`⚠ Odds API 401 — quota exceeded or key invalid. See banner above.`,'w');
+}
+
+// ── Odds API Proxy ──
+// Routes calls through Replit to hide the key server-side
+// Falls back to direct call if Replit unavailable
+async function oddsProxy(path, params={}){
+  // Try Replit proxy first (key hidden server-side)
+  try{
+    const qs = new URLSearchParams(params).toString();
+    const proxyR = await fx(
+      `${EP.replit}/odds-proxy?path=${encodeURIComponent(path)}${qs?'&'+qs:''}`,
+      {headers:{'X-API-Key':KEYS.replit}}, 10000
+    );
+    if(proxyR.ok) return proxyR;
+    // If 401 on proxy, key issue — show helpful message
+    if(proxyR.status===401){
+      console.warn('Odds API 401 via proxy — key quota exceeded or invalid');
+      chip('odds','fail');
+      return proxyR;
+    }
+  }catch(e){}
+  // Fallback: direct call (key visible but functional if proxy down)
+  const qs2 = new URLSearchParams({...params, apiKey:KEYS.odds}).toString();
+  return await fx(`${EP.odds}/${path}?${qs2}`, {}, 10000);
+}
+
 window.onload=()=>{
   // ── Startup API health pings ──
   // Replit
