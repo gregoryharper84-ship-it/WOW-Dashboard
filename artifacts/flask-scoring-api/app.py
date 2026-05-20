@@ -3032,7 +3032,15 @@ def api_sports_stats(sport):
                 }, timeout=15)
                 r.raise_for_status()
                 data = r.json()
-                results = data.get("result", []) if data.get("success") == 1 else []
+                if data.get("success") != 1:
+                    return jsonify({
+                        "ok":              False,
+                        "sport":           "tennis",
+                        "source":          "api-tennis.com",
+                        "mode":            "h2h",
+                        "upstream_errors": data.get("result", data.get("error", "Unknown error")),
+                    }), 422
+                results = data.get("result", [])
                 return jsonify({
                     "ok":    True,
                     "sport": "tennis",
@@ -3051,7 +3059,15 @@ def api_sports_stats(sport):
                 }, timeout=15)
                 r.raise_for_status()
                 data = r.json()
-                results = data.get("result", []) if data.get("success") == 1 else []
+                if data.get("success") != 1:
+                    return jsonify({
+                        "ok":              False,
+                        "sport":           "tennis",
+                        "source":          "api-tennis.com",
+                        "mode":            "profile",
+                        "upstream_errors": data.get("result", data.get("error", "Unknown error")),
+                    }), 422
+                results = data.get("result", [])
                 if not isinstance(results, list):
                     results = [results] if results else []
                 return jsonify({
@@ -3193,23 +3209,54 @@ def api_sports_tennis_fixtures():
             return jsonify({"ok": False, "upstream_errors": errs}), 422
 
         fixtures = data.get("result", [])
+        if not isinstance(fixtures, list):
+            fixtures = []
+
+        import re as _re
+        _DATE_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+        _TIME_RE = _re.compile(r"^(\d{2}):(\d{2})(?::\d{2})?$")
 
         # Optional tour filter on event_type_type (e.g. "Atp Singles", "Wta Doubles")
-        if tour and isinstance(fixtures, list):
-            fixtures = [
-                f for f in fixtures
-                if tour in f.get("event_type_type", "").lower()
-            ]
+        # Coerce to str — upstream may send None for event_type_type.
+        if tour:
+            fixtures = [f for f in fixtures
+                        if tour in str(f.get("event_type_type") or "").lower()]
+
+        # Normalize each fixture so the dashboard can consume it the same way as
+        # /tennis-stats/today (commence_time / player1 / player2 / tour / tournament).
+        def _derive_tour(etype) -> str:
+            et = str(etype or "").lower()
+            if "atp" in et: return "ATP"
+            if "wta" in et: return "WTA"
+            if "challenger" in et: return "Challenger"
+            if "itf" in et: return "ITF"
+            return ""
+
+        for f in fixtures:
+            d = str(f.get("event_date") or "")
+            t = str(f.get("event_time") or "")
+            t_match = _TIME_RE.match(t)
+            if _DATE_RE.match(d) and t_match:
+                # Assume UTC — api-tennis.com returns times in UTC.
+                f["commence_time"] = f"{d}T{t_match.group(1)}:{t_match.group(2)}:00Z"
+            else:
+                f["commence_time"] = None
+            f["player1"]    = f.get("event_first_player")  or ""
+            f["player2"]    = f.get("event_second_player") or ""
+            f["tournament"] = f.get("tournament_name")     or ""
+            f["tour"]       = _derive_tour(f.get("event_type_type"))
+            f["event_id"]   = str(f.get("event_key") or "")
 
         return jsonify({
-            "ok":       True,
-            "sport":    "tennis",
-            "source":   "api-tennis.com",
-            "date":     date,
-            "live_only": live_only,
+            "ok":          True,
+            "sport":       "tennis",
+            "source":      "api-tennis.com",
+            "date":        date,
+            "live_only":   live_only,
             "tour_filter": tour or None,
-            "count":    len(fixtures),
-            "fixtures": fixtures,
+            "count":       len(fixtures),
+            "fixtures":    fixtures,
+            "matches":     fixtures,   # alias for dashboards expecting the /tennis-stats/today shape
         })
     except _req.exceptions.Timeout:
         return jsonify({"ok": False, "error": "api-tennis.com request timed out"}), 504
