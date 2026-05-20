@@ -784,7 +784,9 @@ def health():
             "schema":         "GET /openapi.json (no auth)",
             "fbref_stats":    "GET /fbref-stats?player=...&league=... (X-API-Key required) — soccer player season stats",
             "tennis_stats":       "GET /tennis-stats?player=...&tour=atp|wta&year=...&limit=... (X-API-Key required) — ATP/WTA match stats via JeffSackmann",
-            "tennis_stats_today": "GET /tennis-stats/today?tour=atp|wta (X-API-Key required) — today's live ATP/WTA matches from Odds API"
+            "tennis_stats_today": "GET /tennis-stats/today?tour=atp|wta (X-API-Key required) — today's live ATP/WTA matches from Odds API",
+            "api_sports_players": "GET /api-sports/{baseball|basketball|hockey}/players?player=...&league=...&season=... (X-API-Key required) — search players via api-sports.io",
+            "api_sports_stats":   "GET /api-sports/{baseball|basketball|hockey}/stats?player_id=...&league=...&season=... (X-API-Key required) — season stats via api-sports.io"
         }
     })
 
@@ -2805,6 +2807,202 @@ def tennis_stats():
 
     except _req.exceptions.Timeout:
         return jsonify({"ok": False, "error": "Request to GitHub timed out"}), 504
+    except _req.exceptions.RequestException as e:
+        return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api-sports/<string:sport>/players", methods=["GET"])
+@require_api_key
+def api_sports_players(sport):
+    """
+    Search for players via api-sports.io.
+    Supported sports: basketball (free plan has /players search).
+    Baseball and hockey do not expose a /players search endpoint on the free plan.
+
+    Query params:
+      player  — name fragment to search (required)
+      league  — league id (optional)
+      season  — season string (optional, e.g. "2022-2023" for basketball)
+    """
+    import requests as _req
+
+    BASES = {
+        "baseball":   "https://v1.baseball.api-sports.io",
+        "basketball": "https://v1.basketball.api-sports.io",
+        "hockey":     "https://v1.hockey.api-sports.io",
+    }
+    sport_lower = sport.lower()
+    base = BASES.get(sport_lower)
+    if not base:
+        return jsonify({
+            "ok": False,
+            "error": f"Unknown sport '{sport}'. Supported: baseball, basketball, hockey",
+        }), 400
+
+    player = request.args.get("player", "").strip()
+    league = request.args.get("league", "").strip()
+    season = request.args.get("season", "").strip()
+
+    if not player:
+        return jsonify({"ok": False, "error": "player query param is required"}), 400
+
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
+
+    params = {"search": player}
+    if league:
+        params["league"] = league
+    if season:
+        params["season"] = season
+
+    try:
+        r = _req.get(f"{base}/players",
+                     headers={"x-apisports-key": api_key},
+                     params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+
+        # Surface any upstream errors from api-sports
+        upstream_errors = data.get("errors")
+        if upstream_errors and upstream_errors != [] and upstream_errors != {}:
+            return jsonify({
+                "ok":             False,
+                "sport":          sport_lower,
+                "upstream_errors": upstream_errors,
+                "hint": (
+                    "The /players search endpoint is not available for baseball or hockey "
+                    "on the free api-sports plan. Basketball search works without extra params."
+                    if sport_lower in ("baseball", "hockey") else
+                    "api-sports returned validation errors — check league/season params."
+                ),
+            }), 422
+
+        results = data.get("response", [])
+        return jsonify({
+            "ok":      True,
+            "sport":   sport_lower,
+            "query":   {"player": player, "league": league or None, "season": season or None},
+            "count":   len(results),
+            "players": results,
+        })
+    except _req.exceptions.Timeout:
+        return jsonify({"ok": False, "error": "api-sports request timed out"}), 504
+    except _req.exceptions.RequestException as e:
+        return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api-sports/<string:sport>/stats", methods=["GET"])
+@require_api_key
+def api_sports_stats(sport):
+    """
+    Fetch season statistics via api-sports.io.
+
+    Basketball (free plan): uses /statistics endpoint.
+      Required: team, league, season.  player_id is optional.
+    Baseball / Hockey (free plan): /players/statistics not available;
+      returns a 422 with a clear explanation.
+
+    Query params:
+      team      — team id (required for basketball stats)
+      league    — league id
+      season    — season string (e.g. "2022-2023" for basketball, "2023" for hockey)
+      player_id — numeric player id (optional filter)
+    """
+    import requests as _req
+
+    BASES = {
+        "baseball":   "https://v1.baseball.api-sports.io",
+        "basketball": "https://v1.basketball.api-sports.io",
+        "hockey":     "https://v1.hockey.api-sports.io",
+    }
+    # Actual endpoints confirmed on free plan:
+    #   basketball → /statistics  (requires team + league + season)
+    #   baseball   → not available
+    #   hockey     → not available
+    STAT_PATHS = {
+        "basketball": "statistics",
+    }
+
+    sport_lower = sport.lower()
+    base = BASES.get(sport_lower)
+    if not base:
+        return jsonify({
+            "ok": False,
+            "error": f"Unknown sport '{sport}'. Supported: baseball, basketball, hockey",
+        }), 400
+
+    if sport_lower not in STAT_PATHS:
+        return jsonify({
+            "ok":   False,
+            "sport": sport_lower,
+            "error": (
+                f"Player statistics are not available for '{sport_lower}' on the free "
+                "api-sports plan. Statistics are currently supported for: basketball."
+            ),
+        }), 422
+
+    player_id = request.args.get("player_id", "").strip()
+    team      = request.args.get("team", "").strip()
+    league    = request.args.get("league", "").strip()
+    season    = request.args.get("season", "").strip()
+
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
+
+    params = {}
+    if player_id:
+        params["id"] = player_id
+    if team:
+        params["team"] = team
+    if league:
+        params["league"] = league
+    if season:
+        params["season"] = season
+
+    try:
+        path = STAT_PATHS[sport_lower]
+        r = _req.get(f"{base}/{path}",
+                     headers={"x-apisports-key": api_key},
+                     params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+
+        # Surface any upstream validation errors
+        upstream_errors = data.get("errors")
+        if upstream_errors and upstream_errors != [] and upstream_errors != {}:
+            return jsonify({
+                "ok":              False,
+                "sport":           sport_lower,
+                "upstream_errors": upstream_errors,
+                "hint": (
+                    "Basketball /statistics requires: team (team id), league, and season. "
+                    "Example: ?team=145&league=12&season=2022-2023"
+                ),
+            }), 422
+
+        # response can be a list (multiple records) or a dict (single object like team stats)
+        raw_response = data.get("response", [])
+        count = data.get("results", len(raw_response) if isinstance(raw_response, list) else 1)
+        return jsonify({
+            "ok":    True,
+            "sport": sport_lower,
+            "query": {
+                "player_id": player_id or None,
+                "team":      team or None,
+                "league":    league or None,
+                "season":    season or None,
+            },
+            "count": count,
+            "stats": raw_response,
+        })
+    except _req.exceptions.Timeout:
+        return jsonify({"ok": False, "error": "api-sports request timed out"}), 504
     except _req.exceptions.RequestException as e:
         return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
     except Exception as e:
