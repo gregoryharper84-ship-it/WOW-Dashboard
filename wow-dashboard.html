@@ -2062,11 +2062,14 @@ async function runSoccerEngine(log){
   try{
     // Soccer prop definitions
     const propDefs = [
-      {prop:'shots on target', lines:[0.5, 1.5, 2.5], side:'MORE', statKey:'shots.on', perGame: true},
-      {prop:'shots',           lines:[1.5, 2.5, 3.5], side:'MORE', statKey:'shots.total', perGame: true},
+      // PASSES FIRST — role-based, volume-predictable, elite archetype (learned rule)
+      {prop:'passes', lines:[29.5, 39.5, 49.5, 59.5], side:'MORE', statKey:'passes.total', perGame: true, confidenceBoost: 0.04},
+      // Defensive props — predictable role/volume
       {prop:'goals',           lines:[0.5],            side:'MORE', statKey:'goals.total', perGame: true},
       {prop:'assists',         lines:[0.5],            side:'MORE', statKey:'goals.assists', perGame: true},
-      {prop:'passes',          lines:[29.5, 39.5, 49.5, 59.5], side:'MORE', statKey:'passes.total', perGame: true},
+      // Shots — valid but binary risk, warn on stack
+      {prop:'shots on target', lines:[0.5, 1.5, 2.5], side:'MORE', statKey:'shots.on', perGame: true},
+      {prop:'shots',           lines:[1.5, 2.5, 3.5], side:'MORE', statKey:'shots.total', perGame: true},
     ];
 
     // Get today's soccer fixtures from Replit
@@ -2583,6 +2586,43 @@ function detectFragileProp(prop, line, sport){
     flags.push({tag:'binary-0.5-event', severity:'ban_stack', note:'Binary 0.5 event — ban as stacked anchor'});
   if(p.includes('home run') || p === 'hr')
     flags.push({tag:'hr-hard-ban', severity:'hard_ban', note:'HR props — HARD BAN'});
+
+  // ── PITCHING OUTS: Veteran/leash check (learned: Trevor Rogers loss) ──
+  if(p.includes('pitcher outs') || p.includes('pitching outs') || p.includes('outs recorded')){
+    if(line >= 17.5)
+      flags.push({tag:'pitching-outs-high-line', severity:'ban_power', note:`${line}+ pitching outs — fragile high line`});
+    // Flag volatile/young arms for LESS on outs (learned rule)
+    flags.push({tag:'pitching-outs-leash-check', severity:'warn',
+      note:'PO MORE: confirm veteran stability + low walk rate + trusted leash before Power'});
+  }
+
+  // ── NBA POWER: thin hooks banned from 2-leg power (learned: Jalen Williams 3.5 ast) ──
+  if((sport==='NBA'||sport==='WNBA') && line > 0.5 && line <= 4.5 &&
+     (p.includes('assist') || p.includes('rebound')) && slip_type?.includes('Power')){
+    flags.push({tag:'nba-thin-hook-power-ban', severity:'ban_power',
+      note:`${line} ${p} — thin hook in Power. Playoff environments compress these. Use Flex only`});
+  }
+
+  // ── SOCCER: passes/possession props are ELITE — reward them ──
+  if(sport==='Soccer'){
+    if(p.includes('pass')){
+      flags.push({tag:'soccer-passes-elite', severity:'boost',
+        note:'Soccer passes: role-based, volume-predictable — highest-quality soccer prop type'});
+    }
+    if(p.includes('clearance') || p.includes('save') || (p.includes('goalkeeper') && p.includes('save'))){
+      flags.push({tag:'soccer-defensive-elite', severity:'boost',
+        note:'Soccer defensive props: predictable role/volume — elite archetype'});
+    }
+    // Warn on stacked binary attacker events
+    if((p.includes('shot') || p.includes('goal')) && line <= 0.5){
+      flags.push({tag:'soccer-binary-attacker-warn', severity:'warn',
+        note:'Binary attacker event — fine solo but ban stacking 3+ in one slip'});
+    }
+  }
+
+  // ── SLIP VOLATILITY: ban 4+ binary props in one slip ──
+  // (checked at slip-build time via checkSlipVolatility)
+
   if(line >= 17.5 && (p.includes('pitch') || p.includes('outs recorded')))
     flags.push({tag:'pitching-outs-high-line', severity:'ban_power', note:`${line}+ pitching outs — fragile high line`});
   if(p.includes('total game') && line >= 22.5 && sport==='Tennis')
@@ -2595,6 +2635,41 @@ function detectFragileProp(prop, line, sport){
     flags.push({tag:'demon-ftm-risk', severity:'warn', note:'FTM over requires elite foul-drawer context'});
 
   return flags;
+}
+
+// ── Slip ecosystem volatility check (learned: don't stack 4+ binary props) ──
+function checkSlipVolatility(legs){
+  if(!legs?.length) return {safe:true, warnings:[]};
+  const warnings = [];
+  const binaryCount = legs.filter(l=>parseFloat(l.line||0) <= 0.5).length;
+  const attackerSoccerBinary = legs.filter(l=>
+    l.sport==='Soccer' && parseFloat(l.line||0) <= 0.5 &&
+    (l.prop?.toLowerCase().includes('shot')||l.prop?.toLowerCase().includes('goal'))
+  ).length;
+  const thinNBAHooks = legs.filter(l=>
+    (l.sport==='NBA'||l.sport==='WNBA') &&
+    parseFloat(l.line||0) <= 4.5 && parseFloat(l.line||0) > 0.5 &&
+    (l.prop?.toLowerCase().includes('assist')||l.prop?.toLowerCase().includes('rebound'))
+  ).length;
+  const pitchingOuts = legs.filter(l=>
+    l.prop?.toLowerCase().includes('outs recorded')||l.prop?.toLowerCase().includes('pitching outs')
+  ).length;
+
+  if(binaryCount >= 4)
+    warnings.push(`⚠ ${binaryCount} binary (0.5) props — volatility overload. Max 2 recommended.`);
+  if(attackerSoccerBinary >= 3)
+    warnings.push(`⚠ ${attackerSoccerBinary} binary soccer attacker events stacked — high variance cluster`);
+  if(thinNBAHooks >= 2)
+    warnings.push(`⚠ ${thinNBAHooks} thin NBA hooks (≤4.5 assists/rebounds) — compress to 1 max in Power`);
+  if(pitchingOuts >= 2)
+    warnings.push(`⚠ ${pitchingOuts} pitching outs props — confirm BOTH have veteran/leash profile`);
+
+  return {
+    safe: warnings.length === 0,
+    warnings,
+    binaryCount,
+    volatilityScore: binaryCount * 15 + attackerSoccerBinary * 10 + thinNBAHooks * 10 + pitchingOuts * 5
+  };
 }
 
 // ══════════════════════════════════
@@ -4309,7 +4384,9 @@ async function enrichWithSoccerStats(prop){
           hitRate = prop.side==='MORE' ?
             (recentAvg > prop.line ? 0.62 : 0.42) :
             (recentAvg < prop.line ? 0.62 : 0.42);
-          note = `Passes/game: ${recentAvg.toFixed(0)} | Accuracy: ${passAccuracy}% | ${appearances} apps`;
+          // LEARNED: passes are elite archetype — role-based, volume-predictable
+          hitRate = Math.min(0.80, hitRate + 0.04);
+          note = `Passes/game: ${recentAvg.toFixed(0)} | Accuracy: ${passAccuracy}% | ${appearances} apps | ⭐ ELITE archetype`;
         } else if(propLower.includes('goal')){
           recentAvg = goals/Math.max(appearances,1);
           hitRate = prop.side==='MORE' ?
@@ -4682,12 +4759,47 @@ async function buildAllSlips(){
     const strength=gradeSlipStrength(legs.map(l=>l.rawProb||0.58),cfg.type);
     const ev=calcPPSlipEV(legs.map(l=>l.rawProb||0.58),cfg.type,legs.length);
 
+    // ── Slip ecosystem volatility check (learned rules) ──
+    const volCheck = checkSlipVolatility(legs.map(l=>({...l, slip_type:cfg.label})));
+
     const card=document.createElement('div');
     const borderColor=cfg.jeremia?'#7c3aed':strength?.color||'var(--border)';
     card.style.cssText=`border:2px solid ${borderColor}40;border-radius:10px;padding:14px;margin-bottom:10px;background:var(--surface);`;
 
     // Duplication indicators
     const dupLegs=legs.filter(l=>(l.rawProb||0)>=0.65&&usedAcrossSlips.has(l.player));
+
+    card.innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div>
+          <div style="font-size:15px;font-weight:800;color:${cfg.jeremia?'#7c3aed':'var(--text)'};">${cfg.label}</div>
+          <div style="font-size:11px;color:var(--text2);">${legs.length} legs · ${cfg.type==='power'?'All must hit':'Misses allowed'}</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          ${strength?`<div style="text-align:center;padding:6px 12px;border-radius:8px;background:${strength.color}18;border:1px solid ${strength.color}40;"><div style="font-size:20px;font-weight:900;color:${strength.color};line-height:1;">${strength.score}</div><div style="font-size:10px;font-weight:700;color:${strength.color};">${strength.label}</div></div>`:''}
+          <button class="btn btn-p btn-sm" onclick="loadSuggestedSlip(${JSON.stringify(legs.map(l=>({player:l.player,sport:l.sport,prop:l.prop,side:l.side,line:l.line,tier:l.tier,rawProb:l.rawProb,wowScore:l.wowScore})))})" style="${cfg.jeremia?'background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;':''}">Use →</button>
+        </div>
+      </div>
+      ${ev?`<div style="padding:6px 10px;border-radius:6px;margin-bottom:8px;background:${ev.isPositiveEV?'var(--green-light)':'var(--red-light)'};border:1px solid ${ev.isPositiveEV?'#a7f3d0':'#fca5a5'};font-size:11px;font-family:var(--mono);color:${ev.isPositiveEV?'var(--green)':'var(--red)'};">${ev.isPositiveEV?'✓ +EV':'✗ -EV'} · ROI: ${ev.expectedROI>=0?'+':''}${(ev.expectedROI*100).toFixed(1)}% · Break-even: ${(ev.breakEven*100).toFixed(1)}% · Kelly: ${ev.recommendedBankrollPct}% bankroll · Payout: ${ev.multiplier}x</div>`:''}
+      ${!volCheck.safe?`<div style="padding:6px 10px;border-radius:6px;margin-bottom:8px;background:var(--yellow-light);border:1px solid rgba(245,158,11,0.3);font-size:11px;">${volCheck.warnings.map(w=>`⚠ ${w}`).join('<br>')}</div>`:''}
+      ${legs.map((l,i)=>{
+        const isDupe=(l.rawProb||0)>=0.65&&dupLegs.includes(l);
+        const prob=l.rawProb!=null?((l.rawProb)*100).toFixed(1)+'%':'–';
+        const probColor=(l.rawProb||0)>=0.65?'var(--green)':(l.rawProb||0)>=0.59?'var(--yellow)':'var(--text2)';
+        const roleLabel=cfg.jeremia?(
+          (l.prop||'').toLowerCase().includes('assist')&&(l.line||0)<=2.5?'🎯 Core':
+          (l.prop||'').toLowerCase().includes('rebound')||((l.prop||'').toLowerCase().includes('fantasy'))?'⚓ Anchor':'🎪 Ceiling'
+        ):'';
+        return`<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);">
+          <span style="font-size:11px;color:var(--text3);min-width:16px;">${i+1}.</span>
+          ${roleLabel?`<span style="font-size:10px;font-weight:600;color:${probColor};">${roleLabel}</span>`:''}
+          <span style="font-weight:600;font-size:13px;flex:1;">${l.player}</span>
+          <span style="font-size:11px;color:var(--text2);">${l.sport} · ${l.prop} ${l.side} ${l.line}</span>
+          <span style="font-family:var(--mono);font-size:11px;font-weight:700;color:${probColor};">${prob}</span>
+          ${isDupe?`<span style="font-size:9px;background:var(--accent-light);color:var(--accent);border-radius:3px;padding:1px 4px;">65%+</span>`:''}
+        </div>`;
+      }).join('')}
+    `;
 
     card.innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -5127,16 +5239,60 @@ async function runWinnersUpsets(){
           const favSpread = favTeam==='away' ? awaySpread : homeSpread;
           const dogSpread = favTeam==='away' ? homeSpread : awaySpread;
           const isHomeDog = (favTeam==='away');
+          const isLowTotal = (cfg.sport==='MLB' && total && total < 8.5);
           const isHighTotal = (cfg.sport==='MLB' && total >= 9.0)||(cfg.sport==='WNBA' && total >= 165);
 
+          // ── LEARNED UPSET CHECKLIST (Reds +125 → 4-1 win, May 2026) ──
+          // Upset edge = mispriced win probability, NOT just "bad team beats good team"
           let sportCtx = {upsetEdge:0, reasons:[], favBoosts:[]};
           if(cfg.sport==='MLB') sportCtx = await getMLBGameContext({away:ev.away_team,home:ev.home_team,awayProb,homeProb});
           else if(cfg.sport==='WNBA') sportCtx = await getWNBAGameContext({away:ev.away_team,home:ev.home_team});
-          else {
-            if(isHomeDog){ sportCtx.upsetEdge+=12; sportCtx.reasons.push('Home underdog'); }
-            if(isHighTotal){ sportCtx.upsetEdge+=8; sportCtx.reasons.push(`High total O/U ${total}`); }
+
+          let upsetScore = Math.round(dogProb * 60); // base: implied probability × 60
+          const upsetReasons = [...(sportCtx.reasons||[])];
+
+          // Criterion 1: +120 or better line (key threshold — real value starts here)
+          if(dogML !== null && dogML >= 120){
+            upsetScore += 20;
+            upsetReasons.push(`+${dogML} line — value threshold met (+120 or better)`);
+          } else if(dogML !== null && dogML >= 100){
+            upsetScore += 10;
+            upsetReasons.push(`+${dogML} line — slight value`);
           }
 
+          // Criterion 2: Close implied probability (mispriced favorite)
+          // 38-47%: market says one-sided but math says close
+          if(dogProb >= 0.43 && dogProb <= 0.47){
+            upsetScore += 20;
+            upsetReasons.push(`${(dogProb*100).toFixed(0)}% implied — market mispricing favorite`);
+          } else if(dogProb >= 0.38 && dogProb < 0.43){
+            upsetScore += 12;
+            upsetReasons.push(`${(dogProb*100).toFixed(0)}% implied — real upset path`);
+          }
+
+          // Criterion 3: Low/moderate game total = clean game script
+          // (Reds lesson: starter limits damage, bullpen protects lead)
+          if(cfg.sport==='MLB' && isLowTotal){
+            upsetScore += 15;
+            upsetReasons.push(`Low total O/U ${total} — clean game script, starter advantage`);
+          }
+
+          // Criterion 4: Home underdog — underpriced home field
+          if(isHomeDog){
+            upsetScore += 12;
+            upsetReasons.push('Home underdog — home field advantage underpriced');
+          }
+
+          // Criterion 5: Sport context bonuses (FIP, weather, B2B, etc.)
+          upsetScore += sportCtx.upsetEdge;
+
+          // Criterion 6: Favorite priced off reputation (high total + heavy favorite = fade candidate)
+          if(isHighTotal && favProb >= 0.62){
+            upsetScore += 8;
+            upsetReasons.push(`High total + heavy favorite — potential overpriced reputation play`);
+          }
+
+          // Favorite boost flags (for display)
           if(favProb >= 0.62){
             favorites.push({
               sport:cfg.sport, away:ev.away_team, home:ev.home_team,
@@ -5148,22 +5304,21 @@ async function runWinnersUpsets(){
             });
           }
 
-          const baseScore = Math.round(dogProb*60);
-          const bonusScore = sportCtx.upsetEdge+(isHomeDog?15:0)+(isHighTotal?10:0)+(dogProb>=0.38&&dogProb<=0.47?15:0);
-          const totalScore = baseScore+bonusScore;
-          const upsetReasons = [
-            ...(sportCtx.reasons||[]),
-            ...(isHomeDog?['Home underdog — home field underpriced']:[]),
-            ...(isHighTotal?[`High total O/U ${total} — high-variance game`]:[]),
-            ...(dogProb>=0.38&&dogProb<=0.47?[`${(dogProb*100).toFixed(0)}% implied — closer than line suggests`]:[]),
-          ];
-          if(totalScore>=35 && dogProb>=0.30 && upsetReasons.length>0){
+          // Only surface upsets that pass the minimum checklist:
+          // - +120 or better line (or close to it)
+          // - Real upset path (dogProb >= 0.30)
+          // - At least one qualifying reason
+          // - Min total score threshold
+          const passesChecklist = (dogML === null || dogML >= 100) && dogProb >= 0.30 && upsetReasons.length > 0;
+          if(upsetScore >= 35 && passesChecklist){
             upsets.push({
               sport:cfg.sport, away:ev.away_team, home:ev.home_team,
               pick:dogName, fav:favName, prob:dogProb, ml:dogML, spread:dogSpread,
-              edge:totalScore, total, gameTime,
+              edge:upsetScore, total, gameTime,
               reasons:upsetReasons.slice(0,4),
-              potential_payout: dogML>0?`+${dogML}`:String(dogML),
+              potential_payout: dogML!=null&&dogML>0?`+${dogML}`:dogML!=null?String(dogML):'N/A',
+              // Unit sizing guidance (learned: 0.5u-0.75u on clean upset profiles)
+              unit_size: upsetScore >= 65 ? '0.75u' : upsetScore >= 50 ? '0.5u' : '0.25u',
             });
           }
         }catch(e){}
@@ -5240,6 +5395,7 @@ async function runWinnersUpsets(){
           ${g.spread!=null?`<span>Spread: <strong>${g.spread>0?'+':''}${g.spread}</strong></span>`:''}
           ${g.total?`<span>O/U: <strong>${g.total}</strong></span>`:''}
           <span>Score: <strong style="color:var(--purple);">${g.edge}/100</strong></span>
+          ${g.unit_size?`<span>Size: <strong style="color:var(--purple);">${g.unit_size}</strong></span>`:''}
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;">
           ${(g.reasons||[]).map(r=>`<span style="font-size:10px;background:var(--purple-light);color:var(--purple);padding:2px 7px;border-radius:10px;">${r}</span>`).join('')}
