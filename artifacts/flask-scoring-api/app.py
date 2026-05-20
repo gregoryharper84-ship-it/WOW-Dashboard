@@ -2545,9 +2545,16 @@ def _write_player_cache(conn, player_lower, league_id, season, player_id, full_n
 def fbref_stats():
     import psycopg2 as _pg
 
+    # European soccer seasons run Aug → May (api-football labels by start year).
+    # MLS runs Feb → Nov (labelled by calendar year). Default to the European
+    # season that's currently in progress: Aug-Dec → this year, Jan-Jul → last year.
+    from datetime import date as _date
+    _today = _date.today()
+    _default_season = str(_today.year if _today.month >= 8 else _today.year - 1)
+
     player = request.args.get("player", "").strip()
     league = request.args.get("league", "").strip().lower()
-    season = request.args.get("season", "2024").strip()
+    season = request.args.get("season", _default_season).strip()
 
     if not player:
         return jsonify({"ok": False, "error": "Missing required param: player"}), 400
