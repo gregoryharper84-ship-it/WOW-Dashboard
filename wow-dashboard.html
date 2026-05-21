@@ -730,7 +730,8 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
         <div class="field"><label>Sport Filter</label><select id="s_sport"><option value="all">All Sports</option><option value="MLB">MLB</option><option value="NBA">NBA</option><option value="NHL">NHL</option><option value="WNBA">WNBA</option><option value="Soccer">Soccer</option><option value="Tennis">Tennis</option></select></div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn btn-p" onclick="buildAllSlips()"><span id="slipBtn">Build All Slips</span><span id="slipSp" class="hidden"><div class="sp"></div></span></button>
+        <button class="btn btn-p" onclick="buildAllSlips()"><span id="slipBtn">Build All Slips</span></button>
+              <button class="btn" onclick="buildSmartSlip()" id="smartSlipBtn" title="Proven structure: T1 NBA Rebounds + Star Points/PRA + MLB Strikeouts" style="background:linear-gradient(135deg,#22c55e,#16a34a);border:none;color:#fff;">🧠 Smart Slip<span id="slipSp" class="hidden"><div class="sp"></div></span></button>
         <button class="btn btn-s btn-sm" onclick="clearSlip()">Clear</button>
         <button class="btn btn-s btn-sm" onclick="exportSlip()">Export Active</button>
       </div>
@@ -3079,6 +3080,76 @@ function computeWeightedHitRate(vals, line, side){
 }
 
 // ══════════════════════════════════
+// ══════════════════════════════════════════════════════
+// PROP TIER RANKING SYSTEM
+// Empirical hit rates from processed slip database
+// Tier 1 (85-100%): Anchor — put in Power
+// Tier 2 (60-85%):  Solid  — good in Power, great in Flex
+// Tier 3 (40-60%):  Flex only — never anchor Power
+// Tier 4 (<40%):    Avoid — flag hard, never Power
+// ══════════════════════════════════════════════════════
+const PROP_TIERS = {
+  tier1:[
+    {match:'rebound',         sport:['NBA','WNBA'], note:'3/3 hit, avg +5.0 over line — best prop in sample'},
+    {match:'pra',             sport:['NBA','WNBA'], note:'Multi-path combo, 1/1 confirmed'},
+    {match:'pts+reb',         sport:['NBA','WNBA'], note:'Combo — multiple paths to hit'},
+    {match:'pts+ast',         sport:['NBA','WNBA'], note:'Combo — multiple paths to hit'},
+    {match:'strikeout',       sport:['MLB'],        note:'1/1 — reliable with K-heavy matchup'},
+    {match:'goalie save',     sport:['Soccer'],     note:'2/2 — Atubolu confirmed twice'},
+    {match:'goalkeeper save', sport:['Soccer'],     note:'2/2 — reliable vs attack-heavy opponents'},
+    {match:'points',          sport:['NBA','WNBA'], note:'Playoff stars crush lines — Brunson +16.5, 2/2'},
+    {match:'points rebounds', sport:['NBA','WNBA'], note:'Combo prop — reliable'},
+  ],
+  tier2:[
+    {match:'assist',        sport:['NBA','WNBA'], note:'1/2 — star playmakers reliable, avoid non-stars'},
+    {match:'hitter fs',     sport:['MLB'],        note:'1/3 — needs high run environment'},
+    {match:'hitter fantasy',sport:['MLB'],        note:'Check game total before using'},
+    {match:'fta',           sport:['WNBA'],       note:'1/1 — FTA more stable than FTM'},
+    {match:'total bases',   sport:['MLB'],        note:'Good in high-total games'},
+    {match:'hits',          sport:['MLB'],        note:'Matchup dependent'},
+    {match:'aces',          sport:['Tennis'],     note:'Surface-dependent, reliable pattern'},
+    {match:'total games',   sport:['Tennis'],     note:'Tends to be consistent'},
+    {match:'passes att',    sport:['Soccer'],     note:'Only for midfielders in high-possession teams'},
+  ],
+  tier3:[
+    {match:'first inning',  sport:['MLB'], note:'4/12 — 33% hit rate, Flex only, max 2 per slip'},
+    {match:'1st inn',       sport:['MLB'], note:'High variance — never anchor, Flex only'},
+    {match:'pitches thrown',sport:['MLB'], note:'33% hit rate — Flex only'},
+    {match:'shots',         sport:['Soccer'], note:'0/1 — DNP risk compounds attacker shot variance'},
+    {match:'2-pt made',     sport:['NBA'], note:'Niche prop — limited signal'},
+  ],
+  tier4:[
+    {match:'ftm',           sport:['NBA','WNBA'], note:'0/1 — foul-dependent, Mobley hit 1 on 3.5'},
+    {match:'free throw made',sport:['NBA','WNBA'],note:'Avoid — uncontrollable variance'},
+    {match:'turnover',      sport:null,           note:'0/1 — game-script dependent, Sykes 0 on 2.5'},
+  ],
+};
+
+function getPropTier(prop, sport){
+  const pl = (prop||'').toLowerCase();
+  const sp = sport||'';
+  for(const t of [1,2,3,4]){
+    for(const def of PROP_TIERS[`tier${t}`]){
+      if(!pl.includes(def.match)) continue;
+      if(def.sport && !def.sport.includes(sp)) continue;
+      return {tier:t, note:def.note};
+    }
+  }
+  return {tier:2, note:'Unclassified — default Tier 2'};
+}
+
+function propTierBadge(prop, sport){
+  const {tier, note} = getPropTier(prop, sport);
+  const styles = {
+    1:'background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.4);color:#22c55e;',
+    2:'background:rgba(59,130,246,0.15);border:1px solid rgba(59,130,246,0.4);color:#3b82f6;',
+    3:'background:rgba(234,179,8,0.15);border:1px solid rgba(234,179,8,0.4);color:#eab308;',
+    4:'background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);color:#ef4444;',
+  };
+  const labels = {1:'⚓ Anchor',2:'✓ Solid',3:'⚠ Flex Only',4:'✗ Avoid'};
+  return `<span style="font-size:10px;padding:2px 6px;border-radius:4px;${styles[tier]}" title="${note}">${labels[tier]}</span>`;
+}
+
 // FIX #5 — FRAGILE PROP DETECTION
 // ══════════════════════════════════
 function detectFragileProp(prop, line, sport){
@@ -3093,7 +3164,94 @@ function detectFragileProp(prop, line, sport){
   if(p.includes('home run') || p === 'hr')
     flags.push({tag:'hr-hard-ban', severity:'hard_ban', note:'HR props — HARD BAN'});
 
-  // ── PITCHING OUTS: Veteran/leash check (learned: Trevor Rogers loss) ──
+  // ══════════════════════════════════════════════════════
+  // LEARNED RULES — from May 19-20 slip analysis
+  // ══════════════════════════════════════════════════════
+
+  // ── 1ST INNING PITCHES: high variance, many misses even with good starters ──
+  // Slip 10/11: 6-leg 1st Inn PT slip — only 2/6 hit. Miss rate 67%
+  // Lines 14.5-16.5 all failed for multiple starters. Volatile prop type.
+  if(propL.includes('1st inn') || propL.includes('first inn') || propL.includes('pitches thrown')){
+    flags.push({tag:'first-inning-pitches-volatile', severity:'warn',
+      note:'1st Inn. Pitches: high variance, 67% miss rate observed. Max 2 per slip, LESS safer than MORE'});
+    if(slip_type?.includes('Power'))
+      flags.push({tag:'first-inning-power-ban', severity:'ban_power',
+        note:'1st Inn Pitches in Power = all-or-nothing on volatile props. Flex only.'});
+  }
+
+  // ── SOCCER DNP: catastrophic slip killer, appeared 3x in 48hrs ──
+  // Slips 12, 13, 14: Franck Kessie DNP killed 3 slips
+  // Vincent Sierro DNP also. DNP risk on soccer props is extreme.
+  if(sport==='Soccer'){
+    flags.push({tag:'soccer-dnp-risk', severity:'warn',
+      note:'Soccer DNP risk is high — lineup rotations common. Check confirmed starting XI before betting.'});
+    // Binary soccer shots on attacker = DNP + miss risk double
+    if(propL.includes('shot') && line <= 0.5)
+      flags.push({tag:'soccer-shot-dnp-compound', severity:'ban_power',
+        note:'0.5 Shots + DNP risk = double failure mode. Avoid in Power.'});
+  }
+
+  // ── FTM/FTA: extremely volatile, Mobley hit 1 vs 3.5 line ──
+  // Slip 17: Evan Mobley FTM MORE 3.5 → got 1. Classic foul-dependent miss.
+  if(propL.includes('ftm') || propL.includes('free throw made')){
+    flags.push({tag:'ftm-volatile-avoid', severity:'ban_power',
+      note:'FTM depends on fouls drawn — uncontrollable variance. Mobley hit 1 on 3.5 line. Avoid in Power.'});
+  }
+
+  // ── TURNOVERS: too game-script dependent ──
+  // Slip 17: Brittney Sykes Turnovers MORE 2.5 → got 0
+  if(propL.includes('turnover')){
+    flags.push({tag:'turnovers-avoid-power', severity:'ban_power',
+      note:'Turnovers are game-script dependent — Sykes 0 on 2.5 line. Use Flex only.'});
+  }
+
+  // ── 2-PT MADE: niche prop, limited signal ──
+  if(propL.includes('2-pt') || propL.includes('2pt') || propL.includes('two point')){
+    flags.push({tag:'two-pt-niche', severity:'warn',
+      note:'2-PT Made: niche prop, limited historical data. Low confidence in lines.'});
+  }
+
+  // ── HITTER FANTASY SCORE: stacking risk on same game ──
+  // Slip 18: Brunson + Casey Schmitt MLB HFS on same day — Schmitt missed badly (3 vs 5)
+  // HFS is better on obvious matchup favorites, misses on pitching-dominant games
+  if(propL.includes('hitter fs') || propL.includes('hitter fantasy')){
+    flags.push({tag:'hitter-fs-matchup-dependent', severity:'warn',
+      note:'Hitter FS: depends on run environment. Schmitt (SF vs AZ) hit only 3 on 5 line. Check game total.'});
+  }
+
+  // ── REBOUNDS: strong positive signal — appeared in 3 wins ──
+  // Slip 15: Mobley 14 reb on 9.5. Slip 16: KAT 13 on 11, Mobley 14 on 5.5
+  // Rebounds are the most reliable prop in this sample — always crushed the line
+  if(propL.includes('rebound') && !propL.includes('assist')){
+    flags.push({tag:'rebounds-elite-signal', severity:'boost',
+      note:'Rebounds: consistently crushed lines in sample (Mobley 14 on 9.5/5.5, KAT 13 on 11). High confidence.'});
+  }
+
+  // ── PRA / COMBO PROPS: strong positive signal ──
+  // Slip 15: Alyssa Thomas PRA 31 on 28.5. Combo props give multiple paths to hit.
+  if(propL === 'pra' || propL.includes('pts+reb') || propL.includes('points+rebounds') ||
+     (propL.includes('points') && propL.includes('rebound') && propL.includes('assist'))){
+    flags.push({tag:'combo-prop-multi-path', severity:'boost',
+      note:'PRA/Combo props: multiple paths to hit. Alyssa Thomas 31 on 28.5. Reliable in playoffs.'});
+  }
+
+  // ── GOALIE SAVES: positive signal when team is likely to concede ──
+  // Slip 13/14: N. Atubolu Goalie Saves MORE 2.5 → HIT 3. Consistent.
+  if(propL.includes('goalie save') || propL.includes('goalkeeper save')){
+    flags.push({tag:'goalie-saves-reliable', severity:'boost',
+      note:'Goalie Saves: Atubolu hit 2.5 line both times (3 saves). Reliable when facing attack-heavy opponents.'});
+  }
+
+  // ── STAR ISOLATION PROPS: massive upside ──
+  // SGA 9 assists on 6.5 / Brunson 38 pts on 21.5 / Wembanyama 38 P+R on 37.5
+  // Playoff stars go massive — lines often lag their actual usage
+  if((player||'').toLowerCase().includes('wembanyama') ||
+     (player||'').toLowerCase().includes('gilgeous') ||
+     (player||'').toLowerCase().includes('brunson')){
+    if(propL.includes('point') || propL.includes('assist') || propL.includes('rebound'))
+      flags.push({tag:'playoff-star-upside', severity:'boost',
+        note:'Playoff star: SGA/Brunson/Wemby all smashed lines. Lines often conservative on stars in playoffs.'});
+  }
   if(p.includes('pitcher outs') || p.includes('pitching outs') || p.includes('outs recorded')){
     if(line >= 17.5)
       flags.push({tag:'pitching-outs-high-line', severity:'ban_power', note:`${line}+ pitching outs — fragile high line`});
@@ -3147,6 +3305,7 @@ function detectFragileProp(prop, line, sport){
 function checkSlipVolatility(legs){
   if(!legs?.length) return {safe:true, warnings:[]};
   const warnings = [];
+
   const binaryCount = legs.filter(l=>parseFloat(l.line||0) <= 0.5).length;
   const attackerSoccerBinary = legs.filter(l=>
     l.sport==='Soccer' && parseFloat(l.line||0) <= 0.5 &&
@@ -3161,20 +3320,46 @@ function checkSlipVolatility(legs){
     l.prop?.toLowerCase().includes('outs recorded')||l.prop?.toLowerCase().includes('pitching outs')
   ).length;
 
+  // ── NEW: 1st Inning Pitches ── (learned: 4/6 missed same slate)
+  const firstInnPitches = legs.filter(l=>
+    l.prop?.toLowerCase().includes('1st inn') ||
+    l.prop?.toLowerCase().includes('pitches thrown') ||
+    l.prop?.toLowerCase().includes('first inn')
+  ).length;
+
+  // ── NEW: Soccer DNP risk ── (learned: Kessie DNP killed 3 slips)
+  const soccerLegs = legs.filter(l=>l.sport==='Soccer').length;
+
+  // ── NEW: volatile stat types ── (FTM, Turnovers)
+  const volatileStats = legs.filter(l=>
+    l.prop?.toLowerCase().includes('ftm') ||
+    l.prop?.toLowerCase().includes('free throw made') ||
+    l.prop?.toLowerCase().includes('turnover')
+  ).length;
+
   if(binaryCount >= 4)
     warnings.push(`⚠ ${binaryCount} binary (0.5) props — volatility overload. Max 2 recommended.`);
   if(attackerSoccerBinary >= 3)
-    warnings.push(`⚠ ${attackerSoccerBinary} binary soccer attacker events stacked — high variance cluster`);
+    warnings.push(`⚠ ${attackerSoccerBinary} binary soccer attacker events — high variance cluster`);
   if(thinNBAHooks >= 2)
-    warnings.push(`⚠ ${thinNBAHooks} thin NBA hooks (≤4.5 assists/rebounds) — compress to 1 max in Power`);
+    warnings.push(`⚠ ${thinNBAHooks} thin NBA hooks (≤4.5) — compress to 1 max in Power`);
   if(pitchingOuts >= 2)
-    warnings.push(`⚠ ${pitchingOuts} pitching outs props — confirm BOTH have veteran/leash profile`);
+    warnings.push(`⚠ ${pitchingOuts} pitching outs props — confirm both have veteran/leash profile`);
+  if(firstInnPitches >= 3)
+    warnings.push(`⚠ ${firstInnPitches} first-inning pitch props — 67% miss rate observed. Max 2 per slip.`);
+  if(firstInnPitches >= 1 && legs.some(l=>l.slip_type?.includes('Power')||l._slipType?.includes('power')))
+    warnings.push(`⚠ 1st Inning Pitches in Power slip — volatile prop type, Flex only recommended`);
+  if(soccerLegs >= 2)
+    warnings.push(`⚠ ${soccerLegs} soccer legs — confirm starting XIs before submitting (DNP risk is high)`);
+  if(volatileStats >= 2)
+    warnings.push(`⚠ ${volatileStats} high-variance stat props (FTM/Turnovers) — avoid stacking, Flex only`);
 
   return {
     safe: warnings.length === 0,
     warnings,
     binaryCount,
-    volatilityScore: binaryCount * 15 + attackerSoccerBinary * 10 + thinNBAHooks * 10 + pitchingOuts * 5
+    volatilityScore: binaryCount*15 + attackerSoccerBinary*10 + thinNBAHooks*10 +
+                     pitchingOuts*5 + firstInnPitches*12 + volatileStats*10
   };
 }
 
@@ -4007,7 +4192,11 @@ function makePCard(p){
   card.innerHTML=`
     <div class="pm" style="min-width:0;flex:1;">
       <div class="pp">${p.player}${p.mlb_position?` <span style="font-size:11px;font-weight:400;color:var(--text2);">${p.mlb_position}</span>`:''}</div>
-      <div class="pd">${p.sport} · ${p.prop} ${p.side} ${p.line}${p.game?` · ${p.game}`:''}</div>
+      <div class="pd" style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
+        <span>${p.sport} · ${p.prop} ${p.side} ${p.line}${p.game?` · ${p.game}`:''}</span>
+        ${propTierBadge(p.prop, p.sport)}
+        ${p.sport==='Soccer'?`<span style="font-size:10px;background:rgba(234,179,8,0.15);border:1px solid rgba(234,179,8,0.4);color:#eab308;padding:2px 5px;border-radius:4px;" title="Confirm this player is in the starting XI before submitting">⚠ Confirm XI</span>`:''}
+      </div>
       ${statsHtml}${sparkline}${analystHtml}${marketHtml}${evHtml}${insightsHtml}${sampleHtml}${flagsHtml}
     </div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0;margin-left:10px;min-width:80px;">
@@ -5335,6 +5524,86 @@ function buildSlipOfSize(pool, n, tgt, usedAcrossSlips){
   return legs;
 }
 
+// ══════════════════════════════════════════════════════
+// SMART SLIP TEMPLATE
+// Builds slips around proven structure from slip analysis:
+// Best hit rate pattern: T1 NBA Rebounds + T1 Star Points/PRA + T1 MLB Strikeouts
+// ══════════════════════════════════════════════════════
+async function buildSmartSlip(){
+  const btn = document.getElementById('smartSlipBtn');
+  if(btn) btn.textContent = 'Building...';
+
+  const pool = [...approvedProps, ...(propPool||[])].filter(p=>
+    ['tier1','tier2'].includes(p.tier) && p.rawProb >= 0.54
+  );
+
+  if(pool.length < 2){
+    alert('Not enough qualified props. Run the Best Props engine first.');
+    if(btn) btn.textContent = '🧠 Smart Slip';
+    return;
+  }
+
+  // Score each prop by prop tier first, then WOW score
+  const scored = pool.map(p=>{
+    const {tier} = getPropTier(p.prop, p.sport);
+    return {...p, _smartScore: (5-tier)*20 + (p.wowScore||50) + (p.rawProb||0.5)*30};
+  }).sort((a,b)=>b._smartScore - a._smartScore);
+
+  // Try to build the proven 3-leg template:
+  // Slot 1: NBA/WNBA Rebounds (Tier 1 anchor — 3/3 in sample)
+  // Slot 2: NBA/WNBA Points or PRA (playoff star — 2/2 in sample)
+  // Slot 3: MLB Strikeouts or solid MLB prop
+  const template = [
+    p => (p.sport==='NBA'||p.sport==='WNBA') && p.prop?.toLowerCase().includes('rebound'),
+    p => (p.sport==='NBA'||p.sport==='WNBA') && (p.prop?.toLowerCase().includes('point')||p.prop?.toLowerCase().includes('pra')||p.prop?.toLowerCase().includes('pts+')),
+    p => p.sport==='MLB' && (p.prop?.toLowerCase().includes('strikeout')||getPropTier(p.prop,'MLB').tier===1),
+  ];
+
+  const selected = [];
+  const usedPlayers = new Set();
+
+  // Fill each template slot
+  for(const matcher of template){
+    const match = scored.find(p=>matcher(p) && !usedPlayers.has(p.player));
+    if(match){ selected.push(match); usedPlayers.add(match.player); }
+  }
+
+  // If template not fully filled, backfill with best remaining Tier 1 props
+  if(selected.length < 3){
+    for(const p of scored){
+      if(selected.length >= 3) break;
+      if(!usedPlayers.has(p.player) && getPropTier(p.prop,p.sport).tier <= 2){
+        selected.push(p);
+        usedPlayers.add(p.player);
+      }
+    }
+  }
+
+  if(selected.length < 2){
+    alert('Could not build smart slip — need more Tier 1/2 props in pool. Run engine first.');
+    if(btn) btn.textContent = '🧠 Smart Slip';
+    return;
+  }
+
+  // Load into active slip builder
+  slipLegs = selected.map(p=>({
+    player:p.player, sport:p.sport, prop:p.prop,
+    side:p.side, line:p.line, tier:p.tier,
+    rawProb:p.rawProb, wowScore:p.wowScore,
+    _propTier: getPropTier(p.prop,p.sport).tier,
+  }));
+  renderLegs();
+  gradeSlip();
+  switchTab('slip');
+
+  if(btn) btn.textContent = '🧠 Smart Slip';
+
+  // Show what was built
+  const legs = selected.map(p=>`${p.player} ${p.prop} ${p.side} ${p.line}`).join(' / ');
+  const tierInfo = selected.map(p=>`T${getPropTier(p.prop,p.sport).tier}`).join('+');
+  console.log(`Smart slip built [${tierInfo}]: ${legs}`);
+}
+
 async function buildAllSlips(){
   const tgt=document.getElementById('s_grade').value;
   const sf=document.getElementById('s_sport').value;
@@ -5913,57 +6182,85 @@ async function runWinnersUpsets(){
           const isLowTotal = (cfg.sport==='MLB' && total && total < 8.5);
           const isHighTotal = (cfg.sport==='MLB' && total >= 9.0)||(cfg.sport==='WNBA' && total >= 165);
 
-          // ── LEARNED UPSET CHECKLIST (Reds +125 → 4-1 win, May 2026) ──
-          // Upset edge = mispriced win probability, NOT just "bad team beats good team"
+          // ── LEARNED UPSET CHECKLIST — updated May 2026 (7 game winner slips: 6W 1L 85.7%) ──
+          // Wins: NYM/NYY rival upset, CIN/PHI home dog, WSH/NYM home blowout (x3 entries)
+          // Loss: COL/TEX — Rockies worst team in MLB, never pick vs playoff contender
           let sportCtx = {upsetEdge:0, reasons:[], favBoosts:[]};
           if(cfg.sport==='MLB') sportCtx = await getMLBGameContext({away:ev.away_team,home:ev.home_team,awayProb,homeProb});
           else if(cfg.sport==='WNBA') sportCtx = await getWNBAGameContext({away:ev.away_team,home:ev.home_team});
 
-          let upsetScore = Math.round(dogProb * 60); // base: implied probability × 60
+          // ── FADE: historically bad teams on game winner (COL lesson: $19.20 wasted) ──
+          const FADE_ML = ['rockies','colorado col','white sox','athletics','marlins miami'];
+          const awayLow = (ev.away_team||'').toLowerCase();
+          const homeLow = (ev.home_team||'').toLowerCase();
+          const dogLow  = (dogName||'').toLowerCase();
+          const dogIsWorstTeam = FADE_ML.some(t =>
+            dogLow.includes(t) || awayLow.includes(t) || homeLow.includes(t)
+          ) && FADE_ML.some(t => dogLow.includes(t.split(' ')[0]));
+          if(dogIsWorstTeam){ /* skip — worst-team ML picks lose far more than they pay */ }
+          else {
+
+          let upsetScore = Math.round(dogProb * 60);
           const upsetReasons = [...(sportCtx.reasons||[])];
 
-          // Criterion 1: +120 or better line (key threshold — real value starts here)
+          // C1: Line value (+120 or better)
           if(dogML !== null && dogML >= 120){
             upsetScore += 20;
-            upsetReasons.push(`+${dogML} line — value threshold met (+120 or better)`);
+            upsetReasons.push(`+${dogML} line — value threshold met`);
           } else if(dogML !== null && dogML >= 100){
             upsetScore += 10;
             upsetReasons.push(`+${dogML} line — slight value`);
           }
 
-          // Criterion 2: Close implied probability (mispriced favorite)
-          // 38-47%: market says one-sided but math says close
+          // C2: Mispriced implied probability
           if(dogProb >= 0.43 && dogProb <= 0.47){
             upsetScore += 20;
-            upsetReasons.push(`${(dogProb*100).toFixed(0)}% implied — market mispricing favorite`);
+            upsetReasons.push(`${(dogProb*100).toFixed(0)}% implied — market mispricing`);
           } else if(dogProb >= 0.38 && dogProb < 0.43){
             upsetScore += 12;
             upsetReasons.push(`${(dogProb*100).toFixed(0)}% implied — real upset path`);
           }
 
-          // Criterion 3: Low/moderate game total = clean game script
-          // (Reds lesson: starter limits damage, bullpen protects lead)
+          // C3: Low game total = clean script (Reds lesson)
           if(cfg.sport==='MLB' && isLowTotal){
             upsetScore += 15;
-            upsetReasons.push(`Low total O/U ${total} — clean game script, starter advantage`);
+            upsetReasons.push(`Low O/U ${total} — clean game script`);
           }
 
-          // Criterion 4: Home underdog — underpriced home field
+          // C4: Home underdog — bumped 12→15 (CIN home vs PHI hit, WSH home vs NYM hit: 2/2)
           if(isHomeDog){
-            upsetScore += 12;
-            upsetReasons.push('Home underdog — home field advantage underpriced');
+            upsetScore += 15;
+            upsetReasons.push('Home underdog — home field advantage underpriced (2/2 confirmed)');
           }
 
-          // Criterion 5: Sport context bonuses (FIP, weather, B2B, etc.)
+          // C5: Sport context (FIP, weather, B2B, fatigue)
           upsetScore += sportCtx.upsetEdge;
 
-          // Criterion 6: Favorite priced off reputation (high total + heavy favorite = fade candidate)
+          // C6: Overpriced heavy fav on high total
           if(isHighTotal && favProb >= 0.62){
             upsetScore += 8;
-            upsetReasons.push(`High total + heavy favorite — potential overpriced reputation play`);
+            upsetReasons.push('Heavy fav on high total — reputation overpricing');
           }
 
-          // Favorite boost flags (for display)
+          // C7 (NEW): Rivalry games — market underestimates familiarity edge
+          // NYM beat NYY confirmed (+ev rivalry game May 2026)
+          const RIVALRIES = [
+            ['yankees','mets'],['mets','nationals'],['dodgers','giants'],
+            ['cubs','cardinals'],['red sox','yankees'],['giants','dodgers'],
+          ];
+          if(RIVALRIES.some(([a,b])=>(awayLow.includes(a)&&homeLow.includes(b))||(awayLow.includes(b)&&homeLow.includes(a)))){
+            upsetScore += 10;
+            upsetReasons.push('Rivalry game — familiarity edge, upsets underpriced (NYM/NYY confirmed)');
+          }
+
+          // C8 (NEW): Home dog with real probability — double boost
+          // WSH 8-4 blowout: user made 3 entries (max conviction) — this combo pays
+          if(isHomeDog && dogProb >= 0.40){
+            upsetScore += 8;
+            upsetReasons.push('Home dog ≥40% — confirmed multi-entry value play');
+          }
+
+          // Favorites
           if(favProb >= 0.62){
             favorites.push({
               sport:cfg.sport, away:ev.away_team, home:ev.home_team,
@@ -5975,12 +6272,7 @@ async function runWinnersUpsets(){
             });
           }
 
-          // Only surface upsets that pass the minimum checklist:
-          // - +120 or better line (or close to it)
-          // - Real upset path (dogProb >= 0.30)
-          // - At least one qualifying reason
-          // - Min total score threshold
-          const passesChecklist = (dogML === null || dogML >= 100) && dogProb >= 0.30 && upsetReasons.length > 0;
+          const passesChecklist = (dogML===null||dogML>=100) && dogProb>=0.30 && upsetReasons.length>0;
           if(upsetScore >= 35 && passesChecklist){
             upsets.push({
               sport:cfg.sport, away:ev.away_team, home:ev.home_team,
@@ -5988,10 +6280,11 @@ async function runWinnersUpsets(){
               edge:upsetScore, total, gameTime,
               reasons:upsetReasons.slice(0,4),
               potential_payout: dogML!=null&&dogML>0?`+${dogML}`:dogML!=null?String(dogML):'N/A',
-              // Unit sizing guidance (learned: 0.5u-0.75u on clean upset profiles)
+              // Sizing: WSH pattern = size up when home dog + rivalry + real prob
               unit_size: upsetScore >= 65 ? '0.75u' : upsetScore >= 50 ? '0.5u' : '0.25u',
             });
           }
+          } // end dogIsWorstTeam check
         }catch(e){}
       }
     }catch(e){}
