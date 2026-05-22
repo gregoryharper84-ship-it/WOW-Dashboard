@@ -1809,21 +1809,89 @@ async function getMLBScheduleWithTeams(){
 
 // NHL Official API — free, no key
 async function getNHLPlayerLog(playerId, season='20252026'){
+  // BUGFIX: /2 = regular season, /3 = playoffs. Try playoffs first (May-June).
+  // api-web.nhle.com may be CORS-blocked in browser — ESPN fallback added.
+  for(const gameType of ['3','2']){
+    try{
+      const r=await fx(`${EP.nhl}/player/${playerId}/game-log/${season}/${gameType}`,{},6000);
+      if(r.ok){
+        const d=await r.json();
+        const logs=d.gameLog||[];
+        if(logs.length>0) return logs;
+      }
+    }catch(e){}
+  }
+  // ESPN NHL stats log fallback (CORS-safe)
   try{
-    const r=await fx(`${EP.nhl}/player/${playerId}/game-log/${season}/2`,{},8000);
-    if(!r.ok)return null;
-    const d=await r.json();
-    return d.gameLog||[];
-  }catch(e){return null;}
+    for(const nhlSeason of ['2025','2024']){
+      const r=await fx(
+        `https://sports.core.api.espn.com/v2/sports/hockey/leagues/nhl/seasons/${nhlSeason}/athletes/${playerId}/statisticslog`,
+        {}, 6000
+      );
+      if(!r.ok) continue;
+      const d=await r.json();
+      const entries=d.entries||[];
+      if(!entries.length) continue;
+      // Convert ESPN format to NHL game log format
+      return entries.slice(0,15).map(e=>{
+        const stats=e.statistics?.splits?.[0]?.stats||
+                    e.statistics?.splits?.[0]?.categories?.flatMap?.(c=>c.stats||[])||[];
+        const getStat=(...abbrevs)=>{
+          for(const ab of abbrevs){
+            const f=stats.find?.(s=>(s.abbreviation||s.name||'').toUpperCase()===ab.toUpperCase());
+            if(f && parseFloat(f.value||0)>=0) return parseFloat(f.value||0);
+          }
+          return 0;
+        };
+        return {
+          shots: getStat('SOG','SHOTS','SH'),
+          saves: getStat('SV','SAVES','SA'),
+          goals: getStat('G','GOALS'),
+          assists: getStat('A','ASSISTS'),
+          points: getStat('PTS','POINTS','P'),
+          toi: getStat('TOI','MIN'),
+        };
+      }).filter(g=>g.toi>0||g.shots>0||g.saves>0);
+    }
+  }catch(e){}
+  return null;
 }
 
 async function getNHLRoster(teamAbbr){
+  // Try nhle.com first, ESPN as CORS-safe fallback
   try{
     const r=await fx(`${EP.nhl}/roster/${teamAbbr}/current`,{},6000);
-    if(!r.ok)return null;
+    if(r.ok){
+      const d=await r.json();
+      const roster=[...(d.forwards||[]),(d.defensemen||[]),(d.goalies||[])].flat();
+      if(roster.length>0) return roster;
+    }
+  }catch(e){}
+  // ESPN NHL roster fallback (CORS-safe)
+  try{
+    // Map common abbrevs to ESPN team IDs
+    const ESPN_NHL_IDS={BOS:1,BUF:2,DET:3,FLA:13,MTL:8,OTT:9,TBL:14,TOR:10,
+      CAR:12,CBJ:29,NJD:1,NYI:16,NYR:17,PHI:18,PIT:19,WSH:23,
+      ARI:24,CHI:4,COL:21,DAL:25,MIN:30,NSH:18,STL:19,WPG:26,
+      ANA:25,CGY:20,EDM:22,LAK:26,SJS:28,SEA:55,UTA:56,VAN:23,VGK:54,NYI:16};
+    const espnId = ESPN_NHL_IDS[teamAbbr];
+    if(!espnId) return null;
+    const r=await fx(
+      `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/${espnId}/roster`,
+      {}, 6000
+    );
+    if(!r.ok) return null;
     const d=await r.json();
-    return [...(d.forwards||[]),(d.defensemen||[]),(d.goalies||[])].flat();
-  }catch(e){return null;}
+    const athletes=(d.athletes||[]).flatMap(g=>g.items||g.athletes||[g]).filter(a=>a.id);
+    // Convert to NHL-style objects
+    return athletes.map(a=>({
+      id: a.id,
+      firstName:{default:a.firstName||''},
+      lastName:{default:a.lastName||''},
+      positionCode: a.position?.abbreviation==='G'?'G':
+                    a.position?.abbreviation==='D'?'D':'C',
+    }));
+  }catch(e){ return null; }
 }
 
 async function getNHLScheduleToday(){
@@ -2219,7 +2287,12 @@ async function runNHLEngine(log){
     if(!games||!games.length){log('⚠ NHL: No games today','w');return[];}
     log(`✓ NHL: ${games.length} games on slate`,'ok');
 
-    const nhlProps=[{key:'shots',prop:'shots on goal',line:3.5,side:'MORE'},{key:'saves',prop:'saves',line:28.5,side:'MORE'}];
+    const nhlProps=[
+      {key:'shots', prop:'shots on goal', lines:[1.5,2.5,3.5,4.5], side:'MORE'},
+      {key:'saves', prop:'saves',         lines:[20.5,24.5,28.5],  side:'MORE'},
+      {key:'points',prop:'points',        lines:[0.5,1.5],         side:'MORE'},
+      {key:'goals', prop:'goals',         lines:[0.5],             side:'MORE'},
+    ];
 
     for(const game of games.slice(0,6)){
       if(parseNHLGameState(game) === 'final') continue; // skip completed games only
@@ -2240,17 +2313,23 @@ async function runNHLEngine(log){
           if(!logs||!logs.length)continue;
 
           for(const np of props){
-            const hits=computeHitRates(logs.map(g=>({[np.key]:g[np.key]||g.shots||g.saves||0})),np.key,np.line,np.side);
-            if(hits&&hits.l5_hit_rate!=null){
-              candidates.push({
-                player:`${player.firstName?.default||''} ${player.lastName?.default||''}`.trim(),
-                sport:'NHL',prop:np.prop,side:np.side,line:np.line,game:gameStr,
-                recent_avg:hits.recent_avg,l5_hit_rate:hits.l5_hit_rate,l10_hit_rate:hits.l10_hit_rate,
-                raw_vals:logs.map(g=>parseFloat(g[np.key]||g.shots||g.saves||0)).slice(0,10),
-                source:'engine', lineupConfirmed:true,
-                confidence:hits.l5_hit_rate,
-                note:`L5 avg: ${hits.recent_avg?.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`
-              });
+            const rawVals=logs.map(g=>parseFloat(g[np.key]||0)).filter(v=>!isNaN(v)&&v>=0);
+            if(!rawVals.length) continue;
+            const testLines=np.lines||[np.line];
+            for(const testLine of testLines){
+              const hits=computeHitRates(logs.map(g=>({[np.key]:g[np.key]||0})),np.key,testLine,np.side);
+              if(hits&&hits.l5_hit_rate>=0.50){
+                candidates.push({
+                  player:`${player.firstName?.default||''} ${player.lastName?.default||''}`.trim(),
+                  sport:'NHL',prop:np.prop,side:np.side,line:testLine,game:gameStr,
+                  recent_avg:hits.recent_avg,l5_hit_rate:hits.l5_hit_rate,l10_hit_rate:hits.l10_hit_rate,
+                  raw_vals:rawVals.slice(0,10),
+                  source:'engine', lineupConfirmed:true,
+                  confidence:hits.l5_hit_rate,
+                  note:`L5 avg: ${hits.recent_avg?.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`
+                });
+                break; // best line found for this prop
+              }
             }
           }
         }
@@ -4978,6 +5057,12 @@ const _QA_CASES = [
   {
     label: 'WOWVALIDATE: MLB prop does not crash detectFragileProp',
     prop: {sport:'MLB', prop:'pitcher strikeouts', side:'MORE', line:5.5, source:'engine', lineupConfirmed:true, recent_avg:6.2, l5_hit_rate:0.70, raw_vals:[7,6,5,7,6]},
+    expect: 'PASS'
+  },
+  // NHL REGRESSION CASES
+  {
+    label: 'REGRESSION: NHL engine prop passes gates (source=engine)',
+    prop: {sport:'NHL', prop:'shots on goal', side:'MORE', line:2.5, source:'engine', lineupConfirmed:true, recent_avg:3.2, l5_hit_rate:0.68, raw_vals:[4,3,2,4,3]},
     expect: 'PASS'
   },
   // STAR PLAYER REGRESSION CASES — detectFragileProp player param
