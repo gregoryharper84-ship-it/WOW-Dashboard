@@ -2263,6 +2263,124 @@ async function runNHLEngine(log){
 
 // ── ESPN WNBA Engine ──
 // ESPN has the best WNBA coverage — game logs, player stats, today's slate
+// ── ESPN NBA Engine — primary fallback when BDL fails ──
+// Mirrors runESPNWNBAEngine pattern exactly, swapped for NBA endpoints/lines
+async function runESPNNBAEngine(log){
+  const candidates = [];
+  try{
+    // Step 1: Get NBA slate — check today + next 2 days (playoff rest days)
+    let events = [];
+    for(let di=0; di<3; di++){
+      const d = new Date(Date.now()+di*86400000);
+      const yyyymmdd = d.getFullYear().toString()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+      const scoreR = await fx(`${EP.espn}/basketball/nba/scoreboard?dates=${yyyymmdd}`,{},8000);
+      if(!scoreR.ok) continue;
+      const scoreD = await scoreR.json(); chip('espn','ok');
+      const dayEvents = (scoreD.events||[]).filter(ev=>{
+        const st = ev.competitions?.[0]?.status?.type?.description||'';
+        return !['Final','Postponed','Cancelled'].includes(st);
+      });
+      if(dayEvents.length){ events=dayEvents; break; }
+    }
+    if(!events.length){ log('⚠ NBA ESPN: No upcoming games found','w'); return []; }
+    log(`✓ NBA: ${events.length} games via ESPN`,'ok');
+
+    const propDefs = [
+      {prop:'points',          key:'pts',  lines:[10.5,15.5,20.5,25.5,30.5,35.5]},
+      {prop:'rebounds',        key:'reb',  lines:[3.5,5.5,7.5,10.5,13.5]},
+      {prop:'assists',         key:'ast',  lines:[1.5,3.5,5.5,7.5,10.5]},
+      {prop:'3-pointers made', key:'tpm',  lines:[0.5,1.5,2.5,3.5,4.5]},
+      {prop:'steals',          key:'stl',  lines:[0.5,1.5,2.5]},
+      {prop:'blocks',          key:'blk',  lines:[0.5,1.5,2.5]},
+    ];
+
+    for(const ev of events){
+      const comp = ev.competitions?.[0];
+      const teams = comp?.competitors||[];
+      const away = teams.find(t=>t.homeAway==='away');
+      const home = teams.find(t=>t.homeAway==='home');
+      const gameStr = `${away?.team?.displayName||'Away'} @ ${home?.team?.displayName||'Home'}`;
+
+      for(const team of [away,home].filter(Boolean)){
+        const teamId = team.team?.id;
+        if(!teamId) continue;
+
+        // Step 2: Get roster
+        const rostR = await fx(
+          `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${teamId}/roster`,
+          {}, 8000
+        );
+        if(!rostR.ok) continue;
+        const rostD = await rostR.json();
+        const athletes = (rostD.athletes||[]).flatMap(g=>g.items||g.athletes||[g]).filter(a=>a.id);
+        if(!athletes.length) continue;
+
+        // Step 3: Game logs for top 6 players per team
+        for(const athlete of athletes.slice(0,6)){
+          const aid = athlete.id;
+          const name = athlete.fullName||`${athlete.firstName||''} ${athlete.lastName||''}`.trim();
+
+          const logR = await fx(
+            `https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/seasons/2025/athletes/${aid}/statisticslog`,
+            {}, 8000
+          );
+          if(!logR.ok) continue;
+          const logD = await logR.json();
+          const entries = logD.entries||[];
+          if(entries.length < 2) continue;
+
+          const gameLogs = entries.slice(0,15).map(e=>{
+            const stats = e.statistics?.splits?.[0]?.stats ||
+                          e.statistics?.splits?.[0]?.categories?.flatMap?.(c=>c.stats||[]) ||
+                          e.stats || [];
+            const getStat = (...abbrevs) => {
+              for(const ab of abbrevs){
+                const found = stats.find?.(s=>(s.abbreviation||s.name||'').toUpperCase()===ab.toUpperCase());
+                if(found && parseFloat(found.value||0)>=0) return parseFloat(found.value||0);
+              }
+              return 0;
+            };
+            return {
+              pts: getStat('PTS','PT','POINTS'),
+              reb: getStat('REB','TREB','REBOUNDS','RB'),
+              ast: getStat('AST','ASSISTS','A'),
+              tpm: getStat('3PM','FG3M','3FGM','THREE'),
+              stl: getStat('STL','STEALS','ST'),
+              blk: getStat('BLK','BLOCKS','BS'),
+              mins:getStat('MIN','MINS','MINUTES'),
+            };
+          }).filter(g=>g.mins>8); // NBA starters typically 20+ min, 8 catches bench appearances
+
+          if(gameLogs.length < 2) continue;
+
+          for(const pd of propDefs){
+            const vals = gameLogs.map(g=>g[pd.key]);
+            const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+            let bestLine=null, bestHR=0;
+            for(const line of pd.lines){
+              if(avg < line*0.55) continue; // skip lines far above player avg
+              const hr = vals.filter(v=>v>line).length/vals.length;
+              if(hr>=0.55 && hr>bestHR){ bestHR=hr; bestLine=line; }
+            }
+            if(!bestLine) continue;
+            candidates.push({
+              player:name, sport:'NBA', prop:pd.prop, side:'MORE',
+              line:bestLine, game:gameStr,
+              recent_avg:parseFloat(avg.toFixed(2)),
+              l5_hit_rate:bestHR, l10_hit_rate:bestHR,
+              raw_vals:vals.slice(0,10), confidence:bestHR,
+              role_score:7, source:'engine', lineupConfirmed:true,
+              note:`ESPN NBA: ${avg.toFixed(1)} avg | L${gameLogs.length}: ${(bestHR*100).toFixed(0)}%`
+            });
+          }
+        }
+      }
+    }
+    log(`✓ NBA: ${candidates.length} candidates via ESPN`,'ok');
+  }catch(e){ log(`⚠ NBA ESPN engine: ${e.message}`,'w'); }
+  return validateEngineOutput('NBA', candidates, 'runESPNNBAEngine');
+}
+
 async function runESPNWNBAEngine(log){
   const candidates = [];
   try{
@@ -2421,9 +2539,9 @@ async function runBDLEngine(sport,log){
     // Step 1: Get today's games (local date + postseason)
     let games=[];
     for(const season of seasons){
-      // Check today + next 4 days (playoffs have 2-3 day rest periods)
+      // PERF FIX: check today + next 2 days only (was 5) — reduces game fetch from 20 to 6 calls
     const _bdlDates=[localDate,tmrDate,
-      ...[2,3,4].map(i=>{const d=new Date(Date.now()+i*86400000);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;})
+      ...[2].map(i=>{const d=new Date(Date.now()+i*86400000);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;})
     ];
     for(const dateStr of _bdlDates){
         const gR=await bdlFetch(`${bdlBase}/games?dates[]=${dateStr}&per_page=25`);
@@ -2498,18 +2616,22 @@ async function runBDLEngine(sport,log){
         if(!players.length){ log(`  ⚠ No roster data for team ${teamId} (BDL 401/429)`,'w'); continue; }
 
         // Step 3: Get full game log for each player (throttled)
-        // PERF FIX: Cap at 6 players (was 12) + raise delay to 1100ms (was 150ms)
-        // Free tier = 60 req/min. Old: 12 players × 2 req × 150ms = 400% over limit → 429s
-        // New: 6 players × 2 req × 1100ms = ~55 req/min → fits free tier
+        // PERF FIX: cap 6 players (was 12) + 1100ms delay (was 150ms) = fits 60req/min free tier
         const playersToFetch = players.slice(0, 6);
+        let _bdlStatsBlocked = false; // 401 on stats = tier restriction, abort early
         for(const player of playersToFetch){
-          await _bdlDelay(1100); // 1100ms = safe for 60 req/min free tier
+          if(_bdlStatsBlocked) break; // stats endpoint blocked — skip remaining players
+          await _bdlDelay(1100); // 1100ms — safe for BDL free tier (60 req/min)
           let playerLogs=[];
           for(const season of seasons){
-            // BUGFIX: Use bdlFetch (has auth header + retry logic) not raw fx()
             const logR=await bdlFetch(
               `${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=25`
             );
+            // 401 on stats = free tier doesn't allow player stats endpoint — abort BDL entirely
+            if(logR && logR.status === 401){
+              log(`  ⚠ BDL: player stats endpoint returned 401 — tier restriction. Switching to ESPN.`,'w');
+              _bdlStatsBlocked = true; break;
+            }
             const psLogR=await bdlFetch(
               `${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&postseason=true&per_page=15`
             );
@@ -2565,13 +2687,24 @@ async function runBDLEngine(sport,log){
       }
     }
 
+    // If BDL stats endpoint was 401-blocked mid-run, go to ESPN regardless of candidate count
+    if(typeof _bdlStatsBlocked !== 'undefined' && _bdlStatsBlocked){
+      log(`⚠ ${sport}: BDL stats tier-restricted — switching to ESPN engine for real stats`,'w');
+      if(sport==='NBA') return runESPNNBAEngine(log);
+      if(sport==='WNBA') return runESPNWNBAEngine(log);
+    }
     log(`✓ ${sport}: ${candidates.length} candidates`,'ok');
     if(!candidates.length){
       log(`⚠ ${sport}: 0 candidates — BDL may have limited data. Trying ESPN fallback...`,'w');
+      // Route to sport-specific ESPN engine (real stats) instead of generic stub
+      if(sport==='NBA') return runESPNNBAEngine(log);
+      if(sport==='WNBA') return runESPNWNBAEngine(log);
       return runESPNEngine(sport,log);
     }
   }catch(e){
     log(`⚠ ${sport} error: ${e.message} — trying ESPN fallback`,'w');
+    if(sport==='NBA') return runESPNNBAEngine(log);
+    if(sport==='WNBA') return runESPNWNBAEngine(log);
     return runESPNEngine(sport,log);
   }
   return validateEngineOutput(sport, candidates, 'runBDLEngine');
@@ -3556,6 +3689,7 @@ function propTierBadge(prop, sport){
 // ══════════════════════════════════
 function detectFragileProp(prop, line, sport){
   const p = (prop||'').toLowerCase();
+  const propL = p; // alias — legacy references use propL
   const flags = [];
 
   // May 11 Lockdown Patch bans
@@ -4805,6 +4939,28 @@ const _QA_CASES = [
   {
     label: 'REGRESSION: WNBA engine prop not killed by coin-flip gate',
     prop: {sport:'WNBA', prop:'points', side:'MORE', line:15.5, source:'engine', lineupConfirmed:true, recent_avg:16.0, rawProb:0.60},
+    expect: 'PASS'
+  },
+  // WOWVALIDATE REGRESSION CASES — covers detectFragileProp + wowValidate, not just runFourGates
+  {
+    label: 'WOWVALIDATE: basic NBA prop does not crash wowValidate',
+    prop: {sport:'NBA', prop:'points', side:'MORE', line:24.5, source:'engine', lineupConfirmed:true, recent_avg:26, l5_hit_rate:0.68, raw_vals:[28,24,26,27,25]},
+    expect: 'PASS'
+  },
+  {
+    label: 'WOWVALIDATE: MLB prop does not crash detectFragileProp',
+    prop: {sport:'MLB', prop:'pitcher strikeouts', side:'MORE', line:5.5, source:'engine', lineupConfirmed:true, recent_avg:6.2, l5_hit_rate:0.70, raw_vals:[7,6,5,7,6]},
+    expect: 'PASS'
+  },
+  // ESPN NBA ENGINE REGRESSION CASES
+  {
+    label: 'REGRESSION: ESPN NBA engine prop survives full gate stack',
+    prop: {sport:'NBA', prop:'points', side:'MORE', line:20.5, source:'engine', lineupConfirmed:true, recent_avg:23.4, l5_hit_rate:0.68, raw_vals:[25,22,19,24,27]},
+    expect: 'PASS'
+  },
+  {
+    label: 'REGRESSION: ESPN NBA engine prop not killed by coin-flip gate',
+    prop: {sport:'NBA', prop:'assists', side:'MORE', line:5.5, source:'engine', lineupConfirmed:true, recent_avg:6.1, l5_hit_rate:0.62, raw_vals:[7,5,6,8,5]},
     expect: 'PASS'
   },
   // NULL SAFETY REGRESSION CASES
