@@ -3691,7 +3691,7 @@ function propTierBadge(prop, sport){
 
 // FIX #5 — FRAGILE PROP DETECTION
 // ══════════════════════════════════
-function detectFragileProp(prop, line, sport){
+function detectFragileProp(prop, line, sport, player=''){
   const p = (prop||'').toLowerCase();
   const propL = p; // alias — legacy references use propL
   const flags = [];
@@ -4956,6 +4956,12 @@ const _QA_CASES = [
     prop: {sport:'MLB', prop:'pitcher strikeouts', side:'MORE', line:5.5, source:'engine', lineupConfirmed:true, recent_avg:6.2, l5_hit_rate:0.70, raw_vals:[7,6,5,7,6]},
     expect: 'PASS'
   },
+  // STAR PLAYER REGRESSION CASES — detectFragileProp player param
+  {
+    label: 'REGRESSION: Star player prop passes detectFragileProp without crash',
+    prop: {sport:'NBA', prop:'points', side:'MORE', line:24.5, source:'engine', lineupConfirmed:true, recent_avg:30, l5_hit_rate:0.72, raw_vals:[35,28,30,32,27], player:'Shai Gilgeous-Alexander'},
+    expect: 'PASS'
+  },
   // ESPN NBA ENGINE REGRESSION CASES
   {
     label: 'REGRESSION: ESPN NBA engine prop survives full gate stack',
@@ -5104,7 +5110,7 @@ async function wowValidate(p, wowScore){
   }
 
   // ── HARD BANS ──
-  const fragileFlags = detectFragileProp(p.prop, p.line, p.sport);
+  const fragileFlags = detectFragileProp(p.prop, p.line, p.sport, p.player||'');
   const hardBan = fragileFlags.find(f=>f.severity==='hard_ban');
   if(hardBan) return {tier:'reject', label:`REJECT — ${hardBan.note}`, failures:[hardBan.tag], fragileFlags, rawProb:0, ev:null};
   if(p.injury_flag===1) return {tier:'conditional', label:'CONDITIONAL — Injury Flagged', failures:['injury-flag'], fragileFlags, rawProb:null, ev:null};
