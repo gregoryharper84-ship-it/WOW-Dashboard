@@ -4381,19 +4381,22 @@ function runFourGates(prop){
     result.g3 = '✅ DATA EXISTS';
   }
 
-  // PATCH C: Half-point proximity warning — only when real stats data present
-  // raw_vals or l5_hit_rate must exist to confirm this is real data, not engine estimate
-  const hasRealData = (prop.raw_vals?.length >= 3) || (prop.l5_hit_rate != null && prop.source !== 'engine');
+  // PATCH C: Half-point coin-flip warning
+  // Only applies to SPORTSBOOK-sourced props (odds_api, bookmaker, etc.)
+  // Engine props have already been filtered by hit-rate analysis — do not double-gate
+  const isSbSource = prop.source && prop.source !== 'engine' && prop.source !== 'fbref' &&
+                     prop.source !== 'replit' && prop.source !== 'pandascore';
+  const hasRealData = isSbSource && (prop.raw_vals?.length >= 3) && prop.l5_hit_rate != null;
   if(recentAvg != null && line != null && hasRealData){
     const lineEndsHalf = (line % 1 === 0.5);
     const gapToLine = Math.abs(recentAvg - line);
     if(lineEndsHalf && gapToLine <= 1.5){
       result.flags.push('coin-flip-zone');
-      result.g3 += ' ⚠️ COIN FLIP — avg within 1.5 of .5 line, require P > 65%';
-      // Raise the bar — require stronger probability to pass
-      if((prop.rawProb||0.55) < 0.65){
+      result.g3 += ' ⚠️ COIN FLIP — sportsbook line within 1.5 of avg on .5 line, require P > 65%';
+      const baseProb = prop.l5_hit_rate ?? 0.55;
+      if(baseProb < 0.65){
         result.kill = true;
-        result.killReason = `Gate 3 (Coin Flip): Line ${line} within 1.5 of avg ${recentAvg?.toFixed(1)} on a .5 line. Raw prob ${Math.round((prop.rawProb||0.55)*100)}% < 65% required threshold.`;
+        result.killReason = `Gate 3 (Coin Flip): Line ${line} within 1.5 of avg ${recentAvg?.toFixed(1)} on a .5 line. L5 hit rate ${Math.round(baseProb*100)}% < 65% required for sportsbook prop.`;
         return result;
       }
     }
@@ -4711,8 +4714,8 @@ const _QA_CASES = [
     expect: 'KILL'
   },
   {
-    label: 'G3: Coin-flip on real data with low prob killed',
-    prop: {sport:'MLB', prop:'pitcher strikeouts', side:'MORE', line:5.5, source:'odds_api', recent_avg:5.8, rawProb:0.58, l5_hit_rate:0.60, raw_vals:[6,5,7,5,6,5,6,5,7,5]},
+    label: 'G3: Coin-flip on sportsbook data with low prob killed',
+    prop: {sport:'MLB', prop:'pitcher strikeouts', side:'MORE', line:5.5, source:'odds_api', bookmaker:'DraftKings', recent_avg:5.8, rawProb:0.58, l5_hit_rate:0.60, raw_vals:[6,5,7,5,6,5,6,5,7,5]},
     expect: 'KILL'
   },
   {
