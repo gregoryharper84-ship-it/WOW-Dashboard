@@ -2446,6 +2446,38 @@ async function getBullpenFatigue(teamId, teamName){
     return fatigue;
   }catch(e){ _bullpenCache[teamId]=null; return null; }
 }
+// ── Line Movement Detection ──
+// Stores the first-seen line for each prop as the "opening line".
+// On subsequent fetches, detects movement and flags sharp activity.
+function recordOpeningLine(player, prop, side, line, source){
+  const key = `${(player||'').toLowerCase()}|${(prop||'').toLowerCase()}|${side}`;
+  if(!_openingLineCache[key]){
+    _openingLineCache[key] = { line, timestamp: Date.now(), source };
+  }
+  return _openingLineCache[key];
+}
+
+function detectLineMovement(player, prop, side, currentLine){
+  const key = `${(player||'').toLowerCase()}|${(prop||'').toLowerCase()}|${side}`;
+  const opening = _openingLineCache[key];
+  if(!opening || opening.line == null || currentLine == null) return null;
+  const move = currentLine - opening.line; // positive = line moved up (harder to hit MORE)
+  if(Math.abs(move) < 0.25) return null; // ignore sub-0.25 movement (noise)
+  const direction = move > 0 ? 'up' : 'down';
+  const isFavorableMore = side === 'MORE' && move < 0; // line dropped = easier to hit MORE
+  const isFavorableLess = side === 'LESS' && move > 0; // line rose = easier to hit LESS
+  const isFavorable = isFavorableMore || isFavorableLess;
+  return {
+    openingLine: opening.line,
+    currentLine,
+    move: parseFloat(move.toFixed(2)),
+    direction,
+    isFavorable, // did the line move in your favor?
+    isSharpSignal: Math.abs(move) >= 0.5, // 0.5+ unit move = meaningful sharp action
+    note: `Line ${move > 0 ? '↑' : '↓'}${Math.abs(move)} (open: ${opening.line} → now: ${currentLine})${isFavorable ? ' ✓ favorable' : ''}${Math.abs(move) >= 0.5 ? ' ⚡ sharp' : ''}`,
+  };
+}
+
 async function runMLBEngine(log){
   const candidates=[];
   try{
@@ -2602,14 +2634,27 @@ async function runMLBEngine(log){
           // Variance scoring for strikeouts — consistent pitchers score higher
           const vScore = isKProp ? strikeoutVarianceScore(vals.slice(0,8)) : null;
 
-          // FIX #11: Find optimal line — best EV above break-even
+          // ── L3 Recent Form — weight last 3 starts to detect hot/cold streaks ──
+          const l3Vals = vals.slice(0,3);
+          const l3Avg  = l3Vals.length >= 2 ? l3Vals.reduce((a,b)=>a+b,0)/l3Vals.length : null;
+          const l5Avg  = vals.slice(0,5).reduce((a,b)=>a+b,0)/Math.min(5,vals.length);
+          // L3 vs L5 divergence: >15% gap = meaningful trend
+          const l3Trend = l3Avg != null && l5Avg > 0
+            ? (l3Avg - l5Avg) / l5Avg  // positive = hot streak, negative = slump
+            : 0;
+          const isHotStreak  = l3Trend >  0.15;
+          const isColdStreak = l3Trend < -0.15;
+
+          // Find optimal line — best EV above break-even
           let bestLine=null, bestHits=null, bestEV=-999;
           for(const testLine of smartLines){
             const hits=computeHitRates(pitchingLog.map(s=>({[pd.key]:s.stat?.[pd.key]||0})),pd.key,testLine,pd.side);
             if(!hits||hits.l5_hit_rate==null) continue;
             if(hits.l5_hit_rate < 0.45) continue;
-            // Apply variance multiplier to EV ranking — consistent pitcher gets boost
-            const adjHR = vScore ? hits.l5_hit_rate * vScore.multiplier : hits.l5_hit_rate;
+            let adjHR = vScore ? hits.l5_hit_rate * vScore.multiplier : hits.l5_hit_rate;
+            // L3 form adjustment: hot streak +5%, cold streak -10%
+            if(isHotStreak)  adjHR = Math.min(0.92, adjHR * 1.05);
+            if(isColdStreak) adjHR = adjHR * 0.90;
             const ev = adjHR - 0.577;
             if(ev > bestEV){ bestEV=ev; bestLine=testLine; bestHits=hits; }
           }
@@ -2630,6 +2675,8 @@ async function runMLBEngine(log){
               noteParts.push(`smart line: ${getStrikeoutLines(seasonK9,oppBatting,avg).center}`);
           }
           if(fi?.inning1_era < 99) noteParts.push(`F1-ERA: ${fi.inning1_era.toFixed(2)}`);
+          if(isHotStreak)  noteParts.push(`🔥 L3 hot (+${(l3Trend*100).toFixed(0)}%)`);
+          if(isColdStreak) noteParts.push(`🥶 L3 slump (${(l3Trend*100).toFixed(0)}%)`);
 
           candidates.push({
             player:pitcher.fullName, sport:'MLB', prop:pd.prop,
@@ -2784,29 +2831,60 @@ async function runNHLEngine(log){
 
         for(const player of [...forwards,...goalies]){
           const isGoalie=player.positionCode==='G';
-          const props=isGoalie?[nhlProps[1]]:[nhlProps[0]];
           const logs=await getNHLPlayerLog(player.id);
           const playerName=`${player.firstName?.default||''} ${player.lastName?.default||''}`.trim();
           log(`  NHL ${abbr} ${playerName}: logs=${logs?.length||0}`,'i');
           if(!logs||!logs.length)continue;
 
-          for(const np of props){
-            const rawVals=logs.map(g=>parseFloat(g[np.key]||0)).filter(v=>!isNaN(v)&&v>=0);
-            if(!rawVals.length) continue;
-            const testLines=np.lines||[np.line];
-            for(const testLine of testLines){
-              const hits=computeHitRates(logs.map(g=>({[np.key]:g[np.key]||0})),np.key,testLine,np.side);
-              if(hits&&hits.l5_hit_rate>=0.50){
+          if(isGoalie){
+            // ── Goalie: use save% + shotsAgainst for better save line selection ──
+            const savePcts  = logs.map(g=>parseFloat(g.savePct||g.savePercentage||0)).filter(v=>v>0);
+            const savsArr   = logs.map(g=>parseFloat(g.saves||0)).filter(v=>!isNaN(v));
+            const shotsArr  = logs.map(g=>parseFloat(g.shotsAgainst||g.shots||0)).filter(v=>v>0);
+            const avgSavePct= savePcts.length ? savePcts.reduce((a,b)=>a+b,0)/savePcts.length : 0.910;
+            const avgShots  = shotsArr.length ? shotsArr.reduce((a,b)=>a+b,0)/shotsArr.length : 30;
+            const avgSaves  = savsArr.length  ? savsArr.reduce((a,b)=>a+b,0)/savsArr.length   : avgShots * avgSavePct;
+            // Dynamic save lines centered on avg saves (same pattern as baseball K lines)
+            const snapH = v => Math.round(v*2)/2;
+            const centerLine = snapH(avgSaves);
+            const saveLines = [-2,-1,0,1,2].map(d=>snapH(centerLine+d)).filter(l=>l>=18.5&&l<=40.5);
+            for(const testLine of [...new Set(saveLines)]){
+              const hr = savsArr.filter(v=>v>testLine).length/savsArr.length;
+              if(hr>=0.50){
                 candidates.push({
-                  player:`${player.firstName?.default||''} ${player.lastName?.default||''}`.trim(),
-                  sport:'NHL',prop:np.prop,side:np.side,line:testLine,game:gameStr,
-                  recent_avg:hits.recent_avg,l5_hit_rate:hits.l5_hit_rate,l10_hit_rate:hits.l10_hit_rate,
-                  raw_vals:rawVals.slice(0,10),
-                  source:'engine', lineupConfirmed:true,
-                  confidence:hits.l5_hit_rate,
-                  note:`L5 avg: ${hits.recent_avg?.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`
+                  player:playerName, sport:'NHL', prop:'saves', side:'MORE', line:testLine, game:gameStr,
+                  recent_avg:parseFloat(avgSaves.toFixed(1)),
+                  l5_hit_rate:hr, l10_hit_rate:hr,
+                  raw_vals:savsArr.slice(0,10),
+                  source:'engine', lineupConfirmed:true, confidence:hr,
+                  nhlGoalieSavePct:parseFloat(avgSavePct.toFixed(3)),
+                  nhlGoalieShotsAgainst:parseFloat(avgShots.toFixed(1)),
+                  note:`Saves avg ${avgSaves.toFixed(1)} | Save% ${(avgSavePct*100).toFixed(1)}% | Shots/game ${avgShots.toFixed(1)} | L5 hit ${(hr*100).toFixed(0)}%`
                 });
-                break; // best line found for this prop
+                break;
+              }
+            }
+          } else {
+            // ── Skater props (shots, points, goals) ──
+            const skaterProps=[nhlProps[0],nhlProps[2],nhlProps[3]];
+            for(const np of skaterProps){
+              const rawVals=logs.map(g=>parseFloat(g[np.key]||0)).filter(v=>!isNaN(v)&&v>=0);
+              if(!rawVals.length) continue;
+              const testLines=np.lines||[np.line];
+              for(const testLine of testLines){
+                const hits=computeHitRates(logs.map(g=>({[np.key]:g[np.key]||0})),np.key,testLine,np.side);
+                if(hits&&hits.l5_hit_rate>=0.50){
+                  candidates.push({
+                    player:playerName,
+                    sport:'NHL',prop:np.prop,side:np.side,line:testLine,game:gameStr,
+                    recent_avg:hits.recent_avg,l5_hit_rate:hits.l5_hit_rate,l10_hit_rate:hits.l10_hit_rate,
+                    raw_vals:rawVals.slice(0,10),
+                    source:'engine', lineupConfirmed:true,
+                    confidence:hits.l5_hit_rate,
+                    note:`L5 avg: ${hits.recent_avg?.toFixed(1)} | L5 hit: ${(hits.l5_hit_rate*100).toFixed(0)}%`
+                  });
+                  break;
+                }
               }
             }
           }
@@ -3301,6 +3379,7 @@ const _pitcherHandCache = {};      // pitcherId → 'L' or 'R'
 const _pitcherHandStatCache = {};  // `${playerId}_vl` or `_vr` → handedness split
 const _firstInningCache = {};      // pitcherId → first-inning stats object
 const _teamBattingCache = {};      // teamId → team batting stats (K%, OPS, contact)
+const _openingLineCache = {};     // `${player}|${prop}|${side}` → {line, timestamp, source}
 const _bdlDelay = ms => new Promise(r => setTimeout(r, ms));
 async function bdlFetch(url, retries=1){
   // PERF FIX: Max 1 retry, flat 1s wait. Old exponential (1s+2s+4s=7s) was
@@ -4005,7 +4084,8 @@ async function runTennisEngine(log){
         if(!playerName) continue;
 
         // ── Get player profile stats (use ID directly from fixture) ──
-        let aces=[], totals=[], dfs=[], rankNote='';
+        let aces=[], totals=[], dfs=[], rankNote='', surfNote='';
+        let surfWinRate=null, h2hWinRate=null; // surface/H2H win rates for confidence adjustment
 
         if(playerId){
           const stR = await fx(
@@ -4017,6 +4097,21 @@ async function runTennisEngine(log){
             const profile = stD.response?.[0] || stD.player || stD;
             const ranking = profile.ranking || profile.rank || null;
             if(ranking) rankNote = ` | Rank #${ranking}`;
+
+            // ── Surface-specific win rate ──
+            const surfLowerT = (surface||'').toLowerCase();
+            const surfKey = surfLowerT.includes('clay')?'clay':surfLowerT.includes('grass')?'grass':'hard';
+            const surfStats = profile.statistics?.surfaces?.[surfKey]
+              || profile.statistics?.[surfKey]
+              || profile.surfaces?.[surfKey] || null;
+            if(surfStats){
+              const sw = parseInt(surfStats.wins||surfStats.win||0);
+              const sl = parseInt(surfStats.losses||surfStats.loss||0);
+              if(sw+sl >= 5){
+                surfWinRate = sw / (sw+sl);
+                surfNote = ` | ${surfKey} ${sw}-${sl} (${(surfWinRate*100).toFixed(0)}%)`;
+              }
+            }
 
             // Season stat averages → synthesize distribution for hit rate calc
             const avgAces  = parseFloat(profile.statistics?.avgAces  || profile.aces  || 0);
@@ -4050,10 +4145,16 @@ async function runTennisEngine(log){
               if(h2hR.ok){
                 const h2hD = await h2hR.json();
                 const h2h = h2hD.response?.[0] || h2hD;
-                const p1Wins = h2h.firstPlayerResults?.won || 0;
-                const p2Wins = h2h.secondPlayerResults?.won || 0;
+                const p1Wins = h2h.firstPlayerResults?.won || h2h.player1?.won || 0;
+                const p2Wins = h2h.secondPlayerResults?.won || h2h.player2?.won || 0;
                 const total  = p1Wins + p2Wins;
-                if(total > 0) h2hNote = ` | H2H: ${p1Wins}-${p2Wins}`;
+                if(total >= 3){
+                  h2hWinRate = p1Wins / total;
+                  const h2hEdge = h2hWinRate >= 0.67 ? ' 🔥 dominates H2H' : h2hWinRate <= 0.33 ? ' ❄️ struggles H2H' : '';
+                  h2hNote = ` | H2H: ${p1Wins}-${p2Wins} (${(h2hWinRate*100).toFixed(0)}%)${h2hEdge}`;
+                } else if(total > 0){
+                  h2hNote = ` | H2H: ${p1Wins}-${p2Wins} (small sample)`;
+                }
               }
             }catch(e){ console.warn('Tennis H2H fetch failed:',e?.message); }
           }
@@ -4077,11 +4178,15 @@ async function runTennisEngine(log){
             for(const line of [2.5,4.5,6.5,8.5,10.5]){
               const hr=aces.filter(v=>v>line).length/aces.length;
               if(hr>=0.52){ // synthetic distribution — lower threshold than real game logs
+                // Surface win rate boosts confidence: strong surface player → more aces, more wins
+                const surfAdj = surfWinRate != null ? (surfWinRate - 0.5) * 0.10 : 0; // ±5% max
+                const adjHR = Math.min(0.90, Math.max(0.50, hr + surfAdj));
                 candidates.push({player:playerName,sport:'Tennis',prop:'aces',side:'MORE',line,
                   game:gameStr,tournament,surface,tour,
                   recent_avg:parseFloat(adjAvg.toFixed(1)),
-                  l5_hit_rate:hr,l10_hit_rate:hr,raw_vals:aces.slice(-10),confidence:hr,role_score:7,
-                  note:`Avg ${avg.toFixed(1)} aces (${surface})${rankNote}${h2hNote}`,
+                  l5_hit_rate:adjHR,l10_hit_rate:adjHR,raw_vals:aces.slice(-10),confidence:adjHR,role_score:7,
+                  surfWinRate,h2hWinRate,
+                  note:`Avg ${avg.toFixed(1)} aces (${surface})${rankNote}${surfNote}${h2hNote}`,
                   apiTennisId:playerId});
                 break;
               }
@@ -4758,8 +4863,13 @@ async function getNBAPaceFactor(game){
     if(!match) return 1.0;
     const total = match.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.find(o=>o.name==='Over')?.point;
     if(!total) return 1.0;
-    // League avg NBA total ~225 — pace factor scales relative to that
-    const factor = total / 225;
+    // League averages: NBA ~225, WNBA ~155 — detect by sport key in game string
+    // getNBAPaceFactor is shared between NBA and WNBA
+    const isWNBA = game.toLowerCase().includes('wnba') ||
+      (match.sport_key||'').includes('wnba') ||
+      (match.sport_title||'').toLowerCase().includes('wnba');
+    const leagueAvg = isWNBA ? 155 : 225;
+    const factor = total / leagueAvg;
     paceCacheNBA[key] = factor;
     return factor;
   }catch(e){ return 1.0; }
@@ -6334,7 +6444,7 @@ function makePCard(p){
 
   card.innerHTML=`
     <div class="pm" style="min-width:0;flex:1;">
-      <div class="pp">${p.player}${p.mlb_position?` <span style="font-size:11px;font-weight:400;color:var(--text2);">${p.mlb_position}</span>`:''}</div>
+      <div class="pp">${p.player}${p.mlb_position?` <span style="font-size:11px;font-weight:400;color:var(--text2);">${p.mlb_position}</span>`:''}${p.lineMovement?` <span style="font-size:9px;padding:1px 5px;border-radius:8px;margin-left:3px;font-weight:700;background:${p.lineMovement.isFavorable?'var(--green-light)':p.lineMovement.move>0?'var(--red-light)':'var(--yellow-light)'};color:${p.lineMovement.isFavorable?'var(--green)':p.lineMovement.move>0?'var(--red)':'var(--yellow)'};" title="${p.lineMovement.note}">${p.lineMovement.move>0?'↑':'↓'}${Math.abs(p.lineMovement.move).toFixed(1)}${p.lineMovement.isSharpSignal?' ⚡':''}</span>`:''}</div>
       <div class="pd" style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
         <span>${p.sport} · ${p.prop} ${p.side} ${p.line}${p.game?` · ${p.game}`:''}</span>
         ${propTierBadge(p.prop, p.sport)}
@@ -8137,7 +8247,7 @@ async function runWinnersUpsets(){
     const ctx = {pitcherEdge:0, upsetEdge:0, reasons:[], favBoosts:[]};
     try{
       const today = new Date().toISOString().split('T')[0];
-      const schedR = await fx(`${EP.mlb}/schedule?sportId=1&date=${today}&hydrate=probablePitcher,team,linescore,weather`,{},8000);
+      const schedR = await fx(`${EP.mlb}/schedule?sportId=1&date=${today}&hydrate=probablePitcher,team,linescore,weather,seriesStatus`,{},8000);
       if(!schedR.ok) return ctx;
       const sched = await schedR.json();
       const games = sched.dates?.[0]?.games||[];
@@ -8330,6 +8440,19 @@ async function runWinnersUpsets(){
       if(isRoadDog && game.awayProb >= 0.38){
         ctx.upsetEdge += 8;
         ctx.reasons.push('Road dog — historically undervalued in lines');
+      }
+
+      // ── Getaway Game Detection ──
+      // Last game of a road series = mental getaway effect, road team is disengaged
+      // BUT also means the home team is motivated for a series win
+      const seriesStatus = matched.seriesStatus || matched.series_status || null;
+      const gameNum   = parseInt(matched.seriesGameNumber || matched.game_number || 0);
+      const seriesLen = parseInt(matched.gamesInSeries    || matched.series_length || 0);
+      const isGetaway = seriesLen > 1 && gameNum === seriesLen;
+      if(isGetaway){
+        const awayCity = matched.teams?.away?.team?.locationName || game.away;
+        ctx.upsetEdge += 10;
+        ctx.reasons.push(`Getaway game — ${awayCity} road finale. Road team mentally checked out, home team closing series`);
       }
 
     }catch(e){}
@@ -11139,8 +11262,13 @@ async function refreshPropPool(manual=false){
       const ws=await scoreOne(en);
       const val=await wowValidateGated(en,ws);
       const record={...en,...val,wowScore:ws};
+      // Record opening line on first sight; detect movement on subsequent refreshes
+      recordOpeningLine(en.player, en.prop, en.side, en.line, en.source);
+      const lineMove = detectLineMovement(en.player, en.prop, en.side, en.line);
+      if(lineMove){ record.lineMovement = lineMove; }
       _allValidated.push(record);
       if(['tier1','tier2','flex'].includes(val.tier)){
+        if(lineMove?.isSharpSignal) record.note = (record.note||'') + ' | ' + lineMove.note;
         scored.push(record); addToPool(record);
       } else if(val.gateKill){
         const bucket=(val.label||'Unknown').replace('GATE KILL — ','').substring(0,80);
@@ -11238,6 +11366,11 @@ function renderPropPool(){
       const m = reason.match(/^(NBA|MLB|NHL|WNBA|Soccer|Tennis|CS2)/i);
       if(m) sportKillSummary[m[1].toUpperCase()] = (sportKillSummary[m[1].toUpperCase()]||0) + count;
     }
+  }
+  // ── Line movement summary for display ──
+  const movedProps = propPool.filter(p=>p.lineMovement?.isSharpSignal);
+  if(movedProps.length > 0){
+    // Will be surfaced in card rendering below
   }
   const allChip=`<span onclick="document.getElementById('poolSportFilter').value='all';renderPropPool();" style="cursor:pointer;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:${sf==='all'?'var(--accent)':'var(--surface2)'};color:${sf==='all'?'#fff':'var(--text2)'};border:1px solid var(--border);">All (${propPool.length})</span>`;
 
