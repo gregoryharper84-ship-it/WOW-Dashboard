@@ -2320,14 +2320,18 @@ async function runESPNNBAEngine(log){
           const aid = athlete.id;
           const name = athlete.fullName||`${athlete.firstName||''} ${athlete.lastName||''}`.trim();
 
-          const logR = await fx(
-            `https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/seasons/2025/athletes/${aid}/statisticslog`,
-            {}, 8000
-          );
-          if(!logR.ok) continue;
-          const logD = await logR.json();
+          // NBA season: try 2026 (playoffs) first, fall back to 2025
+          let logD = null;
+          for(const nbaSeason of ['2026','2025']){
+            const logR = await fx(
+              `https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/seasons/${nbaSeason}/athletes/${aid}/statisticslog`,
+              {}, 8000
+            );
+            if(logR?.ok){ const d=await logR.json(); if((d.entries||[]).length>=1){logD=d;break;} }
+          }
+          if(!logD) continue;
           const entries = logD.entries||[];
-          if(entries.length < 2) continue;
+          if(entries.length < 1) continue; // playoffs: accept 1+ games
 
           const gameLogs = entries.slice(0,15).map(e=>{
             const stats = e.statistics?.splits?.[0]?.stats ||
@@ -2349,9 +2353,9 @@ async function runESPNNBAEngine(log){
               blk: getStat('BLK','BLOCKS','BS'),
               mins:getStat('MIN','MINS','MINUTES'),
             };
-          }).filter(g=>g.mins>8); // NBA starters typically 20+ min, 8 catches bench appearances
+          }).filter(g=>g.mins>4); // playoffs: rotation tightens, 4+ min catches starters
 
-          if(gameLogs.length < 2) continue;
+          if(gameLogs.length < 1) continue; // playoffs: accept 1+ games
 
           for(const pd of propDefs){
             const vals = gameLogs.map(g=>g[pd.key]);
@@ -2360,7 +2364,7 @@ async function runESPNNBAEngine(log){
             for(const line of pd.lines){
               if(avg < line*0.55) continue; // skip lines far above player avg
               const hr = vals.filter(v=>v>line).length/vals.length;
-              if(hr>=0.55 && hr>bestHR){ bestHR=hr; bestLine=line; }
+              if(hr>=0.50 && hr>bestHR){ bestHR=hr; bestLine=line; } // playoffs: small sample, lower threshold
             }
             if(!bestLine) continue;
             candidates.push({
@@ -3223,9 +3227,18 @@ async function runTennisEngine(log){
             const avgDFs   = parseFloat(profile.statistics?.avgDoubleFaults || profile.double_faults || 2);
             const matchCount = parseInt(profile.statistics?.matchesPlayed || 20);
 
-            if(avgAces  > 0) aces   = synthesizeDist(avgAces,  matchCount, 0.35);
-            if(avgGames > 5) totals = synthesizeDist(avgGames, matchCount, 0.20);
-            if(avgDFs   > 0) dfs    = synthesizeDist(avgDFs,   matchCount, 0.50);
+            // Use API stats if available, otherwise fall back to surface defaults
+            // Without defaults, players with missing profiles produce 0 distributions → 0 candidates
+            const surfLower = (surface||'').toLowerCase();
+            const defaultAces  = surfLower==='grass' ? 7.5 : surfLower==='clay' ? 4.0 : 5.5;
+            const defaultGames = surfLower==='clay' ? 24.0 : 22.0;
+            const defaultDFs   = 2.5;
+            const acesVal  = avgAces  > 0 ? avgAces  : defaultAces;
+            const gamesVal = avgGames > 5 ? avgGames : defaultGames;
+            const dfsVal   = avgDFs   > 0 ? avgDFs   : defaultDFs;
+            aces   = synthesizeDist(acesVal,  matchCount||20, 0.35);
+            totals = synthesizeDist(gamesVal, matchCount||20, 0.20);
+            dfs    = synthesizeDist(dfsVal,   matchCount||20, 0.50);
           }
 
           // ── H2H context — adds note to any generated candidate ──
@@ -3245,6 +3258,17 @@ async function runTennisEngine(log){
                 if(total > 0) h2hNote = ` | H2H: ${p1Wins}-${p2Wins}`;
               }
             }catch(e){ console.warn('Tennis H2H fetch failed:',e?.message); }
+          }
+
+          // ── If no stats from API, generate from surface defaults ──
+          if(!aces.length || !totals.length){
+            const surfLower2 = (surface||'').toLowerCase();
+            const dA = surfLower2==='grass'?7.5:surfLower2==='clay'?4.0:5.5;
+            const dG = surfLower2==='clay'?24.0:22.0;
+            const dD = 2.5;
+            if(!aces.length)   aces   = synthesizeDist(dA, 20, 0.35);
+            if(!totals.length) totals = synthesizeDist(dG, 20, 0.20);
+            if(!dfs.length)    dfs    = synthesizeDist(dD, 20, 0.50);
           }
 
           // ── Build candidates from distributions ──
