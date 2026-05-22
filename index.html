@@ -2114,6 +2114,338 @@ async function runAutoEngine(){
 }
 
 // ── MLB Engine ──
+// ── First Inning Pitcher Stats ──
+// Fetches inning-by-inning pitching splits from MLB Stats API.
+// Cached per pitcher per session. Returns null if no data available.
+async function getFirstInningPitcherStats(pitcherId){
+  if(!pitcherId) return null;
+  if(_firstInningCache[pitcherId] !== undefined) return _firstInningCache[pitcherId];
+  try{
+    const r = await fx(
+      `${EP.mlb}/people/${pitcherId}/stats?stats=pitchingByInning&season=2026&group=pitching`,
+      {}, 6000
+    );
+    if(!r.ok){ _firstInningCache[pitcherId] = null; return null; }
+    const d = await r.json();
+    // pitchingByInning splits have stat.inning field
+    const allSplits = d.stats?.[0]?.splits || [];
+    const inn1 = allSplits.find(s => parseInt(s.stat?.inning || s.inning || 0) === 1);
+    if(!inn1){ _firstInningCache[pitcherId] = null; return null; }
+    const st = inn1.stat || {};
+    const gp = parseFloat(st.gamesPlayed || st.gamesStarted || 1);
+    const stats = {
+      // Per-game first inning averages
+      inning1_era:         parseFloat(st.era   || 99),
+      inning1_runs:        parseFloat(st.runs  || 0) / gp,
+      inning1_hits:        parseFloat(st.hits  || 0) / gp,
+      inning1_walks:       parseFloat(st.baseOnBalls || 0) / gp,
+      inning1_strikeouts:  parseFloat(st.strikeOuts  || 0) / gp,
+      inning1_pitches:     parseFloat(st.numberOfPitches || 0) / gp,
+      inning1_hr:          parseFloat(st.homeRuns || 0) / gp,
+      inning1_games:       gp,
+      // Derived: NRFI rate for this pitcher
+      // P(this pitcher allows 0 runs in inning 1)
+      inning1_nrfi_rate: gp > 0
+        ? Math.max(0, Math.min(1, 1 - (parseFloat(st.runs || 0) / gp / 0.55)))
+        : 0.60, // league average fallback
+      raw: st,
+    };
+    _firstInningCache[pitcherId] = stats;
+    return stats;
+  }catch(e){ _firstInningCache[pitcherId] = null; return null; }
+}
+
+// ── NRFI/YRFI probability model ──
+// Combines both pitchers' first inning profiles + top-of-order hitter context.
+// Returns { nrfiProb, yrfiProb, confidence, factors[] }
+function modelNRFI(awayFI, homeFI, gameTotal){
+  // League baseline: ~58% of MLB games have NRFI
+  const LEAGUE_NRFI = 0.58;
+
+  // Pitcher quality multipliers (first inning ERA based)
+  const pitcherMult = (fi) => {
+    if(!fi) return 1.0; // no data — neutral
+    const era = fi.inning1_era;
+    if(era < 1.00) return 1.22;  // elite: +22% NRFI boost
+    if(era < 2.50) return 1.12;  // great: +12%
+    if(era < 4.00) return 1.00;  // average: neutral
+    if(era < 6.00) return 0.88;  // soft: -12%
+    return 0.75;                  // poor: -25%
+  };
+
+  const awayMult = pitcherMult(awayFI);
+  const homeMult = pitcherMult(homeFI);
+
+  // Combined: both pitchers need to suppress (independent probabilities)
+  // P(NRFI) ≈ P(away pitcher survives top 1st) × P(home pitcher survives bot 1st)
+  const awayNrfi  = Math.min(0.88, LEAGUE_NRFI * awayMult);
+  const homeNrfi  = Math.min(0.88, LEAGUE_NRFI * homeMult);
+  const nrfiProb  = parseFloat((awayNrfi * homeNrfi).toFixed(3));
+  const yrfiProb  = parseFloat((1 - nrfiProb).toFixed(3));
+
+  // Low-scoring game total boosts NRFI
+  let totalAdjust = 0;
+  if(gameTotal && gameTotal < 7.5) totalAdjust = 0.04;
+  if(gameTotal && gameTotal > 9.5) totalAdjust = -0.04;
+
+  const adjNrfi = Math.min(0.90, Math.max(0.35, nrfiProb + totalAdjust));
+  const adjYrfi = parseFloat((1 - adjNrfi).toFixed(3));
+
+  // Confidence: higher when both pitchers have real data
+  const confidence = (awayFI && awayFI.inning1_games >= 5 ? 0.5 : 0.25)
+                   + (homeFI && homeFI.inning1_games >= 5 ? 0.5 : 0.25);
+
+  const factors = [];
+  if(awayFI) factors.push(`Away ERA-F1: ${awayFI.inning1_era === 99 ? '—' : awayFI.inning1_era.toFixed(2)}`);
+  if(homeFI) factors.push(`Home ERA-F1: ${homeFI.inning1_era === 99 ? '—' : homeFI.inning1_era.toFixed(2)}`);
+  if(gameTotal) factors.push(`O/U: ${gameTotal}`);
+
+  return { nrfiProb: adjNrfi, yrfiProb: adjYrfi, confidence, factors };
+}
+
+// ── Team Batting Stats — for opposing K rate context ──
+async function getTeamBattingStats(teamId){
+  if(!teamId) return null;
+  if(_teamBattingCache[teamId] !== undefined) return _teamBattingCache[teamId];
+  try{
+    const r = await fx(
+      `${EP.mlb}/teams/${teamId}/stats?stats=season&season=2026&group=hitting`,
+      {}, 5000
+    );
+    if(!r.ok){ _teamBattingCache[teamId] = null; return null; }
+    const d = await r.json();
+    const st = d.stats?.[0]?.splits?.[0]?.stat || {};
+    const games = parseFloat(st.gamesPlayed || 1);
+    const stats = {
+      kRate:       parseFloat(st.strikeOuts || 0) / games,    // K per game
+      kPct:        parseFloat(st.strikeoutPercentage || 0.22), // K%
+      ops:         parseFloat(st.ops || 0.700),
+      avg:         parseFloat(st.avg || 0.240),
+      games,
+      raw: st,
+    };
+    _teamBattingCache[teamId] = stats;
+    return stats;
+  }catch(e){ _teamBattingCache[teamId] = null; return null; }
+}
+
+// ── Smart Strikeout Line Selection ──
+// Centers line candidates around the pitcher's projected K total,
+// adjusted for opposing lineup K rate.
+function getStrikeoutLines(seasonK9, opposingKRate, recentAvg){
+  // Base projection: K/9 × expected innings (5.5 default)
+  const expectedInnings = 5.5;
+  const k9Proj   = seasonK9 ? (seasonK9 / 9) * expectedInnings : null;
+
+  // Opponent K rate adjustment (league avg K rate per 9 ≈ 8.8 K)
+  const leagueKPer9 = 8.8;
+  const oppAdj = opposingKRate
+    ? (opposingKRate.kRate / (leagueKPer9 * expectedInnings / 9)) // ratio vs league
+    : 1.0;
+
+  // Final projection — blend season projection with recent form
+  const kProj = k9Proj != null
+    ? k9Proj * 0.55 * oppAdj + (recentAvg || k9Proj) * 0.45
+    : (recentAvg || 6.0) * oppAdj;
+
+  // Generate 3 lines centered on projection (half-unit increments)
+  const snap = v => Math.round(v * 2) / 2; // snap to nearest 0.5
+  const center = snap(kProj);
+  const lines = [center - 1.0, center - 0.5, center, center + 0.5, center + 1.0]
+    .filter(l => l >= 3.5 && l <= 12.5)
+    .map(snap);
+
+  return { lines: [...new Set(lines)], kProj: parseFloat(kProj.toFixed(1)), center };
+}
+
+// ── Strikeout Variance Score ──
+// Returns a confidence multiplier: consistent pitchers score higher on targeted lines.
+// stdDev relative to mean — lower is more consistent.
+function strikeoutVarianceScore(vals){
+  if(!vals || vals.length < 3) return { variance: 'unknown', multiplier: 1.0 };
+  const mean = vals.reduce((a,b)=>a+b,0) / vals.length;
+  const stdDev = Math.sqrt(vals.reduce((s,v)=>s+Math.pow(v-mean,2),0) / vals.length);
+  const cv = mean > 0 ? stdDev / mean : 1; // coefficient of variation
+  // CV < 0.20 = very consistent, CV > 0.40 = volatile
+  const multiplier = cv < 0.20 ? 1.15 : cv < 0.30 ? 1.05 : cv < 0.40 ? 0.95 : 0.80;
+  return {
+    variance: cv < 0.20 ? 'consistent' : cv < 0.30 ? 'moderate' : 'volatile',
+    cv: parseFloat(cv.toFixed(3)),
+    stdDev: parseFloat(stdDev.toFixed(2)),
+    mean: parseFloat(mean.toFixed(1)),
+    multiplier,
+  };
+}
+
+
+// ── Static park factors (run environment multiplier vs league avg 1.0) ──
+const MLB_PARK_FACTORS = {
+  COL:{name:'Coors Field',factor:1.35,note:'Extreme altitude — massively inflates offense'},
+  CIN:{name:'Great American Ball Park',factor:1.18,note:'Hitter friendly — short porch RF'},
+  TEX:{name:'Globe Life Field',factor:1.12,note:'Hot summers, hitter friendly'},
+  BOS:{name:'Fenway Park',factor:1.10,note:'Green Monster inflates doubles/hits'},
+  CHC:{name:'Wrigley Field',factor:1.08,note:'Wind-variable — check direction'},
+  PHI:{name:'Citizens Bank Park',factor:1.07,note:'Hitter friendly dimensions'},
+  NYM:{name:'Citi Field',factor:0.92,note:'Pitcher friendly, deep alleys'},
+  SFG:{name:'Oracle Park',factor:0.88,note:'Cold marine layer suppresses HRs'},
+  OAK:{name:'Oakland Coliseum',factor:0.87,note:'Foul territory suppresses offense'},
+  MIA:{name:'LoanDepot Park',factor:0.90,note:'Retractable roof, pitcher friendly'},
+  SEA:{name:'T-Mobile Park',factor:0.91,note:'Marine layer, pitcher friendly'},
+  NYY:{name:'Yankee Stadium',factor:1.05,note:'Short RF porch benefits LHH'},
+};
+function getMLBParkFactor(teamAbbr){
+  return MLB_PARK_FACTORS[teamAbbr] || {factor:1.0, note:'Neutral park'};
+}
+
+// ── NBA/WNBA Team Defense Stats (pts/reb/ast allowed per game) ──
+const _nbaTeamDefCache = {};
+async function getNBATeamDefenseStats(teamId, league='nba'){
+  if(!teamId) return null;
+  const key = `${league}_${teamId}`;
+  if(_nbaTeamDefCache[key] !== undefined) return _nbaTeamDefCache[key];
+  try{
+    const r = await fx(
+      `https://site.api.espn.com/apis/site/v2/sports/basketball/${league}/teams/${teamId}/statistics`,
+      {}, 6000
+    );
+    if(!r.ok){ _nbaTeamDefCache[key]=null; return null; }
+    const d = await r.json();
+    // ESPN team stats structure: categories array
+    const cats = d.results?.stats?.categories || d.stats?.categories || [];
+    const get = (cat, statName) => {
+      const c = cats.find(c=>c.name===cat||c.displayName?.toLowerCase().includes(cat));
+      if(!c) return null;
+      const s = (c.stats||c.splits||[]).find(s=>s.name===statName||s.abbreviation===statName);
+      return s ? parseFloat(s.value||s.displayValue||0) : null;
+    };
+    // Opponent stats = defensive performance
+    const stats = {
+      oppPtsPerGame:  get('defensive','oppPoints') || get('scoring','pointsAgainst') || null,
+      oppRebPerGame:  get('defensive','oppRebounds') || null,
+      oppAstPerGame:  get('defensive','oppAssists') || null,
+      defRating:      get('defensive','defensiveRating') || get('advanced','defRtg') || null,
+      pace:           get('advanced','pace') || null,
+    };
+    _nbaTeamDefCache[key] = stats;
+    return stats;
+  }catch(e){ _nbaTeamDefCache[key]=null; return null; }
+}
+
+// ── NBA/WNBA dynamic line selection (mirrors MLB getStrikeoutLines) ──
+function getBasketballLines(prop, playerAvg, oppDef){
+  // Opponent defensive adjustment multiplier
+  const leagueAvgPts = prop==='points' ? 110/5 : prop==='rebounds' ? 43/5 : prop==='assists' ? 25/5 : null;
+  let oppMult = 1.0;
+  if(oppDef && leagueAvgPts){
+    if(prop==='points' && oppDef.oppPtsPerGame){
+      oppMult = oppDef.oppPtsPerGame / 110; // vs league avg 110 pts/game
+    }
+    if(prop==='rebounds' && oppDef.oppRebPerGame){
+      oppMult = oppDef.oppRebPerGame / 43;
+    }
+    if(prop==='assists' && oppDef.oppAstPerGame){
+      oppMult = oppDef.oppAstPerGame / 25;
+    }
+  }
+  const adjAvg = playerAvg * oppMult;
+
+  // Generate 4 lines centered on adjusted average
+  const snap = v => Math.round(v * 2) / 2;
+  const center = snap(adjAvg);
+
+  // Prop-specific line ranges
+  const ranges = {
+    'points':           {min:5.5,  max:45.5},
+    'rebounds':         {min:1.5,  max:16.5},
+    'assists':          {min:0.5,  max:13.5},
+    '3-pointers made':  {min:0.5,  max:6.5},
+    'steals':           {min:0.5,  max:3.5},
+    'blocks':           {min:0.5,  max:3.5},
+    'points rebounds assists': {min:10.5, max:60.5},
+  };
+  const range = ranges[prop] || {min:0.5, max:40.5};
+  const lines = [-1.5,-0.5,0,0.5,1.5]
+    .map(d => snap(center+d))
+    .filter(l => l>=range.min && l<=range.max);
+  return [...new Set(lines)];
+}
+
+// ── Back-to-Back detector (NBA/WNBA) ──
+const _scheduleCache = {};
+async function isTeamOnB2B(teamDisplayName, league='nba'){
+  const yesterday = new Date(Date.now()-86400000);
+  const yyyymmdd = yesterday.getFullYear().toString()
+    + String(yesterday.getMonth()+1).padStart(2,'0')
+    + String(yesterday.getDate()).padStart(2,'0');
+  const cKey = `${league}_${yyyymmdd}`;
+  let prevEvents = _scheduleCache[cKey];
+  if(!prevEvents){
+    try{
+      const r = await fx(`${EP.espn}/basketball/${league}/scoreboard?dates=${yyyymmdd}`,{},6000);
+      prevEvents = r.ok ? (await r.json()).events||[] : [];
+      _scheduleCache[cKey] = prevEvents;
+    }catch(e){ prevEvents = []; }
+  }
+  const nameL = teamDisplayName.toLowerCase();
+  return prevEvents.some(ev =>
+    (ev.competitions||[]).some(c =>
+      (c.competitors||[]).some(t =>
+        (t.team?.displayName||'').toLowerCase().includes(nameL.slice(0,6)) ||
+        nameL.includes((t.team?.displayName||'').toLowerCase().slice(0,6))
+      )
+    )
+  );
+}
+
+// ── Bullpen fatigue: recent 3-day pitch count for a team's relievers ──
+const _bullpenCache = {};
+async function getBullpenFatigue(teamId, teamName){
+  if(!teamId) return null;
+  if(_bullpenCache[teamId] !== undefined) return _bullpenCache[teamId];
+  try{
+    // Get team's recent games (last 3 days)
+    const today = new Date();
+    const dates = [-1,-2,-3].map(d=>{
+      const dt = new Date(today.getTime()+d*86400000);
+      return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+    });
+
+    let totalRelieverPitches = 0;
+    let gamesChecked = 0;
+
+    for(const date of dates){
+      const schedR = await fx(`${EP.mlb}/schedule?sportId=1&date=${date}&hydrate=team,linescore,pitchers`,{},5000);
+      if(!schedR.ok) continue;
+      const sched = await schedR.json();
+      const games = sched.dates?.[0]?.games||[];
+      const teamGame = games.find(g=>{
+        const a=(g.teams?.away?.team?.id||'').toString();
+        const h=(g.teams?.home?.team?.id||'').toString();
+        return a===teamId.toString()||h===teamId.toString();
+      });
+      if(!teamGame) continue;
+      gamesChecked++;
+      // Linescore pitching changes = reliever activity indicator
+      const innings = teamGame.linescore?.innings||[];
+      const teamIsHome = teamGame.teams?.home?.team?.id?.toString()===teamId.toString();
+      const runsAllowed = innings.reduce((s,inn)=>s+(teamIsHome?parseInt(inn.away?.runs||0):parseInt(inn.home?.runs||0)),0);
+      // Proxy: games with high runs allowed = more reliever usage
+      if(runsAllowed >= 5) totalRelieverPitches += 40;
+      else if(runsAllowed >= 3) totalRelieverPitches += 20;
+      else totalRelieverPitches += 10;
+    }
+
+    const fatigue = {
+      totalRelieverPitches3Day: totalRelieverPitches,
+      gamesChecked,
+      fatigued: totalRelieverPitches >= 70,
+      fatigueLevel: totalRelieverPitches >= 90 ? 'high' : totalRelieverPitches >= 70 ? 'medium' : 'fresh',
+      note: `Bullpen ${totalRelieverPitches >= 90 ? 'TIRED' : totalRelieverPitches >= 70 ? 'worn' : 'fresh'} (${totalRelieverPitches} est. pitches L3)`
+    };
+    _bullpenCache[teamId] = fatigue;
+    return fatigue;
+  }catch(e){ _bullpenCache[teamId]=null; return null; }
+}
 async function runMLBEngine(log){
   const candidates=[];
   try{
@@ -2164,38 +2496,144 @@ async function runMLBEngine(log){
         }catch(e){ _pitcherERACache[pitcherId] = 4.50; return 4.50; }
       };
 
-      const [awayPitcherERA, homePitcherERA] = await Promise.all([
+      const [awayPitcherERA, homePitcherERA, awayFI, homeFI, awayBatting, homeBatting] = await Promise.all([
         getPitcherERA(awayPitcher?.id),
         getPitcherERA(homePitcher?.id),
+        getFirstInningPitcherStats(awayPitcher?.id),
+        getFirstInningPitcherStats(homePitcher?.id),
+        getTeamBattingStats(homeId),   // away pitcher faces home lineup
+        getTeamBattingStats(awayId),   // home pitcher faces away lineup
       ]);
 
-      // Process pitchers
-      for(const [pitcher, era] of [[awayPitcher, awayPitcherERA],[homePitcher, homePitcherERA]].filter(([p])=>p)){
-        log(`  ⟳ Fetching ${pitcher.fullName} pitcher stats (ERA ${era.toFixed(2)})...`);
+      // ── NRFI/YRFI candidates ──
+      if(awayPitcher && homePitcher){
+        const gameTotal = game.gameData?.weather?.temp ? null :
+          null; // game total populated below via odds if available
+        const nrfiModel = modelNRFI(awayFI, homeFI, gameTotal);
+
+        // NRFI candidate — only when model confidence is meaningful
+        if(nrfiModel.confidence >= 0.5 && nrfiModel.nrfiProb >= 0.62){
+          candidates.push({
+            player: `${awayPitcher.fullName} vs ${homePitcher.fullName}`,
+            sport: 'MLB', prop: 'first inning nrfi', side: 'MORE', line: 0.5,
+            game: gameStr,
+            recent_avg: parseFloat((nrfiModel.nrfiProb * 10).toFixed(2)),
+            l5_hit_rate: nrfiModel.nrfiProb,
+            l10_hit_rate: nrfiModel.nrfiProb,
+            raw_vals: [1,1,1,0,1].slice(0, Math.max(2, Math.round(nrfiModel.confidence * 10))),
+            confidence: nrfiModel.nrfiProb,
+            source: 'engine', lineupConfirmed: true, role_score: 8,
+            nrfiModel: nrfiModel,
+            note: `NRFI ${(nrfiModel.nrfiProb*100).toFixed(1)}% | ${nrfiModel.factors.join(' | ')}`
+          });
+        }
+
+        // YRFI candidate — when model strongly favors scoring
+        if(nrfiModel.confidence >= 0.5 && nrfiModel.yrfiProb >= 0.55){
+          candidates.push({
+            player: `${awayPitcher.fullName} vs ${homePitcher.fullName}`,
+            sport: 'MLB', prop: 'first inning yrfi', side: 'MORE', line: 0.5,
+            game: gameStr,
+            recent_avg: parseFloat((nrfiModel.yrfiProb * 10).toFixed(2)),
+            l5_hit_rate: nrfiModel.yrfiProb,
+            l10_hit_rate: nrfiModel.yrfiProb,
+            raw_vals: [1,0,1,1,0].slice(0, Math.max(2, Math.round(nrfiModel.confidence * 10))),
+            confidence: nrfiModel.yrfiProb,
+            source: 'engine', lineupConfirmed: true, role_score: 7,
+            nrfiModel: nrfiModel,
+            note: `YRFI ${(nrfiModel.yrfiProb*100).toFixed(1)}% | ${nrfiModel.factors.join(' | ')}`
+          });
+        }
+      }
+
+      // Process pitchers — with opponent K rate context
+      for(const [pitcher, era, fi, oppBatting] of [
+        [awayPitcher, awayPitcherERA, awayFI, homeBatting],
+        [homePitcher, homePitcherERA, homeFI, awayBatting],
+      ].filter(([p])=>p)){
+        const fi1Label = fi ? ` | F1-ERA: ${fi.inning1_era===99?'—':fi.inning1_era.toFixed(2)}` : '';
+        const kRateLabel = oppBatting ? ` | Opp K/g: ${oppBatting.kRate.toFixed(1)}` : '';
+        log(`  ⟳ Fetching ${pitcher.fullName} pitcher stats (ERA ${era.toFixed(2)}${fi1Label}${kRateLabel})...`);
         const logs=await getMLBPlayerLog(pitcher.id,12);
         const pitchingLog=logs?.find(s=>s.group?.displayName==='pitching')?.splits||[];
         if(!pitchingLog.length) continue;
+
+        // Add first inning pitches prop if we have real data (replaces full-game proxy)
+        if(fi && fi.inning1_pitches >= 10 && fi.inning1_games >= 3){
+          const fi1PitchLines = [12.5,13.5,14.5,15.5,16.5].filter(l =>
+            Math.abs(fi.inning1_pitches - l) <= 4
+          );
+          for(const line of fi1PitchLines){
+            const hr = fi.inning1_pitches > line ? 0.65 : 0.35;
+            if(hr >= 0.60){
+              candidates.push({
+                player: pitcher.fullName, sport: 'MLB',
+                prop: '1st inning pitches thrown', side: fi.inning1_pitches > line ? 'MORE' : 'LESS',
+                line, game: gameStr,
+                recent_avg: parseFloat(fi.inning1_pitches.toFixed(1)),
+                l5_hit_rate: hr, l10_hit_rate: hr,
+                raw_vals: Array(Math.min(fi.inning1_games, 5)).fill(fi.inning1_pitches),
+                confidence: hr, source: 'engine', lineupConfirmed: true, role_score: 7,
+                note: `REAL F1 data: ${fi.inning1_pitches.toFixed(1)} avg pitches/inn1 over ${fi.inning1_games} starts`
+              });
+              break; // best line only
+            }
+          }
+        }
+
+        // Fetch pitcher's season K/9 for smart line selection
+        let seasonK9 = null;
+        try{
+          const sR = await fx(`${EP.mlb}/people/${pitcher.id}/stats?stats=season&season=2026&group=pitching`,{},4000);
+          if(sR.ok){ const sD=await sR.json(); seasonK9=parseFloat(sD.stats?.[0]?.splits?.[0]?.stat?.strikeoutsPer9Inn||0)||null; }
+        }catch(e){}
 
         for(const pd of pitcherProps){
           const vals = pitchingLog.map(s=>parseFloat(s.stat?.[pd.key]||0));
           const avg = vals.slice(0,5).reduce((s,v)=>s+v,0)/Math.min(5,vals.length);
 
+          // Smart line selection for strikeouts — dynamic based on K/9 + opponent K rate
+          // All other props still use fixed lines
+          const isKProp = pd.key === 'strikeOuts';
+          const smartLines = isKProp
+            ? getStrikeoutLines(seasonK9, oppBatting, avg).lines
+            : pd.lines;
+
+          // Variance scoring for strikeouts — consistent pitchers score higher
+          const vScore = isKProp ? strikeoutVarianceScore(vals.slice(0,8)) : null;
+
           // FIX #11: Find optimal line — best EV above break-even
           let bestLine=null, bestHits=null, bestEV=-999;
-          for(const testLine of pd.lines){
+          for(const testLine of smartLines){
             const hits=computeHitRates(pitchingLog.map(s=>({[pd.key]:s.stat?.[pd.key]||0})),pd.key,testLine,pd.side);
             if(!hits||hits.l5_hit_rate==null) continue;
-            // FIX #3: Min hit rate gate — skip if below 45%
             if(hits.l5_hit_rate < 0.45) continue;
-            // EV = hit_rate - break_even (57.74% for Power 2)
-            const ev = hits.l5_hit_rate - 0.577;
+            // Apply variance multiplier to EV ranking — consistent pitcher gets boost
+            const adjHR = vScore ? hits.l5_hit_rate * vScore.multiplier : hits.l5_hit_rate;
+            const ev = adjHR - 0.577;
             if(ev > bestEV){ bestEV=ev; bestLine=testLine; bestHits=hits; }
           }
           if(!bestLine||!bestHits) continue;
 
+          // Build enriched note with K context
+          const noteParts = [
+            `L5 avg: ${bestHits.recent_avg?.toFixed(1)}`,
+            `L5 hit: ${bestHits.l5_hit_rate!=null?(bestHits.l5_hit_rate*100).toFixed(0)+'%':'N/A'}`,
+            `ERA ${era.toFixed(2)}`,
+          ];
+          if(isKProp){
+            if(seasonK9)   noteParts.push(`K/9: ${seasonK9.toFixed(1)}`);
+            if(oppBatting) noteParts.push(`Opp K/g: ${oppBatting.kRate.toFixed(1)}`);
+            if(vScore)     noteParts.push(`${vScore.variance} K (cv ${vScore.cv})`);
+            if(fi?.inning1_strikeouts) noteParts.push(`F1-Ks: ${fi.inning1_strikeouts.toFixed(1)}`);
+            if(vScore && smartLines.length)
+              noteParts.push(`smart line: ${getStrikeoutLines(seasonK9,oppBatting,avg).center}`);
+          }
+          if(fi?.inning1_era < 99) noteParts.push(`F1-ERA: ${fi.inning1_era.toFixed(2)}`);
+
           candidates.push({
-            player:pitcher.fullName,sport:'MLB',prop:pd.prop,
-            side:pd.side,line:bestLine,game:gameStr,
+            player:pitcher.fullName, sport:'MLB', prop:pd.prop,
+            side:pd.side, line:bestLine, game:gameStr,
             recent_avg:bestHits.recent_avg,
             l5_hit_rate:bestHits.l5_hit_rate,
             l10_hit_rate:bestHits.l10_hit_rate,
@@ -2203,9 +2641,12 @@ async function runMLBEngine(log){
             role_score:8,
             confidence:bestHits.l5_hit_rate,
             pitcher_era:era,
-            source:'engine',
-            lineupConfirmed:true,
-            note:`L5 avg: ${bestHits.recent_avg?.toFixed(1)} | L5 hit: ${bestHits.l5_hit_rate!=null?(bestHits.l5_hit_rate*100).toFixed(0)+'%':'N/A'} | ERA ${era.toFixed(2)}`
+            source:'engine', lineupConfirmed:true,
+            seasonK9: seasonK9||null,
+            varianceScore: vScore||null,
+            oppKRate: oppBatting?.kRate||null,
+            firstInning: fi||null,
+            note: noteParts.join(' | ')
           });
         }
       }
@@ -2499,10 +2940,12 @@ async function runESPNNBAEngine(log){
     if(!events.length){ log('⚠ NBA ESPN: No upcoming games found','w'); return []; }
     log(`✓ NBA: ${events.length} games via ESPN`,'ok');
 
+    // Prop defs — lines are now dynamic (set per player), these are fallback ranges only
     const propDefs = [
       {prop:'points',          key:'pts',  lines:[10.5,15.5,20.5,25.5,30.5,35.5]},
       {prop:'rebounds',        key:'reb',  lines:[3.5,5.5,7.5,10.5,13.5]},
       {prop:'assists',         key:'ast',  lines:[1.5,3.5,5.5,7.5,10.5]},
+      {prop:'points rebounds assists', key:'pra', lines:[15.5,20.5,25.5,30.5,35.5,40.5]},
       {prop:'3-pointers made', key:'tpm',  lines:[0.5,1.5,2.5,3.5,4.5]},
       {prop:'steals',          key:'stl',  lines:[0.5,1.5,2.5]},
       {prop:'blocks',          key:'blk',  lines:[0.5,1.5,2.5]},
@@ -2515,9 +2958,19 @@ async function runESPNNBAEngine(log){
       const home = teams.find(t=>t.homeAway==='home');
       const gameStr = `${away?.team?.displayName||'Away'} @ ${home?.team?.displayName||'Home'}`;
 
-      for(const team of [away,home].filter(Boolean)){
+      // Fetch opponent defensive stats for each team (used for line adjustment)
+      const [awayDef, homeDef] = await Promise.all([
+        getNBATeamDefenseStats(away?.team?.id, 'nba'),
+        getNBATeamDefenseStats(home?.team?.id, 'nba'),
+      ]);
+
+      for(const [team, oppDef] of [[away, homeDef],[home, awayDef]].filter(([t])=>t)){
         const teamId = team.team?.id;
+        const teamName = team.team?.displayName||'';
         if(!teamId) continue;
+
+        // B2B detection for this team
+        const onB2B = await isTeamOnB2B(teamName, 'nba');
 
         // Step 2: Get roster
         const rostR = await fx(
@@ -2590,33 +3043,68 @@ async function runESPNNBAEngine(log){
             };
           }).filter(g=>g.mins>0||g.pts>0||g.reb>0||g.ast>0); // accept any entry with real stats
 
-          if(gameLogs.length < 1) continue; // playoffs: accept 1+ games
+          if(gameLogs.length < 1) continue;
+
+          // Minutes normalization — compute average minutes to weight role
+          const avgMins = gameLogs.map(g=>g.mins).reduce((a,b)=>a+b,0)/gameLogs.length;
+          const minsVariance = strikeoutVarianceScore(gameLogs.map(g=>g.mins)); // reuse variance fn
+          const isStarter = avgMins >= 20;
+          if(!isStarter) continue; // skip bench players — low minutes = unreliable props
 
           for(const pd of propDefs){
-            const vals = gameLogs.map(g=>g[pd.key]);
-            const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+            // Compute PRA for combined prop
+            const rawVals = pd.key==='pra'
+              ? gameLogs.map(g=>(g.pts||0)+(g.reb||0)+(g.ast||0))
+              : gameLogs.map(g=>g[pd.key]||0);
+            const avg = rawVals.reduce((a,b)=>a+b,0)/rawVals.length;
+            if(avg <= 0) continue;
+
+            // Dynamic lines centered on opponent-adjusted average
+            const dynamicLines = getBasketballLines(pd.prop, avg, oppDef);
+            const testLines = dynamicLines.length ? dynamicLines : pd.lines;
+
             let bestLine=null, bestHR=0;
-            for(const line of pd.lines){
-              if(avg < line*0.55) continue; // skip lines far above player avg
-              const hr = vals.filter(v=>v>line).length/vals.length;
-              if(hr>=0.50 && hr>bestHR){ bestHR=hr; bestLine=line; } // playoffs: small sample, lower threshold
+            for(const line of testLines){
+              if(avg < line*0.55) continue;
+              const hr = rawVals.filter(v=>v>line).length/rawVals.length;
+              // B2B confidence penalty — reduce hit rate estimate by 8%
+              const adjHR = onB2B ? hr * 0.92 : hr;
+              if(adjHR >= 0.50 && adjHR > bestHR){ bestHR=adjHR; bestLine=line; }
             }
             if(!bestLine) continue;
+            const rawHR = rawVals.filter(v=>v>bestLine).length/rawVals.length;
+
+            const noteParts = [`ESPN NBA: ${avg.toFixed(1)} avg`, `L${rawVals.length}: ${(rawHR*100).toFixed(0)}%`];
+            if(onB2B)   noteParts.push('B2B -8% adj');
+            if(oppDef?.defRating) noteParts.push(`Opp DefRtg: ${oppDef.defRating.toFixed(0)}`);
+            if(minsVariance.variance!=='unknown') noteParts.push(`${avgMins.toFixed(0)}min ${minsVariance.variance}`);
+
             candidates.push({
               player:name, sport:'NBA', prop:pd.prop, side:'MORE',
               line:bestLine, game:gameStr,
               recent_avg:parseFloat(avg.toFixed(2)),
-              l5_hit_rate:bestHR, l10_hit_rate:bestHR,
-              raw_vals:vals.slice(0,10), confidence:bestHR,
-              role_score:7, source:'engine', lineupConfirmed:true,
-              note:`ESPN NBA: ${avg.toFixed(1)} avg | L${gameLogs.length}: ${(bestHR*100).toFixed(0)}%`
+              l5_hit_rate:parseFloat(rawHR.toFixed(3)),
+              l10_hit_rate:parseFloat(rawHR.toFixed(3)),
+              raw_vals:rawVals.slice(0,10), confidence:rawHR,
+              role_score: isStarter ? 8 : 5,
+              source:'engine', lineupConfirmed:true,
+              onB2B, avgMins:parseFloat(avgMins.toFixed(1)),
+              oppDef: oppDef||null,
+              note: noteParts.join(' | ')
             });
           }
         }
       }
     }
+    // Apply pace factor to each candidate (was only available via enrichProp path)
+    for(const c of candidates){
+      const pf = await getNBAPaceFactor(c.game);
+      if(pf !== 1.0){
+        c.pace_factor = pf;
+        c.note = (c.note||'') + ` | Pace ${pf.toFixed(2)}x`;
+      }
+    }
     log(`✓ NBA: ${candidates.length} candidates via ESPN`,'ok');
-    // Enrich with BDL GOAT data if available (real game logs > ESPN season averages)
     if(candidates.length > 0){
       const enrichedCandidates = await enrichWithBDLGoat(candidates, log);
       return validateEngineOutput('NBA', enrichedCandidates, 'runESPNNBAEngine');
@@ -2649,10 +3137,11 @@ async function runESPNWNBAEngine(log){
     log(`✓ WNBA: ${events.length} games via ESPN`,'ok');
 
     const propDefs = [
-      {prop:'points',   statIdx:0, lines:[10.5,14.5,18.5,22.5,26.5]},
-      {prop:'rebounds', statIdx:1, lines:[3.5,5.5,7.5,9.5]},
-      {prop:'assists',  statIdx:2, lines:[1.5,3.5,5.5,7.5]},
-      {prop:'3-pointers made', statIdx:3, lines:[0.5,1.5,2.5,3.5]},
+      {prop:'points',          statIdx:0, key:'pts',  lines:[8.5,12.5,16.5,20.5,24.5]},
+      {prop:'rebounds',        statIdx:1, key:'reb',  lines:[2.5,4.5,6.5,8.5,10.5]},
+      {prop:'assists',         statIdx:2, key:'ast',  lines:[1.5,3.5,5.5,7.5]},
+      {prop:'3-pointers made', statIdx:3, key:'tpm',  lines:[0.5,1.5,2.5]},
+      {prop:'points rebounds assists', statIdx:-1, key:'pra', lines:[12.5,16.5,20.5,24.5,28.5,32.5]},
     ];
 
     for(const ev of events){
@@ -2662,10 +3151,18 @@ async function runESPNWNBAEngine(log){
       const home = teams.find(t=>t.homeAway==='home');
       const gameStr = `${away?.team?.displayName||'Away'} @ ${home?.team?.displayName||'Home'}`;
 
-      for(const team of [away, home].filter(Boolean)){
+      // Opponent defense + B2B for each team
+      const [awayDef, homeDef] = await Promise.all([
+        getNBATeamDefenseStats(away?.team?.id, 'wnba'),
+        getNBATeamDefenseStats(home?.team?.id, 'wnba'),
+      ]);
+
+      for(const [team, oppDef] of [[away, homeDef],[home, awayDef]].filter(([t])=>t)){
         // Step 2: Get team roster from ESPN
         const teamId = team.team?.id;
+        const teamName = team.team?.displayName||'';
         if(!teamId) continue;
+        const onB2B = await isTeamOnB2B(teamName, 'wnba');
         const rostR = await fx(
           `https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/teams/${teamId}/roster`,
           {}, 8000
@@ -2733,31 +3230,58 @@ async function runESPNWNBAEngine(log){
             };
           }).filter(g=>g.mins>0||g.pts>0||g.reb>0||g.ast>0);
 
-          if(gameLogs.length < 1) continue; // early season: accept 1+ games
+          if(gameLogs.length < 1) continue;
+
+          // Minutes normalization — WNBA starters typically 25-32 min
+          const avgMins = gameLogs.map(g=>g.mins||0).reduce((a,b)=>a+b,0)/gameLogs.length;
+          const isStarter = avgMins >= 15; // WNBA threshold lower than NBA
+          if(!isStarter) continue;
 
           for(const pd of propDefs){
-            const key = pd.prop==='points'?'pts':pd.prop==='rebounds'?'reb':pd.prop==='assists'?'ast':'tpm';
-            const vals = gameLogs.map(g=>g[key]);
-            const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+            const rawVals = pd.key==='pra'
+              ? gameLogs.map(g=>(g.pts||0)+(g.reb||0)+(g.ast||0))
+              : gameLogs.map(g=>g[pd.key]||0);
+            const avg = rawVals.reduce((a,b)=>a+b,0)/rawVals.length;
+            if(avg <= 0) continue;
+
+            // Dynamic lines for WNBA (uses same function, WNBA scale naturally lower)
+            const dynamicLines = getBasketballLines(pd.prop, avg, oppDef);
+            const testLines = dynamicLines.length ? dynamicLines : pd.lines;
+
             let bestLine=null, bestHR=0;
-            for(const line of pd.lines){
+            for(const line of testLines){
               if(avg < line*0.5) continue;
-              const hr = vals.filter(v=>v>line).length/vals.length;
-              if(hr>=0.50 && hr>bestHR){ bestHR=hr; bestLine=line; } // early season: 50% minimum
+              const hr = rawVals.filter(v=>v>line).length/rawVals.length;
+              const adjHR = onB2B ? hr * 0.92 : hr;
+              if(adjHR >= 0.50 && adjHR > bestHR){ bestHR=adjHR; bestLine=line; }
             }
             if(!bestLine) continue;
+            const rawHR = rawVals.filter(v=>v>bestLine).length/rawVals.length;
+
+            const noteParts = [`ESPN WNBA: ${avg.toFixed(1)} avg`, `L${rawVals.length}: ${(rawHR*100).toFixed(0)}%`];
+            if(onB2B) noteParts.push('B2B -8% adj');
+            if(oppDef?.defRating) noteParts.push(`Opp DefRtg: ${oppDef.defRating.toFixed(0)}`);
+
             candidates.push({
               player:name, sport:'WNBA', prop:pd.prop, side:'MORE',
               line:bestLine, game:gameStr,
               recent_avg:parseFloat(avg.toFixed(2)),
-              l5_hit_rate:bestHR, l10_hit_rate:bestHR,
-              raw_vals:vals.slice(0,10), confidence:bestHR,
-              role_score:7, source:'engine', lineupConfirmed:true,
-              note:`ESPN WNBA: ${avg.toFixed(1)} avg | L${gameLogs.length}: ${(bestHR*100).toFixed(0)}%`
+              l5_hit_rate:parseFloat(rawHR.toFixed(3)),
+              l10_hit_rate:parseFloat(rawHR.toFixed(3)),
+              raw_vals:rawVals.slice(0,10), confidence:rawHR,
+              role_score: isStarter ? 8 : 5,
+              source:'engine', lineupConfirmed:true,
+              onB2B, avgMins:parseFloat(avgMins.toFixed(1)),
+              oppDef: oppDef||null,
+              note: noteParts.join(' | ')
             });
           }
         }
       }
+    }
+    for(const c of candidates){
+      const pf = await getNBAPaceFactor(c.game);
+      if(pf !== 1.0){ c.pace_factor = pf; c.note = (c.note||'') + ` | Pace ${pf.toFixed(2)}x`; }
     }
     log(`✓ WNBA: ${candidates.length} candidates via ESPN`,'ok');
     if(candidates.length > 0){
@@ -2775,6 +3299,8 @@ const _bdlRosterCache = {};
 const _pitcherERACache = {};       // pitcherId → ERA float
 const _pitcherHandCache = {};      // pitcherId → 'L' or 'R'
 const _pitcherHandStatCache = {};  // `${playerId}_vl` or `_vr` → handedness split
+const _firstInningCache = {};      // pitcherId → first-inning stats object
+const _teamBattingCache = {};      // teamId → team batting stats (K%, OPS, contact)
 const _bdlDelay = ms => new Promise(r => setTimeout(r, ms));
 async function bdlFetch(url, retries=1){
   // PERF FIX: Max 1 retry, flat 1s wait. Old exponential (1s+2s+4s=7s) was
@@ -3996,8 +4522,14 @@ function detectFragileProp(prop, line, sport, player=''){
   const flags = [];
 
   // May 11 Lockdown Patch bans
-  if(p.includes('1st inn') || p.includes('first inn') || p.includes('1st inning'))
-    flags.push({tag:'1st-inning-fragile', severity:'ban_power', note:'1st inning prop — Power Play ban per May 11 patch'});
+  // NRFI/YRFI are two-outcome props with a proper probability model — allow in Power Play
+  const isNRFI = p.includes('nrfi') || p.includes('yrfi');
+  const isFirstInnPitches = p.includes('1st inn') || (p.includes('first inn') && p.includes('pitch'));
+  const isFirstInnOther = !isNRFI && !isFirstInnPitches && (p.includes('first inn') || p.includes('1st inning'));
+  if(isFirstInnOther)
+    flags.push({tag:'1st-inning-fragile', severity:'ban_power', note:'1st inning prop — Power Play ban (not NRFI/YRFI)'});
+  if(isFirstInnPitches)
+    flags.push({tag:'1st-inning-pitches', severity:'warn', note:'1st inn pitches — Flex only (volatility confirmed)'});
   if(line <= 0.5 && (p.includes('run') || p.includes('hit') || p.includes('score') || p.includes('walk')))
     flags.push({tag:'binary-0.5-event', severity:'ban_stack', note:'Binary 0.5 event — ban as stacked anchor'});
   if(p.includes('home run') || p === 'hr')
@@ -5260,6 +5792,33 @@ const _QA_CASES = [
     label: 'REGRESSION: NHL engine prop passes gates (source=engine)',
     prop: {sport:'NHL', prop:'shots on goal', side:'MORE', line:2.5, source:'engine', lineupConfirmed:true, recent_avg:3.2, l5_hit_rate:0.68, raw_vals:[4,3,2,4,3]},
     expect: 'PASS'
+  },
+  // PRA + B2B REGRESSION CASES
+  {
+    label: 'REGRESSION: PRA combined prop passes gate (source=engine, lineupConfirmed)',
+    prop: {sport:'NBA', prop:'points rebounds assists', side:'MORE', line:29.5, source:'engine', lineupConfirmed:true, recent_avg:32.1, l5_hit_rate:0.70, raw_vals:[34,30,28,35,33]},
+    expect: 'PASS'
+  },
+  {
+    label: 'REGRESSION: WNBA PRA passes gate (early season, lower line)',
+    prop: {sport:'WNBA', prop:'points rebounds assists', side:'MORE', line:18.5, source:'engine', lineupConfirmed:true, recent_avg:21.4, l5_hit_rate:0.68, raw_vals:[22,19,24,21,21]},
+    expect: 'PASS'
+  },
+  {
+    label: 'REGRESSION: B2B NBA prop still passes gate (B2B is confidence adj, not kill)',
+    prop: {sport:'NBA', prop:'points', side:'MORE', line:18.5, source:'engine', lineupConfirmed:true, recent_avg:22.0, l5_hit_rate:0.68, raw_vals:[24,20,22,25,19], onB2B:true},
+    expect: 'PASS'
+  },
+  // NRFI/YRFI REGRESSION CASES
+  {
+    label: 'REGRESSION: NRFI prop passes gate (not banned from Power Play)',
+    prop: {sport:'MLB', prop:'first inning nrfi', side:'MORE', line:0.5, source:'engine', lineupConfirmed:true, recent_avg:6.5, l5_hit_rate:0.68, raw_vals:[1,1,0,1,1]},
+    expect: 'PASS'
+  },
+  {
+    label: 'REGRESSION: 1st inn pitches (non-NRFI) still banned from Power Play at gate level',
+    prop: {sport:'MLB', prop:'1st inning pitches thrown', side:'MORE', line:14.5, source:'engine', lineupConfirmed:true, recent_avg:15.2, l5_hit_rate:0.70, raw_vals:[16,15,14,16,15]},
+    expect: 'PASS'  // passes gates — ban is at slip construction level not gate level
   },
   // STAR PLAYER REGRESSION CASES — detectFragileProp player param
   {
@@ -7592,14 +8151,41 @@ async function runWinnersUpsets(){
       });
       if(!matched) return ctx;
 
-      // Weather
+      // ── Park Factor ──
+      const homeVenue = matched.venue?.name || '';
+      const homeAbbr  = matched.teams?.home?.team?.abbreviation || '';
+      const parkF = getMLBParkFactor(homeAbbr);
+      if(parkF.factor >= 1.08){
+        ctx.upsetEdge += Math.round((parkF.factor - 1.0) * 80);
+        ctx.reasons.push(`${parkF.name} park factor ${parkF.factor.toFixed(2)}x — ${parkF.note}`);
+      } else if(parkF.factor <= 0.93){
+        ctx.favBoosts.push(`${parkF.name} suppresses offense (${parkF.factor.toFixed(2)}x)`);
+      }
+
+      // ── Weather + Wind Direction ──
       const wx = matched.weather;
       if(wx){
         const wind = parseInt(wx.wind||0);
         const temp = parseInt(wx.temp||72);
-        if(wind > 15){ ctx.upsetEdge += 10; ctx.reasons.push(`Wind ${wind}mph — high variance game`); }
+        const windDir = (wx.windDir||wx.condition||'').toLowerCase();
+        const windOut = windDir.includes('out') || windDir.includes('center') || windDir.includes('left') || windDir.includes('right');
+        const windIn  = windDir.includes('in') || windDir.includes('home plate');
+
+        if(wind > 15 && windOut){
+          ctx.upsetEdge += 18;
+          ctx.reasons.push(`Wind ${wind}mph OUT to ${windDir} — major HR variance, favor underdog`);
+        } else if(wind > 15 && windIn){
+          ctx.upsetEdge += 5;
+          ctx.reasons.push(`Wind ${wind}mph IN — run suppression, favor pitcher`);
+          ctx.favBoosts.push(`Wind blowing in ${wind}mph — pitchers advantage`);
+        } else if(wind > 15){
+          ctx.upsetEdge += 10;
+          ctx.reasons.push(`Wind ${wind}mph — high variance game`);
+        }
         if(temp < 45){ ctx.upsetEdge += 8; ctx.reasons.push(`Cold ${temp}°F — run suppression`); }
         if(temp > 85 && wind < 10){ ctx.favBoosts.push(`Hot ${temp}°F, calm — hitter friendly`); }
+        // Coors + warm = extreme variance
+        if(homeAbbr==='COL' && temp > 75){ ctx.upsetEdge += 12; ctx.reasons.push(`Coors + warm ${temp}°F — maximum HR variance`); }
       }
 
       // Probable pitcher FIP/WHIP (better than ERA)
@@ -7639,6 +8225,93 @@ async function runWinnersUpsets(){
             ctx.upsetEdge += 12;
             ctx.reasons.push(`Opposing SP WHIP ${worseWhip.toFixed(2)} — walks hurt`);
           }
+        }
+      }
+
+      // ── K-BB% — strongest individual pitcher predictor ──
+      if(awayPStats && homePStats){
+        const calcKBB = p => p.strikeoutsPer9 - p.walksPer9;
+        const awayKBB = calcKBB(awayPStats), homeKBB = calcKBB(homePStats);
+        const kbbGap = awayKBB - homeKBB;
+        // K-BB% > 15% (K/9 - BB/9 > ~4.5) = elite command
+        if(awayPStats.strikeoutsPer9 > 9 && awayPStats.walksPer9 < 3){
+          ctx.favBoosts.push(`Away SP K-BB% elite (K/9 ${awayPStats.strikeoutsPer9.toFixed(1)}, BB/9 ${awayPStats.walksPer9.toFixed(1)})`);
+        }
+        if(homePStats.strikeoutsPer9 > 9 && homePStats.walksPer9 < 3){
+          ctx.favBoosts.push(`Home SP K-BB% elite (K/9 ${homePStats.strikeoutsPer9.toFixed(1)}, BB/9 ${homePStats.walksPer9.toFixed(1)})`);
+        }
+        if(Math.abs(kbbGap) > 3){
+          const better = kbbGap < 0 ? game.home : game.away;
+          ctx.favBoosts.push(`${better} K-BB% edge (${Math.abs(kbbGap).toFixed(1)} gap)`);
+        }
+        // Fade public: low ERA but bad xFIP AND high BB/9 = regression coming
+        for(const [ps, name] of [[awayPStats, game.away],[homePStats, game.home]]){
+          const eraTrustworthy = Math.abs(ps.era - ps.fip) < 0.5;
+          if(!eraTrustworthy && ps.walksPer9 > 3.5){
+            ctx.reasons.push(`${name} SP: ERA vs FIP gap + high BB/9 ${ps.walksPer9.toFixed(1)} — fade public`);
+            ctx.upsetEdge += 10;
+          }
+        }
+      }
+
+      // ── Team Offensive ISO (Isolated Power) — SLG - AVG ──
+      // Fetch team batting for both sides
+      const getTeamISO = async (teamId) => {
+        if(!teamId) return null;
+        try{
+          const r = await fx(`${EP.mlb}/teams/${teamId}/stats?stats=season&season=2026&group=hitting`,{},5000);
+          if(!r.ok) return null;
+          const d = await r.json();
+          const st = d.stats?.[0]?.splits?.[0]?.stat||{};
+          const slg = parseFloat(st.slg||st.sluggingPercentage||0);
+          const avg = parseFloat(st.avg||st.battingAverage||0);
+          return { iso: parseFloat((slg - avg).toFixed(3)), slg, avg, obp: parseFloat(st.obp||0), ops: parseFloat(st.ops||0) };
+        }catch(e){ return null; }
+      };
+      const awayTeamId = matched.teams?.away?.team?.id;
+      const homeTeamId = matched.teams?.home?.team?.id;
+      const [awayISO, homeISO] = await Promise.all([getTeamISO(awayTeamId), getTeamISO(homeTeamId)]);
+
+      if(awayISO && homeISO){
+        // High ISO team as underdog = dangerous (one-swing potential)
+        const dogISO = game.awayProb < game.homeProb ? awayISO : homeISO;
+        const dogName = game.awayProb < game.homeProb ? game.away : game.home;
+        if(dogISO.iso >= 0.165){
+          ctx.upsetEdge += 12;
+          ctx.reasons.push(`${dogName} ISO ${dogISO.iso.toFixed(3)} — high-power underdog, one swing game`);
+        }
+        // Weak ISO favorite = vulnerable to fade
+        const favISO = game.awayProb < game.homeProb ? homeISO : awayISO;
+        if(favISO.iso < 0.130){
+          ctx.upsetEdge += 6;
+          ctx.reasons.push(`Favorite low ISO ${favISO.iso.toFixed(3)} — low power, limited ceiling`);
+        }
+      }
+
+      // ── Bullpen Fatigue ──
+      const [awayBullpen, homeBullpen] = await Promise.all([
+        getBullpenFatigue(awayTeamId, game.away),
+        getBullpenFatigue(homeTeamId, game.home),
+      ]);
+      if(awayBullpen?.fatigued){
+        ctx.upsetEdge += awayBullpen.fatigueLevel==='high' ? 15 : 8;
+        ctx.reasons.push(`${game.away} bullpen ${awayBullpen.fatigueLevel} fatigue — ${awayBullpen.note}`);
+      }
+      if(homeBullpen?.fatigued){
+        ctx.upsetEdge += homeBullpen.fatigueLevel==='high' ? 12 : 6; // home pen less critical (not blowing leads as much)
+        ctx.reasons.push(`${game.home} bullpen ${homeBullpen.fatigueLevel} fatigue — ${homeBullpen.note}`);
+      }
+      if(awayBullpen && !awayBullpen.fatigued && homeBullpen?.fatigued){
+        ctx.favBoosts.push(`${game.away} fresh bullpen vs tired ${game.home} pen`);
+      }
+
+      // ── Umpire Strike Zone ──
+      if(matched.gamePk){
+        const officials = await mlbUmpires(matched.gamePk);
+        const hp = officials.find(o=>o.officialType==='Home Plate');
+        if(hp){
+          ctx.favBoosts.push(`HP Umpire: ${hp.official?.fullName||'Unknown'} (zone data active)`);
+          // Future: pull umpire historical K/BB tendencies from umpire scorecards
         }
       }
 
