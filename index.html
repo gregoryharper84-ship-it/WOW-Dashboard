@@ -1988,15 +1988,13 @@ async function runAutoEngine(){
       } else if(sport==='NBA'){
         allCandidates.push(...await runBDLEngine('NBA',log));
       } else if(sport==='WNBA'){
-        // WNBA — ESPN WNBA is most reliable source (BDL/OddsAPI have coverage gaps)
+        // WNBA — ESPN is primary. BDL WNBA consistently returns 401/429 (teams 20/21/27/6)
+        // so we skip BDL entirely to avoid ESPN running twice (primary + BDL's own fallback)
         log(`⟳ WNBA: fetching slate from ESPN...`,'i');
         const wnbaCandidates = await runESPNWNBAEngine(log);
         allCandidates.push(...wnbaCandidates);
-        if(!wnbaCandidates.length){
-          // Fallback to BDL
-          const wnbaBDL = await runBDLEngine('WNBA', log);
-          allCandidates.push(...wnbaBDL);
-        }
+        // BDL WNBA disabled — re-enable when BDL key has WNBA coverage
+        // if(!wnbaCandidates.length){ const wnbaBDL = await runBDLEngine('WNBA', log); allCandidates.push(...wnbaBDL); }
       } else if(sport==='CS2'){
         log('⟳ Running CS2 engine (MAP 1 kills)...');
         const cs2Candidates = await runCS2Engine(log);
@@ -2009,7 +2007,11 @@ async function runAutoEngine(){
       } else if(sport==='Soccer'){
         log(`⟳ Soccer: fetching fixtures + player stats via Replit...`,'i');
         // Wake up Replit before calling (free tier sleeps after inactivity)
-        try{ await fx(`${EP.replit}/health`,{headers:{'X-API-Key':KEYS.replit}},5000); }catch(e){}
+        try{
+          const hR=await fx(`${EP.replit}/health`,{headers:{'X-API-Key':KEYS.replit}},5000);
+          if(hR?.status===401) log('⛔ Replit API key rejected (401) — Soccer/Tennis/Scoring will fail. Update KEYS.replit.','e');
+          else if(hR?.ok) chip('replit','ok');
+        }catch(e){}
         const soccerCandidates = await runSoccerEngine(log);
         allCandidates.push(...soccerCandidates);
         if(!soccerCandidates.length) log(`⚠ Soccer: no candidates — league may need populating (see Replit /fbref-stats/populate)`,'w');
@@ -3124,8 +3126,15 @@ async function runSoccerEngine(log){
       {headers:{'X-API-Key':KEYS.replit}}, 8000
     );
 
+    // Explicit 401 detection — KEYS.replit expired/rotated = key rejected
+    if(fixturesR && !fixturesR.ok){
+      if(fixturesR.status===401 || fixturesR.status===403)
+        log(`⛔ Soccer: Replit API key rejected (${fixturesR.status}) — update KEYS.replit in source. Soccer/Tennis/Scoring all use same key.`,'e');
+      else
+        log(`⚠ Soccer: Replit returned HTTP ${fixturesR.status} — 0 fixtures`,'w');
+    }
     let fixtures = [];
-    if(fixturesR.ok){
+    if(fixturesR && fixturesR.ok){
       // Guard against HTML error pages (Replit cold start returns HTML)
       const rawText = await fixturesR.text();
       if(rawText.trim().startsWith('<')){
@@ -3240,7 +3249,10 @@ async function runTennisEngine(log){
         `${EP.replit}/api-sports/tennis/fixtures?date=${todayFormatted}&tour=${tour}`,
         {headers:{'X-API-Key':KEYS.replit}}, 10000
       );
-      if(!r.ok) continue;
+      if(!r.ok){
+        if(r.status===401){ log('⛔ Tennis: Replit API key rejected (401) — update KEYS.replit','e'); break; }
+        continue;
+      }
       // Guard against HTML error pages (Replit cold-starting)
       const rawText = await r.text();
       if(rawText.trim().startsWith('<')){
@@ -3484,7 +3496,10 @@ async function scoreOne(c){
     if(c.pace_factor!=null)    payload.pace_factor    = c.pace_factor;
 
     const r=await fx(`${EP.replit}/gpt-score`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},body:JSON.stringify(payload)},6000);
-    if(!r.ok)return null;
+    if(!r.ok){
+      if(r.status===401) console.warn('WOW scoreOne: Replit key rejected (401) — props will use local scoring only');
+      return null;
+    }
     const d=await r.json();chip('replit','ok');return d.wow_score??d.score??null;
   }catch(e){return null;}
 }
