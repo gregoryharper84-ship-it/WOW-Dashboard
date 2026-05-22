@@ -2097,6 +2097,8 @@ async function runMLBEngine(log){
             role_score:8,
             confidence:bestHits.l5_hit_rate,
             pitcher_era:era,
+            source:'engine',
+            lineupConfirmed:true,
             note:`L5 avg: ${bestHits.recent_avg?.toFixed(1)} | L5 hit: ${bestHits.l5_hit_rate!=null?(bestHits.l5_hit_rate*100).toFixed(0)+'%':'N/A'} | ERA ${era.toFixed(2)}`
           });
         }
@@ -2166,6 +2168,8 @@ async function runMLBEngine(log){
               confidence:bestHits.l5_hit_rate,
               opp_pitcher_era:oppERA,
               handedness_stat:handednessStat,
+              source:'engine',
+              lineupConfirmed:true,
               note:`L5 avg: ${bestHits.recent_avg?.toFixed(1)} | L5 hit: ${(bestHits.l5_hit_rate*100).toFixed(0)}% | vs ERA ${oppERA.toFixed(2)}${handednessNote}`
             });
           }
@@ -10089,7 +10093,7 @@ async function buildMLBLessCandidates(cfg, log){
           }
         }catch(e){}
         if(score<15) continue;
-        if(cfg.runs) candidates.push({player:pname,sport:'MLB',prop:'runs scored',side:'LESS',line:0.5,game:gameStr,score,reasons,opp_pitcher:oppPitcher?.fullName||'',opp_era:oppERA,game_total:gameTotal,batting_order:battingOrder});
+        if(cfg.runs) candidates.push({player:pname,sport:'MLB',prop:'runs scored',side:'LESS',line:0.5,game:gameStr,score,reasons,opp_pitcher:oppPitcher?.fullName||'',opp_era:oppERA,game_total:gameTotal,batting_order:battingOrder,source:'engine',lineupConfirmed:true});
         if(cfg.hits) candidates.push({player:pname,sport:'MLB',prop:'hits',side:'LESS',line:0.5,game:gameStr,score,reasons,opp_pitcher:oppPitcher?.fullName||'',opp_era:oppERA});
         if(cfg.tb) candidates.push({player:pname,sport:'MLB',prop:'total bases',side:'LESS',line:0.5,game:gameStr,score,reasons,opp_pitcher:oppPitcher?.fullName||''});
         if(cfg.pa && battingOrder>=7) candidates.push({player:pname,sport:'MLB',prop:'plate appearances',side:'LESS',line:4.5,game:gameStr,score:score+10,reasons:[...reasons,'low-order PA risk'],opp_pitcher:oppPitcher?.fullName||''});
