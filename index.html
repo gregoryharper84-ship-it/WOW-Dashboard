@@ -2303,8 +2303,8 @@ async function runNHLEngine(log){
 
       for(const abbr of [awayAbbr,homeAbbr].filter(Boolean)){
         const roster=await getNHLRoster(abbr);
+        log(`  NHL ${abbr}: roster=${roster?.length||0} players`,'i');
         if(!roster)continue;
-        // Top forwards for SOG, goalies for saves
         const forwards=roster.filter(p=>p.positionCode==='L'||p.positionCode==='R'||p.positionCode==='C').slice(0,3);
         const goalies=roster.filter(p=>p.positionCode==='G').slice(0,1);
 
@@ -2312,6 +2312,8 @@ async function runNHLEngine(log){
           const isGoalie=player.positionCode==='G';
           const props=isGoalie?[nhlProps[1]]:[nhlProps[0]];
           const logs=await getNHLPlayerLog(player.id);
+          const playerName=`${player.firstName?.default||''} ${player.lastName?.default||''}`.trim();
+          log(`  NHL ${abbr} ${playerName}: logs=${logs?.length||0}`,'i');
           if(!logs||!logs.length)continue;
 
           for(const np of props){
@@ -2396,6 +2398,7 @@ async function runESPNNBAEngine(log){
         const athletes = (rostD.athletes||[]).flatMap(g=>g.items||g.athletes||[g]).filter(a=>a.id);
         if(!athletes.length) continue;
 
+        log(`  NBA ESPN ${team.team?.displayName||teamId}: ${athletes.length} athletes found`,'i');
         // Step 3: Game logs for top 6 players per team
         for(const athlete of athletes.slice(0,6)){
           const aid = athlete.id;
@@ -2410,8 +2413,9 @@ async function runESPNNBAEngine(log){
             );
             if(logR?.ok){ const d=await logR.json(); if((d.entries||[]).length>=1){logD=d;break;} }
           }
-          if(!logD) continue;
+          if(!logD){ log(`  NBA ESPN ${name}: no log data`,'i'); continue; }
           const entries = logD.entries||[];
+          log(`  NBA ESPN ${name}: ${entries.length} log entries`,'i');
           if(entries.length < 1) continue; // playoffs: accept 1+ games
 
           const gameLogs = entries.slice(0,15).map(e=>{
@@ -2522,18 +2526,19 @@ async function runESPNWNBAEngine(log){
           const name = athlete.fullName || `${athlete.firstName||''} ${athlete.lastName||''}`.trim();
 
           // WNBA season year: try 2026 (current), fall back to 2025 if no data
-          let logD = null;
+          let logD = null; let wnbaSeasonUsed = null;
           for(const wnbaSeason of ['2026','2025']){
             const logR = await fx(
               `https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba/seasons/${wnbaSeason}/athletes/${aid}/statisticslog`,
               {}, 8000
             );
-            if(logR?.ok){ const d=await logR.json(); if((d.entries||[]).length>=1){logD=d;break;} }
+            if(logR?.ok){ const d=await logR.json(); if((d.entries||[]).length>=1){logD=d;wnbaSeasonUsed=wnbaSeason;break;} }
           }
-          if(!logD) continue;
+          if(!logD){ log(`  WNBA ${name}: no log data (tried 2026+2025)`,'i'); continue; }
 
           // ESPN stats log: entries array with splits per game
           const entries = logD.entries||[];
+          log(`  WNBA ${name}: season=${wnbaSeasonUsed}, ${entries.length} entries`,'i');
           if(entries.length < 1) continue; // early season: accept 1+ games
 
           // Extract per-game stats using abbreviation lookup (index varies by ESPN endpoint)
@@ -3324,6 +3329,7 @@ async function runTennisEngine(log){
             const defaultAces  = surfLower==='grass' ? 7.5 : surfLower==='clay' ? 4.0 : 5.5;
             const defaultGames = surfLower==='clay' ? 24.0 : 22.0;
             const defaultDFs   = 2.5;
+            log(`  Tennis ${playerName}: avgAces=${avgAces} avgGames=${avgGames} matches=${matchCount} → using acesVal=${avgAces>0?avgAces:defaultAces}`,'i');
             const acesVal  = avgAces  > 0 ? avgAces  : defaultAces;
             const gamesVal = avgGames > 5 ? avgGames : defaultGames;
             const dfsVal   = avgDFs   > 0 ? avgDFs   : defaultDFs;
