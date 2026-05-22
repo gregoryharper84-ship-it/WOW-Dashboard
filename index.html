@@ -438,7 +438,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
       <div class="alert ab">Pulls slip-qualified props from live sportsbook lines every hour. Only props that clear WOW validation (Tier 1 or 2) are shown. Auto-refreshes while dashboard is open.</div>
       <div class="fr">
         <div class="field"><label>Sports Filter</label>
-          <select id="poolSportFilter" onchange="refreshPropPool(true)">
+          <select id="poolSportFilter" onchange="renderPropPool()">
             <option value="all">All Sports</option>
             <option value="NBA">NBA</option>
             <option value="MLB">MLB</option>
@@ -10164,8 +10164,16 @@ function renderPropPool(){
   const sportCounts={};
   propPool.forEach(p=>{const s=(p.sport||'?').toUpperCase();sportCounts[s]=(sportCounts[s]||0)+1;});
   const breakdownHtml=Object.entries(sportCounts).map(([s,c])=>
-    `<span onclick="document.getElementById('poolSportFilter').value='${s}';renderPropPool();" style="cursor:pointer;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:${sf.toUpperCase()===s?'var(--accent)':'var(--surface2)'};color:${sf.toUpperCase()===s?'#fff':'var(--text2)'};border:1px solid var(--border);">${s} (${c})</span>`
+    `<span onclick="document.getElementById('poolSportFilter').value='${s}';renderPropPool();" title="${c===0?'0 qualified — gates killed all props for this sport':''+c+' qualified props'}" style="cursor:pointer;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:${sf.toUpperCase()===s?'var(--accent)':'var(--surface2)'};color:${sf.toUpperCase()===s?'#fff':c===0?'var(--text3)':'var(--text2)'};border:1px solid ${c===0?'var(--border)':'var(--border)'};opacity:${c===0?'0.6':'1'};">${s} (${c}${c===0?' ⚠':''})</span>`
   ).join('');
+  // Per-sport kill reason summary (from last validation run)
+  const sportKillSummary = {};
+  if(window._lastKillReasons){
+    for(const [reason, count] of Object.entries(window._lastKillReasons)){
+      const m = reason.match(/^(NBA|MLB|NHL|WNBA|Soccer|Tennis|CS2)/i);
+      if(m) sportKillSummary[m[1].toUpperCase()] = (sportKillSummary[m[1].toUpperCase()]||0) + count;
+    }
+  }
   const allChip=`<span onclick="document.getElementById('poolSportFilter').value='all';renderPropPool();" style="cursor:pointer;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:${sf==='all'?'var(--accent)':'var(--surface2)'};color:${sf==='all'?'#fff':'var(--text2)'};border:1px solid var(--border);">All (${propPool.length})</span>`;
 
   if(!data.length){
@@ -10942,33 +10950,49 @@ async function buildJeremiaSlip(){
   let candidates=propPool.filter(p=>sportFilter.includes(p.sport)&&['tier1','tier2','tier3'].includes(p.tier));
 
   if(candidates.length<legCount){
+    // Check if pool has ANY props at all for this sport before attempting live fetch
+    const poolHasSport = propPool.some(p=>sportFilter.includes(p.sport));
+    if(!poolHasSport && propPool.length > 0){
+      output.innerHTML=`<div class="alert ay">⚠ No ${sportFilter.join('/')} props in pool. Run the Prop Pool scan for ${sportFilter.join('/')} first, or select a sport that has props (e.g. MLB).</div>`;
+      document.getElementById('jerSp').classList.add('hidden');
+      document.getElementById('jerBtn').textContent='Build Jeremia Slip';
+      return;
+    }
+
     output.innerHTML=`<div class="alert ab"><div class="spd"></div> Not enough props in pool — pulling live stats for ${sportFilter.join('/')}...</div>`;
 
-    // Pull live stats using the correct engine per sport
+    // Pull live stats — with 10s timeout per sport to prevent infinite spinner
+    const withTimeout = (promise, ms=10000) => Promise.race([
+      promise,
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),ms))
+    ]);
+
     for(const sp of sportFilter){
       try{
         let engCandidates = [];
-        if(sp==='NBA' || sp==='WNBA'){
-          engCandidates = await runBDLEngine(sp, (msg)=>{});
-          // WNBA fallback to Odds API if BDL empty
-          if(!engCandidates.length && sp==='WNBA'){
-            engCandidates = await runOddsAPIEngine('WNBA','basketball_wnba',
-              'player_points,player_rebounds,player_assists', (msg)=>{});
-          }
+        // Use ESPN engines (CORS-safe, no BDL auth issues) for NBA/WNBA
+        if(sp==='NBA'){
+          engCandidates = await withTimeout(runESPNNBAEngine((msg)=>{}));
+        } else if(sp==='WNBA'){
+          engCandidates = await withTimeout(runESPNWNBAEngine((msg)=>{}));
         } else if(sp==='MLB'){
-          engCandidates = await runMLBEngine((msg)=>{});
+          engCandidates = await withTimeout(runMLBEngine((msg)=>{}));
         } else if(sp==='NHL'){
-          engCandidates = await runNHLEngine((msg)=>{});
+          engCandidates = await withTimeout(runNHLEngine((msg)=>{}));
         } else if(sp==='Soccer'){
-          engCandidates = await runSoccerEngine((msg)=>{});
+          engCandidates = await withTimeout(runSoccerEngine((msg)=>{}));
         } else if(sp==='Tennis'){
-          engCandidates = await runTennisEngine((msg)=>{});
+          engCandidates = await withTimeout(runTennisEngine((msg)=>{}));
         } else {
-          // NFL / other — ESPN fallback
-          engCandidates = await runESPNEngine(sp, (msg)=>{});
+          engCandidates = await withTimeout(runESPNEngine(sp, (msg)=>{}));
         }
         candidates.push(...engCandidates);
-      }catch(e){}
+      }catch(e){
+        // Timeout or error — show message and continue with other sports
+        if(e.message==='timeout'){
+          output.innerHTML+=`<div style="color:var(--orange);font-size:12px;">⚠ ${sp} stats timed out (10s) — skipping</div>`;
+        }
+      }
     }
 
     // Score candidates not yet validated
@@ -11016,7 +11040,8 @@ async function buildJeremiaSlip(){
   }
 
   if(selected.length<2){
-    output.innerHTML=`<div class="alert ay">⚠ Not enough Jeremia-style props found. Try running the Prop Pool first or selecting a broader sport filter.</div>`;
+    const sportInPool = propPool.filter(p=>sportFilter.includes(p.sport)).length;
+    output.innerHTML=`<div class="alert ay">⚠ Not enough ${sportFilter.join('/')} props found for a ${legCount}-leg slip. ${sportInPool>0?`Pool has ${sportInPool} ${sportFilter.join('/')} props but none met Jeremia criteria.`:'Run the Prop Pool scan for this sport first.'} Try selecting MLB (${propPool.filter(p=>p.sport==='MLB').length} props available) or refreshing the pool.</div>`;
     document.getElementById('jerBtn').textContent='Build Jeremia Slip';
     document.getElementById('jerSp').classList.add('hidden');
     return;
