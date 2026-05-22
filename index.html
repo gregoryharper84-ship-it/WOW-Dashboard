@@ -865,15 +865,20 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
   </div>
   <div class="main">
 
-  <!-- WINNERS & UPSETS -->
-  <div class="card" style="margin-bottom:12px;">
-    <div class="ch">
+  <!-- TEAMS BOARD HEADER -->
+  <div style="border-radius:16px;border:1px solid var(--border);background:linear-gradient(135deg,var(--surface) 0%,var(--surface2) 100%);padding:16px;margin-bottom:12px;">
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;justify-content:space-between;">
       <div>
-        <span class="ct">🏆 Winners & Upsets</span>
-        <span id="wuLastUpdate" style="font-size:11px;color:var(--text2);margin-left:10px;"></span>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;">
+          <span class="badge bg-b">Today's Board</span>
+          <span class="badge bg-g" id="boardLiveMode" style="display:none;">Live Market Mode</span>
+          <span style="font-size:11px;color:var(--text2);" id="teamsLastUpdate"></span>
+        </div>
+        <h2 style="font-size:20px;font-weight:900;color:var(--text);margin:0 0 4px;">LLP Team Betting Engine</h2>
+        <p style="font-size:12px;color:var(--text2);margin:0;">Ranked winners, upset candidates, market edge, and the cleanest reasons behind each play.</p>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <select id="wu_sport" style="font-size:12px;padding:4px 8px;width:auto;border-radius:8px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <select id="teams_sport" style="font-size:12px;padding:5px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
           <option value="all">All Sports</option>
           <option value="MLB">MLB</option>
           <option value="NBA">NBA</option>
@@ -881,90 +886,118 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
           <option value="WNBA">WNBA</option>
           <option value="Soccer">Soccer</option>
         </select>
-        <button class="btn btn-p btn-sm" onclick="runWinnersUpsets()">
-          <span id="wuBtn">Find Winners & Upsets</span>
-          <span id="wuSp" class="hidden"><div class="sp"></div></span>
+        <button class="btn btn-p btn-sm" onclick="runTeamsBoard()">
+          <span id="teamsBoardBtn">Refresh Board</span>
+          <span id="teamsBoardSp" class="hidden"><div class="sp"></div></span>
         </button>
+        <button class="btn btn-s btn-sm" onclick="exportTeamsBoard()">Export</button>
       </div>
-    </div>
-    <div class="cb">
-      <div class="alert ab">Scans today's full slate, calculates no-vig probabilities, and surfaces <strong>strong favorites</strong> likely to win and <strong>underdog upset picks</strong> with meaningful edge.</div>
-      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:120px;background:var(--green-light);border:1px solid rgba(16,185,129,0.2);border-radius:10px;padding:12px;text-align:center;">
-          <div style="font-size:22px;font-weight:900;color:var(--green);" id="wuFavCount">—</div>
-          <div style="font-size:10px;font-weight:700;color:var(--green);text-transform:uppercase;">Strong Favorites</div>
-          <div style="font-size:10px;color:var(--text2);margin-top:2px;">&gt;65% implied</div>
-        </div>
-        <div style="flex:1;min-width:120px;background:var(--purple-light);border:1px solid rgba(168,85,247,0.2);border-radius:10px;padding:12px;text-align:center;">
-          <div style="font-size:22px;font-weight:900;color:var(--purple);" id="wuUpsetCount">—</div>
-          <div style="font-size:10px;font-weight:700;color:var(--purple);text-transform:uppercase;">Upset Picks</div>
-          <div style="font-size:10px;color:var(--text2);margin-top:2px;">35-45% dog with edge</div>
-        </div>
-        <div style="flex:1;min-width:120px;background:var(--accent-light);border:1px solid rgba(59,130,246,0.2);border-radius:10px;padding:12px;text-align:center;">
-          <div style="font-size:22px;font-weight:900;color:var(--accent);" id="wuGameCount">—</div>
-          <div style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;">Games Scanned</div>
-        </div>
-      </div>
-      <div id="wuOutput"></div>
     </div>
   </div>
-  <div class="card" style="margin-bottom:12px;">
-    <div class="ch">
+
+  <!-- STAT CARDS -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px;" id="teamsStatCards">
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Games Analyzed</div>
+      <div style="font-size:24px;font-weight:900;color:var(--text);margin:6px 0 2px;" id="statGamesAnalyzed">—</div>
+      <div style="font-size:11px;color:var(--text2);" id="statGamesSubtitle">Across MLB, NBA, NHL, Soccer</div>
+    </div>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Bettable Picks</div>
+      <div style="font-size:24px;font-weight:900;color:var(--green);margin:6px 0 2px;" id="statBettable">—</div>
+      <div style="font-size:11px;color:var(--text2);" id="statBettableSub">Anchor + Strong tier</div>
+    </div>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Top Winner</div>
+      <div style="font-size:18px;font-weight:900;color:var(--text);margin:6px 0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" id="statTopWinner">—</div>
+      <div style="font-size:11px;color:var(--text2);" id="statTopWinnerSub">Highest model probability</div>
+    </div>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Best Edge</div>
+      <div style="font-size:24px;font-weight:900;color:var(--green);margin:6px 0 2px;" id="statBestEdge">—</div>
+      <div style="font-size:11px;color:var(--text2);" id="statBestEdgeSub">vs. market implied</div>
+    </div>
+  </div>
+
+  <!-- SUMMARY PANELS -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;" id="teamsSummaryPanels">
+    <div class="card">
+      <div class="ch">
+        <span class="ct">⭐ Highest Probability Winners</span>
+        <span class="badge bg-g">Sorted by win %</span>
+      </div>
+      <div class="cb" id="wuFavPanel">
+        <div style="color:var(--text2);font-size:12px;text-align:center;padding:20px 0;">Run board to load favorites</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ch">
+        <span class="ct">⚡ Best Upset Candidates</span>
+        <span class="badge bg-p">Value dogs</span>
+      </div>
+      <div class="cb" id="wuUpsetPanel">
+        <div style="color:var(--text2);font-size:12px;text-align:center;padding:20px 0;">Run board to load upsets</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOARD FILTERS & RANKED OUTPUT -->
+  <div style="border-radius:12px;border:1px solid var(--border);background:var(--surface);padding:12px 14px;margin-bottom:10px;">
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;justify-content:space-between;">
       <div>
-        <span class="ct">🏟 LLP Team Bet Analyzer</span>
-        <span id="llpLastUpdate" style="font-size:11px;color:var(--text2);margin-left:10px;"></span>
+        <div style="font-size:15px;font-weight:800;color:var(--text);">Ranked Game Board</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:2px;">Highest edge games shown first. Use filters to isolate sport, tier, or bet type.</div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <span id="llpGameCount" class="badge bg-b">0 games</span>
-        <button class="btn btn-p btn-sm" onclick="runLLPBoard()">
-          <span id="llpRunBtn">Scan Today's Games</span>
-          <span id="llpRunSp" class="hidden"><div class="sp"></div></span>
-        </button>
-      </div>
-    </div>
-    <div class="cb">
-      <div class="alert ab">Pulls today's full slate from live sportsbooks, runs every game through the LLP model, and surfaces the best team bets with tier ratings.</div>
-      <div class="fr">
-        <div class="field"><label>Sport</label>
-          <select id="llp_sport">
-            <option value="all">All Sports</option>
-            <option value="MLB">MLB</option>
-            <option value="NBA">NBA</option>
-            <option value="NHL">NHL</option>
-            <option value="WNBA">WNBA</option>
-            <option value="Soccer">Soccer</option>
-            <option value="NFL">NFL</option>
-          </select>
-        </div>
-        <div class="field"><label>Min Tier</label>
-          <select id="llp_mintier">
-            <option value="all">All Tiers</option>
-            <option value="anchor">Anchor Only</option>
-            <option value="strong">Strong+</option>
-            <option value="lean">Lean+</option>
-          </select>
-        </div>
-        <div class="field"><label>Bet Type</label>
-          <select id="llp_bettype">
-            <option value="all">All Types</option>
-            <option value="moneyline">Moneyline</option>
-            <option value="spread">Spread</option>
-            <option value="total">Total</option>
-          </select>
-        </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <select id="llp_sport" style="font-size:12px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+          <option value="all">All Sports</option>
+          <option value="MLB">MLB</option>
+          <option value="NBA">NBA</option>
+          <option value="NHL">NHL</option>
+          <option value="WNBA">WNBA</option>
+          <option value="Soccer">Soccer</option>
+          <option value="NFL">NFL</option>
+        </select>
+        <select id="llp_mintier" style="font-size:12px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+          <option value="all">All Tiers</option>
+          <option value="anchor">Anchor Only</option>
+          <option value="strong">Strong+</option>
+          <option value="lean">Lean+</option>
+        </select>
+        <select id="llp_bettype" style="font-size:12px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+          <option value="all">All Types</option>
+          <option value="moneyline">Moneyline</option>
+          <option value="spread">Spread</option>
+          <option value="total">Total</option>
+        </select>
+        <select id="llp_sort" onchange="renderTeamsBoardOutput()" style="font-size:12px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+          <option value="edge">Best Edge</option>
+          <option value="prob">Highest Probability</option>
+          <option value="time">Start Time</option>
+        </select>
       </div>
     </div>
   </div>
 
-  <!-- LLP PROGRESS -->
-  <div id="llpProgress" class="hidden card" style="margin-bottom:12px;">
-    <div class="cb" style="padding:12px;">
-      <div class="ob" id="llpLog" style="min-height:60px;max-height:120px;"></div>
+  <!-- LLP PROGRESS LOG -->
+  <div id="llpProgress" class="hidden card" style="margin-bottom:10px;">
+    <div class="cb" style="padding:10px;">
+      <div class="ob" id="llpLog" style="min-height:50px;max-height:100px;"></div>
     </div>
   </div>
 
-  <!-- LLP ANALYSIS OUTPUT -->
+  <!-- BOARD OUTPUT -->
   <div id="llpAnalysisOutput"></div>
+
+  <!-- HIDDEN LEGACY IDS (keep for JS compatibility) -->
+  <div style="display:none;">
+    <span id="wuFavCount">0</span><span id="wuUpsetCount">0</span>
+    <span id="wuGameCount">0</span><span id="llpGameCount">0</span>
+    <span id="wuLastUpdate"></span><span id="llpLastUpdate"></span>
+    <span id="llpRunBtn"></span><span id="wuBtn"></span>
+    <div id="wuOutput"></div>
+    <span id="llpRunSp"></span><span id="wuSp"></span>
+  </div>
 
   <!-- MANUAL ENTRY -->
   <div class="g2">
@@ -2348,6 +2381,104 @@ async function runNHLEngine(log){
 // ESPN has the best WNBA coverage — game logs, player stats, today's slate
 // ── ESPN NBA Engine — primary fallback when BDL fails ──
 // Mirrors runESPNWNBAEngine pattern exactly, swapped for NBA endpoints/lines
+// ── BDL GOAT Tier Integration ──
+// Detects if BDL key has GOAT access (Player Stats endpoint).
+// Used to enrich ESPN candidates with real game logs, injuries, and prop lines.
+let _bdlGoatVerified = null; // null=unchecked, true=GOAT, false=not GOAT
+
+async function isBDLGoat(){
+  if(_bdlGoatVerified !== null) return _bdlGoatVerified;
+  try{
+    // /season_averages is GOAT-only — use it as tier probe
+    const r = await fx(
+      `https://api.balldontlie.io/v1/season_averages?season=2025&player_ids[]=666786`,
+      {headers:{'Authorization':KEYS.bdl}}, 5000
+    );
+    _bdlGoatVerified = r.status === 200;
+    if(_bdlGoatVerified) console.log('BDL GOAT tier confirmed ✅');
+    else console.log(`BDL not GOAT tier (status ${r.status}) — ESPN mode`);
+  }catch(e){ _bdlGoatVerified = false; }
+  return _bdlGoatVerified;
+}
+
+async function enrichWithBDLGoat(candidates, log){
+  // Enriches ESPN candidates with BDL GOAT data:
+  // - Real game-by-game stats (more accurate than ESPN season avg)
+  // - Injury status for Gate 1
+  // - Season averages for line calibration
+  if(!candidates.length) return candidates;
+  const goat = await isBDLGoat();
+  if(!goat) return candidates; // BDL not GOAT — return ESPN candidates as-is
+
+  log('  ⚡ BDL GOAT enrichment running...','i');
+  const enriched = [];
+
+  for(const c of candidates){
+    try{
+      // Step 1: Find BDL player ID by name
+      const searchR = await fx(
+        `https://api.balldontlie.io/v1/players?search=${encodeURIComponent(c.player)}&per_page=5`,
+        {headers:{'Authorization':KEYS.bdl}}, 5000
+      );
+      if(!searchR.ok){ enriched.push(c); continue; }
+      const searchD = await searchR.json();
+      const bdlPlayer = (searchD.data||[]).find(p=>
+        `${p.first_name} ${p.last_name}`.toLowerCase() === c.player.toLowerCase()
+      ) || searchD.data?.[0];
+      if(!bdlPlayer){ enriched.push(c); continue; }
+
+      // Step 2: Get real game logs (GOAT endpoint)
+      await _bdlDelay(200); // gentle rate limiting on 600 req/min GOAT tier
+      const statsR = await fx(
+        `https://api.balldontlie.io/v1/stats?player_ids[]=${bdlPlayer.id}&seasons[]=2025&per_page=15`,
+        {headers:{'Authorization':KEYS.bdl}}, 6000
+      );
+      if(!statsR.ok){ enriched.push(c); continue; }
+      const statsD = await statsR.json();
+      const games = (statsD.data||[]).filter(g=>g.min&&g.min!=='0:00').slice(0,10);
+
+      if(games.length >= 2){
+        // Override ESPN estimates with real stats
+        const propKey = c.prop==='points'?'pts':c.prop==='rebounds'?'reb':
+                        c.prop==='assists'?'ast':c.prop==='3-pointers made'?'fg3m':
+                        c.prop==='steals'?'stl':c.prop==='blocks'?'blk':null;
+        if(propKey){
+          const vals = games.map(g=>parseFloat(g[propKey]||0));
+          const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+          const hr = vals.filter(v=>v>c.line).length/vals.length;
+          c.raw_vals = vals;
+          c.recent_avg = parseFloat(avg.toFixed(2));
+          c.l5_hit_rate = hr;
+          c.l10_hit_rate = hr;
+          c.confidence = hr;
+          c.note = `BDL GOAT: ${avg.toFixed(1)} avg | L${vals.length}: ${(hr*100).toFixed(0)}% | ${c.note||''}`;
+          c.bdlEnriched = true;
+        }
+      }
+
+      // Step 3: Check injury status (ALL-STAR+ endpoint)
+      const injR = await fx(
+        `https://api.balldontlie.io/v1/player_injuries?player_ids[]=${bdlPlayer.id}`,
+        {headers:{'Authorization':KEYS.bdl}}, 4000
+      );
+      if(injR.ok){
+        const injD = await injR.json();
+        const inj = injD.data?.[0];
+        if(inj){
+          c.injuryStatus = inj.status?.toLowerCase()||'active';
+          c.lineupConfirmed = !['out','injured reserve'].includes(c.injuryStatus);
+        }
+      }
+
+      enriched.push(c);
+    }catch(e){ enriched.push(c); } // always include candidate even if enrichment fails
+  }
+
+  const enrichedCount = enriched.filter(c=>c.bdlEnriched).length;
+  log(`  ✓ BDL enriched ${enrichedCount}/${candidates.length} candidates with real game logs`,'ok');
+  return enriched;
+}
+
 async function runESPNNBAEngine(log){
   const candidates = [];
   try{
@@ -2404,41 +2535,60 @@ async function runESPNNBAEngine(log){
           const aid = athlete.id;
           const name = athlete.fullName||`${athlete.firstName||''} ${athlete.lastName||''}`.trim();
 
-          // NBA season: try 2026 (playoffs) first, fall back to 2025
+          // NBA: try playoff stats (types/3) first — most current for May playoffs
+          // Then regular season (types/2), then prior year as last resort
           let logD = null;
-          for(const nbaSeason of ['2026','2025']){
+          const nbaStatPaths = [
+            'seasons/2026/types/3',  // 2025-26 playoffs (current)
+            'seasons/2026/types/2',  // 2025-26 regular season
+            'seasons/2025/types/3',  // 2024-25 playoffs
+            'seasons/2025/types/2',  // 2024-25 regular season
+          ];
+          for(const path of nbaStatPaths){
             const logR = await fx(
-              `https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/seasons/${nbaSeason}/athletes/${aid}/statisticslog`,
+              `https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/${path}/athletes/${aid}/statisticslog`,
               {}, 8000
             );
-            if(logR?.ok){ const d=await logR.json(); if((d.entries||[]).length>=1){logD=d;break;} }
+            if(logR?.ok){
+              const d = await logR.json();
+              if((d.entries||[]).length >= 1){ logD = d; break; }
+            }
           }
-          if(!logD){ log(`  NBA ESPN ${name}: no log data`,'i'); continue; }
+          if(!logD){ log(`  NBA ESPN ${name}: no log data (tried playoffs+regular 2026+2025)`,'i'); continue; }
           const entries = logD.entries||[];
-          log(`  NBA ESPN ${name}: ${entries.length} log entries`,'i');
-          if(entries.length < 1) continue; // playoffs: accept 1+ games
+          log(`  NBA ESPN ${name}: ${entries.length} entries`,'i');
+          if(entries.length < 1) continue;
 
           const gameLogs = entries.slice(0,15).map(e=>{
-            const stats = e.statistics?.splits?.[0]?.stats ||
-                          e.statistics?.splits?.[0]?.categories?.flatMap?.(c=>c.stats||[]) ||
-                          e.stats || [];
+            // ESPN returns stats in multiple structures — try all paths
+            const s1 = e.statistics?.splits?.[0]?.stats||[];
+            const s2 = e.statistics?.splits?.[0]?.categories?.flatMap?.(c=>c.stats||[])||[];
+            const s3 = e.statistics?.categories?.flatMap?.(c=>c.stats||[])||[];
+            const s4 = (e.statistics?.splits||[]).flatMap?.(sp=>sp.stats||[])||[];
+            const stats = [...s1,...s2,...s3,...s4];
             const getStat = (...abbrevs) => {
               for(const ab of abbrevs){
-                const found = stats.find?.(s=>(s.abbreviation||s.name||'').toUpperCase()===ab.toUpperCase());
-                if(found && parseFloat(found.value||0)>=0) return parseFloat(found.value||0);
+                const f = stats.find?.(s=>{
+                  const id = (s.abbreviation||s.name||s.shortDisplayName||'').toUpperCase();
+                  return id === ab.toUpperCase();
+                });
+                if(f !== undefined){
+                  const v = parseFloat(f.value ?? f.displayValue ?? 0);
+                  if(!isNaN(v) && v >= 0) return v;
+                }
               }
               return 0;
             };
             return {
-              pts: getStat('PTS','PT','POINTS'),
-              reb: getStat('REB','TREB','REBOUNDS','RB'),
-              ast: getStat('AST','ASSISTS','A'),
-              tpm: getStat('3PM','FG3M','3FGM','THREE'),
-              stl: getStat('STL','STEALS','ST'),
-              blk: getStat('BLK','BLOCKS','BS'),
-              mins:getStat('MIN','MINS','MINUTES'),
+              pts: getStat('PTS','PT','POINTS','P'),
+              reb: getStat('REB','TREB','REBOUNDS','RB','TR'),
+              ast: getStat('AST','ASSISTS','A','AS'),
+              tpm: getStat('3PM','FG3M','3FGM','THREE','3P'),
+              stl: getStat('STL','STEALS','ST','S'),
+              blk: getStat('BLK','BLOCKS','BS','B'),
+              mins:getStat('MIN','MINS','MINUTES','GP'),
             };
-          }).filter(g=>g.mins>4); // playoffs: rotation tightens, 4+ min catches starters
+          }).filter(g=>g.mins>0||g.pts>0||g.reb>0||g.ast>0); // accept any entry with real stats
 
           if(gameLogs.length < 1) continue; // playoffs: accept 1+ games
 
@@ -2466,6 +2616,11 @@ async function runESPNNBAEngine(log){
       }
     }
     log(`✓ NBA: ${candidates.length} candidates via ESPN`,'ok');
+    // Enrich with BDL GOAT data if available (real game logs > ESPN season averages)
+    if(candidates.length > 0){
+      const enrichedCandidates = await enrichWithBDLGoat(candidates, log);
+      return validateEngineOutput('NBA', enrichedCandidates, 'runESPNNBAEngine');
+    }
   }catch(e){ log(`⚠ NBA ESPN engine: ${e.message}`,'w'); }
   return validateEngineOutput('NBA', candidates, 'runESPNNBAEngine');
 }
@@ -2525,42 +2680,58 @@ async function runESPNWNBAEngine(log){
           const aid = athlete.id;
           const name = athlete.fullName || `${athlete.firstName||''} ${athlete.lastName||''}`.trim();
 
-          // WNBA season year: try 2026 (current), fall back to 2025 if no data
-          let logD = null; let wnbaSeasonUsed = null;
-          for(const wnbaSeason of ['2026','2025']){
+          // WNBA: types/2 = regular season (WNBA only has regular season in May)
+          let logD = null; let wnbaPathUsed = null;
+          const wnbaStatPaths = [
+            'seasons/2026/types/2',  // 2026 WNBA regular season (current)
+            'seasons/2026',          // without type filter
+            'seasons/2025/types/2',  // 2025 season fallback
+            'seasons/2025',
+          ];
+          for(const path of wnbaStatPaths){
             const logR = await fx(
-              `https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba/seasons/${wnbaSeason}/athletes/${aid}/statisticslog`,
+              `https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba/${path}/athletes/${aid}/statisticslog`,
               {}, 8000
             );
-            if(logR?.ok){ const d=await logR.json(); if((d.entries||[]).length>=1){logD=d;wnbaSeasonUsed=wnbaSeason;break;} }
+            if(logR?.ok){
+              const d = await logR.json();
+              if((d.entries||[]).length >= 1){ logD = d; wnbaPathUsed = path; break; }
+            }
           }
-          if(!logD){ log(`  WNBA ${name}: no log data (tried 2026+2025)`,'i'); continue; }
+          if(!logD){ log(`  WNBA ${name}: no log data`,'i'); continue; }
 
-          // ESPN stats log: entries array with splits per game
           const entries = logD.entries||[];
-          log(`  WNBA ${name}: season=${wnbaSeasonUsed}, ${entries.length} entries`,'i');
-          if(entries.length < 1) continue; // early season: accept 1+ games
+          log(`  WNBA ${name}: path=${wnbaPathUsed}, ${entries.length} entries`,'i');
+          if(entries.length < 1) continue;
 
-          // Extract per-game stats using abbreviation lookup (index varies by ESPN endpoint)
+          // WNBA multi-path stat parser (same as NBA)
           const gameLogs = entries.slice(0,15).map(e=>{
-            const stats = e.statistics?.splits?.[0]?.stats ||
-                          e.statistics?.splits?.[0]?.categories?.flatMap?.(c=>c.stats||[]) ||
-                          e.stats || [];
+            const s1 = e.statistics?.splits?.[0]?.stats||[];
+            const s2 = e.statistics?.splits?.[0]?.categories?.flatMap?.(c=>c.stats||[])||[];
+            const s3 = e.statistics?.categories?.flatMap?.(c=>c.stats||[])||[];
+            const s4 = (e.statistics?.splits||[]).flatMap?.(sp=>sp.stats||[])||[];
+            const stats = [...s1,...s2,...s3,...s4];
             const getStat = (...abbrevs) => {
               for(const ab of abbrevs){
-                const found = stats.find?.(s => (s.abbreviation||s.name||'').toUpperCase() === ab.toUpperCase());
-                if(found && parseFloat(found.value||0) >= 0) return parseFloat(found.value||0);
+                const f = stats.find?.(s=>{
+                  const id=(s.abbreviation||s.name||s.shortDisplayName||'').toUpperCase();
+                  return id===ab.toUpperCase();
+                });
+                if(f!==undefined){
+                  const v=parseFloat(f.value??f.displayValue??0);
+                  if(!isNaN(v)&&v>=0) return v;
+                }
               }
               return 0;
             };
             return {
-              pts:  getStat('PTS','PT','POINTS'),
-              reb:  getStat('REB','TREB','REBOUNDS','RB'),
-              ast:  getStat('AST','ASSISTS','A'),
-              tpm:  getStat('3PM','FG3M','3FGM','THREE'),
-              mins: getStat('MIN','MINS','MINUTES'),
+              pts:  getStat('PTS','PT','POINTS','P'),
+              reb:  getStat('REB','TREB','REBOUNDS','RB','TR'),
+              ast:  getStat('AST','ASSISTS','A','AS'),
+              tpm:  getStat('3PM','FG3M','3FGM','THREE','3P'),
+              mins: getStat('MIN','MINS','MINUTES','GP'),
             };
-          }).filter(g=>g.mins > 2); // early season: capture even short stints
+          }).filter(g=>g.mins>0||g.pts>0||g.reb>0||g.ast>0);
 
           if(gameLogs.length < 1) continue; // early season: accept 1+ games
 
@@ -2589,6 +2760,10 @@ async function runESPNWNBAEngine(log){
       }
     }
     log(`✓ WNBA: ${candidates.length} candidates via ESPN`,'ok');
+    if(candidates.length > 0){
+      const enrichedWNBA = await enrichWithBDLGoat(candidates, log);
+      return validateEngineOutput('WNBA', enrichedWNBA, 'runESPNWNBAEngine');
+    }
   }catch(e){ log(`⚠ WNBA ESPN engine: ${e.message}`,'w'); }
   return validateEngineOutput('WNBA', candidates, 'runESPNWNBAEngine');
 }
@@ -7785,6 +7960,11 @@ async function runWinnersUpsets(){
     out.appendChild(sec);
   }
 
+  // Store globally for unified board
+  _teamsWUFavorites = favorites;
+  _teamsWUUpsets = upsets;
+  renderTeamsSummaryPanels();
+
   document.getElementById('wuBtn').textContent='Find Winners & Upsets';
   document.getElementById('wuSp').classList.add('hidden');
 }
@@ -8022,105 +8202,317 @@ async function runLLPBoard(){
   document.getElementById('llpRunSp').classList.add('hidden');
 }
 
-function renderLLPBoard(allGames){
-  const outputDiv = document.getElementById('llpAnalysisOutput');
-  const tierFilter = document.getElementById('llp_mintier').value;
-  const betFilter = document.getElementById('llp_bettype').value;
+// ── Global state for unified Teams board ──
+let _teamsWUFavorites = [];
+let _teamsWUUpsets = [];
+let _teamsLLPGames = [];
 
-  const tierOrd = {'TEAM ANCHOR':0,'TEAM STRONG':1,'TEAM LEAN':2,'PASS':3};
+// ── Unified board runner — calls WU + LLP together ──
+async function runTeamsBoard(){
+  const btn = document.getElementById('teamsBoardBtn');
+  const sp = document.getElementById('teamsBoardSp');
+  btn.textContent = 'Scanning...';
+  sp.classList.remove('hidden');
+  document.getElementById('boardLiveMode').style.display = 'inline-flex';
+
+  // Map unified sport filter to legacy selects
+  const sf = document.getElementById('teams_sport').value;
+  const wuSportEl = document.getElementById('wu_sport');
+  if(wuSportEl) wuSportEl.value = sf;
+  const llpSportEl = document.getElementById('llp_sport');
+  if(llpSportEl) llpSportEl.value = sf;
+
+  // Run both engines in parallel
+  try{
+    await Promise.all([runWinnersUpsets(), runLLPBoard()]);
+  }catch(e){}
+
+  document.getElementById('teamsLastUpdate').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  btn.textContent = 'Refresh Board';
+  sp.classList.add('hidden');
+}
+
+function exportTeamsBoard(){
+  const rows = _teamsLLPGames.flatMap(g =>
+    g.bets.map(b => `${g.sport},${g.away_team} @ ${g.home_team},${b.pick},${b.tier},${b.edge_pct}%,${b.unit_size},${b.reasoning}`)
+  );
+  const csv = ['Sport,Matchup,Pick,Tier,Edge,Size,Reasoning', ...rows].join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = `WOW-Teams-${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+}
+
+function renderTeamsSummaryPanels(){
+  // Favorites panel
+  const favEl = document.getElementById('wuFavPanel');
+  if(favEl){
+    if(!_teamsWUFavorites.length){
+      favEl.innerHTML = '<div style="color:var(--text2);font-size:12px;text-align:center;padding:16px 0;">No favorites found yet</div>';
+    } else {
+      favEl.innerHTML = _teamsWUFavorites.slice(0,5).map((g,i) => `
+        <div style="display:grid;grid-template-columns:2rem 1fr auto;align-items:center;gap:10px;border-radius:10px;background:var(--surface2);padding:10px;margin-bottom:6px;">
+          <div style="width:28px;height:28px;border-radius:8px;background:var(--surface);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:var(--text2);">${i+1}</div>
+          <div>
+            <div style="font-size:13px;font-weight:700;color:var(--text);">${g.pick}</div>
+            <div style="font-size:11px;color:var(--text2);">${g.sport} · vs ${g.dog}${g.boosts?.[0]?' · '+g.boosts[0]:''}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:14px;font-weight:900;color:var(--green);">${(g.prob*100).toFixed(1)}%</div>
+            <div style="font-size:10px;color:var(--text2);">+${g.edge.toFixed(1)}% edge</div>
+          </div>
+        </div>`).join('');
+    }
+  }
+
+  // Upsets panel
+  const upsetEl = document.getElementById('wuUpsetPanel');
+  if(upsetEl){
+    if(!_teamsWUUpsets.length){
+      upsetEl.innerHTML = '<div style="color:var(--text2);font-size:12px;text-align:center;padding:16px 0;">No upset candidates found yet</div>';
+    } else {
+      upsetEl.innerHTML = _teamsWUUpsets.slice(0,4).map((g,i) => `
+        <div style="border-radius:10px;border:1px solid rgba(168,85,247,0.2);background:var(--purple-light);padding:10px;margin-bottom:6px;">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:var(--purple);">${i+1}. ${g.pick}</div>
+              <div style="font-size:11px;color:var(--text2);margin-top:2px;">${(g.reasons||[]).slice(0,2).join(' · ')}</div>
+            </div>
+            <div style="text-align:right;flex-shrink:0;">
+              <div style="font-size:14px;font-weight:900;color:var(--purple);">${(g.prob*100).toFixed(1)}%</div>
+              <div style="font-size:11px;color:var(--text2);">${g.ml>0?'+'+g.ml:g.ml}</div>
+            </div>
+          </div>
+        </div>`).join('');
+    }
+  }
+}
+
+function renderTeamsStatCards(allGames){
+  const bets = allGames.flatMap(g=>g.bets||[]);
+  const anchors = bets.filter(b=>b.tier==='TEAM ANCHOR').length;
+  const strongs = bets.filter(b=>b.tier==='TEAM STRONG').length;
+  const topBet = [...bets].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
+  const topFav = [..._teamsWUFavorites].sort((a,b)=>b.prob-a.prob)[0];
+
+  const el = id => document.getElementById(id);
+  if(el('statGamesAnalyzed')) el('statGamesAnalyzed').textContent = allGames.length;
+  if(el('statGamesSubtitle')) el('statGamesSubtitle').textContent = [...new Set(allGames.map(g=>g.sport))].join(', ')||'No sports';
+  if(el('statBettable')) el('statBettable').textContent = anchors + strongs;
+  if(el('statBettableSub')) el('statBettableSub').textContent = `${anchors} anchor, ${strongs} strong`;
+  if(el('statTopWinner') && topFav) el('statTopWinner').textContent = `${topFav.pick} ${(topFav.prob*100).toFixed(0)}%`;
+  if(el('statBestEdge') && topBet) el('statBestEdge').textContent = `+${topBet.edge_pct}%`;
+  if(el('statBestEdgeSub') && topBet) el('statBestEdgeSub').textContent = topBet.pick;
+}
+
+function renderLLPBoard(allGames){
+  _teamsLLPGames = allGames; // store globally for filters
+  renderTeamsStatCards(allGames);
+  renderTeamsStatCards(allGames); // also update summary after
+  renderTeamsSummaryPanels();
+  renderTeamsBoardOutput();
+  document.getElementById('llpLastUpdate').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  document.getElementById('llpGameCount').textContent = allGames.length + ' games';
+}
+
+function renderTeamsBoardOutput(){
+  const outputDiv = document.getElementById('llpAnalysisOutput');
+  if(!outputDiv) return;
+
+  const tierFilter = document.getElementById('llp_mintier')?.value || 'all';
+  const betFilter  = document.getElementById('llp_bettype')?.value  || 'all';
+  const sortMode   = document.getElementById('llp_sort')?.value     || 'edge';
+  const sportF     = document.getElementById('llp_sport')?.value    || 'all';
+
   const tierMin = {anchor:['TEAM ANCHOR'], strong:['TEAM ANCHOR','TEAM STRONG'], lean:['TEAM ANCHOR','TEAM STRONG','TEAM LEAN'], all:['TEAM ANCHOR','TEAM STRONG','TEAM LEAN']};
   const allowed = tierMin[tierFilter] || tierMin.all;
 
-  // Filter games that have qualifying bets
-  let filtered = allGames.map(g=>({
-    ...g,
-    bets: g.bets.filter(b=>
-      allowed.includes(b.tier) &&
-      (betFilter==='all' || b.type===betFilter)
-    )
-  })).filter(g=>g.bets.length>0);
+  let filtered = _teamsLLPGames.map(g=>({...g, bets:(g.bets||[]).filter(b=>
+    allowed.includes(b.tier) &&
+    (betFilter==='all' || b.type===betFilter) &&
+    (sportF==='all' || g.sport===sportF)
+  )})).filter(g=>g.bets.length>0);
 
-  // Sort by best edge
-  filtered.sort((a,b)=>{
-    const aTop = Math.max(...a.bets.map(b=>b.edge_pct));
-    const bTop = Math.max(...b.bets.map(b=>b.edge_pct));
-    return bTop-aTop;
-  });
+  if(sortMode==='edge')   filtered.sort((a,b)=>Math.max(...b.bets.map(x=>x.edge_pct)) - Math.max(...a.bets.map(x=>x.edge_pct)));
+  if(sortMode==='prob')   filtered.sort((a,b)=>Math.max(...b.bets.map(x=>x.implied_prob||0)) - Math.max(...a.bets.map(x=>x.implied_prob||0)));
+  if(sortMode==='time')   filtered.sort((a,b)=>(a.game_time||'').localeCompare(b.game_time||''));
 
   outputDiv.innerHTML = '';
 
   if(!filtered.length){
-    outputDiv.innerHTML = `<div class="alert ay">⚠ No qualifying bets found with current filters. Try "All Tiers" to see everything, or check back when today's lines are posted.</div>`;
+    outputDiv.innerHTML = `<div class="alert ay">⚠ No qualifying bets with current filters. Try "All Tiers" or click Refresh Board to scan today's slate.</div>`;
     return;
   }
 
-  // Summary
+  // Summary bar
   const anchors = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM ANCHOR').length;
   const strongs = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM STRONG').length;
-  const leans = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM LEAN').length;
-
-  const summary = document.createElement('div');
-  summary.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;';
-  summary.innerHTML = `
-    <div style="padding:10px 16px;background:var(--green-light);border-radius:10px;border:1px solid rgba(16,185,129,0.2);text-align:center;">
-      <div style="font-size:22px;font-weight:900;color:var(--green);">${anchors}</div>
+  const leans   = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM LEAN').length;
+  const sumDiv = document.createElement('div');
+  sumDiv.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;';
+  sumDiv.innerHTML = `
+    <div style="padding:8px 14px;background:var(--green-light);border-radius:10px;border:1px solid rgba(16,185,129,0.2);text-align:center;min-width:70px;">
+      <div style="font-size:20px;font-weight:900;color:var(--green);">${anchors}</div>
       <div style="font-size:10px;font-weight:700;color:var(--green);text-transform:uppercase;">Anchor</div>
     </div>
-    <div style="padding:10px 16px;background:var(--accent-light);border-radius:10px;border:1px solid rgba(59,130,246,0.2);text-align:center;">
-      <div style="font-size:22px;font-weight:900;color:var(--accent);">${strongs}</div>
+    <div style="padding:8px 14px;background:var(--accent-light);border-radius:10px;border:1px solid rgba(59,130,246,0.2);text-align:center;min-width:70px;">
+      <div style="font-size:20px;font-weight:900;color:var(--accent);">${strongs}</div>
       <div style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;">Strong</div>
     </div>
-    <div style="padding:10px 16px;background:var(--yellow-light);border-radius:10px;border:1px solid rgba(245,158,11,0.2);text-align:center;">
-      <div style="font-size:22px;font-weight:900;color:var(--yellow);">${leans}</div>
+    <div style="padding:8px 14px;background:var(--yellow-light);border-radius:10px;border:1px solid rgba(245,158,11,0.2);text-align:center;min-width:70px;">
+      <div style="font-size:20px;font-weight:900;color:var(--yellow);">${leans}</div>
       <div style="font-size:10px;font-weight:700;color:var(--yellow);text-transform:uppercase;">Lean</div>
     </div>
-    <div style="padding:10px 16px;background:var(--surface2);border-radius:10px;border:1px solid var(--border);text-align:center;">
-      <div style="font-size:22px;font-weight:900;color:var(--text);">${filtered.length}</div>
+    <div style="padding:8px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border);text-align:center;min-width:70px;">
+      <div style="font-size:20px;font-weight:900;color:var(--text);">${filtered.length}</div>
       <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;">Games</div>
-    </div>
-  `;
-  outputDiv.appendChild(summary);
+    </div>`;
+  outputDiv.appendChild(sumDiv);
 
   // Game cards
-  filtered.forEach(game=>{
+  filtered.forEach((game, idx) => {
+    const topBet = [...game.bets].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
+    const tierColor = topBet?.tier==='TEAM ANCHOR'?'var(--green)':topBet?.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
+    const tierBg    = topBet?.tier==='TEAM ANCHOR'?'var(--green-light)':topBet?.tier==='TEAM STRONG'?'var(--accent-light)':'var(--yellow-light)';
+    const tierBadge = topBet?.tier==='TEAM ANCHOR'?'bg-g':topBet?.tier==='TEAM STRONG'?'bg-b':'bg-y';
+    const decisionLabel = topBet?.tier==='TEAM ANCHOR'?'BET':topBet?.tier==='TEAM STRONG'?'BET':'LEAN';
+    const decisionColor = decisionLabel==='BET'?'var(--green)':'var(--yellow)';
+
+    // Map WU data for this game
+    const awayL = (game.away_team||'').toLowerCase();
+    const homeL = (game.home_team||'').toLowerCase();
+    const wuFav = _teamsWUFavorites.find(f =>
+      (f.away||'').toLowerCase().includes(awayL.slice(0,5)) ||
+      (f.home||'').toLowerCase().includes(homeL.slice(0,5))
+    );
+    const wuUpset = _teamsWUUpsets.find(u =>
+      (u.away||'').toLowerCase().includes(awayL.slice(0,5)) ||
+      (u.home||'').toLowerCase().includes(homeL.slice(0,5))
+    );
+
+    const modelProb = wuFav ? (wuFav.prob*100).toFixed(1) : (topBet?.implied_prob ? ((topBet.implied_prob + topBet.edge_pct/100)*100).toFixed(1) : '—');
+    const impliedProb = topBet?.implied_prob ? (topBet.implied_prob*100).toFixed(1) : '—';
+    const whyItems = (topBet?.reasoning||'').split('.').filter(s=>s.trim().length>5).slice(0,4);
+    const upsetText = wuUpset ? `${wuUpset.pick} at ${wuUpset.ml>0?'+'+wuUpset.ml:wuUpset.ml} has some path. ${(wuUpset.reasons||[]).slice(0,2).join('. ')}.` : 'No significant upset path detected for this game.';
+
+    const cardId = `llpcard_${idx}`;
     const card = document.createElement('div');
     card.className = 'card';
     card.style.marginBottom = '10px';
-
-    const topBet = [...game.bets].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
-    const topColor = topBet?.tier==='TEAM ANCHOR'?'var(--green)':topBet?.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
-    const topBadge = topBet?.tier==='TEAM ANCHOR'?'bg-g':topBet?.tier==='TEAM STRONG'?'bg-b':'bg-y';
-
+    card.style.overflow = 'hidden';
     card.innerHTML = `
-      <div class="ch">
-        <div>
-          <div style="font-size:14px;font-weight:700;">${game.away_team} @ ${game.home_team}</div>
-          <div style="font-size:11px;color:var(--text2);">${game.sport}${game.game_time?' · '+game.game_time:''}</div>
-        </div>
-        ${topBet?`<span class="badge ${topBadge}">${topBet.tier}</span>`:''}
-      </div>
-      <div class="cb">
-        ${game.bets.map(bet=>{
-          const tc = bet.tier==='TEAM ANCHOR'?'var(--green)':bet.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
-          const tbg = bet.tier==='TEAM ANCHOR'?'var(--green-light)':bet.tier==='TEAM STRONG'?'var(--accent-light)':'var(--yellow-light)';
-          return `<div style="padding:10px 12px;background:${tbg};border-radius:8px;border:1px solid ${tc}40;margin-bottom:6px;">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+      <!-- Card Header -->
+      <div style="background:var(--surface2);padding:14px 16px;border-bottom:1px solid var(--border);">
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;justify-content:space-between;">
+          <div>
+            <div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:6px;">
+              <span class="badge" style="background:var(--surface);color:var(--text2);border:1px solid var(--border);">#${idx+1}</span>
+              <span class="badge bg-b">${game.sport}</span>
+              <span class="badge" style="background:${decisionLabel==='BET'?'rgba(16,185,129,0.15)':'rgba(245,158,11,0.15)'};color:${decisionColor};border:1px solid ${decisionColor}40;">${decisionLabel}</span>
+              <span class="badge ${tierBadge}">${topBet?.tier?.replace('TEAM ','')}</span>
+              ${game.game_time?`<span style="font-size:11px;color:var(--text2);">🕐 ${game.game_time}</span>`:''}
+            </div>
+            <div style="font-size:16px;font-weight:800;color:var(--text);">${game.away_team} @ ${game.home_team}</div>
+            ${wuFav?`<div style="font-size:12px;color:var(--green);margin-top:2px;">Projected winner: <strong>${wuFav.pick}</strong></div>`:''}
+          </div>
+          <!-- Recommended Bet Box -->
+          <div style="border-radius:12px;border:1px solid rgba(16,185,129,0.25);background:rgba(16,185,129,0.08);padding:12px;min-width:200px;">
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);font-weight:700;">Recommended Bet</div>
+            <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-top:4px;">
               <div>
-                <span style="font-size:13px;font-weight:700;color:${tc};">${bet.pick}</span>
-                <span style="font-size:11px;color:var(--text2);margin-left:8px;">${bet.line>0?'+':''}${bet.line}</span>
+                <div style="font-size:18px;font-weight:900;color:var(--text);">${topBet?.pick||'—'}</div>
+                <div style="font-size:12px;color:var(--text2);">${topBet?.line>0?'+':''}${topBet?.line||'—'} · ${topBet?.unit_size||'—'}u</div>
               </div>
               <div style="text-align:right;">
-                <div style="font-size:11px;font-weight:700;color:${tc};">${bet.tier}</div>
-                <div style="font-size:10px;color:var(--text2);">${bet.unit_size}u</div>
+                <div style="font-size:10px;color:var(--text2);">Edge</div>
+                <div style="font-size:20px;font-weight:900;color:var(--green);">+${topBet?.edge_pct||0}%</div>
               </div>
             </div>
-            <div style="font-size:11px;font-family:var(--mono);color:${tc};">Edge: +${bet.edge_pct}% · Implied: ${(bet.implied_prob*100).toFixed(1)}%</div>
-            <div style="font-size:11px;color:var(--text2);margin-top:3px;">${bet.reasoning}</div>
-            <button class="btn btn-s btn-sm" style="margin-top:6px;" onclick="loadLLPBetToForm('${game.sport}','${game.away_team.replace(/'/g,"\\'")}','${game.home_team.replace(/'/g,"\\'")}','${bet.pick.replace(/'/g,"\\'")}','${bet.line}')">Load to Evaluator</button>
-          </div>`;
-        }).join('')}
+          </div>
+        </div>
       </div>
-    `;
+
+      <!-- Card Body -->
+      <div style="display:grid;grid-template-columns:1.1fr .9fr;gap:12px;padding:14px 16px;">
+        <div>
+          <!-- Score boxes -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px;">
+            <div style="border-radius:10px;background:var(--surface2);padding:8px 10px;">
+              <div style="font-size:10px;color:var(--text2);">Model Win</div>
+              <div style="font-size:14px;font-weight:800;color:var(--text);">${modelProb}%</div>
+            </div>
+            <div style="border-radius:10px;background:var(--surface2);padding:8px 10px;">
+              <div style="font-size:10px;color:var(--text2);">Implied</div>
+              <div style="font-size:14px;font-weight:800;color:var(--text);">${impliedProb}%</div>
+            </div>
+            <div style="border-radius:10px;background:var(--surface2);padding:8px 10px;">
+              <div style="font-size:10px;color:var(--text2);">Edge</div>
+              <div style="font-size:14px;font-weight:800;color:var(--green);">+${topBet?.edge_pct||0}%</div>
+            </div>
+          </div>
+          <!-- Why win -->
+          <div style="border-radius:10px;border:1px solid var(--border);background:var(--surface2);padding:12px;">
+            <div style="font-size:12px;font-weight:700;color:var(--green);margin-bottom:8px;">🏆 Why ${wuFav?.pick||game.away_team}?</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">
+              ${(whyItems.length?whyItems:[topBet?.reasoning||'Edge over market']).slice(0,4).map(item=>`
+                <div style="display:flex;gap:6px;border-radius:8px;background:var(--surface);padding:6px 8px;font-size:11px;color:var(--text2);">
+                  <span style="color:var(--green);flex-shrink:0;">✓</span>
+                  <span>${item.trim()}</span>
+                </div>`).join('')}
+            </div>
+          </div>
+        </div>
+        <div>
+          <!-- Probability bars -->
+          <div style="border-radius:10px;border:1px solid var(--border);background:var(--surface2);padding:12px;margin-bottom:10px;">
+            <div style="margin-bottom:8px;">
+              <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2);margin-bottom:4px;">
+                <span>Model probability</span><strong style="color:var(--text);">${modelProb}%</strong>
+              </div>
+              <div style="height:6px;border-radius:3px;background:var(--surface);overflow:hidden;">
+                <div style="height:100%;border-radius:3px;background:var(--green);width:${modelProb}%;transition:width .4s;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2);margin-bottom:4px;">
+                <span>Market implied</span><span>${impliedProb}%</span>
+              </div>
+              <div style="height:6px;border-radius:3px;background:var(--surface);overflow:hidden;">
+                <div style="height:100%;border-radius:3px;background:var(--text2);width:${impliedProb}%;transition:width .4s;"></div>
+              </div>
+            </div>
+          </div>
+          <!-- Upset risk -->
+          <div style="border-radius:10px;border:1px solid rgba(245,158,11,0.2);background:rgba(245,158,11,0.08);padding:12px;">
+            <div style="font-size:12px;font-weight:700;color:var(--yellow);margin-bottom:4px;">⚠ Upset Risk</div>
+            <div style="font-size:11px;color:var(--text2);line-height:1.6;">${upsetText}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- All bets (expandable) -->
+      <div id="${cardId}_detail" class="hidden" style="border-top:1px solid var(--border);padding:12px 16px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          ${game.bets.map(bet => {
+            const bc = bet.tier==='TEAM ANCHOR'?'var(--green)':bet.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
+            const bbg = bet.tier==='TEAM ANCHOR'?'var(--green-light)':bet.tier==='TEAM STRONG'?'var(--accent-light)':'var(--yellow-light)';
+            return `<div style="border-radius:8px;background:${bbg};border:1px solid ${bc}40;padding:10px;">
+              <div style="font-size:12px;font-weight:700;color:${bc};">${bet.pick}</div>
+              <div style="font-size:11px;color:var(--text2);margin:2px 0;">${bet.line>0?'+':''}${bet.line} · ${bet.unit_size}u · +${bet.edge_pct}% edge</div>
+              <div style="font-size:10px;color:var(--text2);line-height:1.5;">${bet.reasoning}</div>
+              <button class="btn btn-s btn-sm" style="margin-top:6px;font-size:10px;" onclick="loadLLPBetToForm('${game.sport}','${(game.away_team||'').replace(/'/g,"\'")}','${(game.home_team||'').replace(/'/g,"\'")}','${bet.pick.replace(/'/g,"\'")}','${bet.line}')">Load to Evaluator</button>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- Expand toggle -->
+      <button onclick="const d=document.getElementById('${cardId}_detail');const open=!d.classList.contains('hidden');d.classList.toggle('hidden');this.textContent=open?'View full engine details ▾':'Hide full engine details ▴';"
+        style="width:100%;border-top:1px solid var(--border);padding:10px;background:transparent;color:var(--text2);font-size:12px;font-weight:600;cursor:pointer;transition:background .15s;border-radius:0 0 var(--r) var(--r);"
+        onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background='transparent'">
+        View full engine details ▾
+      </button>`;
+
     outputDiv.appendChild(card);
   });
 }
