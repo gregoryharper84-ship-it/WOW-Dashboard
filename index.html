@@ -2436,16 +2436,20 @@ async function runESPNWNBAEngine(log){
           const aid = athlete.id;
           const name = athlete.fullName || `${athlete.firstName||''} ${athlete.lastName||''}`.trim();
 
-          const logR = await fx(
-            `https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba/seasons/2026/athletes/${aid}/statisticslog`,
-            {}, 8000
-          );
-          if(!logR.ok) continue;
-          const logD = await logR.json();
+          // WNBA season year: try 2026 (current), fall back to 2025 if no data
+          let logD = null;
+          for(const wnbaSeason of ['2026','2025']){
+            const logR = await fx(
+              `https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba/seasons/${wnbaSeason}/athletes/${aid}/statisticslog`,
+              {}, 8000
+            );
+            if(logR?.ok){ const d=await logR.json(); if((d.entries||[]).length>=1){logD=d;break;} }
+          }
+          if(!logD) continue;
 
           // ESPN stats log: entries array with splits per game
           const entries = logD.entries||[];
-          if(entries.length < 2) continue; // lowered from 3 — early season has few games
+          if(entries.length < 1) continue; // early season: accept 1+ games
 
           // Extract per-game stats using abbreviation lookup (index varies by ESPN endpoint)
           const gameLogs = entries.slice(0,15).map(e=>{
@@ -2466,9 +2470,9 @@ async function runESPNWNBAEngine(log){
               tpm:  getStat('3PM','FG3M','3FGM','THREE'),
               mins: getStat('MIN','MINS','MINUTES'),
             };
-          }).filter(g=>g.mins > 4); // lowered from 5 — capture short stints
+          }).filter(g=>g.mins > 2); // early season: capture even short stints
 
-          if(gameLogs.length < 2) continue; // lowered from 3 — early season
+          if(gameLogs.length < 1) continue; // early season: accept 1+ games
 
           for(const pd of propDefs){
             const key = pd.prop==='points'?'pts':pd.prop==='rebounds'?'reb':pd.prop==='assists'?'ast':'tpm';
@@ -2478,7 +2482,7 @@ async function runESPNWNBAEngine(log){
             for(const line of pd.lines){
               if(avg < line*0.5) continue;
               const hr = vals.filter(v=>v>line).length/vals.length;
-              if(hr>=0.52 && hr>bestHR){ bestHR=hr; bestLine=line; } // lowered from 0.55 for early season
+              if(hr>=0.50 && hr>bestHR){ bestHR=hr; bestLine=line; } // early season: 50% minimum
             }
             if(!bestLine) continue;
             candidates.push({
@@ -3250,7 +3254,7 @@ async function runTennisEngine(log){
             const adjAvg=avg*sAdj;
             for(const line of [2.5,4.5,6.5,8.5,10.5]){
               const hr=aces.filter(v=>v>line).length/aces.length;
-              if(hr>=0.57){
+              if(hr>=0.52){ // synthetic distribution — lower threshold than real game logs
                 candidates.push({player:playerName,sport:'Tennis',prop:'aces',side:'MORE',line,
                   game:gameStr,tournament,surface,tour,
                   recent_avg:parseFloat(adjAvg.toFixed(1)),
@@ -3263,7 +3267,7 @@ async function runTennisEngine(log){
             if(surface.toLowerCase()==='clay'){
               for(const line of [6.5,8.5,10.5]){
                 const hrL=aces.filter(v=>v<line).length/aces.length;
-                if(hrL>=0.62){
+                if(hrL>=0.55){ // clay LESS aces
                   candidates.push({player:playerName,sport:'Tennis',prop:'aces',side:'LESS',line,
                     game:gameStr,tournament,surface,tour,
                     recent_avg:parseFloat(adjAvg.toFixed(1)),
@@ -3280,7 +3284,7 @@ async function runTennisEngine(log){
             for(const line of [18.5,20.5,22.5,24.5,26.5]){
               const hrM=totals.filter(v=>v>line).length/totals.length;
               const hrL=totals.filter(v=>v<line).length/totals.length;
-              if(hrM>=0.60){
+              if(hrM>=0.53){
                 candidates.push({player:playerName,sport:'Tennis',prop:'total games',side:'MORE',line,
                   game:gameStr,tournament,surface,tour,
                   recent_avg:parseFloat(avg.toFixed(1)),
@@ -3289,7 +3293,7 @@ async function runTennisEngine(log){
                   apiTennisId:playerId});
                 break;
               }
-              if(hrL>=0.60){
+              if(hrL>=0.53){
                 candidates.push({player:playerName,sport:'Tennis',prop:'total games',side:'LESS',line,
                   game:gameStr,tournament,surface,tour,
                   recent_avg:parseFloat(avg.toFixed(1)),
@@ -3304,7 +3308,7 @@ async function runTennisEngine(log){
             const avg=mean(dfs);
             for(const line of [1.5,2.5,3.5,4.5]){
               const hrL=dfs.filter(v=>v<line).length/dfs.length;
-              if(hrL>=0.58){
+              if(hrL>=0.52){
                 candidates.push({player:playerName,sport:'Tennis',prop:'double faults',side:'LESS',line,
                   game:gameStr,tournament,surface,tour,
                   recent_avg:parseFloat(avg.toFixed(1)),
@@ -3345,7 +3349,7 @@ async function runESPNEngine(sport,log){
 }
 
 function genFallbackCandidates(sport,away,home){
-  const defs={NFL:[{prop:'passing yards',line:250.5,side:'MORE'},{prop:'receptions',line:5.5,side:'MORE'},{prop:'rush attempts',line:15.5,side:'MORE'}],soccer:[{prop:'shots on target',line:1.5,side:'MORE'},{prop:'passes',line:40.5,side:'MORE'}]};
+  const defs={NFL:[{prop:'passing yards',line:250.5,side:'MORE'},{prop:'receptions',line:5.5,side:'MORE'},{prop:'rush attempts',line:15.5,side:'MORE'}],soccer:[{prop:'shots on target',line:1.5,side:'MORE'},{prop:'passes',line:40.5,side:'MORE'}],WNBA:[{prop:'points',line:14.5,side:'MORE'},{prop:'rebounds',line:5.5,side:'MORE'},{prop:'assists',line:3.5,side:'MORE'}],NBA:[{prop:'points',line:18.5,side:'MORE'},{prop:'rebounds',line:5.5,side:'MORE'},{prop:'assists',line:4.5,side:'MORE'}]};
   return (defs[sport]||[]).map(d=>({player:`${away} Key Player`,sport,prop:d.prop,side:d.side,line:d.line,game:`${away} @ ${home}`,note:'⚠ No stats API for this sport — verify player + line manually'}));
 }
 
