@@ -3244,7 +3244,7 @@ async function runTennisEngine(log){
                 const total  = p1Wins + p2Wins;
                 if(total > 0) h2hNote = ` | H2H: ${p1Wins}-${p2Wins}`;
               }
-            }catch(e){}
+            }catch(e){ console.warn('Tennis H2H fetch failed:',e?.message); }
           }
 
           // ── Build candidates from distributions ──
@@ -4505,7 +4505,7 @@ function runFourGates(prop){
     // Only apply strict gate when we have real L10 data (not engine estimates)
     const l10 = prop.l10_hit_rate ?? prop.w_l10_hit_rate ?? null;
     const recentFSAvg = prop.recent_avg ?? 0;
-    const hasL10Data = l10 != null && prop.source !== 'engine';
+    const hasL10Data = l10 != null && prop.source && prop.source !== 'engine'; // safe: undefined → falsy → treat as sportsbook
     if(hasL10Data && (l10 < 0.70 || recentFSAvg < 7.0)){
       result.kill = true;
       result.killReason = `Gate 2 (Hitter FS): L10 hit rate ${Math.round(l10*100)}% < 70% required, or avg FS ${recentFSAvg?.toFixed(1)} < 7.0 threshold. Too volatile.`;
@@ -10402,7 +10402,9 @@ async function buildNBALessCandidates(sport, cfg, log){
     for(const teamId of [game.visitor_team?.id, game.home_team?.id].filter(Boolean)){
       // Get players via recent stats
       const statsR = await bdlFetch(`${bdlBase}/stats?team_ids[]=${teamId}&seasons[]=2025&per_page=20`);
-      if(!statsR?.ok) continue;
+      if(!statsR) continue;
+      if(statsR.status === 401){ log(`⚠ ${sport} LESS: BDL stats tier-restricted (401) — skipping`,'w'); break; }
+      if(!statsR.ok) continue;
       const statsD = await statsR.json();
       const playerMap = new Map();
       (statsD.data||[]).forEach(s=>{ if(s.player?.id&&s.player?.first_name) playerMap.set(s.player.id,s.player); });
