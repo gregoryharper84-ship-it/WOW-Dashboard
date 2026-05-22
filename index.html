@@ -4364,10 +4364,21 @@ function runFourGates(prop){
   const hasData = prop.raw_vals?.length > 0 || prop.l5_hit_rate != null ||
                   prop.recentGame != null    || prop.recent_avg != null;
   if(!hasData){
-    result.g3 = '❌ NO BOX SCORE DATA';
-    result.kill = true;
-    result.killReason = 'Gate 3: No box score data available — NO PLAY';
-    return result;
+    // Engine props with no data = genuine gap — kill
+    // Sportsbook props with no data = enrichment pending or unavailable
+    //   → warn only, let wowValidate score on market data (CLV, line movement)
+    const isEngineSourced = prop.source === 'engine' || prop.source === 'fbref' ||
+                            prop.source === 'replit'  || prop.source === 'pandascore';
+    if(isEngineSourced){
+      result.g3 = '❌ NO BOX SCORE DATA';
+      result.kill = true;
+      result.killReason = 'Gate 3: No box score data for engine prop — NO PLAY';
+      return result;
+    } else {
+      // Sportsbook prop — pass with advisory, wowValidate will score on market signals
+      result.g3 = '⚠️ NO STATS — market scoring only (CLV/line movement)';
+      result.flags.push('no-historical-data');
+    }
   }
   // Check if data contradicts direction
   const recentAvg  = prop.recent_avg;
@@ -4713,9 +4724,14 @@ const _QA_CASES = [
 
   // ── GATE 3: BOX SCORE ──
   {
-    label: 'G3: No box score data killed',
-    prop: {sport:'NBA', prop:'points', side:'MORE', line:24.5},
+    label: 'G3: Engine prop with no box score data killed',
+    prop: {sport:'NBA', prop:'points', side:'MORE', line:24.5, source:'engine'},
     expect: 'KILL'
+  },
+  {
+    label: 'G3: Sportsbook prop with no stats passes with warning',
+    prop: {sport:'NBA', prop:'points', side:'MORE', line:24.5, source:'odds_api', bookmaker:'DraftKings'},
+    expect: 'PASS'
   },
   {
     label: 'G3: Coin-flip on sportsbook data with low prob killed',
