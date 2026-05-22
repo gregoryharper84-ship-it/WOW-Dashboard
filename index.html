@@ -2498,20 +2498,23 @@ async function runBDLEngine(sport,log){
         if(!players.length){ log(`  ⚠ No roster data for team ${teamId} (BDL 401/429)`,'w'); continue; }
 
         // Step 3: Get full game log for each player (throttled)
-        for(const player of players){
-          await _bdlDelay(150); // 150ms between player requests
+        // PERF FIX: Cap at 6 players (was 12) + raise delay to 1100ms (was 150ms)
+        // Free tier = 60 req/min. Old: 12 players × 2 req × 150ms = 400% over limit → 429s
+        // New: 6 players × 2 req × 1100ms = ~55 req/min → fits free tier
+        const playersToFetch = players.slice(0, 6);
+        for(const player of playersToFetch){
+          await _bdlDelay(1100); // 1100ms = safe for 60 req/min free tier
           let playerLogs=[];
           for(const season of seasons){
-            const logR=await fx(
-              `${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=25`,
-              {headers:{'Authorization':KEYS.bdl}}, 8000
+            // BUGFIX: Use bdlFetch (has auth header + retry logic) not raw fx()
+            const logR=await bdlFetch(
+              `${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=25`
             );
-            const psLogR=await fx(
-              `${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&postseason=true&per_page=15`,
-              {headers:{'Authorization':KEYS.bdl}}, 8000
+            const psLogR=await bdlFetch(
+              `${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=${season}&postseason=true&per_page=15`
             );
-            const reg=logR.ok?(await logR.json()).data||[]:[];
-            const ps=psLogR.ok?(await psLogR.json()).data||[]:[];
+            const reg=logR?.ok?(await logR.json()).data||[]:[];
+            const ps=psLogR?.ok?(await psLogR.json()).data||[]:[];
             // Postseason first (most recent context during playoffs)
             const combined=[...ps,...reg].filter(g=>{
               const m=g.min; const mVal=m?parseInt(String(m).split(':')[0]||0):0; return mVal>5;
@@ -9768,56 +9771,45 @@ async function refreshPropPool(manual=false){
   log(`\n⟳ Validating ${Math.min(deduped.length,60)} props through WOW stack...`,'i');
 
   const scored=[];
-  // ── DIAGNOSTIC COUNTERS ──
-  const _killReasons = {}; // killReason string → count
-  const _belowThreshold = []; // passed gates, failed tier
-  const _allValidated = []; // full record for console debugging
+  const _killReasons={}, _belowThreshold=[], _allValidated=[];
   for(const p of deduped.slice(0,60)){
     try{
       const en=await enrichProp(p);
       const ws=await scoreOne(en);
       const val=await wowValidateGated(en,ws);
-      const record = {...en,...val,wowScore:ws};
+      const record={...en,...val,wowScore:ws};
       _allValidated.push(record);
       if(['tier1','tier2','flex'].includes(val.tier)){
         scored.push(record); addToPool(record);
       } else if(val.gateKill){
-        // Gate kill — bucket by reason
-        const bucket = val.label || 'Unknown gate kill';
-        _killReasons[bucket] = (_killReasons[bucket]||0) + 1;
+        const bucket=(val.label||'Unknown').replace('GATE KILL — ','').substring(0,80);
+        _killReasons[bucket]=(_killReasons[bucket]||0)+1;
         logEl.innerHTML+=`<span class="ow">⛔ GATE KILL: ${en.player||''} ${en.prop||''} — ${val.label}\n</span>`;
         logEl.scrollTop=logEl.scrollHeight;
       } else {
-        // Passed gates, didn't make tier cut
-        _belowThreshold.push({player:en.player,prop:en.prop,side:en.side,line:en.line,wowScore:ws,tier:val.tier,label:val.label});
+        _belowThreshold.push({player:en.player,prop:en.prop,side:en.side,line:en.line,wowScore:ws,tier:val.tier});
       }
-    }catch(e){}
+    }catch(e){ console.warn('WOW validation error:',e?.message,e); }
   }
-  // Expose to console for live debugging
-  window._lastValidatedProps = _allValidated;
-  window._lastKillReasons    = _killReasons;
-  window._lastBelowThreshold = _belowThreshold;
-
-  // ── DIAGNOSTIC SUMMARY LOG ──
-  const totalKilled = Object.values(_killReasons).reduce((s,n)=>s+n,0);
-  const totalBelow  = _belowThreshold.length;
-  if(totalKilled > 0 || totalBelow > 0){
+  window._lastValidatedProps=_allValidated;
+  window._lastKillReasons=_killReasons;
+  window._lastBelowThreshold=_belowThreshold;
+  const _nKilled=Object.values(_killReasons).reduce((s,n)=>s+n,0);
+  const _nBelow=_belowThreshold.length;
+  if(_nKilled>0||_nBelow>0){
     logEl.innerHTML+=`\n<span class="oi">── Validation Summary ──\n</span>`;
-    if(totalKilled > 0){
-      logEl.innerHTML+=`<span class="ow">  Gate kills (${totalKilled}):\n</span>`;
-      for(const [reason, count] of Object.entries(_killReasons).sort((a,b)=>b[1]-a[1])){
-        // Shorten reason for display
-        const short = reason.replace('GATE KILL — ','').substring(0,80);
-        logEl.innerHTML+=`<span class="ow">    × ${count} — ${short}\n</span>`;
-      }
+    if(_nKilled>0){
+      logEl.innerHTML+=`<span class="ow">  Gate kills (${_nKilled}):\n</span>`;
+      Object.entries(_killReasons).sort((a,b)=>b[1]-a[1]).forEach(([r,c])=>{
+        logEl.innerHTML+=`<span class="ow">    x${c} ${r}\n</span>`;
+      });
     }
-    if(totalBelow > 0){
-      logEl.innerHTML+=`<span class="ow">  Passed gates, below tier (${totalBelow}):\n</span>`;
-      const topBelow = _belowThreshold.sort((a,b)=>(b.wowScore||0)-(a.wowScore||0)).slice(0,5);
-      for(const p of topBelow){
-        logEl.innerHTML+=`<span class="ow">    · ${p.player} ${p.prop} ${p.side} ${p.line} — score ${p.wowScore||'?'} → ${p.tier||'reject'}\n</span>`;
-      }
-      if(totalBelow > 5) logEl.innerHTML+=`<span class="ow">    … and ${totalBelow-5} more (see window._lastBelowThreshold)\n</span>`;
+    if(_nBelow>0){
+      logEl.innerHTML+=`<span class="ow">  Passed gates, below tier (${_nBelow}):\n</span>`;
+      _belowThreshold.sort((a,b)=>(b.wowScore||0)-(a.wowScore||0)).slice(0,5).forEach(p=>{
+        logEl.innerHTML+=`<span class="ow">    . ${p.player} ${p.prop} ${p.side} ${p.line} score:${p.wowScore||'?'} tier:${p.tier||'reject'}\n</span>`;
+      });
+      if(_nBelow>5) logEl.innerHTML+=`<span class="ow">    ...+${_nBelow-5} more (window._lastBelowThreshold)\n</span>`;
     }
     logEl.scrollTop=logEl.scrollHeight;
   }
