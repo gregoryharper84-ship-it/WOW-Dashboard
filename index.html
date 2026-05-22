@@ -2047,15 +2047,18 @@ async function runMLBEngine(log){
       const gameStr=`${awayName} @ ${homeName}`;
       const awayPitcher=game.teams?.away?.probablePitcher;const homePitcher=game.teams?.home?.probablePitcher;
 
-      // FIX #2: Get pitcher ERA early for quality filter
+      // PERF FIX: getPitcherERA now uses session cache — same pitcher never fetched twice
       const getPitcherERA = async (pitcherId) => {
         if(!pitcherId) return 4.50;
+        if(_pitcherERACache[pitcherId] !== undefined) return _pitcherERACache[pitcherId];
         try{
           const r = await fx(`${EP.mlb}/people/${pitcherId}/stats?stats=season&season=2026&group=pitching`,{},5000);
-          if(!r.ok) return 4.50;
+          if(!r.ok){ _pitcherERACache[pitcherId] = 4.50; return 4.50; }
           const d = await r.json();
-          return parseFloat(d.stats?.[0]?.splits?.[0]?.stat?.era || 4.50);
-        }catch(e){ return 4.50; }
+          const era = parseFloat(d.stats?.[0]?.splits?.[0]?.stat?.era || 4.50);
+          _pitcherERACache[pitcherId] = era;
+          return era;
+        }catch(e){ _pitcherERACache[pitcherId] = 4.50; return 4.50; }
       };
 
       const [awayPitcherERA, homePitcherERA] = await Promise.all([
@@ -2115,18 +2118,38 @@ async function runMLBEngine(log){
 
         const roster=await getMLBRoster(teamId);
         const hitters=roster.filter(p=>p.position?.type==='Hitter').slice(0,5);
-        for(const hitter of hitters){
-          const logs=await getMLBPlayerLog(hitter.person?.id,12);
+        // PERF FIX: Fetch hitter logs in batches of 3 (was fully sequential)
+        const hitterLogs = [];
+        for(let i=0; i<hitters.length; i+=3){
+          const batch = hitters.slice(i, i+3);
+          const batchLogs = await Promise.all(batch.map(h => getMLBPlayerLog(h.person?.id, 12)));
+          hitterLogs.push(...batchLogs);
+        }
+        for(let hi=0; hi<hitters.length; hi++){
+          const hitter = hitters[hi];
+          const logs = hitterLogs[hi];
           const hittingLog=logs?.find(s=>s.group?.displayName==='hitting')?.splits||[];
           if(!hittingLog.length) continue;
 
-          // FIX #9: Get handedness split vs opposing pitcher
+          // PERF FIX: Cache pitcher handedness — same pitcher was fetched once per hitter
+          // (5 hitters × 2 teams × 8 games = 80 identical fetches). Now fetched once per pitcher.
           let handednessStat = null;
           if(oppPitcher?.id){
-            // Get pitcher handedness
-            const pitcherInfo = await fx(`${EP.mlb}/people/${oppPitcher.id}`,{},4000).then(r=>r.ok?r.json():null).catch(()=>null);
-            const throws = pitcherInfo?.people?.[0]?.pitchHand?.code; // 'L' or 'R'
-            if(throws) handednessStat = await getHandednessSplit(hitter.person?.id, throws==='L'?'vl':'vr');
+            let throws = _pitcherHandCache[oppPitcher.id];
+            if(throws === undefined){
+              const pitcherInfo = await fx(`${EP.mlb}/people/${oppPitcher.id}`,{},4000).then(r=>r.ok?r.json():null).catch(()=>null);
+              throws = pitcherInfo?.people?.[0]?.pitchHand?.code || null;
+              _pitcherHandCache[oppPitcher.id] = throws; // cache for session
+            }
+            if(throws){
+              const splitKey = `${hitter.person?.id}_${throws==='L'?'vl':'vr'}`;
+              if(_pitcherHandStatCache[splitKey] !== undefined){
+                handednessStat = _pitcherHandStatCache[splitKey];
+              } else {
+                handednessStat = await getHandednessSplit(hitter.person?.id, throws==='L'?'vl':'vr');
+                _pitcherHandStatCache[splitKey] = handednessStat;
+              }
+            }
           }
 
           for(const hp of hitterProps){
@@ -2361,15 +2384,20 @@ async function runESPNWNBAEngine(log){
 // ── BDL Rate-Limit Management ──
 // BDL free tier: aggressive 429 + 401 under load. Cache rosters per session.
 const _bdlRosterCache = {};
+// ── Pitcher caches — persist for full session, same pitcher never fetched twice ──
+const _pitcherERACache = {};       // pitcherId → ERA float
+const _pitcherHandCache = {};      // pitcherId → 'L' or 'R'
+const _pitcherHandStatCache = {};  // `${playerId}_vl` or `_vr` → handedness split
 const _bdlDelay = ms => new Promise(r => setTimeout(r, ms));
-async function bdlFetch(url, retries=2){
+async function bdlFetch(url, retries=1){
+  // PERF FIX: Max 1 retry, flat 1s wait. Old exponential (1s+2s+4s=7s) was
+  // blocking the UI for seconds per failing team. Hard bail on 429 after 1 retry.
   for(let attempt=0; attempt<=retries; attempt++){
-    const r = await fx(url, {headers:{'Authorization':KEYS.bdl}}, 10000);
+    const r = await fx(url, {headers:{'Authorization':KEYS.bdl}}, 8000);
     if(r.ok) return r;
     if(r.status === 429){
-      const wait = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
-      await _bdlDelay(wait);
-      continue;
+      if(attempt < retries){ await _bdlDelay(1000); continue; } // wait 1s, one retry only
+      return null; // still 429 after retry — bail, don't hang
     }
     if(r.status === 401) return null; // key issue — bail immediately
     return r;
@@ -10079,7 +10107,20 @@ async function buildMLBLessCandidates(cfg, log){
     const gameTotal = totalKey?gameTotals[totalKey]:null;
     const isLowTotal = cfg.lowou && gameTotal && gameTotal < 7.5;
 
-    const getPitcherERA = async(p)=>{ if(!p?.id) return 4.50; try{ const r=await fx(`${EP.mlb}/people/${p.id}/stats?stats=season&season=2026&group=pitching`,{},5000); if(!r.ok)return 4.50; const d=await r.json(); return parseFloat(d.stats?.[0]?.splits?.[0]?.stat?.era||4.50); }catch(e){return 4.50;} };
+    // PERF FIX: reuse module-level _pitcherERACache so same pitcher is never fetched twice
+    // across the LESS-candidates engine, the primary engine, or successive games.
+    const getPitcherERA = async(p)=>{
+      if(!p?.id) return 4.50;
+      if(_pitcherERACache[p.id] !== undefined) return _pitcherERACache[p.id];
+      try{
+        const r=await fx(`${EP.mlb}/people/${p.id}/stats?stats=season&season=2026&group=pitching`,{},5000);
+        if(!r.ok){ _pitcherERACache[p.id] = 4.50; return 4.50; }
+        const d=await r.json();
+        const era = parseFloat(d.stats?.[0]?.splits?.[0]?.stat?.era||4.50);
+        _pitcherERACache[p.id] = era;
+        return era;
+      }catch(e){ _pitcherERACache[p.id] = 4.50; return 4.50; }
+    };
     const [awayERA, homeERA] = await Promise.all([getPitcherERA(game.teams?.away?.probablePitcher), getPitcherERA(game.teams?.home?.probablePitcher)]);
 
     for(const [teamData, oppPitcher, oppERA] of [[game.teams?.away,game.teams?.home?.probablePitcher,homeERA],[game.teams?.home,game.teams?.away?.probablePitcher,awayERA]]){
