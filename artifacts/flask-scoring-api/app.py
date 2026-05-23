@@ -788,7 +788,9 @@ def health():
             "tennis_stats_today":  "GET /tennis-stats/today?tour=atp|wta (X-API-Key required) — today's live ATP/WTA matches from Odds API",
             "api_sports_players":        "GET /api-sports/{baseball|basketball|hockey|nfl|tennis}/players?player=... (X-API-Key required) — search players via api-sports.io",
             "api_sports_stats":          "GET /api-sports/{basketball|nfl|tennis}/stats?player_id=...&team=...&league=...&season=... (X-API-Key required) — season stats via api-sports.io",
-            "api_sports_tennis_fixtures":"GET /api-sports/tennis/fixtures?date=YYYY-MM-DD (X-API-Key required) — tennis fixtures for a date via api-sports.io"
+            "api_sports_tennis_fixtures":"GET /api-sports/tennis/fixtures?date=YYYY-MM-DD (X-API-Key required) — tennis fixtures for a date via api-sports.io",
+            "umpire_stats":          "GET /umpire-stats?name=...&since=YYYY-MM-DD (X-API-Key required) — MLB HP umpire career K/BB/runs aggregates",
+            "umpire_stats_populate": "POST /umpire-stats/populate {start_date,end_date} (X-API-Key required) — backfill umpire_games from MLB Stats API (max 180 days)"
         }
     })
 
@@ -3754,6 +3756,288 @@ def serve_frontend(path):
         return send_from_directory(_STATIC_DIR, "index.html")
 
     return jsonify({"service": "WOW Scoring API", "status": "ok", "version": "1.0.0"}), 200
+
+
+# ── MLB Umpire stats (HP umpire K/BB/runs aggregates) ──────────────────────
+# Data source: MLB Stats API (statsapi.mlb.com) — official, free, no auth.
+# Strategy: /populate crawls a date range, computes per-game K/BB/R totals,
+# upserts one row per game into `umpire_games`. /umpire-stats GET aggregates
+# from that table at query time (cheap; ~2,430 games per season).
+
+_UMPIRE_SCHEMA_LOCK = threading.Lock()
+_UMPIRE_SCHEMA_READY = False
+_UMPIRE_POPULATE_LOCK = threading.Lock()
+_UMPIRE_POPULATE_STATE = {"running": False, "started_at": None, "range": None}
+
+
+def _ensure_umpire_schema(conn):
+    """Create umpire_games table on first use (idempotent)."""
+    global _UMPIRE_SCHEMA_READY
+    if _UMPIRE_SCHEMA_READY:
+        return
+    with _UMPIRE_SCHEMA_LOCK:
+        if _UMPIRE_SCHEMA_READY:
+            return
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS umpire_games (
+                    game_pk        INTEGER PRIMARY KEY,
+                    game_date      DATE NOT NULL,
+                    hp_umpire      TEXT NOT NULL,
+                    hp_umpire_lower TEXT NOT NULL,
+                    so             INTEGER NOT NULL DEFAULT 0,
+                    bb             INTEGER NOT NULL DEFAULT 0,
+                    runs           INTEGER NOT NULL DEFAULT 0,
+                    bf             INTEGER NOT NULL DEFAULT 0,
+                    inserted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS umpire_games_lower_idx
+                    ON umpire_games (hp_umpire_lower);
+                CREATE INDEX IF NOT EXISTS umpire_games_date_idx
+                    ON umpire_games (game_date);
+            """)
+            conn.commit()
+        _UMPIRE_SCHEMA_READY = True
+
+
+def _fetch_game_umpire_stats(game_pk, timeout=8):
+    """Pull HP umpire + K/BB/runs/BF for a single completed MLB game."""
+    import requests as _req
+    url = f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
+    r = _req.get(url, timeout=timeout)
+    r.raise_for_status()
+    d = r.json()
+    ld = d.get("liveData", {}) or {}
+    box = ld.get("boxscore", {}) or {}
+
+    hp = None
+    for o in box.get("officials", []) or []:
+        if o.get("officialType") == "Home Plate":
+            hp = (o.get("official") or {}).get("fullName")
+            break
+    if not hp:
+        return None
+
+    teams = box.get("teams", {}) or {}
+    so = bb = bf = 0
+    for side in ("home", "away"):
+        pitch = ((teams.get(side) or {}).get("teamStats") or {}).get("pitching") or {}
+        so += int(pitch.get("strikeOuts")  or 0)
+        bb += int(pitch.get("baseOnBalls") or 0)
+        bf += int(pitch.get("battersFaced") or 0)
+
+    linescore = (ld.get("linescore") or {}).get("teams") or {}
+    runs = int((linescore.get("home") or {}).get("runs") or 0) + \
+           int((linescore.get("away") or {}).get("runs") or 0)
+
+    return {"hp_umpire": hp, "so": so, "bb": bb, "runs": runs, "bf": bf}
+
+
+@app.route("/umpire-stats", methods=["GET"])
+@require_api_key
+def umpire_stats():
+    """
+    Career aggregates for an MLB Home Plate umpire, computed from cached
+    game-level rows in `umpire_games` (populated via /umpire-stats/populate).
+
+    Query params:
+      name   — umpire full name fragment (required, case-insensitive)
+      since  — optional ISO date (YYYY-MM-DD); only count games on/after
+
+    Returns: { games, kRate (K/BF), bbRate (BB/BF), runsPerGame, soPerGame,
+               bbPerGame, lastGameDate, sampleSince }.
+    """
+    import psycopg2 as _pg, psycopg2.extras as _pgx
+
+    from datetime import date as _date
+    name = (request.args.get("name") or "").strip().lower()
+    since = (request.args.get("since") or "").strip() or None
+    if not name:
+        return jsonify({"ok": False, "error": "Missing required param: name"}), 400
+    if since:
+        try:
+            _date.fromisoformat(since)
+        except ValueError:
+            return jsonify({"ok": False, "error": "since must be YYYY-MM-DD"}), 400
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+
+    try:
+        conn = _pg.connect(db_url)
+        try:
+            _ensure_umpire_schema(conn)
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                clauses = ["hp_umpire_lower LIKE %s"]
+                params  = [f"%{name}%"]
+                if since:
+                    clauses.append("game_date >= %s")
+                    params.append(since)
+                where = " AND ".join(clauses)
+                cur.execute(f"""
+                    SELECT
+                        MIN(hp_umpire) AS hp_umpire,
+                        COUNT(*)::int  AS games,
+                        SUM(so)::int   AS total_so,
+                        SUM(bb)::int   AS total_bb,
+                        SUM(runs)::int AS total_runs,
+                        SUM(bf)::int   AS total_bf,
+                        MAX(game_date) AS last_game_date,
+                        MIN(game_date) AS first_game_date
+                    FROM umpire_games
+                    WHERE {where}
+                """, params)
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"DB error: {e}"}), 500
+
+    games = (row or {}).get("games") or 0
+    if not games:
+        return jsonify({
+            "ok": True,
+            "name": name,
+            "games": 0,
+            "message": "No games cached for this umpire. Run POST /umpire-stats/populate "
+                       "with a date range to backfill.",
+        })
+
+    bf = row["total_bf"] or 0
+    return jsonify({
+        "ok":   True,
+        "name": row["hp_umpire"],
+        "stats": {
+            "games":         games,
+            "kRate":         round(row["total_so"] / bf, 4) if bf else None,
+            "bbRate":        round(row["total_bb"] / bf, 4) if bf else None,
+            "runsPerGame":   round(row["total_runs"] / games, 3),
+            "soPerGame":     round(row["total_so"]   / games, 3),
+            "bbPerGame":     round(row["total_bb"]   / games, 3),
+            "bfPerGame":     round(bf / games, 2),
+            "lastGameDate":  str(row["last_game_date"]) if row["last_game_date"] else None,
+            "firstGameDate": str(row["first_game_date"]) if row["first_game_date"] else None,
+            "sampleSince":   since,
+        },
+        "source": "statsapi.mlb.com (cached)",
+    })
+
+
+@app.route("/umpire-stats/populate", methods=["POST"])
+@require_api_key
+def umpire_stats_populate():
+    """
+    Backfill `umpire_games` from MLB Stats API for a date range.
+    Runs in a background thread (returns immediately with ETA).
+
+    JSON body: { "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD" }
+    Defaults: end_date = today, start_date = end_date - 14 days.
+
+    Skips games already cached (PRIMARY KEY on game_pk).
+    Rate-limited at ~5 requests/sec to be polite to statsapi.mlb.com.
+    """
+    import threading, requests as _req, psycopg2 as _pg, time as _t
+    from datetime import date as _date, timedelta as _td
+
+    body = request.get_json(silent=True) or {}
+    end_s   = body.get("end_date")   or _date.today().isoformat()
+    start_s = body.get("start_date") or (_date.fromisoformat(end_s) - _td(days=14)).isoformat()
+
+    try:
+        start = _date.fromisoformat(start_s)
+        end   = _date.fromisoformat(end_s)
+    except ValueError:
+        return jsonify({"ok": False, "error": "start_date/end_date must be YYYY-MM-DD"}), 400
+    if end < start:
+        return jsonify({"ok": False, "error": "end_date must be >= start_date"}), 400
+    if (end - start).days > 180:
+        return jsonify({"ok": False, "error": "Range too large; max 180 days per call"}), 400
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+
+    # Single-flight guard — only one populate crawl may run at a time.
+    with _UMPIRE_POPULATE_LOCK:
+        if _UMPIRE_POPULATE_STATE["running"]:
+            return jsonify({
+                "ok":      False,
+                "error":   "A populate job is already running.",
+                "status":  "in_progress",
+                "started_at": _UMPIRE_POPULATE_STATE["started_at"],
+                "range":   _UMPIRE_POPULATE_STATE["range"],
+            }), 409
+        _UMPIRE_POPULATE_STATE["running"] = True
+        _UMPIRE_POPULATE_STATE["started_at"] = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime())
+        _UMPIRE_POPULATE_STATE["range"] = [start_s, end_s]
+
+    def _crawl():
+        try:
+            conn = _pg.connect(db_url)
+            try:
+                _ensure_umpire_schema(conn)
+                sched_url = "https://statsapi.mlb.com/api/v1/schedule"
+                params = {"sportId": 1, "startDate": start_s, "endDate": end_s, "hydrate": "officials"}
+                try:
+                    r = _req.get(sched_url, params=params, timeout=15)
+                    r.raise_for_status()
+                    sched = r.json()
+                except Exception as e:
+                    app.logger.warning("umpire populate: schedule fetch failed: %s", e)
+                    return
+
+                game_pks = []
+                for d in sched.get("dates", []):
+                    for g in d.get("games", []):
+                        state = (g.get("status") or {}).get("abstractGameState")
+                        if state == "Final":
+                            game_pks.append((g.get("gamePk"), g.get("officialDate") or d.get("date")))
+
+                inserted = skipped = failed = 0
+                with conn.cursor() as cur:
+                    for idx, (pk, gdate) in enumerate(game_pks):
+                        try:
+                            info = _fetch_game_umpire_stats(pk)
+                            if not info:
+                                failed += 1
+                                continue
+                            cur.execute("""
+                                INSERT INTO umpire_games
+                                    (game_pk, game_date, hp_umpire, hp_umpire_lower, so, bb, runs, bf)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (game_pk) DO NOTHING
+                            """, (pk, gdate, info["hp_umpire"], info["hp_umpire"].lower(),
+                                  info["so"], info["bb"], info["runs"], info["bf"]))
+                            if cur.rowcount > 0:
+                                inserted += 1
+                            else:
+                                skipped += 1
+                        except Exception as e:
+                            failed += 1
+                            app.logger.warning("umpire populate: game %s failed: %s", pk, e)
+                        # Commit every 25 games to reduce lock-hold time
+                        if (idx + 1) % 25 == 0:
+                            conn.commit()
+                        _t.sleep(0.2)  # ~5 rps
+                    conn.commit()
+                app.logger.info("umpire populate done: inserted=%d skipped=%d failed=%d",
+                                inserted, skipped, failed)
+            finally:
+                conn.close()
+        finally:
+            with _UMPIRE_POPULATE_LOCK:
+                _UMPIRE_POPULATE_STATE["running"] = False
+
+    threading.Thread(target=_crawl, daemon=True).start()
+    days = (end - start).days + 1
+    est_games = days * 15  # ~15 MLB games per day in-season
+    return jsonify({
+        "ok":          True,
+        "message":     f"Populating umpire_games from {start_s} to {end_s} ({days} days).",
+        "eta_seconds": int(est_games * 0.25),
+        "hint":        "Already-cached games are skipped. Call /umpire-stats?name=... afterwards.",
+    })
 
 
 if __name__ == "__main__":
