@@ -783,6 +783,8 @@ def health():
             "leaderboard":    "GET /leaderboard?window=L5|L10(default L10)&sport=...&prop=...&side=...&limit=...",
             "schema":         "GET /openapi.json (no auth)",
             "fbref_stats":    "GET /fbref-stats?player=...&league=... (X-API-Key required) — soccer player season stats",
+            "fbref_fixtures": "GET /fbref-stats/fixtures?date=YYYY-MM-DD&leagues=epl,mls&fresh=1 (X-API-Key required) — soccer fixtures, cache-first with live fallback + write-through",
+            "fbref_fixtures_refresh": "POST /fbref-stats/fixtures/refresh {start_date,end_date} (X-API-Key required) — pre-populate soccer_fixtures_cache; designed for daily external scheduler",
             "tennis_stats":        "GET /tennis-stats?player=...&tour=atp|wta&year=...&limit=... (X-API-Key required) — ATP/WTA match stats via JeffSackmann",
             "tennis_stats_player": "GET /tennis-stats/player?player=...&tour=atp|wta&surface=Hard|Clay|Grass|Carpet&years=1-5&opponent=... (X-API-Key required) — aggregated career stats (avgAces, avgDFs, firstServePct, surface win rates, H2H) from JeffSackmann",
             "tennis_stats_today":  "GET /tennis-stats/today?tour=atp|wta (X-API-Key required) — today's live ATP/WTA matches from Odds API",
@@ -2702,36 +2704,166 @@ def fbref_stats():
             conn.close()
 
 
+# ── Soccer fixtures cache (write-through Postgres) ──────────────────────────
+# Strategy: GET /fbref-stats/fixtures serves from `soccer_fixtures_cache`
+# when fresh rows exist for the requested date. POST /fbref-stats/fixtures/refresh
+# crawls a date range from api-football and upserts; designed to be hit by an
+# external scheduler (e.g. Replit Scheduled Deployment) on a daily cadence.
+
+_FIXTURES_SCHEMA_LOCK = threading.Lock()
+_FIXTURES_SCHEMA_READY = False
+_FIXTURES_REFRESH_LOCK = threading.Lock()
+_FIXTURES_REFRESH_STATE = {"running": False, "started_at": None, "range": None}
+
+
+def _ensure_fixtures_schema(conn):
+    global _FIXTURES_SCHEMA_READY
+    if _FIXTURES_SCHEMA_READY:
+        return
+    with _FIXTURES_SCHEMA_LOCK:
+        if _FIXTURES_SCHEMA_READY:
+            return
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS soccer_fixtures_cache (
+                    fixture_id     BIGINT PRIMARY KEY,
+                    fixture_date   DATE NOT NULL,
+                    commence_time  TIMESTAMPTZ,
+                    status         TEXT,
+                    venue          TEXT,
+                    league_key     TEXT NOT NULL,
+                    league_id      INTEGER NOT NULL,
+                    season         INTEGER,
+                    home_team      TEXT,
+                    away_team      TEXT,
+                    refreshed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS soccer_fixtures_date_idx
+                    ON soccer_fixtures_cache (fixture_date);
+                CREATE INDEX IF NOT EXISTS soccer_fixtures_league_idx
+                    ON soccer_fixtures_cache (league_key);
+            """)
+            conn.commit()
+        _FIXTURES_SCHEMA_READY = True
+
+
+def _fixtures_row_to_dict(r):
+    return {
+        "fixture_id":    int(r["fixture_id"]),
+        "commence_time": r["commence_time"].isoformat() if r["commence_time"] else None,
+        "status":        r["status"],
+        "venue":         r["venue"],
+        "league":        r["league_key"],
+        "league_id":     int(r["league_id"]),
+        "season":        int(r["season"]) if r["season"] is not None else None,
+        "home_team":     r["home_team"],
+        "away_team":     r["away_team"],
+    }
+
+
+def _crawl_fixtures_into_cache(api_key, date_strs, db_url):
+    """Fetch fixtures for each date and upsert into soccer_fixtures_cache.
+    Returns (inserted, updated, errors)."""
+    import psycopg2 as _pg, time as _t
+    inserted = updated = 0
+    errors = []
+    conn = _pg.connect(db_url)
+    try:
+        _ensure_fixtures_schema(conn)
+        with conn.cursor() as cur:
+            for date_str in date_strs:
+                try:
+                    data = _soccer_api_get("fixtures", {"date": date_str}, api_key)
+                except Exception as e:
+                    errors.append({"date": date_str, "error": str(e)})
+                    continue
+
+                upstream_errors = data.get("errors")
+                if isinstance(upstream_errors, dict) and upstream_errors:
+                    errors.append({"date": date_str, "upstream": upstream_errors})
+
+                for f in data.get("response", []):
+                    lg = f.get("league", {}) or {}
+                    lid = lg.get("id")
+                    league_key = next((k for k, v in _SOCCER_LEAGUE_MAP.items() if v == lid), None)
+                    if not league_key:
+                        continue   # skip unconfigured leagues
+                    fx    = f.get("fixture", {}) or {}
+                    teams = f.get("teams",   {}) or {}
+                    try:
+                        cur.execute("""
+                            INSERT INTO soccer_fixtures_cache
+                                (fixture_id, fixture_date, commence_time, status, venue,
+                                 league_key, league_id, season, home_team, away_team, refreshed_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                            ON CONFLICT (fixture_id) DO UPDATE SET
+                                commence_time = EXCLUDED.commence_time,
+                                status        = EXCLUDED.status,
+                                venue         = EXCLUDED.venue,
+                                league_key    = EXCLUDED.league_key,
+                                league_id     = EXCLUDED.league_id,
+                                season        = EXCLUDED.season,
+                                home_team     = EXCLUDED.home_team,
+                                away_team     = EXCLUDED.away_team,
+                                refreshed_at  = NOW()
+                            RETURNING (xmax = 0) AS was_insert
+                        """, (
+                            fx.get("id"), date_str, fx.get("date"),
+                            (fx.get("status") or {}).get("short"),
+                            (fx.get("venue")  or {}).get("name"),
+                            league_key, lid, lg.get("season"),
+                            (teams.get("home") or {}).get("name"),
+                            (teams.get("away") or {}).get("name"),
+                        ))
+                        row = cur.fetchone()
+                        if row and row[0]:
+                            inserted += 1
+                        else:
+                            updated += 1
+                    except Exception as e:
+                        errors.append({"fixture_id": fx.get("id"), "error": str(e)})
+
+                conn.commit()
+                _t.sleep(6.5)   # api-football free plan: 10 req/min
+    finally:
+        conn.close()
+    return inserted, updated, errors
+
+
 @app.route("/fbref-stats/fixtures", methods=["GET"])
 @require_api_key
 def fbref_stats_fixtures():
     """
     Return soccer fixtures for a given date across the configured leagues
-    (default: EPL + MLS).
+    (default: EPL + MLS). Reads from soccer_fixtures_cache when populated;
+    falls back to a live api-football call (and write-through caches) when
+    the cache is empty for that date.
 
     Query params:
-      date    — YYYY-MM-DD (default today, UTC)
-      leagues — comma-separated league keys (default "epl,mls")
+      date     — YYYY-MM-DD (default today, UTC)
+      leagues  — comma-separated league keys (default "epl,mls")
+      fresh    — '1' to force a live fetch + cache refresh, bypassing cache
 
-    Response shape (mirrors /api-sports/tennis/fixtures):
-      { ok, date, count, fixtures: [
-          { fixture_id, commence_time, league, league_id, season,
-            status, venue, home_team, away_team }
-      ]}
+    Response: { ok, date, count, fixtures: [...], errors, source }
     """
-    from datetime import date as _date
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+    import psycopg2 as _pg, psycopg2.extras as _pgx
 
     api_key = os.environ.get("API_FOOTBALL_KEY", "")
     if not api_key:
         return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
 
-    date_str = (request.args.get("date") or _date.today().isoformat()).strip()
+    date_str = (request.args.get("date") or _dt.now(_tz.utc).date().isoformat()).strip()
+    try:
+        _date.fromisoformat(date_str)
+    except ValueError:
+        return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
 
     raw_leagues = (request.args.get("leagues") or "epl,mls").strip()
     league_keys = [s.strip().lower() for s in raw_leagues.split(",") if s.strip()]
+    fresh_flag  = request.args.get("fresh", "").strip() == "1"
 
-    # Resolve requested league keys → ids; track which key each id maps back to.
-    wanted_ids = {}   # league_id → league_key
+    wanted_ids = {}
     unknown    = []
     for key in league_keys:
         lid = _SOCCER_LEAGUE_MAP.get(key)
@@ -2739,38 +2871,90 @@ def fbref_stats_fixtures():
             wanted_ids[lid] = key
         else:
             unknown.append(key)
-
-    # api-football free plan refuses current-year `season` values but lets us
-    # query the global fixtures list with only `date`. Pull all fixtures for
-    # the date once and filter client-side by league id.
-    fixtures_out = []
     errors = [{"league": k, "error": "unknown league key"} for k in unknown]
 
-    try:
-        data = _soccer_api_get("fixtures", {"date": date_str}, api_key)
-        upstream_errors = data.get("errors")
-        if isinstance(upstream_errors, dict) and upstream_errors:
-            errors.append({"upstream": upstream_errors})
-        for f in data.get("response", []):
-            lg = f.get("league", {}) or {}
-            lid = lg.get("id")
-            if lid not in wanted_ids:
-                continue
-            fx    = f.get("fixture", {}) or {}
-            teams = f.get("teams",   {}) or {}
-            fixtures_out.append({
-                "fixture_id":    fx.get("id"),
-                "commence_time": fx.get("date"),
-                "status":        (fx.get("status") or {}).get("short"),
-                "venue":         (fx.get("venue") or {}).get("name"),
-                "league":        wanted_ids[lid],
-                "league_id":     lid,
-                "season":        lg.get("season"),
-                "home_team":     (teams.get("home") or {}).get("name"),
-                "away_team":     (teams.get("away") or {}).get("name"),
-            })
-    except Exception as e:
-        errors.append({"fetch": str(e)})
+    db_url = os.environ.get("DATABASE_URL", "")
+    fixtures_out = []
+    source = None
+
+    # 1) Try cache first (unless fresh=1)
+    if db_url and not fresh_flag:
+        try:
+            conn = _pg.connect(db_url)
+            try:
+                _ensure_fixtures_schema(conn)
+                with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT * FROM soccer_fixtures_cache
+                        WHERE fixture_date = %s AND league_key = ANY(%s)
+                        ORDER BY commence_time
+                    """, (date_str, league_keys))
+                    rows = cur.fetchall()
+                    fixtures_out = [_fixtures_row_to_dict(r) for r in rows]
+                if fixtures_out:
+                    source = "cache"
+            finally:
+                conn.close()
+        except Exception as e:
+            errors.append({"cache": str(e)})
+
+    # 2) Cache miss (or fresh=1) → live fetch + write-through
+    if not fixtures_out:
+        try:
+            data = _soccer_api_get("fixtures", {"date": date_str}, api_key)
+            upstream_errors = data.get("errors")
+            if isinstance(upstream_errors, dict) and upstream_errors:
+                errors.append({"upstream": upstream_errors})
+            for f in data.get("response", []):
+                lg = f.get("league", {}) or {}
+                lid = lg.get("id")
+                if lid not in wanted_ids:
+                    continue
+                fx    = f.get("fixture", {}) or {}
+                teams = f.get("teams",   {}) or {}
+                fixtures_out.append({
+                    "fixture_id":    fx.get("id"),
+                    "commence_time": fx.get("date"),
+                    "status":        (fx.get("status") or {}).get("short"),
+                    "venue":         (fx.get("venue") or {}).get("name"),
+                    "league":        wanted_ids[lid],
+                    "league_id":     lid,
+                    "season":        lg.get("season"),
+                    "home_team":     (teams.get("home") or {}).get("name"),
+                    "away_team":     (teams.get("away") or {}).get("name"),
+                })
+            source = "live"
+
+            # Write-through: cache what we just fetched so the next call is instant.
+            if db_url and fixtures_out:
+                try:
+                    conn = _pg.connect(db_url)
+                    try:
+                        _ensure_fixtures_schema(conn)
+                        with conn.cursor() as cur:
+                            for fxo in fixtures_out:
+                                cur.execute("""
+                                    INSERT INTO soccer_fixtures_cache
+                                        (fixture_id, fixture_date, commence_time, status, venue,
+                                         league_key, league_id, season, home_team, away_team, refreshed_at)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                                    ON CONFLICT (fixture_id) DO UPDATE SET
+                                        commence_time = EXCLUDED.commence_time,
+                                        status        = EXCLUDED.status,
+                                        refreshed_at  = NOW()
+                                """, (
+                                    fxo["fixture_id"], date_str, fxo["commence_time"],
+                                    fxo["status"], fxo["venue"],
+                                    fxo["league"], fxo["league_id"], fxo["season"],
+                                    fxo["home_team"], fxo["away_team"],
+                                ))
+                            conn.commit()
+                    finally:
+                        conn.close()
+                except Exception as e:
+                    errors.append({"writethrough": str(e)})
+        except Exception as e:
+            errors.append({"fetch": str(e)})
 
     return jsonify({
         "ok":       True,
@@ -2778,7 +2962,83 @@ def fbref_stats_fixtures():
         "leagues":  league_keys,
         "count":    len(fixtures_out),
         "fixtures": fixtures_out,
+        "source":   source,
         "errors":   errors,
+    })
+
+
+@app.route("/fbref-stats/fixtures/refresh", methods=["POST"])
+@require_api_key
+def fbref_stats_fixtures_refresh():
+    """
+    Pre-populate soccer_fixtures_cache for a date range (default: today
+    through +2 days, covering timezone edges). Designed for an external
+    daily scheduler (e.g. Replit Scheduled Deployment).
+
+    JSON body: { "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD" }
+    Defaults: start_date = today UTC, end_date = today + 2 days.
+    Max 10 days per call (api-football rate-limit budget).
+
+    Runs synchronously when range ≤ 1 day (fast); in background otherwise.
+    Single-flight: returns 409 if a refresh is already running.
+    """
+    import threading, psycopg2 as _pg, time as _t
+    from datetime import date as _date, timedelta as _td, datetime as _dt, timezone as _tz
+
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+
+    body = request.get_json(silent=True) or {}
+    today = _dt.now(_tz.utc).date()
+    start_s = body.get("start_date") or today.isoformat()
+    end_s   = body.get("end_date")   or (today + _td(days=2)).isoformat()
+
+    try:
+        start = _date.fromisoformat(start_s)
+        end   = _date.fromisoformat(end_s)
+    except ValueError:
+        return jsonify({"ok": False, "error": "start_date/end_date must be YYYY-MM-DD"}), 400
+    if end < start:
+        return jsonify({"ok": False, "error": "end_date must be >= start_date"}), 400
+    days = (end - start).days + 1
+    if days > 10:
+        return jsonify({"ok": False, "error": "Range too large; max 10 days per call"}), 400
+
+    with _FIXTURES_REFRESH_LOCK:
+        if _FIXTURES_REFRESH_STATE["running"]:
+            return jsonify({
+                "ok":         False,
+                "error":      "A fixtures refresh is already running.",
+                "status":     "in_progress",
+                "started_at": _FIXTURES_REFRESH_STATE["started_at"],
+                "range":      _FIXTURES_REFRESH_STATE["range"],
+            }), 409
+        _FIXTURES_REFRESH_STATE["running"] = True
+        _FIXTURES_REFRESH_STATE["started_at"] = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime())
+        _FIXTURES_REFRESH_STATE["range"] = [start_s, end_s]
+
+    date_strs = [(start + _td(days=i)).isoformat() for i in range(days)]
+
+    def _run():
+        try:
+            inserted, updated, errs = _crawl_fixtures_into_cache(api_key, date_strs, db_url)
+            app.logger.info("fixtures refresh done: inserted=%d updated=%d errors=%d",
+                            inserted, updated, len(errs))
+        finally:
+            with _FIXTURES_REFRESH_LOCK:
+                _FIXTURES_REFRESH_STATE["running"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({
+        "ok":          True,
+        "message":     f"Fixtures refresh started for {start_s}..{end_s} ({days} days).",
+        "eta_seconds": int(days * 7),   # ~6.5s rate-limit gap per day
+        "leagues":     sorted(_SOCCER_LEAGUE_MAP.keys()),
+        "hint":        "Call /fbref-stats/fixtures?date=... after ETA to read from cache.",
     })
 
 
