@@ -12198,38 +12198,39 @@ async function refreshPropPool(manual=false){
           }
         }catch(e){}
       }
-      if(propsFound>0) log(`✓ ${cfg.sport}: ${propsFound} props`,'ok');
-      else log(`⚠ ${cfg.sport}: player props require paid API tier — using engine`,'w');
-    }catch(e){log(`⚠ ${cfg.sport}: ${e.message}`,'w');}
-  }
-
-  // Engine fallback when sportsbook player props unavailable (free tier)
-  if(!raw.length && anyEventsFound){
-    log('\n⟳ Sportsbook props need paid tier. Populating from engine...','i');
-    try{
-      for(const cfg of sportConfigs){
+      if(propsFound>0){
+        log(`✓ ${cfg.sport}: ${propsFound} props`,'ok');
+      } else {
+        // Per-sport engine fallback — runs immediately when Odds API has no player props
+        // (free tier doesn't include NBA/NHL/WNBA player props — must use engine)
+        log(`  ⟳ ${cfg.sport}: Odds API has no player props — running engine fallback...`,'i');
         let eng=[];
         try{
-          if(cfg.sport==='MLB')              eng=await runMLBEngine(()=>{});
-          else if(cfg.sport==='NBA'||cfg.sport==='WNBA') eng=await runBDLEngine(cfg.sport,()=>{});
-          else if(cfg.sport==='NHL')         eng=await runNHLEngine(()=>{});
-          else if(cfg.sport==='Soccer')      eng=await runSoccerEngine(()=>{});
-          else if(cfg.sport==='Tennis')      eng=await runTennisEngine(()=>{});
-          else if(cfg.sport==='CS2')         eng=await runCS2Engine(()=>{});
+          if(cfg.sport==='MLB')                    eng=await runMLBEngine(()=>{});
+          else if(cfg.sport==='NBA')               eng=await runESPNNBAEngine(()=>{});
+          else if(cfg.sport==='WNBA')              eng=await runESPNWNBAEngine(()=>{});
+          else if(cfg.sport==='NHL')               eng=await runNHLEngine(()=>{});
+          else if(cfg.sport==='Soccer')            eng=await runSoccerEngine(()=>{});
+          else if(cfg.sport==='Tennis')            eng=await runTennisEngine(()=>{});
+          else if(cfg.sport==='CS2')               eng=await runCS2Engine(()=>{});
         }catch(e){ log(`  ⚠ ${cfg.sport} engine: ${e.message}`,'w'); }
         if(eng.length){
-          raw.push(...eng.slice(0,20).map(c=>({
+          raw.push(...eng.slice(0,25).map(c=>({
             ...c, bookmaker:'engine',
             selectedProb:c.l5_hit_rate||c.confidence||0.55
           })));
-          log(`  ✓ ${cfg.sport}: ${Math.min(eng.length,20)} props from engine`,'ok');
+          log(`  ✓ ${cfg.sport}: ${Math.min(eng.length,25)} engine props loaded`,'ok');
         } else {
-          log(`  ⚠ ${cfg.sport}: 0 props from engine (no games or stats unavailable)`,'w');
+          log(`  ⚠ ${cfg.sport}: 0 engine props (off-season or no slate)`,'w');
         }
       }
-      if(raw.length) log(`✓ Engine fallback: ${raw.length} total props loaded`,'ok');
-    }catch(e){log(`⚠ Engine fallback: ${e.message}`,'w');}
+    }catch(e){log(`⚠ ${cfg.sport}: ${e.message}`,'w');}
   }
+
+  // Log queue composition for diagnosis
+  const queueBySport = raw.reduce((a,p)=>(a[p.sport]=(a[p.sport]||0)+1,a),{});
+  window._lastValidationQueue = raw.slice();
+  log(`\n⟳ Queue: ${JSON.stringify(queueBySport)} (${raw.length} total)`, 'i');
 
   if(!raw.length){
     log('\n⚠ No props available. Run Best Props engine (🎯 tab) to populate the pool directly.','w');
@@ -12241,11 +12242,18 @@ async function refreshPropPool(manual=false){
 
   const seen=new Set();
   const deduped=raw.filter(p=>{const k=`${p.player}|${p.prop}|${p.line}`;if(seen.has(k))return false;seen.add(k);return true;});
-  log(`\n⟳ Validating ${Math.min(deduped.length,60)} props through WOW stack...`,'i');
+  // Cap per-sport to prevent MLB from consuming the entire 60-prop budget
+  const sportBudget = {};
+  const balanced = deduped.filter(p => {
+    sportBudget[p.sport] = (sportBudget[p.sport]||0)+1;
+    return sportBudget[p.sport] <= 20; // max 20 props per sport → allows 5 sports
+  });
+  log(`\n⟳ Validating ${balanced.length} props through WOW stack (sport-balanced)...`,'i');
+  window._lastValidationQueue = balanced.slice();
 
   const scored=[];
   const _killReasons={}, _belowThreshold=[], _allValidated=[];
-  for(const p of deduped.slice(0,60)){
+  for(const p of balanced){
     try{
       const en=await enrichProp(p);
       const ws=await scoreOne(en);
