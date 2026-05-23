@@ -900,6 +900,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
           <option value="tier1">Tier 1 Only</option>
           <option value="tier12">Tier 1 + 2</option>
         </select>
+        <button class="btn btn-s btn-sm" onclick="importPoolToSlipBuilder()" title="Load latest Prop Pool results into Slip Builder">⬇ Sync from Pool</button>
         <button class="btn btn-s btn-sm" onclick="clearSlip()">Clear Slip</button>
         <button class="btn btn-s btn-sm" onclick="exportSlip()">Export</button>
       </div>
@@ -8251,7 +8252,25 @@ function setSbType(type){
   updateSlipCard();
 }
 
-// Render the prop browser from the approved pool
+// ── Slip Builder's own prop list — populated by Best Props engine or explicit import ──
+// Never auto-reads from propPool (Prop Pool tab). User must explicitly feed it.
+let _sbProps = [];
+
+function loadSbFromBestProps(props){
+  // Called by Best Props engine when it finishes — feeds the Slip Builder
+  _sbProps = (props||[]).filter(p => ['tier1','tier2','tier3'].includes(p.tier));
+  renderSlipBrowser();
+}
+
+function importPoolToSlipBuilder(){
+  // Explicit user-initiated copy from Prop Pool to Slip Builder
+  if(!propPool.length){ alert('Run the Prop Pool scan first.'); return; }
+  _sbProps = [...propPool];
+  renderSlipBrowser();
+  document.getElementById('sbPoolCount').textContent = `${_sbProps.length} props loaded from pool`;
+}
+
+// Render the prop browser from _sbProps (Slip Builder's own source)
 function renderSlipBrowser(){
   const el = document.getElementById('slipBrowser');
   const countEl = document.getElementById('sbPoolCount');
@@ -8260,7 +8279,7 @@ function renderSlipBrowser(){
   const sportF = document.getElementById('sb_sport')?.value || 'all';
   const tierF  = document.getElementById('sb_tier')?.value  || 'all';
 
-  let pool = propPool.filter(p => {
+  let pool = _sbProps.filter(p => {
     if(sportF !== 'all' && p.sport !== sportF) return false;
     if(tierF === 'tier1' && p.tier !== 'tier1') return false;
     if(tierF === 'tier12' && !['tier1','tier2'].includes(p.tier)) return false;
@@ -8269,9 +8288,19 @@ function renderSlipBrowser(){
 
   if(countEl) countEl.textContent = `${pool.length} props`;
 
+  if(!_sbProps.length){
+    const poolAvail = propPool.length;
+    el.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text2);font-size:13px;border-radius:10px;border:1px dashed var(--border);">
+      <div style="margin-bottom:10px;">No props loaded yet.</div>
+      ${poolAvail > 0
+        ? `<button class="btn btn-p btn-sm" onclick="importPoolToSlipBuilder()">⬇ Import ${poolAvail} props from Pool</button>`
+        : `<button class="btn btn-p btn-sm" onclick="switchTab('pool')">→ Run Best Props engine</button>`
+      }
+    </div>`;
+    return;
+  }
   if(!pool.length){
-    el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--text2);font-size:13px;border-radius:10px;border:1px dashed var(--border);">
-      No props available. <button class="btn btn-p btn-sm" style="margin-left:8px;" onclick="switchTab('pool')">→ Run Best Props</button></div>`;
+    el.innerHTML = `<div style="text-align:center;padding:20px;color:var(--text2);font-size:12px;">No props match current filters.</div>`;
     return;
   }
 
@@ -8616,8 +8645,6 @@ function buildAllSlips(){
 }
 
 function addToPool(p){
-  // Refresh slip browser when pool changes
-  setTimeout(renderSlipBrowser, 50);
   if(approvedProps.find(x=>x.player===p.player&&x.prop===p.prop&&x.side===p.side))return;
   if(!['tier1','tier2','flex'].includes(p.tier))return;
   approvedProps.push(p);renderPool();
@@ -12266,6 +12293,8 @@ async function refreshPropPool(manual=false){
   }
 
   propPool=scored.sort((a,b)=>{const to={tier1:0,tier2:1,flex:2};return(to[a.tier]??3)-(to[b.tier]??3)||(b.wowScore||0)-(a.wowScore||0);});
+  // Feed Slip Builder when pool is refreshed (non-destructive — only loads if _sbProps is empty)
+  if(!_sbProps.length) loadSbFromBestProps(propPool);
   const now=new Date();
   document.getElementById('poolLastUpdate').textContent=`Updated ${now.toLocaleTimeString()}`;
   document.getElementById('poolCountBadge').textContent=`${propPool.length} qualified`;
