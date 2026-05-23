@@ -783,8 +783,9 @@ def health():
             "leaderboard":    "GET /leaderboard?window=L5|L10(default L10)&sport=...&prop=...&side=...&limit=...",
             "schema":         "GET /openapi.json (no auth)",
             "fbref_stats":    "GET /fbref-stats?player=...&league=... (X-API-Key required) — soccer player season stats",
-            "tennis_stats":       "GET /tennis-stats?player=...&tour=atp|wta&year=...&limit=... (X-API-Key required) — ATP/WTA match stats via JeffSackmann",
-            "tennis_stats_today": "GET /tennis-stats/today?tour=atp|wta (X-API-Key required) — today's live ATP/WTA matches from Odds API",
+            "tennis_stats":        "GET /tennis-stats?player=...&tour=atp|wta&year=...&limit=... (X-API-Key required) — ATP/WTA match stats via JeffSackmann",
+            "tennis_stats_player": "GET /tennis-stats/player?player=...&tour=atp|wta&surface=Hard|Clay|Grass|Carpet&years=1-5&opponent=... (X-API-Key required) — aggregated career stats (avgAces, avgDFs, firstServePct, surface win rates, H2H) from JeffSackmann",
+            "tennis_stats_today":  "GET /tennis-stats/today?tour=atp|wta (X-API-Key required) — today's live ATP/WTA matches from Odds API",
             "api_sports_players":        "GET /api-sports/{baseball|basketball|hockey|nfl|tennis}/players?player=... (X-API-Key required) — search players via api-sports.io",
             "api_sports_stats":          "GET /api-sports/{basketball|nfl|tennis}/stats?player_id=...&team=...&league=...&season=... (X-API-Key required) — season stats via api-sports.io",
             "api_sports_tennis_fixtures":"GET /api-sports/tennis/fixtures?date=YYYY-MM-DD (X-API-Key required) — tennis fixtures for a date via api-sports.io"
@@ -2984,6 +2985,203 @@ def tennis_stats():
     except _req.exceptions.RequestException as e:
         return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
     except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── Tennis per-player career-stats cache ────────────────────────────────────
+# Sackmann CSVs are large (~1-2 MB each year). Cache parsed rows per (tour,year)
+# in memory with a 12-hour TTL so repeated /tennis-stats/player lookups for
+# different players in the same session don't re-download the same files.
+_TENNIS_CSV_CACHE = {}   # key: (tour, year) -> {"rows": [...], "fetched_at": ts}
+_TENNIS_CSV_TTL   = 12 * 3600
+_TENNIS_CSV_LOCK  = threading.Lock()
+
+
+def _fetch_sackmann_year(tour, year, timeout=10):
+    """Return parsed Sackmann rows for (tour, year), cached in memory."""
+    import time, requests as _req, csv, io
+    key = (tour, str(year))
+    now = time.time()
+    with _TENNIS_CSV_LOCK:
+        entry = _TENNIS_CSV_CACHE.get(key)
+        if entry and (now - entry["fetched_at"]) < _TENNIS_CSV_TTL:
+            return entry["rows"]
+
+    url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{tour}/master/{tour}_matches_{year}.csv"
+    resp = _req.get(url, timeout=timeout)
+    if resp.status_code == 404:
+        rows = []
+    else:
+        resp.raise_for_status()
+        rows = list(csv.DictReader(io.StringIO(resp.text)))
+
+    with _TENNIS_CSV_LOCK:
+        _TENNIS_CSV_CACHE[key] = {"rows": rows, "fetched_at": now}
+    return rows
+
+
+@app.route("/tennis-stats/player", methods=["GET"])
+@require_api_key
+def tennis_stats_player():
+    """
+    Aggregate per-player career stats from JeffSackmann's ATP/WTA dataset.
+
+    Query params:
+      player   — player name fragment (required, matched case-insensitive)
+      tour     — 'atp' or 'wta' (default 'atp')
+      surface  — optional filter: 'Hard', 'Clay', 'Grass', 'Carpet'
+      years    — how many recent seasons to scan (default 3, max 5)
+      opponent — optional opponent name fragment for H2H record
+
+    Returns aggregated stats: avgAces, avgDFs, firstServePct,
+    surfaceWinRate, overallWinRate, recentForm (last 10), matchesAnalyzed.
+    """
+    import datetime
+
+    player_name = request.args.get("player", "").strip().lower()
+    tour        = request.args.get("tour", "atp").strip().lower()
+    surface_f   = request.args.get("surface", "").strip().title() or None
+    opponent_f  = request.args.get("opponent", "").strip().lower() or None
+    try:
+        years_n = max(1, min(int(request.args.get("years", 3)), 5))
+    except ValueError:
+        years_n = 3
+
+    if not player_name:
+        return jsonify({"ok": False, "error": "Missing required param: player"}), 400
+    if tour not in ("atp", "wta"):
+        return jsonify({"ok": False, "error": "tour must be 'atp' or 'wta'"}), 400
+    if surface_f and surface_f not in ("Hard", "Clay", "Grass", "Carpet"):
+        return jsonify({"ok": False, "error": "surface must be Hard, Clay, Grass, or Carpet"}), 400
+
+    current_year = datetime.date.today().year
+    years = [str(current_year - i) for i in range(years_n)]
+
+    def _intf(v):
+        try:
+            return float(v) if v not in (None, "", "NA") else None
+        except (ValueError, TypeError):
+            return None
+
+    matches = []
+    fetched_years = []
+    try:
+        for yr in years:
+            rows = _fetch_sackmann_year(tour, yr)
+            if not rows:
+                continue
+            fetched_years.append(yr)
+            for row in rows:
+                winner = (row.get("winner_name") or "").lower()
+                loser  = (row.get("loser_name")  or "").lower()
+                if player_name in winner:
+                    won = True
+                elif player_name in loser:
+                    won = False
+                else:
+                    continue
+                if surface_f and (row.get("surface") or "") != surface_f:
+                    continue
+                opp = loser if won else winner
+                if opponent_f and opponent_f not in opp:
+                    continue
+
+                date_raw = row.get("tourney_date") or ""
+                iso_date = (f"{date_raw[0:4]}-{date_raw[4:6]}-{date_raw[6:8]}"
+                            if len(date_raw) == 8 and date_raw.isdigit() else date_raw)
+
+                matches.append({
+                    "date":      iso_date,
+                    "date_raw":  date_raw,
+                    "tourney":   row.get("tourney_name"),
+                    "surface":   row.get("surface"),
+                    "round":     row.get("round"),
+                    "opponent":  row.get("loser_name") if won else row.get("winner_name"),
+                    "won":       won,
+                    "aces":      _intf(row.get("w_ace")  if won else row.get("l_ace")),
+                    "dfs":       _intf(row.get("w_df")   if won else row.get("l_df")),
+                    "svpt":      _intf(row.get("w_svpt") if won else row.get("l_svpt")),
+                    "first_in":  _intf(row.get("w_1stIn") if won else row.get("l_1stIn")),
+                    "first_won": _intf(row.get("w_1stWon") if won else row.get("l_1stWon")),
+                    "second_won":_intf(row.get("w_2ndWon") if won else row.get("l_2ndWon")),
+                })
+
+        if not fetched_years:
+            return jsonify({
+                "ok": False,
+                "error": f"No {tour.upper()} match files found for years {years}",
+            }), 404
+
+        # Sort newest first by date_raw (YYYYMMDD sorts lexically)
+        matches.sort(key=lambda m: m.get("date_raw") or "", reverse=True)
+
+        def _avg(vals):
+            vals = [v for v in vals if v is not None]
+            return round(sum(vals) / len(vals), 3) if vals else None
+
+        def _pct(num, den):
+            num_vals = [v for v in num if v is not None]
+            den_vals = [v for v in den if v is not None]
+            n, d = sum(num_vals), sum(den_vals)
+            return round(n / d, 4) if d > 0 else None
+
+        wins = [m for m in matches if m["won"]]
+        # Surface breakdown
+        surfaces = {}
+        for m in matches:
+            s = m.get("surface") or "Unknown"
+            bucket = surfaces.setdefault(s, {"played": 0, "won": 0})
+            bucket["played"] += 1
+            if m["won"]:
+                bucket["won"] += 1
+        for s, b in surfaces.items():
+            b["winRate"] = round(b["won"] / b["played"], 4) if b["played"] else None
+
+        recent_form = [
+            {"date": m["date"], "won": m["won"], "opponent": m["opponent"],
+             "tourney": m["tourney"], "surface": m["surface"]}
+            for m in matches[:10]
+        ]
+
+        stats = {
+            "avgAces":       _avg([m["aces"] for m in matches]),
+            "avgDFs":        _avg([m["dfs"]  for m in matches]),
+            "firstServePct": _pct([m["first_in"]  for m in matches],
+                                  [m["svpt"]      for m in matches]),
+            "firstServeWonPct": _pct([m["first_won"] for m in matches],
+                                     [m["first_in"]  for m in matches]),
+            "secondServeWonPct": _pct(
+                [m["second_won"] for m in matches],
+                [(m["svpt"] or 0) - (m["first_in"] or 0)
+                 if m["svpt"] is not None and m["first_in"] is not None else None
+                 for m in matches],
+            ),
+            "overallWinRate": round(len(wins) / len(matches), 4) if matches else None,
+            "matchesAnalyzed": len(matches),
+        }
+        if surface_f:
+            stats["surfaceWinRate"] = stats["overallWinRate"]
+            stats["surfaceFilter"]  = surface_f
+
+        return jsonify({
+            "ok":          True,
+            "source":      f"JeffSackmann/tennis_{tour}",
+            "player":      player_name,
+            "tour":        tour.upper(),
+            "years":       fetched_years,
+            "surface":     surface_f,
+            "opponent":    opponent_f,
+            "stats":       stats,
+            "bySurface":   surfaces,
+            "recentForm":  recent_form,
+        })
+
+    except Exception as e:
+        import requests as _req
+        if isinstance(e, _req.exceptions.Timeout):
+            return jsonify({"ok": False, "error": "Request to GitHub timed out"}), 504
+        if isinstance(e, _req.exceptions.RequestException):
+            return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
