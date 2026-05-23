@@ -1,0 +1,87 @@
+Let me audit what the Replit backend currently serves and where the gaps are:Now I have the full picture. Here's the honest assessment:
+
+---
+
+## What Replit Currently Does
+
+| Endpoint | Purpose | Current State |
+|---|---|---|
+| `/gpt-score` | WOW scoring via Claude API | ✅ Working — core of the model |
+| `/analyze-board` | AI board analysis | ✅ Working |
+| `/claude-proxy` | Claude API proxy for artifacts | ✅ Working |
+| `/api-sports/tennis/fixtures` | Today's ATP/WTA matches | ⚠️ Often empty → falls back to historical |
+| `/api-sports/tennis/stats` | Player serve/return stats | ⚠️ Returns nulls → synthetic distributions used |
+| `/tennis-stats/today` | Jeff Sackmann historical fallback | ⚠️ Works but stale |
+| `/fbref-stats/fixtures` | Soccer fixtures | ❌ Returns 0 most days — needs populating |
+| `/fbref-stats?player=` | Soccer player stats | ❌ Rarely used, coverage gaps |
+| `/health` | Key validation | ✅ Working |
+
+---
+
+## The 7 Highest-Impact Replit Improvements
+
+### 1. Tennis: Real Stats from Sackmann Data (biggest fix)
+The entire tennis engine runs on synthetic distributions because `/api-sports/tennis/stats` returns null for most players. Jeff Sackmann's ATP/WTA GitHub dataset has real match-by-match ace counts, double faults, serve %, and surface win rates going back decades — for every ranked player.
+
+**What to build:** A `/tennis-stats/player?name=X&surface=Y` endpoint that queries the pre-loaded Sackmann dataset and returns `{ avgAces, avgDFs, firstServePct, surfaceWinRate, h2hRecord }`. One-time data load, serves all queries from memory.
+
+---
+
+### 2. Closing Line Auto-Fetch (enables real CLV tracking)
+The CLV log currently requires you to manually enter the closing line after a game. That means CLV is only tracked when you remember to go back and log it.
+
+**What to build:** A `/closing-lines` endpoint that accepts `{ player, prop, side, line, gameDate }` and returns the closing line from the Odds API at game time. Run it as a cron job that automatically fetches closing lines for all props logged that day and pushes them back to the CLV log.
+
+---
+
+### 3. MLB Umpire Historical Database
+The `mlbUmpires()` function correctly identifies the home plate umpire but can't do anything useful with it because there's no historical data. UmpireScorecards.com tracks every HP umpire's K rate, run environment, and tendency to expand/compress the zone.
+
+**What to build:** A `/umpire-stats?name=X` endpoint that serves pre-loaded umpire historical data: `{ kRate, bbRate, runsPerGame, zoneExpansion }`. This immediately activates the umpire feature already wired into `getMLBGameContext`.
+
+---
+
+### 4. Soccer: League Population + xG
+Soccer currently shows "0 fixtures today" because the league data needs to be populated via `/fbref-stats/populate` — but that endpoint requires manual triggering and the data goes stale.
+
+**What to build:** 
+- A daily cron job that auto-populates fixtures for the configured leagues
+- A `/soccer/xg?team=X` endpoint serving expected goals data per team from FBRef
+- `/soccer/lineups?fixture=X` for confirmed starting XI (Gate 1 for soccer)
+
+---
+
+### 5. Persistent Opening Line Storage
+The line movement detection we built stores opening lines in `_openingLineCache` — but this resets every page load. If you load the dashboard at 10am and Arrighetti's strikeout line is 5.5, refresh at 2pm, the opening line is gone.
+
+**What to build:** A `/lines/store` (POST) and `/lines/opening?player=X&prop=Y` (GET) endpoint. Dashboard POSTs the opening line on first sight, fetches on subsequent loads. Builds a historical line movement database over time.
+
+---
+
+### 6. NBA/WNBA Usage Rate Cache
+BDL GOAT has usage rate but you're not paying for it yet. Basketball Reference publishes usage % publicly.
+
+**What to build:** A daily cron that scrapes BRef's NBA usage table and serves it via `/nba/usage?player=X` → `{ usagePct, minutesPct, pace }`. This activates Component 2 of the projection formula (Player Usage % × Minutes) that's currently missing entirely.
+
+---
+
+### 7. `/gpt-score` Payload Enrichment
+The WOW scorer sends props to Claude for scoring. Right now it sends basic stats. If Replit enriched the payload before sending to Claude — adding opponent defensive rating, umpire data, bullpen fatigue, surface win rate — the AI scoring would be significantly more accurate.
+
+**What to build:** A scoring middleware layer on Replit that enriches each prop payload with all available context before sending to Claude. The dashboard sends the raw prop, Replit adds the intelligence, Claude scores a richer signal.
+
+---
+
+## Priority Order
+
+| # | Build | Impact | Effort |
+|---|---|---|---|
+| 1 | Tennis Sackmann stats endpoint | Fixes entire tennis engine | Medium |
+| 2 | Closing line auto-fetch | Enables automated CLV | Medium |
+| 3 | MLB umpire database | Activates already-built feature | Low |
+| 4 | NBA usage rate cron | Fills Component 2 gap | Medium |
+| 5 | Opening line persistence | Extends line movement to cross-session | Low |
+| 6 | Soccer auto-populate + xG | Fixes soccer 0-fixtures issue | High |
+| 7 | `/gpt-score` enrichment middleware | Improves AI scoring quality | High |
+
+Items 3 and 5 are afternoon builds — static data loads, simple GET endpoints. Items 1, 2, and 4 need cron jobs. Items 6 and 7 are larger but would unlock two completely broken model areas.
