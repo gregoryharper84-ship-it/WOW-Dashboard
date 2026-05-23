@@ -8997,6 +8997,52 @@ async function runWinnersUpsets(){
     }catch(e){}
   }
 
+  // ── Fallback: derive favorites from LLP data when Odds API returned nothing ──
+  if(totalGames === 0 && _teamsLLPGames.length > 0){
+    for(const game of _teamsLLPGames){
+      const topBet = [...(game.bets||[])].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
+      if(!topBet) continue;
+      const impl = topBet.implied_prob || 0;
+      const edge = topBet.edge_pct || 0;
+
+      // Derive fav/dog from the top bet
+      const pickLower = (topBet.pick||'').toLowerCase();
+      const awayL = (game.away_team||'').toLowerCase();
+      const homeL = (game.home_team||'').toLowerCase();
+      const isFavHome = pickLower.includes(homeL.slice(0,5)) || (!pickLower.includes(awayL.slice(0,5)));
+      const favName = isFavHome ? game.home_team : game.away_team;
+      const dogName = isFavHome ? game.away_team  : game.home_team;
+      const favProb = impl > 0 ? impl : 0.55 + (edge / 200);
+
+      totalGames++;
+
+      if(favProb >= 0.62 || topBet.tier === 'TEAM ANCHOR'){
+        favorites.push({
+          sport: game.sport, away: game.away_team, home: game.home_team,
+          pick: topBet.pick || favName, dog: dogName, prob: favProb,
+          ml: null, spread: topBet.line,
+          edge: edge, total: null, gameTime: game.game_time,
+          confidence: favProb >= 0.75 ? 'high' : 'medium',
+          tier: topBet.tier === 'TEAM ANCHOR' ? 'LOCK' : 'STRONG',
+          boosts: topBet.reasoning ? [topBet.reasoning.split('.')[0]] : [],
+        });
+      }
+      // Upset: decent dog odds with real edge from LLP
+      if(favProb < 0.60 && edge >= 8 && topBet.tier !== 'PASS'){
+        const dogProb = 1 - favProb;
+        upsets.push({
+          sport: game.sport, away: game.away_team, home: game.home_team,
+          pick: topBet.pick, fav: favName, prob: dogProb,
+          ml: null, spread: topBet.line, edge: Math.round(edge),
+          total: null, gameTime: game.game_time,
+          reasons: topBet.reasoning ? [topBet.reasoning.split('.')[0], `LLP edge: +${edge}%`] : [`LLP edge: +${edge}%`],
+          potential_payout: 'value',
+          unit_size: edge >= 15 ? '0.5u' : '0.25u',
+        });
+      }
+    }
+  }
+
   favorites.sort((a,b)=>b.prob-a.prob);
   upsets.sort((a,b)=>b.edge-a.edge);
 
@@ -9349,10 +9395,10 @@ async function runTeamsBoard(){
   if(llpSportEl) llpSportEl.value = sf;
 
   // Run both engines in parallel — use allSettled so one failure doesn't kill the other
-  const [wuResult, llpResult] = await Promise.allSettled([
-    runWinnersUpsets(), // has its own try/catch now — errors visible in wuFavPanel
-    runLLPBoard().catch(e => { console.warn('LLP engine error:', e); }),
-  ]);
+  // Run LLP first so _teamsLLPGames is populated before WU runs
+  // WU can then fall back to LLP data if Odds API is unavailable
+  await runLLPBoard().catch(e => { console.warn('LLP engine error:', e); });
+  await runWinnersUpsets(); // has own try/catch; uses _teamsLLPGames fallback
 
   // Final render pass after BOTH complete — unconditional
   // (even if WU threw and _teamsWUFavorites is empty, panels must update from initial state)
