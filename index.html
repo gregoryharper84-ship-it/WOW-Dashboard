@@ -9079,6 +9079,8 @@ async function runWinnersUpsets(){
   _teamsWUFavorites = favorites;
   _teamsWUUpsets = upsets;
   renderTeamsSummaryPanels();
+  // Also refresh stat cards — Top Winner comes from WU data
+  if(_teamsLLPGames.length) renderTeamsStatCards(_teamsLLPGames);
 
   document.getElementById('wuBtn').textContent='Find Winners & Upsets';
   document.getElementById('wuSp').classList.add('hidden');
@@ -9337,10 +9339,20 @@ async function runTeamsBoard(){
   const llpSportEl = document.getElementById('llp_sport');
   if(llpSportEl) llpSportEl.value = sf;
 
-  // Run both engines in parallel
-  try{
-    await Promise.all([runWinnersUpsets(), runLLPBoard()]);
-  }catch(e){}
+  // Run both engines in parallel — use allSettled so one failure doesn't kill the other
+  const [wuResult, llpResult] = await Promise.allSettled([
+    runWinnersUpsets().catch(e => { console.warn('WU engine error:', e); }),
+    runLLPBoard().catch(e => { console.warn('LLP engine error:', e); }),
+  ]);
+
+  // Final render pass after BOTH complete — ensures WU data populates stat cards
+  // (LLP calls renderTeamsSummaryPanels mid-run before WU finishes; this fixes the race)
+  if(_teamsWUFavorites.length || _teamsWUUpsets.length){
+    renderTeamsSummaryPanels();
+  }
+  if(_teamsLLPGames.length){
+    renderTeamsStatCards(_teamsLLPGames); // refreshes Top Winner with WU data now available
+  }
 
   document.getElementById('teamsLastUpdate').textContent = `Updated ${new Date().toLocaleTimeString()}`;
   btn.textContent = 'Refresh Board';
@@ -9423,8 +9435,8 @@ function renderTeamsStatCards(allGames){
 function renderLLPBoard(allGames){
   _teamsLLPGames = allGames; // store globally for filters
   renderTeamsStatCards(allGames);
-  renderTeamsStatCards(allGames); // also update summary after
-  renderTeamsSummaryPanels();
+  // Note: renderTeamsSummaryPanels() intentionally NOT called here —
+  // WU may still be running in parallel; runTeamsBoard() does final render after both complete
   renderTeamsBoardOutput();
   document.getElementById('llpLastUpdate').textContent = `Updated ${new Date().toLocaleTimeString()}`;
   document.getElementById('llpGameCount').textContent = allGames.length + ' games';
