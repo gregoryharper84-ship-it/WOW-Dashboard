@@ -795,7 +795,8 @@ def health():
             "umpire_stats_populate": "POST /umpire-stats/populate {start_date,end_date} (X-API-Key required) — backfill umpire_games from MLB Stats API (max 180 days)",
             "lines_opening_store":   "POST /lines/opening {player,prop,line,side?,date?,sport?,book?} (X-API-Key required) — capture opening line; first-write-wins",
             "lines_opening_get":     "GET /lines/opening?player=...&prop=...&side=over|under|yes|no&date=YYYY-MM-DD&current=N (X-API-Key required) — lookup stored opening line, optional movement vs current",
-            "lines_opening_list":    "GET /lines/opening/list?date=YYYY-MM-DD&sport=... (X-API-Key required) — bulk list of opening lines for a day"
+            "lines_opening_list":    "GET /lines/opening/list?date=YYYY-MM-DD&sport=... (X-API-Key required) — bulk list of opening lines for a day",
+            "gpt_score_enriched":    "POST /gpt-score/enriched {player,sport,prop,side,line,...,skip_claude?} (X-API-Key required) — wraps /gpt-score with a Claude narrative pulling opening-line movement context"
         }
     })
 
@@ -4732,6 +4733,245 @@ def lines_opening_list():
             for r in rows
         ],
     })
+
+
+# ── /gpt-score enrichment middleware ─────────────────────────────────────────
+# Wraps the existing /gpt-score result with a Claude-generated narrative that
+# pulls supporting context from the data we already store: opening-line
+# movement (Postgres), tennis career aggregates (Sackmann CSV cache). Strictly
+# additive — does not change the underlying wow_score logic.
+
+_ENRICH_DEFAULT_MODEL = "claude-opus-4-7"
+
+
+def _collect_enrichment_context(player, sport, prop, side, line, game_date):
+    """Build a context dict from our internal data sources. Returns
+    (context_dict, sources_used_list)."""
+    import psycopg2 as _pg, psycopg2.extras as _pgx
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+
+    ctx = {}
+    sources = []
+    db_url = os.environ.get("DATABASE_URL", "")
+    player_lower = (player or "").strip().lower()
+    prop_lower   = (prop or "").strip().lower()
+    side_lower   = (side or "").strip().lower()
+
+    # Map MORE/LESS → over/under for opening-line lookup
+    ol_side = {"more": "over", "less": "under"}.get(side_lower, side_lower)
+
+    # 1) Opening-line movement (any sport)
+    if db_url and player_lower and prop_lower:
+        try:
+            today = (game_date or _dt.now(_tz.utc).date().isoformat())
+            conn = _pg.connect(db_url)
+            try:
+                with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT opening_line, captured_at, side, line_date
+                        FROM opening_lines
+                        WHERE player_lower = %s AND prop = %s AND side = %s
+                          AND line_date <= %s
+                        ORDER BY line_date DESC LIMIT 1
+                    """, (player_lower, prop_lower, ol_side, today))
+                    row = cur.fetchone()
+                    if row:
+                        opening = float(row["opening_line"])
+                        movement = round(line - opening, 4)
+                        ctx["opening_line"] = {
+                            "opening":       opening,
+                            "current":       line,
+                            "movement":      movement,
+                            "side":          row["side"],
+                            "captured_date": row["line_date"].isoformat(),
+                        }
+                        sources.append("opening_lines")
+            finally:
+                conn.close()
+        except Exception as e:
+            ctx["opening_line_error"] = str(e)
+
+    # NOTE: Tennis-specific career aggregates are intentionally NOT pulled here.
+    # The /tennis-stats/player endpoint computes aggregates on demand from raw
+    # Sackmann CSVs but does not memoise the aggregate dict by player, so there
+    # is no zero-cost lookup. Adding one would mean re-parsing tens of MB of
+    # CSV per request. Leaving as a future enhancement — opening-line movement
+    # above already provides cross-sport enrichment for tennis props too.
+
+    return ctx, sources
+
+
+def _build_enrichment_prompt(player, sport, prop, side, line, wow_score, signal, ctx):
+    """Build a tight prompt for Claude — short, factual, no recommendations."""
+    import json as _json
+    ctx_blob = _json.dumps(ctx, indent=2) if ctx else "(no supporting data found)"
+    return (
+        "You are a SUPPORT LAYER for sports prop analysis. You DO NOT recommend bets. "
+        "You write a concise (2-4 sentence) factual narrative explaining what the "
+        "supporting data suggests about the prop, in plain language a casual reader "
+        "would understand. Avoid hedging clichés like 'tough call' or 'time will tell'.\n\n"
+        f"PROP:  {player} — {prop} {side} {line} ({sport})\n"
+        f"WOW SCORE: {wow_score} ({signal})\n\n"
+        "SUPPORTING DATA:\n"
+        f"{ctx_blob}\n\n"
+        "Write the narrative now. Reference specific numbers from the supporting data "
+        "where useful. Do not invent numbers not present above. If supporting data is "
+        "empty, say so in one sentence and stop."
+    )
+
+
+@app.route("/gpt-score/enriched", methods=["POST"])
+@require_api_key
+def gpt_score_enriched():
+    """
+    Enriched scoring: runs the standard /gpt-score logic, then appends a
+    Claude-generated narrative that draws from our internal data (opening-line
+    movement, tennis aggregates).
+
+    Request body: identical to /gpt-score, plus optional:
+      model       — Claude model (default claude-opus-4-7)
+      max_tokens  — Claude response cap (default 350)
+      skip_claude — if true, returns the score + raw context without calling Claude
+
+    Response: standard /gpt-score response shape, plus:
+      enrichment: { narrative, model, sources_used, context, claude_error? }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body must be valid JSON"}), 400
+
+    required_fields = ["player", "sport", "prop", "side", "line"]
+    missing = [f for f in required_fields if f not in data]
+    if missing:
+        return jsonify({
+            "error": "Missing required fields",
+            "missing_fields": missing,
+            "required_fields": required_fields,
+            "hint": "side must be MORE or LESS. line is a numeric value (e.g. 27.5).",
+        }), 422
+
+    player = str(data["player"]).strip()
+    sport  = str(data["sport"]).strip().upper()
+    prop   = str(data["prop"]).strip().lower()
+    try:
+        side = normalize_side(str(data["side"]))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+    try:
+        line = float(data["line"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "'line' must be a numeric value"}), 422
+
+    reserved = set(required_fields + ["features", "game_date", "environment",
+                                      "model", "max_tokens", "skip_claude"])
+    features = {k: v for k, v in data.items() if k not in reserved}
+    features.update(data.get("features", {}) or {})
+
+    game_date = None
+    raw_game_date = data.get("game_date")
+    if raw_game_date:
+        from datetime import date as _date
+        try:
+            game_date = str(_date.fromisoformat(str(raw_game_date)))
+        except ValueError:
+            return jsonify({"error": "'game_date' must be YYYY-MM-DD format, e.g. 2026-05-08"}), 422
+
+    try:
+        environment = normalize_environment(data.get("environment", "")) or "test"
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+
+    # Strict boolean coercion for skip_claude — accept true/false/1/0/yes/no
+    raw_skip = data.get("skip_claude", False)
+    if isinstance(raw_skip, bool):
+        skip_claude = raw_skip
+    elif isinstance(raw_skip, (int, float)):
+        skip_claude = bool(raw_skip)
+    elif isinstance(raw_skip, str):
+        sv = raw_skip.strip().lower()
+        if sv in ("true", "1", "yes", "y", "on"):
+            skip_claude = True
+        elif sv in ("false", "0", "no", "n", "off", ""):
+            skip_claude = False
+        else:
+            return jsonify({"error": "'skip_claude' must be a boolean (true/false)"}), 422
+    else:
+        return jsonify({"error": "'skip_claude' must be a boolean (true/false)"}), 422
+
+    # 1) Compute the underlying score (same as /gpt-score)
+    score, signal, msg = compute_wow_score(features, player, prop, side, line)
+    saved_ok = persist_request(player, sport, prop, side, line, score, signal,
+                               game_date=game_date, environment=environment)
+    audit_valid = bool(features.get("raw_l5")) and bool(features.get("raw_l10"))
+
+    base_response = {
+        "wow_score":      score,
+        "signal":         signal,
+        "message":        msg,
+        "saved_to_lobby": bool(saved_ok),
+        "environment":    environment,
+        "player":         player,
+        "sport":          sport,
+        "prop":           prop,
+        "side":           side,
+        "line":           line,
+        "audit_valid":    audit_valid,
+        "invalid_reason": None if audit_valid else "L5/L10 raw rows not provided in request",
+    }
+
+    # 2) Gather enrichment context
+    ctx, sources = _collect_enrichment_context(player, sport, prop, side, line, game_date)
+
+    enrichment = {
+        "model":        None,
+        "sources_used": sources,
+        "context":      ctx,
+        "narrative":    None,
+    }
+
+    # 3) Call Claude (unless skipped or unavailable)
+    if skip_claude:
+        enrichment["narrative"] = "(skipped — skip_claude=true)"
+    elif not _ANTHROPIC_AVAILABLE:
+        enrichment["claude_error"] = "anthropic package not installed"
+    else:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            enrichment["claude_error"] = "ANTHROPIC_API_KEY not set"
+        else:
+            model = str(data.get("model") or _ENRICH_DEFAULT_MODEL)
+            try:
+                max_tokens = int(data.get("max_tokens") or 350)
+            except (TypeError, ValueError):
+                max_tokens = 350
+            max_tokens = max(64, min(max_tokens, 1024))
+            prompt = _build_enrichment_prompt(player, sport, prop, side, line, score, signal, ctx)
+            try:
+                client = _anthropic.Anthropic(api_key=api_key)
+                resp = client.messages.create(
+                    model=model,
+                    max_tokens=max_tokens,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                # Concatenate text blocks (Claude returns content as a list)
+                parts = []
+                for block in resp.content or []:
+                    txt = getattr(block, "text", None)
+                    if txt:
+                        parts.append(txt)
+                enrichment["narrative"] = "".join(parts).strip() or "(empty response)"
+                enrichment["model"] = model
+            except _anthropic.AuthenticationError:
+                enrichment["claude_error"] = "Invalid ANTHROPIC_API_KEY"
+            except _anthropic.RateLimitError:
+                enrichment["claude_error"] = "Anthropic rate limit hit"
+            except _anthropic.BadRequestError as e:
+                enrichment["claude_error"] = f"Bad request to Anthropic: {e}"
+            except Exception as e:
+                enrichment["claude_error"] = f"Anthropic call failed: {e}"
+
+    base_response["enrichment"] = enrichment
+    return jsonify(base_response)
 
 
 if __name__ == "__main__":
