@@ -790,7 +790,10 @@ def health():
             "api_sports_stats":          "GET /api-sports/{basketball|nfl|tennis}/stats?player_id=...&team=...&league=...&season=... (X-API-Key required) — season stats via api-sports.io",
             "api_sports_tennis_fixtures":"GET /api-sports/tennis/fixtures?date=YYYY-MM-DD (X-API-Key required) — tennis fixtures for a date via api-sports.io",
             "umpire_stats":          "GET /umpire-stats?name=...&since=YYYY-MM-DD (X-API-Key required) — MLB HP umpire career K/BB/runs aggregates",
-            "umpire_stats_populate": "POST /umpire-stats/populate {start_date,end_date} (X-API-Key required) — backfill umpire_games from MLB Stats API (max 180 days)"
+            "umpire_stats_populate": "POST /umpire-stats/populate {start_date,end_date} (X-API-Key required) — backfill umpire_games from MLB Stats API (max 180 days)",
+            "lines_opening_store":   "POST /lines/opening {player,prop,line,side?,date?,sport?,book?} (X-API-Key required) — capture opening line; first-write-wins",
+            "lines_opening_get":     "GET /lines/opening?player=...&prop=...&side=over|under|yes|no&date=YYYY-MM-DD&current=N (X-API-Key required) — lookup stored opening line, optional movement vs current",
+            "lines_opening_list":    "GET /lines/opening/list?date=YYYY-MM-DD&sport=... (X-API-Key required) — bulk list of opening lines for a day"
         }
     })
 
@@ -4037,6 +4040,290 @@ def umpire_stats_populate():
         "message":     f"Populating umpire_games from {start_s} to {end_s} ({days} days).",
         "eta_seconds": int(est_games * 0.25),
         "hint":        "Already-cached games are skipped. Call /umpire-stats?name=... afterwards.",
+    })
+
+
+# ── Opening line persistence ────────────────────────────────────────────────
+# First-write-wins per (player, prop, side, date) — captures the OPENING line.
+# Subsequent POSTs for the same key are silently ignored (ON CONFLICT DO NOTHING).
+# Lets the dashboard compute true line movement across page reloads / sessions.
+
+_LINES_SCHEMA_LOCK = threading.Lock()
+_LINES_SCHEMA_READY = False
+
+
+def _ensure_lines_schema(conn):
+    global _LINES_SCHEMA_READY
+    if _LINES_SCHEMA_READY:
+        return
+    with _LINES_SCHEMA_LOCK:
+        if _LINES_SCHEMA_READY:
+            return
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS opening_lines (
+                    player        TEXT NOT NULL,
+                    player_lower  TEXT NOT NULL,
+                    prop          TEXT NOT NULL,
+                    side          TEXT NOT NULL DEFAULT 'over',
+                    line_date     DATE NOT NULL,
+                    opening_line  NUMERIC(8,2) NOT NULL,
+                    sport         TEXT,
+                    book          TEXT,
+                    captured_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (player_lower, prop, side, line_date)
+                );
+                CREATE INDEX IF NOT EXISTS opening_lines_date_idx
+                    ON opening_lines (line_date);
+            """)
+            conn.commit()
+        _LINES_SCHEMA_READY = True
+
+
+@app.route("/lines/opening", methods=["POST"])
+@require_api_key
+def lines_opening_store():
+    """
+    Capture an opening line. First write per (player, prop, side, date) wins;
+    subsequent POSTs are silently ignored so the opening line is preserved.
+
+    JSON body: {
+      "player": "Aaron Judge",  (required)
+      "prop":   "home_runs",    (required, lowercase identifier)
+      "line":   1.5,            (required, numeric)
+      "side":   "over",         (optional, default "over")
+      "date":   "2026-05-22",   (optional, default today UTC)
+      "sport":  "mlb",          (optional)
+      "book":   "draftkings"    (optional)
+    }
+
+    Returns { ok, stored: bool, opening_line, captured_at }.
+    `stored: false` means a line already existed for this key (the existing
+    opening line is returned, not overwritten).
+    """
+    import psycopg2 as _pg, psycopg2.extras as _pgx
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+
+    body = request.get_json(silent=True) or {}
+    player = (body.get("player") or "").strip()
+    prop   = (body.get("prop") or "").strip().lower()
+    side   = (body.get("side") or "over").strip().lower()
+    sport  = (body.get("sport") or "").strip().lower() or None
+    book   = (body.get("book")  or "").strip().lower() or None
+    raw_line = body.get("line")
+    raw_date = (body.get("date") or "").strip() or _dt.now(_tz.utc).date().isoformat()
+
+    if not player or not prop or raw_line is None:
+        return jsonify({"ok": False, "error": "player, prop, and line are required"}), 400
+    try:
+        line = float(raw_line)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "line must be numeric"}), 400
+    try:
+        _date.fromisoformat(raw_date)
+    except ValueError:
+        return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
+    if side not in ("over", "under", "yes", "no"):
+        return jsonify({"ok": False, "error": "side must be over|under|yes|no"}), 400
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+
+    try:
+        conn = _pg.connect(db_url)
+        try:
+            _ensure_lines_schema(conn)
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO opening_lines
+                        (player, player_lower, prop, side, line_date,
+                         opening_line, sport, book)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (player_lower, prop, side, line_date) DO NOTHING
+                    RETURNING opening_line, captured_at
+                """, (player, player.lower(), prop, side, raw_date,
+                      line, sport, book))
+                inserted = cur.fetchone()
+                if inserted:
+                    conn.commit()
+                    return jsonify({
+                        "ok":           True,
+                        "stored":       True,
+                        "opening_line": float(inserted["opening_line"]),
+                        "captured_at":  inserted["captured_at"].isoformat(),
+                    })
+                # Conflict — fetch the existing opening line
+                cur.execute("""
+                    SELECT opening_line, captured_at
+                    FROM opening_lines
+                    WHERE player_lower = %s AND prop = %s
+                      AND side = %s AND line_date = %s
+                """, (player.lower(), prop, side, raw_date))
+                existing = cur.fetchone()
+                return jsonify({
+                    "ok":           True,
+                    "stored":       False,
+                    "opening_line": float(existing["opening_line"]) if existing else None,
+                    "captured_at":  existing["captured_at"].isoformat() if existing else None,
+                    "note":         "Opening line already captured for this key; not overwritten.",
+                })
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"DB error: {e}"}), 500
+
+
+@app.route("/lines/opening", methods=["GET"])
+@require_api_key
+def lines_opening_get():
+    """
+    Look up a previously stored opening line.
+
+    Query params:
+      player   (required)
+      prop     (required, lowercase)
+      side     (optional, default 'over'; one of over|under|yes|no)
+      date     (optional, default today UTC)
+
+    If `current` is supplied (numeric), the response also includes
+    `movement` = current - opening_line, useful for the line-movement
+    detector in the dashboard.
+    """
+    import psycopg2 as _pg, psycopg2.extras as _pgx
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+
+    player = (request.args.get("player") or "").strip().lower()
+    prop   = (request.args.get("prop") or "").strip().lower()
+    side   = (request.args.get("side") or "over").strip().lower()
+    raw_date = (request.args.get("date") or "").strip() or _dt.now(_tz.utc).date().isoformat()
+    current_s = (request.args.get("current") or "").strip()
+
+    if not player or not prop:
+        return jsonify({"ok": False, "error": "player and prop are required"}), 400
+    if side not in ("over", "under", "yes", "no"):
+        return jsonify({"ok": False, "error": "side must be over|under|yes|no"}), 400
+    try:
+        _date.fromisoformat(raw_date)
+    except ValueError:
+        return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
+    current = None
+    if current_s:
+        try:
+            current = float(current_s)
+        except ValueError:
+            return jsonify({"ok": False, "error": "current must be numeric"}), 400
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+
+    try:
+        conn = _pg.connect(db_url)
+        try:
+            _ensure_lines_schema(conn)
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT player, opening_line, sport, book, captured_at
+                    FROM opening_lines
+                    WHERE player_lower = %s AND prop = %s
+                      AND side = %s AND line_date = %s
+                """, (player, prop, side, raw_date))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"DB error: {e}"}), 500
+
+    if not row:
+        return jsonify({
+            "ok":    True,
+            "found": False,
+            "player": player, "prop": prop, "side": side, "date": raw_date,
+        })
+
+    opening = float(row["opening_line"])
+    resp = {
+        "ok":           True,
+        "found":        True,
+        "player":       row["player"],
+        "prop":         prop,
+        "side":         side,
+        "date":         raw_date,
+        "opening_line": opening,
+        "sport":        row["sport"],
+        "book":         row["book"],
+        "captured_at":  row["captured_at"].isoformat(),
+    }
+    if current is not None:
+        resp["current"]  = current
+        resp["movement"] = round(current - opening, 3)
+    return jsonify(resp)
+
+
+@app.route("/lines/opening/list", methods=["GET"])
+@require_api_key
+def lines_opening_list():
+    """
+    List opening lines for a given date (default today UTC). Optional `sport`
+    filter. Useful for dashboard bulk-fetch on page load.
+    """
+    import psycopg2 as _pg, psycopg2.extras as _pgx
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+
+    raw_date = (request.args.get("date") or "").strip() or _dt.now(_tz.utc).date().isoformat()
+    sport    = (request.args.get("sport") or "").strip().lower() or None
+    try:
+        _date.fromisoformat(raw_date)
+    except ValueError:
+        return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+
+    try:
+        conn = _pg.connect(db_url)
+        try:
+            _ensure_lines_schema(conn)
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                if sport:
+                    cur.execute("""
+                        SELECT player, prop, side, opening_line, sport, book, captured_at
+                        FROM opening_lines
+                        WHERE line_date = %s AND sport = %s
+                        ORDER BY captured_at
+                    """, (raw_date, sport))
+                else:
+                    cur.execute("""
+                        SELECT player, prop, side, opening_line, sport, book, captured_at
+                        FROM opening_lines
+                        WHERE line_date = %s
+                        ORDER BY captured_at
+                    """, (raw_date,))
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"DB error: {e}"}), 500
+
+    return jsonify({
+        "ok":    True,
+        "date":  raw_date,
+        "sport": sport,
+        "count": len(rows),
+        "lines": [
+            {
+                "player":       r["player"],
+                "prop":         r["prop"],
+                "side":         r["side"],
+                "opening_line": float(r["opening_line"]),
+                "sport":        r["sport"],
+                "book":         r["book"],
+                "captured_at":  r["captured_at"].isoformat(),
+            }
+            for r in rows
+        ],
     })
 
 
