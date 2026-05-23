@@ -8997,8 +8997,9 @@ async function runWinnersUpsets(){
     }catch(e){}
   }
 
-  // ── Fallback: derive favorites from LLP data when Odds API returned nothing ──
-  if(totalGames === 0 && _teamsLLPGames.length > 0){
+  // ── Fallback: derive favorites from LLP data when Odds API returned no qualifying games ──
+  // Use favorites.length (not totalGames) — Odds API events have no bookmakers so totalGames>0 but no odds processed
+  if(favorites.length === 0 && _teamsLLPGames.length > 0){
     for(const game of _teamsLLPGames){
       const topBet = [...(game.bets||[])].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
       if(!topBet) continue;
@@ -9127,7 +9128,10 @@ async function runWinnersUpsets(){
   _teamsWUFavorites = favorites;
   _teamsWUUpsets = upsets;
   renderTeamsSummaryPanels();
-  if(_teamsLLPGames.length) renderTeamsStatCards(_teamsLLPGames);
+  if(_teamsLLPGames.length){
+    renderTeamsStatCards(_teamsLLPGames);
+    renderTeamsBoardOutput(); // re-render cards so Why/Upset sections pick up WU data
+  }
 
   document.getElementById('wuBtn').textContent='Find Winners & Upsets';
   document.getElementById('wuSp').classList.add('hidden');
@@ -9405,6 +9409,7 @@ async function runTeamsBoard(){
   renderTeamsSummaryPanels();
   if(_teamsLLPGames.length){
     renderTeamsStatCards(_teamsLLPGames);
+    renderTeamsBoardOutput(); // final pass — ensures cards have WU data
   }
 
   document.getElementById('teamsLastUpdate').textContent = `Updated ${new Date().toLocaleTimeString()}`;
@@ -9573,7 +9578,10 @@ function renderTeamsBoardOutput(){
     const modelProb = wuFav ? (wuFav.prob*100).toFixed(1) : (topBet?.implied_prob ? ((topBet.implied_prob + topBet.edge_pct/100)*100).toFixed(1) : '—');
     const impliedProb = topBet?.implied_prob ? (topBet.implied_prob*100).toFixed(1) : '—';
     const whyItems = (topBet?.reasoning||'').split('.').filter(s=>s.trim().length>5).slice(0,4);
-    const upsetText = wuUpset ? `${wuUpset.pick} at ${wuUpset.ml>0?'+'+wuUpset.ml:wuUpset.ml} has some path. ${(wuUpset.reasons||[]).slice(0,2).join('. ')}.` : 'No significant upset path detected for this game.';
+    const upsetOdds = wuUpset?.ml != null ? ` at ${wuUpset.ml>0?'+'+wuUpset.ml:wuUpset.ml}` : '';
+    const upsetText = wuUpset
+      ? `${wuUpset.pick}${upsetOdds} has a path. ${(wuUpset.reasons||[]).slice(0,2).join('. ')}.`
+      : 'No significant upset path detected for this game.';
 
     const cardId = `llpcard_${idx}`;
     const card = document.createElement('div');
