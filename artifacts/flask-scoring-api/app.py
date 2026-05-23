@@ -2495,6 +2495,90 @@ _SOCCER_LEAGUE_MAP = {
     "liga-nos": 94, "portugal": 94,
 }
 
+# ESPN public scoreboard slugs — used as a backup when api-football is quota'd
+# or suspended. Keep aligned to keys in _SOCCER_LEAGUE_MAP.
+_ESPN_LEAGUE_MAP = {
+    "epl": "eng.1", "pl": "eng.1", "premier-league": "eng.1",
+    "ucl": "uefa.champions", "cl": "uefa.champions", "champions-league": "uefa.champions",
+    "laliga": "esp.1", "la-liga": "esp.1", "liga": "esp.1",
+    "bundesliga": "ger.1",
+    "seriea": "ita.1", "serie-a": "ita.1",
+    "ligue1": "fra.1", "ligue-1": "fra.1",
+    "mls": "usa.1",
+    "eredivisie": "ned.1",
+    "liga-nos": "por.1", "portugal": "por.1",
+}
+
+# Canonical league_key per api-football league_id — used so we always cache
+# under one stable key regardless of which alias the caller used.
+_LEAGUE_ID_CANONICAL = {
+    39: "epl", 2: "ucl", 140: "laliga", 78: "bundesliga",
+    135: "seriea", 61: "ligue1", 253: "mls", 88: "eredivisie", 94: "portugal",
+}
+
+def _canonical_league_key(key):
+    lid = _SOCCER_LEAGUE_MAP.get(key)
+    if lid is None:
+        return key
+    return _LEAGUE_ID_CANONICAL.get(lid, key)
+
+
+def _espn_fetch_fixtures(date_str, league_keys):
+    """Fetch fixtures for a date from ESPN's public scoreboard, normalized to
+    our schema. Returns (fixtures_list, errors_list). IDs are stored as
+    *negative* BIGINTs to avoid PK collision with positive api-football IDs in
+    the shared soccer_fixtures_cache table.
+    """
+    import requests as _req
+    fixtures = []
+    errors   = []
+    yyyymmdd = date_str.replace("-", "")
+    seen_keys = set()
+    for key in league_keys:
+        slug = _ESPN_LEAGUE_MAP.get(key)
+        if not slug or slug in seen_keys:
+            continue
+        seen_keys.add(slug)
+        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/scoreboard"
+        try:
+            r = _req.get(url, params={"dates": yyyymmdd}, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            errors.append({"espn_league": key, "error": str(e)})
+            continue
+
+        season_year = (data.get("season") or {}).get("year")
+        for ev in data.get("events", []) or []:
+            try:
+                fid_raw = ev.get("id")
+                if fid_raw is None:
+                    continue
+                fid = -int(fid_raw)   # negate → namespace separation from api-football IDs
+                comps = (ev.get("competitions") or [{}])[0]
+                home = away = None
+                for c in comps.get("competitors", []) or []:
+                    side = c.get("homeAway")
+                    name = (c.get("team") or {}).get("displayName")
+                    if side == "home": home = name
+                    elif side == "away": away = name
+                status = ((ev.get("status") or {}).get("type") or {}).get("shortDetail") \
+                         or ((ev.get("status") or {}).get("type") or {}).get("description")
+                fixtures.append({
+                    "fixture_id":    fid,
+                    "commence_time": ev.get("date"),
+                    "status":        status,
+                    "venue":         (comps.get("venue") or {}).get("fullName"),
+                    "league":        _canonical_league_key(key),
+                    "league_id":     _SOCCER_LEAGUE_MAP.get(key) or 0,
+                    "season":        season_year,
+                    "home_team":     home,
+                    "away_team":     away,
+                })
+            except Exception as e:
+                errors.append({"espn_event": ev.get("id"), "error": str(e)})
+    return fixtures, errors
+
 def _soccer_api_get(path, params, api_key):
     import requests as _req
     base = "https://v3.football.api-sports.io"
@@ -2761,70 +2845,104 @@ def _fixtures_row_to_dict(r):
     }
 
 
-def _crawl_fixtures_into_cache(api_key, date_strs, db_url):
+def _crawl_fixtures_into_cache(api_key, date_strs, db_url, league_keys=None):
     """Fetch fixtures for each date and upsert into soccer_fixtures_cache.
+    Tries api-football first; falls back to ESPN public scoreboard per date
+    when api-football errors (suspended/quota/network) or returns empty.
     Returns (inserted, updated, errors)."""
     import psycopg2 as _pg, time as _t
+
+    if not league_keys:
+        league_keys = sorted({k for k in _SOCCER_LEAGUE_MAP.keys()
+                              if k in _ESPN_LEAGUE_MAP})
+
     inserted = updated = 0
     errors = []
+
+    def _upsert(cur, date_str, rec):
+        nonlocal inserted, updated
+        cur.execute("""
+            INSERT INTO soccer_fixtures_cache
+                (fixture_id, fixture_date, commence_time, status, venue,
+                 league_key, league_id, season, home_team, away_team, refreshed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (fixture_id) DO UPDATE SET
+                commence_time = EXCLUDED.commence_time,
+                status        = EXCLUDED.status,
+                venue         = EXCLUDED.venue,
+                league_key    = EXCLUDED.league_key,
+                league_id     = EXCLUDED.league_id,
+                season        = EXCLUDED.season,
+                home_team     = EXCLUDED.home_team,
+                away_team     = EXCLUDED.away_team,
+                refreshed_at  = NOW()
+            RETURNING (xmax = 0) AS was_insert
+        """, (
+            rec["fixture_id"], date_str, rec["commence_time"],
+            rec["status"], rec["venue"],
+            rec["league"], rec["league_id"], rec["season"],
+            rec["home_team"], rec["away_team"],
+        ))
+        row = cur.fetchone()
+        if row and row[0]:
+            inserted += 1
+        else:
+            updated += 1
+
     conn = _pg.connect(db_url)
     try:
         _ensure_fixtures_schema(conn)
         with conn.cursor() as cur:
             for date_str in date_strs:
+                af_records = []
+                af_failed  = False
                 try:
-                    data = _soccer_api_get("fixtures", {"date": date_str}, api_key)
+                    data = _soccer_api_get("fixtures", {"date": date_str}, api_key) if api_key else {"response": []}
+                    if api_key:
+                        upstream_errors = data.get("errors")
+                        if isinstance(upstream_errors, dict) and upstream_errors:
+                            errors.append({"date": date_str, "upstream": upstream_errors})
+                            af_failed = True
+                        for f in data.get("response", []):
+                            lg = f.get("league", {}) or {}
+                            lid = lg.get("id")
+                            league_key = _LEAGUE_ID_CANONICAL.get(lid)
+                            if not league_key:
+                                continue
+                            fx    = f.get("fixture", {}) or {}
+                            teams = f.get("teams",   {}) or {}
+                            af_records.append({
+                                "fixture_id": fx.get("id"),
+                                "commence_time": fx.get("date"),
+                                "status": (fx.get("status") or {}).get("short"),
+                                "venue":  (fx.get("venue")  or {}).get("name"),
+                                "league": league_key,
+                                "league_id": lid,
+                                "season": lg.get("season"),
+                                "home_team": (teams.get("home") or {}).get("name"),
+                                "away_team": (teams.get("away") or {}).get("name"),
+                            })
                 except Exception as e:
-                    errors.append({"date": date_str, "error": str(e)})
-                    continue
+                    errors.append({"date": date_str, "apifootball_error": str(e)})
+                    af_failed = True
 
-                upstream_errors = data.get("errors")
-                if isinstance(upstream_errors, dict) and upstream_errors:
-                    errors.append({"date": date_str, "upstream": upstream_errors})
+                # Fallback to ESPN if api-football errored or returned nothing.
+                if af_failed or not af_records:
+                    espn_records, espn_errs = _espn_fetch_fixtures(date_str, league_keys)
+                    if espn_errs:
+                        errors.extend([{"date": date_str, **e} for e in espn_errs])
+                    records = espn_records
+                else:
+                    records = af_records
 
-                for f in data.get("response", []):
-                    lg = f.get("league", {}) or {}
-                    lid = lg.get("id")
-                    league_key = next((k for k, v in _SOCCER_LEAGUE_MAP.items() if v == lid), None)
-                    if not league_key:
-                        continue   # skip unconfigured leagues
-                    fx    = f.get("fixture", {}) or {}
-                    teams = f.get("teams",   {}) or {}
+                for rec in records:
                     try:
-                        cur.execute("""
-                            INSERT INTO soccer_fixtures_cache
-                                (fixture_id, fixture_date, commence_time, status, venue,
-                                 league_key, league_id, season, home_team, away_team, refreshed_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                            ON CONFLICT (fixture_id) DO UPDATE SET
-                                commence_time = EXCLUDED.commence_time,
-                                status        = EXCLUDED.status,
-                                venue         = EXCLUDED.venue,
-                                league_key    = EXCLUDED.league_key,
-                                league_id     = EXCLUDED.league_id,
-                                season        = EXCLUDED.season,
-                                home_team     = EXCLUDED.home_team,
-                                away_team     = EXCLUDED.away_team,
-                                refreshed_at  = NOW()
-                            RETURNING (xmax = 0) AS was_insert
-                        """, (
-                            fx.get("id"), date_str, fx.get("date"),
-                            (fx.get("status") or {}).get("short"),
-                            (fx.get("venue")  or {}).get("name"),
-                            league_key, lid, lg.get("season"),
-                            (teams.get("home") or {}).get("name"),
-                            (teams.get("away") or {}).get("name"),
-                        ))
-                        row = cur.fetchone()
-                        if row and row[0]:
-                            inserted += 1
-                        else:
-                            updated += 1
+                        _upsert(cur, date_str, rec)
                     except Exception as e:
-                        errors.append({"fixture_id": fx.get("id"), "error": str(e)})
+                        errors.append({"fixture_id": rec.get("fixture_id"), "error": str(e)})
 
                 conn.commit()
-                _t.sleep(6.5)   # api-football free plan: 10 req/min
+                _t.sleep(6.5)   # rate-limit gap (covers api-football 10 req/min)
     finally:
         conn.close()
     return inserted, updated, errors
@@ -2849,9 +2967,8 @@ def fbref_stats_fixtures():
     from datetime import date as _date, datetime as _dt, timezone as _tz
     import psycopg2 as _pg, psycopg2.extras as _pgx
 
+    # api_key is optional — when missing, fall straight to ESPN.
     api_key = os.environ.get("API_FOOTBALL_KEY", "")
-    if not api_key:
-        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
 
     date_str = (request.args.get("date") or _dt.now(_tz.utc).date().isoformat()).strip()
     try:
@@ -2868,10 +2985,13 @@ def fbref_stats_fixtures():
     for key in league_keys:
         lid = _SOCCER_LEAGUE_MAP.get(key)
         if lid:
-            wanted_ids[lid] = key
+            wanted_ids[lid] = _LEAGUE_ID_CANONICAL.get(lid, key)
         else:
             unknown.append(key)
     errors = [{"league": k, "error": "unknown league key"} for k in unknown]
+    # Canonicalize requested league keys for cache reads so an alias request
+    # (e.g. ?leagues=ucl) still hits rows stored under the canonical key.
+    canonical_keys = sorted({_canonical_league_key(k) for k in league_keys if k in _SOCCER_LEAGUE_MAP})
 
     db_url = os.environ.get("DATABASE_URL", "")
     fixtures_out = []
@@ -2888,7 +3008,7 @@ def fbref_stats_fixtures():
                         SELECT * FROM soccer_fixtures_cache
                         WHERE fixture_date = %s AND league_key = ANY(%s)
                         ORDER BY commence_time
-                    """, (date_str, league_keys))
+                    """, (date_str, canonical_keys or league_keys))
                     rows = cur.fetchall()
                     fixtures_out = [_fixtures_row_to_dict(r) for r in rows]
                 if fixtures_out:
@@ -2898,63 +3018,91 @@ def fbref_stats_fixtures():
         except Exception as e:
             errors.append({"cache": str(e)})
 
-    # 2) Cache miss (or fresh=1) → live fetch + write-through
+    # 2) Cache miss (or fresh=1) → live fetch.
+    #    Try api-football first (if key present); fall back to ESPN public
+    #    scoreboard if api-football errors (suspended/quota) or returns nothing.
     if not fixtures_out:
-        try:
-            data = _soccer_api_get("fixtures", {"date": date_str}, api_key)
-            upstream_errors = data.get("errors")
-            if isinstance(upstream_errors, dict) and upstream_errors:
-                errors.append({"upstream": upstream_errors})
-            for f in data.get("response", []):
-                lg = f.get("league", {}) or {}
-                lid = lg.get("id")
-                if lid not in wanted_ids:
-                    continue
-                fx    = f.get("fixture", {}) or {}
-                teams = f.get("teams",   {}) or {}
-                fixtures_out.append({
-                    "fixture_id":    fx.get("id"),
-                    "commence_time": fx.get("date"),
-                    "status":        (fx.get("status") or {}).get("short"),
-                    "venue":         (fx.get("venue") or {}).get("name"),
-                    "league":        wanted_ids[lid],
-                    "league_id":     lid,
-                    "season":        lg.get("season"),
-                    "home_team":     (teams.get("home") or {}).get("name"),
-                    "away_team":     (teams.get("away") or {}).get("name"),
-                })
-            source = "live"
+        af_failed = api_key == ""    # treat missing key as "skip api-football"
+        if api_key:
+            try:
+                data = _soccer_api_get("fixtures", {"date": date_str}, api_key)
+                upstream_errors = data.get("errors")
+                if isinstance(upstream_errors, dict) and upstream_errors:
+                    errors.append({"upstream": upstream_errors})
+                    af_failed = True
+                for f in data.get("response", []):
+                    lg = f.get("league", {}) or {}
+                    lid = lg.get("id")
+                    if lid not in wanted_ids:
+                        continue
+                    fx    = f.get("fixture", {}) or {}
+                    teams = f.get("teams",   {}) or {}
+                    fixtures_out.append({
+                        "fixture_id":    fx.get("id"),
+                        "commence_time": fx.get("date"),
+                        "status":        (fx.get("status") or {}).get("short"),
+                        "venue":         (fx.get("venue") or {}).get("name"),
+                        "league":        wanted_ids[lid],
+                        "league_id":     lid,
+                        "season":        lg.get("season"),
+                        "home_team":     (teams.get("home") or {}).get("name"),
+                        "away_team":     (teams.get("away") or {}).get("name"),
+                    })
+                if fixtures_out:
+                    source = "live-apifootball"
+            except Exception as e:
+                errors.append({"apifootball_error": str(e)})
+                af_failed = True
 
-            # Write-through: cache what we just fetched so the next call is instant.
-            if db_url and fixtures_out:
+        # Fall back to ESPN when api-football skipped/failed/empty.
+        if af_failed or not fixtures_out:
+            espn_recs, espn_errs = _espn_fetch_fixtures(date_str, league_keys)
+            if espn_errs:
+                errors.extend(espn_errs)
+            if espn_recs:
+                fixtures_out = espn_recs
+                source = "live-espn"
+
+        # Explicit dual-failure marker so operators can spot total outages.
+        if not fixtures_out:
+            errors.append({"both_sources_empty": True,
+                           "hint": "api-football and ESPN both returned no fixtures for this date/league set"})
+
+        # Write-through: persist whatever we got (api-football OR ESPN) so the
+        # next call serves from cache.
+        if db_url and fixtures_out:
+            try:
+                conn = _pg.connect(db_url)
                 try:
-                    conn = _pg.connect(db_url)
-                    try:
-                        _ensure_fixtures_schema(conn)
-                        with conn.cursor() as cur:
-                            for fxo in fixtures_out:
-                                cur.execute("""
-                                    INSERT INTO soccer_fixtures_cache
-                                        (fixture_id, fixture_date, commence_time, status, venue,
-                                         league_key, league_id, season, home_team, away_team, refreshed_at)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                                    ON CONFLICT (fixture_id) DO UPDATE SET
-                                        commence_time = EXCLUDED.commence_time,
-                                        status        = EXCLUDED.status,
-                                        refreshed_at  = NOW()
-                                """, (
-                                    fxo["fixture_id"], date_str, fxo["commence_time"],
-                                    fxo["status"], fxo["venue"],
-                                    fxo["league"], fxo["league_id"], fxo["season"],
-                                    fxo["home_team"], fxo["away_team"],
-                                ))
-                            conn.commit()
-                    finally:
-                        conn.close()
-                except Exception as e:
-                    errors.append({"writethrough": str(e)})
-        except Exception as e:
-            errors.append({"fetch": str(e)})
+                    _ensure_fixtures_schema(conn)
+                    with conn.cursor() as cur:
+                        for fxo in fixtures_out:
+                            cur.execute("""
+                                INSERT INTO soccer_fixtures_cache
+                                    (fixture_id, fixture_date, commence_time, status, venue,
+                                     league_key, league_id, season, home_team, away_team, refreshed_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                                ON CONFLICT (fixture_id) DO UPDATE SET
+                                    commence_time = EXCLUDED.commence_time,
+                                    status        = EXCLUDED.status,
+                                    venue         = EXCLUDED.venue,
+                                    league_key    = EXCLUDED.league_key,
+                                    league_id     = EXCLUDED.league_id,
+                                    season        = EXCLUDED.season,
+                                    home_team     = EXCLUDED.home_team,
+                                    away_team     = EXCLUDED.away_team,
+                                    refreshed_at  = NOW()
+                            """, (
+                                fxo["fixture_id"], date_str, fxo["commence_time"],
+                                fxo["status"], fxo["venue"],
+                                fxo["league"], fxo["league_id"], fxo["season"],
+                                fxo["home_team"], fxo["away_team"],
+                            ))
+                        conn.commit()
+                finally:
+                    conn.close()
+            except Exception as e:
+                errors.append({"writethrough": str(e)})
 
     return jsonify({
         "ok":       True,
@@ -2985,9 +3133,8 @@ def fbref_stats_fixtures_refresh():
     import threading, psycopg2 as _pg, time as _t
     from datetime import date as _date, timedelta as _td, datetime as _dt, timezone as _tz
 
+    # api_key is optional — refresh will fall back to ESPN when missing.
     api_key = os.environ.get("API_FOOTBALL_KEY", "")
-    if not api_key:
-        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
     db_url = os.environ.get("DATABASE_URL", "")
     if not db_url:
         return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
