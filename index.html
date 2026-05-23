@@ -509,77 +509,208 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 <!-- ══════════════════════════════════════ -->
 <div id="tab-jeremia" class="hidden">
   <div class="main">
-  <div style="background:linear-gradient(135deg,#7c3aed 0%,#4f46e5 100%);border-radius:var(--r);padding:18px 22px;margin-bottom:14px;color:#fff;">
-    <h2 style="font-size:17px;font-weight:700;margin-bottom:4px;">🧬 Jeremia-Style Slip Builder</h2>
-    <p style="font-size:12px;opacity:.85;">Floor-first · Volume-driven · Low-threshold exploitation · Multi-path anchored · Controlled ceiling</p>
-  </div>
 
-  <div class="g2" style="margin-bottom:12px;">
-    <div class="card">
-      <div class="ch"><span class="ct">Build Settings</span></div>
-      <div class="cb">
-        <div class="fr">
-          <div class="field"><label>Slip Type</label>
-            <select id="jer_sliptype">
-              <option value="power2">Power 2</option>
-              <option value="power3" selected>Power 3</option>
-              <option value="power4">Power 4</option>
-              <option value="flex5">Flex 5</option>
-              <option value="flex6">Flex 6</option>
-            </select>
-          </div>
-          <div class="field"><label>Sport</label>
-            <select id="jer_sport">
-              <option value="NBA" selected>NBA</option>
-              <option value="WNBA">WNBA</option>
-              <option value="MLB">MLB</option>
-              <option value="NHL">NHL</option>
-              <option value="Soccer">Soccer</option>
-              <option value="Tennis">Tennis</option>
-              <option value="all">All Sports</option>
-            </select>
-          </div>
-          <div class="field"><label>Platform</label>
-            <select id="jer_platform">
-              <option>PrizePicks</option>
-              <option>BetUS</option>
-            </select>
-          </div>
+  <!-- ── HEADER ── -->
+  <div style="border-radius:16px;border:1px solid rgba(124,58,237,0.3);background:linear-gradient(135deg,rgba(124,58,237,0.15) 0%,var(--surface) 50%,rgba(16,185,129,0.08) 100%);padding:16px 20px;margin-bottom:12px;">
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;justify-content:space-between;">
+      <div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+          <span class="badge" style="background:rgba(124,58,237,0.15);color:#a78bfa;border:1px solid rgba(124,58,237,0.3);">Jermia Style</span>
+          <span class="badge bg-g">Floor First</span>
+          <span class="badge bg-b">Multi-Path Anchored</span>
+          <span style="font-size:11px;color:var(--text2);" id="jerLastUpdated"></span>
         </div>
-
-        <div class="dv"><div class="dl"></div><div class="dt">Jeremia Style Rules</div><div class="dl"></div></div>
-        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
-          <label class="jer-rule-label"><input type="checkbox" id="jer_assists" checked> <span>✓ Prioritize low-threshold assist overs (0.5–2.5)</span></label>
-          <label class="jer-rule-label"><input type="checkbox" id="jer_ra" checked> <span>✓ Include rebounds+assists multi-path anchors</span></label>
-          <label class="jer-rule-label"><input type="checkbox" id="jer_fantasy" checked> <span>✓ Allow fantasy score for stat-stuffers</span></label>
-          <label class="jer-rule-label"><input type="checkbox" id="jer_ceiling" checked> <span>✓ 1 controlled ceiling piece allowed</span></label>
-          <label class="jer-rule-label"><input type="checkbox" id="jer_nostar" checked> <span>🚫 No superstar 1H unders</span></label>
-          <label class="jer-rule-label"><input type="checkbox" id="jer_nohook" checked> <span>🚫 No thin-margin hook lines</span></label>
-          <label class="jer-rule-label"><input type="checkbox" id="jer_nofade" checked> <span>🚫 No broad stat fade attempts</span></label>
-          <label class="jer-rule-label"><input type="checkbox" id="jer_noscoring" checked> <span>🚫 No pure scoring-only anchors</span></label>
-        </div>
-
-        <button class="btn btn-p" onclick="buildJeremiaSlip()" style="background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;">
-          <span id="jerBtn">Build Jeremia Slip</span>
+        <h2 style="font-size:20px;font-weight:900;margin:0 0 4px;">🧬 Jermia Slip Builder</h2>
+        <p style="font-size:12px;color:var(--text2);margin:0;">Build low-threshold, role-safe slips using ranked candidates, failure paths, and slip balance checks.</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <select id="jer_sliptype" style="font-size:12px;padding:5px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+          <option value="power2">Power 2</option>
+          <option value="power3" selected>Power 3</option>
+          <option value="power4">Power 4</option>
+          <option value="flex5">Flex 5</option>
+          <option value="flex6">Flex 6</option>
+        </select>
+        <select id="jer_sport" style="font-size:12px;padding:5px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+          <option value="NBA" selected>NBA</option>
+          <option value="WNBA">WNBA</option>
+          <option value="MLB">MLB</option>
+          <option value="NHL">NHL</option>
+          <option value="Soccer">Soccer</option>
+          <option value="Tennis">Tennis</option>
+          <option value="all">All Sports</option>
+        </select>
+        <select id="jer_platform" style="font-size:12px;padding:5px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+          <option>PrizePicks</option><option>BetUS</option>
+        </select>
+        <button class="btn btn-p btn-sm" onclick="loadJeremiaCandidates()" style="background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;">
+          <span id="jerBtn">Refresh Candidates</span>
           <span id="jerSp" class="hidden"><div class="sp"></div></span>
         </button>
       </div>
     </div>
+  </div>
 
-    <div class="card">
-      <div class="ch"><span class="ct">Jeremia Style Criteria</span></div>
-      <div class="cb" style="font-size:12px;color:var(--text2);line-height:1.8;">
-        <div style="margin-bottom:8px;"><strong style="color:var(--text);">🎯 Volume + Low Threshold Core</strong><br>0.5–2.5 assist overs, low-barrier role-player stats. Probability compression — one or two events cash it.</div>
-        <div style="margin-bottom:8px;"><strong style="color:var(--text);">⚓ Multi-Path Anchors</strong><br>Rebounds+Assists, fantasy for stat-stuffers, big-man peripherals. Multiple ways to win reduces variance.</div>
-        <div style="margin-bottom:8px;"><strong style="color:var(--text);">🎪 Controlled Ceiling Piece</strong><br>1 higher-line play tied to role/usage. Controlled — not chaos. Feels risky but hits often.</div>
-        <div style="margin-bottom:8px;"><strong style="color:var(--text);">🔗 Soft Correlation</strong><br>Similar game environments, pace/flow benefit — without full same-team dependency.</div>
-        <div><strong style="color:var(--red);">🚫 Hard Avoids</strong><br>Superstar 1H unders · Thin-margin hook lines · Broad stat fades · Pure scoring anchors · HR/TD/Goal volatility</div>
-      </div>
+  <!-- ── STAT CARDS ── -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:12px;">
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;">Best Candidate</div>
+      <div style="font-size:16px;font-weight:900;color:var(--green);margin:4px 0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" id="jerStatBest">—</div>
+      <div style="font-size:10px;color:var(--text2);" id="jerStatBestSub">Top Jermia fit</div>
+    </div>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;">Approved</div>
+      <div style="font-size:22px;font-weight:900;color:var(--green);margin:4px 0 2px;" id="jerStatApproved">—</div>
+      <div style="font-size:10px;color:var(--text2);">Ready for slip</div>
+    </div>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;">Rejected</div>
+      <div style="font-size:22px;font-weight:900;color:var(--orange);margin:4px 0 2px;" id="jerStatRejected">—</div>
+      <div style="font-size:10px;color:var(--text2);">Hard avoid triggered</div>
+    </div>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;">Current Slip</div>
+      <div style="font-size:16px;font-weight:900;color:#a78bfa;margin:4px 0 2px;" id="jerStatSlip">0/3 legs</div>
+      <div style="font-size:10px;color:var(--text2);" id="jerStatSlipGrade">No legs selected</div>
     </div>
   </div>
 
-  <!-- Jeremia slip output -->
-  <div id="jeremiaOutput"></div>
+  <!-- ── MODE CARDS ── -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-bottom:12px;">
+    <div style="border-radius:12px;border:1px solid rgba(16,185,129,0.2);background:rgba(16,185,129,0.08);padding:12px;">
+      <div style="font-size:13px;font-weight:800;margin-bottom:6px;">🏆 Jermia Standard</div>
+      <p style="font-size:11px;color:var(--text2);line-height:1.6;margin:0 0 8px;">Power 3 or 4 using low-threshold overs, assists, rebounds, combos, and stat-stuffer fantasy score props.</p>
+      <span class="badge bg-g" style="font-size:10px;">Best for safer overs</span>
+    </div>
+    <div style="border-radius:12px;border:1px solid rgba(59,130,246,0.2);background:rgba(59,130,246,0.08);padding:12px;">
+      <div style="font-size:13px;font-weight:800;margin-bottom:6px;">📚 Jermia LESS</div>
+      <p style="font-size:11px;color:var(--text2);line-height:1.6;margin:0 0 8px;">Targets losing-team players, blowout dogs, lower-order hitters, fringe roles, and DNP protection scenarios.</p>
+      <span class="badge bg-b" style="font-size:10px;">Best for Flex 6</span>
+    </div>
+    <div style="border-radius:12px;border:1px solid rgba(245,158,11,0.2);background:rgba(245,158,11,0.08);padding:12px;">
+      <div style="font-size:13px;font-weight:800;margin-bottom:6px;">🔥 Controlled Ceiling</div>
+      <p style="font-size:11px;color:var(--text2);line-height:1.6;margin:0 0 8px;">Allows one higher-line leg only when role, usage, and game environment support it. Never builds around chaos.</p>
+      <span class="badge bg-y" style="font-size:10px;">One max per slip</span>
+    </div>
+  </div>
+
+  <!-- ── MAIN GRID: Candidates + Slip Preview ── -->
+  <div style="display:grid;grid-template-columns:1fr 340px;gap:12px;align-items:start;">
+
+    <!-- Left: Candidates + Rules -->
+    <div>
+      <!-- Filter bar -->
+      <div style="border-radius:12px;border:1px solid var(--border);background:var(--surface);padding:10px 14px;margin-bottom:10px;">
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;">
+          <div>
+            <div style="font-size:14px;font-weight:800;">Today's Best Jermia Candidates</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:1px;">Ranked by fit score, role safety, threshold quality, and failure-path control.</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <select id="jer_modeFilter" onchange="renderJeremiaCandidateList()" style="font-size:11px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+              <option value="all">All Modes</option>
+              <option value="Jermia Standard">Jermia Standard</option>
+              <option value="Jermia LESS">Jermia LESS</option>
+              <option value="Hard Avoid">Hard Avoid</option>
+            </select>
+            <select id="jer_sportFilter" onchange="renderJeremiaCandidateList()" style="font-size:11px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+              <option value="all">All Sports</option>
+              <option value="NBA">NBA</option>
+              <option value="MLB">MLB</option>
+              <option value="NHL">NHL</option>
+              <option value="WNBA">WNBA</option>
+            </select>
+            <select id="jer_viewFilter" onchange="renderJeremiaCandidateList()" style="font-size:11px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
+              <option value="approved">Approved First</option>
+              <option value="score">Highest Fit</option>
+              <option value="risk">Lowest Risk</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Candidate cards output -->
+      <div id="jeremiaCandidates">
+        <div style="text-align:center;padding:40px;color:var(--text2);font-size:13px;">
+          Click <strong>Refresh Candidates</strong> to load today's Jermia-style props.
+        </div>
+      </div>
+
+      <!-- Rules Engine -->
+      <div style="border-radius:12px;border:1px solid var(--border);background:var(--surface);padding:14px;margin-top:10px;">
+        <div style="font-size:14px;font-weight:800;margin-bottom:10px;">⚡ Jermia Rules Engine</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;">
+          <div style="border-radius:10px;border:1px solid var(--border);background:var(--surface2);padding:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <span style="font-size:12px;font-weight:700;">Approved Profiles</span>
+              <span class="badge bg-g" style="font-size:10px;">Use</span>
+            </div>
+            ${['Low-threshold assist overs','Rebounds+assists for role players','Fantasy score for stat-stuffers','One controlled ceiling piece max'].map(x=>`<div style="display:flex;gap:5px;font-size:11px;color:var(--text2);margin-bottom:3px;"><span style="color:var(--green);flex-shrink:0;">✓</span><span>${x}</span></div>`).join('')}
+          </div>
+          <div style="border-radius:10px;border:1px solid var(--border);background:var(--surface2);padding:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <span style="font-size:12px;font-weight:700;">Hard Avoids</span>
+              <span class="badge bg-r" style="font-size:10px;">Skip</span>
+            </div>
+            ${['Superstar 1H unders','Thin-margin hook lines','Pure scoring-only anchors','Broad stat fades, no support'].map(x=>`<div style="display:flex;gap:5px;font-size:11px;color:var(--text2);margin-bottom:3px;"><span style="color:var(--red);flex-shrink:0;">✗</span><span>${x}</span></div>`).join('')}
+          </div>
+          <div style="border-radius:10px;border:1px solid var(--border);background:var(--surface2);padding:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <span style="font-size:12px;font-weight:700;">LESS Targets</span>
+              <span class="badge bg-b" style="font-size:10px;">Target</span>
+            </div>
+            ${['DNP candidates with platform protection','Lower-order MLB vs elite pitchers','Bench players in blowout scripts','Defensive NHL/Soccer low volume'].map(x=>`<div style="display:flex;gap:5px;font-size:11px;color:var(--text2);margin-bottom:3px;"><span style="color:var(--accent);flex-shrink:0;">→</span><span>${x}</span></div>`).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Slip Preview (sticky) -->
+    <div style="position:sticky;top:70px;">
+      <div id="jeremiaSlipPreview" style="border-radius:14px;border:1px solid var(--border);background:var(--surface);padding:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+          <span style="font-size:14px;font-weight:800;">📋 Final Slip</span>
+          <span class="badge" id="jerLegBadge" style="background:var(--surface2);border:1px solid var(--border);">0/3 Legs</span>
+        </div>
+        <div style="border-radius:10px;border:1px solid rgba(124,58,237,0.25);background:rgba(124,58,237,0.08);padding:10px;margin-bottom:10px;">
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#a78bfa;font-weight:700;">Slip Grade</div>
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-top:4px;">
+            <div style="font-size:32px;font-weight:900;" id="jerSlipGradeDisplay">—</div>
+            <div style="text-align:right;"><div style="font-size:11px;color:var(--text2);">Avg Fit</div><div style="font-size:18px;font-weight:900;color:var(--green);" id="jerSlipAvgScore">—</div></div>
+          </div>
+        </div>
+        <div id="jerSlipLegs" style="margin-bottom:10px;min-height:60px;">
+          <div style="border-radius:10px;border:1px dashed var(--border2);padding:20px;text-align:center;font-size:12px;color:var(--text2);">Add approved Jermia legs to build the slip.</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;font-size:12px;">
+          <div style="background:var(--surface2);border-radius:8px;padding:8px;"><div style="font-size:10px;color:var(--text2);">Slip Type</div><div style="font-weight:700;" id="jerSlipType">Power 3</div></div>
+          <div style="background:var(--surface2);border-radius:8px;padding:8px;"><div style="font-size:10px;color:var(--text2);">Payout</div><div style="font-weight:700;" id="jerSlipPayout">5x</div></div>
+          <div style="background:var(--surface2);border-radius:8px;padding:8px;"><div style="font-size:10px;color:var(--text2);">Correlation</div><div style="font-weight:700;" id="jerSlipCorr">—</div></div>
+          <div style="background:var(--surface2);border-radius:8px;padding:8px;"><div style="font-size:10px;color:var(--text2);">EV</div><div style="font-weight:700;font-size:11px;" id="jerSlipEV">—</div></div>
+        </div>
+        <button id="jerBuildBtn" onclick="buildJeremiaFromSelection()" disabled
+          style="width:100%;padding:12px;border-radius:10px;background:var(--surface2);color:var(--text2);font-weight:800;font-size:13px;cursor:not-allowed;border:none;transition:.2s;">
+          🔒 Build Jermia Slip
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Legacy hidden IDs for JS compatibility -->
+  <div style="display:none;">
+    <input type="checkbox" id="jer_assists" checked>
+    <input type="checkbox" id="jer_ra" checked>
+    <input type="checkbox" id="jer_fantasy" checked>
+    <input type="checkbox" id="jer_ceiling" checked>
+    <input type="checkbox" id="jer_nostar" checked>
+    <input type="checkbox" id="jer_nohook" checked>
+    <input type="checkbox" id="jer_nofade" checked>
+    <input type="checkbox" id="jer_noscoring" checked>
+  </div>
+
+  <!-- Jeremia slip output (legacy) -->
+  <div id="jeremiaOutput" style="margin-top:10px;"></div>
 
 
   <div style="background:linear-gradient(135deg,#064e3b 0%,#065f46 100%);border-radius:var(--r);padding:18px 22px;margin-top:20px;margin-bottom:14px;color:#fff;">
@@ -1179,6 +1310,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
     <div id="clvSummaryDash" class="card" style="margin-bottom:12px;">
       <div class="ch"><span class="ct">📊 Performance Dashboard</span><span id="clvDateRange" style="font-size:12px;color:var(--text2);"></span></div>
       <div class="cb" id="clvDashBody">
+        <div id="clvFeedbackPanel" style="margin-bottom:10px;"></div>
         <div style="color:var(--text2);font-size:13px;text-align:center;padding:12px;">Log picks to see performance metrics.</div>
       </div>
     </div>
@@ -6120,8 +6252,10 @@ async function wowValidate(p, wowScore){
   // ── BASE PROBABILITY ──
   let rawProb;
   if(weightedL5!=null && weightedL10!=null){
-    const l5weight = sampleCheck.n >= 10 ? 0.40 : 0.50;
-    const l10weight = sampleCheck.n >= 10 ? 0.40 : 0.30;
+    // Use adaptive weights (CLV-feedback adjusted) if enough data, else baseline
+    const aw = getAdaptiveWeights(p.sport, p.prop);
+    const l5weight  = sampleCheck.n >= 10 ? aw.l5  : 0.50;
+    const l10weight = sampleCheck.n >= 10 ? aw.l10 : 0.30;
     rawProb = weightedL5 * l5weight + weightedL10 * l10weight + (p.confidence||0.50) * (1-l5weight-l10weight);
   } else if(weightedL5!=null){
     // Only L5 available — use it with confidence fallback
@@ -9643,6 +9777,8 @@ let slipImages = [];
 
 // Load persisted data
 try { clvLog = JSON.parse(localStorage.getItem('wow_clv_log')||'[]'); } catch(e){}
+// Initialize adaptive weights from localStorage on load
+try { if(Object.keys(_adaptiveWeights).length===0){ _adaptiveWeights = JSON.parse(localStorage.getItem('wow_adaptive_weights')||'{}'); } }catch(e){}
 try { winningSlips = JSON.parse(localStorage.getItem('wow_winning_slips')||'[]'); } catch(e){}
 
 // Pre-seed confirmed real slips if database is empty
@@ -9764,6 +9900,146 @@ function logCLV(){
   });
 }
 
+// ══════════════════════════════════════════════════
+// CLV FEEDBACK LOOP + BRIER SCORE TRACKING
+// ══════════════════════════════════════════════════
+
+// ── Brier Score ──
+// Measures probability calibration. Lower = better.
+// Perfect = 0.0 | Random = 0.25 | Target = < 0.20
+// Uses clvLog entries that have both modProb and outcome.
+function calcBrierScore(entries){
+  const usable = entries.filter(e =>
+    e.modProb != null && (e.outcome === 'win' || e.outcome === 'loss')
+  );
+  if(usable.length < 5) return null;
+  const sum = usable.reduce((acc, e) => {
+    const p = parseFloat(e.modProb);
+    const o = e.outcome === 'win' ? 1 : 0;
+    return acc + Math.pow(p - o, 2);
+  }, 0);
+  const score = sum / usable.length;
+  const grade = score < 0.18 ? 'A' : score < 0.21 ? 'B' : score < 0.24 ? 'C' : 'F';
+  const color = score < 0.18 ? 'var(--green)' : score < 0.21 ? 'var(--accent)' : score < 0.24 ? 'var(--yellow)' : 'var(--red)';
+  return { score: parseFloat(score.toFixed(4)), grade, color, n: usable.length };
+}
+
+// ── Calibration Bucket Analysis ──
+// Groups predictions into confidence buckets and checks if actual hit rates match.
+function calcCalibrationBuckets(entries){
+  const usable = entries.filter(e =>
+    e.modProb != null && (e.outcome === 'win' || e.outcome === 'loss')
+  );
+  const buckets = [
+    {label:'50-55%', min:0.50, max:0.55, hits:0, total:0},
+    {label:'55-60%', min:0.55, max:0.60, hits:0, total:0},
+    {label:'60-65%', min:0.60, max:0.65, hits:0, total:0},
+    {label:'65-70%', min:0.65, max:0.70, hits:0, total:0},
+    {label:'70-75%', min:0.70, max:0.75, hits:0, total:0},
+    {label:'75%+',   min:0.75, max:1.00, hits:0, total:0},
+  ];
+  usable.forEach(e => {
+    const p = parseFloat(e.modProb);
+    const b = buckets.find(b => p >= b.min && p < b.max);
+    if(b){ b.total++; if(e.outcome === 'win') b.hits++; }
+  });
+  return buckets.filter(b => b.total >= 3).map(b => ({
+    ...b,
+    actual: b.total > 0 ? b.hits / b.total : null,
+    expected: (b.min + b.max) / 2,
+    drift: b.total > 0 ? (b.hits/b.total) - ((b.min+b.max)/2) : 0,
+  }));
+}
+
+// ── Layer Performance Analysis ──
+// Analyzes CLV log to find which signal types generate real edge.
+// Returns performance by sport, prop type, and tier.
+function analyzeLayerPerformance(){
+  const settled = clvLog.filter(e =>
+    (e.outcome === 'win' || e.outcome === 'loss') && e.clv != null
+  );
+  if(settled.length < 10) return null;
+
+  const groupBy = (key) => {
+    const groups = {};
+    settled.forEach(e => {
+      const k = e[key] || 'unknown';
+      if(!groups[k]) groups[k] = { entries:[], clvSum:0, wins:0 };
+      groups[k].entries.push(e);
+      groups[k].clvSum += parseFloat(e.clv || 0);
+      if(e.outcome === 'win') groups[k].wins++;
+    });
+    return Object.entries(groups)
+      .filter(([,g]) => g.entries.length >= 5)
+      .map(([key, g]) => ({
+        key,
+        n: g.entries.length,
+        avgCLV: parseFloat((g.clvSum / g.entries.length).toFixed(3)),
+        winRate: parseFloat((g.wins / g.entries.length).toFixed(3)),
+        clvGrade: g.clvSum/g.entries.length > 0.02 ? 'A' :
+                  g.clvSum/g.entries.length > 0   ? 'B' :
+                  g.clvSum/g.entries.length > -0.02 ? 'C' : 'F',
+      }))
+      .sort((a, b) => b.avgCLV - a.avgCLV);
+  };
+
+  return {
+    bySport:   groupBy('sport'),
+    byProp:    groupBy('prop'),
+    byTier:    groupBy('slipType'),
+    totalN:    settled.length,
+    overallCLV: parseFloat((settled.reduce((s,e)=>s+parseFloat(e.clv||0),0)/settled.length).toFixed(3)),
+  };
+}
+
+// ── Adaptive Scoring Weights ──
+// Adjusts L5/L10 weights based on CLV performance per sport+prop type.
+// Stored in localStorage. Applied in scoreOne().
+// Min 20 samples before any adjustment. Max ±10% shift from baseline.
+let _adaptiveWeights = {};
+try {
+  _adaptiveWeights = JSON.parse(localStorage.getItem('wow_adaptive_weights')||'{}');
+} catch(e) { _adaptiveWeights = {}; }
+
+function computeAdaptiveWeights(){
+  const perf = analyzeLayerPerformance();
+  if(!perf || perf.totalN < 20) return {};
+  const weights = {};
+  // For each sport: adjust L5 weight based on CLV performance
+  perf.bySport.forEach(s => {
+    if(s.n < 20) return;
+    // Strong positive CLV → trust recent data more → boost L5 weight
+    // Negative CLV → recent data misleading → lean on L10 more
+    const l5Adj = Math.max(-0.08, Math.min(0.08, s.avgCLV * 2));
+    weights[s.key] = {
+      l5: parseFloat((0.40 + l5Adj).toFixed(3)),
+      l10: parseFloat((0.40 - l5Adj).toFixed(3)),
+      source: `CLV: ${(s.avgCLV*100).toFixed(1)}% avg (${s.n} picks)`,
+      grade: s.clvGrade,
+    };
+  });
+  return weights;
+}
+
+function getAdaptiveWeights(sport, prop){
+  const base = { l5: 0.40, l10: 0.40 };
+  const aw = _adaptiveWeights[sport];
+  if(!aw) return base;
+  return { l5: aw.l5, l10: aw.l10 };
+}
+
+function applyAdaptiveWeights(){
+  const weights = computeAdaptiveWeights();
+  _adaptiveWeights = weights;
+  try { localStorage.setItem('wow_adaptive_weights', JSON.stringify(weights)); } catch(e){}
+  return weights;
+}
+
+function resetAdaptiveWeights(){
+  _adaptiveWeights = {};
+  try { localStorage.removeItem('wow_adaptive_weights'); } catch(e){}
+}
+
 function renderCLVDashboard(){
   const settled=clvLog.filter(e=>e.outcome==='win'||e.outcome==='loss');
   if(!settled.length){document.getElementById('clvDashBody').innerHTML='<div style="color:var(--text2);font-size:13px;text-align:center;padding:12px;">Log picks to see performance metrics.</div>';return;}
@@ -9775,6 +10051,13 @@ function renderCLVDashboard(){
   const badProcess=clvLog.filter(e=>e.processGrade==='C'||e.processGrade==='F').length;
   const positiveCLV=clvLog.filter(e=>e.clv!=null&&e.clv>0).length;
   const beatClose=clvLog.filter(e=>e.beatClose===true).length;
+
+  // CLV Feedback + Brier (computed here, rendered in feedback panel)
+  const brierData    = calcBrierScore(clvLog);
+  const calibBuckets = calcCalibrationBuckets(clvLog);
+  const layerPerf    = analyzeLayerPerformance();
+  // Refresh feedback panel if it exists
+  setTimeout(renderCLVFeedbackPanel, 50);
   const avgMiss=settled.length?settled.filter(e=>e.missDistance!=null).reduce((s,e)=>s+e.missDistance,0)/(settled.filter(e=>e.missDistance!=null).length||1):0;
 
   // By sport win rates
@@ -9814,6 +10097,7 @@ function renderCLVDashboard(){
       ${kpi((winPct*100).toFixed(1)+'%','Win Rate',winColor)}
       ${kpi(settled.length,'Settled','var(--text)')}
       ${kpi(clvLog.length,'Total Logged','var(--text)')}
+  ${brierData ? kpi(brierData.score.toFixed(4)+' '+brierData.grade,'Brier Score',brierData.color) : ''}
       ${kpi(goodProcess,'Good Process','var(--green)')}
       ${kpi(badProcess,'Bad Process','var(--red)')}
       ${kpi(positiveCLV,'+ CLV Picks','var(--accent)')}
@@ -10865,6 +11149,77 @@ function renderSlipDatabase(){
 // ══════════════════════════════════
 // LEARNING ENGINE
 // ══════════════════════════════════
+// ── Render CLV Feedback Panel (Brier + Calibration + Adaptive Weights) ──
+function renderCLVFeedbackPanel(){
+  const el = document.getElementById('clvFeedbackPanel');
+  if(!el) return;
+
+  const brierData    = calcBrierScore(clvLog);
+  const calibBuckets = calcCalibrationBuckets(clvLog);
+  const layerPerf    = analyzeLayerPerformance();
+
+  let html = '<div style="display:grid;gap:10px;">';
+
+  // Brier Score
+  html += `<div style="border-radius:10px;border:1px solid var(--border);background:var(--surface2);padding:12px;">
+    <div style="font-size:13px;font-weight:700;margin-bottom:8px;">📐 Brier Score — Probability Calibration</div>`;
+  if(brierData){
+    html += `<div style="display:flex;gap:12px;align-items:center;margin-bottom:8px;">
+      <div style="font-size:26px;font-weight:900;color:${brierData.color};">${brierData.score.toFixed(4)}</div>
+      <div><div style="font-weight:700;color:${brierData.color};">Grade ${brierData.grade}</div>
+      <div style="font-size:11px;color:var(--text2);">${brierData.n} picks · Target &lt;0.20 · Random=0.25</div></div>
+    </div>`;
+    if(calibBuckets.length){
+      html += '<div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px;">Calibration by confidence bucket:</div>';
+      calibBuckets.forEach(b=>{
+        const act = b.actual!=null?(b.actual*100).toFixed(0)+'%':'—';
+        const drift = Math.abs(b.drift)<0.05?'✓ calibrated':b.drift>0?`↑ overconfident (+${(b.drift*100).toFixed(0)}%)`:`↓ underconfident (${(b.drift*100).toFixed(0)}%)`;
+        const dc = Math.abs(b.drift)<0.05?'var(--green)':Math.abs(b.drift)<0.10?'var(--yellow)':'var(--red)';
+        html += `<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0;border-bottom:1px solid var(--border);">
+          <span>${b.label}</span><span>n=${b.total}</span>
+          <span>Actual: <strong>${act}</strong></span>
+          <span style="color:${dc};">${drift}</span>
+        </div>`;
+      });
+    }
+  } else {
+    html += '<div style="font-size:12px;color:var(--text2);">Log 5+ settled picks with model probability to see calibration.</div>';
+  }
+  html += '</div>';
+
+  // Layer Performance + Adaptive Weights
+  html += `<div style="border-radius:10px;border:1px solid var(--border);background:var(--surface2);padding:12px;">
+    <div style="font-size:13px;font-weight:700;margin-bottom:8px;">🔄 CLV Feedback Loop — Adaptive Weights</div>`;
+  if(layerPerf && layerPerf.totalN >= 10){
+    html += `<div style="font-size:12px;margin-bottom:8px;">Overall CLV: <strong style="color:${layerPerf.overallCLV>0?'var(--green)':'var(--red)'};">${layerPerf.overallCLV>0?'+':''}${(layerPerf.overallCLV*100).toFixed(1)}%</strong> · ${layerPerf.totalN} settled picks</div>`;
+    if(layerPerf.bySport.length){
+      html += '<div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px;">Performance by sport:</div>';
+      layerPerf.bySport.forEach(s=>{
+        const gc = s.clvGrade==='A'?'var(--green)':s.clvGrade==='B'?'var(--accent)':s.clvGrade==='C'?'var(--yellow)':'var(--red)';
+        html += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);">
+          <span style="font-weight:600;">${s.key}</span>
+          <span style="color:var(--text2);">${s.n} picks</span>
+          <span style="color:${s.avgCLV>0?'var(--green)':'var(--red)'};">${s.avgCLV>0?'+':''}${(s.avgCLV*100).toFixed(1)}% CLV</span>
+          <span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${gc}22;color:${gc};">${s.clvGrade}</span>
+        </div>`;
+      });
+    }
+    html += `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-p btn-sm" onclick="const w=applyAdaptiveWeights();const n=Object.keys(w).length;alert(n?'✅ Applied weights for '+n+' sport(s). Scoring updated.':'⚠ Need 20+ settled picks per sport');renderCLVFeedbackPanel();">Apply Adaptive Weights</button>
+      <button class="btn btn-s btn-sm" onclick="resetAdaptiveWeights();alert('Reset to baseline L5:40% L10:40%');renderCLVFeedbackPanel();">Reset Baseline</button>
+    </div>`;
+    if(Object.keys(_adaptiveWeights).length){
+      html += `<div style="margin-top:8px;font-size:11px;color:var(--green);">✓ Active: ${Object.entries(_adaptiveWeights).map(([sp,w])=>`${sp} L5=${(w.l5*100).toFixed(0)}%`).join(' · ')}</div>`;
+    } else {
+      html += '<div style="margin-top:8px;font-size:11px;color:var(--text2);">Using baseline weights. Apply above when you have 20+ settled picks per sport.</div>';
+    }
+  } else {
+    html += '<div style="font-size:12px;color:var(--text2);">Log 10+ settled picks to see layer performance and enable adaptive weights.</div>';
+  }
+  html += '</div></div>';
+  el.innerHTML = html;
+}
+
 async function runLearningEngine(){
   const hasData = clvLog.length > 0 || winningSlips.length > 0 || activeSlips.filter(s=>s.status!=='active').length > 0;
   if(!hasData){
@@ -12113,6 +12468,403 @@ async function buildTennisLessCandidates(cfg, log){
     log(`✓ Tennis: ${candidates.length} LESS candidates`,'ok');
   }catch(e){ log(`⚠ Tennis: ${e.message}`,'w'); }
   return candidates;
+}
+
+
+// ══════════════════════════════════════════════════
+// JERMIA SLIP BUILDER — New UI Functions
+// ══════════════════════════════════════════════════
+
+let _jeremiaCandidates = []; // all scored candidates
+let _jermiaSlip = [];        // currently selected legs
+
+// ── Jermia Fit Score (0-100) ──
+function scoreJermiaFit(p){
+  let score = Math.round((p.rawProb||p.l5_hit_rate||0.55) * 60); // base from probability
+  const pl = (p.prop||'').toLowerCase();
+  // Multi-path bonus
+  if(pl.includes('rebounds') && pl.includes('assists')) score += 18;
+  else if(pl.includes('assists') || pl.includes('rebounds')) score += 10;
+  else if(pl.includes('fantasy') || pl.includes('pra')) score += 14;
+  // Low threshold bonus
+  if(p.line <= 2.5 && pl.includes('assist')) score += 10;
+  if(p.line <= 5.5 && (pl.includes('rebounds') || pl.includes('assists'))) score += 6;
+  // Role safety from role_score
+  if((p.role_score||5) >= 8) score += 8;
+  // Hard avoid penalties
+  if(pl.includes('1h') || pl.includes('first half')) score -= 20;
+  if(p.side === 'LESS' && pl.includes('point')) score -= 10;
+  const hookThin = p.recent_avg != null && Math.abs((p.recent_avg||0) - p.line) < 0.5;
+  if(hookThin) score -= 12;
+  return Math.max(0, Math.min(100, score));
+}
+
+// ── Derive Jermia mode from prop ──
+function getJermiaMode(p){
+  const pl = (p.prop||'').toLowerCase();
+  const score = p.jerScore || scoreJermiaFit(p);
+  if(score < 50) return 'Hard Avoid';
+  if(p.side === 'LESS') return 'Jermia LESS';
+  if(pl.includes('1h') || (pl === 'points' && p.line > 22)) return 'Controlled Ceiling';
+  return 'Jermia Standard';
+}
+
+// ── Derive why[] reasons from prop fields ──
+function getJermiaWhyReasons(p){
+  const pl = (p.prop||'').toLowerCase();
+  const reasons = [];
+  if(pl.includes('rebounds') && pl.includes('assists'))
+    reasons.push('Multi-path: rebounds AND assists both count toward the line');
+  if(pl.includes('assists') && p.line <= 2.5)
+    reasons.push('Low-threshold assist over — one or two possessions cash it');
+  if((p.role_score||5) >= 8) reasons.push('High-floor role — consistent minutes and usage');
+  if(p.l5_hit_rate >= 0.68) reasons.push(`Strong L5 hit rate: ${(p.l5_hit_rate*100).toFixed(0)}%`);
+  if(p.l10_hit_rate >= 0.65) reasons.push(`Consistent L10: ${(p.l10_hit_rate*100).toFixed(0)}%`);
+  if(p.recent_avg && p.line) {
+    const gap = p.recent_avg - p.line;
+    if(gap > 1.5) reasons.push(`Line well below avg (${p.recent_avg.toFixed(1)} avg vs ${p.line} line)`);
+  }
+  if(p.side === 'LESS') reasons.push('LESS logic: role, script, or matchup suppresses volume');
+  if(p.note) { const noteParts = (p.note||'').split('|').slice(0,2); reasons.push(...noteParts.map(n=>n.trim()).filter(n=>n.length>5)); }
+  return reasons.slice(0,4).length ? reasons.slice(0,4) : ['Engine validated against Jermia criteria'];
+}
+
+// ── Derive failure path ──
+function getJermiaFailure(p){
+  const pl = (p.prop||'').toLowerCase();
+  if(pl.includes('assists')) return 'Early foul trouble, blowout script, or teammate usage spike reducing assist chances.';
+  if(pl.includes('rebounds') && pl.includes('assists')) return 'Blowout minutes cut, early foul trouble, or opponent dominates boards.';
+  if(pl.includes('hits') && p.side==='LESS') return 'Early single, bullpen downgrade, or unexpected move up the batting order.';
+  if(pl.includes('shots')) return 'Power-play usage spike, empty-net chase script, or overtime.';
+  if(pl.includes('strikeout')) return 'Command issues (high BB), short outing, or lineup change.';
+  return 'Game-script shift, injury, or opponent adjustment reducing expected volume.';
+}
+
+// ── Load candidates (calls existing buildJeremiaSlip engine, surfaces in new UI) ──
+async function loadJeremiaCandidates(){
+  const btn = document.getElementById('jerBtn');
+  const sp = document.getElementById('jerSp');
+  btn.textContent = 'Loading...';
+  sp.classList.remove('hidden');
+
+  const sport = document.getElementById('jer_sport').value;
+  const slipTypeFull = document.getElementById('jer_sliptype').value;
+  const slipType = slipTypeFull.startsWith('power') ? 'power' : 'flex';
+  const legCount = parseInt(slipTypeFull.replace('power','').replace('flex','')) || 3;
+  const sportFilter = sport==='all' ? ['NBA','WNBA','MLB','NHL','Soccer','Tennis'] :
+    sport==='NBA' ? ['NBA','WNBA'] : [sport];
+
+  // Pull from pool first
+  let rawCandidates = propPool.filter(p => sportFilter.includes(p.sport) && ['tier1','tier2','tier3'].includes(p.tier));
+
+  // If pool is light, fetch live
+  if(rawCandidates.length < legCount * 2){
+    const withTimeout = (promise, ms=10000) => Promise.race([promise, new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),ms))]);
+    for(const sp2 of sportFilter){
+      try{
+        let eng = [];
+        if(sp2==='NBA') eng = await withTimeout(runESPNNBAEngine(()=>{}));
+        else if(sp2==='WNBA') eng = await withTimeout(runESPNWNBAEngine(()=>{}));
+        else if(sp2==='MLB') eng = await withTimeout(runMLBEngine(()=>{}));
+        else if(sp2==='NHL') eng = await withTimeout(runNHLEngine(()=>{}));
+        rawCandidates.push(...eng);
+      }catch(e){}
+    }
+    // Score unvalidated candidates
+    for(const c of rawCandidates.filter(p=>!p.tier).slice(0,30)){
+      try{
+        const en = await enrichProp(c);
+        const ws = await scoreOne(en);
+        const val = await wowValidateGated(en, ws);
+        if(['tier1','tier2','tier3'].includes(val.tier) || (val.rawProb||0) >= 0.54){
+          Object.assign(c, en, val, {wowScore:ws});
+        }
+      }catch(e){}
+    }
+  }
+
+  // Score each candidate for Jermia fit
+  _jeremiaCandidates = rawCandidates
+    .filter(p => p.player && p.prop)
+    .map(p => {
+      const jerScore = scoreJermiaFit(p);
+      const mode = getJermiaMode({...p, jerScore});
+      const status = mode === 'Hard Avoid' ? 'Rejected' :
+                     jerScore >= 75 ? 'Approved' : 'Candidate';
+      return {
+        ...p,
+        jerScore,
+        jerMode: mode,
+        jerStatus: status,
+        jerWhy: getJermiaWhyReasons(p),
+        jerFailure: getJermiaFailure(p),
+        jerGrade: jerScore >= 92 ? 'A+' : jerScore >= 87 ? 'A' : jerScore >= 82 ? 'A-' :
+                  jerScore >= 77 ? 'B+' : jerScore >= 70 ? 'B' : jerScore >= 60 ? 'C' : 'D',
+      };
+    })
+    .sort((a,b) => b.jerScore - a.jerScore);
+
+  // Update stat cards
+  const approved = _jeremiaCandidates.filter(c=>c.jerStatus==='Approved');
+  const rejected = _jeremiaCandidates.filter(c=>c.jerStatus==='Rejected');
+  const best = approved[0];
+  const el = id => document.getElementById(id);
+  if(el('jerStatBest')) el('jerStatBest').textContent = best ? best.player : '—';
+  if(el('jerStatBestSub')) el('jerStatBestSub').textContent = best ? `${best.jerScore} fit score` : 'No candidates';
+  if(el('jerStatApproved')) el('jerStatApproved').textContent = approved.length;
+  if(el('jerStatRejected')) el('jerStatRejected').textContent = rejected.length;
+  if(el('jerLastUpdated')) el('jerLastUpdated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+
+  btn.textContent = 'Refresh Candidates';
+  sp.classList.add('hidden');
+  renderJeremiaCandidateList();
+  updateJermiaSlipPreview();
+}
+
+// ── Render candidate cards ──
+function renderJeremiaCandidateList(){
+  const el = document.getElementById('jeremiaCandidates');
+  if(!el) return;
+  if(!_jeremiaCandidates.length){
+    el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2);font-size:13px;">Click <strong>Refresh Candidates</strong> to load today's Jermia-style props.</div>';
+    return;
+  }
+  const modeF = document.getElementById('jer_modeFilter')?.value || 'all';
+  const sportF = document.getElementById('jer_sportFilter')?.value || 'all';
+  const viewF = document.getElementById('jer_viewFilter')?.value || 'approved';
+  let list = _jeremiaCandidates.filter(c =>
+    (modeF==='all' || c.jerMode===modeF) &&
+    (sportF==='all' || c.sport===sportF)
+  );
+  if(viewF==='approved') list.sort((a,b)=>(a.jerStatus==='Approved'?-1:1)-(b.jerStatus==='Approved'?-1:1)||b.jerScore-a.jerScore);
+  else if(viewF==='score') list.sort((a,b)=>b.jerScore-a.jerScore);
+  else if(viewF==='risk') list.sort((a,b)=>a.jerScore-b.jerScore); // lower score = higher risk
+  el.innerHTML = list.map((c,i) => {
+    const isSelected = _jermiaSlip.some(l=>l.player===c.player&&l.prop===c.prop);
+    const scoreColor = c.jerScore>=88?'var(--green)':c.jerScore>=75?'var(--accent)':c.jerScore>=60?'var(--yellow)':'var(--red)';
+    const statusBg = c.jerStatus==='Approved'?'rgba(16,185,129,0.12)':c.jerStatus==='Candidate'?'rgba(59,130,246,0.12)':'rgba(239,68,68,0.12)';
+    const statusColor = c.jerStatus==='Approved'?'var(--green)':c.jerStatus==='Candidate'?'var(--accent)':'var(--red)';
+    const modeBg = c.jerMode==='Jermia LESS'?'rgba(59,130,246,0.12)':c.jerMode==='Hard Avoid'?'rgba(239,68,68,0.12)':'rgba(124,58,237,0.12)';
+    const modeColor = c.jerMode==='Jermia LESS'?'var(--accent)':c.jerMode==='Hard Avoid'?'var(--red)':'#a78bfa';
+    const sideColor = c.side==='MORE'?'var(--green)':'var(--orange)';
+    return `
+    <div style="border-radius:12px;border:1px solid var(--border);background:var(--surface);margin-bottom:10px;overflow:hidden;">
+      <!-- Card Header -->
+      <div style="background:var(--surface2);padding:12px 14px;border-bottom:1px solid var(--border);">
+        <div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;">
+          <!-- Score Ring -->
+          <div style="width:56px;height:56px;border-radius:50%;border:1px solid var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center;flex-direction:column;flex-shrink:0;">
+            <div style="font-size:18px;font-weight:900;color:${scoreColor};line-height:1;">${c.jerScore}</div>
+            <div style="font-size:8px;text-transform:uppercase;color:var(--text2);">Fit</div>
+          </div>
+          <!-- Info -->
+          <div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:5px;">
+              <span style="font-size:10px;padding:1px 6px;border-radius:8px;background:var(--surface);border:1px solid var(--border);color:var(--text2);">#${i+1}</span>
+              <span style="font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(59,130,246,0.12);color:var(--accent);">${c.sport}</span>
+              <span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${c.side==='MORE'?'rgba(16,185,129,0.12)':'rgba(245,158,11,0.12)'};color:${sideColor};">${c.side}</span>
+              <span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${statusBg};color:${statusColor};">${c.jerStatus}</span>
+              <span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${modeBg};color:${modeColor};">${c.jerMode}</span>
+              ${c.game ? `<span style="font-size:10px;color:var(--text2);">🕐 ${c.game.split('@')[1]?.trim()||c.game}</span>` : ''}
+            </div>
+            <div style="font-size:15px;font-weight:900;">${c.player} ${c.prop} ${c.side} ${c.line}</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:2px;">${c.sport} · PrizePicks · Grade <strong style="color:var(--text);">${c.jerGrade}</strong></div>
+          </div>
+          <!-- Add Button -->
+          <div style="display:flex;flex-direction:column;gap:5px;">
+            <button onclick="toggleJeremiaLeg(${i})" ${c.jerStatus==='Rejected'?'disabled':''} style="padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;cursor:${c.jerStatus==='Rejected'?'not-allowed':'pointer'};background:${isSelected?'var(--green)':c.jerStatus==='Rejected'?'var(--surface2)':'var(--accent)'};color:${isSelected||c.jerStatus==='Rejected'?'#fff':'#000'};border:none;">
+              ${isSelected?'✓ Added':c.jerStatus==='Rejected'?'Rejected':'+ Add Leg'}
+            </button>
+            <button onclick="toggleJermiaDetails('jd${i}')" style="padding:5px 10px;border-radius:8px;font-size:10px;font-weight:600;background:var(--surface);border:1px solid var(--border);color:var(--text2);cursor:pointer;">Details ▾</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card Body -->
+      <div style="display:grid;grid-template-columns:1.2fr .8fr;gap:10px;padding:12px 14px;">
+        <!-- Why it fits -->
+        <div style="border-radius:10px;border:1px solid var(--border);background:var(--surface2);padding:10px;">
+          <div style="font-size:11px;font-weight:700;margin-bottom:6px;">✨ Why It Fits Jermia</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+            ${c.jerWhy.map(w=>`<div style="display:flex;gap:5px;background:var(--surface);border-radius:6px;padding:5px 6px;font-size:10px;color:var(--text2);">
+              ${c.jerStatus==='Rejected'?'<span style="color:var(--red);flex-shrink:0;">✗</span>':'<span style="color:var(--green);flex-shrink:0;">✓</span>'}
+              <span>${w}</span>
+            </div>`).join('')}
+          </div>
+        </div>
+        <!-- Risk metrics + failure -->
+        <div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px;">
+            <div style="background:var(--surface2);border-radius:6px;padding:6px;text-align:center;">
+              <div style="font-size:9px;color:var(--text2);">Role</div>
+              <div style="font-size:10px;font-weight:700;">${(c.role_score||5)>=8?'High':'Stable'}</div>
+            </div>
+            <div style="background:var(--surface2);border-radius:6px;padding:6px;text-align:center;">
+              <div style="font-size:9px;color:var(--text2);">Line</div>
+              <div style="font-size:10px;font-weight:700;">${c.line<=5?'Low':c.line<=15?'Fair':'High'}</div>
+            </div>
+            <div style="background:var(--surface2);border-radius:6px;padding:6px;text-align:center;">
+              <div style="font-size:9px;color:var(--text2);">Grade</div>
+              <div style="font-size:10px;font-weight:700;color:${scoreColor};">${c.jerGrade}</div>
+            </div>
+          </div>
+          <div style="border-radius:8px;border:1px solid rgba(245,158,11,0.2);background:rgba(245,158,11,0.08);padding:8px;">
+            <div style="font-size:10px;font-weight:700;color:var(--yellow);margin-bottom:3px;">⚠ Failure Path</div>
+            <div style="font-size:10px;color:var(--text2);line-height:1.5;">${c.jerFailure}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Expandable details -->
+      <div id="jd${i}" style="display:none;border-top:1px solid var(--border);padding:10px 14px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div style="background:var(--surface2);border-radius:8px;padding:10px;">
+            <div style="font-size:11px;font-weight:700;margin-bottom:4px;">Slip Correlation</div>
+            <div style="font-size:11px;color:var(--text2);line-height:1.5;">
+              ${c.note||'No correlation data — engine note not available.'}
+            </div>
+          </div>
+          <div style="background:var(--surface2);border-radius:8px;padding:10px;">
+            <div style="font-size:11px;font-weight:700;margin-bottom:4px;">Jermia Check</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px;">
+              <div style="background:var(--surface);border-radius:5px;padding:5px;">Multi-path: <strong>${(c.prop||'').includes('assists')||(c.prop||'').includes('rebounds')?'Yes':'Partial'}</strong></div>
+              <div style="background:var(--surface);border-radius:5px;padding:5px;">Platform: <strong>PrizePicks</strong></div>
+              <div style="background:var(--surface);border-radius:5px;padding:5px;">Grade: <strong style="color:${scoreColor};">${c.jerGrade}</strong></div>
+              <div style="background:var(--surface);border-radius:5px;padding:5px;">Status: <strong style="color:${statusColor};">${c.jerStatus}</strong></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleJermiaDetails(id){
+  const el = document.getElementById(id);
+  if(!el) return;
+  const open = el.style.display === 'block';
+  el.style.display = open ? 'none' : 'block';
+}
+
+// ── Slip leg management ──
+function toggleJeremiaLeg(candidateIdx){
+  const c = _jeremiaCandidates[candidateIdx];
+  if(!c || c.jerStatus === 'Rejected') return;
+  const slipTypeFull = document.getElementById('jer_sliptype').value;
+  const legCount = parseInt(slipTypeFull.replace('power','').replace('flex','')) || 3;
+  const idx = _jermiaSlip.findIndex(l=>l.player===c.player&&l.prop===c.prop);
+  if(idx >= 0){
+    _jermiaSlip.splice(idx, 1);
+  } else {
+    if(_jermiaSlip.length >= legCount) return; // at cap
+    _jermiaSlip.push(c);
+  }
+  renderJeremiaCandidateList();
+  updateJermiaSlipPreview();
+}
+
+// ── Update slip preview sidebar ──
+function updateJermiaSlipPreview(){
+  const slipTypeFull = document.getElementById('jer_sliptype')?.value || 'power3';
+  const legCount = parseInt(slipTypeFull.replace('power','').replace('flex','')) || 3;
+  const payouts = {power2:'3x',power3:'5x',power4:'10x',flex5:'10x',flex6:'25x'};
+
+  const avgScore = _jermiaSlip.length
+    ? Math.round(_jermiaSlip.reduce((s,l)=>s+(l.jerScore||70),0)/_jermiaSlip.length) : 0;
+  const grade = avgScore>=90?'A':avgScore>=84?'B+':avgScore>=75?'B':_jermiaSlip.length?'C':'—';
+
+  const el = id => document.getElementById(id);
+  if(el('jerLegBadge')) el('jerLegBadge').textContent = `${_jermiaSlip.length}/${legCount} Legs`;
+  if(el('jerLegBadge')) el('jerLegBadge').style.background = _jermiaSlip.length>=legCount?'var(--green-light)':'var(--surface2)';
+  if(el('jerSlipGradeDisplay')) el('jerSlipGradeDisplay').textContent = grade;
+  if(el('jerSlipAvgScore')) el('jerSlipAvgScore').textContent = avgScore || '—';
+  if(el('jerSlipType')) el('jerSlipType').textContent = slipTypeFull.replace('power','Power ').replace('flex','Flex ');
+  if(el('jerSlipPayout')) el('jerSlipPayout').textContent = payouts[slipTypeFull] || '5x';
+
+  // Legs list
+  const legsEl = el('jerSlipLegs');
+  if(legsEl){
+    if(!_jermiaSlip.length){
+      legsEl.innerHTML = '<div style="border-radius:10px;border:1px dashed var(--border2);padding:16px;text-align:center;font-size:12px;color:var(--text2);">Add approved Jermia legs to build the slip.</div>';
+    } else {
+      legsEl.innerHTML = _jermiaSlip.map((l,i)=>`
+        <div style="background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:5px;display:flex;align-items:flex-start;justify-content:space-between;gap:6px;">
+          <div>
+            <div style="font-size:10px;color:var(--text2);">Leg ${i+1}</div>
+            <div style="font-size:12px;font-weight:700;">${l.player}</div>
+            <div style="font-size:10px;color:var(--text2);">${l.prop} ${l.side} ${l.line}</div>
+          </div>
+          <button onclick="_jermiaSlip.splice(${i},1);renderJeremiaCandidateList();updateJermiaSlipPreview();"
+            style="background:none;border:none;color:var(--text2);cursor:pointer;padding:2px;border-radius:4px;" title="Remove">✕</button>
+        </div>`).join('');
+    }
+  }
+
+  // EV estimate
+  if(_jermiaSlip.length >= 2 && el('jerSlipEV')){
+    const slipType = slipTypeFull.startsWith('power') ? 'power' : 'flex';
+    const ev = calcPPSlipEV(_jermiaSlip.map(l=>l.rawProb||0.60), slipType, _jermiaSlip.length);
+    if(ev) el('jerSlipEV').textContent = `${ev.isPositiveEV?'+EV':'-EV'} ROI: ${ev.expectedROI>=0?'+':''}${(ev.expectedROI*100).toFixed(1)}%`;
+  }
+
+  // Correlation check
+  if(el('jerSlipCorr')){
+    const teams = _jermiaSlip.map(l=>l.team||l.sport||'');
+    const sameTeam = teams.some((t,i)=>t&&teams.indexOf(t)!==i);
+    el('jerSlipCorr').textContent = sameTeam ? '⚠ Same Team' : 'Low';
+    el('jerSlipCorr').style.color = sameTeam ? 'var(--orange)' : 'var(--green)';
+  }
+
+  // Build button
+  const buildBtn = el('jerBuildBtn');
+  if(buildBtn){
+    const ready = _jermiaSlip.length >= legCount;
+    buildBtn.disabled = !ready;
+    buildBtn.style.background = ready ? 'linear-gradient(135deg,#7c3aed,#4f46e5)' : 'var(--surface2)';
+    buildBtn.style.color = ready ? '#fff' : 'var(--text2)';
+    buildBtn.style.cursor = ready ? 'pointer' : 'not-allowed';
+  }
+
+  // Stat card
+  if(el('jerStatSlip')) el('jerStatSlip').textContent = `${_jermiaSlip.length}/${legCount} legs`;
+  if(el('jerStatSlipGrade')) el('jerStatSlipGrade').textContent = _jermiaSlip.length ? `Grade ${grade}` : 'No legs selected';
+}
+
+// ── Build Jermia slip from manual selection ──
+function buildJeremiaFromSelection(){
+  if(!_jermiaSlip.length) return;
+  const slipTypeFull = document.getElementById('jer_sliptype').value;
+  const slipType = slipTypeFull.startsWith('power') ? 'power' : 'flex';
+  const s = gradeSlipStrength(_jermiaSlip.map(l=>l.rawProb||0.60), slipType);
+  const ev = calcPPSlipEV(_jermiaSlip.map(l=>l.rawProb||0.60), slipType, _jermiaSlip.length);
+  const output = document.getElementById('jeremiaOutput');
+  if(!output) return;
+
+  const hdr = document.createElement('div');
+  hdr.style.cssText = 'border:2px solid #7c3aed;border-radius:10px;padding:16px;margin-bottom:12px;background:linear-gradient(135deg,#7c3aed0a,#4f46e50a);margin-top:10px;';
+  hdr.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+      <div>
+        <div style="font-size:16px;font-weight:800;">🧬 ${slipTypeFull.toUpperCase()} Jermia Slip</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px;">${_jermiaSlip.length} legs · Floor-first, volume-driven</div>
+      </div>
+      ${s?`<div style="text-align:center;padding:8px 16px;border-radius:8px;background:${s.color}18;border:1px solid ${s.color}40;">
+        <div style="font-size:28px;font-weight:900;color:${s.color};line-height:1;">${s.score}</div>
+        <div style="font-size:11px;font-weight:700;color:${s.color};">${s.label}</div>
+      </div>`:''}
+    </div>
+    ${ev?`<div style="padding:8px 12px;border-radius:6px;background:${ev.isPositiveEV?'var(--green-light)':'var(--red-light)'};border:1px solid ${ev.isPositiveEV?'#a7f3d0':'#fca5a5'};font-size:12px;font-family:var(--mono);color:${ev.isPositiveEV?'var(--green)':'var(--red)'};">
+      ${ev.isPositiveEV?'✓ +EV':'✗ -EV'} · ROI: ${ev.expectedROI>=0?'+':''}${(ev.expectedROI*100).toFixed(1)}% · Break-even: ${(ev.breakEven*100).toFixed(1)}% · Kelly: ${ev.recommendedBankrollPct}% bankroll
+    </div>`:''}
+    <div style="margin-top:10px;display:flex;gap:8px;">
+      <button class="btn btn-p btn-sm" onclick="loadSuggestedSlip(JSON.parse(this.dataset.slip))"
+        data-slip="${JSON.stringify(_jermiaSlip.map(l=>({player:l.player,sport:l.sport,prop:l.prop,side:l.side,line:l.line,tier:l.tier,rawProb:l.rawProb,wowScore:l.wowScore}))).replace(/"/g,'&quot;')}"
+        style="background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;">Use This Slip</button>
+      <button class="btn btn-s btn-sm" onclick="loadJeremiaCandidates()">Rebuild</button>
+    </div>`;
+  output.innerHTML = '';
+  output.appendChild(hdr);
+  output.scrollIntoView({behavior:'smooth'});
 }
 
 async function buildJeremiaSlip(){
