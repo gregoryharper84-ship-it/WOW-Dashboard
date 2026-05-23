@@ -2255,6 +2255,72 @@ async function runAutoEngine(){
 }
 
 // ── MLB Engine ──
+// ── NHL Player Stats via ESPN search (maps player name → ESPN ID) ──
+// Used when getNHLPlayerLog fails because NHLe.com is CORS-blocked
+const _nhlEspnIdCache = {}; // playerName → ESPN athlete ID
+async function getNHLEspnId(playerName){
+  if(_nhlEspnIdCache[playerName] !== undefined) return _nhlEspnIdCache[playerName];
+  try{
+    const encoded = encodeURIComponent(playerName);
+    const r = await fx(
+      `https://site.api.espn.com/apis/common/v3/search?query=${encoded}&type=athlete&sport=hockey&limit=3`,
+      {}, 5000
+    );
+    if(!r.ok){ _nhlEspnIdCache[playerName] = null; return null; }
+    const d = await r.json();
+    const athletes = d.items || d.results || d.athletes || [];
+    const match = athletes.find(a => {
+      const n = (a.displayName || a.name || '').toLowerCase();
+      const search = playerName.toLowerCase();
+      return n === search || n.includes(search.split(' ').pop()); // last name match
+    });
+    const espnId = match?.id || match?.uid?.split(':').pop() || null;
+    _nhlEspnIdCache[playerName] = espnId;
+    return espnId;
+  }catch(e){ _nhlEspnIdCache[playerName] = null; return null; }
+}
+
+async function getNHLPlayerLogViaESPN(playerName){
+  // Get ESPN ID for this player, then fetch their NHL stats log
+  const espnId = await getNHLEspnId(playerName);
+  if(!espnId) return null;
+  try{
+    for(const season of ['2025','2024']){
+      const r = await fx(
+        `https://sports.core.api.espn.com/v2/sports/hockey/leagues/nhl/seasons/${season}/athletes/${espnId}/statisticslog`,
+        {}, 6000
+      );
+      if(!r.ok) continue;
+      const d = await r.json();
+      const rows = d.entries || d.items || [];
+      if(rows.length >= 1){
+        // Convert to NHL game log format
+        return rows.slice(0,15).map(e => {
+          const stats = (e.statistics?.splits||[]).flatMap(sp=>sp.stats||[]);
+          const getStat = (...abbrs) => {
+            for(const ab of abbrs){
+              const f = stats.find(s=>(s.abbreviation||s.name||'').toUpperCase()===ab.toUpperCase());
+              if(f) return parseFloat(f.value||0);
+            }
+            return 0;
+          };
+          return {
+            shots: getStat('SOG','SHOTS','SH'),
+            saves: getStat('SV','SAVES'),
+            goals: getStat('G','GOALS'),
+            assists: getStat('A','ASSISTS'),
+            points: getStat('PTS','POINTS','P'),
+            savePct: getStat('SV%','SVPCT'),
+            shotsAgainst: getStat('SA','SHOTSAGAINST'),
+            toi: getStat('TOI','MIN'),
+          };
+        }).filter(g => g.toi > 0 || g.shots > 0 || g.saves > 0);
+      }
+    }
+  }catch(e){}
+  return null;
+}
+
 // ── First Inning Pitcher Stats ──
 // Fetches inning-by-inning pitching splits from MLB Stats API.
 // Cached per pitcher per session. Returns null if no data available.
@@ -2594,27 +2660,52 @@ function recordOpeningLine(player, prop, side, line, source){
   const key = `${(player||'').toLowerCase()}|${(prop||'').toLowerCase()}|${side}`;
   if(!_openingLineCache[key]){
     _openingLineCache[key] = { line, timestamp: Date.now(), source };
+    // Persist to Replit /lines/opening (first-write-wins on server side)
+    const today = new Date().toISOString().split('T')[0];
+    fx(`${EP.replit}/lines/opening`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},
+      body: JSON.stringify({ player, prop, side, line, date: today, source: source||'engine' })
+    }, 4000).catch(()=>{}); // fire-and-forget — local cache is primary
   }
   return _openingLineCache[key];
 }
 
-function detectLineMovement(player, prop, side, currentLine){
+async function detectLineMovement(player, prop, side, currentLine){
   const key = `${(player||'').toLowerCase()}|${(prop||'').toLowerCase()}|${side}`;
-  const opening = _openingLineCache[key];
+  let opening = _openingLineCache[key];
+  // If not in session cache, check Replit for persisted opening line
+  if(!opening){
+    try{
+      const today = new Date().toISOString().split('T')[0];
+      const r = await fx(
+        `${EP.replit}/lines/opening?player=${encodeURIComponent(player)}&prop=${encodeURIComponent(prop)}&side=${side}&date=${today}`,
+        {headers:{'X-API-Key':KEYS.replit}}, 4000
+      );
+      if(r?.ok){
+        const d = await r.json();
+        if(d.line != null){
+          opening = { line: d.line, timestamp: d.captured_at || Date.now(), source: 'replit' };
+          _openingLineCache[key] = opening; // hydrate session cache
+        }
+      }
+    }catch(e){}
+  }
   if(!opening || opening.line == null || currentLine == null) return null;
-  const move = currentLine - opening.line; // positive = line moved up (harder to hit MORE)
-  if(Math.abs(move) < 0.25) return null; // ignore sub-0.25 movement (noise)
+  const move = currentLine - opening.line;
+  if(Math.abs(move) < 0.25) return null;
   const direction = move > 0 ? 'up' : 'down';
-  const isFavorableMore = side === 'MORE' && move < 0; // line dropped = easier to hit MORE
-  const isFavorableLess = side === 'LESS' && move > 0; // line rose = easier to hit LESS
+  const isFavorableMore = side === 'MORE' && move < 0;
+  const isFavorableLess = side === 'LESS' && move > 0;
   const isFavorable = isFavorableMore || isFavorableLess;
   return {
     openingLine: opening.line,
     currentLine,
     move: parseFloat(move.toFixed(2)),
     direction,
-    isFavorable, // did the line move in your favor?
-    isSharpSignal: Math.abs(move) >= 0.5, // 0.5+ unit move = meaningful sharp action
+    isFavorable,
+    isSharpSignal: Math.abs(move) >= 0.5,
+    persistedFromReplit: opening.source === 'replit',
     note: `Line ${move > 0 ? '↑' : '↓'}${Math.abs(move)} (open: ${opening.line} → now: ${currentLine})${isFavorable ? ' ✓ favorable' : ''}${Math.abs(move) >= 0.5 ? ' ⚡ sharp' : ''}`,
   };
 }
@@ -2972,8 +3063,12 @@ async function runNHLEngine(log){
 
         for(const player of [...forwards,...goalies]){
           const isGoalie=player.positionCode==='G';
-          const logs=await getNHLPlayerLog(player.id);
           const playerName=`${player.firstName?.default||''} ${player.lastName?.default||''}`.trim();
+          let logs=await getNHLPlayerLog(player.id);
+          // If NHLe.com is CORS-blocked (logs=null/empty), try ESPN via name lookup
+          if(!logs||!logs.length){
+            logs = await getNHLPlayerLogViaESPN(playerName);
+          }
           log(`  NHL ${abbr} ${playerName}: logs=${logs?.length||0}`,'i');
           if(!logs||!logs.length)continue;
 
@@ -3209,25 +3304,32 @@ async function runESPNNBAEngine(log){
 
           // NBA: try playoff stats (types/3) first — most current for May playoffs
           // Then regular season (types/2), then prior year as last resort
+          // ESPN statisticslog returns 'items' OR 'entries' depending on version
           let logD = null;
           const nbaStatPaths = [
             'seasons/2026/types/3',  // 2025-26 playoffs (current)
             'seasons/2026/types/2',  // 2025-26 regular season
             'seasons/2025/types/3',  // 2024-25 playoffs
             'seasons/2025/types/2',  // 2024-25 regular season
+            'seasons/2026',          // without type filter
+            'seasons/2025',          // prior year without type filter
           ];
           for(const path of nbaStatPaths){
-            const logR = await fx(
-              `https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/${path}/athletes/${aid}/statisticslog`,
-              {}, 8000
-            );
-            if(logR?.ok){
-              const d = await logR.json();
-              if((d.entries||[]).length >= 1){ logD = d; break; }
-            }
+            try{
+              const logR = await fx(
+                `https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/${path}/athletes/${aid}/statisticslog`,
+                {}, 8000
+              );
+              if(logR?.ok){
+                const d = await logR.json();
+                // ESPN uses 'items' OR 'entries' — check both
+                const rows = d.entries || d.items || [];
+                if(rows.length >= 1){ logD = d; logD._rows = rows; break; }
+              }
+            }catch(e){}
           }
-          if(!logD){ log(`  NBA ESPN ${name}: no log data (tried playoffs+regular 2026+2025)`,'i'); continue; }
-          const entries = logD.entries||[];
+          if(!logD){ log(`  NBA ESPN ${name}: no log data (tried 6 paths)`,'i'); continue; }
+          const entries = logD._rows || logD.entries || logD.items || [];
           log(`  NBA ESPN ${name}: ${entries.length} entries`,'i');
           if(entries.length < 1) continue;
 
@@ -3405,18 +3507,22 @@ async function runESPNWNBAEngine(log){
             'seasons/2025',
           ];
           for(const path of wnbaStatPaths){
-            const logR = await fx(
-              `https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba/${path}/athletes/${aid}/statisticslog`,
-              {}, 8000
-            );
-            if(logR?.ok){
-              const d = await logR.json();
-              if((d.entries||[]).length >= 1){ logD = d; wnbaPathUsed = path; break; }
-            }
+            try{
+              const logR = await fx(
+                `https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba/${path}/athletes/${aid}/statisticslog`,
+                {}, 8000
+              );
+              if(logR?.ok){
+                const d = await logR.json();
+                // ESPN uses 'items' OR 'entries' — check both
+                const rows = d.entries || d.items || [];
+                if(rows.length >= 1){ logD = d; logD._rows = rows; wnbaPathUsed = path; break; }
+              }
+            }catch(e){}
           }
           if(!logD){ log(`  WNBA ${name}: no log data`,'i'); continue; }
 
-          const entries = logD.entries||[];
+          const entries = logD._rows || logD.entries || logD.items || [];
           log(`  WNBA ${name}: path=${wnbaPathUsed}, ${entries.length} entries`,'i');
           if(entries.length < 1) continue;
 
@@ -4055,9 +4161,29 @@ async function runSoccerEngine(log){
     // Explicit 401 detection — KEYS.replit expired/rotated = key rejected
     if(fixturesR && !fixturesR.ok){
       if(fixturesR.status===401 || fixturesR.status===403)
-        log(`⛔ Soccer: Replit API key rejected (${fixturesR.status}) — update KEYS.replit in source. Soccer/Tennis/Scoring all use same key.`,'e');
-      else
-        log(`⚠ Soccer: Replit returned HTTP ${fixturesR.status} — 0 fixtures`,'w');
+        log(`⛔ Soccer: Replit API key rejected (${fixturesR.status}) — update KEYS.replit in source.`,'e');
+      else {
+        log(`⟳ Soccer: cache miss (HTTP ${fixturesR.status}) — triggering /fbref-stats/refresh...`,'i');
+        try{
+          await fx(`${EP.replit}/fbref-stats/refresh`,{method:'POST',headers:{'X-API-Key':KEYS.replit}},10000);
+          const retryR = await fx(
+            `${EP.replit}/fbref-stats/fixtures?date=${new Date().toISOString().split('T')[0]}`,
+            {headers:{'X-API-Key':KEYS.replit}}, 8000
+          );
+          if(retryR?.ok){
+            const rt = await retryR.text();
+            if(!rt.trim().startsWith('<')){
+              const rd = JSON.parse(rt);
+              const rf = rd.fixtures||rd.data||rd||[];
+              if(Array.isArray(rf)&&rf.length){
+                log(`✓ Soccer: ${rf.length} fixtures after refresh`,'ok');
+                // splice into the fixtures variable below by re-assigning
+                Object.assign(fixturesR, {_refreshed: rf});
+              }
+            }
+          }
+        }catch(e2){}
+      }
     }
     let fixtures = [];
     if(fixturesR && fixturesR.ok){
@@ -4228,53 +4354,59 @@ async function runTennisEngine(log){
         let aces=[], totals=[], dfs=[], rankNote='', surfNote='';
         let surfWinRate=null, h2hWinRate=null; // surface/H2H win rates for confidence adjustment
 
-        if(playerId){
-          const stR = await fx(
-            `${EP.replit}/api-sports/tennis/stats?player_id=${playerId}`,
-            {headers:{'X-API-Key':KEYS.replit}}, 8000
-          );
-          if(stR.ok){
-            const stD = await stR.json();
-            const profile = stD.response?.[0] || stD.player || stD;
-            const ranking = profile.ranking || profile.rank || null;
-            if(ranking) rankNote = ` | Rank #${ranking}`;
-
-            // ── Surface-specific win rate ──
-            const surfLowerT = (surface||'').toLowerCase();
-            const surfKey = surfLowerT.includes('clay')?'clay':surfLowerT.includes('grass')?'grass':'hard';
-            const surfStats = profile.statistics?.surfaces?.[surfKey]
-              || profile.statistics?.[surfKey]
-              || profile.surfaces?.[surfKey] || null;
-            if(surfStats){
-              const sw = parseInt(surfStats.wins||surfStats.win||0);
-              const sl = parseInt(surfStats.losses||surfStats.loss||0);
-              if(sw+sl >= 5){
-                surfWinRate = sw / (sw+sl);
-                surfNote = ` | ${surfKey} ${sw}-${sl} (${(surfWinRate*100).toFixed(0)}%)`;
+        if(playerName){
+          // ── /tennis-stats/player (Sackmann data) ──
+          const surfLower = (surface||'').toLowerCase();
+          const surfKey = surfLower.includes('clay')?'clay':surfLower.includes('grass')?'grass':'hard';
+          let sackOk = false;
+          try{
+            const sackR = await fx(
+              `${EP.replit}/tennis-stats/player?name=${encodeURIComponent(playerName)}&surface=${surfKey}`,
+              {headers:{'X-API-Key':KEYS.replit}}, 8000
+            );
+            if(sackR?.ok){
+              const sackD = await sackR.json();
+              const ranking = sackD.ranking || sackD.rank || null;
+              if(ranking) rankNote = ` | Rank #${ranking}`;
+              const surfData = sackD.surfaces?.[surfKey] || sackD.surface || null;
+              if(surfData){
+                const sw=parseInt(surfData.wins||0), sl=parseInt(surfData.losses||0);
+                if(sw+sl>=5){ surfWinRate=sw/(sw+sl); surfNote=` | ${surfKey} ${sw}-${sl} (${(surfWinRate*100).toFixed(0)}%)`; }
               }
+              const avgAces = parseFloat(sackD.avg_aces||sackD.avgAces||0);
+              const avgGames= parseFloat(sackD.avg_games||sackD.avgGames||0);
+              const avgDFs  = parseFloat(sackD.avg_dfs||sackD.avgDoubleFaults||0);
+              const matchCount=parseInt(sackD.matches_played||sackD.matchesPlayed||20);
+              const winRate = parseFloat(sackD.win_rate||sackD.winRate||0.5);
+              const firstSvPct=parseFloat(sackD.first_serve_pct||sackD.firstServePct||0.60);
+              const recentForm=sackD.recent_form||sackD.recentForm||null;
+              if(surfWinRate===null&&winRate>0) surfWinRate=winRate;
+              const defaultAces=surfLower==='grass'?7.5:surfLower==='clay'?4.0:5.5;
+              const defaultGames=surfLower==='clay'?24.0:22.0;
+              const defaultDFs=2.5;
+              let recentFormMult=1.0;
+              if(recentForm&&typeof recentForm==='string'){
+                const last5=recentForm.slice(-5).toUpperCase();
+                const wins5=(last5.match(/W/g)||[]).length;
+                recentFormMult=0.85+(wins5*0.06);
+              }
+              const acesVal=avgAces>0?avgAces:defaultAces;
+              const gamesVal=avgGames>5?avgGames:defaultGames;
+              const dfsVal=avgDFs>0?avgDFs:defaultDFs;
+              if(firstSvPct>0) surfNote+=` | 1stSv ${(firstSvPct*100).toFixed(0)}%`;
+              log(`  Tennis ${playerName}: avgAces=${acesVal.toFixed(1)} firstSv=${(firstSvPct*100).toFixed(0)}% ${surfKey} matches=${matchCount}`,'i');
+              aces  =synthesizeDist(acesVal*recentFormMult,matchCount||20,0.35);
+              totals=synthesizeDist(gamesVal,matchCount||20,0.20);
+              dfs   =synthesizeDist(dfsVal,matchCount||20,0.50);
+              sackOk=true;
             }
-
-            // Season stat averages → synthesize distribution for hit rate calc
-            const avgAces  = parseFloat(profile.statistics?.avgAces  || profile.aces  || 0);
-            const avgGames = parseFloat(profile.statistics?.avgGames  || profile.games || 22);
-            const avgDFs   = parseFloat(profile.statistics?.avgDoubleFaults || profile.double_faults || 2);
-            const matchCount = parseInt(profile.statistics?.matchesPlayed || 20);
-
-            // Use API stats if available, otherwise fall back to surface defaults
-            // Without defaults, players with missing profiles produce 0 distributions → 0 candidates
-            const surfLower = (surface||'').toLowerCase();
-            const defaultAces  = surfLower==='grass' ? 7.5 : surfLower==='clay' ? 4.0 : 5.5;
-            const defaultGames = surfLower==='clay' ? 24.0 : 22.0;
-            const defaultDFs   = 2.5;
-            log(`  Tennis ${playerName}: avgAces=${avgAces} avgGames=${avgGames} matches=${matchCount} → using acesVal=${avgAces>0?avgAces:defaultAces}`,'i');
-            const acesVal  = avgAces  > 0 ? avgAces  : defaultAces;
-            const gamesVal = avgGames > 5 ? avgGames : defaultGames;
-            const dfsVal   = avgDFs   > 0 ? avgDFs   : defaultDFs;
-            aces   = synthesizeDist(acesVal,  matchCount||20, 0.35);
-            totals = synthesizeDist(gamesVal, matchCount||20, 0.20);
-            dfs    = synthesizeDist(dfsVal,   matchCount||20, 0.50);
+          }catch(e){}
+          if(!sackOk){
+            const defaultAces=surfLower==='grass'?7.5:surfLower==='clay'?4.0:5.5;
+            const defaultGames=surfLower==='clay'?24.0:22.0;
+            log(`  Tennis ${playerName}: Sackmann unavailable — surface defaults`,'i');
+            aces=synthesizeDist(defaultAces,20,0.35); totals=synthesizeDist(defaultGames,20,0.20); dfs=synthesizeDist(2.5,20,0.50);
           }
-
           // ── H2H context — adds note to any generated candidate ──
           let h2hNote = '';
           if(oppId){
@@ -4453,7 +4585,22 @@ async function scoreOne(c){
       if(r.status===401) console.warn('WOW scoreOne: Replit key rejected (401) — props will use local scoring only');
       return null;
     }
-    const d=await r.json();chip('replit','ok');return d.wow_score??d.score??null;
+    const d=await r.json();chip('replit','ok');
+    const score = d.wow_score??d.score??null;
+    // Fire-and-forget enriched narrative (non-blocking, stores to window._wowNarratives)
+    if(score!=null && payload.player){
+      fx(`${EP.replit}/gpt-score/enriched`,{
+        method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},
+        body:JSON.stringify({...payload,skip_claude:false})
+      },7000).then(er=>{
+        if(er?.ok) er.json().then(ed=>{
+          if(!window._wowNarratives) window._wowNarratives={};
+          const nk=`${payload.player||''}|${payload.prop||''}`;
+          window._wowNarratives[nk]=ed.narrative||ed.analysis||null;
+        }).catch(()=>{});
+      }).catch(()=>{});
+    }
+    return score;
   }catch(e){return null;}
 }
 
@@ -8558,13 +8705,42 @@ async function runWinnersUpsets(){
         ctx.favBoosts.push(`${game.away} fresh bullpen vs tired ${game.home} pen`);
       }
 
-      // ── Umpire Strike Zone ──
+      // ── Umpire Strike Zone (live stats from /umpire-stats) ──
       if(matched.gamePk){
         const officials = await mlbUmpires(matched.gamePk);
         const hp = officials.find(o=>o.officialType==='Home Plate');
         if(hp){
-          ctx.favBoosts.push(`HP Umpire: ${hp.official?.fullName||'Unknown'} (zone data active)`);
-          // Future: pull umpire historical K/BB tendencies from umpire scorecards
+          const hpName = hp.official?.fullName || '';
+          ctx.favBoosts.push(`HP Umpire: ${hpName||'Unknown'}`);
+          if(hpName){
+            try{
+              const umpR = await fx(
+                `${EP.replit}/umpire-stats?name=${encodeURIComponent(hpName)}`,
+                {headers:{'X-API-Key':KEYS.replit}}, 5000
+              );
+              if(umpR?.ok){
+                const ump = await umpR.json();
+                const kRate   = parseFloat(ump.k_rate   || ump.kRate   || 0);
+                const bbRate  = parseFloat(ump.bb_rate  || ump.bbRate  || 0);
+                const runsPerGame = parseFloat(ump.runs_per_game || ump.runsPerGame || 0);
+                const zoneNote = [];
+                // Wide zone = more Ks, favors pitcher → suppress run environment
+                if(kRate > 0.235){
+                  ctx.favBoosts.push(`${hpName}: wide zone (K% ${(kRate*100).toFixed(1)}%) — pitcher friendly`);
+                  ctx.upsetEdge -= 5; // tighter game, favor favorite
+                } else if(kRate < 0.195){
+                  ctx.reasons.push(`${hpName}: tight zone (K% ${(kRate*100).toFixed(1)}%) — hitter friendly, more variance`);
+                  ctx.upsetEdge += 8; // more offense = more variance = underdog value
+                }
+                if(runsPerGame > 10.0){
+                  ctx.upsetEdge += 6;
+                  ctx.reasons.push(`${hpName}: high-scoring games historically (${runsPerGame.toFixed(1)} R/G)`);
+                } else if(runsPerGame < 7.5){
+                  ctx.favBoosts.push(`${hpName}: low-scoring games (${runsPerGame.toFixed(1)} R/G) — favor pitcher`);
+                }
+              }
+            }catch(e){}
+          }
         }
       }
 
@@ -11628,7 +11804,7 @@ async function refreshPropPool(manual=false){
       const record={...en,...val,wowScore:ws};
       // Record opening line on first sight; detect movement on subsequent refreshes
       recordOpeningLine(en.player, en.prop, en.side, en.line, en.source);
-      const lineMove = detectLineMovement(en.player, en.prop, en.side, en.line);
+      const lineMove = await detectLineMovement(en.player, en.prop, en.side, en.line);
       if(lineMove){ record.lineMovement = lineMove; }
       _allValidated.push(record);
       if(['tier1','tier2','flex'].includes(val.tier)){
