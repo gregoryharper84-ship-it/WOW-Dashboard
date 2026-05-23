@@ -8517,7 +8517,9 @@ async function runWinnersUpsets(){
   document.getElementById('wuBtn').textContent = 'Scanning...';
   document.getElementById('wuSp').classList.remove('hidden');
   const out = document.getElementById('wuOutput');
+  if(!out){ console.error('WU: wuOutput element missing'); return; }
   out.innerHTML = `<div class="alert ab"><div class="spd"></div> Scanning today's slate...</div>`;
+  try{  // ← top-level catch so errors surface visibly instead of silently skipping panels
 
   const sportFilter = document.getElementById('wu_sport').value;
   const sportConfigs = [
@@ -9079,11 +9081,18 @@ async function runWinnersUpsets(){
   _teamsWUFavorites = favorites;
   _teamsWUUpsets = upsets;
   renderTeamsSummaryPanels();
-  // Also refresh stat cards — Top Winner comes from WU data
   if(_teamsLLPGames.length) renderTeamsStatCards(_teamsLLPGames);
 
   document.getElementById('wuBtn').textContent='Find Winners & Upsets';
   document.getElementById('wuSp').classList.add('hidden');
+  }catch(wuErr){
+    // Surface the actual error visibly instead of silently leaving panels at initial state
+    console.error('runWinnersUpsets error:', wuErr);
+    const wuErrEl = document.getElementById('wuFavPanel');
+    if(wuErrEl) wuErrEl.innerHTML = `<div style="color:var(--red);font-size:11px;padding:8px;">⚠ WU engine error: ${wuErr?.message||wuErr}</div>`;
+    document.getElementById('wuBtn').textContent='Find Winners & Upsets';
+    document.getElementById('wuSp').classList.add('hidden');
+  }
 }
 
 // ── Tennis Leg Checker ──
@@ -9341,17 +9350,15 @@ async function runTeamsBoard(){
 
   // Run both engines in parallel — use allSettled so one failure doesn't kill the other
   const [wuResult, llpResult] = await Promise.allSettled([
-    runWinnersUpsets().catch(e => { console.warn('WU engine error:', e); }),
+    runWinnersUpsets(), // has its own try/catch now — errors visible in wuFavPanel
     runLLPBoard().catch(e => { console.warn('LLP engine error:', e); }),
   ]);
 
-  // Final render pass after BOTH complete — ensures WU data populates stat cards
-  // (LLP calls renderTeamsSummaryPanels mid-run before WU finishes; this fixes the race)
-  if(_teamsWUFavorites.length || _teamsWUUpsets.length){
-    renderTeamsSummaryPanels();
-  }
+  // Final render pass after BOTH complete — unconditional
+  // (even if WU threw and _teamsWUFavorites is empty, panels must update from initial state)
+  renderTeamsSummaryPanels();
   if(_teamsLLPGames.length){
-    renderTeamsStatCards(_teamsLLPGames); // refreshes Top Winner with WU data now available
+    renderTeamsStatCards(_teamsLLPGames);
   }
 
   document.getElementById('teamsLastUpdate').textContent = `Updated ${new Date().toLocaleTimeString()}`;
