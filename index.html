@@ -1619,6 +1619,9 @@ const ODDS_K={MLB:'baseball_mlb',NBA:'basketball_nba',NHL:'icehockey_nhl',WNBA:'
 const SPORT_IDS={MLB:3,NBA:4,NFL:1,NHL:6,WNBA:8,soccer:7};
 
 let approvedProps=[],slipLegs=[];
+let propPool = [];       // declared here (module top) — prevents TDZ in renderSlipBrowser, buildSmartSlip
+let _adaptiveWeights = {}; // declared here — prevents TDZ in getAdaptiveWeights
+try { _adaptiveWeights = JSON.parse(localStorage.getItem('wow_adaptive_weights')||'{}'); } catch(e){}
 
 function toggleAllSports(cb){
   document.querySelectorAll('.eng-sport-cb').forEach(el=>{
@@ -4991,6 +4994,8 @@ function propTierBadge(prop, sport){
 // FIX #5 — FRAGILE PROP DETECTION
 // ══════════════════════════════════
 function detectFragileProp(prop, line, sport, player=''){
+  // Declare _slipType at TOP of function — fixes TDZ (was declared at line ~5110, used at ~5022)
+  const _slipType = document.getElementById('jer_sliptype')?.value || 'power3';
   const p = (prop||'').toLowerCase();
   const propL = p; // alias — legacy references use propL
   const flags = [];
@@ -5106,8 +5111,7 @@ function detectFragileProp(prop, line, sport, player=''){
   }
 
   // ── NBA POWER: thin hooks banned from 2-leg power (learned: Jalen Williams 3.5 ast) ──
-  // Read slip type from DOM — slip_type was incorrectly used as a bare variable (bug fix)
-  const _slipType = document.getElementById('jer_sliptype')?.value || 'power3';
+  // _slipType declared at top of function (TDZ fix)
   if((sport==='NBA'||sport==='WNBA') && line > 0.5 && line <= 4.5 &&
      (p.includes('assist') || p.includes('rebound')) && _slipType.toLowerCase().includes('power')){
     flags.push({tag:'nba-thin-hook-power-ban', severity:'ban_power',
@@ -8232,7 +8236,6 @@ async function buildSmartSlip(){
   console.log(`Smart slip built [${tierInfo}]: ${legs}`);
 }
 
-async 
 // ══════════════════════════════════════════════════
 // SLIP BUILDER — PrizePicks-style UX
 // ══════════════════════════════════════════════════
@@ -10629,11 +10632,8 @@ function analyzeLayerPerformance(){
 // ── Adaptive Scoring Weights ──
 // Adjusts L5/L10 weights based on CLV performance per sport+prop type.
 // Stored in localStorage. Applied in scoreOne().
-// Min 20 samples before any adjustment. Max ±10% shift from baseline.
-let _adaptiveWeights = {};
-try {
-  _adaptiveWeights = JSON.parse(localStorage.getItem('wow_adaptive_weights')||'{}');
-} catch(e) { _adaptiveWeights = {}; }
+// _adaptiveWeights declared at module top — see globals section (TDZ fix)
+// Loaded from localStorage in the globals init block below.
 
 function computeAdaptiveWeights(){
   const perf = analyzeLayerPerformance();
@@ -12076,7 +12076,7 @@ function clearLearning(){
 // ══════════════════════════════════════════════════════
 // PROP POOL ENGINE — Auto-refresh every hour
 // ══════════════════════════════════════════════════════
-let propPool = [];
+// propPool declared at module top (see globals section above) — TDZ fix
 let propPoolTimer = null;
 
 // Slip strength grader 0-100
