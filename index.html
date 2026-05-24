@@ -3410,10 +3410,20 @@ async function runESPNNBAEngine(log){
               );
               if(!glR?.ok) continue;
               const glD = await glR.json();
-              const events = glD.events || {};
-              const rawRows = Object.values(events);
+              // FIX: ESPN v3 gamelog nests events under seasonTypes[].categories[]
+              // Top-level glD.events and glD.names are usually empty/absent
+              let rawRows = Object.values(glD.events || {});
+              let labels = glD.names || glD.columnHeaders || [];
+              if(rawRows.length === 0 || labels.length === 0){
+                for(const st of glD.seasonTypes||[]){
+                  for(const cat of st.categories||[]){
+                    const ce=cat.events||[]; const cn=cat.names||cat.shortNames||cat.abbreviations||[];
+                    if(ce.length>=1 && cn.length>=1){ rawRows=ce; labels=cn; break; }
+                  }
+                  if(rawRows.length>0 && labels.length>0) break;
+                }
+              }
               if(rawRows.length >= 1){
-                const labels = glD.names || glD.columnHeaders || [];
                 const parsed = rawRows.map(ev => {
                   const stats = ev.stats || ev.values || [];
                   const get = (...abbrs) => {
@@ -3457,6 +3467,27 @@ async function runESPNNBAEngine(log){
             }
           }
 
+          // Early-season fallback: ESPN athlete season stats
+          if(!gameLogs||gameLogs.length<1){
+            try{
+              const avgR=await fx(`https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/athletes/${aid}/stats`,{},6000);
+              if(avgR?.ok){
+                const avgD=await avgR.json();
+                const allStats=(avgD.statistics?.splits||avgD.splits||[])
+                  .flatMap(sp=>sp.categories||[])
+                  .flatMap(cat=>cat.stats||[]);
+                const getStat=(...abs)=>{for(const ab of abs){const f=allStats.find(s=>(s.abbreviation||s.name||'').toUpperCase()===ab.toUpperCase());if(f&&f.value!=null){const v=parseFloat(f.value);if(!isNaN(v)&&v>0)return v;}}return 0;};
+                const pts=getStat('PTS');const reb=getStat('REB','TREB');const ast=getStat('AST');
+                const tpm=getStat('3PM','FG3M');const mins=getStat('MIN');
+                const gp=getStat('GP','GS')||1;
+                if(pts>0||reb>0){
+                  const vary=(v,p=0.12)=>Math.max(0,parseFloat((v*(1+(Math.random()*2-1)*p)).toFixed(1)));
+                  gameLogs=Array.from({length:Math.min(5,Math.max(1,Math.round(gp)))},()=>({pts:vary(pts),reb:vary(reb),ast:vary(ast),tpm:vary(tpm),mins:mins||25}));
+                  log(`  NBA ESPN ${name}: season avg proxy (${gp} GP, ${pts.toFixed(1)} ppg)`,'i');
+                }
+              }
+            }catch(e){}
+          }
           if(!gameLogs||gameLogs.length<1){
             window._nbaNoLogCache.add(aid);
             log(`  NBA ESPN ${name}: no log data`,'i');
@@ -3623,20 +3654,23 @@ async function runESPNWNBAEngine(log){
               );
               if(!glR?.ok) continue;
               const glD = await glR.json();
-              // Response: { events: { eventId: {...} }, seasonTypes: [...] }
-              // Extract per-game stats from events object
-              const events = glD.events || {};
-              const statsMap = glD.seasonTypes
-                ? Object.values(glD.seasonTypes)
-                    .flatMap(st => Object.values(st.categories||{}))
-                    .flatMap(cat => cat.events||[])
-                : [];
+              // FIX: ESPN v3 gamelog nests events under seasonTypes[].categories[]
+              // Top-level glD.events / glD.names are empty/absent in the real API response
+              let rawRows = Object.values(glD.events || {});
+              let labels = glD.names || glD.columnHeaders || [];
+              if(rawRows.length === 0 || labels.length === 0){
+                for(const st of glD.seasonTypes||[]){
+                  for(const cat of st.categories||[]){
+                    const ce=cat.events||[]; const cn=cat.names||cat.shortNames||cat.abbreviations||[];
+                    if(ce.length>=1 && cn.length>=1){ rawRows=ce; labels=cn; break; }
+                  }
+                  if(rawRows.length>0 && labels.length>0) break;
+                }
+              }
 
               // Flatten all event entries into game rows
-              const rawRows = Object.values(events);
               if(rawRows.length >= 1){
                 // Parse into our game log format
-                const labels = (glD.names || glD.columnHeaders || []);
                 gameLogs = rawRows.map(ev => {
                   const stats = ev.stats || ev.values || [];
                   const get = (abbrs) => {
@@ -3699,9 +3733,34 @@ async function runESPNWNBAEngine(log){
             }
           }
 
+          // Early-season fallback: ESPN athlete season stats (always populated after 1+ games)
+          // Covers players with 0 per-game log entries but a valid season avg (e.g. first 1-2 games)
+          if(!gameLogs || gameLogs.length < 1){
+            try{
+              const avgR = await fx(`https://site.web.api.espn.com/apis/site/v2/sports/basketball/wnba/athletes/${aid}/stats`,{},6000);
+              if(avgR?.ok){
+                const avgD = await avgR.json();
+                const allStats = (avgD.statistics?.splits||avgD.splits||[])
+                  .flatMap(sp=>sp.categories||[])
+                  .flatMap(cat=>cat.stats||[]);
+                const getStat=(...abs)=>{ for(const ab of abs){ const f=allStats.find(s=>(s.abbreviation||s.name||'').toUpperCase()===ab.toUpperCase()); if(f&&f.value!=null){ const v=parseFloat(f.value); if(!isNaN(v)&&v>0) return v; } } return 0; };
+                const pts=getStat('PTS'); const reb=getStat('REB','TREB'); const ast=getStat('AST');
+                const tpm=getStat('3PM','FG3M'); const mins=getStat('MIN');
+                const gamesPlayed=getStat('GP','GS')||1;
+                if(pts>0||reb>0){
+                  // Build synthetic log: 5 entries with small variance around season avg
+                  const vary=(v,pct=0.12)=>Math.max(0,parseFloat((v*(1+(Math.random()*2-1)*pct)).toFixed(1)));
+                  gameLogs=Array.from({length:Math.min(5,Math.max(1,Math.round(gamesPlayed)))},()=>({
+                    pts:vary(pts),reb:vary(reb),ast:vary(ast),tpm:vary(tpm),mins:mins||20
+                  }));
+                  log(`  WNBA ${name}: season avg proxy (${gamesPlayed} GP, ${pts.toFixed(1)} ppg)`,'i');
+                }
+              }
+            }catch(e){}
+          }
           if(!gameLogs || gameLogs.length < 1){
             window._wnbaNoLogCache.add(aid);
-            log(`  WNBA ${name}: no log data (tried gamelog + statisticslog)`,'i');
+            log(`  WNBA ${name}: no log data (tried gamelog + statisticslog + season avg)`,'i');
             continue;
           }
 
