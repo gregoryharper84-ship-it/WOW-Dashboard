@@ -1619,9 +1619,11 @@ const ODDS_K={MLB:'baseball_mlb',NBA:'basketball_nba',NHL:'icehockey_nhl',WNBA:'
 const SPORT_IDS={MLB:3,NBA:4,NFL:1,NHL:6,WNBA:8,soccer:7};
 
 let approvedProps=[],slipLegs=[];
-let propPool = [];       // declared here (module top) — prevents TDZ in renderSlipBrowser, buildSmartSlip
-let _adaptiveWeights = {}; // declared here — prevents TDZ in getAdaptiveWeights
+let propPool = [];         // module top — prevents TDZ in renderSlipBrowser, buildSmartSlip
+let _adaptiveWeights = {}; // module top — prevents TDZ in getAdaptiveWeights
 try { _adaptiveWeights = JSON.parse(localStorage.getItem('wow_adaptive_weights')||'{}'); } catch(e){}
+let _sbType = 'power';     // module top — prevents TDZ in setSbType when called from switchTab
+let _sbProps = [];         // module top — prevents TDZ in renderSlipBrowser
 
 function toggleAllSports(cb){
   document.querySelectorAll('.eng-sport-cb').forEach(el=>{
@@ -3516,6 +3518,7 @@ async function runESPNNBAEngine(log){
 }
 
 async function runESPNWNBAEngine(log){
+  window._wnbaNoLogCache = new Set(); // reset per-run (new games may have logged)
   const candidates = [];
   try{
        // Step 1: Get WNBA slate — try today + next 4 days (rest days common in playoffs)
@@ -3571,20 +3574,32 @@ async function runESPNWNBAEngine(log){
         );
         if(!rostR.ok) continue;
         const rostD = await rostR.json();
-        const athletes = (rostD.athletes||[]).flatMap(g=>g.items||g.athletes||[g]).filter(a=>a.id);
+        const allAthletes = (rostD.athletes||[]).flatMap(g=>g.items||g.athletes||[g]).filter(a=>a.id);
+        // Fix 1: only query active players — inactive/IR athletes always 404
+        const athletes = allAthletes.filter(a => {
+          if(a.active === false) return false;
+          const statusType = (a.status?.type||a.status?.name||'active').toLowerCase();
+          return !['inactive','injured reserve','ir','suspended','out for season'].includes(statusType);
+        });
         if(!athletes.length) continue;
 
         // Step 3: Get recent game logs for each player
-        for(const athlete of athletes.slice(0,8)){
+        for(const athlete of athletes.slice(0,10)){
           const aid = athlete.id;
           const name = athlete.fullName || `${athlete.firstName||''} ${athlete.lastName||''}`.trim();
 
-          // WNBA: types/2 = regular season (WNBA only has regular season in May)
-          let logD = null; let wnbaPathUsed = null;
+          // WNBA stat log paths — types/1=preseason, types/2=regular season
+          // Session cache: skip athletes we already know have no log (avoids 100+ doomed requests)
+          if(!window._wnbaNoLogCache) window._wnbaNoLogCache = new Set();
+          if(window._wnbaNoLogCache.has(aid)){
+            continue; // cached miss — skip silently
+          }
+          let logD = null; let wnbaPathUsed = null; let lastStatus = 0;
           const wnbaStatPaths = [
-            'seasons/2026/types/2',  // 2026 WNBA regular season (current)
+            'seasons/2026/types/2',  // 2026 regular season (primary)
+            'seasons/2026/types/1',  // 2026 preseason (early-season games sometimes here)
             'seasons/2026',          // without type filter
-            'seasons/2025/types/2',  // 2025 season fallback
+            'seasons/2025/types/2',  // 2025 fallback
             'seasons/2025',
           ];
           for(const path of wnbaStatPaths){
@@ -3593,6 +3608,7 @@ async function runESPNWNBAEngine(log){
                 `https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba/${path}/athletes/${aid}/statisticslog`,
                 {}, 8000
               );
+              lastStatus = logR?.status || 0;
               if(logR?.ok){
                 const d = await logR.json();
                 // ESPN uses 'items' OR 'entries' — check both
@@ -3601,7 +3617,15 @@ async function runESPNWNBAEngine(log){
               }
             }catch(e){}
           }
-          if(!logD){ log(`  WNBA ${name}: no log data`,'i'); continue; }
+          if(!logD){
+            // Cache the miss so next refresh skips this athlete
+            window._wnbaNoLogCache.add(aid);
+            const reason = lastStatus === 404 ? 'ESPN 404 (no 2026/2025 log)' :
+                           lastStatus === 503 ? 'ESPN 503 (throttled)' :
+                           lastStatus === 429 ? 'ESPN 429 (rate limited)' : 'no log data';
+            log(`  WNBA ${name}: ${reason}`,'i');
+            continue;
+          }
 
           const entries = logD._rows || logD.entries || logD.items || [];
           log(`  WNBA ${name}: path=${wnbaPathUsed}, ${entries.length} entries`,'i');
@@ -8240,7 +8264,7 @@ async function buildSmartSlip(){
 // SLIP BUILDER — PrizePicks-style UX
 // ══════════════════════════════════════════════════
 
-let _sbType = 'power'; // 'power' | 'flex'
+// _sbType declared at module top (TDZ prevention)
 
 function setSbType(type){
   _sbType = type;
@@ -8257,7 +8281,7 @@ function setSbType(type){
 
 // ── Slip Builder's own prop list — populated by Best Props engine or explicit import ──
 // Never auto-reads from propPool (Prop Pool tab). User must explicitly feed it.
-let _sbProps = [];
+// _sbProps declared at module top (TDZ prevention)
 
 function loadSbFromBestProps(props){
   // Called by Best Props engine when it finishes — feeds the Slip Builder
