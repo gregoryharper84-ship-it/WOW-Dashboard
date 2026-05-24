@@ -12,3 +12,9 @@ id = "AhZ3axwzsOUpAEfdM0r2N"
 uri = "file://attached_assets/index_patched.zip"
 type = "unspecified"
 title = "index.html (patched) — unzip and drop into your GitHub repo"
+
+[[outputs]]
+id = "U-KI2H5svHgd3n-I-9LZC"
+uri = "file://attached_assets/index_patched_v2.zip"
+type = "unspecified"
+title = "WOW AUTO-PROP ENGINE v2 — patched (NBA + WNBA via Flask)"
