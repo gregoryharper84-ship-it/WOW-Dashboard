@@ -2580,6 +2580,222 @@ def _espn_fetch_fixtures(date_str, league_keys):
                 errors.append({"espn_event": ev.get("id"), "error": str(e)})
     return fixtures, errors
 
+# ── ESPN player-stats fallback (used when api-football is suspended/empty) ──
+#
+# ESPN's public site API is keyless, unmetered, and covers every league we
+# care about. The trade-off vs api-football is that ESPN's overview endpoint
+# only exposes a fixed set of season totals (starts, goals, assists, shots,
+# shots-on-target, fouls, cards, offsides) — no passes/dribbles/tackles/rating
+# breakdowns. That's still enough for the dashboard's prop-scoring needs.
+#
+# Flow:  search by name → pick best match in requested league →
+#        fetch /athletes/{id}/overview → flatten statistics.splits into our
+#        existing stats_list shape with unmapped fields set to None.
+
+_ESPN_PLAYER_SEARCH_CACHE = {}                # (name_lower, league_slug) -> (ts, results)
+_ESPN_PLAYER_SEARCH_TTL_SECONDS = 60 * 60      # 1 hour
+_ESPN_PLAYER_SEARCH_LOCK = threading.Lock()
+
+
+def _espn_search_player(name, preferred_league_slug=None):
+    """Search ESPN for soccer players matching `name`. Returns
+    (results_list, error_reason_or_None). Distinguishes between
+    'no_candidate' (search worked, nothing matched) and HTTP/timeout/parse
+    failures so callers can diagnose ESPN outages vs. typos."""
+    import requests as _req, time as _time
+
+    name_lower = (name or "").strip().lower()
+    if not name_lower:
+        return [], "empty_query"
+
+    cache_key = (name_lower, preferred_league_slug or "")
+    now = _time.time()
+    with _ESPN_PLAYER_SEARCH_LOCK:
+        hit = _ESPN_PLAYER_SEARCH_CACHE.get(cache_key)
+        if hit and (now - hit[0]) < _ESPN_PLAYER_SEARCH_TTL_SECONDS:
+            cached = hit[1]
+            return cached, (None if cached else "no_candidate")
+
+    url = "https://site.web.api.espn.com/apis/common/v3/search"
+    try:
+        # NB: `type=player` is silently ignored by ESPN unless `sport=soccer`
+        # is also present; without both, the search returns teams + leagues.
+        r = _req.get(url, params={"limit": 15, "query": name,
+                                  "type": "player", "sport": "soccer"}, timeout=10)
+    except _req.exceptions.Timeout:
+        return [], "search_timeout"
+    except _req.exceptions.RequestException as e:
+        return [], f"search_network_error: {e}"
+    if r.status_code != 200:
+        return [], f"search_http_{r.status_code}"
+    try:
+        data = r.json()
+    except ValueError:
+        return [], "search_parse_error"
+
+    results = []
+    for item in data.get("items", []) or []:
+        if (item.get("sport") or "").lower() != "soccer":
+            continue
+        results.append({
+            "id":          item.get("id"),
+            "name":        item.get("displayName"),
+            "league_slug": item.get("league"),
+            "jersey":      item.get("jersey"),
+        })
+
+    if preferred_league_slug:
+        results.sort(key=lambda r: 0 if r.get("league_slug") == preferred_league_slug else 1)
+
+    with _ESPN_PLAYER_SEARCH_LOCK:
+        _ESPN_PLAYER_SEARCH_CACHE[cache_key] = (now, results)
+    return results, (None if results else "no_candidate")
+
+
+def _espn_player_overview(league_slug, athlete_id):
+    """Fetch ESPN athlete overview. Returns (dict_or_None, error_or_None)."""
+    import requests as _req
+    url = f"https://site.web.api.espn.com/apis/common/v3/sports/soccer/{league_slug}/athletes/{athlete_id}/overview"
+    try:
+        r = _req.get(url, timeout=10)
+    except _req.exceptions.Timeout:
+        return None, "overview_timeout"
+    except _req.exceptions.RequestException as e:
+        return None, f"overview_network_error: {e}"
+    if r.status_code != 200:
+        return None, f"overview_http_{r.status_code}"
+    try:
+        return r.json(), None
+    except ValueError:
+        return None, "overview_parse_error"
+
+
+# Map ESPN canonical stat names → our flatten_soccer_stats keys. ESPN does NOT
+# expose passes/dribbles/tackles/rating/penalty/minutes/position breakdowns in
+# the overview endpoint, so those stay None when ESPN is the source.
+_ESPN_STAT_NAME_MAP = {
+    "totalGoals":      "goals",
+    "goalAssists":     "assists",
+    "totalShots":      "shots_total",
+    "shotsOnTarget":   "shots_on",
+    "yellowCards":     "yellow_cards",
+    "redCards":        "red_cards",
+    "starts":          "appearances",
+    "foulsCommitted":  "fouls_committed",
+    "foulsSuffered":   "fouls_suffered",
+    "offsides":        "offsides",
+}
+
+
+def _normalize_espn_stats(overview, preferred_league_slug=None):
+    """Convert ESPN overview.statistics.splits into a list of stats dicts in the
+    same shape /fbref-stats already returns. Splits matching the preferred
+    league slug come first. Returns (stats_list, player_meta_dict)."""
+    if not overview:
+        return [], {}
+
+    stats_block = overview.get("statistics") or {}
+    names = stats_block.get("names") or []
+    splits = stats_block.get("splits") or []
+
+    # Build per-split dicts keyed by our internal names
+    out = []
+    for sp in splits:
+        if not isinstance(sp, dict):
+            continue
+        raw = sp.get("stats") or []
+        per_stat = {}
+        for n, v in zip(names, raw):
+            mapped = _ESPN_STAT_NAME_MAP.get(n)
+            if not mapped:
+                continue
+            try:
+                per_stat[mapped] = float(v) if v not in (None, "", "-") else None
+            except (ValueError, TypeError):
+                per_stat[mapped] = v
+
+        # Cast counts to ints where safe
+        for ik in ("goals", "assists", "shots_total", "shots_on",
+                   "yellow_cards", "red_cards", "appearances",
+                   "fouls_committed", "fouls_suffered", "offsides"):
+            v = per_stat.get(ik)
+            if isinstance(v, float) and v.is_integer():
+                per_stat[ik] = int(v)
+
+        # Always-null fields (ESPN doesn't provide these)
+        for nk in ("minutes", "position", "rating",
+                   "passes_total", "passes_key",
+                   "dribbles_attempts", "dribbles_success",
+                   "tackles", "penalties_scored", "penalties_missed"):
+            per_stat.setdefault(nk, None)
+
+        per_stat["team"]      = sp.get("teamSlug") or sp.get("displayName")
+        per_stat["team_id"]   = sp.get("teamId")
+        per_stat["league"]    = sp.get("displayName")
+        per_stat["league_id"] = sp.get("leagueId")
+        per_stat["league_slug"] = sp.get("leagueSlug")
+        per_stat["season"]    = sp.get("displayName")  # ESPN bakes season into displayName
+
+        out.append(per_stat)
+
+    if preferred_league_slug:
+        out.sort(key=lambda s: 0 if s.get("league_slug") == preferred_league_slug else 1)
+
+    return out, {}
+
+
+def _try_espn_player_stats(player, league_key):
+    """Search ESPN by name, fetch overview for best match, return
+    (response_dict_or_None, espn_diagnostics_list). The diagnostics list
+    explains why fallback came up empty (search_timeout, no_candidate,
+    overview_http_404, overview_no_stats, etc.) so callers can surface a
+    meaningful error instead of a generic 'not found'."""
+    diagnostics = []
+    preferred_slug = _ESPN_LEAGUE_MAP.get((league_key or "").lower())
+    candidates, search_err = _espn_search_player(player, preferred_league_slug=preferred_slug)
+    if search_err:
+        diagnostics.append({"stage": "search", "reason": search_err})
+    if not candidates:
+        return None, diagnostics
+
+    # Try the top candidate; if its overview has no stats, fall back to next.
+    for cand in candidates[:5]:
+        cand_slug = cand.get("league_slug") or preferred_slug or "eng.1"
+        cand_id   = cand.get("id")
+        if not cand_id:
+            continue
+        overview, ov_err = _espn_player_overview(cand_slug, cand_id)
+        if ov_err:
+            diagnostics.append({"stage": "overview", "id": cand_id, "reason": ov_err})
+            continue
+        stats_list, _ = _normalize_espn_stats(overview, preferred_league_slug=preferred_slug)
+        if not stats_list:
+            diagnostics.append({"stage": "overview", "id": cand_id, "reason": "overview_no_stats"})
+            continue
+
+        return {
+            "ok":          True,
+            "source":      "espn-fallback",
+            "cache_hit":   False,
+            "player": {
+                "id":          cand_id,
+                "name":        cand.get("name"),
+                "age":         None,
+                "nationality": None,
+                "height":      None,
+                "weight":      None,
+                "photo":       f"https://a.espncdn.com/i/headshots/soccer/players/full/{cand_id}.png",
+            },
+            "season":         None,   # ESPN bakes season into per-split displayName
+            "league_filter":  _SOCCER_LEAGUE_MAP.get((league_key or "").lower()),
+            "stats":          stats_list,
+            "count":          len(stats_list),
+            "fallback_note":  "api-football unavailable or empty; data sourced from ESPN public API (subset of fields)",
+        }, diagnostics
+
+    return None, diagnostics
+
+
 def _soccer_api_get(path, params, api_key):
     import requests as _req
     base = "https://v3.football.api-sports.io"
@@ -2701,9 +2917,10 @@ def fbref_stats():
     if not player:
         return jsonify({"ok": False, "error": "Missing required param: player"}), 400
 
+    # api-football key is now soft-optional. When missing, we skip api-football
+    # entirely and go straight to ESPN — keeps the endpoint usable in keyless
+    # / suspended-account scenarios.
     api_key = os.environ.get("API_FOOTBALL_KEY", "")
-    if not api_key:
-        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
 
     league_id     = _SOCCER_LEAGUE_MAP.get(league)
     leagues_to_try = [league_id] if league_id else [39, 140, 78, 135, 61]
@@ -2712,14 +2929,63 @@ def fbref_stats():
     db_url = os.environ.get("DATABASE_URL", "")
     conn   = _pg.connect(db_url) if db_url else None
 
+    def _espn_or_404(reason):
+        """Try ESPN fallback. On hit, return jsonified response. On miss,
+        surface specific ESPN diagnostics so outages can be distinguished from
+        true 'player not found' cases."""
+        espn_response, espn_diag = _try_espn_player_stats(player, league)
+        if espn_response:
+            return jsonify(espn_response)
+        # Classify the ESPN miss for the caller
+        if any(d.get("reason", "").startswith(("search_timeout", "search_network",
+                                               "search_http", "overview_timeout",
+                                               "overview_network", "overview_http",
+                                               "search_parse", "overview_parse"))
+               for d in espn_diag):
+            espn_summary = "ESPN unreachable or returned non-200 — see espn_diagnostics."
+        else:
+            espn_summary = "ESPN returned no matching soccer player — check spelling."
+        return jsonify({
+            "ok":    False,
+            "error": f"Player '{player}' not available from any source.",
+            "tried": ["api-football", "espn-fallback"],
+            "api_football_reason": reason,
+            "espn_summary": espn_summary,
+            "espn_diagnostics": espn_diag,
+            "hint":  (
+                "Verify spelling, try a fuller name (e.g. 'bukayo saka' not 'saka'), "
+                "or call POST /fbref-stats/populate to refresh the api-football "
+                "cache (requires API_FOOTBALL_KEY to be active)."
+            ),
+            "cache_populated": False,
+        }), 404
+
+    # If no api-football key, route directly to ESPN.
+    if not api_key:
+        try:
+            return _espn_or_404("API_FOOTBALL_KEY not configured")
+        finally:
+            if conn:
+                conn.close()
+
+    # Narrow set of errors we treat as "api-football is broken, try ESPN".
+    # Anything outside this set is a real bug and should bubble up as 500.
+    import requests as _req
+    _AF_FALLBACK_ERRORS = (ValueError, _req.exceptions.RequestException)
+
     try:
         # ── 1. Cache hit → 1 API call, instant ───────────────────────────────
         cached_id, cached_name = _get_cached_player_id(conn, player_lower, leagues_to_try, season)
 
         if cached_id:
-            data = _soccer_api_get("players", {"id": cached_id, "season": season}, api_key)
+            try:
+                data = _soccer_api_get("players", {"id": cached_id, "season": season}, api_key)
+            except _AF_FALLBACK_ERRORS as af_err:
+                # api-football errored on a cached id (e.g. suspended account).
+                return _espn_or_404(f"api-football error on cached id: {af_err}")
             if not data.get("response"):
-                return jsonify({"ok": False, "error": "Player in cache but stats unavailable"}), 404
+                # Cache resolved id but api-football has no stats — try ESPN.
+                return _espn_or_404("api-football returned empty response for cached id")
             entry = data["response"][0]
             cache_hit = True
         else:
@@ -2728,29 +2994,17 @@ def fbref_stats():
             found_league_id = None
 
             if player_lower.isdigit():
-                data = _soccer_api_get("players", {"id": int(player_lower), "season": season}, api_key)
-                if data.get("response"):
-                    entry = data["response"][0]
-                    found_league_id = leagues_to_try[0]
+                try:
+                    data = _soccer_api_get("players", {"id": int(player_lower), "season": season}, api_key)
+                    if data.get("response"):
+                        entry = data["response"][0]
+                        found_league_id = leagues_to_try[0]
+                except _AF_FALLBACK_ERRORS as af_err:
+                    return _espn_or_404(f"api-football error on numeric id: {af_err}")
 
             if not entry:
-                # ── 3. Not in cache and no ID: we can't afford a live squad
-                # scan (rate-limited to 10 req/min → up to 2 min for EPL).
-                # Return a clear error with instructions to pre-populate.
-                if conn:
-                    conn.close()
-                return jsonify({
-                    "ok":    False,
-                    "error": f"Player '{player}' not in cache yet.",
-                    "hint":  (
-                        "Call POST /fbref-stats/populate with "
-                        "{\"league\":\"epl\",\"season\":\"2024\"} "
-                        "to index all players for that league. "
-                        "This runs in the background and takes ~3 minutes. "
-                        "Alternatively pass the player's api-football numeric ID as player=<id>."
-                    ),
-                    "cache_populated": False,
-                }), 404
+                # ── 3. Not in cache and no ID → ESPN is our best free option ──
+                return _espn_or_404("player not in api-football cache; no numeric id supplied")
 
             found_league_id = found_league_id or leagues_to_try[0]
             pid       = entry["player"]["id"]
@@ -2780,10 +3034,11 @@ def fbref_stats():
             "count":         len(stats_list),
         })
 
-    except ValueError as e:
-        return jsonify({"ok": False, "error": str(e)}), 502
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+    except _AF_FALLBACK_ERRORS as e:
+        # Known api-football failure mode (suspended/quota'd/network) → ESPN.
+        # Unexpected exceptions (KeyError, TypeError, AttributeError, etc.)
+        # propagate as 500 so genuine regressions stay visible.
+        return _espn_or_404(f"api-football error: {e}")
     finally:
         if conn:
             conn.close()
