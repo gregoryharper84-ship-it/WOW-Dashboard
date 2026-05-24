@@ -4873,17 +4873,30 @@ def rundown_events(sport_id, date_str):
         return jsonify({"ok": False, "step": "fetch", "error": str(e)}), 502
 
     if r.status_code == 401:
-        # Plan limit — client should fall through to Odds API tier.
+        # Plan limit — return HTTP 200 with a clean handshake so the browser
+        # client treats it as a normal "fall through to Odds API" signal
+        # instead of a network error. Matches Claude's v2 client contract.
         return jsonify({
-            "ok": False, "step": "auth", "status": 401,
+            "ok": True,
+            "source": "therundown",
+            "sport_id": sport_id,
+            "date": date_str,
+            "count": 0,
+            "events": [],
+            "fallback_hint": True,
             "reason": "TheRundown key unauthorized for events endpoint (plan limit)",
             "hint":   "Upgrade plan at therundown.io or rely on the Odds API fallback.",
-        }), 401
+        }), 200
     if r.status_code == 404:
+        # No slate for this sport/date — valid empty result, not an error.
         return jsonify({
-            "ok": False, "step": "path", "status": 404,
-            "reason": f"sport_id={sport_id} or date={date_str} not found",
-        }), 404
+            "ok": True,
+            "source": "therundown",
+            "sport_id": sport_id,
+            "date": date_str,
+            "count": 0,
+            "events": [],
+        }), 200
     if not r.ok:
         return jsonify({
             "ok": False, "step": "upstream", "status": r.status_code,

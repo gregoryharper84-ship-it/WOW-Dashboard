@@ -7,7 +7,19 @@ Two new routes that keep `RUNDOWN_API_KEY` server-side:
 | Route | Returns | Notes |
 |---|---|---|
 | `GET /rundown/sports` | Sport directory (`{sport_id, sport_name}` list) | 1hr cache |
-| `GET /rundown/events/<sport_id>/<YYYY-MM-DD>` | Events array (with lines if plan grants access) | **5min cache** (lines move fast); empty responses are not cached; 401 = plan limit, 404 = no events |
+| `GET /rundown/events/<sport_id>/<YYYY-MM-DD>` | Events array (with lines if plan grants access) | **5min cache** (lines move fast); empty responses are not cached |
+
+### Response contract (matches Claude's v2 client)
+
+| Upstream condition | HTTP | Body shape |
+|---|---|---|
+| Lines available | `200` | `{ ok: true, source: "therundown", events: [...], count: N }` |
+| Plan limit (upstream 401) | `200` | `{ ok: true, source: "therundown", events: [], count: 0, fallback_hint: true, reason, hint }` |
+| No slate that day (upstream 404) | `200` | `{ ok: true, source: "therundown", events: [], count: 0 }` |
+| Bad date format | `400` | `{ ok: false, error: "date must be YYYY-MM-DD" }` |
+| Other upstream / network errors | `502` | `{ ok: false, step, status, body }` |
+
+The 200 + `fallback_hint: true` handshake is the key piece: the browser sees a clean response (no network error noise), the v2 client logs one warning line and drops straight to the Odds API tier.
 
 Both require the same `X-API-Key: $SCORING_API_KEY` header all the other Flask routes use.
 
