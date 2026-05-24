@@ -24,3 +24,9 @@ id = "5Yo8iy-bP1M7fzNV-MbY9"
 uri = "file://attached_assets/exports/wow_v14.9_optionA_optionC.zip"
 type = "unspecified"
 title = "WOW v14.9 — Option A + C (architect-reviewed)"
+
+[[outputs]]
+id = "4iC6CpJ_5opLsbeoMgULo"
+uri = "file://attached_assets/exports/wow_v14.9_tier0_nba.zip"
+type = "unspecified"
+title = "WOW v14.9 — Tier 0 NBA (stats.nba.com)"

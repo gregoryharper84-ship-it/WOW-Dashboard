@@ -3360,6 +3360,27 @@ async function fetchFlaskBasketballStats(name, leagueId){
   }catch(e){ _flaskBballFailCounters.timeout++; _flaskBballStatsCache[cacheKey]=null; return null; }
 }
 
+async function fetchNBAStatsGamelog(name){
+  // Tier 0: stats.nba.com via nba_api on the Flask backend.
+  // Independent of API-Sports plan; has current-season per-game data.
+  const cacheKey = `nbas:${name.toLowerCase()}`;
+  if(_flaskBballStatsCache[cacheKey] !== undefined) return _flaskBballStatsCache[cacheKey];
+  try {
+    const url = `${EP.replit}/nba-stats/gamelog?player=${encodeURIComponent(name)}&last=10`;
+    const r = await fx(url, {headers:{'X-API-Key': KEYS.replit}}, 20000);
+    if(!r){ _flaskBballFailCounters.timeout++; _flaskBballStatsCache[cacheKey]=null; return null; }
+    if(r.status===401||r.status===403){ _flaskBballFailCounters.auth++; _flaskBballStatsCache[cacheKey]=null; return null; }
+    if(!r.ok){ _flaskBballFailCounters.http++; _flaskBballStatsCache[cacheKey]=null; return null; }
+    const d = await r.json();
+    if(!d.ok||!Array.isArray(d.games)||!d.games.length){
+      _flaskBballFailCounters.empty++; _flaskBballStatsCache[cacheKey]=null; return null;
+    }
+    _flaskBballFailCounters.ok++;
+    _flaskBballStatsCache[cacheKey]=d.games;
+    return d.games;
+  }catch(e){ _flaskBballFailCounters.timeout++; _flaskBballStatsCache[cacheKey]=null; return null; }
+}
+
 async function fetchFlaskBasketballGamelog(name, leagueId){
   const cacheKey = `gl:${leagueId}:${name.toLowerCase()}`;
   if(_flaskBballStatsCache[cacheKey] !== undefined) return _flaskBballStatsCache[cacheKey];
@@ -3419,8 +3440,18 @@ async function runFlaskBasketballEngine(sport, log){
           if(!name) continue;
           const stats=await fetchFlaskBasketballStats(name,leagueId);
           if(!stats||stats.pts+stats.reb+stats.ast===0) continue;
-          // Try to grab real per-game data once per player (Tier 2-quality if available)
-          const gamelog=await fetchFlaskBasketballGamelog(name,leagueId);
+          // Try to grab real per-game data once per player.
+          // Tier 0: stats.nba.com (NBA only — WNBA is IP-blocked from this server).
+          // Tier 0 fallback: api-sports gamelog (blocked when account suspended).
+          let gamelog = null, gamelogSource = null;
+          if(sport==='NBA'){
+            gamelog = await fetchNBAStatsGamelog(name);
+            if(gamelog) gamelogSource = 'stats.nba.com';
+          }
+          if(!gamelog){
+            gamelog = await fetchFlaskBasketballGamelog(name,leagueId);
+            if(gamelog) gamelogSource = 'api-sports';
+          }
           for(const pd of propDefs){
             const avg=stats[pd.key]; if(!avg||avg<=0) continue;
             let bestLine=null,bestHR=0;
@@ -3446,7 +3477,8 @@ async function runFlaskBasketballEngine(sport, log){
                 recent_avg:parseFloat(avg.toFixed(2)),l5_hit_rate:realL5,l10_hit_rate:realL10,
                 raw_vals:realVals,confidence:(realL5!=null?realL5:bestHR)*0.90,
                 role_score:7,source:'engine',lineupConfirmed:false,
-                note:`Flask+gamelog: ${realVals.length}g real, season avg ${avg.toFixed(1)}`});
+                data_quality:'gamelog-real', data_source:gamelogSource||'gamelog',
+                note:`Flask+gamelog (${gamelogSource||'real'}): ${realVals.length}g real, season avg ${avg.toFixed(1)}`});
             } else {
               const penalizedHR=bestHR*0.80;
               candidates.push({player:name,sport,prop:pd.prop,side:'MORE',line:bestLine,game:gameStr,

@@ -4808,6 +4808,127 @@ def api_sports_basketball_gamelog():
     })
 
 
+# ─── Tier 0 NBA: stats.nba.com via nba_api ──────────────────────────────────
+# Free, current-season per-game data. Independent of API-Sports plan status.
+_nba_player_id_cache = {}  # name_lower -> player_id
+
+@app.route("/nba-stats/gamelog", methods=["GET"])
+@require_api_key
+def nba_stats_gamelog():
+    """
+    Fetch real per-game stats for an NBA player via stats.nba.com (nba_api).
+
+    Returns the player's last N games of the current season with
+    pts/reb/ast/stl/blk/min/opp/date. Response shape matches
+    /api-sports/basketball/gamelog so client code can swap sources transparently.
+
+    Query params:
+      player — player full name (required)
+      season — season string like "2025-26" (defaults to current NBA season)
+      last   — number of recent games (default 10, max 30)
+    """
+    from datetime import datetime as _dt
+    try:
+        from nba_api.stats.endpoints import playergamelog as _pgl
+        from nba_api.stats.static import players as _nba_players
+    except ImportError:
+        return jsonify({"ok": False, "error": "nba_api package not installed on server"}), 500
+
+    player_name = request.args.get("player", "").strip()
+    season      = request.args.get("season", "").strip()
+    try:
+        last_n = max(1, min(30, int(request.args.get("last", "10") or 10)))
+    except ValueError:
+        last_n = 10
+
+    if not player_name:
+        return jsonify({"ok": False, "error": "player query param required"}), 400
+
+    if not season:
+        now = _dt.utcnow()
+        # NBA season starts Oct of prior year, runs through June.
+        yr = now.year if now.month >= 10 else now.year - 1
+        season = f"{yr}-{str(yr + 1)[2:]}"
+
+    # Step 1: resolve player name → stats.nba.com id (cached forever, ids are stable)
+    key = player_name.lower()
+    player_id = _nba_player_id_cache.get(key)
+    if player_id is None:
+        try:
+            matches = _nba_players.find_players_by_full_name(player_name)
+            if not matches:
+                return jsonify({
+                    "ok": False, "step": "player_search",
+                    "reason": f"No NBA player matching '{player_name}' in stats.nba.com directory",
+                }), 404
+            exact = [m for m in matches if (m.get("full_name") or "").lower() == key]
+            player_id = (exact[0] if exact else matches[0])["id"]
+            _nba_player_id_cache[key] = player_id
+        except Exception as e:
+            return jsonify({"ok": False, "step": "player_search", "error": str(e)}), 502
+
+    # Step 2: fetch game log (cached per player+season, 1hr TTL)
+    gcache_key = f"nbagl:{player_id}:{season}"
+    games = _bball_cache_get(gcache_key)
+    if games is None:
+        try:
+            gl = _pgl.PlayerGameLog(player_id=player_id, season=season, timeout=20)
+            df = gl.get_data_frames()[0]
+            # Coerce numpy types (int64/float64) to JSON-safe Python natives
+            # before caching, so any future re-serve from cache is safe.
+            games = [
+                {k: (v.item() if hasattr(v, 'item') else v) for k, v in rec.items()}
+                for rec in df.to_dict(orient='records')
+            ]
+            _bball_cache_set(gcache_key, games)
+        except Exception as e:
+            return jsonify({
+                "ok": False, "step": "gamelog_fetch",
+                "player_id": player_id, "season": season,
+                "error": str(e),
+                "hint": "stats.nba.com may be rate-limiting or unreachable from this server's IP",
+            }), 502
+
+    if not games:
+        return jsonify({
+            "ok": False, "step": "gamelog_fetch",
+            "player_id": player_id, "season": season,
+            "reason": f"No games found for player {player_id} in {season}",
+        }), 404
+
+    # Step 3: shape to match /api-sports/basketball/gamelog response
+    out = []
+    for g in games[:last_n]:
+        matchup = g.get("MATCHUP") or ""  # "OKC @ LAC" or "OKC vs. LAC"
+        if " @ " in matchup:
+            home_away, opp = "@", matchup.split(" @ ", 1)[1].strip()
+        elif " vs. " in matchup:
+            home_away, opp = "vs", matchup.split(" vs. ", 1)[1].strip()
+        else:
+            home_away, opp = "", ""
+        out.append({
+            "game_id":   str(g.get("Game_ID") or ""),
+            "date":      str(g.get("GAME_DATE") or ""),
+            "opp":       opp,
+            "home_away": home_away,
+            "min":       int(g.get("MIN") or 0),
+            "pts":       int(g.get("PTS") or 0),
+            "reb":       int(g.get("REB") or 0),
+            "ast":       int(g.get("AST") or 0),
+            "stl":       int(g.get("STL") or 0),
+            "blk":       int(g.get("BLK") or 0),
+        })
+
+    return jsonify({
+        "ok":     True,
+        "source": "stats.nba.com",
+        "player": {"id": player_id, "name": player_name},
+        "season": season,
+        "count":  len(out),
+        "games":  out,
+    })
+
+
 @app.route("/api-sports/tennis/fixtures", methods=["GET"])
 @require_api_key
 def api_sports_tennis_fixtures():
