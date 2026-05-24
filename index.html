@@ -3325,6 +3325,113 @@ async function enrichWithBDLGoat(candidates, log){
   return enriched;
 }
 
+
+// ── Flask-backed Basketball Engine (NBA + WNBA) ─────────────────────────────
+// Tier-3 fallback: used only when ESPN gamelog + season-avg both return 0.
+// Calls Replit Flask /api-sports/basketball/stats, synthesises hit-rate from
+// per-game averages. data_quality:'season-avg' tag flags these downstream.
+const _flaskBballStatsCache = {};
+const _flaskBballFailCounters = { auth:0, http:0, timeout:0, empty:0, ok:0 };
+
+async function fetchFlaskBasketballStats(name, leagueId){
+  const cacheKey = `${leagueId}:${name.toLowerCase()}`;
+  if(_flaskBballStatsCache[cacheKey] !== undefined) return _flaskBballStatsCache[cacheKey];
+  try {
+    const url = `${EP.replit}/api-sports/basketball/stats?player=${encodeURIComponent(name)}&league=${leagueId}`;
+    const r = await fx(url, {headers:{'X-API-Key': KEYS.replit}}, 10000);
+    if(!r?.ok){
+      if(r && (r.status===401||r.status===403)) _flaskBballFailCounters.auth++;
+      else _flaskBballFailCounters.http++;
+      _flaskBballStatsCache[cacheKey]=null; return null;
+    }
+    const d = await r.json();
+    if(!d.ok||!Array.isArray(d.stats)||!d.stats.length){
+      _flaskBballFailCounters.empty++; _flaskBballStatsCache[cacheKey]=null; return null;
+    }
+    _flaskBballFailCounters.ok++;
+    const reg = d.stats.find(s=>/regular/i.test(s.split_name||''))||d.stats.find(s=>/career/i.test(s.split_name||''))||d.stats[0];
+    const out = {
+      pts:Number(reg.points_per_game)||0, reb:Number(reg.rebounds_per_game)||0,
+      ast:Number(reg.assists_per_game)||0, stl:Number(reg.steals_per_game)||0,
+      blk:Number(reg.blocks_per_game)||0, mins:Number(reg.minutes_per_game)||0,
+      games:Number(reg.games)||0, split:reg.split_name||'', source:d.source||'flask',
+    };
+    _flaskBballStatsCache[cacheKey]=out; return out;
+  }catch(e){ _flaskBballFailCounters.timeout++; _flaskBballStatsCache[cacheKey]=null; return null; }
+}
+
+function synthHitRate(avg, line){
+  if(!isFinite(avg)||avg<=0) return 0;
+  const edge=(avg-line)/Math.max(line*1.5,1);
+  return Math.max(0.10,Math.min(0.85,0.5+edge));
+}
+
+async function runFlaskBasketballEngine(sport, log){
+  const leagueId = sport==='WNBA'?13:12;
+  const sportPath = sport==='WNBA'?'wnba':'nba';
+  const candidates = [];
+  try{
+    let events=[],slateDate='';
+    for(let di=0;di<5;di++){
+      const d=new Date(Date.now()+di*86400000);
+      const yyyymmdd=d.getFullYear().toString()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+      const scoreR=await fx(`${EP.espn}/basketball/${sportPath}/scoreboard?dates=${yyyymmdd}`,{},8000);
+      if(!scoreR?.ok) continue;
+      const scoreD=await scoreR.json(); chip('espn','ok');
+      const dayEvents=(scoreD.events||[]).filter(ev=>!['Final','Postponed','Cancelled'].includes(ev.competitions?.[0]?.status?.type?.description||''));
+      if(dayEvents.length){events=dayEvents;slateDate=yyyymmdd;break;}
+    }
+    if(!events.length){log(`⚠ ${sport}: no upcoming games (Flask fallback)`,'w');return [];}
+    const _failsBefore={..._flaskBballFailCounters};
+    const propDefs=sport==='WNBA'
+      ?[{key:'pts',prop:'points',lines:[10.5,14.5,18.5,22.5,26.5]},{key:'reb',prop:'rebounds',lines:[3.5,5.5,7.5,9.5]},{key:'ast',prop:'assists',lines:[1.5,3.5,5.5,7.5]},{key:'stl',prop:'steals',lines:[0.5,1.5,2.5]},{key:'blk',prop:'blocks',lines:[0.5,1.5,2.5]}]
+      :[{key:'pts',prop:'points',lines:[10.5,15.5,20.5,25.5,30.5,35.5]},{key:'reb',prop:'rebounds',lines:[3.5,5.5,7.5,10.5,13.5]},{key:'ast',prop:'assists',lines:[1.5,3.5,5.5,7.5,10.5]},{key:'stl',prop:'steals',lines:[0.5,1.5,2.5]},{key:'blk',prop:'blocks',lines:[0.5,1.5,2.5]}];
+    for(const ev of events){
+      const comp=ev.competitions?.[0];
+      const teams=comp?.competitors||[];
+      const away=teams.find(t=>t.homeAway==='away');
+      const home=teams.find(t=>t.homeAway==='home');
+      const gameStr=`${away?.team?.displayName||'Away'} @ ${home?.team?.displayName||'Home'}`;
+      for(const team of [away,home].filter(Boolean)){
+        const teamId=team.team?.id; if(!teamId) continue;
+        const rostR=await fx(`https://site.api.espn.com/apis/site/v2/sports/basketball/${sportPath}/teams/${teamId}/roster`,{},8000);
+        if(!rostR?.ok) continue;
+        const rostD=await rostR.json();
+        const athletes=(rostD.athletes||[]).flatMap(g=>g.items||g.athletes||[g]).filter(a=>a.id);
+        for(const athlete of athletes.slice(0,8)){
+          const name=athlete.fullName||`${athlete.firstName||''} ${athlete.lastName||''}`.trim();
+          if(!name) continue;
+          const stats=await fetchFlaskBasketballStats(name,leagueId);
+          if(!stats||stats.pts+stats.reb+stats.ast===0) continue;
+          for(const pd of propDefs){
+            const avg=stats[pd.key]; if(!avg||avg<=0) continue;
+            let bestLine=null,bestHR=0;
+            for(const line of pd.lines){
+              if(avg<line*0.55) continue;
+              const hr=synthHitRate(avg,line);
+              if(hr>=0.55&&hr>bestHR){bestHR=hr;bestLine=line;}
+            }
+            if(!bestLine) continue;
+            const penalizedHR=bestHR*0.80;
+            candidates.push({player:name,sport,prop:pd.prop,side:'MORE',line:bestLine,game:gameStr,
+              recent_avg:parseFloat(avg.toFixed(2)),l5_hit_rate:penalizedHR,l10_hit_rate:penalizedHR,
+              raw_vals:[parseFloat(avg.toFixed(2))],confidence:penalizedHR*0.75,
+              role_score:7,source:'engine',lineupConfirmed:false,data_quality:'season-avg',
+              note:`Flask ${stats.split}: ${avg.toFixed(1)} avg / ${stats.games} GP (synthetic HR)`});
+          }
+        }
+      }
+    }
+    const _d={auth:_flaskBballFailCounters.auth-_failsBefore.auth,http:_flaskBballFailCounters.http-_failsBefore.http,timeout:_flaskBballFailCounters.timeout-_failsBefore.timeout,empty:_flaskBballFailCounters.empty-_failsBefore.empty,ok:_flaskBballFailCounters.ok-_failsBefore.ok};
+    const _calls=_d.auth+_d.http+_d.timeout+_d.empty+_d.ok;
+    if(_d.auth>=3) log(`⚠ ${sport}: Flask auth failed ${_d.auth}× (check X-API-Key / EP.replit)`,'w');
+    else if(_calls>=5&&_d.ok===0) log(`⚠ ${sport}: ${_calls} Flask calls, 0 OK — Flask may be down`,'w');
+    log(`✓ ${sport}: Flask fallback → ${candidates.length} candidates [ok=${_d.ok} empty=${_d.empty} http=${_d.http} auth=${_d.auth}]`,'ok');
+  }catch(e){log(`⚠ ${sport} Flask engine: ${e.message}`,'w');}
+  return validateEngineOutput(sport, candidates, 'runFlaskBasketballEngine');
+}
+
+// ── End Flask Basketball Engine ───────────────────────────────────────────────
 async function runESPNNBAEngine(log){
   window._nbaNoLogCache = new Set(); // reset per run
   const candidates = [];
@@ -3563,7 +3670,12 @@ async function runESPNNBAEngine(log){
       const enrichedCandidates = await enrichWithBDLGoat(candidates, log);
       return validateEngineOutput('NBA', enrichedCandidates, 'runESPNNBAEngine');
     }
+    // Tier-3 fallback: ESPN gamelog returned 0 — try Flask season-avg engine
+    log('  ⟳ NBA: ESPN gamelog empty — trying Flask fallback','i');
+    return runFlaskBasketballEngine('NBA', log);
   }catch(e){ log(`⚠ NBA ESPN engine: ${e.message}`,'w'); }
+  // Tier-3 fallback on exception
+  if(!candidates.length) return runFlaskBasketballEngine('NBA', log);
   return validateEngineOutput('NBA', candidates, 'runESPNNBAEngine');
 }
 
@@ -3823,7 +3935,12 @@ async function runESPNWNBAEngine(log){
       const enrichedWNBA = await enrichWithBDLGoat(candidates, log);
       return validateEngineOutput('WNBA', enrichedWNBA, 'runESPNWNBAEngine');
     }
+    // Tier-3 fallback: ESPN gamelog returned 0 — try Flask season-avg engine
+    log('  ⟳ WNBA: ESPN gamelog empty — trying Flask fallback','i');
+    return runFlaskBasketballEngine('WNBA', log);
   }catch(e){ log(`⚠ WNBA ESPN engine: ${e.message}`,'w'); }
+  // Tier-3 fallback on exception
+  if(!candidates.length) return runFlaskBasketballEngine('WNBA', log);
   return validateEngineOutput('WNBA', candidates, 'runESPNWNBAEngine');
 }
 
@@ -3856,6 +3973,11 @@ async function bdlFetch(url, retries=1){
 
 // ── BallDontLie Engine (NBA/WNBA) ──
 async function runBDLEngine(sport,log){
+  // BDL 401/429 consistently fails for NBA/WNBA — skip directly to ESPN/Flask engine
+  if(sport==='NBA'||sport==='WNBA'){
+    log(`  ⟳ ${sport}: BDL bypassed (auth/rate-limit) → ESPN engine`,'i');
+    return sport==='NBA' ? runESPNNBAEngine(log) : runESPNWNBAEngine(log);
+  }
   const candidates=[];
   const bdlBase='https://api.balldontlie.io/v1';
   // BDL season keys: 2024 = 2024-25 season (current playoffs), 2025 = 2025-26
