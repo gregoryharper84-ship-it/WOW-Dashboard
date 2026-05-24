@@ -18,3 +18,9 @@ id = "U-KI2H5svHgd3n-I-9LZC"
 uri = "file://attached_assets/index_patched_v2.zip"
 type = "unspecified"
 title = "WOW AUTO-PROP ENGINE v2 — patched (NBA + WNBA via Flask)"
+
+[[outputs]]
+id = "5Yo8iy-bP1M7fzNV-MbY9"
+uri = "file://attached_assets/exports/wow_v14.9_optionA_optionC.zip"
+type = "unspecified"
+title = "WOW v14.9 — Option A + C (architect-reviewed)"

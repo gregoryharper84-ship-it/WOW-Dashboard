@@ -3360,6 +3360,22 @@ async function fetchFlaskBasketballStats(name, leagueId){
   }catch(e){ _flaskBballFailCounters.timeout++; _flaskBballStatsCache[cacheKey]=null; return null; }
 }
 
+async function fetchFlaskBasketballGamelog(name, leagueId){
+  const cacheKey = `gl:${leagueId}:${name.toLowerCase()}`;
+  if(_flaskBballStatsCache[cacheKey] !== undefined) return _flaskBballStatsCache[cacheKey];
+  try {
+    const url = `${EP.replit}/api-sports/basketball/gamelog?player=${encodeURIComponent(name)}&league=${leagueId}&last=10`;
+    const r = await fx(url, {headers:{'X-API-Key': KEYS.replit}}, 12000);
+    if(!r?.ok){ _flaskBballStatsCache[cacheKey]=null; return null; }
+    const d = await r.json();
+    if(!d.ok||!Array.isArray(d.games)||!d.games.length){
+      _flaskBballStatsCache[cacheKey]=null; return null;
+    }
+    _flaskBballStatsCache[cacheKey]=d.games;
+    return d.games;
+  }catch(e){ _flaskBballStatsCache[cacheKey]=null; return null; }
+}
+
 function synthHitRate(avg, line){
   if(!isFinite(avg)||avg<=0) return 0;
   const edge=(avg-line)/Math.max(line*1.5,1);
@@ -3403,6 +3419,8 @@ async function runFlaskBasketballEngine(sport, log){
           if(!name) continue;
           const stats=await fetchFlaskBasketballStats(name,leagueId);
           if(!stats||stats.pts+stats.reb+stats.ast===0) continue;
+          // Try to grab real per-game data once per player (Tier 2-quality if available)
+          const gamelog=await fetchFlaskBasketballGamelog(name,leagueId);
           for(const pd of propDefs){
             const avg=stats[pd.key]; if(!avg||avg<=0) continue;
             let bestLine=null,bestHR=0;
@@ -3412,12 +3430,32 @@ async function runFlaskBasketballEngine(sport, log){
               if(hr>=0.55&&hr>bestHR){bestHR=hr;bestLine=line;}
             }
             if(!bestLine) continue;
-            const penalizedHR=bestHR*0.80;
-            candidates.push({player:name,sport,prop:pd.prop,side:'MORE',line:bestLine,game:gameStr,
-              recent_avg:parseFloat(avg.toFixed(2)),l5_hit_rate:penalizedHR,l10_hit_rate:penalizedHR,
-              raw_vals:[parseFloat(avg.toFixed(2))],confidence:penalizedHR*0.75,
-              role_score:7,source:'engine',lineupConfirmed:false,data_quality:'season-avg',
-              note:`Flask ${stats.split}: ${avg.toFixed(1)} avg / ${stats.games} GP (synthetic HR)`});
+            // Real per-game values for this prop?
+            let realVals=null, realL5=null, realL10=null;
+            if(gamelog && gamelog.length >= 3){
+              const vals = gamelog.map(g => Number(g[pd.key])||0);
+              if(vals.some(v=>v>0)){
+                realVals = vals.slice(0,10);
+                const l5 = vals.slice(0,5);
+                realL5  = l5.length ? l5.filter(v=>v>bestLine).length/l5.length : null;
+                realL10 = vals.length ? vals.filter(v=>v>bestLine).length/vals.length : null;
+              }
+            }
+            if(realVals){
+              candidates.push({player:name,sport,prop:pd.prop,side:'MORE',line:bestLine,game:gameStr,
+                recent_avg:parseFloat(avg.toFixed(2)),l5_hit_rate:realL5,l10_hit_rate:realL10,
+                raw_vals:realVals,confidence:(realL5!=null?realL5:bestHR)*0.90,
+                role_score:7,source:'engine',lineupConfirmed:false,
+                note:`Flask+gamelog: ${realVals.length}g real, season avg ${avg.toFixed(1)}`});
+            } else {
+              const penalizedHR=bestHR*0.80;
+              candidates.push({player:name,sport,prop:pd.prop,side:'MORE',line:bestLine,game:gameStr,
+                recent_avg:parseFloat(avg.toFixed(2)),l5_hit_rate:penalizedHR,l10_hit_rate:penalizedHR,
+                raw_vals:[parseFloat(avg.toFixed(2))],confidence:penalizedHR*0.75,
+                role_score:7,source:'engine',lineupConfirmed:false,data_quality:'season-avg',
+                _gp:stats.games,
+                note:`Flask ${stats.split}: ${avg.toFixed(1)} avg / ${stats.games} GP (synthetic HR)`});
+            }
           }
         }
       }
@@ -8965,8 +9003,10 @@ function renderSlipBrowser(){
           </div>
           <div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap;">
             <span style="font-size:10px;padding:1px 6px;border-radius:6px;background:${tierBg};color:${tierColor};font-weight:700;">${(p.tier||'').toUpperCase()}</span>
-            <span style="font-size:10px;color:var(--text2);">L5 avg: <strong>${avg}</strong></span>
-            <span style="font-size:10px;color:var(--text2);">Hit rate: <strong style="color:${parseFloat(hitPct)>=65?'var(--green)':'var(--text)'};">${hitPct}</strong></span>
+            ${p.data_quality==='season-avg'
+              ? `<span style="font-size:10px;color:var(--text2);">Season avg: <strong>${avg}</strong>${p._gp?' · '+p._gp+' GP':''}</span><span style="font-size:9px;padding:1px 5px;border-radius:6px;background:var(--yellow-light);color:var(--yellow);font-weight:700;" title="Synthetic hit rate derived from season average vs line — no per-game data available">SEASON AVG · synth ${hitPct}</span>`
+              : `<span style="font-size:10px;color:var(--text2);">L5 avg: <strong>${avg}</strong></span><span style="font-size:10px;color:var(--text2);">Hit rate: <strong style="color:${parseFloat(hitPct)>=65?'var(--green)':'var(--text)'};">${hitPct}</strong></span>`
+            }
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0;">
@@ -13039,7 +13079,7 @@ function renderPropPool(){
       <span onclick="addLegSide('${p.player}','${p.sport}','${p.prop.replace(/'/g,"\\'")}',${p.line},'MORE',${p.bothSides.more.prob},'${(p.game||'').replace(/'/g,"\\'")}',${p.overOdds})" style="cursor:pointer;padding:2px 8px;border-radius:4px;font-size:10px;font-family:var(--mono);font-weight:600;background:${p.side==='MORE'?'var(--green-light)':'var(--surface2)'};color:${p.side==='MORE'?'var(--green)':'var(--text2)'};border:1px solid ${p.side==='MORE'?'#a7f3d0':'var(--border)'};">▲ MORE ${p.overOdds>0?'+':''}${p.overOdds} (${(p.bothSides.more.prob*100).toFixed(0)}%)</span>
       <span onclick="addLegSide('${p.player}','${p.sport}','${p.prop.replace(/'/g,"\\'")}',${p.line},'LESS',${p.bothSides.less.prob},'${(p.game||'').replace(/'/g,"\\'")}',${p.underOdds})" style="cursor:pointer;padding:2px 8px;border-radius:4px;font-size:10px;font-family:var(--mono);font-weight:600;background:${p.side==='LESS'?'var(--accent-light)':'var(--surface2)'};color:${p.side==='LESS'?'var(--accent)':'var(--text2)'};border:1px solid ${p.side==='LESS'?'#bfdbfe':'var(--border)'};">▼ LESS ${p.underOdds>0?'+':''}${p.underOdds} (${(p.bothSides.less.prob*100).toFixed(0)}%)</span>
     </div>`:'';
-    card.innerHTML=`<div class="pm" style="min-width:0;flex:1;"><div class="pp">${p.player}</div><div class="pd">${p.sport} · ${p.prop} · line ${p.line}${p.bookmaker?' · '+p.bookmaker:''}</div>${p.recent_avg!=null?`<div style="font-size:10px;font-family:var(--mono);color:var(--text2);margin-top:2px;">L5 avg: ${parseFloat(p.recent_avg).toFixed(1)} · L5: ${p.l5_hit_rate!=null?(p.l5_hit_rate*100).toFixed(0)+'%':'–'} · L10: ${p.l10_hit_rate!=null?(p.l10_hit_rate*100).toFixed(0)+'%':'–'}</div>`:''} ${bothHtml}</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0;margin-left:8px;min-width:80px;"><span class="badge ${bm[p.tier]||'bg-gr'}">${p.tier==='tier1'?'TIER 1':'T2'}</span>${p.wowScore!=null?`<div class="ps ${sc}" style="font-size:18px;">${p.wowScore}</div>`:''}<button class="btn btn-g btn-sm" onclick='addToSlipCard(${JSON.stringify(pObj)})'>+ Slip</button></div>`;
+    card.innerHTML=`<div class="pm" style="min-width:0;flex:1;"><div class="pp">${p.player}</div><div class="pd">${p.sport} · ${p.prop} · line ${p.line}${p.bookmaker?' · '+p.bookmaker:''}</div>${p.data_quality==='season-avg'?`<div style="font-size:10px;font-family:var(--mono);color:var(--text2);margin-top:2px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;"><span>Season avg: <strong>${parseFloat(p.recent_avg).toFixed(1)}</strong>${p._gp?' · '+p._gp+' GP':''}</span><span style="background:var(--yellow-light);color:var(--yellow);padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;" title="Synthetic hit rate from season avg vs line — no per-game data">SEASON AVG · synth HR ${p.l5_hit_rate!=null?(p.l5_hit_rate*100).toFixed(0)+'%':'–'}</span></div>`:p.recent_avg!=null?`<div style="font-size:10px;font-family:var(--mono);color:var(--text2);margin-top:2px;">L5 avg: ${parseFloat(p.recent_avg).toFixed(1)} · L5: ${p.l5_hit_rate!=null?(p.l5_hit_rate*100).toFixed(0)+'%':'–'} · L10: ${p.l10_hit_rate!=null?(p.l10_hit_rate*100).toFixed(0)+'%':'–'}</div>`:''} ${bothHtml}</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0;margin-left:8px;min-width:80px;"><span class="badge ${bm[p.tier]||'bg-gr'}">${p.tier==='tier1'?'TIER 1':'T2'}</span>${p.wowScore!=null?`<div class="ps ${sc}" style="font-size:18px;">${p.wowScore}</div>`:''}<button class="btn btn-g btn-sm" onclick='addToSlipCard(${JSON.stringify(pObj)})'>+ Slip</button></div>`;
     div.appendChild(card);
   });
 

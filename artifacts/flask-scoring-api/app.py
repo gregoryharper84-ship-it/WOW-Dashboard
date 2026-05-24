@@ -4525,6 +4525,289 @@ def api_sports_stats(sport):
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ─── Basketball gamelog cache (per-process, TTL-based) ──────────────────────
+_bball_gamelog_cache = {}   # key -> (timestamp, data)
+_BBALL_CACHE_TTL = 3600     # 1 hour
+
+def _bball_cache_get(key):
+    import time as _t
+    entry = _bball_gamelog_cache.get(key)
+    if not entry:
+        return None
+    ts, data = entry
+    if _t.time() - ts > _BBALL_CACHE_TTL:
+        _bball_gamelog_cache.pop(key, None)
+        return None
+    return data
+
+def _bball_cache_set(key, data):
+    import time as _t
+    _bball_gamelog_cache[key] = (_t.time(), data)
+
+
+@app.route("/api-sports/basketball/gamelog", methods=["GET"])
+@require_api_key
+def api_sports_basketball_gamelog():
+    """
+    Fetch real per-game stats for a basketball player via api-sports.io.
+
+    Returns the player's last N completed games with pts/reb/ast/stl/blk/min/opp/date.
+    Uses team-level caching to minimize API calls across players on the same team.
+
+    Query params:
+      player   — player name (required) — searched via api-sports /players
+      league   — league id (12 = NBA, 13 = WNBA) (required)
+      season   — season string (defaults to current: "2025-2026" for NBA, "2026" for WNBA)
+      last     — number of recent games to return (default 5, max 15)
+    """
+    import requests as _req
+    from datetime import datetime as _dt
+
+    player_name = request.args.get("player", "").strip()
+    league      = request.args.get("league", "").strip()
+    season      = request.args.get("season", "").strip()
+    try:
+        last_n = max(1, min(15, int(request.args.get("last", "5") or 5)))
+    except ValueError:
+        last_n = 5
+
+    if not player_name:
+        return jsonify({"ok": False, "error": "player query param required"}), 400
+    if not league:
+        return jsonify({"ok": False, "error": "league query param required (12=NBA, 13=WNBA)"}), 400
+
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return jsonify({"ok": False, "error": "API_FOOTBALL_KEY not configured"}), 500
+
+    if not season:
+        now = _dt.utcnow()
+        if league == "12":  # NBA spans Oct-June
+            yr = now.year if now.month >= 10 else now.year - 1
+            season = f"{yr}-{yr+1}"
+        else:               # WNBA May-Oct, single year
+            season = str(now.year)
+
+    base = "https://v1.basketball.api-sports.io"
+    headers = {"x-apisports-key": api_key}
+
+    # ── Step 1: locate player → team ────────────────────────────────────────
+    pcache_key = f"player:{league}:{season}:{player_name.lower()}"
+    pcached = _bball_cache_get(pcache_key)
+    if pcached:
+        player_id, team_id, resolved_name = pcached
+    else:
+        try:
+            pr = _req.get(f"{base}/players",
+                          headers=headers,
+                          params={"search": player_name, "league": league, "season": season},
+                          timeout=15)
+            pr.raise_for_status()
+            pdata = pr.json()
+            errs = pdata.get("errors")
+            if errs and errs != [] and errs != {}:
+                return jsonify({
+                    "ok": False, "step": "player_search",
+                    "upstream_errors": errs,
+                    "hint": "Check league/season. NBA=12 season='2025-2026', WNBA=13 season='2026'.",
+                }), 422
+            resp = pdata.get("response", []) or []
+            if not resp:
+                return jsonify({
+                    "ok": False, "step": "player_search",
+                    "reason": f"No players matching '{player_name}' in league={league} season={season}",
+                }), 404
+            # Prefer exact / closest name match
+            pl = resp[0]
+            for cand in resp:
+                cname = (cand.get("name") or "").lower()
+                if cname == player_name.lower():
+                    pl = cand
+                    break
+            player_id = pl.get("id")
+            resolved_name = pl.get("name") or player_name
+            # api-sports player response shape varies — try multiple paths
+            team_id = None
+            for key in ("team", "teams"):
+                t = pl.get(key)
+                if isinstance(t, dict) and t.get("id"):
+                    team_id = t["id"]
+                    break
+                if isinstance(t, list) and t and isinstance(t[0], dict) and t[0].get("id"):
+                    team_id = t[0]["id"]
+                    break
+            if not team_id:
+                return jsonify({
+                    "ok": False, "step": "player_search",
+                    "player_id": player_id, "name": resolved_name,
+                    "reason": "Player found but no team id in api-sports response",
+                }), 422
+            _bball_cache_set(pcache_key, (player_id, team_id, resolved_name))
+        except _req.exceptions.Timeout:
+            return jsonify({"ok": False, "step": "player_search", "error": "timeout"}), 504
+        except Exception as e:
+            return jsonify({"ok": False, "step": "player_search", "error": str(e)}), 502
+
+    # ── Step 2: get team's recent finished games ────────────────────────────
+    gcache_key = f"games:{league}:{season}:{team_id}"
+    games_list = _bball_cache_get(gcache_key)
+    if games_list is None:
+        try:
+            gr = _req.get(f"{base}/games",
+                          headers=headers,
+                          params={"team": team_id, "league": league, "season": season},
+                          timeout=15)
+            gr.raise_for_status()
+            gdata = gr.json()
+            errs = gdata.get("errors")
+            if errs and errs != [] and errs != {}:
+                return jsonify({"ok": False, "step": "team_games",
+                                "upstream_errors": errs}), 422
+            all_games = gdata.get("response", []) or []
+            # Filter to finished games (FT=Full Time, AOT/AET=after overtime).
+            # NOTE: "POST" = postponed, NOT a completed state — exclude it.
+            finished = []
+            for g in all_games:
+                status = (g.get("status") or {}).get("short") or ""
+                if status not in ("FT", "AOT", "AET"):
+                    continue
+                finished.append(g)
+            finished.sort(key=lambda x: x.get("date", ""), reverse=True)
+            games_list = finished
+            _bball_cache_set(gcache_key, games_list)
+        except _req.exceptions.Timeout:
+            return jsonify({"ok": False, "step": "team_games", "error": "timeout"}), 504
+        except Exception as e:
+            return jsonify({"ok": False, "step": "team_games", "error": str(e)}), 502
+
+    if not games_list:
+        return jsonify({
+            "ok": False, "step": "team_games",
+            "player_id": player_id, "team_id": team_id,
+            "reason": f"No finished games found for team {team_id} in season {season}",
+        }), 404
+
+    # ── Step 3: fetch per-player stats for each of the last N games ─────────
+    def _num(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0
+
+    # Helper: flatten api-sports per-game player stats — handles both shapes.
+    #   Shape A (flat):  [{player:{id,...}, team:{...}, points, rebounds, ...}, ...]
+    #   Shape B (nested):[{team:{...}, players:[{player:{...}, points, ...}, ...]}, ...]
+    def _iter_player_rows(gstats):
+        for item in gstats or []:
+            if not isinstance(item, dict):
+                continue
+            nested = item.get("players")
+            if isinstance(nested, list):
+                for sub in nested:
+                    if isinstance(sub, dict):
+                        yield sub
+            elif item.get("player"):
+                yield item
+
+    # Track upstream errors so we can distinguish "no rows" from "api rejected"
+    last_upstream_error = None
+    games_out = []
+    # Walk through ALL finished games (not just the first last_n) — some recent
+    # games may lack player rows; keep collecting until we have last_n matches.
+    for g in games_list:
+        if len(games_out) >= last_n:
+            break
+        game_id = g.get("id")
+        if not game_id:
+            continue
+        scache_key = f"gstats:{game_id}"
+        gstats = _bball_cache_get(scache_key)
+        if gstats is None:
+            try:
+                sr = _req.get(f"{base}/games/statistics/players",
+                              headers=headers,
+                              params={"id": game_id},
+                              timeout=15)
+                sr.raise_for_status()
+                sdata = sr.json()
+                sd_errs = sdata.get("errors")
+                if sd_errs and sd_errs != [] and sd_errs != {}:
+                    last_upstream_error = sd_errs
+                    continue
+                gstats = sdata.get("response", []) or []
+                _bball_cache_set(scache_key, gstats)
+            except Exception as e:
+                last_upstream_error = str(e)
+                continue
+        # Find this player's row across both possible response shapes
+        player_row = None
+        for row in _iter_player_rows(gstats):
+            row_player = row.get("player") or {}
+            if row_player.get("id") == player_id:
+                player_row = row
+                break
+        if not player_row:
+            continue
+        # Determine opponent from game teams
+        teams_obj = g.get("teams") or {}
+        home_id = (teams_obj.get("home") or {}).get("id")
+        if team_id == home_id:
+            opp = (teams_obj.get("away") or {}).get("name") or "?"
+            home_away = "vs"
+        else:
+            opp = (teams_obj.get("home") or {}).get("name") or "?"
+            home_away = "@"
+        # api-sports basketball rebounds can be int or {total, offence, defence}
+        reb_field = player_row.get("rebounds")
+        if isinstance(reb_field, dict):
+            reb_val = _num(reb_field.get("total"))
+        else:
+            reb_val = _num(reb_field)
+        games_out.append({
+            "game_id":   game_id,
+            "date":      (g.get("date") or "")[:10],
+            "opp":       opp,
+            "home_away": home_away,
+            "min":       player_row.get("minutes") or "",
+            "pts":       _num(player_row.get("points")),
+            "reb":       reb_val,
+            "ast":       _num(player_row.get("assists")),
+            "stl":       _num(player_row.get("steals")),
+            "blk":       _num(player_row.get("blocks")),
+        })
+
+    if not games_out:
+        # Distinguish "api-sports rejected our requests" from "no matching rows"
+        if last_upstream_error:
+            return jsonify({
+                "ok": False, "step": "per_game_stats",
+                "player_id": player_id, "team_id": team_id,
+                "upstream_errors": last_upstream_error,
+                "reason": "api-sports /games/statistics/players returned errors for every game tried",
+                "hint": "Usually means this league/season is not on your api-sports plan",
+            }), 422
+        return jsonify({
+            "ok": False, "step": "per_game_stats",
+            "player_id": player_id, "team_id": team_id,
+            "games_scanned": len(games_list),
+            "reason": "No per-game stats rows matched this player across all finished team games",
+            "hint": "api-sports basketball may not have per-game player stats for this league/season",
+        }), 404
+
+    return jsonify({
+        "ok":      True,
+        "source":  "api-sports.io",
+        "player":  {"id": player_id, "name": resolved_name, "team_id": team_id},
+        "league":  league,
+        "season":  season,
+        "count":   len(games_out),
+        "games":   games_out,
+    })
+
+
 @app.route("/api-sports/tennis/fixtures", methods=["GET"])
 @require_api_key
 def api_sports_tennis_fixtures():
