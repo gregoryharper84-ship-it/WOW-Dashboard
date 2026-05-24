@@ -1,0 +1,120 @@
+═══ WOW AUTO-PROP ENGINE v2 — REAL STATS ═══
+Sports: MLB, NBA, NHL, WNBA, NFL, Soccer, Tennis | Max: 10 | Min Tier: tier2
+
+⟳ Scanning MLB slate + pulling player stats...
+✓ MLB: 16 games on slate
+  ⟳ Fetching Mitch Keller pitcher stats (ERA 3.86 | Opp K/g: 9.3)...
+  ⟳ Fetching Dylan Cease pitcher stats (ERA 2.98 | Opp K/g: 7.1)...
+  ⟳ Fetching Framber Valdez pitcher stats (ERA 4.58 | Opp K/g: 8.7)...
+  ⟳ Fetching Brandon Young pitcher stats (ERA 4.25 | Opp K/g: 9.3)...
+  ⟳ Fetching Trevor Rogers pitcher stats (ERA 6.87 | Opp K/g: 9.3)...
+  ⟳ Fetching Bailey Ober pitcher stats (ERA 3.63 | Opp K/g: 8.6)...
+  ⟳ Fetching Sonny Gray pitcher stats (ERA 2.93 | Opp K/g: 8.4)...
+  ⟳ Fetching Parker Messick pitcher stats (ERA 2.45 | Opp K/g: 7.5)...
+  ⟳ Fetching Andrew Painter pitcher stats (ERA 5.77 | Opp K/g: 8.3)...
+  ⟳ Fetching Drew Rasmussen pitcher stats (ERA 3.19 | Opp K/g: 7.1)...
+  ⟳ Fetching Ryan Weathers pitcher stats (ERA 3.58 | Opp K/g: 8.9)...
+  ⟳ Fetching Matthew Liberatore pitcher stats (ERA 4.70 | Opp K/g: 8.1)...
+  ⟳ Fetching Brady Singer pitcher stats (ERA 6.26 | Opp K/g: 9.1)...
+  ⟳ Fetching Christian Scott pitcher stats (ERA 4.12 | Opp K/g: 8.0)...
+  ⟳ Fetching Tyler Phillips pitcher stats (ERA 1.20 | Opp K/g: 8.2)...
+✓ MLB: 67 candidates with real stats
+
+⟳ Scanning NBA slate + pulling player stats...
+✓ NBA: 2 game(s) on slate
+  ⚠ No roster data for team 21 (BDL 401/429)
+  ⚠ No roster data for team 27 (BDL 401/429)
+✓ NBA: 0 candidates
+⚠ NBA: 0 candidates — BDL may have limited data. Trying ESPN fallback...
+✓ NBA: 1 games via ESPN
+  NBA ESPN Oklahoma City Thunder: 18 athletes found
+  NBA ESPN Brooks Barnhizer: no log data
+  NBA ESPN Branden Carlson: no log data
+  NBA ESPN Alex Caruso: no log data
+  NBA ESPN Luguentz Dort: no log data
+  NBA ESPN Shai Gilgeous-Alexander: no log data
+  NBA ESPN Isaiah Hartenstein: no log data
+  NBA ESPN San Antonio Spurs: 18 athletes found
+  NBA ESPN Harrison Barnes: no log data
+  NBA ESPN Bismack Biyombo: no log data
+  NBA ESPN Carter Bryant: no log data
+  NBA ESPN Stephon Castle: no log data
+  NBA ESPN Julian Champagnie: no log data
+  NBA ESPN De'Aaron Fox: no log data
+✓ NBA: 0 candidates via ESPN
+
+⟳ Scanning NHL slate + pulling player stats...
+✓ NHL: 1 games on slate
+  NHL COL: roster=21 players
+  NHL COL Max Domi: logs=0
+  NHL COL Bo Groulx: logs=0
+  NHL COL Calle Jarnkrok: logs=0
+  NHL COL Anthony Stolarz: logs=0
+  NHL VGK: roster=0 players
+✓ NHL: 0 candidates with real stats
+
+⟳ Scanning WNBA slate + pulling player stats...
+⟳ WNBA: fetching slate from ESPN...
+  ⟳ WNBA: Next games on 2026-05-24
+✓ WNBA: 3 games via ESPN
+  WNBA Monique Akoa Makani: no log data (tried gamelog + statisticslog)
+  WNBA Valeriane Ayayi: no log data (tried gamelog + statisticslog)
+  WNBA DeWanna Bonner: no log data (tried gamelog + statisticslog)
+  WNBA Noemie Brochant: no log data (tried gamelog + statisticslog)
+  WNBA Sha Carter: no log data (tried gamelog + statisticslog)
+  WNBA Shay Ciezki: no log data (tried gamelog + statisticslog)
+  WNBA Kahleah Copper: no log data (tried gamelog + statisticslog)
+  WNBA Kyara Linskens: no log data (tried gamelog + statisticslog)
+  WNBA Natasha Mack: no log data (tried gamelog + statisticslog)
+  WNBA Jovana Nogic: no log data (tried gamelog + statisticslog)
+  WNBA Isobel Borlase: no log data (tried gamelog + statisticslog)
+  WNBA Jordin Canada: no log data (tried gamelog + statisticslog)
+  WNBA Allisha Gray: no log data (tried gamelog + statisticslog)
+  WNBA Naz Hillmon: no log data (tried gamelog + statisticslog)
+  WNBA Rhyne Howard: no log data (tried gamelog + statisticslog)
+  WNBA Brionna Jones: no log data (tried gamelog + statisticslog)
+  WNBA Sika Kone: no log data (tried gamelog + statisticslog)
+  WNBA Indya Nivar: no log data (tried gamelog + statisticslog)
+  WNBA Aaliyah Nye: no log data (tried gamelog + statisticslog)
+  WNBA Madina Okot: no log data (tried gamelog + statisticslog)
+  WNBA Paige Bueckers: no log data (tried gamelog + statisticslog)
+  WNBA Alysha Clark: no log data (tried gamelog + statisticslog)
+  WNBA Dulcy Fankam Mendjiadeu: no log data (tried gamelog + statisticslog)
+  WNBA Azzi Fudd: no log data (tried gamelog + statisticslog)
+  WNBA Aziaha James: no log data (tried gamelog + statisticslog)
+  WNBA Awak Kuier: no log data (tried gamelog + statisticslog)
+  WNBA Arike Ogunbowale: no log data (tried gamelog + statisticslog)
+  WNBA JJ Quinerly: no log data (tried gamelog + statisticslog)
+  WNBA Jessica Shepard: no log data (tried gamelog + statisticslog)
+  WNBA Maddy Siegrist: no log data (tried gamelog + statisticslog)
+  WNBA Rebecca Allen: no log data (tried gamelog + statisticslog)
+  WNBA Pauline Astier: no log data (tried gamelog + statisticslog)
+  WNBA Raquel Carrera: no log data (tried gamelog + statisticslog)
+  WNBA Marine Fauthoux: no log data (tried gamelog + statisticslog)
+  WNBA Leonie Fiebich: no log data (tried gamelog + statisticslog)
+  WNBA Rebekah Gardner: no log data (tried gamelog + statisticslog)
+  WNBA Aubrey Griffin: no log data (tried gamelog + statisticslog)
+  WNBA Sabrina Ionescu: no log data (tried gamelog + statisticslog)
+  WNBA Marine Johannes: no log data (tried gamelog + statisticslog)
+  WNBA Jonquel Jones: no log data (tried gamelog + statisticslog)
+  WNBA Georgia Amoore: no log data (tried gamelog + statisticslog)
+  WNBA Shakira Austin: no log data (tried gamelog + statisticslog)
+  WNBA Lauren Betts: no log data (tried gamelog + statisticslog)
+  WNBA Sonia Citron: no log data (tried gamelog + statisticslog)
+  WNBA Angela Dugalic: no log data (tried gamelog + statisticslog)
+  WNBA Alicia Florez Getino: no log data (tried gamelog + statisticslog)
+  WNBA Rori Harmon: no log data (tried gamelog + statisticslog)
+  WNBA Kiki Iriafen: no log data (tried gamelog + statisticslog)
+  WNBA Darianna Littlepage-Buggs: no log data (tried gamelog + statisticslog)
+  WNBA Cotie McMahon: no log data (tried gamelog + statisticslog)
+  WNBA Lexie Brown: no log data (tried gamelog + statisticslog)
+  WNBA Zia Cooke: no log data (tried gamelog + statisticslog)
+  WNBA Stefanie Dolson: no log data (tried gamelog + statisticslog)
+  WNBA Awa Fam: no log data (tried gamelog + statisticslog)
+  WNBA Natisha Hiedeman: no log data (tried gamelog + statisticslog)
+  WNBA Joyner Holmes: no log data (tried gamelog + statisticslog)
+  WNBA Mackenzie Holmes: no log data (tried gamelog + statisticslog)
+  WNBA Jordan Horston: no log data (tried gamelog + statisticslog)
+  WNBA Flau'jae Johnson: no log data (tried gamelog + statisticslog)
+  WNBA Ezi Magbegor: no log data (tried gamelog + statisticslog)
+✓ WNBA: 0 candidates via ESPN
