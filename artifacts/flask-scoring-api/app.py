@@ -2796,6 +2796,238 @@ def _try_espn_player_stats(player, league_key):
     return None, diagnostics
 
 
+# ─────────────────────────── ESPN BASKETBALL FALLBACK ────────────────────────
+# Same pattern as the soccer fallback: search ESPN public APIs by player name,
+# pull the athlete overview, normalize stat names. Covers NBA + WNBA when the
+# api-sports.io basketball endpoint is unavailable (account suspended, key
+# missing, validation errors, etc.).
+
+# api-sports basketball league ids: 12=NBA, 13=WNBA. Accept either form.
+_ESPN_BBALL_LEAGUE_MAP = {
+    "nba":  "nba",  "wnba": "wnba",
+    "12":   "nba",  "13":   "wnba",
+    12:     "nba",  13:     "wnba",
+}
+
+# Map ESPN basketball stat names → our normalized keys. Same vocabulary for
+# NBA and WNBA — only the order in `names[]` differs, and we align by index.
+_ESPN_BBALL_STAT_NAME_MAP = {
+    "gamesPlayed":     "games",
+    "avgMinutes":      "minutes_per_game",
+    "avgPoints":       "points_per_game",
+    "avgRebounds":     "rebounds_per_game",
+    "avgAssists":      "assists_per_game",
+    "avgSteals":       "steals_per_game",
+    "avgBlocks":       "blocks_per_game",
+    "avgTurnovers":    "turnovers_per_game",
+    "avgFouls":        "fouls_per_game",
+    "fieldGoalPct":    "field_goal_pct",
+    "threePointPct":   "three_point_pct",
+    "freeThrowPct":    "free_throw_pct",
+}
+
+
+def _espn_basketball_search(name, preferred_league_slug=None):
+    """Search ESPN basketball players. Returns (results, error_or_None).
+    Each result: {id, name, league_slug, jersey}. preferred_league_slug is
+    'nba' or 'wnba' — matches are sorted to that league first."""
+    import requests as _req, time as _time
+
+    name_lower = (name or "").strip().lower()
+    if not name_lower:
+        return [], "empty_query"
+
+    cache_key = ("bball:" + name_lower, preferred_league_slug or "")
+    now = _time.time()
+    with _ESPN_PLAYER_SEARCH_LOCK:
+        hit = _ESPN_PLAYER_SEARCH_CACHE.get(cache_key)
+        if hit and (now - hit[0]) < _ESPN_PLAYER_SEARCH_TTL_SECONDS:
+            cached = hit[1]
+            return cached, (None if cached else "no_candidate")
+
+    url = "https://site.web.api.espn.com/apis/common/v3/search"
+    try:
+        r = _req.get(url, params={"limit": 15, "query": name,
+                                  "type": "player", "sport": "basketball"},
+                     timeout=10)
+    except _req.exceptions.Timeout:
+        return [], "search_timeout"
+    except _req.exceptions.RequestException as e:
+        return [], f"search_network_error: {e}"
+    if r.status_code != 200:
+        return [], f"search_http_{r.status_code}"
+    try:
+        data = r.json()
+    except ValueError:
+        return [], "search_parse_error"
+
+    results = []
+    for item in data.get("items", []) or []:
+        if (item.get("sport") or "").lower() != "basketball":
+            continue
+        results.append({
+            "id":          item.get("id"),
+            "name":        item.get("displayName"),
+            "league_slug": item.get("league"),
+            "jersey":      item.get("jersey"),
+        })
+
+    if preferred_league_slug:
+        results.sort(key=lambda r: 0 if r.get("league_slug") == preferred_league_slug else 1)
+
+    with _ESPN_PLAYER_SEARCH_LOCK:
+        _ESPN_PLAYER_SEARCH_CACHE[cache_key] = (now, results)
+    return results, (None if results else "no_candidate")
+
+
+def _espn_basketball_overview(league_slug, athlete_id):
+    """Fetch ESPN basketball athlete overview. Returns (dict, error_or_None).
+    league_slug is 'nba' or 'wnba'."""
+    import requests as _req
+    url = f"https://site.web.api.espn.com/apis/common/v3/sports/basketball/{league_slug}/athletes/{athlete_id}/overview"
+    try:
+        r = _req.get(url, timeout=10)
+    except _req.exceptions.Timeout:
+        return None, "overview_timeout"
+    except _req.exceptions.RequestException as e:
+        return None, f"overview_network_error: {e}"
+    if r.status_code != 200:
+        return None, f"overview_http_{r.status_code}"
+    try:
+        return r.json(), None
+    except ValueError:
+        return None, "overview_parse_error"
+
+
+def _normalize_espn_basketball_stats(overview):
+    """Convert ESPN overview['statistics'] into a flat list of split dicts.
+    Each split: {split_name, games, points_per_game, ...}. ESPN exposes
+    'Regular Season', 'Postseason', 'Career' for NBA; 'Regular Season',
+    'Career' for WNBA."""
+    stats = (overview or {}).get("statistics") or {}
+    names = stats.get("names") or []
+    splits = stats.get("splits") or []
+
+    out = []
+    for split in splits:
+        values = split.get("stats") or []
+        rec = {"split_name": split.get("displayName")}
+        for idx, espn_key in enumerate(names):
+            our_key = _ESPN_BBALL_STAT_NAME_MAP.get(espn_key)
+            if not our_key or idx >= len(values):
+                continue
+            raw = values[idx]
+            # ESPN returns stats as strings; coerce numerics where possible.
+            try:
+                rec[our_key] = float(raw) if "." in str(raw) else int(raw)
+            except (TypeError, ValueError):
+                rec[our_key] = raw
+        out.append(rec)
+    return out
+
+
+def _try_espn_basketball_player_search(name, league_hint=None):
+    """High-level: search ESPN basketball by name. Returns
+    (list_of_player_dicts, diagnostics). Each player dict mirrors enough of
+    the api-sports.io /players shape that downstream consumers can read it:
+        {id, name, league, team: {name: league_slug}, photo}
+    """
+    diagnostics = []
+    preferred = _ESPN_BBALL_LEAGUE_MAP.get(league_hint) if league_hint else None
+    candidates, search_err = _espn_basketball_search(name, preferred_league_slug=preferred)
+    if search_err:
+        diagnostics.append({"stage": "search", "reason": search_err})
+
+    players = []
+    for c in candidates:
+        league_slug = c.get("league_slug")
+        if league_slug not in ("nba", "wnba"):
+            continue   # filter out NCAA / international clutter
+        cid = c.get("id")
+        players.append({
+            "id":     cid,
+            "name":   c.get("name"),
+            "league": league_slug.upper(),
+            "team":   {"name": None},
+            "jersey": c.get("jersey"),
+            "photo":  f"https://a.espncdn.com/i/headshots/{league_slug}/players/full/{cid}.png",
+        })
+    return players, diagnostics
+
+
+def _try_espn_basketball_stats(player_id=None, player_name=None, league_hint=None):
+    """High-level: pull season stats from ESPN. Caller may supply an ESPN
+    athlete id directly, or a player name (which we search first). Returns
+    (list_of_split_records, player_dict_or_None, diagnostics)."""
+    diagnostics = []
+    preferred_slug = _ESPN_BBALL_LEAGUE_MAP.get(league_hint) if league_hint else None
+
+    # Resolve to (athlete_id, league_slug, player_name)
+    resolved = []
+    if player_id:
+        # Try the hinted league first, then the other. ESPN ids are unique
+        # across NBA + WNBA so at most one will succeed.
+        slugs_to_try = [preferred_slug] if preferred_slug else []
+        for s in ("nba", "wnba"):
+            if s not in slugs_to_try:
+                slugs_to_try.append(s)
+        for slug in slugs_to_try:
+            resolved.append((player_id, slug, None))
+    elif player_name:
+        candidates, search_err = _espn_basketball_search(player_name, preferred_league_slug=preferred_slug)
+        if search_err:
+            diagnostics.append({"stage": "search", "reason": search_err})
+        for c in candidates[:5]:
+            if c.get("league_slug") in ("nba", "wnba") and c.get("id"):
+                resolved.append((c["id"], c["league_slug"], c.get("name")))
+    else:
+        return [], None, [{"stage": "input", "reason": "need player_id or player_name"}]
+
+    for athlete_id, slug, name in resolved:
+        overview, ov_err = _espn_basketball_overview(slug, athlete_id)
+        if ov_err:
+            diagnostics.append({"stage": "overview", "id": athlete_id, "slug": slug, "reason": ov_err})
+            continue
+        splits = _normalize_espn_basketball_stats(overview)
+        if not splits:
+            diagnostics.append({"stage": "overview", "id": athlete_id, "slug": slug, "reason": "overview_no_stats"})
+            continue
+        player_dict = {
+            "id":     athlete_id,
+            "name":   name or (overview.get("athlete") or {}).get("displayName"),
+            "league": slug.upper(),
+            "photo":  f"https://a.espncdn.com/i/headshots/{slug}/players/full/{athlete_id}.png",
+        }
+        return splits, player_dict, diagnostics
+
+    return [], None, diagnostics
+
+
+def _is_api_sports_suspended_or_auth_error(upstream_errors):
+    """Detect when api-sports.io is returning an account-level failure
+    (suspended, invalid key, etc.) vs. a recoverable validation error. We
+    only fall back to ESPN for the former — validation errors should still
+    surface so callers fix their query.
+
+    We deliberately require explicit auth-context tokens in the value (e.g.
+    'suspend', 'invalid key', 'quota') rather than weak words like 'access'
+    alone, since api-sports also returns validation errors keyed by 'access'
+    in some cases. The 'access' KEY is treated as auth-context only when
+    paired with a value containing one of those tokens."""
+    if not upstream_errors or not isinstance(upstream_errors, dict):
+        return False
+    AUTH_TOKENS = (
+        "suspend", "subscribe", "missing key", "invalid key",
+        "rate limit", "quota", "not active", "account is",
+        "unauthorized", "forbidden", "dashboard.api-football.com",
+    )
+    for _key, val in upstream_errors.items():
+        v = str(val).lower()
+        if any(tok in v for tok in AUTH_TOKENS):
+            return True
+    return False
+
+
 def _soccer_api_get(path, params, api_key):
     import requests as _req
     base = "https://v3.football.api-sports.io"
@@ -3949,7 +4181,35 @@ def api_sports_players(sport):
 
     # ── All other sports: api-sports.io with API_FOOTBALL_KEY ─────────────────
     api_key = os.environ.get("API_FOOTBALL_KEY", "")
+
+    def _basketball_espn_fallback(api_football_reason):
+        """ESPN player search fallback for basketball (NBA + WNBA). Only used
+        when api-sports.io is unavailable. Returns a Flask response."""
+        players, diag = _try_espn_basketball_player_search(player, league_hint=league or None)
+        if players:
+            return jsonify({
+                "ok":             True,
+                "sport":          "basketball",
+                "source":         "espn-fallback",
+                "query":          {"player": player, "league": league or None, "season": season or None},
+                "count":          len(players),
+                "players":        players,
+                "fallback_note": "api-sports.io unavailable; data sourced from ESPN public API (NBA + WNBA only).",
+                "api_sports_reason": api_football_reason,
+            })
+        return jsonify({
+            "ok":              False,
+            "sport":           "basketball",
+            "tried":           ["api-sports", "espn-fallback"],
+            "api_sports_reason": api_football_reason,
+            "espn_diagnostics":  diag,
+            "hint":            "ESPN returned no NBA/WNBA player matching this name. Check spelling or try a full first+last name.",
+        }), 404
+
+    # No api-football key + basketball → ESPN directly
     if not api_key:
+        if sport_lower == "basketball":
+            return _basketball_espn_fallback("API_FOOTBALL_KEY not configured")
         return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
 
     params = {"search": player}
@@ -3968,6 +4228,10 @@ def api_sports_players(sport):
         # Surface any upstream errors from api-sports
         upstream_errors = data.get("errors")
         if upstream_errors and upstream_errors != [] and upstream_errors != {}:
+            # If api-sports is suspended / auth-broken AND we're basketball,
+            # transparently fall back to ESPN rather than surface a 422.
+            if sport_lower == "basketball" and _is_api_sports_suspended_or_auth_error(upstream_errors):
+                return _basketball_espn_fallback(f"api-sports upstream: {upstream_errors}")
             if sport_lower in ("baseball", "hockey"):
                 hint = (
                     "The /players search endpoint is not available for baseball or hockey "
@@ -3993,10 +4257,16 @@ def api_sports_players(sport):
             "players": results,
         })
     except _req.exceptions.Timeout:
+        if sport_lower == "basketball":
+            return _basketball_espn_fallback("api-sports request timed out")
         return jsonify({"ok": False, "error": "api-sports request timed out"}), 504
     except _req.exceptions.RequestException as e:
+        if sport_lower == "basketball":
+            return _basketball_espn_fallback(f"api-sports network error: {e}")
         return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
     except Exception as e:
+        # Catch-all so unexpected errors return a sanitized 500 here rather
+        # than leaking traceback via the global error handler.
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
@@ -4146,7 +4416,51 @@ def api_sports_stats(sport):
         }), 400
 
     api_key = os.environ.get("API_FOOTBALL_KEY", "")
+
+    # Accept `player` as an alternate way to pass a name (used by the ESPN
+    # fallback path when the dashboard doesn't yet have an ESPN athlete id).
+    player_name_arg = request.args.get("player", "").strip()
+
+    def _basketball_stats_espn_fallback(api_football_reason):
+        splits, player_dict, diag = _try_espn_basketball_stats(
+            player_id=player_id or None,
+            player_name=player_name_arg or None,
+            league_hint=league or None,
+        )
+        if splits and player_dict:
+            return jsonify({
+                "ok":     True,
+                "sport":  "basketball",
+                "source": "espn-fallback",
+                "player": player_dict,
+                "query":  {
+                    "player_id": player_id or None,
+                    "player":    player_name_arg or None,
+                    "league":    league or None,
+                    "season":    season or None,
+                },
+                "count":  len(splits),
+                "stats":  splits,
+                "fallback_note":      "api-sports.io unavailable; stats sourced from ESPN public API (Regular Season / Postseason / Career splits, per-game averages).",
+                "api_sports_reason":  api_football_reason,
+            })
+        return jsonify({
+            "ok":               False,
+            "sport":            "basketball",
+            "tried":            ["api-sports", "espn-fallback"],
+            "api_sports_reason": api_football_reason,
+            "espn_diagnostics":  diag,
+            "hint": (
+                "ESPN basketball fallback could not resolve this player. "
+                "Either pass a valid ESPN athlete id via player_id, or a name "
+                "via ?player=<full name>. Hint: call "
+                "/api-sports/basketball/players?player=<name> first to get the id."
+            ),
+        }), 404
+
     if not api_key:
+        if sport_lower == "basketball":
+            return _basketball_stats_espn_fallback("API_FOOTBALL_KEY not configured")
         return jsonify({"ok": False, "error": "API_FOOTBALL_KEY secret not configured"}), 500
 
     base = BASES[sport_lower]
@@ -4169,6 +4483,8 @@ def api_sports_stats(sport):
 
         upstream_errors = data.get("errors")
         if upstream_errors and upstream_errors != [] and upstream_errors != {}:
+            if sport_lower == "basketball" and _is_api_sports_suspended_or_auth_error(upstream_errors):
+                return _basketball_stats_espn_fallback(f"api-sports upstream: {upstream_errors}")
             return jsonify({
                 "ok":              False,
                 "sport":           sport_lower,
@@ -4196,10 +4512,16 @@ def api_sports_stats(sport):
             "stats": raw_response,
         })
     except _req.exceptions.Timeout:
+        if sport_lower == "basketball":
+            return _basketball_stats_espn_fallback("api-sports request timed out")
         return jsonify({"ok": False, "error": "api-sports request timed out"}), 504
     except _req.exceptions.RequestException as e:
+        if sport_lower == "basketball":
+            return _basketball_stats_espn_fallback(f"api-sports network error: {e}")
         return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
     except Exception as e:
+        # Catch-all so unexpected errors return a sanitized 500 here rather
+        # than leaking traceback via the global error handler.
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
