@@ -4529,13 +4529,13 @@ def api_sports_stats(sport):
 _bball_gamelog_cache = {}   # key -> (timestamp, data)
 _BBALL_CACHE_TTL = 3600     # 1 hour
 
-def _bball_cache_get(key):
+def _bball_cache_get(key, ttl=None):
     import time as _t
     entry = _bball_gamelog_cache.get(key)
     if not entry:
         return None
     ts, data = entry
-    if _t.time() - ts > _BBALL_CACHE_TTL:
+    if _t.time() - ts > (ttl if ttl is not None else _BBALL_CACHE_TTL):
         _bball_gamelog_cache.pop(key, None)
         return None
     return data
@@ -4806,6 +4806,109 @@ def api_sports_basketball_gamelog():
         "count":   len(games_out),
         "games":   games_out,
     })
+
+
+# ─── TheRundown events proxy ────────────────────────────────────────────────
+# Keeps RUNDOWN_API_KEY server-side (was exposed client-side in older code).
+# Path confirmed by directory probe 2026-05-24: therundown.io/api/v1/
+# Sport IDs confirmed live: NFL=2, MLB=3, NBA=4, NHL=6, UFC=7, WNBA=8,
+#                           MLS=10, EPL=11, NBAPlayoffs=24, NHLPlayoffs=28.
+
+@app.route("/rundown/sports", methods=["GET"])
+@require_api_key
+def rundown_sports():
+    """Return the live TheRundown sport directory (id → name)."""
+    import requests as _req
+    key = os.getenv('RUNDOWN_API_KEY')
+    if not key:
+        return jsonify({"ok": False, "error": "RUNDOWN_API_KEY not configured"}), 500
+    cached = _bball_cache_get("trd:sports:dir")
+    if cached is not None:
+        return jsonify(cached)
+    try:
+        r = _req.get('https://therundown.io/api/v1/sports',
+                     headers={'X-TheRundown-Key': key}, timeout=10)
+    except Exception as e:
+        return jsonify({"ok": False, "step": "fetch", "error": str(e)}), 502
+    if not r.ok:
+        return jsonify({"ok": False, "status": r.status_code, "body": r.text[:300]}), 502
+    try:
+        sports = r.json().get('sports', [])
+    except Exception as e:
+        return jsonify({"ok": False, "step": "parse", "error": str(e)}), 502
+    result = {"ok": True, "source": "therundown", "count": len(sports), "sports": sports}
+    _bball_cache_set("trd:sports:dir", result)
+    return jsonify(result)
+
+
+@app.route("/rundown/events/<int:sport_id>/<date_str>", methods=["GET"])
+@require_api_key
+def rundown_events(sport_id, date_str):
+    """
+    Proxy for TheRundown events endpoint — returns events (with lines if the
+    account plan grants access) for a given sport_id on YYYY-MM-DD.
+
+    Distinguishes 401 (plan/auth) from 404 (no events) so the client can
+    short-circuit cleanly into its Odds API / ESPN fallback chain.
+    """
+    import requests as _req
+    # Betting lines are volatile — short TTL keeps proxy responses fresh.
+    EVENTS_TTL = 300  # 5 minutes
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+        return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
+
+    key = os.getenv('RUNDOWN_API_KEY')
+    if not key:
+        return jsonify({"ok": False, "error": "RUNDOWN_API_KEY not configured"}), 500
+
+    cache_key = f"trd:ev:{sport_id}:{date_str}"
+    cached = _bball_cache_get(cache_key, ttl=EVENTS_TTL)
+    if cached is not None:
+        return jsonify(cached)
+
+    url = f'https://therundown.io/api/v1/sports/{sport_id}/events/{date_str}'
+    try:
+        r = _req.get(url, headers={'X-TheRundown-Key': key}, timeout=12)
+    except Exception as e:
+        return jsonify({"ok": False, "step": "fetch", "error": str(e)}), 502
+
+    if r.status_code == 401:
+        # Plan limit — client should fall through to Odds API tier.
+        return jsonify({
+            "ok": False, "step": "auth", "status": 401,
+            "reason": "TheRundown key unauthorized for events endpoint (plan limit)",
+            "hint":   "Upgrade plan at therundown.io or rely on the Odds API fallback.",
+        }), 401
+    if r.status_code == 404:
+        return jsonify({
+            "ok": False, "step": "path", "status": 404,
+            "reason": f"sport_id={sport_id} or date={date_str} not found",
+        }), 404
+    if not r.ok:
+        return jsonify({
+            "ok": False, "step": "upstream", "status": r.status_code,
+            "body": r.text[:300],
+        }), 502
+
+    try:
+        data = r.json()
+    except Exception as e:
+        return jsonify({"ok": False, "step": "parse", "error": str(e)}), 502
+
+    events = data.get('events') or data.get('data') or []
+    result = {
+        "ok":       True,
+        "source":   "therundown",
+        "sport_id": sport_id,
+        "date":     date_str,
+        "count":    len(events),
+        "events":   events,
+    }
+    # Skip caching empty responses — avoids freezing out a late-scheduled
+    # game from showing up for 5 minutes after it's added upstream.
+    if events:
+        _bball_cache_set(cache_key, result)
+    return jsonify(result)
 
 
 # ─── Tier 0 NBA: stats.nba.com via nba_api ──────────────────────────────────
