@@ -3530,6 +3530,16 @@ async function runESPNNBAEngine(log){
                   if(rawRows.length>0 && labels.length>0) break;
                 }
               }
+              // ── DIAGNOSTIC (remove after confirmed working) ──
+              if(!window._nbaDbgCount) window._nbaDbgCount=0;
+              if(window._nbaDbgCount < 3 && season==='2026'){
+                window._nbaDbgCount++;
+                const _stC=(glD.seasonTypes||[]).length;
+                const _cat0=(glD.seasonTypes?.[0]?.categories||[]).length;
+                const _ev0=(glD.seasonTypes?.[0]?.categories?.[0]?.events||[]).length;
+                const _topKeys=Object.keys(glD||{}).slice(0,8).join(',');
+                log(`  [DBG-NBA] ${name}: topKeys=[${_topKeys}] stypes=${_stC} cats0=${_cat0} evts0=${_ev0} rows=${rawRows.length} lbls=${labels.length}`,'i');
+              }
               if(rawRows.length >= 1){
                 const parsed = rawRows.map(ev => {
                   const stats = ev.stats || ev.values || [];
@@ -3680,7 +3690,8 @@ async function runESPNNBAEngine(log){
 }
 
 async function runESPNWNBAEngine(log){
-  window._wnbaNoLogCache = new Set(); // reset per-run (new games may have logged)
+  window._wnbaNoLogCache = new Set(); // reset per-run
+  window._wnbaEspnFailStreak = 0;     // reset fast-bail counter per-run
   const candidates = [];
   try{
        // Step 1: Get WNBA slate — try today + next 4 days (rest days common in playoffs)
@@ -3746,7 +3757,15 @@ async function runESPNWNBAEngine(log){
         if(!athletes.length) continue;
 
         // Step 3: Get recent game logs for each player
+        // Fast-bail: if ESPN gamelog is dead for the whole season (e.g. early WNBA),
+        // bail after 4 consecutive failures instead of wasting 60+ API calls
+        if(!window._wnbaEspnFailStreak) window._wnbaEspnFailStreak = 0;
         for(const athlete of athletes.slice(0,10)){
+          // Bail early if ESPN gamelog is clearly dead for all players this run
+          if(window._wnbaEspnFailStreak >= 4){
+            log('  ⟳ WNBA: ESPN 0-for-4 → bailing to Flask (skipping remaining players)','i');
+            return runFlaskBasketballEngine('WNBA', log);
+          }
           const aid = athlete.id;
           const name = athlete.fullName || `${athlete.firstName||''} ${athlete.lastName||''}`.trim();
 
@@ -3778,6 +3797,16 @@ async function runESPNWNBAEngine(log){
                   }
                   if(rawRows.length>0 && labels.length>0) break;
                 }
+              }
+              // ── DIAGNOSTIC (remove after confirmed working) ──
+              if(!window._wnbaDbgCount) window._wnbaDbgCount=0;
+              if(window._wnbaDbgCount < 3 && season==='2026'){
+                window._wnbaDbgCount++;
+                const _stC=(glD.seasonTypes||[]).length;
+                const _cat0=(glD.seasonTypes?.[0]?.categories||[]).length;
+                const _ev0=(glD.seasonTypes?.[0]?.categories?.[0]?.events||[]).length;
+                const _topKeys=Object.keys(glD||{}).slice(0,8).join(',');
+                log(`  [DBG-WNBA] ${name}: topKeys=[${_topKeys}] stypes=${_stC} cats0=${_cat0} evts0=${_ev0} rows=${rawRows.length} lbls=${labels.length}`,'i');
               }
 
               // Flatten all event entries into game rows
@@ -3872,9 +3901,11 @@ async function runESPNWNBAEngine(log){
           }
           if(!gameLogs || gameLogs.length < 1){
             window._wnbaNoLogCache.add(aid);
+            window._wnbaEspnFailStreak = (window._wnbaEspnFailStreak||0) + 1;
             log(`  WNBA ${name}: no log data (tried gamelog + statisticslog + season avg)`,'i');
             continue;
           }
+          window._wnbaEspnFailStreak = 0; // reset streak on successful log fetch
 
           // gameLogs already parsed above (either from gamelog or statisticslog fallback)
           if(gameLogs.length < 1) continue;
