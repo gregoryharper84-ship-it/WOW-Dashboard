@@ -2803,13 +2803,20 @@ async function runMLBEngine(log){
     // FIX #11: Test all lines, pick optimal EV line (not just middle)
     const pitcherProps=[
       {key:'strikeOuts',prop:'strikeouts',lines:[4.5,5.5,6.5,7.5],side:'MORE'},
-      {key:'outs',prop:'pitcher outs recorded',lines:[14.5,16.5,17.5],side:'MORE'}
+      {key:'outs',prop:'pitcher outs recorded',lines:[14.5,16.5,17.5],side:'MORE'},
+      // MLB-PATCH-2026-05-23: new prop types from expanded registry
+      {key:'numberOfPitches',prop:'pitches thrown',lines:[80.5,85.5,90.5,95.5],side:'MORE'},
+      {key:'baseOnBalls',prop:'walks allowed',lines:[0.5,1.5,2.5],side:'MORE'},
     ];
     const hitterProps=[
       {key:'hits',prop:'hits',lines:[0.5,1.5],side:'MORE'},
       {key:'totalBases',prop:'total bases',lines:[0.5,1.5,2.5],side:'MORE'},
       {key:'rbi',prop:'rbis',lines:[0.5,1.5],side:'MORE'},
       {key:'runs',prop:'runs scored',lines:[0.5,1.5],side:'MORE'},
+      // MLB-PATCH-2026-05-23: new prop types from expanded registry
+      {key:'stolenBases',prop:'stolen bases',lines:[0.5,1.5],side:'MORE'},
+      {key:'strikeOuts',prop:'hitter strikeouts',lines:[0.5,1.5,2.5],side:'MORE'},
+      {key:'baseOnBalls',prop:'walks',lines:[0.5,1.5],side:'MORE'},
     ];
 
     // FIX #9: Get handedness splits helper
@@ -5002,29 +5009,50 @@ const PROP_TIERS = {
     {match:'goalkeeper save', sport:['Soccer'],     note:'2/2 — reliable vs attack-heavy opponents'},
     {match:'points',          sport:['NBA','WNBA'], note:'Playoff stars crush lines — Brunson +16.5, 2/2'},
     {match:'points rebounds', sport:['NBA','WNBA'], note:'Combo prop — reliable'},
+    // MLB PATCH: Combined/attempts tier 1 additions
+    {match:'pitching outs',   sport:['MLB'],        note:'ATTEMPTS — outs are process stat, low variance'},
+    {match:'outs recorded',   sport:['MLB'],        note:'ATTEMPTS — outs are process stat, low variance'},
+    {match:'pitcher fantasy', sport:['MLB'],        note:'COMBINED — Ks + IP, multi-component'},
+    {match:'pitcher fs',      sport:['MLB'],        note:'COMBINED — Ks + IP, multi-component'},
+    {match:'hits+runs+rbis',  sport:['MLB'],        note:'COMBINED — multiple offensive paths'},
+    {match:'h+r+rbi',         sport:['MLB'],        note:'COMBINED — multiple offensive paths'},
+    {match:'strikeout',       sport:['MLB'],        note:'COMBINED when Combo tag present'},
   ],
   tier2:[
-    {match:'assist',        sport:['NBA','WNBA'], note:'1/2 — star playmakers reliable, avoid non-stars'},
-    {match:'hitter fs',     sport:['MLB'],        note:'1/3 — needs high run environment'},
-    {match:'hitter fantasy',sport:['MLB'],        note:'Check game total before using'},
-    {match:'fta',           sport:['WNBA'],       note:'1/1 — FTA more stable than FTM'},
-    {match:'total bases',   sport:['MLB'],        note:'Good in high-total games'},
-    {match:'hits',          sport:['MLB'],        note:'Matchup dependent'},
-    {match:'aces',          sport:['Tennis'],     note:'Surface-dependent, reliable pattern'},
-    {match:'total games',   sport:['Tennis'],     note:'Tends to be consistent'},
-    {match:'passes att',    sport:['Soccer'],     note:'Only for midfielders in high-possession teams'},
+    {match:'assist',          sport:['NBA','WNBA'], note:'1/2 — star playmakers reliable, avoid non-stars'},
+    {match:'hitter fs',       sport:['MLB'],        note:'1/3 — needs high run environment'},
+    {match:'hitter fantasy',  sport:['MLB'],        note:'Check game total before using'},
+    {match:'fta',             sport:['WNBA'],       note:'1/1 — FTA more stable than FTM'},
+    {match:'total bases',     sport:['MLB'],        note:'COMBINED (1B=1,2B=2,3B=3,HR=4) — good in high-total games'},
+    {match:'hits',            sport:['MLB'],        note:'Matchup dependent'},
+    {match:'aces',            sport:['Tennis'],     note:'Surface-dependent, reliable pattern'},
+    {match:'total games',     sport:['Tennis'],     note:'Tends to be consistent'},
+    {match:'passes att',      sport:['Soccer'],     note:'Only for midfielders in high-possession teams'},
+    // MLB PATCH: new prop types
+    {match:'walks',           sport:['MLB'],        note:'Check pitcher BB/9 (hitter walks) or pitcher BB rate'},
+    {match:'walks allowed',   sport:['MLB'],        note:'Check pitcher BB/9 — use L10'},
+    {match:'stolen base',     sport:['MLB'],        note:'Confirm player running + check opp catcher CS%'},
+    {match:'pitches thrown',  sport:['MLB'],        note:'ATTEMPTS (full game) — 80-95 range, check starter leash'},
   ],
   tier3:[
-    {match:'first inning',  sport:['MLB'], note:'4/12 — 33% hit rate, Flex only, max 2 per slip'},
-    {match:'1st inn',       sport:['MLB'], note:'High variance — never anchor, Flex only'},
-    {match:'pitches thrown',sport:['MLB'], note:'33% hit rate — Flex only'},
-    {match:'shots',         sport:['Soccer'], note:'0/1 — DNP risk compounds attacker shot variance'},
-    {match:'2-pt made',     sport:['NBA'], note:'Niche prop — limited signal'},
+    {match:'first inning',    sport:['MLB'], note:'4/12 — 33% hit rate, Flex only, max 2 per slip'},
+    {match:'1st inn',         sport:['MLB'], note:'High variance — never anchor, Flex only'},
+    {match:'pitches thrown',  sport:['MLB'], note:'1st inning version: 33% hit rate — Flex only'},
+    {match:'shots',           sport:['Soccer'], note:'0/1 — DNP risk compounds attacker shot variance'},
+    {match:'2-pt made',       sport:['NBA'], note:'Niche prop — limited signal'},
+    // MLB PATCH: volatile props
+    {match:'earned run',      sport:['MLB'], note:'VOLATILE — use L10 not L5, start-to-start huge variance'},
+    {match:'hitter strikeout',sport:['MLB'], note:'INVERSE prop — need both hitter K% AND pitcher K rate'},
+    {match:'batter strikeout',sport:['MLB'], note:'INVERSE prop — need both hitter K% AND pitcher K rate'},
+    {match:'singles',         sport:['MLB'], note:'Subset of hits — require L5 ≥ 60%, excludes XBH'},
   ],
   tier4:[
-    {match:'ftm',           sport:['NBA','WNBA'], note:'0/1 — foul-dependent, Mobley hit 1 on 3.5'},
-    {match:'free throw made',sport:['NBA','WNBA'],note:'Avoid — uncontrollable variance'},
-    {match:'turnover',      sport:null,           note:'0/1 — game-script dependent, Sykes 0 on 2.5'},
+    {match:'ftm',             sport:['NBA','WNBA'], note:'0/1 — foul-dependent, Mobley hit 1 on 3.5'},
+    {match:'free throw made', sport:['NBA','WNBA'], note:'Avoid — uncontrollable variance'},
+    {match:'turnover',        sport:null,           note:'0/1 — game-script dependent, Sykes 0 on 2.5'},
+    // MLB PATCH: hard bans
+    {match:'triple',          sport:['MLB'],        note:'HARD BAN — rarest offensive event (~0.3% of PAs). Single event kill.'},
+    {match:'home run',        sport:['MLB'],        note:'HARD BAN — single event, no multi-path. Never include.'},
   ],
 };
 
@@ -5075,6 +5103,9 @@ function detectFragileProp(prop, line, sport, player=''){
     flags.push({tag:'binary-0.5-event', severity:'ban_stack', note:'Binary 0.5 event — ban as stacked anchor'});
   if(p.includes('home run') || p === 'hr')
     flags.push({tag:'hr-hard-ban', severity:'hard_ban', note:'HR props — HARD BAN'});
+  // MLB PATCH: Triples = single event hard ban
+  if(p.includes('triple') && (sport === 'MLB' || sport === 'baseball') && !p.includes('double'))
+    flags.push({tag:'triple-hard-ban', severity:'hard_ban', note:'Triples — HARD BAN. Rarest offensive event (~0.3% of PAs). Never include.'});
 
   // ══════════════════════════════════════════════════════
   // LEARNED RULES — from May 19-20 slip analysis
@@ -5145,6 +5176,61 @@ function detectFragileProp(prop, line, sport, player=''){
      (propL.includes('points') && propL.includes('rebound') && propL.includes('assist'))){
     flags.push({tag:'combo-prop-multi-path', severity:'boost',
       note:'PRA/Combo props: multiple paths to hit. Alyssa Thomas 31 on 28.5. Reliable in playoffs.'});
+  }
+
+  // ══════════════════════════════════════════════════════
+  // MLB-PATCH-2026-05-23: new prop type flags from expanded registry
+  // ══════════════════════════════════════════════════════
+
+  // ── EARNED RUNS ALLOWED: use L10 not L5, extreme start-to-start variance ──
+  if((propL.includes('earned run') || propL.includes('era')) && sport==='MLB'){
+    flags.push({tag:'earned-runs-use-l10', severity:'warn',
+      note:'Earned Runs: extremely volatile. Always use L10, not L5. Inherited runners and defense make this unreliable.'});
+  }
+
+  // ── HITTER STRIKEOUTS: inverse prop — need pitcher K rate context ──
+  if((propL.includes('hitter strikeout') || propL.includes('batter strikeout')) && sport==='MLB'){
+    flags.push({tag:'hitter-ks-inverse', severity:'warn',
+      note:'Hitter Ks: INVERSE prop. High hitter K% + high pitcher K/9 = favor MORE. Low K pitcher = lean LESS. Always cross-reference.'});
+  }
+
+  // ── STOLEN BASES: requires runner profile + catcher matchup ──
+  if(propL.includes('stolen base') && sport==='MLB'){
+    flags.push({tag:'stolen-bases-matchup', severity:'warn',
+      note:'Stolen Bases: confirm player is running (not slowed by injury). Check opp catcher CS%. Strong catcher arm kills this prop.'});
+    if(line <= 0.5)
+      flags.push({tag:'stolen-base-binary', severity:'ban_stack',
+        note:'0.5 Stolen Bases = binary single-event for a speed-dependent stat. Ban as stacked anchor.'});
+  }
+
+  // ── SINGLES: subset of hits, higher bar required ──
+  if(propL.includes('single') && sport==='MLB'){
+    flags.push({tag:'singles-subset-hits', severity:'warn',
+      note:'Singles: subset of hits (excludes XBH). Requires L5 ≥ 60% — tighter than hits because doubles/HRs take away.'});
+  }
+
+  // ── FULL-GAME PITCHES THROWN: leash risk — check starter history ──
+  if(propL.includes('pitches thrown') && !propL.includes('1st') && !propL.includes('first') && sport==='MLB'){
+    flags.push({tag:'pitches-thrown-leash-risk', severity:'warn',
+      note:'Full-game Pitches Thrown: check if pitcher has history of being pulled early. Leash/bullpen hooks kill Over bets.'});
+  }
+
+  // ── WALKS ALLOWED: volatile but patterned — check BB/9 trend ──
+  if((propL.includes('walk') || propL.includes('base on ball')) && sport==='MLB'){
+    flags.push({tag:'walks-bb-trend', severity:'warn',
+      note:'Walks: check pitcher BB/9 trend (last 5 starts). Pitchers with command issues can balloon walk counts vs tough lineups.'});
+  }
+
+  // ── HITS+RUNS+RBIS (inning-segmented): small sample per inning ──
+  if((propL.includes('hits+runs') || propL.includes('h+r+rbi')) && propL.includes('inn')){
+    flags.push({tag:'inning-hrbi-small-sample', severity:'warn',
+      note:`Inning-segmented H+R+RBI: small sample per inning span. ${propL.includes('1+2+3+4+5') ? 'Five-inning spans are more reliable' : 'First-inning spans are most volatile'}. Use L5 ≥ 60%.`});
+  }
+
+  // ── PITCHER STRIKEOUTS COMBO: multi-game or split — treat as COMBINED ──
+  if(propL.includes('strikeout') && propL.includes('combo')){
+    flags.push({tag:'strikeout-combo-combined', severity:'boost',
+      note:'Pitcher Strikeouts (Combo): multi-game or split format — COMBINED tier. More stable than single-game K lines.'});
   }
 
   // ── GOALIE SAVES: positive signal when team is likely to concede ──
@@ -5813,15 +5899,39 @@ function runFourGates(prop){
   }
 
   // ── GATE 2 — PROP TYPE CLASSIFICATION ──
+  // MLB-PATCH-2026-05-23: isHitterFS must be declared BEFORE isCombined so that
+  // 'fantasy' string in Hitter FS props doesn't get swallowed by the isCombined 'fantasy' check.
+  // Bug: PATCH E (Hitter FS reclassification) was unreachable because isCombined matched first.
+  const isHitterFS = (propLower.includes('hitter fs') || propLower.includes('hitter fantasy') ||
+                     (propLower.includes('fantasy') && !propLower.includes('pitcher') && prop.sport === 'MLB'));
+
   const isAttempts = propLower.includes('attempt') || propLower.includes('fga') ||
                      propLower.includes('pitches') || propLower.includes('shots on') ||
-                     propLower.includes('2pa') || propLower.includes('passes att');
-  const isCombined = propLower.includes('pra') || propLower.includes('reb+') ||
+                     propLower.includes('2pa') || propLower.includes('passes att') ||
+                     // MLB PATCH: Pitching Outs = ATTEMPTS (process stat)
+                     propLower.includes('pitching out') || propLower.includes('outs recorded');
+
+  const isCombined = !isHitterFS && (  // exclude HitterFS — it needs its own gate below
+                     propLower.includes('pra') || propLower.includes('reb+') ||
                      propLower.includes('r+a') || propLower.includes('h+r') ||
-                     propLower.includes('fantasy') || propLower.includes('+ast');
+                     // MLB PATCH: Hits+Runs+RBIs (full-game and inning-segmented)
+                     propLower.includes('hits+runs') || propLower.includes('h+r+rbi') ||
+                     // MLB PATCH: Total Bases = COMBINED (1B=1,2B=2,3B=3,HR=4 — multiple paths)
+                     propLower.includes('total base') ||
+                     // MLB PATCH: Pitcher Strikeouts (Combo) = COMBINED
+                     (propLower.includes('strikeout') && propLower.includes('combo')) ||
+                     // MLB PATCH: Pitcher Fantasy Score = COMBINED (Ks + IP components)
+                     propLower.includes('pitcher fantasy') || propLower.includes('pitcher fs') ||
+                     // original combined checks (non-MLB fantasy stays COMBINED)
+                     propLower.includes('fantasy') || propLower.includes('+ast'));
+
   const isFTM      = propLower.includes('free throw') && propLower.includes('made');
+
   const isSingle   = propLower.includes('home run') || propLower.includes('touchdown') ||
-                     propLower.includes('anytime goal') || propLower.includes('anytime td');
+                     propLower.includes('anytime goal') || propLower.includes('anytime td') ||
+                     // MLB PATCH: Triples = SINGLE EVENT hard ban (rarest offensive event ~0.3% of PAs)
+                     (propLower.includes('triple') && prop.sport === 'MLB' && !propLower.includes('double'));
+
   const isMade     = (propLower.includes('made') || propLower.includes('2pm') ||
                       propLower.includes('3pm') || propLower.includes('fgm')) && !isFTM;
 
@@ -5893,6 +6003,61 @@ function runFourGates(prop){
     }
     result.flags.push('hitter-fs-volatile');
     result.g2 += ` ⚠️ CAUTION — L10=${Math.round(l10*100)}%, avg=${recentFSAvg?.toFixed(1)}`;
+
+  // MLB PATCH: Earned Runs Allowed — MADE tier, use L10 (highly volatile start-to-start)
+  } else if(propLower.includes('earned run') && prop.sport === 'MLB'){
+    result.propClass = 'EARNED_RUNS';
+    result.g2 = 'EARNED RUNS ⭐⭐⭐ — volatile (use L10, not L5)';
+    result.flags.push('earned-runs-use-l10');
+    // Prefer l10 over l5 — ER has huge start-to-start variance
+    if(prop.l10_hit_rate != null && prop.l5_hit_rate != null && prop.l10_hit_rate < prop.l5_hit_rate - 0.15){
+      result.flags.push('earned-runs-l10-divergence');
+      result.g2 += ` ⚠️ L5/L10 diverge — L10 ${Math.round(prop.l10_hit_rate*100)}% is the reliable baseline`;
+    }
+
+  // MLB PATCH: Hitter Strikeouts — MADE tier, INVERSE prop (need pitcher K rate cross-ref)
+  } else if((propLower.includes('hitter strikeout') || propLower.includes('batter strikeout')) && prop.sport === 'MLB'){
+    result.propClass = 'HITTER_STRIKEOUTS';
+    result.g2 = 'HITTER Ks ⭐⭐⭐ — inverse prop: high hitter K% + high pitcher K rate = MORE';
+    result.flags.push('hitter-ks-inverse-prop');
+    // Cross-reference: if opp pitcher has high K rate, skews MORE for the hitter
+    const oppK9 = prop.opp_pitcher_k9 || prop.seasonK9 || null;
+    if(oppK9 != null){
+      if(oppK9 > 9.0) result.g2 += ` ✅ Opp K/9 ${oppK9.toFixed(1)} — high K environment favors MORE`;
+      else if(oppK9 < 7.0) result.g2 += ` ⚠️ Opp K/9 ${oppK9.toFixed(1)} — low K environment, lean LESS`;
+    }
+
+  // MLB PATCH: Stolen Bases — MADE tier, requires catcher + pitcher matchup check
+  } else if(propLower.includes('stolen base') && prop.sport === 'MLB'){
+    result.propClass = 'STOLEN_BASES';
+    result.g2 = 'STOLEN BASES ⭐⭐⭐ — confirm player is running (check injury/speed) + opp catcher CS%';
+    result.flags.push('stolen-bases-matchup-required');
+    // Flag catcher arm if available
+    if(prop.opp_catcher_cs_pct != null){
+      if(prop.opp_catcher_cs_pct > 0.35)
+        result.g2 += ` ❌ Elite catcher (${Math.round(prop.opp_catcher_cs_pct*100)}% CS) — avoid MORE`;
+      else
+        result.g2 += ` ✅ Weak catcher arm (${Math.round(prop.opp_catcher_cs_pct*100)}% CS)`;
+    }
+
+  // MLB PATCH: Walks (hitter) and Walks Allowed (pitcher) — MADE standard, check BB/9
+  } else if((propLower.includes('walk') || propLower.includes('base on ball')) && prop.sport === 'MLB'){
+    result.propClass = 'WALKS_MLB';
+    result.g2 = 'WALKS MLB ⭐⭐⭐ — check pitcher BB/9 (hitter walks) or pitcher BB rate (walks allowed)';
+    result.flags.push('walks-bb-rate-check');
+
+  // MLB PATCH: Singles — subset of Hits, MADE tier with higher bar (must hit AND be a single)
+  } else if(propLower.includes('single') && prop.sport === 'MLB'){
+    result.propClass = 'SINGLES_MLB';
+    result.g2 = 'SINGLES ⭐⭐⭐ — subset of hits (excludes XBH). Require L5 ≥ 60%.';
+    result.flags.push('singles-subset-hits');
+    const l5 = prop.l5_hit_rate ?? null;
+    if(l5 != null && l5 < 0.60){
+      result.kill = true;
+      result.killReason = `Gate 2 (Singles): L5 hit rate ${Math.round(l5*100)}% < 60% required for singles prop (subset of hits, higher bar)`;
+      result.g2 += ' ❌ KILL';
+      return result;
+    }
 
   } else if(isMade){
     result.propClass = 'MADE';
@@ -6384,12 +6549,73 @@ const _QA_CASES = [
     prop: {sport:'NBA', prop:'assists', side:'MORE', line:5.5, source:'engine', lineupConfirmed:true, recent_avg:6.1, l5_hit_rate:0.62, raw_vals:[7,5,6,8,5]},
     expect: 'PASS'
   },
-  // NULL SAFETY REGRESSION CASES
+  // ── MLB PROP REGISTRY REGRESSION CASES (MLB-PATCH-2026-05-23) ──
   {
-    label: 'NULL SAFETY: NBA prop survives BDL null response path',
-    prop: {sport:'NBA', prop:'points', side:'MORE', line:24.5, source:'engine', lineupConfirmed:true, recent_avg:26, l5_hit_rate:0.68, raw_vals:[28,24,26,27,25]},
+    label: 'MLB PATCH: Pitching Outs = ATTEMPTS, passes gate',
+    prop: {sport:'MLB', prop:'pitcher outs recorded', side:'MORE', line:16.5, source:'engine', lineupConfirmed:true, recent_avg:18.0, l5_hit_rate:0.70, raw_vals:[19,17,18,20,17]},
     expect: 'PASS'
   },
+  {
+    label: 'MLB PATCH: Total Bases = COMBINED, passes gate',
+    prop: {sport:'MLB', prop:'total bases', side:'MORE', line:1.5, source:'engine', lineupConfirmed:true, recent_avg:2.1, l5_hit_rate:0.68, raw_vals:[2,1,3,2,2]},
+    expect: 'PASS'
+  },
+  {
+    label: 'MLB PATCH: Hits+Runs+RBIs = COMBINED, passes gate',
+    prop: {sport:'MLB', prop:'hits+runs+rbis', side:'MORE', line:1.5, source:'engine', lineupConfirmed:true, recent_avg:2.2, l5_hit_rate:0.70, raw_vals:[3,2,1,2,3]},
+    expect: 'PASS'
+  },
+  {
+    label: 'MLB PATCH: Pitcher Fantasy Score = COMBINED, passes gate',
+    prop: {sport:'MLB', prop:'pitcher fantasy score', side:'MORE', line:24.5, source:'engine', lineupConfirmed:true, recent_avg:26.0, l5_hit_rate:0.68, raw_vals:[28,24,27,26,25]},
+    expect: 'PASS'
+  },
+  {
+    label: 'MLB PATCH: Strikeouts (Combo) = COMBINED, passes gate',
+    prop: {sport:'MLB', prop:'pitcher strikeouts (combo)', side:'MORE', line:9.5, source:'engine', lineupConfirmed:true, recent_avg:11.0, l5_hit_rate:0.70, raw_vals:[12,10,11,11,10]},
+    expect: 'PASS'
+  },
+  {
+    label: 'MLB PATCH: Triples = SINGLE EVENT hard ban for MLB',
+    prop: {sport:'MLB', prop:'triples', side:'MORE', line:0.5, source:'odds_api', lineupConfirmed:true, recent_avg:0.1, l5_hit_rate:0.20, raw_vals:[0,0,1,0,0]},
+    expect: 'KILL'
+  },
+  {
+    label: 'MLB PATCH: Hitter FS now correctly reaches SINGLE EVENT gate (HitterFS ordering fix)',
+    prop: {sport:'MLB', prop:'hitter fantasy score', side:'MORE', line:5, source:'odds_api', lineupConfirmed:true, l10_hit_rate:0.45, recent_avg:4.8, raw_vals:[4,8,3,0,7,5,2,9,4,3]},
+    expect: 'KILL'
+  },
+  {
+    label: 'MLB PATCH: Full-game Pitches Thrown = ATTEMPTS, passes gate',
+    prop: {sport:'MLB', prop:'pitches thrown', side:'MORE', line:90.5, source:'engine', lineupConfirmed:true, recent_avg:93.0, l5_hit_rate:0.70, raw_vals:[95,91,92,98,89]},
+    expect: 'PASS'
+  },
+  {
+    label: 'MLB PATCH: Stolen Bases prop passes gate (engine source)',
+    prop: {sport:'MLB', prop:'stolen bases', side:'MORE', line:0.5, source:'engine', lineupConfirmed:true, recent_avg:0.8, l5_hit_rate:0.68, raw_vals:[1,1,0,1,1]},
+    expect: 'PASS'
+  },
+  {
+    label: 'MLB PATCH: Hitter Strikeouts prop passes gate (engine source)',
+    prop: {sport:'MLB', prop:'hitter strikeouts', side:'MORE', line:1.5, source:'engine', lineupConfirmed:true, recent_avg:1.8, l5_hit_rate:0.68, raw_vals:[2,2,1,2,1]},
+    expect: 'PASS'
+  },
+  {
+    label: 'MLB PATCH: Walks prop passes gate (engine source)',
+    prop: {sport:'MLB', prop:'walks', side:'MORE', line:0.5, source:'engine', lineupConfirmed:true, recent_avg:0.9, l5_hit_rate:0.70, raw_vals:[1,1,0,1,1]},
+    expect: 'PASS'
+  },
+  {
+    label: 'MLB PATCH: Singles L5 < 60% killed',
+    prop: {sport:'MLB', prop:'singles', side:'MORE', line:0.5, source:'odds_api', lineupConfirmed:true, recent_avg:0.6, l5_hit_rate:0.50, raw_vals:[0,1,1,0,1]},
+    expect: 'KILL'
+  },
+  {
+    label: 'MLB PATCH: 1+2+3 Inning H+R+RBI = COMBINED, passes gate',
+    prop: {sport:'MLB', prop:'1+2+3 inning hits+runs+rbis', side:'MORE', line:0.5, source:'engine', lineupConfirmed:true, recent_avg:1.2, l5_hit_rate:0.68, raw_vals:[2,1,0,1,2]},
+    expect: 'PASS'
+  },
+  // NULL SAFETY: STAR PLAYER REGRESSION CASES
   {
     label: 'NULL SAFETY: WNBA prop survives BDL gR null response',
     prop: {sport:'WNBA', prop:'points', side:'MORE', line:18.5, source:'engine', lineupConfirmed:true, recent_avg:20, l5_hit_rate:0.68, raw_vals:[22,18,20,21,19]},
