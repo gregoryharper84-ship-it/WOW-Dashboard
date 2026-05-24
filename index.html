@@ -298,6 +298,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
     <button class="tab" onclick="switchTab('team')">🏟 Teams</button>
     <button class="tab" onclick="switchTab('log')">📊 Log</button>
     <button class="tab" onclick="switchTab('claude')" style="background:linear-gradient(135deg,rgba(124,58,237,0.15),rgba(79,70,229,0.15));border:1px solid rgba(124,58,237,0.3);">🤖 Ask Claude</button>
+    <button class="tab" onclick="switchTab('gameintel')" style="background:linear-gradient(135deg,rgba(16,185,129,0.12),rgba(6,182,212,0.10));border:1px solid rgba(16,185,129,0.25);">🎮 Game Intel</button>
   </div>
 </div>
 
@@ -343,6 +344,53 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
   </div>
   <div style="font-size:10px;color:var(--text3);margin-top:6px;text-align:center;">
     Shift+Enter for new line · Enter to send · Context refreshes with each message
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════ -->
+<!-- GAME INTEL                            -->
+<!-- ══════════════════════════════════════ -->
+<div id="tab-gameintel" class="hidden">
+  <div class="main">
+    <div class="card" style="margin-bottom:12px;background:linear-gradient(135deg,rgba(16,185,129,0.08),rgba(6,182,212,0.05));border:1px solid rgba(16,185,129,0.2);">
+      <div class="cb">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+          <span style="font-size:22px;">🎮</span>
+          <div>
+            <div style="font-size:15px;font-weight:800;">Game Intel</div>
+            <div style="font-size:11px;color:var(--text2);">Select any game for instant AI breakdown: spread edge, totals, first-half play, and top props.</div>
+          </div>
+          <button class="btn btn-s" style="margin-left:auto;font-size:12px;" onclick="loadGameIntel()">↺ Refresh Games</button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;" id="giSportFilter">
+          <button class="badge bg-g" style="cursor:pointer;font-size:11px;padding:3px 10px;" onclick="loadGameIntel('all')" id="gf-all">All Sports</button>
+          <button class="badge bg-gr" style="cursor:pointer;font-size:11px;padding:3px 10px;" onclick="loadGameIntel('MLB')" id="gf-MLB">MLB</button>
+          <button class="badge bg-gr" style="cursor:pointer;font-size:11px;padding:3px 10px;" onclick="loadGameIntel('NBA')" id="gf-NBA">NBA</button>
+          <button class="badge bg-gr" style="cursor:pointer;font-size:11px;padding:3px 10px;" onclick="loadGameIntel('NHL')" id="gf-NHL">NHL</button>
+          <button class="badge bg-gr" style="cursor:pointer;font-size:11px;padding:3px 10px;" onclick="loadGameIntel('WNBA')" id="gf-WNBA">WNBA</button>
+          <button class="badge bg-gr" style="cursor:pointer;font-size:11px;padding:3px 10px;" onclick="loadGameIntel('Soccer')" id="gf-Soccer">Soccer</button>
+        </div>
+      </div>
+    </div>
+    <div id="giGameList" style="margin-bottom:14px;">
+      <div style="text-align:center;padding:30px;color:var(--text3);font-size:13px;">
+        Click <strong>Refresh Games</strong> to load today's slate, then click any game to get an AI breakdown.
+      </div>
+    </div>
+    <div id="giAnalysisPanel" class="hidden">
+      <div class="card" style="border:1px solid rgba(16,185,129,0.3);">
+        <div class="ch">
+          <span class="ct" id="giAnalysisTitle">Game Analysis</span>
+          <button class="btn btn-s" style="font-size:11px;padding:4px 10px;" onclick="document.getElementById('giAnalysisPanel').classList.add('hidden')">✕ Close</button>
+        </div>
+        <div class="cb">
+          <div id="giAnalysisContent" style="font-size:13px;line-height:1.7;color:var(--text);min-height:80px;">
+            <div style="display:flex;align-items:center;gap:8px;color:var(--text2);"><div class="sp"></div> Analyzing game...</div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1891,6 +1939,186 @@ GUIDELINES (apply after gates pass)
   }
 }
 
+
+// ══════════════════════════════════
+// GAME INTEL ENGINE
+// ══════════════════════════════════
+
+const _giEspnPaths = {
+  MLB:  'baseball/mlb',
+  NBA:  'basketball/nba',
+  NHL:  'hockey/nhl',
+  WNBA: 'basketball/wnba',
+  Soccer: 'soccer/usa.1',
+};
+let _giAllGames = []; // cache of all loaded games
+
+async function loadGameIntel(sportFilter){
+  const container = document.getElementById('giGameList');
+  sportFilter = sportFilter || 'all';
+
+  // Update filter button styles
+  document.querySelectorAll('#giSportFilter .badge').forEach(b => {
+    b.className = b.id === 'gf-'+(sportFilter==='all'?'all':sportFilter)
+      ? 'badge bg-g' : 'badge bg-gr';
+    b.style.cssText = 'cursor:pointer;font-size:11px;padding:3px 10px;';
+  });
+
+  if(_giAllGames.length && sportFilter !== 'all'){
+    renderGiGameList(_giAllGames.filter(g => sportFilter==='all'||g.sport===sportFilter), container);
+    return;
+  }
+
+  container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text2);font-size:12px;display:flex;align-items:center;justify-content:center;gap:8px;"><div class="sp"></div> Fetching today\'s slate...</div>';
+  _giAllGames = [];
+
+  const sports = Object.entries(_giEspnPaths);
+  for(const [sport, path] of sports){
+    try{
+      // Try today + tomorrow
+      for(let di=0; di<3; di++){
+        const d = new Date(Date.now()+di*86400000);
+        const yyyymmdd = d.getFullYear().toString()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+        const r = await fx(`${EP.espn}/${path}/scoreboard?dates=${yyyymmdd}`,{},8000);
+        if(!r?.ok) continue;
+        const data = await r.json();
+        const events = (data.events||[]).filter(ev => {
+          const st = ev.competitions?.[0]?.status?.type?.description||'';
+          return !['Final','Postponed','Cancelled'].includes(st);
+        });
+        if(events.length){
+          events.forEach(ev => {
+            const comp = ev.competitions?.[0];
+            const teams = comp?.competitors||[];
+            const away = teams.find(t=>t.homeAway==='away')||teams[0]||{};
+            const home = teams.find(t=>t.homeAway==='home')||teams[1]||{};
+            const time = comp?.date ? new Date(comp.date).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : 'TBD';
+            const dateLabel = di===0 ? 'Today' : di===1 ? 'Tomorrow' : new Date(Date.now()+di*86400000).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+            _giAllGames.push({
+              sport, away: away.team?.displayName||'Away', home: home.team?.displayName||'Home',
+              time, dateLabel, status: comp?.status?.type?.description||'Scheduled',
+              eventId: ev.id,
+            });
+          });
+          break;
+        }
+      }
+    }catch(e){ console.warn('GameIntel slate fetch error:', e?.message); }
+  }
+
+  const toShow = sportFilter==='all' ? _giAllGames : _giAllGames.filter(g=>g.sport===sportFilter);
+  renderGiGameList(toShow, container);
+}
+
+function renderGiGameList(games, container){
+  if(!games.length){
+    container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:13px;">No upcoming games found for this sport today.</div>';
+    return;
+  }
+
+  const bySport = {};
+  games.forEach(g => { if(!bySport[g.sport]) bySport[g.sport]; (bySport[g.sport]=bySport[g.sport]||[]).push(g); });
+
+  const sportColors = {MLB:'var(--red)',NBA:'var(--accent)',NHL:'var(--cyan)',WNBA:'var(--purple)',Soccer:'var(--green)'};
+  window._giGameMap = [];
+  container.innerHTML = Object.entries(bySport).map(([sport, gs]) => `
+    <div style="margin-bottom:12px;">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:${sportColors[sport]||'var(--text2)'};padding:4px 0 6px;">
+        ${sport} · ${gs.length} game${gs.length!==1?'s':''}
+      </div>
+      ${gs.map((g) => { window._giGameMap.push(g); return `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:6px;transition:.15s;cursor:pointer;"
+          onmouseenter="this.style.borderColor='var(--border2)'" onmouseleave="this.style.borderColor='var(--border)'">
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:700;">${g.away} <span style="color:var(--text3);font-weight:400;">@</span> ${g.home}</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:2px;">${g.sport} · ${g.dateLabel} ${g.time} ET · <span style="color:${g.status==='In Progress'?'var(--green)':'var(--text3);'};">${g.status}</span></div>
+          </div>
+          <button class="btn btn-p" style="font-size:11px;padding:6px 14px;flex-shrink:0;"
+            data-gi="${_giGameMap.length}" onclick="analyzeGame(window._giGameMap[this.dataset.gi])">
+            🔍 Analyze
+          </button>
+        </div>
+      `; }).join('')}
+    </div>
+  `).join('');
+}
+
+async function analyzeGame(game){
+  const panel = document.getElementById('giAnalysisPanel');
+  const title = document.getElementById('giAnalysisTitle');
+  const content = document.getElementById('giAnalysisContent');
+
+  panel.classList.remove('hidden');
+  title.textContent = `${game.away} @ ${game.home} · ${game.sport}`;
+  content.innerHTML = '<div style="display:flex;align-items:center;gap:8px;color:var(--text2);"><div class="sp"></div> Claude is analyzing this game...</div>';
+  panel.scrollIntoView({behavior:'smooth', block:'start'});
+
+  // Gather any relevant props from the current pool
+  const poolEl = document.getElementById('pool-list') || document.getElementById('engResults');
+  const relatedProps = window._lastEngineResults
+    ? window._lastEngineResults.filter(p => p.game && (p.game.includes(game.away)||p.game.includes(game.home)))
+        .slice(0,6).map(p => `${p.player} ${p.prop} ${p.side} ${p.line} (${p.tier}, L5:${p.l5_hit_rate!=null?(p.l5_hit_rate*100).toFixed(0)+'%':'?'})`)
+        .join('\n    ')
+    : 'No props loaded yet — run the Best Props engine first for prop context.';
+
+  const prompt = `Analyze this game for betting:
+
+GAME: ${game.away} @ ${game.home}
+SPORT: ${game.sport}
+TIME: ${game.dateLabel} ${game.time} ET
+
+RELEVANT PROPS FROM WOW POOL:
+    ${relatedProps}
+
+Give me a concise breakdown in this format:
+
+📊 SPREAD: [Your recommendation] · Edge: [X%] · Reason: [1 sentence]
+🎯 TOTAL: [Over/Under X] · Edge: [X%] · Reason: [1 sentence]  
+⚡ FIRST HALF: [Best first-half play] · Why: [1 sentence]
+🏆 TOP PROPS: [2 best individual props from the pool above, or suggest likely ones]
+⚠️ TRAP ALERT: [Any line that looks like a public trap — if none, say "No obvious traps"]
+
+Be specific with numbers. If you don't have enough data for a confident edge, say so rather than guessing.`;
+
+  try{
+    const context = buildDashboardContext();
+    const sysPrompt = `You are a sharp sports betting analyst embedded in the WOW Command Center. Be concise, specific, and data-driven. Reference real numbers. If data is limited, be honest about confidence levels. Format your response clearly using the exact structure requested.
+
+Dashboard context: ${context.slice(0,1500)}`;
+
+    const r = await fetch(`${EP.replit}/claude-proxy`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,system:sysPrompt,messages:[{role:'user',content:prompt}]})
+    });
+    const data = await r.json();
+    const reply = data.content?.[0]?.text || data.error?.message || 'No response.';
+
+    // Format the reply nicely
+    content.innerHTML = reply
+      .split('\n')
+      .map(line => {
+        line = line.trim();
+        if(!line) return '<div style="height:6px;"></div>';
+        const isHeader = line.match(/^[📊🎯⚡🏆⚠️]/);
+        return `<div style="margin-bottom:${isHeader?'8':'2'}px;${isHeader?'font-weight:700;color:var(--text);':'color:var(--text2);font-size:12px;'}">${line}</div>`;
+      }).join('');
+
+    // Add quick-action buttons
+    content.innerHTML += `
+      <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;">
+        <button class="btn btn-s" style="font-size:11px;" onclick="claudePrompt('Give me a deeper breakdown of ${game.away} vs ${game.home} — specifically first quarter trends and pace of play.');switchTab('claude');">
+          💬 Deep dive in chat
+        </button>
+        <button class="btn btn-s" style="font-size:11px;" onclick="claudePrompt('Build me a slip from the best props in the ${game.away} @ ${game.home} game.');switchTab('claude');">
+          🎰 Build a slip for this game
+        </button>
+      </div>`;
+  }catch(e){
+    content.innerHTML = `<div style="color:var(--red);">Analysis failed: ${e.message}</div>`;
+  }
+}
+
 // Clear Claude chat history (called if user wants fresh context)
 function clearClaudeChat(){
   _claudeHistory = [];
@@ -1904,7 +2132,7 @@ document.getElementById('slateDate').textContent=new Date().toLocaleDateString('
 
 // ── Tabs ──
 function switchTab(n){
-  ['engine','pool','jeremia','board','prizepicks','slip','manual','team','log','claude'].forEach(t=>{
+  ['engine','pool','jeremia','board','prizepicks','slip','manual','team','log','claude','gameintel'].forEach(t=>{
     const el=document.getElementById('tab-'+t);
     if(el) el.classList.add('hidden');
   });
@@ -2332,6 +2560,7 @@ async function runAutoEngine(){
 
   log(`\n✓ Engine complete. ${top.length} props meet criteria.`,'ok');
   top.filter(p=>['tier1','tier2','flex'].includes(p.tier)).forEach(p=>addToPool(p));
+  window._lastEngineResults = top;
   renderEngineResults(top,resEl);
 
   document.getElementById('engBtn').textContent='RUN ENGINE';document.getElementById('engSp').classList.add('hidden');
@@ -7406,6 +7635,55 @@ async function wowValidate(p, wowScore){
   };
 }
 
+
+// ── buildPropReason: one-line human-readable "WHY" for each prop card ──
+function buildPropReason(p){
+  const parts = [];
+  // Real game log evidence
+  if(p.raw_vals && p.raw_vals.length >= 3 && p.data_quality !== 'season-avg'){
+    const n = Math.min(p.raw_vals.length, 10);
+    const vals = p.raw_vals.slice(0, n);
+    const hits = vals.filter(v => p.side==='MORE' ? v > p.line : v < p.line).length;
+    parts.push(`${hits}/${n} last ${n}`);
+  } else if(p.l5_hit_rate != null && p.data_quality !== 'season-avg'){
+    parts.push(`${(p.l5_hit_rate*100).toFixed(0)}% L5`);
+  }
+  // Avg vs line gap
+  if(p.recent_avg != null && p.line){
+    const gap = parseFloat(p.recent_avg) - parseFloat(p.line);
+    if(Math.abs(gap) >= 0.5){
+      parts.push(`avg ${parseFloat(p.recent_avg).toFixed(1)} vs line ${p.line} (${gap>0?'+':''}${gap.toFixed(1)})`);
+    }
+  }
+  // Matchup / defense
+  if(p.matchup_rating != null){
+    const label = p.matchup_rating>=8?'elite matchup':p.matchup_rating>=6?'good matchup':p.matchup_rating<=3?'tough matchup':null;
+    if(label) parts.push(`${label} (${p.matchup_rating}/10)`);
+  }
+  // Pace factor
+  if(p.pace_factor && Math.abs(p.pace_factor - 1.0) >= 0.05){
+    parts.push(`pace ${p.pace_factor > 1 ? '+' : ''}${((p.pace_factor-1)*100).toFixed(0)}%`);
+  }
+  // Sharp line movement
+  if(p.lineMovement?.isSharpSignal){
+    parts.push(`⚡ sharp ${p.lineMovement.move>0?'↑':'↓'}${Math.abs(p.lineMovement.move).toFixed(1)}`);
+  }
+  // Season avg badge (data quality flag)
+  if(p.data_quality === 'season-avg'){
+    parts.push(`season avg ${parseFloat(p.recent_avg||0).toFixed(1)}${p._gp?' · '+p._gp+' GP':''}`);
+  }
+  // MLB analyst flags
+  if(p._mlbAnalyst?.pitcherName){
+    parts.push(`vs ${p._mlbAnalyst.pitcherName} ERA ${p._mlbAnalyst.pitcherERA?.toFixed(2)||'?'}`);
+  }
+  // Note field first segment
+  if(p.note && parts.length < 2){
+    const seg = p.note.split('|')[0].trim();
+    if(seg.length > 4 && !seg.startsWith('Pace')) parts.push(seg.slice(0,60));
+  }
+  return parts.slice(0,3).join(' · ');
+}
+
 function renderEngineResults(props,container){
   if(!props.length){container.innerHTML=`<div class="alert ay">No props met criteria. Try lowering Min Tier or adding more sports.</div>`;return;}
   const groups={tier1:[],tier2:[],other:[]};
@@ -7516,6 +7794,7 @@ function makePCard(p){
         ${p.sport==='Soccer'?`<span style="font-size:10px;background:rgba(234,179,8,0.15);border:1px solid rgba(234,179,8,0.4);color:#eab308;padding:2px 5px;border-radius:4px;" title="Confirm this player is in the starting XI before submitting">⚠ Confirm XI</span>`:''}
       </div>
       ${statsHtml}${sparkline}${analystHtml}${marketHtml}${evHtml}${insightsHtml}${sampleHtml}${flagsHtml}
+      ${(()=>{try{const r=buildPropReason(p);return r?`<div style="margin-top:5px;padding:4px 8px;background:var(--surface2);border-radius:5px;border-left:2px solid var(--accent);font-size:10px;color:var(--text2);font-family:var(--mono);line-height:1.4;">💡 ${r}</div>`:'';}catch(e){return'';}})()}
     </div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0;margin-left:10px;min-width:80px;">
       <span class="badge ${bm[p.tier]||'bg-gr'}">${lm[p.tier]||p.tier}</span>
@@ -14499,5 +14778,105 @@ window.onload=()=>{
 };
 </script>
 </div><!-- end #app -->
+
+<!-- ══════════════════════════════════════ -->
+<!-- FLOATING AI CHAT BAR                  -->
+<!-- ══════════════════════════════════════ -->
+<div id="floatAIWrap" style="position:fixed;bottom:20px;right:16px;z-index:2000;display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+
+  <!-- Slide-up mini chat panel -->
+  <div id="floatAIPanel" style="display:none;width:360px;max-width:calc(100vw - 32px);background:var(--surface);border:1px solid rgba(124,58,237,0.35);border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,0.6);overflow:hidden;">
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:linear-gradient(135deg,rgba(124,58,237,0.2),rgba(79,70,229,0.15));border-bottom:1px solid rgba(124,58,237,0.2);">
+      <div style="display:flex;align-items:center;gap:7px;">
+        <span style="font-size:16px;">🤖</span>
+        <span style="font-size:13px;font-weight:700;">Ask WOW AI</span>
+        <span style="font-size:10px;color:var(--text3);">instant answers</span>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button onclick="switchTab('claude');toggleFloatChat();" style="background:none;border:none;color:var(--text2);font-size:10px;cursor:pointer;padding:2px 6px;border-radius:4px;background:var(--surface2);">Full chat ↗</button>
+        <button onclick="toggleFloatChat()" style="background:none;border:none;color:var(--text3);font-size:16px;cursor:pointer;line-height:1;padding:2px;">✕</button>
+      </div>
+    </div>
+    <!-- Quick prompts -->
+    <div style="padding:8px 10px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:5px;" id="floatQuickPrompts">
+      <button class="eng-sport-pill" style="font-size:10px;padding:3px 8px;" onclick="floatSend('What are the top 3 plays today and why?')">Top 3 plays today</button>
+      <button class="eng-sport-pill" style="font-size:10px;padding:3px 8px;" onclick="floatSend('Build me a Power 3 slip from the current pool.')">Power 3 slip</button>
+      <button class="eng-sport-pill" style="font-size:10px;padding:3px 8px;" onclick="floatSend('Which props look like traps I should fade?')">Trap props to fade</button>
+      <button class="eng-sport-pill" style="font-size:10px;padding:3px 8px;" onclick="floatSend('What game has the best first-half total play today?')">Best first-half play</button>
+      <button class="eng-sport-pill" style="font-size:10px;padding:3px 8px;" onclick="floatSend('Analyze my active slips and flag any concerns.')">Review my slips</button>
+    </div>
+    <!-- Response area -->
+    <div id="floatAIResponse" style="padding:10px 14px;min-height:60px;max-height:260px;overflow-y:auto;font-size:12px;color:var(--text2);line-height:1.6;">
+      <div style="color:var(--text3);text-align:center;padding:12px 0;">Ask anything — or tap a quick prompt above.</div>
+    </div>
+    <!-- Input -->
+    <div style="display:flex;gap:6px;padding:8px 10px;border-top:1px solid var(--border);">
+      <input id="floatAIInput" type="text" placeholder="e.g. Break down the OKC vs Spurs game…" style="flex:1;font-size:12px;padding:7px 10px;"
+        onkeydown="if(event.key==='Enter'){floatSend();}" />
+      <button class="btn btn-p" style="padding:7px 14px;font-size:12px;" onclick="floatSend()" id="floatSendBtn">↑</button>
+    </div>
+  </div>
+
+  <!-- Floating button -->
+  <button onclick="toggleFloatChat()" id="floatAIBtn"
+    style="background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;border-radius:50px;padding:11px 18px;color:#fff;font-weight:700;font-size:13px;cursor:pointer;box-shadow:0 4px 24px rgba(124,58,237,0.55);display:flex;align-items:center;gap:7px;transition:.2s;white-space:nowrap;"
+    onmouseenter="this.style.boxShadow='0 4px 32px rgba(124,58,237,0.75)'"
+    onmouseleave="this.style.boxShadow='0 4px 24px rgba(124,58,237,0.55)'">
+    <span id="floatAIBtnIcon">💬</span>
+    <span id="floatAIBtnLabel">Ask AI</span>
+  </button>
+</div>
+
+<script>
+function toggleFloatChat(){
+  const panel = document.getElementById('floatAIPanel');
+  const icon = document.getElementById('floatAIBtnIcon');
+  const label = document.getElementById('floatAIBtnLabel');
+  const isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : 'flex';
+  panel.style.flexDirection = 'column';
+  icon.textContent = isOpen ? '💬' : '✕';
+  label.textContent = isOpen ? 'Ask AI' : 'Close';
+  if(!isOpen) document.getElementById('floatAIInput').focus();
+}
+
+async function floatSend(preset){
+  const input = document.getElementById('floatAIInput');
+  const msg = preset || input.value.trim();
+  if(!msg) return;
+  input.value = '';
+
+  const resp = document.getElementById('floatAIResponse');
+  const btn = document.getElementById('floatSendBtn');
+  resp.innerHTML = '<div style="display:flex;align-items:center;gap:6px;color:var(--text3);"><div class="sp"></div> Claude is thinking...</div>';
+  btn.disabled = true;
+
+  try{
+    const context = buildDashboardContext();
+    const r = await fetch(`${EP.replit}/claude-proxy`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:400,
+        system:`You are a sharp sports betting analyst in the WOW dashboard. Be direct, specific, and actionable. Use bullet points. Reference real data from the dashboard. Keep responses concise (under 200 words). Dashboard context: ${context.slice(0,2000)}`,
+        messages:[{role:'user',content:msg}]
+      })
+    });
+    const data = await r.json();
+    const reply = data.content?.[0]?.text || data.error?.message || 'No response.';
+    resp.innerHTML = reply.split('\n').filter(l=>l.trim()).map(l=>`<div style="margin-bottom:4px;">${l.trim()}</div>`).join('');
+
+    // Add to main Claude history so context carries over if they open full chat
+    if(window._claudeHistory) window._claudeHistory.push({role:'user',content:msg},{role:'assistant',content:reply});
+  }catch(e){
+    resp.innerHTML = `<div style="color:var(--red);font-size:11px;">Error: ${e.message}</div>`;
+  }finally{
+    btn.disabled = false;
+  }
+}
+</script>
+
 </body>
 </html>
