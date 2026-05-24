@@ -1,0 +1,39 @@
+Before writing blind, let me check if there's any dashboard code in the project history.Good — now I have the full picture. I can see both `LLP_TRD_SPORT_IDS` and `TRD_SPORT_IDS` are in the code, the affiliate lines structure, and the exact URL shape that was broken. Writing the complete drop-in now with a three-tier fallback chain.Clean. Now let me write the call-site patch — the two lines that actually replace the old fetch in both LLP and WU:Here's exactly what was built and how to apply it:
+
+---
+
+**Three-tier fallback chain**
+
+| Tier | Source | Lines available | Trigger |
+|---|---|---|---|
+| 1 | TheRundown (fixed path) | ✅ Full moneyline + spread + total | Always tried first |
+| 2 | Odds API | ✅ Full lines | TRD 401/404/error |
+| 3 | ESPN public scoreboard | ❌ Games only, no lines | Both above fail |
+
+The ESPN fallback is intentionally limited — it keeps the Teams tab showing real games instead of a blank board, but it fires `assertHasLines()` which logs a warning and skips the no-vig/edge/tier scoring for that sport. You'll see game matchups rendered but no bet recommendations, which is the correct behavior when lines aren't available.
+
+**Three places to edit in Replit:**
+
+1. **Drop the entire `fetch-team-events-patch.js` block** into your `<script>` tag above `runLLPBoard` and the WU loop — replace both `TRD_SPORT_IDS` and `LLP_TRD_SPORT_IDS` declarations with the unified one at the top of the file.
+
+2. **In `runLLPBoard()`** — find the `fx(EP.rundown/events?...)` fetch block and replace with the two-line LLP call site from the patch.
+
+3. **In the WU sport loop** — same replacement with the WU call site lines.
+
+4. **Null guard on `bookmakers[0]`** — add `if (!bk) continue;` before any no-vig calculation in both engines. This is the only defensive change needed downstream.
+
+**Verification sequence after deploy:**
+```
+Network tab → filter "therundown"
+  → should show /sports/{id}/events/{date} shape (not /events?...)
+  → 401 = path correct, key pending  
+  → 200 = fully live
+
+Network tab → filter "api.the-odds-api"  
+  → should only fire if therundown returns 401/404 (not on every refresh)
+
+Console log
+  → "TheRundown MLB: 15 events ✓" = Tier 1 working
+  → "Odds API MLB: 12 events ✓ (fallback)" = Tier 1 failing, Tier 2 active
+  → "ESPN MLB: 8 games (no lines — limited mode)" = both API sources down
+```
