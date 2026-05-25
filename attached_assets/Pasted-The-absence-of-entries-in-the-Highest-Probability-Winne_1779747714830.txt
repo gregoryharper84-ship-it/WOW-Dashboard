@@ -1,0 +1,11 @@
+The absence of entries in the ⭐ Highest Probability Winners and ⚡ Best Upset Candidates sections isn’t due to a display bug—it’s because the Teams board hasn’t produced any eligible candidates.  There are two main reasons this happens: either the board scan hasn’t run, or it ran but didn’t get valid data from its data sources.  To resolve this you should:
+
+1. **Run the board scan:** On the Teams page, click **Refresh Board**.  The model will pull today’s slate, compute edge estimates, and populate the panels if any teams meet the probability and upset thresholds.  These sections stay blank until a scan completes successfully, so you won’t see anything if you haven’t run the scan since loading the page.
+
+2. **Check API keys and endpoints:** The board relies on several external data feeds (TheRundown, OddsAPI, BallDontLie, etc.) to calculate win probabilities.  If any of those endpoints return errors—common when API keys are missing, expired, or misconfigured—the scan will abort and you’ll see “0 games analyzed” with empty panels.  Make sure all your API keys are current and passed correctly (e.g. use `Authorization: Bearer <key>` for BallDontLie).  If you’re running behind a proxy, confirm the proxy endpoints (like your Replit services) are up and return JSON.
+
+3. **Validate your environment:** Ensure you’re running the latest build of the dashboard.  If you’ve modified source files locally, run a fresh build (`npm run build`) and redeploy to GitHub Pages.  Mismatched script bundles can cause JavaScript errors that prevent scans from running.
+
+4. **Relax the thresholds (optional):** The model filters teams aggressively for value.  On slates with few edges or when markets are tight, it’s possible no team meets the “highest probability” or “upset” cutoffs.  If you want more candidates, adjust the thresholds in the model configuration to surface more borderline picks.
+
+Once these issues are addressed, rerunning **Refresh Board** should populate the panels whenever there are meaningful favourites or upset candidates in the current slate.
