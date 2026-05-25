@@ -2620,7 +2620,7 @@ async function runDailyScan() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': KEYS.replit },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-5',
         max_tokens: 4000,
         system: _DS_WOW_SYSTEM,
         messages: [{ role: 'user', content: userMsg }],
