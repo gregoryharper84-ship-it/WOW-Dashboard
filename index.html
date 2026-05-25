@@ -441,8 +441,8 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
     background:rgba(230,57,70,0.05);
   }
   /* Tab content */
-  .lm-tc { padding:14px 16px; }
-  .lm-tc.hidden { display:none; }
+  .lm-tc { padding:14px 16px;display:block; }
+  .lm-tc-off { display:none!important; }
   /* Chart */
   .lm-chart-wrap { margin-bottom:12px; }
   .lm-chart-legend {
@@ -11182,23 +11182,6 @@ function renderTeamsSummaryPanels(){
   }
 }
 
-mes){
-  const bets = allGames.flatMap(g=>g.bets||[]);
-  const anchors = bets.filter(b=>b.tier==='TEAM ANCHOR').length;
-  const strongs = bets.filter(b=>b.tier==='TEAM STRONG').length;
-  const topBet = [...bets].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
-  const topFav = [..._teamsWUFavorites].sort((a,b)=>b.prob-a.prob)[0];
-
-  const el = id => document.getElementById(id);
-  if(el('statGamesAnalyzed')) el('statGamesAnalyzed').textContent = allGames.length;
-  if(el('statGamesSubtitle')) el('statGamesSubtitle').textContent = [...new Set(allGames.map(g=>g.sport))].join(', ')||'No sports';
-  if(el('statBettable')) el('statBettable').textContent = anchors + strongs;
-  if(el('statBettableSub')) el('statBettableSub').textContent = `${anchors} anchor, ${strongs} strong`;
-  if(el('statTopWinner') && topFav) el('statTopWinner').textContent = `${topFav.pick} ${(topFav.prob*100).toFixed(0)}%`;
-  if(el('statBestEdge') && topBet) el('statBestEdge').textContent = `+${topBet.edge_pct}%`;
-  if(el('statBestEdgeSub') && topBet) el('statBestEdgeSub').textContent = topBet.pick;
-}
-
 function renderTeamsStatCards(allGames){
   const bets = allGames.flatMap(g=>g.bets||[]);
   const anchors = bets.filter(b=>b.tier==='TEAM ANCHOR').length;
@@ -11450,11 +11433,11 @@ function renderTeamsBoardOutput(){
         <button class="lm-ctab ${!['ml','spread','total'].includes(defTab)?'active':''}" onclick="lmSwitchTab('${cid}','engine',this)">ENGINE</button>
       </div>
 
-      <div id="${cid}_ml"     class="lm-tc ${defTab==='ml'?'':'hidden'}">${mlContent}</div>
-      <div id="${cid}_spread" class="lm-tc ${defTab==='spread'?'':'hidden'}">${spreadContent}</div>
-      <div id="${cid}_total"  class="lm-tc ${defTab==='total'?'':'hidden'}">${totalContent}</div>
-      <div id="${cid}_odds"   class="lm-tc hidden">${oddsContent}</div>
-      <div id="${cid}_engine" class="lm-tc ${!['ml','spread','total'].includes(defTab)?'':'hidden'}">${engineContent}</div>
+      <div id="${cid}_ml"     class="lm-tc ${defTab==='ml'?'':'lm-tc-off'}">${mlContent}</div>
+      <div id="${cid}_spread" class="lm-tc ${defTab==='spread'?'':'lm-tc-off'}">${spreadContent}</div>
+      <div id="${cid}_total"  class="lm-tc ${defTab==='total'?'':'lm-tc-off'}">${totalContent}</div>
+      <div id="${cid}_odds"   class="lm-tc lm-tc-off">${oddsContent}</div>
+      <div id="${cid}_engine" class="lm-tc ${!['ml','spread','total'].includes(defTab)?'':'lm-tc-off'}">${engineContent}</div>
 
       <button class="lm-expand-btn" onclick="lmToggleAllBets('${cid}_bets',this)">View all ${game.bets.length} engine bets ▾</button>
       <div id="${cid}_bets" class="lm-bets-grid">
@@ -11517,7 +11500,7 @@ function lmSparkline(modelProb, impliedProb, seed){
 function lmSwitchTab(cid, tab, btn){
   ['ml','spread','total','odds','engine'].forEach(t=>{
     const el=document.getElementById(`${cid}_${t}`);
-    if(el) el.classList.toggle('hidden', t!==tab);
+    if(el) el.classList.toggle('lm-tc-off', t!==tab);
   });
   const tabs=btn?.closest('.lm-card-tabs')?.querySelectorAll('.lm-ctab');
   tabs?.forEach(b=>b.classList.remove('active'));
