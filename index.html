@@ -2195,6 +2195,8 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 const KEYS={odds:'311bae3d2356b258e27750224a9e5fcf',bdl:'0b3cae52-e907-4abb-8670-d54502bc373c',replit:'j|nNZo*[uWj%EIH[0Y:yNjhsKp:iBqK|'};
 function localDate(offsetDays=0){const d=new Date(Date.now()+offsetDays*86400000);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
 
+// ⚠ EP.rundown and EP.replit MUST stay in sync — both point to the same Flask proxy on Replit.
+// If the Replit URL changes, update BOTH or TheRundown fetches and claude-proxy calls will silently split-brain.
 const EP={rundown:'https://create-app-gregoryharper84.replit.app',odds:'https://api.the-odds-api.com/v4',espn:'https://site.api.espn.com/apis/site/v2/sports',bdl:'https://api.balldontlie.io/v1',replit:'https://create-app-gregoryharper84.replit.app',mlb:'https://statsapi.mlb.com/api/v1',nhl:'https://api-web.nhle.com/v1'};
 const ESPN_P={MLB:'baseball/mlb',NBA:'basketball/nba',NHL:'hockey/nhl',WNBA:'basketball/wnba',NFL:'americanfootball/nfl',soccer:'soccer/usa.1'};
 const ODDS_K={MLB:'baseball_mlb',NBA:'basketball_nba',NHL:'icehockey_nhl',WNBA:'basketball_wnba',NFL:'americanfootball_nfl',Soccer:'soccer_usa_mls',Tennis:'tennis_atp'};
