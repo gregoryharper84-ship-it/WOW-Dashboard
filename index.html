@@ -552,6 +552,83 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
   .lm-odds-table td { color:var(--text);padding:7px 8px;border-bottom:1px solid rgba(255,255,255,0.04); }
   .lm-odds-best { color:var(--green);font-weight:700; }
 
+
+  /* ── Gap callout banner ── */
+  .lm-gap-banner {
+    display:flex;align-items:center;justify-content:space-between;
+    background:linear-gradient(135deg,rgba(230,57,70,0.08),rgba(16,185,129,0.08));
+    border:1px solid rgba(255,255,255,0.08);border-radius:10px;
+    padding:10px 14px;margin-bottom:12px;gap:12px;flex-wrap:wrap;
+  }
+  .lm-gap-item { text-align:center;min-width:70px; }
+  .lm-gap-label { font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px; }
+  .lm-gap-val { font-size:18px;font-weight:900; }
+  .lm-gap-arrow {
+    font-size:22px;font-weight:900;color:var(--green);
+    display:flex;align-items:center;gap:6px;
+  }
+  .lm-gap-neg { color:var(--red); }
+  /* ── Monthly ROI banner ── */
+  .lm-roi-banner {
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));
+    gap:8px;margin-bottom:14px;
+  }
+  .lm-roi-card {
+    background:var(--surface2);border:1px solid var(--border);
+    border-radius:12px;padding:12px 14px;text-align:center;
+  }
+  .lm-roi-card.highlight {
+    border-color:rgba(230,57,70,0.35);
+    background:linear-gradient(135deg,rgba(230,57,70,0.06),var(--surface2));
+  }
+  .lm-roi-lbl { font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px; }
+  .lm-roi-val { font-size:22px;font-weight:900;color:var(--text); }
+  .lm-roi-sub { font-size:11px;color:var(--text2);margin-top:3px; }
+  /* ── Odds filter pill ── */
+  .lm-odds-pills {
+    display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;
+  }
+  .lm-odds-pill {
+    padding:5px 12px;border-radius:20px;font-size:11px;font-weight:700;
+    border:1px solid var(--border2);background:var(--surface2);
+    color:var(--text2);cursor:pointer;transition:all .15s;white-space:nowrap;
+  }
+  .lm-odds-pill:hover { color:var(--text); }
+  .lm-odds-pill.active { background:var(--lm-red);border-color:var(--lm-red);color:white; }
+
+
+  /* ── Analytics Intel Cards ── */
+  .lm-intel-card {
+    background:var(--surface2);border:1px solid var(--border);
+    border-radius:10px;padding:10px;
+  }
+  .lm-intel-label {
+    font-size:10px;font-weight:700;color:var(--text2);
+    text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;
+  }
+  .lm-intel-row {
+    display:flex;justify-content:space-between;align-items:center;
+    font-size:11px;color:var(--text2);margin-bottom:3px;
+  }
+  /* ── MLB Totals Summary Section ── */
+  .lm-totals-grid {
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+    gap:10px;
+  }
+  .lm-total-card {
+    background:var(--surface2);border:1px solid var(--border);
+    border-radius:12px;padding:12px;transition:border-color .2s;
+  }
+  .lm-total-card:hover { border-color:var(--border2); }
+  .lm-total-matchup { font-size:13px;font-weight:700;color:var(--text);margin-bottom:6px; }
+  .lm-total-signal {
+    display:inline-block;padding:3px 10px;border-radius:6px;
+    font-size:11px;font-weight:800;margin-bottom:6px;
+  }
+  .lm-sig-over  { background:var(--green-light);color:var(--green); }
+  .lm-sig-under { background:var(--accent-light);color:var(--accent); }
+  .lm-sig-skip  { background:var(--surface);color:var(--text2);border:1px solid var(--border2); }
+
 </style>
 </head>
 <body>
@@ -1477,6 +1554,16 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
         <option value="prob">Highest Prob</option>
         <option value="time">Start Time</option>
       </select>
+      </div>
+      <!-- High Odds Filter Pills -->
+      <div class="lm-odds-pills" id="lmOddsPills">
+        <span style="font-size:11px;color:var(--text2);font-weight:600;">Odds:</span>
+        <button class="lm-odds-pill active" data-odds="all"  onclick="lmSetOdds(this,'all')">All</button>
+        <button class="lm-odds-pill" data-odds="-150" onclick="lmSetOdds(this,'-150')">-150+</button>
+        <button class="lm-odds-pill" data-odds="-200" onclick="lmSetOdds(this,'-200')">-200+</button>
+        <button class="lm-odds-pill" data-odds="-300" onclick="lmSetOdds(this,'-300')">-300+</button>
+        <button class="lm-odds-pill" data-odds="-400" onclick="lmSetOdds(this,'-400')">Frank Zone (-400+)</button>
+      </div>
     </div>
     <div class="lm-right-ctrls">
       <span id="boardLiveMode" class="badge bg-g" style="display:none;">● Live</span>
@@ -1533,6 +1620,18 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
         <div class="lm-wu-empty">Run board to load upsets</div>
       </div>
     </div>
+  </div>
+
+  <!-- MLB TOTALS SUMMARY (populated when runMLBTotalsEngine runs) -->
+  <div id="mlbTotalsSummary" style="display:none;margin-bottom:14px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <div style="font-size:14px;font-weight:800;color:var(--text);">⚾ MLB Run Total Projections</div>
+        <div style="font-size:11px;color:var(--text2);">Frank 5-Factor · ±0.75 threshold · Click game card → TOTAL tab for full breakdown</div>
+      </div>
+      <span class="badge bg-b" id="mlbTotalsCount">0 games</span>
+    </div>
+    <div class="lm-totals-grid" id="mlbTotalsGrid"></div>
   </div>
 
   <!-- BOARD TITLE -->
@@ -1759,6 +1858,52 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 
   <!-- CLV LOG -->
   <div id="ptab-clv-content">
+    <!-- Monthly ROI Banner -->
+    <div id="clvMonthlyBanner" style="margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <div style="font-size:14px;font-weight:800;color:var(--text);">📅 Monthly Performance</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <select id="roiMonthPicker" class="lm-select" onchange="renderMonthlyROI()" style="font-size:11px;padding:4px 8px;">
+            <option value="current">This Month</option>
+            <option value="last">Last Month</option>
+            <option value="all">All Time</option>
+          </select>
+        </div>
+      </div>
+      <div class="lm-roi-banner" id="clvRoiCards">
+        <div class="lm-roi-card highlight">
+          <div class="lm-roi-lbl">Win Rate</div>
+          <div class="lm-roi-val" id="roiWinRate">—</div>
+          <div class="lm-roi-sub" id="roiRecord">Log picks to track</div>
+        </div>
+        <div class="lm-roi-card">
+          <div class="lm-roi-lbl">Picks This Month</div>
+          <div class="lm-roi-val" id="roiPickCount">—</div>
+          <div class="lm-roi-sub" id="roiPeriodLabel">—</div>
+        </div>
+        <div class="lm-roi-card">
+          <div class="lm-roi-lbl">Unit ROI</div>
+          <div class="lm-roi-val" id="roiUnitROI">—</div>
+          <div class="lm-roi-sub">vs 10% stock mkt</div>
+        </div>
+        <div class="lm-roi-card">
+          <div class="lm-roi-lbl">Dollar P&amp;L</div>
+          <div class="lm-roi-val" id="roiDollarPL">—</div>
+          <div class="lm-roi-sub" id="roiDollarSub">From tracked slips</div>
+        </div>
+        <div class="lm-roi-card">
+          <div class="lm-roi-lbl">Streak</div>
+          <div class="lm-roi-val" id="roiStreak">—</div>
+          <div class="lm-roi-sub" id="roiStreakType">Current</div>
+        </div>
+        <div class="lm-roi-card">
+          <div class="lm-roi-lbl">Best Sport</div>
+          <div class="lm-roi-val" id="roiBestSport" style="font-size:16px;">—</div>
+          <div class="lm-roi-sub" id="roiBestSportRate">This month</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Summary Dashboard -->
     <div id="clvSummaryDash" class="card" style="margin-bottom:12px;">
       <div class="ch"><span class="ct">📊 Performance Dashboard</span><span id="clvDateRange" style="font-size:12px;color:var(--text2);"></span></div>
@@ -3285,6 +3430,291 @@ async function getBullpenFatigue(teamId, teamName){
     return fatigue;
   }catch(e){ _bullpenCache[teamId]=null; return null; }
 }
+// ══════════════════════════════════════════════════════════
+// MLB TOTALS ENGINE — Frank's 5-Factor System
+// Globals, helpers, and main runner
+// ══════════════════════════════════════════════════════════
+let _mlbTotalsData    = [];   // populated by runMLBTotalsEngine — [{gamePk,away,home,...}]
+const _mlbStarterCache  = {}; // pitcherId → {era,l5Era,adjustedEra,inningsPerStart,name}
+const _mlbTeamOffCache  = {}; // teamId → rpg float
+const _mlbTeamBullCache = {}; // teamId → bullpenERA float
+
+async function getMLBStarterStats(pitcherId){
+  if(!pitcherId) return {era:4.50,l5Era:4.50,adjustedEra:4.50,name:'TBD',inningsPerStart:5.5};
+  if(_mlbStarterCache[pitcherId]) return _mlbStarterCache[pitcherId];
+  try{
+    const [seasonR, gamelogR] = await Promise.all([
+      fx(`${EP.mlb}/people/${pitcherId}/stats?stats=season&season=2026&group=pitching`,{},5000),
+      fx(`${EP.mlb}/people/${pitcherId}/stats?stats=gameLog&season=2026&gameType=R&group=pitching&limit=5`,{},5000),
+    ]);
+    let seasonEra=4.50, l5Era=4.50, inningsPerStart=5.5, name='TBD';
+    if(seasonR.ok){
+      const sd=await seasonR.json();
+      const ss=sd.stats?.[0]?.splits?.[0]?.stat;
+      if(ss){
+        seasonEra=parseFloat(ss.era||4.50);
+        const ip=parseFloat(ss.inningsPitched||0);
+        const gs=parseInt(ss.gamesStarted||1);
+        inningsPerStart=gs>0?Math.min(7,Math.max(3,ip/gs)):5.5;
+      }
+      name=sd.stats?.[0]?.player?.fullName||sd.people?.[0]?.fullName||'TBD';
+    }
+    if(gamelogR.ok){
+      const gld=await gamelogR.json();
+      const starts=(gld.stats?.[0]?.splits||[]).filter(s=>parseFloat(s.stat?.inningsPitched||0)>=3);
+      if(starts.length>=2){
+        const er=starts.reduce((s,g)=>s+parseInt(g.stat?.earnedRuns||0),0);
+        const ip=starts.reduce((s,g)=>s+parseFloat(g.stat?.inningsPitched||0),0);
+        l5Era=ip>0?(er/ip*9):seasonEra;
+      } else { l5Era=seasonEra; }
+    }
+    const adjustedEra=(seasonEra+l5Era)/2;
+    const result={era:seasonEra,l5Era,adjustedEra,name,inningsPerStart};
+    _mlbStarterCache[pitcherId]=result;
+    return result;
+  }catch(e){
+    const fallback={era:4.50,l5Era:4.50,adjustedEra:4.50,name:'TBD',inningsPerStart:5.5};
+    _mlbStarterCache[pitcherId]=fallback;
+    return fallback;
+  }
+}
+
+async function getMLBTeamOffenseRPG(teamId){
+  if(!teamId) return 4.4;
+  if(_mlbTeamOffCache[teamId]!==undefined) return _mlbTeamOffCache[teamId];
+  try{
+    const r=await fx(`${EP.mlb}/teams/${teamId}/stats?stats=season&season=2026&group=hitting`,{},5000);
+    if(!r.ok){ _mlbTeamOffCache[teamId]=4.4; return 4.4; }
+    const d=await r.json();
+    const s=d.stats?.[0]?.splits?.[0]?.stat;
+    const gp=parseInt(s?.gamesPlayed||1);
+    const runs=parseInt(s?.runs||0);
+    const rpg=gp>0?Math.max(2.5,Math.min(7.5,runs/gp)):4.4;
+    _mlbTeamOffCache[teamId]=rpg;
+    return rpg;
+  }catch(e){ _mlbTeamOffCache[teamId]=4.4; return 4.4; }
+}
+
+async function getMLBTeamBullpenERA(teamId){
+  if(!teamId) return 4.20;
+  if(_mlbTeamBullCache[teamId]!==undefined) return _mlbTeamBullCache[teamId];
+  try{
+    const r=await fx(`${EP.mlb}/teams/${teamId}/stats?stats=season&season=2026&group=pitching`,{},5000);
+    if(!r.ok){ _mlbTeamBullCache[teamId]=4.20; return 4.20; }
+    const d=await r.json();
+    const s=d.stats?.[0]?.splits?.[0]?.stat;
+    const teamEra=parseFloat(s?.era||4.20);
+    // Proxy: team ERA + 0.3 approximates bullpen ERA (relievers trend higher than starters)
+    const bullpenProxy=Math.min(6.5,Math.max(2.5,teamEra+0.3));
+    _mlbTeamBullCache[teamId]=bullpenProxy;
+    return bullpenProxy;
+  }catch(e){ _mlbTeamBullCache[teamId]=4.20; return 4.20; }
+}
+
+async function runMLBTotalsEngine(log){
+  log('⚾ MLB Totals Engine (5-Factor)...');
+  _mlbTotalsData.length=0;
+  const LEAGUE_AVG_RPG=4.4;
+  try{
+    const today=new Date().toISOString().split('T')[0];
+    const schedR=await fx(
+      `${EP.mlb}/schedule?sportId=1&date=${today}&hydrate=probablePitcher,team,weather,teams`,
+      {},10000
+    );
+    if(!schedR.ok){ log('⚠ MLB totals: schedule failed'); return []; }
+    const sched=await schedR.json();
+    const games=sched.dates?.[0]?.games||[];
+    if(!games.length){ log('⚾ No MLB games today'); return []; }
+    log(`  Projecting ${games.length} games...`);
+
+    for(const game of games){
+      try{
+        const awayT=game.teams?.away?.team;
+        const homeT=game.teams?.home?.team;
+        const awayPit=game.teams?.away?.probablePitcher;
+        const homePit=game.teams?.home?.probablePitcher;
+        if(!awayT||!homeT) continue;
+
+        const [awayP,homeP,awayRPG,homeRPG,awayBull,homeBull]=await Promise.all([
+          getMLBStarterStats(awayPit?.id),
+          getMLBStarterStats(homePit?.id),
+          getMLBTeamOffenseRPG(awayT.id),
+          getMLBTeamOffenseRPG(homeT.id),
+          getMLBTeamBullpenERA(awayT.id),
+          getMLBTeamBullpenERA(homeT.id),
+        ]);
+
+        // ── Step 1-2: Starter + Bullpen RA ──
+        const awayStarterRA=(awayP.adjustedEra/9)*awayP.inningsPerStart;
+        const awayBullRA   =(awayBull/9)*(9-awayP.inningsPerStart);
+        const awayTotalRA  =awayStarterRA+awayBullRA; // home scores this off away pitching
+
+        const homeStarterRA=(homeP.adjustedEra/9)*homeP.inningsPerStart;
+        const homeBullRA   =(homeBull/9)*(9-homeP.inningsPerStart);
+        const homeTotalRA  =homeStarterRA+homeBullRA; // away scores this off home pitching
+
+        // ── Step 3-4: Offensive adjustment ──
+        const awayRunsScored=homeTotalRA*(awayRPG/LEAGUE_AVG_RPG);
+        const homeRunsScored=awayTotalRA*(homeRPG/LEAGUE_AVG_RPG);
+        let proj=awayRunsScored+homeRunsScored;
+
+        // ── Step 5: Park factor ──
+        const homeAbbr=homeT.abbreviation||'';
+        const parkF=getMLBParkFactor(homeAbbr);
+        const prePark=proj;
+        proj=proj*parkF.factor;
+
+        // ── Step 6: Weather ──
+        const wx=game.weather;
+        let wAdj=0, wNotes=[];
+        if(wx){
+          const wind=parseInt(wx.wind||0);
+          const temp=parseInt(wx.temp||72);
+          const dir=(wx.windDir||'').toLowerCase();
+          const out=dir.includes('out')||dir.includes('center')||dir.includes('lf')||dir.includes('rf');
+          const inn=dir.includes('in')||dir.includes('home plate');
+          if(wind>=10&&out){wAdj+=0.5;wNotes.push(`💨 ${wind}mph OUT (+0.5)`);}
+          else if(wind>=10&&inn){wAdj-=0.5;wNotes.push(`💨 ${wind}mph IN (-0.5)`);}
+          else if(wind>=5&&out){wAdj+=0.25;wNotes.push(`💨 ${wind}mph OUT (+0.25)`);}
+          else if(wind>=5&&inn){wAdj-=0.25;wNotes.push(`💨 ${wind}mph IN (-0.25)`);}
+          if(temp>85){wAdj+=0.25;wNotes.push(`🌡️ ${temp}°F hot (+0.25)`);}
+          else if(temp<50){wAdj-=0.25;wNotes.push(`🌡️ ${temp}°F cold (-0.25)`);}
+        }
+        proj+=wAdj;
+        proj=Math.round(proj*10)/10;
+
+        const gameTime=game.gameDate
+          ?new Date(game.gameDate).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
+          :null;
+
+        _mlbTotalsData.push({
+          gamePk:game.gamePk,
+          away:awayT.name, home:homeT.name,
+          awayAbbr:awayT.abbreviation, homeAbbr,
+          proj, gameTime,
+          breakdown:{
+            awayPitcher:awayP.name||awayPit?.fullName||'TBD',
+            homePitcher:homeP.name||homePit?.fullName||'TBD',
+            awaySeasonERA:awayP.era.toFixed(2), homeSeasonERA:homeP.era.toFixed(2),
+            awayL5ERA:awayP.l5Era.toFixed(2),   homeL5ERA:homeP.l5Era.toFixed(2),
+            awayAdjERA:awayP.adjustedEra.toFixed(2), homeAdjERA:homeP.adjustedEra.toFixed(2),
+            awayIP:awayP.inningsPerStart.toFixed(1),  homeIP:homeP.inningsPerStart.toFixed(1),
+            awayBullERA:awayBull.toFixed(2), homeBullERA:homeBull.toFixed(2),
+            awayRPG:awayRPG.toFixed(1), homeRPG:homeRPG.toFixed(1),
+            awayRunsScored:awayRunsScored.toFixed(2),
+            homeRunsScored:homeRunsScored.toFixed(2),
+            parkName:parkF.name, parkFactor:parkF.factor.toFixed(2), parkNote:parkF.note,
+            prePark:prePark.toFixed(1),
+            weatherAdj:wAdj.toFixed(2), weatherNotes:wNotes,
+          },
+        });
+        log(`  ✓ ${awayT.abbreviation||'?'} @ ${homeAbbr}: proj ${proj}`);
+      }catch(ge){ console.warn('MLB totals game err:',ge); }
+    }
+    log(`⚾ MLB Totals: ${_mlbTotalsData.length}/${games.length} projected`);
+    return _mlbTotalsData;
+  }catch(e){
+    log(`⚠ MLB Totals Engine: ${e.message}`);
+    return [];
+  }
+}
+
+// Helper: find matching MLB totals entry for a game card
+function findMLBTotals(awayTeam, homeTeam){
+  const aL=(awayTeam||'').toLowerCase();
+  const hL=(homeTeam||'').toLowerCase();
+  return _mlbTotalsData.find(t=>
+    ((t.away||'').toLowerCase().includes(aL.slice(0,5))||(t.awayAbbr||'').toLowerCase()===aL.slice(0,3))||
+    ((t.home||'').toLowerCase().includes(hL.slice(0,5))||(t.homeAbbr||'').toLowerCase()===hL.slice(0,3))
+  )||null;
+}
+
+// ── Render the full MLB totals breakdown for the TOTAL card tab ──
+function renderMLBTotalsTab(mlbT, bookTotal){
+  if(!mlbT) return `<div style="text-align:center;padding:20px;color:var(--text2);font-size:13px;">No total projection available for this game.<br><span style="font-size:11px;">Run board to fetch MLB 5-factor data.</span></div>`;
+
+  const b=mlbT.breakdown;
+  const proj=mlbT.proj;
+  const bookNum=parseFloat(bookTotal)||null;
+  const gap=bookNum!==null?(proj-bookNum):null;
+  const signal=gap!==null?(Math.abs(gap)>=0.75?(gap>0?'OVER':'UNDER'):'SKIP'):null;
+  const sigColor=signal==='OVER'?'var(--green)':signal==='UNDER'?'var(--accent)':signal==='SKIP'?'var(--text2)':'var(--text)';
+  const sigBg=signal==='OVER'?'var(--green-light)':signal==='UNDER'?'var(--accent-light)':'var(--surface2)';
+
+  return `
+    <!-- Signal Banner -->
+    <div style="background:${sigBg};border:1px solid ${sigColor}40;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+      <div>
+        <div style="font-size:10px;font-weight:700;color:${sigColor};text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;">WOW 5-Factor Projection</div>
+        <div style="font-size:32px;font-weight:900;color:var(--text);">${proj}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px;">projected total runs</div>
+      </div>
+      ${bookNum!==null?`<div style="text-align:center;">
+        <div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">vs Book</div>
+        <div style="font-size:22px;font-weight:900;color:var(--text2);">${bookNum}</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:2px;">posted total</div>
+      </div>`:''}
+      ${gap!==null?`<div style="text-align:center;">
+        <div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Gap</div>
+        <div style="font-size:22px;font-weight:900;color:${sigColor};">${gap>0?'+':''}${gap.toFixed(1)}</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:2px;">runs</div>
+      </div>`:''}
+      ${signal?`<div style="background:${sigBg};border:2px solid ${sigColor};border-radius:10px;padding:10px 18px;text-align:center;">
+        <div style="font-size:20px;font-weight:900;color:${sigColor};">${signal}</div>
+        <div style="font-size:10px;color:var(--text2);margin-top:2px;">${signal==='SKIP'?'Edge < 0.75':'Threshold: ±0.75'}</div>
+      </div>`:''}
+    </div>
+
+    <!-- Formula Breakdown -->
+    <div style="font-size:12px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">5-Factor Breakdown</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+      <!-- Away pitching -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px;">
+        <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;margin-bottom:6px;">Away Pitching → Home Scores</div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:3px;">${b.awayPitcher}</div>
+        <div style="font-size:11px;color:var(--text2);">Season ERA: <strong style="color:var(--text);">${b.awaySeasonERA}</strong> · L5: <strong style="color:var(--text);">${b.awayL5ERA}</strong></div>
+        <div style="font-size:11px;color:var(--text2);">Adj ERA: <strong style="color:var(--lm-red,#e63946);">${b.awayAdjERA}</strong> · ${b.awayIP} IP proj</div>
+        <div style="font-size:11px;color:var(--text2);">Bullpen ERA: <strong>${b.awayBullERA}</strong></div>
+        <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);">
+          <div style="font-size:10px;color:var(--text2);">Home offense (${b.homeRPG} RPG)</div>
+          <div style="font-size:14px;font-weight:800;color:var(--green);">${b.homeRunsScored} runs</div>
+        </div>
+      </div>
+      <!-- Home pitching -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px;">
+        <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;margin-bottom:6px;">Home Pitching → Away Scores</div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:3px;">${b.homePitcher}</div>
+        <div style="font-size:11px;color:var(--text2);">Season ERA: <strong style="color:var(--text);">${b.homeSeasonERA}</strong> · L5: <strong style="color:var(--text);">${b.homeL5ERA}</strong></div>
+        <div style="font-size:11px;color:var(--text2);">Adj ERA: <strong style="color:var(--lm-red,#e63946);">${b.homeAdjERA}</strong> · ${b.homeIP} IP proj</div>
+        <div style="font-size:11px;color:var(--text2);">Bullpen ERA: <strong>${b.homeBullERA}</strong></div>
+        <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);">
+          <div style="font-size:10px;color:var(--text2);">Away offense (${b.awayRPG} RPG)</div>
+          <div style="font-size:14px;font-weight:800;color:var(--green);">${b.awayRunsScored} runs</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Park + Weather -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px;">
+        <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;margin-bottom:5px;">Park Factor</div>
+        <div style="font-size:14px;font-weight:800;color:${parseFloat(b.parkFactor)>=1.05?'var(--red)':parseFloat(b.parkFactor)<=0.95?'var(--accent)':'var(--text)'};">${b.parkFactor}×</div>
+        <div style="font-size:11px;color:var(--text2);">${b.parkName}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">${b.parkNote}</div>
+        <div style="font-size:10px;color:var(--text2);margin-top:5px;">Pre-park: ${b.prePark} → After: <strong>${(parseFloat(b.prePark)*parseFloat(b.parkFactor)).toFixed(1)}</strong></div>
+      </div>
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px;">
+        <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;margin-bottom:5px;">Weather Adjustment</div>
+        <div style="font-size:14px;font-weight:800;color:${parseFloat(b.weatherAdj)>0?'var(--red)':parseFloat(b.weatherAdj)<0?'var(--accent)':'var(--text2)'};">${parseFloat(b.weatherAdj)>0?'+':''}${b.weatherAdj} runs</div>
+        ${b.weatherNotes.length?b.weatherNotes.map(n=>`<div style="font-size:11px;color:var(--text2);">${n}</div>`).join(''):
+        `<div style="font-size:11px;color:var(--text3);">No weather adjustment</div>`}
+      </div>
+    </div>
+    <div style="margin-top:8px;font-size:10px;color:var(--text3);text-align:center;">Formula: (SP_RA + BP_RA) × Offense_Mult × Park_Factor + Weather · Threshold: ±0.75 runs</div>
+  `;
+}
+
+
 // ── Line Movement Detection ──
 // Stores the first-seen line for each prop as the "opening line".
 // On subsequent fetches, detects movement and flags sharp activity.
@@ -11104,6 +11534,10 @@ async function runTeamsBoard(){
   // WU can then fall back to LLP data if Odds API is unavailable
   await runLLPBoard().catch(e => { console.warn('LLP engine error:', e); });
   await runWinnersUpsets(); // has own try/catch; uses _teamsLLPGames fallback
+  // Run MLB Totals Engine in parallel after LLP so TOTAL tabs are populated
+  const llpLogEl = document.getElementById('llpLog');
+  const tLog = t => { if(llpLogEl) llpLogEl.innerHTML += clr(t) + '<br>'; };
+  await runMLBTotalsEngine(tLog).catch(e=>console.warn('MLB totals err:',e));
 
   // Final render pass after BOTH complete — unconditional
   // (even if WU threw and _teamsWUFavorites is empty, panels must update from initial state)
@@ -11112,6 +11546,7 @@ async function runTeamsBoard(){
     renderTeamsStatCards(_teamsLLPGames);
     renderTeamsBoardOutput(); // final pass — ensures cards have WU data
   }
+  renderMLBTotalsSummary(); // update MLB totals quick-scan after all data loaded
 
   document.getElementById('teamsLastUpdate').textContent = `Updated ${new Date().toLocaleTimeString()}`;
   btn.textContent = 'Refresh Board';
@@ -11209,6 +11644,139 @@ function renderLLPBoard(allGames){
   document.getElementById('llpGameCount').textContent = allGames.length + ' games';
 }
 
+
+// ── Render MLB Totals Summary section (quick-scan view above board) ──
+function renderMLBTotalsSummary(){
+  const section = document.getElementById('mlbTotalsSummary');
+  const grid    = document.getElementById('mlbTotalsGrid');
+  const countEl = document.getElementById('mlbTotalsCount');
+  if(!section||!grid) return;
+  if(!_mlbTotalsData.length){ section.style.display='none'; return; }
+
+  section.style.display='block';
+  if(countEl) countEl.textContent = `${_mlbTotalsData.length} game${_mlbTotalsData.length!==1?'s':''}`;
+
+  // Pull book totals from _teamsLLPGames for matching
+  const getBook = (away,home) => {
+    const aL=(away||'').toLowerCase(), hL=(home||'').toLowerCase();
+    const g=_teamsLLPGames.find(g=>
+      (g.away_team||'').toLowerCase().includes(aL.slice(0,5))||
+      (g.home_team||'').toLowerCase().includes(hL.slice(0,5))
+    );
+    return g?.bets?.find(b=>b.type==='total')?.line||null;
+  };
+
+  grid.innerHTML = _mlbTotalsData.map(t=>{
+    const bookT = getBook(t.away, t.home);
+    const gap   = bookT!==null ? (t.proj - bookT) : null;
+    const signal= gap!==null ? (Math.abs(gap)>=0.75?(gap>0?'OVER':'UNDER'):'SKIP') : null;
+    const sigCls= signal==='OVER'?'lm-sig-over':signal==='UNDER'?'lm-sig-under':'lm-sig-skip';
+    const b=t.breakdown;
+    return `<div class="lm-total-card">
+      <div class="lm-total-matchup">${t.awayAbbr||t.away.split(' ').pop()} @ ${t.homeAbbr||t.home.split(' ').pop()}${t.gameTime?` <span style="font-size:10px;color:var(--text3);">🕐 ${t.gameTime}</span>`:''}</div>
+      ${signal?`<span class="lm-total-signal ${sigCls}">${signal}</span>`:''}
+      <div style="display:flex;gap:12px;align-items:baseline;margin-bottom:6px;">
+        <div>
+          <div style="font-size:10px;color:var(--text2);">WOW Proj</div>
+          <div style="font-size:20px;font-weight:900;color:var(--text);">${t.proj}</div>
+        </div>
+        ${bookT!==null?`<div>
+          <div style="font-size:10px;color:var(--text2);">Book</div>
+          <div style="font-size:20px;font-weight:900;color:var(--text2);">${bookT}</div>
+        </div>`:''}
+        ${gap!==null?`<div>
+          <div style="font-size:10px;color:var(--text2);">Gap</div>
+          <div style="font-size:16px;font-weight:800;color:${Math.abs(gap)>=0.75?(gap>0?'var(--green)':'var(--accent)'):'var(--text3)'};">${gap>0?'+':''}${gap.toFixed(1)}</div>
+        </div>`:''}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;font-size:10px;color:var(--text2);">
+        <span>${b.awayPitcher.split(' ').pop()} ${b.awayAdjERA} ERA</span>
+        <span>vs</span>
+        <span>${b.homePitcher.split(' ').pop()} ${b.homeAdjERA} ERA</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+
+// ── Analytics Intel section for LLP game cards (Linemaker-style depth) ──
+// Called from renderTeamsBoardOutput engineContent template.
+// Uses regular string concat — no nested template literals.
+function buildLLPCardIntel(game, mlbTotals, wuFav, totalBet){
+  const items = [];
+  const sport = game.sport || '';
+
+  // ── MLB: Pitcher matchup + park factor + 5-factor total ──
+  if(sport === 'MLB' && mlbTotals){
+    const b = mlbTotals.breakdown;
+    const awayLast = b.awayPitcher.split(' ').pop();
+    const homeLast = b.homePitcher.split(' ').pop();
+    items.push(
+      '<div class="lm-intel-card">' +
+        '<div class="lm-intel-label">⚾ Pitching Matchup</div>' +
+        '<div class="lm-intel-row"><span>' + awayLast + '</span>' +
+          '<span style="color:var(--lm-red,#e63946);font-weight:800;">ERA ' + b.awayAdjERA + '</span></div>' +
+        '<div class="lm-intel-row"><span>' + homeLast + '</span>' +
+          '<span style="color:var(--lm-red,#e63946);font-weight:800;">ERA ' + b.homeAdjERA + '</span></div>' +
+        '<div style="font-size:10px;color:var(--text3);margin-top:3px;">(Season+L5)/2 adj ERA · L5 trend built-in</div>' +
+      '</div>'
+    );
+    const pfColor = parseFloat(b.parkFactor) >= 1.05 ? 'var(--red)' : parseFloat(b.parkFactor) <= 0.95 ? 'var(--accent)' : 'var(--text)';
+    const awayCity = (game.away_team||'Away').split(' ').pop();
+    const homeCity = (game.home_team||'Home').split(' ').pop();
+    items.push(
+      '<div class="lm-intel-card">' +
+        '<div class="lm-intel-label">🏟 Park + Offense</div>' +
+        '<div style="font-size:12px;font-weight:700;color:' + pfColor + ';">' + b.parkFactor + 'x ' + b.parkName.split(' ').slice(0,2).join(' ') + '</div>' +
+        '<div class="lm-intel-row"><span>' + awayCity + '</span><span>' + b.awayRPG + ' RPG</span></div>' +
+        '<div class="lm-intel-row"><span>' + homeCity + '</span><span>' + b.homeRPG + ' RPG</span></div>' +
+      '</div>'
+    );
+    const bookT = totalBet ? totalBet.line : null;
+    const gap   = bookT !== null ? (mlbTotals.proj - bookT) : null;
+    const sig   = gap !== null ? (Math.abs(gap) >= 0.75 ? (gap > 0 ? 'OVER' : 'UNDER') : 'SKIP') : null;
+    const sc    = sig === 'OVER' ? 'var(--green)' : sig === 'UNDER' ? 'var(--accent)' : 'var(--text2)';
+    items.push(
+      '<div class="lm-intel-card">' +
+        '<div class="lm-intel-label">📊 5-Factor Total</div>' +
+        '<div style="font-size:18px;font-weight:900;color:var(--text);">' + mlbTotals.proj + ' proj</div>' +
+        (bookT !== null ? '<div style="font-size:11px;color:var(--text2);">Book: ' + bookT + ' → <strong style="color:' + sc + ';">' + (sig||'—') + '</strong></div>' : '') +
+        '<div style="font-size:10px;color:var(--text3);margin-top:2px;">±0.75 = bet · TOTAL tab for breakdown</div>' +
+      '</div>'
+    );
+    if(b.weatherNotes && b.weatherNotes.length){
+      items.push(
+        '<div class="lm-intel-card">' +
+          '<div class="lm-intel-label">🌤 Weather</div>' +
+          b.weatherNotes.map(function(n){ return '<div style="font-size:11px;color:var(--text2);">' + n + '</div>'; }).join('') +
+          '<div style="font-size:11px;color:var(--text2);">Adj: ' + (parseFloat(b.weatherAdj) > 0 ? '+' : '') + b.weatherAdj + ' runs</div>' +
+        '</div>'
+      );
+    }
+  }
+
+  // ── All sports: WU model boosts ──
+  if(wuFav && wuFav.boosts && wuFav.boosts.length){
+    items.push(
+      '<div class="lm-intel-card">' +
+        '<div class="lm-intel-label">💡 Model Factors</div>' +
+        wuFav.boosts.slice(0,3).map(function(b){ return '<div style="font-size:10px;color:var(--green);margin-bottom:2px;">✓ ' + b + '</div>'; }).join('') +
+      '</div>'
+    );
+  }
+
+  if(!items.length) return '';
+  return (
+    '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">' +
+      '<div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Analytics Intel</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;">' +
+        items.join('') +
+      '</div>' +
+    '</div>'
+  );
+}
+
+
 function renderTeamsBoardOutput(){
   const outputDiv = document.getElementById('llpAnalysisOutput');
   if(!outputDiv) return;
@@ -11217,6 +11785,7 @@ function renderTeamsBoardOutput(){
   const betFilter  = document.getElementById('llp_bettype')?.value  || 'all';
   const sortMode   = document.getElementById('llp_sort')?.value     || 'edge';
   const sportF     = document.getElementById('llp_sport')?.value    || 'all';
+  const oddsThresh = parseInt(window._lmOddsFilter || 'all') || null;
 
   const tierMin = {anchor:['TEAM ANCHOR'], strong:['TEAM ANCHOR','TEAM STRONG'], lean:['TEAM ANCHOR','TEAM STRONG','TEAM LEAN'], all:['TEAM ANCHOR','TEAM STRONG','TEAM LEAN']};
   const allowed = tierMin[tierFilter] || tierMin.all;
@@ -11224,7 +11793,9 @@ function renderTeamsBoardOutput(){
   let filtered = _teamsLLPGames.map(g=>({...g, bets:(g.bets||[]).filter(b=>
     allowed.includes(b.tier) &&
     (betFilter==='all' || b.type===betFilter) &&
-    (sportF==='all' || g.sport===sportF)
+    (sportF==='all' || g.sport===sportF) &&
+    // High odds filter: only include if any ML bet meets threshold
+    (!oddsThresh || b.type!=='moneyline' || (typeof b.line==='number' && b.line <= oddsThresh))
   )})).filter(g=>g.bets.length>0);
 
   if(sortMode==='edge')  filtered.sort((a,b)=>Math.max(...b.bets.map(x=>x.edge_pct))-Math.max(...a.bets.map(x=>x.edge_pct)));
@@ -11329,17 +11900,19 @@ function renderTeamsBoardOutput(){
       </div>
       <div style="font-size:11px;color:var(--text2);text-align:center;">${spreadBet?.type==='spread'?`Spread pick: <strong style="color:var(--text);">${spreadBet.pick}</strong> · +${spreadBet.edge_pct}% edge`:'No spread bet identified for this game.'}</div>`;
 
-    // ── Total tab content ──
+    // ── Total tab content — MLB uses 5-factor engine, others show LLP bet ──
     const totalBet = game.bets.find(b=>b.type==='total') || null;
-    const totalContent = `
-      <div style="padding:20px 0;text-align:center;">
-        ${totalBet ? `
-          <div style="font-size:13px;color:var(--text2);margin-bottom:8px;">Total Line</div>
-          <div style="font-size:36px;font-weight:900;color:var(--text);">${totalBet.pick}</div>
-          <div style="font-size:14px;color:var(--text2);margin-top:4px;">${totalBet.line>0?'+':''}${totalBet.line} · ${totalBet.unit_size}u · +${totalBet.edge_pct}% edge</div>
-          <div style="font-size:11px;color:var(--text2);margin-top:12px;max-width:300px;margin-left:auto;margin-right:auto;">${totalBet.reasoning||''}</div>
-        ` : `<div style="color:var(--text2);font-size:13px;">No total bet identified for this game.</div>`}
-      </div>`;
+    const mlbTotals = game.sport==='MLB' ? findMLBTotals(game.away_team, game.home_team) : null;
+    const totalContent = game.sport==='MLB'
+      ? renderMLBTotalsTab(mlbTotals, totalBet?.line)
+      : `<div style="padding:20px 0;text-align:center;">
+          ${totalBet ? `
+            <div style="font-size:13px;color:var(--text2);margin-bottom:8px;">Total Line</div>
+            <div style="font-size:36px;font-weight:900;color:var(--text);">${totalBet.pick}</div>
+            <div style="font-size:14px;color:var(--text2);margin-top:4px;">${totalBet.line>0?'+':''}${totalBet.line} · ${totalBet.unit_size}u · +${totalBet.edge_pct}% edge</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:12px;max-width:300px;margin-left:auto;margin-right:auto;">${totalBet.reasoning||''}</div>
+          ` : `<div style="color:var(--text2);font-size:13px;">No total bet identified for this game.</div>`}
+        </div>`;
 
     // ── Best Odds tab content ──
     const allBetsOdds = game.bets.slice(0,4);
@@ -11360,12 +11933,32 @@ function renderTeamsBoardOutput(){
       <button class="btn btn-s btn-sm" style="margin-top:10px;font-size:11px;" onclick="loadLLPBetToForm('${game.sport}','${(game.away_team||'').replace(/'/g,"\\'")}','${(game.home_team||'').replace(/'/g,"\\'")}','${(topBet?.pick||'').replace(/'/g,"\\'")}','${topBet?.line||''}')">Load to Evaluator</button>`;
 
     // ── Engine tab content (main analysis) ──
+    const gapVal = (modelProb!=='—'&&impliedProb!=='—') ? (parseFloat(modelProb)-parseFloat(impliedProb)).toFixed(1) : null;
+    const gapPositive = gapVal !== null && parseFloat(gapVal) > 0;
     const engineContent = `
       <div class="lm-chart-wrap">${lmSparkline(parseFloat(modelProb)||50,parseFloat(impliedProb)||50,idx+200)}</div>
-      <div class="lm-chart-legend" style="margin-bottom:12px;">
+      <div class="lm-chart-legend" style="margin-bottom:10px;">
         <span class="lm-leg"><span class="lm-leg-line" style="background:#e63946;"></span>Model Win %</span>
         <span class="lm-leg"><span class="lm-leg-line" style="background:rgba(255,255,255,0.3);border-top:1px dashed rgba(255,255,255,0.3);"></span>Market Implied</span>
       </div>
+      ${gapVal!==null ? `<div class="lm-gap-banner">
+        <div class="lm-gap-item">
+          <div class="lm-gap-label">Model Win %</div>
+          <div class="lm-gap-val" style="color:var(--lm-red);">${modelProb}%</div>
+        </div>
+        <div style="font-size:20px;color:var(--text3);">vs</div>
+        <div class="lm-gap-item">
+          <div class="lm-gap-label">Market Implied</div>
+          <div class="lm-gap-val" style="color:var(--text2);">${impliedProb}%</div>
+        </div>
+        <div class="lm-gap-arrow ${gapPositive?'':'lm-gap-neg'}">
+          <span style="font-size:14px;">${gapPositive?'↑':'↓'}</span>
+          <div>
+            <div style="font-size:11px;color:var(--text2);">Edge Gap</div>
+            <div>${gapPositive?'+':''}${gapVal}%</div>
+          </div>
+        </div>
+      </div>` : ''}
       <div class="lm-bet-rec">
         <div class="lm-bet-rec-lbl">Recommended Bet</div>
         <div class="lm-bet-rec-body">
@@ -11409,7 +12002,8 @@ function renderTeamsBoardOutput(){
             </div>
           </div>
         </div>
-      </div>`;
+      </div>
+      ${buildLLPCardIntel(game,mlbTotals,wuFav,totalBet)}`;
 
     const card = document.createElement('div');
     card.className = 'lm-game-card';
@@ -11527,6 +12121,14 @@ function lmSetSport(btn, sport){
     const el=document.getElementById(id);
     if(el) el.value=sport;
   });
+  renderTeamsBoardOutput();
+}
+
+// ── Odds filter pill ──
+function lmSetOdds(btn, threshold){
+  document.querySelectorAll('.lm-odds-pill').forEach(p=>p.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  window._lmOddsFilter = threshold;
   renderTeamsBoardOutput();
 }
 
@@ -11942,6 +12544,7 @@ function switchPTab(name){
   if(name==='wow'){loadStats();loadLB();loadLog();}
   if(name==='learn') renderLearnedRules();
   if(name==='slip'){ renderSlipDatabase(); renderSlipBrowser(); setSbType(_sbType); }
+  if(name==='clv'){ renderCLVTable(); renderCLVDashboard(); }
 }
 
 // ══════════════════════════════════
@@ -12140,6 +12743,158 @@ function resetAdaptiveWeights(){
   try { localStorage.removeItem('wow_adaptive_weights'); } catch(e){}
 }
 
+
+// ══════════════════════════════════════════════════════════
+// MONTHLY ROI TRACKER
+// ══════════════════════════════════════════════════════════
+function calcMonthlyROI(){
+  const mode = document.getElementById('roiMonthPicker')?.value || 'current';
+  const now = new Date();
+  
+  let entries;
+  let label;
+  if(mode === 'current'){
+    const y = now.getFullYear(), m = now.getMonth();
+    entries = clvLog.filter(e=>{
+      const d = new Date(e.timestamp || 0);
+      return d.getFullYear()===y && d.getMonth()===m;
+    });
+    label = now.toLocaleString('default',{month:'long',year:'numeric'});
+  } else if(mode === 'last'){
+    const d = new Date(now.getFullYear(), now.getMonth()-1, 1);
+    const y = d.getFullYear(), m = d.getMonth();
+    entries = clvLog.filter(e=>{
+      const ed = new Date(e.timestamp || 0);
+      return ed.getFullYear()===y && ed.getMonth()===m;
+    });
+    label = d.toLocaleString('default',{month:'long',year:'numeric'});
+  } else {
+    entries = [...clvLog];
+    label = 'All Time';
+  }
+
+  const settled = entries.filter(e=>e.outcome==='win'||e.outcome==='loss');
+  const wins    = settled.filter(e=>e.outcome==='win');
+  const losses  = settled.filter(e=>e.outcome==='loss');
+  const winRate = settled.length ? (wins.length/settled.length*100).toFixed(1) : null;
+
+  // Unit ROI: treat each pick as 1 unit flat
+  // Win = +1u (we're betting props at even odds approx on PrizePicks)
+  // Loss = -1u
+  // ROI = net / total * 100
+  const unitROI = settled.length
+    ? ((wins.length - losses.length) / settled.length * 100).toFixed(1)
+    : null;
+
+  // Dollar P&L from activeSlips in the period
+  const slipRange = (activeSlips||[]).filter(s=>{
+    if(s.slip_result==='pending') return false;
+    const d = new Date(s.id||0); // id = Date.now() at creation
+    if(mode==='current'){const now2=new Date();return d.getFullYear()===now2.getFullYear()&&d.getMonth()===now2.getMonth();}
+    if(mode==='last'){const lm=new Date(now.getFullYear(),now.getMonth()-1,1);return d.getFullYear()===lm.getFullYear()&&d.getMonth()===lm.getMonth();}
+    return true;
+  });
+  let dollarPL = null;
+  if(slipRange.length){
+    dollarPL = slipRange.reduce((sum,s)=>{
+      const e = parseFloat(s.entry)||0;
+      const p = parseFloat(s.potential_payout)||0;
+      return sum + (s.slip_result==='win' ? p-e : -e);
+    }, 0);
+  }
+
+  // Current streak
+  let streak = 0, streakType = '';
+  for(const e of (entries.filter(e=>e.outcome==='win'||e.outcome==='loss'))){
+    if(streak===0){ streak=1; streakType=e.outcome; continue; }
+    if(e.outcome===streakType) streak++;
+    else break;
+  }
+
+  // Best sport this period
+  const bySport = {};
+  settled.forEach(e=>{
+    if(!bySport[e.sport]) bySport[e.sport]={w:0,t:0};
+    bySport[e.sport].t++;
+    if(e.outcome==='win') bySport[e.sport].w++;
+  });
+  const bestSportEntry = Object.entries(bySport)
+    .filter(([,v])=>v.t>=2)
+    .sort((a,b)=>(b[1].w/b[1].t)-(a[1].w/a[1].t))[0];
+
+  return {
+    winRate, unitROI, dollarPL, streak, streakType, label,
+    settled: settled.length, wins: wins.length, losses: losses.length,
+    bestSport: bestSportEntry?.[0] || null,
+    bestSportRate: bestSportEntry ? (bestSportEntry[1].w/bestSportEntry[1].t*100).toFixed(0) : null
+  };
+}
+
+function renderMonthlyROI(){
+  const r = calcMonthlyROI();
+  const set = n => { const el=document.getElementById(n); if(el) return el; return {textContent:'',style:{color:'',fontSize:''}}; };
+
+  // Win Rate
+  const winRateEl = set('roiWinRate');
+  if(r.winRate !== null){
+    winRateEl.textContent = r.winRate + '%';
+    winRateEl.style.color = parseFloat(r.winRate)>=80?'var(--green)':parseFloat(r.winRate)>=65?'var(--yellow)':'var(--red)';
+  } else {
+    winRateEl.textContent = '—';
+    winRateEl.style.color = 'var(--text2)';
+  }
+  set('roiRecord').textContent = r.settled ? `${r.wins}W – ${r.losses}L` : 'Log picks to track';
+
+  // Picks
+  set('roiPickCount').textContent = r.settled || '—';
+  set('roiPeriodLabel').textContent = r.label;
+
+  // Unit ROI
+  const unitEl = set('roiUnitROI');
+  if(r.unitROI !== null){
+    const u = parseFloat(r.unitROI);
+    unitEl.textContent = (u>=0?'+':'') + r.unitROI + '%';
+    unitEl.style.color = u>=10?'var(--green)':u>=0?'var(--yellow)':'var(--red)';
+  } else {
+    unitEl.textContent = '—';
+    unitEl.style.color = 'var(--text2)';
+  }
+
+  // Dollar P&L
+  const plEl = set('roiDollarPL');
+  if(r.dollarPL !== null){
+    const p = r.dollarPL;
+    plEl.textContent = (p>=0?'+$':'−$') + Math.abs(p).toFixed(2);
+    plEl.style.color = p>=0?'var(--green)':'var(--red)';
+    set('roiDollarSub').textContent = 'From tracked slips';
+  } else {
+    plEl.textContent = '—';
+    plEl.style.color = 'var(--text2)';
+    set('roiDollarSub').textContent = 'Track slips for $';
+  }
+
+  // Streak
+  const streakEl = set('roiStreak');
+  if(r.streak > 0){
+    streakEl.textContent = r.streak + (r.streakType==='win'?' 🔥':'💀');
+    streakEl.style.color = r.streakType==='win'?'var(--green)':'var(--red)';
+    set('roiStreakType').textContent = r.streakType==='win'?'Win streak':'Lose streak';
+  } else {
+    streakEl.textContent = '—';
+    set('roiStreakType').textContent = 'Current';
+  }
+
+  // Best sport
+  if(r.bestSport){
+    set('roiBestSport').textContent = r.bestSport;
+    set('roiBestSportRate').textContent = r.bestSportRate + '% win rate';
+  } else {
+    set('roiBestSport').textContent = '—';
+    set('roiBestSportRate').textContent = 'Need ≥2 picks/sport';
+  }
+}
+
+
 function renderCLVDashboard(){
   const settled=clvLog.filter(e=>e.outcome==='win'||e.outcome==='loss');
   if(!settled.length){document.getElementById('clvDashBody').innerHTML='<div style="color:var(--text2);font-size:13px;text-align:center;padding:12px;">Log picks to see performance metrics.</div>';return;}
@@ -12243,6 +12998,8 @@ function renderCLVDashboard(){
 
     ${topTags.length?`<div style="margin-top:12px;"><div class="slbl">Top Failure Tags</div><div style="display:flex;flex-wrap:wrap;gap:6px;">${topTags.map(([t,c])=>`<span style="background:var(--red-light);color:var(--red);border-radius:4px;padding:3px 8px;font-size:11px;font-family:var(--mono);">⚠ ${t} (${c})</span>`).join('')}</div></div>`:''}
   `;
+
+  renderMonthlyROI();
 }
 
 function kpi(val,label,color){
