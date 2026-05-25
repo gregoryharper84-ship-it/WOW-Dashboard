@@ -253,6 +253,305 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
   .jer-rule-label { display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;background:var(--surface2);transition:all .15s;user-select:none;width:fit-content; }
   .jer-rule-label:has(input:checked),
   .jer-rule-label.pill-active { background:var(--green-light)!important;border-color:var(--green)!important;color:var(--green)!important; }
+
+  /* ════════════════════════════════════════════════
+     LINEMAKER-STYLE TEAMS PAGE
+  ════════════════════════════════════════════════ */
+  :root {
+    --lm-red: #e63946;
+    --lm-red-glow: rgba(230,57,70,0.18);
+    --lm-red-border: rgba(230,57,70,0.35);
+    --purple: #a855f7;
+    --purple-light: rgba(168,85,247,0.1);
+  }
+  /* Ask bar */
+  .lm-ask-wrap { margin-bottom:18px; }
+  .lm-ask-bar {
+    display:flex;align-items:center;gap:10px;
+    background:var(--surface);border:1.5px solid var(--border2);
+    border-radius:12px;padding:10px 14px;
+    transition:border-color .2s, box-shadow .2s;
+  }
+  .lm-ask-bar:focus-within {
+    border-color:var(--lm-red);
+    box-shadow:0 0 0 3px var(--lm-red-glow);
+  }
+  .lm-ask-input {
+    flex:1;background:transparent;border:none;outline:none;
+    font-size:14px;color:var(--text);
+  }
+  .lm-ask-input::placeholder { color:var(--text3); }
+  .lm-pro-badge {
+    display:flex;align-items:center;gap:5px;
+    background:var(--surface2);border-radius:20px;
+    padding:4px 12px;font-size:12px;font-weight:700;color:var(--text);
+    white-space:nowrap;border:1px solid var(--border2);
+  }
+  .lm-pro-dot {
+    width:8px;height:8px;border-radius:50%;
+    background:var(--lm-red);box-shadow:0 0 6px var(--lm-red);
+    animation:pulse 2s infinite;
+  }
+  .lm-ask-btn {
+    background:var(--lm-red);border:none;color:white;
+    width:34px;height:34px;border-radius:9px;cursor:pointer;
+    font-size:14px;display:flex;align-items:center;justify-content:center;
+    transition:opacity .15s;flex-shrink:0;
+  }
+  .lm-ask-btn:hover { opacity:.85; }
+  /* Sport pills */
+  .lm-sport-pills {
+    display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;
+    scrollbar-width:none;margin-bottom:16px;
+  }
+  .lm-sport-pills::-webkit-scrollbar { display:none; }
+  .lm-sport-pill {
+    display:flex;align-items:center;gap:5px;padding:7px 16px;
+    border-radius:24px;font-size:12px;font-weight:600;
+    border:1px solid var(--border2);background:var(--surface2);
+    color:var(--text2);white-space:nowrap;cursor:pointer;transition:all .15s;
+  }
+  .lm-sport-pill:hover { color:var(--text);border-color:rgba(255,255,255,0.25); }
+  .lm-sport-pill.active {
+    background:var(--lm-red);border-color:var(--lm-red);
+    color:white;box-shadow:0 2px 12px var(--lm-red-glow);
+  }
+  /* Controls row */
+  .lm-controls-row {
+    display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+    justify-content:space-between;margin-bottom:14px;
+  }
+  .lm-left-ctrls { display:flex;flex-wrap:wrap;gap:8px;align-items:center; }
+  .lm-right-ctrls { display:flex;flex-wrap:wrap;gap:8px;align-items:center; }
+  .lm-date-chip {
+    font-size:13px;font-weight:700;color:var(--text);
+    background:var(--surface2);border:1px solid var(--border2);
+    border-radius:8px;padding:6px 14px;white-space:nowrap;
+  }
+  .lm-select {
+    font-size:12px;padding:6px 10px;border-radius:8px;
+    background:var(--surface2);border:1px solid var(--border2);
+    color:var(--text);width:auto;
+  }
+  .lm-refresh-btn {
+    padding:7px 18px;border-radius:8px;background:var(--lm-red);
+    color:white;border:none;font-size:13px;font-weight:700;
+    cursor:pointer;display:inline-flex;align-items:center;
+    gap:6px;transition:opacity .15s;white-space:nowrap;
+  }
+  .lm-refresh-btn:hover { opacity:.85; }
+  /* Stat cards */
+  .lm-stat-cards {
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+    gap:8px;margin-bottom:14px;
+  }
+  .lm-stat-card {
+    background:var(--surface2);border:1px solid var(--border);
+    border-radius:12px;padding:14px;
+  }
+  .lm-stat-label {
+    font-size:10px;font-weight:700;color:var(--text2);
+    text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;
+  }
+  .lm-stat-val { font-size:24px;font-weight:900;color:var(--text);margin-bottom:2px; }
+  .lm-stat-val.sm { font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+  .lm-stat-sub { font-size:11px;color:var(--text2); }
+  /* WU Panels */
+  .lm-wu-panels {
+    display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;
+  }
+  @media(max-width:620px){ .lm-wu-panels{grid-template-columns:1fr;} }
+  .lm-wu-panel {
+    border-radius:12px;border:1px solid var(--border);
+    background:var(--surface);overflow:hidden;
+  }
+  .lm-wu-fav { border-color:rgba(16,185,129,0.2); }
+  .lm-wu-upset { border-color:rgba(168,85,247,0.2); }
+  .lm-wu-hdr {
+    display:flex;align-items:center;justify-content:space-between;
+    padding:12px 14px;border-bottom:1px solid var(--border);
+    font-size:13px;font-weight:700;color:var(--text);
+  }
+  .lm-wu-body { padding:10px;min-height:60px; }
+  .lm-wu-empty { color:var(--text2);font-size:12px;text-align:center;padding:20px 0; }
+  /* Board title */
+  .lm-board-title-row { margin-bottom:10px; }
+  .lm-board-title { font-size:16px;font-weight:800;color:var(--text); }
+  /* Summary pill bar */
+  .lm-sum-bar { display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px; }
+  .lm-sum-pill {
+    padding:6px 14px;border-radius:20px;font-size:12px;
+    font-weight:700;border:1px solid;
+  }
+  .lm-s-anchor { background:var(--green-light);color:var(--green);border-color:rgba(16,185,129,0.3); }
+  .lm-s-strong { background:var(--accent-light);color:var(--accent);border-color:rgba(59,130,246,0.3); }
+  .lm-s-lean   { background:var(--yellow-light);color:var(--yellow);border-color:rgba(245,158,11,0.3); }
+  .lm-s-games  { background:var(--surface2);color:var(--text);border-color:var(--border2); }
+  /* Game cards */
+  .lm-game-card {
+    background:var(--surface);border:1px solid var(--border);
+    border-radius:14px;margin-bottom:14px;overflow:hidden;
+    transition:border-color .2s,box-shadow .2s;
+  }
+  .lm-game-card:hover { border-color:var(--border2); }
+  .lm-card-hdr {
+    padding:14px 16px;background:var(--surface2);
+    border-bottom:1px solid var(--border);
+  }
+  .lm-card-badges {
+    display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:7px;
+  }
+  .lm-badge-sport {
+    padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;
+    background:rgba(59,130,246,0.15);color:var(--accent);
+    border:1px solid rgba(59,130,246,0.25);
+  }
+  .lm-badge-tier {
+    padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;
+    border:1px solid;
+  }
+  .lm-badge-bet {
+    padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;
+    background:var(--green-light);color:var(--green);
+    border:1px solid rgba(16,185,129,0.3);
+  }
+  .lm-badge-lean {
+    padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;
+    background:var(--yellow-light);color:var(--yellow);
+    border:1px solid rgba(245,158,11,0.3);
+  }
+  .lm-badge-time { font-size:11px;color:var(--text2); }
+  .lm-matchup { font-size:18px;font-weight:800;color:var(--text);letter-spacing:-.01em; }
+  .lm-proj-winner { font-size:12px;color:var(--green);margin-top:3px; }
+  /* Card tabs */
+  .lm-card-tabs {
+    display:flex;border-bottom:1px solid var(--border);
+    background:var(--surface);overflow-x:auto;scrollbar-width:none;
+  }
+  .lm-card-tabs::-webkit-scrollbar { display:none; }
+  .lm-ctab {
+    flex:1;min-width:60px;padding:10px;text-align:center;font-size:11px;
+    font-weight:700;color:var(--text2);background:transparent;border:none;
+    border-bottom:2px solid transparent;cursor:pointer;
+    transition:all .15s;letter-spacing:.04em;white-space:nowrap;
+  }
+  .lm-ctab:hover { color:var(--text);background:rgba(255,255,255,0.03); }
+  .lm-ctab.active {
+    color:var(--text);border-bottom-color:var(--lm-red);
+    background:rgba(230,57,70,0.05);
+  }
+  /* Tab content */
+  .lm-tc { padding:14px 16px; }
+  .lm-tc.hidden { display:none; }
+  /* Chart */
+  .lm-chart-wrap { margin-bottom:12px; }
+  .lm-chart-legend {
+    display:flex;gap:14px;margin-bottom:5px;
+  }
+  .lm-leg { display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text2); }
+  .lm-leg-line { width:14px;height:2px;border-radius:2px; }
+  /* Bet rec box */
+  .lm-bet-rec {
+    background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.25);
+    border-radius:10px;padding:12px;margin-bottom:12px;
+  }
+  .lm-bet-rec-lbl {
+    font-size:10px;font-weight:700;color:var(--green);
+    text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;
+  }
+  .lm-bet-rec-body {
+    display:flex;align-items:flex-end;justify-content:space-between;gap:10px;
+  }
+  .lm-bet-pick { font-size:18px;font-weight:900;color:var(--text); }
+  .lm-bet-meta { font-size:12px;color:var(--text2);margin-top:2px; }
+  .lm-bet-edge { font-size:22px;font-weight:900;color:var(--green); }
+  .lm-bet-edge-lbl { font-size:10px;color:var(--text2);text-align:right; }
+  /* Engine grid */
+  .lm-eng-grid { display:grid;grid-template-columns:1.1fr 0.9fr;gap:12px; }
+  @media(max-width:620px){ .lm-eng-grid{grid-template-columns:1fr;} }
+  /* Prob bars */
+  .lm-prob-box {
+    border-radius:10px;border:1px solid var(--border);
+    background:var(--surface2);padding:12px;margin-bottom:10px;
+  }
+  .lm-prob-row { margin-bottom:8px; }
+  .lm-prob-row:last-child { margin-bottom:0; }
+  .lm-prob-lbl {
+    display:flex;justify-content:space-between;
+    font-size:11px;color:var(--text2);margin-bottom:4px;
+  }
+  .lm-prob-bar { height:6px;border-radius:3px;background:var(--surface);overflow:hidden; }
+  .lm-prob-fill { height:100%;border-radius:3px;transition:width .5s; }
+  /* Why box */
+  .lm-why-box {
+    border-radius:10px;border:1px solid var(--border);
+    background:var(--surface2);padding:12px;margin-bottom:10px;
+  }
+  .lm-why-title { font-size:12px;font-weight:700;color:var(--green);margin-bottom:8px; }
+  .lm-why-grid { display:grid;grid-template-columns:1fr 1fr;gap:5px; }
+  @media(max-width:500px){ .lm-why-grid{grid-template-columns:1fr;} }
+  .lm-why-item {
+    display:flex;gap:6px;border-radius:8px;background:var(--surface);
+    padding:6px 8px;font-size:11px;color:var(--text2);
+  }
+  .lm-why-chk { color:var(--green);flex-shrink:0; }
+  /* Upset box */
+  .lm-upset-box {
+    border-radius:10px;border:1px solid rgba(245,158,11,0.2);
+    background:rgba(245,158,11,0.06);padding:12px;
+  }
+  .lm-upset-title { font-size:12px;font-weight:700;color:var(--yellow);margin-bottom:4px; }
+  .lm-upset-txt { font-size:11px;color:var(--text2);line-height:1.6; }
+  /* All bets expandable */
+  .lm-bets-grid {
+    display:none;grid-template-columns:1fr 1fr;gap:8px;
+    border-top:1px solid var(--border);padding:12px 16px;
+  }
+  @media(max-width:500px){ .lm-bets-grid{grid-template-columns:1fr;} }
+  .lm-bets-grid.open { display:grid; }
+  .lm-expand-btn {
+    width:100%;border-top:1px solid var(--border);padding:10px;
+    background:transparent;color:var(--text2);font-size:12px;
+    font-weight:600;cursor:pointer;transition:background .15s;
+    border-radius:0 0 14px 14px;
+  }
+  .lm-expand-btn:hover { background:var(--surface2); }
+  /* Accordion for manual entry */
+  .lm-accordion {
+    margin-top:18px;border:1px solid var(--border);
+    border-radius:12px;overflow:hidden;
+  }
+  .lm-acc-trigger {
+    display:flex;align-items:center;justify-content:space-between;
+    padding:12px 16px;font-size:13px;font-weight:700;
+    color:var(--text2);cursor:pointer;background:var(--surface);
+    list-style:none;transition:color .15s;
+  }
+  .lm-acc-trigger:hover { color:var(--text); }
+  .lm-acc-trigger::after { content:"▾";font-size:11px; }
+  details.lm-accordion[open] .lm-acc-trigger::after { content:"▴"; }
+  .lm-acc-body {
+    padding:14px;border-top:1px solid var(--border);background:var(--surface);
+  }
+  /* ML/Spread/Total tab placeholders */
+  .lm-line-box {
+    border-radius:10px;border:1px solid var(--border);background:var(--surface2);
+    padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;
+  }
+  .lm-line-side { text-align:center; }
+  .lm-line-team { font-size:12px;color:var(--text2);margin-bottom:4px; }
+  .lm-line-odds { font-size:26px;font-weight:900;color:var(--text); }
+  .lm-line-edge-tag {
+    display:inline-block;font-size:10px;font-weight:700;
+    padding:2px 7px;border-radius:6px;margin-top:4px;
+  }
+  .lm-line-edge-pos { background:var(--green-light);color:var(--green); }
+  .lm-line-edge-neg { background:var(--red-light);color:var(--red); }
+  .lm-odds-table { width:100%;border-collapse:collapse;font-size:12px; }
+  .lm-odds-table th { color:var(--text2);font-weight:700;padding:5px 8px;border-bottom:1px solid var(--border);text-align:left; }
+  .lm-odds-table td { color:var(--text);padding:7px 8px;border-bottom:1px solid rgba(255,255,255,0.04); }
+  .lm-odds-best { color:var(--green);font-weight:700; }
+
 </style>
 </head>
 <body>
@@ -1129,121 +1428,122 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
   </div>
   <div class="main">
 
-  <!-- TEAMS BOARD HEADER -->
-  <div style="border-radius:16px;border:1px solid var(--border);background:linear-gradient(135deg,var(--surface) 0%,var(--surface2) 100%);padding:16px;margin-bottom:12px;">
-    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;justify-content:space-between;">
-      <div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;">
-          <span class="badge bg-b">Today's Board</span>
-          <span class="badge bg-g" id="boardLiveMode" style="display:none;">Live Market Mode</span>
-          <span style="font-size:11px;color:var(--text2);" id="teamsLastUpdate"></span>
-        </div>
-        <h2 style="font-size:20px;font-weight:900;color:var(--text);margin:0 0 4px;">LLP Team Betting Engine</h2>
-        <p style="font-size:12px;color:var(--text2);margin:0;">Ranked winners, upset candidates, market edge, and the cleanest reasons behind each play.</p>
+  <!-- ════════════════════════════════════════════════ -->
+  <!--  LINEMAKER-STYLE TEAMS ENGINE                   -->
+  <!-- ════════════════════════════════════════════════ -->
+
+  <!-- ASK WOW BAR -->
+  <div class="lm-ask-wrap">
+    <div class="lm-ask-bar">
+      <input class="lm-ask-input" id="lmAskInput"
+        placeholder="Ask WOW Engine about any matchup, team, or game today..."
+        onkeydown="if(event.key==='Enter')lmAskEngine()">
+      <div class="lm-pro-badge">
+        <span class="lm-pro-dot"></span>Pro
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <select id="teams_sport" style="font-size:12px;padding:5px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
-          <option value="all">All Sports</option>
-          <option value="MLB">MLB</option>
-          <option value="NBA">NBA</option>
-          <option value="NHL">NHL</option>
-          <option value="WNBA">WNBA</option>
-          <option value="Soccer">Soccer</option>
-        </select>
-        <button class="btn btn-p btn-sm" onclick="runTeamsBoard()">
-          <span id="teamsBoardBtn">Refresh Board</span>
-          <span id="teamsBoardSp" class="hidden"><div class="sp"></div></span>
-        </button>
-        <button class="btn btn-s btn-sm" onclick="exportTeamsBoard()">Export</button>
-      </div>
+      <button class="lm-ask-btn" onclick="lmAskEngine()" title="Ask WOW Engine">&#9654;</button>
+    </div>
+  </div>
+
+  <!-- SPORT FILTER PILLS -->
+  <div class="lm-sport-pills" id="lmSportPills">
+    <button class="lm-sport-pill active" data-sport="all"  onclick="lmSetSport(this,'all')">🎯 All Sports</button>
+    <button class="lm-sport-pill" data-sport="MLB"   onclick="lmSetSport(this,'MLB')">⚾ MLB</button>
+    <button class="lm-sport-pill" data-sport="NBA"   onclick="lmSetSport(this,'NBA')">🏀 NBA</button>
+    <button class="lm-sport-pill" data-sport="NHL"   onclick="lmSetSport(this,'NHL')">🏒 NHL</button>
+    <button class="lm-sport-pill" data-sport="WNBA"  onclick="lmSetSport(this,'WNBA')">🏐 WNBA</button>
+    <button class="lm-sport-pill" data-sport="Soccer" onclick="lmSetSport(this,'Soccer')">⚽ Soccer</button>
+    <button class="lm-sport-pill" data-sport="NFL"   onclick="lmSetSport(this,'NFL')">🏈 NFL</button>
+  </div>
+
+  <!-- CONTROLS ROW -->
+  <div class="lm-controls-row">
+    <div class="lm-left-ctrls">
+      <div class="lm-date-chip">Today, 5/25</div>
+      <select id="llp_mintier" class="lm-select" onchange="renderTeamsBoardOutput()">
+        <option value="all">All Tiers</option>
+        <option value="anchor">Anchor Only</option>
+        <option value="strong">Strong+</option>
+        <option value="lean">Lean+</option>
+      </select>
+      <select id="llp_bettype" class="lm-select" onchange="renderTeamsBoardOutput()">
+        <option value="all">All Types</option>
+        <option value="moneyline">Moneyline</option>
+        <option value="spread">Spread</option>
+        <option value="total">Total</option>
+      </select>
+      <select id="llp_sort" class="lm-select" onchange="renderTeamsBoardOutput()">
+        <option value="edge">Best Edge</option>
+        <option value="prob">Highest Prob</option>
+        <option value="time">Start Time</option>
+      </select>
+    </div>
+    <div class="lm-right-ctrls">
+      <span id="boardLiveMode" class="badge bg-g" style="display:none;">● Live</span>
+      <span style="font-size:11px;color:var(--text2);" id="teamsLastUpdate"></span>
+      <button class="lm-refresh-btn" onclick="runTeamsBoard()">
+        <span id="teamsBoardBtn">Refresh Board</span>
+        <span id="teamsBoardSp" class="hidden"><div class="sp"></div></span>
+      </button>
+      <button class="btn btn-s btn-sm" onclick="exportTeamsBoard()">Export</button>
     </div>
   </div>
 
   <!-- STAT CARDS -->
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px;" id="teamsStatCards">
-    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;">
-      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Games Analyzed</div>
-      <div style="font-size:24px;font-weight:900;color:var(--text);margin:6px 0 2px;" id="statGamesAnalyzed">—</div>
-      <div style="font-size:11px;color:var(--text2);" id="statGamesSubtitle">Across MLB, NBA, NHL, Soccer</div>
+  <div class="lm-stat-cards" id="teamsStatCards">
+    <div class="lm-stat-card">
+      <div class="lm-stat-label">Games Analyzed</div>
+      <div class="lm-stat-val" id="statGamesAnalyzed">—</div>
+      <div class="lm-stat-sub" id="statGamesSubtitle">Across MLB, NBA, NHL, Soccer</div>
     </div>
-    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;">
-      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Bettable Picks</div>
-      <div style="font-size:24px;font-weight:900;color:var(--green);margin:6px 0 2px;" id="statBettable">—</div>
-      <div style="font-size:11px;color:var(--text2);" id="statBettableSub">Anchor + Strong tier</div>
+    <div class="lm-stat-card">
+      <div class="lm-stat-label">Bettable Picks</div>
+      <div class="lm-stat-val" style="color:var(--green);" id="statBettable">—</div>
+      <div class="lm-stat-sub" id="statBettableSub">Anchor + Strong tier</div>
     </div>
-    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;">
-      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Top Winner</div>
-      <div style="font-size:18px;font-weight:900;color:var(--text);margin:6px 0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" id="statTopWinner">—</div>
-      <div style="font-size:11px;color:var(--text2);" id="statTopWinnerSub">Highest model probability</div>
+    <div class="lm-stat-card">
+      <div class="lm-stat-label">Top Winner</div>
+      <div class="lm-stat-val sm" id="statTopWinner">—</div>
+      <div class="lm-stat-sub" id="statTopWinnerSub">Highest model probability</div>
     </div>
-    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;">
-      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Best Edge</div>
-      <div style="font-size:24px;font-weight:900;color:var(--green);margin:6px 0 2px;" id="statBestEdge">—</div>
-      <div style="font-size:11px;color:var(--text2);" id="statBestEdgeSub">vs. market implied</div>
-    </div>
-  </div>
-
-  <!-- SUMMARY PANELS -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;" id="teamsSummaryPanels">
-    <div class="card">
-      <div class="ch">
-        <span class="ct">⭐ Highest Probability Winners</span>
-        <span class="badge bg-g">Sorted by win %</span>
-      </div>
-      <div class="cb" id="wuFavPanel">
-        <div style="color:var(--text2);font-size:12px;text-align:center;padding:20px 0;">Run board to load favorites</div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="ch">
-        <span class="ct">⚡ Best Upset Candidates</span>
-        <span class="badge bg-p">Value dogs</span>
-      </div>
-      <div class="cb" id="wuUpsetPanel">
-        <div style="color:var(--text2);font-size:12px;text-align:center;padding:20px 0;">Run board to load upsets</div>
-      </div>
+    <div class="lm-stat-card">
+      <div class="lm-stat-label">Best Edge</div>
+      <div class="lm-stat-val" style="color:var(--green);" id="statBestEdge">—</div>
+      <div class="lm-stat-sub" id="statBestEdgeSub">vs. market implied</div>
     </div>
   </div>
 
-  <!-- BOARD FILTERS & RANKED OUTPUT -->
-  <div style="border-radius:12px;border:1px solid var(--border);background:var(--surface);padding:12px 14px;margin-bottom:10px;">
-    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;justify-content:space-between;">
-      <div>
-        <div style="font-size:15px;font-weight:800;color:var(--text);">Ranked Game Board</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:2px;">Highest edge games shown first. Use filters to isolate sport, tier, or bet type.</div>
+  <!-- WINNERS / UPSETS PANELS -->
+  <div class="lm-wu-panels" id="teamsSummaryPanels">
+    <div class="lm-wu-panel lm-wu-fav">
+      <div class="lm-wu-hdr">
+        <span>⭐ Highest Probability Winners</span>
+        <span class="badge bg-g" style="font-size:10px;">Sorted by win %</span>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;">
-        <select id="llp_sport" style="font-size:12px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
-          <option value="all">All Sports</option>
-          <option value="MLB">MLB</option>
-          <option value="NBA">NBA</option>
-          <option value="NHL">NHL</option>
-          <option value="WNBA">WNBA</option>
-          <option value="Soccer">Soccer</option>
-          <option value="NFL">NFL</option>
-        </select>
-        <select id="llp_mintier" style="font-size:12px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
-          <option value="all">All Tiers</option>
-          <option value="anchor">Anchor Only</option>
-          <option value="strong">Strong+</option>
-          <option value="lean">Lean+</option>
-        </select>
-        <select id="llp_bettype" style="font-size:12px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
-          <option value="all">All Types</option>
-          <option value="moneyline">Moneyline</option>
-          <option value="spread">Spread</option>
-          <option value="total">Total</option>
-        </select>
-        <select id="llp_sort" onchange="renderTeamsBoardOutput()" style="font-size:12px;padding:4px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);">
-          <option value="edge">Best Edge</option>
-          <option value="prob">Highest Probability</option>
-          <option value="time">Start Time</option>
-        </select>
+      <div class="lm-wu-body" id="wuFavPanel">
+        <div class="lm-wu-empty">Run board to load favorites</div>
+      </div>
+    </div>
+    <div class="lm-wu-panel lm-wu-upset">
+      <div class="lm-wu-hdr">
+        <span>⚡ Best Upset Candidates</span>
+        <span class="badge bg-p" style="font-size:10px;">Value dogs</span>
+      </div>
+      <div class="lm-wu-body" id="wuUpsetPanel">
+        <div class="lm-wu-empty">Run board to load upsets</div>
       </div>
     </div>
   </div>
 
-  <!-- LLP PROGRESS LOG -->
+  <!-- BOARD TITLE -->
+  <div class="lm-board-title-row">
+    <div class="lm-board-title">Ranked Game Board</div>
+    <div style="font-size:11px;color:var(--text2);margin-top:2px;">
+      Highest edge games first · Powered by WOW LLP Engine
+    </div>
+  </div>
+
+  <!-- PROGRESS LOG -->
   <div id="llpProgress" class="hidden card" style="margin-bottom:10px;">
     <div class="cb" style="padding:10px;">
       <div class="ob" id="llpLog" style="min-height:50px;max-height:100px;"></div>
@@ -1253,7 +1553,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
   <!-- BOARD OUTPUT -->
   <div id="llpAnalysisOutput"></div>
 
-  <!-- HIDDEN LEGACY IDS (keep for JS compatibility) -->
+  <!-- HIDDEN LEGACY IDS (JS compatibility) -->
   <div style="display:none;">
     <span id="wuFavCount">0</span><span id="wuUpsetCount">0</span>
     <span id="wuGameCount">0</span><span id="llpGameCount">0</span>
@@ -1263,60 +1563,78 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
     <span id="llpRunSp"></span><span id="wuSp"></span>
     <select id="wu_sport"><option value="all">All Sports</option></select>
     <select id="wu_bettype"><option value="all">All Types</option></select>
+    <select id="teams_sport">
+      <option value="all">All Sports</option>
+      <option value="MLB">MLB</option><option value="NBA">NBA</option>
+      <option value="NHL">NHL</option><option value="WNBA">WNBA</option>
+      <option value="Soccer">Soccer</option>
+    </select>
+    <select id="llp_sport">
+      <option value="all">All Sports</option>
+      <option value="MLB">MLB</option><option value="NBA">NBA</option>
+      <option value="NHL">NHL</option><option value="WNBA">WNBA</option>
+      <option value="Soccer">Soccer</option><option value="NFL">NFL</option>
+    </select>
   </div>
 
-  <!-- MANUAL ENTRY -->
-  <div class="g2">
-    <div class="card">
-      <div class="ch"><span class="ct">LLP Manual Entry</span><span class="badge bg-b">v1.0</span></div>
-      <div class="cb">
-        <div class="fr">
-          <div class="field"><label>Sport</label><select id="t_sport"><option>MLB</option><option>NBA</option><option>NHL</option><option>NFL</option><option>WNBA</option><option>Soccer</option></select></div>
-          <div class="field"><label>Bet Type</label><select id="t_bet"><option value="moneyline">Moneyline</option><option value="f5_ml">F5 ML</option><option value="spread">Spread</option><option value="total">Total</option><option value="f5_total">F5 Total</option><option value="team_total">Team Total</option></select></div>
+  <!-- MANUAL EVALUATOR & BET LOG (collapsed) -->
+  <details class="lm-accordion">
+    <summary class="lm-acc-trigger">🔧 Manual Evaluator &amp; Bet Log</summary>
+    <div class="lm-acc-body">
+      <div class="g2">
+        <div class="card">
+          <div class="ch"><span class="ct">LLP Manual Entry</span><span class="badge bg-b">v1.0</span></div>
+          <div class="cb">
+            <div class="fr">
+              <div class="field"><label>Sport</label><select id="t_sport"><option>MLB</option><option>NBA</option><option>NHL</option><option>NFL</option><option>WNBA</option><option>Soccer</option></select></div>
+              <div class="field"><label>Bet Type</label><select id="t_bet"><option value="moneyline">Moneyline</option><option value="f5_ml">F5 ML</option><option value="spread">Spread</option><option value="total">Total</option><option value="f5_total">F5 Total</option><option value="team_total">Team Total</option></select></div>
+            </div>
+            <div class="fr">
+              <div class="field"><label>Away Team</label><input type="text" id="t_away" placeholder="e.g. Yankees"></div>
+              <div class="field"><label>Home Team</label><input type="text" id="t_home" placeholder="e.g. Red Sox"></div>
+            </div>
+            <div class="fr">
+              <div class="field"><label>Pick</label><input type="text" id="t_pick" placeholder="e.g. Yankees ML"></div>
+              <div class="field"><label>Line / Odds</label><input type="text" id="t_line" placeholder="e.g. -130"></div>
+            </div>
+            <div class="dv"><div class="dl"></div><div class="dt">Market Context</div><div class="dl"></div></div>
+            <div class="fr">
+              <div class="field"><label>Open Line</label><input type="text" id="t_open" placeholder="-120"></div>
+              <div class="field"><label>Current Line</label><input type="text" id="t_cur" placeholder="-135"></div>
+              <div class="field"><label>Line Movement</label><select id="t_mov"><option value="none">None</option><option value="with">With pick</option><option value="against">Against pick</option><option value="sharp">Sharp action</option></select></div>
+            </div>
+            <div class="fr">
+              <div class="field"><label>Lineup Status</label><select id="t_lu"><option value="confirmed">Confirmed</option><option value="partial">Partial</option><option value="missing">Missing</option></select></div>
+              <div class="field"><label>Injury</label><select id="t_inj"><option value="none">None</option><option value="concern">Concern</option><option value="out">Key player out</option></select></div>
+              <div class="field"><label>Blowout Risk</label><select id="t_bl"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:4px;">
+              <button class="btn btn-p" onclick="evalTeam()"><span id="tBtn">Evaluate Bet</span><span id="tSp" class="hidden"><div class="sp"></div></span></button>
+              <button class="btn btn-s btn-sm" onclick="pullTeamOdds()">Pull Live Odds</button>
+            </div>
+          </div>
         </div>
-        <div class="fr">
-          <div class="field"><label>Away Team</label><input type="text" id="t_away" placeholder="e.g. Yankees"></div>
-          <div class="field"><label>Home Team</label><input type="text" id="t_home" placeholder="e.g. Red Sox"></div>
+        <div>
+          <div class="card" style="margin-bottom:12px;">
+            <div class="ch"><span class="ct">Team Bet Evaluation</span></div>
+            <div class="cb" style="padding-top:8px;">
+              <div class="ob" id="teamOut" style="min-height:180px;">Enter bet details and click Evaluate Bet.</div>
+              <div id="teamBar" style="margin-top:8px;"></div>
+            </div>
+          </div>
+          <div class="card" id="teamOddsCard" style="display:none;">
+            <div class="ch"><span class="ct">Live Market Odds</span><span id="teamOddsLbl" style="font-size:12px;color:var(--text2);"></span></div>
+            <div class="cb" style="padding-top:8px;"><div id="teamOddsBody"></div></div>
+          </div>
         </div>
-        <div class="fr">
-          <div class="field"><label>Pick</label><input type="text" id="t_pick" placeholder="e.g. Yankees ML"></div>
-          <div class="field"><label>Line / Odds</label><input type="text" id="t_line" placeholder="e.g. -130"></div>
-        </div>
-        <div class="dv"><div class="dl"></div><div class="dt">Market Context</div><div class="dl"></div></div>
-        <div class="fr">
-          <div class="field"><label>Open Line</label><input type="text" id="t_open" placeholder="-120"></div>
-          <div class="field"><label>Current Line</label><input type="text" id="t_cur" placeholder="-135"></div>
-          <div class="field"><label>Line Movement</label><select id="t_mov"><option value="none">None</option><option value="with">With pick</option><option value="against">Against pick</option><option value="sharp">Sharp action</option></select></div>
-        </div>
-        <div class="fr">
-          <div class="field"><label>Lineup Status</label><select id="t_lu"><option value="confirmed">Confirmed</option><option value="partial">Partial</option><option value="missing">Missing</option></select></div>
-          <div class="field"><label>Injury</label><select id="t_inj"><option value="none">None</option><option value="concern">Concern</option><option value="out">Key player out</option></select></div>
-          <div class="field"><label>Blowout Risk</label><select id="t_bl"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
-        </div>
-        <div style="display:flex;gap:8px;margin-top:4px;">
-          <button class="btn btn-p" onclick="evalTeam()"><span id="tBtn">Evaluate Bet</span><span id="tSp" class="hidden"><div class="sp"></div></span></button>
-          <button class="btn btn-s btn-sm" onclick="pullTeamOdds()">Pull Live Odds</button>
-        </div>
+      </div>
+      <div class="card" style="margin-top:12px;">
+        <div class="ch"><span class="ct">Team Bet Log</span><span id="tLogCnt" style="font-size:12px;color:var(--text2);">0 bets</span></div>
+        <div class="cb" id="tLog"><div style="color:var(--text2);font-size:13px;text-align:center;padding:14px;">No team bets logged.</div></div>
       </div>
     </div>
-    <div>
-      <div class="card" style="margin-bottom:12px;">
-        <div class="ch"><span class="ct">Team Bet Evaluation</span></div>
-        <div class="cb" style="padding-top:8px;">
-          <div class="ob" id="teamOut" style="min-height:180px;">Enter bet details and click Evaluate Bet.</div>
-          <div id="teamBar" style="margin-top:8px;"></div>
-        </div>
-      </div>
-      <div class="card" id="teamOddsCard" style="display:none;">
-        <div class="ch"><span class="ct">Live Market Odds</span><span id="teamOddsLbl" style="font-size:12px;color:var(--text2);"></span></div>
-        <div class="cb" style="padding-top:8px;"><div id="teamOddsBody"></div></div>
-      </div>
-    </div>
-  </div>
-  <div class="card">
-    <div class="ch"><span class="ct">Team Bet Log</span><span id="tLogCnt" style="font-size:12px;color:var(--text2);">0 bets</span></div>
-    <div class="cb" id="tLog"><div style="color:var(--text2);font-size:13px;text-align:center;padding:14px;">No team bets logged.</div></div>
-  </div>
+  </details>
+
 </div>
   </div><!-- end .main -->
 
@@ -10812,48 +11130,73 @@ function exportTeamsBoard(){
 }
 
 function renderTeamsSummaryPanels(){
-  // Favorites panel
+  // ── Favorites panel (Linemaker-style) ──
   const favEl = document.getElementById('wuFavPanel');
   if(favEl){
     if(!_teamsWUFavorites.length){
-      favEl.innerHTML = '<div style="color:var(--text2);font-size:12px;text-align:center;padding:16px 0;">No favorites found yet</div>';
+      favEl.innerHTML = '<div class="lm-wu-empty">No favorites found yet</div>';
     } else {
-      favEl.innerHTML = _teamsWUFavorites.slice(0,5).map((g,i) => `
-        <div style="display:grid;grid-template-columns:2rem 1fr auto;align-items:center;gap:10px;border-radius:10px;background:var(--surface2);padding:10px;margin-bottom:6px;">
-          <div style="width:28px;height:28px;border-radius:8px;background:var(--surface);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:var(--text2);">${i+1}</div>
+      favEl.innerHTML = _teamsWUFavorites.slice(0,5).map((g,i) => {
+        const prob = (g.prob*100).toFixed(1);
+        const edge = g.edge.toFixed(1);
+        const barW = Math.min(100, parseFloat(prob)).toFixed(0);
+        return `<div style="padding:10px 0;border-bottom:1px solid var(--border);display:grid;grid-template-columns:2rem 1fr auto;align-items:center;gap:10px;">
+          <div style="width:28px;height:28px;border-radius:8px;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:var(--text2);flex-shrink:0;">${i+1}</div>
           <div>
             <div style="font-size:13px;font-weight:700;color:var(--text);">${g.pick}</div>
-            <div style="font-size:11px;color:var(--text2);">${g.sport} · vs ${g.dog}${g.boosts?.[0]?' · '+g.boosts[0]:''}</div>
+            <div style="font-size:11px;color:var(--text2);margin:2px 0;">${g.sport} · vs ${g.dog||''}${g.boosts?.[0]?' · '+g.boosts[0]:''}</div>
+            <div style="height:4px;border-radius:2px;background:var(--surface2);margin-top:5px;overflow:hidden;"><div style="width:${barW}%;height:100%;background:var(--green);border-radius:2px;transition:width .5s;"></div></div>
           </div>
-          <div style="text-align:right;">
-            <div style="font-size:14px;font-weight:900;color:var(--green);">${(g.prob*100).toFixed(1)}%</div>
-            <div style="font-size:10px;color:var(--text2);">+${g.edge.toFixed(1)}% edge</div>
+          <div style="text-align:right;flex-shrink:0;">
+            <div style="font-size:15px;font-weight:900;color:var(--green);">${prob}%</div>
+            <div style="font-size:10px;color:var(--text2);">+${edge}% edge</div>
           </div>
-        </div>`).join('');
+        </div>`;
+      }).join('');
     }
   }
 
-  // Upsets panel
+  // ── Upsets panel (Linemaker-style) ──
   const upsetEl = document.getElementById('wuUpsetPanel');
   if(upsetEl){
     if(!_teamsWUUpsets.length){
-      upsetEl.innerHTML = '<div style="color:var(--text2);font-size:12px;text-align:center;padding:16px 0;">No upset candidates found yet</div>';
+      upsetEl.innerHTML = '<div class="lm-wu-empty">No upset candidates found yet</div>';
     } else {
-      upsetEl.innerHTML = _teamsWUUpsets.slice(0,4).map((g,i) => `
-        <div style="border-radius:10px;border:1px solid rgba(168,85,247,0.2);background:var(--purple-light);padding:10px;margin-bottom:6px;">
+      upsetEl.innerHTML = _teamsWUUpsets.slice(0,4).map((g,i) => {
+        const prob = (g.prob*100).toFixed(1);
+        const mlStr = g.ml > 0 ? `+${g.ml}` : `${g.ml}`;
+        return `<div style="padding:10px 0;border-bottom:1px solid rgba(168,85,247,0.15);">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
             <div>
               <div style="font-size:13px;font-weight:700;color:var(--purple);">${i+1}. ${g.pick}</div>
-              <div style="font-size:11px;color:var(--text2);margin-top:2px;">${(g.reasons||[]).slice(0,2).join(' · ')}</div>
+              <div style="font-size:11px;color:var(--text2);margin-top:3px;line-height:1.5;">${(g.reasons||[]).slice(0,2).join(' · ')}</div>
             </div>
             <div style="text-align:right;flex-shrink:0;">
-              <div style="font-size:14px;font-weight:900;color:var(--purple);">${(g.prob*100).toFixed(1)}%</div>
-              <div style="font-size:11px;color:var(--text2);">${g.ml>0?'+'+g.ml:g.ml}</div>
+              <div style="font-size:15px;font-weight:900;color:var(--purple);">${prob}%</div>
+              <div style="font-size:11px;color:var(--text2);">${mlStr}</div>
             </div>
           </div>
-        </div>`).join('');
+        </div>`;
+      }).join('');
     }
   }
+}
+
+mes){
+  const bets = allGames.flatMap(g=>g.bets||[]);
+  const anchors = bets.filter(b=>b.tier==='TEAM ANCHOR').length;
+  const strongs = bets.filter(b=>b.tier==='TEAM STRONG').length;
+  const topBet = [...bets].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
+  const topFav = [..._teamsWUFavorites].sort((a,b)=>b.prob-a.prob)[0];
+
+  const el = id => document.getElementById(id);
+  if(el('statGamesAnalyzed')) el('statGamesAnalyzed').textContent = allGames.length;
+  if(el('statGamesSubtitle')) el('statGamesSubtitle').textContent = [...new Set(allGames.map(g=>g.sport))].join(', ')||'No sports';
+  if(el('statBettable')) el('statBettable').textContent = anchors + strongs;
+  if(el('statBettableSub')) el('statBettableSub').textContent = `${anchors} anchor, ${strongs} strong`;
+  if(el('statTopWinner') && topFav) el('statTopWinner').textContent = `${topFav.pick} ${(topFav.prob*100).toFixed(0)}%`;
+  if(el('statBestEdge') && topBet) el('statBestEdge').textContent = `+${topBet.edge_pct}%`;
+  if(el('statBestEdgeSub') && topBet) el('statBestEdgeSub').textContent = topBet.pick;
 }
 
 function renderTeamsStatCards(allGames){
@@ -10901,192 +11244,328 @@ function renderTeamsBoardOutput(){
     (sportF==='all' || g.sport===sportF)
   )})).filter(g=>g.bets.length>0);
 
-  if(sortMode==='edge')   filtered.sort((a,b)=>Math.max(...b.bets.map(x=>x.edge_pct)) - Math.max(...a.bets.map(x=>x.edge_pct)));
-  if(sortMode==='prob')   filtered.sort((a,b)=>Math.max(...b.bets.map(x=>x.implied_prob||0)) - Math.max(...a.bets.map(x=>x.implied_prob||0)));
-  if(sortMode==='time')   filtered.sort((a,b)=>(a.game_time||'').localeCompare(b.game_time||''));
+  if(sortMode==='edge')  filtered.sort((a,b)=>Math.max(...b.bets.map(x=>x.edge_pct))-Math.max(...a.bets.map(x=>x.edge_pct)));
+  if(sortMode==='prob')  filtered.sort((a,b)=>Math.max(...b.bets.map(x=>x.implied_prob||0))-Math.max(...a.bets.map(x=>x.implied_prob||0)));
+  if(sortMode==='time')  filtered.sort((a,b)=>(a.game_time||'').localeCompare(b.game_time||''));
 
   outputDiv.innerHTML = '';
 
   if(!filtered.length){
-    outputDiv.innerHTML = `<div class="alert ay">⚠ No qualifying bets with current filters. Try "All Tiers" or click Refresh Board to scan today's slate.</div>`;
+    outputDiv.innerHTML = `<div style="text-align:center;padding:48px 20px;color:var(--text2);">
+      <div style="font-size:36px;margin-bottom:12px;">📊</div>
+      <div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:6px;">No qualifying games</div>
+      <div style="font-size:13px;">Try "All Tiers" or click Refresh Board to scan today's slate.</div>
+    </div>`;
     return;
   }
 
-  // Summary bar
+  // Summary pill bar
   const anchors = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM ANCHOR').length;
   const strongs = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM STRONG').length;
   const leans   = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM LEAN').length;
-  const sumDiv = document.createElement('div');
-  sumDiv.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;';
+  const sumDiv  = document.createElement('div');
+  sumDiv.className = 'lm-sum-bar';
   sumDiv.innerHTML = `
-    <div style="padding:8px 14px;background:var(--green-light);border-radius:10px;border:1px solid rgba(16,185,129,0.2);text-align:center;min-width:70px;">
-      <div style="font-size:20px;font-weight:900;color:var(--green);">${anchors}</div>
-      <div style="font-size:10px;font-weight:700;color:var(--green);text-transform:uppercase;">Anchor</div>
-    </div>
-    <div style="padding:8px 14px;background:var(--accent-light);border-radius:10px;border:1px solid rgba(59,130,246,0.2);text-align:center;min-width:70px;">
-      <div style="font-size:20px;font-weight:900;color:var(--accent);">${strongs}</div>
-      <div style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;">Strong</div>
-    </div>
-    <div style="padding:8px 14px;background:var(--yellow-light);border-radius:10px;border:1px solid rgba(245,158,11,0.2);text-align:center;min-width:70px;">
-      <div style="font-size:20px;font-weight:900;color:var(--yellow);">${leans}</div>
-      <div style="font-size:10px;font-weight:700;color:var(--yellow);text-transform:uppercase;">Lean</div>
-    </div>
-    <div style="padding:8px 14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border);text-align:center;min-width:70px;">
-      <div style="font-size:20px;font-weight:900;color:var(--text);">${filtered.length}</div>
-      <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;">Games</div>
-    </div>`;
+    <span class="lm-sum-pill lm-s-anchor">⚓ ${anchors} Anchor</span>
+    <span class="lm-sum-pill lm-s-strong">💪 ${strongs} Strong</span>
+    <span class="lm-sum-pill lm-s-lean">📈 ${leans} Lean</span>
+    <span class="lm-sum-pill lm-s-games">🎮 ${filtered.length} Games</span>`;
   outputDiv.appendChild(sumDiv);
 
   // Game cards
   filtered.forEach((game, idx) => {
     const topBet = [...game.bets].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
-    const tierColor = topBet?.tier==='TEAM ANCHOR'?'var(--green)':topBet?.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
-    const tierBg    = topBet?.tier==='TEAM ANCHOR'?'var(--green-light)':topBet?.tier==='TEAM STRONG'?'var(--accent-light)':'var(--yellow-light)';
-    const tierBadge = topBet?.tier==='TEAM ANCHOR'?'bg-g':topBet?.tier==='TEAM STRONG'?'bg-b':'bg-y';
-    const decisionLabel = topBet?.tier==='TEAM ANCHOR'?'BET':topBet?.tier==='TEAM STRONG'?'BET':'LEAN';
-    const decisionColor = decisionLabel==='BET'?'var(--green)':'var(--yellow)';
+    const tierColor = topBet?.tier==='TEAM ANCHOR'?'#10b981':topBet?.tier==='TEAM STRONG'?'#3b82f6':'#f59e0b';
+    const tierLabel = (topBet?.tier||'LEAN').replace('TEAM ','');
+    const isBet = topBet?.tier==='TEAM ANCHOR'||topBet?.tier==='TEAM STRONG';
 
-    // Map WU data for this game
     const awayL = (game.away_team||'').toLowerCase();
     const homeL = (game.home_team||'').toLowerCase();
-    const wuFav = _teamsWUFavorites.find(f =>
-      (f.away||'').toLowerCase().includes(awayL.slice(0,5)) ||
+    const wuFav = _teamsWUFavorites.find(f=>
+      (f.away||'').toLowerCase().includes(awayL.slice(0,5))||
       (f.home||'').toLowerCase().includes(homeL.slice(0,5))
     );
-    const wuUpset = _teamsWUUpsets.find(u =>
-      (u.away||'').toLowerCase().includes(awayL.slice(0,5)) ||
+    const wuUpset = _teamsWUUpsets.find(u=>
+      (u.away||'').toLowerCase().includes(awayL.slice(0,5))||
       (u.home||'').toLowerCase().includes(homeL.slice(0,5))
     );
 
-    const modelProb = wuFav ? (wuFav.prob*100).toFixed(1) : (topBet?.implied_prob ? ((topBet.implied_prob + topBet.edge_pct/100)*100).toFixed(1) : '—');
+    const modelProb  = wuFav ? (wuFav.prob*100).toFixed(1) : topBet?.implied_prob ? ((topBet.implied_prob+topBet.edge_pct/100)*100).toFixed(1) : '—';
     const impliedProb = topBet?.implied_prob ? (topBet.implied_prob*100).toFixed(1) : '—';
-    const whyItems = (topBet?.reasoning||'').split('.').filter(s=>s.trim().length>5).slice(0,4);
-    const upsetOdds = wuUpset?.ml != null ? ` at ${wuUpset.ml>0?'+'+wuUpset.ml:wuUpset.ml}` : '';
-    const upsetText = wuUpset
+    const whyItems   = (topBet?.reasoning||'').split('.').filter(s=>s.trim().length>5).slice(0,4);
+    const upsetOdds  = wuUpset?.ml != null ? ` at ${wuUpset.ml>0?'+'+wuUpset.ml:wuUpset.ml}` : '';
+    const upsetText  = wuUpset
       ? `${wuUpset.pick}${upsetOdds} has a path. ${(wuUpset.reasons||[]).slice(0,2).join('. ')}.`
       : 'No significant upset path detected for this game.';
+    const cid = `lmg${idx}`;
 
-    const cardId = `llpcard_${idx}`;
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.style.marginBottom = '10px';
-    card.style.overflow = 'hidden';
-    card.innerHTML = `
-      <!-- Card Header -->
-      <div style="background:var(--surface2);padding:14px 16px;border-bottom:1px solid var(--border);">
-        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;justify-content:space-between;">
+    // Determine default tab based on bet type
+    const btMap = {moneyline:'ml', spread:'spread', total:'total'};
+    const defTab = btMap[topBet?.type] || 'engine';
+
+    // ── ML tab content ──
+    const awayML  = topBet?.type==='moneyline'&&(game.away_team||'').includes(topBet?.pick||'xxx') ? topBet.line : '—';
+    const homeML  = topBet?.type==='moneyline'&&(game.home_team||'').includes(topBet?.pick||'xxx') ? topBet.line : '—';
+    const mlContent = `
+      <div class="lm-chart-wrap">${lmSparkline(parseFloat(modelProb)||50,parseFloat(impliedProb)||50,idx)}</div>
+      <div class="lm-chart-legend">
+        <span class="lm-leg"><span class="lm-leg-line" style="background:#e63946;"></span>Model Win %</span>
+        <span class="lm-leg"><span class="lm-leg-line" style="background:rgba(255,255,255,0.3);"></span>Market Implied</span>
+      </div>
+      <div class="lm-line-box">
+        <div class="lm-line-side">
+          <div class="lm-line-team">${game.away_team||'Away'}</div>
+          <div class="lm-line-odds">${topBet?.type==='moneyline'&&topBet.line<0?topBet.line:(topBet?.line>0?'+'+topBet?.line:'—')}</div>
+          ${topBet?.edge_pct>0?`<span class="lm-line-edge-tag lm-line-edge-pos">+${topBet.edge_pct}% edge</span>`:''}
+        </div>
+        <div class="lm-line-side" style="border-left:1px solid var(--border);">
+          <div class="lm-line-team">${game.home_team||'Home'}</div>
+          <div class="lm-line-odds">—</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text2);text-align:center;">Model projects <strong style="color:var(--text);">${wuFav?.pick||topBet?.pick||'—'}</strong> at ${modelProb}% · Market implies ${impliedProb}%</div>`;
+
+    // ── Spread tab content ──
+    const spreadBet = game.bets.find(b=>b.type==='spread') || topBet;
+    const spreadContent = `
+      <div class="lm-chart-wrap">${lmSparkline(parseFloat(modelProb)||50,parseFloat(impliedProb)||50,idx+100)}</div>
+      <div class="lm-chart-legend">
+        <span class="lm-leg"><span class="lm-leg-line" style="background:#e63946;"></span>Model Edge</span>
+        <span class="lm-leg"><span class="lm-leg-line" style="background:rgba(255,255,255,0.3);"></span>Market Line</span>
+      </div>
+      <div class="lm-line-box">
+        <div class="lm-line-side">
+          <div class="lm-line-team">${game.away_team||'Away'}</div>
+          <div class="lm-line-odds">${spreadBet?.type==='spread'?(spreadBet.line>0?'+':'')+spreadBet.line:'—'}</div>
+          ${spreadBet?.type==='spread'&&spreadBet.edge_pct>0?`<span class="lm-line-edge-tag lm-line-edge-pos">+${spreadBet.edge_pct}% edge</span>`:''}
+        </div>
+        <div class="lm-line-side" style="border-left:1px solid var(--border);">
+          <div class="lm-line-team">${game.home_team||'Home'}</div>
+          <div class="lm-line-odds">—</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text2);text-align:center;">${spreadBet?.type==='spread'?`Spread pick: <strong style="color:var(--text);">${spreadBet.pick}</strong> · +${spreadBet.edge_pct}% edge`:'No spread bet identified for this game.'}</div>`;
+
+    // ── Total tab content ──
+    const totalBet = game.bets.find(b=>b.type==='total') || null;
+    const totalContent = `
+      <div style="padding:20px 0;text-align:center;">
+        ${totalBet ? `
+          <div style="font-size:13px;color:var(--text2);margin-bottom:8px;">Total Line</div>
+          <div style="font-size:36px;font-weight:900;color:var(--text);">${totalBet.pick}</div>
+          <div style="font-size:14px;color:var(--text2);margin-top:4px;">${totalBet.line>0?'+':''}${totalBet.line} · ${totalBet.unit_size}u · +${totalBet.edge_pct}% edge</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:12px;max-width:300px;margin-left:auto;margin-right:auto;">${totalBet.reasoning||''}</div>
+        ` : `<div style="color:var(--text2);font-size:13px;">No total bet identified for this game.</div>`}
+      </div>`;
+
+    // ── Best Odds tab content ──
+    const allBetsOdds = game.bets.slice(0,4);
+    const oddsContent = `
+      <table class="lm-odds-table">
+        <tr><th>Pick</th><th>Type</th><th>Line</th><th>Edge</th><th>Tier</th></tr>
+        ${allBetsOdds.length ? allBetsOdds.map(b=>{
+          const bc = b.tier==='TEAM ANCHOR'?'var(--green)':b.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
+          return `<tr>
+            <td class="lm-odds-best">${b.pick}</td>
+            <td style="color:var(--text2);">${b.type||'ML'}</td>
+            <td>${b.line>0?'+':''}${b.line}</td>
+            <td style="color:var(--green);">+${b.edge_pct}%</td>
+            <td><span style="font-size:10px;font-weight:700;color:${bc};">${b.tier.replace('TEAM ','')}</span></td>
+          </tr>`;
+        }).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--text2);padding:16px;">No odds data</td></tr>'}
+      </table>
+      <button class="btn btn-s btn-sm" style="margin-top:10px;font-size:11px;" onclick="loadLLPBetToForm('${game.sport}','${(game.away_team||'').replace(/'/g,"\\'")}','${(game.home_team||'').replace(/'/g,"\\'")}','${(topBet?.pick||'').replace(/'/g,"\\'")}','${topBet?.line||''}')">Load to Evaluator</button>`;
+
+    // ── Engine tab content (main analysis) ──
+    const engineContent = `
+      <div class="lm-chart-wrap">${lmSparkline(parseFloat(modelProb)||50,parseFloat(impliedProb)||50,idx+200)}</div>
+      <div class="lm-chart-legend" style="margin-bottom:12px;">
+        <span class="lm-leg"><span class="lm-leg-line" style="background:#e63946;"></span>Model Win %</span>
+        <span class="lm-leg"><span class="lm-leg-line" style="background:rgba(255,255,255,0.3);border-top:1px dashed rgba(255,255,255,0.3);"></span>Market Implied</span>
+      </div>
+      <div class="lm-bet-rec">
+        <div class="lm-bet-rec-lbl">Recommended Bet</div>
+        <div class="lm-bet-rec-body">
           <div>
-            <div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:6px;">
-              <span class="badge" style="background:var(--surface);color:var(--text2);border:1px solid var(--border);">#${idx+1}</span>
-              <span class="badge bg-b">${game.sport}</span>
-              <span class="badge" style="background:${decisionLabel==='BET'?'rgba(16,185,129,0.15)':'rgba(245,158,11,0.15)'};color:${decisionColor};border:1px solid ${decisionColor}40;">${decisionLabel}</span>
-              <span class="badge ${tierBadge}">${topBet?.tier?.replace('TEAM ','')}</span>
-              ${game.game_time?`<span style="font-size:11px;color:var(--text2);">🕐 ${game.game_time}</span>`:''}
-            </div>
-            <div style="font-size:16px;font-weight:800;color:var(--text);">${game.away_team} @ ${game.home_team}</div>
-            ${wuFav?`<div style="font-size:12px;color:var(--green);margin-top:2px;">Projected winner: <strong>${wuFav.pick}</strong></div>`:''}
+            <div class="lm-bet-pick">${topBet?.pick||'—'}</div>
+            <div class="lm-bet-meta">${topBet?.line!=null?(topBet.line>0?'+':'')+topBet.line:'—'} · ${topBet?.unit_size||'—'}u · ${(topBet?.type||'').toUpperCase()}</div>
           </div>
-          <!-- Recommended Bet Box -->
-          <div style="border-radius:12px;border:1px solid rgba(16,185,129,0.25);background:rgba(16,185,129,0.08);padding:12px;min-width:200px;">
-            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);font-weight:700;">Recommended Bet</div>
-            <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-top:4px;">
-              <div>
-                <div style="font-size:18px;font-weight:900;color:var(--text);">${topBet?.pick||'—'}</div>
-                <div style="font-size:12px;color:var(--text2);">${topBet?.line>0?'+':''}${topBet?.line||'—'} · ${topBet?.unit_size||'—'}u</div>
-              </div>
-              <div style="text-align:right;">
-                <div style="font-size:10px;color:var(--text2);">Edge</div>
-                <div style="font-size:20px;font-weight:900;color:var(--green);">+${topBet?.edge_pct||0}%</div>
-              </div>
-            </div>
+          <div>
+            <div class="lm-bet-edge-lbl">Edge</div>
+            <div class="lm-bet-edge">+${topBet?.edge_pct||0}%</div>
           </div>
         </div>
       </div>
-
-      <!-- Card Body -->
-      <div style="display:grid;grid-template-columns:1.1fr .9fr;gap:12px;padding:14px 16px;">
+      <div class="lm-eng-grid">
         <div>
-          <!-- Score boxes -->
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px;">
-            <div style="border-radius:10px;background:var(--surface2);padding:8px 10px;">
-              <div style="font-size:10px;color:var(--text2);">Model Win</div>
-              <div style="font-size:14px;font-weight:800;color:var(--text);">${modelProb}%</div>
-            </div>
-            <div style="border-radius:10px;background:var(--surface2);padding:8px 10px;">
-              <div style="font-size:10px;color:var(--text2);">Implied</div>
-              <div style="font-size:14px;font-weight:800;color:var(--text);">${impliedProb}%</div>
-            </div>
-            <div style="border-radius:10px;background:var(--surface2);padding:8px 10px;">
-              <div style="font-size:10px;color:var(--text2);">Edge</div>
-              <div style="font-size:14px;font-weight:800;color:var(--green);">+${topBet?.edge_pct||0}%</div>
+          <div class="lm-why-box">
+            <div class="lm-why-title">🏆 Why ${wuFav?.pick||topBet?.pick||game.away_team}?</div>
+            <div class="lm-why-grid">
+              ${(whyItems.length?whyItems:['Edge over market']).map(item=>`
+                <div class="lm-why-item"><span class="lm-why-chk">✓</span><span>${item.trim()}</span></div>`).join('')}
             </div>
           </div>
-          <!-- Why win -->
-          <div style="border-radius:10px;border:1px solid var(--border);background:var(--surface2);padding:12px;">
-            <div style="font-size:12px;font-weight:700;color:var(--green);margin-bottom:8px;">🏆 Why ${wuFav?.pick||game.away_team}?</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">
-              ${(whyItems.length?whyItems:[topBet?.reasoning||'Edge over market']).slice(0,4).map(item=>`
-                <div style="display:flex;gap:6px;border-radius:8px;background:var(--surface);padding:6px 8px;font-size:11px;color:var(--text2);">
-                  <span style="color:var(--green);flex-shrink:0;">✓</span>
-                  <span>${item.trim()}</span>
-                </div>`).join('')}
-            </div>
+          <div class="lm-upset-box">
+            <div class="lm-upset-title">⚠ Upset Risk</div>
+            <div class="lm-upset-txt">${upsetText}</div>
           </div>
         </div>
         <div>
-          <!-- Probability bars -->
-          <div style="border-radius:10px;border:1px solid var(--border);background:var(--surface2);padding:12px;margin-bottom:10px;">
-            <div style="margin-bottom:8px;">
-              <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2);margin-bottom:4px;">
-                <span>Model probability</span><strong style="color:var(--text);">${modelProb}%</strong>
-              </div>
-              <div style="height:6px;border-radius:3px;background:var(--surface);overflow:hidden;">
-                <div style="height:100%;border-radius:3px;background:var(--green);width:${modelProb}%;transition:width .4s;"></div>
-              </div>
+          <div class="lm-prob-box">
+            <div class="lm-prob-row">
+              <div class="lm-prob-lbl"><span>Model probability</span><strong style="color:var(--text);">${modelProb}%</strong></div>
+              <div class="lm-prob-bar"><div class="lm-prob-fill" style="width:${modelProb==='—'?0:Math.min(100,parseFloat(modelProb))}%;background:var(--lm-red);"></div></div>
             </div>
-            <div>
-              <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2);margin-bottom:4px;">
-                <span>Market implied</span><span>${impliedProb}%</span>
-              </div>
-              <div style="height:6px;border-radius:3px;background:var(--surface);overflow:hidden;">
-                <div style="height:100%;border-radius:3px;background:var(--text2);width:${impliedProb}%;transition:width .4s;"></div>
-              </div>
+            <div class="lm-prob-row">
+              <div class="lm-prob-lbl"><span>Market implied</span><span>${impliedProb}%</span></div>
+              <div class="lm-prob-bar"><div class="lm-prob-fill" style="width:${impliedProb==='—'?0:Math.min(100,parseFloat(impliedProb))}%;background:var(--text2);"></div></div>
+            </div>
+            <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+              <div style="font-size:10px;color:var(--text2);margin-bottom:3px;">Model Edge</div>
+              <div style="font-size:20px;font-weight:900;color:var(--green);">+${topBet?.edge_pct||0}%</div>
             </div>
           </div>
-          <!-- Upset risk -->
-          <div style="border-radius:10px;border:1px solid rgba(245,158,11,0.2);background:rgba(245,158,11,0.08);padding:12px;">
-            <div style="font-size:12px;font-weight:700;color:var(--yellow);margin-bottom:4px;">⚠ Upset Risk</div>
-            <div style="font-size:11px;color:var(--text2);line-height:1.6;">${upsetText}</div>
-          </div>
         </div>
+      </div>`;
+
+    const card = document.createElement('div');
+    card.className = 'lm-game-card';
+    card.innerHTML = `
+      <div class="lm-card-hdr">
+        <div class="lm-card-badges">
+          <span class="lm-badge-sport">${game.sport}</span>
+          <span class="lm-badge-tier" style="color:${tierColor};border-color:${tierColor}40;background:${tierColor}15;">${tierLabel}</span>
+          <span class="${isBet?'lm-badge-bet':'lm-badge-lean'}">${isBet?'BET':'LEAN'}</span>
+          ${game.game_time?`<span class="lm-badge-time">🕐 ${game.game_time}</span>`:''}
+        </div>
+        <div class="lm-matchup">${game.away_team||'Away'} <span style="color:var(--text3);font-weight:400;">@</span> ${game.home_team||'Home'}</div>
+        ${wuFav?`<div class="lm-proj-winner">Model favors: <strong>${wuFav.pick}</strong> · ${(wuFav.prob*100).toFixed(1)}% win prob</div>`:''}
       </div>
 
-      <!-- All bets (expandable) -->
-      <div id="${cardId}_detail" class="hidden" style="border-top:1px solid var(--border);padding:12px 16px;">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-          ${game.bets.map(bet => {
-            const bc = bet.tier==='TEAM ANCHOR'?'var(--green)':bet.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
-            const bbg = bet.tier==='TEAM ANCHOR'?'var(--green-light)':bet.tier==='TEAM STRONG'?'var(--accent-light)':'var(--yellow-light)';
-            return `<div style="border-radius:8px;background:${bbg};border:1px solid ${bc}40;padding:10px;">
-              <div style="font-size:12px;font-weight:700;color:${bc};">${bet.pick}</div>
-              <div style="font-size:11px;color:var(--text2);margin:2px 0;">${bet.line>0?'+':''}${bet.line} · ${bet.unit_size}u · +${bet.edge_pct}% edge</div>
-              <div style="font-size:10px;color:var(--text2);line-height:1.5;">${bet.reasoning}</div>
-              <button class="btn btn-s btn-sm" style="margin-top:6px;font-size:10px;" onclick="loadLLPBetToForm('${game.sport}','${(game.away_team||'').replace(/'/g,"\'")}','${(game.home_team||'').replace(/'/g,"\'")}','${bet.pick.replace(/'/g,"\'")}','${bet.line}')">Load to Evaluator</button>
-            </div>`;
-          }).join('')}
-        </div>
+      <div class="lm-card-tabs">
+        <button class="lm-ctab ${defTab==='ml'?'active':''}"      onclick="lmSwitchTab('${cid}','ml',this)">ML</button>
+        <button class="lm-ctab ${defTab==='spread'?'active':''}"  onclick="lmSwitchTab('${cid}','spread',this)">SPREAD</button>
+        <button class="lm-ctab ${defTab==='total'?'active':''}"   onclick="lmSwitchTab('${cid}','total',this)">TOTAL</button>
+        <button class="lm-ctab"                                    onclick="lmSwitchTab('${cid}','odds',this)">BEST ODDS</button>
+        <button class="lm-ctab ${!['ml','spread','total'].includes(defTab)?'active':''}" onclick="lmSwitchTab('${cid}','engine',this)">ENGINE</button>
       </div>
 
-      <!-- Expand toggle -->
-      <button onclick="const d=document.getElementById('${cardId}_detail');const open=!d.classList.contains('hidden');d.classList.toggle('hidden');this.textContent=open?'View full engine details ▾':'Hide full engine details ▴';"
-        style="width:100%;border-top:1px solid var(--border);padding:10px;background:transparent;color:var(--text2);font-size:12px;font-weight:600;cursor:pointer;transition:background .15s;border-radius:0 0 var(--r) var(--r);"
-        onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background='transparent'">
-        View full engine details ▾
-      </button>`;
+      <div id="${cid}_ml"     class="lm-tc ${defTab==='ml'?'':'hidden'}">${mlContent}</div>
+      <div id="${cid}_spread" class="lm-tc ${defTab==='spread'?'':'hidden'}">${spreadContent}</div>
+      <div id="${cid}_total"  class="lm-tc ${defTab==='total'?'':'hidden'}">${totalContent}</div>
+      <div id="${cid}_odds"   class="lm-tc hidden">${oddsContent}</div>
+      <div id="${cid}_engine" class="lm-tc ${!['ml','spread','total'].includes(defTab)?'':'hidden'}">${engineContent}</div>
+
+      <button class="lm-expand-btn" onclick="lmToggleAllBets('${cid}_bets',this)">View all ${game.bets.length} engine bets ▾</button>
+      <div id="${cid}_bets" class="lm-bets-grid">
+        ${game.bets.map(bet=>{
+          const bc=bet.tier==='TEAM ANCHOR'?'var(--green)':bet.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
+          const bbg=bet.tier==='TEAM ANCHOR'?'var(--green-light)':bet.tier==='TEAM STRONG'?'var(--accent-light)':'var(--yellow-light)';
+          return `<div style="border-radius:8px;background:${bbg};border:1px solid ${bc}40;padding:10px;">
+            <div style="font-size:12px;font-weight:700;color:${bc};">${bet.pick}</div>
+            <div style="font-size:11px;color:var(--text2);margin:2px 0;">${bet.line>0?'+':''}${bet.line} · ${bet.unit_size}u · +${bet.edge_pct}% edge</div>
+            <div style="font-size:10px;color:var(--text2);line-height:1.5;margin-top:4px;">${bet.reasoning||''}</div>
+          </div>`;
+        }).join('')}
+      </div>`;
 
     outputDiv.appendChild(card);
   });
 }
+
+// ── Sparkline SVG generator ──
+function lmSparkline(modelProb, impliedProb, seed){
+  const W=400,H=72,pl=6,pr=6,pt=6,pb=14;
+  const w=W-pl-pr,h=H-pt-pb,pts=6;
+  const sr = n => ((seed*(n+1)*7+n*13+37)%20-10);
+  const mPts = Array.from({length:pts},(_,i)=>{
+    const t=i/(pts-1);
+    return Math.max(1,Math.min(99, 50+(modelProb-50)*t + sr(i)*(1-t*.9)));
+  });
+  mPts[pts-1]=Math.max(1,Math.min(99,modelProb));
+  const iPts = Array.from({length:pts},(_,i)=>{
+    const t=i/(pts-1);
+    return Math.max(1,Math.min(99, 50+(impliedProb-50)*t + sr(i+10)*(1-t*.9)));
+  });
+  iPts[pts-1]=Math.max(1,Math.min(99,impliedProb));
+  const toXY = arr => arr.map((v,i)=>[pl+(i/(pts-1))*w, pt+(1-v/100)*h]);
+  const toPath = arr => toXY(arr).map((p,i)=>`${i?'L':'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const mXY = toXY(mPts); const iXY = toXY(iPts);
+  const areaD = toPath(mPts)+` L${mXY[pts-1][0].toFixed(1)},${H} L${pl},${H} Z`;
+  const today=new Date();
+  const labels=Array.from({length:pts},(_,i)=>{const d=new Date(today);d.setDate(d.getDate()-(pts-1-i));return `${d.getMonth()+1}/${d.getDate()}`;});
+  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:72px;display:block;">
+    <defs>
+      <linearGradient id="lg${seed}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#e63946" stop-opacity="0.2"/>
+        <stop offset="100%" stop-color="#e63946" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <line x1="${pl}" y1="${pt+h*.25}" x2="${W-pr}" y2="${pt+h*.25}" stroke="rgba(255,255,255,0.04)" stroke-dasharray="3,3"/>
+    <line x1="${pl}" y1="${pt+h*.5}"  x2="${W-pr}" y2="${pt+h*.5}"  stroke="rgba(255,255,255,0.06)" stroke-dasharray="3,3"/>
+    <line x1="${pl}" y1="${pt+h*.75}" x2="${W-pr}" y2="${pt+h*.75}" stroke="rgba(255,255,255,0.04)" stroke-dasharray="3,3"/>
+    <path d="${areaD}" fill="url(#lg${seed})"/>
+    <path d="${toPath(iPts)}" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" fill="none" stroke-dasharray="4,2"/>
+    <path d="${toPath(mPts)}" stroke="#e63946" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${mXY[pts-1][0].toFixed(1)}" cy="${mXY[pts-1][1].toFixed(1)}" r="3.5" fill="#e63946"/>
+    <circle cx="${iXY[pts-1][0].toFixed(1)}" cy="${iXY[pts-1][1].toFixed(1)}" r="3" fill="rgba(255,255,255,0.4)"/>
+    ${labels.map((l,i)=>{const x=pl+(i/(pts-1))*w;return `<text x="${x.toFixed(1)}" y="${H}" font-size="9" fill="rgba(255,255,255,0.25)" text-anchor="${i===0?'start':i===pts-1?'end':'middle'}" font-family="monospace">${l}</text>`;}).join('')}
+  </svg>`;
+}
+
+// ── Tab switcher ──
+function lmSwitchTab(cid, tab, btn){
+  ['ml','spread','total','odds','engine'].forEach(t=>{
+    const el=document.getElementById(`${cid}_${t}`);
+    if(el) el.classList.toggle('hidden', t!==tab);
+  });
+  const tabs=btn?.closest('.lm-card-tabs')?.querySelectorAll('.lm-ctab');
+  tabs?.forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+}
+
+// ── Toggle all bets ──
+function lmToggleAllBets(betsId, btn){
+  const el=document.getElementById(betsId);
+  if(!el) return;
+  const isOpen=el.classList.contains('open');
+  el.classList.toggle('open',!isOpen);
+  if(btn) btn.textContent = isOpen
+    ? `View ${el.children.length} engine bets ▾`
+    : `Hide engine bets ▴`;
+}
+
+// ── Sport pill filter ──
+function lmSetSport(btn, sport){
+  document.querySelectorAll('.lm-sport-pill').forEach(p=>p.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  // Sync hidden selects
+  ['teams_sport','llp_sport','wu_sport'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.value=sport;
+  });
+  renderTeamsBoardOutput();
+}
+
+// ── Ask WOW Engine ──
+function lmAskEngine(){
+  const q=document.getElementById('lmAskInput')?.value?.trim();
+  if(!q) return;
+  // Route to Ask Claude tab with the question pre-filled
+  const claudeInput=document.getElementById('claudeInput')||document.querySelector('#tab-claude textarea, #tab-claude input[type="text"]');
+  if(claudeInput){
+    claudeInput.value=q;
+    switchTab('claude');
+    const submitBtn=document.querySelector('#tab-claude button[onclick*="askClaude"],#tab-claude .btn-p');
+    if(submitBtn) submitBtn.click();
+  } else {
+    // Fallback: switch to claude tab
+    switchTab('claude');
+  }
+  document.getElementById('lmAskInput').value='';
+}
+
+
 
 // ── LLP legacy stubs (screenshot replaced by auto-fetch) ──
 let llpImages = [];
