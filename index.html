@@ -675,6 +675,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
     <button class="tab" onclick="switchTab('log')">📊 Log</button>
     <button class="tab" onclick="switchTab('claude')" style="background:linear-gradient(135deg,rgba(124,58,237,0.15),rgba(79,70,229,0.15));border:1px solid rgba(124,58,237,0.3);">🤖 Ask Claude</button>
     <button class="tab" onclick="switchTab('gameintel')" style="background:linear-gradient(135deg,rgba(16,185,129,0.12),rgba(6,182,212,0.10));border:1px solid rgba(16,185,129,0.25);">🎮 Game Intel</button>
+    <button class="tab" onclick="switchTab('dailyscan')" style="background:linear-gradient(135deg,rgba(245,166,35,0.12),rgba(234,88,12,0.08));border:1px solid rgba(245,166,35,0.25);">📡 Daily Scan</button>
   </div>
 </div>
 
@@ -767,6 +768,76 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<!-- DAILY SCAN TAB -->
+<!-- ══════════════════════════════════════ -->
+<div id="tab-dailyscan" class="hidden">
+  <div class="main">
+
+    <!-- Header card -->
+    <div class="card" style="margin-bottom:12px;background:linear-gradient(135deg,rgba(245,166,35,0.08),rgba(234,88,12,0.05));border:1px solid rgba(245,166,35,0.25);">
+      <div class="cb">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+          <span style="font-size:22px;">📡</span>
+          <div>
+            <div style="font-size:15px;font-weight:800;color:var(--text);">WOW Daily Scan</div>
+            <div style="font-size:11px;color:var(--text2);">v2.1 gate pipeline · Run 3× daily — Morning / Midday / Evening lock</div>
+          </div>
+          <span id="dsLastScanBadge" style="margin-left:auto;font-size:10px;color:var(--text3);letter-spacing:.5px;"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session selector -->
+    <div class="card" style="margin-bottom:12px;">
+      <div class="ch"><span class="ct">Session</span></div>
+      <div class="cb" style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="ds-sess-MORNING" class="btn btn-p btn-sm ds-sess-btn" onclick="setDsSess('MORNING')" style="font-size:12px;">☀ Morning</button>
+        <button id="ds-sess-MIDDAY"  class="btn btn-s btn-sm ds-sess-btn" onclick="setDsSess('MIDDAY')"  style="font-size:12px;">◐ Midday</button>
+        <button id="ds-sess-EVENING" class="btn btn-s btn-sm ds-sess-btn" onclick="setDsSess('EVENING')" style="font-size:12px;">◑ Evening</button>
+        <span style="margin-left:auto;font-size:11px;color:var(--text3);align-self:center;" id="dsSessionDesc">Pre-slate · Lines fresh</span>
+      </div>
+    </div>
+
+    <!-- Input -->
+    <div class="card" style="margin-bottom:12px;">
+      <div class="ch">
+        <span class="ct">Props Input</span>
+        <span style="font-size:10px;color:var(--text3);">Player | Team | Opp | Sport | Prop | Side | Line | Time</span>
+      </div>
+      <div class="cb">
+        <textarea id="dsScanInput" rows="7" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:10px;font-family:var(--mono);font-size:12px;color:var(--text2);line-height:1.8;resize:vertical;outline:none;" placeholder="Paste props in any readable format. Example:&#10;&#10;Nikola Jokic | DEN | MIN | NBA | Rebounds | MORE | 12.5 | 8:30 PM ET&#10;Sandy Alcantara | MIA | ATL | MLB | Strikeouts | MORE | 6.5 | 6:40 PM ET&#10;Connor McDavid | EDM | VAN | NHL | Shots on Goal | MORE | 3.5 | 9:00 PM ET&#10;&#10;Or paste a full board description — engine will parse and gate each prop."></textarea>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+          <button class="btn btn-p" id="dsRunBtn" onclick="runDailyScan()" style="min-width:160px;">
+            <span id="dsRunLabel">▶ Run WOW Scan</span>
+            <span id="dsRunSp" class="sp hidden" style="display:inline-block;"></span>
+          </button>
+          <button class="btn btn-s btn-sm" onclick="document.getElementById('dsScanInput').value='';document.getElementById('dsScanResults').innerHTML='';document.getElementById('dsScanResults').classList.add('hidden');" style="font-size:12px;">✕ Clear</button>
+          <span id="dsStatusLine" style="font-size:11px;color:var(--text3);margin-left:4px;"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div id="dsScanResults" class="hidden">
+      <div class="card">
+        <div class="ch">
+          <span class="ct" id="dsScanResultsTitle">Scan Results</span>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span class="badge bg-g" style="font-size:10px;" id="dsApprovedCount" style="display:none;"></span>
+            <span class="badge bg-p" style="font-size:10px;" id="dsWatchCount"    style="display:none;"></span>
+            <span class="badge" style="font-size:10px;background:var(--red-light);color:var(--red);border:1px solid rgba(239,68,68,0.2);" id="dsRejectCount" style="display:none;"></span>
+          </div>
+        </div>
+        <div class="cb" style="padding:0;">
+          <div id="dsScanOutput" class="ob" style="min-height:180px;max-height:560px;overflow-y:auto;border-radius:0;border:none;border-top:1px solid var(--border);padding:14px 16px;font-size:11.5px;line-height:1.75;"></div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -2374,15 +2445,26 @@ GUIDELINES (apply after gates pass)
         'X-API-Key': KEYS.replit,
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-3-5-sonnet-20241022',
         max_tokens: 1000,
         system: systemPrompt,
         messages: _claudeHistory.slice(-10),
       })
     });
 
+    if(!response.ok){
+      const errData = await response.json().catch(()=>({}));
+      const errMsg = errData?.error?.message || errData?.message || `HTTP ${response.status}`;
+      throw new Error(`Proxy error: ${errMsg}`);
+    }
     const data = await response.json();
-    const reply = data.content?.[0]?.text || data.error?.message || 'No response received.';
+    // Anthropic API response: data.content[0].text
+    // Proxy error response: data.error.message
+    // Unknown response: fallback
+    const reply = data?.content?.[0]?.text
+      || (data?.error?.message ? `⚠ API Error: ${data.error.message}` : null)
+      || data?.message
+      || 'No response received.';
 
     // Add to history
     _claudeHistory.push({role:'assistant', content: reply});
@@ -2402,6 +2484,191 @@ GUIDELINES (apply after gates pass)
   }
 }
 
+
+// ══════════════════════════════════
+// DAILY SCAN ENGINE
+// ══════════════════════════════════
+
+let _dsSession = 'MORNING';
+
+const _DS_SESSION_META = {
+  MORNING:  { desc: 'Pre-slate · Lines fresh',          color: 'rgba(245,166,35,0.9)'  },
+  MIDDAY:   { desc: 'Mid-day · Lineup updates',         color: 'rgba(77,171,247,0.9)'  },
+  EVENING:  { desc: 'Lock scan · Final confirmations',  color: 'rgba(167,139,250,0.9)' },
+};
+
+const _DS_WOW_SYSTEM = `You are the WOW Betting Model Engine v2.1. Research-first. Gate-enforced. No forced action. No narrative approvals.
+
+CORE RULES:
+- Reject bad props. Only approve plays that survive all gates and evidence.
+- Do not simulate validation. No data = no approval. No edge = no bet.
+- Never confuse Not Called with Not Available. Never fake L5/L10, odds, or timestamps.
+- Fewer, sharper, better-calibrated plays beat forced volume.
+
+PIPELINE — execute in this exact order every run:
+1. SOURCE ACCESS STATUS: report board_source, market_odds, player_logs, status_lineups, projections, weather_park, timestamp_freshness
+2. GATE 1 — AVAILABILITY: OUT/DOUBTFUL = kill. GTD: P(plays)<70% = kill. NBA/WNBA: confirmed starter required within 90min of tip for Final Approval. MLB pitchers: confirmed starter required (probable-only is not enough).
+3. GATE 2 — PROP TYPE: HARD BANS: binary 0.5 lines for Runs, RBI, Goals, Assists, TDs, HRs, Stolen Bases. Pure scoring/HR/TD anchors banned. Superstar 1H PRA LESS banned. CS2 headshots in Power Play banned. PREFERRED: attempts/volume, combined stats, multi-path, stable role props.
+4. SPORT-SPECIFIC RESEARCH: Pull L5/L10 exact stat logs, role, matchup, usage, injury, game context.
+5. GATE 3 — BOX SCORE: raw_vals<3 = kill. L5 hit rate<40% = kill. Coin-flip gate (bookmaker source only): .5 line AND abs(avg-line)≤1.5 AND L5<65% = kill.
+6. GATE 4 — CONTEXT: Underdog +3%. Heavy favorite scoring -5%. Low game total -5%. B2B second night -5%. Playoff +3%. Wind>15mph NFL passing -10%. Effective prob drops below 45% = kill.
+7. VOLATILITY FLAG: RED(<5 games/returning injury/role uncertainty), YELLOW(5-10 games/fluctuating minutes), GREEN(15+ games/confirmed role/L5≥3/5).
+8. TIER: Tier 1=L5≥4/5+favorable matchup+GREEN+all gates → Power Play eligible. Tier 2=L5≥3/5+neutral+YELLOW ok → Flex only. Tier 3=Watch. Tier 4=Avoid.
+9. MARKET/CLV: If model prob exceeds no-vig market prob by ≥10%, trigger market disagreement audit — identify verifiable edge or downgrade one tier.
+10. FINAL LABEL — only these: MARKET_VERIFIED_APPROVED / MODEL_QUALIFIED_PRIZEPICKS / CONDITIONAL / WATCH / REJECT / DATA_INSUFFICIENT / NO_PLAY
+
+NON-FRAGILE PROPS (preferred in this order):
+1. MLB pitcher Ks / outs recorded
+2. NBA/WNBA rebounds
+3. NBA/WNBA assists
+4. NHL shots on goal / goalie saves
+5. MLB batter hits
+6. Tennis player games won / spreads
+7. Soccer GK saves / tackles+interceptions
+
+FOR EVERY SCORED PROP OUTPUT THIS FORMAT:
+━━━ [PLAYER] — [PROP] [SIDE] [LINE] ━━━
+Team/Opp: | Sport: | Time:
+Raw L5: [x,x,x,x,x]
+L5: X/5 (X%) | L10: X/10 (X%) or N/A | Median: X | Avg: X
+Gate 1 (Availability): PASS/FAIL — reason
+Gate 2 (Prop Type): PASS/FAIL — reason
+Gate 3 (Box Score): PASS/FAIL — reason
+Gate 4 (Context): PASS/ADJUSTED/FAIL — adjustments applied
+Volatility: RED/YELLOW/GREEN — reason
+Tier: 1/2/3/4
+Probability: XX–XX%
+Market: available/unavailable/stale — CLV grade if available
+VERDICT: [FINAL LABEL]
+Edge: one sentence plain English
+Failure paths: top 2 risks
+
+At the top of your response, output SOURCE ACCESS STATUS with all fields.
+At the bottom, output a SUMMARY TABLE: counts of each label.
+If board is weak or all props fail, return NO_PLAY with explanation.
+Be honest. Do not inflate probability. Do not approve from narrative.`;
+
+function setDsSess(sess) {
+  _dsSession = sess;
+  const meta = _DS_SESSION_META[sess];
+  document.getElementById('dsSessionDesc').textContent = meta.desc;
+  document.querySelectorAll('.ds-sess-btn').forEach(b => {
+    b.className = 'btn btn-s btn-sm ds-sess-btn';
+  });
+  const active = document.getElementById('ds-sess-' + sess);
+  if (active) active.className = 'btn btn-p btn-sm ds-sess-btn';
+}
+
+function _dsColorize(text) {
+  if (!text) return '';
+  const lines = text.split('\n');
+  return lines.map(line => {
+    let color = '';
+    let weight = '';
+    if (/MARKET_VERIFIED_APPROVED|MODEL_QUALIFIED_PRIZEPICKS/.test(line)) {
+      color = 'var(--green)'; weight = 'font-weight:700;';
+    } else if (/\bREJECT\b|KILL|FAIL(?!URE)/.test(line)) {
+      color = 'var(--red)';
+    } else if (/\bCONDITIONAL\b|\bWATCH\b/.test(line)) {
+      color = '#fcd34d';
+    } else if (/NO_PLAY|DATA_INSUFFICIENT/.test(line)) {
+      color = 'var(--red)'; weight = 'font-weight:700;';
+    } else if (/\bTier 1\b/.test(line)) {
+      color = 'var(--green)'; weight = 'font-weight:600;';
+    } else if (/\bTier 2\b/.test(line)) {
+      color = '#f5a623';
+    } else if (/\bGREEN\b/.test(line)) {
+      color = 'var(--green)';
+    } else if (/\bRED\b/.test(line)) {
+      color = 'var(--red)';
+    } else if (/\bYELLOW\b/.test(line)) {
+      color = '#fcd34d';
+    } else if (/^━|^SOURCE ACCESS|^SUMMARY/.test(line.trim())) {
+      color = 'var(--accent)'; weight = 'font-weight:700;';
+    }
+    const style = (color ? `color:${color};` : '') + weight;
+    return style ? `<span style="${style}">${line}</span>` : line;
+  }).join('\n');
+}
+
+function _dsCountLabels(text) {
+  const approved = (text.match(/MARKET_VERIFIED_APPROVED|MODEL_QUALIFIED_PRIZEPICKS/g) || []).length;
+  const watch    = (text.match(/\bCONDITIONAL\b|\bWATCH\b/g) || []).length;
+  const reject   = (text.match(/\bREJECT\b/g) || []).length;
+  return { approved, watch, reject };
+}
+
+async function runDailyScan() {
+  const input = document.getElementById('dsScanInput').value.trim();
+  if (!input) return;
+
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  const dateStr = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+  // UI — loading state
+  document.getElementById('dsRunLabel').classList.add('hidden');
+  document.getElementById('dsRunSp').classList.remove('hidden');
+  document.getElementById('dsRunBtn').disabled = true;
+  document.getElementById('dsStatusLine').textContent = 'Running gate pipeline…';
+  document.getElementById('dsScanResults').classList.add('hidden');
+
+  const userMsg = `WOW DAILY SCAN — ${_dsSession} SESSION\nDate/Time: ${dateStr} ${timeStr}\n\nPROPS:\n${input}\n\nRun the full WOW v2.1 pipeline. Source Access Status first, then score every prop through all gates.`;
+
+  try {
+    const response = await fetch(`${EP.replit}/claude-proxy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': KEYS.replit },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        system: _DS_WOW_SYSTEM,
+        messages: [{ role: 'user', content: userMsg }],
+      }),
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData?.error?.message || `HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const reply = data?.content?.[0]?.text
+      || (data?.error?.message ? `⚠ API Error: ${data.error.message}` : null)
+      || 'No response received.';
+
+    // Render results
+    const counts = _dsCountLabels(reply);
+    const output = document.getElementById('dsScanOutput');
+    output.innerHTML = _dsColorize(reply);
+
+    // Badge counts
+    const aEl = document.getElementById('dsApprovedCount');
+    const wEl = document.getElementById('dsWatchCount');
+    const rEl = document.getElementById('dsRejectCount');
+    aEl.textContent = counts.approved ? `✓ ${counts.approved} Approved` : '';
+    aEl.style.display = counts.approved ? '' : 'none';
+    wEl.textContent = counts.watch ? `◐ ${counts.watch} Watch` : '';
+    wEl.style.display = counts.watch ? '' : 'none';
+    rEl.textContent = counts.reject ? `✕ ${counts.reject} Rejected` : '';
+    rEl.style.display = counts.reject ? '' : 'none';
+
+    document.getElementById('dsScanResultsTitle').textContent = `${_dsSession} Scan — ${timeStr}`;
+    document.getElementById('dsScanResults').classList.remove('hidden');
+    document.getElementById('dsLastScanBadge').textContent = `Last scan: ${_dsSession} · ${timeStr}`;
+    document.getElementById('dsStatusLine').textContent = '';
+
+  } catch(e) {
+    const output = document.getElementById('dsScanOutput');
+    output.innerHTML = `<span style="color:var(--red);">✕ Scan error: ${e.message}</span>`;
+    document.getElementById('dsScanResults').classList.remove('hidden');
+    document.getElementById('dsStatusLine').textContent = '';
+  } finally {
+    document.getElementById('dsRunLabel').classList.remove('hidden');
+    document.getElementById('dsRunSp').classList.add('hidden');
+    document.getElementById('dsRunBtn').disabled = false;
+  }
+}
 
 // ══════════════════════════════════
 // GAME INTEL ENGINE
@@ -2552,10 +2819,10 @@ Dashboard context: ${context.slice(0,1500)}`;
     const r = await fetch(`${EP.replit}/claude-proxy`,{
       method:'POST',
       headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,system:sysPrompt,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:'claude-3-5-sonnet-20241022',max_tokens:600,system:sysPrompt,messages:[{role:'user',content:prompt}]})
     });
     const data = await r.json();
-    const reply = data.content?.[0]?.text || data.error?.message || 'No response.';
+    const reply = data?.content?.[0]?.text || (data?.error?.message ? `⚠ ${data.error.message}` : null) || 'No response.';
 
     // Format the reply nicely
     content.innerHTML = reply
@@ -16114,14 +16381,14 @@ async function floatSend(preset){
       method:'POST',
       headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},
       body:JSON.stringify({
-        model:'claude-sonnet-4-20250514',
+        model:'claude-3-5-sonnet-20241022',
         max_tokens:400,
         system:`You are a sharp sports betting analyst in the WOW dashboard. Be direct, specific, and actionable. Use bullet points. Reference real data from the dashboard. Keep responses concise (under 200 words). Dashboard context: ${context.slice(0,2000)}`,
         messages:[{role:'user',content:msg}]
       })
     });
     const data = await r.json();
-    const reply = data.content?.[0]?.text || data.error?.message || 'No response.';
+    const reply = data?.content?.[0]?.text || (data?.error?.message ? `⚠ ${data.error.message}` : null) || 'No response.';
     resp.innerHTML = reply.split('\n').filter(l=>l.trim()).map(l=>`<div style="margin-bottom:4px;">${l.trim()}</div>`).join('');
 
     // Add to main Claude history so context carries over if they open full chat
