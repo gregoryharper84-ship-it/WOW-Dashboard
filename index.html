@@ -676,6 +676,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
     <button class="tab" onclick="switchTab('claude')" style="background:linear-gradient(135deg,rgba(124,58,237,0.15),rgba(79,70,229,0.15));border:1px solid rgba(124,58,237,0.3);">🤖 Ask Claude</button>
     <button class="tab" onclick="switchTab('gameintel')" style="background:linear-gradient(135deg,rgba(16,185,129,0.12),rgba(6,182,212,0.10));border:1px solid rgba(16,185,129,0.25);">🎮 Game Intel</button>
     <button class="tab" onclick="switchTab('dailyscan')" style="background:linear-gradient(135deg,rgba(245,166,35,0.12),rgba(234,88,12,0.08));border:1px solid rgba(245,166,35,0.25);">📡 Daily Scan</button>
+    <button class="tab" onclick="switchTab('backtest')" style="background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(168,85,247,0.08));border:1px solid rgba(99,102,241,0.25);">📊 Backtest</button>
   </div>
 </div>
 
@@ -837,6 +838,186 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
         </div>
       </div>
     </div>
+
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<!-- BACKTEST TAB -->
+<!-- ══════════════════════════════════════ -->
+<div id="tab-backtest" class="hidden">
+  <div class="main">
+
+    <!-- Header -->
+    <div class="card" style="margin-bottom:12px;background:linear-gradient(135deg,rgba(99,102,241,0.08),rgba(168,85,247,0.05));border:1px solid rgba(99,102,241,0.25);">
+      <div class="cb">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:22px;">📊</span>
+          <div>
+            <div style="font-size:15px;font-weight:800;color:var(--text);">WOW Historical Backtest</div>
+            <div style="font-size:11px;color:var(--text2);">Validate WOW gate thresholds against real season data · NBA/WNBA via BallDontLie · Season = starting year (2024 = 2024–25)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Config card -->
+    <div class="card" style="margin-bottom:12px;">
+      <div class="ch"><span class="ct">Backtest Config</span></div>
+      <div class="cb">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:14px;">
+          <div class="field">
+            <label>Player Name</label>
+            <input type="text" id="btPlayerInput" placeholder="e.g. Nikola Jokic"
+              style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;color:var(--text);font-size:13px;outline:none;" />
+          </div>
+          <div class="field">
+            <label>Prop</label>
+            <select id="btPropSelect" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;color:var(--text);font-size:13px;">
+              <option value="rebounds">Rebounds</option>
+              <option value="assists">Assists</option>
+              <option value="points">Points</option>
+              <option value="3pm">3-Pointers Made</option>
+              <option value="blocks">Blocks</option>
+              <option value="steals">Steals</option>
+              <option value="pra">Pts+Reb+Ast</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Line</label>
+            <input type="number" id="btLineInput" placeholder="e.g. 12.5" step="0.5" min="0"
+              style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;color:var(--text);font-size:13px;outline:none;" />
+          </div>
+          <div class="field">
+            <label>Side</label>
+            <select id="btSideSelect" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;color:var(--text);font-size:13px;">
+              <option value="MORE">MORE (Over)</option>
+              <option value="LESS">LESS (Under)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Season</label>
+            <select id="btSeasonSelect" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;color:var(--text);font-size:13px;">
+              <option value="2024">2024–25</option>
+              <option value="2023">2023–24</option>
+              <option value="2022">2022–23</option>
+              <option value="2021">2021–22</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <button class="btn btn-p" id="btRunBtn" onclick="runBacktest()" style="min-width:160px;">▶ Run Backtest</button>
+          <button class="btn btn-s btn-sm" onclick="btClear()" style="font-size:12px;">✕ Clear</button>
+          <span id="btStatus" style="font-size:11px;color:var(--text3);"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div id="btResults" class="hidden">
+
+      <!-- Summary stat cards -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:12px;">
+        <div class="card">
+          <div class="cb">
+            <div style="font-size:10px;color:var(--text3);letter-spacing:.5px;margin-bottom:4px;">PLAYER / PROP</div>
+            <div style="font-size:13px;font-weight:800;color:var(--text);" id="btSummaryPlayer">—</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:2px;" id="btSummaryMeta">—</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cb" style="text-align:center;">
+            <div style="font-size:10px;color:var(--text3);letter-spacing:.5px;margin-bottom:4px;">GAMES ANALYZED</div>
+            <div style="font-size:30px;font-weight:900;color:var(--text);" id="btSummaryGames">—</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cb" style="text-align:center;">
+            <div style="font-size:10px;color:var(--text3);letter-spacing:.5px;margin-bottom:4px;">APPROVED HIT RATE</div>
+            <div style="font-size:30px;font-weight:900;color:var(--green);" id="btSummaryHitRate">—</div>
+            <div style="font-size:10px;color:var(--text3);" id="btSummaryApprovedCount">— approvals</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cb" style="text-align:center;">
+            <div style="font-size:10px;color:var(--text3);letter-spacing:.5px;margin-bottom:4px;">FALSE NEG RATE</div>
+            <div style="font-size:30px;font-weight:900;color:var(--text2);" id="btSummaryFalseNeg">—</div>
+            <div style="font-size:10px;color:var(--text3);">rejected games that hit</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Calibration table -->
+      <div class="card" style="margin-bottom:12px;">
+        <div class="ch">
+          <span class="ct">WOW Tier Calibration</span>
+          <span style="font-size:10px;color:var(--text3);">Predicted probability range vs actual hit rate — ✅ calibrated · ⚠ overconfident · ❌ badly off</span>
+        </div>
+        <div class="cb" style="padding:0;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+              <tr style="background:var(--surface2);border-bottom:1px solid var(--border);">
+                <th style="padding:9px 14px;text-align:left;color:var(--text2);font-weight:600;">WOW Tier</th>
+                <th style="padding:9px 14px;text-align:left;color:var(--text2);font-weight:600;">Rule</th>
+                <th style="padding:9px 14px;text-align:left;color:var(--text2);font-weight:600;">Predicted</th>
+                <th style="padding:9px 14px;text-align:left;color:var(--text2);font-weight:600;">Actual Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:9px 14px;"><span style="color:var(--green);font-weight:700;">Tier 1</span></td>
+                <td style="padding:9px 14px;color:var(--text3);font-size:11px;">L5 ≥ 4/5 · Power Play</td>
+                <td style="padding:9px 14px;color:var(--text2);">68–75%</td>
+                <td style="padding:9px 14px;" id="btCalibT1">—</td>
+              </tr>
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:9px 14px;"><span style="color:#f5a623;font-weight:700;">Tier 2</span></td>
+                <td style="padding:9px 14px;color:var(--text3);font-size:11px;">L5 3/5 · Flex only</td>
+                <td style="padding:9px 14px;color:var(--text2);">58–65%</td>
+                <td style="padding:9px 14px;" id="btCalibT2">—</td>
+              </tr>
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:9px 14px;"><span style="color:var(--text2);font-weight:700;">Tier 3</span></td>
+                <td style="padding:9px 14px;color:var(--text3);font-size:11px;">L5 2/5 · Watch</td>
+                <td style="padding:9px 14px;color:var(--text2);">52–58%</td>
+                <td style="padding:9px 14px;" id="btCalibT3">—</td>
+              </tr>
+              <tr>
+                <td style="padding:9px 14px;"><span style="color:var(--text3);font-weight:700;">Rejected</span></td>
+                <td style="padding:9px 14px;color:var(--text3);font-size:11px;">Gate 3 kill</td>
+                <td style="padding:9px 14px;color:var(--text3);">Not approved</td>
+                <td style="padding:9px 14px;" id="btCalibKill">—</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Game log table -->
+      <div class="card">
+        <div class="ch">
+          <span class="ct">Game Log</span>
+          <span style="font-size:10px;color:var(--text3);">Most recent 30 games · WOW gates applied retroactively at each game using prior 5 played games</span>
+        </div>
+        <div class="cb" style="padding:0;overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:580px;">
+            <thead>
+              <tr style="background:var(--surface2);border-bottom:1px solid var(--border);">
+                <th style="padding:7px 10px;text-align:left;color:var(--text2);">Date</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--text2);">L5 Values</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--text2);">L5%</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--text2);">Avg</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--text2);">Tier</th>
+                <th style="padding:7px 10px;text-align:center;color:var(--text2);">Appr.</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--text2);">Actual</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--text2);">Kill Reason</th>
+              </tr>
+            </thead>
+            <tbody id="btGameLogBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /btResults -->
 
   </div>
 </div>
@@ -2672,9 +2853,238 @@ async function runDailyScan() {
   }
 }
 
-// ══════════════════════════════════
+// ══════════════════════════════════════════════════════
+// BACKTEST ENGINE — WOW Historical Gate Validation
+// ══════════════════════════════════════════════════════
+
+const BT_STAT_MAP = {
+  rebounds: { key:'reb',  label:'Rebounds',        combo:null },
+  assists:  { key:'ast',  label:'Assists',          combo:null },
+  points:   { key:'pts',  label:'Points',           combo:null },
+  '3pm':    { key:'fg3m', label:'3-Pointers Made',  combo:null },
+  blocks:   { key:'blk',  label:'Blocks',           combo:null },
+  steals:   { key:'stl',  label:'Steals',           combo:null },
+  pra:      { key:null,   label:'Pts+Reb+Ast',      combo:['pts','reb','ast'] },
+};
+
+function btGetStat(game, propKey) {
+  const def = BT_STAT_MAP[propKey];
+  if (!def) return 0;
+  if (def.combo) return def.combo.reduce((s,k) => s + (parseFloat(game[k]) || 0), 0);
+  return parseFloat(game[def.key]) || 0;
+}
+
+// Apply WOW Gate 3 logic and assign tier using historical L5
+function btApplyGates(l5Vals, line, side) {
+  const isMore = side === 'MORE';
+  const l5Hit  = l5Vals.filter(v => isMore ? v > line : v < line).length;
+  const l5Rate = l5Hit / 5;
+  const avg    = l5Vals.reduce((a,b) => a+b, 0) / 5;
+  const sorted = [...l5Vals].sort((a,b) => a-b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+
+  let gatePass   = true;
+  let killReason = '';
+
+  // G3: Minimum hit rate
+  if (l5Rate < 0.40) {
+    gatePass = false;
+    killReason = `G3: L5 ${Math.round(l5Rate*100)}% < 40%`;
+  }
+  // G3: Coin-flip gate (.5 lines only, bookmaker source rule)
+  else if (line % 1 === 0.5 && Math.abs(avg - line) <= 1.5 && l5Rate < 0.65) {
+    gatePass = false;
+    killReason = `G3: Coin flip (avg ${avg.toFixed(1)}, L5 ${Math.round(l5Rate*100)}%)`;
+  }
+
+  let tier = 'kill';
+  let predLow = 0, predHigh = 0;
+  if (gatePass) {
+    if      (l5Rate >= 0.80) { tier='tier1'; predLow=68; predHigh=75; }
+    else if (l5Rate >= 0.60) { tier='tier2'; predLow=58; predHigh=65; }
+    else                     { tier='tier3'; predLow=52; predHigh=58; }
+  }
+
+  return { l5Rate, avg: parseFloat(avg.toFixed(1)), median, gatePass, killReason, tier, predLow, predHigh };
+}
+
+function btClear() {
+  document.getElementById('btResults').classList.add('hidden');
+  document.getElementById('btStatus').textContent = '';
+}
+
+async function runBacktest() {
+  const playerName = document.getElementById('btPlayerInput').value.trim();
+  const propKey    = document.getElementById('btPropSelect').value;
+  const line       = parseFloat(document.getElementById('btLineInput').value);
+  const side       = document.getElementById('btSideSelect').value;
+  const season     = document.getElementById('btSeasonSelect').value;
+
+  const statusEl = document.getElementById('btStatus');
+  const runBtn   = document.getElementById('btRunBtn');
+  const resultsEl= document.getElementById('btResults');
+
+  if (!playerName || isNaN(line)) {
+    statusEl.textContent = '⚠ Enter player name and line to continue.';
+    return;
+  }
+
+  runBtn.disabled = true;
+  statusEl.textContent = '⟳ Searching player...';
+  resultsEl.classList.add('hidden');
+
+  try {
+    // ── Step 1: Find player via BDL ──
+    const searchR = await fx(
+      `${EP.bdl}/players?search=${encodeURIComponent(playerName)}&per_page=5`,
+      {headers:{'Authorization':KEYS.bdl}}, 6000
+    );
+    if (!searchR.ok) throw new Error(`BDL player search ${searchR.status}`);
+    const searchData = await searchR.json();
+    const player = searchData.data?.[0];
+    if (!player) throw new Error(`No player found: "${playerName}"`);
+    const fullName = `${player.first_name} ${player.last_name}`;
+    const teamName = player.team?.full_name || player.team?.abbreviation || '';
+    statusEl.textContent = `✓ ${fullName} · Loading ${season} season logs...`;
+
+    // ── Step 2: Pull full season game logs (paginated) ──
+    let allGames = [];
+    let page = 1;
+    while (true) {
+      const logsR = await fx(
+        `${EP.bdl}/game_logs?player_id=${player.id}&season=${season}&per_page=100&page=${page}`,
+        {headers:{'Authorization':KEYS.bdl}}, 12000
+      );
+      if (!logsR.ok) throw new Error(`BDL game_logs ${logsR.status} — check BDL plan tier`);
+      const logsData = await logsR.json();
+      allGames = allGames.concat(logsData.data || []);
+      if (!logsData.meta?.next_page) break;
+      page++;
+      await new Promise(r => setTimeout(r, 300)); // throttle pagination
+    }
+
+    // Filter DNPs: keep only games where player actually played
+    const played = allGames.filter(g => {
+      const mins = g.min ? parseFloat((g.min||'0').split(':')[0]) : 0;
+      const activity = (g.pts||0) + (g.reb||0) + (g.ast||0) + (g.blk||0) + (g.stl||0);
+      return mins > 0 || activity > 0;
+    });
+
+    // Sort chronologically
+    played.sort((a,b) => new Date(a.game.date) - new Date(b.game.date));
+
+    if (played.length < 6) throw new Error(
+      `Only ${played.length} games played in ${season} season — need at least 6 for backtest`
+    );
+    statusEl.textContent = `✓ ${played.length} games · Running WOW gate simulation...`;
+
+    // ── Step 3: Simulate WOW gates retroactively for each game ──
+    const results = [];
+    for (let i = 5; i < played.length; i++) {
+      const l5Vals    = played.slice(i-5, i).map(g => btGetStat(g, propKey));
+      const actualVal = btGetStat(played[i], propKey);
+      const gate      = btApplyGates(l5Vals, line, side);
+      const actualHit = side === 'MORE' ? actualVal > line : actualVal < line;
+      results.push({
+        gameDate: played[i].game.date,
+        l5Vals,
+        ...gate,
+        actualVal,
+        actualHit,
+        approved: gate.gatePass,
+      });
+    }
+
+    // ── Step 4: Build calibration buckets ──
+    const calib = {
+      tier1: {approved:0, hit:0},
+      tier2: {approved:0, hit:0},
+      tier3: {approved:0, hit:0},
+      kill:  {count:0,    hit:0},
+    };
+    results.forEach(r => {
+      if (r.tier === 'kill') { calib.kill.count++; if(r.actualHit) calib.kill.hit++; }
+      else { calib[r.tier].approved++; if(r.actualHit) calib[r.tier].hit++; }
+    });
+
+    // ── Step 5: Render ──
+    btRenderResults({
+      fullName, teamName, propKey, line, side, season,
+      propLabel: BT_STAT_MAP[propKey]?.label || propKey,
+      results, calib,
+    });
+
+    const totalApproved = calib.tier1.approved + calib.tier2.approved + calib.tier3.approved;
+    statusEl.textContent = `✓ Done — ${results.length} games analyzed, ${totalApproved} approved`;
+    resultsEl.classList.remove('hidden');
+
+  } catch(e) {
+    statusEl.textContent = `✗ ${e.message}`;
+    console.error('Backtest error:', e);
+  } finally {
+    runBtn.disabled = false;
+  }
+}
+
+function btRenderResults({ fullName, teamName, propLabel, line, side, season, results, calib }) {
+  const totalApproved = calib.tier1.approved + calib.tier2.approved + calib.tier3.approved;
+  const totalHit      = calib.tier1.hit + calib.tier2.hit + calib.tier3.hit;
+  const overallRate   = totalApproved ? Math.round(totalHit / totalApproved * 100) : null;
+  const falseNegRate  = calib.kill.count ? Math.round(calib.kill.hit / calib.kill.count * 100) : null;
+
+  // Summary cards
+  document.getElementById('btSummaryPlayer').textContent = fullName;
+  document.getElementById('btSummaryMeta').textContent =
+    `${teamName} · ${season} Season · ${propLabel} ${side} ${line}`;
+  document.getElementById('btSummaryGames').textContent = results.length;
+  document.getElementById('btSummaryHitRate').textContent = overallRate !== null ? `${overallRate}%` : 'N/A';
+  document.getElementById('btSummaryApprovedCount').textContent = `${totalApproved} approvals`;
+  document.getElementById('btSummaryFalseNeg').textContent = falseNegRate !== null ? `${falseNegRate}%` : 'N/A';
+
+  // Calibration rows
+  const btGrade = (bucket, predLow, predHigh) => {
+    if (!bucket.approved) return `<span style="color:var(--text3);">No approvals this season</span>`;
+    const pct = Math.round(bucket.hit / bucket.approved * 100);
+    const ok  = pct >= predLow - 5 && pct <= predHigh + 5;
+    const low = pct < predLow - 5;
+    const color = ok ? 'var(--green)' : low ? 'var(--red)' : '#fcd34d';
+    const icon  = ok ? '✅' : low ? '❌' : '⚠';
+    return `<span style="color:${color};font-weight:700;">${icon} ${pct}%</span>`
+      + ` <span style="color:var(--text3);font-size:10px;">(${bucket.hit}/${bucket.approved} · predicted ${predLow}–${predHigh}%)</span>`;
+  };
+  document.getElementById('btCalibT1').innerHTML = btGrade(calib.tier1, 68, 75);
+  document.getElementById('btCalibT2').innerHTML = btGrade(calib.tier2, 58, 65);
+  document.getElementById('btCalibT3').innerHTML = btGrade(calib.tier3, 52, 58);
+  document.getElementById('btCalibKill').innerHTML = calib.kill.count
+    ? `<span style="color:var(--text2);">${falseNegRate}% hit anyway</span>`
+      + ` <span style="color:var(--text3);font-size:10px;">(${calib.kill.hit}/${calib.kill.count} rejected games)</span>`
+    : `<span style="color:var(--text3);">No rejects</span>`;
+
+  // Game log — most recent 30, newest first
+  const rows = [...results].reverse().slice(0, 30);
+  document.getElementById('btGameLogBody').innerHTML = rows.map(r => {
+    const tc  = r.tier==='tier1'?'var(--green)':r.tier==='tier2'?'#f5a623':r.tier==='tier3'?'var(--text2)':'var(--text3)';
+    const tl  = r.tier==='tier1'?'T1':r.tier==='tier2'?'T2':r.tier==='tier3'?'T3':'KILL';
+    const hc  = r.actualHit ? 'var(--green)' : 'var(--red)';
+    const appr= r.approved
+      ? `<span style="color:var(--green);">✓</span>`
+      : `<span style="color:var(--text3);">—</span>`;
+    return `<tr style="border-bottom:1px solid var(--border);">
+      <td style="padding:5px 10px;color:var(--text3);">${r.gameDate}</td>
+      <td style="padding:5px 10px;font-family:var(--mono);color:var(--text2);font-size:10px;">[${r.l5Vals.join(', ')}]</td>
+      <td style="padding:5px 10px;color:var(--text2);">${Math.round(r.l5Rate*100)}%</td>
+      <td style="padding:5px 10px;color:var(--text2);">${r.avg}</td>
+      <td style="padding:5px 10px;color:${tc};font-weight:700;">${tl}</td>
+      <td style="padding:5px 10px;text-align:center;">${appr}</td>
+      <td style="padding:5px 10px;font-weight:700;color:${hc};">${r.actualVal} ${r.actualHit?'✓':'✗'}</td>
+      <td style="padding:5px 10px;color:var(--text3);font-size:10px;">${r.killReason||''}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════
 // GAME INTEL ENGINE
-// ══════════════════════════════════
+// ══════════════════════════════════════════════════════
 
 const _giEspnPaths = {
   MLB:  'baseball/mlb',
