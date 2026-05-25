@@ -11883,7 +11883,7 @@ async function runWinnersUpsets(){
           </div>
           <div style="display:flex;gap:6px;align-items:center;">
             <span class="badge bg-p">UPSET</span>
-            <span style="font-family:var(--mono);font-size:13px;font-weight:900;color:var(--purple);">${g.potential_payout}</span>
+            <span style="font-family:var(--mono);font-size:13px;font-weight:900;color:var(--purple);">${g.potential_payout && g.potential_payout !== 'null' && g.potential_payout !== 'N/A' ? g.potential_payout : g.ml && g.ml !== null ? (g.ml > 0 ? `+${g.ml}` : String(g.ml)) : '— odds TBD'}</span>
           </div>
         </div>
         <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--text2);margin-bottom:6px;">
@@ -12289,7 +12289,7 @@ function renderTeamsSummaryPanels(){
     } else {
       upsetEl.innerHTML = _teamsWUUpsets.slice(0,4).map((g,i) => {
         const prob = (g.prob*100).toFixed(1);
-        const mlStr = g.ml > 0 ? `+${g.ml}` : `${g.ml}`;
+        const mlStr = g.ml != null ? (g.ml > 0 ? `+${g.ml}` : `${g.ml}`) : 'odds TBD';
         return `<div style="padding:10px 0;border-bottom:1px solid rgba(168,85,247,0.15);">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
             <div>
