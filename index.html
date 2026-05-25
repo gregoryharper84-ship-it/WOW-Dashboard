@@ -4484,7 +4484,7 @@ async function isBDLGoat(){
     // /season_averages is GOAT-only — use it as tier probe
     const r = await fx(
       `https://api.balldontlie.io/v1/season_averages?season=2025&player_ids[]=666786`,
-      {headers:{'Authorization':'Bearer '+KEYS.bdl}}, 5000
+      {headers:{'Authorization':KEYS.bdl}}, 5000
     );
     _bdlGoatVerified = r.status === 200;
     if(_bdlGoatVerified) console.log('BDL GOAT tier confirmed ✅');
@@ -4510,7 +4510,7 @@ async function enrichWithBDLGoat(candidates, log){
       // Step 1: Find BDL player ID by name
       const searchR = await fx(
         `https://api.balldontlie.io/v1/players?search=${encodeURIComponent(c.player)}&per_page=5`,
-        {headers:{'Authorization':'Bearer '+KEYS.bdl}}, 5000
+        {headers:{'Authorization':KEYS.bdl}}, 5000
       );
       if(!searchR.ok){ enriched.push(c); continue; }
       const searchD = await searchR.json();
@@ -4523,7 +4523,7 @@ async function enrichWithBDLGoat(candidates, log){
       await _bdlDelay(200); // gentle rate limiting on 600 req/min GOAT tier
       const statsR = await fx(
         `https://api.balldontlie.io/v1/stats?player_ids[]=${bdlPlayer.id}&seasons[]=2025&per_page=15`,
-        {headers:{'Authorization':'Bearer '+KEYS.bdl}}, 6000
+        {headers:{'Authorization':KEYS.bdl}}, 6000
       );
       if(!statsR.ok){ enriched.push(c); continue; }
       const statsD = await statsR.json();
@@ -4551,7 +4551,7 @@ async function enrichWithBDLGoat(candidates, log){
       // Step 3: Check injury status (ALL-STAR+ endpoint)
       const injR = await fx(
         `https://api.balldontlie.io/v1/player_injuries?player_ids[]=${bdlPlayer.id}`,
-        {headers:{'Authorization':'Bearer '+KEYS.bdl}}, 4000
+        {headers:{'Authorization':KEYS.bdl}}, 4000
       );
       if(injR.ok){
         const injD = await injR.json();
@@ -5286,7 +5286,7 @@ async function bdlFetch(url, retries=1){
   // PERF FIX: Max 1 retry, flat 1s wait. Old exponential (1s+2s+4s=7s) was
   // blocking the UI for seconds per failing team. Hard bail on 429 after 1 retry.
   for(let attempt=0; attempt<=retries; attempt++){
-    const r = await fx(url, {headers:{'Authorization':'Bearer '+KEYS.bdl}}, 8000);
+    const r = await fx(url, {headers:{'Authorization':KEYS.bdl}}, 8000);
     if(r.ok) return r;
     if(r.status === 429){
       if(attempt < retries){ await _bdlDelay(1000); continue; } // wait 1s, one retry only
@@ -9443,8 +9443,8 @@ async function enrichWithNBAStats(prop){
 
     // Get last 15 game logs — include postseason
     const [logR, psLogR] = await Promise.all([
-      fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2025&per_page=15`,{headers:{'Authorization':'Bearer '+KEYS.bdl}}, 8000),
-      fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2025&postseason=true&per_page=10`,{headers:{'Authorization':'Bearer '+KEYS.bdl}}, 8000),
+      fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2025&per_page=15`,{headers:{'Authorization': KEYS.bdl}}, 8000),
+      fx(`${bdlBase}/stats?player_ids[]=${player.id}&seasons[]=2025&postseason=true&per_page=10`,{headers:{'Authorization': KEYS.bdl}}, 8000),
     ]);
     const regData=logR.ok?(await logR.json()).data||[]:[];
     const psData=psLogR.ok?(await psLogR.json()).data||[]:[];
@@ -10804,11 +10804,11 @@ async function pullStats(){
   el.innerHTML='<span class="oi">⟳ Searching...</span>';chip('bdl','');
   if(!['NBA','WNBA'].includes(sport)){el.innerHTML=`<span class="ow">BallDontLie covers NBA/WNBA only. Paste ${sport} logs manually.</span>`;return;}
   try{
-    const sr=await fx(`${EP.bdl}/players?search=${encodeURIComponent(player)}&per_page=5`,{headers:{'Authorization':'Bearer '+KEYS.bdl}});
+    const sr=await fx(`${EP.bdl}/players?search=${encodeURIComponent(player)}&per_page=5`,{headers:{'Authorization':KEYS.bdl}});
     if(!sr.ok)throw new Error(sr.status);const sd=await sr.json();const players=sd.data||[];
     if(!players.length){el.innerHTML='<span class="ow">Player not found.</span>';chip('bdl','fail');return;}
     const p=players[0];chip('bdl','ok');
-    const lr=await fx(`${EP.bdl}/stats?player_ids[]=${p.id}&per_page=10&seasons[]=2025`,{headers:{'Authorization':'Bearer '+KEYS.bdl}});
+    const lr=await fx(`${EP.bdl}/stats?player_ids[]=${p.id}&per_page=10&seasons[]=2025`,{headers:{'Authorization':KEYS.bdl}});
     const ld=await lr.json();const logs=(ld.data||[]).slice(0,10);
     let out=`<span class="ok">✓ ${p.first_name} ${p.last_name} — ${p.team?.full_name||'FA'} | ${p.position||'?'}\n\n</span><span class="oh">L${logs.length} GAME LOG:\n</span>`;
     if(!logs.length){out+='<span class="ow">No recent logs.</span>';}
@@ -11588,69 +11588,80 @@ async function runLLPBoard(){
       const trdSid = LLP_TRD_SPORT_IDS[cfg.sport];
       if(!trdSid){ log(`⚠ ${cfg.sport}: no sport ID`,'w'); continue; }
       const today = localDate();
-      const trdEvR = await fx(
-        `${EP.rundown}/rundown/events/${trdSid}/${today}`,
-        {}, 10000
-      );
-      if(!trdEvR.ok){ log(`⚠ ${cfg.sport}: proxy ${trdEvR.status}`,'w'); continue; }
-      const trdEvData = await trdEvR.json();
-      if(trdEvData.fallback_hint){ log(`⚠ ${cfg.sport}: TheRundown plan limit — no lines`,'w'); continue; }
-      const eventList = trdEvData.events || trdEvData.data || [];
-      if(!eventList?.length){ log(`⚠ ${cfg.sport}: no games today`,'w'); continue; }
-      log(`✓ ${cfg.sport}: ${eventList.length} games`,'ok');
+      let events = [];
 
-      // Build events array from TheRundown lines
-      let events = eventList.map(ev => {
-        const linesObj = ev.lines || ev.affiliate_lines || {};
-        const lineData = Object.values(linesObj).find(l =>
-          l?.moneyline?.moneyline_away != null
-        ) || Object.values(linesObj)[0];
-        const ml  = lineData?.moneyline || {};
-        const sp  = lineData?.spread    || {};
-        const tot = lineData?.total     || {};
-        return {
-          away_team: ev.away_team||'',
-          home_team: ev.home_team||'',
-          commence_time: ev.event_date||'',
-          bookmakers: ml.moneyline_away != null ? [{
-            markets:[
-              {key:'h2h', outcomes:[
-                {name:ev.away_team, price:ml.moneyline_away},
-                {name:ev.home_team, price:ml.moneyline_home},
-              ]},
-              {key:'spreads', outcomes:[
-                {name:ev.away_team, price:sp.spread_away||0, point:sp.line_away||0},
-                {name:ev.home_team, price:sp.spread_home||0, point:sp.line_home||0},
-              ]},
-              {key:'totals', outcomes:[
-                {name:'Over',  price:tot.total_over||0,  point:tot.total_over_under||0},
-                {name:'Under', price:tot.total_under||0, point:tot.total_over_under||0},
-              ]},
-            ]
-          }] : [],
-        };
-      }).filter(g => g.away_team && g.home_team);
+      // ── PRIMARY: TheRundown via Replit proxy ──
+      try{
+        const trdEvR = await fx(`${EP.rundown}/rundown/events/${trdSid}/${today}`, {}, 10000);
+        if(trdEvR.ok){
+          const trdEvData = await trdEvR.json();
+          if(!trdEvData.fallback_hint){
+            const eventList = trdEvData.events || trdEvData.data || [];
+            if(eventList.length){
+              const mapped = eventList.map(ev => {
+                const linesObj = ev.lines || ev.affiliate_lines || {};
+                const lineData = Object.values(linesObj).find(l =>
+                  l?.moneyline?.moneyline_away != null
+                ) || Object.values(linesObj)[0];
+                const ml  = lineData?.moneyline || {};
+                const sp  = lineData?.spread    || {};
+                const tot = lineData?.total     || {};
+                return {
+                  away_team: ev.away_team||'',
+                  home_team: ev.home_team||'',
+                  commence_time: ev.event_date||'',
+                  bookmakers: ml.moneyline_away != null ? [{
+                    markets:[
+                      {key:'h2h', outcomes:[
+                        {name:ev.away_team, price:ml.moneyline_away},
+                        {name:ev.home_team, price:ml.moneyline_home},
+                      ]},
+                      {key:'spreads', outcomes:[
+                        {name:ev.away_team, price:sp.spread_away||0, point:sp.line_away||0},
+                        {name:ev.home_team, price:sp.spread_home||0, point:sp.line_home||0},
+                      ]},
+                      {key:'totals', outcomes:[
+                        {name:'Over',  price:tot.total_over||0,  point:tot.total_over_under||0},
+                        {name:'Under', price:tot.total_under||0, point:tot.total_over_under||0},
+                      ]},
+                    ]
+                  }] : [],
+                };
+              }).filter(g => g.away_team && g.home_team);
+              // Only accept if at least some events have moneyline data
+              const withOdds = mapped.filter(g => g.bookmakers?.length > 0);
+              if(withOdds.length){ events = mapped; log(`✓ ${cfg.sport}: ${eventList.length} games (TheRundown)`,'ok'); }
+              else { log(`⚠ ${cfg.sport}: TheRundown returned games but no moneyline data`,'w'); }
+            } else { log(`⚠ ${cfg.sport}: TheRundown — no games today`,'w'); }
+          } else { log(`⚠ ${cfg.sport}: TheRundown plan limit`,'w'); }
+        } else { log(`⚠ ${cfg.sport}: TheRundown proxy ${trdEvR.status}`,'w'); }
+      }catch(trdErr){ log(`⚠ ${cfg.sport}: TheRundown error — ${trdErr.message}`,'w'); }
 
-      if(!events?.length){ log(`⚠ ${cfg.sport}: no odds data from TheRundown`,'w'); continue; }
-
-      // Legacy block kept for Odds API per-event fallback (rarely needed now)
-      if(false){ // disabled — kept for reference
-        log(`  ⟳ Fetching per-event odds for ${cfg.sport}...`);
-        for(const ev of eventList.slice(0,8)){
-          try{
-            const perR = await fx(
-              `${EP.odds}/sports/${cfg.key}/events/${ev.id}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
-              {}, 6000
-            );
-            if(perR.ok){
-              const perData = await perR.json();
-              if(perData.bookmakers?.length) events.push(perData);
-            }
-          }catch(e){}
-        }
-        // If still empty, use events without odds (just list games)
-        if(!events.length) events = eventList;
+      // ── FALLBACK: Odds API bulk endpoint when TheRundown has no usable data ──
+      if(!events.length || !events.some(g => g.bookmakers?.length > 0)){
+        log(`⟳ ${cfg.sport}: falling back to Odds API...`);
+        try{
+          const oddsR = await fx(
+            `${EP.odds}/sports/${cfg.key}/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`,
+            {}, 8000
+          );
+          if(oddsR.ok){
+            const oddsJson = await oddsR.json();
+            // Accept games that started within the last 2 hours or haven't started yet
+            const cutoff = Date.now() - 7200000;
+            const oddsEvents = oddsJson
+              .filter(ev => ev.bookmakers?.length > 0)
+              .filter(ev => !ev.commence_time || new Date(ev.commence_time).getTime() > cutoff);
+            if(oddsEvents.length){
+              events = oddsEvents;
+              log(`✓ ${cfg.sport}: ${oddsEvents.length} games (Odds API fallback)`,'ok');
+            } else { log(`⚠ ${cfg.sport}: Odds API — no current games`,'w'); }
+          } else { log(`⚠ ${cfg.sport}: Odds API ${oddsR.status}`,'w'); }
+        }catch(oErr){ log(`⚠ ${cfg.sport}: Odds API error — ${oErr.message}`,'w'); }
       }
+
+      if(!events.length){ log(`⚠ ${cfg.sport}: no data from any source`,'w'); continue; }
+
       if(!events?.length){ log(`⚠ ${cfg.sport}: no games to process`,'w'); continue; }
       for(const ev of events.slice(0,8)){
         try{
@@ -16248,7 +16259,7 @@ window.onload=()=>{
     .catch(()=>chip('espn','fail'));
 
   // BallDontLie — lightweight teams check
-  fx('https://api.balldontlie.io/v1/teams?per_page=1',{headers:{'Authorization':'Bearer '+KEYS.bdl}},5000)
+  fx('https://api.balldontlie.io/v1/teams?per_page=1',{headers:{'Authorization':KEYS.bdl}},5000)
     .then(r=>{ chip('bdl', r.ok?'ok':'fail'); })
     .catch(()=>chip('bdl','fail'));
 
