@@ -1658,13 +1658,13 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 </div>
 <script>
 // ── Config ──
-const KEYS={rundown:'6f00cf9201adfd3026defd4a1808d7400ec441955647efe3d7eade517d4cdc74',odds:'311bae3d2356b258e27750224a9e5fcf',bdl:'0b3cae52-e907-4abb-8670-d54502bc373c',replit:'j|nNZo*[uWj%EIH[0Y:yNjhsKp:iBqK|'};
+const KEYS={odds:'311bae3d2356b258e27750224a9e5fcf',bdl:'0b3cae52-e907-4abb-8670-d54502bc373c',replit:'j|nNZo*[uWj%EIH[0Y:yNjhsKp:iBqK|'};
 function localDate(offsetDays=0){const d=new Date(Date.now()+offsetDays*86400000);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
 
-const EP={rundown:'https://therundown.io/api/v2',odds:'https://api.the-odds-api.com/v4',espn:'https://site.api.espn.com/apis/site/v2/sports',bdl:'https://api.balldontlie.io/v1',replit:'https://create-app-gregoryharper84.replit.app',mlb:'https://statsapi.mlb.com/api/v1',nhl:'https://api-web.nhle.com/v1'};
+const EP={rundown:'https://create-app-gregoryharper84.replit.app',odds:'https://api.the-odds-api.com/v4',espn:'https://site.api.espn.com/apis/site/v2/sports',bdl:'https://api.balldontlie.io/v1',replit:'https://create-app-gregoryharper84.replit.app',mlb:'https://statsapi.mlb.com/api/v1',nhl:'https://api-web.nhle.com/v1'};
 const ESPN_P={MLB:'baseball/mlb',NBA:'basketball/nba',NHL:'hockey/nhl',WNBA:'basketball/wnba',NFL:'americanfootball/nfl',soccer:'soccer/usa.1'};
 const ODDS_K={MLB:'baseball_mlb',NBA:'basketball_nba',NHL:'icehockey_nhl',WNBA:'basketball_wnba',NFL:'americanfootball_nfl',Soccer:'soccer_usa_mls',Tennis:'tennis_atp'};
-const SPORT_IDS={MLB:3,NBA:4,NFL:1,NHL:6,WNBA:8,soccer:7};
+const SPORT_IDS={MLB:3,NBA:4,NFL:1,NHL:6,WNBA:8,soccer:10};
 
 let approvedProps=[],slipLegs=[];
 let propPool = [];         // module top — prevents TDZ in renderSlipBrowser, buildSmartSlip
@@ -2236,9 +2236,11 @@ async function loadBoard(){
   let ok=false;
   try{
     const today=localDate();const sid=SPORT_IDS[sport]||3;
-    const r=await fx(`${EP.rundown}/events?key=${KEYS.rundown}&sport_id=${sid}&date=${today}`,{headers:{'X-TheRundown-Key':KEYS.rundown}});
+    const r=await fx(`${EP.rundown}/rundown/events/${sid}/${today}`,{},10000);
     if(!r.ok)throw new Error(r.status);
-    const data=await r.json();chip('rundown','ok');
+    const data=await r.json();
+    if(data.fallback_hint){throw new Error('plan_limit');}
+    chip('rundown','ok');
     const evs=data.events||data.data||[];
     if(evs.length>0){
       const norm=evs.map(ev=>({competitions:[{competitors:[{homeAway:'away',team:{displayName:ev.away_team||'Away'},score:ev.score?.away||''},{homeAway:'home',team:{displayName:ev.home_team||'Home'},score:ev.score?.home||''}],status:{type:{description:ev.score?.event_status_detail||'Scheduled'}},date:ev.event_date}]}));
@@ -10147,20 +10149,21 @@ async function runWinnersUpsets(){
   };
 
   // TheRundown sport ID map (same source as LLP — no Odds API dependency)
-  const TRD_SPORT_IDS = {MLB:3, NBA:4, NHL:6, WNBA:8, Soccer:7};
+  const TRD_SPORT_IDS = {MLB:3, NBA:4, NHL:6, WNBA:8, MLS:10, EPL:11, Soccer:10};
 
   for(const cfg of sportConfigs){
     try{
-      // Fetch events + lines from TheRundown (same API LLP uses — no quota)
+      // Fetch events + lines via Flask proxy (key server-side, fallback_hint on plan limit)
       const sid = TRD_SPORT_IDS[cfg.sport];
       if(!sid) continue;
       const today = localDate();
       const trdR = await fx(
-        `${EP.rundown}/events?key=${KEYS.rundown}&sport_id=${sid}&date=${today}&include=all_periods`,
-        {headers:{'X-TheRundown-Key':KEYS.rundown}}, 10000
+        `${EP.rundown}/rundown/events/${sid}/${today}`,
+        {}, 10000
       );
       if(!trdR.ok){ continue; }
       const trdData = await trdR.json();
+      if(trdData.fallback_hint){ continue; } // plan limit — fall to next sport
       const eventList2 = trdData.events || trdData.data || [];
       if(!eventList2?.length) continue;
 
@@ -10560,22 +10563,23 @@ async function runLLPBoard(){
   ].filter(s => sportFilter==='all' || s.sport===sportFilter);
 
   // TheRundown sport ID map — same as WU, no Odds API dependency
-  const LLP_TRD_SPORT_IDS = {MLB:3, NBA:4, NHL:6, WNBA:8, Soccer:7};
+  const LLP_TRD_SPORT_IDS = {MLB:3, NBA:4, NHL:6, WNBA:8, MLS:10, EPL:11, Soccer:10};
   const allGames = [];
 
   for(const cfg of sportConfigs){
     log(`⟳ Fetching ${cfg.sport} games...`);
     try{
-      // Fetch from TheRundown (same source as WU — no Odds API quota)
+      // Fetch via Flask proxy — key server-side, clean fallback_hint on plan limit
       const trdSid = LLP_TRD_SPORT_IDS[cfg.sport];
-      if(!trdSid){ log(`⚠ ${cfg.sport}: no TheRundown sport ID`,'w'); continue; }
+      if(!trdSid){ log(`⚠ ${cfg.sport}: no sport ID`,'w'); continue; }
       const today = localDate();
       const trdEvR = await fx(
-        `${EP.rundown}/events?key=${KEYS.rundown}&sport_id=${trdSid}&date=${today}&include=all_periods`,
-        {headers:{'X-TheRundown-Key':KEYS.rundown}}, 10000
+        `${EP.rundown}/rundown/events/${trdSid}/${today}`,
+        {}, 10000
       );
-      if(!trdEvR.ok){ log(`⚠ ${cfg.sport}: TheRundown ${trdEvR.status}`,'w'); continue; }
+      if(!trdEvR.ok){ log(`⚠ ${cfg.sport}: proxy ${trdEvR.status}`,'w'); continue; }
       const trdEvData = await trdEvR.json();
+      if(trdEvData.fallback_hint){ log(`⚠ ${cfg.sport}: TheRundown plan limit — no lines`,'w'); continue; }
       const eventList = trdEvData.events || trdEvData.data || [];
       if(!eventList?.length){ log(`⚠ ${cfg.sport}: no games today`,'w'); continue; }
       log(`✓ ${cfg.sport}: ${eventList.length} games`,'ok');
@@ -14763,7 +14767,7 @@ window.onload=()=>{
     .catch(()=>chip('bdl','fail'));
 
   // TheRundown — use a lightweight sports endpoint
-  fx(`${EP.rundown}/sports`,{headers:{'x-rapidapi-key':KEYS.rundown}},5000)
+  fx(`${EP.rundown}/rundown/sports`,{},5000)
     .then(r=>{ chip('rundown', r.ok?'ok':'fail'); })
     .catch(()=>chip('rundown','fail'));
   renderCLVDashboard();
