@@ -2726,10 +2726,14 @@ VERDICT: [FINAL LABEL]
 Edge: one sentence plain English
 Failure paths: top 2 risks
 
-At the top of your response, output SOURCE ACCESS STATUS with all fields.
-At the bottom, output a SUMMARY TABLE: counts of each label.
-If board is weak or all props fail, return NO_PLAY with explanation.
-Be honest. Do not inflate probability. Do not approve from narrative.`;
+At the bottom of your response, after all prop scores, output a PRE-LOCK CHECKLIST:
+□ MLB pitcher starters confirmed on official lineup card (not just "probable")
+□ WNBA/NBA: confirmed active roster — check for DNP/GTD within 90min of tip
+□ Any GTD player: estimate P(plays) — kill if < 70%
+□ 1st Inn Pitches MORE: verify efficiency gap — if recent P/inn > line, downgrade
+□ Same-team stack ≥3: verify team is not a heavy underdog
+
+If any item cannot be confirmed, downgrade that prop to CONDITIONAL.`;
 
 function setDsSess(sess) {
   _dsSession = sess;
@@ -7083,7 +7087,7 @@ function detectFragileProp(prop, line, sport, player=''){
     flags.push({tag:'1st-inning-fragile', severity:'ban_power', note:'1st inning prop — Power Play ban (not NRFI/YRFI)'});
   if(isFirstInnPitches)
     flags.push({tag:'1st-inning-pitches', severity:'warn', note:'1st inn pitches — Flex only (volatility confirmed)'});
-  if(line <= 0.5 && (p.includes('run') || p.includes('hit') || p.includes('score') || p.includes('walk')))
+  if(line <= 0.5 && (p.includes('run') || p.includes('hit') || p.includes('score') || p.includes('walk') || p.includes('rbi')))
     flags.push({tag:'binary-0.5-event', severity:'ban_stack', note:'Binary 0.5 event — ban as stacked anchor'});
   if(p.includes('home run') || p === 'hr')
     flags.push({tag:'hr-hard-ban', severity:'hard_ban', note:'HR props — HARD BAN'});
@@ -7196,7 +7200,7 @@ function detectFragileProp(prop, line, sport, player=''){
   if(propL.includes('1st 3 minutes') || propL.includes('first 3 minutes') || propL.includes('- 1st 3'))
     flags.push({tag:'first-3-min-extreme', severity:'ban_power', note:'1st 3 Minutes: extreme small sample (single possessions). Flex only, L5 ≥ 70%.'});
   if(propL.includes('personal foul') && (sport==='NBA' || sport==='WNBA'))
-    flags.push({tag:'personal-fouls-blowout', severity:'warn', note:'Personal Fouls: blowout risk (bench time = fewer fouls). Avoid heavy favorites.'});
+    flags.push({tag:'personal-fouls-blowout', severity:'ban_power', note:'Personal Fouls: whistle-dependent, not in WOW non-fragile hierarchy. Flex only — blowout risk (bench time reduces fouls). Never Power Play anchor.'});
   if((propL.includes('defensive reb') || propL.includes('offensive reb')) && (sport==='NBA' || sport==='WNBA'))
     flags.push({tag:'reb-subset-check', severity:'warn', note:'Reb subset: confirm player role (starter + high floor time).'});
   // Tennis new flags
@@ -7266,8 +7270,8 @@ function detectFragileProp(prop, line, sport, player=''){
     flags.push({tag:'tennis-games-over-22.5', severity:'cap_64', note:'Tennis total games over 22.5 — cap WOW at 64'});
   if(p.includes('total game') && line >= 21.5 && sport==='Tennis')
     flags.push({tag:'tennis-games-over-21.5', severity:'cap_70', note:'Tennis total games over 21.5 — cap WOW at 70'});
-  if(p.includes('assist') && line <= 0.5)
-    flags.push({tag:'binary-assist-hook', severity:'ban_stack', note:'0.5 assist hook — binary event ban'});
+  if(p.includes('assist') && !p.includes('goal') && line <= 0.5)
+    flags.push({tag:'binary-assist-hook', severity:'hard_ban', note:'Binary 0.5 assists MORE — hard ban (WOW Gate 2: binary event on assist line)'});
   if((p.includes('ftm') || p.includes('free throw')) && line > 3)
     flags.push({tag:'demon-ftm-risk', severity:'warn', note:'FTM over requires elite foul-drawer context'});
 
@@ -7299,6 +7303,24 @@ function checkSlipVolatility(legs){
     l.prop?.toLowerCase().includes('pitches thrown') ||
     l.prop?.toLowerCase().includes('first inn')
   ).length;
+  const firstInnPitchesMore = legs.filter(l=>
+    (l.prop?.toLowerCase().includes('1st inn') ||
+     l.prop?.toLowerCase().includes('pitches thrown') ||
+     l.prop?.toLowerCase().includes('first inn')) &&
+    (l.side||'').toUpperCase() === 'MORE'
+  ).length;
+
+  // ── NEW: Same-pitcher dedup ── (learned: Misiorowski/Bradish in 3 slips)
+  const pitcherNames = legs
+    .filter(l => l.sport==='MLB' && (l.prop?.toLowerCase().includes('pitch') || l.prop?.toLowerCase().includes('strikeout') || l.prop?.toLowerCase().includes('ks')))
+    .map(l => (l.player||'').toLowerCase().trim());
+  const pitcherDupes = pitcherNames.filter((n,i) => n && pitcherNames.indexOf(n) !== i).length;
+
+  // ── NEW: Same-team underdog stack ── (learned: 4 ATH hitters in blowout)
+  const teamCounts = {};
+  legs.forEach(l => { const t = (l.team||'').toUpperCase().trim(); if(t) teamCounts[t] = (teamCounts[t]||0)+1; });
+  const maxSameTeam = Math.max(0, ...Object.values(teamCounts));
+  const stackedTeam = Object.keys(teamCounts).find(t => teamCounts[t] === maxSameTeam && maxSameTeam >= 3);
 
   // ── NEW: Soccer DNP risk ── (learned: Kessie DNP killed 3 slips)
   const soccerLegs = legs.filter(l=>l.sport==='Soccer').length;
@@ -7318,10 +7340,65 @@ function checkSlipVolatility(legs){
     warnings.push(`⚠ ${thinNBAHooks} thin NBA hooks (≤4.5) — compress to 1 max in Power`);
   if(pitchingOuts >= 2)
     warnings.push(`⚠ ${pitchingOuts} pitching outs props — confirm both have veteran/leash profile`);
+  if(firstInnPitchesMore >= 2)
+    warnings.push(`⚠ ${firstInnPitchesMore} × 1st Inn Pitches MORE in same slip — correlated miss risk. May 25 data: all 4 MORE legs missed same slate. Cap at 1 MORE per slip.`);
   if(firstInnPitches >= 3)
-    warnings.push(`⚠ ${firstInnPitches} first-inning pitch props — 67% miss rate observed. Max 2 per slip.`);
+    warnings.push(`⚠ ${firstInnPitches} first-inning pitch props — high correlation. Max 2 per slip.`);
   if(firstInnPitches >= 1 && legs.some(l=>l.slip_type?.includes('Power')||l._slipType?.includes('power')))
     warnings.push(`⚠ 1st Inning Pitches in Power slip — volatile prop type, Flex only recommended`);
+  if(pitcherDupes > 0)
+    warnings.push(`⚠ Same MLB pitcher appears multiple times — remove duplicate leg before submitting`);
+  if(stackedTeam)
+    warnings.push(`⚠ ${maxSameTeam} legs from ${stackedTeam} — underdog team stack risk. Verify ML before submitting. Blowout kills all legs simultaneously.`);
+
+  // ── DFS Correlation Lane detection ──
+  // Valid positive correlations: Pitcher K LESS + opposing hitter MORE
+  //                              Pitcher Outs LESS + opposing hitter volume MORE
+  // Note: standalone gate approval of EACH leg must happen first — this is modifier only
+  const mlbPitcherKLess = legs.filter(l=>
+    l.sport==='MLB' &&
+    (l.prop?.toLowerCase().includes('strikeout')||(l.prop?.toLowerCase().includes(' k')&&!l.prop?.toLowerCase().includes('pick'))) &&
+    (l.side||'').toUpperCase()==='LESS'
+  );
+  const mlbPitcherOutsLess = legs.filter(l=>
+    l.sport==='MLB' &&
+    (l.prop?.toLowerCase().includes('out')&&l.prop?.toLowerCase().includes('record')) &&
+    (l.side||'').toUpperCase()==='LESS'
+  );
+  const mlbHitterMore = legs.filter(l=>
+    l.sport==='MLB' &&
+    ['hit','total base','tb','fantasy','rbi','run'].some(k=>(l.prop||'').toLowerCase().includes(k)) &&
+    (l.side||'').toUpperCase()==='MORE'
+  );
+
+  if((mlbPitcherKLess.length > 0 || mlbPitcherOutsLess.length > 0) && mlbHitterMore.length > 0){
+    const pitcherLeg = mlbPitcherKLess[0] || mlbPitcherOutsLess[0];
+    const hitterLeg  = mlbHitterMore[0];
+    // Check if they are from opposing teams (same game, different sides)
+    const pitcherGame  = (pitcherLeg.game||pitcherLeg.opponent||'').toLowerCase();
+    const hitterTeam   = (hitterLeg.team||'').toLowerCase();
+    const isPotentialOpp = pitcherGame.includes(hitterTeam) || hitterTeam.includes(pitcherGame.split(/[@vs]/)[0]?.trim()||'__');
+    warnings.push(
+      isPotentialOpp
+        ? `📊 DFS Correlation Lane detected: ${pitcherLeg.player||'Pitcher'} K/Outs LESS + ${hitterLeg.player||'Hitter'} MORE — valid positive correlation. Verify both legs pass standalone gates first.`
+        : `📊 Potential DFS Correlation Lane (K/Outs LESS + Hitter MORE) — confirm these are from the same game and opposing teams before treating as a correlated play.`
+    );
+  }
+
+  // ── WNBA DFS correlation lane ──
+  const wnbaPGAssistsMore = legs.filter(l=>
+    l.sport==='WNBA' &&
+    l.prop?.toLowerCase().includes('assist') &&
+    (l.side||'').toUpperCase()==='MORE'
+  );
+  const wnbaFrontcourtMore = legs.filter(l=>
+    l.sport==='WNBA' &&
+    (l.prop?.toLowerCase().includes('point')||l.prop?.toLowerCase().includes('pra')||l.prop?.toLowerCase().includes('rebound')) &&
+    (l.side||'').toUpperCase()==='MORE'
+  );
+  if(wnbaPGAssistsMore.length > 0 && wnbaFrontcourtMore.length > 0){
+    warnings.push(`📊 WNBA DFS Correlation Lane: PG Assists MORE + Frontcourt Points/PRA MORE — valid positive correlation if same team and both legs pass standalone gates.`);
+  }
   if(soccerLegs >= 2)
     warnings.push(`⚠ ${soccerLegs} soccer legs — confirm starting XIs before submitting (DNP risk is high)`);
   if(volatileStats >= 2)
@@ -7332,7 +7409,8 @@ function checkSlipVolatility(legs){
     warnings,
     binaryCount,
     volatilityScore: binaryCount*15 + attackerSoccerBinary*10 + thinNBAHooks*10 +
-                     pitchingOuts*5 + firstInnPitches*12 + volatileStats*10
+                     pitchingOuts*5 + firstInnPitches*12 + volatileStats*10 +
+                     firstInnPitchesMore*15 + (stackedTeam?20:0) + pitcherDupes*10
   };
 }
 
@@ -7439,7 +7517,251 @@ async function getMLBOpponentRating(game, isPitcher){
 // Pitcher quality check, game environment, correlation risk
 // ══════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════
+// MLB PITCH-TYPE + ENVIRONMENT MODULE — v1.0
+// Skill × Opportunity × Leash for K props
+// Environment completeness gate for hitter props
+// ══════════════════════════════════════════════════════
+
+// Cache for pitcher/arsenal lookups this session
+const _mlbKCache = {};
+
+// Pull pitcher's K/9, arsenal (pitch mix + velocity), leash signal, opponent K profile
+async function buildMLBKPropContext(propPlayer, opponentTeamId) {
+  const cacheKey = `kctx_${propPlayer}_${opponentTeamId}`;
+  if(_mlbKCache[cacheKey]) return _mlbKCache[cacheKey];
+
+  const ctx = {
+    k9: null, k9Available: false,
+    bb9: null,
+    avgVelocity: null, primaryPitchType: null,
+    recentPitchCountAvg: null, recentIPAvg: null,
+    leashRisk: false,       // avg < 85 pitches or < 4.5 IP = early hook risk
+    dualOutcomeRisk: false, // velo > 97 or K/9 > 12
+    oppKRate: null, oppKRateAvailable: false,
+    oppChaseRate: null,     // approximated from K% + BB%
+    contactLineup: false,   // oppKRate < 0.20
+    dataConfidence: 0,      // 0-4: how many fields resolved
+  };
+
+  try {
+    // ── Step 1: Find pitcher player ID from name ──
+    const searchR = await fx(
+      `${EP.mlb}/people/search?names=${encodeURIComponent(propPlayer)}&sport.id=1`,
+      {}, 5000
+    );
+    if(!searchR.ok) { _mlbKCache[cacheKey]=ctx; return ctx; }
+    const people = (await searchR.json()).people || [];
+    const pitcher = people.find(p => p.primaryPosition?.code === '1') || people[0];
+    if(!pitcher?.id) { _mlbKCache[cacheKey]=ctx; return ctx; }
+
+    // ── Step 2: Season pitching stats — K/9, BB/9 ──
+    const statR = await fx(
+      `${EP.mlb}/people/${pitcher.id}/stats?stats=season&season=2026&group=pitching`,
+      {}, 6000
+    );
+    if(statR.ok) {
+      const stat = (await statR.json()).stats?.[0]?.splits?.[0]?.stat;
+      if(stat) {
+        const ip = parseFloat(stat.inningsPitched||0);
+        const ks = parseFloat(stat.strikeOuts||0);
+        const bbs= parseFloat(stat.baseOnBalls||0);
+        ctx.k9  = ip > 0 ? parseFloat((ks/ip*9).toFixed(2)) : parseFloat(stat.strikeoutsPer9Inn||0);
+        ctx.bb9 = ip > 0 ? parseFloat((bbs/ip*9).toFixed(2)) : parseFloat(stat.walksPer9Inn||0);
+        ctx.k9Available = ctx.k9 > 0;
+        if(ctx.k9Available) ctx.dataConfidence++;
+        if(ctx.k9 > 12 || ctx.k9 < 5) ctx.dualOutcomeRisk = true;
+      }
+    }
+
+    // ── Step 3: Pitch arsenal — primary type + avg velocity ──
+    const arsR = await fx(
+      `${EP.mlb}/people/${pitcher.id}/stats?stats=pitchArsenal&season=2026`,
+      {}, 5000
+    );
+    if(arsR.ok) {
+      const splits = (await arsR.json()).stats?.[0]?.splits || [];
+      if(splits.length) {
+        const primary = splits.sort((a,b)=>(b.stat?.percentage||0)-(a.stat?.percentage||0))[0];
+        ctx.primaryPitchType = primary?.stat?.pitchType || null;
+        ctx.avgVelocity = parseFloat(primary?.stat?.avgSpeed||0)||null;
+        if(ctx.avgVelocity > 97) ctx.dualOutcomeRisk = true;
+        ctx.dataConfidence++;
+      }
+    }
+
+    // ── Step 4: Recent game logs — pitch count + IP trend (leash) ──
+    const logR = await fx(
+      `${EP.mlb}/people/${pitcher.id}/stats?stats=gameLog&season=2026&group=pitching&limit=5`,
+      {}, 6000
+    );
+    if(logR.ok) {
+      const starts = ((await logR.json()).stats?.[0]?.splits||[])
+        .filter(s => parseFloat(s.stat?.inningsPitched||0) >= 1);
+      if(starts.length >= 2) {
+        const pCounts = starts.map(s=>parseInt(s.stat?.numberOfPitches||0)).filter(n=>n>0);
+        const ipVals  = starts.map(s=>parseFloat(s.stat?.inningsPitched||0)).filter(n=>n>0);
+        if(pCounts.length) {
+          ctx.recentPitchCountAvg = parseFloat((pCounts.reduce((a,b)=>a+b,0)/pCounts.length).toFixed(0));
+          ctx.leashRisk = ctx.recentPitchCountAvg < 85;
+        }
+        if(ipVals.length) {
+          ctx.recentIPAvg = parseFloat((ipVals.reduce((a,b)=>a+b,0)/ipVals.length).toFixed(2));
+          if(ctx.recentIPAvg < 4.5) ctx.leashRisk = true; // < 4.5 IP = likely pulled before K accumulation
+        }
+        ctx.dataConfidence++;
+      }
+    }
+
+    // ── Step 5: Opponent K% + approximate contact profile ──
+    if(opponentTeamId) {
+      const oR = await fx(
+        `${EP.mlb}/teams/${opponentTeamId}/stats?stats=season&season=2026&group=hitting`,
+        {}, 6000
+      );
+      if(oR.ok) {
+        const oStat = (await oR.json()).stats?.[0]?.splits?.[0]?.stat;
+        if(oStat) {
+          const pas = parseFloat(oStat.plateAppearances||oStat.atBats||1);
+          const ks  = parseFloat(oStat.strikeOuts||0);
+          const bbs = parseFloat(oStat.baseOnBalls||0);
+          ctx.oppKRate = parseFloat((ks/pas).toFixed(4));
+          // Chase rate approximation: low BB% relative to K% = swings at bad pitches
+          const oppBBRate = bbs/pas;
+          ctx.oppChaseRate = ctx.oppKRate > 0 ? parseFloat((ctx.oppKRate/Math.max(oppBBRate,0.05)).toFixed(2)) : null;
+          ctx.oppKRateAvailable = ctx.oppKRate > 0;
+          ctx.contactLineup = ctx.oppKRate < 0.20;
+          ctx.dataConfidence++;
+        }
+      }
+    }
+  } catch(e) { console.warn('buildMLBKPropContext:', e.message); }
+
+  _mlbKCache[cacheKey] = ctx;
+  return ctx;
+}
+
+// Score how complete the environment data is for a hitter prop
+function checkMLBEnvironmentCompleteness(analystResult, prop) {
+  const fields = {
+    pitcherQuality:  analystResult.pitcherERA != null,
+    gameTotal:       analystResult.gameTotal != null,
+    windChecked:     analystResult.flags.some(f=>/wind/i.test(f)),
+    parkFactor:      true, // always available via static lookup
+    handedness:      !!(prop._handednessChecked || prop.handedness_stat ||
+                        (prop.note && /split|hand/i.test(prop.note))),
+    bullpenContext:  analystResult.bullpenERA != null,
+  };
+
+  const resolved = Object.entries(fields).filter(([,v])=>v).map(([k])=>k);
+  const missing  = Object.entries(fields).filter(([,v])=>!v).map(([k])=>k);
+
+  // Critical fields (must have ≥2 of these for Tier 1)
+  const critical = ['pitcherQuality','gameTotal','windChecked'];
+  const criticalResolved = critical.filter(k=>fields[k]).length;
+
+  return {
+    complete: missing.length <= 1,
+    criticalResolved,
+    resolvedCount: resolved.length,
+    missingCount: missing.length,
+    missing,
+    resolved,
+    summary: resolved.join('+') || 'none',
+  };
+}
+
 const mlbAnalystCache = {};
+
+// ══════════════════════════════════════════════════════
+// MLB MANAGER / FRONT-OFFICE LEASH TENDENCIES — v1.0
+// Static lookup updated for 2025-26 season
+// 0 = normal, 1 = moderate quick-hook, 2 = aggressive quick-hook
+// ══════════════════════════════════════════════════════
+const _MLB_QUICK_HOOK_TEAMS = {
+  // Aggressive quick-hook / opener-heavy
+  'TB': 2, 'OAK': 2, 'ATH': 2, 'KC': 1,
+  // Moderate quick-hook
+  'PIT': 1, 'CIN': 1, 'CWS': 1, 'MIA': 1, 'COL': 1, 'WSH': 1,
+  // Neutral-to-long leash (traditional rotations)
+  'NYY': 0, 'LAD': 0, 'ATL': 0, 'HOU': 0, 'PHI': 0,
+};
+
+// Known patient / high-BB% lineups — approx. 2025 season
+const _MLB_PATIENT_LINEUPS = ['NYY','SEA','OAK','ATH','BOS','MIN'];
+// Known contact / low-K% lineups
+const _MLB_CONTACT_LINEUPS = ['STL','LAA','MIA','MIL'];
+
+async function buildMLBManagerLeashContext(pitcherTeam, opponentTeam, kCtx, matchedGame) {
+  const ctx = {
+    quickHookTier: _MLB_QUICK_HOOK_TEAMS[pitcherTeam] || 0,
+    tttoRisk: false,          // third-time-through-order risk
+    pitchCountLeash: false,   // manager pulls at pitch count threshold
+    paLengthNote: null,       // plate-appearance-length modifier
+    paLengthAdj: 0,           // probability adjustment from PA length
+    dayAfterFlag: false,      // day-after-night-game fatigue
+    dayAfterNote: null,
+    outsvulnerable: false,    // outs line is in pull-risk zone (17.5/18.5)
+  };
+
+  // ── TTTO (third time through order) ──
+  // Risk is elevated when: starter is not an ace AND avg IP < 5.5 AND team has quick-hook tendency
+  const avgIP = kCtx?.recentIPAvg || 5.0;
+  const k9 = kCtx?.k9 || 7.0;
+  if(avgIP < 5.5 && k9 < 9.0 && ctx.quickHookTier >= 1){
+    ctx.tttoRisk = true;
+    ctx.pitchCountLeash = true;
+  } else if(avgIP < 4.5){
+    ctx.tttoRisk = true; // Always TTTO risk if averaging < 4.5 IP
+  }
+
+  // ── PA length modifier ──
+  // Aggressive hitters vs efficient pitcher → fewer pitches → lower K count but faster outs
+  // Patient hitters vs wild pitcher → more pitches → higher K count, helps pitch-total lines
+  const isPatientOpp = _MLB_PATIENT_LINEUPS.includes(opponentTeam);
+  const isContactOpp = _MLB_CONTACT_LINEUPS.includes(opponentTeam);
+  const isWildPitcher = (kCtx?.bb9 || 0) >= 4.0;
+  const isEfficientPitcher = (kCtx?.bb9 || 0) <= 2.0 && (kCtx?.k9 || 0) >= 8.0;
+
+  if(isPatientOpp && isWildPitcher){
+    ctx.paLengthNote = `Patient lineup (${opponentTeam}) vs wild pitcher — high pitch/PA, favors K MORE and pitch total MORE`;
+    ctx.paLengthAdj = 0.03;
+  } else if(isContactOpp && isEfficientPitcher){
+    ctx.paLengthNote = `Contact lineup (${opponentTeam}) vs efficient pitcher — quick outs, caution on K MORE`;
+    ctx.paLengthAdj = -0.03;
+  } else if(isPatientOpp && !isWildPitcher){
+    ctx.paLengthNote = `Patient lineup (${opponentTeam}) — moderate PA inflation`;
+    ctx.paLengthAdj = 0.01;
+  }
+
+  // ── Day-after-night-game fatigue ──
+  try{
+    if(matchedGame){
+      const today = new Date().toISOString().split('T')[0];
+      const yesterday = new Date(Date.now()-86400000).toISOString().split('T')[0];
+      const prevR = await fx(
+        `${EP.mlb}/schedule?sportId=1&date=${yesterday}&hydrate=team`,
+        {}, 5000
+      );
+      if(prevR.ok){
+        const prevGames = (await prevR.json()).dates?.[0]?.games || [];
+        const awayAbbr = matchedGame.teams?.away?.team?.abbreviation||'';
+        const homeAbbr = matchedGame.teams?.home?.team?.abbreviation||'';
+        const playedYesterday = prevGames.some(g => {
+          const pa = g.teams?.away?.team?.abbreviation||'';
+          const ph = g.teams?.home?.team?.abbreviation||'';
+          return pa===awayAbbr||ph===homeAbbr||pa===homeAbbr||ph===awayAbbr;
+        });
+        if(playedYesterday){
+          ctx.dayAfterFlag = true;
+          ctx.dayAfterNote = 'Day-after-night-game — hitter fatigue risk, especially catchers and older veterans';
+        }
+      }
+    }
+  }catch(e){}
+
+  return ctx;
+}
 
 async function runMLBPropAnalyst(prop){
   if(prop.sport !== 'MLB') return null;
@@ -7558,6 +7880,172 @@ async function runMLBPropAnalyst(prop){
         }
       }
     }
+
+    // ── STEP 2B: Pitcher K Props — Skill × Opportunity × Leash ──
+    const isPitcherKProp = /strikeout|pitcher k|\bk\b.*prop|ks\b/i.test(propLower);
+    if(isPitcherKProp){
+      const oppTeamId = matchedGame
+        ? (playerTeamSide==='away'
+            ? matchedGame.teams?.home?.team?.id
+            : matchedGame.teams?.away?.team?.id)
+        : null;
+      const kCtx = await buildMLBKPropContext(prop.player||'', oppTeamId);
+      result.kPropContext = kCtx;
+
+      // ── Skill: K/9 ──
+      if(kCtx.k9Available){
+        if(kCtx.k9 >= 10.0){
+          result.flags.push(`Elite K/9 ${kCtx.k9} — high strikeout skill`);
+          result.adjustments.push({field:'rawProb', delta:0.03, reason:`Elite K/9 (${kCtx.k9})`});
+        } else if(kCtx.k9 < 7.0){
+          result.flags.push(`Low K/9 ${kCtx.k9} — insufficient strikeout rate for K prop`);
+          result.adjustments.push({field:'rawProb', delta:-0.07, reason:`Low K/9 (${kCtx.k9})`});
+        }
+      } else {
+        result.flags.push('⚠ K/9 unavailable — K prop requires pitcher skill data');
+        result.adjustments.push({field:'rawProb', delta:-0.05, reason:'Missing K/9'});
+      }
+
+      // ── Opportunity: opponent K% (contact vs swing-and-miss lineup) ──
+      if(kCtx.oppKRateAvailable){
+        const kPct = Math.round(kCtx.oppKRate*100);
+        if(kCtx.contactLineup){
+          result.flags.push(`Contact lineup — opp K% ${kPct}% < 20% — reduced K opportunity`);
+          result.adjustments.push({field:'rawProb', delta:-0.06, reason:`Contact lineup (${kPct}% K)`});
+        } else if(kCtx.oppKRate >= 0.26){
+          result.flags.push(`High-K lineup — opp K% ${kPct}% ≥ 26% — strong K opportunity`);
+          result.adjustments.push({field:'rawProb', delta:0.04, reason:`Strikeout-prone lineup (${kPct}% K)`});
+        }
+        // Chase approximation: high K/BB ratio on opponent = free swings
+        if(kCtx.oppChaseRate && kCtx.oppChaseRate > 3.0){
+          result.flags.push(`Aggressive lineup (K/BB ratio ${kCtx.oppChaseRate.toFixed(1)}) — chases off-speed`);
+          result.adjustments.push({field:'rawProb', delta:0.02, reason:'Aggressive/chasing lineup'});
+        }
+      } else {
+        result.flags.push('⚠ Opponent K% unavailable — opportunity side unverified');
+        result.adjustments.push({field:'rawProb', delta:-0.03, reason:'Missing opp K%'});
+      }
+
+      // ── Leash: pitch count trend + IP depth ──
+      if(kCtx.recentPitchCountAvg){
+        if(kCtx.leashRisk){
+          result.flags.push(`Leash risk — avg ${kCtx.recentPitchCountAvg} pitches/start${kCtx.recentIPAvg?`, ${kCtx.recentIPAvg} IP avg`:''} — may not go deep enough for K accumulation`);
+          result.adjustments.push({field:'rawProb', delta:-0.07, reason:`Leash risk (${kCtx.recentPitchCountAvg} pitches avg)`});
+        } else {
+          result.flags.push(`Pitch count OK — avg ${kCtx.recentPitchCountAvg}/start, ${kCtx.recentIPAvg||'?'} IP`);
+        }
+      }
+
+      // ── Dual-outcome flag ──
+      if(kCtx.dualOutcomeRisk){
+        const reason = kCtx.avgVelocity > 97 ? `velo ${kCtx.avgVelocity}mph` : `K/9 ${kCtx.k9}`;
+        result.flags.push(`DUAL OUTCOME: ${reason} — either dominant (big K) or quick/inefficient hook. Validate LESS path.`);
+      }
+
+      // ── Arsenal summary ──
+      if(kCtx.primaryPitchType){
+        const velNote = kCtx.avgVelocity ? ` @ ${kCtx.avgVelocity}mph` : '';
+        result.flags.push(`Primary pitch: ${kCtx.primaryPitchType}${velNote}`);
+      }
+
+      // ── BB/9 context (high BB = more pitches = better for K accumulation, but also leash risk) ──
+      if(kCtx.bb9 >= 4.0){
+        result.flags.push(`BB/9 ${kCtx.bb9} ≥ 4.0 — walks inflate pitch count (both K and leash risk)`);
+      }
+
+      // ── K prop data confidence ──
+      result.kPropDataConfidence = kCtx.dataConfidence;
+      if(kCtx.dataConfidence < 2){
+        result.flags.push('K prop data confidence LOW — fewer than 2 sources resolved');
+        result.kPropDataLow = true;
+      }
+    }
+
+    // ── STEP 2C: Manager / Front-Office Leash + TTTO + PA Length + Day-After Fatigue ──
+    // These are modifiers only — cannot override L5/L10, gates, or line data
+    try{
+      const pitcherTeamAbbr = (prop.team||'').toUpperCase().trim();
+      const oppTeamAbbr     = (prop.opponent||'').toUpperCase().trim();
+      const propLower2C     = (prop.prop||'').toLowerCase();
+      const isOutsProp      = propLower2C.includes('out') && propLower2C.includes('record');
+      const isPitcherProp   = isPitcherKProp || isOutsProp;
+
+      // Only run leash context for pitcher props
+      if(isPitcherProp){
+        const leash = await buildMLBManagerLeashContext(
+          pitcherTeamAbbr, oppTeamAbbr,
+          result.kPropContext || null,
+          matchedGame
+        );
+        result.managerLeashCtx = leash;
+
+        // ── Quick-hook team downgrade ──
+        if(leash.quickHookTier === 2){
+          result.flags.push(`Aggressive quick-hook team (${pitcherTeamAbbr}) — opener/bullpen risk. Outs MORE and K MORE downgraded.`);
+          result.adjustments.push({field:'rawProb', delta: prop.side==='MORE'?-0.07:-0.0, reason:`Quick-hook team tier 2 (${pitcherTeamAbbr})`});
+        } else if(leash.quickHookTier === 1){
+          result.flags.push(`Moderate quick-hook tendency (${pitcherTeamAbbr}) — verify pitch count budget.`);
+          result.adjustments.push({field:'rawProb', delta: prop.side==='MORE'?-0.03:0, reason:`Quick-hook team tier 1 (${pitcherTeamAbbr})`});
+        }
+
+        // ── TTTO (third time through order) penalty ──
+        if(leash.tttoRisk){
+          result.flags.push(`TTTO risk — ${pitcherTeamAbbr} avg IP trend suggests manager pulls before 3rd pass through lineup. Caps K/Outs accumulation.`);
+          result.adjustments.push({field:'rawProb', delta: prop.side==='MORE'?-0.05:0.03, reason:'TTTO risk'});
+        }
+
+        // ── Outs 17.5/18.5 — pull-risk vulnerable zone ──
+        const outsLine = parseFloat(prop.line||0);
+        if(isOutsProp && outsLine >= 17.5 && outsLine <= 18.5){
+          result.flags.push(`Outs line ${outsLine} in pull-risk zone (17.5–18.5) — one bad inning or quick hook ends the start at exactly this range.`);
+          if(prop.side === 'MORE'){
+            result.flags.push('Outs MORE 17.5/18.5 requires: veteran starter + long leash + no rested bullpen + patient opponent confirms depth.');
+            result.adjustments.push({field:'rawProb', delta:-0.04, reason:`Outs vulnerability zone (${outsLine})`});
+          } else {
+            result.flags.push('Outs LESS 17.5/18.5 — strong lane if quick-hook team, rested bullpen, or contact/patient opponent.');
+            result.adjustments.push({field:'rawProb', delta:0.03, reason:`Outs LESS vulnerability zone favorable (${outsLine})`});
+          }
+        }
+
+        // ── PA length modifier ──
+        if(leash.paLengthNote){
+          result.flags.push(leash.paLengthNote);
+          if(leash.paLengthAdj !== 0){
+            result.adjustments.push({field:'rawProb', delta:leash.paLengthAdj, reason:'PA length modifier'});
+          }
+        }
+
+        // ── Day-after-night-game fatigue ──
+        if(leash.dayAfterFlag){
+          result.flags.push(leash.dayAfterNote);
+          // Affects pitcher efficiency slightly — more walks, higher pitch count
+          result.adjustments.push({field:'rawProb', delta: prop.side==='MORE'?0.01:-0.01, reason:'Day-after fatigue'});
+        }
+      }
+
+      // ── Day-after fatigue for HITTER props (stronger effect) ──
+      if(isHitterProp && !isPitcherProp && matchedGame){
+        try{
+          const yesterday = new Date(Date.now()-86400000).toISOString().split('T')[0];
+          const prevR2 = await fx(`${EP.mlb}/schedule?sportId=1&date=${yesterday}`,{},5000);
+          if(prevR2.ok){
+            const prevGames2 = (await prevR2.json()).dates?.[0]?.games||[];
+            const awA = (matchedGame.teams?.away?.team?.abbreviation||'').toUpperCase();
+            const hmA = (matchedGame.teams?.home?.team?.abbreviation||'').toUpperCase();
+            const hitterTeam = playerTeamSide==='away'?awA:hmA;
+            const playedYest = prevGames2.some(g=>{
+              const pa=(g.teams?.away?.team?.abbreviation||'').toUpperCase();
+              const ph=(g.teams?.home?.team?.abbreviation||'').toUpperCase();
+              return pa===hitterTeam||ph===hitterTeam;
+            });
+            if(playedYest && prop.side==='MORE'){
+              result.flags.push(`Day-after-night-game fatigue (${hitterTeam}) — hitter MORE props take -2% adjustment, especially catchers and veterans.`);
+              result.adjustments.push({field:'rawProb', delta:-0.02, reason:'Day-after hitter fatigue'});
+            }
+          }
+        }catch(e){}
+      }
+    }catch(e){ console.warn('STEP 2C:', e.message); }
 
     // ── STEP 3: Game environment check ──
     if(matchedGame){
@@ -7710,6 +8198,83 @@ async function runMLBPropAnalyst(prop){
         }
       }catch(e){}
 
+      // ── Park Factor (static lookup — always run for hitter props) ──
+      if(isHitterProp){
+        const parkTeam = playerTeamSide==='home' ? homeAbbr : awayAbbr;
+        const pf = getMLBParkFactor(parkTeam);
+        result.parkFactor = pf?.factor || 1.0;
+        result.parkName   = pf?.name   || parkTeam;
+        if(pf){
+          if(pf.factor >= 1.10){
+            result.flags.push(`Hitter-friendly park: ${pf.name} (factor ${pf.factor.toFixed(2)}) — ball carries`);
+            result.adjustments.push({field:'rawProb', delta: prop.side==='MORE'?0.03:-0.02, reason:`Park factor ${pf.factor.toFixed(2)}`});
+          } else if(pf.factor <= 0.90){
+            result.flags.push(`Pitcher-friendly park: ${pf.name} (factor ${pf.factor.toFixed(2)}) — suppresses offense`);
+            result.adjustments.push({field:'rawProb', delta: prop.side==='LESS'?0.03:-0.02, reason:`Park factor ${pf.factor.toFixed(2)}`});
+          }
+          if(pf.note) result.flags.push(`Park note: ${pf.note}`);
+        }
+      }
+
+      // ── Bullpen quality (hitter props — late-game plate appearances) ──
+      if(isHitterProp){
+        try{
+          const bullpenTeamId = playerTeamSide==='home'
+            ? matchedGame.teams?.away?.team?.id
+            : matchedGame.teams?.home?.team?.id;
+          if(bullpenTeamId){
+            const bpERA = await getMLBTeamBullpenERA(bullpenTeamId);
+            result.bullpenERA = bpERA;
+            if(bpERA != null){
+              if(bpERA < 3.20){
+                result.flags.push(`Elite bullpen ERA ${bpERA.toFixed(2)} — late-game plate appearances suppressed`);
+                result.adjustments.push({field:'rawProb', delta:-0.03, reason:`Elite bullpen (${bpERA.toFixed(2)} ERA)`});
+              } else if(bpERA > 4.80){
+                result.flags.push(`Weak bullpen ERA ${bpERA.toFixed(2)} — late-game opportunities increase`);
+                result.adjustments.push({field:'rawProb', delta: prop.side==='MORE'?0.02:0, reason:`Weak bullpen (${bpERA.toFixed(2)} ERA)`});
+              }
+            }
+          }
+        }catch(bpErr){}
+      }
+
+      // ── Team implied total (for ALL hitter prop types, not just runs) ──
+      if(isHitterProp && result.gameTotal){
+        try{
+          const oddsTeamR = await fx(
+            `${EP.odds}/sports/baseball_mlb/odds?apiKey=${KEYS.odds}&regions=us&markets=h2h&oddsFormat=american`,
+            {}, 5000
+          );
+          if(oddsTeamR.ok){
+            const oddsTeam = await oddsTeamR.json();
+            const gm = oddsTeam.find(g=>
+              g.away_team?.toLowerCase().includes(awayAbbr.toLowerCase())||
+              g.home_team?.toLowerCase().includes(homeAbbr.toLowerCase())
+            );
+            if(gm){
+              const bk = gm.bookmakers?.[0];
+              const awayML = bk?.markets?.[0]?.outcomes?.find(o=>o.name===gm.away_team)?.price;
+              const homeML = bk?.markets?.[0]?.outcomes?.find(o=>o.name===gm.home_team)?.price;
+              if(awayML && homeML){
+                const nvp = noVigProb(awayML, homeML);
+                const isAway = playerTeamSide==='away';
+                const teamWinP = isAway ? nvp.over : nvp.under;
+                // Estimate team implied runs = O/U × team win share (simplified)
+                const teamImplied = parseFloat((result.gameTotal * (teamWinP > 0.5 ? 0.56 : 0.44)).toFixed(1));
+                result.teamImpliedTotal = teamImplied;
+                if(teamImplied < 3.5 && prop.side==='MORE'){
+                  result.flags.push(`Low team implied total ${teamImplied} — limited run-scoring environment`);
+                  result.adjustments.push({field:'rawProb', delta:-0.04, reason:`Low team implied (${teamImplied})`});
+                } else if(teamImplied >= 5.5 && prop.side==='MORE'){
+                  result.flags.push(`High team implied ${teamImplied} — favorable scoring environment`);
+                  result.adjustments.push({field:'rawProb', delta:0.02, reason:`High team implied (${teamImplied})`});
+                }
+              }
+            }
+          }
+        }catch(tiErr){}
+      }
+
       // Determine favored offense from linescore/moneyline
       result.favoredOffense = playerTeamSide === 'home'
         ? matchedGame.teams?.home?.team?.name
@@ -7733,6 +8298,46 @@ async function runMLBPropAnalyst(prop){
       } else if(streak >= 2){
         result.flags.push(`${streak} consecutive 0-${prop.prop} games`);
         result.adjustments.push({field:'rawProb', delta:-0.04, reason:'2-game cold streak'});
+      }
+    }
+
+    // ── STEP 4B: Proof Gate — do not approve MLB props from generic form alone ──
+    if(isHitterProp){
+      const env = checkMLBEnvironmentCompleteness(result, prop);
+      result.environmentCompleteness = env;
+
+      // Proof requirements for Tier 1 (Power eligible):
+      // pitcherQuality + gameTotal + (handedness OR wind) + parkFactor
+      // Proof requirements for Tier 2 (Flex): pitcherQuality OR gameTotal
+      if(env.criticalResolved === 0){
+        // Zero critical fields = generic form only — not approvable
+        result.flags.push('PROOF GATE FAIL — no pitcher quality, game total, or wind data. Hitter prop from generic form only. Downgrade to CONDITIONAL.');
+        result.adjustments.push({field:'rawProb', delta:-0.12, reason:'Proof gate fail: generic form only'});
+        result.proofGateFail = true;
+      } else if(env.criticalResolved === 1){
+        // One critical field — Tier 2 cap, note missing data
+        const missing = env.missing.filter(f=>['pitcherQuality','gameTotal','windChecked'].includes(f));
+        if(missing.length){
+          result.flags.push(`Proof gate partial — missing: ${missing.join(', ')}. Cap Tier 2.`);
+          result.adjustments.push({field:'rawProb', delta:-0.05, reason:`Partial matchup proof (missing ${missing.join(', ')})`});
+          result.proofGateWarn = true;
+        }
+      }
+      // Full environment summary in output
+      result.flags.push(`Environment: ${env.summary} (${env.resolvedCount}/${env.resolvedCount+env.missingCount} fields)`);
+    }
+
+    if(isPitcherKProp && result.kPropContext){
+      const kCtx = result.kPropContext;
+      // K prop proof gate: need at least K/9 + opp K% for approval
+      if(!kCtx.k9Available && !kCtx.oppKRateAvailable){
+        result.flags.push('K PROP PROOF GATE — neither K/9 nor opp K% available. Conditional only.');
+        result.adjustments.push({field:'rawProb', delta:-0.10, reason:'K prop: missing all skill/opportunity data'});
+        result.proofGateFail = true;
+      } else if(!kCtx.k9Available || !kCtx.oppKRateAvailable){
+        result.flags.push('K PROP PROOF PARTIAL — one of K/9 or opp K% missing. Cap Tier 2.');
+        result.adjustments.push({field:'rawProb', delta:-0.04, reason:'K prop: partial data'});
+        result.proofGateWarn = true;
       }
     }
 
@@ -7764,6 +8369,229 @@ async function runMLBPropAnalyst(prop){
   }
 
   mlbAnalystCache[cacheKey] = result;
+  return result;
+}
+
+// ══════════════════════════════════════════════════════
+// WNBA PROP ANALYST ENGINE — v1.0
+// Rotation + Pace + Usage Shift + Rest/Fatigue + Defensive Matchup + DFS Lane
+// Modifiers only — cannot override L5/L10, gates, or line data
+// ══════════════════════════════════════════════════════
+
+const _wnbaAnalystCache = {};
+
+async function runWNBAPropAnalyst(prop) {
+  if(prop.sport !== 'WNBA') return null;
+  const cacheKey = `wnba_${prop.player}|${prop.prop}|${prop.line}|${prop.game||''}`;
+  if(_wnbaAnalystCache[cacheKey]) return _wnbaAnalystCache[cacheKey];
+
+  const result = {
+    confidence: 'medium',
+    confidenceIcon: '⚠️',
+    flags: [],
+    adjustments: [],
+    analystNote: '',
+    // Sub-context
+    minutesTrend: null,     // recent avg minutes
+    rotationRisk: false,    // bench/rotation player risk
+    paceAdj: 0,             // pace-based adjustment
+    usageShiftNote: null,   // usage shift from star absence
+    fatigue: false,         // 3rd in 5, B2B, or travel
+    fatigueNote: null,
+    defMatchupNote: null,   // defensive assignment risk
+    defMatchupAdj: 0,
+  };
+
+  try {
+    const bdlBase = 'https://api.balldontlie.io/v1/wnba';
+    const propLower = (prop.prop||'').toLowerCase();
+    const isScoring = propLower.includes('point') || propLower.includes('fantasy');
+    const isAssists = propLower.includes('assist');
+    const isRebounds = propLower.includes('rebound') || propLower.includes('pra') || propLower.includes('pr+a');
+    const today = new Date().toISOString().split('T')[0];
+
+    // ── Step 1: Player search + game logs ──
+    const searchR = await fx(
+      `${bdlBase}/players?search=${encodeURIComponent(prop.player||'')}&per_page=5`,
+      {headers:{'Authorization':KEYS.bdl}}, 6000
+    );
+    if(!searchR.ok){ _wnbaAnalystCache[cacheKey]=result; return result; }
+    const player = (await searchR.json()).data?.[0];
+    if(!player){ _wnbaAnalystCache[cacheKey]=result; return result; }
+
+    // Recent game logs — minutes + stats
+    const logsR = await fx(
+      `${bdlBase}/game_logs?player_id=${player.id}&season=2025&per_page=10`,
+      {headers:{'Authorization':KEYS.bdl}}, 8000
+    );
+    const gameLogs = logsR.ok ? ((await logsR.json()).data||[]).filter(g=>{
+      const m=String(g.min||'0'); return m!=='0' && m!=='0:00';
+    }) : [];
+
+    // ── Layer 1: 40-minute rotation edge — minutes trend ──
+    if(gameLogs.length >= 3){
+      const recentMins = gameLogs.slice(0,5).map(g=>{
+        const m=String(g.min||'0').split(':'); return parseInt(m[0]||0);
+      }).filter(n=>n>0);
+      if(recentMins.length){
+        result.minutesTrend = parseFloat((recentMins.reduce((a,b)=>a+b,0)/recentMins.length).toFixed(1));
+        const allMins = gameLogs.map(g=>{
+          const m=String(g.min||'0').split(':'); return parseInt(m[0]||0);
+        }).filter(n=>n>0);
+        const seasonAvgMins = allMins.length ? allMins.reduce((a,b)=>a+b,0)/allMins.length : result.minutesTrend;
+
+        const minDiff = result.minutesTrend - seasonAvgMins;
+
+        if(minDiff >= 3.5){
+          result.flags.push(`WNBA Rotation Edge: +${minDiff.toFixed(1)} min bump (recent ${result.minutesTrend} vs season ${seasonAvgMins.toFixed(1)}) — meaningful in 40-min game. Confirmed by role context?`);
+          result.adjustments.push({field:'rawProb', delta:prop.side==='MORE'?0.04:-0.02, reason:`WNBA minutes bump +${minDiff.toFixed(1)}`});
+        } else if(minDiff <= -3.5){
+          result.flags.push(`WNBA Rotation Risk: -${Math.abs(minDiff).toFixed(1)} min trend (recent ${result.minutesTrend} vs season ${seasonAvgMins.toFixed(1)}) — floor reduced in 40-min game.`);
+          result.adjustments.push({field:'rawProb', delta:prop.side==='MORE'?-0.05:0.03, reason:`WNBA minutes drop -${Math.abs(minDiff).toFixed(1)}`});
+          result.rotationRisk = true;
+        }
+
+        // Bench player warning
+        if(result.minutesTrend < 18){
+          result.flags.push(`WNBA Bench role: ${result.minutesTrend} avg min — rotation risk, floor is uncertain`);
+          result.adjustments.push({field:'rawProb', delta:prop.side==='MORE'?-0.06:0.04, reason:'WNBA bench rotation risk'});
+          result.rotationRisk = true;
+        } else if(result.minutesTrend >= 30){
+          result.flags.push(`WNBA Star load: ${result.minutesTrend} avg min — high-floor producer, stable usage`);
+          result.adjustments.push({field:'rawProb', delta:prop.side==='MORE'?0.02:0, reason:'WNBA star load'});
+        }
+      }
+    }
+
+    // ── Layer 2: Pace split layer ──
+    // Get opponent team defensive rating from team stats if available
+    try{
+      const teamsR = await fx(`${bdlBase}/teams`,{headers:{'Authorization':KEYS.bdl}},5000);
+      if(teamsR.ok){
+        const teams = (await teamsR.json()).data || [];
+        const oppTeamName = (prop.opponent||'').toLowerCase();
+        const oppTeam = teams.find(t=>
+          (t.full_name||'').toLowerCase().includes(oppTeamName)||
+          (t.abbreviation||'').toLowerCase()===oppTeamName.toLowerCase().slice(0,3)
+        );
+        if(oppTeam){
+          // Approximation: check opponent's scoring allowed (proxy for pace/def rating)
+          const oppStatsR = await fx(
+            `${bdlBase}/teams/${oppTeam.id}/stats?season=2025`,
+            {headers:{'Authorization':KEYS.bdl}}, 5000
+          );
+          // Note: BDL WNBA team stats endpoint may vary; graceful fallback
+          // Use available data as pace proxy
+        }
+      }
+    }catch(e){}
+
+    // ── Layer 3: Usage shift engine ──
+    // Check if lineup context suggests this player is a usage beneficiary or hurt by an absence
+    if(prop.lineup_context || prop.team_note){
+      const ctx = (prop.lineup_context||prop.team_note||'').toLowerCase();
+      const starWords = ['out','dnp','injury','questionable','gtd','scratch'];
+      if(starWords.some(w=>ctx.includes(w))){
+        result.flags.push('⚠ WNBA Usage Shift: Star absence noted in context — verify this player is the ACTUAL beneficiary before approving MORE. Check role, shot creation, and lineup slot.');
+        result.usageShiftNote = 'Potential usage beneficiary — confirm role explicitly';
+      }
+    }
+
+    // ── Layer 4: Rest / travel fatigue ──
+    try{
+      // Check last 5 days of WNBA schedule for this team
+      const fiveDaysAgo = new Date(Date.now()-5*86400000).toISOString().split('T')[0];
+      const teamId = player.team?.id;
+      if(teamId){
+        const recentGamesR = await fx(
+          `${bdlBase}/games?team_ids[]=${teamId}&start_date=${fiveDaysAgo}&end_date=${today}&per_page=10`,
+          {headers:{'Authorization':KEYS.bdl}}, 6000
+        );
+        if(recentGamesR.ok){
+          const recentGames = (await recentGamesR.json()).data || [];
+          // Sort chronologically
+          const sorted = recentGames.sort((a,b)=>new Date(a.date)-new Date(b.date));
+          const gameCount = sorted.length;
+
+          // 3rd game in 5 nights
+          if(gameCount >= 3){
+            result.fatigue = true;
+            result.fatigueNote = `WNBA 3rd game in 5 nights — fatigue is real, especially for high-minute post players and stars. MORE props need stronger L5 support.`;
+            result.flags.push(result.fatigueNote);
+            result.adjustments.push({field:'rawProb', delta:prop.side==='MORE'?-0.05:0.04, reason:'3rd game in 5 nights'});
+          }
+          // Back-to-back check
+          else if(gameCount >= 2){
+            const last = sorted[sorted.length-1];
+            const yesterday = new Date(Date.now()-86400000).toISOString().split('T')[0];
+            if((last.date||'').startsWith(yesterday)){
+              result.fatigue = true;
+              result.fatigueNote = `WNBA B2B second night — minutes/efficiency typically drop 5–8%.`;
+              result.flags.push(result.fatigueNote);
+              result.adjustments.push({field:'rawProb', delta:prop.side==='MORE'?-0.04:0.04, reason:'WNBA B2B fatigue'});
+            }
+          }
+
+          // Check cross-country travel (approximation: games in 3 different cities in 4 days)
+          if(gameCount >= 3 && !result.fatigue){
+            result.flags.push('WNBA dense schedule — verify travel context before lock');
+          }
+        }
+      }
+    }catch(e){}
+
+    // ── Layer 5: Defensive matchup / lockdown tax ──
+    // Guard/wing scorers must account for defensive assignment
+    if(isScoring){
+      const posLower = (player.position||'').toLowerCase();
+      const isGuardWing = posLower.includes('g') || posLower.includes('f') || !posLower;
+      if(isGuardWing){
+        result.defMatchupNote = `WNBA scoring prop: guard/wing matchup — verify no lockdown defender (opponent perimeter length, scheme, spacing pressure) before Tier 1.`;
+        result.flags.push(result.defMatchupNote);
+        // Note: actual defensive rating data would require Synergy/Statcast WNBA — not available via BDL
+        // Flag as informational, no automatic adjustment without data
+      }
+    }
+
+    // ── Layer 6: WNBA proof gate ──
+    // WNBA props cannot be approved from L5/L10 or soft market logic alone
+    const hasExactLine = (prop.raw_vals?.length||0) >= 5;
+    const hasRotationData = result.minutesTrend != null;
+    const hasRestCheck = result.fatigue !== undefined;
+    const proofCount = [hasExactLine, hasRotationData].filter(Boolean).length;
+
+    if(!hasExactLine){
+      result.flags.push('WNBA PROOF GATE: L5 exact-line data required — season average alone is not sufficient.');
+      result.adjustments.push({field:'rawProb', delta:-0.08, reason:'WNBA: no exact-line L5 data'});
+    }
+    if(!hasRotationData && gameLogs.length < 3){
+      result.flags.push('WNBA PROOF GATE: Rotation/minutes context unavailable — fewer than 3 game logs. Flag as CONDITIONAL.');
+      result.adjustments.push({field:'rawProb', delta:-0.06, reason:'WNBA: insufficient game log data'});
+    }
+
+    // ── Final confidence ──
+    const riskCount = result.flags.filter(f=>f.includes('⚠')||f.includes('RISK')||f.includes('GATE')).length;
+    if(riskCount === 0 && !result.rotationRisk && !result.fatigue){
+      result.confidence = 'high';
+      result.confidenceIcon = '✅';
+    } else if(riskCount >= 3 || result.rotationRisk){
+      result.confidence = 'low';
+      result.confidenceIcon = '❌';
+    }
+
+    // Build analyst note
+    const notes = [];
+    if(result.minutesTrend) notes.push(`${result.minutesTrend} avg min`);
+    if(result.fatigue) notes.push('fatigue');
+    if(result.rotationRisk) notes.push('rotation risk');
+    result.analystNote = notes.join(' · ') || 'WNBA context checked';
+
+  } catch(e){
+    result.analystNote = 'WNBA analyst unavailable';
+    console.warn('runWNBAPropAnalyst:', e.message);
+  }
+
+  _wnbaAnalystCache[cacheKey] = result;
   return result;
 }
 
@@ -8826,12 +9654,21 @@ async function wowValidate(p, wowScore){
   if(p.sport === 'MLB'){
     mlbAnalyst = await runMLBPropAnalyst(p);
     if(mlbAnalyst){
-      // Store on prop for display
       p._mlbAnalyst = mlbAnalyst;
-      // Apply analyst flags to failures
       mlbAnalyst.flags.forEach(f=>failures.push(f));
-      // Show analyst insights
       if(mlbAnalyst.analystNote) insights.push(`${mlbAnalyst.confidenceIcon} ${mlbAnalyst.analystNote}`);
+    }
+  }
+
+  // ── WNBA ANALYST ──
+  let wnbaAnalyst = null;
+  if(p.sport === 'WNBA'){
+    wnbaAnalyst = await runWNBAPropAnalyst(p);
+    if(wnbaAnalyst){
+      p._wnbaAnalyst = wnbaAnalyst;
+      // Analyst flags are informational — do not add to failures directly (modifiers only)
+      wnbaAnalyst.flags.filter(f=>f.includes('GATE')||f.includes('RISK')||f.includes('⚠')).forEach(f=>failures.push(f));
+      if(wnbaAnalyst.analystNote) insights.push(`${wnbaAnalyst.confidenceIcon} WNBA: ${wnbaAnalyst.analystNote}`);
     }
   }
 
@@ -8971,6 +9808,15 @@ async function wowValidate(p, wowScore){
     rawProb = Math.min(0.92, Math.max(0.32, rawProb));
   }
 
+  // ── WNBA analyst adjustments ──
+  if(wnbaAnalyst?.adjustments?.length){
+    for(const adj of wnbaAnalyst.adjustments){
+      rawProb += adj.delta;
+      insights.push(`${adj.delta > 0 ? '+' : ''}${(adj.delta*100).toFixed(0)}% WNBA: ${adj.reason}`);
+    }
+    rawProb = Math.min(0.92, Math.max(0.32, rawProb));
+  }
+
   // ── FIX #7: VOLATILITY ADJUSTMENT ──
   // 0.5 props are near-binary — one bad game wipes them out
   // Require higher confidence and apply ceiling to prevent overconfidence
@@ -9069,24 +9915,39 @@ async function wowValidate(p, wowScore){
   // ── FINAL TIER DECISION ──
   let tier='watch', label='WATCH';
 
+  // MLB proof gate overrides — apply before tier assignment
+  const mlbProofFail = p.sport==='MLB' && mlbAnalyst?.proofGateFail;
+  const mlbProofWarn = p.sport==='MLB' && mlbAnalyst?.proofGateWarn && !mlbProofFail;
+
   if(badPrice){
     tier='reject'; label='REJECT — PrizePicks line significantly worse than market';
+  } else if(mlbProofFail){
+    tier='conditional'; label='CONDITIONAL — MLB proof gate fail: missing critical matchup data';
+    failures.push('mlb-proof-gate-fail');
   } else if(rawProb < 0.53){
     tier='watch'; label='WATCH — Below all break-evens';
-  } else if(rawProb >= 0.63 && dq==='GREEN' && !hasPowerBan && !medianFailed && !badPrice){
+  } else if(rawProb >= 0.63 && dq==='GREEN' && !hasPowerBan && !medianFailed && !badPrice && !mlbProofWarn){
     tier='tier1'; label='TIER 1 — Power + Flex Qualified';
   } else if(rawProb >= 0.57 && dq!=='RED' && !hasPowerBan){
-    tier='tier2'; label='MODEL QUALIFIED — Power 2/3 + Flex';
+    tier = mlbProofWarn ? 'tier2' : 'tier2';
+    label = mlbProofWarn
+      ? 'MODEL QUALIFIED — Flex Only (MLB partial matchup data)'
+      : 'MODEL QUALIFIED — Power 2/3 + Flex';
   } else if(hasPowerBan && rawProb >= 0.57){
     tier='tier2'; label='MODEL QUALIFIED — Flex/Research Only';
     failures.push('power-play-banned-fragile-leg');
   } else if(rawProb >= 0.55){
-    // +EV on Flex 5/6 (break-evens 53.21% / 52.94%) but below Power threshold
     tier='flex'; label='FLEX QUALIFIED — Flex 5/6 Only (not Power)';
   } else if(rawProb >= 0.53){
     tier='conditional'; label='CONDITIONAL — Verify Before Playing';
   } else {
     tier='watch'; label='WATCH';
+  }
+
+  // MLB Tier 1 extra gate: proof warn blocks Power even if prob qualifies
+  if(tier==='tier1' && mlbProofWarn){
+    tier='tier2'; label='MODEL QUALIFIED — Flex Only (MLB environment incomplete)';
+    failures.push('mlb-environment-incomplete');
   }
 
   return {
