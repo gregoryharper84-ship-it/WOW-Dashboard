@@ -6884,6 +6884,15 @@ _CS2_COLS = {
 def _cs2(player_name, hltv_id, prop, direction, line):
     r = {"source": "hltv.org", "games": [], "complete": False,
          "rows": 0, "gap": ""}
+    # HLTV is fully behind Cloudflare's active JS challenge as of 2026-05.
+    # Verified dead against this endpoint: cloudscraper (6 configs), curl-cffi
+    # (5 impersonations), and 6 community proxy APIs. Only a real headless
+    # browser (Playwright/Chromium) can bypass it. CS2 is intentionally punted
+    # to manual entry, matching Pikkit DES/Proj. The parser below is kept so a
+    # future bypass (working proxy, Playwright sidecar) can plug straight in.
+    r["gap"] = "CS2/HLTV requires manual entry — Cloudflare blocks automated fetch"
+    return r
+    # --- unreachable: preserved for future bypass ---
     if not _CS_OK:
         r["gap"] = "cloudscraper not installed — add to requirements.txt"; return r
     slug = player_name.lower().replace(" ","-")
