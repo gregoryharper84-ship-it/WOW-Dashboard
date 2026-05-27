@@ -7871,6 +7871,559 @@ def cm_latest_run():
     return cm_get_board(row["board_id"])
 
 
+# ─────────────────────────────────────────────────────────────────────
+# LLP team-betting analysis pipeline
+# ─────────────────────────────────────────────────────────────────────
+# v1: market-driven model that fetches lines from The Odds API, computes
+# no-vig implied probabilities, applies small structural adjustments to
+# produce a model probability, then derives edge / Kelly / confidence /
+# decision. Reuses opening_lines table for CLV tracking.
+
+_LLP_SPORT_MAP = {
+    "nba":   "basketball_nba",   "wnba":  "basketball_wnba",
+    "ncaab": "basketball_ncaab",
+    "mlb":   "baseball_mlb",
+    "nfl":   "americanfootball_nfl",
+    "ncaaf": "americanfootball_ncaaf",
+    "nhl":   "icehockey_nhl",
+}
+
+# Simple in-process cache: sport_key -> (fetched_at, [events])
+_LLP_ODDS_CACHE = {}
+_LLP_CACHE_TTL_SEC = 120
+
+
+def _llp_american_to_decimal(american):
+    try:
+        a = float(american)
+    except (TypeError, ValueError):
+        return None
+    if a == 0: return None
+    return 1.0 + (a/100.0 if a > 0 else 100.0/abs(a))
+
+
+def _llp_american_to_prob(american):
+    try:
+        a = float(american)
+    except (TypeError, ValueError):
+        return None
+    if a == 0: return None
+    return (100.0/(a+100.0)) if a > 0 else (abs(a)/(abs(a)+100.0))
+
+
+def _llp_no_vig_two_way(p_a, p_b):
+    """Devig a two-way market. Returns (p_a_novig, p_b_novig) or (None, None)."""
+    if p_a is None or p_b is None: return (None, None)
+    tot = p_a + p_b
+    if tot <= 0: return (None, None)
+    return (p_a/tot, p_b/tot)
+
+
+def _llp_kelly(model_p, decimal_odds, fraction=0.25):
+    """Quarter-Kelly by default. Returns stake as fraction of bankroll, clamped [0,1]."""
+    if model_p is None or decimal_odds is None or decimal_odds <= 1.0:
+        return 0.0
+    b = decimal_odds - 1.0
+    q = 1.0 - model_p
+    full = (b*model_p - q) / b
+    if full <= 0: return 0.0
+    return max(0.0, min(1.0, full * fraction))
+
+
+def _llp_confidence_tier(edge):
+    if edge is None: return "UNKNOWN"
+    a = abs(edge)
+    if a >= 0.045: return "STRONG"
+    if a >= 0.025: return "MEDIUM"
+    if a >= 0.012: return "SMALL"
+    return "PASS"
+
+
+def _llp_decision(edge, model_p, novig_p, upset_score, trap_flag, failures):
+    """Final decision: BET / SMALL BET / WATCH / PASS / TRAP."""
+    if trap_flag: return "TRAP"
+    if edge is None or model_p is None: return "WATCH"
+    tier = _llp_confidence_tier(edge)
+    if edge < 0: return "PASS"
+    if len(failures) >= 3 and tier in ("MEDIUM","SMALL"): return "WATCH"
+    if tier == "STRONG": return "BET"
+    if tier == "MEDIUM": return "SMALL BET"
+    if tier == "SMALL":  return "WATCH"
+    return "PASS"
+
+
+def _llp_fetch_odds(sport_key, regions="us", markets="h2h,spreads,totals"):
+    """Fetch current odds from The Odds API with TTL cache. Returns list of events or None."""
+    import requests as _req
+    now = datetime.now().timestamp()
+    hit = _LLP_ODDS_CACHE.get(sport_key)
+    if hit and (now - hit[0]) < _LLP_CACHE_TTL_SEC:
+        return hit[1]
+    key = os.environ.get("ODDS_API_KEY", "")
+    if not key: return None
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
+    try:
+        r = _req.get(url, params={"apiKey": key, "regions": regions,
+                                  "markets": markets, "oddsFormat": "american"},
+                     timeout=10)
+        if r.status_code != 200: return None
+        events = r.json()
+        _LLP_ODDS_CACHE[sport_key] = (now, events)
+        return events
+    except Exception:
+        return None
+
+
+def _llp_norm_team(name):
+    if not name: return ""
+    return "".join(c for c in name.lower() if c.isalnum())
+
+
+def _llp_match_event(events, away, home):
+    """Best-effort fuzzy match of an event by team names."""
+    if not events: return None
+    a, h = _llp_norm_team(away), _llp_norm_team(home)
+    for e in events:
+        ea = _llp_norm_team(e.get("away_team",""))
+        eh = _llp_norm_team(e.get("home_team",""))
+        if (a in ea or ea in a) and (h in eh or eh in h):
+            return e
+        if (a in eh or eh in a) and (h in ea or ea in h):
+            return e
+    return None
+
+
+def _llp_extract_market(event, market_key, side, line=None):
+    """
+    From an Odds API event, find the user's selection across all bookmakers.
+    Returns dict with chosen book, american_odds, line (point), and a
+    list of all (book, american) for the same outcome (used for devig).
+    """
+    if not event: return None
+    side_norm = (side or "").strip()
+    side_lc = side_norm.lower()
+    bms = event.get("bookmakers") or []
+
+    # Collect outcomes for the requested market across books
+    all_outcomes = []  # list of (book_key, outcome_dict, market_pair)
+    for bm in bms:
+        for mk in (bm.get("markets") or []):
+            if mk.get("key") != market_key: continue
+            outs = mk.get("outcomes") or []
+            for o in outs:
+                all_outcomes.append((bm.get("key",""), o, outs))
+    if not all_outcomes: return None
+
+    def _is_match(o):
+        # Blank side must never match — caller is required to specify a side.
+        if not side_lc: return False
+        name = (o.get("name") or "").lower()
+        if market_key == "totals":
+            return name == side_lc  # exact "over" / "under"
+        if market_key in ("h2h","spreads"):
+            n_norm = _llp_norm_team(name); s_norm = _llp_norm_team(side_norm)
+            if not n_norm or not s_norm: return False
+            return n_norm == s_norm or n_norm in s_norm or s_norm in n_norm
+        return False
+
+    chosen = None
+    pair_for_chosen = None
+    for book, o, pair in all_outcomes:
+        if _is_match(o):
+            chosen = {"book": book, "american": o.get("price"),
+                      "point": o.get("point"), "name": o.get("name")}
+            pair_for_chosen = pair
+            break
+    if not chosen:
+        return None
+
+    # Build devig pair from the same bookmaker/market
+    opp_p = None; chosen_p = _llp_american_to_prob(chosen["american"])
+    if pair_for_chosen and len(pair_for_chosen) >= 2:
+        for o in pair_for_chosen:
+            if o is chosen.get("_o"): continue
+            n = (o.get("name") or "").lower()
+            if n != (chosen["name"] or "").lower():
+                opp_p = _llp_american_to_prob(o.get("price"))
+                break
+    novig_chosen, _ = _llp_no_vig_two_way(chosen_p, opp_p)
+    chosen["implied_prob"] = chosen_p
+    chosen["novig_prob"]   = novig_chosen
+    return chosen
+
+
+def _llp_opening_line_for_game(away, home, market, side, board_date, current_point):
+    """
+    Reuse the opening_lines table for team markets by encoding the team market
+    as a synthetic (player, prop, side) key. First write per date wins.
+    The side token must differ between the two sides of a market, otherwise
+    h2h/spreads writes collide and corrupt CLV.
+    """
+    import psycopg2 as _pg, psycopg2.extras as _pgx
+    synth_player = f"{away}@{home}".strip()
+    synth_prop   = f"team:{market}".lower()
+    s_lc = (side or "").lower().strip()
+    if market == "totals":
+        synth_side = "over" if s_lc in ("over","yes") else "under"
+    else:
+        # h2h / spreads: key by normalized team selection so the two sides
+        # of the same game don't share a row.
+        tok = _llp_norm_team(side)[:60] or "unknown"
+        synth_side = f"team_{tok}"
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url or current_point is None:
+        return {"opening_line": None, "movement": None, "stored": False}
+    try:
+        conn = _pg.connect(db_url)
+        try:
+            _ensure_lines_schema(conn)
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO opening_lines
+                      (player, player_lower, prop, side, line_date, opening_line, sport, book)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (player_lower, prop, side, line_date) DO NOTHING
+                    RETURNING opening_line
+                """, (synth_player, synth_player.lower(), synth_prop, synth_side,
+                      board_date, float(current_point), None, None))
+                ins = cur.fetchone()
+                if ins:
+                    conn.commit()
+                    op = float(ins["opening_line"])
+                    return {"opening_line": op, "movement": 0.0, "stored": True}
+                cur.execute("""
+                    SELECT opening_line FROM opening_lines
+                    WHERE player_lower=%s AND prop=%s AND side=%s AND line_date=%s
+                """, (synth_player.lower(), synth_prop, synth_side, board_date))
+                row = cur.fetchone()
+                if row and row.get("opening_line") is not None:
+                    op = float(row["opening_line"])
+                    return {"opening_line": op,
+                            "movement": float(current_point) - op,
+                            "stored": False}
+                return {"opening_line": None, "movement": None, "stored": False}
+        finally:
+            conn.close()
+    except Exception:
+        return {"opening_line": None, "movement": None, "stored": False}
+
+
+def _llp_model_prob(sport, market, side, novig_p, ctx):
+    """
+    v1 model: anchor on no-vig probability, apply structural adjustments.
+    ctx supplies optional context (home_team match, line_movement, etc.).
+    Returns (model_p, adjustments_dict).
+    """
+    if novig_p is None: return (None, {})
+    adj = {}
+    p = float(novig_p)
+
+    # Home advantage on ML (h2h) — small bump for the home side
+    if market == "h2h" and ctx.get("is_home_side"):
+        bump = {"nba":0.020, "wnba":0.018, "mlb":0.015, "nfl":0.022,
+                "nhl":0.018, "ncaab":0.024, "ncaaf":0.025}.get(sport, 0.015)
+        p += bump; adj["home_advantage"] = bump
+
+    # Sharp line movement toward our side → small upward nudge
+    mv = ctx.get("line_movement_pts")
+    if mv is not None and ctx.get("movement_toward_us"):
+        nudge = min(0.015, abs(mv) * 0.003)
+        p += nudge; adj["sharp_move_with_us"] = nudge
+    elif mv is not None and ctx.get("movement_against_us"):
+        nudge = min(0.020, abs(mv) * 0.004)
+        p -= nudge; adj["sharp_move_against_us"] = -nudge
+
+    # Rest/B2B disadvantage for NBA totals/sides — stub-aware
+    if sport == "nba" and ctx.get("b2b_disadvantage"):
+        p -= 0.015; adj["b2b_disadvantage"] = -0.015
+
+    # MLB bullpen reliability for totals (stub when unknown)
+    if sport == "mlb" and market == "totals":
+        rel = ctx.get("bullpen_reliability")  # 0..1 or None
+        if rel is not None:
+            # weak bullpen → more runs → bias OVER up / UNDER down
+            delta = (rel - 0.5) * 0.04  # ±0.02
+            if side.lower() == "over": p -= delta
+            else:                      p += delta
+            adj["bullpen_reliability"] = round(-delta if side.lower()=="over" else delta, 4)
+
+    # MLB weather/park (stub when unknown — applied only if ctx provided)
+    if sport == "mlb" and market == "totals" and ctx.get("park_run_factor"):
+        prf = ctx["park_run_factor"]  # >1 hitter friendly, <1 pitcher friendly
+        delta = (prf - 1.0) * 0.03
+        if side.lower() == "over": p += delta
+        else:                      p -= delta
+        adj["park_run_factor"] = round(delta if side.lower()=="over" else -delta, 4)
+
+    p = max(0.01, min(0.99, p))
+    return (p, adj)
+
+
+def _llp_upset_score(market, side, novig_p, model_p, is_home_side):
+    """0..100 upset score; >55 = upset candidate."""
+    if market != "h2h" or novig_p is None or model_p is None: return 0
+    # Underdog (novig < 0.5) with positive edge
+    if novig_p >= 0.50: return 0
+    edge = model_p - novig_p
+    if edge <= 0: return 0
+    base = (0.50 - novig_p) * 200       # 0..100 as dog deepens
+    edge_bonus = min(40, edge * 1000)   # +40 max for big edge
+    return int(min(100, base * 0.6 + edge_bonus))
+
+
+def _llp_favorite_trap(market, side, novig_p, model_p, line_movement_pts, against_us):
+    """Heavy favorite (≥-200, novig ≥0.67), negative edge, line moving against us."""
+    if market != "h2h" or novig_p is None or model_p is None: return False
+    if novig_p < 0.67: return False
+    if (model_p - novig_p) > -0.01: return False
+    if line_movement_pts is None: return False
+    return bool(against_us and abs(line_movement_pts) >= 0.5)
+
+
+def _llp_failure_paths(sport, market, side, ctx):
+    """List of risk callouts when context is missing or negative."""
+    fp = []
+    if ctx.get("starters_unconfirmed"):
+        fp.append("Starting lineup / starter not confirmed")
+    if ctx.get("injury_risk"):
+        fp.append(f"Key injury/rest concern: {ctx['injury_risk']}")
+    if sport == "mlb" and market == "totals":
+        if ctx.get("bullpen_reliability") is None:
+            fp.append("Bullpen reliability data unavailable")
+        if not ctx.get("park_run_factor") and not ctx.get("weather_checked"):
+            fp.append("Weather/park factors unverified")
+    if ctx.get("line_movement_pts") is None:
+        fp.append("Opening line not yet captured (no movement signal)")
+    if ctx.get("clv_status") == "missing":
+        fp.append("CLV reference unavailable")
+    return fp
+
+
+def _llp_analyze_one(game, default_sport, board_date):
+    """Analyze a single game/market and return the per-game record."""
+    sport_in = (game.get("sport") or default_sport or "").lower().strip()
+    sport = sport_in if sport_in in _LLP_SPORT_MAP else sport_in
+    sport_key = _LLP_SPORT_MAP.get(sport)
+    away = (game.get("away") or game.get("away_team") or "").strip()
+    home = (game.get("home") or game.get("home_team") or "").strip()
+    market_in = (game.get("market") or "h2h").lower().strip()
+    market = {"moneyline":"h2h","ml":"h2h","h2h":"h2h",
+              "spread":"spreads","spreads":"spreads",
+              "total":"totals","totals":"totals","ou":"totals"}.get(market_in, market_in)
+    side = (game.get("side") or "").strip()
+    requested_line = game.get("line")
+
+    if not side:
+        return {
+            "sport": sport, "away_team": away, "home_team": home,
+            "market": market, "side": side,
+            "book": None, "opening_line": None, "current_line": None,
+            "implied_probability": None, "no_vig_implied_probability": None,
+            "model_win_probability": None, "edge": None,
+            "kelly_stake": None, "confidence_tier": "UNKNOWN",
+            "starter_lineup_confirmation": "unverified",
+            "injury_rest_context": "unverified",
+            "bullpen_reliability": None, "weather_park": None,
+            "market_movement_clv_status": "unknown",
+            "upset_score": 0, "favorite_trap_flag": False,
+            "prop_correlation_support": None,
+            "failure_paths": ["'side' is required for team-betting games"],
+            "model_adjustments": {},
+            "final_decision": "PASS",
+            "notes": ["missing 'side' field"],
+        }
+
+    record = {
+        "sport": sport, "away_team": away, "home_team": home,
+        "market": market, "side": side,
+        "book": None, "opening_line": None, "current_line": None,
+        "implied_probability": None, "no_vig_implied_probability": None,
+        "model_win_probability": None, "edge": None,
+        "kelly_stake": None, "confidence_tier": "UNKNOWN",
+        "starter_lineup_confirmation": "unverified",
+        "injury_rest_context": "unverified",
+        "bullpen_reliability": None,
+        "weather_park": None,
+        "market_movement_clv_status": "unknown",
+        "upset_score": 0, "favorite_trap_flag": False,
+        "prop_correlation_support": None,
+        "failure_paths": [],
+        "model_adjustments": {},
+        "final_decision": "PASS",
+        "notes": [],
+    }
+
+    if not away or not home:
+        record["notes"].append("missing away/home team")
+        record["failure_paths"] = ["away_team and home_team are required"]
+        record["final_decision"] = "PASS"
+        return record
+    if not sport_key:
+        record["notes"].append(f"unsupported sport: {sport!r}")
+        record["failure_paths"] = [f"Sport {sport!r} not mapped to Odds API"]
+        return record
+
+    events = _llp_fetch_odds(sport_key)
+    if not events:
+        record["notes"].append("odds-api unavailable or no events")
+        record["failure_paths"] = ["Odds API returned no data for this sport"]
+        return record
+
+    event = _llp_match_event(events, away, home)
+    if not event:
+        record["notes"].append("event not found in odds feed")
+        record["failure_paths"] = ["Game not found in current odds feed (check team names / date)"]
+        return record
+
+    sel = _llp_extract_market(event, market, side)
+    if not sel:
+        record["notes"].append(f"market/side not found: {market}/{side}")
+        record["failure_paths"] = [f"Market {market} side {side!r} not offered by tracked books"]
+        return record
+
+    record["book"]         = sel.get("book")
+    record["current_line"] = sel.get("point") if sel.get("point") is not None else sel.get("american")
+    record["implied_probability"]        = round(sel["implied_prob"], 4) if sel.get("implied_prob") is not None else None
+    record["no_vig_implied_probability"] = round(sel["novig_prob"], 4)   if sel.get("novig_prob")   is not None else None
+
+    # Opening-line / movement (only meaningful when there is a numeric point)
+    op_info = {"opening_line": None, "movement": None, "stored": False}
+    if isinstance(sel.get("point"), (int, float)):
+        op_info = _llp_opening_line_for_game(away, home, market, side, board_date, sel["point"])
+    record["opening_line"] = op_info.get("opening_line")
+    mv = op_info.get("movement")
+    if mv is None:
+        record["market_movement_clv_status"] = "no-opening-line"
+    elif op_info.get("stored"):
+        record["market_movement_clv_status"] = "opening-line-captured"
+    else:
+        record["market_movement_clv_status"] = f"moved {mv:+.2f} pts"
+
+    # Build context for the model
+    is_home_side = market == "h2h" and (_llp_norm_team(side) and
+                                        _llp_norm_team(side) in _llp_norm_team(home))
+    movement_toward_us = False; movement_against_us = False
+    if mv is not None and abs(mv) > 0.01:
+        if market == "totals":
+            # mv>0 = total raised → toward OVER; mv<0 → toward UNDER
+            if side.lower() == "over"  and mv > 0: movement_toward_us = True
+            if side.lower() == "under" and mv < 0: movement_toward_us = True
+            if side.lower() == "over"  and mv < 0: movement_against_us = True
+            if side.lower() == "under" and mv > 0: movement_against_us = True
+        elif market == "spreads":
+            # Direction depends on whether we took the favorite (point<0)
+            # or the dog (point>0). For a favorite, the line moving more
+            # negative (mv<0) means the market agrees with us → toward us.
+            # For a dog, mv>0 (line getting more positive) → toward us.
+            sp = sel.get("point")
+            if isinstance(sp, (int, float)):
+                if sp < 0:   # we took the favorite
+                    if mv < 0: movement_toward_us = True
+                    else:      movement_against_us = True
+                elif sp > 0: # we took the dog
+                    if mv > 0: movement_toward_us = True
+                    else:      movement_against_us = True
+                # sp == 0 (pickem) → no directional signal
+
+    ctx = {
+        "is_home_side": is_home_side,
+        "line_movement_pts": mv,
+        "movement_toward_us": movement_toward_us,
+        "movement_against_us": movement_against_us,
+        "b2b_disadvantage": bool(game.get("b2b_disadvantage")),
+        "bullpen_reliability": game.get("bullpen_reliability"),
+        "park_run_factor": game.get("park_run_factor"),
+        "weather_checked": bool(game.get("weather_checked")),
+        "starters_unconfirmed": not bool(game.get("starters_confirmed")),
+        "injury_risk": game.get("injury_risk"),
+        "clv_status": "missing" if mv is None else "tracked",
+    }
+
+    model_p, adj = _llp_model_prob(sport, market, side, sel.get("novig_prob"), ctx)
+    record["model_win_probability"] = round(model_p, 4) if model_p is not None else None
+    record["model_adjustments"]     = adj
+
+    if model_p is not None and sel.get("novig_prob") is not None:
+        edge = model_p - sel["novig_prob"]
+        record["edge"] = round(edge, 4)
+        dec_odds = _llp_american_to_decimal(sel.get("american"))
+        record["kelly_stake"] = round(_llp_kelly(model_p, dec_odds), 4)
+        record["confidence_tier"] = _llp_confidence_tier(edge)
+    else:
+        edge = None
+
+    # Stub fields with provided context, fall back to "unverified" / None
+    record["starter_lineup_confirmation"] = "confirmed" if game.get("starters_confirmed") else "unverified"
+    record["injury_rest_context"] = game.get("injury_risk") or "no flags reported"
+    if sport == "mlb":
+        record["bullpen_reliability"] = game.get("bullpen_reliability")
+        wp = []
+        if game.get("park_run_factor") is not None:
+            wp.append(f"park_run_factor={game['park_run_factor']}")
+        if game.get("weather"):
+            wp.append(f"weather={game['weather']}")
+        record["weather_park"] = ", ".join(wp) if wp else "unverified"
+    record["prop_correlation_support"] = game.get("prop_correlation_support")
+
+    record["upset_score"] = _llp_upset_score(market, side, sel.get("novig_prob"),
+                                             model_p, is_home_side)
+    record["favorite_trap_flag"] = _llp_favorite_trap(market, side,
+                                                     sel.get("novig_prob"), model_p,
+                                                     mv, movement_against_us)
+
+    record["failure_paths"] = _llp_failure_paths(sport, market, side, ctx)
+    record["final_decision"] = _llp_decision(edge, model_p, sel.get("novig_prob"),
+                                             record["upset_score"],
+                                             record["favorite_trap_flag"],
+                                             record["failure_paths"])
+
+    # Honor a user-requested line as a sanity flag
+    if requested_line is not None and isinstance(sel.get("point"), (int, float)):
+        try:
+            if abs(float(requested_line) - float(sel["point"])) > 0.01:
+                record["notes"].append(
+                    f"line drift: requested {requested_line} vs current {sel['point']}")
+        except (TypeError, ValueError):
+            pass
+
+    return record
+
+
+def _llp_team_analysis(games, default_sport, board_date):
+    """Analyze a list of games and aggregate into the response shape."""
+    analyses = []
+    source_status = {"odds_api": "ok" if os.environ.get("ODDS_API_KEY") else "missing",
+                     "opening_lines_db": "ok" if os.environ.get("DATABASE_URL") else "missing"}
+    failures = 0; matches = 0
+    for g in (games or []):
+        rec = _llp_analyze_one(g, default_sport, board_date)
+        analyses.append(rec)
+        if rec.get("current_line") is not None: matches += 1
+        else: failures += 1
+    if failures and not matches:
+        source_status["odds_api"] = "no matches in feed"
+
+    def _rank(r):
+        edge = r.get("edge") or -1
+        return (edge, r.get("model_win_probability") or 0)
+
+    winners_ranked = sorted(
+        [r for r in analyses if r["final_decision"] in ("BET","SMALL BET")],
+        key=_rank, reverse=True)
+    upset_candidates = [r for r in analyses if r["upset_score"] >= 55]
+    best_bets        = [r for r in analyses if r["final_decision"] == "BET"]
+    pass_traps       = [r for r in analyses
+                        if r["final_decision"] in ("PASS","TRAP","WATCH")]
+    return {
+        "team_analysis":     analyses,
+        "winners_ranked":    winners_ranked,
+        "upset_candidates":  upset_candidates,
+        "best_bets":         best_bets,
+        "pass_traps":        pass_traps,
+        "source_access_status": source_status,
+    }
+
+
 # ── Endpoint: POST /run-connected-model (full orchestrator) ──────────
 @app.route("/run-connected-model", methods=["POST"])
 @require_api_key
@@ -7917,20 +8470,41 @@ def cm_run_connected_model():
         board_id = _cm_insert_board(conn, source, board_type, board_date, props, meta)
     execution_notes.append(f"board saved: {board_id}")
 
-    # Team-betting boards don't go through the per-prop WOW/Claude/arbiter pipeline.
-    # Save the board and return; team_analysis pipeline is a separate future module.
+    # Team-betting boards: run the LLP team-side analysis pipeline.
+    # Per-prop WOW/Claude/arbiter is for player props only and is skipped here.
     if is_team_board:
+        default_sport = (meta.get("sport") or
+                         (games[0].get("sport") if games and games[0].get("sport") else "")
+                         ).lower().strip()
         execution_notes.append(
-            f"team_betting board accepted with {len(games)} game(s); "
-            "per-prop pipeline skipped (team_analysis not yet implemented)"
+            f"team_betting board: running LLP team analysis for {len(games)} game(s)"
+        )
+        try:
+            agg = _llp_team_analysis(games, default_sport, board_date)
+        except Exception as e:
+            app.logger.exception("LLP team analysis failed")
+            return jsonify({"ok": False, "stage": "llp_team_analysis",
+                            "board_id": board_id, "error": str(e),
+                            "execution_notes": execution_notes}), 500
+
+        execution_notes.append(
+            f"LLP team analysis done: "
+            f"bets={len(agg['best_bets'])}, "
+            f"winners_ranked={len(agg['winners_ranked'])}, "
+            f"upsets={len(agg['upset_candidates'])}, "
+            f"pass_traps={len(agg['pass_traps'])}"
         )
         return jsonify({
-            "ok": True, "status": "received", "board_id": board_id,
+            "ok": True, "status": "completed", "board_id": board_id,
             "board_type": board_type,
             "games_received": len(games),
-            "source_access_status": {"team_betting": "saved; analysis pending"},
-            "team_analysis": None,
-            "execution_notes": execution_notes,
+            "source_access_status": agg["source_access_status"],
+            "team_analysis":       agg["team_analysis"],
+            "winners_ranked":      agg["winners_ranked"],
+            "upset_candidates":    agg["upset_candidates"],
+            "best_bets":           agg["best_bets"],
+            "pass_traps":          agg["pass_traps"],
+            "execution_notes":     execution_notes,
         })
 
     # 2. wow-score (via internal call to keep logic in one place)
