@@ -8524,8 +8524,15 @@ def _llp_plain_english_reason(rec):
     mp   = rec.get("model_win_probability")
     ip   = rec.get("no_vig_implied_probability") or rec.get("implied_probability")
     mkt_label = {"h2h": "moneyline", "spreads": "spread", "totals": "total"}.get(mkt, mkt)
-    line_str = f" {line:+g}" if isinstance(line, (int, float)) and mkt != "h2h" else (
-               f" {line:g}" if isinstance(line, (int, float)) else "")
+    # For h2h the `current_line` field actually holds the American odds price
+    # (e.g. -145, +136) — render with explicit sign and label as odds.
+    # For spreads/totals it's the point line; signed for spreads, plain for totals.
+    if isinstance(line, (int, float)):
+        if mkt == "h2h":      line_str = f" ({line:+d} odds)" if float(line).is_integer() else f" ({line:+g} odds)"
+        elif mkt == "spreads": line_str = f" {line:+g}"
+        else:                  line_str = f" {line:g}"
+    else:
+        line_str = ""
     pct = (lambda x: f"{x*100:.1f}%") if isinstance(mp, (int, float)) else (lambda x: "n/a")
 
     if decision == "BET":
@@ -8570,10 +8577,13 @@ def _llp_clean_item(rec):
         team_field = f"{away} @ {home}".strip(" @")
         opponent_field = ""
     else:
-        sl = side.lower()
-        if sl and sl in home.lower():
+        # Use normalized team matching (strip "Lakers -4.5", abbreviations, etc.)
+        side_n = _llp_norm_team(side)
+        home_n = _llp_norm_team(home)
+        away_n = _llp_norm_team(away)
+        if side_n and home_n and (side_n in home_n or home_n in side_n):
             team_field, opponent_field = home, away
-        elif sl and sl in away.lower():
+        elif side_n and away_n and (side_n in away_n or away_n in side_n):
             team_field, opponent_field = away, home
         else:
             team_field, opponent_field = side, (home if side != home else away)
@@ -8659,12 +8669,28 @@ def _llp_team_analysis(games, default_sport, board_date):
         },
     }
 
+    # Clean (ChatGPT-friendly) projections.
+    clean_winners = [_llp_clean_item(r) for r in winners_ranked]
+    clean_upsets  = [_llp_clean_item(r) for r in upset_candidates]
+    clean_bets    = [_llp_clean_item(r) for r in best_bets]
+    clean_pass    = [_llp_clean_item(r) for r in pass_traps]
+
+    def _edges_for(market_key):
+        items = [r for r in analyses
+                 if r.get("market") == market_key
+                 and isinstance(r.get("edge"), (int, float))]
+        items.sort(key=lambda r: r.get("edge") or 0, reverse=True)
+        return [_llp_clean_item(r) for r in items]
+
     return {
         "team_analysis":     analyses,
-        "winners_ranked":    winners_ranked,
-        "upset_candidates":  upset_candidates,
-        "best_bets":         best_bets,
-        "pass_traps":        pass_traps,
+        "winners_ranked":    clean_winners,
+        "upset_candidates":  clean_upsets,
+        "best_bets":         clean_bets,
+        "pass_traps":        clean_pass,
+        "totals_edges":      _edges_for("totals"),
+        "spread_edges":      _edges_for("spreads"),
+        "moneyline_edges":   _edges_for("h2h"),
         "slate_summary":     slate_summary,
         "source_access_status": source_status,
     }
@@ -8763,6 +8789,9 @@ def cm_run_connected_model():
             "upset_candidates":    agg["upset_candidates"],
             "best_bets":           agg["best_bets"],
             "pass_traps":          agg["pass_traps"],
+            "totals_edges":        agg["totals_edges"],
+            "spread_edges":        agg["spread_edges"],
+            "moneyline_edges":     agg["moneyline_edges"],
             "execution_notes":     execution_notes,
         })
 
