@@ -8513,6 +8513,94 @@ def _llp_analyze_one(game, default_sport, board_date):
     return record
 
 
+def _llp_plain_english_reason(rec):
+    """Build a one-sentence human-readable rationale for a record."""
+    decision = rec.get("final_decision") or "PASS"
+    edge = rec.get("edge")
+    mkt  = rec.get("market") or "h2h"
+    side = rec.get("side") or "this side"
+    line = rec.get("current_line")
+    book = rec.get("book") or "consensus"
+    mp   = rec.get("model_win_probability")
+    ip   = rec.get("no_vig_implied_probability") or rec.get("implied_probability")
+    mkt_label = {"h2h": "moneyline", "spreads": "spread", "totals": "total"}.get(mkt, mkt)
+    line_str = f" {line:+g}" if isinstance(line, (int, float)) and mkt != "h2h" else (
+               f" {line:g}" if isinstance(line, (int, float)) else "")
+    pct = (lambda x: f"{x*100:.1f}%") if isinstance(mp, (int, float)) else (lambda x: "n/a")
+
+    if decision == "BET":
+        head = f"Best bet: {side}{line_str} ({mkt_label}) at {book}."
+    elif decision == "SMALL BET":
+        head = f"Small bet: {side}{line_str} ({mkt_label}) at {book}."
+    elif decision == "TRAP":
+        head = f"Trap alert: avoid {side}{line_str} ({mkt_label})."
+    elif decision == "WATCH":
+        head = f"Watch only: {side}{line_str} ({mkt_label}) — wait for confirmation."
+    else:
+        head = f"Pass: {side}{line_str} ({mkt_label})."
+
+    body_parts = []
+    if isinstance(mp, (int, float)) and isinstance(ip, (int, float)):
+        body_parts.append(f"model {pct(mp)} vs market {pct(ip)}")
+    if isinstance(edge, (int, float)):
+        body_parts.append(f"edge {edge*100:+.2f}%")
+    if rec.get("clv_beat") is True:
+        body_parts.append("beating CLV")
+    elif rec.get("clv_beat") is False:
+        body_parts.append("losing CLV")
+    fp = rec.get("failure_paths") or []
+    if fp and decision in ("PASS", "TRAP", "WATCH"):
+        body_parts.append(f"risk: {fp[0].lower()}")
+    body = ("; " + ", ".join(body_parts)) if body_parts else ""
+    return head + body
+
+
+def _llp_clean_item(rec):
+    """ChatGPT-friendly projection of a full analyze record."""
+    sport  = rec.get("sport") or ""
+    away   = rec.get("away_team") or ""
+    home   = rec.get("home_team") or ""
+    side   = rec.get("side") or ""
+    market = rec.get("market") or "h2h"
+    mkt_label = {"h2h": "moneyline", "spreads": "spread", "totals": "total"}.get(market, market)
+
+    # team / opponent: for totals (Over/Under) there's no team-side, so we
+    # report the matchup as "Away @ Home" and leave opponent blank.
+    if market == "totals":
+        team_field = f"{away} @ {home}".strip(" @")
+        opponent_field = ""
+    else:
+        sl = side.lower()
+        if sl and sl in home.lower():
+            team_field, opponent_field = home, away
+        elif sl and sl in away.lower():
+            team_field, opponent_field = away, home
+        else:
+            team_field, opponent_field = side, (home if side != home else away)
+
+    return {
+        "sport":                sport,
+        "team":                 team_field,
+        "opponent":             opponent_field,
+        "market":               mkt_label,
+        "side":                 side,
+        "line":                 rec.get("current_line"),
+        "book":                 rec.get("book"),
+        "implied_probability":  rec.get("no_vig_implied_probability") or rec.get("implied_probability"),
+        "model_probability":    rec.get("model_win_probability"),
+        "edge":                 rec.get("edge"),
+        "kelly":                rec.get("kelly_stake"),
+        "decision":             rec.get("final_decision"),
+        "confidence_tier":      rec.get("confidence_tier"),
+        "clv_beat":             rec.get("clv_beat"),
+        "rest_context":         rec.get("rest_context"),
+        "starter_status":       rec.get("starter_status"),
+        "lineup_status":        rec.get("lineup_status"),
+        "top_failure_paths":    (rec.get("failure_paths") or [])[:3],
+        "plain_english_reason": _llp_plain_english_reason(rec),
+    }
+
+
 def _llp_team_analysis(games, default_sport, board_date):
     """Analyze a list of games and aggregate into the response shape."""
     analyses = []
