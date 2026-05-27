@@ -6995,6 +6995,35 @@ def _tennis(first, last, prop, direction, line):
     r.update(_stats(games, line, direction)); return r
 
 
+# ── /wow/l10/v2 dispatch helper (callable in-process by orchestrator) ──
+def _score_one_prop_v2(*, player, sport, prop, direction, line,
+                       season="2025-26", mlb_ssn="2026", year="2026",
+                       hltv_id=None):
+    """Dispatch a single prop to the correct sport handler and return
+    (data_dict, error_message). error_message is None on success.
+    Shared by `wow_l10_v2()` and the Connected Model orchestrator so both
+    paths use identical scoring logic."""
+    parts = (player or "").split(" ", 1)
+    first = parts[0]; last = parts[1] if len(parts) > 1 else ""
+
+    if   prop  == "Pitcher Fantasy Score":
+        return _pitcher_fantasy_score(first, last, direction, line, year), None
+    elif prop  == "1st Inn. Pitches Thrown":
+        return _first_inn_pitches(first, last, direction, line, mlb_ssn), None
+    elif sport == "cs2":
+        if not hltv_id:
+            return None, ("CS2 needs hltv_id=NNNN "
+                          "(look up at hltv.org/stats/players)")
+        return _cs2(player, hltv_id, prop, direction, line), None
+    elif sport == "tennis":
+        return _tennis(first, last, prop, direction, line), None
+    elif sport == "nba":
+        return _nba(first, last, prop, direction, line, season), None
+    elif sport in ("mlb_batter","mlb_pitcher","wnba","nfl"):
+        return _bbref(first, last, sport, prop, direction, line, year), None
+    return None, f"Unknown sport '{sport}'"
+
+
 # ── /wow/l10/v2 main route ───────────────────────────────────
 @app.route("/wow/l10/v2", methods=["GET"])
 def wow_l10_v2():
@@ -7021,28 +7050,12 @@ def wow_l10_v2():
         hit = _cache_get(_L10V2_CACHE, ck, _L10V2_TTL)
         if hit: return jsonify({"ok": True, "cached": True, **hit})
 
-    parts = player.split(" ", 1)
-    first = parts[0]; last = parts[1] if len(parts) > 1 else ""
-
-    if   prop  == "Pitcher Fantasy Score":
-        data = _pitcher_fantasy_score(first, last, direction, line, year)
-    elif prop  == "1st Inn. Pitches Thrown":
-        data = _first_inn_pitches(first, last, direction, line, mlb_ssn)
-    elif sport == "cs2":
-        if not hltv_id:
-            return jsonify({"ok": False,
-                            "error": "CS2 needs &hltv_id=NNNN "
-                                     "(look up at hltv.org/stats/players)"}), 400
-        data = _cs2(player, hltv_id, prop, direction, line)
-    elif sport == "tennis":
-        data = _tennis(first, last, prop, direction, line)
-    elif sport == "nba":
-        data = _nba(first, last, prop, direction, line, season)
-    elif sport in ("mlb_batter","mlb_pitcher","wnba","nfl"):
-        data = _bbref(first, last, sport, prop, direction, line, year)
-    else:
-        return jsonify({"ok": False,
-                        "error": f"Unknown sport '{sport}'"}), 400
+    data, err = _score_one_prop_v2(
+        player=player, sport=sport, prop=prop, direction=direction, line=line,
+        season=season, mlb_ssn=mlb_ssn, year=year, hltv_id=hltv_id,
+    )
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
 
     resp = {
         "player": player, "sport": sport, "prop": prop,
@@ -7065,6 +7078,875 @@ def wow_l10_v2():
     if data.get("rows",0) >= 3:
         _cache_set(_L10V2_CACHE, ck, resp)
     return jsonify({"ok": True, "cached": False, **resp})
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CONNECTED MODEL ORCHESTRATOR (CM)
+# ChatGPT → /input-board → /wow-score → /claude-audit → /final-arbiter
+#                       → /build-slips → /postmortem-log
+# All endpoints require X-API-Key (SCORING_API_KEY).
+# Tables prefixed `cm_` to avoid collisions with the rest of this DB.
+# ═══════════════════════════════════════════════════════════════════════
+
+CM_TIER_TO_POOL = {
+    "FINAL LOCK ELIGIBLE":      "approved",
+    "CONDITIONAL — L5 ONLY":    "conditional",
+    "WATCH / RESEARCH ONLY":    "watch",
+    "REJECT — INSUFFICIENT DATA": "reject",
+}
+
+CM_PRIZEPICKS_FLEX_MULT = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 37.5}
+
+_CM_SCHEMA_READY = False
+_CM_SCHEMA_LOCK  = threading.Lock()
+
+_CM_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS cm_boards (
+    board_id    TEXT PRIMARY KEY,
+    source      TEXT NOT NULL,
+    board_type  TEXT NOT NULL,
+    board_date  DATE NOT NULL,
+    props       JSONB NOT NULL,
+    meta        JSONB,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS cm_boards_date_idx ON cm_boards(board_date DESC);
+
+CREATE TABLE IF NOT EXISTS cm_wow_outputs (
+    board_id            TEXT PRIMARY KEY REFERENCES cm_boards(board_id) ON DELETE CASCADE,
+    model               TEXT NOT NULL DEFAULT 'WOW',
+    approved_pool       JSONB NOT NULL,
+    conditional_pool    JSONB NOT NULL,
+    watch_pool          JSONB NOT NULL,
+    reject_pool         JSONB NOT NULL,
+    source_access_status JSONB NOT NULL,
+    per_prop_results    JSONB NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS cm_claude_audits (
+    board_id        TEXT PRIMARY KEY REFERENCES cm_boards(board_id) ON DELETE CASCADE,
+    model_version   TEXT NOT NULL,
+    audit           JSONB NOT NULL,
+    raw_response    TEXT,
+    latency_ms      INTEGER,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS cm_final_decisions (
+    board_id              TEXT PRIMARY KEY REFERENCES cm_boards(board_id) ON DELETE CASCADE,
+    final_approved_pool   JSONB NOT NULL,
+    final_conditional_pool JSONB NOT NULL,
+    final_watch_pool      JSONB NOT NULL,
+    final_reject_pool     JSONB NOT NULL,
+    accepted_claude_flags JSONB NOT NULL,
+    rejected_claude_flags JSONB NOT NULL,
+    per_prop_reasoning    JSONB NOT NULL,
+    raw_response          TEXT,
+    latency_ms            INTEGER,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS cm_slips (
+    slip_id      TEXT PRIMARY KEY,
+    board_id     TEXT NOT NULL REFERENCES cm_boards(board_id) ON DELETE CASCADE,
+    slip_size    INTEGER NOT NULL,
+    legs         JSONB NOT NULL,
+    payout_mult  NUMERIC NOT NULL,
+    avg_edge     NUMERIC,
+    rank_score   NUMERIC,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS cm_slips_board_idx ON cm_slips(board_id);
+
+CREATE TABLE IF NOT EXISTS cm_postmortems (
+    postmortem_id  TEXT PRIMARY KEY,
+    board_id       TEXT REFERENCES cm_boards(board_id) ON DELETE SET NULL,
+    slip_id        TEXT REFERENCES cm_slips(slip_id) ON DELETE SET NULL,
+    outcome        JSONB NOT NULL,
+    notes          TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS cm_postmortems_board_idx ON cm_postmortems(board_id);
+
+CREATE TABLE IF NOT EXISTS cm_patch_candidates (
+    candidate_id          TEXT PRIMARY KEY,
+    source_postmortem_id  TEXT REFERENCES cm_postmortems(postmortem_id) ON DELETE SET NULL,
+    rule_change_proposed  JSONB NOT NULL,
+    accepted              BOOLEAN,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+def _cm_ensure_schema():
+    """Idempotently create all CM tables. Safe to call repeatedly."""
+    global _CM_SCHEMA_READY
+    if _CM_SCHEMA_READY:
+        return
+    with _CM_SCHEMA_LOCK:
+        if _CM_SCHEMA_READY:
+            return
+        try:
+            with get_db_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(_CM_SCHEMA_DDL)
+                conn.commit()
+            _CM_SCHEMA_READY = True
+            app.logger.info("CM schema ready")
+        except Exception as e:
+            app.logger.error(f"CM schema bootstrap failed: {e}")
+            raise
+
+try:
+    _cm_ensure_schema()
+except Exception:
+    app.logger.warning("CM schema not ready at boot; will retry on first request")
+
+
+def _cm_db():
+    """Get DB conn, lazily bootstrapping schema if needed."""
+    _cm_ensure_schema()
+    return get_db_conn()
+
+
+def _cm_insert_board(conn, source, board_type, board_date_str, props, meta,
+                     max_attempts=20):
+    """Insert a board with a generated board_YYYYMMDD_NNN id. Retries on PK
+    collision (concurrent inserts for same date), returns the board_id used.
+    Replaces a naive COUNT(*)+1 scheme that was race-prone."""
+    yyyymmdd = board_date_str.replace("-", "")
+    prefix   = f"board_{yyyymmdd}_"
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM cm_boards WHERE board_id LIKE %s",
+                    (prefix + "%",))
+        base = cur.fetchone()[0]
+    last_err = None
+    for attempt in range(max_attempts):
+        candidate = f"{prefix}{base + 1 + attempt:03d}"
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO cm_boards (board_id, source, board_type, "
+                    "board_date, props, meta) "
+                    "VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb)",
+                    (candidate, source, board_type, board_date_str,
+                     json.dumps(props), json.dumps(meta)),
+                )
+            conn.commit()
+            return candidate
+        except psycopg2.IntegrityError as e:
+            conn.rollback()
+            last_err = e
+            continue
+    raise RuntimeError(
+        f"_cm_insert_board: could not allocate id after {max_attempts} "
+        f"attempts (concurrent contention?): {last_err}")
+
+
+def _cm_coerce_list(d, key):
+    """Force d[key] to a list. Defends against Claude returning a string,
+    null, dict, or omitted field where a list is contractually required."""
+    v = d.get(key)
+    if isinstance(v, list):
+        return v
+    if v in (None, "", 0, False):
+        return []
+    if isinstance(v, dict):
+        app.logger.warning(f"CM: Claude returned dict for '{key}'; wrapping in single-element list")
+        return [v]
+    app.logger.warning(f"CM: Claude returned {type(v).__name__} for '{key}'; coercing to []")
+    return []
+
+
+def _cm_load_board(conn, board_id):
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM cm_boards WHERE board_id = %s", (board_id,))
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _cm_load_wow(conn, board_id):
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM cm_wow_outputs WHERE board_id = %s", (board_id,))
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _cm_load_audit(conn, board_id):
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM cm_claude_audits WHERE board_id = %s", (board_id,))
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _cm_load_final(conn, board_id):
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM cm_final_decisions WHERE board_id = %s", (board_id,))
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+# ── Claude call helper ────────────────────────────────────────────────
+def _cm_claude_call(system_prompt, user_content, max_tokens=4096):
+    """Single Anthropic Messages call. Returns (text, model_version, latency_ms).
+    Raises on error."""
+    if not _ANTHROPIC_AVAILABLE:
+        raise RuntimeError("anthropic SDK not installed")
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    model = os.environ.get("CM_CLAUDE_MODEL", "claude-sonnet-4-5")
+    client = _anthropic.Anthropic(api_key=api_key)
+    t0 = time.time()
+    resp = client.messages.create(
+        model=model, max_tokens=max_tokens, temperature=0.0,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_content}],
+    )
+    latency_ms = int((time.time() - t0) * 1000)
+    text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+    return text, model, latency_ms
+
+
+def _cm_extract_json(text):
+    """Strip ```json fences and parse. Raises ValueError on failure."""
+    s = (text or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s)
+        s = re.sub(r"\s*```$", "", s)
+    # Find first { and last } if there's surrounding prose
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j != -1 and j > i:
+        s = s[i:j+1]
+    return json.loads(s)
+
+
+# ── Pool classification from per-prop scoring ────────────────────────
+def _cm_classify_pools(per_prop_results):
+    """Take a list of scored prop dicts and split into approved/conditional/watch/reject."""
+    pools = {"approved": [], "conditional": [], "watch": [], "reject": []}
+    src_counts = {"available": 0, "partial": 0, "failed": 0}
+    for pr in per_prop_results:
+        tier = pr.get("confidence_tier", "REJECT — INSUFFICIENT DATA")
+        bucket = CM_TIER_TO_POOL.get(tier, "reject")
+        pools[bucket].append(pr)
+        if pr.get("rows", 0) >= 10 and pr.get("complete"):
+            src_counts["available"] += 1
+        elif pr.get("rows", 0) >= 3:
+            src_counts["partial"] += 1
+        else:
+            src_counts["failed"] += 1
+    return pools, src_counts
+
+
+# ── Active model rules (loaded at request time so they can be patched) ──
+def _cm_active_rules():
+    return {
+        "tier_definitions": {
+            "FINAL LOCK ELIGIBLE": "10 complete L10 rows from authoritative source",
+            "CONDITIONAL — L5 ONLY": "5-9 rows present, not 10 complete",
+            "WATCH / RESEARCH ONLY": "3-4 rows present",
+            "REJECT — INSUFFICIENT DATA": "<3 rows or no source access",
+        },
+        "approval_requirements": [
+            "L5 exact-line proof from authoritative source",
+            "L10 median visible and not contradicted by line",
+            "Official status / lineup confirmed (where applicable)",
+            "Projection support exists",
+            "Market odds support exists and is not contradictory",
+            "MORE/LESS side compared, edge calculated",
+        ],
+        "auto_reject_archetypes": [
+            "CS2 props (HLTV behind Cloudflare, manual entry required)",
+            "Pikkit DES/Proj (manual entry required)",
+            "Props with stale or unverified official status",
+        ],
+        "correlation_rules": [
+            "No two legs from same game/player in a single slip",
+        ],
+        "claude_authority": "Claude may challenge approval but cannot create approval. WOW remains source of truth.",
+    }
+
+
+# ── Claude prompts (verbatim from product spec) ──────────────────────
+_CM_CLAUDE_AUDIT_SYSTEM = """You are Claude acting as the Red Team Validator for the WOW Betting Model.
+
+You are not the primary picker.
+Do not generate new picks first.
+Do not approve props.
+Do not build slips.
+
+Audit the WOW output for:
+- missing L5/L10 exact-line proof
+- unsupported L10 median
+- missing or stale official status
+- missing projection support
+- missing or contradictory market support
+- overstated probability
+- wrong approval label
+- fragile failure path
+- same-game or same-player correlation risk
+- known failed archetypes
+- MORE/LESS side not properly compared
+
+Return ONLY a single JSON object with these exact keys (arrays may be empty):
+{
+  "props_to_keep": [],
+  "props_to_downgrade": [],
+  "props_to_reject": [],
+  "missing_data_flags": [],
+  "overconfidence_flags": [],
+  "correlation_flags": [],
+  "patch_recommendations": []
+}
+
+Each prop entry must be an object with at minimum: player, prop, line, side, reason.
+Each flag entry must be an object with at minimum: target (player+prop or "board"), severity, reason.
+
+Claude can challenge approval.
+Claude cannot create approval.
+Respond with ONLY the JSON object, no prose, no markdown fences."""
+
+_CM_CLAUDE_ARBITER_SYSTEM = """You are WOW Final Arbiter.
+
+Compare:
+1. WOW primary output
+2. Claude audit
+3. Active WOW model rules
+
+Accept Claude's critique only if it identifies a real missing checkpoint, stale assumption, unsupported label, market contradiction, role/status issue, L5/L10 issue, median failure, projection gap, or correlation risk.
+
+Reject Claude's critique if it is only preference, narrative, unsupported caution, or a second-model opinion.
+
+WOW remains source of truth. Claude is a validator, not the picker.
+
+Return ONLY a single JSON object with these exact keys:
+{
+  "final_approved_pool": [],
+  "final_conditional_pool": [],
+  "final_watch_pool": [],
+  "final_reject_pool": [],
+  "accepted_claude_flags": [],
+  "rejected_claude_flags": [],
+  "per_prop_reasoning": []
+}
+
+Each pool entry must be an object with: player, prop, line, side, initial_wow_label, claude_recommendation, arbiter_decision, final_label, allowed_in_slips (bool), reason.
+Each accepted/rejected flag must be an object with: target, original_severity, decision ("accepted"|"rejected"|"partial"), reason.
+per_prop_reasoning is an array of objects: {player, prop, summary}.
+
+Respond with ONLY the JSON object, no prose, no markdown fences."""
+
+
+# ── Endpoint: POST /input-board ───────────────────────────────────────
+@app.route("/input-board", methods=["POST"])
+@require_api_key
+def cm_input_board():
+    body = request.get_json(silent=True) or {}
+    source     = (body.get("source") or "chatgpt").strip()
+    board_type = (body.get("board_type") or "prizepicks").strip()
+    board_date = (body.get("date") or datetime.now().strftime("%Y-%m-%d")).strip()
+    props      = body.get("props") or []
+    meta       = body.get("meta") or {}
+
+    if not isinstance(props, list) or not props:
+        return jsonify({"ok": False, "error": "props must be a non-empty array"}), 400
+    try:
+        datetime.strptime(board_date, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
+
+    with _cm_db() as conn:
+        board_id = _cm_insert_board(conn, source, board_type, board_date, props, meta)
+    return jsonify({"ok": True, "board_id": board_id, "status": "received",
+                    "props_received": len(props)})
+
+
+# ── Endpoint: POST /wow-score ─────────────────────────────────────────
+@app.route("/wow-score", methods=["POST"])
+@require_api_key
+def cm_wow_score():
+    body = request.get_json(silent=True) or {}
+    board_id = (body.get("board_id") or "").strip()
+    if not board_id:
+        return jsonify({"ok": False, "error": "board_id required"}), 400
+
+    with _cm_db() as conn:
+        board = _cm_load_board(conn, board_id)
+        if not board:
+            return jsonify({"ok": False, "error": f"board {board_id} not found"}), 404
+        props = board["props"] if isinstance(board["props"], list) else json.loads(board["props"])
+
+        per_prop_results = []
+        for p in props:
+            try:
+                data, err = _score_one_prop_v2(
+                    player=p.get("player",""), sport=(p.get("sport","") or "").lower(),
+                    prop=p.get("prop",""), direction=(p.get("side","MORE") or "MORE").upper(),
+                    line=float(p.get("line", 0)),
+                    season=p.get("season","2025-26"), mlb_ssn=p.get("mlb_season","2026"),
+                    year=p.get("year","2026"), hltv_id=p.get("hltv_id"),
+                )
+                if err:
+                    pr = {**p, "rows": 0, "complete": False, "gap": err,
+                          "confidence_tier": "REJECT — INSUFFICIENT DATA",
+                          "source": "n/a", "games": []}
+                else:
+                    pr = {**p,
+                          "source": data.get("source"),
+                          "rows": data.get("rows", 0),
+                          "complete": data.get("complete", False),
+                          "gap": data.get("gap", ""),
+                          "games": data.get("games", []),
+                          "l5_avg": data.get("l5_avg"),
+                          "l10_avg": data.get("l10_avg"),
+                          "l10_median": data.get("l10_median"),
+                          "l5_hit_rate": data.get("l5_hit_rate"),
+                          "l10_hit_rate": data.get("l10_hit_rate"),
+                          "edge": data.get("edge"),
+                          "confidence_tier": _tier(data.get("rows", 0),
+                                                   data.get("complete", False))}
+            except Exception as e:
+                app.logger.exception(f"score failed for {p}")
+                pr = {**p, "rows": 0, "complete": False,
+                      "gap": f"scoring exception: {type(e).__name__}: {str(e)[:200]}",
+                      "confidence_tier": "REJECT — INSUFFICIENT DATA",
+                      "source": "n/a", "games": []}
+            per_prop_results.append(pr)
+
+        pools, src_counts = _cm_classify_pools(per_prop_results)
+        src_status = {
+            "player_logs": ("available" if src_counts["available"] >= len(per_prop_results)//2
+                            else ("partial" if src_counts["available"] + src_counts["partial"] > 0 else "failed")),
+            "counts": src_counts,
+            "total_props": len(per_prop_results),
+        }
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO cm_wow_outputs (board_id, approved_pool, conditional_pool, "
+                "watch_pool, reject_pool, source_access_status, per_prop_results) "
+                "VALUES (%s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb) "
+                "ON CONFLICT (board_id) DO UPDATE SET "
+                "approved_pool=EXCLUDED.approved_pool, "
+                "conditional_pool=EXCLUDED.conditional_pool, "
+                "watch_pool=EXCLUDED.watch_pool, reject_pool=EXCLUDED.reject_pool, "
+                "source_access_status=EXCLUDED.source_access_status, "
+                "per_prop_results=EXCLUDED.per_prop_results, created_at=NOW()",
+                (board_id, json.dumps(pools["approved"]), json.dumps(pools["conditional"]),
+                 json.dumps(pools["watch"]), json.dumps(pools["reject"]),
+                 json.dumps(src_status), json.dumps(per_prop_results)),
+            )
+        conn.commit()
+
+    return jsonify({
+        "ok": True, "board_id": board_id, "model": "WOW",
+        "approved_pool": pools["approved"], "conditional_pool": pools["conditional"],
+        "watch_pool": pools["watch"], "reject_pool": pools["reject"],
+        "source_access_status": src_status,
+    })
+
+
+# ── Endpoint: POST /claude-audit ──────────────────────────────────────
+@app.route("/claude-audit", methods=["POST"])
+@require_api_key
+def cm_claude_audit():
+    body = request.get_json(silent=True) or {}
+    board_id = (body.get("board_id") or "").strip()
+    if not board_id:
+        return jsonify({"ok": False, "error": "board_id required"}), 400
+
+    with _cm_db() as conn:
+        board = _cm_load_board(conn, board_id)
+        wow   = _cm_load_wow(conn, board_id)
+        if not board: return jsonify({"ok": False, "error": "board not found"}), 404
+        if not wow:   return jsonify({"ok": False, "error": "wow_output missing — run /wow-score first"}), 409
+
+        payload = {
+            "board_id": board_id, "board_type": board["board_type"],
+            "date": str(board["board_date"]),
+            "wow_output": {
+                "approved_pool":    wow["approved_pool"],
+                "conditional_pool": wow["conditional_pool"],
+                "watch_pool":       wow["watch_pool"],
+                "reject_pool":      wow["reject_pool"],
+                "source_access_status": wow["source_access_status"],
+            },
+            "active_rules": _cm_active_rules(),
+        }
+        user_content = ("Audit this WOW output. Return ONLY the specified JSON object.\n\n"
+                        + json.dumps(payload, default=str))
+
+        try:
+            text, model_version, latency_ms = _cm_claude_call(
+                _CM_CLAUDE_AUDIT_SYSTEM, user_content, max_tokens=6000)
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"claude call failed: {e}"}), 502
+
+        try:
+            audit = _cm_extract_json(text)
+        except Exception:
+            try:
+                text2, _, _ = _cm_claude_call(
+                    _CM_CLAUDE_AUDIT_SYSTEM,
+                    user_content + "\n\nREMINDER: Return ONLY valid JSON with the exact keys specified.",
+                    max_tokens=6000)
+                audit = _cm_extract_json(text2)
+                text = text2
+            except Exception as e2:
+                return jsonify({"ok": False,
+                                "error": f"claude returned unparseable JSON: {e2}",
+                                "raw": text[:2000]}), 502
+
+        for k in ("props_to_keep","props_to_downgrade","props_to_reject",
+                  "missing_data_flags","overconfidence_flags",
+                  "correlation_flags","patch_recommendations"):
+            audit[k] = _cm_coerce_list(audit, k)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO cm_claude_audits (board_id, model_version, audit, raw_response, latency_ms) "
+                "VALUES (%s, %s, %s::jsonb, %s, %s) "
+                "ON CONFLICT (board_id) DO UPDATE SET "
+                "model_version=EXCLUDED.model_version, audit=EXCLUDED.audit, "
+                "raw_response=EXCLUDED.raw_response, latency_ms=EXCLUDED.latency_ms, created_at=NOW()",
+                (board_id, model_version, json.dumps(audit), text, latency_ms),
+            )
+        conn.commit()
+
+    return jsonify({"ok": True, "board_id": board_id,
+                    "model_version": model_version, "latency_ms": latency_ms,
+                    **audit})
+
+
+# ── Endpoint: POST /final-arbiter ─────────────────────────────────────
+@app.route("/final-arbiter", methods=["POST"])
+@require_api_key
+def cm_final_arbiter():
+    body = request.get_json(silent=True) or {}
+    board_id = (body.get("board_id") or "").strip()
+    if not board_id:
+        return jsonify({"ok": False, "error": "board_id required"}), 400
+
+    with _cm_db() as conn:
+        board = _cm_load_board(conn, board_id)
+        wow   = _cm_load_wow(conn, board_id)
+        audit = _cm_load_audit(conn, board_id)
+        if not board: return jsonify({"ok": False, "error": "board not found"}), 404
+        if not wow:   return jsonify({"ok": False, "error": "wow_output missing"}), 409
+        if not audit: return jsonify({"ok": False, "error": "claude_audit missing — run /claude-audit first"}), 409
+
+        payload = {
+            "board_id": board_id,
+            "wow_output": {
+                "approved_pool":    wow["approved_pool"],
+                "conditional_pool": wow["conditional_pool"],
+                "watch_pool":       wow["watch_pool"],
+                "reject_pool":      wow["reject_pool"],
+            },
+            "claude_audit": audit["audit"],
+            "active_rules": _cm_active_rules(),
+        }
+        user_content = ("Reconcile WOW and Claude. Return ONLY the specified JSON object.\n\n"
+                        + json.dumps(payload, default=str))
+
+        try:
+            text, model_version, latency_ms = _cm_claude_call(
+                _CM_CLAUDE_ARBITER_SYSTEM, user_content, max_tokens=8000)
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"claude arbiter call failed: {e}"}), 502
+
+        try:
+            decision = _cm_extract_json(text)
+        except Exception:
+            try:
+                text2, _, _ = _cm_claude_call(
+                    _CM_CLAUDE_ARBITER_SYSTEM,
+                    user_content + "\n\nREMINDER: Return ONLY valid JSON.", max_tokens=8000)
+                decision = _cm_extract_json(text2); text = text2
+            except Exception as e2:
+                return jsonify({"ok": False,
+                                "error": f"arbiter returned unparseable JSON: {e2}",
+                                "raw": text[:2000]}), 502
+
+        for k in ("final_approved_pool","final_conditional_pool",
+                  "final_watch_pool","final_reject_pool",
+                  "accepted_claude_flags","rejected_claude_flags",
+                  "per_prop_reasoning"):
+            decision[k] = _cm_coerce_list(decision, k)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO cm_final_decisions (board_id, final_approved_pool, "
+                "final_conditional_pool, final_watch_pool, final_reject_pool, "
+                "accepted_claude_flags, rejected_claude_flags, per_prop_reasoning, "
+                "raw_response, latency_ms) "
+                "VALUES (%s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, "
+                "%s::jsonb, %s::jsonb, %s, %s) "
+                "ON CONFLICT (board_id) DO UPDATE SET "
+                "final_approved_pool=EXCLUDED.final_approved_pool, "
+                "final_conditional_pool=EXCLUDED.final_conditional_pool, "
+                "final_watch_pool=EXCLUDED.final_watch_pool, "
+                "final_reject_pool=EXCLUDED.final_reject_pool, "
+                "accepted_claude_flags=EXCLUDED.accepted_claude_flags, "
+                "rejected_claude_flags=EXCLUDED.rejected_claude_flags, "
+                "per_prop_reasoning=EXCLUDED.per_prop_reasoning, "
+                "raw_response=EXCLUDED.raw_response, "
+                "latency_ms=EXCLUDED.latency_ms, created_at=NOW()",
+                (board_id, json.dumps(decision["final_approved_pool"]),
+                 json.dumps(decision["final_conditional_pool"]),
+                 json.dumps(decision["final_watch_pool"]),
+                 json.dumps(decision["final_reject_pool"]),
+                 json.dumps(decision["accepted_claude_flags"]),
+                 json.dumps(decision["rejected_claude_flags"]),
+                 json.dumps(decision["per_prop_reasoning"]),
+                 text, latency_ms),
+            )
+        conn.commit()
+
+    return jsonify({"ok": True, "board_id": board_id,
+                    "model_version": model_version, "latency_ms": latency_ms,
+                    **decision})
+
+
+# ── Endpoint: POST /build-slips ───────────────────────────────────────
+def _cm_same_game_or_player(a, b):
+    if a.get("player") and a.get("player") == b.get("player"): return True
+    g1 = f"{a.get('team','')}@{a.get('opponent','')}"
+    g2 = f"{b.get('team','')}@{b.get('opponent','')}"
+    g1r = f"{a.get('opponent','')}@{a.get('team','')}"
+    return g1 != "@" and (g1 == g2 or g1r == g2)
+
+
+def _cm_slip_combos(legs, k):
+    from itertools import combinations
+    out = []
+    for combo in combinations(legs, k):
+        ok = True
+        for i in range(len(combo)):
+            for j in range(i+1, len(combo)):
+                if _cm_same_game_or_player(combo[i], combo[j]):
+                    ok = False; break
+            if not ok: break
+        if ok: out.append(list(combo))
+    return out
+
+
+@app.route("/build-slips", methods=["POST"])
+@require_api_key
+def cm_build_slips():
+    body = request.get_json(silent=True) or {}
+    board_id = (body.get("board_id") or "").strip()
+    slip_sizes = body.get("slip_sizes") or [2, 3, 4]
+    max_per_size = int(body.get("max_slips_per_size", 5))
+    include_conditional = bool(body.get("include_conditional", False))
+
+    if not board_id:
+        return jsonify({"ok": False, "error": "board_id required"}), 400
+
+    with _cm_db() as conn:
+        final = _cm_load_final(conn, board_id)
+        if not final:
+            return jsonify({"ok": False, "error": "no final_decision — run /final-arbiter first"}), 409
+        pool = list(final["final_approved_pool"] or [])
+        if include_conditional:
+            pool += list(final["final_conditional_pool"] or [])
+        pool = [p for p in pool if p.get("allowed_in_slips", True)]
+
+        all_built = []
+        with conn.cursor() as cur:
+            for size in slip_sizes:
+                size = int(size)
+                mult = CM_PRIZEPICKS_FLEX_MULT.get(size)
+                if mult is None or len(pool) < size: continue
+                combos = _cm_slip_combos(pool, size)
+                scored = []
+                for c in combos:
+                    edges = [float(p.get("edge") or 0) for p in c]
+                    avg_edge = sum(edges) / len(edges) if edges else 0.0
+                    scored.append((c, avg_edge, avg_edge * mult))
+                scored.sort(key=lambda x: x[2], reverse=True)
+                for idx, (legs, avg_edge, rank_score) in enumerate(scored[:max_per_size]):
+                    slip_id = f"slip_{board_id[6:]}_{size}_{idx+1:02d}"
+                    cur.execute(
+                        "INSERT INTO cm_slips (slip_id, board_id, slip_size, legs, "
+                        "payout_mult, avg_edge, rank_score) "
+                        "VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s) "
+                        "ON CONFLICT (slip_id) DO UPDATE SET legs=EXCLUDED.legs, "
+                        "payout_mult=EXCLUDED.payout_mult, avg_edge=EXCLUDED.avg_edge, "
+                        "rank_score=EXCLUDED.rank_score",
+                        (slip_id, board_id, size, json.dumps(legs),
+                         mult, avg_edge, rank_score),
+                    )
+                    all_built.append({"slip_id": slip_id, "slip_size": size,
+                                      "payout_mult": mult, "avg_edge": avg_edge,
+                                      "rank_score": rank_score, "legs": legs})
+        conn.commit()
+
+    return jsonify({"ok": True, "board_id": board_id,
+                    "slips_built": len(all_built), "slips": all_built})
+
+
+# ── Endpoint: POST /postmortem-log ────────────────────────────────────
+@app.route("/postmortem-log", methods=["POST"])
+@require_api_key
+def cm_postmortem_log():
+    body = request.get_json(silent=True) or {}
+    board_id = (body.get("board_id") or "").strip() or None
+    slip_id  = (body.get("slip_id")  or "").strip() or None
+    outcome  = body.get("outcome") or {}
+    notes    = (body.get("notes") or "").strip() or None
+    if not outcome:
+        return jsonify({"ok": False, "error": "outcome required"}), 400
+
+    pm_id = f"pm_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{random.randint(100,999)}"
+    with _cm_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO cm_postmortems (postmortem_id, board_id, slip_id, outcome, notes) "
+                "VALUES (%s, %s, %s, %s::jsonb, %s)",
+                (pm_id, board_id, slip_id, json.dumps(outcome), notes),
+            )
+        conn.commit()
+    return jsonify({"ok": True, "postmortem_id": pm_id})
+
+
+# ── Endpoint: GET /board/<id> (full bundle) ───────────────────────────
+@app.route("/board/<board_id>", methods=["GET"])
+@require_api_key
+def cm_get_board(board_id):
+    with _cm_db() as conn:
+        board = _cm_load_board(conn, board_id)
+        if not board:
+            return jsonify({"ok": False, "error": "board not found"}), 404
+        wow   = _cm_load_wow(conn, board_id)
+        audit = _cm_load_audit(conn, board_id)
+        final = _cm_load_final(conn, board_id)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM cm_slips WHERE board_id=%s ORDER BY slip_size, rank_score DESC",
+                        (board_id,))
+            slips = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM cm_postmortems WHERE board_id=%s ORDER BY created_at DESC",
+                        (board_id,))
+            postmortems = [dict(r) for r in cur.fetchall()]
+    # Use json.dumps(default=str) to handle date/datetime from RealDictCursor;
+    # jsonify() doesn't accept a default= serializer.
+    return app.response_class(
+        json.dumps({"ok": True, "board": board, "wow_output": wow,
+                    "claude_audit": audit, "final_decision": final,
+                    "slips": slips, "postmortems": postmortems}, default=str),
+        mimetype="application/json")
+
+
+# ── Endpoint: GET /latest-run ────────────────────────────────────────
+@app.route("/latest-run", methods=["GET"])
+@require_api_key
+def cm_latest_run():
+    with _cm_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT board_id FROM cm_boards ORDER BY created_at DESC LIMIT 1")
+            row = cur.fetchone()
+    if not row:
+        return jsonify({"ok": False, "error": "no boards yet"}), 404
+    return cm_get_board(row["board_id"])
+
+
+# ── Endpoint: POST /run-connected-model (full orchestrator) ──────────
+@app.route("/run-connected-model", methods=["POST"])
+@require_api_key
+def cm_run_connected_model():
+    body = request.get_json(silent=True) or {}
+    slips_requested = bool(body.get("slips_requested", False))
+    slip_sizes      = body.get("slip_sizes") or [2, 3]
+    skip_arbiter    = bool(body.get("skip_arbiter", False))
+
+    # 1. input-board (inline)
+    source     = (body.get("source") or "chatgpt").strip()
+    board_type = (body.get("board_type") or "prizepicks").strip()
+    board_date = (body.get("date") or datetime.now().strftime("%Y-%m-%d")).strip()
+    props      = body.get("props") or []
+    meta       = body.get("meta") or {}
+    if not isinstance(props, list) or not props:
+        return jsonify({"ok": False, "error": "props must be a non-empty array"}), 400
+    try:
+        datetime.strptime(board_date, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
+
+    execution_notes = []
+    with _cm_db() as conn:
+        board_id = _cm_insert_board(conn, source, board_type, board_date, props, meta)
+    execution_notes.append(f"board saved: {board_id}")
+
+    # 2. wow-score (via internal call to keep logic in one place)
+    with app.test_request_context(json={"board_id": board_id},
+                                  headers={"X-API-Key": os.environ.get("SCORING_API_KEY","")}):
+        wow_resp = cm_wow_score()
+    wow_json = wow_resp.get_json() if hasattr(wow_resp, "get_json") else wow_resp[0].get_json()
+    if not wow_json.get("ok"):
+        return jsonify({"ok": False, "stage": "wow-score", "board_id": board_id,
+                        "error": wow_json.get("error"), "execution_notes": execution_notes}), 500
+    execution_notes.append(f"wow-score done: approved={len(wow_json['approved_pool'])}, "
+                           f"conditional={len(wow_json['conditional_pool'])}, "
+                           f"watch={len(wow_json['watch_pool'])}, "
+                           f"reject={len(wow_json['reject_pool'])}")
+
+    # 3. claude-audit
+    claude_json = None
+    final_json  = None
+    if not skip_arbiter:
+        with app.test_request_context(json={"board_id": board_id},
+                                      headers={"X-API-Key": os.environ.get("SCORING_API_KEY","")}):
+            audit_resp = cm_claude_audit()
+        ar = audit_resp.get_json() if hasattr(audit_resp, "get_json") else audit_resp[0].get_json()
+        if not ar.get("ok"):
+            execution_notes.append(f"claude-audit failed: {ar.get('error')}")
+        else:
+            claude_json = ar
+            execution_notes.append(f"claude-audit done in {ar.get('latency_ms')}ms")
+
+            # 4. final-arbiter
+            with app.test_request_context(json={"board_id": board_id},
+                                          headers={"X-API-Key": os.environ.get("SCORING_API_KEY","")}):
+                arb_resp = cm_final_arbiter()
+            fr = arb_resp.get_json() if hasattr(arb_resp, "get_json") else arb_resp[0].get_json()
+            if not fr.get("ok"):
+                execution_notes.append(f"final-arbiter failed: {fr.get('error')}")
+            else:
+                final_json = fr
+                execution_notes.append(f"final-arbiter done in {fr.get('latency_ms')}ms")
+
+    # 5. slips (optional)
+    slips_json = None
+    if slips_requested and final_json:
+        with app.test_request_context(
+            json={"board_id": board_id, "slip_sizes": slip_sizes},
+            headers={"X-API-Key": os.environ.get("SCORING_API_KEY","")}):
+            slip_resp = cm_build_slips()
+        sr = slip_resp.get_json() if hasattr(slip_resp, "get_json") else slip_resp[0].get_json()
+        if sr.get("ok"):
+            slips_json = sr
+            execution_notes.append(f"slips built: {sr.get('slips_built')}")
+
+    final_pools = (final_json or {})
+    return jsonify({
+        "ok": True, "status": "completed", "board_id": board_id,
+        "wow_summary": {
+            "approved_pool":    wow_json["approved_pool"],
+            "conditional_pool": wow_json["conditional_pool"],
+            "watch_pool":       wow_json["watch_pool"],
+            "reject_pool":      wow_json["reject_pool"],
+            "source_access_status": wow_json["source_access_status"],
+        },
+        "claude_audit":   claude_json,
+        "final_decision": final_json,
+        "approved_pool":    final_pools.get("final_approved_pool",    wow_json["approved_pool"]),
+        "conditional_pool": final_pools.get("final_conditional_pool", wow_json["conditional_pool"]),
+        "watch_pool":       final_pools.get("final_watch_pool",       wow_json["watch_pool"]),
+        "reject_pool":      final_pools.get("final_reject_pool",      wow_json["reject_pool"]),
+        "slips": slips_json,
+        "execution_notes": execution_notes,
+    })
 
 
 if __name__ == "__main__":
