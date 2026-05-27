@@ -1,0 +1,53 @@
+Good document — it solves CS2 and Tennis cleanly. One important correction before building: it misidentifies what to do for **1st Inn. Pitches**. Scraping PrizePicks gives you the prop LINE — you already have that. You need the player's **historical pitch counts**, which live in the MLB Stats API. Different problem entirely.
+
+Here's everything confirmed and fixed:
+
+The confirmed PrizePicks Pitcher Fantasy Score formula: 1 point per out recorded, 3 points per strikeout, −3 per earned run, +4 for a quality start (6+ IP, ≤3 ER), plus a win bonus.---
+
+## What The Document Got Right vs Wrong
+
+**✅ CS2 (HLTV)** — Document's approach is correct. cloudscraper bypasses Cloudflare, parse the `stats-table`. Done.
+
+**✅ Tennis** — Document is correct. Tennis Abstract is static HTML, `pd.read_html` handles it natively.
+
+**❌ 1st Inn. Pitches** — The document suggests scraping PrizePicks for the prop line. That's the wrong problem. You already have the line. What you need is the pitcher's historical pitch counts, which live in the **MLB Stats API** (`statsapi.mlb.com`) — completely free, official, no scraping, no rate limits. That's what this code does.
+
+**✅ Pitcher Fantasy Score** — Formula is now confirmed:
+
+```
++1 per out (= 3 per full inning)
++3 per strikeout
+-3 per earned run
++4 quality start (6+ IP, ≤3 ER)
++6 win
+```
+
+Verified: 6 IP (18 outs) + 8 Ks + 2 ER + QS = 18 + 24 − 6 + 4 = 40 points.
+
+---
+
+## Deploy Instructions
+
+**1. Add to `requirements.txt`:**
+```
+cloudscraper>=1.2.71
+```
+
+**2. Paste `wow_l10_addendum.py` into `app.py`** — after the first endpoint block, before `if __name__ == "__main__":`
+
+**3. The dashboard now calls `/wow/l10/v2` instead of `/wow/l10`**
+
+---
+
+## Full Prop Coverage After This Deploy
+
+| Prop | Source | Status |
+|------|--------|--------|
+| NBA all props | nba_api → stats.nba.com | ✅ |
+| MLB hitter/pitcher standard | Baseball Reference | ✅ |
+| Pitcher Fantasy Score | BBRef + confirmed PP formula | ✅ |
+| 1st Inn. Pitches Thrown | MLB Stats API pitch-by-pitch | ✅ |
+| CS2 (with HLTV ID) | HLTV via cloudscraper | ✅ |
+| Tennis (Aces, DFs) | Tennis Abstract | ✅ |
+| WNBA / NFL | Sports Reference | ✅ |
+| Pikkit DES/Proj | Screenshot only | ❌ always |
