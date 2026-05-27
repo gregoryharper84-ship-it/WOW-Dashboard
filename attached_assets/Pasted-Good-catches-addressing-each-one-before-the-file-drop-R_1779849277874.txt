@@ -1,0 +1,50 @@
+Good catches — addressing each one before the file drop.
+
+**Route backward compat:** Confirmed — `/wow/l10` stays untouched, `/wow/l10/v2` is additive. The first endpoint file already handles that separation.
+
+**Per-game PBP cache:** You're right to flag it. My original code had no game-level cache, so a single L10 request for 1st-inning pitches would fire 10 × 1-3MB calls. Fixed below with `_GAME_PBP_CACHE` — completed games never change so TTL is 24h.
+
+**cloudscraper lag:** Noted. Will add a clear error message when it fails so you know exactly where to look.
+
+**Win bonus:** The formula code has `+6 if win` as conditional — the example just happened to have no win. Matches the confirmed formula.631 lines. Here's the summary of what changed vs the previous drop and what to watch in the smoke test:
+
+---
+
+## Changes From Previous File
+
+**Per-game PBP cache added (`_PBP_CACHE`, 24h TTL)**
+First request for 1st-inning pitches fires up to 10 MLB API calls. Every repeat within 24 hours fires zero. The raw JSON is never stored — only the extracted integer per `gamePk:pitcherId` key.
+
+**Formula verified and inline**
+`_pitcher_fs(outs, ks, er, win)` → `outs + ks×3 − er×3 + 4(QS) + 6(W)`. The QS check is `outs >= 18 and er <= 3`. Win bonus is conditional, not hardcoded.
+
+**HLTV failure message is explicit**
+If `status_code != 200`, the gap field says *"cloudscraper challenge may be stale, try Playwright fallback"* — makes the first suspect obvious without digging.
+
+**`/wow/l10` (v1) untouched**
+This file adds only `/wow/l10/v2`. Nothing in v1 is modified.
+
+---
+
+## Smoke Test Sequence
+
+```
+1. GET /wow/l10/v2?player=Victor+Wembanyama&sport=nba
+       &prop=Points&direction=MORE&line=19.5
+   → expect: ok=true, rows=10, source=stats.nba.com
+
+2. GET /wow/l10/v2?player=Jack+Kochanowicz&sport=mlb_pitcher
+       &prop=Pitcher+Fantasy+Score&direction=LESS&line=23.5
+   → expect: ok=true, formula field present, notes show "K ER QS"
+
+3. GET /wow/l10/v2?player=Shane+Baz&sport=mlb_pitcher
+       &prop=1st+Inn.+Pitches+Thrown&direction=MORE&line=15.5
+   → expect: ok=true, source=statsapi.mlb.com, notes show gamePk
+
+4. Same request as #3 immediately again
+   → expect: cached=true, instant response (PBP cache working)
+
+5. GET /wow/l10/v2?player=zywoo&sport=cs2
+       &prop=Kills&direction=MORE&line=25.5&hltv_id=11893
+   → expect: ok=true OR gap explains cloudscraper issue
+```
