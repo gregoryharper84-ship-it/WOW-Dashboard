@@ -7438,6 +7438,65 @@ per_prop_reasoning is an array of objects: {player, prop, summary}.
 Respond with ONLY the JSON object, no prose, no markdown fences."""
 
 
+# ── Sport normalization (public-API form is UPPER) ────────────────────
+# Accepts any casing plus common aliases ("baseball", "basketball",
+# "football", "hockey", "soccer"). Returns the canonical UPPER token used
+# everywhere downstream. Use _cm_v2_sport_key() to translate to the
+# lowercase form the v2 per-prop scorer expects (and to split MLB into
+# batter/pitcher based on the prop name).
+_CM_SPORT_ALIASES = {
+    "":             "",
+    "MLB":          "MLB",  "BASEBALL":     "MLB",
+    "MLB_BATTER":   "MLB",  "MLB_PITCHER":  "MLB",
+    "NBA":          "NBA",  "NBA BASKETBALL": "NBA",
+    "WNBA":         "WNBA", "WNBA BASKETBALL":"WNBA",
+    "BASKETBALL":   "NBA",  # default; caller can override with WNBA explicitly
+    "NCAAB":        "NCAAB","COLLEGE BASKETBALL": "NCAAB",
+    "NFL":          "NFL",  "FOOTBALL":     "NFL",
+    "NCAAF":        "NCAAF","COLLEGE FOOTBALL": "NCAAF",
+    "NHL":          "NHL",  "HOCKEY":       "NHL",
+    "SOCCER":       "SOCCER","FOOTBALL (SOCCER)":"SOCCER","FUTBOL":"SOCCER",
+    "TENNIS":       "TENNIS","ATP":"TENNIS","WTA":"TENNIS",
+    "CS2":          "CS2",  "COUNTER-STRIKE":"CS2","COUNTER STRIKE":"CS2","CSGO":"CS2",
+}
+
+def _cm_normalize_sport(s):
+    """Return canonical UPPER sport token, or '' if unknown/blank."""
+    if s is None: return ""
+    key = str(s).upper().strip()
+    if key in _CM_SPORT_ALIASES:
+        return _CM_SPORT_ALIASES[key]
+    # Unknown sports pass through uppercased so the dispatcher can decide.
+    return key
+
+
+_MLB_PITCHER_PROPS = {
+    "pitcher strikeouts", "hits allowed", "earned runs", "walks allowed",
+    "pitcher fantasy score", "1st inn. pitches thrown", "outs", "walks issued",
+    "strikeouts",
+}
+_MLB_BATTER_PROPS = {
+    "hitter hits", "total bases", "runs scored", "rbis", "h+r+rbi",
+    "hitter strikeouts",
+}
+
+def _cm_v2_sport_key(canonical_upper, prop):
+    """
+    Translate canonical UPPER sport to the lowercase v2-scorer key.
+    For MLB, infer mlb_batter vs mlb_pitcher from the prop name using an
+    explicit allowlist (preferred) with a "pitcher" substring fallback.
+    """
+    c = (canonical_upper or "").upper().strip()
+    if c == "MLB":
+        p = (prop or "").lower().strip()
+        if p in _MLB_PITCHER_PROPS:    return "mlb_pitcher"
+        if p in _MLB_BATTER_PROPS:     return "mlb_batter"
+        if "pitcher" in p:             return "mlb_pitcher"  # safety net
+        if "hitter"  in p:             return "mlb_batter"
+        return "mlb_batter"  # default for ambiguous MLB props
+    return c.lower()
+
+
 # ── Endpoint: POST /input-board ───────────────────────────────────────
 @app.route("/input-board", methods=["POST"])
 @require_api_key
@@ -7468,11 +7527,22 @@ def cm_input_board():
     except ValueError:
         return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
 
+    # Normalize sport on every prop and every game to UPPER canonical form.
+    body_sport = _cm_normalize_sport(body.get("sport"))
+    for p in props:
+        if isinstance(p, dict):
+            p["sport"] = _cm_normalize_sport(p.get("sport") or body_sport)
+    for g in games:
+        if isinstance(g, dict):
+            g["sport"] = _cm_normalize_sport(g.get("sport") or body_sport)
+
     meta = dict(meta)
     if games:
         meta["games"] = games
     if model:
         meta["model"] = model
+    if body_sport:
+        meta["sport"] = body_sport
 
     with _cm_db() as conn:
         board_id = _cm_insert_board(conn, source, board_type, board_date, props, meta)
@@ -7500,8 +7570,10 @@ def cm_wow_score():
         per_prop_results = []
         for p in props:
             try:
+                _canonical_sport = _cm_normalize_sport(p.get("sport",""))
+                _v2_sport        = _cm_v2_sport_key(_canonical_sport, p.get("prop",""))
                 data, err = _score_one_prop_v2(
-                    player=p.get("player",""), sport=(p.get("sport","") or "").lower(),
+                    player=p.get("player",""), sport=_v2_sport,
                     prop=p.get("prop",""), direction=(p.get("side","MORE") or "MORE").upper(),
                     line=float(p.get("line", 0)),
                     season=p.get("season","2025-26"), mlb_ssn=p.get("mlb_season","2026"),
@@ -8459,11 +8531,22 @@ def cm_run_connected_model():
     except ValueError:
         return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
 
+    # Normalize sport on every prop and every game to UPPER canonical form.
+    body_sport = _cm_normalize_sport(body.get("sport"))
+    for p in props:
+        if isinstance(p, dict):
+            p["sport"] = _cm_normalize_sport(p.get("sport") or body_sport)
+    for g in games:
+        if isinstance(g, dict):
+            g["sport"] = _cm_normalize_sport(g.get("sport") or body_sport)
+
     meta = dict(meta)
     if games:
         meta["games"] = games
     if model:
         meta["model"] = model
+    if body_sport:
+        meta["sport"] = body_sport
 
     execution_notes = []
     with _cm_db() as conn:
