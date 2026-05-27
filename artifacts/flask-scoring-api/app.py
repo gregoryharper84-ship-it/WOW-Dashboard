@@ -8255,10 +8255,20 @@ def _llp_favorite_trap(market, side, novig_p, model_p, line_movement_pts, agains
 def _llp_failure_paths(sport, market, side, ctx):
     """List of risk callouts when context is missing or negative."""
     fp = []
-    if ctx.get("starters_unconfirmed"):
-        fp.append("Starting lineup / starter not confirmed")
+    # Sport-aware availability check:
+    #   MLB / NFL → starter confirmation is the meaningful signal (SP / QB).
+    #   NBA / NHL / NCAAB / NCAAF / WNBA → lineup confirmation is what matters.
+    if sport in ("mlb", "nfl"):
+        if ctx.get("starters_unconfirmed"):
+            fp.append("Starting pitcher not confirmed" if sport == "mlb"
+                      else "Starting QB not confirmed")
+    else:
+        if ctx.get("lineup_unconfirmed"):
+            fp.append("Starting lineup not confirmed")
     if ctx.get("injury_risk"):
-        fp.append(f"Key injury/rest concern: {ctx['injury_risk']}")
+        fp.append(f"Key injury concern: {ctx['injury_risk']}")
+    if ctx.get("short_rest"):
+        fp.append("Short rest / back-to-back disadvantage")
     if sport == "mlb" and market == "totals":
         if ctx.get("bullpen_reliability") is None:
             fp.append("Bullpen reliability data unavailable")
@@ -8285,7 +8295,7 @@ def _llp_analyze_one(game, default_sport, board_date):
     side = (game.get("side") or "").strip()
     requested_line = game.get("line")
 
-    if not side:
+    def _empty_record(extra_notes=None, extra_failures=None):
         return {
             "sport": sport, "away_team": away, "home_team": home,
             "market": market, "side": side,
@@ -8293,37 +8303,29 @@ def _llp_analyze_one(game, default_sport, board_date):
             "implied_probability": None, "no_vig_implied_probability": None,
             "model_win_probability": None, "edge": None,
             "kelly_stake": None, "confidence_tier": "UNKNOWN",
-            "starter_lineup_confirmation": "unverified",
+            "starter_status": "unverified",
+            "lineup_status":  "unverified",
+            "rest_context":   {"b2b": None, "days_rest": None, "short_rest": None, "note": "unverified"},
             "injury_rest_context": "unverified",
+            "starter_lineup_confirmation": "unverified",
             "bullpen_reliability": None, "weather_park": None,
             "market_movement_clv_status": "unknown",
+            "clv_beat": None, "clv_delta_pts": None,
             "upset_score": 0, "favorite_trap_flag": False,
             "prop_correlation_support": None,
-            "failure_paths": ["'side' is required for team-betting games"],
+            "failure_paths": list(extra_failures or []),
             "model_adjustments": {},
             "final_decision": "PASS",
-            "notes": ["missing 'side' field"],
+            "notes": list(extra_notes or []),
         }
 
-    record = {
-        "sport": sport, "away_team": away, "home_team": home,
-        "market": market, "side": side,
-        "book": None, "opening_line": None, "current_line": None,
-        "implied_probability": None, "no_vig_implied_probability": None,
-        "model_win_probability": None, "edge": None,
-        "kelly_stake": None, "confidence_tier": "UNKNOWN",
-        "starter_lineup_confirmation": "unverified",
-        "injury_rest_context": "unverified",
-        "bullpen_reliability": None,
-        "weather_park": None,
-        "market_movement_clv_status": "unknown",
-        "upset_score": 0, "favorite_trap_flag": False,
-        "prop_correlation_support": None,
-        "failure_paths": [],
-        "model_adjustments": {},
-        "final_decision": "PASS",
-        "notes": [],
-    }
+    if not side:
+        rec = _empty_record(
+            extra_notes=["missing 'side' field"],
+            extra_failures=["'side' is required for team-betting games"])
+        return rec
+
+    record = _empty_record()
 
     if not away or not home:
         record["notes"].append("missing away/home team")
@@ -8371,6 +8373,25 @@ def _llp_analyze_one(game, default_sport, board_date):
     else:
         record["market_movement_clv_status"] = f"moved {mv:+.2f} pts"
 
+    # CLV beat flag: did the opening line we captured turn out better than current?
+    # Direction-aware so it works for totals (over/under) and spreads (fav/dog).
+    # mv == 0 is a push: neither beat nor loss → None (excluded from stats).
+    record["clv_delta_pts"] = round(mv, 2) if isinstance(mv, (int, float)) else None
+    if mv is None or not isinstance(sel.get("point"), (int, float)) or abs(mv) < 1e-9:
+        record["clv_beat"] = None
+    elif market == "totals":
+        s_lc = (side or "").lower()
+        if   s_lc == "over":  record["clv_beat"] = mv > 0   # total moved up vs our opening
+        elif s_lc == "under": record["clv_beat"] = mv < 0
+        else:                 record["clv_beat"] = None
+    elif market == "spreads":
+        sp = sel.get("point")
+        if   sp < 0: record["clv_beat"] = mv < 0   # favorite: line got more negative → we beat CLV
+        elif sp > 0: record["clv_beat"] = mv > 0   # dog: line got more positive
+        else:        record["clv_beat"] = None
+    else:  # h2h has no point movement; price drift via opening_line not tracked here
+        record["clv_beat"] = None
+
     # Build context for the model
     is_home_side = market == "h2h" and (_llp_norm_team(side) and
                                         _llp_norm_team(side) in _llp_norm_team(home))
@@ -8397,16 +8418,26 @@ def _llp_analyze_one(game, default_sport, board_date):
                     else:      movement_against_us = True
                 # sp == 0 (pickem) → no directional signal
 
+    # Rest / fatigue signals (passthrough from caller, all optional)
+    days_rest = game.get("days_rest")
+    b2b       = game.get("b2b_disadvantage") or game.get("back_to_back")
+    short_rest = False
+    if isinstance(days_rest, (int, float)) and days_rest <= 1: short_rest = True
+    if b2b: short_rest = True
+
     ctx = {
         "is_home_side": is_home_side,
         "line_movement_pts": mv,
         "movement_toward_us": movement_toward_us,
         "movement_against_us": movement_against_us,
-        "b2b_disadvantage": bool(game.get("b2b_disadvantage")),
+        "b2b_disadvantage": bool(b2b),
+        "days_rest": days_rest,
+        "short_rest": short_rest,
         "bullpen_reliability": game.get("bullpen_reliability"),
         "park_run_factor": game.get("park_run_factor"),
         "weather_checked": bool(game.get("weather_checked")),
         "starters_unconfirmed": not bool(game.get("starters_confirmed")),
+        "lineup_unconfirmed":   not bool(game.get("lineup_confirmed") or game.get("starters_confirmed")),
         "injury_risk": game.get("injury_risk"),
         "clv_status": "missing" if mv is None else "tracked",
     }
@@ -8424,9 +8455,30 @@ def _llp_analyze_one(game, default_sport, board_date):
     else:
         edge = None
 
-    # Stub fields with provided context, fall back to "unverified" / None
-    record["starter_lineup_confirmation"] = "confirmed" if game.get("starters_confirmed") else "unverified"
-    record["injury_rest_context"] = game.get("injury_risk") or "no flags reported"
+    # Stub fields with provided context, fall back to "unverified" / None.
+    # Starter (MLB pitcher / NFL QB) and lineup (NBA/NHL/MLB batting order)
+    # are surfaced separately. starter_lineup_confirmation is retained for
+    # back-compat with earlier consumers.
+    record["starter_status"] = "confirmed" if game.get("starters_confirmed") else "unverified"
+    record["lineup_status"]  = ("confirmed" if game.get("lineup_confirmed") else
+                                ("confirmed" if game.get("starters_confirmed") else "unverified"))
+    # Back-compat combined signal: "confirmed" if EITHER starter or lineup is
+    # confirmed (matches legacy semantics where the field was the union).
+    record["starter_lineup_confirmation"] = (
+        "confirmed" if (game.get("starters_confirmed") or game.get("lineup_confirmed"))
+        else "unverified")
+    rest_note_parts = []
+    if isinstance(days_rest, (int, float)): rest_note_parts.append(f"{days_rest} days rest")
+    if b2b:                                  rest_note_parts.append("back-to-back")
+    if game.get("injury_risk"):              rest_note_parts.append(f"injury: {game['injury_risk']}")
+    record["rest_context"] = {
+        "b2b": bool(b2b) if b2b is not None or days_rest is not None else None,
+        "days_rest": days_rest,
+        "short_rest": short_rest,
+        "note": ", ".join(rest_note_parts) if rest_note_parts else "unverified",
+    }
+    record["injury_rest_context"] = (
+        ", ".join(rest_note_parts) if rest_note_parts else "no flags reported")
     if sport == "mlb":
         record["bullpen_reliability"] = game.get("bullpen_reliability")
         wp = []
@@ -8486,12 +8538,46 @@ def _llp_team_analysis(games, default_sport, board_date):
     best_bets        = [r for r in analyses if r["final_decision"] == "BET"]
     pass_traps       = [r for r in analyses
                         if r["final_decision"] in ("PASS","TRAP","WATCH")]
+    traps_only       = [r for r in analyses if r["final_decision"] == "TRAP"]
+
+    # Slate-level summary: counts, total stake, edge stats, CLV stats.
+    decisions = {"BET":0, "SMALL BET":0, "WATCH":0, "PASS":0, "TRAP":0}
+    edges = []; stakes = []; clv_beats = 0; clv_losses = 0; clv_tracked = 0
+    for r in analyses:
+        d = r.get("final_decision", "PASS")
+        if d in decisions: decisions[d] += 1
+        if isinstance(r.get("edge"), (int, float)):        edges.append(float(r["edge"]))
+        if isinstance(r.get("kelly_stake"), (int, float)): stakes.append(float(r["kelly_stake"]))
+        beat = r.get("clv_beat")
+        if beat is True:  clv_beats += 1; clv_tracked += 1
+        if beat is False: clv_losses += 1; clv_tracked += 1
+    slate_summary = {
+        "games_analyzed":     len(analyses),
+        "games_with_odds":    matches,
+        "games_missing_odds": failures,
+        "decisions":          decisions,
+        "best_bets_count":    len(best_bets),
+        "winners_count":      len(winners_ranked),
+        "upset_count":        len(upset_candidates),
+        "trap_count":         len(traps_only),
+        "total_kelly_stake":  round(sum(stakes), 4) if stakes else 0.0,
+        "avg_edge":           round(sum(edges)/len(edges), 4) if edges else None,
+        "max_edge":           round(max(edges), 4) if edges else None,
+        "clv": {
+            "tracked":    clv_tracked,
+            "beats":      clv_beats,
+            "losses":     clv_losses,
+            "beat_rate":  round(clv_beats/clv_tracked, 4) if clv_tracked else None,
+        },
+    }
+
     return {
         "team_analysis":     analyses,
         "winners_ranked":    winners_ranked,
         "upset_candidates":  upset_candidates,
         "best_bets":         best_bets,
         "pass_traps":        pass_traps,
+        "slate_summary":     slate_summary,
         "source_access_status": source_status,
     }
 
@@ -8581,7 +8667,9 @@ def cm_run_connected_model():
             "ok": True, "status": "completed", "board_id": board_id,
             "board_type": board_type,
             "games_received": len(games),
+            "final_decision_source": "llp_engine",
             "source_access_status": agg["source_access_status"],
+            "slate_summary":       agg["slate_summary"],
             "team_analysis":       agg["team_analysis"],
             "winners_ranked":      agg["winners_ranked"],
             "upset_candidates":    agg["upset_candidates"],
