@@ -1,0 +1,547 @@
+Yes — with **Replit connected to both**, the connection should look like this:
+
+```text
+ChatGPT / WOW
+   ↓
+Replit Orchestrator
+   ↓
+Claude Audit
+   ↓
+Replit Final Arbiter
+   ↓
+ChatGPT / WOW Final Output
+```
+
+The models should **not** connect model-to-model directly. They should both connect through Replit.
+
+# The clean architecture
+
+## 1. Replit becomes the control center
+
+Replit should own:
+
+```text
+1. Board intake
+2. WOW primary scoring
+3. Claude red-team audit
+4. Final arbiter decision
+5. Slip builder
+6. Postmortem storage
+```
+
+So ChatGPT and Claude are not trying to remember everything separately.
+
+Replit stores the truth.
+
+---
+
+# How the connection works
+
+## Step 1: ChatGPT sends board to Replit
+
+When you upload PrizePicks screenshots or props here, ChatGPT/WOW should call your Replit endpoint:
+
+```http
+POST /input-board
+```
+
+Payload:
+
+```json
+{
+  "source": "chatgpt",
+  "board_type": "prizepicks",
+  "date": "2026-05-27",
+  "props": [
+    {
+      "player": "Player Name",
+      "team": "TEAM",
+      "opponent": "OPP",
+      "sport": "MLB",
+      "prop": "Strikeouts",
+      "line": 4.5,
+      "side": "MORE",
+      "source": "PrizePicks"
+    }
+  ]
+}
+```
+
+Replit saves the board and returns:
+
+```json
+{
+  "board_id": "board_20260527_001",
+  "status": "received"
+}
+```
+
+---
+
+## Step 2: Replit runs WOW scoring
+
+Replit then calls your WOW scoring logic:
+
+```http
+POST /wow-score
+```
+
+WOW should return:
+
+```json
+{
+  "board_id": "board_20260527_001",
+  "model": "WOW",
+  "approved_pool": [],
+  "conditional_pool": [],
+  "watch_pool": [],
+  "reject_pool": [],
+  "source_access_status": {
+    "player_logs": "available",
+    "official_status": "partial",
+    "market_odds": "available",
+    "projections": "available"
+  }
+}
+```
+
+This is the **primary model decision**.
+
+---
+
+## Step 3: Replit sends WOW output to Claude
+
+Then Replit calls Claude:
+
+```http
+POST /claude-audit
+```
+
+Claude receives the WOW output and audits it.
+
+Claude should return:
+
+```json
+{
+  "board_id": "board_20260527_001",
+  "props_to_keep": [],
+  "props_to_downgrade": [],
+  "props_to_reject": [],
+  "missing_data_flags": [],
+  "correlation_flags": [],
+  "patch_recommendations": []
+}
+```
+
+Claude’s role is not to make new picks.
+
+Claude’s role is:
+
+```text
+Find bad assumptions.
+Find missing data.
+Find overpromoted legs.
+Find correlation problems.
+Find label mistakes.
+```
+
+---
+
+## Step 4: Replit runs final arbiter
+
+Then Replit should call:
+
+```http
+POST /final-arbiter
+```
+
+The arbiter compares:
+
+```text
+WOW original decision
+Claude audit
+Active model rules
+```
+
+Then decides:
+
+```json
+{
+  "final_approved_pool": [],
+  "final_conditional_pool": [],
+  "final_watch_pool": [],
+  "final_reject_pool": [],
+  "accepted_claude_flags": [],
+  "rejected_claude_flags": []
+}
+```
+
+Important rule:
+
+```text
+Claude can challenge approval.
+Claude cannot create approval.
+WOW cannot ignore Claude silently.
+```
+
+Every Claude flag must be:
+
+```text
+Accepted
+Rejected
+Partially accepted
+```
+
+with a reason.
+
+---
+
+## Step 5: Replit returns final result to ChatGPT
+
+Finally, ChatGPT receives the final Replit result and presents it cleanly to you.
+
+```text
+Final Approved Pool
+Conditional Pool
+Watchlist
+Rejects
+Claude Audit Notes
+Slip Options if requested
+```
+
+---
+
+# The endpoint setup you want in Replit
+
+You want these endpoints:
+
+```text
+POST /input-board
+POST /wow-score
+POST /claude-audit
+POST /final-arbiter
+POST /build-slips
+POST /postmortem-log
+GET  /board/:board_id
+GET  /latest-run
+```
+
+Minimum MVP:
+
+```text
+POST /run-connected-model
+```
+
+That one endpoint can do everything:
+
+```text
+Input board
+→ WOW score
+→ Claude audit
+→ Final arbiter
+→ Return final output
+```
+
+That is the easiest first version.
+
+---
+
+# Best first MVP endpoint
+
+Use this:
+
+```http
+POST /run-connected-model
+```
+
+Payload:
+
+```json
+{
+  "board_type": "prizepicks",
+  "date": "2026-05-27",
+  "mode": "prop_pool",
+  "slips_requested": false,
+  "props": [
+    {
+      "player": "Player Name",
+      "team": "TEAM",
+      "opponent": "OPP",
+      "sport": "MLB",
+      "prop": "Strikeouts",
+      "line": 4.5,
+      "side": "MORE",
+      "source": "PrizePicks"
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "status": "completed",
+  "board_id": "board_20260527_001",
+  "wow_summary": {},
+  "claude_audit": {},
+  "final_decision": {},
+  "approved_pool": [],
+  "conditional_pool": [],
+  "watch_pool": [],
+  "reject_pool": [],
+  "execution_notes": []
+}
+```
+
+That gives you one clean action from ChatGPT.
+
+---
+
+# Best system design
+
+## Replit should control the sequence
+
+Inside Replit, the code flow should be:
+
+```python
+def run_connected_model(board):
+    board_id = save_board(board)
+
+    wow_output = run_wow_primary_analysis(board)
+
+    claude_audit = run_claude_red_team_audit(
+        wow_output=wow_output,
+        active_rules=get_active_model_rules()
+    )
+
+    final_output = run_final_arbiter(
+        wow_output=wow_output,
+        claude_audit=claude_audit,
+        active_rules=get_active_model_rules()
+    )
+
+    save_full_run(board_id, wow_output, claude_audit, final_output)
+
+    return final_output
+```
+
+---
+
+# What ChatGPT should do
+
+ChatGPT should be the **operator interface**.
+
+Here is ChatGPT’s role:
+
+```text
+1. Receive screenshots / board from you
+2. Extract visible props
+3. Send candidate board to Replit
+4. Receive final connected-model result
+5. Explain it clearly
+6. Build slips only if requested
+7. Patch model if postmortem reveals a real issue
+```
+
+---
+
+# What Claude should do
+
+Claude should be the **red-team QA model**.
+
+Claude should only receive:
+
+```text
+WOW output
+Active rules
+Board context
+```
+
+Claude should not receive a blank board and start picking.
+
+Claude’s prompt should say:
+
+```text
+Audit this output. Do not generate independent picks first.
+```
+
+---
+
+# What Replit should store
+
+Replit should store:
+
+```text
+boards
+props
+wow_outputs
+claude_audits
+final_decisions
+slips
+postmortems
+patch_candidates
+```
+
+This is how you know later:
+
+```text
+Did WOW miss?
+Did Claude catch it?
+Did Claude over-warn?
+Did the final arbiter make the right call?
+Should we patch the system?
+```
+
+---
+
+# Replit environment variables
+
+In Replit, you’ll want:
+
+```text
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+WOW_ENGINE_KEY=
+ODDS_API_KEY=
+RUNDOWN_API_KEY=
+SPORTSDATA_API_KEY=
+DATABASE_URL=
+REPLIT_API_KEY=
+```
+
+Optional:
+
+```text
+PRIZEPICKS_SOURCE=
+PICKFINDER_KEY=
+OUTLIER_KEY=
+PROPS_CASH_KEY=
+```
+
+---
+
+# The most important prompt inside Replit
+
+Use this for Claude:
+
+```text
+You are Claude acting as the Red Team Validator for the WOW Betting Model.
+
+You are not the primary picker.
+Do not generate new picks first.
+Do not approve props.
+Do not build slips.
+
+Audit the WOW output for:
+- missing L5/L10 exact-line proof
+- unsupported L10 median
+- missing or stale official status
+- missing projection support
+- missing or contradictory market support
+- overstated probability
+- wrong approval label
+- fragile failure path
+- same-game or same-player correlation risk
+- known failed archetypes
+- MORE/LESS side not properly compared
+
+Return:
+- props_to_keep
+- props_to_downgrade
+- props_to_reject
+- missing_data_flags
+- overconfidence_flags
+- correlation_flags
+- patch_recommendations
+
+Claude can challenge approval.
+Claude cannot create approval.
+```
+
+---
+
+# The most important final arbiter prompt
+
+Use this inside Replit after Claude returns the audit:
+
+```text
+You are WOW Final Arbiter.
+
+Compare:
+1. WOW primary output
+2. Claude audit
+3. Active WOW model rules
+
+Accept Claude’s critique only if it identifies a real missing checkpoint, stale assumption, unsupported label, market contradiction, role/status issue, L5/L10 issue, median failure, projection gap, or correlation risk.
+
+Reject Claude’s critique if it is only preference, narrative, unsupported caution, or a second-model opinion.
+
+For every prop return:
+- initial WOW label
+- Claude recommendation
+- arbiter decision
+- final label
+- allowed_in_slips
+- reason
+
+WOW remains source of truth.
+Claude is a validator, not the picker.
+```
+
+---
+
+# The simplest way to connect it now
+
+Since Replit is already connected to both, your next move is:
+
+## Build one Replit endpoint:
+
+```text
+POST /run-connected-model
+```
+
+That endpoint should:
+
+```text
+1. Accept board props
+2. Run WOW primary
+3. Call Claude audit
+4. Run arbiter
+5. Return final result
+```
+
+Then connect that one endpoint as a ChatGPT Action.
+
+That gives you:
+
+```text
+ChatGPT → Replit → WOW + Claude → Replit → ChatGPT
+```
+
+That is the cleanest setup.
+
+---
+
+# Final recommendation
+
+Do **not** start with six endpoints.
+
+Start with one:
+
+```text
+/run-connected-model
+```
+
+Once that works, split it into:
+
+```text
+/input-board
+/wow-score
+/claude-audit
+/final-arbiter
+/build-slips
+/postmortem-log
+```
+
+MVP first. Full system after.
