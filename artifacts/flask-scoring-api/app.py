@@ -7445,21 +7445,41 @@ def cm_input_board():
     body = request.get_json(silent=True) or {}
     source     = (body.get("source") or "chatgpt").strip()
     board_type = (body.get("board_type") or "prizepicks").strip()
+    model      = (body.get("model") or "").strip().lower()
     board_date = (body.get("date") or datetime.now().strftime("%Y-%m-%d")).strip()
-    props      = body.get("props") or []
+    props      = body.get("props") if isinstance(body.get("props"), list) else []
+    games      = body.get("games") if isinstance(body.get("games"), list) else []
     meta       = body.get("meta") or {}
 
-    if not isinstance(props, list) or not props:
+    is_team_board = (board_type == "team_betting") or (model == "llp_team")
+    if is_team_board and board_type == "prizepicks":
+        board_type = "team_betting"
+
+    if not props and not games:
+        return jsonify({"ok": False,
+                        "error": "Either props or games must be a non-empty array."}), 400
+    if is_team_board and not games:
+        return jsonify({"ok": False, "error": "games must be a non-empty array"}), 400
+    if not is_team_board and board_type == "prizepicks" and not props:
         return jsonify({"ok": False, "error": "props must be a non-empty array"}), 400
+
     try:
         datetime.strptime(board_date, "%Y-%m-%d")
     except ValueError:
         return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
 
+    meta = dict(meta)
+    if games:
+        meta["games"] = games
+    if model:
+        meta["model"] = model
+
     with _cm_db() as conn:
         board_id = _cm_insert_board(conn, source, board_type, board_date, props, meta)
     return jsonify({"ok": True, "board_id": board_id, "status": "received",
-                    "props_received": len(props)})
+                    "board_type": board_type,
+                    "props_received": len(props),
+                    "games_received": len(games)})
 
 
 # ── Endpoint: POST /wow-score ─────────────────────────────────────────
@@ -7863,20 +7883,55 @@ def cm_run_connected_model():
     # 1. input-board (inline)
     source     = (body.get("source") or "chatgpt").strip()
     board_type = (body.get("board_type") or "prizepicks").strip()
+    model      = (body.get("model") or "").strip().lower()
     board_date = (body.get("date") or datetime.now().strftime("%Y-%m-%d")).strip()
-    props      = body.get("props") or []
+    props      = body.get("props") if isinstance(body.get("props"), list) else []
+    games      = body.get("games") if isinstance(body.get("games"), list) else []
     meta       = body.get("meta") or {}
-    if not isinstance(props, list) or not props:
+
+    is_team_board = (board_type == "team_betting") or (model == "llp_team")
+    if is_team_board and board_type == "prizepicks":
+        board_type = "team_betting"
+
+    if not props and not games:
+        return jsonify({"ok": False,
+                        "error": "Either props or games must be a non-empty array."}), 400
+    if is_team_board and not games:
+        return jsonify({"ok": False, "error": "games must be a non-empty array"}), 400
+    if not is_team_board and board_type == "prizepicks" and not props:
         return jsonify({"ok": False, "error": "props must be a non-empty array"}), 400
+
     try:
         datetime.strptime(board_date, "%Y-%m-%d")
     except ValueError:
         return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
 
+    meta = dict(meta)
+    if games:
+        meta["games"] = games
+    if model:
+        meta["model"] = model
+
     execution_notes = []
     with _cm_db() as conn:
         board_id = _cm_insert_board(conn, source, board_type, board_date, props, meta)
     execution_notes.append(f"board saved: {board_id}")
+
+    # Team-betting boards don't go through the per-prop WOW/Claude/arbiter pipeline.
+    # Save the board and return; team_analysis pipeline is a separate future module.
+    if is_team_board:
+        execution_notes.append(
+            f"team_betting board accepted with {len(games)} game(s); "
+            "per-prop pipeline skipped (team_analysis not yet implemented)"
+        )
+        return jsonify({
+            "ok": True, "status": "received", "board_id": board_id,
+            "board_type": board_type,
+            "games_received": len(games),
+            "source_access_status": {"team_betting": "saved; analysis pending"},
+            "team_analysis": None,
+            "execution_notes": execution_notes,
+        })
 
     # 2. wow-score (via internal call to keep logic in one place)
     with app.test_request_context(json={"board_id": board_id},
