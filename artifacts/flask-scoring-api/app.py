@@ -8604,17 +8604,23 @@ def cm_run_connected_model():
                            f"reject={len(wow_json['reject_pool'])}")
 
     # 3. claude-audit
-    claude_json = None
-    final_json  = None
+    claude_json          = None
+    claude_audit_status  = "skipped" if skip_arbiter else "pending"
+    claude_error         = None
+    final_json           = None
     if not skip_arbiter:
         with app.test_request_context(json={"board_id": board_id},
                                       headers={"X-API-Key": os.environ.get("SCORING_API_KEY","")}):
             audit_resp = cm_claude_audit()
         ar = audit_resp.get_json() if hasattr(audit_resp, "get_json") else audit_resp[0].get_json()
         if not ar.get("ok"):
-            execution_notes.append(f"claude-audit failed: {ar.get('error')}")
+            claude_audit_status = "failed"
+            claude_error        = ar.get("error") or "unknown error"
+            execution_notes.append(f"claude-audit failed: {claude_error}")
+            execution_notes.append("Claude audit unavailable; final arbiter skipped.")
         else:
-            claude_json = ar
+            claude_json         = ar
+            claude_audit_status = "ok"
             execution_notes.append(f"claude-audit done in {ar.get('latency_ms')}ms")
 
             # 4. final-arbiter
@@ -8623,12 +8629,58 @@ def cm_run_connected_model():
                 arb_resp = cm_final_arbiter()
             fr = arb_resp.get_json() if hasattr(arb_resp, "get_json") else arb_resp[0].get_json()
             if not fr.get("ok"):
-                execution_notes.append(f"final-arbiter failed: {fr.get('error')}")
+                arbiter_error = fr.get("error") or "unknown error"
+                execution_notes.append(f"final-arbiter failed: {arbiter_error}")
+                execution_notes.append("Final arbiter unavailable; using WOW + Claude-audit output unsigned.")
             else:
                 final_json = fr
                 execution_notes.append(f"final-arbiter done in {fr.get('latency_ms')}ms")
 
-    # 5. slips (optional)
+    # ── WOW-only fallback when the arbitrated pool is unavailable ──
+    # We never silently present an unaudited result as fully approved. The
+    # cause of the fallback (claude failure vs arbiter failure vs skipped)
+    # is recorded so messaging is accurate.
+    def _downgrade_unaudited(items, cause_note):
+        out = []
+        for it in (items or []):
+            it2 = dict(it)
+            tier = (it2.get("confidence_tier") or "").upper()
+            label = (it2.get("final_label") or "")
+            if ("FINAL LOCK" in tier or "FINAL APPROVED" in tier or
+                "final approved" in label.lower() or "final lock" in label.lower()):
+                it2["confidence_tier"] = "MODEL QUALIFIED — UNAUDITED"
+                it2["final_label"]     = "Model Qualified - Unaudited"
+            it2["audited"] = False
+            it2["audit_note"] = cause_note
+            out.append(it2)
+        return out
+
+    if final_json:
+        final_decision_source = "claude_arbiter"
+        approved_pool    = final_json.get("final_approved_pool",    wow_json["approved_pool"])
+        conditional_pool = final_json.get("final_conditional_pool", wow_json["conditional_pool"])
+        watch_pool       = final_json.get("final_watch_pool",       wow_json["watch_pool"])
+        reject_pool      = final_json.get("final_reject_pool",      wow_json["reject_pool"])
+    else:
+        # Distinguish the three "no arbitrated pool" causes.
+        if claude_audit_status == "skipped":
+            final_decision_source = "wow_only_skipped"
+            cause_note = "Final arbiter skipped by request; WOW-only output."
+            slip_skip_reason = "arbiter skipped by request"
+        elif claude_audit_status == "failed":
+            final_decision_source = "wow_only_fallback"
+            cause_note = "Claude audit unavailable; WOW-only output."
+            slip_skip_reason = "Claude audit unavailable"
+        else:  # claude ok but arbiter failed
+            final_decision_source = "wow_plus_claude_unsigned"
+            cause_note = "Final arbiter unavailable; WOW + Claude-audit output unsigned."
+            slip_skip_reason = "final arbiter unavailable"
+        approved_pool    = _downgrade_unaudited(wow_json["approved_pool"], cause_note)
+        conditional_pool = list(wow_json["conditional_pool"])
+        watch_pool       = list(wow_json["watch_pool"])
+        reject_pool      = list(wow_json["reject_pool"])
+
+    # 5. slips (optional) — only built when we have a full arbiter result
     slips_json = None
     if slips_requested and final_json:
         with app.test_request_context(
@@ -8639,10 +8691,19 @@ def cm_run_connected_model():
         if sr.get("ok"):
             slips_json = sr
             execution_notes.append(f"slips built: {sr.get('slips_built')}")
+    elif slips_requested and not final_json:
+        execution_notes.append(f"slips skipped: {slip_skip_reason}, no arbitrated pool.")
 
-    final_pools = (final_json or {})
     return jsonify({
         "ok": True, "status": "completed", "board_id": board_id,
+        "wow_output": {
+            "approved_pool":    wow_json["approved_pool"],
+            "conditional_pool": wow_json["conditional_pool"],
+            "watch_pool":       wow_json["watch_pool"],
+            "reject_pool":      wow_json["reject_pool"],
+            "source_access_status": wow_json["source_access_status"],
+        },
+        # Back-compat alias for existing consumers
         "wow_summary": {
             "approved_pool":    wow_json["approved_pool"],
             "conditional_pool": wow_json["conditional_pool"],
@@ -8650,12 +8711,16 @@ def cm_run_connected_model():
             "reject_pool":      wow_json["reject_pool"],
             "source_access_status": wow_json["source_access_status"],
         },
-        "claude_audit":   claude_json,
-        "final_decision": final_json,
-        "approved_pool":    final_pools.get("final_approved_pool",    wow_json["approved_pool"]),
-        "conditional_pool": final_pools.get("final_conditional_pool", wow_json["conditional_pool"]),
-        "watch_pool":       final_pools.get("final_watch_pool",       wow_json["watch_pool"]),
-        "reject_pool":      final_pools.get("final_reject_pool",      wow_json["reject_pool"]),
+        "claude_audit":         claude_json,
+        "claude_audit_status":  claude_audit_status,
+        "claude_error":         claude_error,
+        "final_decision":       final_json,
+        "final_decision_source": final_decision_source,
+        "final_approved_pool":  approved_pool,
+        "approved_pool":        approved_pool,
+        "conditional_pool":     conditional_pool,
+        "watch_pool":           watch_pool,
+        "reject_pool":          reject_pool,
         "slips": slips_json,
         "execution_notes": execution_notes,
     })
