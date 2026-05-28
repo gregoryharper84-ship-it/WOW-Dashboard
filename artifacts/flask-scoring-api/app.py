@@ -8422,6 +8422,47 @@ def _llp_model_prob(sport, market, side, novig_p, ctx):
                 "nhl":0.018, "ncaab":0.024, "ncaaf":0.025}.get(sport, 0.015)
         p += bump; adj["home_advantage"] = bump
 
+    # Team-strength blend (h2h only): when ESPN-standings ratings are
+    # available for BOTH teams, anchor an independent projection on the
+    # pythag/win-pct delta and blend it 50/50 with the home-adjusted market
+    # baseline. This breaks the "edges cluster at +1.5%/+2.0%" pattern that
+    # happens when model_p is essentially novig + a fixed bump — now the
+    # model can genuinely agree OR disagree with the market based on real
+    # team quality.
+    #
+    # Math (per architect review):
+    #   - `p` already includes the home_advantage bump above.
+    #   - `strength_p` is the NEUTRAL-SITE strength projection (no home bump
+    #     in it) so the home advantage isn't double-counted via the blend.
+    #   - blended = 0.5 * p + 0.5 * strength_p  → home bump counts once
+    #     (carried by `p`); strength delta contributes its full weight.
+    #   - `team_strength_blend` records only the incremental shift from the
+    #     blend so the home_advantage line item stays clean and attributable.
+    if market == "h2h":
+        our_rating = ctx.get("our_team_rating")
+        opp_rating = ctx.get("opp_team_rating")
+        if (isinstance(our_rating, dict) and isinstance(opp_rating, dict)
+                and isinstance(our_rating.get("strength"), (int, float))
+                and isinstance(opp_rating.get("strength"), (int, float))):
+            delta = float(our_rating["strength"]) - float(opp_rating["strength"])
+            # Sport-specific weight: how much a 0.100 strength delta should
+            # shift a single-game win prob. MLB is highest-variance so the
+            # delta translates less; NBA/NFL more.
+            weight = {"mlb":0.45, "nba":0.65, "wnba":0.60, "nfl":0.70,
+                      "nhl":0.40, "ncaab":0.65, "ncaaf":0.65}.get(sport, 0.55)
+            strength_p = 0.5 + (delta * weight)           # neutral site
+            strength_p = max(0.05, min(0.95, strength_p))
+            baseline_before = p                             # = novig + home_bump
+            blended = 0.5 * baseline_before + 0.5 * strength_p
+            shift = blended - baseline_before               # pure strength contribution
+            p = blended
+            # `model_adjustments` is additive-only: every numeric value here
+            # MUST be a probability delta that contributes to (model_p - novig_p).
+            # The raw strength gap (delta) is a rating quantity, not a prob
+            # adjustment, so it lives on `record["team_ratings"]["delta"]`
+            # (set by the caller in `_llp_analyze_one`), not here.
+            adj["team_strength_blend"] = round(shift, 4)
+
     # Sharp line movement toward our side → small upward nudge
     mv = ctx.get("line_movement_pts")
     if mv is not None and ctx.get("movement_toward_us"):
@@ -8601,10 +8642,30 @@ def _llp_analyze_one(game, default_sport, board_date):
     record["implied_probability"]        = round(sel["implied_prob"], 4) if sel.get("implied_prob") is not None else None
     record["no_vig_implied_probability"] = round(sel["novig_prob"], 4)   if sel.get("novig_prob")   is not None else None
 
-    # Opening-line / movement (only meaningful when there is a numeric point)
+    # Opening-line / movement (only meaningful when there is a numeric point).
+    # Primary source: `opening_lines` (first-write-wins per date).
+    # Fallback: earliest `odds_snapshots` row from today — useful when a
+    # background poller (or earlier analyze run for a different side of the
+    # same game) wrote snapshot history before this market's opening_lines
+    # row was created.
     op_info = {"opening_line": None, "movement": None, "stored": False}
     if isinstance(sel.get("point"), (int, float)):
         op_info = _llp_opening_line_for_game(away, home, market, side, board_date, sel["point"])
+    # Pass the matched book so the snapshot anchor is same-book; falls back
+    # to None (any-book) only if `sel` somehow has no book attribution.
+    earliest_snap = _llp_earliest_snapshot_today(
+        sport, away, home, market, side, board_date,
+        book=sel.get("book") if isinstance(sel, dict) else None)
+    # If opening_lines had no prior anchor but odds_snapshots does, use it.
+    if (op_info.get("opening_line") is None
+            and earliest_snap is not None
+            and earliest_snap.get("point") is not None
+            and isinstance(sel.get("point"), (int, float))):
+        op_info = {
+            "opening_line": earliest_snap["point"],
+            "movement":     float(sel["point"]) - earliest_snap["point"],
+            "stored":       False,
+        }
     record["opening_line"] = op_info.get("opening_line")
     mv = op_info.get("movement")
     if mv is None:
@@ -8618,7 +8679,36 @@ def _llp_analyze_one(game, default_sport, board_date):
     # Direction-aware so it works for totals (over/under) and spreads (fav/dog).
     # mv == 0 is a push: neither beat nor loss → None (excluded from stats).
     record["clv_delta_pts"] = round(mv, 2) if isinstance(mv, (int, float)) else None
-    if mv is None or not isinstance(sel.get("point"), (int, float)) or abs(mv) < 1e-9:
+    if market == "h2h":
+        # H2H has no point movement, so we anchor CLV on american-odds drift
+        # using the earliest snapshot from today. We "beat CLV" when the
+        # market price moved AGAINST our side (price got shorter for us =
+        # opposing side longer = our locked price was better).
+        # Implied-prob change is the cleanest direction-agnostic signal.
+        cur_am  = sel.get("american")
+        snap_am = (earliest_snap or {}).get("american_odds")
+        if (isinstance(cur_am, (int, float)) and isinstance(snap_am, (int, float))
+                and abs(cur_am - snap_am) >= 1):
+            try:
+                cur_dec  = _llp_american_to_decimal(cur_am)
+                snap_dec = _llp_american_to_decimal(snap_am)
+                cur_ip   = (1.0 / cur_dec)  if cur_dec  and cur_dec  > 0 else None
+                snap_ip  = (1.0 / snap_dec) if snap_dec and snap_dec > 0 else None
+                if cur_ip is not None and snap_ip is not None:
+                    # Market thinks our side is MORE likely now → our earlier
+                    # locked price was a CLV beat.
+                    record["clv_beat"] = bool(cur_ip > snap_ip + 1e-6)
+                    record["clv_delta_pts"] = round((cur_ip - snap_ip) * 100, 2)
+                    record["market_movement_clv_status"] = (
+                        f"price {snap_am:+.0f} → {cur_am:+.0f} "
+                        f"({(cur_ip - snap_ip) * 100:+.1f} pp)")
+                else:
+                    record["clv_beat"] = None
+            except Exception:
+                record["clv_beat"] = None
+        else:
+            record["clv_beat"] = None
+    elif mv is None or not isinstance(sel.get("point"), (int, float)) or abs(mv) < 1e-9:
         record["clv_beat"] = None
     elif market == "totals":
         s_lc = (side or "").lower()
@@ -8630,7 +8720,7 @@ def _llp_analyze_one(game, default_sport, board_date):
         if   sp < 0: record["clv_beat"] = mv < 0   # favorite: line got more negative → we beat CLV
         elif sp > 0: record["clv_beat"] = mv > 0   # dog: line got more positive
         else:        record["clv_beat"] = None
-    else:  # h2h has no point movement; price drift via opening_line not tracked here
+    else:
         record["clv_beat"] = None
 
     # Build context for the model
@@ -8706,6 +8796,56 @@ def _llp_analyze_one(game, default_sport, board_date):
         "source":     "site.api.espn.com",
     }
 
+    # LLP Pro Data Ingestion: fetch team strength ratings (ESPN standings,
+    # 1h cache, one HTTP call per sport per hour). Look up BOTH teams and
+    # decide which is "our" side vs "opp" based on the bet side we're
+    # analyzing. Used by `_llp_model_prob` to compute an independent
+    # h2h projection instead of just nudging no-vig — fixing the
+    # +1.5%/+2.0% edge clustering pattern.
+    team_ratings = _llp_fetch_team_ratings(sport)
+    home_rating  = _llp_lookup_team_rating(team_ratings, home)
+    away_rating  = _llp_lookup_team_rating(team_ratings, away)
+    # Compute the raw strength gap once for metadata. Stored on the record
+    # (NOT in `model_adjustments`, which is reserved for additive probability
+    # deltas — per architect review). Negative = our side rated weaker.
+    _home_strength = (home_rating or {}).get("strength") if isinstance(home_rating, dict) else None
+    _away_strength = (away_rating or {}).get("strength") if isinstance(away_rating, dict) else None
+    record["team_ratings"] = {
+        "home": home_rating, "away": away_rating,
+        "home_strength": _home_strength, "away_strength": _away_strength,
+        "source": "site.api.espn.com",
+        "available": bool(home_rating and away_rating),
+    }
+    # Determine which team is "our" side for the model. Match the side token
+    # to home/away using normalized team names (handles aliases like
+    # "Yankees" → "New York Yankees", case variants, punctuation).
+    #
+    # Safety rule (per architect review): for h2h, if the side cannot be
+    # confidently mapped to either team, DISABLE the strength blend by
+    # passing None — defaulting to "home" would invert the delta sign on
+    # mis-mapped sides and silently corrupt edges. For totals (side is
+    # over/under and the blend is h2h-only anyway), defaulting to home is
+    # harmless and lets the record carry a useful rating snapshot.
+    s_norm    = _llp_norm_team(side or "")
+    home_norm = _llp_norm_team(home or "")
+    away_norm = _llp_norm_team(away or "")
+    if s_norm and home_norm and (s_norm == home_norm
+                                  or s_norm in home_norm
+                                  or home_norm in s_norm):
+        our_rating, opp_rating = home_rating, away_rating
+    elif s_norm and away_norm and (s_norm == away_norm
+                                    or s_norm in away_norm
+                                    or away_norm in s_norm):
+        our_rating, opp_rating = away_rating, home_rating
+    elif market == "h2h":
+        # H2H side didn't map to either team — refuse to guess. The model
+        # will fall back to pure no-vig + home bump for this record.
+        our_rating, opp_rating = None, None
+    else:
+        # Totals (over/under) — strength blend is gated on market == 'h2h'
+        # inside _llp_model_prob, so the choice here is cosmetic.
+        our_rating, opp_rating = home_rating, away_rating
+
     ctx = {
         "is_home_side": is_home_side,
         "line_movement_pts": mv,
@@ -8722,6 +8862,10 @@ def _llp_analyze_one(game, default_sport, board_date):
         "lineup_unconfirmed":   record["lineup_status"]  != "confirmed",
         "injury_risk": game.get("injury_risk"),
         "clv_status": "missing" if mv is None else "tracked",
+        # Team-strength ratings (ESPN standings, optional). Consumed by
+        # `_llp_model_prob` for the h2h independent-projection blend.
+        "our_team_rating": our_rating,
+        "opp_team_rating": opp_rating,
     }
 
     # LLP Discovery pre-pass: classify the team-side market before validation.
@@ -9025,13 +9169,127 @@ def _llp_clean_item(rec):
     }
 
 
+def _llp_expand_both_sides(games):
+    """Adapter: expand every matchup into BOTH sides of every market it touches.
+
+    The engine evaluates one (sport, away, home, market, side) per record.
+    Callers historically had to submit each side explicitly, which made it
+    impossible to compare both sides of the same market in one slate and
+    blocked downstream features that need the partner side (no-vig pricing,
+    arbitrage detection, side-specific CLV).
+
+    This adapter takes a list of game payloads and returns an expanded list
+    where every (sport, away, home, market) appears with BOTH sides:
+      - h2h:     side=<away_team>, side=<home_team>
+      - totals:  side="over",      side="under"
+      - spreads: side=<away_team>, side=<home_team>  (line sign flips)
+
+    Existing entries are preserved verbatim; only the missing partner side
+    is appended. Empty/None `side` on h2h or spreads → expand to both teams.
+    Empty/None `side` on totals → expand to both over and under. The
+    operation is idempotent: passing an already-expanded slate is a no-op.
+    """
+    if not games:
+        return []
+    out = []
+    seen = set()  # (sport, away, home, market, normalized_side) → dedupe
+
+    def _key(g, side_override=None):
+        sport = (g.get("sport") or "").lower().strip()
+        away  = (g.get("away") or g.get("away_team") or "").strip()
+        home  = (g.get("home") or g.get("home_team") or "").strip()
+        market_raw = (g.get("market") or "h2h").lower().strip()
+        market = {"moneyline":"h2h","ml":"h2h","h2h":"h2h",
+                  "spread":"spreads","spreads":"spreads",
+                  "total":"totals","totals":"totals","ou":"totals"}.get(
+                      market_raw, market_raw)
+        side = (side_override if side_override is not None
+                else (g.get("side") or "")).lower().strip()
+        return (sport, away, home, market, side)
+
+    def _add(g):
+        k = _key(g)
+        if k in seen:
+            return
+        seen.add(k)
+        out.append(g)
+
+    for g in games:
+        if not isinstance(g, dict):
+            continue
+        market_raw = (g.get("market") or "h2h").lower().strip()
+        market = {"moneyline":"h2h","ml":"h2h","h2h":"h2h",
+                  "spread":"spreads","spreads":"spreads",
+                  "total":"totals","totals":"totals","ou":"totals"}.get(
+                      market_raw, market_raw)
+        away = (g.get("away") or g.get("away_team") or "").strip()
+        home = (g.get("home") or g.get("home_team") or "").strip()
+        side = (g.get("side") or "").strip()
+        line = g.get("line")
+
+        if market == "totals":
+            if not side or side.lower() not in ("over", "under"):
+                # No side specified → emit both.
+                base = {k: v for k, v in g.items() if k != "side"}
+                _add({**base, "side": "over"})
+                _add({**base, "side": "under"})
+            else:
+                _add(g)
+                partner_side = "under" if side.lower() == "over" else "over"
+                _add({**{k: v for k, v in g.items() if k != "side"},
+                      "side": partner_side})
+        elif market in ("h2h", "spreads"):
+            if not away or not home:
+                _add(g)  # let the engine emit the proper failure path
+                continue
+            if not side:
+                # No side → emit both teams.
+                base = {k: v for k, v in g.items() if k not in ("side", "line")}
+                if market == "h2h":
+                    _add({**base, "side": away})
+                    _add({**base, "side": home})
+                else:  # spreads — need a line to flip; if none, emit no line
+                    if isinstance(line, (int, float)):
+                        _add({**base, "side": away, "line":  float(line)})
+                        _add({**base, "side": home, "line": -float(line)})
+                    else:
+                        _add({**base, "side": away})
+                        _add({**base, "side": home})
+            else:
+                _add(g)
+                # Figure out the partner team. Match case-insensitively;
+                # if `side` doesn't match either team, leave the payload
+                # alone and let the engine emit the failure path.
+                s_lc = side.lower()
+                if   s_lc == away.lower(): partner = home
+                elif s_lc == home.lower(): partner = away
+                else: partner = None
+                if partner:
+                    base = {k: v for k, v in g.items() if k not in ("side", "line")}
+                    if market == "spreads" and isinstance(line, (int, float)):
+                        _add({**base, "side": partner, "line": -float(line)})
+                    else:
+                        _add({**base, "side": partner})
+        else:
+            # Unknown market — pass through unchanged.
+            _add(g)
+    return out
+
+
 def _llp_team_analysis(games, default_sport, board_date):
-    """Analyze a list of games and aggregate into the response shape."""
+    """Analyze a list of games and aggregate into the response shape.
+
+    Auto-expands each matchup into both sides via `_llp_expand_both_sides`
+    so callers can submit a single game object per market (or omit `side`
+    entirely) and still get both-side analysis. Idempotent — already-
+    expanded slates are deduped.
+    """
+    games = _llp_expand_both_sides(games or [])
     analyses = []
     source_status = {"odds_api": "ok" if os.environ.get("ODDS_API_KEY") else "missing",
                      "opening_lines_db": "ok" if os.environ.get("DATABASE_URL") else "missing"}
     failures = 0; matches = 0
-    for g in (games or []):
+    for g in games:
         rec = _llp_analyze_one(g, default_sport, board_date)
         analyses.append(rec)
         if rec.get("current_line") is not None: matches += 1
@@ -10075,6 +10333,234 @@ def _llp_persist_odds_snapshot(sport, away, home, market, sel):
             conn.close()
     except Exception:
         pass
+
+
+def _llp_earliest_snapshot_today(sport, away, home, market, side, board_date,
+                                  book=None):
+    """Return the earliest odds_snapshots row for this (sport, game, market, side,
+    book) captured on `board_date` (UTC). Used as the CLV anchor when
+    `opening_lines` is empty (e.g. the engine has been polling but no analyze
+    call has fired `_llp_opening_line_for_game` yet), and for h2h price-drift
+    CLV (which has no point movement). Returns `None` on any failure or no rows.
+
+    Match rules (per architect review):
+      - `book` filter (when provided) so CLV drift compares same-book prices,
+        not cross-book noise from line shopping.
+      - `side` matched against the persisted snapshot side using both raw
+        case-insensitive equality AND normalized team-name equality
+        (`_llp_norm_team`). The persister stores `sel.get('name')` — the
+        sportsbook's full team string (e.g. "New York Yankees") — while
+        callers commonly pass aliases ("Yankees"). Without normalization
+        the anchor lookup silently missed nearly all h2h/spreads matches.
+        For totals, `side` is "over"/"under" and norm is a no-op.
+    """
+    if not sport or not away or not home or not market:
+        return None
+    try:
+        import psycopg2.extras as _pgx
+        game_key = f"{_llp_norm_team(away)}@{_llp_norm_team(home)}"
+        side_raw  = (side or "").strip()
+        side_norm = _llp_norm_team(side_raw)  # "Yankees" / "New York Yankees" → "yankees" / "newyorkyankees"
+        conn = get_db_conn()
+        try:
+            _ensure_llp_pro_schema(conn)
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                # Side match logic:
+                #   1. NULL side row matches anything (totals over/under may
+                #      sometimes be stored without a side).
+                #   2. Raw lowercase equality (legacy snapshots).
+                #   3. Normalized-team equality on both sides via
+                #      `regexp_replace` (lowercase then strip non-alnum) —
+                #      handles "Yankees" anchor vs "New York Yankees"
+                #      persisted side. We also allow substring containment
+                #      either direction to cover "Yankees" → "newyorkyankees".
+                cur.execute("""
+                    SELECT american_odds, point, fetched_at, book, side
+                    FROM odds_snapshots
+                    WHERE sport = %s
+                      AND game_key = %s
+                      AND market = %s
+                      AND (%s::text IS NULL OR book = %s)
+                      AND (
+                            side IS NULL
+                         OR LOWER(side) = LOWER(%s)
+                         OR regexp_replace(LOWER(side), '[^a-z0-9]', '', 'g') = %s
+                         OR regexp_replace(LOWER(side), '[^a-z0-9]', '', 'g') LIKE '%%' || %s || '%%'
+                         OR %s LIKE '%%' || regexp_replace(LOWER(side), '[^a-z0-9]', '', 'g') || '%%'
+                          )
+                      AND (fetched_at AT TIME ZONE 'UTC')::date = %s::date
+                    ORDER BY fetched_at ASC
+                    LIMIT 1
+                """, (sport, game_key, market,
+                      book, book,
+                      side_raw,
+                      side_norm, side_norm, side_norm,
+                      board_date))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "american_odds": (float(row["american_odds"])
+                                      if row["american_odds"] is not None else None),
+                    "point": (float(row["point"])
+                              if row["point"] is not None else None),
+                    "fetched_at":    row["fetched_at"],
+                    "book":          row.get("book"),
+                    "side":          row.get("side"),
+                }
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+# ── Ingestion: ESPN standings → team strength ratings (free, public) ──
+_LLP_TEAM_RATINGS_CACHE = {}   # keyed by sport → (fetched_at_ts, {team_norm: rating_dict})
+_LLP_TEAM_RATINGS_TTL_SEC = 3600  # 1h — standings move slowly
+
+_LLP_ESPN_STANDINGS_PATHS = {
+    "mlb":   "baseball/mlb",
+    "nba":   "basketball/nba",
+    "wnba":  "basketball/wnba",
+    "nfl":   "football/nfl",
+    "nhl":   "hockey/nhl",
+    "ncaab": "basketball/mens-college-basketball",
+    "ncaaf": "football/college-football",
+}
+
+# Pythagorean exponent per sport (Bill James / variants). Used when both
+# points-for and points-against are present to compute expected win-pct,
+# which is a more stable strength signal than raw W-L early-season.
+_LLP_PYTHAG_EXPONENT = {
+    "mlb": 1.83, "nba": 14.0, "wnba": 14.0,
+    "nfl": 2.37, "nhl": 2.00, "ncaab": 11.5, "ncaaf": 2.50,
+}
+
+
+def _llp_pythag(points_for, points_against, sport):
+    """Pythagorean expected win pct. Returns None when inputs unusable."""
+    try:
+        pf = float(points_for); pa = float(points_against)
+        if pf <= 0 and pa <= 0:
+            return None
+        ex = _LLP_PYTHAG_EXPONENT.get(sport, 2.0)
+        num = pf ** ex
+        den = num + (pa ** ex)
+        if den <= 0:
+            return None
+        return num / den
+    except (TypeError, ValueError, ZeroDivisionError, OverflowError):
+        return None
+
+
+def _llp_fetch_team_ratings(sport):
+    """Fetch team strength ratings from ESPN public standings JSON.
+
+    Returns dict keyed by normalized team name → {
+        win_pct, pythag_pct, strength, games_played, source, fetched_at
+    }. `strength` is `pythag_pct` when available, else `win_pct`. Never
+    raises — returns {} on any failure. Cached 1h per sport. Persists each
+    team's row to `team_context` table for postmortem.
+    """
+    import requests as _req
+    if not sport:
+        return {}
+    espn_path = _LLP_ESPN_STANDINGS_PATHS.get(sport.lower())
+    if not espn_path:
+        return {}
+    now_ts = datetime.now().timestamp()
+    hit = _LLP_TEAM_RATINGS_CACHE.get(sport)
+    if hit and (now_ts - hit[0]) < _LLP_TEAM_RATINGS_TTL_SEC:
+        return hit[1]
+    out = {}
+    try:
+        url = f"https://site.api.espn.com/apis/v2/sports/{espn_path}/standings"
+        r = _req.get(url, timeout=10)
+        if r.status_code != 200:
+            _LLP_TEAM_RATINGS_CACHE[sport] = (now_ts, out)
+            return out
+        data = r.json() or {}
+        # ESPN nests standings under children[].standings.entries[]
+        # (one child per league/conference). Fall back to top-level
+        # standings.entries[] when the league is flat.
+        groups = data.get("children") or [data]
+        for grp in groups:
+            standings = (grp or {}).get("standings") or {}
+            for entry in (standings.get("entries") or []):
+                team = entry.get("team") or {}
+                team_name = team.get("displayName") or team.get("name") or ""
+                if not team_name:
+                    continue
+                # Stats is a list of {name, value, ...} dicts.
+                stats = {s.get("name"): s.get("value")
+                         for s in (entry.get("stats") or [])
+                         if isinstance(s, dict) and s.get("name")}
+                wins   = stats.get("wins")
+                losses = stats.get("losses")
+                gp = ((float(wins) + float(losses))
+                      if isinstance(wins, (int, float))
+                      and isinstance(losses, (int, float)) else None)
+                wp = stats.get("winPercent")
+                if wp is None and gp and gp > 0:
+                    wp = float(wins) / gp
+                pf = stats.get("pointsFor")  or stats.get("avgPointsFor")
+                pa = stats.get("pointsAgainst") or stats.get("avgPointsAgainst")
+                # MLB uses runsFor / runsAgainst on some endpoints
+                if pf is None: pf = stats.get("runsFor")
+                if pa is None: pa = stats.get("runsAgainst")
+                pythag = _llp_pythag(pf, pa, sport.lower()) if (pf is not None and pa is not None) else None
+                strength = pythag if pythag is not None else (
+                    float(wp) if isinstance(wp, (int, float)) else None)
+                if strength is None:
+                    continue  # no usable signal — skip this team
+                rating = {
+                    "team_name":    team_name,
+                    "win_pct":      float(wp) if isinstance(wp, (int, float)) else None,
+                    "pythag_pct":   pythag,
+                    "strength":     float(strength),
+                    "games_played": gp,
+                    "source":       "site.api.espn.com",
+                    "fetched_at":   datetime.now(timezone.utc).isoformat(),
+                }
+                out[_llp_norm_team(team_name)] = rating
+        _LLP_TEAM_RATINGS_CACHE[sport] = (now_ts, out)
+        # Best-effort persist to team_context.
+        try:
+            conn = get_db_conn()
+            try:
+                _ensure_llp_pro_schema(conn)
+                with conn.cursor() as cur:
+                    for tnorm, rating in out.items():
+                        cur.execute("""
+                            INSERT INTO team_context
+                              (sport, team, context_kind, payload, source)
+                            VALUES (%s, %s, 'standings_rating', %s::jsonb, %s)
+                        """, (sport.lower(), rating["team_name"],
+                              json.dumps(rating), rating["source"]))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+        return out
+    except Exception:
+        _LLP_TEAM_RATINGS_CACHE[sport] = (now_ts, out)
+        return out
+
+
+def _llp_lookup_team_rating(ratings, team_name):
+    """Look up a team's rating by name, using normalized matching."""
+    if not ratings or not team_name:
+        return None
+    norm = _llp_norm_team(team_name)
+    if norm in ratings:
+        return ratings[norm]
+    # Fuzzy fallback: substring match in either direction.
+    for k, v in ratings.items():
+        if not k: continue
+        if k in norm or norm in k:
+            return v
+    return None
 
 
 def _llp_log_bet_decision(rec):
