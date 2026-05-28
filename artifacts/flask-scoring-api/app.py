@@ -8901,6 +8901,26 @@ def _llp_team_analysis(games, default_sport, board_date):
         else: failures += 1
     if failures and not matches:
         source_status["odds_api"] = "no matches in feed"
+    return _llp_build_buckets(analyses, source_status)
+
+
+def _llp_build_buckets(analyses, source_status):
+    """Aggregate per-record analyses into the response/bucket shape.
+
+    Pure function: re-run after the Claude arbiter mutates llp_badge fields
+    so the response buckets stay consistent with the post-audit state.
+
+    Defensive: a single malformed entry (None, non-dict, or non-dict
+    nested `discovery`) must never crash bucket construction or the
+    downstream HTTP response. We sanitize the input here so every
+    consumer below can assume dict shape.
+    """
+    analyses = [r for r in (analyses or []) if isinstance(r, dict)]
+    for r in analyses:
+        if not isinstance(r.get("discovery"), dict):
+            r["discovery"] = {}
+    matches  = sum(1 for r in analyses if r.get("current_line") is not None)
+    failures = len(analyses) - matches
 
     def _rank(r):
         edge = r.get("edge") or -1
@@ -9039,6 +9059,358 @@ def _llp_team_analysis(games, default_sport, board_date):
     }
 
 
+# ── LLP Claude Audit: Red Team Validator for the badge ladder ──────────
+#
+# Claude audits whether LLP's ANCHOR / BET / QUALIFIED / LEAN / WAIT /
+# CANDIDATE / PASS labels are justified. It can ONLY challenge / downgrade /
+# confirm; it can never create a new BET or ANCHOR. The deterministic
+# arbiter `_llp_apply_claude_arbiter` accepts a Claude flag only when the
+# flag is corroborated by the record itself (real missing checkpoint,
+# stale assumption, market contradiction, CLV issue, status issue, or
+# explicit badge-rule violation). Unsupported narrative caution is rejected.
+
+_LLP_CLAUDE_AUDIT_SYSTEM = """You are Claude acting as the Red Team Validator for the LLP Team-Betting Model.
+
+You are NOT the picker.
+Do not create new ANCHOR, BET, QUALIFIED, or LEAN plays.
+Do not upgrade any badge.
+You may only challenge, downgrade, or confirm an LLP badge already assigned.
+
+LLP badge ladder (assigned by the engine before you see the slate):
+- ANCHOR    : edge >= 3.5%, discovery+validation clean, independent model adjustments, confirmed starter+lineup, no failure paths, fragility < 0.5
+- BET       : discovery+validation clean, decision in {BET, SMALL BET}, sub-ANCHOR edge
+- QUALIFIED : discovery+validation clean but edge below the bet tier
+- LEAN      : positive edge with starter/lineup unverified
+- WAIT      : edge present but market-side blocker (stale line, market_cause unverified/stale, bad market_timing) OR decision == WATCH
+- CANDIDATE : discovery signal present, validation incomplete (no actionable edge)
+- PASS      : hard fail (TRAP, no current_line, negative CLV, negative edge, payout_friction > 0.025)
+
+For each item with badge in {ANCHOR, BET, QUALIFIED, LEAN}, audit for these specific flag types:
+- overpromoted_badge              : badge is higher than the gates support
+- stale_line_overconfidence       : market is stale/frozen but record still treated as actionable
+- clv_without_validation          : clv_beat is False but record is still BET/ANCHOR
+- starter_lineup_unverified       : execution-side status not confirmed but record is BET/ANCHOR
+- spread_fragility_overlooked     : ANCHOR with spread_fragility >= 0.5
+- possession_conversion_mismatch  : possession/conversion model inconsistent with market cause
+- market_cause_unverified         : market_cause is None/"unverified" but record is BET/ANCHOR
+- favorite_trap_risk              : favorite_trap_flag is True but record is BET/ANCHOR
+- upset_price_temptation          : high upset_score with thin edge being promoted
+- rest_context_underweighted      : short rest / back-to-back not reflected in model_adjustments
+- injury_market_already_adjusted  : line has already moved on injury news (stale signal)
+
+Return ONLY a single JSON object with these exact keys (arrays may be empty):
+{
+  "flags": [
+    {
+      "target":     "<sport>|<market>|<side>",
+      "flag_type":  "<one of the 11 types above>",
+      "current_badge": "<ANCHOR|BET|QUALIFIED|LEAN|WAIT|CANDIDATE|PASS>",
+      "severity":   "<low|medium|high>",
+      "reason":     "<one short factual sentence citing the field that contradicts the badge>"
+    }
+  ],
+  "confirmations": [
+    { "target": "<sport>|<market>|<side>", "current_badge": "<...>", "reason": "<short factual sentence>" }
+  ]
+}
+
+Rules:
+- Cite a concrete field from the record (e.g. starter_status, clv_beat, discovery.stale_line). Do not speculate.
+- Do not flag PASS, WAIT, or CANDIDATE records — they are already non-actionable.
+- Do not invent new plays. Do not propose upgrades.
+- Respond with ONLY the JSON object. No prose. No markdown fences."""
+
+
+# Flag-type → (validator, downgrade_target). The validator runs against
+# the raw record dict and must return True for the flag to be accepted.
+# The downgrade_target is the maximum badge the record may keep after the
+# flag is accepted. We always take min(current_badge, downgrade_target).
+
+_LLP_BADGE_RANK = {
+    "ANCHOR": 6, "BET": 5, "QUALIFIED": 4, "LEAN": 3,
+    "WAIT": 2, "CANDIDATE": 1, "PASS": 0,
+}
+
+def _llp_v_overpromoted(rec):
+    return (rec.get("llp_badge") in ("ANCHOR", "BET")
+            and not (_llp_discovery_clean(rec) and _llp_validation_clean(rec)))
+
+def _llp_v_stale_overconf(rec):
+    d = rec.get("discovery") or {}
+    return (rec.get("llp_badge") in ("ANCHOR", "BET")
+            and (d.get("stale_line") is True or d.get("market_cause") == "stale"))
+
+def _llp_v_clv_no_validation(rec):
+    return rec.get("llp_badge") in ("ANCHOR", "BET") and rec.get("clv_beat") is False
+
+def _llp_v_starter_unverified(rec):
+    return (rec.get("llp_badge") in ("ANCHOR", "BET")
+            and (rec.get("starter_status") == "unverified"
+                 or rec.get("lineup_status") == "unverified"))
+
+def _llp_v_fragility_overlooked(rec):
+    d = rec.get("discovery") or {}
+    frag = d.get("spread_fragility")
+    return (rec.get("llp_badge") == "ANCHOR"
+            and isinstance(frag, (int, float)) and frag >= 0.5)
+
+def _llp_v_possession_mismatch(rec):
+    d = rec.get("discovery") or {}
+    pc = d.get("possession_conversion")
+    return (rec.get("llp_badge") in ("ANCHOR", "BET")
+            and isinstance(pc, (int, float)) and pc < 0.5)
+
+def _llp_v_market_cause_unverified(rec):
+    d = rec.get("discovery") or {}
+    return (rec.get("llp_badge") in ("ANCHOR", "BET")
+            and d.get("market_cause") in (None, "unverified"))
+
+def _llp_v_favorite_trap(rec):
+    return (rec.get("llp_badge") in ("ANCHOR", "BET")
+            and rec.get("favorite_trap_flag") is True)
+
+def _llp_v_upset_temptation(rec):
+    edge = rec.get("edge") or 0
+    return (rec.get("llp_badge") in ("ANCHOR", "BET")
+            and (rec.get("upset_score") or 0) >= 55
+            and isinstance(edge, (int, float)) and edge < 0.05)
+
+def _llp_v_rest_underweighted(rec):
+    # rest_context is canonically a dict ({b2b, days_rest, short_rest, note});
+    # tolerate string form too for forward compat / external callers.
+    rc = rec.get("rest_context")
+    if isinstance(rc, dict):
+        short_rest = bool(rc.get("short_rest")) or bool(rc.get("b2b"))
+        dr = rc.get("days_rest")
+        if isinstance(dr, (int, float)) and dr <= 1:
+            short_rest = True
+        if not short_rest:
+            note = (rc.get("note") or "").lower()
+            short_rest = any(t in note for t in ("short", "b2b", "back-to-back"))
+    elif isinstance(rc, str):
+        s = rc.lower()
+        short_rest = any(t in s for t in ("short", "b2b", "back-to-back", "1 day", "0 day"))
+    else:
+        short_rest = False
+    adj = rec.get("model_adjustments") or {}
+    adj_keys = " ".join(adj.keys()).lower() if isinstance(adj, dict) else ""
+    return (rec.get("llp_badge") in ("ANCHOR", "BET")
+            and short_rest and "rest" not in adj_keys)
+
+def _llp_v_injury_already_adjusted(rec):
+    d = rec.get("discovery") or {}
+    return (rec.get("llp_badge") in ("ANCHOR", "BET")
+            and (d.get("stale_line") is True
+                 or d.get("line_freeze") is True
+                 or d.get("derivative_desync") is True))
+
+_LLP_ARBITER_RULES = {
+    "overpromoted_badge":             (_llp_v_overpromoted,              "QUALIFIED"),
+    "stale_line_overconfidence":      (_llp_v_stale_overconf,            "WAIT"),
+    "clv_without_validation":         (_llp_v_clv_no_validation,         "CANDIDATE"),
+    "starter_lineup_unverified":      (_llp_v_starter_unverified,        "LEAN"),
+    "spread_fragility_overlooked":    (_llp_v_fragility_overlooked,      "BET"),
+    "possession_conversion_mismatch": (_llp_v_possession_mismatch,       "QUALIFIED"),
+    "market_cause_unverified":        (_llp_v_market_cause_unverified,   "WAIT"),
+    "favorite_trap_risk":             (_llp_v_favorite_trap,             "CANDIDATE"),
+    "upset_price_temptation":         (_llp_v_upset_temptation,          "LEAN"),
+    "rest_context_underweighted":     (_llp_v_rest_underweighted,        "LEAN"),
+    "injury_market_already_adjusted": (_llp_v_injury_already_adjusted,   "WAIT"),
+}
+
+
+def _llp_record_key(rec):
+    """Stable target key for matching Claude flags back to records."""
+    sport  = (rec.get("sport") or "").lower().strip()
+    market = (rec.get("market") or "").lower().strip()
+    side   = (rec.get("side") or "").lower().strip()
+    return f"{sport}|{market}|{side}"
+
+
+def _llp_build_audit_payload(agg):
+    """Build the minimal context Claude needs to audit the slate."""
+    audit_items = []
+    for r in agg.get("team_analysis", []):
+        if not isinstance(r, dict):
+            continue  # malformed entry — skip rather than crash
+        if (r.get("llp_badge") or "PASS") in ("PASS", "CANDIDATE"):
+            continue  # already non-actionable; nothing to audit
+        # Coerce nested maps defensively so a malformed `discovery` (e.g. int)
+        # cannot crash payload construction.
+        d = r.get("discovery")
+        if not isinstance(d, dict):
+            d = {}
+        audit_items.append({
+            "target":         _llp_record_key(r),
+            "sport":          r.get("sport"),
+            "market":         r.get("market"),
+            "side":           r.get("side"),
+            "away_team":      r.get("away_team"),
+            "home_team":      r.get("home_team"),
+            "current_line":   r.get("current_line"),
+            "book":           r.get("book"),
+            "edge":           r.get("edge"),
+            "model_win_probability":    r.get("model_win_probability"),
+            "no_vig_implied_probability": r.get("no_vig_implied_probability"),
+            "final_decision":           r.get("final_decision"),
+            "confidence_tier":          r.get("confidence_tier"),
+            "llp_badge":                r.get("llp_badge"),
+            "discovery_clean":          r.get("discovery_clean"),
+            "validation_clean":         r.get("validation_clean"),
+            "clv_beat":                 r.get("clv_beat"),
+            "starter_status":           r.get("starter_status"),
+            "lineup_status":            r.get("lineup_status"),
+            "favorite_trap_flag":       r.get("favorite_trap_flag"),
+            "failure_paths":            r.get("failure_paths") or [],
+            "rest_context":             r.get("rest_context"),
+            "upset_score":              r.get("upset_score"),
+            "model_adjustments":        r.get("model_adjustments"),
+            "discovery": {
+                "market_cause":          d.get("market_cause"),
+                "stale_line":            d.get("stale_line"),
+                "line_freeze":           d.get("line_freeze"),
+                "derivative_desync":     d.get("derivative_desync"),
+                "market_timing":         d.get("market_timing"),
+                "spread_fragility":      d.get("spread_fragility"),
+                "possession_conversion": d.get("possession_conversion"),
+                "payout_friction":       d.get("payout_friction"),
+            },
+        })
+    return {
+        "slate_summary":     agg.get("slate_summary"),
+        "winners_ranked":    agg.get("winners_ranked"),
+        "upset_candidates":  agg.get("upset_candidates"),
+        "best_bets":         agg.get("best_bets"),
+        "pass_traps":        agg.get("pass_traps"),
+        "moneyline_edges":   agg.get("moneyline_edges"),
+        "spread_edges":      agg.get("spread_edges"),
+        "totals_edges":      agg.get("totals_edges"),
+        "audit_items":       audit_items,
+    }
+
+
+def _llp_run_claude_audit_team(agg):
+    """Run the LLP Red Team Validator. Returns (audit_json, status, error, latency_ms).
+
+    status ∈ {"ok", "failed", "skipped"}. On failure, audit_json is None and
+    error carries the reason; the caller is expected to mark items audited=False.
+    """
+    if not [r for r in agg.get("team_analysis", [])
+            if isinstance(r, dict)
+            and (r.get("llp_badge") or "PASS") not in ("PASS", "CANDIDATE")]:
+        return None, "skipped", "no actionable badges to audit", 0
+    payload = _llp_build_audit_payload(agg)
+    try:
+        text, _model, latency_ms = _cm_claude_call(
+            _LLP_CLAUDE_AUDIT_SYSTEM,
+            json.dumps(payload, default=str),
+            max_tokens=4096,
+        )
+    except Exception as e:
+        return None, "failed", str(e), 0
+    try:
+        audit_json = _cm_extract_json(text)
+    except Exception as e:
+        return None, "failed", f"claude returned non-JSON: {e}", latency_ms
+    # Defensive shape coercion.
+    if not isinstance(audit_json, dict):
+        return None, "failed", "claude audit was not a JSON object", latency_ms
+    audit_json.setdefault("flags", [])
+    audit_json.setdefault("confirmations", [])
+    if not isinstance(audit_json["flags"], list):       audit_json["flags"] = []
+    if not isinstance(audit_json["confirmations"], list): audit_json["confirmations"] = []
+    return audit_json, "ok", None, latency_ms
+
+
+def _llp_apply_claude_arbiter(agg, audit_json):
+    """Apply the deterministic LLP arbiter to Claude's audit output.
+
+    A flag is ACCEPTED only if its validator (`_LLP_ARBITER_RULES`) returns
+    True for the matching record. Accepted flags downgrade the record's
+    `llp_badge` to min(current, downgrade_target). Unmatched targets and
+    unsupported flag types are REJECTED. Returns (accepted, rejected).
+    Claude can never upgrade — `_llp_badge_min` enforces this by rank.
+    """
+    # Defensive: only key dict-shaped records so a malformed entry cannot
+    # crash the request before we even start auditing.
+    by_key = {_llp_record_key(r): r
+              for r in agg.get("team_analysis", []) if isinstance(r, dict)}
+    accepted, rejected = [], []
+
+    for flag in (audit_json.get("flags") or []):
+        if not isinstance(flag, dict):
+            rejected.append({"flag": flag, "reason": "flag was not a JSON object"})
+            continue
+        ftype  = (flag.get("flag_type") or "").strip()
+        target = (flag.get("target") or "").strip().lower()
+        rule   = _LLP_ARBITER_RULES.get(ftype)
+        if rule is None:
+            rejected.append({"flag": flag, "reason": f"unsupported flag_type: {ftype}"})
+            continue
+        rec = by_key.get(target)
+        if rec is None:
+            rejected.append({"flag": flag, "reason": f"target not found in slate: {target}"})
+            continue
+        validator, downgrade_to = rule
+        try:
+            corroborated = validator(rec)
+        except Exception as e:
+            # Never let a malformed record shape break the request — reject
+            # the flag with a diagnostic reason and keep auditing the slate.
+            rejected.append({"flag": flag,
+                             "reason": f"validator error: {e.__class__.__name__}: {e}"})
+            continue
+        if not corroborated:
+            rejected.append({"flag": flag,
+                             "reason": "record state does not corroborate the flag"})
+            continue
+        # Accept: downgrade badge (never upgrade).
+        before = rec.get("llp_badge") or "PASS"
+        cur_rank = _LLP_BADGE_RANK.get(before, 0)
+        tgt_rank = _LLP_BADGE_RANK.get(downgrade_to, 0)
+        if tgt_rank < cur_rank:
+            rec["llp_badge"] = downgrade_to
+        rec.setdefault("claude_arbiter_flags", []).append({
+            "flag_type":    ftype,
+            "severity":     flag.get("severity"),
+            "reason":       flag.get("reason"),
+            "badge_before": before,
+            "badge_after":  rec["llp_badge"],
+        })
+        accepted.append({
+            "target":       target,
+            "flag_type":    ftype,
+            "severity":     flag.get("severity"),
+            "reason":       flag.get("reason"),
+            "badge_before": before,
+            "badge_after":  rec["llp_badge"],
+        })
+
+    # On success, every record in the slate is considered audited — the
+    # auditor saw the full slate context even when a given record had a
+    # non-actionable badge (PASS/CANDIDATE) and therefore needed no flag.
+    # Defensive: skip non-dict entries instead of crashing the request.
+    for r in agg.get("team_analysis", []):
+        if not isinstance(r, dict):
+            continue
+        r["audited"] = True
+        if (r.get("llp_badge") or "PASS") in ("PASS", "CANDIDATE"):
+            r["audit_note"] = "non-actionable badge; reviewed, no flag needed"
+        else:
+            r["audit_note"] = "claude red-team audit applied"
+
+    return accepted, rejected
+
+
+def _llp_mark_unaudited(agg, reason):
+    """Failure path: every record gets audited=False with a consistent note."""
+    for r in agg.get("team_analysis", []):
+        if not isinstance(r, dict):
+            continue
+        r["audited"] = False
+        r["audit_note"] = reason
+
+
 # ── LLP Postmortem table: slate-result reconciliation + learning layer ──
 _LLP_POSTMORTEM_SCHEMA_LOCK = threading.Lock()
 _LLP_POSTMORTEM_SCHEMA_READY = False
@@ -9132,13 +9504,21 @@ def _llp_log_postmortem(analyses, board_id, slate_date):
     status = {"inserted": 0, "skipped": 0, "failed": False, "reason": None}
     if not analyses:
         return status
+    # Defensive: a malformed record (None, non-dict, or non-dict nested
+    # `discovery`) must never block postmortem logging for the rest of
+    # the slate. Skip non-dict entries outright.
     rows = []
     for r in analyses:
+        if not isinstance(r, dict):
+            status["skipped"] += 1
+            continue
         decision = r.get("final_decision") or "PASS"
         if decision not in _LLP_POSTMORTEM_DECISIONS:
             status["skipped"] += 1
             continue
-        disc = r.get("discovery") or {}
+        disc = r.get("discovery")
+        if not isinstance(disc, dict):
+            disc = {}
         team, opp = _llp_resolve_team_opponent(
             r.get("market") or "h2h", r.get("side") or "",
             r.get("away_team") or "", r.get("home_team") or "")
@@ -9338,6 +9718,50 @@ def cm_run_connected_model():
             f"no_play={agg['no_play']}"
         )
 
+        # ── LLP Claude Red-Team Audit (post-badge, pre-postmortem) ──
+        #
+        # The audit can only DOWNGRADE or CONFIRM. It runs against the
+        # canonical badges produced by the engine. If Claude fails, we
+        # keep engine output verbatim and mark every record audited=False.
+        llp_skip_audit = bool(body.get("skip_arbiter", False))
+        llp_audit_json      = None
+        accepted_flags      = []
+        rejected_flags      = []
+        llp_audit_latency   = 0
+        if llp_skip_audit:
+            llp_audit_status = "skipped"
+            llp_audit_error  = "arbiter skipped by request"
+            llp_decision_src = "llp_engine"
+            _llp_mark_unaudited(agg, "claude audit skipped by request")
+            execution_notes.append("LLP claude audit skipped by request")
+        else:
+            llp_audit_json, llp_audit_status, llp_audit_error, llp_audit_latency = \
+                _llp_run_claude_audit_team(agg)
+            if llp_audit_status == "ok":
+                accepted_flags, rejected_flags = _llp_apply_claude_arbiter(
+                    agg, llp_audit_json)
+                # Rebuild buckets so approved/etc. reflect post-audit badges.
+                rebuilt = _llp_build_buckets(agg["team_analysis"],
+                                             agg["source_access_status"])
+                agg.update(rebuilt)
+                llp_decision_src = ("llp_claude_arbiter"
+                                    if accepted_flags else "llp_engine")
+                execution_notes.append(
+                    f"LLP claude audit done in {llp_audit_latency}ms: "
+                    f"accepted={len(accepted_flags)}, rejected={len(rejected_flags)}"
+                )
+            elif llp_audit_status == "skipped":
+                # Nothing actionable to audit — engine output stands.
+                llp_decision_src = "llp_engine"
+                _llp_mark_unaudited(agg, "no actionable badges to audit")
+                execution_notes.append(
+                    f"LLP claude audit skipped: {llp_audit_error}")
+            else:  # failed
+                llp_decision_src = "llp_wow_only_fallback"
+                _llp_mark_unaudited(agg, "Claude LLP audit unavailable")
+                execution_notes.append(
+                    f"LLP claude audit failed: {llp_audit_error}")
+
         # Phase 3: best-effort postmortem logging (does not block the response).
         pm_status = _llp_log_postmortem(agg["team_analysis"], board_id, board_date)
         if pm_status.get("failed"):
@@ -9353,7 +9777,15 @@ def cm_run_connected_model():
             "ok": True, "status": "completed", "board_id": board_id,
             "board_type": board_type,
             "games_received": len(games),
-            "final_decision_source": "llp_engine",
+            # Engine vs arbiter provenance (spec §7).
+            "final_decision_source":     llp_decision_src,
+            "llp_final_decision_source": llp_decision_src,
+            "claude_audit_status":       llp_audit_status,
+            "claude_error":              llp_audit_error if llp_audit_status == "failed" else None,
+            "llp_claude_audit":          llp_audit_json,
+            "accepted_claude_flags":     accepted_flags,
+            "rejected_claude_flags":     rejected_flags,
+            "claude_audit_latency_ms":   llp_audit_latency,
             "source_access_status": agg["source_access_status"],
             "slate_summary":       agg["slate_summary"],
             "team_analysis":       agg["team_analysis"],
