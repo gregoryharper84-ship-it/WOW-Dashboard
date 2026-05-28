@@ -420,6 +420,26 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
     background:var(--yellow-light);color:var(--yellow);
     border:1px solid rgba(245,158,11,0.3);
   }
+  /* Discovery Engine badges — Phase 2 */
+  .lm-disc-badge { padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;border:1px solid; }
+  .lm-disc-bet     { background:#10b98120;color:#10b981;border-color:#10b98140; }
+  .lm-disc-anchor  { background:#3b82f620;color:#3b82f6;border-color:#3b82f640; }
+  .lm-disc-qual    { background:#8b5cf620;color:#8b5cf6;border-color:#8b5cf640; }
+  .lm-disc-cand    { background:#f59e0b20;color:#f59e0b;border-color:#f59e0b40; }
+  .lm-disc-lean    { background:#64748b20;color:#94a3b8;border-color:#64748b40; }
+  .lm-disc-wait    { background:#0ea5e920;color:#0ea5e9;border-color:#0ea5e940; }
+  .lm-disc-pass    { background:#ef444420;color:#ef4444;border-color:#ef444440; }
+  .lm-disc-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:10px; }
+  .lm-disc-cell { background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 10px; }
+  .lm-disc-cell-lbl { font-size:9px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px; }
+  .lm-disc-cell-val { font-size:13px;font-weight:700;color:var(--text); }
+  .lm-disc-cell-sub { font-size:10px;color:var(--text2);margin-top:2px;line-height:1.3; }
+  .lm-disc-pos { color:#10b981!important; }
+  .lm-disc-neg { color:#ef4444!important; }
+  .lm-disc-warn { color:#f59e0b!important; }
+  .lm-disc-neutral { color:var(--text2)!important; }
+  .lm-disc-edge-banner { display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:12px;flex-wrap:wrap;gap:10px; }
+  .lm-disc-cause-tag { display:inline-block;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600;background:var(--surface2);border:1px solid var(--border);color:var(--text2);margin-top:4px; }
   .lm-badge-time { font-size:11px;color:var(--text2); }
   .lm-matchup { font-size:18px;font-weight:800;color:var(--text);letter-spacing:-.01em; }
   .lm-proj-winner { font-size:12px;color:var(--green);margin-top:3px; }
@@ -6912,6 +6932,351 @@ function runLLPQACases(qaLog){
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── LLP PHASE 2 — DISCOVERY ENGINE ────────────────────────────────────────
+// Converts LLP from "who wins" to "is the market mispriced?"
+// Spec: ChatGPT LLP Discovery Engine v1 (2026-05-28)
+// Runs AFTER runLLPBoard + runWinnersUpsets so WU model probs are available.
+
+function runLLPDiscovery(game) {
+  const topBet = [...(game.bets||[])].sort((a,b) => b.edge_pct - a.edge_pct)[0];
+  if (!topBet) { game._llpBadge = 'PASS'; game._llpDecision = 'PASS'; return game; }
+
+  const sport = game.sport || '';
+  const isNBAlike = sport === 'NBA' || sport === 'WNBA';
+
+  // ── 1. Model True Probability ──────────────────────────────────────────
+  // Use WU engine prob if available for this game; else fall back to market
+  const awayL = (game.away_team||'').toLowerCase();
+  const homeL = (game.home_team||'').toLowerCase();
+  const wuFav = _teamsWUFavorites.find(f =>
+    (f.away||'').toLowerCase().includes(awayL.slice(0,5)) ||
+    (f.home||'').toLowerCase().includes(homeL.slice(0,5))
+  );
+  const noVigMarketProb = topBet.implied_prob || 0.50;
+  const modelTrueProb   = wuFav?.prob ?? noVigMarketProb;
+  const modelConfidence = wuFav ? 'wu' : 'market_only';
+
+  game._noVigMarketProb  = noVigMarketProb;
+  game._modelTrueProb    = modelTrueProb;
+  game._modelConfidence  = modelConfidence;
+
+  // ── 2. Pure Edge Δ = Model True % − No-Vig Market % ──────────────────
+  const pureEdge    = modelTrueProb - noVigMarketProb;
+  const pureEdgePct = parseFloat((pureEdge * 100).toFixed(2));
+
+  game._pureEdge    = pureEdge;
+  game._pureEdgePct = pureEdgePct;
+  game._edgeTier    = pureEdgePct >= 5.0  ? 'PREMIUM'
+                    : pureEdgePct >= 3.5  ? 'STRONG'
+                    : pureEdgePct >= 2.5  ? 'MILD'
+                    : 'NONE';
+
+  // ── 3. Market Cause Classification ────────────────────────────────────
+  let marketCause = 'market_cause_unverified';
+  let marketCauseVerified = false;
+
+  if (modelConfidence === 'wu' && Math.abs(pureEdgePct) >= 3.5) {
+    // WU model sees something market doesn't — likely matchup or pace mispricing
+    marketCause = noVigMarketProb >= 0.60 ? 'public_overreaction' : 'matchup_identity_mismatch';
+    marketCauseVerified = true;
+  } else if (topBet.line !== undefined) {
+    const odds = topBet.line;
+    if (odds > 0) {
+      // Underdog with model edge → possible low_liquidity or public_overreaction on opponent
+      marketCause = 'public_overreaction';
+      marketCauseVerified = pureEdgePct >= 2.5 && modelConfidence === 'wu';
+    } else if (odds <= -300) {
+      // Heavy favorite — payout friction, derivative desync likely
+      marketCause = 'derivative_desync';
+      marketCauseVerified = false;
+    } else if (pureEdgePct >= 2.5) {
+      marketCause = 'pace_mispricing';
+      marketCauseVerified = modelConfidence === 'wu';
+    }
+  }
+
+  game._marketCause         = marketCause;
+  game._marketCauseVerified = marketCauseVerified;
+
+  // ── 4. Stale Line / Line Freeze Detection ─────────────────────────────
+  // Without historical opener we detect via cross-market inconsistency
+  const mlBet     = game.bets.find(b => b.type === 'moneyline');
+  const spreadBet = game.bets.find(b => b.type === 'spread');
+  const totalBet  = game.bets.find(b => b.type === 'total');
+
+  let staleLineFlag    = false;
+  let lineFreezeStatus = 'NONE';
+  let derivativeDesync = false;
+  let desyncType       = '';
+  let desyncSeverity   = 'LOW';
+
+  // Desync: ML implies heavy favorite but spread is under 4 pts
+  if (mlBet && spreadBet && noVigMarketProb >= 0.62) {
+    const spreadSize = Math.abs(spreadBet._spreadPoint || 0);
+    if (spreadSize < 4) {
+      derivativeDesync = true;
+      desyncType       = 'ml_spread_mismatch';
+      desyncSeverity   = spreadSize < 2 ? 'HIGH' : 'MEDIUM';
+      staleLineFlag    = true;
+      lineFreezeStatus = 'WATCH';
+    }
+  }
+  // Desync: large ML edge but total looks normal (game script mismatch)
+  if (mlBet && totalBet && pureEdgePct >= 4 && modelConfidence === 'wu') {
+    derivativeDesync = true;
+    desyncType       = desyncType || 'ml_total_context';
+    desyncSeverity   = desyncSeverity === 'HIGH' ? 'HIGH' : 'MEDIUM';
+    lineFreezeStatus = lineFreezeStatus === 'NONE' ? 'CANDIDATE' : lineFreezeStatus;
+  }
+  // Stale flag: single-book only (no consensus)
+  if (!game.raw_bk?.markets?.length || game.bets.length < 2) {
+    staleLineFlag    = staleLineFlag || false;
+    lineFreezeStatus = lineFreezeStatus === 'NONE' ? 'WATCH' : lineFreezeStatus;
+  }
+
+  game._staleLineFlag    = staleLineFlag;
+  game._lineFreezeStatus = lineFreezeStatus;
+  game._derivativeDesync = derivativeDesync;
+  game._desyncType       = desyncType || 'none';
+  game._desyncSeverity   = desyncSeverity;
+  game._lineMoveDelta    = null; // requires opening line tracking (future)
+  game._openLine         = null;
+  game._currentLine      = mlBet?.line ?? null;
+
+  // ── 5. Spread Fragility ───────────────────────────────────────────────
+  let spreadFragility      = 'N/A';
+  let spreadFragilityScore = 0;
+  const spreadFragilityReasons = [];
+
+  if (spreadBet) {
+    const pt = Math.abs(spreadBet._spreadPoint || spreadBet.line || 0);
+    if (isNBAlike) {
+      if (pt >= 12)     { spreadFragility = 'HIGH';   spreadFragilityScore = 80; spreadFragilityReasons.push('Large spread — garbage-time exposure'); }
+      else if (pt >= 7) { spreadFragility = 'MEDIUM'; spreadFragilityScore = 50; spreadFragilityReasons.push('Mid-range spread — pace volatility'); }
+      else              { spreadFragility = 'LOW';    spreadFragilityScore = 20; }
+    } else if (sport === 'MLB') {
+      spreadFragility = 'LOW'; spreadFragilityScore = 15;
+      spreadFragilityReasons.push('Standard ±1.5 run line');
+    } else if (sport === 'NHL') {
+      spreadFragility = 'LOW'; spreadFragilityScore = 15;
+      spreadFragilityReasons.push('Standard ±1.5 puck line');
+    } else {
+      spreadFragility = 'MEDIUM'; spreadFragilityScore = 40;
+    }
+    if (noVigMarketProb >= 0.70 && spreadFragility !== 'LOW') {
+      spreadFragilityScore = Math.min(100, spreadFragilityScore + 15);
+      spreadFragilityReasons.push('Heavy favorite — cover risk if game goes final early');
+    }
+  }
+  game._spreadFragility        = spreadFragility;
+  game._spreadFragilityScore   = spreadFragilityScore;
+  game._spreadFragilityReasons = spreadFragilityReasons;
+
+  // ── 6. Possession Conversion (NBA/WNBA) ───────────────────────────────
+  let possessionConversion      = 'NEUTRAL';
+  let possessionConversionScore = 50;
+  const possessionNotes         = [];
+
+  if (isNBAlike) {
+    // Proxy: positive pure edge with WU confidence = positive conversion signal
+    if (modelConfidence === 'wu' && pureEdgePct >= 3.0) {
+      possessionConversion      = 'POSITIVE';
+      possessionConversionScore = 70;
+      possessionNotes.push('WU model edge aligns with possession advantage');
+    } else if (pureEdgePct <= -2.0) {
+      possessionConversion      = 'NEGATIVE';
+      possessionConversionScore = 30;
+      possessionNotes.push('Model below market — possession conversion concern');
+    } else {
+      possessionNotes.push('Stat validation required for confirmation');
+    }
+  } else {
+    possessionNotes.push(`${sport} possession layer: N/A`);
+  }
+  game._possessionConversion      = possessionConversion;
+  game._possessionConversionScore = possessionConversionScore;
+  game._possessionNotes           = possessionNotes;
+
+  // ── 7. Payout Friction ────────────────────────────────────────────────
+  const odds = mlBet?.line ?? topBet.line;
+  let payoutFriction    = 'LOW';
+  let executionValue    = 'POSITIVE';
+  const payoutNotes     = [];
+
+  if (typeof odds === 'number') {
+    if (odds <= -400)       { payoutFriction = 'HIGH';   executionValue = 'NEGATIVE'; payoutNotes.push('Heavy chalk — payout doesn\'t justify risk'); }
+    else if (odds <= -200)  { payoutFriction = 'MEDIUM'; executionValue = 'NEUTRAL';  payoutNotes.push('Moderate friction — unit sizing critical'); }
+    else                    { payoutFriction = 'LOW';    executionValue = 'POSITIVE'; }
+    // Edge must overcome friction
+    if (payoutFriction === 'HIGH' && pureEdgePct < 5.0) {
+      executionValue = 'NEGATIVE';
+      payoutNotes.push('Edge insufficient to overcome heavy-chalk friction');
+    }
+  }
+  game._payoutFriction       = payoutFriction;
+  game._payoutFrictionNotes  = payoutNotes;
+  game._executionValue       = executionValue;
+
+  // ── 8. CLV Placeholder ────────────────────────────────────────────────
+  game._clvStatus    = 'UNKNOWN';
+  game._projectedCLV = pureEdgePct >= 3.5 ? 'POSITIVE' : pureEdgePct >= 1.0 ? 'NEUTRAL' : 'NEGATIVE';
+  game._clvNotes     = ['CLV tracking requires opening line — log at execution'];
+
+  // ── 9. Failure Paths ──────────────────────────────────────────────────
+  const failurePaths = [];
+  if (noVigMarketProb >= 0.65) failurePaths.push('Heavy favorite — market already pricing most edge in');
+  if (spreadFragility === 'HIGH') failurePaths.push('High spread fragility — garbage time risk');
+  if (possessionConversion === 'NEGATIVE') failurePaths.push('Negative possession conversion for cover');
+  if (payoutFriction === 'HIGH') failurePaths.push('Heavy-chalk payout friction eats Kelly value');
+  if (derivativeDesync) failurePaths.push(`Derivative desync (${desyncType}) — line may correct`);
+  if (!marketCauseVerified) failurePaths.push('Market cause unverified — may be efficient price');
+  game._failurePaths = failurePaths;
+
+  // ── 10. Final LLP Badge Decision ──────────────────────────────────────
+  const hasHardFail     = (topBet.qaFlags||[]).some(f => LLP_HARD_FAIL_FLAGS.includes(f));
+  const validationClean = !hasHardFail;
+
+  const isPass = !validationClean || pureEdgePct < 0 || executionValue === 'NEGATIVE';
+  const isWait = validationClean && pureEdgePct >= 1.0 && !marketCauseVerified && !staleLineFlag;
+
+  const anchorReqs = (
+    pureEdgePct >= 3.5 &&
+    marketCauseVerified &&
+    validationClean &&
+    spreadFragility !== 'HIGH' &&
+    possessionConversion !== 'NEGATIVE' &&
+    payoutFriction !== 'HIGH'
+  );
+  const betReqs = anchorReqs && (topBet._kelly ?? 0) >= 0.01;
+  const qualReqs = pureEdgePct >= 2.5 && marketCauseVerified && validationClean;
+  const candReqs = pureEdgePct >= 0 || staleLineFlag;
+
+  let llpBadge    = 'PASS';
+  let llpDecision = 'PASS';
+  let llpBadgeCSS = 'lm-disc-pass';
+
+  if      (isPass)     { llpBadge = 'PASS';      llpDecision = 'PASS';      llpBadgeCSS = 'lm-disc-pass'; }
+  else if (betReqs)    { llpBadge = 'BET';        llpDecision = 'BET';       llpBadgeCSS = 'lm-disc-bet'; }
+  else if (anchorReqs) { llpBadge = 'ANCHOR';     llpDecision = 'ANCHOR';    llpBadgeCSS = 'lm-disc-anchor'; }
+  else if (qualReqs)   { llpBadge = 'QUALIFIED';  llpDecision = 'QUALIFIED'; llpBadgeCSS = 'lm-disc-qual'; }
+  else if (isWait)     { llpBadge = 'WAIT';       llpDecision = 'WAIT';      llpBadgeCSS = 'lm-disc-wait'; }
+  else if (candReqs)   { llpBadge = 'CANDIDATE';  llpDecision = 'CANDIDATE'; llpBadgeCSS = 'lm-disc-cand'; }
+  else if (pureEdgePct >= 1.0) { llpBadge = 'LEAN'; llpDecision = 'LEAN';   llpBadgeCSS = 'lm-disc-lean'; }
+
+  game._llpBadge      = llpBadge;
+  game._llpDecision   = llpDecision;
+  game._llpBadgeCSS   = llpBadgeCSS;
+  game._recommendedUnits = betReqs ? Math.min((topBet._kelly||0) * 0.5, 1.0) : anchorReqs ? 0.5 : 0;
+
+  return game;
+}
+
+// Enrich all LLP games — called after both runLLPBoard + runWinnersUpsets complete
+function enrichLLPGamesWithDiscovery() {
+  _teamsLLPGames = _teamsLLPGames.map(g => runLLPDiscovery(g));
+}
+
+// Build the Discovery tab HTML for a game card
+function buildDiscoveryTab(game) {
+  const na = (v, cls='') => v != null ? `<span class="${cls}">${v}</span>` : `<span class="lm-disc-neutral">—</span>`;
+  const sigClass = v => v === 'POSITIVE' || v === 'LOW' || v === 'BET' || v === 'ANCHOR' ? 'lm-disc-pos'
+    : v === 'NEGATIVE' || v === 'HIGH' || v === 'PASS' ? 'lm-disc-neg'
+    : v === 'MEDIUM' || v === 'CANDIDATE' || v === 'WATCH' ? 'lm-disc-warn'
+    : 'lm-disc-neutral';
+
+  const pureEdgePct = game._pureEdgePct ?? null;
+  const edgeColor   = pureEdgePct === null ? 'var(--text2)'
+    : pureEdgePct >= 3.5 ? '#10b981'
+    : pureEdgePct >= 2.5 ? '#3b82f6'
+    : pureEdgePct >= 1.0 ? '#f59e0b'
+    : '#ef4444';
+
+  const modelPct  = game._modelTrueProb   != null ? (game._modelTrueProb*100).toFixed(1)   : '—';
+  const marketPct = game._noVigMarketProb != null ? (game._noVigMarketProb*100).toFixed(1) : '—';
+  const confLabel = game._modelConfidence === 'wu' ? 'WU Engine' : 'Market Only';
+
+  const causeLabel = (game._marketCause||'—').replace(/_/g,' ');
+  const causeVerified = game._marketCauseVerified;
+
+  const failureList = (game._failurePaths||[]).map(f =>
+    `<div style="font-size:10px;color:#ef4444;margin-bottom:3px;">⚠ ${f}</div>`
+  ).join('');
+
+  return `
+    <div style="padding:4px 0 8px;">
+      <!-- Edge Banner -->
+      <div class="lm-disc-edge-banner">
+        <div>
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;">Pure Edge Δ</div>
+          <div style="font-size:28px;font-weight:900;color:${edgeColor};">${pureEdgePct != null ? (pureEdgePct >= 0 ? '+' : '') + pureEdgePct + '%' : '—'}</div>
+          <div style="font-size:10px;color:var(--text2);">Model ${modelPct}% vs Market ${marketPct}%</div>
+          <div style="font-size:10px;color:var(--text3);">Source: ${confLabel}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;">LLP Decision</div>
+          <span class="lm-disc-badge ${game._llpBadgeCSS||'lm-disc-pass'}" style="font-size:13px;padding:4px 12px;">${game._llpBadge||'—'}</span>
+          ${game._recommendedUnits > 0 ? `<div style="font-size:10px;color:var(--text2);margin-top:4px;">${game._recommendedUnits.toFixed(2)}u recommended</div>` : ''}
+        </div>
+      </div>
+
+      <!-- Discovery Grid -->
+      <div class="lm-disc-grid">
+        <div class="lm-disc-cell">
+          <div class="lm-disc-cell-lbl">Edge Tier</div>
+          <div class="lm-disc-cell-val ${sigClass(game._edgeTier)}">${game._edgeTier||'—'}</div>
+        </div>
+        <div class="lm-disc-cell">
+          <div class="lm-disc-cell-lbl">Market Cause</div>
+          <div class="lm-disc-cell-val" style="font-size:11px;text-transform:capitalize;">${causeLabel}</div>
+          <div class="lm-disc-cell-sub">${causeVerified ? '✓ Verified' : '⚠ Unverified'}</div>
+        </div>
+        <div class="lm-disc-cell">
+          <div class="lm-disc-cell-lbl">Line Freeze</div>
+          <div class="lm-disc-cell-val ${sigClass(game._lineFreezeStatus)}">${game._lineFreezeStatus||'NONE'}</div>
+          <div class="lm-disc-cell-sub">${game._derivativeDesync ? 'Desync: ' + (game._desyncType||'').replace(/_/g,' ') : 'No desync'}</div>
+        </div>
+        <div class="lm-disc-cell">
+          <div class="lm-disc-cell-lbl">Spread Fragility</div>
+          <div class="lm-disc-cell-val ${sigClass(game._spreadFragility==='LOW'?'LOW':game._spreadFragility==='HIGH'?'HIGH':'MEDIUM')}">${game._spreadFragility||'—'}</div>
+          <div class="lm-disc-cell-sub">${(game._spreadFragilityReasons||[]).slice(0,1).join('')||''}</div>
+        </div>
+        <div class="lm-disc-cell">
+          <div class="lm-disc-cell-lbl">Possession Conv.</div>
+          <div class="lm-disc-cell-val ${sigClass(game._possessionConversion)}">${game._possessionConversion||'—'}</div>
+          <div class="lm-disc-cell-sub">${(game._possessionNotes||[]).slice(0,1).join('')||''}</div>
+        </div>
+        <div class="lm-disc-cell">
+          <div class="lm-disc-cell-lbl">Payout Friction</div>
+          <div class="lm-disc-cell-val ${sigClass(game._payoutFriction==='LOW'?'POSITIVE':game._payoutFriction==='HIGH'?'NEGATIVE':'NEUTRAL')}">${game._payoutFriction||'—'}</div>
+          <div class="lm-disc-cell-sub">${(game._payoutFrictionNotes||[]).slice(0,1).join('')||''}</div>
+        </div>
+        <div class="lm-disc-cell">
+          <div class="lm-disc-cell-lbl">CLV Projection</div>
+          <div class="lm-disc-cell-val ${sigClass(game._projectedCLV)}">${game._projectedCLV||'UNKNOWN'}</div>
+          <div class="lm-disc-cell-sub">Actual CLV logged post-result</div>
+        </div>
+        <div class="lm-disc-cell">
+          <div class="lm-disc-cell-lbl">Desync Severity</div>
+          <div class="lm-disc-cell-val ${sigClass(game._desyncSeverity==='LOW'?'POSITIVE':game._desyncSeverity==='HIGH'?'NEGATIVE':'MEDIUM')}">${game._derivativeDesync ? game._desyncSeverity : 'NONE'}</div>
+          <div class="lm-disc-cell-sub">${game._derivativeDesync ? (game._desyncType||'').replace(/_/g,' ') : 'Markets aligned'}</div>
+        </div>
+      </div>
+
+      <!-- Failure Paths -->
+      ${failureList ? `<div style="margin-top:12px;background:var(--surface2);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:10px 12px;">
+        <div style="font-size:10px;font-weight:700;color:var(--text2);margin-bottom:6px;">⚠ FAILURE PATHS</div>
+        ${failureList}
+      </div>` : '<div style="margin-top:10px;font-size:11px;color:#10b981;">✓ No major failure paths detected</div>'}
+
+      <!-- Ladder Status -->
+      <div style="margin-top:10px;font-size:10px;color:var(--text3);border-top:1px solid var(--border);padding-top:8px;">
+        Discovery: ${game._edgeTier||'NONE'} · Validation: ${(game.bets||[]).some(b=>(b.qaFlags||[]).length>0)?'FLAGS PRESENT':'CLEAN'} · Ladder: ${game._llpBadge||'—'}
+        ${game._modelConfidence === 'market_only' ? ' · ⚠ No independent model — use WU for true probability' : ''}
+      </div>
+    </div>`;
+}
+// ──────────────────────────────────────────────────────────────────────────────
+
 // ── SPORTSBOOK COMPARISON ──
 // Pulls the no-vig implied probability for a prop from Odds API
 // This is the "true market probability" to compare against
@@ -12908,6 +13273,8 @@ async function runWinnersUpsets(){
   // Store globally for unified board
   _teamsWUFavorites = favorites;
   _teamsWUUpsets = upsets;
+  // Phase 2: enrich LLP games with Discovery Engine now that WU probs are available
+  if(_teamsLLPGames.length) enrichLLPGamesWithDiscovery();
   renderTeamsSummaryPanels();
   if(_teamsLLPGames.length){
     renderTeamsStatCards(_teamsLLPGames);
@@ -13727,16 +14094,26 @@ function renderTeamsBoardOutput(){
 
     const card = document.createElement('div');
     card.className = 'lm-game-card';
+    // Phase 2: use Discovery Engine badge where available
+    const discBadge    = game._llpBadge || null;
+    const discBadgeCSS = game._llpBadgeCSS || '';
+    const discBadgeHTML = discBadge
+      ? `<span class="lm-disc-badge ${discBadgeCSS}">${discBadge}</span>`
+      : (isBet ? `<span class="lm-badge-bet">BET</span>` : `<span class="lm-badge-lean">LEAN</span>`);
+    const displayEdge = game._pureEdgePct != null
+      ? (game._pureEdgePct >= 0 ? '+' : '') + game._pureEdgePct + '% pure edge'
+      : '+' + (topBet?.edge_pct||0) + '% edge';
     card.innerHTML = `
       <div class="lm-card-hdr">
         <div class="lm-card-badges">
           <span class="lm-badge-sport">${game.sport}</span>
           <span class="lm-badge-tier" style="color:${tierColor};border-color:${tierColor}40;background:${tierColor}15;">${tierLabel}</span>
-          <span class="${isBet?'lm-badge-bet':'lm-badge-lean'}">${isBet?'BET':'LEAN'}</span>
+          ${discBadgeHTML}
           ${game.game_time?`<span class="lm-badge-time">🕐 ${game.game_time}</span>`:''}
         </div>
         <div class="lm-matchup">${game.away_team||'Away'} <span style="color:var(--text3);font-weight:400;">@</span> ${game.home_team||'Home'}</div>
-        ${wuFav?`<div class="lm-proj-winner">Model favors: <strong>${wuFav.pick}</strong> · ${(wuFav.prob*100).toFixed(1)}% win prob</div>`:''}
+        ${wuFav?`<div class="lm-proj-winner">Model favors: <strong>${wuFav.pick}</strong> · ${(wuFav.prob*100).toFixed(1)}% win prob · ${displayEdge}</div>`:
+                `<div class="lm-proj-winner" style="color:var(--text2);">${displayEdge}</div>`}
       </div>
 
       <div class="lm-card-tabs">
@@ -13745,21 +14122,24 @@ function renderTeamsBoardOutput(){
         <button class="lm-ctab ${defTab==='total'?'active':''}"   onclick="lmSwitchTab('${cid}','total',this)">TOTAL</button>
         <button class="lm-ctab"                                    onclick="lmSwitchTab('${cid}','odds',this)">BEST ODDS</button>
         <button class="lm-ctab ${!['ml','spread','total'].includes(defTab)?'active':''}" onclick="lmSwitchTab('${cid}','engine',this)">ENGINE</button>
+        <button class="lm-ctab" onclick="lmSwitchTab('${cid}','discovery',this)">🔍 DISCOVERY</button>
       </div>
 
-      <div id="${cid}_ml"     class="lm-tc ${defTab==='ml'?'':'lm-tc-off'}">${mlContent}</div>
-      <div id="${cid}_spread" class="lm-tc ${defTab==='spread'?'':'lm-tc-off'}">${spreadContent}</div>
-      <div id="${cid}_total"  class="lm-tc ${defTab==='total'?'':'lm-tc-off'}">${totalContent}</div>
-      <div id="${cid}_odds"   class="lm-tc lm-tc-off">${oddsContent}</div>
-      <div id="${cid}_engine" class="lm-tc ${!['ml','spread','total'].includes(defTab)?'':'lm-tc-off'}">${engineContent}</div>
+      <div id="${cid}_ml"        class="lm-tc ${defTab==='ml'?'':'lm-tc-off'}">${mlContent}</div>
+      <div id="${cid}_spread"    class="lm-tc ${defTab==='spread'?'':'lm-tc-off'}">${spreadContent}</div>
+      <div id="${cid}_total"     class="lm-tc ${defTab==='total'?'':'lm-tc-off'}">${totalContent}</div>
+      <div id="${cid}_odds"      class="lm-tc lm-tc-off">${oddsContent}</div>
+      <div id="${cid}_engine"    class="lm-tc ${!['ml','spread','total'].includes(defTab)?'':'lm-tc-off'}">${engineContent}</div>
+      <div id="${cid}_discovery" class="lm-tc lm-tc-off">${buildDiscoveryTab(game)}</div>
 
       <button class="lm-expand-btn" onclick="lmToggleAllBets('${cid}_bets',this)">View all ${game.bets.length} engine bets ▾</button>
       <div id="${cid}_bets" class="lm-bets-grid">
         ${game.bets.map(bet=>{
           const bc=bet.tier==='TEAM ANCHOR'?'var(--green)':bet.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
           const bbg=bet.tier==='TEAM ANCHOR'?'var(--green-light)':bet.tier==='TEAM STRONG'?'var(--accent-light)':'var(--yellow-light)';
+          const qaBadge = (bet.qaFlags||[]).length ? `<span style="font-size:9px;color:#ef4444;"> ⚠ ${bet.qaFlags.join(', ')}</span>` : '';
           return `<div style="border-radius:8px;background:${bbg};border:1px solid ${bc}40;padding:10px;">
-            <div style="font-size:12px;font-weight:700;color:${bc};">${bet.pick}</div>
+            <div style="font-size:12px;font-weight:700;color:${bc};">${bet.pick}${qaBadge}</div>
             <div style="font-size:11px;color:var(--text2);margin:2px 0;">${bet.line>0?'+':''}${bet.line} · ${bet.unit_size}u · +${bet.edge_pct}% edge</div>
             <div style="font-size:10px;color:var(--text2);line-height:1.5;margin-top:4px;">${bet.reasoning||''}</div>
           </div>`;
