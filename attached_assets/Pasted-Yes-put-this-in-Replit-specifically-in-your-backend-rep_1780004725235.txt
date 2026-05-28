@@ -1,0 +1,70 @@
+Yes — put this in **Replit**, specifically in your backend repo where `app.py` lives.
+
+Use it as the next Replit Agent instruction:
+
+```text id="z6w5hs"
+Ship the completed LLP MLB F5 market-routing patch.
+
+Confirm the following are live in app.py:
+
+1. Centralized _LLP_MARKET_ALIASES includes F5 short forms:
+   - f5
+   - f5_ml
+   - first5_ml
+   - f5_total
+   - first5_total
+   - f5_spread
+   - first5_spread
+   plus canonical Odds API market keys.
+
+2. _llp_market_base() normalizes F5 segment markets so they match using the same logic as full-game equivalents.
+
+3. _llp_fetch_odds pulls MLB F5 markets alongside full-game markets in one API call.
+
+4. The odds cache key accounts for the expanded market set.
+
+5. _llp_choose_mlb_target_market() returns:
+   - ML
+   - F5_ML
+   - ML_WATCH_ONLY
+
+6. Every MLB h2h record exposes:
+   - f5_available
+   - f5_book
+   - f5_american
+   - f5_total_line
+   - recommended_market
+   - full_game_edge_allowed
+
+7. Add / confirm rollback flag:
+   - LLP_DISABLE_MLB_F5=1
+
+8. Ensure advisory tags are not counted as hard failures:
+   - _LLP_RECOMMEND_F5_ML
+   - _LLP_ML_WATCH_ONLY_NO_F5
+
+9. Confirm the old _LLP_MLB_FULLGAME_PREFERS_F5 behavior now derives from _llp_choose_mlb_target_market(), so there is one source of truth.
+
+10. Run smoke tests:
+   - MLB full-game ML weak + F5 available → recommended_market = F5_ML
+   - MLB full-game ML weak + no F5 available → recommended_market = ML_WATCH_ONLY
+   - MLB full-game ML strong → recommended_market = ML
+   - Non-MLB → no F5 routing
+   - LLP_DISABLE_MLB_F5=1 → old full-game-only behavior restored
+
+Do not auto-upgrade any side to BET because of F5 availability alone. F5 only clears the MLB market-selection blocker. Final approval still requires LLP badge ANCHOR or BET, edge, Kelly, context, and clean failure-path review.
+
+After this is verified, prepare the next task: odds snapshot background cron.
+```
+
+Then add this as a short internal note in your Replit project docs or comments:
+
+```text id="bj6w56"
+LLP MLB F5 routing is now part of market selection, not bet approval. F5 availability may convert weak full-game ML into F5_ML candidate, but only LLP Layer 4 may approve a wager.
+```
+
+After Replit confirms it is shipped, the next instruction should be:
+
+```text id="ukq2es"
+Move to Step 3: build odds snapshot background cron for first_seen_line, current_line, lock_line, close_line, and CLV tracking.
+```
