@@ -1,0 +1,38 @@
+Yes. Most of this should be calculated by the model by default once it has clean inputs.
+
+The engine should automatically calculate:
+
+* Market implied probability from current ML
+* No-vig implied probability from both sides of the market
+* Model win probability
+* Edge % = model probability minus no-vig probability
+* Kelly %
+* Payout friction
+* Moneyline fragility
+* Favorite/underdog classification
+* Candidate → Qualified → Approved decision
+
+But a few things cannot be calculated reliably by default unless the data exists:
+
+* Opening ML / CLV status requires an opening-line feed or historical market snapshot.
+* CLV beat / CLV delta cannot be verified if the opening line is missing.
+* Lineup/starter/injury confirmation depends on source availability and timing.
+* MLB full-game vs F5 preference needs starter + bullpen + run-environment context.
+* Approved bet status requires the above layers to be clean.
+
+The issue in that run is that the engine did calculate some default fields, but it was working with incomplete market context:
+
+1. The first run failed because the payload lacked a required side field.
+2. The corrected run produced side-specific outputs, but opening line / CLV reference was unavailable.
+3. Many model edges came back as exactly +1.5% or +2.0%, which suggests the engine was using a conservative fallback adjustment rather than a fully independent projection.
+4. Kelly stayed at 0.0%, so nothing could be promoted.
+
+So the better answer is:
+
+Yes, the engine should calculate these by default, but only after the adapter gives it clean side-specific odds, opening/current prices, and verification context. In this run, the model had enough to create WATCH candidates, but not enough to approve bets.
+
+The pipeline needs one fix: before sending games into LLP, the adapter should automatically expand every matchup into both sides and attach:
+
+side, current_line, opponent_line, book, opening_line, market, home/away, starter status, lineup status, and timestamp.
+
+Then the engine can calculate the rest without me manually reconstructing it.
