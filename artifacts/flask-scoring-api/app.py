@@ -8024,6 +8024,170 @@ def _llp_decision(edge, model_p, novig_p, upset_score, trap_flag, failures):
     return "PASS"
 
 
+# ── Discovery + Validation gates (v14.9+ badge ladder) ───────────────
+# A play must clear BOTH gates to enter `approved` / qualify for ANCHOR/BET.
+# Field semantics here are defensive: if a discovery field doesn't exist
+# (because we don't yet pull the underlying data), the check passes —
+# never silently reject for a check we can't perform.
+
+# Cost thresholds (no-vig delta). "ok" means ≤ this; "high" means > this.
+_LLP_PAYOUT_FRICTION_OK = 0.025
+# Explicit bad market_timing values. "unverified" is intentionally NOT here
+# — that's the current pipeline-wide placeholder until a real timing source
+# is plumbed. Populate with concrete bad states (e.g. "late", "post_lock")
+# once the timing feed exists.
+_LLP_BAD_TIMING = frozenset()
+
+def _llp_discovery_clean(rec):
+    """BET-level Discovery gate: market signal interpretable and cost OK.
+
+    This is the gate for entering `approved` / BET. ANCHOR adds further
+    requirements via `_llp_anchor_eligible`.
+
+    Stale-line semantics: per spec, "stale-line or sharp signal alone cannot
+    approve the play". A `market_cause == "stale"` (or `stale_line is True`)
+    is rejected here so it cannot reach BET/ANCHOR; such records fall to WAIT.
+    """
+    disc = rec.get("discovery") or {}
+    cause = disc.get("market_cause")
+    if cause in (None, "unverified", "stale"):
+        return False
+    if disc.get("stale_line") is True:
+        return False
+    friction = disc.get("payout_friction")
+    if isinstance(friction, (int, float)) and friction > _LLP_PAYOUT_FRICTION_OK:
+        return False
+    # Defensive: these fields are honest-None today, but if a downstream
+    # populates them with the literal "NEGATIVE", block.
+    if disc.get("possession_conversion") == "NEGATIVE": return False
+    if disc.get("execution_value") == "NEGATIVE":       return False
+    return True
+
+
+def _llp_anchor_eligible(rec):
+    """ANCHOR Discovery+Validation gate (single source of truth).
+
+    Requires:
+      - `_llp_discovery_clean` (verified cause, cost OK, not stale)
+      - `_llp_validation_clean` (positive edge, model present, no fatal flags)
+      - edge >= 3.5%
+      - independent model signal (`model_adjustments` non-empty)
+      - confirmed starter AND confirmed lineup
+      - zero failure paths
+      - spread_fragility < 0.5 when applicable (None passes — fragility is
+        only meaningful for `spreads` market; h2h/totals have None by design)
+    """
+    if not _llp_discovery_clean(rec):  return False
+    if not _llp_validation_clean(rec): return False
+    edge = rec.get("edge")
+    if not isinstance(edge, (int, float)) or edge < 0.035: return False
+    if not (rec.get("model_adjustments") or {}):           return False
+    if rec.get("failure_paths"):                           return False
+    if rec.get("starter_status") != "confirmed":           return False
+    if rec.get("lineup_status")  != "confirmed":           return False
+    disc = rec.get("discovery") or {}
+    fragility = disc.get("spread_fragility")
+    if isinstance(fragility, (int, float)) and fragility >= 0.5:
+        return False
+    return True
+
+
+def _llp_validation_clean(rec):
+    """Validation Engine clean: model+edge+CLV are coherent and non-fatal."""
+    if rec.get("favorite_trap_flag"):                       return False
+    if rec.get("current_line") is None:                     return False
+    edge = rec.get("edge")
+    if not isinstance(edge, (int, float)) or edge < 0:      return False
+    if rec.get("model_win_probability") is None:            return False
+    # ≥3 failure paths is treated as a hard validation flag.
+    if len(rec.get("failure_paths") or []) >= 3:            return False
+    # CLV: tolerate unknown (None) and positive (True); reject confirmed negative.
+    if rec.get("clv_beat") is False:                        return False
+    return True
+
+
+def _llp_compute_badge(rec):
+    """v14.9+ canonical badge ladder.
+
+    PASS      → hard fail: TRAP, negative edge, negative CLV, no market
+    ANCHOR    → BET-clean + low fragility + edge ≥ 3.5% + independent model
+                + verified market_cause + confirmed starter/lineup + no failures
+    BET       → discovery+validation clean, BET/SMALL BET decision
+    QUALIFIED → discovery+validation clean, edge sub-bet
+    LEAN      → positive edge but starter/lineup unverified
+    WAIT      → WATCH or actionable edge blocked on unverified market_cause/timing
+    CANDIDATE → discovery signal, validation incomplete (no edge yet)
+    """
+    decision = rec.get("final_decision") or "PASS"
+    edge     = rec.get("edge")
+    disc     = rec.get("discovery") or {}
+    cause    = disc.get("market_cause")
+    friction = disc.get("payout_friction")
+
+    # ── Hard PASS conditions (take precedence over every other state). ──
+    # Narrowly scoped per spec: TRAP, no market, negative CLV, negative edge,
+    # excessive vig. We do NOT hard-fail on `decision == "PASS"` because that
+    # bucket includes tiny-positive-edge plays (edge < 1.2%) that may still
+    # be valid CANDIDATE/QUALIFIED records on a clean discovery side.
+    if decision == "TRAP":                                 return "PASS"
+    if rec.get("favorite_trap_flag"):                      return "PASS"
+    if rec.get("current_line") is None:                    return "PASS"
+    if rec.get("clv_beat") is False:                       return "PASS"
+    if isinstance(edge, (int, float)) and edge < 0:        return "PASS"
+    if isinstance(friction, (int, float)) and friction > _LLP_PAYOUT_FRICTION_OK:
+        return "PASS"
+
+    disc_ok = _llp_discovery_clean(rec)
+    val_ok  = _llp_validation_clean(rec)
+
+    # ANCHOR — single source of truth; all gates live in `_llp_anchor_eligible`.
+    if _llp_anchor_eligible(rec):
+        return "ANCHOR"
+
+    # WAIT (market-side) — stale line, market_cause unverified/stale, or
+    # explicit bad market_timing state. Checked BEFORE LEAN because a
+    # market-data blocker takes precedence over an execution-side blocker:
+    # even with a clean execution, a stale signal cannot approve the play.
+    #
+    # NOTE: `market_timing == "unverified"` is the current pipeline-wide
+    # placeholder (the timing source isn't plumbed yet) and must NOT be
+    # treated as a blocker — doing so would collapse every non-ANCHOR
+    # record into WAIT. Once a real timing source exists, add its explicit
+    # bad-state values (e.g. "late", "post_lock") to _LLP_BAD_TIMING below.
+    has_edge = isinstance(edge, (int, float)) and edge > 0
+    bad_timing = disc.get("market_timing") in _LLP_BAD_TIMING
+    market_blocker = (cause in (None, "unverified", "stale")
+                      or disc.get("stale_line") is True
+                      or bad_timing)
+    if has_edge and market_blocker:
+        return "WAIT"
+
+    # LEAN — positive edge with execution-side blocker (starter/lineup
+    # unverified). Checked BEFORE BET because BET requires execution cleared.
+    if has_edge and (rec.get("starter_status") == "unverified"
+                     or rec.get("lineup_status") == "unverified"):
+        return "LEAN"
+
+    # BET — actionable decision with both engines clean.
+    if disc_ok and val_ok and decision in ("BET", "SMALL BET"):
+        return "BET"
+
+    # QUALIFIED — both engines clean but edge below bet tier.
+    if disc_ok and val_ok:
+        return "QUALIFIED"
+
+    # WAIT (decision-side) — WATCH decision with a real edge that didn't
+    # match the market-blocker path above (e.g. fragility-blocked WATCH).
+    if has_edge and decision == "WATCH":
+        return "WAIT"
+
+    # CANDIDATE — discovery surfaced something, validation incomplete.
+    if cause and cause != "unverified" and not val_ok:
+        return "CANDIDATE"
+
+    return "PASS"
+
+
 def _llp_fetch_odds(sport_key, regions="us", markets="h2h,spreads,totals"):
     """Fetch current odds from The Odds API with TTL cache. Returns list of events or None."""
     import requests as _req
@@ -8322,6 +8486,9 @@ def _llp_analyze_one(game, default_sport, board_date):
             "failure_paths": list(extra_failures or []),
             "model_adjustments": {},
             "final_decision": "PASS",
+            "discovery_clean": False,
+            "validation_clean": False,
+            "llp_badge": "PASS",
             "notes": list(extra_notes or []),
         }
 
@@ -8510,6 +8677,11 @@ def _llp_analyze_one(game, default_sport, board_date):
                                              record["upset_score"],
                                              record["favorite_trap_flag"],
                                              record["failure_paths"])
+
+    # v14.9+ Discovery+Validation gates and canonical badge.
+    record["discovery_clean"]  = _llp_discovery_clean(record)
+    record["validation_clean"] = _llp_validation_clean(record)
+    record["llp_badge"]        = _llp_compute_badge(record)
 
     # Honor a user-requested line as a sanity flag
     if requested_line is not None and isinstance(sel.get("point"), (int, float)):
@@ -8703,6 +8875,9 @@ def _llp_clean_item(rec):
         "kelly":                rec.get("kelly_stake"),
         "decision":             rec.get("final_decision"),
         "confidence_tier":      rec.get("confidence_tier"),
+        "llp_badge":            rec.get("llp_badge"),
+        "discovery_clean":      rec.get("discovery_clean"),
+        "validation_clean":     rec.get("validation_clean"),
         "clv_beat":             rec.get("clv_beat"),
         "rest_context":         rec.get("rest_context"),
         "starter_status":       rec.get("starter_status"),
@@ -8805,10 +8980,14 @@ def _llp_team_analysis(games, default_sport, board_date):
                        if isinstance(r.get("model_win_probability"), (int, float))
                        and not _is_market_verified(r)
                        and r.get("final_decision") != "TRAP"]
+    # v14.9+: `approved` requires BOTH Discovery and Validation clean.
+    # A record reaches `approved` only if its canonical badge is ANCHOR or BET.
     approved        = ([r for r in market_verified
-                        if r.get("final_decision") in ("BET", "SMALL BET")]
+                        if r.get("final_decision") in ("BET", "SMALL BET")
+                        and r.get("llp_badge") in ("ANCHOR", "BET")]
                        + [r for r in model_qualified
-                          if r.get("confidence_tier") in ("STRONG", "MEDIUM")])
+                          if r.get("confidence_tier") in ("STRONG", "MEDIUM")
+                          and r.get("llp_badge") in ("ANCHOR", "BET")])
     approved_ids    = {id(r) for r in approved}
     # Mutually-exclusive states relative to approved:
     #   conditional  → not approved AND awaiting confirmation
@@ -8975,7 +9154,7 @@ def _llp_log_postmortem(analyses, board_id, slate_date):
             disc.get("market_cause"), disc.get("market_efficiency_rank"),
             disc.get("spread_fragility"), disc.get("possession_conversion"),
             disc.get("payout_friction"),
-            decision, r.get("confidence_tier"), r.get("kelly_stake"),
+            decision, r.get("llp_badge") or r.get("confidence_tier"), r.get("kelly_stake"),
             None, "NOT_BET", r.get("clv_delta_pts"),
             ("STRONG_POSITIVE" if r.get("clv_beat") is True
              else "NEGATIVE" if r.get("clv_beat") is False
