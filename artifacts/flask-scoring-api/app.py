@@ -8593,6 +8593,9 @@ def _llp_analyze_one(game, default_sport, board_date):
         record["failure_paths"] = [f"Market {market} side {side!r} not offered by tracked books"]
         return record
 
+    # LLP Pro Data Ingestion: persist every matched market snapshot.
+    _llp_persist_odds_snapshot(sport, away, home, market, sel)
+
     record["book"]         = sel.get("book")
     record["current_line"] = sel.get("point") if sel.get("point") is not None else sel.get("american")
     record["implied_probability"]        = round(sel["implied_prob"], 4) if sel.get("implied_prob") is not None else None
@@ -8663,6 +8666,46 @@ def _llp_analyze_one(game, default_sport, board_date):
     if isinstance(days_rest, (int, float)) and days_rest <= 1: short_rest = True
     if b2b: short_rest = True
 
+    # LLP Pro Data Ingestion: resolve starter/lineup from official sources
+    # FIRST, before building `ctx`. The downstream `_llp_discovery`,
+    # `_llp_model_prob`, and `_llp_failure_paths` all read
+    # `ctx["starters_unconfirmed"]` / `ctx["lineup_unconfirmed"]`, so if we
+    # resolved AFTER ctx was built the official API would never override the
+    # body-driven defaults — confirmed MLB games would still carry legacy
+    # "Starting pitcher not confirmed" failure paths.
+    starter_from_body = "confirmed" if game.get("starters_confirmed") else "unverified"
+    lineup_from_body  = ("confirmed" if game.get("lineup_confirmed") else
+                         ("confirmed" if game.get("starters_confirmed") else "unverified"))
+    if sport == "mlb":
+        mlb_ctx = _llp_fetch_mlb_lineup_context(away, home, board_date)
+        record["starter_status"] = (mlb_ctx["starter_status"]
+                                    if mlb_ctx["starter_status"] == "confirmed"
+                                    else starter_from_body)
+        record["lineup_status"]  = (mlb_ctx["lineup_status"]
+                                    if mlb_ctx["lineup_status"] == "confirmed"
+                                    else lineup_from_body)
+    else:
+        record["starter_status"] = starter_from_body
+        record["lineup_status"]  = lineup_from_body
+    # Back-compat combined signal now reflects resolved statuses, not raw
+    # body flags. "confirmed" if EITHER resolved starter or lineup is confirmed.
+    record["starter_lineup_confirmation"] = (
+        "confirmed" if (record["starter_status"] == "confirmed"
+                        or record["lineup_status"] == "confirmed")
+        else "unverified")
+
+    # LLP Pro Data Ingestion: fetch injury context (best-effort, per game).
+    # Persists to `injury_status` table inside the fetcher; we keep a small
+    # summary on the record so downstream/postmortem can see it.
+    injury_home = _llp_fetch_espn_injuries(sport, home)
+    injury_away = _llp_fetch_espn_injuries(sport, away)
+    record["injury_context"] = {
+        "home_team":  home, "home_injuries": injury_home,
+        "away_team":  away, "away_injuries": injury_away,
+        "home_count": len(injury_home), "away_count": len(injury_away),
+        "source":     "site.api.espn.com",
+    }
+
     ctx = {
         "is_home_side": is_home_side,
         "line_movement_pts": mv,
@@ -8674,8 +8717,9 @@ def _llp_analyze_one(game, default_sport, board_date):
         "bullpen_reliability": game.get("bullpen_reliability"),
         "park_run_factor": game.get("park_run_factor"),
         "weather_checked": bool(game.get("weather_checked")),
-        "starters_unconfirmed": not bool(game.get("starters_confirmed")),
-        "lineup_unconfirmed":   not bool(game.get("lineup_confirmed") or game.get("starters_confirmed")),
+        # Resolved statuses (API-first, body fallback) — see block above.
+        "starters_unconfirmed": record["starter_status"] != "confirmed",
+        "lineup_unconfirmed":   record["lineup_status"]  != "confirmed",
         "injury_risk": game.get("injury_risk"),
         "clv_status": "missing" if mv is None else "tracked",
     }
@@ -8696,19 +8740,6 @@ def _llp_analyze_one(game, default_sport, board_date):
         record["confidence_tier"] = _llp_confidence_tier(edge)
     else:
         edge = None
-
-    # Stub fields with provided context, fall back to "unverified" / None.
-    # Starter (MLB pitcher / NFL QB) and lineup (NBA/NHL/MLB batting order)
-    # are surfaced separately. starter_lineup_confirmation is retained for
-    # back-compat with earlier consumers.
-    record["starter_status"] = "confirmed" if game.get("starters_confirmed") else "unverified"
-    record["lineup_status"]  = ("confirmed" if game.get("lineup_confirmed") else
-                                ("confirmed" if game.get("starters_confirmed") else "unverified"))
-    # Back-compat combined signal: "confirmed" if EITHER starter or lineup is
-    # confirmed (matches legacy semantics where the field was the union).
-    record["starter_lineup_confirmation"] = (
-        "confirmed" if (game.get("starters_confirmed") or game.get("lineup_confirmed"))
-        else "unverified")
     rest_note_parts = []
     if isinstance(days_rest, (int, float)): rest_note_parts.append(f"{days_rest} days rest")
     if b2b:                                  rest_note_parts.append("back-to-back")
@@ -8766,6 +8797,16 @@ def _llp_analyze_one(game, default_sport, board_date):
     # v14.9+ Discovery+Validation gates and canonical badge.
     record["discovery_clean"]  = _llp_discovery_clean(record)
     record["validation_clean"] = _llp_validation_clean(record)
+    # LLP Pro Data Ingestion: detect the 7 spec failure tags AFTER the
+    # discovery/validation gates have run (the `candidate-promoted-too-early`
+    # check depends on `discovery_clean`/`validation_clean`). Then re-run
+    # validation so any new HARD tag counts toward the `>=3` cardinality
+    # gate, and compute the badge (which routes through the spec ceiling
+    # and applies the CANDIDATE cap for stale/early/fake-edge tags).
+    _pro_tags = _llp_pro_detect_failures(record)
+    if _pro_tags:
+        record["failure_paths"].extend(_pro_tags)
+        record["validation_clean"] = _llp_validation_clean(record)
     record["llp_badge"]        = _llp_compute_badge(record)
 
     # LLP spec field: `lock_line` — snapshot the current_line at the moment
@@ -8782,6 +8823,11 @@ def _llp_analyze_one(game, default_sport, board_date):
                     f"line drift: requested {requested_line} vs current {sel['point']}")
         except (TypeError, ValueError):
             pass
+
+    # LLP Pro Data Ingestion: write the final per-game decision to
+    # `bet_decisions` for postmortem/learning. Best-effort; logging
+    # failures must never break analysis.
+    _llp_log_bet_decision(record)
 
     return record
 
@@ -9259,6 +9305,14 @@ def _llp_apply_spec_badge_ceiling(badge, rec):
     if (isinstance(novig, (int, float)) and novig >= 0.55
         and isinstance(edge,  (int, float)) and edge  <  0.04):
         badge = _llp_badge_min(badge, "LEAN")
+    # LLP Pro Data Ingestion: stale-market / early-promoted / fake-edge
+    # tags cap the badge at CANDIDATE until Layer 4 validation clears.
+    # Tag set is intentionally checked via membership in
+    # `_LLP_PRO_CANDIDATE_CEILING_TAGS` so adding a new candidate-cap tag
+    # is a one-line change to the set.
+    fp = rec.get("failure_paths") or []
+    if any(t in _LLP_PRO_CANDIDATE_CEILING_TAGS for t in fp):
+        badge = _llp_badge_min(badge, "CANDIDATE")
     return badge
 
 def _llp_v_overpromoted(rec):
@@ -9623,6 +9677,499 @@ def _ensure_llp_postmortem_schema(conn):
             """)
             conn.commit()
         _LLP_POSTMORTEM_SCHEMA_READY = True
+
+
+# ════════════════════════════════════════════════════════════════════════
+# LLP PRO DATA INGESTION PATCH
+# ════════════════════════════════════════════════════════════════════════
+# Implements the LLP team-betting Pro Data Ingestion spec using the free
+# provider mix:
+#   - Odds + market movement: The Odds API (wired via `_llp_fetch_odds`)
+#   - Starters + lineups (MLB): statsapi.mlb.com (official, free JSON)
+#   - Injuries (NBA/WNBA/NFL/NHL/MLB): site.api.espn.com (public JSON)
+#
+# Storage (7 spec tables): odds_snapshots, team_context, lineup_status,
+# injury_status, model_outputs, clv_log, bet_decisions.
+#
+# Hard rule: stale/soft lines, "fake-market-edge" plays, and prematurely
+# promoted candidates are capped at CANDIDATE by the spec ceiling until
+# Layer 4 validation clears (confirmed starter+lineup AND real model
+# adjustments AND positive Kelly).
+
+# Failure tags — HARD (count toward `_llp_validation_clean` cardinality).
+LLP_PRO_FAILURE_MISSING_ODDS_FEED           = "missing-odds-feed"
+LLP_PRO_FAILURE_MISSING_LINEUP_STATUS       = "missing-lineup-status"
+LLP_PRO_FAILURE_MISSING_STARTER_CONFIRM     = "missing-starter-confirmation"
+LLP_PRO_FAILURE_STALE_MARKET_NOT_ACTIONABLE = "stale-market-not-actionable"
+LLP_PRO_FAILURE_CLV_WITHOUT_VALIDATION      = "clv-without-validation"
+LLP_PRO_FAILURE_FAKE_MARKET_EDGE            = "fake-market-edge"
+LLP_PRO_FAILURE_CANDIDATE_PROMOTED_EARLY    = "candidate-promoted-too-early"
+
+_LLP_PRO_FAILURE_TAGS = frozenset({
+    LLP_PRO_FAILURE_MISSING_ODDS_FEED,
+    LLP_PRO_FAILURE_MISSING_LINEUP_STATUS,
+    LLP_PRO_FAILURE_MISSING_STARTER_CONFIRM,
+    LLP_PRO_FAILURE_STALE_MARKET_NOT_ACTIONABLE,
+    LLP_PRO_FAILURE_CLV_WITHOUT_VALIDATION,
+    LLP_PRO_FAILURE_FAKE_MARKET_EDGE,
+    LLP_PRO_FAILURE_CANDIDATE_PROMOTED_EARLY,
+})
+
+# Tags that the spec ceiling caps at CANDIDATE regardless of model edge.
+_LLP_PRO_CANDIDATE_CEILING_TAGS = frozenset({
+    LLP_PRO_FAILURE_STALE_MARKET_NOT_ACTIONABLE,
+    LLP_PRO_FAILURE_CANDIDATE_PROMOTED_EARLY,
+    LLP_PRO_FAILURE_FAKE_MARKET_EDGE,
+})
+
+
+# ── DB schema: 7 new tables for the LLP Pro data stack ─────────────────
+_LLP_PRO_SCHEMA_LOCK  = threading.Lock()
+_LLP_PRO_SCHEMA_READY = False
+
+
+def _ensure_llp_pro_schema(conn):
+    """Create the 7 LLP Pro Data Ingestion tables (idempotent, best-effort)."""
+    global _LLP_PRO_SCHEMA_READY
+    if _LLP_PRO_SCHEMA_READY:
+        return
+    with _LLP_PRO_SCHEMA_LOCK:
+        if _LLP_PRO_SCHEMA_READY:
+            return
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS odds_snapshots (
+                    id            BIGSERIAL PRIMARY KEY,
+                    fetched_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sport         TEXT NOT NULL,
+                    game_key      TEXT NOT NULL,
+                    away_team     TEXT,
+                    home_team     TEXT,
+                    market        TEXT NOT NULL,
+                    book          TEXT,
+                    side          TEXT,
+                    american_odds DOUBLE PRECISION,
+                    point         DOUBLE PRECISION,
+                    snapshot_kind TEXT NOT NULL DEFAULT 'current',
+                    source        TEXT NOT NULL DEFAULT 'the-odds-api'
+                );
+                CREATE INDEX IF NOT EXISTS odds_snapshots_game_idx
+                    ON odds_snapshots (sport, game_key, market, fetched_at DESC);
+
+                CREATE TABLE IF NOT EXISTS team_context (
+                    id            BIGSERIAL PRIMARY KEY,
+                    fetched_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sport         TEXT NOT NULL,
+                    team          TEXT NOT NULL,
+                    context_kind  TEXT NOT NULL,
+                    payload       JSONB,
+                    source        TEXT
+                );
+                CREATE INDEX IF NOT EXISTS team_context_team_idx
+                    ON team_context (sport, team, context_kind, fetched_at DESC);
+
+                CREATE TABLE IF NOT EXISTS lineup_status (
+                    id                    BIGSERIAL PRIMARY KEY,
+                    fetched_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sport                 TEXT NOT NULL,
+                    game_key              TEXT NOT NULL,
+                    away_team             TEXT,
+                    home_team             TEXT,
+                    game_date             DATE,
+                    starter_status        TEXT NOT NULL DEFAULT 'unverified',
+                    lineup_status         TEXT NOT NULL DEFAULT 'unverified',
+                    probable_pitchers     JSONB,
+                    confirmed_lineup_size INTEGER,
+                    source                TEXT
+                );
+                CREATE INDEX IF NOT EXISTS lineup_status_game_idx
+                    ON lineup_status (sport, game_key, fetched_at DESC);
+
+                CREATE TABLE IF NOT EXISTS injury_status (
+                    id         BIGSERIAL PRIMARY KEY,
+                    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sport      TEXT NOT NULL,
+                    team       TEXT NOT NULL,
+                    player     TEXT,
+                    status     TEXT,
+                    detail     TEXT,
+                    source     TEXT
+                );
+                CREATE INDEX IF NOT EXISTS injury_status_team_idx
+                    ON injury_status (sport, team, fetched_at DESC);
+
+                CREATE TABLE IF NOT EXISTS model_outputs (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sport               TEXT NOT NULL,
+                    game_key            TEXT NOT NULL,
+                    market              TEXT NOT NULL,
+                    side                TEXT,
+                    no_vig_implied_prob DOUBLE PRECISION,
+                    model_win_prob      DOUBLE PRECISION,
+                    edge_pct            DOUBLE PRECISION,
+                    kelly_pct           DOUBLE PRECISION,
+                    confidence_tier     TEXT,
+                    model_version       TEXT
+                );
+                CREATE INDEX IF NOT EXISTS model_outputs_game_idx
+                    ON model_outputs (sport, game_key, market, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS clv_log (
+                    id           BIGSERIAL PRIMARY KEY,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sport        TEXT NOT NULL,
+                    game_key     TEXT NOT NULL,
+                    market       TEXT NOT NULL,
+                    side         TEXT,
+                    opening_line DOUBLE PRECISION,
+                    bet_line     DOUBLE PRECISION,
+                    closing_line DOUBLE PRECISION,
+                    clv_delta    DOUBLE PRECISION,
+                    clv_grade    TEXT,
+                    clv_beat     BOOLEAN
+                );
+                CREATE INDEX IF NOT EXISTS clv_log_game_idx
+                    ON clv_log (sport, game_key, market, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS bet_decisions (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    sport               TEXT NOT NULL,
+                    game_key            TEXT NOT NULL,
+                    away_team           TEXT,
+                    home_team           TEXT,
+                    market              TEXT NOT NULL,
+                    side                TEXT,
+                    book                TEXT,
+                    current_line        DOUBLE PRECISION,
+                    opening_line        DOUBLE PRECISION,
+                    no_vig_implied_prob DOUBLE PRECISION,
+                    model_win_prob      DOUBLE PRECISION,
+                    edge_pct            DOUBLE PRECISION,
+                    kelly_pct           DOUBLE PRECISION,
+                    confidence_tier     TEXT,
+                    final_decision      TEXT,
+                    llp_badge           TEXT,
+                    starter_status      TEXT,
+                    lineup_status       TEXT,
+                    market_timing       TEXT,
+                    market_cause        TEXT,
+                    clv_beat            BOOLEAN,
+                    failure_tags        TEXT[]
+                );
+                CREATE INDEX IF NOT EXISTS bet_decisions_game_idx
+                    ON bet_decisions (sport, game_key, market, created_at DESC);
+                CREATE INDEX IF NOT EXISTS bet_decisions_badge_idx
+                    ON bet_decisions (llp_badge);
+            """)
+            conn.commit()
+        _LLP_PRO_SCHEMA_READY = True
+
+
+# ── Ingestion: MLB Stats API (official, free) for starters + lineups ───
+_LLP_MLB_SCHEDULE_CACHE = {}   # keyed by date_str → (fetched_at_ts, schedule_dict)
+_LLP_MLB_CTX_CACHE      = {}   # keyed by (away|home|date) → (ts, resolved_dict)
+_LLP_INJURY_CACHE       = {}
+_LLP_PRO_CACHE_TTL_SEC  = 180  # 3 min — short enough for late-breaking news
+
+
+def _llp_fetch_mlb_schedule(date_str):
+    """Fetch MLB schedule (with probablePitcher+lineups hydrate) for a date.
+
+    Date-keyed cache: a 12-game slate hits statsapi.mlb.com once, not 12×.
+    Never raises — returns the raw API dict on success, `{}` otherwise.
+    """
+    import requests as _req
+    now_ts = datetime.now().timestamp()
+    hit = _LLP_MLB_SCHEDULE_CACHE.get(date_str)
+    if hit and (now_ts - hit[0]) < _LLP_PRO_CACHE_TTL_SEC:
+        return hit[1]
+    try:
+        r = _req.get("https://statsapi.mlb.com/api/v1/schedule",
+                     params={"sportId": 1, "date": date_str,
+                             "hydrate": "probablePitcher,lineups"},
+                     timeout=10)
+        if r.status_code != 200:
+            _LLP_MLB_SCHEDULE_CACHE[date_str] = (now_ts, {})
+            return {}
+        data = r.json() or {}
+        _LLP_MLB_SCHEDULE_CACHE[date_str] = (now_ts, data)
+        return data
+    except Exception:
+        _LLP_MLB_SCHEDULE_CACHE[date_str] = (now_ts, {})
+        return {}
+
+
+def _llp_fetch_mlb_lineup_context(away, home, game_date=None):
+    """Resolve MLB starter/lineup status for one game from the cached schedule.
+
+    Returns dict with `starter_status`, `lineup_status`, `probable_pitchers`,
+    `confirmed_lineup_size`, `source`, `fetched_at`. Never raises — on any
+    failure returns the unverified shell so callers can emit the appropriate
+    failure tags. The underlying schedule HTTP call is cached per date by
+    `_llp_fetch_mlb_schedule` so a full slate triggers exactly one fetch.
+    """
+    base = {"starter_status": "unverified", "lineup_status": "unverified",
+            "probable_pitchers": {}, "confirmed_lineup_size": 0,
+            "source": "statsapi.mlb.com",
+            "fetched_at": datetime.now(timezone.utc).isoformat()}
+    if not away or not home:
+        return base
+    date_str = game_date if game_date else datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cache_key = f"{_llp_norm_team(away)}|{_llp_norm_team(home)}|{date_str}"
+    now_ts = datetime.now().timestamp()
+    hit = _LLP_MLB_CTX_CACHE.get(cache_key)
+    if hit and (now_ts - hit[0]) < _LLP_PRO_CACHE_TTL_SEC:
+        return hit[1]
+    data = _llp_fetch_mlb_schedule(date_str)
+    if not data:
+        _LLP_MLB_CTX_CACHE[cache_key] = (now_ts, base)
+        return base
+    an, hn = _llp_norm_team(away), _llp_norm_team(home)
+    for d in (data.get("dates") or []):
+        for g in (d.get("games") or []):
+            teams = g.get("teams") or {}
+            gh = _llp_norm_team(
+                ((teams.get("home") or {}).get("team") or {}).get("name") or "")
+            ga = _llp_norm_team(
+                ((teams.get("away") or {}).get("team") or {}).get("name") or "")
+            if not ((an in ga or ga in an) and (hn in gh or gh in hn)):
+                continue
+            pp = {}
+            for tk in ("away", "home"):
+                name = ((teams.get(tk) or {}).get("probablePitcher") or {}).get("fullName")
+                if name: pp[tk] = name
+            lineups = g.get("lineups") or {}
+            away_bo = lineups.get("awayPlayers") or []
+            home_bo = lineups.get("homePlayers") or []
+            lineup_size = (min(len(away_bo), len(home_bo))
+                           if (away_bo and home_bo) else 0)
+            starter_ok = bool(pp.get("away") and pp.get("home"))
+            lineup_ok  = lineup_size >= 9
+            out = {
+                "starter_status": "confirmed" if starter_ok else "unverified",
+                "lineup_status":  "confirmed" if lineup_ok  else "unverified",
+                "probable_pitchers":     pp,
+                "confirmed_lineup_size": lineup_size,
+                "source":     "statsapi.mlb.com",
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _LLP_MLB_CTX_CACHE[cache_key] = (now_ts, out)
+            try:
+                conn = get_db_conn()
+                try:
+                    _ensure_llp_pro_schema(conn)
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO lineup_status
+                              (sport, game_key, away_team, home_team, game_date,
+                               starter_status, lineup_status, probable_pitchers,
+                               confirmed_lineup_size, source)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
+                        """, ("mlb", f"{an}@{hn}|{date_str}", away, home,
+                              date_str, out["starter_status"], out["lineup_status"],
+                              json.dumps(pp), lineup_size, out["source"]))
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+            return out
+    _LLP_MLB_CTX_CACHE[cache_key] = (now_ts, base)
+    return base
+
+
+_LLP_ESPN_SPORT_PATH = {
+    "mlb":  ("baseball",   "mlb"),
+    "nba":  ("basketball", "nba"),
+    "wnba": ("basketball", "wnba"),
+    "nfl":  ("football",   "nfl"),
+    "nhl":  ("hockey",     "nhl"),
+}
+
+
+def _llp_fetch_espn_injuries(sport, team=None):
+    """Fetch league-wide or team injuries from ESPN's public JSON.
+
+    Never raises. Returns list of `{team, player, status, detail}` dicts.
+    Persists to `injury_status` best-effort.
+    """
+    import requests as _req
+    s = (sport or "").lower()
+    path = _LLP_ESPN_SPORT_PATH.get(s)
+    if not path:
+        return []
+    cache_key = f"{s}|{_llp_norm_team(team or '')}"
+    hit = _LLP_INJURY_CACHE.get(cache_key)
+    now_ts = datetime.now().timestamp()
+    if hit and (now_ts - hit[0]) < _LLP_PRO_CACHE_TTL_SEC:
+        return hit[1]
+    out = []
+    try:
+        url = (f"https://site.api.espn.com/apis/site/v2/sports/"
+               f"{path[0]}/{path[1]}/injuries")
+        r = _req.get(url, timeout=10)
+        if r.status_code != 200:
+            _LLP_INJURY_CACHE[cache_key] = (now_ts, [])
+            return []
+        data = r.json() or {}
+        tnorm = _llp_norm_team(team or "")
+        for tblock in (data.get("injuries") or []):
+            team_name = tblock.get("displayName") or ""
+            if team and tnorm and tnorm not in _llp_norm_team(team_name):
+                continue
+            for inj in (tblock.get("injuries") or []):
+                athlete = inj.get("athlete") or {}
+                out.append({
+                    "team":   team_name,
+                    "player": athlete.get("displayName") or athlete.get("shortName") or "",
+                    "status": inj.get("status") or "",
+                    "detail": ((inj.get("type") or {}).get("description")
+                               or inj.get("longComment") or ""),
+                })
+    except Exception:
+        out = []
+    _LLP_INJURY_CACHE[cache_key] = (now_ts, out)
+    if out:
+        try:
+            conn = get_db_conn()
+            try:
+                _ensure_llp_pro_schema(conn)
+                with conn.cursor() as cur:
+                    psycopg2.extras.execute_batch(cur, """
+                        INSERT INTO injury_status
+                          (sport, team, player, status, detail, source)
+                        VALUES (%s,%s,%s,%s,%s,%s)
+                    """, [(s, i["team"], i["player"], i["status"],
+                           i["detail"], "site.api.espn.com") for i in out])
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+    return out
+
+
+def _llp_persist_odds_snapshot(sport, away, home, market, sel):
+    """Best-effort: write a row to odds_snapshots after a successful odds match."""
+    if not isinstance(sel, dict):
+        return
+    try:
+        conn = get_db_conn()
+        try:
+            _ensure_llp_pro_schema(conn)
+            game_key = f"{_llp_norm_team(away)}@{_llp_norm_team(home)}"
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO odds_snapshots
+                      (sport, game_key, away_team, home_team, market, book, side,
+                       american_odds, point, snapshot_kind, source)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (sport, game_key, away, home, market,
+                      sel.get("book"), sel.get("name"),
+                      sel.get("american"), sel.get("point"),
+                      "current", "the-odds-api"))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _llp_log_bet_decision(rec):
+    """Best-effort: write the final per-game record to `bet_decisions`."""
+    if not isinstance(rec, dict):
+        return
+    try:
+        conn = get_db_conn()
+        try:
+            _ensure_llp_pro_schema(conn)
+            disc = rec.get("discovery") or {}
+            game_key = (f"{_llp_norm_team(rec.get('away_team'))}"
+                        f"@{_llp_norm_team(rec.get('home_team'))}")
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bet_decisions
+                      (sport, game_key, away_team, home_team, market, side, book,
+                       current_line, opening_line, no_vig_implied_prob,
+                       model_win_prob, edge_pct, kelly_pct, confidence_tier,
+                       final_decision, llp_badge, starter_status, lineup_status,
+                       market_timing, market_cause, clv_beat, failure_tags)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s,%s,
+                            %s,%s,%s,%s, %s,%s,%s, %s)
+                """, (rec.get("sport"), game_key,
+                      rec.get("away_team"), rec.get("home_team"),
+                      rec.get("market"), rec.get("side"), rec.get("book"),
+                      rec.get("current_line"), rec.get("opening_line"),
+                      rec.get("no_vig_implied_probability"),
+                      rec.get("model_win_probability"), rec.get("edge"),
+                      rec.get("kelly_stake"), rec.get("confidence_tier"),
+                      rec.get("final_decision"), rec.get("llp_badge"),
+                      rec.get("starter_status"), rec.get("lineup_status"),
+                      disc.get("market_timing"), disc.get("market_cause"),
+                      rec.get("clv_beat"),
+                      list(rec.get("failure_paths") or [])))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _llp_pro_detect_failures(rec):
+    """Detect the 7 LLP Pro Data Ingestion failure tags on a populated record.
+
+    Returns a list of tag strings that apply. Tags are HARD (count toward
+    `_llp_validation_clean` cardinality and the spec ceiling caps).
+    """
+    tags  = []
+    sport = (rec.get("sport") or "").lower()
+    disc  = rec.get("discovery") or {}
+    edge     = rec.get("edge")
+    clv_beat = rec.get("clv_beat")
+    starter  = rec.get("starter_status")
+    lineup   = rec.get("lineup_status")
+    adjs     = rec.get("model_adjustments") or {}
+
+    if rec.get("current_line") is None:
+        tags.append(LLP_PRO_FAILURE_MISSING_ODDS_FEED)
+
+    # Starter confirmation: MLB-only (probable pitcher = starter for team
+    # markets). NHL goalies can be added later via DailyFaceoff ingestion.
+    if sport == "mlb" and starter != "confirmed":
+        tags.append(LLP_PRO_FAILURE_MISSING_STARTER_CONFIRM)
+
+    # Lineup confirmation: MLB/NBA/WNBA/NHL gate on starting unit availability.
+    if sport in ("mlb", "nba", "wnba", "nhl") and lineup != "confirmed":
+        tags.append(LLP_PRO_FAILURE_MISSING_LINEUP_STATUS)
+
+    # Stale market with unverified execution context → not actionable.
+    is_stale = (disc.get("stale_line") is True
+                or disc.get("market_cause") == "stale"
+                or disc.get("market_timing") == "stale")
+    if is_stale and (starter != "confirmed" or lineup != "confirmed"):
+        tags.append(LLP_PRO_FAILURE_STALE_MARKET_NOT_ACTIONABLE)
+
+    # CLV without validation: positive CLV but execution unverified.
+    if clv_beat is True and (starter != "confirmed" or lineup != "confirmed"):
+        tags.append(LLP_PRO_FAILURE_CLV_WITHOUT_VALIDATION)
+
+    # Fake market edge: large edge but model has no real adjustments AND
+    # execution unverified → the edge is just trusting the price.
+    if (isinstance(edge, (int, float)) and edge > 0.04
+            and not adjs
+            and (starter != "confirmed" or lineup != "confirmed")):
+        tags.append(LLP_PRO_FAILURE_FAKE_MARKET_EDGE)
+
+    # Candidate promoted too early: discovery-clean but validation NOT
+    # clean, yet edge is high enough to risk downstream over-promotion.
+    if (rec.get("discovery_clean") is True
+            and rec.get("validation_clean") is False
+            and isinstance(edge, (int, float)) and edge >= 0.035):
+        tags.append(LLP_PRO_FAILURE_CANDIDATE_PROMOTED_EARLY)
+
+    return tags
 
 
 # Decisions worth logging — exclude TRAP (those are decided rejections, not
