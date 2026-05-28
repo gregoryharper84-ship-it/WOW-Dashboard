@@ -8106,6 +8106,11 @@ _LLP_ADVISORY_TAGS = frozenset({
     # but MUST NOT count toward `_llp_validation_clean`'s `>= 3` hard-fail
     # or `_llp_decision`'s `>= 3` WATCH demotion. Add new advisory tags here.
     "_LLP_MLB_FULLGAME_PREFERS_F5",
+    # LLP Verified-Data-Layer Step 5 chooser tags: informational routing
+    # hints (consumer should display the F5 line instead of full-game ML);
+    # not real failures, so they must not affect validation cardinality.
+    "_LLP_RECOMMEND_F5_ML",
+    "_LLP_ML_WATCH_ONLY_NO_F5",
 })
 
 
@@ -8232,31 +8237,136 @@ def _llp_compute_badge_raw(rec):
     return _llp_apply_spec_badge_ceiling(badge, rec)
 
 
+def _llp_choose_mlb_target_market(rec):
+    """LLP Verified-Data-Layer Step 5: route MLB full-game ML to F5 when
+    full-game ML is not actionable.
+
+    Returns one of:
+      - "ML"             — full-game ML approved (strong edge or bullpen tailwind)
+      - "F5_ML"          — full-game blocked but F5 market is available
+      - "ML_WATCH_ONLY"  — full-game blocked and no F5 line available
+      - <market.upper()> — non-h2h MLB markets pass through unchanged
+      - "ML"             — non-MLB (no-op default)
+
+    Gates (in priority order):
+      1. Sport != MLB           → "ML" (caller's market unchanged downstream)
+      2. Market != h2h          → market upper-case (pass through)
+      3. Bullpen reliability > 0.50 OR full-game edge >= 0.04
+                                → "ML" (full-game is actionable as-is)
+      4. F5 market data present → "F5_ML"
+      5. Otherwise              → "ML_WATCH_ONLY"
+    """
+    if not isinstance(rec, dict):                       return "ML"
+    if (rec.get("sport")  or "").lower() != "mlb":      return "ML"
+    market = (rec.get("market") or "").lower()
+    if market != "h2h":
+        return market.upper() if market else "ML"
+    edge = rec.get("edge")
+    bp   = rec.get("bullpen_reliability")
+    if isinstance(bp, (int, float)) and bp > 0.50:
+        return "ML"
+    if isinstance(edge, (int, float)) and edge >= 0.04:
+        return "ML"
+    if rec.get("f5_available"):
+        return "F5_ML"
+    return "ML_WATCH_ONLY"
+
+
 def _llp_mlb_fullgame_f5_advisory(rec):
     """LLP spec advisory: MLB full-game ML defaults to F5 unless bullpen edge
-    is positive or full-game edge is strong (>= 6%).
+    is positive or full-game edge is strong.
 
-    This is a soft advisory (surfaced as a failure_path), not a hard badge
-    cap — the dashboard / consumer can use it to redirect users to the F5
-    line for a cleaner read. Returns True when the F5 preference applies.
+    Unified with `_llp_choose_mlb_target_market` so the advisory and the
+    chooser cannot disagree (architect-flagged split-brain). Advisory is
+    True iff the chooser routed AWAY from "ML" for an MLB h2h record.
+    Returns False for non-MLB, non-h2h, or records the chooser approved
+    as full-game ML.
     """
     if not isinstance(rec, dict):                       return False
     if (rec.get("sport")  or "").lower() != "mlb":      return False
     if (rec.get("market") or "").lower() != "h2h":      return False
-    edge = rec.get("edge")
-    if isinstance(edge, (int, float)) and edge >= 0.06: return False
-    bp = rec.get("bullpen_reliability")
-    if isinstance(bp, (int, float))   and bp   >= 0.50: return False
-    return True
+    return _llp_choose_mlb_target_market(rec) != "ML"
 
 
-def _llp_fetch_odds(sport_key, regions="us", markets="h2h,spreads,totals"):
+# ── Market alias normalization + segment-market routing ───────────────
+# Canonical Odds API market keys live alongside user-facing aliases so
+# callers can submit "ml" / "spread" / "f5_ml" / etc. and have them
+# routed correctly. F5 (first-5-innings) markets are MLB-only and use
+# the documented Odds API segment-market keys.
+_LLP_MARKET_ALIASES = {
+    # Full game
+    "moneyline":"h2h", "ml":"h2h", "h2h":"h2h",
+    "spread":"spreads", "spreads":"spreads",
+    "total":"totals", "totals":"totals", "ou":"totals",
+    # MLB First-5-Innings (F5) — short forms
+    "f5":"h2h_1st_5_innings", "f5_ml":"h2h_1st_5_innings",
+    "f5_h2h":"h2h_1st_5_innings", "first5":"h2h_1st_5_innings",
+    "first5_ml":"h2h_1st_5_innings", "first_5":"h2h_1st_5_innings",
+    "first_5_ml":"h2h_1st_5_innings",
+    "f5_spread":"spreads_1st_5_innings", "f5_spreads":"spreads_1st_5_innings",
+    "first5_spread":"spreads_1st_5_innings",
+    "f5_total":"totals_1st_5_innings", "f5_totals":"totals_1st_5_innings",
+    "f5_ou":"totals_1st_5_innings", "first5_total":"totals_1st_5_innings",
+    # Canonical Odds API segment keys (passthrough)
+    "h2h_1st_5_innings":"h2h_1st_5_innings",
+    "spreads_1st_5_innings":"spreads_1st_5_innings",
+    "totals_1st_5_innings":"totals_1st_5_innings",
+}
+
+# Sport-aware default market list for the odds fetcher. MLB pulls the
+# F5 markets alongside full-game so a single odds call has everything
+# the engine needs (full game + segment routing). Unsupported markets
+# silently get dropped by The Odds API rather than 404'ing the call.
+#
+# COST NOTE: pulling 6 markets instead of 3 ~2x's Odds API credits per
+# MLB fetch. Set LLP_DISABLE_MLB_F5=1 in the environment to fall back to
+# full-game-only and recover the credits; F5 routing will then degrade
+# gracefully (f5_available=False, recommended_market="ML_WATCH_ONLY").
+_LLP_DEFAULT_ODDS_MARKETS_FALLBACK = "h2h,spreads,totals"
+
+def _llp_default_odds_markets(sport_key):
+    if sport_key == "baseball_mlb" and not os.environ.get("LLP_DISABLE_MLB_F5"):
+        return ("h2h,spreads,totals,"
+                "h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings")
+    return _LLP_DEFAULT_ODDS_MARKETS_FALLBACK
+
+# Back-compat: tests + readers can still introspect this dict for "what
+# markets does sport X pull by default" without exercising the env flag.
+_LLP_DEFAULT_ODDS_MARKETS = {
+    "baseball_mlb": ("h2h,spreads,totals,"
+                     "h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings"),
+}
+
+
+def _llp_market_base(market_key):
+    """Map any market_key (full-game or segment) to its base type.
+
+    Used by extract/expand logic so F5 markets behave identically to
+    full-game equivalents at the matching level (h2h/spreads use team
+    names, totals use over/under).
+    """
+    if not market_key: return ""
+    m = str(market_key).lower()
+    if m.startswith("h2h"):     return "h2h"
+    if m.startswith("spreads"): return "spreads"
+    if m.startswith("totals"):  return "totals"
+    return m
+
+
+def _llp_fetch_odds(sport_key, regions="us", markets=None):
     """Fetch current odds from The Odds API with TTL cache. Returns list of events or None."""
     import requests as _req
+    if markets is None:
+        markets = _llp_default_odds_markets(sport_key)
     now = datetime.now().timestamp()
-    hit = _LLP_ODDS_CACHE.get(sport_key)
+    # Cache key includes markets so requests with different market sets
+    # don't poison each other (callers can still override via argument).
+    cache_key = (sport_key, markets, regions)
+    hit = _LLP_ODDS_CACHE.get(cache_key)
     if hit and (now - hit[0]) < _LLP_CACHE_TTL_SEC:
         return hit[1]
+    # Back-compat: also keep the legacy sport_key-only cache key warm so
+    # any other reader hitting it via sport_key alone gets the latest.
     key = os.environ.get("ODDS_API_KEY", "")
     if not key: return None
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
@@ -8266,7 +8376,8 @@ def _llp_fetch_odds(sport_key, regions="us", markets="h2h,spreads,totals"):
                      timeout=10)
         if r.status_code != 200: return None
         events = r.json()
-        _LLP_ODDS_CACHE[sport_key] = (now, events)
+        _LLP_ODDS_CACHE[cache_key] = (now, events)
+        _LLP_ODDS_CACHE[sport_key] = (now, events)  # legacy compat
         return events
     except Exception:
         return None
@@ -8312,13 +8423,15 @@ def _llp_extract_market(event, market_key, side, line=None):
                 all_outcomes.append((bm.get("key",""), o, outs))
     if not all_outcomes: return None
 
+    base = _llp_market_base(market_key)  # h2h_1st_5_innings → h2h, etc.
+
     def _is_match(o):
         # Blank side must never match — caller is required to specify a side.
         if not side_lc: return False
         name = (o.get("name") or "").lower()
-        if market_key == "totals":
+        if base == "totals":
             return name == side_lc  # exact "over" / "under"
-        if market_key in ("h2h","spreads"):
+        if base in ("h2h","spreads"):
             n_norm = _llp_norm_team(name); s_norm = _llp_norm_team(side_norm)
             if not n_norm or not s_norm: return False
             return n_norm == s_norm or n_norm in s_norm or s_norm in n_norm
@@ -8556,9 +8669,7 @@ def _llp_analyze_one(game, default_sport, board_date):
     away = (game.get("away") or game.get("away_team") or "").strip()
     home = (game.get("home") or game.get("home_team") or "").strip()
     market_in = (game.get("market") or "h2h").lower().strip()
-    market = {"moneyline":"h2h","ml":"h2h","h2h":"h2h",
-              "spread":"spreads","spreads":"spreads",
-              "total":"totals","totals":"totals","ou":"totals"}.get(market_in, market_in)
+    market = _LLP_MARKET_ALIASES.get(market_in, market_in)
     side = (game.get("side") or "").strip()
     requested_line = game.get("line")
 
@@ -8919,6 +9030,30 @@ def _llp_analyze_one(game, default_sport, board_date):
                                              record["favorite_trap_flag"],
                                              record["failure_paths"])
 
+    # LLP Verified-Data-Layer Step 5: when this is an MLB full-game h2h
+    # record, peek at the SAME event for F5 (first-5-innings) availability
+    # so the chooser below can route to F5_ML if full-game isn't actionable.
+    # F5 markets are pulled in the same odds call via _LLP_DEFAULT_ODDS_MARKETS
+    # so this is a free in-memory lookup — no extra API hit.
+    record["f5_available"] = False
+    record["f5_book"]      = None
+    record["f5_american"]  = None
+    record["f5_total_line"] = None
+    if sport == "mlb" and market == "h2h" and side:
+        f5_sel = _llp_extract_market(event, "h2h_1st_5_innings", side)
+        if isinstance(f5_sel, dict) and f5_sel.get("american") is not None:
+            record["f5_available"] = True
+            record["f5_book"]     = f5_sel.get("book")
+            record["f5_american"] = f5_sel.get("american")
+            # Also try to grab the F5 total line for downstream display.
+            # We probe both sides since either Over or Under will carry the
+            # same `point` value.
+            for _side in ("Over", "Under"):
+                f5_total = _llp_extract_market(event, "totals_1st_5_innings", _side)
+                if isinstance(f5_total, dict) and isinstance(f5_total.get("point"), (int, float)):
+                    record["f5_total_line"] = float(f5_total["point"])
+                    break
+
     # LLP spec: MLB full-game ML defaults to F5 unless bullpen edge positive
     # or full-game edge strong. Surfaced as a failure_path + top-level flag so
     # the dashboard can redirect users to the F5 line for a cleaner read.
@@ -8927,6 +9062,17 @@ def _llp_analyze_one(game, default_sport, board_date):
     record["mlb_fullgame_prefers_f5"] = _llp_mlb_fullgame_f5_advisory(record)
     if record["mlb_fullgame_prefers_f5"]:
         record["failure_paths"].append("_LLP_MLB_FULLGAME_PREFERS_F5")
+
+    # LLP Verified-Data-Layer Step 5 chooser: recommended target market.
+    # ML / F5_ML / ML_WATCH_ONLY for MLB h2h; pass-through otherwise. Also
+    # sets `full_game_edge_allowed` so downstream approval gates can refuse
+    # MLB full-game ML bets when the chooser routed us to F5 or watch-only.
+    record["recommended_market"]    = _llp_choose_mlb_target_market(record)
+    record["full_game_edge_allowed"] = (record["recommended_market"] == "ML")
+    if record["recommended_market"] == "F5_ML":
+        record["failure_paths"].append("_LLP_RECOMMEND_F5_ML")
+    elif record["recommended_market"] == "ML_WATCH_ONLY":
+        record["failure_paths"].append("_LLP_ML_WATCH_ONLY_NO_F5")
 
     # LLP spec field: moneyline_fragility for h2h markets, derived from how
     # extreme the no-vig implied probability is (heavy fav / dog = fragile).
@@ -9199,10 +9345,7 @@ def _llp_expand_both_sides(games):
         away  = (g.get("away") or g.get("away_team") or "").strip()
         home  = (g.get("home") or g.get("home_team") or "").strip()
         market_raw = (g.get("market") or "h2h").lower().strip()
-        market = {"moneyline":"h2h","ml":"h2h","h2h":"h2h",
-                  "spread":"spreads","spreads":"spreads",
-                  "total":"totals","totals":"totals","ou":"totals"}.get(
-                      market_raw, market_raw)
+        market = _LLP_MARKET_ALIASES.get(market_raw, market_raw)
         side = (side_override if side_override is not None
                 else (g.get("side") or "")).lower().strip()
         return (sport, away, home, market, side)
@@ -9218,16 +9361,14 @@ def _llp_expand_both_sides(games):
         if not isinstance(g, dict):
             continue
         market_raw = (g.get("market") or "h2h").lower().strip()
-        market = {"moneyline":"h2h","ml":"h2h","h2h":"h2h",
-                  "spread":"spreads","spreads":"spreads",
-                  "total":"totals","totals":"totals","ou":"totals"}.get(
-                      market_raw, market_raw)
+        market = _LLP_MARKET_ALIASES.get(market_raw, market_raw)
+        base   = _llp_market_base(market)  # F5 markets branch like full-game equivalents
         away = (g.get("away") or g.get("away_team") or "").strip()
         home = (g.get("home") or g.get("home_team") or "").strip()
         side = (g.get("side") or "").strip()
         line = g.get("line")
 
-        if market == "totals":
+        if base == "totals":
             if not side or side.lower() not in ("over", "under"):
                 # No side specified → emit both.
                 base = {k: v for k, v in g.items() if k != "side"}
@@ -9238,23 +9379,23 @@ def _llp_expand_both_sides(games):
                 partner_side = "under" if side.lower() == "over" else "over"
                 _add({**{k: v for k, v in g.items() if k != "side"},
                       "side": partner_side})
-        elif market in ("h2h", "spreads"):
+        elif base in ("h2h", "spreads"):
             if not away or not home:
                 _add(g)  # let the engine emit the proper failure path
                 continue
             if not side:
                 # No side → emit both teams.
-                base = {k: v for k, v in g.items() if k not in ("side", "line")}
-                if market == "h2h":
-                    _add({**base, "side": away})
-                    _add({**base, "side": home})
+                base_g = {k: v for k, v in g.items() if k not in ("side", "line")}
+                if base == "h2h":
+                    _add({**base_g, "side": away})
+                    _add({**base_g, "side": home})
                 else:  # spreads — need a line to flip; if none, emit no line
                     if isinstance(line, (int, float)):
-                        _add({**base, "side": away, "line":  float(line)})
-                        _add({**base, "side": home, "line": -float(line)})
+                        _add({**base_g, "side": away, "line":  float(line)})
+                        _add({**base_g, "side": home, "line": -float(line)})
                     else:
-                        _add({**base, "side": away})
-                        _add({**base, "side": home})
+                        _add({**base_g, "side": away})
+                        _add({**base_g, "side": home})
             else:
                 _add(g)
                 # Figure out the partner team. Match case-insensitively;
@@ -9265,11 +9406,11 @@ def _llp_expand_both_sides(games):
                 elif s_lc == home.lower(): partner = away
                 else: partner = None
                 if partner:
-                    base = {k: v for k, v in g.items() if k not in ("side", "line")}
-                    if market == "spreads" and isinstance(line, (int, float)):
-                        _add({**base, "side": partner, "line": -float(line)})
+                    base_g = {k: v for k, v in g.items() if k not in ("side", "line")}
+                    if base == "spreads" and isinstance(line, (int, float)):
+                        _add({**base_g, "side": partner, "line": -float(line)})
                     else:
-                        _add({**base, "side": partner})
+                        _add({**base_g, "side": partner})
         else:
             # Unknown market — pass through unchanged.
             _add(g)
