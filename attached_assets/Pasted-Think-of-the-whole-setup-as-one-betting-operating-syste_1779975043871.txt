@@ -1,0 +1,278 @@
+Think of the whole setup as **one betting operating system** with several parts doing different jobs.
+
+## 1. This ChatGPT model = the strategist / model architect
+
+This is where the **logic, rules, patches, postmortems, and decision framework** live.
+
+My role is to:
+
+* interpret your model rules
+* explain what should happen
+* audit the outputs
+* identify weak spots
+* patch the model after losses
+* create clean prompts/instructions for Claude, Replit, and the dashboard
+* make sure the system stays disciplined instead of turning into “pick chasing”
+
+The current model philosophy is: **screenshots or boards define what is available, but the full model determines what is playable**. That means the board is just the menu; the engine still has to research status, L5/L10, role, matchup, market sanity, and failure paths before anything gets approved. 
+
+## 2. WOW Betting Engine = the main brain
+
+The **WOW Betting Engine** is the full decision system.
+
+It is the master framework that applies:
+
+* Layer 0 reality/slate verification
+* Layer 1 data intake
+* Layer 2 adjustments
+* Layer 3 simulation/probability
+* Layer 4 synthesis/edge/Kelly/final decision
+* individual player audit
+* L5/L10 exact-line validation
+* role/deployment checks
+* market sanity
+* failure-path review
+* LESS lane
+* postmortem learning
+
+The WOW engine’s job is not simply to say “who wins.” Its job is to answer:
+
+> “Is this bet or prop mispriced enough, supported enough, and clean enough to execute?”
+
+That is why Layer 4 matters so much. A high-probability pick is not automatically a good bet if the price, market, or payout structure is bad. The model’s v14.8/v14.9 direction explicitly says the system must focus on EV, edge quality, bankroll control, and learning rather than hit rate alone.  
+
+## 3. LLP Team Betting Engine = the team-side betting specialist
+
+The **LLP Team Betting Engine** is a specialized branch of WOW focused on:
+
+* moneylines
+* spreads
+* totals
+* team totals
+* derivative markets
+* BetUS-style straight bets
+* WNBA/MLB/NBA team-side opportunities
+* market timing and CLV
+
+LLP should not just pick winners. It should run:
+
+**Discovery Engine → Validation Engine → Execution Engine**
+
+That means LLP first looks for potential market inefficiencies, stale lines, line freezes, injury lag, or derivative desyncs. Then it validates whether the side is actually worth betting using matchup, possession conversion, spread fragility, payout friction, no-vig edge, Kelly, and CLV logic.
+
+So LLP answers:
+
+> “Is this team-side market priced wrong enough to bet?”
+
+Not just:
+
+> “Who is more likely to win?”
+
+That keeps LLP from falling into favorite traps, fake stale-line edges, and raw-win-probability mistakes.
+
+## 4. OddsLinker = the market-discrepancy / arbitrage scanner
+
+OddsLinker is the **price comparison system**.
+
+Its job is to detect:
+
+* BetUS vs market consensus gaps
+* PrizePicks vs sportsbook line differences
+* offshore line freezes
+* stale derivative prices
+* arbitrage windows
+* mispriced props
+* CLV opportunities
+
+OddsLinker is not the final approver either. It creates **edge candidates**.
+
+Example:
+
+> PrizePicks has a line at 12.5, but sportsbooks imply 14.5.
+
+That does not automatically mean “bet it.” It means:
+
+> “This is worth sending through WOW validation.”
+
+So OddsLinker feeds candidates into the WOW engine, then WOW decides whether the player data, role, matchup, status, and failure path actually support the edge.
+
+## 5. PrizeProfits Engine = the PrizePicks slip optimizer
+
+PrizeProfits is the **PrizePicks-specific execution layer**.
+
+Its job is to:
+
+* evaluate board props
+* compare More vs Less
+* enforce hit-rate thresholds
+* build approved prop pools
+* route props into Power, Flex, or Jermia-style slips
+* avoid bad correlation
+* prevent overexposure
+* protect against forced slip construction
+
+Your saved workflow says the engine should work as:
+
+**Approved Prop Finder → Slip Optimizer → Exposure Controller**
+
+That is important because asking the system to “build slips” too early can force weak cards. The correct process is to approve the prop pool first, then build slips only from approved legs. 
+
+## 6. Claude = the coding / implementation partner
+
+Claude is mainly helping you implement the model inside your actual app/codebase.
+
+Claude’s role is usually:
+
+* editing Replit code
+* updating app.py or frontend logic
+* wiring response fields
+* creating arrays like approved, rejected, watchlist, market_verified, model_qualified
+* improving the dashboard output
+* implementing clean data structures
+* helping connect endpoints
+* making the model usable in the actual product
+
+Claude is not the master decision authority. Claude is more like the **engineer/developer** helping translate the rules into working code.
+
+The risk with Claude is that it may implement what you ask but not always understand the full betting model context unless you give it the latest master instructions. That is why alignment testing matters.
+
+## 7. Replit = the backend engine / API layer
+
+Replit is where the model becomes executable.
+
+It can host:
+
+* Flask backend
+* scoring endpoints
+* scan endpoints
+* random forest/WOW scoring support
+* request logs
+* scan results
+* JSON outputs
+* integrations with odds/stat APIs
+* dashboard data feeds
+
+Replit should be the place where the system actually runs repeatable workflows like:
+
+* board intake
+* daily scan
+* prop scoring
+* team-side scoring
+* RF/WOW support score
+* result logging
+* scan-results/summary response
+
+But the rule is important:
+
+> Replit/WOW score supports the decision. It does not approve the bet by itself.
+
+Your master model says Random Forest/WOW score is support only, and missing L5/L10, market gap, projection, role, or official status blocks Final Approval. 
+
+## 8. WOW Dashboard = the visual command center
+
+The WOW dashboard is the user-facing control panel.
+
+Its job should be to make the engine easy to understand.
+
+The dashboard should display:
+
+* sport
+* winners
+* upsets
+* approved props
+* model qualified props
+* conditional props
+* rejected props
+* why each play passed or failed
+* market edge
+* CLV status
+* confidence tier
+* failure paths
+* source access status
+
+The dashboard should not create the logic. It should **show the logic clearly**.
+
+The ideal dashboard makes it easy for you to see:
+
+> “What does the model like, why does it like it, what is the risk, and is this actually executable?”
+
+## How they work together
+
+The full workflow should look like this:
+
+```text
+PrizePicks / BetUS / Market Board
+        ↓
+Board Intake Agent
+        ↓
+Replit Backend / API Scan
+        ↓
+Stats + Odds + Status + Market Data
+        ↓
+WOW Betting Engine Validation
+        ↓
+LLP / OddsLinker / PrizeProfits Routing
+        ↓
+Approved / Conditional / Watch / Reject
+        ↓
+WOW Dashboard Display
+        ↓
+ChatGPT + Claude Audit / Patch / Improve
+        ↓
+Postmortem Learning
+        ↓
+Updated Model Rules
+```
+
+## The clean division of labor
+
+| Component                   | Main Job                                                      |
+| --------------------------- | ------------------------------------------------------------- |
+| **ChatGPT / this model**    | Strategy, model logic, postmortem, patching, QA, alignment    |
+| **WOW Betting Engine**      | Core betting decision brain                                   |
+| **LLP Team Betting Engine** | Team-side bets, spreads, MLs, totals, CLV, market timing      |
+| **OddsLinker**              | Arbitrage, stale lines, mispriced props, market discrepancies |
+| **PrizeProfits**            | PrizePicks prop pools and slip construction                   |
+| **Claude**                  | Code implementation and refactoring                           |
+| **Replit**                  | Backend APIs, scans, scoring, JSON outputs                    |
+| **WOW Dashboard**           | Visual display and decision cockpit                           |
+
+## The biggest alignment rule
+
+Everything should obey the same approval ladder:
+
+1. **Board availability**
+2. **Official status / slate confirmation**
+3. **L5/L10 exact-line data**
+4. **Role / minutes / leash / deployment**
+5. **Matchup and game script**
+6. **Market sanity / no-vig edge / CLV**
+7. **Failure-path review**
+8. **Final label**
+9. **Slip or bet construction**
+10. **Postmortem logging**
+
+No component should skip ahead.
+
+Claude should not code a shortcut.
+Replit should not return “approved” from a score alone.
+The dashboard should not show a pick as green without proof.
+LLP should not bet a team just because it is likely to win.
+PrizeProfits should not build slips before the approved pool exists.
+ChatGPT should not fake live validation when data is missing.
+
+## The powerful version of the system
+
+When aligned correctly, this becomes one cohesive machine:
+
+**ChatGPT designs the rules.**
+**Claude implements the rules.**
+**Replit runs the rules.**
+**WOW Engine validates the bets.**
+**LLP finds team-side edges.**
+**OddsLinker finds market inefficiencies.**
+**PrizeProfits builds only from approved props.**
+**WOW Dashboard shows the results clearly.**
+**Postmortems improve the next version.**
+
+That is the real power: not one model guessing picks, but a full betting operation where every part has a job and every pick has to survive the same disciplined process.
