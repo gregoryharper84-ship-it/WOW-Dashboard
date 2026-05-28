@@ -1,0 +1,85 @@
+Patch it as an **LLP Pro Data Ingestion Patch**.
+
+```text
+LLP PRO DATA INGESTION PATCH
+
+Purpose:
+LLP must use a pro data stack for team-side markets before approving ML, spread, totals, F5, or derivative bets.
+
+Primary data sources:
+1. OpticOdds or OddsJam
+   - opening odds
+   - current odds
+   - consensus odds
+   - line movement
+   - closing odds
+   - sportsbook timestamps
+   - CLV tracking
+
+2. SportsDataIO
+   - starters
+   - lineups
+   - injuries
+   - depth charts
+   - team/player stats
+   - projected/confirmed status
+
+3. Official backup sources
+   - MLB.com probable pitchers
+   - official league/team injury reports
+   - weather/park sources where applicable
+
+Engine-calculated fields:
+- no-vig implied probability
+- model win probability
+- edge %
+- Kelly %
+- CLV delta
+- CLV grade
+- market timing score
+- final decision
+
+Required tables:
+- odds_snapshots
+- team_context
+- lineup_status
+- injury_status
+- model_outputs
+- clv_log
+- bet_decisions
+
+LLP workflow:
+1. Pull odds snapshots from OpticOdds/OddsJam.
+2. Store opening/current/consensus/closing lines.
+3. Pull starters, lineups, injuries, and context from SportsDataIO.
+4. Confirm official starters/lineups where available.
+5. Calculate no-vig implied probability.
+6. Run LLP model win probability.
+7. Calculate edge %.
+8. Calculate Kelly %.
+9. Grade CLV opportunity.
+10. Run Layer 4 Team Bet Synthesis.
+11. Output BET / SMALL BET / LEAN / WATCH / PASS.
+
+Hard rule:
+Do not approve LLP team bets from stale lines, likely winners, or market discrepancies alone. A stale/soft line creates a Candidate only. Approval requires official context, matchup validation, edge %, Kelly %, and acceptable failure paths.
+
+Failure tags:
+- missing-odds-feed
+- missing-lineup-status
+- missing-starter-confirmation
+- stale-market-not-actionable
+- clv-without-validation
+- fake-market-edge
+- candidate-promoted-too-early
+```
+
+Fast Replit/Claude command:
+
+```text
+Patch LLP Team Betting Engine with LLP PRO DATA INGESTION PATCH.
+
+Add OpticOdds/OddsJam as the odds + CLV source, SportsDataIO as the starter/lineup/injury source, and official league sources as backup confirmation. Store odds snapshots, team context, lineup status, injury status, model outputs, CLV logs, and bet decisions.
+
+Make win probability, no-vig probability, edge %, Kelly %, CLV grade, timing score, and final decision engine-calculated fields. Do not approve team bets from stale lines or likely winners alone. Stale/soft lines are Candidate only until Layer 4 validation clears.
+```
