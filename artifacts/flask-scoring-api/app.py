@@ -8311,6 +8311,12 @@ def _llp_analyze_one(game, default_sport, board_date):
             "bullpen_reliability": None, "weather_park": None,
             "market_movement_clv_status": "unknown",
             "clv_beat": None, "clv_delta_pts": None,
+            "discovery": {
+                "stale_line": None, "line_freeze": None, "derivative_desync": None,
+                "spread_fragility": None, "possession_conversion": None,
+                "payout_friction": None, "market_cause": "unverified",
+                "market_efficiency_rank": None, "market_timing": "unverified",
+            },
             "upset_score": 0, "favorite_trap_flag": False,
             "prop_correlation_support": None,
             "failure_paths": list(extra_failures or []),
@@ -8442,6 +8448,10 @@ def _llp_analyze_one(game, default_sport, board_date):
         "clv_status": "missing" if mv is None else "tracked",
     }
 
+    # LLP Discovery pre-pass: classify the team-side market before validation.
+    record["discovery"] = _llp_discovery(
+        sport, market, side, sel, mv, record["market_movement_clv_status"], ctx)
+
     model_p, adj = _llp_model_prob(sport, market, side, sel.get("novig_prob"), ctx)
     record["model_win_probability"] = round(model_p, 4) if model_p is not None else None
     record["model_adjustments"]     = adj
@@ -8513,6 +8523,94 @@ def _llp_analyze_one(game, default_sport, board_date):
     return record
 
 
+def _llp_discovery(sport, market, side, sel, mv, opening_status, ctx):
+    """LLP Discovery pre-pass: team-side market intelligence.
+
+    Owns stale-line detection, line-freeze flags, derivative desync,
+    spread fragility, possession conversion, payout friction, and
+    market-cause classification. Runs before validation/execution and
+    is surfaced as a `discovery` block on each record so the dashboard
+    can show *why* a market is (or isn't) actionable.
+    """
+    # Key numbers per sport for spread fragility scoring.
+    SPREAD_KEYS = {
+        "nfl":     [3, 7, 10, 14, 6, 4],
+        "ncaaf":   [3, 7, 10, 14, 6, 4],
+        "nba":     [2.5, 5, 7, 3],
+        "wnba":    [2.5, 5, 7, 3],
+        "ncaab":   [2.5, 5, 7, 3],
+        "mlb":     [1.5],
+        "nhl":     [1.5],
+    }
+
+    point   = sel.get("point") if sel else None
+    implied = sel.get("implied_prob") if sel else None
+    novig   = sel.get("novig_prob")   if sel else None
+
+    # ── Payout friction: vig cost per side (implied minus no-vig). ──
+    if isinstance(implied, (int, float)) and isinstance(novig, (int, float)):
+        payout_friction = round(max(0.0, implied - novig), 4)
+    else:
+        payout_friction = None
+
+    # ── Spread fragility: distance from nearest key number (0..1). ──
+    spread_fragility = None
+    if market == "spreads" and isinstance(point, (int, float)):
+        keys = SPREAD_KEYS.get(sport, [])
+        if keys:
+            dist = min(abs(abs(point) - k) for k in keys)
+            spread_fragility = round(max(0.0, 1.0 - dist / 0.5), 3) if dist <= 0.5 else 0.0
+
+    # ── Stale-line + line-freeze flags. ──
+    # We have one snapshot per request, so "freeze" is best-effort:
+    # opening captured + zero movement = candidate freeze; multi-snapshot
+    # history is Phase 3 territory.
+    stale_line  = (opening_status == "opening-line-captured" and (mv is None or abs(mv) < 1e-9))
+    line_freeze = stale_line  # alias until snapshot history exists
+
+    # ── Derivative desync: needs cross-market join (ML implied vs spread
+    # implied vs total implied for same game). Not available in single-row
+    # analyze loop — flag explicitly so dashboard knows it's not silently False.
+    derivative_desync = None
+    # ── Possession conversion: pace-adjusted edge — needs team pace stats
+    # we don't pull here. Same honest unknown.
+    possession_conversion = None
+
+    # ── Market cause classification (heuristic). ──
+    if ctx.get("movement_against_us") and ctx.get("lineup_unconfirmed"):
+        market_cause = "injury_lag"
+    elif ctx.get("movement_against_us") and isinstance(mv, (int, float)) and abs(mv) >= 1.0:
+        market_cause = "sharp_against"
+    elif ctx.get("movement_toward_us") and isinstance(mv, (int, float)) and abs(mv) >= 1.0:
+        market_cause = "sharp_with"
+    elif stale_line:
+        market_cause = "stale"
+    elif mv is None:
+        market_cause = "unverified"
+    else:
+        market_cause = "clean"
+
+    # ── Market efficiency rank: lower = more inefficient/exploitable. ──
+    score = 0.0
+    if stale_line:                                   score += 0.4
+    if (spread_fragility or 0) > 0.5:                score += 0.2
+    if isinstance(payout_friction, (int, float)) and payout_friction > 0.025: score += 0.15
+    if market_cause in ("sharp_against","injury_lag"): score += 0.25
+    market_efficiency_rank = round(min(1.0, score), 3)  # 0 = efficient, 1 = highly inefficient
+
+    return {
+        "stale_line":             stale_line,
+        "line_freeze":            line_freeze,
+        "derivative_desync":      derivative_desync,
+        "spread_fragility":       spread_fragility,
+        "possession_conversion":  possession_conversion,
+        "payout_friction":        payout_friction,
+        "market_cause":           market_cause,
+        "market_efficiency_rank": market_efficiency_rank,
+        "market_timing":          "unverified",  # needs game.commence_time plumbing
+    }
+
+
 def _llp_plain_english_reason(rec):
     """Build a one-sentence human-readable rationale for a record."""
     decision = rec.get("final_decision") or "PASS"
@@ -8562,6 +8660,24 @@ def _llp_plain_english_reason(rec):
     return head + body
 
 
+def _llp_resolve_team_opponent(market, side, away, home):
+    """Shared team/opponent resolver used by clean items and postmortem logging.
+
+    For totals, returns the matchup as the "team" field with no opponent.
+    For h2h/spreads, uses normalized team matching to assign side → team.
+    """
+    if market == "totals":
+        return (f"{away} @ {home}".strip(" @"), "")
+    side_n = _llp_norm_team(side or "")
+    home_n = _llp_norm_team(home or "")
+    away_n = _llp_norm_team(away or "")
+    if side_n and home_n and (side_n in home_n or home_n in side_n):
+        return (home, away)
+    if side_n and away_n and (side_n in away_n or away_n in side_n):
+        return (away, home)
+    return (side or "", (home if side != home else away) or "")
+
+
 def _llp_clean_item(rec):
     """ChatGPT-friendly projection of a full analyze record."""
     sport  = rec.get("sport") or ""
@@ -8571,22 +8687,7 @@ def _llp_clean_item(rec):
     market = rec.get("market") or "h2h"
     mkt_label = {"h2h": "moneyline", "spreads": "spread", "totals": "total"}.get(market, market)
 
-    # team / opponent: for totals (Over/Under) there's no team-side, so we
-    # report the matchup as "Away @ Home" and leave opponent blank.
-    if market == "totals":
-        team_field = f"{away} @ {home}".strip(" @")
-        opponent_field = ""
-    else:
-        # Use normalized team matching (strip "Lakers -4.5", abbreviations, etc.)
-        side_n = _llp_norm_team(side)
-        home_n = _llp_norm_team(home)
-        away_n = _llp_norm_team(away)
-        if side_n and home_n and (side_n in home_n or home_n in side_n):
-            team_field, opponent_field = home, away
-        elif side_n and away_n and (side_n in away_n or away_n in side_n):
-            team_field, opponent_field = away, home
-        else:
-            team_field, opponent_field = side, (home if side != home else away)
+    team_field, opponent_field = _llp_resolve_team_opponent(market, side, away, home)
 
     return {
         "sport":                sport,
@@ -8607,6 +8708,7 @@ def _llp_clean_item(rec):
         "starter_status":       rec.get("starter_status"),
         "lineup_status":        rec.get("lineup_status"),
         "top_failure_paths":    (rec.get("failure_paths") or [])[:3],
+        "discovery":            rec.get("discovery"),
         "plain_english_reason": _llp_plain_english_reason(rec),
     }
 
@@ -8682,6 +8784,60 @@ def _llp_team_analysis(games, default_sport, board_date):
         items.sort(key=lambda r: r.get("edge") or 0, reverse=True)
         return [_llp_clean_item(r) for r in items]
 
+    # ── Canonical dashboard buckets (aliases alongside legacy arrays). ──
+    #   market_verified : full sportsbook line + price + no-vig + model + edge + Kelly
+    #   model_qualified : passes model checks but lacks full market verification
+    #   approved        : market_verified BET/SMALL BET + strongest model_qualified
+    #   watchlist       : WATCH or incomplete confirmation / pending status
+    #   conditional     : strong candidates pending starter / lineup / market freshness
+    #   rejected        : PASS / TRAP / negative edge / no market support
+    #   no_play         : true when no approved or qualified plays survive
+    def _is_market_verified(r):
+        return (r.get("book") is not None
+                and r.get("current_line") is not None
+                and isinstance(r.get("no_vig_implied_probability"), (int, float))
+                and isinstance(r.get("model_win_probability"), (int, float))
+                and isinstance(r.get("edge"), (int, float))
+                and isinstance(r.get("kelly_stake"), (int, float)))
+
+    market_verified = [r for r in analyses if _is_market_verified(r)]
+    model_qualified = [r for r in analyses
+                       if isinstance(r.get("model_win_probability"), (int, float))
+                       and not _is_market_verified(r)
+                       and r.get("final_decision") != "TRAP"]
+    approved        = ([r for r in market_verified
+                        if r.get("final_decision") in ("BET", "SMALL BET")]
+                       + [r for r in model_qualified
+                          if r.get("confidence_tier") in ("STRONG", "MEDIUM")])
+    approved_ids    = {id(r) for r in approved}
+    # Mutually-exclusive states relative to approved:
+    #   conditional  → not approved AND awaiting confirmation
+    #   watchlist    → not approved AND signal-only (WATCH / stale / lost CLV)
+    #   rejected     → hard PASS/TRAP / negative edge / no market
+    conditional     = [r for r in analyses
+                       if id(r) not in approved_ids
+                       and r.get("final_decision") in ("WATCH", "SMALL BET")
+                       and (r.get("starter_status") == "unverified"
+                            or r.get("lineup_status") == "unverified"
+                            or (r.get("discovery") or {}).get("market_cause") == "unverified")]
+    conditional_ids = {id(r) for r in conditional}
+    watchlist       = [r for r in analyses
+                       if id(r) not in approved_ids and id(r) not in conditional_ids
+                       and (r.get("final_decision") == "WATCH"
+                            or (r.get("discovery") or {}).get("stale_line") is True
+                            or r.get("clv_beat") is False)]
+    watchlist_ids   = {id(r) for r in watchlist}
+    rejected        = [r for r in analyses
+                       if id(r) not in approved_ids
+                       and id(r) not in conditional_ids
+                       and id(r) not in watchlist_ids
+                       and (r.get("final_decision") in ("PASS", "TRAP")
+                            or (isinstance(r.get("edge"), (int, float)) and r["edge"] < 0)
+                            or r.get("current_line") is None)]
+    # no_play: depends on actionable buckets only (not raw market_verified, which
+    # can be non-empty while every record is PASS/TRAP/negative-edge).
+    no_play         = (len(approved) == 0 and len(conditional) == 0)
+
     return {
         "team_analysis":     analyses,
         "winners_ranked":    clean_winners,
@@ -8691,9 +8847,231 @@ def _llp_team_analysis(games, default_sport, board_date):
         "totals_edges":      _edges_for("totals"),
         "spread_edges":      _edges_for("spreads"),
         "moneyline_edges":   _edges_for("h2h"),
+        # Canonical dashboard aliases (do not remove legacy arrays above).
+        "approved":          [_llp_clean_item(r) for r in approved],
+        "market_verified":   [_llp_clean_item(r) for r in market_verified],
+        "model_qualified":   [_llp_clean_item(r) for r in model_qualified],
+        "conditional":       [_llp_clean_item(r) for r in conditional],
+        "watchlist":         [_llp_clean_item(r) for r in watchlist],
+        "rejected":          [_llp_clean_item(r) for r in rejected],
+        "no_play":           no_play,
         "slate_summary":     slate_summary,
         "source_access_status": source_status,
     }
+
+
+# ── LLP Postmortem table: slate-result reconciliation + learning layer ──
+_LLP_POSTMORTEM_SCHEMA_LOCK = threading.Lock()
+_LLP_POSTMORTEM_SCHEMA_READY = False
+
+def _ensure_llp_postmortem_schema(conn):
+    global _LLP_POSTMORTEM_SCHEMA_READY
+    if _LLP_POSTMORTEM_SCHEMA_READY:
+        return
+    with _LLP_POSTMORTEM_SCHEMA_LOCK:
+        if _LLP_POSTMORTEM_SCHEMA_READY:
+            return
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS llp_postmortem (
+                    id                       BIGSERIAL PRIMARY KEY,
+                    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    slate_date               DATE,
+                    board_id                 TEXT,
+                    sport                    TEXT,
+                    game_id                  TEXT,
+                    market_type              TEXT,
+                    team                     TEXT,
+                    opponent                 TEXT,
+                    side                     TEXT,
+                    line_at_discovery        DOUBLE PRECISION,
+                    line_at_approval         DOUBLE PRECISION,
+                    closing_line             DOUBLE PRECISION,
+                    odds_at_discovery        DOUBLE PRECISION,
+                    odds_at_approval         DOUBLE PRECISION,
+                    closing_odds             DOUBLE PRECISION,
+                    model_true_prob          DOUBLE PRECISION,
+                    no_vig_market_prob       DOUBLE PRECISION,
+                    pure_edge_pct            DOUBLE PRECISION,
+                    market_cause             TEXT,
+                    market_efficiency_rank   DOUBLE PRECISION,
+                    spread_fragility         DOUBLE PRECISION,
+                    possession_conversion    DOUBLE PRECISION,
+                    payout_friction          DOUBLE PRECISION,
+                    llp_decision             TEXT,
+                    llp_badge                TEXT,
+                    recommended_units        DOUBLE PRECISION,
+                    actual_result            TEXT,
+                    bet_result               TEXT,
+                    clv_delta                DOUBLE PRECISION,
+                    clv_grade                TEXT,
+                    process_grade            TEXT,
+                    failure_tags             TEXT[],
+                    postmortem_notes         TEXT,
+                    patch_needed             BOOLEAN DEFAULT FALSE,
+                    model_version            TEXT,
+                    stale_line               BOOLEAN,
+                    line_freeze              BOOLEAN,
+                    derivative_desync        BOOLEAN,
+                    market_timing            TEXT
+                );
+                -- Forward-compat: add discovery columns if table predates them.
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS stale_line        BOOLEAN;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS line_freeze       BOOLEAN;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS derivative_desync BOOLEAN;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS market_timing     TEXT;
+                CREATE INDEX IF NOT EXISTS llp_postmortem_slate_idx
+                    ON llp_postmortem (slate_date);
+                CREATE INDEX IF NOT EXISTS llp_postmortem_sport_idx
+                    ON llp_postmortem (sport);
+                CREATE INDEX IF NOT EXISTS llp_postmortem_decision_idx
+                    ON llp_postmortem (llp_decision);
+                CREATE INDEX IF NOT EXISTS llp_postmortem_result_idx
+                    ON llp_postmortem (bet_result);
+                CREATE INDEX IF NOT EXISTS llp_postmortem_process_idx
+                    ON llp_postmortem (process_grade);
+                CREATE INDEX IF NOT EXISTS llp_postmortem_failure_tags_gin
+                    ON llp_postmortem USING GIN (failure_tags);
+            """)
+            conn.commit()
+        _LLP_POSTMORTEM_SCHEMA_READY = True
+
+
+# Decisions worth logging — exclude TRAP (those are decided rejections, not
+# learning candidates unless you want false-positive tracking).
+_LLP_POSTMORTEM_DECISIONS = {"BET", "SMALL BET", "WATCH"}
+_LLP_MODEL_VERSION = "v14.9-llp-discovery"
+
+def _llp_log_postmortem(analyses, board_id, slate_date):
+    """Insert one postmortem row per analyzable LLP record.
+
+    Logs approved + meaningful watchlist decisions so we can later classify
+    false positives / false negatives. Returns a structured status dict
+    {inserted, skipped, failed, reason}. Logging is best-effort and must
+    not block a run, but the structured status surfaces real failures.
+    """
+    status = {"inserted": 0, "skipped": 0, "failed": False, "reason": None}
+    if not analyses:
+        return status
+    rows = []
+    for r in analyses:
+        decision = r.get("final_decision") or "PASS"
+        if decision not in _LLP_POSTMORTEM_DECISIONS:
+            status["skipped"] += 1
+            continue
+        disc = r.get("discovery") or {}
+        team, opp = _llp_resolve_team_opponent(
+            r.get("market") or "h2h", r.get("side") or "",
+            r.get("away_team") or "", r.get("home_team") or "")
+        rows.append((
+            slate_date, board_id, r.get("sport"),
+            None,  # game_id (feed doesn't expose a stable id yet)
+            r.get("market"),
+            team, opp, r.get("side"),
+            r.get("opening_line"), r.get("current_line"), None,
+            None, None, None,
+            r.get("model_win_probability"), r.get("no_vig_implied_probability"),
+            r.get("edge"),
+            disc.get("market_cause"), disc.get("market_efficiency_rank"),
+            disc.get("spread_fragility"), disc.get("possession_conversion"),
+            disc.get("payout_friction"),
+            decision, r.get("confidence_tier"), r.get("kelly_stake"),
+            None, "NOT_BET", r.get("clv_delta_pts"),
+            ("STRONG_POSITIVE" if r.get("clv_beat") is True
+             else "NEGATIVE" if r.get("clv_beat") is False
+             else "UNKNOWN"),
+            "NEUTRAL",
+            (r.get("failure_paths") or [])[:5],
+            None, False, _LLP_MODEL_VERSION,
+            disc.get("stale_line"), disc.get("line_freeze"),
+            disc.get("derivative_desync"), disc.get("market_timing"),
+        ))
+    if not rows:
+        return status
+    try:
+        conn = get_db_conn()
+        try:
+            _ensure_llp_postmortem_schema(conn)
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_batch(cur, """
+                    INSERT INTO llp_postmortem (
+                        slate_date, board_id, sport, game_id, market_type,
+                        team, opponent, side,
+                        line_at_discovery, line_at_approval, closing_line,
+                        odds_at_discovery, odds_at_approval, closing_odds,
+                        model_true_prob, no_vig_market_prob, pure_edge_pct,
+                        market_cause, market_efficiency_rank,
+                        spread_fragility, possession_conversion, payout_friction,
+                        llp_decision, llp_badge, recommended_units,
+                        actual_result, bet_result, clv_delta, clv_grade,
+                        process_grade, failure_tags, postmortem_notes,
+                        patch_needed, model_version,
+                        stale_line, line_freeze, derivative_desync, market_timing
+                    ) VALUES (
+                        %s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s,
+                        %s,%s,%s, %s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s,%s,
+                        %s,%s,%s, %s,%s, %s,%s,%s,%s
+                    )
+                """, rows)
+            conn.commit()
+        finally:
+            conn.close()
+        status["inserted"] = len(rows)
+        return status
+    except Exception as e:
+        try: app.logger.warning(f"llp_postmortem insert failed: {e}")
+        except Exception: pass
+        status["failed"] = True
+        status["reason"] = type(e).__name__  # class only, no raw message
+        return status
+
+
+# ── Endpoint: GET /llp/postmortem (retrieve learning rows with filters) ──
+@app.route("/llp/postmortem", methods=["GET"])
+@require_api_key
+def llp_postmortem_query():
+    args = request.args
+    where = []
+    params = []
+    for col, key in (("slate_date","slate_date"), ("sport","sport"),
+                     ("llp_decision","decision"), ("bet_result","result"),
+                     ("process_grade","process_grade")):
+        v = args.get(key)
+        if v:
+            where.append(f"{col} = %s"); params.append(v)
+    tag = args.get("failure_tag")
+    if tag:
+        where.append("%s = ANY(failure_tags)"); params.append(tag)
+    # Validated limit (422 instead of 500 on bad input).
+    raw_limit = args.get("limit", "200")
+    try:
+        limit = int(raw_limit)
+        if limit < 1 or limit > 1000:
+            raise ValueError("out of range")
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "limit must be an integer between 1 and 1000"}), 422
+    sql = "SELECT * FROM llp_postmortem"
+    if where: sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC LIMIT %s"
+    params.append(limit)
+    try:
+        conn = get_db_conn()
+        try:
+            _ensure_llp_postmortem_schema(conn)
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(sql, params)
+                rows = [dict(r) for r in cur.fetchall()]
+                for r in rows:
+                    if r.get("created_at") is not None: r["created_at"] = r["created_at"].isoformat()
+                    if r.get("slate_date")  is not None: r["slate_date"]  = r["slate_date"].isoformat()
+            return jsonify({"ok": True, "count": len(rows), "rows": rows})
+        finally:
+            conn.close()
+    except Exception as e:
+        try: app.logger.warning(f"llp_postmortem query failed: {e}")
+        except Exception: pass
+        return jsonify({"ok": False, "error": "postmortem query failed",
+                        "error_type": type(e).__name__}), 500
 
 
 # ── Endpoint: POST /run-connected-model (full orchestrator) ──────────
@@ -8775,8 +9153,23 @@ def cm_run_connected_model():
             f"bets={len(agg['best_bets'])}, "
             f"winners_ranked={len(agg['winners_ranked'])}, "
             f"upsets={len(agg['upset_candidates'])}, "
-            f"pass_traps={len(agg['pass_traps'])}"
+            f"pass_traps={len(agg['pass_traps'])}, "
+            f"approved={len(agg['approved'])}, "
+            f"market_verified={len(agg['market_verified'])}, "
+            f"no_play={agg['no_play']}"
         )
+
+        # Phase 3: best-effort postmortem logging (does not block the response).
+        pm_status = _llp_log_postmortem(agg["team_analysis"], board_id, board_date)
+        if pm_status.get("failed"):
+            execution_notes.append(
+                f"postmortem log failed ({pm_status.get('reason')}); "
+                f"skipped={pm_status.get('skipped',0)}")
+        else:
+            execution_notes.append(
+                f"postmortem rows logged: inserted={pm_status.get('inserted',0)}, "
+                f"skipped={pm_status.get('skipped',0)}")
+
         return jsonify({
             "ok": True, "status": "completed", "board_id": board_id,
             "board_type": board_type,
@@ -8785,6 +9178,7 @@ def cm_run_connected_model():
             "source_access_status": agg["source_access_status"],
             "slate_summary":       agg["slate_summary"],
             "team_analysis":       agg["team_analysis"],
+            # Legacy arrays (preserved for backward compatibility).
             "winners_ranked":      agg["winners_ranked"],
             "upset_candidates":    agg["upset_candidates"],
             "best_bets":           agg["best_bets"],
@@ -8792,6 +9186,14 @@ def cm_run_connected_model():
             "totals_edges":        agg["totals_edges"],
             "spread_edges":        agg["spread_edges"],
             "moneyline_edges":     agg["moneyline_edges"],
+            # Canonical dashboard buckets (future-facing contract).
+            "approved":            agg["approved"],
+            "market_verified":     agg["market_verified"],
+            "model_qualified":     agg["model_qualified"],
+            "conditional":         agg["conditional"],
+            "watchlist":           agg["watchlist"],
+            "rejected":            agg["rejected"],
+            "no_play":             agg["no_play"],
             "execution_notes":     execution_notes,
         })
 
