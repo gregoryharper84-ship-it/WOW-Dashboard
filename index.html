@@ -6778,6 +6778,140 @@ function noVigProb(overOdds, underOdds){
   };
 }
 
+// ── LLP TEAM BET VALIDATION — PR-FIXED 2026-05-28 ──────────────────────────
+// FIX 1: KELLY_INVALID is a hard fail
+// FIX 2: NEGATIVE_OR_ZERO_EDGE is a hard fail
+// FIX 3: 8 QA cases added (LLP_QA_CASES below + runLLPQACases in test runner)
+// FIX 4: Field names confirmed against engine: implied_prob=noVig, line=americanOdds
+// FIX 5: canAppearInTopWinnersBet replaces raw sort in renderTeamsStatCards
+
+const LLP_HARD_FAIL_FLAGS = [
+  'SIDE_MISMATCH','IMPLIED_PROB_MISMATCH','STALE_OR_SETTLED_GAME',
+  'MISSING_MARKET_PRICE','MISSING_MODEL_PROBABILITY','NO_VIG_MISSING',
+  'MARKET_TYPE_MISMATCH','LINE_TEAM_MISMATCH',
+  'KELLY_INVALID',         // FIX 1
+  'NEGATIVE_OR_ZERO_EDGE'  // FIX 2
+];
+
+function _llpNearlyEqual(a, b, tol=0.005){ return Math.abs(a-b) <= tol; }
+function _llpNormTeam(n){ return (n||'').toLowerCase().replace(/[^a-z0-9]/g,'').trim(); }
+
+// Validate an LLP bet object — attaches qaFlags[] to the bet in place
+function validateLLPBet(bet, game){
+  const flags = [];
+  // MISSING_MARKET_PRICE
+  if(bet.line === undefined || bet.line === null) flags.push('MISSING_MARKET_PRICE');
+  // MISSING_MODEL_PROBABILITY
+  if(bet.implied_prob === undefined || bet.implied_prob === null) flags.push('MISSING_MODEL_PROBABILITY');
+  // NO_VIG_MISSING (same field in this engine — implied_prob IS the no-vig prob)
+  if(bet.implied_prob === undefined || bet.implied_prob === null) flags.push('NO_VIG_MISSING');
+  // SIDE_MISMATCH — pick team name must match the market outcome name stored at creation
+  if(bet._modelPickTeam && bet._marketTeam){
+    if(_llpNormTeam(bet._modelPickTeam) !== _llpNormTeam(bet._marketTeam)) flags.push('SIDE_MISMATCH');
+  }
+  // MARKET_TYPE_MISMATCH
+  if(bet._betType && bet._marketTypeFromOdds && bet._betType !== bet._marketTypeFromOdds) flags.push('MARKET_TYPE_MISMATCH');
+  // STALE_OR_SETTLED_GAME — keyed off _gameStatus set on parent game object
+  const gs = (game||{})._gameStatus || 'scheduled';
+  if(['final','postponed','cancelled','unknown'].includes(gs)) flags.push('STALE_OR_SETTLED_GAME');
+  // IMPLIED_PROB_MISMATCH — recalculate from americanOdds and compare to stored raw implied
+  if(bet.line !== undefined && bet.line !== null && bet._rawImplied !== undefined){
+    const recalc = americanToImplied(bet.line);
+    if(!_llpNearlyEqual(bet._rawImplied, recalc)) flags.push('IMPLIED_PROB_MISMATCH');
+  }
+  // NEGATIVE_OR_ZERO_EDGE (FIX 2)
+  if(typeof bet.edge_pct === 'number' && bet.edge_pct <= 0) flags.push('NEGATIVE_OR_ZERO_EDGE');
+  // KELLY_INVALID (FIX 1)
+  if(bet._kelly === undefined || isNaN(bet._kelly) || bet._kelly < 0) flags.push('KELLY_INVALID');
+
+  bet.qaFlags = flags;
+  return bet;
+}
+
+// Assign LLP decision — reads qaFlags from validateLLPBet
+function assignLLPDecision(bet){
+  const hasHardFail = (bet.qaFlags||[]).some(f => LLP_HARD_FAIL_FLAGS.includes(f));
+  if(hasHardFail){
+    bet.llpDecision = 'QA_FAIL';
+    bet.llpTier = 'Invalid Edge';
+    return bet;
+  }
+  const edge = bet.edge_pct ?? 0;
+  const kelly = bet._kelly ?? 0;
+  const implied = bet.implied_prob ?? 1;
+  const isShortFav = implied >= 0.55;
+  if(isShortFav && edge < 4){ bet.llpDecision='WATCH'; bet.llpTier='Insufficient Favorite Edge'; return bet; }
+  if(edge >= 4 && kelly >= 0.01){ bet.llpDecision='BET'; bet.llpTier='Approved'; return bet; }
+  if(edge >= 2.5 && kelly > 0){ bet.llpDecision='LEAN'; bet.llpTier='Qualified, Not Approved'; return bet; }
+  bet.llpDecision='WATCH'; bet.llpTier='Candidate Only';
+  return bet;
+}
+
+// Filter: only clean bets appear in the top winners / best edge stat card
+function canAppearInTopWinnersBet(bet){
+  return (
+    bet.llpDecision !== 'QA_FAIL' &&
+    !(bet.qaFlags||[]).includes('SIDE_MISMATCH') &&
+    !(bet.qaFlags||[]).includes('IMPLIED_PROB_MISMATCH') &&
+    !(bet.qaFlags||[]).includes('STALE_OR_SETTLED_GAME') &&
+    !(bet.qaFlags||[]).includes('NEGATIVE_OR_ZERO_EDGE') &&
+    !(bet.qaFlags||[]).includes('KELLY_INVALID') &&
+    typeof bet.edge_pct === 'number' && bet.edge_pct > 0
+  );
+}
+
+// ── LLP QA CASES (FIX 3) ─────────────────────────────────────────────────────
+const LLP_QA_CASES = [
+  { label:'LLP-01: SIDE_MISMATCH → QA_FAIL',
+    bet:{type:'moneyline',pick:'New York Liberty ML',line:-250,implied_prob:0.695,edge_pct:19.5,_modelPickTeam:'New York Liberty',_marketTeam:'Phoenix Mercury',_betType:'ML',_marketTypeFromOdds:'ML',_rawImplied:americanToImplied(-250),_kelly:0.02},
+    game:{_gameStatus:'scheduled'}, expDecision:'QA_FAIL', expFlag:'SIDE_MISMATCH' },
+  { label:'LLP-02: STALE_OR_SETTLED_GAME → QA_FAIL',
+    bet:{type:'moneyline',pick:'Carolina Hurricanes ML',line:-240,implied_prob:0.688,edge_pct:17.6,_modelPickTeam:'Carolina Hurricanes',_marketTeam:'Carolina Hurricanes',_betType:'ML',_marketTypeFromOdds:'ML',_rawImplied:americanToImplied(-240),_kelly:0.015},
+    game:{_gameStatus:'final'}, expDecision:'QA_FAIL', expFlag:'STALE_OR_SETTLED_GAME' },
+  { label:'LLP-03: IMPLIED_PROB_MISMATCH → QA_FAIL',
+    bet:{type:'moneyline',pick:'Oklahoma City Thunder ML',line:-240,implied_prob:0.688,edge_pct:17.8,_modelPickTeam:'Oklahoma City Thunder',_marketTeam:'Oklahoma City Thunder',_betType:'ML',_marketTypeFromOdds:'ML',_rawImplied:0.55,_kelly:0.015},
+    game:{_gameStatus:'scheduled'}, expDecision:'QA_FAIL', expFlag:'IMPLIED_PROB_MISMATCH' },
+  { label:'LLP-04: MISSING_MARKET_PRICE → QA_FAIL',
+    bet:{type:'moneyline',pick:'Atlanta Dream ML',line:undefined,implied_prob:0.64,edge_pct:14.0,_modelPickTeam:'Atlanta Dream',_marketTeam:'Atlanta Dream',_betType:'ML',_marketTypeFromOdds:'ML',_kelly:0.03},
+    game:{_gameStatus:'scheduled'}, expDecision:'QA_FAIL', expFlag:'MISSING_MARKET_PRICE' },
+  { label:'LLP-05: NO_VIG_MISSING → QA_FAIL',
+    bet:{type:'spread',pick:'Toronto Blue Jays +1.5',line:-110,implied_prob:undefined,edge_pct:13.4,_modelPickTeam:'Toronto Blue Jays',_marketTeam:'Toronto Blue Jays',_betType:'spread',_marketTypeFromOdds:'spread',_rawImplied:americanToImplied(-110),_kelly:0.025},
+    game:{_gameStatus:'scheduled'}, expDecision:'QA_FAIL', expFlag:'NO_VIG_MISSING' },
+  { label:'LLP-06: KELLY_INVALID (NaN) → QA_FAIL',
+    bet:{type:'moneyline',pick:'Oklahoma City Thunder ML',line:-200,implied_prob:0.65,edge_pct:15.0,_modelPickTeam:'Oklahoma City Thunder',_marketTeam:'Oklahoma City Thunder',_betType:'ML',_marketTypeFromOdds:'ML',_rawImplied:americanToImplied(-200),_kelly:NaN},
+    game:{_gameStatus:'scheduled'}, expDecision:'QA_FAIL', expFlag:'KELLY_INVALID' },
+  { label:'LLP-07: NEGATIVE_OR_ZERO_EDGE → QA_FAIL',
+    bet:{type:'moneyline',pick:'Atlanta Dream ML',line:-500,implied_prob:0.82,edge_pct:-3.0,_modelPickTeam:'Atlanta Dream',_marketTeam:'Atlanta Dream',_betType:'ML',_marketTypeFromOdds:'ML',_rawImplied:americanToImplied(-500),_kelly:0.02},
+    game:{_gameStatus:'scheduled'}, expDecision:'QA_FAIL', expFlag:'NEGATIVE_OR_ZERO_EDGE' },
+  { label:'LLP-08: Clean candidate → BET',
+    bet:{type:'moneyline',pick:'Atlanta Dream ML',line:-500,implied_prob:0.80,edge_pct:5.0,_modelPickTeam:'Atlanta Dream',_marketTeam:'Atlanta Dream',_betType:'ML',_marketTypeFromOdds:'ML',_rawImplied:americanToImplied(-500),_kelly:0.025},
+    game:{_gameStatus:'scheduled'}, expDecision:'BET', expFlag:null },
+];
+
+// Runner called from runGateRegressionTests
+function runLLPQACases(qaLog){
+  let passed=0, failed=0;
+  const results=[];
+  LLP_QA_CASES.forEach(tc=>{
+    const betClone = JSON.parse(JSON.stringify({...tc.bet, _kelly: isNaN(tc.bet._kelly) ? NaN : tc.bet._kelly}));
+    validateLLPBet(betClone, tc.game);
+    assignLLPDecision(betClone);
+    const decOk = betClone.llpDecision === tc.expDecision;
+    const flagOk = tc.expFlag === null
+      ? (betClone.qaFlags||[]).length === 0
+      : (betClone.qaFlags||[]).includes(tc.expFlag);
+    const ok = decOk && flagOk;
+    if(ok) passed++; else failed++;
+    const icon = ok?'✅':'❌';
+    const color = ok?'var(--green)':'var(--red)';
+    if(qaLog) qaLog.innerHTML += `<span style="color:${color};">${icon} ${tc.label}</span>\n`;
+    if(!ok && qaLog) qaLog.innerHTML += `<span style="color:var(--red);padding-left:12px;">   Expected decision=${tc.expDecision} flag=${tc.expFlag} → got decision=${betClone.llpDecision} flags=[${(betClone.qaFlags||[]).join(',')}]</span>\n`;
+    results.push({...tc, ok, actualDecision:betClone.llpDecision, actualFlags:betClone.qaFlags});
+  });
+  return {passed, failed, total:LLP_QA_CASES.length, results};
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── SPORTSBOOK COMPARISON ──
 // Pulls the no-vig implied probability for a prop from Odds API
 // This is the "true market probability" to compare against
@@ -9591,6 +9725,14 @@ async function runGateRegressionTests(manual=false){
   const allPass = failed === 0;
   const summary = `${allPass ? '✅' : '❌'} ${passed}/${total} passed ${failed > 0 ? '— '+failed+' REGRESSIONS DETECTED' : ''}`;
 
+  // ── LLP Team Bet QA (FIX 3) ─────────────────────────────────────────────
+  qaLog.innerHTML += `\n<span style="font-weight:600;color:var(--text2);">── LLP Team Bet Integrity (8 cases) ──</span>\n`;
+  const llpQA = runLLPQACases(qaLog);
+  const llpSummary = `${llpQA.failed===0?'✅':'❌'} LLP: ${llpQA.passed}/${llpQA.total} passed${llpQA.failed>0?' — '+llpQA.failed+' FAIL':''}`;
+  qaLog.innerHTML += `<span style="font-weight:600;color:${llpQA.failed===0?'var(--green)':'var(--red)'};">${llpSummary}</span>\n`;
+  const llpAllPass = llpQA.failed === 0;
+  // ─────────────────────────────────────────────────────────────────────────
+
   // ── Schema QA summary ──
   const schemaSummary = getSchemaQASummary();
   const schemaLine = schemaSummary.pass
@@ -9606,7 +9748,7 @@ async function runGateRegressionTests(manual=false){
     }
   }
 
-  const overallPass = allPass && schemaSummary.pass;
+  const overallPass = allPass && schemaSummary.pass && llpAllPass;
   qaLog.innerHTML += `\n<span style="font-weight:600;color:${overallPass?'var(--green)':'var(--red)'};">${summary}</span>\n`;
   qaLog.scrollTop = qaLog.scrollHeight;
 
@@ -12948,7 +13090,16 @@ async function runLLPBoard(){
             game_time: ev.commence_time ? new Date(ev.commence_time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : null,
             event_id: ev.id,
             bets: [],
-            raw_bk: oddsData.bookmakers?.[0] || null
+            raw_bk: oddsData.bookmakers?.[0] || null,
+            // LLP PATCH FIX 2: game status for STALE_OR_SETTLED_GAME detection
+            _gameStatus: (() => {
+              if(!ev.commence_time) return 'unknown';
+              const t = new Date(ev.commence_time).getTime();
+              const now = Date.now();
+              if(t < now - 10800000) return 'final';    // >3h ago → treat as settled
+              if(t < now + 300000)   return 'live';     // within 5min of start → live
+              return 'scheduled';
+            })()
           };
 
           // Extract best lines from first bookmaker
@@ -12971,18 +13122,35 @@ async function runLLPBoard(){
                 picks.forEach(p=>{
                   const edge = (p.prob - 0.50) * 100;
                   const tier = edge>=5?'TEAM ANCHOR':edge>=3?'TEAM STRONG':edge>=1.5?'TEAM LEAN':'PASS';
-                  if(tier!=='PASS') game.bets.push({
-                    type:'moneyline',
-                    pick:`${p.team} ML`,
-                    line: p.odds,
-                    implied_prob: parseFloat(p.prob.toFixed(3)),
-                    edge_pct: parseFloat(edge.toFixed(1)),
-                    tier,
-                    unit_size: tier==='TEAM ANCHOR'?1.0:tier==='TEAM STRONG'?0.75:0.5,
-                    confidence: tier==='TEAM ANCHOR'?'high':tier==='TEAM STRONG'?'medium':'low',
-                    reasoning: `${p.team} implied at ${(p.prob*100).toFixed(1)}% no-vig. Edge: +${edge.toFixed(1)}%`,
-                    flags: []
-                  });
+                  if(tier!=='PASS'){
+                    // LLP PATCH: Kelly calculation
+                    const B = p.odds > 0 ? p.odds/100 : 100/Math.abs(p.odds);
+                    const kelly = parseFloat(Math.max(0, (p.prob*B - (1-p.prob)) / B).toFixed(4));
+                    const bet = {
+                      type:'moneyline',
+                      pick:`${p.team} ML`,
+                      line: p.odds,
+                      implied_prob: parseFloat(p.prob.toFixed(3)),
+                      edge_pct: parseFloat(edge.toFixed(1)),
+                      tier,
+                      unit_size: tier==='TEAM ANCHOR'?1.0:tier==='TEAM STRONG'?0.75:0.5,
+                      confidence: tier==='TEAM ANCHOR'?'high':tier==='TEAM STRONG'?'medium':'low',
+                      reasoning: `${p.team} implied at ${(p.prob*100).toFixed(1)}% no-vig. Edge: +${edge.toFixed(1)}%`,
+                      flags: [],
+                      // LLP PATCH: integrity fields for validateLLPBet
+                      _modelPickTeam: p.team,
+                      _marketTeam: p.team,  // h2h: pick team === market outcome name
+                      _betType: 'ML',
+                      _marketTypeFromOdds: 'ML',
+                      _rawImplied: americanToImplied(p.odds),
+                      _kelly: kelly
+                    };
+                    // LLP PATCH: run validation + decision; skip QA_FAIL bets
+                    validateLLPBet(bet, game);
+                    assignLLPDecision(bet);
+                    if(bet.llpDecision !== 'QA_FAIL') game.bets.push(bet);
+                    else console.warn(`LLP QA_FAIL filtered: ${bet.pick} flags=[${(bet.qaFlags||[]).join(',')}]`);
+                  }
                 });
               }
             } else if(mkt.key==='totals'){
@@ -13172,7 +13340,8 @@ function renderTeamsStatCards(allGames){
   const bets = allGames.flatMap(g=>g.bets||[]);
   const anchors = bets.filter(b=>b.tier==='TEAM ANCHOR').length;
   const strongs = bets.filter(b=>b.tier==='TEAM STRONG').length;
-  const topBet = [...bets].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
+  // LLP PATCH FIX 5: only clean bets appear in top winners / best edge stat card
+  const topBet = [...bets].filter(canAppearInTopWinnersBet).sort((a,b)=>b.edge_pct-a.edge_pct)[0];
   const topFav = [..._teamsWUFavorites].sort((a,b)=>b.prob-a.prob)[0];
 
   const el = id => document.getElementById(id);
