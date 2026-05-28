@@ -1,0 +1,386 @@
+Yes. Set this up with no Gemini by adding a verified-data layer in front of the LLP engine. OpenAI can help structure and reconcile data, but the engine should only approve bets from verified feed fields and LLP output.
+
+Step 1 — Add a canonical game-context object
+
+Create one object that every LLP run must receive.
+
+type LLPGameContext = {
+  sport: "MLB" | "NBA" | "NHL" | "NFL";
+  game_id: string;
+  game_date: string;
+  away_team: string;
+  home_team: string;
+  game_time: string;
+  market: "ML" | "spread" | "total" | "F5_ML" | "F5_spread";
+  side: string;
+  book: string;
+  opening_line: number | null;
+  first_seen_line: number | null;
+  current_line: number;
+  lock_line: number | null;
+  close_line: number | null;
+  market_implied_probability: number;
+  no_vig_implied_probability: number;
+  starter_status: "confirmed" | "projected" | "unverified";
+  lineup_status: "confirmed" | "projected" | "unverified";
+  injury_status: "confirmed" | "unverified";
+  rest_context: object;
+  f5_available: boolean;
+  f5_line: number | null;
+  bullpen_edge: number | null;
+  full_game_edge_allowed: boolean;
+  source_pack: {
+    odds_source: string;
+    lineup_source: string | null;
+    starter_source: string | null;
+    timestamp: string;
+  };
+};
+
+This is the object your Replit endpoint should build before it calls LLP.
+
+⸻
+
+Step 2 — Add line tracking tables
+
+You need to stop relying on “opening line not captured.” Store line snapshots yourself.
+
+Create a table like:
+
+CREATE TABLE market_line_snapshots (
+  id SERIAL PRIMARY KEY,
+  game_id TEXT NOT NULL,
+  sport TEXT NOT NULL,
+  market TEXT NOT NULL,
+  side TEXT NOT NULL,
+  book TEXT NOT NULL,
+  line NUMERIC NOT NULL,
+  implied_probability NUMERIC,
+  no_vig_implied_probability NUMERIC,
+  total NUMERIC,
+  spread NUMERIC,
+  captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  source TEXT NOT NULL
+);
+
+Then create a derived table or view:
+
+CREATE VIEW market_line_state AS
+SELECT
+  game_id,
+  sport,
+  market,
+  side,
+  book,
+  MIN(captured_at) AS first_seen_at,
+  (ARRAY_AGG(line ORDER BY captured_at ASC))[1] AS first_seen_line,
+  (ARRAY_AGG(line ORDER BY captured_at DESC))[1] AS current_line
+FROM market_line_snapshots
+GROUP BY game_id, sport, market, side, book;
+
+Use first_seen_line as the fallback when true opener is unavailable.
+
+⸻
+
+Step 3 — Add an odds snapshot cron
+
+Run this every 3–5 minutes during active slate windows.
+
+Pseudo-flow:
+
+async function snapshotOddsForToday() {
+  const events = await getEventsForToday();
+  for (const event of events) {
+    const odds = await getOdds(event.id, ["h2h", "spreads", "totals"]);
+    for (const market of odds.markets) {
+      for (const outcome of market.outcomes) {
+        await insertMarketSnapshot({
+          game_id: event.id,
+          sport: event.sport,
+          market: market.key,
+          side: outcome.name,
+          book: odds.book,
+          line: outcome.price,
+          implied_probability: americanToImplied(outcome.price),
+          captured_at: new Date(),
+          source: "odds_api"
+        });
+      }
+    }
+  }
+}
+
+For CLV:
+
+* opening_line = official opener if your feed has it.
+* first_seen_line = your first stored snapshot.
+* current_line = latest snapshot before model run.
+* lock_line = line at time of bet approval.
+* close_line = final pregame line.
+
+⸻
+
+Step 4 — Add starter and lineup verification
+
+Create a second table:
+
+CREATE TABLE game_confirmations (
+  game_id TEXT PRIMARY KEY,
+  sport TEXT NOT NULL,
+  away_team TEXT NOT NULL,
+  home_team TEXT NOT NULL,
+  away_starter TEXT,
+  home_starter TEXT,
+  starter_status TEXT,
+  away_lineup_status TEXT,
+  home_lineup_status TEXT,
+  lineup_status TEXT,
+  injury_status TEXT,
+  rest_context JSONB,
+  source TEXT,
+  source_timestamp TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+Your rules:
+
+MLB starter_status = confirmed only if both starters are confirmed.
+MLB lineup_status = confirmed only if both batting lineups are confirmed.
+NBA lineup_status = confirmed only if starters or active/inactive report is confirmed.
+If any conflict exists, set status = unverified.
+
+Do not let OpenAI invent this. OpenAI can normalize text, but the data must come from a source feed.
+
+⸻
+
+Step 5 — Add F5 market support
+
+This directly solves your MLB full-game blocker.
+
+Add these markets to the odds request:
+
+F5_ML
+F5_spread
+F5_total
+
+Then add this decision rule before LLP:
+
+function chooseMLBTargetMarket(game) {
+  if (game.sport !== "MLB") return "ML";
+  if (game.bullpen_edge > 0.03) {
+    return "ML";
+  }
+  if (game.full_game_model_edge >= 0.04) {
+    return "ML";
+  }
+  if (game.f5_available) {
+    return "F5_ML";
+  }
+  return "ML_WATCH_ONLY";
+}
+
+So instead of the engine saying _LLP_MLB_FULLGAME_PREFERS_F5, it gets the correct F5 candidate up front.
+
+⸻
+
+Step 6 — Use OpenAI only for structured reconciliation
+
+OpenAI should do this:
+
+Input:
+- odds snapshots
+- lineup feed output
+- starter feed output
+- injury feed output
+Output:
+- normalized JSON
+- conflicts
+- missing fields
+- confidence
+
+OpenAI function calling is designed to connect models to external tools and application data, and Structured Outputs can force the model’s response to follow a JSON schema instead of free-form text.  
+
+Use a schema like:
+
+const VerificationSchema = {
+  type: "object",
+  required: ["verified", "conflicts", "missing_fields", "game_context"],
+  properties: {
+    verified: { type: "boolean" },
+    conflicts: {
+      type: "array",
+      items: { type: "string" }
+    },
+    missing_fields: {
+      type: "array",
+      items: { type: "string" }
+    },
+    game_context: {
+      type: "object",
+      properties: {
+        starter_status: { enum: ["confirmed", "projected", "unverified"] },
+        lineup_status: { enum: ["confirmed", "projected", "unverified"] },
+        injury_status: { enum: ["confirmed", "unverified"] },
+        recommended_market: {
+          enum: ["ML", "F5_ML", "spread", "F5_spread", "WATCH_ONLY"]
+        }
+      }
+    }
+  }
+};
+
+Key guardrail:
+
+OpenAI may normalize and flag data.
+OpenAI may not mark a starter, lineup, opening line, or CLV field as verified unless a source field exists.
+OpenAI may not approve bets.
+Only LLP can approve bets.
+
+⸻
+
+Step 7 — Update the Replit LLP endpoint
+
+Before:
+
+runLLPConnectedModel({
+  games: rawGames
+});
+
+After:
+
+const enrichedGames = await buildVerifiedLLPContext(today);
+const sideRows = enrichedGames.flatMap(game => [
+  buildSideRow(game, game.favorite),
+  buildSideRow(game, game.underdog)
+]);
+const batches = chunkByGame(sideRows);
+for (const batch of batches) {
+  await runLLPConnectedModel({
+    source: "replit_verified_context",
+    model: "llp_engine",
+    board_type: "team_betting",
+    date: today,
+    sport: batch[0].sport,
+    mode: "layer4_team_bet_synthesis",
+    slips_requested: false,
+    markets: [batch[0].market],
+    games: batch
+  });
+}
+
+Each side row must include:
+
+{
+  sport,
+  away_team,
+  home_team,
+  game_time,
+  market,
+  book,
+  side,
+  opening_line,
+  first_seen_line,
+  current_line,
+  lock_line,
+  total,
+  starter_status,
+  lineup_status,
+  injury_status,
+  rest_context,
+  f5_available,
+  bullpen_edge,
+  source_pack
+}
+
+⸻
+
+Step 8 — Add hard approval gates
+
+Before displaying a bet, enforce:
+
+function canApproveLLPBet(row) {
+  return (
+    ["ANCHOR", "BET"].includes(row.llp_badge) &&
+    row.model_win_probability != null &&
+    row.no_vig_implied_probability != null &&
+    row.edge != null &&
+    row.kelly_stake > 0 &&
+    row.current_line != null &&
+    row.starter_status !== "unverified" &&
+    row.lineup_status !== "unverified" &&
+    row.failure_paths.length === 0
+  );
+}
+
+For favorites:
+
+if (
+  row.market_implied_probability >= 0.55 &&
+  row.edge < 0.04
+) {
+  return "WATCH";
+}
+
+For MLB full-game ML:
+
+if (
+  row.sport === "MLB" &&
+  row.market === "ML" &&
+  !row.full_game_edge_allowed
+) {
+  return "F5_ONLY_OR_WATCH";
+}
+
+⸻
+
+Step 9 — Add final-card output rules
+
+Your final card builder should only read from:
+
+approved = team_analysis.filter(canApproveLLPBet);
+
+Then:
+
+if (approved.length === 0) {
+  return {
+    final_card: [],
+    headline: "NO PLAY — no approved LLP bets. Best output is watchlist only.",
+    watchlist,
+    pass_traps
+  };
+}
+
+This prevents “high probability” sides from becoming bets.
+
+⸻
+
+Step 10 — Add one optional OpenAI web-search fallback
+
+Only use this when a source feed is missing. OpenAI’s web search tool can access current information with sourced citations through the Responses API.  
+
+Fallback rule:
+
+If official/feed data is missing:
+1. Use OpenAI web search.
+2. Require source URL + timestamp.
+3. Mark result as "web_verified_candidate".
+4. Do not unlock bet approval unless another trusted source agrees.
+
+⸻
+
+Final setup checklist
+
+Use this order:
+
+1. Add market_line_snapshots table.
+2. Add game_confirmations table.
+3. Run odds snapshot cron every 3–5 minutes.
+4. Store first_seen, current, lock, and close lines.
+5. Add lineup/starter/injury ingestion.
+6. Add F5 markets for MLB.
+7. Build LLPGameContext before every LLP call.
+8. Use OpenAI Structured Outputs only to normalize/flag fields.
+9. Send one game per LLP batch, two side rows per game.
+10. Approve only ANCHOR/BET with edge + Kelly + clean context.
+
+That gives you the missing pieces Gemini was trying to fill, but in a controlled, source-backed way.
