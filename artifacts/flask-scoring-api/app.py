@@ -8012,12 +8012,19 @@ def _llp_confidence_tier(edge):
 
 
 def _llp_decision(edge, model_p, novig_p, upset_score, trap_flag, failures):
-    """Final decision: BET / SMALL BET / WATCH / PASS / TRAP."""
+    """Final decision: BET / SMALL BET / WATCH / PASS / TRAP.
+
+    The `>=3` cardinality check filters `_LLP_ADVISORY_TAGS` internally so a
+    soft advisory (e.g. F5 preference) cannot stack with 2 real failures to
+    cause a WATCH demotion. This makes the function advisory-agnostic by
+    design rather than depending on call-site ordering in `_llp_analyze_one`.
+    """
     if trap_flag: return "TRAP"
     if edge is None or model_p is None: return "WATCH"
     tier = _llp_confidence_tier(edge)
     if edge < 0: return "PASS"
-    if len(failures) >= 3 and tier in ("MEDIUM","SMALL"): return "WATCH"
+    hard_failures = [f for f in (failures or []) if f not in _LLP_ADVISORY_TAGS]
+    if len(hard_failures) >= 3 and tier in ("MEDIUM","SMALL"): return "WATCH"
     if tier == "STRONG": return "BET"
     if tier == "MEDIUM": return "SMALL BET"
     if tier == "SMALL":  return "WATCH"
@@ -8082,7 +8089,9 @@ def _llp_anchor_eligible(rec):
     edge = rec.get("edge")
     if not isinstance(edge, (int, float)) or edge < 0.035: return False
     if not (rec.get("model_adjustments") or {}):           return False
-    if rec.get("failure_paths"):                           return False
+    # Use hard-failure helper so soft advisories (e.g. F5 preference)
+    # don't disqualify an otherwise ANCHOR-clean play.
+    if _llp_hard_failure_paths(rec):                       return False
     if rec.get("starter_status") != "confirmed":           return False
     if rec.get("lineup_status")  != "confirmed":           return False
     disc = rec.get("discovery") or {}
@@ -8092,6 +8101,25 @@ def _llp_anchor_eligible(rec):
     return True
 
 
+_LLP_ADVISORY_TAGS = frozenset({
+    # Soft advisories that surface in `failure_paths` for dashboard display
+    # but MUST NOT count toward `_llp_validation_clean`'s `>= 3` hard-fail
+    # or `_llp_decision`'s `>= 3` WATCH demotion. Add new advisory tags here.
+    "_LLP_MLB_FULLGAME_PREFERS_F5",
+})
+
+
+def _llp_hard_failure_paths(rec):
+    """Return the subset of failure_paths that count as hard failures.
+
+    Filters out `_LLP_ADVISORY_TAGS` so soft advisories (e.g. the MLB F5
+    preference) cannot indirectly degrade validation or decision via the
+    cardinality (`>=3`) checks.
+    """
+    fp = rec.get("failure_paths") or []
+    return [f for f in fp if f not in _LLP_ADVISORY_TAGS]
+
+
 def _llp_validation_clean(rec):
     """Validation Engine clean: model+edge+CLV are coherent and non-fatal."""
     if rec.get("favorite_trap_flag"):                       return False
@@ -8099,15 +8127,29 @@ def _llp_validation_clean(rec):
     edge = rec.get("edge")
     if not isinstance(edge, (int, float)) or edge < 0:      return False
     if rec.get("model_win_probability") is None:            return False
-    # ≥3 failure paths is treated as a hard validation flag.
-    if len(rec.get("failure_paths") or []) >= 3:            return False
+    # ≥3 hard failure paths is treated as a hard validation flag.
+    # Advisory tags (e.g. F5 preference) are excluded so a soft advisory
+    # cannot stack with 2 real failures to flip validation_clean.
+    if len(_llp_hard_failure_paths(rec)) >= 3:              return False
     # CLV: tolerate unknown (None) and positive (True); reject confirmed negative.
     if rec.get("clv_beat") is False:                        return False
     return True
 
 
 def _llp_compute_badge(rec):
-    """v14.9+ canonical badge ladder.
+    """v14.9+ canonical badge ladder + LLP team-betting spec ceiling.
+
+    Wraps `_llp_compute_badge_raw` so EVERY return path is funneled through
+    `_llp_apply_spec_badge_ceiling`. The raw function has many early
+    returns; without this wrapper, only the CANDIDATE/PASS fallback path
+    would be capped — which would leave missing-opening_line, missing-CLV,
+    Kelly≤0, and short-fav records sitting at ANCHOR/BET.
+    """
+    return _llp_apply_spec_badge_ceiling(_llp_compute_badge_raw(rec), rec)
+
+
+def _llp_compute_badge_raw(rec):
+    """Raw badge ladder (PASS / CANDIDATE / WAIT / LEAN / QUALIFIED / BET / ANCHOR).
 
     PASS      → hard fail: TRAP, negative edge, negative CLV, no market
     ANCHOR    → BET-clean + low fragility + edge ≥ 3.5% + independent model
@@ -8183,9 +8225,29 @@ def _llp_compute_badge(rec):
 
     # CANDIDATE — discovery surfaced something, validation incomplete.
     if cause and cause != "unverified" and not val_ok:
-        return "CANDIDATE"
+        badge = "CANDIDATE"
+    else:
+        badge = "PASS"
+    # Apply LLP team-betting spec hard caps (data-completeness ceiling).
+    return _llp_apply_spec_badge_ceiling(badge, rec)
 
-    return "PASS"
+
+def _llp_mlb_fullgame_f5_advisory(rec):
+    """LLP spec advisory: MLB full-game ML defaults to F5 unless bullpen edge
+    is positive or full-game edge is strong (>= 6%).
+
+    This is a soft advisory (surfaced as a failure_path), not a hard badge
+    cap — the dashboard / consumer can use it to redirect users to the F5
+    line for a cleaner read. Returns True when the F5 preference applies.
+    """
+    if not isinstance(rec, dict):                       return False
+    if (rec.get("sport")  or "").lower() != "mlb":      return False
+    if (rec.get("market") or "").lower() != "h2h":      return False
+    edge = rec.get("edge")
+    if isinstance(edge, (int, float)) and edge >= 0.06: return False
+    bp = rec.get("bullpen_reliability")
+    if isinstance(bp, (int, float))   and bp   >= 0.50: return False
+    return True
 
 
 def _llp_fetch_odds(sport_key, regions="us", markets="h2h,spreads,totals"):
@@ -8464,6 +8526,9 @@ def _llp_analyze_one(game, default_sport, board_date):
             "sport": sport, "away_team": away, "home_team": home,
             "market": market, "side": side,
             "book": None, "opening_line": None, "current_line": None,
+            "lock_line": None,                  # LLP spec settlement field
+            "moneyline_fragility": None,        # LLP spec h2h fragility field
+            "mlb_fullgame_prefers_f5": False,   # LLP spec F5 advisory flag
             "implied_probability": None, "no_vig_implied_probability": None,
             "model_win_probability": None, "edge": None,
             "kelly_stake": None, "confidence_tier": "UNKNOWN",
@@ -8673,15 +8738,41 @@ def _llp_analyze_one(game, default_sport, board_date):
                                                      mv, movement_against_us)
 
     record["failure_paths"] = _llp_failure_paths(sport, market, side, ctx)
+
     record["final_decision"] = _llp_decision(edge, model_p, sel.get("novig_prob"),
                                              record["upset_score"],
                                              record["favorite_trap_flag"],
                                              record["failure_paths"])
 
+    # LLP spec: MLB full-game ML defaults to F5 unless bullpen edge positive
+    # or full-game edge strong. Surfaced as a failure_path + top-level flag so
+    # the dashboard can redirect users to the F5 line for a cleaner read.
+    # Appended AFTER `_llp_decision` so the advisory cannot accidentally
+    # trigger the `len(failures) >= 3` downgrade inside `_llp_decision`.
+    record["mlb_fullgame_prefers_f5"] = _llp_mlb_fullgame_f5_advisory(record)
+    if record["mlb_fullgame_prefers_f5"]:
+        record["failure_paths"].append("_LLP_MLB_FULLGAME_PREFERS_F5")
+
+    # LLP spec field: moneyline_fragility for h2h markets, derived from how
+    # extreme the no-vig implied probability is (heavy fav / dog = fragile).
+    # Spec accepts "spread_fragility OR moneyline_fragility"; we surface both
+    # so consumers can gate on whichever is meaningful per market.
+    novig = sel.get("novig_prob") if isinstance(sel, dict) else None
+    if market == "h2h" and isinstance(novig, (int, float)):
+        record["moneyline_fragility"] = round(abs(novig - 0.5) * 2, 4)
+    else:
+        record["moneyline_fragility"] = None
+
     # v14.9+ Discovery+Validation gates and canonical badge.
     record["discovery_clean"]  = _llp_discovery_clean(record)
     record["validation_clean"] = _llp_validation_clean(record)
     record["llp_badge"]        = _llp_compute_badge(record)
+
+    # LLP spec field: `lock_line` — snapshot the current_line at the moment
+    # the validation engine clears the play. NULL when validation isn't clean
+    # so the dashboard never displays a phantom lock for a watchlist record.
+    record["lock_line"] = (record.get("current_line")
+                           if record["validation_clean"] else None)
 
     # Honor a user-requested line as a sanity flag
     if requested_line is not None and isinstance(sel.get("point"), (int, float)):
@@ -9131,6 +9222,45 @@ _LLP_BADGE_RANK = {
     "WAIT": 2, "CANDIDATE": 1, "PASS": 0,
 }
 
+
+def _llp_badge_min(a, b):
+    """Return the lower-ranked badge per `_LLP_BADGE_RANK`.
+
+    Used by both the Claude arbiter (no-upgrade enforcement) and the
+    LLP team-betting spec hard caps (badge ceiling). Unknown badges
+    rank as 0 (PASS) so we fail safe.
+    """
+    return a if _LLP_BADGE_RANK.get(a, 0) <= _LLP_BADGE_RANK.get(b, 0) else b
+
+
+def _llp_apply_spec_badge_ceiling(badge, rec):
+    """Cap `badge` per the LLP team-betting completeness/CLV/Kelly spec.
+
+    Hard rules (source: LLP team-betting patch spec):
+      - missing `opening_line`               → max WAIT  (no movement reference)
+      - missing CLV reference (clv_beat None) → max WAIT  (no CLV anchor)
+      - kelly_stake is None or <= 0          → max CANDIDATE  (no positive Kelly)
+      - short-favorite trap: no_vig IP >= 0.55 AND edge < 0.04 → max LEAN
+
+    A non-dict record (defensive) is returned unchanged. PASS is never
+    raised; this function only ever lowers the badge.
+    """
+    if not isinstance(rec, dict):
+        return badge
+    if rec.get("opening_line") is None:
+        badge = _llp_badge_min(badge, "WAIT")
+    if rec.get("clv_beat") is None:
+        badge = _llp_badge_min(badge, "WAIT")
+    ks = rec.get("kelly_stake")
+    if ks is None or (isinstance(ks, (int, float)) and ks <= 0):
+        badge = _llp_badge_min(badge, "CANDIDATE")
+    novig = rec.get("no_vig_implied_probability")
+    edge  = rec.get("edge")
+    if (isinstance(novig, (int, float)) and novig >= 0.55
+        and isinstance(edge,  (int, float)) and edge  <  0.04):
+        badge = _llp_badge_min(badge, "LEAN")
+    return badge
+
 def _llp_v_overpromoted(rec):
     return (rec.get("llp_badge") in ("ANCHOR", "BET")
             and not (_llp_discovery_clean(rec) and _llp_validation_clean(rec)))
@@ -9364,12 +9494,11 @@ def _llp_apply_claude_arbiter(agg, audit_json):
             rejected.append({"flag": flag,
                              "reason": "record state does not corroborate the flag"})
             continue
-        # Accept: downgrade badge (never upgrade).
+        # Accept: downgrade badge (never upgrade). Use the shared
+        # `_llp_badge_min` so the Claude arbiter and the LLP spec ceiling
+        # share a single source of truth for no-upgrade enforcement.
         before = rec.get("llp_badge") or "PASS"
-        cur_rank = _LLP_BADGE_RANK.get(before, 0)
-        tgt_rank = _LLP_BADGE_RANK.get(downgrade_to, 0)
-        if tgt_rank < cur_rank:
-            rec["llp_badge"] = downgrade_to
+        rec["llp_badge"] = _llp_badge_min(before, downgrade_to)
         rec.setdefault("claude_arbiter_flags", []).append({
             "flag_type":    ftype,
             "severity":     flag.get("severity"),
@@ -9461,16 +9590,24 @@ def _ensure_llp_postmortem_schema(conn):
                     postmortem_notes         TEXT,
                     patch_needed             BOOLEAN DEFAULT FALSE,
                     model_version            TEXT,
-                    stale_line               BOOLEAN,
-                    line_freeze              BOOLEAN,
-                    derivative_desync        BOOLEAN,
-                    market_timing            TEXT
+                    stale_line                    BOOLEAN,
+                    line_freeze                   BOOLEAN,
+                    derivative_desync             BOOLEAN,
+                    market_timing                 TEXT,
+                    -- LLP team-betting spec settlement columns.
+                    closing_implied_probability   DOUBLE PRECISION,
+                    bet_implied_probability       DOUBLE PRECISION,
+                    actual_clv_beat               BOOLEAN
                 );
-                -- Forward-compat: add discovery columns if table predates them.
-                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS stale_line        BOOLEAN;
-                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS line_freeze       BOOLEAN;
-                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS derivative_desync BOOLEAN;
-                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS market_timing     TEXT;
+                -- Forward-compat: add discovery + spec settlement columns if
+                -- the table predates them. Safe to re-run.
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS stale_line                  BOOLEAN;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS line_freeze                 BOOLEAN;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS derivative_desync           BOOLEAN;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS market_timing               TEXT;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS closing_implied_probability DOUBLE PRECISION;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS bet_implied_probability     DOUBLE PRECISION;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS actual_clv_beat             BOOLEAN;
                 CREATE INDEX IF NOT EXISTS llp_postmortem_slate_idx
                     ON llp_postmortem (slate_date);
                 CREATE INDEX IF NOT EXISTS llp_postmortem_sport_idx
@@ -9522,6 +9659,14 @@ def _llp_log_postmortem(analyses, board_id, slate_date):
         team, opp = _llp_resolve_team_opponent(
             r.get("market") or "h2h", r.get("side") or "",
             r.get("away_team") or "", r.get("home_team") or "")
+        # LLP spec settlement columns. At approval-time we know
+        #   - bet_implied_probability: the no-vig market IP at the moment we
+        #     locked the play in (so post-mortem can recompute CLV cleanly).
+        #   - closing_implied_probability: unknown until close capture; NULL
+        #     here and back-filled by the settlement job.
+        #   - actual_clv_beat: best-effort snapshot of clv_beat at decision
+        #     time; the settlement job overwrites with the true comparison
+        #     against the closing line once captured.
         rows.append((
             slate_date, board_id, r.get("sport"),
             None,  # game_id (feed doesn't expose a stable id yet)
@@ -9544,6 +9689,9 @@ def _llp_log_postmortem(analyses, board_id, slate_date):
             None, False, _LLP_MODEL_VERSION,
             disc.get("stale_line"), disc.get("line_freeze"),
             disc.get("derivative_desync"), disc.get("market_timing"),
+            None,                                  # closing_implied_probability (back-filled at settlement)
+            r.get("no_vig_implied_probability"),   # bet_implied_probability (at approval)
+            r.get("clv_beat"),                     # actual_clv_beat (snapshot; overwritten at settlement)
         ))
     if not rows:
         return status
@@ -9565,11 +9713,13 @@ def _llp_log_postmortem(analyses, board_id, slate_date):
                         actual_result, bet_result, clv_delta, clv_grade,
                         process_grade, failure_tags, postmortem_notes,
                         patch_needed, model_version,
-                        stale_line, line_freeze, derivative_desync, market_timing
+                        stale_line, line_freeze, derivative_desync, market_timing,
+                        closing_implied_probability, bet_implied_probability,
+                        actual_clv_beat
                     ) VALUES (
                         %s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s,
                         %s,%s,%s, %s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s,%s,
-                        %s,%s,%s, %s,%s, %s,%s,%s,%s
+                        %s,%s,%s, %s,%s, %s,%s,%s,%s, %s,%s,%s
                     )
                 """, rows)
             conn.commit()

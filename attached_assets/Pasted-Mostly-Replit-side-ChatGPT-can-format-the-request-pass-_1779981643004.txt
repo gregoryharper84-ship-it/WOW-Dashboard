@@ -1,0 +1,156 @@
+Mostly **Replit side**.
+
+ChatGPT can format the request, pass board data, and enforce output rules, but the missing fields and scoring gates need to live in the **Replit LLP engine** because that is where the model actually computes:
+
+* starter / lineup confirmation
+* opening-line movement
+* CLV status
+* timing score
+* market efficiency
+* fragility index
+* payout friction
+* Kelly %
+* final BET / SMALL BET / WATCH / PASS decision
+
+## What belongs on Replit side
+
+Add this to the Replit team-betting pipeline:
+
+### 1. Intake schema update
+
+Each team-side row should accept:
+
+```json
+{
+  "opening_line": -125,
+  "current_line": -142,
+  "lock_line": -136,
+  "close_line": null,
+  "starter_status": "confirmed",
+  "lineup_status": "projected",
+  "starter_lineup_confirmation": "starter_confirmed_lineup_projected",
+  "rest_context": {
+    "days_rest": 1,
+    "short_rest": false,
+    "b2b": false
+  },
+  "bullpen_reliability": 0.58,
+  "weather_park": "neutral",
+  "clv_beat": true,
+  "clv_delta_pts": 14,
+  "market_movement_clv_status": "positive"
+}
+```
+
+### 2. Pre-Layer-4 gate
+
+Before Layer 4 synthesis, Replit should run:
+
+```text
+official confirmation
+starter / lineup validation
+opening-line lookup
+CLV comparison
+run environment / scoring context
+moneyline fragility index
+payout friction layer
+Kelly adjustment
+```
+
+### 3. Do not promote without confirmation
+
+The Replit model should enforce:
+
+```text
+If opening_line missing → no approved bet
+If CLV reference missing → cap at WATCH
+If starter/lineup unverified → cap at WATCH
+If Kelly <= 0 → no BET
+If short favorite edge < 4% → no BET
+```
+
+### 4. Store postmortem data
+
+Replit should save:
+
+```json
+{
+  "bet_line": -136,
+  "close_line": -154,
+  "clv_delta": 18,
+  "result": "win/loss/push",
+  "closing_implied_probability": 0.606,
+  "bet_implied_probability": 0.576,
+  "actual_clv_beat": true
+}
+```
+
+That makes future runs smarter and gives the engine settlement accountability.
+
+---
+
+## What belongs on ChatGPT side
+
+ChatGPT should only do orchestration and formatting:
+
+* request today’s board
+* send team-side rows to Replit
+* require required fields in output
+* refuse to force picks
+* display Candidate / Qualified / Approved / Watchlist / Pass
+* call out missing data clearly
+
+ChatGPT should **not** be the place where CLV or Kelly is permanently computed, because it does not persist the historical line database unless Replit stores it.
+
+---
+
+## Recommended implementation path
+
+Add this as a Replit-side patch:
+
+```text
+LLP TEAM BETTING PATCH — DATA COMPLETENESS + CLV/KELLY GATING
+
+For every team-side candidate, require:
+- opening_line
+- current_line
+- lock_line when available
+- close_line after settlement
+- starter_status
+- lineup_status
+- rest_context
+- market_movement_clv_status
+- clv_beat
+- clv_delta_pts
+- payout_friction
+- market_efficiency_rank
+- spread_fragility or moneyline_fragility
+- edge
+- kelly_stake
+
+Before Layer 4:
+1. Detect stale market / CLV opportunities
+2. Build edge candidate pool
+3. Confirm official game and lineup/starter context
+4. Validate matchup edge
+5. Run possession/run/scoring-context layer
+6. Run ML/spread fragility
+7. Run payout friction
+8. Run Kelly adjustment
+9. Only then synthesize final decision
+
+Hard caps:
+- Missing opening_line → max WATCH
+- Missing CLV reference → max WATCH
+- Unverified starter or lineup → max WATCH
+- Kelly <= 0 → PASS/WATCH only
+- Short favorite with market IP >=55% requires edge >=4%
+- MLB full-game ML defaults to F5 unless bullpen edge is positive or full-game edge is strong
+```
+
+## Bottom line
+
+**Replit side needs the model patch.**
+**ChatGPT side only needs the prompt/output enforcement.**
+
+The biggest upgrade is adding a Replit-side **historical odds + confirmation layer** so the engine can stop saying “CLV unavailable” and start producing real Qualified/Approved decisions.
