@@ -1810,10 +1810,10 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
     <div class="lm-left-ctrls">
       <div class="lm-date-chip">Today, 5/25</div>
       <select id="llp_mintier" class="lm-select" onchange="renderTeamsBoardOutput()">
-        <option value="all">All Tiers</option>
-        <option value="anchor">Anchor Only</option>
-        <option value="strong">Strong+</option>
-        <option value="lean">Lean+</option>
+        <option value="all">All Decisions</option>
+        <option value="anchor">Approved Only</option>
+        <option value="strong">Qualified+</option>
+        <option value="lean">Candidate+</option>
       </select>
       <select id="llp_bettype" class="lm-select" onchange="renderTeamsBoardOutput()">
         <option value="all">All Types</option>
@@ -1856,9 +1856,9 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
       <div class="lm-stat-sub" id="statGamesSubtitle">Across MLB, NBA, NHL, Soccer</div>
     </div>
     <div class="lm-stat-card">
-      <div class="lm-stat-label">Bettable Picks</div>
+      <div class="lm-stat-label">Approved Bets</div>
       <div class="lm-stat-val" style="color:var(--green);" id="statBettable">—</div>
-      <div class="lm-stat-sub" id="statBettableSub">Anchor + Strong tier</div>
+      <div class="lm-stat-sub" id="statBettableSub">BET decisions only</div>
     </div>
     <div class="lm-stat-card">
       <div class="lm-stat-label">Top Winner</div>
@@ -6878,6 +6878,57 @@ function canAppearInTopWinnersBet(bet){
     !(bet.qaFlags||[]).includes('KELLY_INVALID') &&
     typeof bet.edge_pct === 'number' && bet.edge_pct > 0
   );
+}
+
+
+// ── LLP DISPLAY ALIGNMENT PATCH — Candidate → Qualified → Approved ──────────
+// This is presentation logic only. It does NOT auto-promote stale/CLV candidates.
+// Approved = BET only. ANCHOR/QUALIFIED = qualified but not automatically playable.
+function llpStageFromDecision(dec){
+  dec = (dec || '').toUpperCase();
+  if(dec === 'BET' || dec === 'SMALL BET') return 'APPROVED';
+  if(dec === 'QUALIFIED' || dec === 'ANCHOR') return 'QUALIFIED';
+  if(dec === 'CANDIDATE' || dec === 'WATCH' || dec === 'WAIT' || dec === 'LEAN') return 'CANDIDATE';
+  if(dec === 'QA_FAIL') return 'QA_FAIL';
+  return 'PASS';
+}
+function llpStageRank(stage){
+  stage = (stage || '').toUpperCase();
+  return stage === 'APPROVED' ? 3 :
+         stage === 'QUALIFIED' ? 2 :
+         stage === 'CANDIDATE' ? 1 :
+         stage === 'PASS' ? 0 : -1;
+}
+function llpStageForBet(game, bet){
+  // Prefer final Discovery/Layer-4 decision when present.
+  const src = (game && game._llpDecision) || (bet && bet.llpDecision) || (bet && bet.tier) || '';
+  if(src === 'TEAM ANCHOR' || src === 'TEAM STRONG') return (bet && bet.llpDecision === 'BET') ? 'APPROVED' : 'CANDIDATE';
+  if(src === 'TEAM LEAN') return 'CANDIDATE';
+  return llpStageFromDecision(src);
+}
+function llpDecisionLabel(game, bet){
+  const stage = llpStageForBet(game, bet);
+  const dec = ((game && game._llpDecision) || (bet && bet.llpDecision) || stage || 'WATCH').toUpperCase();
+  if(stage === 'APPROVED') return 'BET';
+  if(stage === 'QUALIFIED') return 'QUALIFIED';
+  if(stage === 'CANDIDATE') return dec === 'WAIT' ? 'WATCH' : 'CANDIDATE';
+  if(stage === 'QA_FAIL') return 'QA FAIL';
+  return 'PASS';
+}
+function llpStageColor(stage){
+  stage = (stage||'').toUpperCase();
+  return stage === 'APPROVED' ? 'var(--green)' :
+         stage === 'QUALIFIED' ? 'var(--purple)' :
+         stage === 'CANDIDATE' ? 'var(--yellow)' :
+         stage === 'QA_FAIL' ? 'var(--red)' : 'var(--text2)';
+}
+function llpAllowedStageMin(filter){
+  // Existing select values retained for backward compatibility.
+  return filter === 'anchor' ? 3 : filter === 'strong' ? 2 : filter === 'lean' ? 1 : -1;
+}
+function llpDisplayEdge(edge){
+  if(edge === undefined || edge === null || isNaN(edge)) return '—';
+  return (edge >= 0 ? '+' : '') + parseFloat(edge).toFixed(1) + '%';
 }
 
 // ── LLP QA CASES (FIX 3) ─────────────────────────────────────────────────────
@@ -13704,21 +13755,29 @@ function renderTeamsSummaryPanels(){
 }
 
 function renderTeamsStatCards(allGames){
-  const bets = allGames.flatMap(g=>g.bets||[]);
-  const anchors = bets.filter(b=>b.tier==='TEAM ANCHOR').length;
-  const strongs = bets.filter(b=>b.tier==='TEAM STRONG').length;
-  // LLP PATCH FIX 5: only clean bets appear in top winners / best edge stat card
-  const topBet = [...bets].filter(canAppearInTopWinnersBet).sort((a,b)=>b.edge_pct-a.edge_pct)[0];
+  const bets = allGames.flatMap(g => (g.bets||[]).map(b => ({game:g, bet:b, stage:llpStageForBet(g,b)})));
+  const approved  = bets.filter(x => x.stage === 'APPROVED').length;
+  const qualified = bets.filter(x => x.stage === 'QUALIFIED').length;
+  const candidate = bets.filter(x => x.stage === 'CANDIDATE').length;
+  const watchPass = bets.filter(x => x.stage === 'PASS' || x.stage === 'QA_FAIL').length;
+
+  // Only clean, positive-edge bets can populate Best Edge. This prevents stale/zero-edge CLV candidates
+  // from being visually promoted into approved plays.
+  const cleanPositive = bets
+    .filter(x => canAppearInTopWinnersBet(x.bet) && x.stage !== 'PASS' && x.stage !== 'QA_FAIL')
+    .sort((a,b) => (llpStageRank(b.stage)-llpStageRank(a.stage)) || ((b.bet.edge_pct||-99)-(a.bet.edge_pct||-99)));
+  const topBet = cleanPositive[0]?.bet || null;
   const topFav = [..._teamsWUFavorites].sort((a,b)=>b.prob-a.prob)[0];
 
   const el = id => document.getElementById(id);
   if(el('statGamesAnalyzed')) el('statGamesAnalyzed').textContent = allGames.length;
-  if(el('statGamesSubtitle')) el('statGamesSubtitle').textContent = [...new Set(allGames.map(g=>g.sport))].join(', ')||'No sports';
-  if(el('statBettable')) el('statBettable').textContent = anchors + strongs;
-  if(el('statBettableSub')) el('statBettableSub').textContent = `${anchors} anchor, ${strongs} strong`;
+  if(el('statGamesSubtitle')) el('statGamesSubtitle').textContent = [...new Set(allGames.map(g=>g.sport))].join(', ') || 'No sports';
+  if(el('statBettable')) el('statBettable').textContent = approved;
+  if(el('statBettableSub')) el('statBettableSub').textContent = `${qualified} qualified, ${candidate} candidates, ${watchPass} watch/pass`;
   if(el('statTopWinner') && topFav) el('statTopWinner').textContent = `${topFav.pick} ${(topFav.prob*100).toFixed(0)}%`;
-  if(el('statBestEdge') && topBet) el('statBestEdge').textContent = `+${topBet.edge_pct}%`;
-  if(el('statBestEdgeSub') && topBet) el('statBestEdgeSub').textContent = topBet.pick;
+  if(el('statTopWinnerSub')) el('statTopWinnerSub').textContent = 'Winner signal only — not auto-bet';
+  if(el('statBestEdge') && topBet) el('statBestEdge').textContent = llpDisplayEdge(topBet.edge_pct);
+  if(el('statBestEdgeSub')) el('statBestEdgeSub').textContent = topBet ? `${topBet.pick} · ${llpDecisionLabel(cleanPositive[0].game, topBet)}` : 'No clean positive edge';
 }
 
 function renderLLPBoard(allGames){
@@ -13874,14 +13933,16 @@ function renderTeamsBoardOutput(){
   const sportF     = document.getElementById('llp_sport')?.value    || 'all';
   const oddsThresh = parseInt(window._lmOddsFilter || 'all') || null;
 
-  const tierMin = {anchor:['TEAM ANCHOR'], strong:['TEAM ANCHOR','TEAM STRONG'], lean:['TEAM ANCHOR','TEAM STRONG','TEAM LEAN'], all:['TEAM ANCHOR','TEAM STRONG','TEAM LEAN']};
-  const allowed = tierMin[tierFilter] || tierMin.all;
+  const minRank = llpAllowedStageMin(tierFilter);
 
-  let filtered = _teamsLLPGames.map(g=>({...g, bets:(g.bets||[]).filter(b=>
-    allowed.includes(b.tier) &&
+  let filtered = _teamsLLPGames.map(g=>({...g, bets:(g.bets||[]).map(b=>{
+    const stage = llpStageForBet(g,b);
+    return Object.assign({}, b, {_llpStage:stage, _llpRank:llpStageRank(stage)});
+  }).filter(b=>
+    b._llpRank >= minRank &&
     (betFilter==='all' || b.type===betFilter) &&
     (sportF==='all' || g.sport===sportF) &&
-    // High odds filter: only include if any ML bet meets threshold
+    // High-odds filters are discovery/search filters, not approval filters.
     (!oddsThresh || b.type!=='moneyline' || (typeof b.line==='number' && b.line <= oddsThresh))
   )})).filter(g=>g.bets.length>0);
 
@@ -13891,34 +13952,50 @@ function renderTeamsBoardOutput(){
 
   outputDiv.innerHTML = '';
 
-  if(!filtered.length){
-    outputDiv.innerHTML = `<div style="text-align:center;padding:48px 20px;color:var(--text2);">
-      <div style="font-size:36px;margin-bottom:12px;">📊</div>
-      <div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:6px;">No qualifying games</div>
-      <div style="font-size:13px;">Try "All Tiers" or click Refresh Board to scan today's slate.</div>
-    </div>`;
+  if(!_teamsLLPGames.length){
+    outputDiv.innerHTML = `<div class="alert ay"><strong>No live board loaded yet.</strong><br>Use Refresh Board, or use Highest Probability Winners / Best Upset Candidates above while live odds load. The page intentionally stays in Watchlist mode instead of showing a blank slate.</div>`;
     return;
   }
 
-  // Summary pill bar
-  const anchors = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM ANCHOR').length;
-  const strongs = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM STRONG').length;
-  const leans   = filtered.flatMap(g=>g.bets).filter(b=>b.tier==='TEAM LEAN').length;
+  if(!filtered.length){
+    const sameSportGames = _teamsLLPGames
+      .filter(g => sportF==='all' || g.sport===sportF)
+      .map(g => ({...g, bets:(g.bets||[]).map(b=>{
+        const stage = llpStageForBet(g,b);
+        return Object.assign({}, b, {_llpStage:stage, _llpRank:llpStageRank(stage)});
+      })}))
+      .filter(g => (g.bets||[]).length);
+    filtered = sameSportGames.length ? sameSportGames : _teamsLLPGames;
+    const fallbackNote = document.createElement('div');
+    fallbackNote.className = 'alert ay';
+    fallbackNote.innerHTML = `<strong>No approved/qualified plays under the current filters.</strong><br>
+      Showing candidate/watchlist context instead so the dashboard is never blank. Treat these as NO PLAY until edge, Kelly, CLV, lineup/starter and failure-path checks clear.`;
+    outputDiv.appendChild(fallbackNote);
+  }
+
+  // Summary pill bar — Candidate → Qualified → Approved
+  const allFilteredBets = filtered.flatMap(g=>g.bets||[]);
+  const approvedCnt  = allFilteredBets.filter(b=>b._llpStage==='APPROVED').length;
+  const qualifiedCnt = allFilteredBets.filter(b=>b._llpStage==='QUALIFIED').length;
+  const candidateCnt = allFilteredBets.filter(b=>b._llpStage==='CANDIDATE').length;
+  const passCnt      = allFilteredBets.filter(b=>b._llpStage==='PASS' || b._llpStage==='QA_FAIL').length;
   const sumDiv  = document.createElement('div');
   sumDiv.className = 'lm-sum-bar';
   sumDiv.innerHTML = `
-    <span class="lm-sum-pill lm-s-anchor">⚓ ${anchors} Anchor</span>
-    <span class="lm-sum-pill lm-s-strong">💪 ${strongs} Strong</span>
-    <span class="lm-sum-pill lm-s-lean">📈 ${leans} Lean</span>
+    <span class="lm-sum-pill lm-s-anchor">✅ ${approvedCnt} Approved</span>
+    <span class="lm-sum-pill lm-s-strong">🟣 ${qualifiedCnt} Qualified</span>
+    <span class="lm-sum-pill lm-s-lean">🟡 ${candidateCnt} Candidate</span>
+    <span class="lm-sum-pill lm-s-games">👁 ${passCnt} Watch/Pass</span>
     <span class="lm-sum-pill lm-s-games">🎮 ${filtered.length} Games</span>`;
   outputDiv.appendChild(sumDiv);
 
   // Game cards
   filtered.forEach((game, idx) => {
-    const topBet = [...game.bets].sort((a,b)=>b.edge_pct-a.edge_pct)[0];
-    const tierColor = topBet?.tier==='TEAM ANCHOR'?'#10b981':topBet?.tier==='TEAM STRONG'?'#3b82f6':'#f59e0b';
-    const tierLabel = (topBet?.tier||'LEAN').replace('TEAM ','');
-    const isBet = topBet?.tier==='TEAM ANCHOR'||topBet?.tier==='TEAM STRONG';
+    const topBet = [...game.bets].sort((a,b)=>(b._llpRank-a._llpRank)||((b.edge_pct||-99)-(a.edge_pct||-99)))[0];
+    const topStage = llpStageForBet(game, topBet);
+    const tierColor = llpStageColor(topStage);
+    const tierLabel = llpDecisionLabel(game, topBet);
+    const isBet = topStage==='APPROVED';
 
     const awayL = (game.away_team||'').toLowerCase();
     const homeL = (game.home_team||'').toLowerCase();
@@ -14022,6 +14099,8 @@ function renderTeamsBoardOutput(){
     // ── Engine tab content (main analysis) ──
     const gapVal = (modelProb!=='—'&&impliedProb!=='—') ? (parseFloat(modelProb)-parseFloat(impliedProb)).toFixed(1) : null;
     const gapPositive = gapVal !== null && parseFloat(gapVal) > 0;
+    const llpRecLabel = topStage==='APPROVED' ? 'Approved Bet' : topStage==='QUALIFIED' ? 'Qualified — Not Approved' : topStage==='CANDIDATE' ? 'Candidate / Watchlist' : 'No Play / Pass';
+    const llpUnits = topStage==='APPROVED' ? (topBet?._recommendedUnits || topBet?.unit_size || 0.5) : 0;
     const engineContent = `
       <div class="lm-chart-wrap">${lmSparkline(parseFloat(modelProb)||50,parseFloat(impliedProb)||50,idx+200)}</div>
       <div class="lm-chart-legend" style="margin-bottom:10px;">
@@ -14047,15 +14126,15 @@ function renderTeamsBoardOutput(){
         </div>
       </div>` : ''}
       <div class="lm-bet-rec">
-        <div class="lm-bet-rec-lbl">Recommended Bet</div>
+        <div class="lm-bet-rec-lbl">${llpRecLabel}</div>
         <div class="lm-bet-rec-body">
           <div>
             <div class="lm-bet-pick">${topBet?.pick||'—'}</div>
-            <div class="lm-bet-meta">${topBet?.line!=null?(topBet.line>0?'+':'')+topBet.line:'—'} · ${topBet?.unit_size||'—'}u · ${(topBet?.type||'').toUpperCase()}</div>
+            <div class="lm-bet-meta">${topBet?.line!=null?(topBet.line>0?'+':'')+topBet.line:'—'} · ${llpUnits}u · ${(topBet?.type||'').toUpperCase()} · ${tierLabel}</div>
           </div>
           <div>
             <div class="lm-bet-edge-lbl">Edge</div>
-            <div class="lm-bet-edge">+${topBet?.edge_pct||0}%</div>
+            <div class="lm-bet-edge">${llpDisplayEdge(topBet?.edge_pct)}</div>
           </div>
         </div>
       </div>
@@ -14085,7 +14164,7 @@ function renderTeamsBoardOutput(){
             </div>
             <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
               <div style="font-size:10px;color:var(--text2);margin-bottom:3px;">Model Edge</div>
-              <div style="font-size:20px;font-weight:900;color:var(--green);">+${topBet?.edge_pct||0}%</div>
+              <div style="font-size:20px;font-weight:900;color:var(--green);">${llpDisplayEdge(topBet?.edge_pct)}</div>
             </div>
           </div>
         </div>
@@ -14135,12 +14214,13 @@ function renderTeamsBoardOutput(){
       <button class="lm-expand-btn" onclick="lmToggleAllBets('${cid}_bets',this)">View all ${game.bets.length} engine bets ▾</button>
       <div id="${cid}_bets" class="lm-bets-grid">
         ${game.bets.map(bet=>{
-          const bc=bet.tier==='TEAM ANCHOR'?'var(--green)':bet.tier==='TEAM STRONG'?'var(--accent)':'var(--yellow)';
-          const bbg=bet.tier==='TEAM ANCHOR'?'var(--green-light)':bet.tier==='TEAM STRONG'?'var(--accent-light)':'var(--yellow-light)';
+          const betStage=bet._llpStage||llpStageForBet(game,bet);
+          const bc=llpStageColor(betStage);
+          const bbg=betStage==='APPROVED'?'var(--green-light)':betStage==='QUALIFIED'?'var(--purple-light)':betStage==='CANDIDATE'?'var(--yellow-light)':'var(--surface2)';
           const qaBadge = (bet.qaFlags||[]).length ? `<span style="font-size:9px;color:#ef4444;"> ⚠ ${bet.qaFlags.join(', ')}</span>` : '';
           return `<div style="border-radius:8px;background:${bbg};border:1px solid ${bc}40;padding:10px;">
             <div style="font-size:12px;font-weight:700;color:${bc};">${bet.pick}${qaBadge}</div>
-            <div style="font-size:11px;color:var(--text2);margin:2px 0;">${bet.line>0?'+':''}${bet.line} · ${bet.unit_size}u · +${bet.edge_pct}% edge</div>
+            <div style="font-size:11px;color:var(--text2);margin:2px 0;">${llpDecisionLabel(game,bet)} · ${bet.line>0?'+':''}${bet.line} · ${betStage==='APPROVED'?(bet.unit_size||0.5):0}u · ${llpDisplayEdge(bet.edge_pct)} edge</div>
             <div style="font-size:10px;color:var(--text2);line-height:1.5;margin-top:4px;">${bet.reasoning||''}</div>
           </div>`;
         }).join('')}
@@ -14192,7 +14272,7 @@ function lmSparkline(modelProb, impliedProb, seed){
 
 // ── Tab switcher ──
 function lmSwitchTab(cid, tab, btn){
-  ['ml','spread','total','odds','engine'].forEach(t=>{
+  ['ml','spread','total','odds','engine','discovery'].forEach(t=>{
     const el=document.getElementById(`${cid}_${t}`);
     if(el) el.classList.toggle('lm-tc-off', t!==tab);
   });
