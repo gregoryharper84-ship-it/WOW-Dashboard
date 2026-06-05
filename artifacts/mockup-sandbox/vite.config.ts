@@ -1,35 +1,38 @@
-import { defineConfig } from "vite";
+import { defineConfig, type UserConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { mockupPreviewPlugin } from "./mockupPreviewPlugin";
 
-const rawPort = process.env.PORT;
+export default defineConfig(async ({ command }): Promise<UserConfig> => {
+  // PORT / BASE_PATH are only required when serving the dev server. During a
+  // production `vite build` (e.g. the deploy build) they are not provided, so
+  // fall back to safe defaults instead of throwing and failing the build.
+  const isServe = command === "serve";
 
-if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
-}
+  const rawPort = process.env.PORT;
+  if (isServe && !rawPort) {
+    throw new Error(
+      "PORT environment variable is required but was not provided.",
+    );
+  }
+  const port = rawPort ? Number(rawPort) : 5173;
+  if (isServe && (Number.isNaN(port) || port <= 0)) {
+    throw new Error(`Invalid PORT value: "${rawPort}"`);
+  }
 
-const port = Number(rawPort);
+  const rawBasePath = process.env.BASE_PATH;
+  if (isServe && !rawBasePath) {
+    throw new Error(
+      "BASE_PATH environment variable is required but was not provided.",
+    );
+  }
+  const basePath = rawBasePath ?? "/";
 
-if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
-}
-
-const basePath = process.env.BASE_PATH;
-
-if (!basePath) {
-  throw new Error(
-    "BASE_PATH environment variable is required but was not provided.",
-  );
-}
-
-export default defineConfig({
-  base: basePath,
-  plugins: [
+  return {
+    base: basePath,
+    plugins: [
     mockupPreviewPlugin(),
     react(),
     tailwindcss(),
@@ -68,4 +71,5 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: true,
   },
+  };
 });
