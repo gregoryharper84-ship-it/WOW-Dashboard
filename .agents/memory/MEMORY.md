@@ -1,0 +1,1 @@
+- [LLP multi-agent sync](llp-multiagent-sync.md) — user runs a 3-agent workflow (Replit Claude + external ChatGPT + external Claude) that reason blind against app.py; verify before building, keep ground-truth doc current.

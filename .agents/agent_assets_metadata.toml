@@ -36,3 +36,9 @@ id = "8Kiz96HxrdqMo77-YFtLh"
 uri = "file://attached_assets/exports/rundown_proxy_patch.md"
 type = "text"
 title = "TheRundown Flask Proxy — Patch Instructions for Claude"
+
+[[outputs]]
+id = "tSmoBzOVsRxiaJHR4yg6z"
+uri = "file://artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+type = "text"
+title = "LLP Engine — Ground Truth Sync Block"

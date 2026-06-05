@@ -1,0 +1,201 @@
+# LLP Engine — Ground Truth Sync Block
+
+**Purpose:** Paste this at the top of any ChatGPT or Claude planning thread before
+asking for changes to `artifacts/flask-scoring-api/app.py`. ChatGPT and the
+external Claude thread cannot see the code — they plan against memory and drift.
+This pins the *actual shipped reality* so all three agents share one source of
+truth. **The code is the source of truth; this doc is a snapshot of it.**
+
+_Snapshot of: `artifacts/flask-scoring-api/app.py` (~11,300 lines). Production:
+`create-app-gregoryharper84.replit.app`._
+
+---
+
+## 0. Layer model (read this first)
+
+```
+discovery  →  validation  →  approval
+```
+
+- **F5 routing is market SELECTION, not bet APPROVAL.** F5 availability may
+  convert a weak full-game MLB ML into an `F5_ML` *candidate*. It NEVER
+  auto-upgrades anything to BET. Final approval still requires: LLP badge
+  `ANCHOR`/`BET`, positive edge, positive Kelly, verified context, and a clean
+  failure-path review.
+- The additive-only model invariant holds to 1e-6 and must never be broken:
+  `model_win_probability − no_vig_implied_probability == sum(model_adjustments)`.
+
+---
+
+## 1. Badge ladder (rank order)
+
+Higher rank wins. Ceilings only ever **lower** a badge, never raise it.
+
+| Badge       | Rank | Meaning (raw) |
+|-------------|------|---------------|
+| `ANCHOR`    | 6    | BET-clean + low fragility + edge ≥ 3.5% + independent model + verified market_cause + confirmed starter/lineup + no failures |
+| `BET`       | 5    | discovery + validation clean, BET/SMALL BET decision |
+| `QUALIFIED` | 4    | discovery + validation clean, edge sub-bet |
+| `LEAN`      | 3    | positive edge but starter/lineup unverified |
+| `WAIT`      | 2    | WATCH, or actionable edge blocked on unverified market_cause/timing |
+| `CANDIDATE` | 1    | discovery signal, validation incomplete (no edge yet) |
+| `PASS`      | 0    | hard fail: TRAP, negative edge, negative CLV, no market |
+
+---
+
+## 2. Confidence tiers (by `abs(edge)`)
+
+| Tier      | Threshold      |
+|-----------|----------------|
+| `STRONG`  | ≥ 0.045        |
+| `MEDIUM`  | ≥ 0.025        |
+| `SMALL`   | ≥ 0.012        |
+| `PASS`    | < 0.012        |
+| `UNKNOWN` | edge is `None` |
+
+---
+
+## 3. Final decision logic
+
+`_llp_decision(edge, model_p, novig_p, upset_score, trap_flag, failures)`:
+
+1. `trap_flag` → **TRAP**
+2. `edge` or `model_p` is None → **WATCH**
+3. `edge < 0` → **PASS**
+4. ≥ 3 **hard** failures (advisory tags filtered out) AND tier ∈ {MEDIUM, SMALL} → **WATCH**
+5. tier `STRONG` → **BET**
+6. tier `MEDIUM` → **SMALL BET**
+7. tier `SMALL` → **WATCH**
+8. else → **PASS**
+
+---
+
+## 4. Badge ceiling (`_llp_apply_spec_badge_ceiling`) — only lowers
+
+| Condition | Cap at |
+|-----------|--------|
+| `opening_line` is None (no movement reference) | `WAIT` |
+| `clv_beat` is None (no CLV anchor) | `WAIT` |
+| `kelly_stake` is None or ≤ 0 | `CANDIDATE` |
+| short-fav trap: `no_vig_implied_probability` ≥ 0.55 AND `edge` < 0.04 | `LEAN` |
+| any of `stale-market-not-actionable`, `candidate-promoted-too-early`, `fake-market-edge` in `failure_paths` | `CANDIDATE` |
+
+---
+
+## 5. F5 (MLB first-5-innings) market routing — Step 5, LIVE
+
+`_llp_choose_mlb_target_market(rec)` returns `recommended_market`:
+
+1. sport ≠ MLB → `ML` (passthrough; no F5 routing)
+2. market ≠ h2h → market upper-cased (passthrough)
+3. `bullpen_reliability` > 0.50 **OR** `edge` ≥ 0.04 → `ML` (full-game actionable)
+4. `f5_available` is True → `F5_ML`
+5. else → `ML_WATCH_ONLY`
+
+`_llp_mlb_fullgame_f5_advisory(rec)` now **derives from the chooser** (single
+source of truth): returns True iff chooser ≠ `ML` for an MLB h2h record.
+
+**Rollback flag:** set env `LLP_DISABLE_MLB_F5=1` → MLB odds fetch reverts to
+full-game-only (`h2h,spreads,totals`), recovering ~2x Odds API credits. F5
+routing then degrades gracefully (`f5_available=False`,
+`recommended_market="ML_WATCH_ONLY"`).
+
+**Market aliases** (all normalize to canonical Odds API keys):
+`ml`/`moneyline`/`h2h` → `h2h`; `spread`/`spreads` → `spreads`;
+`total`/`totals`/`ou` → `totals`; `f5`/`f5_ml`/`f5_h2h`/`first5`/`first5_ml` →
+`h2h_1st_5_innings`; `f5_spread`/`f5_spreads`/`first5_spread` →
+`spreads_1st_5_innings`; `f5_total`/`f5_totals`/`f5_ou`/`first5_total` →
+`totals_1st_5_innings`.
+
+---
+
+## 6. Failure-path tags
+
+### Hard tags (7) — count toward the ≥ 3 cardinality demotion
+- `missing-odds-feed`
+- `missing-lineup-status`
+- `missing-starter-confirmation`
+- `stale-market-not-actionable`  *(also caps badge at CANDIDATE)*
+- `clv-without-validation`
+- `fake-market-edge`  *(also caps badge at CANDIDATE)*
+- `candidate-promoted-too-early`  *(also caps badge at CANDIDATE)*
+
+### Advisory tags (3) — informational, do NOT count toward cardinality
+- `_LLP_MLB_FULLGAME_PREFERS_F5`
+- `_LLP_RECOMMEND_F5_ML`
+- `_LLP_ML_WATCH_ONLY_NO_F5`
+
+---
+
+## 7. Per-record field contract (top-level keys on every analyze record)
+
+```
+book                         bullpen_reliability         clv_beat
+clv_delta_pts                confidence_tier             current_line
+discovery                    discovery_clean             edge
+f5_american                  f5_available                f5_book
+f5_total_line                failure_paths               favorite_trap_flag
+final_decision               full_game_edge_allowed      implied_probability
+injury_context               injury_rest_context         kelly_stake
+lineup_status                llp_badge                   lock_line
+market_movement_clv_status   mlb_fullgame_prefers_f5     model_adjustments
+model_win_probability        moneyline_fragility         no_vig_implied_probability
+opening_line                 prop_correlation_support    recommended_market
+rest_context                 starter_lineup_confirmation starter_status
+team_ratings                 upset_score                 validation_clean
+weather_park
+```
+
+`recommended_market` ∈ {`ML`, `F5_ML`, `ML_WATCH_ONLY`, `<MARKET>`}.
+`full_game_edge_allowed` is True only when `recommended_market == "ML"`.
+
+---
+
+## 8. Data-source map (free stack + paid Odds API)
+
+| Source | Base URL | Used for | Auth |
+|--------|----------|----------|------|
+| **The Odds API** v4 | `https://api.the-odds-api.com/v4` | Odds for all sports; MLB F5 markets pulled alongside full-game | `ODDS_API_KEY` (paid) |
+| **MLB Stats API** | `https://statsapi.mlb.com/api/v1` (+ `v1.1/game/{pk}/feed/live`) | Schedule, probable pitchers, lineup confirmation, live feed | none (free) |
+| **ESPN public JSON** | `site.api.espn.com` / `site.web.api.espn.com` | Injuries, team standings/ratings | none (free) |
+
+**Odds cache:** in-process, TTL 120s, keyed by `(sport_key, markets, regions)`
+(legacy `sport_key`-only key kept warm for back-compat).
+
+**Sport key map:** `nba→basketball_nba`, `wnba→basketball_wnba`,
+`ncaab→basketball_ncaab`, `mlb→baseball_mlb`, `nfl→americanfootball_nfl`,
+`ncaaf→americanfootball_ncaaf`, `nhl→icehockey_nhl`.
+
+---
+
+## 9. Persistence — 7 LLP Pro tables (auto-create on startup)
+
+`odds_snapshots`, `team_context`, `lineup_status`, `injury_status`,
+`model_outputs`, `clv_log`, `bet_decisions`. Postgres via `DATABASE_URL`. All
+writes are best-effort — a persistence failure never breaks analysis.
+
+---
+
+## 10. 10-step plan status
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1 | Canonical game-context object | Built internally in analyze path |
+| 2 | Line-tracking tables (`odds_snapshots` + first-seen helper) | **LIVE** |
+| 3 | Odds-snapshot background cron (first_seen / current / lock / close + CLV) | **PENDING — next** |
+| 4 | Starter/lineup + injury verification (MLB Stats + ESPN fetchers) | **LIVE** |
+| 5 | F5 MLB markets | **LIVE, deployed** |
+| 6 | OpenAI structured reconciliation | **PENDING** |
+| 7 | Both-sides expansion + record adapter | **LIVE** |
+| 8 | Hard approval gates (`canApproveLLPBet`) | Ceiling enforced; thin wrapper PENDING |
+| 9 | Final-card output rules | Orchestrator layer, not in this backend |
+| 10 | OpenAI web-search fallback | **PENDING** |
+
+---
+
+## What to send back when you (ChatGPT / Claude) want a change
+
+1. The **delta** vs. this snapshot — what decision/threshold/contract you want
+   different, and why.
+2. Any decision made in your thread that isn't reflected here.
+3. Which spec wins if yours disagrees with what's shipped above.
