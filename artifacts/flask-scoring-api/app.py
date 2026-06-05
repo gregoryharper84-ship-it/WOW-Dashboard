@@ -8,7 +8,7 @@ import time
 import statistics
 import traceback
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -11266,6 +11266,337 @@ def cm_run_connected_model():
         "slips": slips_json,
         "execution_notes": execution_notes,
     })
+
+
+# ── Step 3: in-process odds-snapshot cron (first_seen/current/lock/close + CLV) ──
+# Periodically polls The Odds API for every sport in `_LLP_SPORT_MAP`, persisting
+# line snapshots to `odds_snapshots` keyed by snapshot_kind and recording market
+# open→close CLV to `clv_log`. In-process daemon thread (no external scheduler).
+# Disable with LLP_DISABLE_SNAPSHOT_CRON=1. Reuses `_llp_fetch_odds` (so the 120s
+# TTL cache + existing F5 market set are honoured — the cron does not add API
+# spend beyond what analyze already triggers within a TTL window).
+def _llp_env_int(name, default):
+    """Parse an int env var with a safe fallback — never raises at import."""
+    try:
+        return int(str(os.environ.get(name, default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+_LLP_CRON_INTERVAL_SEC    = _llp_env_int("LLP_SNAPSHOT_INTERVAL_SEC", 300)
+_LLP_CRON_LOCK_WINDOW_MIN = _llp_env_int("LLP_LOCK_WINDOW_MIN", 15)
+_LLP_CRON_ENABLED = (os.environ.get("LLP_DISABLE_SNAPSHOT_CRON", "").strip().lower()
+                     not in ("1", "true", "yes", "on"))
+_LLP_CRON_STARTED = False
+_LLP_CRON_LOCK    = threading.Lock()
+# Stable advisory-lock key so only ONE poller ticks at a time across gunicorn
+# workers / multiple instances sharing the same Postgres. Each tick grabs it
+# with pg_try_advisory_lock and skips if another worker already holds it —
+# serializing the check-then-insert one-time writes (first_seen/lock/close)
+# and CLV so concurrent workers can't double-write.
+_LLP_CRON_ADVISORY_KEY = 778597203
+_LLP_CRON_STATS   = {
+    "ticks": 0, "rows_written": 0, "clv_rows": 0,
+    "last_tick": None, "last_error": None, "last_sports": [],
+}
+
+
+def _llp_parse_commence(ct):
+    """Parse an Odds API commence_time (ISO-8601, e.g. '2026-06-05T23:05:00Z')
+    into a tz-aware UTC datetime. Returns None on any failure."""
+    if not ct:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _llp_event_market_keys(event):
+    """Set of distinct Odds API market keys present across an event's books."""
+    keys = set()
+    for bm in (event.get("bookmakers") or []):
+        for mk in (bm.get("markets") or []):
+            k = mk.get("key")
+            if k:
+                keys.add(k)
+    return keys
+
+
+def _llp_iter_event_selections(event, market_key):
+    """Yield (side_name, best_american, point, book) for one market_key, taking
+    the most favourable price (highest American value) per outcome name across
+    all books. Same-side cross-book noise is collapsed to the best line."""
+    best = {}  # name -> (american, point, book)
+    for bm in (event.get("bookmakers") or []):
+        for mk in (bm.get("markets") or []):
+            if mk.get("key") != market_key:
+                continue
+            for o in (mk.get("outcomes") or []):
+                name = o.get("name")
+                am   = o.get("price")
+                if name is None or am is None:
+                    continue
+                try:
+                    amf = float(am)
+                except (TypeError, ValueError):
+                    continue
+                cur = best.get(name)
+                if cur is None or amf > cur[0]:
+                    best[name] = (amf, o.get("point"), bm.get("key", ""))
+    for name, (am, pt, book) in best.items():
+        yield name, am, pt, book
+
+
+def _llp_preload_today(conn, board_date):
+    """One round-trip per map: load today's per-(sport,game_key,market,side)
+    snapshot_kinds set and latest (american, point). Replaces per-side SELECTs
+    so a full slate costs 2 queries/tick instead of thousands. Keys use a
+    lowercased side. Returns (kinds_map, latest_map)."""
+    kinds_map, latest_map = {}, {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT sport, game_key, market, LOWER(side), snapshot_kind
+                FROM odds_snapshots
+                WHERE (fetched_at AT TIME ZONE 'UTC')::date = %s::date
+            """, (board_date,))
+            for sp, gk, mk, sl, kind in cur.fetchall():
+                kinds_map.setdefault((sp, gk, mk, sl), set()).add(kind)
+            cur.execute("""
+                SELECT DISTINCT ON (sport, game_key, market, LOWER(side))
+                       sport, game_key, market, LOWER(side), american_odds, point
+                FROM odds_snapshots
+                WHERE (fetched_at AT TIME ZONE 'UTC')::date = %s::date
+                ORDER BY sport, game_key, market, LOWER(side), fetched_at DESC
+            """, (board_date,))
+            for sp, gk, mk, sl, am, pt in cur.fetchall():
+                latest_map[(sp, gk, mk, sl)] = (
+                    float(am) if am is not None else None,
+                    float(pt) if pt is not None else None)
+    except Exception:
+        pass
+    return kinds_map, latest_map
+
+
+def _llp_earliest_snapshot_conn(conn, sport, game_key, market, side, board_date):
+    """Earliest American price today for this side, read on the SAME tick
+    connection so a first_seen row inserted earlier in this uncommitted tick is
+    visible (a separate connection would miss it and silently drop CLV).
+    Returns the opening American odds (float) or None."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT american_odds FROM odds_snapshots
+                WHERE sport = %s AND game_key = %s AND market = %s
+                  AND LOWER(side) = LOWER(%s)
+                  AND american_odds IS NOT NULL
+                  AND (fetched_at AT TIME ZONE 'UTC')::date = %s::date
+                ORDER BY fetched_at ASC LIMIT 1
+            """, (sport, game_key, market, side, board_date))
+            row = cur.fetchone()
+            return float(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+
+
+def _llp_snap_insert(conn, sport, game_key, away, home, market, side,
+                     american, point, book, kind):
+    """Insert one odds_snapshots row with an explicit snapshot_kind."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO odds_snapshots
+              (sport, game_key, away_team, home_team, market, book, side,
+               american_odds, point, snapshot_kind, source)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (sport, game_key, away, home, market, book, side,
+              american, point, kind, "the-odds-api"))
+
+
+def _llp_grade_clv(open_american, close_american):
+    """Grade market open→close drift for a side from its American prices.
+    Returns (clv_delta_prob, clv_grade, clv_beat). Positive delta = the side's
+    implied probability rose (line moved toward it) → `clv_beat` True."""
+    op = _llp_american_to_prob(open_american)
+    cp = _llp_american_to_prob(close_american)
+    if op is None or cp is None:
+        return (None, "UNKNOWN", None)
+    delta = cp - op
+    a = abs(delta)
+    if   a >= 0.030: grade = "STRONG"
+    elif a >= 0.015: grade = "MEDIUM"
+    elif a >= 0.005: grade = "SMALL"
+    else:            grade = "FLAT"
+    return (delta, grade, delta > 0)
+
+
+def _llp_write_clv_log(conn, sport, game_key, market, side,
+                       opening_american, closing_american):
+    """Write a market open→close CLV row to clv_log. Returns True on insert.
+    `bet_line` is left NULL — the cron tracks market movement, not a placed
+    bet (per-bet CLV is computed in the analyze path via opening_lines)."""
+    delta, grade, beat = _llp_grade_clv(opening_american, closing_american)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO clv_log
+                  (sport, game_key, market, side, opening_line, bet_line,
+                   closing_line, clv_delta, clv_grade, clv_beat)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (sport, game_key, market, side,
+                  opening_american, None, closing_american,
+                  delta, grade, beat))
+        return True
+    except Exception:
+        return False
+
+
+def _llp_snapshot_tick():
+    """One polling pass over all sports. Best-effort; never raises."""
+    if not os.environ.get("ODDS_API_KEY") or not os.environ.get("DATABASE_URL"):
+        _LLP_CRON_STATS["last_error"] = "missing ODDS_API_KEY or DATABASE_URL"
+        return
+    rows = 0
+    clv_rows = 0
+    touched = []
+    try:
+        conn = get_db_conn()
+    except Exception as e:
+        _LLP_CRON_STATS["last_error"] = f"db-connect: {e}"
+        return
+    got_lock = False
+    try:
+        _ensure_llp_pro_schema(conn)
+        # Serialize across workers/instances: skip this tick if another poller
+        # already holds the advisory lock (prevents concurrent double-writes).
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s)", (_LLP_CRON_ADVISORY_KEY,))
+            got_lock = bool(cur.fetchone()[0])
+        if not got_lock:
+            _LLP_CRON_STATS["last_error"] = None
+            return
+        now = datetime.now(timezone.utc)
+        board_date = now.date().isoformat()
+        kinds_map, latest_map = _llp_preload_today(conn, board_date)
+        for sport_key in _LLP_SPORT_MAP.values():
+            events = _llp_fetch_odds(sport_key)
+            if not events:
+                continue
+            touched.append(sport_key)
+            for ev in events:
+                away = ev.get("away_team")
+                home = ev.get("home_team")
+                if not away or not home:
+                    continue
+                game_key = f"{_llp_norm_team(away)}@{_llp_norm_team(home)}"
+                commence = _llp_parse_commence(ev.get("commence_time"))
+                within_lock = bool(
+                    commence
+                    and (commence - timedelta(minutes=_LLP_CRON_LOCK_WINDOW_MIN)) <= now < commence
+                )
+                after_close = bool(commence and now >= commence)
+                for market_key in _llp_event_market_keys(ev):
+                    for side, american, point, book in _llp_iter_event_selections(ev, market_key):
+                        mkey  = (sport_key, game_key, market_key, side.lower())
+                        kinds = kinds_map.setdefault(mkey, set())
+
+                        if "first_seen" not in kinds:
+                            _llp_snap_insert(conn, sport_key, game_key, away, home,
+                                             market_key, side, american, point, book, "first_seen")
+                            rows += 1
+                            kinds.add("first_seen")
+
+                        latest = latest_map.get(mkey)
+                        if latest is None or latest[0] != american or latest[1] != point:
+                            _llp_snap_insert(conn, sport_key, game_key, away, home,
+                                             market_key, side, american, point, book, "current")
+                            rows += 1
+                            latest_map[mkey] = (american, point)
+
+                        if within_lock and "lock_line" not in kinds:
+                            _llp_snap_insert(conn, sport_key, game_key, away, home,
+                                             market_key, side, american, point, book, "lock_line")
+                            rows += 1
+                            kinds.add("lock_line")
+
+                        if after_close and "close_line" not in kinds:
+                            _llp_snap_insert(conn, sport_key, game_key, away, home,
+                                             market_key, side, american, point, book, "close_line")
+                            rows += 1
+                            kinds.add("close_line")
+                            opening = _llp_earliest_snapshot_conn(
+                                conn, sport_key, game_key, market_key, side, board_date)
+                            if opening is not None:
+                                if _llp_write_clv_log(conn, sport_key, game_key, market_key,
+                                                      side, opening, american):
+                                    clv_rows += 1
+        conn.commit()
+        _LLP_CRON_STATS["last_error"] = None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _LLP_CRON_STATS["last_error"] = f"tick: {e}"
+    finally:
+        if got_lock:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (_LLP_CRON_ADVISORY_KEY,))
+                conn.commit()
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+    _LLP_CRON_STATS["ticks"]       += 1
+    _LLP_CRON_STATS["rows_written"] += rows
+    _LLP_CRON_STATS["clv_rows"]    += clv_rows
+    _LLP_CRON_STATS["last_tick"]    = datetime.now(timezone.utc).isoformat()
+    _LLP_CRON_STATS["last_sports"]  = touched
+
+
+def _llp_snapshot_cron_loop():
+    time.sleep(10)  # let the app finish binding before the first poll
+    while True:
+        try:
+            _llp_snapshot_tick()
+        except Exception as e:
+            _LLP_CRON_STATS["last_error"] = f"loop: {e}"
+        time.sleep(_LLP_CRON_INTERVAL_SEC)
+
+
+def _llp_start_snapshot_cron():
+    """Start the daemon poller once. No-op if disabled or already running."""
+    global _LLP_CRON_STARTED
+    if not _LLP_CRON_ENABLED:
+        return
+    with _LLP_CRON_LOCK:
+        if _LLP_CRON_STARTED:
+            return
+        threading.Thread(target=_llp_snapshot_cron_loop, daemon=True,
+                         name="llp-odds-snapshot-cron").start()
+        _LLP_CRON_STARTED = True
+
+
+@app.route("/llp/snapshot-cron/status", methods=["GET"])
+def _llp_snapshot_cron_status():
+    return jsonify({
+        "ok": True,
+        "enabled": _LLP_CRON_ENABLED,
+        "started": _LLP_CRON_STARTED,
+        "interval_sec": _LLP_CRON_INTERVAL_SEC,
+        "lock_window_min": _LLP_CRON_LOCK_WINDOW_MIN,
+        "stats": _LLP_CRON_STATS,
+    })
+
+
+# Start the cron at import so it runs under both `python app.py` (dev) and
+# gunicorn (prod). Daemon thread → no shutdown coordination needed.
+_llp_start_snapshot_cron()
 
 
 if __name__ == "__main__":

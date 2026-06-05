@@ -182,7 +182,7 @@ writes are best-effort — a persistence failure never breaks analysis.
 |------|-------------|--------|
 | 1 | Canonical game-context object | Built internally in analyze path |
 | 2 | Line-tracking tables (`odds_snapshots` + first-seen helper) | **LIVE** |
-| 3 | Odds-snapshot background cron (first_seen / current / lock / close + CLV) | **PENDING — next** |
+| 3 | Odds-snapshot background cron (first_seen / current / lock / close + CLV) | **LIVE** (in-process daemon; see §11) |
 | 4 | Starter/lineup + injury verification (MLB Stats + ESPN fetchers) | **LIVE** |
 | 5 | F5 MLB markets | **LIVE, deployed** |
 | 6 | OpenAI structured reconciliation | **PENDING** |
@@ -190,6 +190,45 @@ writes are best-effort — a persistence failure never breaks analysis.
 | 8 | Hard approval gates (`canApproveLLPBet`) | Ceiling enforced; thin wrapper PENDING |
 | 9 | Final-card output rules | Orchestrator layer, not in this backend |
 | 10 | OpenAI web-search fallback | **PENDING** |
+
+---
+
+## 11. Odds-snapshot cron — Step 3, LIVE
+
+In-process daemon thread (no external scheduler), started at import so it runs
+under both `python app.py` (dev) and gunicorn (prod). Polls The Odds API for
+every sport in the sport map each interval and persists line snapshots.
+
+**Snapshot kinds** (column `odds_snapshots.snapshot_kind`):
+
+| kind | when written | cardinality |
+|------|--------------|-------------|
+| `first_seen` | first observation of a (game, market, side) today | once/day |
+| `current` | every tick **only if** american odds OR point changed vs the last row (change-detection bounds row growth) | many |
+| `lock_line` | inside the lock window `[commence − LOCK_WINDOW_MIN, commence)` | once |
+| `close_line` | first tick at/after `commence_time`; also triggers a CLV write | once |
+
+**Per-side selection:** best (most favourable) American price across all books
+is recorded each time, with the originating `book`.
+
+**CLV:** on `close_line`, opens vs close are graded via the today's earliest
+snapshot anchor and a row is written to `clv_log` (`opening_line`,
+`closing_line`, `clv_delta` in implied-prob points, `clv_grade` ∈
+{STRONG≥0.03, MEDIUM≥0.015, SMALL≥0.005, FLAT}, `clv_beat` = line moved toward
+the side). `bet_line` is NULL — the cron tracks **market movement**, not a placed
+bet (per-bet CLV stays in the analyze path via `opening_lines`).
+
+**Env flags:**
+- `LLP_SNAPSHOT_INTERVAL_SEC` (default 300)
+- `LLP_LOCK_WINDOW_MIN` (default 15)
+- `LLP_DISABLE_SNAPSHOT_CRON=1` to turn the cron off entirely
+
+**Observability:** `GET /llp/snapshot-cron/status` →
+`{enabled, started, interval_sec, lock_window_min, stats:{ticks, rows_written,
+clv_rows, last_tick, last_error, last_sports}}`.
+
+**API cost:** the cron reuses `_llp_fetch_odds`, so polls within the 120s odds
+cache TTL are free; net new spend is one refresh per sport per interval.
 
 ---
 

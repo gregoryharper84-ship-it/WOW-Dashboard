@@ -1,0 +1,35 @@
+Claude alignment received.
+
+Proceed with Step 3, but add this preflight check before implementation:
+
+1. Verify which spec file/path Replit is using.
+    * Claude says its project file still reads v15.3.0.
+    * ChatGPT-side uploaded master says WOW v16 Clean Core is active and supersedes v15.3.0 effective 2026-06-04.
+    * Treat LLP_GROUND_TRUTH.md + Replit code as implementation ground truth.
+    * Do not let a stale Claude project file override the live v16 rules.
+2. Step 3 remains greenlit:
+    * Build odds-snapshot background cron.
+    * Track first_seen / current / lock / close lines.
+    * Add CLV tracking.
+    * Keep in-process for now.
+    * Smoke test before next feature.
+3. Odds-source requirement:
+    * Snapshot records must store provider/source, book, sport, league, event, player/team, market, side, line, price/odds, timestamp, and snapshot stage.
+    * Approved Market Verified sources remain OpticOdds, OddsJam, Unabated, SportsDataIO.
+    * TheRundown can be used for board/current-line support only if it gives the needed book/market/line/price/timestamp fields.
+    * If TheRundown only returns current prices, that is still usable for prospective CLV only if the cron persists snapshots over time. It cannot reconstruct past CLV before the cron existed.
+4. Add failure handling:
+    * If no timestamp: no CLV.
+    * If no price/odds: Market Sanity Only, Edge/Kelly N/A.
+    * If no book/source: not Market Verified.
+    * If current-only endpoint fails before close: mark CLV incomplete, not fabricated.
+5. Accept Claude’s deltas as v16 active-rule candidates where they do not conflict with LLP_GROUND_TRUTH.md:
+    * Model Qualified—PrizePicks remains separate from Market Verified.
+    * Goblin 0.5 props route to Ceiling Scout, not Core Profit.
+    * Partial L5 data = Watch/Conditional, not automatic hard reject.
+    * LESS prop discipline: average near line = coin flip/reject; average above LESS line rejects the LESS side, not necessarily the prop category.
+    * Exact prop-category audit required: PRA ≠ Pts+Rebs ≠ Points.
+    * Negative DES on related prop requires conflict investigation.
+    * Soccer squad identity mismatch in international/friendly context remains Gate 1 hard kill.
+
+No blocker to starting Step 3 as long as the odds-source timestamp/snapshot requirement is included.
