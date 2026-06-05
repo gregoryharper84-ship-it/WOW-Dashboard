@@ -6,8 +6,19 @@ external Claude thread cannot see the code — they plan against memory and drif
 This pins the *actual shipped reality* so all three agents share one source of
 truth. **The code is the source of truth; this doc is a snapshot of it.**
 
-_Snapshot of: `artifacts/flask-scoring-api/app.py` (~11,300 lines). Production:
+_Snapshot of: `artifacts/flask-scoring-api/app.py` (~11,600 lines). Production:
 `create-app-gregoryharper84.replit.app`._
+
+**Active spec: WOW v16 Clean Core** (effective 2026-06-04, supersedes v15.3.0).
+If a planning thread's project file still reads v15.3.0 (e.g. a stale Claude
+project file), it is **out of date** — this doc + the shipped code are the
+implementation ground truth and override it. Accepted v16 delta-candidates that
+do not conflict with this doc stand (PrizePicks stays Model-Qualified, separate
+from Market-Verified; Goblin 0.5 props route to Ceiling Scout not Core Profit;
+partial L5 → Watch/Conditional not auto-reject; LESS discipline on average vs
+line; exact prop-category audit PRA ≠ Pts+Rebs ≠ Points; negative DES on a
+related prop triggers conflict investigation; soccer squad-identity mismatch in
+international/friendly stays Gate 1 hard kill).
 
 ---
 
@@ -211,12 +222,33 @@ every sport in the sport map each interval and persists line snapshots.
 **Per-side selection:** best (most favourable) American price across all books
 is recorded each time, with the originating `book`.
 
+**Snapshot field contract** (every cron row in `odds_snapshots` carries the full
+verified-data record): `source` (provider, `the-odds-api`), `book`, `sport`
+(API sport_key, e.g. `basketball_nba`), `league` (title, e.g. `NBA`), `event_id`
+(provider event id), `game_key` + `away_team`/`home_team` (event), `player`
+(NULL for team markets), `market`, `side`, `point` (line), `american_odds`
+(price), `fetched_at` (timestamp), `snapshot_kind` (stage). Outcomes with no
+price are skipped (no-price ⇒ no row). Analyze-path persisted rows may leave
+`league`/`event_id`/`player` NULL; cron rows always populate them.
+
+**Approved Market-Verified sources** stay OpticOdds / OddsJam / Unabated /
+SportsDataIO. TheRundown is board/current-line support only; a current-only feed
+yields **prospective** CLV only — the cron cannot reconstruct CLV from before it
+started.
+
 **CLV:** on `close_line`, opens vs close are graded via the today's earliest
 snapshot anchor and a row is written to `clv_log` (`opening_line`,
 `closing_line`, `clv_delta` in implied-prob points, `clv_grade` ∈
 {STRONG≥0.03, MEDIUM≥0.015, SMALL≥0.005, FLAT}, `clv_beat` = line moved toward
 the side). `bet_line` is NULL — the cron tracks **market movement**, not a placed
 bet (per-bet CLV stays in the analyze path via `opening_lines`).
+
+**CLV failure handling (never fabricated):** if a `close_line` is captured but
+there is no opening anchor (feed started after the market opened), the cron
+writes an explicit `clv_grade='INCOMPLETE'` row with `opening_line`, `clv_delta`
+and `clv_beat` all NULL — incompleteness is recorded, never back-filled. No
+timestamp ⇒ no CLV; no price ⇒ Market-Sanity-only (Edge/Kelly N/A) in the
+analyze path; no book/source ⇒ not Market-Verified.
 
 **Env flags:**
 - `LLP_SNAPSHOT_INTERVAL_SEC` (default 300)

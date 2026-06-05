@@ -26,10 +26,21 @@ one-time records, duplicate derived rows (e.g. CLV).
 - This makes cross-worker check-then-insert safe without needing partial unique
   indexes. The same pattern protects any future in-process scheduler here.
 
-**Two more cron gotchas hit on the odds-snapshot cron (Step 3):**
+**More cron gotchas hit on the odds-snapshot cron (Step 3):**
 - A CLV/derived-row computed at the end of a tick must read its anchor on the
   **same connection** as the inserts it depends on — a second connection can't
   see the current tick's uncommitted rows, so it silently drops the derived row.
 - Parse int env vars (intervals, windows) through a try/except fallback; a bad
   env value in a module-level `int(os.environ[...])` crashes app startup, which
   violates the "background work must never block startup" rule.
+- **Opening-anchor fabrication trap:** when you derive an "opening" line from a
+  same-day snapshot table AND insert the "close" row in the same pass, an
+  earliest-row-today query will return the close row you just wrote when no real
+  prior history exists → a fabricated FLAT/zero CLV. Gate on whether genuine
+  prior-tick history existed (e.g. `bool(preloaded_kinds_for_this_market)`
+  captured *before* mutating it). If none, write an explicit `INCOMPLETE` CLV
+  row (opening/delta/beat NULL) rather than grading. **Why:** "feed started after
+  the market opened" must be recorded as incomplete, never back-filled into a
+  real beat. Note the analyze path also writes `odds_snapshots` rows with
+  `snapshot_kind='current'` and no `first_seen`, so gate on *any* prior kind, not
+  only `first_seen`.

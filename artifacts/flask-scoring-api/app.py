@@ -10141,9 +10141,12 @@ def _ensure_llp_pro_schema(conn):
                     id            BIGSERIAL PRIMARY KEY,
                     fetched_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     sport         TEXT NOT NULL,
+                    league        TEXT,
+                    event_id      TEXT,
                     game_key      TEXT NOT NULL,
                     away_team     TEXT,
                     home_team     TEXT,
+                    player        TEXT,
                     market        TEXT NOT NULL,
                     book          TEXT,
                     side          TEXT,
@@ -10152,6 +10155,10 @@ def _ensure_llp_pro_schema(conn):
                     snapshot_kind TEXT NOT NULL DEFAULT 'current',
                     source        TEXT NOT NULL DEFAULT 'the-odds-api'
                 );
+                -- Backfill columns on tables created before the full field contract.
+                ALTER TABLE odds_snapshots ADD COLUMN IF NOT EXISTS league   TEXT;
+                ALTER TABLE odds_snapshots ADD COLUMN IF NOT EXISTS event_id TEXT;
+                ALTER TABLE odds_snapshots ADD COLUMN IF NOT EXISTS player   TEXT;
                 CREATE INDEX IF NOT EXISTS odds_snapshots_game_idx
                     ON odds_snapshots (sport, game_key, market, fetched_at DESC);
 
@@ -11403,16 +11410,20 @@ def _llp_earliest_snapshot_conn(conn, sport, game_key, market, side, board_date)
 
 
 def _llp_snap_insert(conn, sport, game_key, away, home, market, side,
-                     american, point, book, kind):
-    """Insert one odds_snapshots row with an explicit snapshot_kind."""
+                     american, point, book, kind,
+                     league=None, event_id=None, player=None):
+    """Insert one odds_snapshots row with an explicit snapshot_kind. Records the
+    full verified-data field contract: provider/source, book, sport, league,
+    event, player/team, market, side, line (point), price (american_odds),
+    timestamp (fetched_at default), and snapshot stage (snapshot_kind)."""
     with conn.cursor() as cur:
         cur.execute("""
             INSERT INTO odds_snapshots
-              (sport, game_key, away_team, home_team, market, book, side,
-               american_odds, point, snapshot_kind, source)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        """, (sport, game_key, away, home, market, book, side,
-              american, point, kind, "the-odds-api"))
+              (sport, league, event_id, game_key, away_team, home_team, player,
+               market, book, side, american_odds, point, snapshot_kind, source)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (sport, league, event_id, game_key, away, home, player,
+              market, book, side, american, point, kind, "the-odds-api"))
 
 
 def _llp_grade_clv(open_american, close_american):
@@ -11448,6 +11459,25 @@ def _llp_write_clv_log(conn, sport, game_key, market, side,
             """, (sport, game_key, market, side,
                   opening_american, None, closing_american,
                   delta, grade, beat))
+        return True
+    except Exception:
+        return False
+
+
+def _llp_write_clv_incomplete(conn, sport, game_key, market, side, closing_american):
+    """Record an explicit INCOMPLETE CLV row when a close line is captured but no
+    opening anchor exists (current-only feed started after this market opened).
+    CLV is marked incomplete, never fabricated: opening_line/clv_delta stay NULL
+    and clv_beat is NULL so downstream cannot read it as a real beat."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO clv_log
+                  (sport, game_key, market, side, opening_line, bet_line,
+                   closing_line, clv_delta, clv_grade, clv_beat)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (sport, game_key, market, side,
+                  None, None, closing_american, None, "INCOMPLETE", None))
         return True
     except Exception:
         return False
@@ -11491,6 +11521,8 @@ def _llp_snapshot_tick():
                 if not away or not home:
                     continue
                 game_key = f"{_llp_norm_team(away)}@{_llp_norm_team(home)}"
+                league   = ev.get("sport_title") or sport_key
+                event_id = ev.get("id")
                 commence = _llp_parse_commence(ev.get("commence_time"))
                 within_lock = bool(
                     commence
@@ -11501,36 +11533,57 @@ def _llp_snapshot_tick():
                     for side, american, point, book in _llp_iter_event_selections(ev, market_key):
                         mkey  = (sport_key, game_key, market_key, side.lower())
                         kinds = kinds_map.setdefault(mkey, set())
+                        # Genuine pre-close history exists only if a PRIOR tick (or
+                        # the analyze path, which writes 'current' rows) already
+                        # recorded ANY snapshot for this market today — the preload
+                        # reflects only committed rows. Captured before we mutate
+                        # `kinds` below so the same-tick close can't pose as the open.
+                        had_prior_history = bool(kinds)
 
                         if "first_seen" not in kinds:
                             _llp_snap_insert(conn, sport_key, game_key, away, home,
-                                             market_key, side, american, point, book, "first_seen")
+                                             market_key, side, american, point, book, "first_seen",
+                                             league=league, event_id=event_id)
                             rows += 1
                             kinds.add("first_seen")
 
                         latest = latest_map.get(mkey)
                         if latest is None or latest[0] != american or latest[1] != point:
                             _llp_snap_insert(conn, sport_key, game_key, away, home,
-                                             market_key, side, american, point, book, "current")
+                                             market_key, side, american, point, book, "current",
+                                             league=league, event_id=event_id)
                             rows += 1
                             latest_map[mkey] = (american, point)
 
                         if within_lock and "lock_line" not in kinds:
                             _llp_snap_insert(conn, sport_key, game_key, away, home,
-                                             market_key, side, american, point, book, "lock_line")
+                                             market_key, side, american, point, book, "lock_line",
+                                             league=league, event_id=event_id)
                             rows += 1
                             kinds.add("lock_line")
 
                         if after_close and "close_line" not in kinds:
                             _llp_snap_insert(conn, sport_key, game_key, away, home,
-                                             market_key, side, american, point, book, "close_line")
+                                             market_key, side, american, point, book, "close_line",
+                                             league=league, event_id=event_id)
                             rows += 1
                             kinds.add("close_line")
-                            opening = _llp_earliest_snapshot_conn(
+                            # Only trust an opening anchor when a prior tick saw
+                            # this market — otherwise the just-inserted close row
+                            # would masquerade as the open and fabricate a FLAT CLV.
+                            opening = (_llp_earliest_snapshot_conn(
                                 conn, sport_key, game_key, market_key, side, board_date)
+                                if had_prior_history else None)
                             if opening is not None:
                                 if _llp_write_clv_log(conn, sport_key, game_key, market_key,
                                                       side, opening, american):
+                                    clv_rows += 1
+                            else:
+                                # No genuine pre-close history (feed started after
+                                # this market opened) → mark CLV incomplete, never
+                                # fabricate an opening anchor.
+                                if _llp_write_clv_incomplete(conn, sport_key, game_key,
+                                                             market_key, side, american):
                                     clv_rows += 1
         conn.commit()
         _LLP_CRON_STATS["last_error"] = None
