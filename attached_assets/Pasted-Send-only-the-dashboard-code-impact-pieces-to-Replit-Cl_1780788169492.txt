@@ -1,0 +1,240 @@
+Send **only the dashboard/code-impact pieces** to Replit. Claude/spec gets the wording, but Replit needs implementation instructions.
+
+## Send this to Replit
+
+```txt
+Implement these WOW v16 Clean Core Replit patches in app.py.
+
+DEPLOYMENT ORDER:
+1. WOW-PATCH-2026-06-06-REPLIT-PROVENANCE-LABEL
+2. WOW-PATCH-2026-06-06-REPLIT-INPUT-NORMALIZATION
+3. WOW-PATCH-2026-06-06-BBREF-FETCH-FAILURE-FLAG
+```
+
+## 1. Replit Provenance Label
+
+**Endpoint affected:** `/wow/l10/v2`
+
+Add a new response field:
+
+```python
+data_quality
+```
+
+Allowed values:
+
+```txt
+Verified
+Manually Reconstructed
+Proxy Only
+Missing
+```
+
+Logic:
+
+```python
+TIER1_SOURCES = [
+    "stats.nba.com", "statsapi.mlb.com", "site.api.espn.com"
+]
+
+MANUAL_RECONSTRUCT_SOURCES = [
+    "baseball-reference.com", "bbref", "pd.read_html"
+]
+
+PROXY_SOURCES = [
+    "espn narrative", "rotowire header", "fox sports header",
+    "season average only"
+]
+
+if rows == 0 or not complete:
+    data_quality = "Missing"
+elif any(t in source.lower() for t in TIER1_SOURCES):
+    data_quality = "Verified"
+elif any(m in source.lower() for m in MANUAL_RECONSTRUCT_SOURCES):
+    data_quality = "Manually Reconstructed"
+elif any(p in source.lower() for p in PROXY_SOURCES):
+    data_quality = "Proxy Only"
+else:
+    data_quality = "Manually Reconstructed"
+
+response["data_quality"] = data_quality
+```
+
+Important: keep existing `confidence_tier`. This patch adds `data_quality`; it does not replace `confidence_tier`. 
+
+---
+
+## 2. Replit Input Normalization
+
+**Endpoint affected:** `/wow/l10/v2`
+
+Add input normalization before dispatch.
+
+Required additions:
+
+```python
+PROP_ALIASES = {
+    "points": "Points",
+    "rebounds": "Rebounds",
+    "assists": "Assists",
+    "pra": "Pts+Reb+Ast",
+    "strikeouts": "Strikeouts",
+    "hits": "Hits",
+}
+
+SPORT_ALIASES = {
+    "nba": "nba",
+    "wnba": "wnba",
+    "nhl": "nhl",
+    "nfl": "nfl",
+    "soccer": "soccer",
+    "tennis": "tennis",
+}
+```
+
+Normalize prop:
+
+```python
+normalized_prop = PROP_ALIASES.get(prop.lower(), prop.title())
+```
+
+Normalize MLB sport routing:
+
+```python
+prop_type_hint = request.args.get("prop_type", "batter")
+
+if sport.lower() == "mlb":
+    normalized_sport = (
+        "mlb_pitcher" if prop_type_hint == "pitcher"
+        else "mlb_batter"
+    )
+else:
+    normalized_sport = SPORT_ALIASES.get(sport.lower(), sport)
+```
+
+Add always-present field:
+
+```python
+normalization_log
+```
+
+Add on rejected responses:
+
+```python
+reject_reason
+```
+
+Allowed `reject_reason` values:
+
+```txt
+INPUT_FORMAT_ERROR
+FETCH_FAILED
+INSUFFICIENT_DATA
+```
+
+Rule:
+
+```txt
+INPUT_FORMAT_ERROR = validation failed before fetch
+FETCH_FAILED = valid input, source errored/timed out
+INSUFFICIENT_DATA = fetch succeeded but returned too few rows
+```
+
+This prevents bad input from looking like a real data gap. 
+
+---
+
+## 3. Replit Health Endpoint
+
+**New endpoint:** `/wow/health`
+
+Purpose: return sport-specific Replit availability instead of only binary UP/DOWN.
+
+Add:
+
+```python
+@app.route("/wow/health", methods=["GET"])
+def wow_health():
+    results = {}
+
+    try:
+        # minimal nba_api probe
+        results["nba"] = "Available"
+    except Exception as e:
+        results["nba"] = f"Degraded — {str(e)[:60]}"
+
+    try:
+        r = _req.get("https://statsapi.mlb.com/api/v1/sports", timeout=5)
+        results["mlb_pitcher"] = "Available" if r.ok else "Degraded"
+    except Exception as e:
+        results["mlb_pitcher"] = f"Degraded — {str(e)[:60]}"
+
+    try:
+        r = _req.get(
+            "https://www.baseball-reference.com/robots.txt",
+            timeout=5
+        )
+        results["mlb_batter"] = "Available" if r.ok else "Degraded"
+    except Exception as e:
+        results["mlb_batter"] = f"Degraded — {str(e)[:60]}"
+
+    try:
+        r = _req.get(
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard",
+            timeout=5
+        )
+        results["wnba"] = "Available" if r.ok else "Degraded"
+    except Exception as e:
+        results["wnba"] = f"Degraded — {str(e)[:60]}"
+
+    results["cs2"] = "Manual Only — permanent"
+
+    overall = "UP" if all(
+        v == "Available" for k, v in results.items()
+        if k != "cs2"
+    ) else "PARTIAL"
+
+    return jsonify({"status": overall, "sports": results})
+```
+
+This makes Replit report `PARTIAL` when NBA works but BBRef/WNBA/MLB batter paths are degraded. 
+
+---
+
+## Smoke tests Replit should run
+
+```txt
+GET /wow/l10/v2?player=LeBron+James&sport=nba&prop=points&line=25.5&side=MORE
+```
+
+Expected:
+
+```txt
+normalization_log includes: prop: 'points' → 'Points'
+data_quality: Verified
+reject_reason: absent
+```
+
+```txt
+GET /wow/l10/v2?player=LeBron+James&sport=nba&prop=xyzstat&line=25.5&side=MORE
+```
+
+Expected:
+
+```txt
+reject_reason: INPUT_FORMAT_ERROR
+data_quality: Missing
+```
+
+```txt
+GET /wow/health
+```
+
+Expected:
+
+```txt
+status: UP or PARTIAL
+sports block includes nba, mlb_pitcher, mlb_batter, wnba, cs2
+```
+
+**Bottom line:** Replit needs the three code changes: `data_quality`, `normalization_log/reject_reason`, and `/wow/health`. Claude gets the spec language; Replit gets the implementation.

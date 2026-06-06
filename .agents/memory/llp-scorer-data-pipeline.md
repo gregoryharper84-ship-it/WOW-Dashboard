@@ -19,5 +19,14 @@ description: What the WOW scorer (/wow/l10/v2) and scanner (/wow-daily-scan) act
 - baseball-reference.com does NOT respond to this server → MLB-batter AND WNBA (both bbref-backed) return REJECT with a fetch-failed `gap`. So anything not on nba_api/statsapi is effectively manual-or-REJECT.
 - **The engine never fabricates**: missing data → `rows:0` + `REJECT — INSUFFICIENT DATA` + `gap` + source still labeled; scanner → `scan_valid:false`/`missing_sports`. Fail-honest.
 
-## Spec delta to remember
-`confidence_tier` labels *completeness* (FINAL LOCK ELIGIBLE / CONDITIONAL — L5 ONLY / WATCH / RESEARCH ONLY / REJECT — INSUFFICIENT DATA), NOT the spec's 4-way *provenance* taxonomy (Verified / Manually Reconstructed / Proxy Only / Missing). Provenance only lives on the scanner's `source_access_status`, not on the per-prop scorer.
+## Provenance + normalization (added to /wow/l10/v2)
+`confidence_tier` still labels *completeness* (FINAL LOCK ELIGIBLE / CONDITIONAL — L5 ONLY / WATCH / RESEARCH ONLY / REJECT — INSUFFICIENT DATA). The per-prop scorer now ALSO returns:
+- `data_quality` — 4-way provenance (Verified / Manually Reconstructed / Proxy Only / Missing) derived from `source`+`complete`. Additive; does NOT replace `confidence_tier`.
+- `normalization_log` — always present; loose inputs are mapped to real column-map keys before dispatch (`points`→`Points`, `sport=mlb`+`hits`→`mlb_batter`+`Hitter Hits`). On cache hits the log reflects the CURRENT request, not the first cacher.
+- `reject_reason` on REJECTs — INPUT_FORMAT_ERROR (bad prop/sport/player identifier) / FETCH_FAILED (source unreachable, tooling missing, Cloudflare/manual) / INSUFFICIENT_DATA (fetch ran, too few rows). Classified from the `gap` string; identifier errors checked before the source-unreachable bucket.
+
+New route `GET /wow/health` (no auth) probes each sport source → per-sport Available/Degraded + overall UP/PARTIAL; cs2 is "Manual Only — permanent" and excluded from the overall calc.
+
+## Fail-soft rule for external fetchers
+**Why:** statsapi/ESPN can return HTTP 200 with an unexpected JSON shape (list/scalar nesting, schema drift). Guarding only the HTTP call is not enough — the *payload traversal* can still raise and bubble out of `_llp_analyze_one` as a 500.
+**How to apply:** every LLP context fetcher must (a) bound its HTTP timeout, (b) `isinstance`-guard each nested container before `.get`, and (c) wrap the whole traversal in a try/except that returns the unverified shell. Acceptance for any new fetcher: feed it malformed-but-200 shapes and confirm it never raises.

@@ -7024,48 +7024,178 @@ def _score_one_prop_v2(*, player, sport, prop, direction, line,
     return None, f"Unknown sport '{sport}'"
 
 
+# ── /wow/l10/v2 patches: provenance label + input normalization ──
+# PATCH 1 — data_quality (provenance label). Derived from `source` +
+# `complete`; ADDS a field, never replaces `confidence_tier`.
+_V2_TIER1_SOURCES  = ("stats.nba.com", "statsapi.mlb.com", "site.api.espn.com")
+_V2_MANUAL_SOURCES = ("baseball-reference.com", "bbref", "pd.read_html")
+_V2_PROXY_SOURCES  = ("espn narrative", "rotowire", "fox sports", "season average")
+
+def _v2_data_quality(source, rows, complete):
+    """PATCH 1: map the data source + completeness to a provenance label
+    (Verified / Manually Reconstructed / Proxy Only / Missing)."""
+    if not rows or not complete:
+        return "Missing"
+    s = (source or "").lower()
+    if any(t in s for t in _V2_TIER1_SOURCES):
+        return "Verified"
+    if any(m in s for m in _V2_MANUAL_SOURCES):
+        return "Manually Reconstructed"
+    if any(p in s for p in _V2_PROXY_SOURCES):
+        return "Proxy Only"
+    return "Manually Reconstructed"
+
+# PATCH 3 — input normalization. Canonical keys already accepted by the
+# sport handlers are passed through untouched; loose inputs are mapped to a
+# real column-map key so bad input can't masquerade as a data gap.
+_V2_ALL_PROP_KEYS = (set(_NBA_COLS) | set(_MLB_COLS) | set(_CS2_COLS)
+                     | set(_TENNIS_COLS)
+                     | {"Pitcher Fantasy Score", "1st Inn. Pitches Thrown"})
+
+_V2_PROP_ALIASES = {
+    "points": "Points", "rebounds": "Rebounds", "assists": "Assists",
+    "steals": "Steals", "blocks": "Blocks",
+    "3pm": "3-PT Made", "threes": "3-PT Made", "3-pt made": "3-PT Made",
+    "pra": "Pts+Rebs+Asts", "pts+reb+ast": "Pts+Rebs+Asts",
+    "pr": "Pts+Rebs", "pa": "Pts+Asts", "ra": "Rebs+Asts",
+    "total bases": "Total Bases", "rbis": "RBIs", "runs scored": "Runs Scored",
+    "h+r+rbi": "H+R+RBI",
+    "hits": "Hitter Hits", "hitter hits": "Hitter Hits",
+    "hitter strikeouts": "Hitter Strikeouts",
+    "strikeouts": "Pitcher Strikeouts", "pitcher strikeouts": "Pitcher Strikeouts",
+    "hits allowed": "Hits Allowed", "earned runs": "Earned Runs",
+    "walks allowed": "Walks Allowed",
+    "kills": "Kills", "headshots": "Headshots", "rating": "Rating",
+    "aces": "Aces", "double faults": "Double Faults", "1st serve %": "1st Serve %",
+}
+
+_V2_SPORT_ALIASES = {
+    "nba": "nba", "wnba": "wnba", "nfl": "nfl", "tennis": "tennis",
+    "cs2": "cs2", "csgo": "cs2", "counter-strike": "cs2", "cs": "cs2",
+}
+
+def _v2_normalize_inputs(raw_sport, raw_prop, prop_type_hint):
+    """PATCH 3: convert loose sport/prop inputs to canonical dispatch keys
+    before scoring. Returns (sport, prop, normalization_log)."""
+    log  = []
+    s_in = (raw_sport or "").strip().lower()
+    p_in = (raw_prop or "").strip()
+
+    if s_in == "mlb":
+        if prop_type_hint == "pitcher":
+            sport = "mlb_pitcher"
+        elif prop_type_hint == "batter":
+            sport = "mlb_batter"
+        else:
+            pl = p_in.lower()
+            sport = ("mlb_pitcher"
+                     if (pl in _MLB_PITCHER_PROPS or "pitcher" in pl)
+                     else "mlb_batter")
+        log.append(f"sport: 'mlb' → '{sport}'")
+    else:
+        sport = _V2_SPORT_ALIASES.get(s_in, s_in)
+        if sport != s_in:
+            log.append(f"sport: '{s_in}' → '{sport}'")
+
+    if p_in in _V2_ALL_PROP_KEYS:
+        prop = p_in
+    else:
+        alias = _V2_PROP_ALIASES.get(p_in.lower())
+        if alias:
+            prop = alias
+            log.append(f"prop: '{p_in}' → '{prop}'")
+        else:
+            prop = p_in.title()
+            if prop != p_in:
+                log.append(f"prop: '{p_in}' → '{prop}'")
+    return sport, prop, log
+
+def _v2_reject_reason(gap, rows, complete):
+    """PATCH 3: classify a REJECT so bad input is distinguishable from a
+    real data gap (INPUT_FORMAT_ERROR / FETCH_FAILED / INSUFFICIENT_DATA).
+    Order matters: caller-fixable input/identifier errors are checked before
+    the broader source-unreachable bucket."""
+    g = (gap or "").lower()
+    # Bad/unknown inputs or unresolvable player identifiers — caller-fixable.
+    if ("column map" in g or "not mapped" in g or "not in " in g
+            or "needs hltv_id" in g or "unknown sport" in g
+            or "required" in g or "must be" in g
+            or "id may be wrong" in g or "static list" in g
+            or "verify name" in g
+            or ("player" in g and "not found" in g)):
+        return "INPUT_FORMAT_ERROR"
+    # Source unreachable / tooling missing / parse failure — not the caller.
+    if ("fetch" in g or "http" in g or "exception" in g or "timeout" in g
+            or "cloudflare" in g or "manual entry" in g or "not installed" in g
+            or "no data" in g or "not found" in g or "table" in g
+            or "page structure" in g or "parse" in g):
+        return "FETCH_FAILED"
+    return "INSUFFICIENT_DATA"
+
+
 # ── /wow/l10/v2 main route ───────────────────────────────────
 @app.route("/wow/l10/v2", methods=["GET"])
 def wow_l10_v2():
     player    = request.args.get("player",    "").strip()
-    sport     = request.args.get("sport",     "").strip().lower()
-    prop      = request.args.get("prop",      "").strip()
+    raw_sport = request.args.get("sport",     "").strip()
+    raw_prop  = request.args.get("prop",      "").strip()
     direction = request.args.get("direction", "MORE").strip().upper()
     line      = request.args.get("line",      type=float)
     season    = request.args.get("season",    "2025-26")
     mlb_ssn   = request.args.get("mlb_season","2026")
     year      = request.args.get("year",      "2026")
     hltv_id   = request.args.get("hltv_id",   type=int)
+    prop_type = request.args.get("prop_type", "").strip().lower()
     nocache   = request.args.get("nocache",   "0") == "1"
+
+    # PATCH 3 — normalize loose inputs before validation/dispatch.
+    sport, prop, normalization_log = _v2_normalize_inputs(raw_sport, raw_prop, prop_type)
 
     if not all([player, sport, prop]) or line is None:
         return jsonify({"ok": False,
-                        "error": "player, sport, prop, line all required"}), 400
+                        "error": "player, sport, prop, line all required",
+                        "reject_reason": "INPUT_FORMAT_ERROR",
+                        "data_quality": "Missing",
+                        "normalization_log": normalization_log}), 400
     if direction not in ("MORE","LESS"):
         return jsonify({"ok": False,
-                        "error": "direction must be MORE or LESS"}), 400
+                        "error": "direction must be MORE or LESS",
+                        "reject_reason": "INPUT_FORMAT_ERROR",
+                        "data_quality": "Missing",
+                        "normalization_log": normalization_log}), 400
 
     ck = f"v2|{player}|{sport}|{prop}|{line}|{direction}|{season}|{mlb_ssn}|{year}"
     if not nocache:
         hit = _cache_get(_L10V2_CACHE, ck, _L10V2_TTL)
-        if hit: return jsonify({"ok": True, "cached": True, **hit})
+        if hit:
+            # normalization_log is request-specific — reflect THIS request's
+            # normalization, not whichever caller first populated the entry.
+            return jsonify({"ok": True, "cached": True,
+                            **{**hit, "normalization_log": normalization_log}})
 
     data, err = _score_one_prop_v2(
         player=player, sport=sport, prop=prop, direction=direction, line=line,
         season=season, mlb_ssn=mlb_ssn, year=year, hltv_id=hltv_id,
     )
     if err:
-        return jsonify({"ok": False, "error": err}), 400
+        return jsonify({"ok": False, "error": err,
+                        "reject_reason": _v2_reject_reason(err, 0, False),
+                        "data_quality": "Missing",
+                        "normalization_log": normalization_log}), 400
 
+    rows     = data.get("rows", 0)
+    complete = data.get("complete", False)
+    gap      = data.get("gap", "")
+    tier     = _tier(rows, complete)
     resp = {
         "player": player, "sport": sport, "prop": prop,
         "direction": direction, "line": line,
         "pulled_at": datetime.now().strftime("%H:%M:%S"),
         "source":    data.get("source"),
         "formula":   data.get("formula"),
-        "rows":      data.get("rows",0),
-        "complete":  data.get("complete",False),
-        "gap":       data.get("gap",""),
+        "rows":      rows,
+        "complete":  complete,
+        "gap":       gap,
         "games":     data.get("games",[]),
         "l5_avg":    data.get("l5_avg"),
         "l10_avg":   data.get("l10_avg"),
@@ -7073,11 +7203,59 @@ def wow_l10_v2():
         "l5_hit_rate":  data.get("l5_hit_rate"),
         "l10_hit_rate": data.get("l10_hit_rate"),
         "edge":      data.get("edge"),
-        "confidence_tier": _tier(data.get("rows",0), data.get("complete",False)),
+        "confidence_tier": tier,
+        "data_quality": _v2_data_quality(data.get("source"), rows, complete),  # PATCH 1
+        "normalization_log": normalization_log,                                # PATCH 3
     }
-    if data.get("rows",0) >= 3:
+    if tier == "REJECT — INSUFFICIENT DATA":
+        resp["reject_reason"] = _v2_reject_reason(gap, rows, complete)         # PATCH 3
+    if rows >= 3:
         _cache_set(_L10V2_CACHE, ck, resp)
     return jsonify({"ok": True, "cached": False, **resp})
+
+
+# ── PATCH 2 — /wow/health: per-sport data-source probe ───────────
+@app.route("/wow/health", methods=["GET"])
+def wow_health():
+    """Lightweight per-sport probe of each data source. Returns per-sport
+    status plus an overall UP/PARTIAL flag (cs2 is manual-only by design and
+    excluded from the overall calc)."""
+    import requests as _req
+    results = {}
+
+    # NBA — nba_api (stats.nba.com)
+    try:
+        results["nba"] = "Available" if _NBA_OK else "Degraded — nba_api not installed"
+    except Exception as e:
+        results["nba"] = f"Degraded — {str(e)[:60]}"
+
+    # MLB pitcher — MLB Stats API
+    try:
+        r = _req.get("https://statsapi.mlb.com/api/v1/sports", timeout=5)
+        results["mlb_pitcher"] = "Available" if r.ok else f"Degraded — HTTP {r.status_code}"
+    except Exception as e:
+        results["mlb_pitcher"] = f"Degraded — {str(e)[:60]}"
+
+    # MLB batter — baseball-reference
+    try:
+        r = _req.get("https://www.baseball-reference.com/robots.txt", timeout=5)
+        results["mlb_batter"] = "Available" if r.ok else f"Degraded — HTTP {r.status_code}"
+    except Exception as e:
+        results["mlb_batter"] = f"Degraded — {str(e)[:60]}"
+
+    # WNBA — ESPN public JSON
+    try:
+        r = _req.get("https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard",
+                     timeout=5)
+        results["wnba"] = "Available" if r.ok else f"Degraded — HTTP {r.status_code}"
+    except Exception as e:
+        results["wnba"] = f"Degraded — {str(e)[:60]}"
+
+    results["cs2"] = "Manual Only — permanent"
+
+    overall = "UP" if all(v == "Available"
+                          for k, v in results.items() if k != "cs2") else "PARTIAL"
+    return jsonify({"status": overall, "sports": results})
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -10410,56 +10588,72 @@ def _llp_fetch_mlb_lineup_context(away, home, game_date=None):
     if not data:
         _LLP_MLB_CTX_CACHE[cache_key] = (now_ts, base)
         return base
-    an, hn = _llp_norm_team(away), _llp_norm_team(home)
-    for d in (data.get("dates") or []):
-        for g in (d.get("games") or []):
-            teams = g.get("teams") or {}
-            gh = _llp_norm_team(
-                ((teams.get("home") or {}).get("team") or {}).get("name") or "")
-            ga = _llp_norm_team(
-                ((teams.get("away") or {}).get("team") or {}).get("name") or "")
-            if not ((an in ga or ga in an) and (hn in gh or gh in hn)):
+    # Defensive: statsapi can return 200 with an unexpected shape (list/scalar
+    # nesting, schema drift). Any traversal error must fall back to the
+    # unverified shell, never bubble out of _llp_analyze_one (T003: no raise).
+    try:
+        an, hn = _llp_norm_team(away), _llp_norm_team(home)
+        dates = data.get("dates") if isinstance(data, dict) else None
+        for d in (dates or []):
+            if not isinstance(d, dict):
                 continue
-            pp = {}
-            for tk in ("away", "home"):
-                name = ((teams.get(tk) or {}).get("probablePitcher") or {}).get("fullName")
-                if name: pp[tk] = name
-            lineups = g.get("lineups") or {}
-            away_bo = lineups.get("awayPlayers") or []
-            home_bo = lineups.get("homePlayers") or []
-            lineup_size = (min(len(away_bo), len(home_bo))
-                           if (away_bo and home_bo) else 0)
-            starter_ok = bool(pp.get("away") and pp.get("home"))
-            lineup_ok  = lineup_size >= 9
-            out = {
-                "starter_status": "confirmed" if starter_ok else "unverified",
-                "lineup_status":  "confirmed" if lineup_ok  else "unverified",
-                "probable_pitchers":     pp,
-                "confirmed_lineup_size": lineup_size,
-                "source":     "statsapi.mlb.com",
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
-            }
-            _LLP_MLB_CTX_CACHE[cache_key] = (now_ts, out)
-            try:
-                conn = get_db_conn()
+            for g in (d.get("games") or []):
+                if not isinstance(g, dict):
+                    continue
+                teams = g.get("teams") or {}
+                if not isinstance(teams, dict):
+                    teams = {}
+                gh = _llp_norm_team(
+                    ((teams.get("home") or {}).get("team") or {}).get("name") or "")
+                ga = _llp_norm_team(
+                    ((teams.get("away") or {}).get("team") or {}).get("name") or "")
+                if not ((an in ga or ga in an) and (hn in gh or gh in hn)):
+                    continue
+                pp = {}
+                for tk in ("away", "home"):
+                    name = ((teams.get(tk) or {}).get("probablePitcher") or {}).get("fullName")
+                    if name: pp[tk] = name
+                lineups = g.get("lineups") or {}
+                if not isinstance(lineups, dict):
+                    lineups = {}
+                away_bo = lineups.get("awayPlayers") or []
+                home_bo = lineups.get("homePlayers") or []
+                lineup_size = (min(len(away_bo), len(home_bo))
+                               if (away_bo and home_bo) else 0)
+                starter_ok = bool(pp.get("away") and pp.get("home"))
+                lineup_ok  = lineup_size >= 9
+                out = {
+                    "starter_status": "confirmed" if starter_ok else "unverified",
+                    "lineup_status":  "confirmed" if lineup_ok  else "unverified",
+                    "probable_pitchers":     pp,
+                    "confirmed_lineup_size": lineup_size,
+                    "source":     "statsapi.mlb.com",
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                }
+                _LLP_MLB_CTX_CACHE[cache_key] = (now_ts, out)
                 try:
-                    _ensure_llp_pro_schema(conn)
-                    with conn.cursor() as cur:
-                        cur.execute("""
-                            INSERT INTO lineup_status
-                              (sport, game_key, away_team, home_team, game_date,
-                               starter_status, lineup_status, probable_pitchers,
-                               confirmed_lineup_size, source)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
-                        """, ("mlb", f"{an}@{hn}|{date_str}", away, home,
-                              date_str, out["starter_status"], out["lineup_status"],
-                              json.dumps(pp), lineup_size, out["source"]))
-                    conn.commit()
-                finally:
-                    conn.close()
-            except Exception:
-                pass
-            return out
+                    conn = get_db_conn()
+                    try:
+                        _ensure_llp_pro_schema(conn)
+                        with conn.cursor() as cur:
+                            cur.execute("""
+                                INSERT INTO lineup_status
+                                  (sport, game_key, away_team, home_team, game_date,
+                                   starter_status, lineup_status, probable_pitchers,
+                                   confirmed_lineup_size, source)
+                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
+                            """, ("mlb", f"{an}@{hn}|{date_str}", away, home,
+                                  date_str, out["starter_status"], out["lineup_status"],
+                                  json.dumps(pp), lineup_size, out["source"]))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+                return out
+    except Exception:
+        _LLP_MLB_CTX_CACHE[cache_key] = (now_ts, base)
+        return base
     _LLP_MLB_CTX_CACHE[cache_key] = (now_ts, base)
     return base
 
