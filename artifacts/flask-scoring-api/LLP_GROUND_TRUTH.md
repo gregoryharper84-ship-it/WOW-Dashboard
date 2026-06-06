@@ -264,6 +264,39 @@ cache TTL are free; net new spend is one refresh per sport per interval.
 
 ---
 
+## Game Winner Payout Discipline (WOW v16 Clean Core)
+
+Applies **only** to the full-game **Game Winner** lane — exact `market == "h2h"`
+(MLB `h2h_1st_5_innings` / F5 is excluded; spreads/totals untouched). Backend
+scope only; dollar bankroll, the $2 floor when bankroll < $25, the $ stake/net
+figures, and post-game "Q3 Lucky / False-Signal" labeling stay in the
+**orchestrator** (this engine's `kelly_stake` is a *fraction* 0–1, no dollar
+concept).
+
+`record["decimal_odds"]` is now stored unconditionally from the chosen side's
+American price. Discipline by decimal price on that side:
+
+- **price < 1.35x → hard REJECT.** Emits `game-winner-below-min-payout`; badge
+  floored to **PASS** by the spec ceiling and `final_decision` forced to `PASS`
+  (dropped). Example: MIA 1.17x → REJECT.
+- **1.35x ≤ price < 1.50x → approvable ONLY if ALL hold:** no-vig edge ≥ +3%
+  (`edge ≥ 0.03`) AND `starter_status == "confirmed"` AND
+  `lineup_status == "confirmed"` AND `model_adjustments` non-empty (Layer 4
+  model synthesis) AND `kelly_stake > 0`. Otherwise emits
+  `game-winner-short-price-unverified` → badge capped at **CANDIDATE**; an
+  actionable `BET`/`SMALL BET` is demoted to `WATCH` (kept on the board for
+  review, never in `winners_ranked` / `best_bets`).
+- **price ≥ 1.50x →** clears the discipline (normal grading applies).
+- **`record["inverted_stake_sizing"]`** = `True` when decimal price < 2.0x on
+  the Game Winner lane (stake risked exceeds potential win). Surfaced for the
+  **orchestrator** to apply its dollar stake-sizing rules; this engine does not
+  size dollars.
+
+Both new tags are **HARD** (`_LLP_PRO_FAILURE_TAGS`, count toward the ≥3
+cardinality gate). The short-price tag is in `_LLP_PRO_CANDIDATE_CEILING_TAGS`.
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

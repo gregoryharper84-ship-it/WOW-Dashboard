@@ -8987,10 +8987,11 @@ def _llp_analyze_one(game, default_sport, board_date):
     record["model_win_probability"] = round(model_p, 4) if model_p is not None else None
     record["model_adjustments"]     = adj
 
+    dec_odds = _llp_american_to_decimal(sel.get("american"))
+    record["decimal_odds"] = dec_odds
     if model_p is not None and sel.get("novig_prob") is not None:
         edge = model_p - sel["novig_prob"]
         record["edge"] = round(edge, 4)
-        dec_odds = _llp_american_to_decimal(sel.get("american"))
         record["kelly_stake"] = round(_llp_kelly(model_p, dec_odds), 4)
         record["confidence_tier"] = _llp_confidence_tier(edge)
     else:
@@ -9097,6 +9098,22 @@ def _llp_analyze_one(game, default_sport, board_date):
     if _pro_tags:
         record["failure_paths"].extend(_pro_tags)
         record["validation_clean"] = _llp_validation_clean(record)
+    # WOW v16 Game Winner Payout Discipline: enforce minimum payout / short-price
+    # verification on the h2h moneyline lane and surface the inverted-stake flag.
+    _gw_tags, _gw_inverted, _gw_reject = _llp_game_winner_discipline(record)
+    record["inverted_stake_sizing"] = _gw_inverted
+    if _gw_tags:
+        record["failure_paths"].extend(_gw_tags)
+        record["validation_clean"] = _llp_validation_clean(record)
+    if _gw_reject:
+        # Sub-1.35x Game Winner is a hard REJECT — drop it entirely.
+        record["final_decision"] = "PASS"
+    elif (LLP_PRO_FAILURE_GW_SHORT_PRICE_UNVERIFIED in _gw_tags
+          and record.get("final_decision") in ("BET", "SMALL BET")):
+        # Short-price (1.35–1.50x) unverified is non-actionable (badge capped
+        # at CANDIDATE). Demote an actionable call to WATCH so it stays on the
+        # board for review but never surfaces in winners_ranked / best_bets.
+        record["final_decision"] = "WATCH"
     record["llp_badge"]        = _llp_compute_badge(record)
 
     # LLP spec field: `lock_line` — snapshot the current_line at the moment
@@ -9712,6 +9729,10 @@ def _llp_apply_spec_badge_ceiling(badge, rec):
     fp = rec.get("failure_paths") or []
     if any(t in _LLP_PRO_CANDIDATE_CEILING_TAGS for t in fp):
         badge = _llp_badge_min(badge, "CANDIDATE")
+    # WOW v16 Game Winner Payout Discipline: sub-1.35x moneyline is a hard
+    # REJECT — floor the badge at PASS (final_decision is also forced to PASS).
+    if LLP_PRO_FAILURE_GW_BELOW_MIN_PAYOUT in fp:
+        badge = _llp_badge_min(badge, "PASS")
     return badge
 
 def _llp_v_overpromoted(rec):
@@ -10104,6 +10125,10 @@ LLP_PRO_FAILURE_CLV_WITHOUT_VALIDATION      = "clv-without-validation"
 LLP_PRO_FAILURE_FAKE_MARKET_EDGE            = "fake-market-edge"
 LLP_PRO_FAILURE_CANDIDATE_PROMOTED_EARLY    = "candidate-promoted-too-early"
 
+# WOW v16 Clean Core — Game Winner Payout Discipline (h2h moneyline lane).
+LLP_PRO_FAILURE_GW_BELOW_MIN_PAYOUT         = "game-winner-below-min-payout"
+LLP_PRO_FAILURE_GW_SHORT_PRICE_UNVERIFIED   = "game-winner-short-price-unverified"
+
 _LLP_PRO_FAILURE_TAGS = frozenset({
     LLP_PRO_FAILURE_MISSING_ODDS_FEED,
     LLP_PRO_FAILURE_MISSING_LINEUP_STATUS,
@@ -10112,6 +10137,8 @@ _LLP_PRO_FAILURE_TAGS = frozenset({
     LLP_PRO_FAILURE_CLV_WITHOUT_VALIDATION,
     LLP_PRO_FAILURE_FAKE_MARKET_EDGE,
     LLP_PRO_FAILURE_CANDIDATE_PROMOTED_EARLY,
+    LLP_PRO_FAILURE_GW_BELOW_MIN_PAYOUT,
+    LLP_PRO_FAILURE_GW_SHORT_PRICE_UNVERIFIED,
 })
 
 # Tags that the spec ceiling caps at CANDIDATE regardless of model edge.
@@ -10119,7 +10146,58 @@ _LLP_PRO_CANDIDATE_CEILING_TAGS = frozenset({
     LLP_PRO_FAILURE_STALE_MARKET_NOT_ACTIONABLE,
     LLP_PRO_FAILURE_CANDIDATE_PROMOTED_EARLY,
     LLP_PRO_FAILURE_FAKE_MARKET_EDGE,
+    LLP_PRO_FAILURE_GW_SHORT_PRICE_UNVERIFIED,
 })
+
+# Game Winner Payout Discipline thresholds (decimal odds on the chosen side).
+_LLP_GW_MIN_PAYOUT_DECIMAL   = 1.35   # below → auto REJECT/PASS
+_LLP_GW_SHORT_PRICE_DECIMAL  = 1.50   # below → requires full verification
+_LLP_GW_SHORT_PRICE_MIN_EDGE = 0.03   # no-vig edge ≥ +3% to clear short price
+_LLP_GW_INVERTED_DECIMAL     = 2.0    # < 2.0 → stake risked exceeds potential win
+
+
+def _llp_game_winner_discipline(rec):
+    """WOW v16 Clean Core — Game Winner payout discipline (h2h moneyline).
+
+    Returns (tags, inverted_stake_sizing, force_reject).
+
+    Decimal odds on the chosen side drive the lane:
+      - price < 1.35x          → hard REJECT/PASS (below-min-payout tag).
+      - 1.35x ≤ price < 1.50x  → approvable ONLY if ALL hold: no-vig edge
+            ≥ +3%, confirmed starter AND lineup, Layer 4 model synthesis
+            (`model_adjustments` non-empty), and positive Kelly. Otherwise
+            cap at CANDIDATE (short-price-unverified tag).
+      - inverted_stake_sizing  → True when price < 2.0x (the stake risked
+            exceeds the potential win); the orchestrator consumes this flag
+            for stake sizing.
+
+    Dollar bankroll, the $2 floor when bankroll < $25, and post-game
+    "Q3 Lucky/False-Signal" labeling are orchestrator concerns and are
+    intentionally NOT handled in this engine (Kelly here is a fraction).
+    """
+    if not isinstance(rec, dict):
+        return ([], False, False)
+    if (rec.get("market") or "").lower() != "h2h":
+        return ([], False, False)
+    dec = rec.get("decimal_odds")
+    if not isinstance(dec, (int, float)) or dec <= 1.0:
+        return ([], False, False)
+    inverted = dec < _LLP_GW_INVERTED_DECIMAL
+    if dec < _LLP_GW_MIN_PAYOUT_DECIMAL:
+        return ([LLP_PRO_FAILURE_GW_BELOW_MIN_PAYOUT], inverted, True)
+    if dec < _LLP_GW_SHORT_PRICE_DECIMAL:
+        edge = rec.get("edge")
+        ks   = rec.get("kelly_stake")
+        verified = (
+            isinstance(edge, (int, float)) and edge >= _LLP_GW_SHORT_PRICE_MIN_EDGE
+            and rec.get("starter_status") == "confirmed"
+            and rec.get("lineup_status")  == "confirmed"
+            and bool(rec.get("model_adjustments") or {})
+            and isinstance(ks, (int, float)) and ks > 0
+        )
+        if not verified:
+            return ([LLP_PRO_FAILURE_GW_SHORT_PRICE_UNVERIFIED], inverted, False)
+    return ([], inverted, False)
 
 
 # ── DB schema: 7 new tables for the LLP Pro data stack ─────────────────

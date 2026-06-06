@@ -1,3 +1,4 @@
 - [LLP multi-agent sync](llp-multiagent-sync.md) — user runs a 3-agent workflow (Replit Claude + external ChatGPT + external Claude) that reason blind against app.py; verify before building, keep ground-truth doc current.
 - [Flask scoring gunicorn workers](flask-scoring-gunicorn-workers.md) — flask-scoring-api runs 2 gunicorn workers in prod; in-process crons run twice → guard shared-DB writes with pg_try_advisory_lock.
 - [Vite deploy build vs PORT/BASE_PATH](vite-deploy-build-port.md) — scaffold vite.config.ts throws on missing PORT/BASE_PATH at build time → deploy build fails; gate throws behind command==="serve".
+- [LLP Game Winner discipline](llp-game-winner-discipline.md) — h2h-only payout gate; backend enforces odds/edge/verification + inverted flag, orchestrator owns dollars; badge caps after _llp_decision must also rewrite final_decision or they leak into winners.
