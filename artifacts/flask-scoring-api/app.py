@@ -6874,6 +6874,331 @@ def _first_inn_pitches(first, last, direction, line, season):
     r.update(_stats(games, line, direction)); return r
 
 
+# ══════════════════════════════════════════════════════════════════════
+# WOW Component B — pybaseball MLB Automation Patch
+# Tier 1 equivalent (derived from Baseball Reference, Savant, FanGraphs)
+# Never Tier 0. On failure, mark as Failed and fall back to manual Tier 1.
+# ══════════════════════════════════════════════════════════════════════
+
+# Availability flag — checked before every pybaseball call.
+try:
+    import pybaseball as _pb
+    _PYBASEBALL_OK = True
+except ImportError:
+    _PYBASEBALL_OK = False
+
+# Prop-to-event mapping for Statcast aggregation.
+# "key" is the pybaseball `events` column value we count per game.
+_PB_STATCAST_EVENTS = {
+    "Pitcher Strikeouts":  "strikeout",
+    "Hits Allowed":        "hit",
+    "Earned Runs":         "home_run",
+    "Hitter Hits":         "hit",
+    "Total Bases":         None,
+    "Runs Scored":         "home_run",
+    "RBIs":                None,
+    "H+R+RBI":             None,
+    "Hitter Strikeouts":   "strikeout",
+    "Walks Allowed":       "walk",
+}
+
+# New MLB workflow fields (attached to every MLB-scored prop).
+_PB_MLB_WORKFLOW_FIELDS = [
+    "weather_checked", "weather_source", "weather_risk",
+    "weather_park_not_checked",
+    "mlb_starter_confirmed", "starter_confirmation_source",
+    "lineup_confirmed", "batting_order_slot",
+    "statcast_checked", "fangraphs_checked",
+    "market_sanity_checked",
+]
+
+
+def _pb_lookup_mlbam_id(first: str, last: str) -> int | None:
+    """Map a name to an MLBAM ID via pybaseball's lookup table.
+    Returns None on failure (lookup table empty or name not found)."""
+    if not _PYBASEBALL_OK:
+        return None
+    try:
+        df = _pb.playerid_lookup(last, first)
+        if df.empty:
+            return None
+        return int(df.iloc[0]["key_mlbam"])
+    except Exception:
+        return None
+
+
+def _pb_statcast_ledgers(player_id: int, prop: str, direction: str,
+                         line: float, year: str, window: int = 10):
+    """Pull L5/L10/L20 from pybaseball Statcast for an MLBAM player.
+
+    Only works for props that map cleanly to statcast `events`:
+    Pitcher Strikeouts (events==strikeout), Hitter Hits (hit), etc.
+    For composite props (Total Bases, H+R+RBI) the statcast event
+    model is not a clean substitute; we return a failure so the
+    caller falls back to manual Tier 1.
+
+    Returns a WOW-compatible dict with `games`, `rows`, `complete`,
+    `gap`, `source`, `l5_avg`, `l10_avg`, `l10_median`, hit rates,
+    and `edge` — or a dict with `gap` on failure.
+    """
+    event = _PB_STATCAST_EVENTS.get(prop)
+    if event is None:
+        return {"gap": f"pybaseball statcast does not support composite prop '{prop}'",
+                "source": "pybaseball (Tier 1 equivalent)", "games": [],
+                "complete": False, "rows": 0}
+    try:
+        is_pitcher = prop in ("Pitcher Strikeouts", "Hits Allowed",
+                              "Earned Runs", "Walks Allowed")
+        raw = _pb.statcast_pitcher(
+            f"{year}-01-01", f"{year}-12-31", player_id) if is_pitcher else \
+              _pb.statcast_batter(
+            f"{year}-01-01", f"{year}-12-31", player_id)
+        if raw.empty:
+            return {"gap": "pybaseball statcast returned empty",
+                    "source": "pybaseball (Tier 1 equivalent)", "games": [],
+                    "complete": False, "rows": 0}
+        raw["game_date"] = pd.to_datetime(raw["game_date"])
+        # Filter rows to the event type
+        mask = raw["events"] == event
+        if event == "hit":
+            mask = raw["events"].isin(["single", "double", "triple", "home_run"])
+        elif event == "strikeout":
+            mask = raw["events"] == "strikeout"
+        elif event == "walk":
+            mask = raw["events"].isin(["walk", "intent_walk", "hit_by_pitch"])
+        evt = raw[mask]
+        # Aggregate per game
+        daily = evt.groupby("game_date").size().reset_index(name="value")
+        daily = daily.sort_values("game_date", ascending=False)
+        # Build WOW-format games list
+        games = []
+        for _, row in daily.iterrows():
+            val = int(row["value"])
+            games.append({
+                "date":    row["game_date"].strftime("%Y-%m-%d"),
+                "opp":     "",   # opponent not available in statcast row
+                "context": "statcast",
+                "value":   val,
+                "hit":     _hit_label(val, line, direction),
+                "notes":   "",
+            })
+        if not games:
+            return {"gap": f"pybaseball statcast: no '{event}' events found",
+                    "source": "pybaseball (Tier 1 equivalent)", "games": [],
+                    "complete": False, "rows": 0}
+        # Cap at 20 for L20 support
+        games = games[:20]
+        for i, g in enumerate(games):
+            g["g"] = i + 1
+        r = {"source": "pybaseball (Tier 1 equivalent)", "games": games,
+             "rows": len(games), "complete": len(games) >= 10, "gap": ""}
+        if not r["complete"]:
+            r["gap"] = f"Only {len(games)} games in pybaseball statcast"
+        r.update(_calc_stats(games, line, direction))
+        return r
+    except Exception as e:
+        return {"gap": f"pybaseball statcast exception: {type(e).__name__}: {str(e)[:200]}",
+                "source": "pybaseball (Tier 1 equivalent)", "games": [],
+                "complete": False, "rows": 0}
+
+
+def _pb_statcast_window(player_id: int, year: str, lookback_days: int = 30):
+    """Pull a recent statcast form window for a player.
+    Returns dict with `has_data` (True only if rows returned), `game_count`,
+    `avg_event_rate`, `last_date`, `source`, `fetched_at`, `error`.
+    """
+    if not _PYBASEBALL_OK:
+        return {"has_data": False, "error": "pybaseball not installed"}
+    try:
+        from datetime import datetime, timedelta
+        end = datetime.now()
+        start = end - timedelta(days=lookback_days)
+        raw = _pb.statcast_pitcher(
+            start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), player_id)
+        if raw.empty:
+            return {"has_data": False, "game_count": 0, "avg_event_rate": 0,
+                    "last_date": None, "source": "pybaseball statcast window",
+                    "fetched_at": datetime.now().isoformat()}
+        raw["game_date"] = pd.to_datetime(raw["game_date"])
+        games = raw["game_date"].nunique()
+        return {"has_data": True, "game_count": games,
+                "avg_event_rate": round(len(raw) / max(games, 1), 1),
+                "last_date": raw["game_date"].max().strftime("%Y-%m-%d"),
+                "source": "pybaseball statcast window",
+                "fetched_at": datetime.now().isoformat()}
+    except Exception as e:
+        return {"has_data": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+def _pb_fangraphs_baseline(player_id: int, year: str):
+    """Pull FanGraphs baseline (projections / season stats) for a player.
+    pybaseball's batting_stats / pitching_stats return season aggregates.
+    Returns dict with `has_data`, `source`, `fetched_at`, and `stats` or `error`.
+    """
+    if not _PYBASEBALL_OK:
+        return {"has_data": False, "error": "pybaseball not installed"}
+    try:
+        # Try pitching first (higher chance of success for pitchers)
+        stats = _pb.pitching_stats(year, year)
+        row = stats[stats["playerid"] == player_id]
+        if row.empty:
+            stats = _pb.batting_stats(year, year)
+            row = stats[stats["playerid"] == player_id]
+        if row.empty:
+            return {"has_data": False, "source": "pybaseball FanGraphs",
+                    "fetched_at": datetime.now().isoformat(),
+                    "stats": None, "error": "Player not found in FanGraphs data"}
+        return {"has_data": True, "source": "pybaseball FanGraphs",
+                "fetched_at": datetime.now().isoformat(),
+                "stats": row.iloc[0].to_dict(), "error": None}
+    except Exception as e:
+        return {"has_data": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+def _pb_pitcher_vs_opponent_k(pitcher_id: int, opponent: str, year: str):
+    """Simulate pitcher K vs a specific opponent using statcast history.
+    Returns dict with `checked`, `head_to_head_games`, `avg_k`, `max_k`,
+    `source`, `fetched_at`, `error` or None on success.
+    """
+    if not _PYBASEBALL_OK:
+        return {"checked": False, "error": "pybaseball not installed"}
+    try:
+        raw = _pb.statcast_pitcher(
+            f"{year}-01-01", f"{year}-12-31", pitcher_id)
+        if raw.empty:
+            return {"checked": True, "head_to_head_games": 0, "avg_k": 0,
+                    "max_k": 0, "source": "pybaseball H2H", "error": None}
+        raw["game_date"] = pd.to_datetime(raw["game_date"])
+        # Filter to opponent (case-insensitive on team abbreviations)
+        opp_upper = opponent.upper()
+        mask = (raw["home_team"].str.upper() == opp_upper) | \
+               (raw["away_team"].str.upper() == opp_upper)
+        h2h = raw[mask]
+        if h2h.empty:
+            return {"checked": True, "head_to_head_games": 0, "avg_k": 0,
+                    "max_k": 0, "source": "pybaseball H2H", "error": None}
+        # Count strikeouts per game
+        k_rows = h2h[h2h["events"] == "strikeout"]
+        daily = k_rows.groupby("game_date").size().reset_index(name="k")
+        avg_k = round(daily["k"].mean(), 1) if not daily.empty else 0.0
+        max_k = int(daily["k"].max()) if not daily.empty else 0
+        return {"checked": True, "head_to_head_games": len(daily),
+                "avg_k": avg_k, "max_k": max_k,
+                "source": "pybaseball H2H", "error": None,
+                "fetched_at": datetime.now().isoformat()}
+    except Exception as e:
+        return {"checked": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+def _pb_to_wow_format(pb_data: dict, prop: str, direction: str, line: float):
+    """Standardize pybaseball output to the WOW format.
+    pb_data is the dict returned by _pb_statcast_ledgers.
+    Returns a dict compatible with WOW's `data` field."""
+    if not pb_data or pb_data.get("gap"):
+        return None
+    return {
+        "source": pb_data.get("source", "pybaseball"),
+        "games": pb_data.get("games", []),
+        "rows": pb_data.get("rows", 0),
+        "complete": pb_data.get("complete", False),
+        "gap": pb_data.get("gap", ""),
+        "l5_avg": pb_data.get("l5_avg"),
+        "l10_avg": pb_data.get("l10_avg"),
+        "l10_median": pb_data.get("l10_median"),
+        "l5_hit_rate": pb_data.get("l5_hit_rate"),
+        "l10_hit_rate": pb_data.get("l10_hit_rate"),
+        "edge": pb_data.get("edge"),
+    }
+
+
+def _mlb_workflow_fields(first: str, last: str, sport: str, prop: str,
+                         year: str, opponent: str = "", game_date: str = "",
+                         statcast_data: dict = None):
+    """Generate the 11 new MLB workflow fields. Some are populated via
+    pybaseball calls, others default to 'not checked' and are filled by
+    the downstream orchestrator (weather, starters, market sanity).
+    Returns a dict keyed by field names."""
+    fields = {
+        "weather_checked": False,
+        "weather_source": None,
+        "weather_risk": None,
+        "weather_park_not_checked": True,
+        "mlb_starter_confirmed": False,
+        "starter_confirmation_source": None,
+        "lineup_confirmed": False,
+        "batting_order_slot": None,
+        "statcast_checked": False,
+        "fangraphs_checked": False,
+        "market_sanity_checked": False,
+    }
+    # Statcast window check — `has_data` means usable rows returned
+    if _PYBASEBALL_OK and sport in ("mlb_pitcher", "mlb_batter"):
+        pid = _pb_lookup_mlbam_id(first, last)
+        if pid:
+            sc = _pb_statcast_window(pid, year)
+            fields["statcast_checked"] = sc.get("has_data", False)
+            fields["statcast_window"] = sc
+    # FanGraphs baseline check — `has_data` means player found in stats
+    if _PYBASEBALL_OK and sport in ("mlb_pitcher", "mlb_batter"):
+        pid = _pb_lookup_mlbam_id(first, last)
+        if pid:
+            fg = _pb_fangraphs_baseline(pid, year)
+            fields["fangraphs_checked"] = fg.get("has_data", False)
+            fields["fangraphs_baseline"] = fg
+    # Pitcher-vs-opponent K simulation
+    if _PYBASEBALL_OK and sport == "mlb_pitcher" and prop == "Pitcher Strikeouts" and opponent:
+        pid = _pb_lookup_mlbam_id(first, last)
+        if pid:
+            h2h = _pb_pitcher_vs_opponent_k(pid, opponent, year)
+            fields["h2h_simulation"] = h2h
+    return fields
+
+
+def _mlb_validate_with_workflow(data: dict, workflow: dict, prop: str, sport: str):
+    """Apply the Component B validation rules on top of a scored prop.
+    Returns a dict with the validated result, any capping, and a
+    `validation_reason` list.
+    
+    Rules:
+    - pitcher prop with unconfirmed starter >2h before first pitch → WATCH only
+    - pitcher prop unconfirmed inside 2h → hard kill (REJECT)
+    - hitter TB/HRR without weather check → add weather-park-not-checked, cap
+    - pitcher K without Savant/FanGraphs → cannot pass skill-quality gate
+    - stale team/no game today → slate purge kill
+    """
+    result = {**data}
+    reasons = []
+    # Starter rules (MLB pitcher props)
+    if sport == "mlb_pitcher":
+        starter_confirmed = workflow.get("mlb_starter_confirmed", False)
+        if not starter_confirmed:
+            # In the absence of real-time clock info, we default to WATCH
+            # The downstream orchestrator should override with hard-kill if <2h
+            reasons.append("Starting pitcher not confirmed")
+            # If this is a gate call (not just advisory), cap at WATCH
+            if not workflow.get("force_advisory_only", False):
+                result["confidence_tier"] = "WATCH / RESEARCH ONLY"
+                result["workflow_cap"] = "WATCH — starter unconfirmed"
+    # Weather rules (MLB hitters)
+    if sport == "mlb_batter" and prop in ("Total Bases", "H+R+RBI", "Hitter Hits"):
+        if not workflow.get("weather_checked", False):
+            reasons.append("weather-park-not-checked")
+            result["weather_park_not_checked"] = True
+            if not workflow.get("force_advisory_only", False):
+                result["confidence_tier"] = "WATCH / RESEARCH ONLY"
+                result["workflow_cap"] = "WATCH — weather/park unverified"
+    # Skill-quality gate for pitcher K
+    if sport == "mlb_pitcher" and prop == "Pitcher Strikeouts":
+        if not workflow.get("statcast_checked", False) and not workflow.get("fangraphs_checked", False):
+            reasons.append("Pitcher K without Savant/FanGraphs — skill quality gate blocked")
+            if not workflow.get("force_advisory_only", False):
+                result["confidence_tier"] = "WATCH / RESEARCH ONLY"
+                result["workflow_cap"] = "WATCH — statcast/fangraphs unavailable"
+    result["workflow_reasons"] = reasons
+    result["workflow"] = workflow
+    return result
+
+
 # ── CS2 via HLTV (cloudscraper) ──────────────────────────────
 _CS2_COLS = {
     "Kills":"Kills","Headshots":"Headshots",
@@ -7019,7 +7344,37 @@ def _score_one_prop_v2(*, player, sport, prop, direction, line,
         return _tennis(first, last, prop, direction, line), None
     elif sport == "nba":
         return _nba(first, last, prop, direction, line, season), None
-    elif sport in ("mlb_batter","mlb_pitcher","wnba","nfl"):
+    elif sport in ("mlb_batter","mlb_pitcher"):
+        # Component B: pybaseball Tier 1 equivalent first, manual Tier 1 fallback.
+        pb_failed = False
+        if _PYBASEBALL_OK:
+            pid = _pb_lookup_mlbam_id(first, last)
+            if pid:
+                pb_data = _pb_statcast_ledgers(pid, prop, direction, line, year)
+                if not pb_data.get("gap"):
+                    # Success — pybaseball delivered usable data.
+                    wow_data = _pb_to_wow_format(pb_data, prop, direction, line)
+                    if wow_data:
+                        # Attach workflow fields
+                        wf = _mlb_workflow_fields(first, last, sport, prop, year)
+                        wow_data["workflow_fields"] = wf
+                        # Apply validation gating (WATCH caps, etc.)
+                        wow_data = _mlb_validate_with_workflow(wow_data, wf, prop, sport)
+                        return wow_data, None
+                pb_failed = True
+        # Fallback: manual Tier 1 ledger (BBRef)
+        bb_data = _bbref(first, last, sport, prop, direction, line, year)
+        if bb_data.get("gap"):
+            bb_data["source"] = (bb_data.get("source") or "") + " (Failed/Not Available)"
+        elif pb_failed:
+            # Preserve pybaseball failure provenance even when BBRef succeeds
+            bb_data["source"] = (bb_data.get("source") or "") + " (pybaseball failed)"
+        # Apply workflow fields and validation even on BBRef fallback
+        wf = _mlb_workflow_fields(first, last, sport, prop, year)
+        bb_data["workflow_fields"] = wf
+        bb_data = _mlb_validate_with_workflow(bb_data, wf, prop, sport)
+        return bb_data, None
+    elif sport in ("wnba","nfl"):
         return _bbref(first, last, sport, prop, direction, line, year), None
     return None, f"Unknown sport '{sport}'"
 
@@ -7207,11 +7562,95 @@ def wow_l10_v2():
         "data_quality": _v2_data_quality(data.get("source"), rows, complete),  # PATCH 1
         "normalization_log": normalization_log,                                # PATCH 3
     }
+    # Component B: attach MLB workflow fields when present
+    wf = data.get("workflow_fields")
+    if wf:
+        resp["workflow_fields"] = wf
+    # workflow_reasons and workflow_cap are at the top level of data
+    if data.get("workflow_reasons"):
+        resp["workflow_reasons"] = data.get("workflow_reasons")
+    if data.get("workflow_cap"):
+        resp["workflow_cap"] = data.get("workflow_cap")
     if tier == "REJECT — INSUFFICIENT DATA":
         resp["reject_reason"] = _v2_reject_reason(gap, rows, complete)         # PATCH 3
     if rows >= 3:
         _cache_set(_L10V2_CACHE, ck, resp)
     return jsonify({"ok": True, "cached": False, **resp})
+
+
+# ── Component B: CSV export for MLB props ───────────────────────
+@app.route("/wow/mlb-export", methods=["POST"])
+@require_api_key
+def wow_mlb_export():
+    """POST a list of MLB-scored props and receive a CSV export with all
+    WOW fields + the 11 Component B workflow fields."""
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "request body must be a JSON object"}), 400
+    props = body.get("props") if isinstance(body.get("props"), list) else []
+    if not props:
+        return jsonify({"ok": False, "error": "provide a non-empty 'props' array"}), 400
+
+    import csv, io
+    out = io.StringIO()
+    fieldnames = [
+        "player", "sport", "prop", "side", "line",
+        "rows", "complete", "confidence_tier", "source", "data_quality",
+        "l10_avg", "l10_hit_rate", "edge", "gap",
+        "weather_checked", "weather_source", "weather_risk",
+        "weather_park_not_checked",
+        "mlb_starter_confirmed", "starter_confirmation_source",
+        "lineup_confirmed", "batting_order_slot",
+        "statcast_checked", "fangraphs_checked",
+        "market_sanity_checked",
+        "workflow_cap", "workflow_reasons",
+    ]
+    writer = csv.DictWriter(out, fieldnames=fieldnames)
+    writer.writeheader()
+    for p in props:
+        if not isinstance(p, dict):
+            continue
+        wf = p.get("workflow_fields", {}) if isinstance(p.get("workflow_fields"), dict) else {}
+        reasons = p.get("workflow_reasons", []) if isinstance(p.get("workflow_reasons"), list) else []
+        row = {
+            "player": p.get("player"),
+            "sport": p.get("sport"),
+            "prop": p.get("prop"),
+            "side": p.get("side") or p.get("direction"),
+            "line": p.get("line"),
+            "rows": p.get("rows"),
+            "complete": p.get("complete"),
+            "confidence_tier": p.get("confidence_tier"),
+            "source": p.get("source"),
+            "data_quality": p.get("data_quality"),
+            "l10_avg": p.get("l10_avg"),
+            "l10_hit_rate": p.get("l10_hit_rate"),
+            "edge": p.get("edge"),
+            "gap": p.get("gap", ""),
+            "weather_checked": wf.get("weather_checked"),
+            "weather_source": wf.get("weather_source"),
+            "weather_risk": wf.get("weather_risk"),
+            "weather_park_not_checked": wf.get("weather_park_not_checked"),
+            "mlb_starter_confirmed": wf.get("mlb_starter_confirmed"),
+            "starter_confirmation_source": wf.get("starter_confirmation_source"),
+            "lineup_confirmed": wf.get("lineup_confirmed"),
+            "batting_order_slot": wf.get("batting_order_slot"),
+            "statcast_checked": wf.get("statcast_checked"),
+            "fangraphs_checked": wf.get("fangraphs_checked"),
+            "market_sanity_checked": wf.get("market_sanity_checked"),
+            "workflow_cap": p.get("workflow_cap"),
+            "workflow_reasons": " | ".join(reasons),
+        }
+        writer.writerow(row)
+    out.seek(0)
+    return (
+        out.getvalue(),
+        200,
+        {
+            "Content-Type": "text/csv",
+            "Content-Disposition": "attachment; filename=wow_mlb_export.csv",
+        },
+    )
 
 
 # ── PATCH 2 — /wow/health: per-sport data-source probe ───────────
@@ -7250,6 +7689,9 @@ def wow_health():
         results["wnba"] = "Available" if r.ok else f"Degraded — HTTP {r.status_code}"
     except Exception as e:
         results["wnba"] = f"Degraded — {str(e)[:60]}"
+
+    # pybaseball (Component B)
+    results["pybaseball"] = "Available" if _PYBASEBALL_OK else "Not Installed"
 
     results["cs2"] = "Manual Only — permanent"
 
