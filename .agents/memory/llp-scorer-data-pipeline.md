@@ -27,6 +27,10 @@ description: What the WOW scorer (/wow/l10/v2) and scanner (/wow-daily-scan) act
 
 New route `GET /wow/health` (no auth) probes each sport source → per-sport Available/Degraded + overall UP/PARTIAL; cs2 is "Manual Only — permanent" and excluded from the overall calc.
 
+## Derived-field shapes (gotcha for any downstream consumer)
+**Why:** `l5_hit_rate`/`l10_hit_rate` from the per-prop scorer are human-readable DISPLAY STRINGS like `"8/10 (80%)"`, NOT floats. `float()` on them throws, so a naive consumer silently scores them as 0 and every prop looks weak. `edge` is in raw stat units (rebounds/points), not a probability.
+**How to apply:** any new lane that does arithmetic on hit rates must parse them (extract `(NN%)` or `X/Y` → 0–1) — see `_hr()` in the WOW-JF lane. Also: `_score_one_prop_v2` matches canonical prop/sport keys only, so callers must run `_v2_normalize_inputs(sport, prop, prop_type)` first (the bare `_cm_normalize_sport`+`_cm_v2_sport_key` path does NOT normalize the prop name → REJECT). The WOW-JF Slip Engine (`POST /wow/jf`) reuses the full WOW gate chain and enforces: no prop enters a slip unless WOW-validated (tier ∈ {FINAL LOCK ELIGIBLE, CONDITIONAL — L5 ONLY}) AND jf_score ≥ 7.
+
 ## Fail-soft rule for external fetchers
 **Why:** statsapi/ESPN can return HTTP 200 with an unexpected JSON shape (list/scalar nesting, schema drift). Guarding only the HTTP call is not enough — the *payload traversal* can still raise and bubble out of `_llp_analyze_one` as a 500.
 **How to apply:** every LLP context fetcher must (a) bound its HTTP timeout, (b) `isinstance`-guard each nested container before `.get`, and (c) wrap the whole traversal in a try/except that returns the unverified shell. Acceptance for any new fetcher: feed it malformed-but-200 shapes and confirm it never raises.

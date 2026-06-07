@@ -8057,6 +8057,326 @@ def cm_build_slips():
                     "slips_built": len(all_built), "slips": all_built})
 
 
+# ══════════════════════════════════════════════════════════════════════
+# WOW-JF Slip Engine v1.0 — child lane inside WOW v16 Clean Core.
+# Activation (human workflow): "/wow jf".  Machine endpoint: POST /wow/jf.
+#
+# Pipeline (faithful to the v1.0 spec):
+#   1. Accept extracted prop pool.
+#   2. Pre-Analysis Slate Purge   (structural + known-dead-archetype purge).
+#   3. Existing WOW v16 gates      (_score_one_prop_v2 + _tier + data_quality).
+#   4. JF-style eligibility tag    (only WOW-validated props are eligible).
+#   5. JF Score 0–10               (consistency + recent form + edge + data).
+#   6. Slip shells from validated  (HARD RULE: no slip leg may skip WOW).
+#   7. Conservative 2 / Standard 3 / Flex 4 outputs.
+#   8. Never force action          (insufficient legs → slip null + reason).
+#
+# NOT a replacement engine — it consumes WOW's own scoring verbatim and only
+# adds a JF score + slip assembly on top. Stateless: computes and returns.
+# ══════════════════════════════════════════════════════════════════════
+
+# JF score band thresholds (inclusive lower bound, 0–10 scale).
+_JF_BAND_PREMIUM   = 9.0    # 9–10  Premium JF Core
+_JF_BAND_ELIGIBLE  = 7.0    # 7–8   JF Slip Eligible
+_JF_BAND_WATCH     = 5.0    # 5–6   Watch Only
+                            # 0–4   Not JF Style
+# A leg may enter a JF slip only at JF Slip Eligible (7.0) or above.
+_JF_SLIP_MIN_SCORE = _JF_BAND_ELIGIBLE
+
+# WOW tiers that count as "passed WOW validation" — the hard-rule gate.
+_JF_WOW_VALID_TIERS = {"FINAL LOCK ELIGIBLE", "CONDITIONAL — L5 ONLY"}
+
+# Conservative / Standard / Flex slip definitions (label, leg count).
+_JF_SLIP_TYPES = [("Conservative", 2), ("Standard", 3), ("Flex", 4)]
+
+# Guardrail: cap eligible legs fed into combinatorial slip building so an
+# oversized pool can't cause a CPU/latency spike (C(12,4)=495 combos max).
+_JF_MAX_COMBO_LEGS = 12
+
+
+def _jf_band(score):
+    """Map a 0–10 JF score to its named band."""
+    if score >= _JF_BAND_PREMIUM:   return "Premium JF Core"
+    if score >= _JF_BAND_ELIGIBLE:  return "JF Slip Eligible"
+    if score >= _JF_BAND_WATCH:     return "Watch Only"
+    return "Not JF Style"
+
+
+def _jf_score_prop(pr):
+    """Compute a transparent 0–10 JF score from a WOW-scored prop dict.
+
+    Components (max 10.0), all sourced from WOW's own output so JF never
+    invents data:
+      • L10 hit rate → up to 5.0  (consistency is the core JF signal)
+      • L5  hit rate → up to 2.0  (recent form)
+      • model edge   → up to 2.0  (edge ≥ 0.20 earns the full 2.0)
+      • data quality → up to 1.0  (Verified = 1.0, Manually Reconstructed 0.5)
+    Returns (score_rounded_1dp, breakdown_dict).
+    """
+    def _f(x):
+        try:    return float(x)
+        except (TypeError, ValueError): return 0.0
+    def _hr(x):
+        """Parse a hit rate to a 0–1 fraction. Accepts a float (0–1 or a
+        percentage >1), '80%', or the WOW display form '8/10 (80%)'."""
+        if x is None: return 0.0
+        if isinstance(x, (int, float)):
+            v = float(x); return v / 100.0 if v > 1.0 else v
+        s = str(x)
+        m = re.search(r'(\d+(?:\.\d+)?)\s*%', s)
+        if m: return max(0.0, min(1.0, float(m.group(1)) / 100.0))
+        m = re.search(r'(\d+)\s*/\s*(\d+)', s)
+        if m and float(m.group(2)) > 0:
+            return max(0.0, min(1.0, float(m.group(1)) / float(m.group(2))))
+        try:
+            v = float(s); return v / 100.0 if v > 1.0 else v
+        except ValueError:
+            return 0.0
+    l10  = max(0.0, min(1.0, _hr(pr.get("l10_hit_rate"))))
+    l5   = max(0.0, min(1.0, _hr(pr.get("l5_hit_rate"))))
+    edge = _f(pr.get("edge"))
+    dq   = pr.get("data_quality") or ""
+
+    c_l10  = l10 * 5.0
+    c_l5   = l5  * 2.0
+    c_edge = max(0.0, min(2.0, edge * 10.0))
+    c_dq   = 1.0 if dq == "Verified" else (0.5 if dq == "Manually Reconstructed" else 0.0)
+    score  = max(0.0, min(10.0, round(c_l10 + c_l5 + c_edge + c_dq, 1)))
+    return score, {
+        "l10_hit_rate": round(c_l10, 2), "l5_hit_rate": round(c_l5, 2),
+        "edge": round(c_edge, 2), "data_quality": round(c_dq, 2),
+    }
+
+
+def _jf_slate_purge(props):
+    """Pre-Analysis Slate Purge: drop structurally unusable or known-dead
+    props *before* any scoring. Returns (kept, purged); purged items carry a
+    `purge_reason`. Conservative by design — removes only props that cannot
+    be validated, never props that merely look statistically weak.
+    """
+    kept, purged, seen = [], [], set()
+    for p in props:
+        if not isinstance(p, dict):
+            purged.append({"prop": p, "purge_reason": "malformed entry (not an object)"})
+            continue
+        player = (p.get("player") or "").strip()
+        sport  = (p.get("sport")  or "").strip()
+        prop   = (p.get("prop")   or "").strip()
+        line   = p.get("line")
+        if not player or not sport or not prop:
+            purged.append({**p, "purge_reason": "missing player/sport/prop"})
+            continue
+        try:
+            float(line)
+        except (TypeError, ValueError):
+            purged.append({**p, "purge_reason": "missing or non-numeric line"})
+            continue
+        # Known auto-reject archetype: CS2 (HLTV behind Cloudflare → manual).
+        if _cm_normalize_sport(sport) == "CS2":
+            purged.append({**p, "purge_reason": "auto-reject archetype: CS2 (manual entry only)"})
+            continue
+        key = (player.lower(), sport.lower(), prop.lower(),
+               (p.get("side") or "").upper(), str(line))
+        if key in seen:
+            purged.append({**p, "purge_reason": "duplicate of an earlier prop"})
+            continue
+        seen.add(key)
+        kept.append(p)
+    return kept, purged
+
+
+def _jf_leg_view(p):
+    """Compact per-leg view for slip output."""
+    return {
+        "player": p.get("player"), "sport": p.get("sport"),
+        "prop": p.get("prop"), "side": p.get("side"), "line": p.get("line"),
+        "jf_score": p.get("jf_score"), "jf_band": p.get("jf_band"),
+        "confidence_tier": p.get("confidence_tier"),
+        "data_quality": p.get("data_quality"), "edge": p.get("edge"),
+        "l10_hit_rate": p.get("l10_hit_rate"),
+    }
+
+
+def _jf_score_pool(props):
+    """Run the existing WOW v16 gates on each prop, then attach JF score,
+    band, and eligibility. Returns a list of enriched prop dicts."""
+    out = []
+    for p in props:
+        side = (p.get("side") or "MORE").upper()
+        if side not in ("MORE", "LESS"):
+            side = "MORE"
+        # Normalize loose sport/prop to canonical dispatch keys, exactly as
+        # /wow/l10/v2 does — _score_one_prop_v2 matches canonical keys only.
+        v2_sport, v2_prop, norm_log = _v2_normalize_inputs(
+            p.get("sport", ""), p.get("prop", ""),
+            (p.get("prop_type") or "").strip().lower())
+        try:
+            data, err = _score_one_prop_v2(
+                player=p.get("player", ""), sport=v2_sport,
+                prop=v2_prop, direction=side,
+                line=float(p.get("line", 0)),
+                season=p.get("season", "2025-26"),
+                mlb_ssn=p.get("mlb_season", "2026"),
+                year=p.get("year", "2026"), hltv_id=p.get("hltv_id"),
+            )
+        except Exception as e:
+            data, err = None, f"scoring exception: {type(e).__name__}: {str(e)[:200]}"
+
+        if err or not data:
+            rec = {**p, "side": side, "rows": 0, "complete": False,
+                   "gap": err or "no data", "edge": None,
+                   "confidence_tier": "REJECT — INSUFFICIENT DATA",
+                   "data_quality": "Missing", "source": "n/a"}
+        else:
+            rows = data.get("rows", 0); complete = data.get("complete", False)
+            rec = {**p, "side": side,
+                   "source": data.get("source"), "rows": rows, "complete": complete,
+                   "gap": data.get("gap", ""),
+                   "l5_avg": data.get("l5_avg"), "l10_avg": data.get("l10_avg"),
+                   "l10_median": data.get("l10_median"),
+                   "l5_hit_rate": data.get("l5_hit_rate"),
+                   "l10_hit_rate": data.get("l10_hit_rate"),
+                   "edge": data.get("edge"),
+                   "confidence_tier": _tier(rows, complete),
+                   "data_quality": _v2_data_quality(data.get("source"), rows, complete)}
+
+        # HARD RULE: JF eligibility requires passing WOW validation first.
+        wow_ok = rec["confidence_tier"] in _JF_WOW_VALID_TIERS
+        if wow_ok:
+            jf_score, jf_breakdown = _jf_score_prop(rec)
+        else:
+            jf_score, jf_breakdown = 0.0, None
+        rec["wow_validated"]    = wow_ok
+        rec["jf_score"]         = jf_score
+        rec["jf_band"]          = _jf_band(jf_score) if wow_ok else "Not JF Style"
+        rec["jf_breakdown"]     = jf_breakdown
+        rec["normalization_log"] = norm_log
+        # Slip-eligible only when WOW-validated AND JF score clears the bar.
+        rec["jf_slip_eligible"] = bool(wow_ok and jf_score >= _JF_SLIP_MIN_SCORE)
+        out.append(rec)
+    return out
+
+
+def _jf_build_slips(scored):
+    """Build Conservative/Standard/Flex slip shells from slip-eligible legs.
+    Never forces action: if a size can't be filled, its slip is unavailable
+    with a reason. Reuses _cm_slip_combos so the no-same-game/player
+    correlation rule is enforced. Returns a dict keyed by slip label."""
+    legs = [p for p in scored if p.get("jf_slip_eligible")]
+    legs.sort(key=lambda p: p.get("jf_score", 0), reverse=True)
+    # Guardrail: cap the candidate pool before combinatorial slip building.
+    # The top legs by JF score dominate the best slips anyway.
+    legs = legs[:_JF_MAX_COMBO_LEGS]
+    slips = {}
+    for label, size in _JF_SLIP_TYPES:
+        mult = CM_PRIZEPICKS_FLEX_MULT.get(size)
+        if len(legs) < size:
+            slips[label] = {"slip_size": size, "payout_mult": mult,
+                            "available": False, "legs": [],
+                            "reason": f"insufficient JF-eligible legs: need {size}, have {len(legs)}"}
+            continue
+        combos = _cm_slip_combos(legs, size)
+        if not combos:
+            slips[label] = {"slip_size": size, "payout_mult": mult,
+                            "available": False, "legs": [],
+                            "reason": "no correlation-clean combination available"}
+            continue
+        scored_combos = []
+        for c in combos:
+            scores = [float(p.get("jf_score") or 0) for p in c]
+            avg = sum(scores) / len(scores) if scores else 0.0
+            premium_all = all(p.get("jf_band") == "Premium JF Core" for p in c)
+            scored_combos.append((c, round(avg, 2), premium_all))
+        # Best floor first: all-premium combos win ties, then higher avg JF.
+        scored_combos.sort(key=lambda x: (x[2], x[1]), reverse=True)
+        best, best_avg, best_premium = scored_combos[0]
+        slips[label] = {
+            "slip_size": size, "payout_mult": mult, "available": True,
+            "avg_jf_score": best_avg, "all_premium": best_premium,
+            "legs": [_jf_leg_view(p) for p in best],
+            "alternates": [
+                {"avg_jf_score": a, "all_premium": pr,
+                 "legs": [_jf_leg_view(p) for p in c]}
+                for (c, a, pr) in scored_combos[1:3]
+            ],
+        }
+    return slips
+
+
+@app.route("/wow/jf", methods=["POST"])
+@require_api_key
+def wow_jf_slip_engine():
+    """WOW-JF Slip Engine v1.0 — child lane. POST a prop pool (or a board_id)
+    and receive JF-scored props + Conservative/Standard/Flex slip shells.
+    Runs the full WOW v16 gate chain first — no prop reaches a slip without
+    passing WOW validation. Never forces action."""
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"ok": False,
+                        "error": "request body must be a JSON object"}), 400
+    board_id = (body.get("board_id") or "").strip()
+
+    # 1. Accept the prop pool: explicit body props, else load a saved board.
+    if isinstance(body.get("props"), list) and body["props"]:
+        props = body["props"]; board_src = None
+    elif board_id:
+        with _cm_db() as conn:
+            board = _cm_load_board(conn, board_id)
+        if not board:
+            return jsonify({"ok": False, "error": f"board {board_id} not found"}), 404
+        raw_props = board["props"]
+        if isinstance(raw_props, list):
+            props = raw_props
+        else:
+            try:
+                props = json.loads(raw_props)
+            except (TypeError, ValueError):
+                return jsonify({"ok": False,
+                                "error": f"board {board_id} has unreadable props"}), 422
+        if not isinstance(props, list):
+            return jsonify({"ok": False,
+                            "error": f"board {board_id} props is not a list"}), 422
+        board_src = board_id
+    else:
+        return jsonify({"ok": False,
+                        "error": "provide a non-empty 'props' array or a 'board_id'"}), 400
+
+    # 2. Pre-Analysis Slate Purge.
+    kept, purged = _jf_slate_purge(props)
+    # 3–5. WOW v16 gates → JF eligibility tag → JF Score 0–10.
+    scored = _jf_score_pool(kept)
+    # 6–8. Slip shells from validated legs only; never force action.
+    slips = _jf_build_slips(scored)
+
+    eligible = [p for p in scored if p.get("jf_slip_eligible")]
+    by_band = {"Premium JF Core": 0, "JF Slip Eligible": 0,
+               "Watch Only": 0, "Not JF Style": 0}
+    for p in scored:
+        b = p.get("jf_band", "Not JF Style")
+        by_band[b] = by_band.get(b, 0) + 1
+
+    return jsonify({
+        "ok": True, "engine": "WOW-JF Slip Engine v1.0",
+        "activation": "/wow jf", "board_id": board_src,
+        "forced_action": False,
+        "counts": {
+            "received": len(props), "purged": len(purged),
+            "scored": len(scored), "slip_eligible": len(eligible),
+            "by_band": by_band,
+        },
+        "slate_purge": purged,
+        "scored_props": [
+            {**_jf_leg_view(p),
+             "rows": p.get("rows"), "complete": p.get("complete"),
+             "wow_validated": p.get("wow_validated"),
+             "jf_slip_eligible": p.get("jf_slip_eligible"),
+             "jf_breakdown": p.get("jf_breakdown"), "gap": p.get("gap")}
+            for p in sorted(scored, key=lambda x: x.get("jf_score", 0), reverse=True)
+        ],
+        "slips": slips,
+    })
+
+
 # ── Endpoint: POST /postmortem-log ────────────────────────────────────
 @app.route("/postmortem-log", methods=["POST"])
 @require_api_key
