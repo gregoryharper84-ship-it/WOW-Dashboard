@@ -1,0 +1,124 @@
+Yes — **a little needs to be wired up if you want this enforced automatically in Replit.** If it only lives in ChatGPT/Claude memory, it helps research, but it will not reliably block bad soccer props.
+
+### What Replit needs to wire
+
+**1. Add soccer source tiers**
+Create a soccer-specific source stack:
+
+* **Tier 0 / official:** league site, club site, official team account, official lineup feed
+* **Tier 1 / core stats:** FBref, Transfermarkt, Understat
+* **Tier 2 / live context:** FotMob, SofaScore, Flashscore
+* **Tier 3 / deep/open data:** StatsBomb Open Data
+* **API layer:** API-Football, if you want automation
+
+**2. Add a confirmed-XI gate**
+For soccer **overs**, especially player props, Replit should check:
+
+```text
+if soccer_prop.side == MORE and confirmed_XI_not_available:
+    max_status = CONDITIONAL / WATCH
+```
+
+Exception: if the prop is a pre-lineup lean only, it can stay in the research pool but not become Final Approved.
+
+**3. Add expected-minutes check**
+Wire in:
+
+```text
+L5 starts
+L10 starts
+L5 minutes
+L10 minutes
+substitution pattern
+early sub frequency before 70'
+```
+
+Then tag:
+
+```text
+minutes-risk
+rotation-risk
+fixture-congestion-risk
+confirmed-starter
+bench-risk
+```
+
+**4. Add prop-type risk routing**
+Soccer props should not all be treated equally.
+
+Preferred stable props:
+
+```text
+passes
+tackles
+interceptions
+fouls
+cards
+shots
+```
+
+High-variance props:
+
+```text
+goals
+assists
+shots on target
+goalkeeper saves in extreme mismatch spots
+```
+
+For high-variance props, Replit should require stronger proof before approval.
+
+**5. Add league-strength adjustment**
+This does not need to be perfect at first. Just add a multiplier placeholder:
+
+```text
+Premier League / Champions League: 1.00
+Top 5 Europe: 0.95–1.00
+MLS / Eredivisie / Saudi / lower leagues: 0.85–0.95
+```
+
+The key is not the exact number yet — it is preventing raw stat translation across leagues.
+
+**6. Add referee context for cards/fouls**
+For cards/fouls, Replit should require:
+
+```text
+referee cards per match
+fouls called per match
+penalties awarded tendency
+team discipline profile
+player card/foul history
+```
+
+If ref data is missing, downgrade instead of approving.
+
+### What does **not** need wiring yet
+
+You do **not** need to build a full soccer engine immediately. This can be added as a **source-stack + gate patch** inside WOW v16.
+
+I would tell Replit:
+
+```text
+Implement Soccer Props Source Stack + Process Patch as a WOW v16 module.
+
+Do not create a separate soccer engine yet.
+
+Add:
+1. soccer_source_tiers
+2. confirmed_XI gate
+3. expected_minutes gate
+4. soccer_prop_type_risk routing
+5. league_strength_adjustment placeholder
+6. referee_context gate for cards/fouls
+7. failure tags:
+   - soccer-xi-unconfirmed
+   - soccer-minutes-risk
+   - soccer-rotation-risk
+   - soccer-fixture-congestion
+   - soccer-league-translation-risk
+   - soccer-ref-context-missing
+   - soccer-high-variance-prop
+   - soccer-official-lineup-confirmed
+```
+
+Bottom line: **yes, wire the gates and tags.** The data sources can stay partly manual/research-assisted for now, but Replit should enforce the approval caps so soccer props do not get treated like NBA/WNBA/MLB props.
