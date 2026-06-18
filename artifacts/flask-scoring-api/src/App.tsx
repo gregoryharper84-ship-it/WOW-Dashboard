@@ -4,8 +4,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import Layout from "@/components/layout";
+import Prompt from "@/pages/prompt";
 import Lobby from "@/pages/lobby";
-import Score from "@/pages/score";
 import Stats from "@/pages/stats";
 import Log from "@/pages/log";
 
@@ -14,8 +14,8 @@ const queryClient = new QueryClient();
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={Lobby} />
-      <Route path="/score" component={Score} />
+      <Route path="/" component={Prompt} />
+      <Route path="/lobby" component={Lobby} />
       <Route path="/stats" component={Stats} />
       <Route path="/log" component={Log} />
       <Route component={NotFound} />

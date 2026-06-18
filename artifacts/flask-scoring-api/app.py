@@ -7972,6 +7972,135 @@ def wow_health():
     return jsonify({"status": overall, "sports": results})
 
 
+# ── /wow/analyze — Claude-powered prompt & screenshot extractor ──────
+@app.route("/wow/analyze", methods=["POST"])
+@require_api_key
+def wow_analyze():
+    """Parse a free-form text prompt or a base64-encoded betting slip screenshot
+    into a structured prop object ready for /wow/l10/v2.
+
+    POST body (JSON):
+      { "prompt": str?, "image_base64": str?, "image_mime": str? }
+
+    Returns:
+      { ok: true, player, sport, prop, direction, line, league?,
+        confidence: "high"|"medium"|"low", raw_response: str }
+    """
+    if not _ANTHROPIC_AVAILABLE:
+        return jsonify({"ok": False,
+                        "error": "anthropic package not installed on server"}), 503
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        return jsonify({"ok": False,
+                        "error": "ANTHROPIC_API_KEY not configured on server"}), 503
+
+    body = request.get_json(silent=True) or {}
+    prompt_text   = (body.get("prompt")       or "").strip()
+    image_b64     = (body.get("image_base64") or "").strip()
+    image_mime    = (body.get("image_mime")   or "image/png").strip()
+
+    if not prompt_text and not image_b64:
+        return jsonify({"ok": False,
+                        "error": "Provide a prompt text and/or an image_base64"}), 400
+
+    # Build Claude message content
+    system_prompt = (
+        "You are an expert sports-betting prop analyst. "
+        "Your only job is to extract a single structured player prop from the user's input "
+        "(which may be natural language, a photo of a betting slip, or both). "
+        "Return ONLY valid JSON — no prose, no markdown fences — with these keys:\n"
+        "  player    (string, full name)\n"
+        "  sport     (string: NBA | NFL | MLB | NHL | Soccer | Tennis | Golf | MMA | NCAAB | NCAAF | WNBA)\n"
+        "  prop      (string, normalized: e.g. 'points', 'rebounds', 'pitcher strikeouts', 'goals')\n"
+        "  direction (string: MORE | LESS)\n"
+        "  line      (number)\n"
+        "  league    (string or null — e.g. 'epl', 'laliga', 'mls'; null if not soccer)\n"
+        "  confidence (string: high | medium | low — your extraction confidence)\n"
+        "If you cannot determine a field with reasonable confidence, set it to null. "
+        "Never invent data. If the image is unreadable or the input is too ambiguous, "
+        "return {\"error\": \"Could not extract a valid prop from the provided input\"}."
+    )
+
+    content = []
+    if image_b64:
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image_mime,
+                "data": image_b64,
+            }
+        })
+    if prompt_text:
+        content.append({"type": "text", "text": prompt_text})
+    elif image_b64:
+        content.append({"type": "text", "text": "Extract the player prop from this betting slip."})
+
+    try:
+        client = _anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=512,
+            system=system_prompt,
+            messages=[{"role": "user", "content": content}],
+        )
+        raw = msg.content[0].text.strip()
+    except _anthropic.AuthenticationError:
+        return jsonify({"ok": False, "error": "Invalid Anthropic API key"}), 401
+    except _anthropic.RateLimitError:
+        return jsonify({"ok": False, "error": "Anthropic rate limit reached — try again shortly"}), 429
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Claude API error: {str(e)[:200]}"}), 502
+
+    # Strip markdown fences if Claude wraps in ```json
+    clean = raw
+    if clean.startswith("```"):
+        clean = re.sub(r"^```[a-z]*\n?", "", clean).rstrip("`").strip()
+
+    try:
+        parsed = json.loads(clean)
+    except (json.JSONDecodeError, ValueError):
+        return jsonify({"ok": False,
+                        "error": "Claude returned non-JSON output",
+                        "raw_response": raw}), 502
+
+    if "error" in parsed:
+        return jsonify({"ok": False, "error": parsed["error"], "raw_response": raw}), 422
+
+    required = ["player", "sport", "prop", "direction", "line"]
+    missing  = [k for k in required if not parsed.get(k)]
+    if missing:
+        return jsonify({
+            "ok": False,
+            "error": f"Could not extract: {', '.join(missing)}",
+            "partial": parsed,
+            "raw_response": raw,
+        }), 422
+
+    # Normalize direction
+    parsed["direction"] = SIDE_MAP.get(str(parsed["direction"]).strip(), "MORE")
+    # Normalize line to float
+    try:
+        parsed["line"] = float(parsed["line"])
+    except (TypeError, ValueError):
+        return jsonify({"ok": False,
+                        "error": "Extracted line is not a number",
+                        "partial": parsed, "raw_response": raw}), 422
+
+    return jsonify({
+        "ok": True,
+        "player":     parsed.get("player"),
+        "sport":      parsed.get("sport"),
+        "prop":       parsed.get("prop"),
+        "direction":  parsed.get("direction"),
+        "line":       parsed.get("line"),
+        "league":     parsed.get("league"),
+        "confidence": parsed.get("confidence", "medium"),
+        "raw_response": raw,
+    })
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # CONNECTED MODEL ORCHESTRATOR (CM)
 # ChatGPT → /input-board → /wow-score → /claude-audit → /final-arbiter
