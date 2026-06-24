@@ -13087,6 +13087,154 @@ def _llp_snapshot_cron_status():
 _llp_start_snapshot_cron()
 
 
+# ---------------------------------------------------------------------------
+# Gate Engine — WOW v16 PrizePicks deterministic classification pipeline
+# ---------------------------------------------------------------------------
+from gate_engine.pipeline import run_pipeline as _ge_run_pipeline
+from gate_engine import tracker as _ge_tracker
+
+
+@app.route("/gate-engine/run", methods=["POST"])
+@require_api_key
+def gate_engine_run():
+    """
+    Run the full WOW v16 gate engine pipeline on a board of prop rows.
+
+    Request body (JSON):
+      {
+        "rows": [
+          {
+            "player":       "LeBron James",
+            "sport":        "NBA",
+            "prop_type":    "Points",
+            "line":         27.5,
+            "direction":    "MORE",
+            "slate_date":   "2026-06-24",
+            "board_source": "PrizePicks",
+            "game":         "LAL vs GSW",
+            "market_line":  27.0          (optional)
+          }
+        ],
+        "target_date":  "2026-06-24",  (optional, defaults to today UTC)
+        "enrichment": {                (optional)
+          "<row_id or 'player:prop'>": {
+            "game_log":       [25, 28, ...],
+            "season_log":     [24, 26, ...],
+            "sportsbook_line": 27.0,
+            "best_available":  26.5,
+            "consensus_line":  27.0,
+            "clv_entry_price": -115,
+            "closing_price":   -120,
+            "status_payload": {
+              "status": "ACTIVE", "source": "Rotowire",
+              "dnp_risk": false, "minutes_restriction": false
+            }
+          }
+        },
+        "record_entries": false
+      }
+
+    Response:
+      {
+        "prop_ledger":        [...],   all rows with full gate audit trail
+        "data_status_ledger": [...],   data status per row
+        "terminal_labels":    [...],   {row_id, label, blockers}
+        "final_card":         [...],   rows that reached FINAL_APPROVED
+        "exposure_report":    {...},   exposure snapshot
+        "clv_table":          [...],   CLV tracking
+        "summary":            {...}    counts by label
+      }
+
+    NOTE: This endpoint is a data/classification layer only.
+    Final approval remains with WOW/LLP. can_approve_bets = false.
+    """
+    body = request.get_json(silent=True) or {}
+
+    raw_rows = body.get("rows")
+    if not raw_rows or not isinstance(raw_rows, list):
+        return jsonify({"error": "rows must be a non-empty list"}), 400
+
+    target_date = None
+    if body.get("target_date"):
+        try:
+            from datetime import date as _date
+            target_date = _date.fromisoformat(body["target_date"])
+        except ValueError:
+            return jsonify({"error": f"Invalid target_date: {body['target_date']}"}), 400
+
+    enrichment    = body.get("enrichment") or {}
+    record_entries = bool(body.get("record_entries", False))
+
+    try:
+        result = _ge_run_pipeline(
+            raw_rows=raw_rows,
+            target_date=target_date,
+            enrichment=enrichment,
+            record_entries=record_entries,
+        )
+    except Exception as exc:
+        req.log.error("gate_engine_run error: %s", exc)
+        return jsonify({"error": "Gate engine pipeline error", "detail": str(exc)}), 500
+
+    result["can_approve_bets"] = False
+    result["disclaimer"]       = DISCLAIMER
+    return jsonify(result), 200
+
+
+@app.route("/gate-engine/result", methods=["POST"])
+@require_api_key
+def gate_engine_result():
+    """
+    Record a post-game result for CLV/hit tracking.
+
+    Request body:
+      {
+        "row_id":        "row_0_abc123",
+        "final_stat":    28.0,
+        "closing_price": -118,    (optional)
+        "notes":         "..."    (optional)
+      }
+    """
+    body = request.get_json(silent=True) or {}
+    row_id = body.get("row_id")
+    if not row_id:
+        return jsonify({"error": "row_id required"}), 400
+    final_stat = body.get("final_stat")
+    if final_stat is None:
+        return jsonify({"error": "final_stat required"}), 400
+    try:
+        final_stat = float(final_stat)
+    except (TypeError, ValueError):
+        return jsonify({"error": "final_stat must be a number"}), 400
+
+    record = _ge_tracker.record_result(
+        row_id=row_id,
+        final_stat=final_stat,
+        closing_price=body.get("closing_price"),
+        notes=body.get("notes"),
+    )
+    return jsonify(record), 200
+
+
+@app.route("/gate-engine/performance", methods=["GET"])
+@require_api_key
+def gate_engine_performance():
+    """Return hit-rate performance bucketed by terminal label."""
+    return jsonify(_ge_tracker.get_bucket_performance()), 200
+
+
+@app.route("/gate-engine/labels", methods=["GET"])
+def gate_engine_labels():
+    """Return all valid terminal labels and data statuses (no auth required)."""
+    from gate_engine.labels import PropLabel, DataStatus
+    return jsonify({
+        "terminal_labels": [l.value for l in PropLabel],
+        "data_statuses":   [d.value for d in DataStatus],
+        "can_approve_bets": False,
+        "note": "FINAL_APPROVED is a data classification only. Bet approval stays with WOW/LLP.",
+    }), 200
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)

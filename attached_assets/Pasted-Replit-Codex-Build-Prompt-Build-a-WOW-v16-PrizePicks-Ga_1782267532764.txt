@@ -1,0 +1,66 @@
+Replit/Codex Build Prompt:
+
+Build a WOW v16 PrizePicks Gate Engine MVP.
+
+Goal:
+Create a deterministic tracking and classification system. The system does not pick bets on its own. It classifies every prop row, logs every blocker, and prevents approval-filter mode.
+
+Required outputs:
+
+1. Full prop ledger
+2. Data-status ledger
+3. Terminal label for every prop
+4. Blocker reason for every rejected or held prop
+5. Final card report
+6. Exposure report
+7. CLV/result tracking table
+8. Test suite for every gate
+
+Required labels:
+
+* RESEARCH_INTEREST
+* MODEL_QUALIFIED_HOLD
+* MARKET_VERIFIED_HOLD
+* MONEY_QUALIFIED
+* FINAL_APPROVED
+* REJECT_NO_EDGE
+* REJECT_BAD_STRUCTURE
+* REJECT_DATA_QUALITY
+* SOURCE_CONFLICT
+* SLATE_PURGE
+* DUPLICATE_EXPOSURE_BLOCK
+* NO_PLAY
+
+Required data statuses:
+
+* RETRIEVED
+* RECONSTRUCTED
+* PROXY_ONLY
+* FAILED
+* SOURCE_CONFLICT
+* INPUT_FAILURE
+* DATA_UNOBTAINABLE
+* NOT_CALLED
+
+Required modules:
+
+1. board_intake.py — normalize PrizePicks board rows
+2. slate_validation.py — verify player/team game date
+3. status_role.py — track player status and role confidence
+4. l5_l10_ledger.py — calculate L5/L10 average, median, hit rate
+5. outlier_gate.py — isolate outlier-driven averages
+6. market_gate.py — compare PrizePicks line to sportsbook/projection market
+7. ev_gate.py — classify whether the prop is money qualified
+8. slip_structure.py — reject filler legs and bad card construction
+9. exposure_gate.py — block duplicate exposure
+10. classifier.py — assign final label
+11. tracker.py — track result, CLV, line movement, and bucket performance
+12. tests/ — pytest tests for every rule
+
+Hard rules:
+
+* Every input row must appear in output.
+* Missing data cannot be fake-filled.
+* No prop can be FINAL_APPROVED without slate, status, L5/L10, market/projection support, failure-path review, and slip-structure approval.
+* If market support is missing, max label is MODEL_QUALIFIED_HOLD unless a validated PrizePicks-only projection module exists.
+* If no play qualifies, output NO PLAY.
