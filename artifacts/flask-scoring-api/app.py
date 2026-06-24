@@ -13235,6 +13235,96 @@ def gate_engine_labels():
     }), 200
 
 
+@app.route("/gate-engine/audit-closure", methods=["POST"])
+@require_api_key
+def gate_engine_audit_closure():
+    """
+    Run WOW v16 Claude Audit Closure validators on a prop closure object.
+
+    Request body:
+      {
+        "closure": {
+          "l5_line_used":             25.5,
+          "approval_timestamp":       "2026-06-24T10:00:00+00:00",
+          "approved_line":            25.5,
+          "current_line":             25.5,
+          "model_prob":               0.62,
+          "slip_type":                "POWER",       # POWER | FLEX | NONE
+          "edge_vs_friction":         0.04,           # float or "UNKNOWN"
+          "market_edge_confirmed":    true,
+          "data_provenance":          "RETRIEVED:Rotowire",
+          "matchup_grade_source":     "WOW_MODEL",
+          "primary_signal":           "L10_TREND",
+          "structural_failure_count": 0,
+          "unresolved_conflict_flags": [],
+          "board_timestamp":          "2026-06-24T09:00:00+00:00",
+          "market_timestamp":         "2026-06-24T09:30:00+00:00",
+          "coin_flip_killed":         false,         # optional
+          "direction":                "MORE"          # optional
+        },
+        "prior_closure": { ... }    # optional — used for coin-flip kill detection
+      }
+
+    Response:
+      {
+        "passed":         bool,
+        "results":        { validator: {passed, code, detail, ceiling} },
+        "blockers":       ["VALIDATOR:CODE", ...],
+        "label_ceiling":  "WATCH" | "MODEL_QUALIFIED_HOLD" | null,
+        "rerun_required": bool,
+        "can_approve_bets": false
+      }
+
+    Hard rules enforced:
+      - l5_line_used within 0.5 of current_line
+      - Approval older than 3h → rerun required
+      - Line moved 0.5+ since approval → rerun required
+      - model_prob must clear break_even(slip_type) + safety_buffer
+      - edge_vs_friction must be POSITIVE for Power Play
+      - Model Qualified without market_edge_confirmed=True not Power eligible
+      - Source conflict blocks FINAL_APPROVED
+      - DES conflict persists across sessions
+      - 3+ structural failures kill prop
+      - Opposite side after coin-flip kill must restart full gate stack
+    """
+    body = request.get_json(silent=True) or {}
+    closure = body.get("closure")
+    if not closure or not isinstance(closure, dict):
+        return jsonify({"error": "closure object required"}), 400
+
+    prior_closure = body.get("prior_closure") or None
+
+    from gate_engine.audit_closure import run_audit_closure
+    try:
+        result = run_audit_closure(closure, prior_closure=prior_closure)
+    except Exception as exc:
+        return jsonify({"error": "Audit closure error", "detail": str(exc)}), 500
+
+    result["can_approve_bets"] = False
+    result["disclaimer"]       = DISCLAIMER
+    return jsonify(result), 200
+
+
+@app.route("/gate-engine/audit-closure/fields", methods=["GET"])
+def gate_engine_closure_fields():
+    """Return required closure fields and their definitions (no auth required)."""
+    from gate_engine.audit_closure import (
+        CLOSURE_FIELDS, BREAK_EVEN, SAFETY_BUFFER,
+        APPROVAL_STALE_HOURS, LINE_MOVEMENT_THRESHOLD,
+        L5_LINE_TOLERANCE, MAX_STRUCTURAL_FAILURES,
+    )
+    return jsonify({
+        "required_fields":          CLOSURE_FIELDS,
+        "break_even":               BREAK_EVEN,
+        "safety_buffer":            SAFETY_BUFFER,
+        "approval_stale_hours":     APPROVAL_STALE_HOURS,
+        "line_movement_threshold":  LINE_MOVEMENT_THRESHOLD,
+        "l5_line_tolerance":        L5_LINE_TOLERANCE,
+        "max_structural_failures":  MAX_STRUCTURAL_FAILURES,
+        "can_approve_bets":         False,
+    }), 200
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)
