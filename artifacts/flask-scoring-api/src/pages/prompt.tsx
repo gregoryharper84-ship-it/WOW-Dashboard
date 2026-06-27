@@ -30,6 +30,47 @@ interface QueuedLeg {
   jfEligible?: boolean;
 }
 
+const SLIP_DRAFT_KEY = "wow_slip_draft";
+const SLIP_DRAFT_TTL = 24 * 60 * 60 * 1000;
+
+interface SlipDraft {
+  slipMode: boolean;
+  legs: QueuedLeg[];
+  savedAt: number;
+}
+
+function loadSlipDraft(): SlipDraft | null {
+  try {
+    const raw = localStorage.getItem(SLIP_DRAFT_KEY);
+    if (!raw) return null;
+    const draft = JSON.parse(raw) as SlipDraft;
+    if (Date.now() - draft.savedAt > SLIP_DRAFT_TTL) {
+      localStorage.removeItem(SLIP_DRAFT_KEY);
+      return null;
+    }
+    return draft;
+  } catch {
+    return null;
+  }
+}
+
+function saveSlipDraft(slipMode: boolean, legs: QueuedLeg[]) {
+  try {
+    const draft: SlipDraft = { slipMode, legs, savedAt: Date.now() };
+    localStorage.setItem(SLIP_DRAFT_KEY, JSON.stringify(draft));
+  } catch {
+    // storage full or unavailable — fail silently
+  }
+}
+
+function clearSlipDraft() {
+  try {
+    localStorage.removeItem(SLIP_DRAFT_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 const EXAMPLE_PROMPTS = [
   "Score Luka Doncic over 8.5 assists tonight",
   "Haaland goals MORE 0.5 EPL",
@@ -117,8 +158,8 @@ function jfBandColor(band?: string) {
 export default function Prompt() {
   const { apiKey } = useApiKey();
 
-  const [slipMode, setSlipMode] = useState(false);
-  const [slipLegs, setSlipLegs] = useState<QueuedLeg[]>([]);
+  const [slipMode, setSlipMode] = useState<boolean>(() => loadSlipDraft()?.slipMode ?? false);
+  const [slipLegs, setSlipLegs] = useState<QueuedLeg[]>(() => loadSlipDraft()?.legs ?? []);
   const [slipVerdict, setSlipVerdict] = useState<JfSlipVerdict | null>(null);
 
   const [promptText, setPromptText] = useState("");
@@ -135,6 +176,14 @@ export default function Prompt() {
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (slipMode || slipLegs.length > 0) {
+      saveSlipDraft(slipMode, slipLegs);
+    } else {
+      clearSlipDraft();
+    }
+  }, [slipMode, slipLegs]);
 
   const analyzeMutation = useMutation({
     mutationFn: async () => {
