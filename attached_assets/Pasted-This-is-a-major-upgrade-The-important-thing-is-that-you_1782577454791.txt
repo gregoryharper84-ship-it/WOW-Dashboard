@@ -1,0 +1,240 @@
+This is a major upgrade. The important thing is that you did not just add more prompt language — you turned the patch into machine-enforced gates. That is exactly the direction WOW needed.
+
+My take: this moves WOW v16 from analyst-assisted to execution-controlled.
+
+What I like most
+
+The five modules are the right five.
+
+Module	My grade	Why it matters
+sharp_anchor.py	A	Correctly rejects only when your side fights sharp direction. That avoids killing valuable stale PP lines.
+settlement_loopback.py	A-	This is huge. Without fresh settled results, the model should not pretend it is calibrated.
+house_rules.py	A-	The 8% injury/partial-play haircut is practical and simple enough to enforce.
+execution_friction.py	A	This is the real FINAL_APPROVED lock. Line age, payout drift, player status, and side-aware movement are non-negotiable.
+correlation_gate.py	A-	Blocking direct overlap in Power Play is exactly right. This prevents dumb slip construction losses.
+
+The best design choice is this:
+
+All return can_approve_bets: False.
+
+That means these endpoints are not “approval machines.” They are risk gates. Approval should only happen after all gates pass and the final EV layer confirms value.
+
+That is clean.
+
+Biggest win
+
+sharp_anchor.py fixes one of the most dangerous earlier model problems:
+
+Old risk:
+
+Sharp market disagrees → reject everything
+
+Better current logic:
+
+Sharp market disagrees against my selected side → reject
+Sharp market disagrees in favor of my selected side → stale value / hold
+
+That distinction is critical for PrizePicks.
+
+Example:
+
+PrizePicks: Rhyne Howard rebounds 3.5 MORE
+Sharp book: 4.5 or 3.5 juiced over
+
+That is not a conflict. That is potentially good.
+
+But:
+
+PrizePicks: Rhyne Howard rebounds 3.5 MORE
+Sharp book: 3.5 heavily juiced under / fair line drifting down
+
+That becomes REJECT_SHARP_CONFLICT or REJECT_FALLING_KNIFE.
+
+That is exactly how it should work.
+
+What still needs tightening
+
+1. You need a master orchestration endpoint
+
+Right now you have individual gates:
+
+/sharp-anchor
+/house-rules
+/execution-friction
+/correlation
+/settle/freshness
+
+Next step should be a single endpoint:
+
+POST /gate-engine/final-lock
+
+It should call all gates in order and return one unified result:
+
+{
+  "can_approve_bets": false,
+  "ceiling_label": "MARKET_VERIFIED_HOLD",
+  "blocking_gates": [
+    "SETTLEMENT_LOOPBACK_STALE",
+    "EXECUTION_LINE_AGE_EXPIRED"
+  ],
+  "warnings": [
+    "MARKET_VERIFIED_HOLD_STALE"
+  ],
+  "required_next_actions": [
+    "refresh PrizePicks line",
+    "refresh settlement ledger"
+  ]
+}
+
+The individual endpoints are good for testing. The final dashboard needs one truth source.
+
+2. settlement_loopback.py should control the label ceiling globally
+
+You already said stale ledger drops ceiling to MODEL_QUALIFIED_HOLD. Good.
+
+Make sure it applies globally like this:
+
+If settlement freshness fails:
+- FINAL_APPROVED blocked
+- MONEY_QUALIFIED blocked
+- MARKET_VERIFIED_HOLD allowed only if market data is live
+- MODEL_QUALIFIED_HOLD maximum if market data is incomplete
+
+This prevents a prop from sneaking through just because the other gates passed.
+
+3. house_rules.py needs platform profiles
+
+The 8% haircut is good, but it should eventually depend on platform and sport.
+
+Minimum profiles:
+
+PrizePicks
+Underdog
+Sleeper
+ParlayPlay
+Sportsbook standard
+
+Each should store:
+
+DNP rule
+partial-play rule
+stat correction rule
+push rule
+fantasy-score rule
+combo-stat rule
+protected-play rule
+
+Then the engine can say:
+
+This prop is playable on Platform A but rejected on Platform B.
+
+That matters for income readiness.
+
+4. correlation_gate.py should separate block vs tax
+
+Not every correlation should reject. Some should only reduce EV.
+
+I would classify like this:
+
+Correlation type	Action
+DIRECT_OVERLAP	Auto block
+SAME_PLAYER_COMPONENT	Auto block for Power, usually block for Flex
+OPPOSING_SIDES_SAME_STAT	Auto block
+TEAMMATE_USAGE_NEGATIVE	Apply EV tax / require external matrix
+PACE_ENVIRONMENT_POSITIVE	Allow only with correlation-adjusted EV
+BLOWOUT_SHARED_RISK	Apply slip-level haircut
+LOW_CORRELATION	No block
+
+So for example:
+
+Rhyne Howard rebounds MORE
++
+Rhyne Howard rebounds+assists LESS
+
+Auto block.
+
+But:
+
+Nneka assists MORE
++
+Rhyne rebounds MORE
+
+That may not be direct conflict. It needs environment/correlation review, not automatic rejection.
+
+5. Prompt Analyzer should not become an approval bypass
+
+The Prompt Analyzer sounds excellent, especially screenshot + Claude Vision + send-to-final-lock.
+
+But it needs a hard rule:
+
+Prompt Analyzer can extract and prefill.
+Prompt Analyzer cannot approve.
+Only Final Lock can approve.
+
+The result card should display:
+
+Extraction confidence ≠ betting confidence
+
+That prevents screenshot OCR or Claude Vision from creating false certainty.
+
+Recommended next build task
+
+Your next most important task is:
+
+Build /gate-engine/final-lock orchestration endpoint
+
+It should consume:
+
+prop
+selected side
+PrizePicks current line
+PrizePicks payout
+sharp fair line
+sportsbook no-vig probability
+model probability
+shrinkage probability
+player status
+platform
+slip legs
+slip type
+settlement freshness
+timestamp
+
+And return:
+
+final_label
+can_approve_bets
+approval_ceiling
+gate_results
+blocking_reasons
+EV_before_friction
+EV_after_friction
+usable_probability
+slip_EV
+required_recheck_fields
+
+My final assessment
+
+This is a real version jump.
+
+Before this, WOW could still sound right while being manually fragile.
+
+Now you have:
+
+market-direction enforcement
+settlement freshness enforcement
+house-rule vulnerability control
+execution-staleness control
+correlation blocking
+UI intake + persistence
+
+That is the right foundation.
+
+I would call this:
+
+WOW v16.2 Gate-Control Build
+Status: STRUCTURALLY VALID
+Approval readiness: Not ready until final-lock orchestration endpoint is added
+Best current label: MACHINE_ENFORCED_HOLD_READY
+
+You are close to the thing you actually need: a dashboard that refuses to approve bad slips even when the analysis sounds convincing.
