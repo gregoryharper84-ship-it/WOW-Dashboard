@@ -1,0 +1,398 @@
+Yes — Claude’s audit is strong. I would accept most of it, but I would **tighten it before patching** because a few items could create false confidence if applied too mechanically.
+
+The main upgrade: **WOW v16 should stop being only a reasoning framework and become an enforced decision system.** Right now the engine has many good rules, but too many are still analyst-written checks instead of hard blocks.
+
+## My review of Claude’s 8 issues
+
+### 1. Calibration feedback loop — **agree, but modify**
+
+Claude is right that this is the biggest structural gap. WOW already logs postmortems, archetypes, CLV, and failure tags, but the next run does not reliably read those outcomes before approving similar plays.
+
+Patch this, but do **not** use “3 losses = auto downgrade” by itself. Three losses can be variance. Use a blended rule:
+
+| Signal                                         | Action                             |
+| ---------------------------------------------- | ---------------------------------- |
+| 3 same-tag failures                            | warning / Watch cap                |
+| 5+ same-tag failures with negative CLV         | bucket downgrade                   |
+| 8–10 failures or negative EV after calibration | auto-suppress                      |
+| positive CLV but bad results                   | variance review, not automatic ban |
+| negative CLV and bad results                   | strongest downgrade                |
+
+This should become **Layer 0.5: Calibration Health Gate**. It runs before prop analysis. It checks bucket, market, player archetype, sport, prop type, and slip type.
+
+This also connects directly to the June 6 patch file, which already identified stale source use, outlier contamination, role-split failures, slate purge issues, and teammate availability as process failures rather than pure variance. 
+
+---
+
+### 2. Probability construction — **agree, but don’t over-trust fixed weights**
+
+Claude’s weight-cap idea is directionally right, but I would not hard-code one universal formula like:
+
+> Market 40%, L10 35%, role 15%, L5 ±5%
+
+That works as a guardrail, but not as a universal model. MLB pitcher Ks, WNBA assists, WNBA PRA, MLB fantasy score, and game winners do not deserve the same weighting.
+
+Better patch:
+
+**Every model probability must show its component ledger:**
+
+| Component                            | Required? |           Max influence |
+| ------------------------------------ | --------: | ----------------------: |
+| no-vig market / sportsbook comp      |       yes |                  40–50% |
+| L10 distribution / median / hit rate |       yes |                  25–35% |
+| role/minutes/usage                   |       yes |                  10–20% |
+| L5 trend                             |  optional |            ±5% hard cap |
+| matchup/context                      |  optional | ±3–5% unless quantified |
+| narrative                            |     never |                      0% |
+
+Also add a **probability interval**, not just a point estimate. Example:
+
+> model_prob: 58%
+> confidence interval: 53–61%
+> usable EV probability: 55% after uncertainty haircut
+
+That prevents the engine from pretending a manual 61% estimate is precise.
+
+For calibration tooling, scikit-learn explicitly supports probability calibration and reliability curves, which are exactly what WOW needs for “when we say 60%, does it actually hit around 60%?” ([Scikit-learn][1])
+
+---
+
+### 3. Line movement intelligence — **agree strongly**
+
+Claude nailed this. WOW currently treats line movement too generically.
+
+Add:
+
+**Line Movement Cause Classifier**
+
+| Cause                                                  | WOW action                           |
+| ------------------------------------------------------ | ------------------------------------ |
+| sharp consensus move with no obvious public/news cause | upgrade or hold for CLV confirmation |
+| injury/news move already priced in                     | downgrade stale edge                 |
+| isolated book shade                                    | Watch unless multiple books confirm  |
+| promo / boosted / PP-only distortion                   | cannot upgrade by itself             |
+| public steam                                           | neutral or downgrade                 |
+| unknown cause                                          | downgrade one tier                   |
+
+This should be powered by a real odds feed if possible. SportsDataIO says its odds API tracks opening and closing lines plus price changes with line movement timestamps, which fits this exact need. ([SportsDataIO][2]) Sportradar’s odds products also advertise live odds updates every 15–30 seconds and player-prop coverage. ([Getting Started][3])
+
+---
+
+### 4. Payout friction — **agree, and this must be visible on every prop**
+
+This is already partially patched in your House Hold Tax / PrizePicks EV rules, but Claude is right that it needs to appear inside **individual prop output**, not only slip review.
+
+Every prop block should show:
+
+```text
+PAYOUT CONTEXT
+Intended format: 2-pick Power / 3-pick Flex / 4-pick Flex / 1-pick Game Winner
+Slip break-even: X%
+Required per-leg probability: Y%
+Model probability: Z%
+Uncertainty haircut: -A%
+EV gap: + / -
+Slip label: POSITIVE / NEGATIVE / UNUSABLE
+```
+
+Important: a prop can be **market-qualified but slip-negative**.
+
+That label should be:
+
+> MARKET_QUALIFIED_BUT_SLIP_NEGATIVE
+
+This is a major income-readiness patch because it blocks “good-looking” legs from entering bad payout structures.
+
+---
+
+### 5. Role stability timing — **agree**
+
+This is a clean patch.
+
+Add required fields:
+
+```text
+subject_status_timestamp
+primary_teammate_status_timestamp
+projected_starter_or_lineup_timestamp
+role_confirmation_age_minutes
+tip_or_first_pitch_time
+```
+
+Rules:
+
+| Role check age               | Label impact                    |
+| ---------------------------- | ------------------------------- |
+| within 90 minutes            | passes                          |
+| 91–120 minutes               | Watch / recheck required        |
+| over 120 minutes             | cannot approve                  |
+| lineup/starter not confirmed | HOLD or REJECT depending market |
+| late status change           | full rerun                      |
+
+This pairs with your June 6 role-split and teammate availability patch, which already says role-dependent players need separate ledgers and primary teammate status checks. 
+
+---
+
+### 6. Failure path review — **agree, but make it numeric**
+
+“Failure paths reviewed” is too easy to fake. Claude’s matrix is right.
+
+New required block:
+
+```text
+FAILURE PATH MATRIX
+Primary kill path:
+- Scenario:
+- Probability band:
+- Model adjustment:
+- Evidence:
+
+Secondary kill path:
+- Scenario:
+- Probability band:
+- Model adjustment:
+- Evidence:
+
+Black swan path:
+- Scenario:
+- Probability band:
+- Void/DNP risk:
+- Evidence:
+```
+
+Rules:
+
+| Failure-path risk           | Action                         |
+| --------------------------- | ------------------------------ |
+| primary kill path >30%      | model_prob must be haircut     |
+| two medium kill paths stack | downgrade one tier             |
+| undocumented kill path      | no approval                    |
+| black swan is injury-only   | note, but do not over-penalize |
+| role/minutes kill path      | serious downgrade              |
+
+This would have helped on many prior WNBA props where the real risk was minutes, blowout, foul trouble, or role compression.
+
+---
+
+### 7. Directional exposure — **strongly agree**
+
+Your current exposure rules catch duplicate players and duplicate games, but not hidden correlation.
+
+Add:
+
+**Directional Exposure Ledger**
+
+Track exposure by script:
+
+| Script type                   | Examples                                                   |
+| ----------------------------- | ---------------------------------------------------------- |
+| fast pace / over environment  | multiple MORE points/PRA/assists from same game            |
+| slow pace / under environment | multiple LESS props from same game                         |
+| blowout script                | favorite overs, dog unders, bench risk                     |
+| pitcher dominance             | Ks MORE + opponent hitters LESS + game under               |
+| starter short leash           | pitching outs LESS + bullpen angle + opponent late scoring |
+| injury-role script            | multiple props depending on one teammate being out         |
+
+Rule:
+
+> If three or more legs depend on the same game script, the slip needs explicit correlation EV math or it is downgraded.
+
+Hard label:
+
+> DIRECTIONAL_EXPOSURE_BLOCK
+
+This matters more for PrizePicks than sportsbook singles because PP cards quietly multiply one bad assumption.
+
+---
+
+### 8. Spec version drift — **mostly already fixed**
+
+Claude’s concern was valid, but your uploaded source says the master spec is now updated to **WOW v16 Clean Core**, explicitly superseding v15.3.0 effective 2026-06-04, and includes the WNBA and MLB source stack upgrades. 
+
+So I would not make this a top-3 patch anymore. Keep it as a housekeeping rule:
+
+> Every patch must update: master spec, patch register, dashboard schema, and starter prompt summary.
+
+## Gaps Claude missed
+
+### Gap 1 — Rules are not machine-enforced
+
+This is the biggest thing Claude did not say strongly enough.
+
+WOW has lots of “must” language, but unless Replit/Codex enforces it with schema validation, the model can still output a pick with missing fields.
+
+Create a required JSON schema for every prop:
+
+```text
+player
+team
+opponent
+game_date
+market
+side
+line
+book_or_platform
+odds_or_payout
+timestamp
+status_timestamp
+role_timestamp
+l5_values
+l10_values
+median
+mean
+market_no_vig_probability
+model_probability
+probability_interval
+edge
+payout_context
+failure_path_matrix
+exposure_tags
+final_label
+blocker_reason
+```
+
+If any required field is missing:
+
+> DATA_CONTRACT_FAIL — cannot approve
+
+---
+
+### Gap 2 — CLV needs to become a scored input, not just a postmortem note
+
+Add a rolling CLV grade by bucket:
+
+| CLV health                      | Meaning                     | Action |
+| ------------------------------- | --------------------------- | ------ |
+| CLV positive + results positive | promote                     |        |
+| CLV positive + results negative | variance hold               |        |
+| CLV negative + results positive | likely luck, do not promote |        |
+| CLV negative + results negative | suppress                    |        |
+| no CLV data                     | approval cap                |        |
+
+Use closing line as a truth proxy. Not perfect, but much better than only grading wins/losses.
+
+---
+
+### Gap 3 — Small sample shrinkage
+
+The model still risks overreacting to L5/L10.
+
+Patch:
+
+> No L5/L10 sample can create a 60%+ model probability without shrinkage to season baseline, role-split baseline, or market baseline.
+
+Example:
+
+```text
+Raw L10 hit rate: 8/10 = 80%
+Shrinkage-adjusted probability: 59–62%
+Usable probability after uncertainty: 57%
+```
+
+This prevents “8/10” from becoming fake certainty.
+
+---
+
+### Gap 4 — Proprietary-market separation still needs enforcement
+
+PrizePicks Fantasy Score, Goblins, Demons, discounted lines, and alt payout rows should never sit in the same trust bucket as sportsbook-comparable markets.
+
+Your lanes should be:
+
+| Lane                             | Approval ceiling                                |
+| -------------------------------- | ----------------------------------------------- |
+| sportsbook-comparable core props | can reach FINAL_APPROVED                        |
+| projection-module props          | can reach MODEL_QUALIFIED_HOLD unless validated |
+| Goblin/Demon/discount props      | cannot upgrade by discount alone                |
+| PP-only fantasy score            | requires internal projection + validation       |
+| no market comp                   | cannot be market verified                       |
+
+---
+
+### Gap 5 — Source hierarchy needs timestamp scoring
+
+Source quality should be scored like this:
+
+| Source type                         | Grade        |
+| ----------------------------------- | ------------ |
+| direct API/stat feed with timestamp | A            |
+| sportsbook odds API                 | A            |
+| official box score/gamelog          | A-           |
+| trusted stat site                   | B            |
+| article/preview/blurb               | C            |
+| screenshot only                     | D            |
+| social report unconfirmed           | D            |
+| no timestamp                        | cap at Watch |
+
+MLB Statcast is a strong MLB source because Baseball Savant allows queries at pitch, game, player, team, and season levels. ([baseballsavant.com][4]) Its CSV documentation also exposes pitch-level fields such as game date and release speed. ([baseballsavant.com][5]) For WNBA, Sportradar’s WNBA API includes a daily change log for updates to teams, players, game stats, schedules, standings, and rankings, which is useful for timestamped freshness. ([Getting Started][6])
+
+---
+
+### Gap 6 — Tool responsibilities need to be formalized
+
+As of June 2026, I would split the stack like this:
+
+| Tool                                                       | Responsibility                                                   |
+| ---------------------------------------------------------- | ---------------------------------------------------------------- |
+| ChatGPT / Deep Research                                    | research synthesis, patch design, source review, final reasoning |
+| Claude                                                     | adversarial audit, failure-path review, prompt/spec critique     |
+| Codex                                                      | code changes, schema enforcement, tests, dashboard patches       |
+| Replit                                                     | hosted app, scheduled runs, database, UI, prop intake pipeline   |
+| Odds API / OpticOdds / SportsDataIO / Sportradar / OddsJam | odds, line movement, market consensus                            |
+| MLflow / Evidently / sklearn                               | calibration, drift, monitoring, probability reliability          |
+
+OpenAI describes Codex as a coding agent that can write, review, and ship code, and the Codex app supports multiple agents, skills, and automations. ([OpenAI Help Center][7]) Replit Agent is positioned for building and deploying apps from natural language, and Replit automations support scheduled or event-driven deployments once the app is deployed. ([Replit Docs][8]) Claude Code can be used in GitHub workflows and has hooks that let you intercept agent behavior around tool calls or session events, which fits audit automation. ([Claude][9])
+
+## Updated patch priority
+
+I would reorder Claude’s list like this:
+
+| Priority | Patch                                        | Why                                            |
+| -------: | -------------------------------------------- | ---------------------------------------------- |
+|        1 | **Machine-Enforced Data Contract**           | Stops incomplete approvals                     |
+|        2 | **Calibration Health Gate Layer 0.5**        | Stops repeating losing archetypes              |
+|        3 | **Payout Context on Every Prop**             | Stops positive-looking but slip-negative legs  |
+|        4 | **CLV + Line Movement Cause Classifier**     | Separates sharp signal from stale/public steam |
+|        5 | **Failure Path Matrix**                      | Forces real downside analysis                  |
+|        6 | **Role Timestamp + Final Lock Recheck**      | Blocks stale role/status approvals             |
+|        7 | **Directional Exposure Ledger**              | Catches hidden correlation                     |
+|        8 | **Probability Component Ledger + Shrinkage** | Stops fake precision                           |
+|        9 | **Source Timestamp Grade**                   | Stops stale narrative data                     |
+|       10 | **Spec Sync / Patch Registry**               | Keeps sessions aligned                         |
+
+## The patch I would install next
+
+Not eight separate patches. I would bundle the top items into one enforcement patch:
+
+**WOW-PATCH-2026-06-27-ENFORCED-CALIBRATION-EV-LOCK**
+
+Core rules:
+
+1. No prop can be approved unless the required data contract is complete.
+2. Layer 0.5 checks historical bucket health before analysis.
+3. Every prop must show payout context and required break-even.
+4. Every model probability must include component weights and uncertainty range.
+5. Every prop must include a three-part failure path matrix.
+6. Every role/status check must have its own timestamp.
+7. Every slip must run directional exposure tags.
+8. Any missing market/no-vig/payout/role/freshness field forces HOLD or REJECT.
+9. “MODEL_QUALIFIED” and “SLIP_PLAYABLE” become separate statuses.
+10. Dashboard/Replit must enforce these as hard validation rules, not analyst suggestions.
+
+## Bottom line
+
+Claude’s audit is good. The biggest correction is this:
+
+**WOW does not need more narrative rules first. It needs enforcement, calibration, and EV visibility.**
+
+Your engine already has many of the right ideas. The failure mode now is that a session can “sound compliant” while missing a required field. The next evolution should make the engine impossible to approve from incomplete data.
+
+[1]: https://scikit-learn.org/stable/modules/calibration.html?utm_source=chatgpt.com "1.16. Probability calibration"
+[2]: https://sportsdata.io/live-odds-api?utm_source=chatgpt.com "Odds API | Sports Betting API"
+[3]: https://developer.sportradar.com/sportradar-updates/changelog/odds-comparison-live-odds-api?utm_source=chatgpt.com "Odds Comparison Live Odds API"
+[4]: https://baseballsavant.mlb.com/statcast_search?utm_source=chatgpt.com "Statcast Search | baseballsavant.com"
+[5]: https://baseballsavant.mlb.com/csv-docs?utm_source=chatgpt.com "Statcast Search CSV Documentation | baseballsavant.com"
+[6]: https://developer.sportradar.com/basketball/docs/wnba-ig-api-basics?utm_source=chatgpt.com "WNBA API Basics"
+[7]: https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan?utm_source=chatgpt.com "Using Codex with your ChatGPT plan"
+[8]: https://docs.replit.com/references/agent/overview?utm_source=chatgpt.com "Replit Agent"
+[9]: https://code.claude.com/docs/en/github-actions?utm_source=chatgpt.com "Claude Code GitHub Actions"
