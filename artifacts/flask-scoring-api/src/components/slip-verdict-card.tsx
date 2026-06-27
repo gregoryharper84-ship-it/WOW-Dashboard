@@ -1,7 +1,8 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   Shield, Activity, Eye, AlertTriangle, TrendingUp, TrendingDown,
-  CheckCircle2, XCircle, Info,
+  CheckCircle2, XCircle, Info, Copy, Share2, Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -67,6 +68,52 @@ function sideIsMore(side?: string) {
 
 const SLIP_ORDER = ["Conservative", "Standard", "Flex"];
 
+function buildSlipText(verdict: JfSlipVerdict): string {
+  const lines: string[] = [];
+  const scored = verdict.scored_props ?? [];
+  const slips = verdict.slips ?? {};
+  const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  lines.push(`🎯 JF Slip Report — ${date}`);
+  lines.push("");
+
+  if (scored.length > 0) {
+    lines.push(`Scored Legs (${scored.length}):`);
+    scored.forEach((p, i) => {
+      const tier = (() => {
+        if (p.confidence_tier?.startsWith("FINAL LOCK"))  return "FINAL LOCK";
+        if (p.confidence_tier?.startsWith("CONDITIONAL")) return "CONDITIONAL";
+        if (p.confidence_tier?.startsWith("WATCH"))       return "WATCH";
+        return "REJECT";
+      })();
+      const score = p.jf_score != null ? ` | JF ${p.jf_score.toFixed(1)}` : "";
+      const band  = p.jf_band ? ` | ${p.jf_band}` : "";
+      const elig  = p.jf_slip_eligible ? " ✓" : " ✗";
+      lines.push(`${i + 1}. ${p.player} — ${p.side?.toUpperCase()} ${p.line} ${p.prop} (${p.sport}) | ${tier}${score}${band}${elig}`);
+    });
+    lines.push("");
+  }
+
+  lines.push("Slip Recommendations:");
+  SLIP_ORDER.forEach((label) => {
+    const slip = slips[label];
+    if (!slip) return;
+    if (!slip.available) {
+      lines.push(`${label}: N/A — ${slip.reason ?? "not available"}`);
+      return;
+    }
+    const legs = (slip.legs ?? []).map((l) => l.player).join(" + ");
+    const avg  = slip.avg_jf_score != null ? ` | avg JF ${slip.avg_jf_score.toFixed(1)}` : "";
+    const mult = slip.payout_mult   != null ? ` | ${slip.payout_mult}×`                   : "";
+    const prem = slip.all_premium ? " | All Premium JF Core" : "";
+    lines.push(`${label} (${slip.slip_size}-leg): ${legs}${avg}${mult}${prem}`);
+  });
+
+  lines.push("");
+  lines.push("Powered by WOW v16 Engine");
+  return lines.join("\n");
+}
+
 interface SlipVerdictCardProps {
   verdict: JfSlipVerdict;
 }
@@ -76,6 +123,37 @@ export default function SlipVerdictCard({ verdict }: SlipVerdictCardProps) {
   const counts = verdict.counts;
   const scored = verdict.scored_props ?? [];
 
+  const [copied, setCopied] = useState(false);
+  const canShare = typeof navigator !== "undefined" && !!navigator.share;
+
+  const handleCopy = async () => {
+    const text = buildSlipText(verdict);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.style.position = "fixed";
+      el.style.opacity = "0";
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!canShare) return;
+    try {
+      await navigator.share({ text: buildSlipText(verdict) });
+    } catch {
+    }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 24 }}
@@ -84,6 +162,32 @@ export default function SlipVerdictCard({ verdict }: SlipVerdictCardProps) {
       transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
       className="space-y-4"
     >
+      {/* Copy / Share action bar */}
+      <div className="flex items-center justify-end gap-2">
+        {canShare && (
+          <button
+            onClick={handleShare}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-border bg-card text-muted-foreground hover:text-foreground hover:border-border/80 transition-colors"
+          >
+            <Share2 size={12} />
+            Share
+          </button>
+        )}
+        <motion.button
+          onClick={handleCopy}
+          whileTap={{ scale: 0.95 }}
+          className={cn(
+            "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors",
+            copied
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+              : "border-border bg-card text-muted-foreground hover:text-foreground hover:border-border/80"
+          )}
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          {copied ? "Copied!" : "Copy slip"}
+        </motion.button>
+      </div>
+
       {/* Band summary */}
       {counts && (
         <div className="rounded-xl border border-border bg-card px-4 py-3">
