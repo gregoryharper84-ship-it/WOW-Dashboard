@@ -80,6 +80,11 @@ CREATE INDEX IF NOT EXISTS kalshi_ledger_status_idx ON kalshi_forecast_ledger(se
 CREATE INDEX IF NOT EXISTS kalshi_ledger_created_idx ON kalshi_forecast_ledger(created_at DESC);
 """
 
+_MIGRATE_DDL = """
+ALTER TABLE kalshi_forecast_ledger
+    ADD COLUMN IF NOT EXISTS settlement_grade TEXT;
+"""
+
 
 # ---------------------------------------------------------------------------
 # DB helpers
@@ -94,12 +99,13 @@ def _get_conn():
 
 
 def ensure_table() -> None:
-    """Create kalshi_forecast_ledger if it does not exist."""
+    """Create kalshi_forecast_ledger if it does not exist, and apply migrations."""
     try:
         conn = _get_conn()
         cur  = conn.cursor()
         cur.execute(DDL)
         cur.execute(_INDEX_DDL)
+        cur.execute(_MIGRATE_DDL)
         conn.commit()
         cur.close()
         conn.close()
@@ -135,14 +141,14 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
                 kalshi_price, entry_price, best_bid, best_ask,
                 spread, depth_score, fee_estimate, adjusted_edge,
                 max_playable_price, label, market_bucket,
-                settlement_source, mode, notes
+                settlement_source, settlement_grade, mode, notes
             ) VALUES (
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,
-                %s,%s,%s
+                %s,%s,%s,%s
             )
             RETURNING id, created_at
             """,
@@ -167,6 +173,7 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
                 entry["label"],
                 entry.get("market_bucket"),
                 entry.get("settlement_source"),
+                entry.get("settlement_grade"),
                 entry.get("mode", "paper"),
                 entry.get("notes"),
             ),

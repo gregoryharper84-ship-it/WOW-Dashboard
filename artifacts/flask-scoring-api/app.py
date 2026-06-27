@@ -14264,6 +14264,7 @@ def kalshi_paper_trade():
         "label":              body.get("label"),
         "market_bucket":      body.get("market_bucket"),
         "settlement_source":  body.get("resolution_source"),
+        "settlement_grade":   body.get("settlement_grade"),
         "mode":               "paper",
         "notes":              body.get("notes"),
     }

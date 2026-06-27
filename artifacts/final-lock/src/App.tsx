@@ -5,26 +5,34 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import FinalLockDashboard from "@/pages/final-lock-dashboard";
 import PromptPage from "@/pages/prompt";
-import { Lock, Sparkles } from "lucide-react";
+import KalshiPage from "@/pages/kalshi";
+import { Lock, Sparkles, TrendingUp } from "lucide-react";
 
 const queryClient = new QueryClient();
 
 function IconRail() {
   const [loc] = useLocation();
   const isPrompt = loc.startsWith("/analyze");
+  const isKalshi = loc.startsWith("/kalshi");
 
   const navItems = [
     {
       href: "/",
       label: "Final Lock",
       icon: Lock,
-      active: !isPrompt,
+      active: !isPrompt && !isKalshi,
     },
     {
       href: "/analyze",
       label: "Prompt",
       icon: Sparkles,
       active: isPrompt,
+    },
+    {
+      href: "/kalshi",
+      label: "Kalshi",
+      icon: TrendingUp,
+      active: isKalshi,
     },
   ];
 
@@ -61,6 +69,7 @@ function Router() {
         <Switch>
           <Route path="/" component={FinalLockDashboard} />
           <Route path="/analyze" component={PromptPage} />
+          <Route path="/kalshi" component={KalshiPage} />
           <Route component={NotFound} />
         </Switch>
       </div>
