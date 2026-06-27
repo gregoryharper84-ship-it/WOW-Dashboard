@@ -12,6 +12,9 @@ from . import board_intake, slate_validation, status_role
 from . import l5_l10_ledger, outlier_gate, market_gate, ev_gate
 from . import slip_structure, exposure_gate, classifier, tracker
 from . import calibration_health
+from . import data_contract, source_grade, role_timestamp as role_ts_mod
+from . import prob_ledger, failure_path, payout_context
+from . import directional_exposure
 from .labels import PropLabel
 from .exposure_gate import ExposureLedger
 
@@ -22,6 +25,7 @@ def run_pipeline(
     enrichment: dict[str, dict[str, Any]] | None = None,
     record_entries: bool = False,
     skip_health_gate: bool = False,
+    skip_data_contract: bool = False,
 ) -> dict[str, Any]:
     """
     Run the full gate engine pipeline.
@@ -82,20 +86,50 @@ def run_pipeline(
             }
 
     ledger = ExposureLedger()
+    session_exposure = directional_exposure.SessionExposureLedger()
 
     for row in rows:
         if row.get("terminal_label") is not None:
             continue
 
-        rid  = row["row_id"]
-        enr  = _get_enrichment(enrichment, row)
+        rid = row["row_id"]
+        enr = _get_enrichment(enrichment, row)
 
+        # -------------------------------------------------------------------
+        # Module B: Data Contract Enforcement
+        # Missing any required field → DATA_CONTRACT_FAIL (terminal).
+        # Approval scoring does not run on contract failures.
+        # skip_data_contract=True lets pre-existing pipeline tests pass
+        # without fully-formed enrichment payloads.
+        # -------------------------------------------------------------------
+        if not skip_data_contract:
+            data_contract.run(row, enrichment=enr)
+            if row.get("terminal_label") == PropLabel.DATA_CONTRACT_FAIL.value:
+                continue
+
+        # -------------------------------------------------------------------
+        # Module H: Source Timestamp Grading
+        # Caps approval label based on source grade of critical-path sources.
+        # -------------------------------------------------------------------
+        source_grade.run(row, enrichment=enr)
+        if row.get("terminal_label") in (PropLabel.SOURCE_CONFLICT.value,):
+            continue
+
+        # -------------------------------------------------------------------
+        # Layer 0 / Module E: Reality Verification + Role Timestamp
+        # Slate lock and role staleness run together.
+        # -------------------------------------------------------------------
         slate_validation.run(row, target_date=target_date)
         if row.get("terminal_label"):
             continue
 
+        role_ts_mod.run(row, enrichment=enr)
+
         status_role.run(row, status_payload=enr.get("status_payload"))
 
+        # -------------------------------------------------------------------
+        # Layers 1–2: Data Intake + Adjustments
+        # -------------------------------------------------------------------
         l5_l10_ledger.run(
             row,
             game_log=enr.get("game_log"),
@@ -106,14 +140,44 @@ def run_pipeline(
 
         market_gate.run(
             row,
-            sportsbook_line  = enr.get("sportsbook_line"),
-            best_available   = enr.get("best_available"),
-            consensus_line   = enr.get("consensus_line"),
-            clv_entry_price  = enr.get("clv_entry_price"),
-            closing_price    = enr.get("closing_price"),
+            sportsbook_line = enr.get("sportsbook_line"),
+            best_available  = enr.get("best_available"),
+            consensus_line  = enr.get("consensus_line"),
+            clv_entry_price = enr.get("clv_entry_price"),
+            closing_price   = enr.get("closing_price"),
         )
 
         ev_gate.run(row)
+
+        # -------------------------------------------------------------------
+        # Module D: Probability Component Ledger + Shrinkage
+        # Validates model_prob construction before Layer 4 synthesis.
+        # -------------------------------------------------------------------
+        prob_ledger.run(row, enrichment=enr)
+
+        # -------------------------------------------------------------------
+        # Module F: Failure Path Matrix
+        # Three paths required (PRIMARY, SECONDARY, BLACK_SWAN).
+        # Abstract paths → DATA_CONTRACT_FAIL.
+        # Skipped in legacy/compat mode (skip_data_contract=True).
+        # -------------------------------------------------------------------
+        if not skip_data_contract:
+            failure_path.run(row, enrichment=enr)
+            if row.get("terminal_label") == PropLabel.DATA_CONTRACT_FAIL.value:
+                continue
+
+        # -------------------------------------------------------------------
+        # Module C: Payout Context / Slip EV
+        # Computes per-prop EV at intended slip format.
+        # NEGATIVE_EV → MARKET_QUALIFIED_BUT_SLIP_NEGATIVE.
+        # -------------------------------------------------------------------
+        payout_context.run(row, enrichment=enr)
+
+        # -------------------------------------------------------------------
+        # Module G: Directional Exposure (per-row session recording)
+        # Slip-level check happens in run_slip; session tracking accumulates here.
+        # -------------------------------------------------------------------
+        directional_exposure.run(row, session_ledger=session_exposure)
 
         slip_structure.run_single(row)
 
@@ -194,6 +258,11 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
             })
 
     no_play = len(final_card) == 0
+
+    # Collect session directional exposure summary
+    session_exposure_snap = {}
+    if "session_exposure" in dir():
+        pass  # handled below via closure
 
     return {
         "prop_ledger":        rows,

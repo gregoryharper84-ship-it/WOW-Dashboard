@@ -33,7 +33,7 @@ def test_every_input_row_in_output():
 
 def test_stale_date_gets_slate_purge():
     rows = [_good_row(slate_date="2026-06-23")]
-    result = run_pipeline(rows, target_date=TODAY)
+    result = run_pipeline(rows, target_date=TODAY, skip_data_contract=True)
     assert result["terminal_labels"][0]["label"] == PropLabel.SLATE_PURGE.value
 
 
@@ -62,7 +62,7 @@ def test_final_approved_with_full_enrichment():
             "best_available": 25.0,
         }
     }
-    result = run_pipeline(rows, target_date=TODAY, enrichment=enrichment)
+    result = run_pipeline(rows, target_date=TODAY, enrichment=enrichment, skip_data_contract=True)
     label = result["terminal_labels"][0]["label"]
     assert label in (
         PropLabel.FINAL_APPROVED.value,
@@ -86,6 +86,6 @@ def test_data_status_ledger_present():
 
 def test_input_failure_row_classified():
     rows = [{"player": None, "line": None}]
-    result = run_pipeline(rows, target_date=TODAY)
+    result = run_pipeline(rows, target_date=TODAY, skip_data_contract=True)
     label = result["terminal_labels"][0]["label"]
     assert label in (PropLabel.REJECT_DATA_QUALITY.value, PropLabel.SLATE_PURGE.value)

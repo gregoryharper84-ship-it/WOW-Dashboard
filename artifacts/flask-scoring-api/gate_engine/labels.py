@@ -14,6 +14,15 @@ class PropLabel(str, Enum):
     SLATE_PURGE              = "SLATE_PURGE"
     DUPLICATE_EXPOSURE_BLOCK = "DUPLICATE_EXPOSURE_BLOCK"
     NO_PLAY                  = "NO_PLAY"
+    # Module B — Data Contract
+    DATA_CONTRACT_FAIL                  = "DATA_CONTRACT_FAIL"
+    # Module C — Payout Context
+    MARKET_QUALIFIED_BUT_SLIP_NEGATIVE  = "MARKET_QUALIFIED_BUT_SLIP_NEGATIVE"
+    FORMAT_PENDING                      = "FORMAT_PENDING"
+    # Module G — Directional Exposure
+    DIRECTIONAL_EXPOSURE_BLOCK          = "DIRECTIONAL_EXPOSURE_BLOCK"
+    SESSION_EXPOSURE_WARNING            = "SESSION_EXPOSURE_WARNING"
+    SESSION_DIRECTIONAL_EXPOSURE_BLOCK  = "SESSION_DIRECTIONAL_EXPOSURE_BLOCK"
 
 
 class DataStatus(str, Enum):
