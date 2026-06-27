@@ -13932,6 +13932,445 @@ def gate_engine_correlation():
     return jsonify(result), 200
 
 
+# ── Gate Engine: Final Lock Orchestrator ─────────────────────────────────────
+
+@app.route("/gate-engine/final-lock", methods=["POST"])
+@require_api_key
+def gate_engine_final_lock():
+    """
+    Master gate-engine orchestration endpoint.
+
+    Runs all five patch gates in sequence and returns a single unified
+    approval decision. This is the truth source for the Final Lock Dashboard.
+
+    POST body (JSON):
+      # Prop identity (required)
+      player            str
+      sport             str
+      market            str
+      side              "MORE" | "LESS" | "OVER" | "UNDER"
+      pp_line           float
+      platform          str   default "prizepicks"
+
+      # Sharp market data (optional — gate skipped if absent)
+      sharp_no_vig_prob float | null
+      sharp_fair_line   float | null
+
+      # Model / EV data (optional)
+      model_probability     float | null
+      shrinkage_probability float | null
+      per_leg_breakeven     float | null
+      payout_multiplier     float | null
+
+      # Execution context (optional — execution gate skipped if absent)
+      analysis_pp_line       float | null
+      analysis_payout        float | null
+      current_payout         float | null
+      analysis_slip_type     str | null
+      current_slip_type      str | null
+      analysis_pick_count    int | null
+      current_pick_count     int | null
+      line_timestamp_utc     str | null   (ISO-8601)
+      player_status          str | null
+      max_line_age_seconds   int  default 30
+
+      # House rules inputs (optional)
+      injury_flag            bool  default false
+      minutes_dependency     bool  default true
+      market_type            str   default "player_prop"
+
+      # Slip legs for correlation gate (optional)
+      slip_legs   [{player, stat, side, team?}]
+      slip_type   str | null
+
+      # Skip settlement DB check (testing only)
+      skip_settlement_check  bool  default false
+
+    Returns:
+      {
+        can_approve_bets:      false,
+        final_label:           str,
+        approval_ceiling:      str,
+        terminal_reject:       str | null,
+        settlement_stale:      bool,
+        gate_results:          { settlement_loopback, sharp_anchor, house_rules,
+                                  execution_friction, correlation_gate },
+        gates_passed:          [str],
+        gates_failed:          [str],
+        gates_skipped:         [str],
+        blocking_gates:        [str],
+        warnings:              [str],
+        required_next_actions: [str],
+        EV_before_friction:    float | null,
+        EV_after_friction:     float | null,
+        usable_probability:    float | null,
+        slip_EV:               float | null,
+        prop:                  { player, market, side, pp_line, platform }
+      }
+    """
+    from gate_engine.final_lock_orchestrator import run as _flo_run
+    body = request.get_json(silent=True) or {}
+    result = _flo_run(body)
+    return jsonify(result), 200
+
+
+# ── Kalshi Exchange Layer ─────────────────────────────────────────────────────
+
+@app.route("/kalshi/evaluate-contract", methods=["POST"])
+@require_api_key
+def kalshi_evaluate_contract():
+    """
+    Full Kalshi contract evaluation: fetch orderbook, normalize, grade
+    settlement, compute adjusted edge, classify into label.
+
+    POST body (JSON):
+      {
+        ticker:             str   — Kalshi market ticker (e.g. "KXNBATOT-25JUN27-T225.5")
+        side:               "YES" | "NO"   default "YES"
+        model_probability:  float | null
+        category:           str   default "sports"
+        settlement_condition: str | null
+        resolution_source:  str | null
+        uncertainty_tax:    float  default 0.01
+        use_live_book:      bool   default true   (false = use provided book data)
+        book_override:      dict | null  (normalized book to use if use_live_book=false)
+      }
+
+    Returns: ContractEvaluation-shaped dict.
+    """
+    from kalshi_engine import kalshi_client, orderbook_normalizer, edge_engine
+    from kalshi_engine import settlement_risk, market_buckets
+
+    body   = request.get_json(silent=True) or {}
+    ticker = (body.get("ticker") or "").strip()
+    side   = (body.get("side") or "YES").upper()
+    model_prob   = body.get("model_probability")
+    category     = (body.get("category") or "sports").lower()
+    uncertainty  = float(body.get("uncertainty_tax", 0.01))
+    use_live     = bool(body.get("use_live_book", True))
+
+    if not ticker:
+        return jsonify({"ok": False, "error": "ticker is required", "can_approve_bets": False}), 400
+
+    # ── Orderbook ─────────────────────────────────────────────────────────────
+    if use_live:
+        raw_book = kalshi_client.safe_get_orderbook(ticker)
+        if not raw_book or raw_book.get("error"):
+            return jsonify({
+                "label":            "KALSHI_DATA_UNOBTAINABLE",
+                "ticker":           ticker,
+                "error":            raw_book.get("error") if raw_book else "fetch failed",
+                "can_approve_bets": False,
+            }), 200
+        norm_book = orderbook_normalizer.normalize(raw_book, ticker=ticker)
+    else:
+        norm_book = body.get("book_override") or {}
+
+    # ── Settlement grade ──────────────────────────────────────────────────────
+    sr = settlement_risk.grade_contract(
+        title                = ticker,
+        settlement_condition = body.get("settlement_condition"),
+        resolution_source    = body.get("resolution_source"),
+        category             = category,
+        contract_ticker      = ticker,
+    )
+
+    # ── Edge evaluation ───────────────────────────────────────────────────────
+    ev = edge_engine.evaluate(
+        model_probability = model_prob,
+        normalized_book   = norm_book,
+        category          = category,
+        side              = side,
+        uncertainty_tax   = uncertainty,
+    )
+
+    # ── Market bucket ─────────────────────────────────────────────────────────
+    bucket = market_buckets.classify(
+        settlement_grade = sr["resolution_clarity_grade"],
+        liquidity_grade  = norm_book.get("liquidity_grade", "F"),
+        has_history      = False,
+        category         = category,
+        settlement_risk  = sr["settlement_risk"],
+        adjusted_edge    = ev.get("adjusted_edge"),
+    )
+
+    # ── Fetch market metadata ─────────────────────────────────────────────────
+    market_meta = {}
+    if use_live:
+        status = kalshi_client.safe_get_market(ticker)
+        if status and not status.get("error"):
+            m = status.get("market") or status
+            market_meta = {
+                "status":     m.get("status"),
+                "close_time": m.get("close_time"),
+                "volume":     m.get("volume"),
+                "last_price": m.get("last_price"),
+            }
+
+    return jsonify({
+        "ticker":              ticker,
+        "side":                side,
+        "model_probability":   model_prob,
+        "current_price":       norm_book.get("best_yes_ask") if side == "YES" else norm_book.get("best_no_ask"),
+        "raw_edge":            ev.get("raw_edge"),
+        "adjusted_edge":       ev.get("adjusted_edge"),
+        "max_playable_price":  ev.get("max_playable_price"),
+        "liquidity_grade":     norm_book.get("liquidity_grade"),
+        "settlement_risk":     sr["settlement_risk"],
+        "settlement_grade":    sr["resolution_clarity_grade"],
+        "market_bucket":       bucket["market_bucket"],
+        "label":               ev["label"],
+        "execution":           ev.get("execution"),
+        "blocking_reasons":    ev.get("blocking_reasons", []) + bucket.get("rationale", []),
+        "warnings":            ev.get("warnings", []),
+        "fee_detail":          ev.get("fee_detail", {}),
+        "orderbook":           norm_book,
+        "settlement_detail":   sr,
+        "market_meta":         market_meta,
+        "can_approve_bets":    False,
+    }), 200
+
+
+@app.route("/kalshi/scan-event", methods=["POST"])
+@require_api_key
+def kalshi_scan_event():
+    """
+    Scan all markets in a Kalshi event and return a summary evaluation.
+
+    POST body (JSON):
+      {
+        event_ticker:       str
+        model_probabilities: { "TICKER-1": 0.62, "TICKER-2": 0.48, ... }  (optional)
+        category:           str   default "sports"
+        resolution_source:  str | null
+      }
+
+    Returns: list of contract summaries (labels, edges, settlement grades).
+    """
+    from kalshi_engine import kalshi_client, orderbook_normalizer, edge_engine
+    from kalshi_engine import settlement_risk, market_buckets
+
+    body         = request.get_json(silent=True) or {}
+    event_ticker = (body.get("event_ticker") or "").strip()
+    if not event_ticker:
+        return jsonify({"ok": False, "error": "event_ticker is required", "can_approve_bets": False}), 400
+
+    model_probs    = body.get("model_probabilities") or {}
+    category       = (body.get("category") or "sports").lower()
+    res_source     = body.get("resolution_source")
+
+    try:
+        markets = kalshi_client.scan_event_markets(event_ticker)
+    except Exception as exc:
+        return jsonify({
+            "ok": False, "error": str(exc), "can_approve_bets": False
+        }), 200
+
+    results = []
+    for m in markets[:50]:  # cap at 50 contracts per scan
+        t     = m.get("ticker") or ""
+        mp    = model_probs.get(t)
+        raw_b = kalshi_client.safe_get_orderbook(t)
+        if raw_b and not raw_b.get("error"):
+            norm_b = orderbook_normalizer.normalize(raw_b, ticker=t)
+        else:
+            norm_b = {"liquidity_grade": "F", "best_yes_ask": None}
+
+        ev = edge_engine.evaluate(mp, norm_b, category) if mp else {
+            "label": "KALSHI_REJECT_UNCALIBRATED", "adjusted_edge": None
+        }
+        sr = settlement_risk.grade_contract(
+            title=t, settlement_condition=m.get("subtitle"),
+            resolution_source=res_source, category=category, contract_ticker=t
+        )
+        results.append({
+            "ticker":           t,
+            "title":            m.get("title") or m.get("subtitle") or t,
+            "label":            ev["label"],
+            "adjusted_edge":    ev.get("adjusted_edge"),
+            "settlement_grade": sr["resolution_clarity_grade"],
+            "liquidity_grade":  norm_b.get("liquidity_grade"),
+            "can_approve_bets": False,
+        })
+
+    return jsonify({
+        "event_ticker":     event_ticker,
+        "contracts_scanned": len(results),
+        "results":          results,
+        "can_approve_bets": False,
+    }), 200
+
+
+@app.route("/kalshi/paper-trade", methods=["POST"])
+@require_api_key
+def kalshi_paper_trade():
+    """
+    Log a paper-trade record to the kalshi_forecast_ledger.
+    Validates kill switches before logging.
+
+    POST body (JSON):
+      {
+        ticker:             str
+        side:               "YES" | "NO"
+        model_probability:  float
+        entry_price:        float   (intended limit price)
+        contracts:          int     default 1
+        adjusted_edge:      float
+        label:              str     (must be KALSHI_PLAYABLE_LIMIT_ONLY or similar)
+        event_ticker:       str | null
+        contract_title:     str | null
+        category:           str | null
+        settlement_grade:   str | null   (for guard validation)
+        liquidity_grade:    str | null
+        notes:              str | null
+      }
+    """
+    from kalshi_engine import execution_guard, calibration_ledger
+
+    body = request.get_json(silent=True) or {}
+
+    # Validate kill switches first
+    guard = execution_guard.validate_execution_request(
+        label            = body.get("label", ""),
+        normalized_book  = {"liquidity_grade": body.get("liquidity_grade", "F")},
+        limit_price      = body.get("entry_price"),
+        settlement_grade = body.get("settlement_grade"),
+        contracts        = int(body.get("contracts", 1)),
+        mode             = "paper",
+    )
+
+    if not guard["allowed"]:
+        return jsonify({
+            "ok":               False,
+            "blocks":           guard["blocks"],
+            "kill_switches":    guard["kill_switches"],
+            "can_approve_bets": False,
+        }), 400
+
+    # Log the paper trade
+    entry = {
+        "market_ticker":      body.get("ticker"),
+        "event_ticker":       body.get("event_ticker"),
+        "contract_title":     body.get("contract_title"),
+        "category":           body.get("category"),
+        "side_yes_no":        (body.get("side") or "YES").upper(),
+        "model_probability":  body.get("model_probability"),
+        "entry_price":        body.get("entry_price"),
+        "best_bid":           body.get("best_bid"),
+        "best_ask":           body.get("best_ask"),
+        "spread":             body.get("spread"),
+        "depth_score":        body.get("liquidity_grade"),
+        "adjusted_edge":      body.get("adjusted_edge"),
+        "label":              body.get("label"),
+        "market_bucket":      body.get("market_bucket"),
+        "settlement_source":  body.get("resolution_source"),
+        "mode":               "paper",
+        "notes":              body.get("notes"),
+    }
+    result = calibration_ledger.log_paper_trade(entry)
+    status = 201 if result.get("ok") else 400
+    return jsonify({**result, "can_approve_bets": False}), status
+
+
+@app.route("/kalshi/ledger", methods=["GET"])
+@require_api_key
+def kalshi_ledger():
+    """
+    Query the Kalshi paper-trade / calibration ledger.
+
+    Query params:
+      limit:              int  default 50 (max 500)
+      settlement_status:  "OPEN" | "SETTLED" | "VOIDED"
+      ticker:             str  — filter by market_ticker
+      mode:               "paper" | "live"
+      summary:            bool  — include Brier score summary
+    """
+    from kalshi_engine import calibration_ledger
+
+    limit  = min(int(request.args.get("limit", 50)), 500)
+    status = request.args.get("settlement_status") or None
+    ticker = request.args.get("ticker") or None
+    mode   = request.args.get("mode") or None
+    include_summary = request.args.get("summary", "false").lower() == "true"
+
+    records = calibration_ledger.get_ledger(
+        limit             = limit,
+        settlement_status = status,
+        market_ticker     = ticker,
+        mode              = mode,
+    )
+    resp = {
+        "records":          records,
+        "count":            len(records),
+        "can_approve_bets": False,
+    }
+    if include_summary:
+        resp["calibration_summary"] = calibration_ledger.get_brier_score()
+
+    return jsonify(resp), 200
+
+
+@app.route("/kalshi/settle-result", methods=["POST"])
+@require_api_key
+def kalshi_settle_result():
+    """
+    Record the settlement outcome for a paper-trade ledger entry.
+
+    POST body (JSON):
+      {
+        id:             int   — kalshi_forecast_ledger record id
+        result:         "YES" | "NO" | "VOID"
+        closing_price:  float | null
+        net_pnl:        float | null
+        clv:            float | null
+        dominant_failure_tag: str | null
+        notes:          str | null
+        run_post_review: bool  default false  (calls Claude post-trade review)
+      }
+    """
+    from kalshi_engine import calibration_ledger, contract_intake
+
+    body = request.get_json(silent=True) or {}
+
+    record_id = body.get("id")
+    if not record_id:
+        return jsonify({"ok": False, "error": "id is required", "can_approve_bets": False}), 400
+
+    result = calibration_ledger.settle_result(
+        record_id            = int(record_id),
+        result               = body.get("result", "VOID"),
+        closing_price        = body.get("closing_price"),
+        net_pnl              = body.get("net_pnl"),
+        clv                  = body.get("clv"),
+        dominant_failure_tag = body.get("dominant_failure_tag"),
+        notes                = body.get("notes"),
+    )
+
+    # Optional Claude post-trade review
+    review = None
+    if body.get("run_post_review") and result.get("ok"):
+        # Fetch the record to get model_probability
+        records = calibration_ledger.get_ledger(limit=1, market_ticker=None)
+        rec = next((r for r in records if r.get("id") == record_id), {})
+        if rec:
+            review = contract_intake.post_trade_review(
+                ticker            = rec.get("market_ticker", ""),
+                model_probability = float(rec.get("model_probability") or 0.5),
+                entry_price       = float(rec.get("entry_price") or 0.5),
+                closing_price     = body.get("closing_price"),
+                result            = body.get("result"),
+                adjusted_edge     = float(rec.get("adjusted_edge") or 0),
+                clv               = body.get("clv"),
+                notes             = body.get("notes", ""),
+            )
+
+    return jsonify({
+        **result,
+        "post_trade_review": review,
+        "can_approve_bets":  False,
+    }), (201 if result.get("ok") else 400)
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)
