@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/final-lock/"
+title = "WOW Final Lock Dashboard"
+version = "1.0.0"
+id = "artifacts/final-lock"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/final-lock/" ]
+localPort = 24071
+
+[services.development]
+run = "pnpm --filter @workspace/final-lock run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/final-lock", "run", "build" ]
+publicDir = "artifacts/final-lock/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24071"
+BASE_PATH = "/final-lock/"

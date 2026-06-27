@@ -13547,6 +13547,207 @@ def gate_engine_llp_labels():
     }), 200
 
 
+# ---------------------------------------------------------------------------
+# /lock-api/* — WOW Final Lock Dashboard endpoints
+# ---------------------------------------------------------------------------
+
+def _get_db_conn():
+    """Open a psycopg2 connection using DATABASE_URL."""
+    import psycopg2
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL not set")
+    return psycopg2.connect(db_url)
+
+
+@app.route("/lock-api/submit", methods=["POST"])
+@require_api_key
+def lock_api_submit():
+    """
+    Machine-gated Final Lock EV check.
+
+    Validates shrinkage_probability >= per-leg breakeven for the chosen slip format.
+    Saves the result to the final_locks table regardless of outcome.
+    can_approve_bets: False enforced — advisory only.
+    """
+    import psycopg2.extras
+
+    from gate_engine.payout_context import ALL_FORMATS
+
+    body = request.get_json(force=True) or {}
+
+    player = (body.get("player") or "").strip()
+    market = (body.get("market") or "").strip()
+    side   = (body.get("side") or "").strip()
+
+    if not player or not market or not side:
+        return jsonify({"error": "player, market, and side are required"}), 400
+
+    slip_type             = body.get("slip_type") or ""
+    shrinkage_probability = body.get("shrinkage_probability")
+    pick_count            = int(body.get("pick_count") or 2)
+    pp_payout             = body.get("pp_payout")
+
+    gate_result: dict = {}
+    decision = "MODEL_QUALIFIED_HOLD"
+    slip_prob = None
+    breakeven_slip = None
+    ev = None
+
+    per_leg_be = ALL_FORMATS.get(slip_type)
+    if per_leg_be is not None and shrinkage_probability is not None:
+        try:
+            shrink_p = float(shrinkage_probability)
+            payout_m = float(pp_payout) if pp_payout else (1.0 / (per_leg_be ** pick_count))
+
+            slip_prob      = shrink_p ** pick_count
+            breakeven_slip = 1.0 / payout_m
+            ev             = slip_prob * payout_m - 1.0
+            edge_per_leg   = shrink_p - per_leg_be
+            gate_pass      = shrink_p >= per_leg_be
+            decision       = "FINAL_APPROVED" if gate_pass else "MODEL_QUALIFIED_HOLD"
+
+            gate_result = {
+                "per_leg_breakeven":     per_leg_be,
+                "shrinkage_probability": shrink_p,
+                "slip_probability":      slip_prob,
+                "breakeven_slip_prob":   breakeven_slip,
+                "estimated_slip_ev":     ev,
+                "edge_per_leg":          edge_per_leg,
+                "gate_pass":             gate_pass,
+                "decision":              decision,
+            }
+        except (TypeError, ValueError, ZeroDivisionError) as exc:
+            gate_result = {"error": str(exc)}
+
+    # Persist to final_locks
+    try:
+        import psycopg2
+        import psycopg2.extras
+        conn = _get_db_conn()
+        cur  = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO final_locks (
+                player, team, opponent, market, side,
+                pp_line, pp_payout, slip_type, pick_count,
+                injury_status, teammate_status,
+                sb_comp_line, sb_no_vig_prob,
+                proj_source1, proj_source2,
+                model_probability, shrinkage_probability, correlation_flag,
+                slip_probability, breakeven_slip_prob, estimated_slip_ev,
+                final_lock_decision, gate_engine_data,
+                sport, league, environment, notes
+            ) VALUES (
+                %s,%s,%s,%s,%s,
+                %s,%s,%s,%s,
+                %s,%s,
+                %s,%s,
+                %s,%s,
+                %s,%s,%s,
+                %s,%s,%s,
+                %s,%s,
+                %s,%s,%s,%s
+            )
+            RETURNING id, created_at
+            """,
+            (
+                player,
+                body.get("team") or None,
+                body.get("opponent") or None,
+                market,
+                side,
+                body.get("pp_line") or None,
+                body.get("pp_payout") or None,
+                slip_type or None,
+                pick_count,
+                body.get("injury_status") or None,
+                body.get("teammate_status") or None,
+                body.get("sb_comp_line") or None,
+                body.get("sb_no_vig_prob") or None,
+                body.get("proj_source1") or None,
+                body.get("proj_source2") or None,
+                body.get("model_probability") or None,
+                shrinkage_probability or None,
+                bool(body.get("correlation_flag", False)),
+                slip_prob,
+                breakeven_slip,
+                ev,
+                decision,
+                psycopg2.extras.Json(gate_result),
+                body.get("sport") or None,
+                body.get("league") or None,
+                body.get("environment") or "live",
+                body.get("notes") or None,
+            ),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        lock_id    = row[0]
+        created_at = row[1].isoformat()
+    except Exception as exc:
+        return jsonify({"error": "DB error", "detail": str(exc)}), 500
+
+    return jsonify({
+        "id":               lock_id,
+        "created_at":       created_at,
+        "decision":         decision,
+        "gate":             gate_result,
+        "can_approve_bets": False,
+        "disclaimer":       DISCLAIMER,
+    }), 201
+
+
+@app.route("/lock-api/history", methods=["GET"])
+@require_api_key
+def lock_api_history():
+    """Return recent final locks from the final_locks table (newest first)."""
+    limit = min(int(request.args.get("limit", 50)), 200)
+    try:
+        import psycopg2.extras
+        conn = _get_db_conn()
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            SELECT
+                id, created_at, player, team, opponent,
+                market, side, pp_line, pp_payout,
+                slip_type, pick_count,
+                injury_status, teammate_status,
+                model_probability, shrinkage_probability, correlation_flag,
+                slip_probability, breakeven_slip_prob, estimated_slip_ev,
+                final_lock_decision,
+                sport, league, environment, notes
+            FROM final_locks
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        # Convert Decimal / datetime to JSON-safe types
+        def safe(v):
+            if hasattr(v, "isoformat"):
+                return v.isoformat()
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return v
+
+        records = [{k: safe(v) for k, v in dict(r).items()} for r in rows]
+        return jsonify({
+            "locks":            records,
+            "can_approve_bets": False,
+        }), 200
+    except Exception as exc:
+        return jsonify({"error": "DB error", "detail": str(exc)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)
