@@ -1,0 +1,173 @@
+## LLP-PATCH-2026-06-27-EXECUTION-GOVERNANCE-v16.1
+
+**Purpose:** Prevent model signals from becoming bets without verified price edge, timing validity, contradiction clearance, calibration, and exposure control.
+
+### 1. Final LLP Labels
+
+Only these final labels are allowed:
+
+* `LLP_APPROVED`
+* `LLP_PLAYABLE`
+* `LLP_WATCH`
+* `LLP_SCOUT`
+* `LLP_REJECT`
+* `LLP_CUT`
+
+Banned as final action labels:
+
+* `LEAN`
+* `CONDITIONAL`
+* `FLIP_CANDIDATE`
+* `SOURCE_CONFLICT`
+* `DATA_UNOBTAINABLE`
+* `NO_BET`
+* `STALE_LINE`
+
+Those may only appear as status tags or failure tags, never as final betting labels.
+
+### 2. Action Rules
+
+`LLP_APPROVED` = bettable only if current line/odds still match approval snapshot.
+`LLP_PLAYABLE` = small-stake playable only.
+`LLP_WATCH` = no bet yet.
+`LLP_SCOUT` = track only.
+`LLP_REJECT` = no edge, wrong side, or bad price.
+`LLP_CUT` = invalid slate, stale market, missing price, missing timestamp, source conflict, or unavailable market.
+
+### 3. Price Edge Required
+
+No verified price edge = no bet.
+
+Required fields before `LLP_PLAYABLE` or `LLP_APPROVED`:
+
+* book
+* odds
+* line
+* side
+* market
+* timestamp
+* opener if available
+* consensus or no-vig fair probability
+* model probability
+* edge
+* source
+* final-lock recheck
+
+Formula:
+
+`edge = model_probability - no_vig_market_probability`
+
+Minimum edge thresholds:
+
+* Liquid main markets: `≥ 1.5%`
+* WNBA / lower-liquidity markets: `≥ 2.0%`
+* Derivatives, F5, 1H, team totals: `≥ 2.5%`
+* Alt / niche markets: `≥ 3.0%`
+* No no-vig comp: max `LLP_SCOUT`
+
+### 4. Probability Caps
+
+* `<52%` = `LLP_REJECT` unless opposite side has value
+* `52–54%` = max `LLP_WATCH`
+* `55–57%` = max `LLP_PLAYABLE`
+* `58–60%` = `LLP_APPROVED` eligible only with clean market edge
+* `>60%` = rare; requires independent validation and no contradiction
+
+Probability alone never approves a bet.
+
+### 5. Timing / Price Decay
+
+Approval expires if any of these occur:
+
+* ML moves `10+ cents` against the side
+* spread/total/team total moves `0.5+`
+* starter, lineup, injury, or weather changes
+* opener/consensus changes the thesis
+* timestamp becomes stale
+* market disappears
+
+Freshness windows:
+
+* More than 6h before start: line checked within 30m
+* 2–6h before start: within 15m
+* Less than 2h before start: within 5m
+* Less than 30m before start: final lock within 2m
+
+No final lock = max `LLP_WATCH`.
+
+### 6. Steam Protocol
+
+If consensus implied probability moves `1.5%+` against the candidate, rerun.
+
+If consensus implied probability moves `2.5%+` against the candidate, downgrade to `LLP_WATCH` unless edge still clears.
+
+Do not chase steam if edge is compressed below the required threshold.
+
+A better price than the market after steam requires stale-line suspicion review.
+
+### 7. Contradiction Hard Kills
+
+Hard kill conditions:
+
+* market move against thesis
+* key player/starter/news contradiction
+* lineup contradiction
+* stale price
+* missing timestamp
+* source conflict
+* weather/park contradiction
+* wrong slate
+* unavailable price
+
+Any hard kill = `LLP_REJECT` or `LLP_CUT`.
+
+### 8. Session Exposure
+
+Default:
+
+* 1–3 LLP bets per day
+* 1.5u normal daily cap
+* 2.0u hard daily cap only after calibration
+* 1.0u max per game
+* 1.25u max same-script exposure
+* no duplicate same-side exposure
+
+### 9. Re-Approval Rule
+
+`LLP_WATCH` can become `LLP_APPROVED` only through a full rerun.
+
+`LLP_APPROVED` can become `LLP_REJECT` after material change.
+
+If already submitted and later invalidated, log:
+
+`INVALIDATED_AFTER_SUBMISSION`
+
+No chase, hedge, or add-on unless the new position has standalone positive EV.
+
+### 10. Calibration Ledger
+
+Every LLP candidate must log:
+
+* date
+* sport
+* league
+* market
+* side
+* odds
+* line
+* book
+* opener
+* close
+* model probability
+* no-vig probability
+* edge
+* stake
+* final label
+* failure tags
+* CLV
+* result
+* ROI
+* Brier/log-loss bucket
+* postmortem note
+
+No calibration ledger = no unit scaling.

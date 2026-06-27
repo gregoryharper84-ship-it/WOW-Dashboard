@@ -13325,6 +13325,123 @@ def gate_engine_closure_fields():
     }), 200
 
 
+@app.route("/gate-engine/llp-governance/validate", methods=["POST"])
+@require_api_key
+def gate_engine_llp_governance():
+    """
+    Run LLP-PATCH-2026-06-27 Execution Governance v16.1 validators.
+
+    Request body:
+      {
+        "candidate": {
+          "final_label":         "LLP_APPROVED",   # must be one of 6 allowed labels
+          "book":                "DraftKings",
+          "odds":                -110,
+          "line":                47.5,
+          "side":                "OVER",
+          "market":              "total",           # liquid_main | WNBA | F5 | alt
+          "timestamp":           "2026-06-27T14:00:00+00:00",
+          "model_probability":   0.59,
+          "no_vig_probability":  0.52,
+          "edge":                0.07,              # or omit to auto-compute
+          "source":              "WOW_MODEL",
+          "opener":              48.0,
+          "game_start_time":     "2026-06-27T17:05:00+00:00",
+          "final_lock_confirmed": false,
+          "stake":               1.0,
+          "consensus_implied_drift": 0.01,         # optional steam check
+          "prior_label":         null,
+          "full_rerun_completed": false,
+          "calibration_ledger":  { ...all 21 fields... },
+          "market_move_against_thesis": false,     # hard kill flags
+          "source_conflict": false,
+          "wrong_slate": false, ...
+        },
+        "session": {
+          "bets_today":           1,
+          "units_today":          0.5,
+          "units_this_game":      0.0,
+          "units_same_script":    0.0,
+          "calibration_verified": false
+        }
+      }
+
+    Response:
+      {
+        "passed":         bool,
+        "results":        { validator: {passed, code, detail, ceiling} },
+        "blockers":       [...],
+        "label_ceiling":  str | null,
+        "effective_label": str,
+        "rerun_required": bool,
+        "can_approve_bets": false
+      }
+
+    Banned as final labels: LEAN, CONDITIONAL, FLIP_CANDIDATE,
+      SOURCE_CONFLICT, DATA_UNOBTAINABLE, NO_BET, STALE_LINE
+
+    Edge thresholds: liquid_main >= 1.5%, WNBA >= 2.0%,
+      derivatives/F5/1H >= 2.5%, alt/niche >= 3.0%
+
+    Probability caps: <52% = REJECT, 52-54% = max WATCH,
+      55-57% = max PLAYABLE, 58-60% = APPROVED eligible
+    """
+    body = request.get_json(silent=True) or {}
+    candidate = body.get("candidate")
+    if not candidate or not isinstance(candidate, dict):
+        return jsonify({"error": "candidate object required"}), 400
+
+    session = body.get("session") or {}
+
+    from gate_engine.llp_governance import run_llp_governance
+    try:
+        result = run_llp_governance(candidate, session=session)
+    except Exception as exc:
+        return jsonify({"error": "LLP governance error", "detail": str(exc)}), 500
+
+    result["disclaimer"] = DISCLAIMER
+    return jsonify(result), 200
+
+
+@app.route("/gate-engine/llp-governance/calibration", methods=["GET"])
+@require_api_key
+def gate_engine_llp_calibration():
+    """Return the LLP calibration ledger (last 200 entries)."""
+    from gate_engine.llp_governance import get_calibration_ledger
+    limit = min(int(request.args.get("limit", 200)), 500)
+    return jsonify({
+        "entries": get_calibration_ledger(limit=limit),
+        "can_approve_bets": False,
+    }), 200
+
+
+@app.route("/gate-engine/llp-governance/labels", methods=["GET"])
+def gate_engine_llp_labels():
+    """Return allowed/banned LLP labels, edge thresholds, and prob caps (no auth)."""
+    from gate_engine.llp_governance import (
+        LLPLabel, BANNED_AS_FINAL, EDGE_THRESHOLD, MarketType,
+        STEAM_RERUN_THRESHOLD, STEAM_DOWNGRADE_THRESHOLD, DEFAULT_EXPOSURE,
+    )
+    return jsonify({
+        "allowed_final_labels": [l.value for l in LLPLabel],
+        "banned_as_final":      list(BANNED_AS_FINAL),
+        "edge_thresholds":      {k.value: v for k, v in EDGE_THRESHOLD.items()},
+        "probability_caps": {
+            "<0.52":        "LLP_REJECT",
+            "0.52–0.54":    "LLP_WATCH",
+            "0.55–0.57":    "LLP_PLAYABLE",
+            "0.58–0.60":    "LLP_APPROVED eligible",
+            ">0.60":        "rare; requires independent validation",
+        },
+        "steam_thresholds": {
+            "rerun":     STEAM_RERUN_THRESHOLD,
+            "downgrade": STEAM_DOWNGRADE_THRESHOLD,
+        },
+        "session_exposure_defaults": DEFAULT_EXPOSURE,
+        "can_approve_bets": False,
+    }), 200
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)
