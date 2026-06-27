@@ -1,0 +1,55 @@
+The best setup is not one app. For your WOW final-lock needs, the best tool is a custom “PrizePicks Final Lock” Replit/Google Sheets dashboard fed by a few data sources.
+
+Best stack for your exact need:
+
+Need	Best tool/source	Why
+Live PrizePicks payout + current PP line	PrizePicks app/manual final check or OpticOdds PrizePicks feed	PrizePicks itself shows picks as live and says multipliers are subject to change, so final lock must verify the app immediately before entry.   OpticOdds advertises PrizePicks real-time odds/props, line movement alerts, consensus lines, and 100+ book coverage.  
+Sportsbook market confirmation / no-vig comp	The Odds API or OpticOdds	The Odds API supports WNBA live/upcoming odds, player props via event-odds, current data, historical data, and Google Sheets/Excel access.  
+Injury/status check	Official WNBA injury report + RotoWire	WNBA’s official injury report updates continually and has required report deadlines.   RotoWire has WNBA injury report, daily lineups, depth charts, projections, split stats, opponent averages, and player props pages.  
+Projection/trend check	Props.Cash + RotoWire + StatMuse/Fox/ESPN logs	Props.Cash supports WNBA, stats, visuals, sportsbook/DFS Pick’Em comparisons, hit rates, matchup grades, and line value tools.  
+Slip EV / payout-adjusted approval	Custom WOW EV calculator	This part should be yours. Apps can show trends/odds, but they will not enforce your WOW rules: payout multiplier, leg probability, correlation, Goblin/Demon tax, Flex dilution, and final approval lock.
+
+My recommendation: build the final-lock tool in Replit.
+
+Call it:
+
+WOW PrizePicks Final Lock Dashboard
+
+It should require these fields before a prop can move from MODEL_QUALIFIED_HOLD to FINAL_APPROVED:
+
+player
+team
+opponent
+market
+side
+PrizePicks current line
+PrizePicks payout/multiplier
+slip type: Power / Flex
+pick count
+injury/status result
+primary teammate status
+sportsbook comp line
+sportsbook odds / no-vig fair probability
+projection source 1
+projection source 2
+model probability
+shrinkage-adjusted probability
+correlation flag
+slip probability
+break-even slip probability
+estimated slip EV
+final_lock_timestamp
+
+For the math layer:
+
+Power slip probability = p1 × p2 × p3 ...
+Break-even slip probability = 1 / payout_multiplier
+Required independent per-leg probability = (1 / payout_multiplier) ^ (1 / number_of_legs)
+Slip EV per $1 = slip_probability × payout_multiplier - 1
+
+For Flex slips, you need a separate payout table and should calculate all hit combinations, not just full-sweep probability.
+
+Important: I would not rely on direct PrizePicks scraping unless it is through a compliant licensed feed. PrizePicks terms prohibit using robots/spiders/automatic means to access, monitor, or copy site/app material.  
+
+Bottom line:
+Use OpticOdds if you want the closest paid all-in-one feed. Use The Odds API + Props.Cash + WNBA/RotoWire + a Replit EV dashboard if you want the best practical WOW setup. The missing piece is not research anymore — it is a machine-enforced final-lock EV gate.
