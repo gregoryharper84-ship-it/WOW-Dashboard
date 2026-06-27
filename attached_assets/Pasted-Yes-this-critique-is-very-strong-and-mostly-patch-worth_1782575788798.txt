@@ -1,0 +1,226 @@
+Yes — this critique is very strong and mostly patch-worthy. I would accept the core ideas, but I would modify the wording so the engine does not become too blunt and kill valid PrizePicks stale-line value.
+
+The most important correction: sharp-market disagreement must be directional. A PrizePicks line that is stale versus a sharp sportsbook is not automatically bad. It is bad only when your chosen side is on the wrong side of sharp movement.
+
+My verdict
+
+Recommendation	Verdict	Notes
+Sharp vs retail market weighting	Adopt, but directional	Very needed. PP/DFS should never be treated as confirmation. It is the target market.
+Settlement loopback/calibration ingestion	Adopt fully	This is one of the biggest missing operational pieces.
+House rules matrix	Adopt fully	Especially important for DNP, partial play, injury returners, and platform-specific grading.
+Liquidity/latency gate	Adopt with sport/platform differences	More critical for sportsbooks, but still useful for PP final lock because lines/payouts move.
+Same-game correlation question	Needs Replit/external matrix	The LLM should classify correlation, not pretend to calculate exact joint probability natively.
+
+1. Sharp vs retail weighting is correct, but needs a side-aware rule
+
+The proposed REJECT_FALLING_KNIFE is useful, but I would not make it blanket.
+
+Example:
+
+Scenario	Correct action
+PP line is higher than sharp book and you want MORE	Reject or downgrade. You are buying a bad number.
+PP line is higher than sharp book and you want LESS	Potentially good. This may be exactly the stale value you want.
+PP line is lower than sharp book and you want MORE	Potentially good.
+PP line is lower than sharp book and you want LESS	Reject or downgrade.
+
+So the patch should say:
+
+Reject only when the selected side is opposed to sharp market direction or when sharp movement has erased the edge.
+
+Better labels:
+
+SHARP_ANCHOR_CONFIRMED
+SHARP_ANCHOR_CONFLICT
+REJECT_SHARP_CONFLICT
+REJECT_FALLING_KNIFE
+MARKET_VERIFIED_HOLD
+FLIP_CANDIDATE
+
+For your current WNBA props, this matters a lot. Rhyne Howard rebounds MORE 3.5 with an 8/10 L10 ledger is not enough by itself. If sharp books sit 3.5/4.5 and lean over, it can survive. If sharp books are 3.5 juiced under or already moved down, it becomes a hold/reject.
+
+2. Settlement loopback is a must-have
+
+This is the best recommendation in the whole critique.
+
+Your WOW model has calibration rules, but calibration cannot work unless every settled result gets fed back in a structured format.
+
+Minimum settled ledger fields:
+
+date
+sport
+player/team
+market
+side
+book/platform
+submitted_line
+closing_line
+submitted_odds_or_payout
+closing_odds_or_projection
+model_probability
+market_probability
+edge
+result
+CLV
+failure_tag
+dominant_failure_tag
+slip_type
+pick_count
+payout_multiplier
+slip_EV
+actual_slip_result
+
+Hard rule I would add:
+
+If SETTLED_LEDGER is missing, stale, or not updated within 18 hours, no FINAL_APPROVED labels are allowed. Maximum label becomes MODEL_QUALIFIED_HOLD or MARKET_VERIFIED_HOLD.
+
+That prevents the model from pretending it is calibrated when it is not.
+
+3. House rules matrix is absolutely needed
+
+This should be patched immediately.
+
+For PrizePicks, sportsbook props, DFS pick’em, and fantasy score markets, settlement rules are not interchangeable. A player who starts and exits early can be graded very differently depending on the platform.
+
+Add this to the failure path layer:
+
+HOUSE_RULES_MATRIX_REQUIRED = true
+Required fields:
+platform
+market_type
+DNP_rule
+partial_play_rule
+stat_correction_rule
+combo_stat_rule
+fantasy_score_rule
+void_push_rule
+discount_goblin_demon_rule
+protected_play_rule_if_any
+
+Then add:
+
+REJECT_HOUSE_RULES_VULNERABILITY
+
+This should fire when:
+
+player has elevated injury/return risk
+AND platform grades partial play as action
+AND usable probability depends on normal minutes/role
+
+For example, a hamstring-return player’s MORE prop may look good by L10, but if 6 minutes of play still grades as a loss, the usable probability needs a haircut or a full reject.
+
+4. Latency and liquidity gate is good, but should be adapted for PrizePicks
+
+For sportsbooks, liquidity is real: limits, market depth, timing, and price availability matter.
+
+For PrizePicks, the better version is:
+
+EXECUTION_FRICTION_GATE
+
+Required final-lock checks:
+
+current PrizePicks line
+current payout multiplier
+current slip type
+current pick count
+line age under 15–30 seconds
+injury/status checked
+market/projection comp checked
+no payout downgrade
+no line movement against side
+no duplicate exposure
+no unresolved source conflict
+
+Possible labels:
+
+REJECT_EXECUTION_STALE
+REJECT_PAYOUT_CHANGED
+REJECT_LOW_LIMIT_UTILITY
+REJECT_LINE_MOVED_AGAINST_SIDE
+
+I would use low liquidity more for sportsbook/LLP. For PrizePicks, the bigger issue is line/payout drift and slip EV decay, not traditional liquidity.
+
+5. Same-game correlation should not be handled natively by the LLM
+
+To answer the question at the end:
+
+Right now, I would not trust the engine to calculate same-game joint probabilities natively inside the prompt. That should be handled by an external matrix or Replit module.
+
+The LLM can classify correlation:
+
+DIRECT_OVERLAP
+SAME_PLAYER_COMPONENT_OVERLAP
+TEAMMATE_USAGE_NEGATIVE
+TEAMMATE_USAGE_POSITIVE
+PACE_ENVIRONMENT_POSITIVE
+BLOWOUT_SHARED_RISK
+INJURY_ROLE_DEPENDENCY
+LOW_CORRELATION
+
+But the actual math should be external:
+
+independent_slip_probability = p1 × p2 × p3
+correlation_adjusted_probability = external model output
+slip_EV = adjusted_probability × payout - 1
+
+For now, without a validated correlation model, your safest rule should be:
+
+No same-player overlapping stat props in the same slip.
+No same-team props in the same slip unless correlation is explicitly classified and EV-adjusted.
+No Power Play approval when correlation is unknown.
+Flex slips require correlation-adjusted hit-combination math, not independent-leg math.
+
+Example direct block:
+
+Rhyne Howard MORE rebounds
++
+Rhyne Howard LESS rebounds + assists
+=
+DIRECT_COMPONENT_CONFLICT
+Auto reject same slip.
+
+Example caution block:
+
+Rhyne Howard rebounds MORE
++
+Allisha Gray assists MORE
+=
+same-team environment dependency
+needs pace/rotation/game-script review
+not auto-approved
+
+Patch I would actually add
+
+Use this as the clean patch register:
+
+WOW-PATCH-2026-06-27-SHARP-MARKET-SETTLEMENT-HOUSE-RULES-CORRELATION-GATE
+Purpose:
+Prevent false approval caused by retail consensus, stale calibration, platform settlement traps, execution friction, and unpriced same-game correlation.
+1. Sharp Market Anchor
+- PrizePicks/DFS lines are target markets, not confirmation markets.
+- Market confirmation must anchor to sharp/no-vig sportsbook lines when available.
+- Retail books may supplement but cannot override sharp disagreement.
+- Discrepancy must be evaluated directionally by selected side.
+- If selected side is opposed to sharp movement or sharp fair line, label REJECT_SHARP_CONFLICT or REJECT_FALLING_KNIFE.
+- If stale PP line is favorable in the same direction as sharp market, keep as MARKET_VERIFIED_HOLD pending final lock.
+2. Settlement Loopback
+- Every run must ingest SETTLED_LEDGER from prior 24–72 hours.
+- Required: result, CLV, closing line, submitted line, model probability, slip EV, failure_tag.
+- If missing or stale >18 hours, downgrade calibration health to MONITOR.
+- MONITOR blocks FINAL_APPROVED unless manual override reason is logged.
+3. House Rules Matrix
+- Every prop/slip must identify target platform settlement rules.
+- DNP, partial play, stat correction, combo stat, fantasy score, push/void, and protected play rules must be known.
+- If partial-play risk is elevated and platform grades partial play as action, apply injury_haircut.
+- If haircut erases edge, label REJECT_HOUSE_RULES_VULNERABILITY.
+4. Execution Friction / Liquidity
+- Final lock must verify current line, payout, slip type, pick count, player status, market comp, and timestamp.
+- Low-liquidity or fast-moving markets require live-check age under 15 seconds.
+- Any payout change, line move against side, or stale timestamp blocks approval.
+- Labels: REJECT_EXECUTION_STALE, REJECT_PAYOUT_CHANGED, REJECT_LOW_LIQUIDITY, REJECT_LINE_MOVED_AGAINST_SIDE.
+5. Correlation EV Gate
+- LLM may classify correlation but may not invent exact joint probability.
+- External Replit/matrix module should calculate adjusted slip probability.
+- Direct overlap, same-player component overlap, and unresolved same-game correlation block Power Play approval.
+- Flex slip EV must use hit-combination math, not independent full-sweep math only.
+
+My bottom line: this is a strong patch set and should be integrated, but I would rewrite REJECT_FALLING_KNIFE so it only fires when the chosen side is fighting the sharp market. Otherwise, you could accidentally reject the exact stale PrizePicks value you are trying to find.

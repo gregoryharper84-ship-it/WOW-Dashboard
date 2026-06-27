@@ -23,6 +23,22 @@ class PropLabel(str, Enum):
     DIRECTIONAL_EXPOSURE_BLOCK          = "DIRECTIONAL_EXPOSURE_BLOCK"
     SESSION_EXPOSURE_WARNING            = "SESSION_EXPOSURE_WARNING"
     SESSION_DIRECTIONAL_EXPOSURE_BLOCK  = "SESSION_DIRECTIONAL_EXPOSURE_BLOCK"
+    # Patch 2026-06-27 — Sharp Market Anchor (directional)
+    REJECT_SHARP_CONFLICT               = "REJECT_SHARP_CONFLICT"
+    REJECT_FALLING_KNIFE                = "REJECT_FALLING_KNIFE"
+    FLIP_CANDIDATE                      = "FLIP_CANDIDATE"
+    # Patch 2026-06-27 — House Rules Matrix
+    REJECT_HOUSE_RULES_VULNERABILITY    = "REJECT_HOUSE_RULES_VULNERABILITY"
+    HOUSE_RULES_CAUTION                 = "HOUSE_RULES_CAUTION"
+    # Patch 2026-06-27 — Execution Friction Gate
+    REJECT_EXECUTION_STALE              = "REJECT_EXECUTION_STALE"
+    REJECT_PAYOUT_CHANGED               = "REJECT_PAYOUT_CHANGED"
+    REJECT_LOW_LIQUIDITY                = "REJECT_LOW_LIQUIDITY"
+    REJECT_LINE_MOVED_AGAINST_SIDE      = "REJECT_LINE_MOVED_AGAINST_SIDE"
+    # Patch 2026-06-27 — Settlement Loopback
+    CALIBRATION_STALE_HOLD              = "CALIBRATION_STALE_HOLD"
+    # Patch 2026-06-27 — Correlation Gate
+    REJECT_POWER_CORRELATED             = "REJECT_POWER_CORRELATED"
 
 
 class DataStatus(str, Enum):
@@ -45,6 +61,15 @@ REJECT_LABELS   = {
     PropLabel.SLATE_PURGE,
     PropLabel.DUPLICATE_EXPOSURE_BLOCK,
     PropLabel.NO_PLAY,
+    # Patch 2026-06-27
+    PropLabel.REJECT_SHARP_CONFLICT,
+    PropLabel.REJECT_FALLING_KNIFE,
+    PropLabel.REJECT_HOUSE_RULES_VULNERABILITY,
+    PropLabel.REJECT_EXECUTION_STALE,
+    PropLabel.REJECT_PAYOUT_CHANGED,
+    PropLabel.REJECT_LOW_LIQUIDITY,
+    PropLabel.REJECT_LINE_MOVED_AGAINST_SIDE,
+    PropLabel.REJECT_POWER_CORRELATED,
 }
 
 GATE_ORDER = [
@@ -54,8 +79,23 @@ GATE_ORDER = [
     "l5_l10_ledger",
     "outlier_gate",
     "market_gate",
+    "sharp_anchor",
+    "house_rules",
     "ev_gate",
     "slip_structure",
     "exposure_gate",
     "classifier",
 ]
+
+
+# Correlation classification labels (sub-labels inside sharp_anchor / payout_context)
+class CorrelationClass(str, Enum):
+    DIRECT_OVERLAP              = "DIRECT_OVERLAP"
+    SAME_PLAYER_COMPONENT       = "SAME_PLAYER_COMPONENT_OVERLAP"
+    TEAMMATE_USAGE_NEGATIVE     = "TEAMMATE_USAGE_NEGATIVE"
+    TEAMMATE_USAGE_POSITIVE     = "TEAMMATE_USAGE_POSITIVE"
+    PACE_ENVIRONMENT_POSITIVE   = "PACE_ENVIRONMENT_POSITIVE"
+    BLOWOUT_SHARED_RISK         = "BLOWOUT_SHARED_RISK"
+    INJURY_ROLE_DEPENDENCY      = "INJURY_ROLE_DEPENDENCY"
+    LOW_CORRELATION             = "LOW_CORRELATION"
+    UNKNOWN                     = "CORRELATION_UNKNOWN"

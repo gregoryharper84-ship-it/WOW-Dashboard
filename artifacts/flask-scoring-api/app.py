@@ -13748,6 +13748,190 @@ def lock_api_history():
         return jsonify({"error": "DB error", "detail": str(exc)}), 500
 
 
+# ── Patch 2026-06-27: Settlement Loopback endpoints ──────────────────────────
+
+@app.route("/lock-api/settle", methods=["POST"])
+@require_api_key
+def lock_api_settle():
+    """
+    Ingest a settled result into the settlement_ledger.
+
+    POST body (JSON):
+      { date, sport, player, market, side, submitted_line, closing_line,
+        submitted_odds_or_payout, closing_odds_or_projection,
+        model_probability, market_probability, edge, result, CLV,
+        failure_tag, dominant_failure_tag, slip_type, pick_count,
+        payout_multiplier, slip_EV, actual_slip_result, notes }
+
+    Required: player, market, result, date
+    """
+    from gate_engine import settlement_loopback as _sl
+    body = request.get_json(silent=True) or {}
+    result = _sl.ingest_settled_result(body)
+    status = 201 if result.get("ok") else 400
+    return jsonify({**result, "can_approve_bets": False}), status
+
+
+@app.route("/lock-api/settle/freshness", methods=["GET"])
+@require_api_key
+def lock_api_settle_freshness():
+    """Return settlement ledger freshness status."""
+    from gate_engine import settlement_loopback as _sl
+    return jsonify({**_sl.check_freshness(), "can_approve_bets": False}), 200
+
+
+@app.route("/lock-api/settle/recent", methods=["GET"])
+@require_api_key
+def lock_api_settle_recent():
+    """Return recent settlement records."""
+    from gate_engine import settlement_loopback as _sl
+    n = min(int(request.args.get("limit", 50)), 500)
+    return jsonify({
+        "settlements":    _sl.get_recent_settlements(n),
+        "can_approve_bets": False,
+    }), 200
+
+
+# ── Patch 2026-06-27: Sharp Anchor standalone endpoint ───────────────────────
+
+@app.route("/gate-engine/sharp-anchor", methods=["POST"])
+@require_api_key
+def gate_engine_sharp_anchor():
+    """
+    Directional sharp market anchor check (standalone, no pipeline).
+
+    POST body (JSON):
+      {
+        pp_line:           number | null,
+        sharp_fair_line:   number | null,
+        sharp_no_vig_prob: number | null,   # 0–1, probability for OVER/MORE
+        side:              "MORE" | "LESS" | "OVER" | "UNDER"
+      }
+
+    Returns: { passed, anchor_status, line_status, reject, terminal_label,
+               our_side_prob, detail, can_approve_bets: False }
+    """
+    from gate_engine import sharp_anchor as _sa
+    body = request.get_json(silent=True) or {}
+    result = _sa.check_standalone(
+        pp_line           = body.get("pp_line"),
+        sharp_fair_line   = body.get("sharp_fair_line"),
+        sharp_no_vig_prob = body.get("sharp_no_vig_prob"),
+        side              = body.get("side", "MORE"),
+    )
+    return jsonify(result), 200
+
+
+# ── Patch 2026-06-27: House Rules standalone endpoint ────────────────────────
+
+@app.route("/gate-engine/house-rules", methods=["POST"])
+@require_api_key
+def gate_engine_house_rules():
+    """
+    House rules matrix check (standalone, no pipeline).
+
+    POST body (JSON):
+      {
+        platform:           "prizepicks" | "fanduel" | "draftkings" | "sportsbook",
+        injury_flag:        bool,
+        minutes_dependency: bool,
+        model_prob:         number | null,
+        per_leg_breakeven:  number | null,
+        market_type:        "player_prop"  (optional, default player_prop)
+      }
+
+    Returns: { passed, code, haircut_applied, surviving_edge, detail, can_approve_bets: False }
+    """
+    from gate_engine import house_rules as _hr
+    body = request.get_json(silent=True) or {}
+    result = _hr.check_standalone(
+        platform           = body.get("platform", "prizepicks"),
+        injury_flag        = bool(body.get("injury_flag", False)),
+        minutes_dependency = bool(body.get("minutes_dependency", True)),
+        model_prob         = body.get("model_prob"),
+        per_leg_breakeven  = body.get("per_leg_breakeven"),
+        market_type        = body.get("market_type", "player_prop"),
+    )
+    return jsonify(result), 200
+
+
+# ── Patch 2026-06-27: Execution Friction standalone endpoint ─────────────────
+
+@app.route("/gate-engine/execution-friction", methods=["POST"])
+@require_api_key
+def gate_engine_execution_friction():
+    """
+    Execution friction / liquidity gate (standalone, no pipeline).
+
+    POST body (JSON):
+      {
+        analysis_pp_line:    number | null,
+        current_pp_line:     number | null,
+        analysis_payout:     number | null,
+        current_payout:      number | null,
+        analysis_slip_type:  string | null,
+        current_slip_type:   string | null,
+        analysis_pick_count: integer | null,
+        current_pick_count:  integer | null,
+        line_timestamp_utc:  string (ISO-8601) | null,
+        player_status:       string | null,
+        side:                "MORE" | "LESS",
+        platform:            "prizepicks" | "sportsbook",
+        max_line_age_seconds: integer (default 30)
+      }
+
+    Returns: { passed, code, rejects, cautions, checks, can_approve_bets: False }
+    """
+    from gate_engine import execution_friction as _ef
+    body = request.get_json(silent=True) or {}
+    result = _ef.check_standalone(
+        analysis_pp_line       = body.get("analysis_pp_line"),
+        current_pp_line        = body.get("current_pp_line"),
+        analysis_payout        = body.get("analysis_payout"),
+        current_payout         = body.get("current_payout"),
+        analysis_slip_type     = body.get("analysis_slip_type"),
+        current_slip_type      = body.get("current_slip_type"),
+        analysis_pick_count    = body.get("analysis_pick_count"),
+        current_pick_count     = body.get("current_pick_count"),
+        line_timestamp_utc     = body.get("line_timestamp_utc"),
+        player_status          = body.get("player_status"),
+        side                   = body.get("side", "MORE"),
+        platform               = body.get("platform", "prizepicks"),
+        max_line_age_seconds   = int(body.get("max_line_age_seconds", 30)),
+    )
+    return jsonify(result), 200
+
+
+# ── Patch 2026-06-27: Correlation Gate standalone endpoint ───────────────────
+
+@app.route("/gate-engine/correlation", methods=["POST"])
+@require_api_key
+def gate_engine_correlation():
+    """
+    Correlation classification for a list of prop legs (standalone, no pipeline).
+
+    POST body (JSON):
+      {
+        legs: [
+          { player: str, stat: str, side: "MORE"|"LESS", team: str? },
+          ...
+        ],
+        slip_type: "3-pick Power" | "4-pick Flex" | ...   (optional)
+      }
+
+    Returns:
+      { classification, classifications, conflicts, block_power_play,
+        note_flex_math, passed, can_approve_bets: False }
+    """
+    from gate_engine import correlation_gate as _cg
+    body  = request.get_json(silent=True) or {}
+    legs  = body.get("legs") or []
+    if not isinstance(legs, list):
+        return jsonify({"ok": False, "error": "legs must be a list"}), 400
+    result = _cg.classify_legs(legs)
+    return jsonify(result), 200
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)

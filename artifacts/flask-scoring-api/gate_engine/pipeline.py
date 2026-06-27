@@ -15,6 +15,7 @@ from . import calibration_health
 from . import data_contract, source_grade, role_timestamp as role_ts_mod
 from . import prob_ledger, failure_path, payout_context
 from . import directional_exposure
+from . import sharp_anchor, house_rules, settlement_loopback
 from .labels import PropLabel
 from .exposure_gate import ExposureLedger
 
@@ -26,33 +27,56 @@ def run_pipeline(
     record_entries: bool = False,
     skip_health_gate: bool = False,
     skip_data_contract: bool = False,
+    skip_settlement_check: bool = False,
 ) -> dict[str, Any]:
     """
     Run the full gate engine pipeline.
 
     Args:
-        raw_rows      — raw board rows (PrizePicks export, API pull, paste)
-        target_date   — slate date to validate against (default: today UTC)
-        enrichment    — dict keyed by row_id or player+prop with:
-                          game_log, season_log, status_payload,
-                          sportsbook_line, best_available, consensus_line,
-                          clv_entry_price, closing_price
-        record_entries — if True, write tracker ENTRY records
+        raw_rows             — raw board rows (PrizePicks export, API pull, paste)
+        target_date          — slate date to validate against (default: today UTC)
+        enrichment           — dict keyed by row_id or player+prop with:
+                                 game_log, season_log, status_payload,
+                                 sportsbook_line, best_available, consensus_line,
+                                 clv_entry_price, closing_price,
+                                 sharp_no_vig_prob, sharp_fair_line,
+                                 house_rules (dict)
+        record_entries       — if True, write tracker ENTRY records
+        skip_settlement_check — if True, skip settlement loopback freshness gate
 
     Returns:
         {
-          prop_ledger       list[dict]   — all rows with gate results
-          data_status_ledger list[dict]  — data status per row
-          terminal_labels   list[dict]   — {row_id, label, blockers}
-          final_card        list[dict]   — rows that reached FINAL_APPROVED
-          exposure_report   dict         — exposure snapshot
-          clv_table         list[dict]   — CLV tracking per row
-          summary           dict         — counts by label
+          prop_ledger         list[dict]   — all rows with gate results
+          data_status_ledger  list[dict]   — data status per row
+          terminal_labels     list[dict]   — {row_id, label, blockers}
+          final_card          list[dict]   — rows that reached FINAL_APPROVED
+          exposure_report     dict         — exposure snapshot
+          clv_table           list[dict]   — CLV tracking per row
+          summary             dict         — counts by label
+          settlement_status   dict         — loopback freshness result
         }
     """
     enrichment = enrichment or {}
 
     rows = board_intake.normalize_board(raw_rows)
+
+    # -------------------------------------------------------------------
+    # Layer 0.4: Settlement Loopback Freshness
+    # Checks whether the calibration ledger has been updated within 18h.
+    # Stale ledger caps all rows at MODEL_QUALIFIED_HOLD after classifier.
+    # -------------------------------------------------------------------
+    settlement_status: dict[str, Any] = {"stale": False}
+    if not skip_settlement_check:
+        try:
+            settlement_status = settlement_loopback.check_freshness()
+        except Exception:
+            settlement_status = {
+                "stale": False,
+                "code": "SETTLEMENT_CHECK_ERROR",
+                "detail": "Settlement freshness check failed — no constraint applied.",
+            }
+
+    settlement_stale = settlement_status.get("stale", False)
 
     # -------------------------------------------------------------------
     # Layer 0.5: Calibration Health Gate
@@ -97,10 +121,6 @@ def run_pipeline(
 
         # -------------------------------------------------------------------
         # Module B: Data Contract Enforcement
-        # Missing any required field → DATA_CONTRACT_FAIL (terminal).
-        # Approval scoring does not run on contract failures.
-        # skip_data_contract=True lets pre-existing pipeline tests pass
-        # without fully-formed enrichment payloads.
         # -------------------------------------------------------------------
         if not skip_data_contract:
             data_contract.run(row, enrichment=enr)
@@ -109,7 +129,6 @@ def run_pipeline(
 
         # -------------------------------------------------------------------
         # Module H: Source Timestamp Grading
-        # Caps approval label based on source grade of critical-path sources.
         # -------------------------------------------------------------------
         source_grade.run(row, enrichment=enr)
         if row.get("terminal_label") in (PropLabel.SOURCE_CONFLICT.value,):
@@ -117,7 +136,6 @@ def run_pipeline(
 
         # -------------------------------------------------------------------
         # Layer 0 / Module E: Reality Verification + Role Timestamp
-        # Slate lock and role staleness run together.
         # -------------------------------------------------------------------
         slate_validation.run(row, target_date=target_date)
         if row.get("terminal_label"):
@@ -126,6 +144,16 @@ def run_pipeline(
         role_ts_mod.run(row, enrichment=enr)
 
         status_role.run(row, status_payload=enr.get("status_payload"))
+
+        # -------------------------------------------------------------------
+        # Patch 2026-06-27 — House Rules Matrix
+        # Runs after status_role so injury/role signals are available.
+        # Only fires when enrichment provides house_rules data.
+        # -------------------------------------------------------------------
+        if enr.get("house_rules"):
+            house_rules.run(row, enrichment=enr)
+            if row.get("terminal_label") == PropLabel.REJECT_HOUSE_RULES_VULNERABILITY.value:
+                continue
 
         # -------------------------------------------------------------------
         # Layers 1–2: Data Intake + Adjustments
@@ -147,19 +175,32 @@ def run_pipeline(
             closing_price   = enr.get("closing_price"),
         )
 
+        # -------------------------------------------------------------------
+        # Patch 2026-06-27 — Sharp Market Anchor (Directional)
+        # Only fires when enrichment provides sharp_no_vig_prob or sharp_fair_line.
+        # PrizePicks/DFS lines are target markets — sharp books are the reference.
+        # -------------------------------------------------------------------
+        if enr.get("sharp_no_vig_prob") is not None or enr.get("sharp_fair_line") is not None:
+            sharp_anchor.run(
+                row,
+                sharp_no_vig_prob = enr.get("sharp_no_vig_prob"),
+                sharp_fair_line   = enr.get("sharp_fair_line"),
+            )
+            if row.get("terminal_label") in (
+                PropLabel.REJECT_SHARP_CONFLICT.value,
+                PropLabel.REJECT_FALLING_KNIFE.value,
+            ):
+                continue
+
         ev_gate.run(row)
 
         # -------------------------------------------------------------------
         # Module D: Probability Component Ledger + Shrinkage
-        # Validates model_prob construction before Layer 4 synthesis.
         # -------------------------------------------------------------------
         prob_ledger.run(row, enrichment=enr)
 
         # -------------------------------------------------------------------
         # Module F: Failure Path Matrix
-        # Three paths required (PRIMARY, SECONDARY, BLACK_SWAN).
-        # Abstract paths → DATA_CONTRACT_FAIL.
-        # Skipped in legacy/compat mode (skip_data_contract=True).
         # -------------------------------------------------------------------
         if not skip_data_contract:
             failure_path.run(row, enrichment=enr)
@@ -168,14 +209,11 @@ def run_pipeline(
 
         # -------------------------------------------------------------------
         # Module C: Payout Context / Slip EV
-        # Computes per-prop EV at intended slip format.
-        # NEGATIVE_EV → MARKET_QUALIFIED_BUT_SLIP_NEGATIVE.
         # -------------------------------------------------------------------
         payout_context.run(row, enrichment=enr)
 
         # -------------------------------------------------------------------
-        # Module G: Directional Exposure (per-row session recording)
-        # Slip-level check happens in run_slip; session tracking accumulates here.
+        # Module G: Directional Exposure
         # -------------------------------------------------------------------
         directional_exposure.run(row, session_ledger=session_exposure)
 
@@ -195,16 +233,24 @@ def run_pipeline(
     for row in rows:
         classifier.classify(row)
 
+    # -------------------------------------------------------------------
+    # Patch 2026-06-27 — Settlement Loopback ceiling enforcement
+    # After classifier: if ledger is stale, downgrade FINAL_APPROVED → MODEL_QUALIFIED_HOLD
+    # -------------------------------------------------------------------
+    if settlement_stale:
+        settlement_loopback.apply_stale_ceiling_to_output(rows, stale=True)
+
     if record_entries:
         for row in rows:
             if row.get("terminal_label") == PropLabel.FINAL_APPROVED.value:
                 tracker.record_entry(row)
 
-    return _build_output(rows, ledger, health_report)
+    return _build_output(rows, ledger, health_report, settlement_status)
 
 
 def _build_output(rows: list[dict], ledger: ExposureLedger,
-                  health_report: dict | None = None) -> dict[str, Any]:
+                  health_report: dict | None = None,
+                  settlement_status: dict | None = None) -> dict[str, Any]:
     label_counts: dict[str, int] = {}
     terminal_labels  = []
     final_card       = []
@@ -242,6 +288,7 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
                 "direction": row.get("direction"),
                 "edge_score": row.get("gates", {}).get("ev_gate", {}).get("edge_score"),
                 "market_status": row.get("gates", {}).get("market_gate", {}).get("market_status"),
+                "sharp_anchor": row.get("gates", {}).get("sharp_anchor", {}).get("anchor_status"),
             })
 
         mkt = row.get("gates", {}).get("market_gate", {})
@@ -259,11 +306,6 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
 
     no_play = len(final_card) == 0
 
-    # Collect session directional exposure summary
-    session_exposure_snap = {}
-    if "session_exposure" in dir():
-        pass  # handled below via closure
-
     return {
         "prop_ledger":        rows,
         "data_status_ledger": data_status_ledger,
@@ -272,6 +314,7 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "exposure_report":    ledger.snapshot(),
         "clv_table":          clv_table,
         "health_report":      health_report or {},
+        "settlement_status":  settlement_status or {},
         "summary": {
             "total_rows":   len(rows),
             "by_label":     label_counts,
