@@ -3,6 +3,21 @@ market_gate.py
 Compare PrizePicks line to sportsbook / projection market.
 Outputs: market edge status, no-vig implied probability, board-vs-book delta.
 Never approves — only labels market data quality.
+
+CLV formula (v16.1-RC1):
+  CLV = closing_implied_probability − entry_implied_probability
+  Positive CLV = market confirmed our side after entry = Beat Close.
+
+  Moneyline / American odds:
+    entry +140 (41.7% implied), close +120 (45.5% implied) → CLV = +3.8% → CLV_BEAT
+
+  Total (OVER): closing_line > entry_line → CLV_BEAT
+  Total (UNDER): closing_line < entry_line → CLV_BEAT
+  Spread (bettor's perspective): entry_line > closing_line → CLV_BEAT
+
+Opener vs closing:
+  Opener unavailable → OPENER_UNAVAILABLE (caps confidence; does NOT block CLV grading)
+  Closing line unavailable → NO_CLOSE_AVAILABLE (blocks CLV grading)
 """
 from __future__ import annotations
 
@@ -17,6 +32,8 @@ MARKET_STATUS_NONE          = "NO_MARKET_AVAILABLE"
 MARKET_STATUS_DRIFT         = "SEVERE_BOARD_VS_BOOK_DRIFT"
 MARKET_STATUS_CLV_PENDING   = "CLV_PENDING"
 MARKET_STATUS_VERIFIED      = "MARKET_VERIFIED"
+MARKET_STATUS_OPENER_UNAVAILABLE = "OPENER_UNAVAILABLE"
+MARKET_STATUS_NO_CLOSE           = "NO_CLOSE_AVAILABLE"
 
 DRIFT_THRESHOLD = 0.5
 EDGE_THRESHOLD  = 0.04
@@ -124,5 +141,58 @@ def _no_vig_prob(american_odds: float | None) -> float | None:
         return None
 
 
-def _clv_beat(entry: float, closing: float) -> bool:
-    return entry < closing
+def _american_to_implied(american_odds: float) -> float:
+    """Convert American odds to decimal implied probability."""
+    o = float(american_odds)
+    if o > 0:
+        return 100.0 / (o + 100.0)
+    return abs(o) / (abs(o) + 100.0)
+
+
+def _clv_beat(entry_odds: float, closing_odds: float) -> bool:
+    """
+    CLV beat using implied-probability comparison (v16.1-RC1).
+
+    CLV = closing_implied_probability − entry_implied_probability
+    Positive CLV = closing line priced our side at higher probability = Beat Close.
+
+    Example:
+      Entry +140 (41.7% implied), Close +120 (45.5% implied)
+      CLV = 45.5% − 41.7% = +3.8%  →  CLV_BEAT
+
+      Entry −120 (54.5% implied), Close −110 (52.4% implied)
+      CLV = 52.4% − 54.5% = −2.1%  →  CLV_MISS
+
+    Both entry_odds and closing_odds are American format.
+    """
+    try:
+        return _american_to_implied(closing_odds) > _american_to_implied(entry_odds)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return False
+
+
+def _clv_beat_line(entry_line: float, closing_line: float,
+                   side: str | None) -> bool | None:
+    """
+    Line-aware CLV for spreads and totals (point-line format, not American odds).
+
+    Total:
+      OVER  — closing_line > entry_line → CLV_BEAT
+              e.g. Bet Over 160.5, closes 162.5 → Beat Close
+      UNDER — closing_line < entry_line → CLV_BEAT
+              e.g. Bet Under 162.5, closes 160.5 → Beat Close
+
+    Spread (line from bettor's side):
+      All sides — entry_line > closing_line → CLV_BEAT
+              Favorite: Bet −2.5, closes −3.5 → entry(−2.5) > closing(−3.5) → Beat Close
+              Underdog: Bet +4.5, closes +3.5 → entry(+4.5) > closing(+3.5) → Beat Close
+    """
+    side_lc = (side or "").lower().strip()
+    try:
+        if side_lc == "over":
+            return float(closing_line) > float(entry_line)
+        if side_lc == "under":
+            return float(closing_line) < float(entry_line)
+        return float(entry_line) > float(closing_line)
+    except (TypeError, ValueError):
+        return None

@@ -77,7 +77,15 @@ def record_result(row_id: str, final_stat: float, closing_price: float | None = 
 
     clv_status: str | None = None
     if clv_entry is not None and closing_price is not None:
-        clv_status = "CLV_BEAT" if clv_entry < closing_price else "CLV_MISS"
+        # CLV = closing_implied_prob − entry_implied_prob  (v16.1-RC1)
+        # Positive = market confirmed our side = CLV_BEAT.
+        try:
+            def _imp(o: float) -> float:
+                f = float(o)
+                return 100.0 / (f + 100.0) if f > 0 else abs(f) / (abs(f) + 100.0)
+            clv_status = "CLV_BEAT" if _imp(closing_price) > _imp(clv_entry) else "CLV_MISS"
+        except (TypeError, ValueError, ZeroDivisionError):
+            clv_status = None
 
     result = {
         "event":          "RESULT",

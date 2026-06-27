@@ -154,12 +154,47 @@ PRICE_EDGE_REQUIRED_FIELDS = [
     "edge", "source",
 ]
 
+# All 20 fields required for calibration grading.
+# `opener` is intentionally excluded — missing opener = OPENER_UNAVAILABLE
+# (caps confidence, limits market-movement analysis, but does NOT block CLV grading).
+# CLV grading requires `close` + `odds`; missing `close` = NO_CLOSE_AVAILABLE (blocks CLV).
 CALIBRATION_LEDGER_FIELDS = [
     "date", "sport", "league", "market", "side", "odds", "line",
-    "book", "opener", "close", "model_probability", "no_vig_probability",
+    "book", "close", "model_probability", "no_vig_probability",
     "edge", "stake", "final_label", "failure_tags", "clv", "result",
     "roi", "brier_bucket", "postmortem_note",
 ]
+
+# CLV grading requires entry price + closing line. Opener is separate.
+CALIBRATION_CLV_REQUIRED   = {"odds", "close"}
+CALIBRATION_OPENER_FIELD   = "opener"
+
+# ---------------------------------------------------------------------------
+# TU1 — Calibration graduation tiers
+# FULL_KELLY renamed to avoid aggressive language; bankroll + PATCH-L
+# Reliability Freeze + calibration gates still override all stake sizing.
+# ---------------------------------------------------------------------------
+FULL_FRACTIONAL_KELLY_ELIGIBLE = (
+    "FULL_FRACTIONAL_KELLY_ELIGIBLE — eligible for the highest allowed "
+    "fractional Kelly tier only if bankroll, PATCH-L, and calibration gates all permit."
+)
+
+CALIBRATION_GRADUATION_TIERS = {
+    "<25 candidates":   "MICRO_STAKE_ONLY (0.25u cap)",
+    "25–49 candidates": "HALF_UNIT_CAP (0.50u max)",
+    "50–99 candidates": "RELIABILITY_FREEZE (quarter-Kelly max)",
+    "100+ candidates":  FULL_FRACTIONAL_KELLY_ELIGIBLE,
+}
+
+# ---------------------------------------------------------------------------
+# TU3 — LLP_PLAYABLE hard stake caps
+# LLP_PLAYABLE cannot become a backdoor full-stake bet.
+# ---------------------------------------------------------------------------
+PLAYABLE_STAKE_CAPS = {
+    "pre_25_candidates_max_units":  0.25,   # before 25 logged candidates
+    "pre_100_candidates_max_units": 0.50,   # before 100 logged candidates
+    "reliability_freeze_max_units": 0.25,   # during Reliability Freeze (quarter-Kelly)
+}
 
 CALLEDGER_PATH = os.environ.get(
     "LLP_CALIBRATION_LEDGER_PATH", "/tmp/llp_calibration_ledger.jsonl"
@@ -405,7 +440,15 @@ def validate_contradiction_kills(candidate: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 def validate_session_exposure(candidate: dict[str, Any],
                                session: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Enforce daily caps and per-game/same-script exposure."""
+    """
+    Enforce daily caps, per-game/same-script exposure, and LLP_PLAYABLE stake caps.
+
+    LLP_PLAYABLE hard stake caps (TU3):
+      Never above 0.25u before 25 logged candidates.
+      Never above 0.50u before 100 logged candidates.
+      During Reliability Freeze: quarter-Kelly max (0.25u cap).
+      LLP_PLAYABLE cannot become a backdoor full-stake bet.
+    """
     session = session or {}
     label = (candidate.get("final_label") or "").upper()
 
@@ -413,13 +456,15 @@ def validate_session_exposure(candidate: dict[str, Any],
                  LLPLabel.REJECT.value, LLPLabel.CUT.value):
         return _ok("EXPOSURE_CHECK_SKIPPED", f"label={label} requires no stake")
 
-    bets_today   = int(session.get("bets_today", 0))
-    units_today  = float(session.get("units_today", 0.0))
-    game_units   = float(session.get("units_this_game", 0.0))
-    script_units = float(session.get("units_same_script", 0.0))
-    stake        = float(candidate.get("stake") or 0.0)
-    calibrated   = bool(session.get("calibration_verified", False))
-    same_side_dup = bool(candidate.get("duplicate_same_side", False))
+    bets_today         = int(session.get("bets_today", 0))
+    units_today        = float(session.get("units_today", 0.0))
+    game_units         = float(session.get("units_this_game", 0.0))
+    script_units       = float(session.get("units_same_script", 0.0))
+    stake              = float(candidate.get("stake") or 0.0)
+    calibrated         = bool(session.get("calibration_verified", False))
+    same_side_dup      = bool(candidate.get("duplicate_same_side", False))
+    candidates_logged  = int(session.get("candidates_logged", 0))
+    reliability_freeze = bool(session.get("reliability_freeze", False))
 
     hard_cap = DEFAULT_EXPOSURE["hard_daily_cap_units"] if calibrated \
                else DEFAULT_EXPOSURE["normal_daily_cap_units"]
@@ -439,6 +484,30 @@ def validate_session_exposure(candidate: dict[str, Any],
 
     if same_side_dup:
         blockers.append("DUPLICATE_SAME_SIDE_EXPOSURE")
+
+    # TU3 — LLP_PLAYABLE hard stake caps (cannot be a backdoor full-stake bet)
+    if label == LLPLabel.PLAYABLE.value:
+        if reliability_freeze:
+            playable_cap = PLAYABLE_STAKE_CAPS["reliability_freeze_max_units"]
+            if stake > playable_cap:
+                blockers.append(
+                    f"PLAYABLE_RELIABILITY_FREEZE_CAP:stake={stake:.2f}u > "
+                    f"{playable_cap:.2f}u (quarter-Kelly max during freeze)"
+                )
+        elif candidates_logged < 25:
+            playable_cap = PLAYABLE_STAKE_CAPS["pre_25_candidates_max_units"]
+            if stake > playable_cap:
+                blockers.append(
+                    f"PLAYABLE_STAKE_CAP:stake={stake:.2f}u > {playable_cap:.2f}u "
+                    f"(pre-25 candidates; logged={candidates_logged})"
+                )
+        elif candidates_logged < 100:
+            playable_cap = PLAYABLE_STAKE_CAPS["pre_100_candidates_max_units"]
+            if stake > playable_cap:
+                blockers.append(
+                    f"PLAYABLE_STAKE_CAP:stake={stake:.2f}u > {playable_cap:.2f}u "
+                    f"(pre-100 candidates; logged={candidates_logged})"
+                )
 
     if blockers:
         return _fail("EXPOSURE_LIMIT", f"Blockers: {blockers}",
@@ -494,12 +563,49 @@ def validate_reapproval(candidate: dict[str, Any]) -> dict[str, Any]:
 # Validator 10: calibration ledger
 # ---------------------------------------------------------------------------
 def validate_calibration_ledger(candidate: dict[str, Any]) -> dict[str, Any]:
-    """All ledger fields must be present before unit scaling is allowed."""
+    """
+    All 20 ledger fields must be present before unit scaling is allowed.
+
+    Opener (RC2):
+      opener field is separate — its absence = OPENER_UNAVAILABLE.
+      This caps confidence and blocks opener/market-movement analysis,
+      but does NOT prevent CLV grading when entry (odds) and closing (close) exist.
+
+    CLV grading blockers:
+      close missing  → NO_CLOSE_AVAILABLE  (blocks CLV grading)
+      odds  missing  → entry price missing  (blocks CLV grading)
+      opener missing → OPENER_UNAVAILABLE   (caps confidence only)
+    """
     ledger = candidate.get("calibration_ledger") or {}
+
+    # Check the 20 required core fields (opener excluded)
     missing = [f for f in CALIBRATION_LEDGER_FIELDS if f not in ledger]
+
+    # Opener tracked separately
+    opener_status = None
+    if CALIBRATION_OPENER_FIELD not in ledger:
+        opener_status = "OPENER_UNAVAILABLE"
+
+    # CLV grading status
+    clv_blocked_by: list[str] = []
+    for f in CALIBRATION_CLV_REQUIRED:
+        if f not in ledger:
+            clv_blocked_by.append(f)
+
+    notes: list[str] = []
+    if opener_status:
+        notes.append(opener_status)
+    if clv_blocked_by:
+        notes.append(f"NO_CLV_GRADING:{','.join(clv_blocked_by)}_missing")
+
     if missing:
         return _fail("CALIBRATION_LEDGER_INCOMPLETE",
-                     f"Missing: {', '.join(missing)} — no unit scaling allowed")
+                     f"Missing required fields: {', '.join(missing)} — no unit scaling allowed"
+                     + (f" | {'; '.join(notes)}" if notes else ""))
+
+    if notes:
+        return _ok("CALIBRATION_LEDGER_COMPLETE_WITH_NOTES", " | ".join(notes))
+
     return _ok("CALIBRATION_LEDGER_COMPLETE")
 
 
@@ -515,13 +621,74 @@ def log_calibration_entry(entry: dict[str, Any]) -> None:
 
 
 def get_calibration_ledger(limit: int = 200) -> list[dict]:
-    """Read the calibration ledger."""
+    """Read the calibration ledger (most recent `limit` entries)."""
     try:
         with open(CALLEDGER_PATH) as f:
             lines = f.readlines()
         return [json.loads(l) for l in lines[-limit:] if l.strip()]
     except (OSError, json.JSONDecodeError):
         return []
+
+
+def get_calibration_label_stats() -> dict[str, Any]:
+    """
+    Return per-label performance counts from the calibration ledger (TU2).
+
+    Includes LLP_CUT so high CUT frequency is visible — it often signals
+    tooling/data-acquisition problems (missing odds, missing timestamps,
+    no close available) rather than betting signal.
+
+    Returns:
+      {
+        "label_stats": {
+          "LLP_APPROVED": {"total": int, "wins": int, ...},
+          "LLP_CUT":      {...},
+          ...
+        },
+        "opener_unavailable_count": int,
+        "no_close_available_count": int,
+        "calibration_graduation_tiers": {...},
+        "can_approve_bets": False,
+      }
+    """
+    entries = get_calibration_ledger(limit=10000)
+    label_stats: dict[str, dict[str, int]] = {
+        lbl.value: {"total": 0, "wins": 0, "losses": 0, "pushes": 0}
+        for lbl in LLPLabel
+    }
+    opener_unavailable = 0
+    no_close_available = 0
+
+    for entry in entries:
+        label = entry.get("final_label") or "UNKNOWN"
+        result = entry.get("result")
+        if label not in label_stats:
+            label_stats[label] = {"total": 0, "wins": 0, "losses": 0, "pushes": 0}
+        label_stats[label]["total"] += 1
+        if result == "WIN":
+            label_stats[label]["wins"] += 1
+        elif result == "LOSS":
+            label_stats[label]["losses"] += 1
+        elif result == "PUSH":
+            label_stats[label]["pushes"] += 1
+
+        if entry.get("opener") is None:
+            opener_unavailable += 1
+        if entry.get("close") is None:
+            no_close_available += 1
+
+    # Compute hit rates
+    for stats in label_stats.values():
+        total = stats["total"]
+        stats["hit_rate"] = round(stats["wins"] / total, 3) if total else None
+
+    return {
+        "label_stats":                label_stats,
+        "opener_unavailable_count":   opener_unavailable,
+        "no_close_available_count":   no_close_available,
+        "calibration_graduation_tiers": CALIBRATION_GRADUATION_TIERS,
+        "can_approve_bets":           False,
+    }
 
 
 # ---------------------------------------------------------------------------

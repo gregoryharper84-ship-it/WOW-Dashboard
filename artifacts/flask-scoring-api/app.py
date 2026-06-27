@@ -13406,12 +13406,34 @@ def gate_engine_llp_governance():
 @app.route("/gate-engine/llp-governance/calibration", methods=["GET"])
 @require_api_key
 def gate_engine_llp_calibration():
-    """Return the LLP calibration ledger (last 200 entries)."""
-    from gate_engine.llp_governance import get_calibration_ledger
+    """
+    Return the LLP calibration ledger (last N entries) and per-label stats.
+
+    Query params:
+      limit   — max entries to return (default 200, max 500)
+      stats   — if "1" or "true", return label stats instead of raw entries
+
+    Label stats (TU2) include LLP_CUT so high-CUT frequency is visible —
+    it often reveals tooling/data-acquisition problems rather than betting signal.
+
+    Also returns:
+      opener_unavailable_count — entries missing opener (OPENER_UNAVAILABLE, RC2)
+      no_close_available_count — entries missing close (blocks CLV grading, RC2)
+      calibration_graduation_tiers — FULL_FRACTIONAL_KELLY_ELIGIBLE tier table (TU1)
+    """
+    from gate_engine.llp_governance import get_calibration_ledger, get_calibration_label_stats
     limit = min(int(request.args.get("limit", 200)), 500)
+    want_stats = request.args.get("stats", "").lower() in ("1", "true", "yes")
+
+    if want_stats:
+        result = get_calibration_label_stats()
+        result["disclaimer"] = DISCLAIMER
+        return jsonify(result), 200
+
     return jsonify({
-        "entries": get_calibration_ledger(limit=limit),
+        "entries":          get_calibration_ledger(limit=limit),
         "can_approve_bets": False,
+        "disclaimer":       DISCLAIMER,
     }), 200
 
 

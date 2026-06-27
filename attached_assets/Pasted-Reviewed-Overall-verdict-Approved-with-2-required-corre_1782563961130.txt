@@ -1,0 +1,222 @@
+Reviewed. Overall verdict:
+
+**Approved with 2 required corrections and 3 small tighten-ups before full lock.**
+
+The five skills are structurally right:
+
+* `wow-llp-runner` correctly enforces the 14-step sequence, approved-label taxonomy, no-vig gate, timing gate, probability caps, exposure check, and mandatory compliance check. 
+* `wow-llp-ledger` correctly creates the two-phase row lifecycle and requires every LLP candidate to get logged, not only approved bets. 
+* `wow-session-tracker` correctly adds an LLP exposure ledger, candidate tracking, duplicate-side block, settlement trigger, and session close checklist. 
+* `wow-postmortem-auto` correctly separates LLP postmortems from WOW/PrizePicks and makes CLV the primary process signal. 
+* `wow-llp-calibration` correctly blocks calibration when Phase 2 settlement data is incomplete and prevents graduation based on ROI alone. 
+
+## Required correction 1 — CLV formula sign is backwards
+
+Both `wow-llp-ledger` and `wow-postmortem-auto` use:
+
+```text
+CLV = entry_odds_implied_prob − closing_odds_implied_prob
+```
+
+That reverses the sign for most sportsbook bets.
+
+Example:
+You bet a side at **+140**. It closes **+120**.
+Entry implied probability = 41.7%.
+Closing implied probability = 45.5%.
+You **beat the close**, but the current formula gives:
+
+```text
+41.7% − 45.5% = -3.8%
+```
+
+That would incorrectly mark a good bet as negative CLV.
+
+Correct rule:
+
+```text
+CLV = closing_implied_probability − entry_implied_probability
+```
+
+Positive CLV = the market closed at a higher implied probability for your side than your entry price.
+
+For spreads/totals/team totals, add line-aware grading:
+
+```text
+Spread:
+- Bet favorite -2.5, closes -3.5 = Beat Close
+- Bet favorite -3.5, closes -2.5 = Lost to Close
+- Bet underdog +4.5, closes +3.5 = Beat Close
+- Bet underdog +3.5, closes +4.5 = Lost to Close
+
+Total:
+- Bet Over 160.5, closes 162.5 = Beat Close
+- Bet Over 162.5, closes 160.5 = Lost to Close
+- Bet Under 162.5, closes 160.5 = Beat Close
+- Bet Under 160.5, closes 162.5 = Lost to Close
+```
+
+This is a **must-fix** before relying on calibration.
+
+---
+
+## Required correction 2 — Opener unavailable should not block CLV grading
+
+`wow-llp-ledger` says if opener is unavailable, CLV cannot be fully graded. That is not quite right. CLV only needs **entry price** and **closing price**.
+
+Correct rule:
+
+```text
+Opener unavailable = OPENER_UNAVAILABLE.
+This limits opener/market-movement analysis and may cap confidence,
+but it does not prevent CLV grading if entry and closing prices are available.
+
+Closing line unavailable = NO_CLOSE_AVAILABLE.
+That blocks CLV grading.
+```
+
+So:
+
+| Missing field        | Correct impact                      |
+| -------------------- | ----------------------------------- |
+| Opener missing       | Confidence cap / no opener analysis |
+| Closing line missing | CLV cannot be graded                |
+| Entry price missing  | CLV cannot be graded                |
+| Timestamp missing    | Cannot be approved/playable         |
+
+---
+
+## Small tighten-up 1 — Rename `FULL_KELLY`
+
+In `wow-llp-calibration`, the graduation table uses `FULL_KELLY`. I would change this to:
+
+```text
+FULL_FRACTIONAL_KELLY_ELIGIBLE
+```
+
+Reason: “Full Kelly” can be dangerous language. Your active rule is still Reliability Freeze + bankroll override. Even after 100+ candidates, the engine should not imply unrestricted full Kelly deployment.
+
+Correct language:
+
+```text
+FULL_FRACTIONAL_KELLY_ELIGIBLE = eligible for the highest allowed fractional Kelly tier, only if bankroll, PATCH-L, and calibration gates all permit.
+```
+
+---
+
+## Small tighten-up 2 — Add `LLP_CUT` to calibration label review
+
+Calibration currently shows rows for `LLP_APPROVED`, `LLP_PLAYABLE`, `LLP_WATCH`, `LLP_SCOUT`, and `LLP_REJECT`. Add `LLP_CUT`.
+
+Reason: `LLP_CUT` frequency matters. If too many cuts are caused by missing odds, missing timestamp, or no close available, that is a tooling/data-acquisition problem, not a betting signal.
+
+---
+
+## Small tighten-up 3 — `LLP_PLAYABLE` needs explicit stake cap
+
+Runner says `LLP_PLAYABLE` is small stake only, which is correct. Add a hard cap:
+
+```text
+LLP_PLAYABLE stake cap:
+- Micro-bankroll: $2 max or user-defined micro cap
+- Reliability Freeze: quarter-Kelly max
+- Never above 0.25u before 25 logged candidates
+- Never above 0.50u before 100 logged candidates
+```
+
+This prevents `LLP_PLAYABLE` from becoming a backdoor full-stake bet.
+
+---
+
+## Send this back to Claude/Replit
+
+ChatGPT reviewed the five SKILL.md files. Overall status: approved pending two required corrections and three small tighten-ups.
+
+## Required Correction 1 — Fix CLV formula sign
+
+Current formula in ledger/postmortem:
+
+CLV = entry_implied_probability − closing_implied_probability
+
+This is backwards for sportsbook side evaluation.
+
+Correct formula:
+
+CLV = closing_implied_probability − entry_implied_probability
+
+Positive CLV means the market closed at a higher implied probability for our side than our entry price.
+
+Example:
+Entry +140 = 41.7% implied.
+Close +120 = 45.5% implied.
+We beat the close.
+Correct CLV = 45.5% − 41.7% = +3.8%.
+
+Also add line-aware grading:
+
+Spread:
+
+* Favorite -2.5 closing -3.5 = Beat Close
+* Favorite -3.5 closing -2.5 = Lost to Close
+* Underdog +4.5 closing +3.5 = Beat Close
+* Underdog +3.5 closing +4.5 = Lost to Close
+
+Total:
+
+* Over 160.5 closing 162.5 = Beat Close
+* Over 162.5 closing 160.5 = Lost to Close
+* Under 162.5 closing 160.5 = Beat Close
+* Under 160.5 closing 162.5 = Lost to Close
+
+## Required Correction 2 — Opener unavailable does not block CLV
+
+Current wording says opener unavailable means CLV cannot be fully graded.
+
+Correct rule:
+
+Opener unavailable = OPENER_UNAVAILABLE.
+This limits opener/market-movement analysis and may cap confidence, but CLV can still be graded if entry and closing prices are available.
+
+Closing line unavailable = NO_CLOSE_AVAILABLE.
+That blocks CLV grading.
+
+Entry price missing = CLV cannot be graded.
+Timestamp missing = cannot be LLP_PLAYABLE or LLP_APPROVED.
+
+## Tighten-up 1 — Rename FULL_KELLY
+
+In wow-llp-calibration, rename FULL_KELLY to:
+
+FULL_FRACTIONAL_KELLY_ELIGIBLE
+
+Reason: full Kelly language is too aggressive. Bankroll, PATCH-L Reliability Freeze, and calibration gates still override all stake sizing.
+
+## Tighten-up 2 — Add LLP_CUT to calibration label review
+
+Calibration label-tier performance should include:
+
+LLP_APPROVED
+LLP_PLAYABLE
+LLP_WATCH
+LLP_SCOUT
+LLP_REJECT
+LLP_CUT
+
+Reason: high CUT frequency can reveal tooling/data-acquisition problems such as missing odds, missing timestamps, or no close available.
+
+## Tighten-up 3 — Add LLP_PLAYABLE stake cap
+
+Add this to wow-llp-runner and wow-session-tracker:
+
+LLP_PLAYABLE stake cap:
+
+* Micro-bankroll: $2 max or user-defined micro cap
+* Reliability Freeze: quarter-Kelly max
+* Never above 0.25u before 25 logged candidates
+* Never above 0.50u before 100 logged candidates
+
+LLP_PLAYABLE cannot become a backdoor full-stake bet.
+
+After these edits, the skills are approved for golden test suite execution.
+
+After Claude/Replit patches those, next step is the **10-case golden test suite**. The skills are close; I would not add more features until those two CLV corrections are fixed.

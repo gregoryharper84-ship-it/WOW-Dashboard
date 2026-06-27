@@ -495,3 +495,223 @@ def _label_rank(label):
         if l.value == label:
             return i
     return -1
+
+
+# ---------------------------------------------------------------------------
+# RC2 — Opener unavailable does not block CLV grading
+# ---------------------------------------------------------------------------
+class TestCalibrationLedgerRC2:
+    """Required Correction 2: opener missing ≠ CLV blocked."""
+
+    def _ledger_all_except_opener(self):
+        """All 20 required fields present, opener absent."""
+        return {f: "dummy" for f in CALIBRATION_LEDGER_FIELDS}
+
+    def test_opener_missing_still_passes(self):
+        """opener absent → OPENER_UNAVAILABLE note, but passed=True."""
+        c = _approved_candidate(calibration_ledger=self._ledger_all_except_opener())
+        r = validate_calibration_ledger(c)
+        assert r["passed"] is True
+        assert "OPENER_UNAVAILABLE" in r["detail"]
+
+    def test_opener_present_passes_cleanly(self):
+        """opener present → CALIBRATION_LEDGER_COMPLETE, no notes."""
+        ledger = {f: "dummy" for f in CALIBRATION_LEDGER_FIELDS}
+        ledger["opener"] = 48.0
+        c = _approved_candidate(calibration_ledger=ledger)
+        r = validate_calibration_ledger(c)
+        assert r["passed"] is True
+        assert r["code"] == "CALIBRATION_LEDGER_COMPLETE"
+
+    def test_close_missing_blocks_clv_grading(self):
+        """close absent → NO_CLV_GRADING in detail (blocks CLV grading)."""
+        ledger = {f: "dummy" for f in CALIBRATION_LEDGER_FIELDS}
+        del ledger["close"]
+        c = _approved_candidate(calibration_ledger=ledger)
+        r = validate_calibration_ledger(c)
+        assert r["passed"] is False
+        assert "close" in r["detail"]
+
+    def test_opener_and_close_both_missing(self):
+        """Both opener and close missing → fails (close is required)."""
+        ledger = {f: "dummy" for f in CALIBRATION_LEDGER_FIELDS}
+        del ledger["close"]
+        c = _approved_candidate(calibration_ledger=ledger)
+        r = validate_calibration_ledger(c)
+        assert r["passed"] is False
+
+    def test_only_opener_missing_does_not_block_unit_scaling(self):
+        """Unit scaling requires 20 core fields — opener absence alone never blocks."""
+        ledger = {f: "dummy" for f in CALIBRATION_LEDGER_FIELDS}
+        c = _approved_candidate(calibration_ledger=ledger)
+        r = validate_calibration_ledger(c)
+        # passed=True means unit scaling is allowed
+        assert r["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# TU1 — FULL_FRACTIONAL_KELLY_ELIGIBLE constant exists and is not FULL_KELLY
+# ---------------------------------------------------------------------------
+class TestFullFractionalKellyEligible:
+    def test_constant_exists(self):
+        from gate_engine.llp_governance import FULL_FRACTIONAL_KELLY_ELIGIBLE
+        assert "FULL_FRACTIONAL_KELLY_ELIGIBLE" in FULL_FRACTIONAL_KELLY_ELIGIBLE
+
+    def test_constant_not_full_kelly(self):
+        from gate_engine.llp_governance import FULL_FRACTIONAL_KELLY_ELIGIBLE
+        assert "FULL_KELLY" not in FULL_FRACTIONAL_KELLY_ELIGIBLE.split("—")[0].strip()
+
+    def test_graduation_tiers_present(self):
+        from gate_engine.llp_governance import CALIBRATION_GRADUATION_TIERS
+        assert "100+ candidates" in CALIBRATION_GRADUATION_TIERS
+        tier = CALIBRATION_GRADUATION_TIERS["100+ candidates"]
+        assert "FULL_FRACTIONAL_KELLY_ELIGIBLE" in tier
+
+    def test_all_graduation_tiers_defined(self):
+        from gate_engine.llp_governance import CALIBRATION_GRADUATION_TIERS
+        assert len(CALIBRATION_GRADUATION_TIERS) == 4
+
+
+# ---------------------------------------------------------------------------
+# TU3 — LLP_PLAYABLE hard stake caps
+# ---------------------------------------------------------------------------
+class TestPlayableStakeCaps:
+    """LLP_PLAYABLE cannot become a backdoor full-stake bet."""
+
+    def _playable_candidate(self, stake=0.5, **kwargs):
+        c = _approved_candidate(
+            final_label=LLPLabel.PLAYABLE.value,
+            model_probability=0.56,
+            stake=stake,
+            **kwargs,
+        )
+        return c
+
+    def test_pre25_cap_enforced(self):
+        """Before 25 candidates: max 0.25u."""
+        c = self._playable_candidate(stake=0.30)
+        session = {"candidates_logged": 10, "bets_today": 0, "units_today": 0.0,
+                   "units_this_game": 0.0, "units_same_script": 0.0}
+        r = validate_session_exposure(c, session=session)
+        assert r["passed"] is False
+        assert "PLAYABLE_STAKE_CAP" in r["detail"]
+
+    def test_pre25_cap_at_limit_passes(self):
+        """Exactly at 0.25u cap passes."""
+        c = self._playable_candidate(stake=0.25)
+        session = {"candidates_logged": 10, "bets_today": 0, "units_today": 0.0,
+                   "units_this_game": 0.0, "units_same_script": 0.0}
+        r = validate_session_exposure(c, session=session)
+        assert r["passed"] is True
+
+    def test_pre100_cap_enforced(self):
+        """25–99 candidates: max 0.50u."""
+        c = self._playable_candidate(stake=0.60)
+        session = {"candidates_logged": 50, "bets_today": 0, "units_today": 0.0,
+                   "units_this_game": 0.0, "units_same_script": 0.0}
+        r = validate_session_exposure(c, session=session)
+        assert r["passed"] is False
+        assert "PLAYABLE_STAKE_CAP" in r["detail"]
+
+    def test_pre100_cap_at_limit_passes(self):
+        """Exactly at 0.50u cap passes (25–99 candidates)."""
+        c = self._playable_candidate(stake=0.50)
+        session = {"candidates_logged": 50, "bets_today": 0, "units_today": 0.0,
+                   "units_this_game": 0.0, "units_same_script": 0.0}
+        r = validate_session_exposure(c, session=session)
+        assert r["passed"] is True
+
+    def test_reliability_freeze_cap_enforced(self):
+        """During Reliability Freeze: max 0.25u regardless of candidate count."""
+        c = self._playable_candidate(stake=0.30)
+        session = {"candidates_logged": 60, "reliability_freeze": True,
+                   "bets_today": 0, "units_today": 0.0,
+                   "units_this_game": 0.0, "units_same_script": 0.0}
+        r = validate_session_exposure(c, session=session)
+        assert r["passed"] is False
+        assert "RELIABILITY_FREEZE" in r["detail"]
+
+    def test_100_plus_candidates_no_playable_cap(self):
+        """100+ logged candidates — no PLAYABLE cap from count gates."""
+        c = self._playable_candidate(stake=0.80)
+        session = {"candidates_logged": 120, "bets_today": 0, "units_today": 0.0,
+                   "units_this_game": 0.0, "units_same_script": 0.0}
+        r = validate_session_exposure(c, session=session)
+        # Cap only comes from daily/game/script limits now, not candidate count
+        assert "PLAYABLE_STAKE_CAP" not in r.get("detail", "")
+
+    def test_approved_label_unaffected_by_playable_cap(self):
+        """LLP_APPROVED is not subject to PLAYABLE stake caps."""
+        c = _approved_candidate(stake=1.0)
+        session = {"candidates_logged": 5, "bets_today": 0, "units_today": 0.0,
+                   "units_this_game": 0.0, "units_same_script": 0.0}
+        r = validate_session_exposure(c, session=session)
+        assert "PLAYABLE_STAKE_CAP" not in r.get("detail", "")
+
+
+# ---------------------------------------------------------------------------
+# RC1 — CLV formula (market_gate level)
+# ---------------------------------------------------------------------------
+class TestCLVFormula:
+    """Required Correction 1: CLV = closing_implied − entry_implied."""
+
+    def test_underdog_line_moves_to_confirm_thesis(self):
+        """Entry +140 (41.7%), close +120 (45.5%) → positive CLV → CLV_BEAT."""
+        from gate_engine import market_gate
+        assert market_gate._clv_beat(140, 120) is True
+
+    def test_reverse_sign_gives_clv_miss(self):
+        """Entry −120 (54.5%), close −110 (52.4%) → negative CLV → CLV_MISS."""
+        from gate_engine import market_gate
+        # Market moved away: closing implied < entry implied
+        assert market_gate._clv_beat(-120, -110) is False
+
+    def test_favorite_line_moves_to_confirm_thesis(self):
+        """Entry −110 (52.4%), close −120 (54.5%) → market confirmed → CLV_BEAT."""
+        from gate_engine import market_gate
+        assert market_gate._clv_beat(-110, -120) is True
+
+    def test_equal_odds_is_miss(self):
+        """No movement → closing_implied == entry_implied → CLV_MISS."""
+        from gate_engine import market_gate
+        assert market_gate._clv_beat(-110, -110) is False
+
+    def test_clv_beat_line_over_beat(self):
+        """Total Over 160.5, closes 162.5 → Beat Close."""
+        from gate_engine.market_gate import _clv_beat_line
+        assert _clv_beat_line(160.5, 162.5, "over") is True
+
+    def test_clv_beat_line_over_miss(self):
+        """Total Over 162.5, closes 160.5 → Lost to Close."""
+        from gate_engine.market_gate import _clv_beat_line
+        assert _clv_beat_line(162.5, 160.5, "over") is False
+
+    def test_clv_beat_line_under_beat(self):
+        """Total Under 162.5, closes 160.5 → Beat Close."""
+        from gate_engine.market_gate import _clv_beat_line
+        assert _clv_beat_line(162.5, 160.5, "under") is True
+
+    def test_clv_beat_line_under_miss(self):
+        """Total Under 160.5, closes 162.5 → Lost to Close."""
+        from gate_engine.market_gate import _clv_beat_line
+        assert _clv_beat_line(160.5, 162.5, "under") is False
+
+    def test_clv_beat_line_spread_favorite_beat(self):
+        """Spread favorite −2.5 closes −3.5 → entry(−2.5) > closing(−3.5) → Beat Close."""
+        from gate_engine.market_gate import _clv_beat_line
+        assert _clv_beat_line(-2.5, -3.5, "favorite") is True
+
+    def test_clv_beat_line_spread_favorite_miss(self):
+        """Spread favorite −3.5 closes −2.5 → Lost to Close."""
+        from gate_engine.market_gate import _clv_beat_line
+        assert _clv_beat_line(-3.5, -2.5, "favorite") is False
+
+    def test_clv_beat_line_spread_underdog_beat(self):
+        """Spread underdog +4.5 closes +3.5 → entry(+4.5) > closing(+3.5) → Beat Close."""
+        from gate_engine.market_gate import _clv_beat_line
+        assert _clv_beat_line(4.5, 3.5, "underdog") is True
+
+    def test_clv_beat_line_spread_underdog_miss(self):
+        """Spread underdog +3.5 closes +4.5 → Lost to Close."""
+        from gate_engine.market_gate import _clv_beat_line
+        assert _clv_beat_line(3.5, 4.5, "underdog") is False
