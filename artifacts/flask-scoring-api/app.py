@@ -13325,6 +13325,89 @@ def gate_engine_closure_fields():
     }), 200
 
 
+@app.route("/gate-engine/calibration-health/validate", methods=["POST"])
+@require_api_key
+def gate_engine_calibration_health_validate():
+    """
+    Layer 0.5: Calibration Health Gate — validate a candidate against history.
+
+    Request body:
+      {
+        "candidate": {
+          "sport":        "WNBA",
+          "market":       "points",
+          "player":       "A'ja Wilson",
+          "failure_tags": ["STALE_SOURCE", "OUTLIER_CONTAMINATION"]
+        }
+      }
+
+    Response:
+      {
+        "passed":            bool,
+        "grade":             "GREEN" | "WATCH" | "SUPPRESS" | "DATA_GAP",
+        "ceiling":           str | null,   (LLP label ceiling)
+        "code":              str,
+        "detail":            str,
+        "blockers":          [...],
+        "dimension_results": {
+          "failure_tags": {...},
+          "sport_market": {...},
+          "player":       {...}
+        },
+        "can_approve_bets":  false
+      }
+
+    Rules:
+      3  same-tag failures           → WATCH ceiling (warning)
+      5+ same-tag failures + neg CLV → WATCH max (bucket downgrade)
+      8+ failures / neg EV           → SUPPRESS (auto-suppress / REJECT max)
+      CLV+  + results−               → GREEN (variance hold — no downgrade)
+      CLV−  + results−               → SUPPRESS (strongest signal)
+    """
+    body = request.get_json(silent=True) or {}
+    candidate = body.get("candidate")
+    if not candidate or not isinstance(candidate, dict):
+        return jsonify({"error": "candidate object required"}), 400
+
+    from gate_engine.calibration_health import validate_calibration_health
+    try:
+        result = validate_calibration_health(candidate)
+    except Exception as exc:
+        return jsonify({"error": "calibration health error", "detail": str(exc)}), 500
+
+    result["disclaimer"] = DISCLAIMER
+    return jsonify(result), 200
+
+
+@app.route("/gate-engine/calibration-health/summary", methods=["GET"])
+@require_api_key
+def gate_engine_calibration_health_summary():
+    """
+    Return health summary across all dimensions from the calibration ledger.
+
+    Response includes:
+      total_records       — total entries in calibration ledger
+      overall_quadrant    — CLV × result health across all records
+      grade               — aggregate health grade
+      by_sport            — health per sport
+      by_market           — health per market type
+      by_failure_tag      — top 10 failure tags by frequency with health stats
+      can_approve_bets    — always false
+
+    Use by_failure_tag to identify systemic tooling/data-acquisition problems
+    (high CUT or LOSS frequency on specific failure_tags signals a process issue,
+    not a betting signal).
+    """
+    from gate_engine.calibration_health import get_health_summary
+    try:
+        result = get_health_summary()
+    except Exception as exc:
+        return jsonify({"error": "health summary error", "detail": str(exc)}), 500
+
+    result["disclaimer"] = DISCLAIMER
+    return jsonify(result), 200
+
+
 @app.route("/gate-engine/llp-governance/validate", methods=["POST"])
 @require_api_key
 def gate_engine_llp_governance():

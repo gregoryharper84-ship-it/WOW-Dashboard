@@ -11,6 +11,7 @@ from typing import Any
 from . import board_intake, slate_validation, status_role
 from . import l5_l10_ledger, outlier_gate, market_gate, ev_gate
 from . import slip_structure, exposure_gate, classifier, tracker
+from . import calibration_health
 from .labels import PropLabel
 from .exposure_gate import ExposureLedger
 
@@ -20,6 +21,7 @@ def run_pipeline(
     target_date: date | None = None,
     enrichment: dict[str, dict[str, Any]] | None = None,
     record_entries: bool = False,
+    skip_health_gate: bool = False,
 ) -> dict[str, Any]:
     """
     Run the full gate engine pipeline.
@@ -47,6 +49,37 @@ def run_pipeline(
     enrichment = enrichment or {}
 
     rows = board_intake.normalize_board(raw_rows)
+
+    # -------------------------------------------------------------------
+    # Layer 0.5: Calibration Health Gate
+    # Runs before all other gates. Checks historical failure patterns
+    # using blended CLV + result signals. A SUPPRESS grade caps the row
+    # at LLP_REJECT before any analysis begins.
+    # -------------------------------------------------------------------
+    health_report: dict[str, Any] = {}
+    if not skip_health_gate:
+        for row in rows:
+            if row.get("terminal_label") is not None:
+                continue
+            enr_pre = _get_enrichment(enrichment, row)
+            health_candidate = {
+                "sport":        row.get("sport"),
+                "market":       row.get("prop_type"),
+                "player":       row.get("player"),
+                "failure_tags": enr_pre.get("failure_tags") or [],
+            }
+            health_result = calibration_health.validate_calibration_health(health_candidate)
+            row["gates"]["calibration_health"] = health_result
+            if not health_result["passed"]:
+                row["blockers"].append(
+                    f"CALIBRATION_HEALTH:{health_result['code']}:"
+                    f"grade={health_result['grade']}"
+                )
+            health_report[row.get("row_id", "")] = {
+                "grade":   health_result["grade"],
+                "ceiling": health_result["ceiling"],
+                "code":    health_result["code"],
+            }
 
     ledger = ExposureLedger()
 
@@ -103,10 +136,11 @@ def run_pipeline(
             if row.get("terminal_label") == PropLabel.FINAL_APPROVED.value:
                 tracker.record_entry(row)
 
-    return _build_output(rows, ledger)
+    return _build_output(rows, ledger, health_report)
 
 
-def _build_output(rows: list[dict], ledger: ExposureLedger) -> dict[str, Any]:
+def _build_output(rows: list[dict], ledger: ExposureLedger,
+                  health_report: dict | None = None) -> dict[str, Any]:
     label_counts: dict[str, int] = {}
     terminal_labels  = []
     final_card       = []
@@ -168,6 +202,7 @@ def _build_output(rows: list[dict], ledger: ExposureLedger) -> dict[str, Any]:
         "final_card":         final_card,
         "exposure_report":    ledger.snapshot(),
         "clv_table":          clv_table,
+        "health_report":      health_report or {},
         "summary": {
             "total_rows":   len(rows),
             "by_label":     label_counts,
