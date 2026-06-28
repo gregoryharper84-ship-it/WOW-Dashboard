@@ -1,0 +1,168 @@
+Good — this is a **real successful diagnostic scan** now.
+
+The backend is finally returning:
+
+```text
+raw_fetched: 100
+returned: 5
+combo_markets: 94
+single_markets: 6
+filter_diagnostics: present
+terminal_label: SCAN_COMPLETE
+```
+
+So the Kalshi lane is live. The remaining issues are now **data-shaping and pricing enrichment**, not connectivity.
+
+## What this scan tells us
+
+| Layer                               | Status                |
+| ----------------------------------- | --------------------- |
+| GPT → Replit                        | ✅ Working             |
+| Auth                                | ✅ Working             |
+| Kalshi public market fetch          | ✅ Working             |
+| Filter diagnostics                  | ✅ Working             |
+| Combo detection                     | ✅ Working             |
+| Raw tickers/titles                  | ✅ Working             |
+| Raw prices                          | ❌ Not returned yet    |
+| Single-game useful market discovery | ⚠️ Present but buried |
+| Approval behavior                   | ✅ Correctly blocked   |
+
+The most important line is:
+
+```text
+combo_markets: 94
+single_markets: 6
+```
+
+That means most Kalshi “sports” markets being surfaced are combo/slate markets. WOW should keep those as **KALSHI_SCOUT** unless you build a specialized combo model. That part is behaving correctly.
+
+## Main issue now: prices are missing
+
+The raw scan returned:
+
+```text
+YES price: not returned
+NO price: not returned
+```
+
+That means Replit is probably returning fields from `GET /markets`, but not enriching them with order-book or price snapshot fields.
+
+For WOW Kalshi scoring, this is required:
+
+```text
+yes_price
+no_price
+best_yes_bid
+best_yes_ask
+best_no_bid
+best_no_ask
+spread
+liquidity_grade
+```
+
+Without those, even if we inject a model probability, the edge engine cannot calculate:
+
+```text
+raw_edge
+fee_drag
+spread_drag
+adjusted_edge
+max_playable_price
+```
+
+## Next Replit patch
+
+Send this:
+
+```text
+The broad Kalshi sports scan now works and returns filter diagnostics.
+
+Current result:
+raw_fetched=100
+combo_markets=94
+single_markets=6
+returned=5
+raw_markets populated
+prices not returned
+
+Next patch:
+For /wow/kalshi/scan, enrich returned raw_markets with price/order-book data.
+
+Required:
+1. For each returned raw_market, include:
+   - yes_price
+   - no_price
+   - best_yes_bid
+   - best_yes_ask
+   - best_no_bid
+   - best_no_ask
+   - spread
+   - volume
+   - open_interest
+   - liquidity_grade
+
+2. If GET /markets has price fields, map them directly.
+3. If GET /markets lacks price fields, call the Kalshi orderbook endpoint for returned markets only.
+4. Do not fetch orderbooks for the full raw_fetched pool if that risks response timeout. Enrich only the final returned/evaluation set.
+5. Add:
+   - price_source: "market_snapshot" or "orderbook"
+   - price_status: "available" / "missing" / "failed"
+
+6. If prices are missing, label the row:
+   KALSHI_DATA_UNOBTAINABLE
+   reason: "Missing contract price/orderbook"
+
+7. Keep live trading disabled:
+   DRY_RUN_ONLY=true
+   ALLOW_LIVE_TRADING=false
+   ALLOW_MARKET_ORDERS=false
+```
+
+## Next Custom GPT test
+
+Before trying model probabilities, run this to surface the 6 singles across all sports:
+
+```text
+Scan Kalshi sports markets through WOW using scan_only mode. Use include_raw_markets=true, include_combo_markets=false, market_type=single_game, max_markets=10. Do not use a sport filter. Return ticker, title, YES price, NO price, bid/ask, spread, liquidity grade, settlement grade, market type, combo flag, and filter diagnostics. Do not approve anything.
+```
+
+Expected:
+
+```text
+single_markets: about 6
+raw_markets: populated
+combo flag: false
+final labels: KALSHI_REJECT_UNCALIBRATED or KALSHI_DATA_UNOBTAINABLE if prices missing
+```
+
+## Then test pricing
+
+After Replit adds price enrichment, rerun the same prompt. We need to see something like:
+
+```text
+YES price: 0.54
+NO price: 0.46
+best_yes_bid: 0.53
+best_yes_ask: 0.55
+spread: 0.02
+liquidity_grade: B/C/D/F
+```
+
+Only after that should we test:
+
+```text
+model_probabilities: {
+  "TICKER": 0.61
+}
+```
+
+## Current WOW status
+
+```text
+Kalshi lane: DISCOVERY WORKING
+Approval readiness: NOT READY
+Reason: raw prices/orderbook not exposed yet
+Final operating label: NO_PLAY
+```
+
+You’re close. The next unlock is **price/orderbook enrichment for returned raw markets**.

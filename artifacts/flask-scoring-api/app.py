@@ -14830,6 +14830,9 @@ def wow_kalshi_scan():
         # ── Build raw_markets from FULL filtered pool (not capped) ────────────
         # include_raw_markets shows all markets that survived filters so the GPT
         # can decide which tickers to supply model_probabilities for.
+        def _cents_to_dec(v: int | float | None) -> float | None:
+            return round(float(v) / 100.0, 4) if v is not None else None
+
         raw_markets_list = []
         if include_raw_markets:
             for m in markets:   # full post-filter pool, not just _eval_markets
@@ -14843,6 +14846,53 @@ def wow_kalshi_scan():
                         if tu.startswith(k.upper()) or k.upper().startswith(tu):
                             mp = v
                             break
+                # Snapshot prices from search_markets.
+                # Standard markets: yes_bid / yes_ask / last_price in cents (0-100 int).
+                # KXMV markets:     yes_bid_dollars / yes_ask_dollars / last_price_dollars
+                #                   in dollars (0.0-1.0 float string); volume/OI in _fp fields.
+                def _snap_float(cents_key: str, dollars_key: str) -> float | None:
+                    v = m.get(cents_key)
+                    if v is not None:
+                        return _cents_to_dec(v)
+                    d = m.get(dollars_key)
+                    if d is not None:
+                        try:
+                            return round(float(d), 4)
+                        except (ValueError, TypeError):
+                            pass
+                    return None
+
+                _yb = _snap_float("yes_bid", "yes_bid_dollars")
+                _ya = _snap_float("yes_ask", "yes_ask_dollars")
+                _lp = _snap_float("last_price", "last_price_dollars")
+                _nb = _snap_float("no_bid",  "no_bid_dollars")
+                _na = _snap_float("no_ask",  "no_ask_dollars")
+
+                # Volume / open-interest: try integer fields, then _fp string fields
+                def _fp_float(int_key: str, fp_key: str) -> float | None:
+                    v = m.get(int_key)
+                    if v is not None:
+                        return float(v)
+                    d = m.get(fp_key)
+                    if d is not None:
+                        try:
+                            return float(d)
+                        except (ValueError, TypeError):
+                            pass
+                    return None
+
+                _volume = _fp_float("volume", "volume_fp")
+                _oi     = _fp_float("open_interest", "open_interest_fp")
+
+                _yes_price = _lp
+                _no_price  = round(1.0 - _lp, 4) if _lp is not None else None
+                _spread    = round(_ya - _yb, 4) if (_ya is not None and _yb is not None) else None
+                _has_snap  = (_lp is not None or _yb is not None or _ya is not None)
+                # Distinguish: data fetched but all-zero liquidity vs truly missing
+                _all_zero  = _has_snap and (_yb or 0.0) == 0.0 and (_ya or 0.0) == 0.0 and (_lp or 0.0) == 0.0
+                _p_status  = ("zero_liquidity" if _all_zero
+                              else "available"  if _has_snap
+                              else "missing")
                 raw_markets_list.append({
                     "ticker":         ticker,
                     "event_ticker":   m.get("event_ticker", ""),
@@ -14852,6 +14902,19 @@ def wow_kalshi_scan():
                     "close_time":     m.get("close_time", ""),
                     "market_type":    mtype,
                     "has_model_prob": mp is not None,
+                    # ── Prices (upgraded to orderbook after eval loop) ──────────
+                    "yes_price":       _yes_price,
+                    "no_price":        _no_price,
+                    "best_yes_bid":    _yb,
+                    "best_yes_ask":    _ya,
+                    "best_no_bid":     _nb if _nb is not None else (round(1.0 - _ya, 4) if _ya is not None else None),
+                    "best_no_ask":     _na if _na is not None else (round(1.0 - _yb, 4) if _yb is not None else None),
+                    "spread":          _spread,
+                    "volume":          _volume,
+                    "open_interest":   _oi,
+                    "liquidity_grade": None,   # set to orderbook grade post-eval
+                    "price_source":    "market_snapshot" if _has_snap else "none",
+                    "price_status":    _p_status,
                 })
 
         # ── Counters ──────────────────────────────────────────────────────────
@@ -14882,6 +14945,7 @@ def wow_kalshi_scan():
 
         candidates = []
         rejected   = []
+        _ob_cache: dict[str, dict] = {}   # ticker → norm_book (for raw_markets enrichment)
 
         for m in _eval_markets:
             ticker      = m.get("ticker") or ""
@@ -14904,6 +14968,7 @@ def wow_kalshi_scan():
                 continue
 
             norm_book = orderbook_normalizer.normalize(raw_book, ticker=ticker)
+            _ob_cache[ticker] = norm_book   # cache for raw_markets enrichment
 
             # ── Model probability lookup ──────────────────────────────────────
             # Exact match first, then case-insensitive prefix match
@@ -14999,9 +15064,23 @@ def wow_kalshi_scan():
                 "raw_edge":           ev.get("raw_edge"),
                 "adjusted_edge":      ev.get("adjusted_edge"),
                 "fee_detail":         fee_breakdown,
+                # ── Full price / order-book snapshot ──────────────────────────
+                "yes_price":          norm_book.get("mid_price"),
+                "no_price":           (round(1.0 - norm_book["mid_price"], 4)
+                                       if norm_book.get("mid_price") is not None else None),
+                "best_yes_bid":       norm_book.get("best_yes_bid"),
+                "best_yes_ask":       norm_book.get("best_yes_ask"),
+                "best_no_bid":        norm_book.get("best_no_bid"),
+                "best_no_ask":        norm_book.get("best_no_ask"),
+                "spread":             norm_book.get("yes_spread"),
                 "entry_price":        norm_book.get("best_yes_ask"),
                 "max_playable_price": ev.get("max_playable_price"),
                 "liquidity_grade":    norm_book.get("liquidity_grade"),
+                "price_source":       "orderbook",
+                "price_status":       ("available"
+                                       if norm_book.get("best_yes_bid") is not None
+                                       else "missing"),
+                # ── Settlement / bucket ───────────────────────────────────────
                 "settlement_grade":   sr["resolution_clarity_grade"],
                 "settlement_risk":    sr["settlement_risk"],
                 "market_bucket":      bucket.get("market_bucket"),
@@ -15017,6 +15096,49 @@ def wow_kalshi_scan():
             else:
                 candidates_reason = "; ".join(row["blocking_reasons"]) if row["blocking_reasons"] else label
                 rejected.append({**row, "reason": candidates_reason})
+
+        # ── Enrich raw_markets with orderbook data for evaluated tickers ─────────
+        # Upgrades market_snapshot → orderbook for tickers in _ob_cache.
+        # For non-evaluated tickers the snapshot fields stay as-is.
+        if include_raw_markets and _ob_cache:
+            _raw_idx = {e["ticker"]: e for e in raw_markets_list}
+            for tkr, nb in _ob_cache.items():
+                entry = _raw_idx.get(tkr)
+                if entry is None:
+                    continue
+                _yb2 = nb.get("best_yes_bid")
+                _ya2 = nb.get("best_yes_ask")
+                _mp2 = nb.get("mid_price")
+                _has_ob = _yb2 is not None or _ya2 is not None
+
+                # Always record that we tried the orderbook and the grade
+                entry["price_source"]    = "orderbook"
+                entry["liquidity_grade"] = nb.get("liquidity_grade")
+
+                if _has_ob:
+                    # Real orderbook levels — overwrite with full book data
+                    _zero_ob = (_yb2 or 0.0) == 0.0 and (_ya2 or 0.0) == 0.0
+                    entry["best_yes_bid"] = _yb2
+                    entry["best_yes_ask"] = _ya2
+                    entry["best_no_bid"]  = nb.get("best_no_bid")
+                    entry["best_no_ask"]  = nb.get("best_no_ask")
+                    entry["spread"]       = nb.get("yes_spread")
+                    entry["yes_price"]    = _mp2
+                    entry["no_price"]     = round(1.0 - _mp2, 4) if _mp2 is not None else None
+                    entry["price_status"] = "zero_liquidity" if _zero_ob else "available"
+                else:
+                    # Empty orderbook — don't overwrite snapshot bid/ask values.
+                    # Refine price_status to reflect what we actually have.
+                    existing_status = entry.get("price_status", "missing")
+                    if existing_status in ("zero_liquidity", "available"):
+                        # Snapshot had values; orderbook confirms no live depth.
+                        # Keep the snapshot numbers; mark as snapshot_only so the
+                        # engine knows there's no live bid/ask spread to trade on.
+                        entry["price_status"] = "snapshot_only"
+                    else:
+                        # No snapshot data either → truly no price info
+                        entry["price_status"] = "missing"
+                        entry["final_label_hint"] = "KALSHI_DATA_UNOBTAINABLE"
 
         resp = {
             "kalshi_scan_version":   _KALSHI_SCAN_VERSION,
