@@ -14267,6 +14267,8 @@ def kalshi_paper_trade():
         "settlement_grade":   body.get("settlement_grade"),
         "mode":               "paper",
         "notes":              body.get("notes"),
+        "blocking_reasons":   body.get("blocking_reasons") or [],
+        "warnings":           body.get("warnings") or [],
     }
     result = calibration_ledger.log_paper_trade(entry)
     status = 201 if result.get("ok") else 400

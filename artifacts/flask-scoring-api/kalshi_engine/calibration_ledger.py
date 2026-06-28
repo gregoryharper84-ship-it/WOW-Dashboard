@@ -83,6 +83,10 @@ CREATE INDEX IF NOT EXISTS kalshi_ledger_created_idx ON kalshi_forecast_ledger(c
 _MIGRATE_DDL = """
 ALTER TABLE kalshi_forecast_ledger
     ADD COLUMN IF NOT EXISTS settlement_grade TEXT;
+ALTER TABLE kalshi_forecast_ledger
+    ADD COLUMN IF NOT EXISTS blocking_reasons TEXT[];
+ALTER TABLE kalshi_forecast_ledger
+    ADD COLUMN IF NOT EXISTS warnings TEXT[];
 """
 
 
@@ -133,6 +137,7 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
     try:
         conn = _get_conn()
         cur  = conn.cursor()
+        import psycopg2.extras as _extras  # type: ignore
         cur.execute(
             """
             INSERT INTO kalshi_forecast_ledger (
@@ -141,14 +146,16 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
                 kalshi_price, entry_price, best_bid, best_ask,
                 spread, depth_score, fee_estimate, adjusted_edge,
                 max_playable_price, label, market_bucket,
-                settlement_source, settlement_grade, mode, notes
+                settlement_source, settlement_grade, mode, notes,
+                blocking_reasons, warnings
             ) VALUES (
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,
-                %s,%s,%s,%s
+                %s,%s,%s,%s,
+                %s,%s
             )
             RETURNING id, created_at
             """,
@@ -176,6 +183,8 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
                 entry.get("settlement_grade"),
                 entry.get("mode", "paper"),
                 entry.get("notes"),
+                entry.get("blocking_reasons") or [],
+                entry.get("warnings") or [],
             ),
         )
         row = cur.fetchone()

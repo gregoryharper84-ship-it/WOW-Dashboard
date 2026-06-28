@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, Fragment } from "react";
 import {
   TrendingUp, RefreshCw, CheckCircle2, XCircle, AlertTriangle,
   ChevronDown, BarChart2, FileText, Activity, X
@@ -57,21 +57,39 @@ interface EvalResult {
 interface LedgerRow {
   id: number;
   created_at: string;
+  updated_at: string | null;
   market_ticker: string;
+  event_ticker: string | null;
+  contract_title: string | null;
+  category: string | null;
   side_yes_no: string;
-  label: string;
-  adjusted_edge: number | null;
+  model_probability: number | null;
+  confidence_low: number | null;
+  confidence_high: number | null;
+  kalshi_price: number | null;
   entry_price: number | null;
+  best_bid: number | null;
+  best_ask: number | null;
+  spread: number | null;
   depth_score: string | null;
+  fee_estimate: number | null;
+  adjusted_edge: number | null;
+  max_playable_price: number | null;
+  label: string;
+  market_bucket: string | null;
+  settlement_source: string | null;
   settlement_grade: string | null;
   settlement_status: string;
+  closing_price: number | null;
   result: string | null;
-  clv: number | null;
   brier_score: number | null;
+  clv: number | null;
+  net_pnl: number | null;
   dominant_failure_tag: string | null;
-  model_probability: number | null;
-  market_bucket: string | null;
   notes: string | null;
+  mode: string | null;
+  blocking_reasons: string[] | null;
+  warnings: string[] | null;
 }
 
 interface CalibrationSummary {
@@ -201,6 +219,8 @@ function EvaluatePanel() {
           settlement_grade: evalResult.settlement_grade,
           market_bucket: evalResult.market_bucket,
           category: evalResult.category,
+          blocking_reasons: evalResult.blocking_reasons,
+          warnings: evalResult.warnings,
         }),
       });
       const data = await res.json();
@@ -558,14 +578,172 @@ function SettleModal({
 
 // ── Ledger Panel ─────────────────────────────────────────────────────────────
 
+function LedgerDetailRow({ row }: { row: LedgerRow }) {
+  const isSettled = row.settlement_status === "SETTLED";
+
+  return (
+    <tr>
+      <td colSpan={12} className="px-3 pb-3 pt-0">
+        <div className="bg-muted/30 border border-border/60 rounded-lg p-4 space-y-4">
+
+          {/* Header identifiers */}
+          <div className="flex items-start gap-4 flex-wrap">
+            <div>
+              <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Full Ticker</p>
+              <p className="text-xs font-mono text-foreground">{row.market_ticker}</p>
+            </div>
+            {row.event_ticker && (
+              <div>
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Event Ticker</p>
+                <p className="text-xs font-mono text-foreground">{row.event_ticker}</p>
+              </div>
+            )}
+            {row.contract_title && (
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Contract Title</p>
+                <p className="text-xs text-foreground">{row.contract_title}</p>
+              </div>
+            )}
+          </div>
+
+          {/* Core evaluation fields */}
+          <div>
+            <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">Evaluation Detail</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <MiniStat label="Model Prob" value={pct(row.model_probability)} />
+              <MiniStat label="Market Bucket" value={row.market_bucket ?? "—"} />
+              <MiniStat label="Settlement Grade" value={row.settlement_grade ?? "—"} />
+              <MiniStat label="Depth Score" value={row.depth_score ?? "—"} />
+              <MiniStat label="Category" value={row.category ?? "—"} />
+              <MiniStat label="Side" value={row.side_yes_no} />
+              <MiniStat label="Mode" value={row.mode ?? "paper"} />
+              {row.dominant_failure_tag && (
+                <MiniStat label="Failure Tag" value={row.dominant_failure_tag} highlight="red" />
+              )}
+            </div>
+          </div>
+
+          {/* Market data at entry */}
+          <div>
+            <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">Market Data at Entry</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <MiniStat label="Entry Price" value={fmt4(row.entry_price)} />
+              <MiniStat label="Kalshi Price" value={fmt4(row.kalshi_price)} />
+              <MiniStat label="Best Bid" value={fmt4(row.best_bid)} />
+              <MiniStat label="Best Ask" value={fmt4(row.best_ask)} />
+              <MiniStat label="Spread" value={fmt4(row.spread)} />
+              <MiniStat label="Fee Est." value={fmt4(row.fee_estimate)} />
+              <MiniStat label="Adj Edge" value={pct(row.adjusted_edge)} highlight={
+                row.adjusted_edge != null ? (row.adjusted_edge > 0 ? "green" : "red") : undefined
+              } />
+              <MiniStat label="Max Playable" value={fmt4(row.max_playable_price)} />
+            </div>
+          </div>
+
+          {/* Confidence interval if available */}
+          {(row.confidence_low != null || row.confidence_high != null) && (
+            <div className="grid grid-cols-2 gap-2 max-w-xs">
+              <MiniStat label="Conf Low" value={pct(row.confidence_low)} />
+              <MiniStat label="Conf High" value={pct(row.confidence_high)} />
+            </div>
+          )}
+
+          {/* Settlement outcome (settled rows only) */}
+          {isSettled && (
+            <div>
+              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">Settlement Outcome</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <MiniStat label="Result" value={row.result ?? "—"} highlight={
+                  row.result === "YES" ? "green" : row.result === "NO" ? "red" : undefined
+                } />
+                <MiniStat label="Closing Price" value={fmt4(row.closing_price)} />
+                <MiniStat label="CLV" value={fmt4(row.clv)} highlight={
+                  row.clv != null ? (row.clv >= 0 ? "green" : "red") : undefined
+                } />
+                <MiniStat label="Brier Score" value={row.brier_score != null ? row.brier_score.toFixed(5) : "—"} highlight={
+                  row.brier_score != null ? (row.brier_score < 0.25 ? "green" : "red") : undefined
+                } />
+                {row.net_pnl != null && (
+                  <MiniStat label="Net PnL" value={fmt4(row.net_pnl)} highlight={row.net_pnl >= 0 ? "green" : "red"} />
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Settlement source */}
+          {row.settlement_source && (
+            <div>
+              <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Settlement Source</p>
+              <p className="text-xs font-mono text-muted-foreground">{row.settlement_source}</p>
+            </div>
+          )}
+
+          {/* Blocking reasons */}
+          {row.blocking_reasons && row.blocking_reasons.length > 0 && (
+            <div>
+              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">Blocking Reasons</p>
+              <div className="space-y-1">
+                {row.blocking_reasons.map((r, i) => (
+                  <p key={i} className="text-xs text-red-300 font-mono bg-red-900/20 rounded px-2 py-1">{r}</p>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Warnings */}
+          {row.warnings && row.warnings.length > 0 && (
+            <div>
+              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">Warnings</p>
+              <div className="space-y-1">
+                {row.warnings.map((w, i) => (
+                  <p key={i} className="text-xs text-amber-300 font-mono bg-amber-900/20 rounded px-2 py-1">{w}</p>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Notes */}
+          {row.notes && (
+            <div>
+              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Notes</p>
+              <p className="text-xs text-foreground whitespace-pre-wrap">{row.notes}</p>
+            </div>
+          )}
+
+          {/* Timestamps */}
+          <div className="flex gap-4 flex-wrap text-[10px] text-muted-foreground border-t border-border/40 pt-2">
+            <span>Logged: {fmtDate(row.created_at)}</span>
+            {row.updated_at && row.updated_at !== row.created_at && (
+              <span>Updated: {fmtDate(row.updated_at)}</span>
+            )}
+            <span>ID: #{row.id}</span>
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function MiniStat({ label, value, highlight }: { label: string; value: string; highlight?: "green" | "red" }) {
+  const valColor = highlight === "green" ? "text-emerald-300" : highlight === "red" ? "text-red-300" : "text-foreground";
+  return (
+    <div className="bg-black/20 rounded p-1.5">
+      <p className="text-[10px] text-muted-foreground mb-0.5">{label}</p>
+      <p className={`text-xs font-mono font-medium ${valColor}`}>{value}</p>
+    </div>
+  );
+}
+
 function LedgerPanel() {
   const [rows, setRows] = useState<LedgerRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<"ALL" | "OPEN" | "SETTLED">("ALL");
   const [settlingRow, setSettlingRow] = useState<LedgerRow | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setExpandedId(null);
     try {
       const params = new URLSearchParams({ limit: "100" });
       if (filter !== "ALL") params.set("settlement_status", filter);
@@ -617,9 +795,11 @@ function LedgerPanel() {
         <div className="py-12 text-center text-muted-foreground text-sm">No ledger rows found.</div>
       ) : (
         <div className="overflow-x-auto">
+          <p className="text-[10px] text-muted-foreground mb-2 italic">Click any row to expand full evaluation detail.</p>
           <table className="w-full text-xs">
             <thead>
               <tr className="text-muted-foreground border-b border-border">
+                <th className="text-left pb-2 pr-3 font-medium w-4"></th>
                 <th className="text-left pb-2 pr-3 font-medium">Ticker</th>
                 <th className="text-left pb-2 pr-3 font-medium">Label</th>
                 <th className="text-left pb-2 pr-3 font-medium">Side</th>
@@ -634,52 +814,67 @@ function LedgerPanel() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
-                <tr key={row.id} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                  <td className="py-2 pr-3 font-mono text-foreground max-w-[160px] truncate" title={row.market_ticker}>
-                    {row.market_ticker}
-                  </td>
-                  <td className="py-2 pr-3">
-                    <LabelBadge label={row.label} />
-                  </td>
-                  <td className="py-2 pr-3 font-mono">{row.side_yes_no}</td>
-                  <td className="py-2 pr-3 text-right font-mono">
-                    <span className={
-                      row.adjusted_edge != null && row.adjusted_edge > 0
-                        ? "text-emerald-400"
-                        : "text-red-400"
-                    }>
-                      {pct(row.adjusted_edge)}
-                    </span>
-                  </td>
-                  <td className="py-2 pr-3 text-right font-mono">{fmt4(row.entry_price)}</td>
-                  <td className="py-2 pr-3 font-mono">{row.depth_score ?? "—"}</td>
-                  <td className="py-2 pr-3 font-mono">{row.settlement_grade ?? "—"}</td>
-                  <td className="py-2 pr-3">
-                    <StatusBadge status={row.settlement_status} />
-                  </td>
-                  <td className="py-2 pr-3 font-mono">
-                    {row.clv != null ? (
-                      <span className={row.clv >= 0 ? "text-emerald-400" : "text-red-400"}>
-                        {fmt4(row.clv)}
-                      </span>
-                    ) : "—"}
-                  </td>
-                  <td className="py-2 pr-3 text-muted-foreground whitespace-nowrap">
-                    {fmtDate(row.created_at)}
-                  </td>
-                  <td className="py-2">
-                    {row.settlement_status === "OPEN" && (
-                      <button
-                        onClick={() => setSettlingRow(row)}
-                        className="px-2 py-1 rounded text-xs border border-amber-700 text-amber-300 hover:bg-amber-900/30 transition-colors whitespace-nowrap"
-                      >
-                        Settle
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((row) => {
+                const isExpanded = expandedId === row.id;
+                return (
+                  <Fragment key={row.id}>
+                    <tr
+                      onClick={() => setExpandedId(isExpanded ? null : row.id)}
+                      className={`border-b border-border/50 cursor-pointer transition-colors ${isExpanded ? "bg-muted/30" : "hover:bg-muted/20"}`}
+                    >
+                      <td className="py-2 pr-1 text-muted-foreground">
+                        <ChevronDown
+                          size={12}
+                          className={`transition-transform ${isExpanded ? "rotate-180 text-primary" : ""}`}
+                        />
+                      </td>
+                      <td className="py-2 pr-3 font-mono text-foreground max-w-[160px] truncate" title={row.market_ticker}>
+                        {row.market_ticker}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <LabelBadge label={row.label} />
+                      </td>
+                      <td className="py-2 pr-3 font-mono">{row.side_yes_no}</td>
+                      <td className="py-2 pr-3 text-right font-mono">
+                        <span className={
+                          row.adjusted_edge != null && row.adjusted_edge > 0
+                            ? "text-emerald-400"
+                            : "text-red-400"
+                        }>
+                          {pct(row.adjusted_edge)}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3 text-right font-mono">{fmt4(row.entry_price)}</td>
+                      <td className="py-2 pr-3 font-mono">{row.depth_score ?? "—"}</td>
+                      <td className="py-2 pr-3 font-mono">{row.settlement_grade ?? "—"}</td>
+                      <td className="py-2 pr-3">
+                        <StatusBadge status={row.settlement_status} />
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {row.clv != null ? (
+                          <span className={row.clv >= 0 ? "text-emerald-400" : "text-red-400"}>
+                            {fmt4(row.clv)}
+                          </span>
+                        ) : "—"}
+                      </td>
+                      <td className="py-2 pr-3 text-muted-foreground whitespace-nowrap">
+                        {fmtDate(row.created_at)}
+                      </td>
+                      <td className="py-2" onClick={(e) => e.stopPropagation()}>
+                        {row.settlement_status === "OPEN" && (
+                          <button
+                            onClick={() => setSettlingRow(row)}
+                            className="px-2 py-1 rounded text-xs border border-amber-700 text-amber-300 hover:bg-amber-900/30 transition-colors whitespace-nowrap"
+                          >
+                            Settle
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {isExpanded && <LedgerDetailRow row={row} />}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
