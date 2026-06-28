@@ -1,0 +1,87 @@
+The Custom GPT Action is correctly calling:
+
+POST https://create-app-gregoryharper84.replit.app/wow/kalshi/scan
+
+But the deployed app still returns:
+
+405 Method Not Allowed
+
+This is not a GPT schema problem. The deployed Flask route is not accepting POST.
+
+Please fix the production Replit deployment.
+
+Required implementation:
+
+```python
+@app.route("/wow/kalshi/scan", methods=["POST"])
+@app.route("/wow/kalshi/scan/", methods=["POST"])
+def wow_kalshi_scan():
+    payload = request.get_json(silent=True) or {}
+
+    category = payload.get("category", "sports")
+    sport = payload.get("sport")
+    scan_date = payload.get("date")
+    mode = payload.get("mode", "scan_only")
+    min_adjusted_edge = payload.get("min_adjusted_edge", 0.04)
+    max_markets = payload.get("max_markets", 50)
+
+    result = run_kalshi_scan(
+        category=category,
+        sport=sport,
+        date=scan_date,
+        mode=mode,
+        min_adjusted_edge=min_adjusted_edge,
+        max_markets=max_markets,
+    )
+
+    return jsonify(result), 200
+```
+
+If `run_kalshi_scan` is not ready, return a clean stub response instead of 405/500:
+
+```python
+return jsonify({
+    "markets_scanned": 0,
+    "playable_limit_only": 0,
+    "final_approved": 0,
+    "watch": 0,
+    "scout": 0,
+    "rejected_no_edge": 0,
+    "rejected_fee_drag": 0,
+    "rejected_thin_book": 0,
+    "rejected_bad_rules": 0,
+    "rejected_uncalibrated": 0,
+    "data_unobtainable": 1,
+    "candidates": [],
+    "rejected": [
+        {
+            "ticker": None,
+            "event_title": "Kalshi scan unavailable",
+            "contract_wording": "Route live but scanner not implemented.",
+            "final_label": "KALSHI_DATA_UNOBTAINABLE",
+            "reason": "Scanner stub active."
+        }
+    ],
+    "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+}), 200
+```
+
+Also run this against the deployed URL, not only the local Replit dev server:
+
+```bash
+curl -i -X OPTIONS https://create-app-gregoryharper84.replit.app/wow/kalshi/scan
+```
+
+The `Allow` header must include `POST`.
+
+Then run:
+
+```bash
+curl -i -X POST https://create-app-gregoryharper84.replit.app/wow/kalshi/scan \
+  -H "Content-Type: application/json" \
+  -d '{"category":"sports","sport":"MLB","date":"2026-06-27","mode":"scan_only","min_adjusted_edge":0.04,"max_markets":50}'
+```
+
+Expected: HTTP 200.
+
+If this works locally but not on `create-app-gregoryharper84.replit.app`, redeploy the Replit app.

@@ -116,6 +116,9 @@ def get_db_conn():
 def require_api_key(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # CORS preflight — let Flask-CORS respond without auth check
+        if request.method == "OPTIONS":
+            return f(*args, **kwargs)
         expected_key = os.environ.get("SCORING_API_KEY", "")
         if not expected_key:
             return jsonify({"error": "Server misconfiguration: SCORING_API_KEY is not set"}), 500
@@ -14376,7 +14379,8 @@ def kalshi_settle_result():
 
 # ── WOW / Kalshi Scan (Custom GPT entry point) ───────────────────────────────
 
-@app.route("/wow/kalshi/scan", methods=["POST"])
+@app.route("/wow/kalshi/scan", methods=["POST", "OPTIONS"])
+@app.route("/wow/kalshi/scan/", methods=["POST", "OPTIONS"])
 @require_api_key
 def wow_kalshi_scan():
     """
