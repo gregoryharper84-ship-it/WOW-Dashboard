@@ -14423,29 +14423,48 @@ _COMBO_TITLE_PHRASES = frozenset([
     "any two of",
     "any three of",
 ])
+# Minimum number of comma-separated leg tokens in the title to call it a multi-pick.
+# Kalshi's KXMV multi-pick slate markets encode picks as "yes Team,yes Team,..." lists.
+_COMBO_MIN_COMMA_LEGS = 3
 
 
 def _detect_market_type(m: dict) -> str:
     """Return 'combo' for genuine multi-leg / parlayed markets, else 'single'.
 
-    Errs on the side of 'single' to avoid penalising normal series / multi-game
-    format markets that are still single-outcome contracts.
+    Three signals, in order of confidence:
+
+    1. Ticker-level token: COMBO, PARLAY, SLATE, BUNDLE as a whole hyphen-segment.
+    2. Title phrase match: explicit multi-leg language ("both teams to", "parlay", …).
+    3. Comma-leg count: Kalshi KXMV multi-pick markets encode legs as a comma-
+       separated list ("yes Dodgers,yes Phillies,yes Padres,…"). ≥ _COMBO_MIN_COMMA_LEGS
+       comma-separated tokens that begin with "yes " or "no " signals a multi-pick slate.
     """
-    title_text = (" ".join([
-        m.get("title", "") or "",
-        m.get("subtitle", "") or "",
-    ])).lower()
+    title_raw = (m.get("title", "") or "") + " " + (m.get("subtitle", "") or "")
+    title_text = title_raw.lower()
     ticker_text = (" ".join([
         m.get("ticker", "") or "",
         m.get("event_ticker", "") or "",
     ])).upper()
 
-    if any(phrase in title_text for phrase in _COMBO_TITLE_PHRASES):
-        return "combo"
-    # Match whole tokens in the ticker (hyphen-delimited segments)
+    # 1. Ticker tokens
     ticker_segments = set(ticker_text.replace("-", " ").split())
     if _COMBO_TICKER_TOKENS & ticker_segments:
         return "combo"
+
+    # 2. Title phrases
+    if any(phrase in title_text for phrase in _COMBO_TITLE_PHRASES):
+        return "combo"
+
+    # 3. Comma-separated multi-pick detection
+    # Split on commas; count tokens that begin with "yes " or "no " (Kalshi pick syntax)
+    parts = [p.strip() for p in title_raw.split(",")]
+    pick_tokens = sum(
+        1 for p in parts
+        if p.lower().startswith("yes ") or p.lower().startswith("no ")
+    )
+    if pick_tokens >= _COMBO_MIN_COMMA_LEGS:
+        return "combo"
+
     return "single"
 
 
@@ -14502,12 +14521,20 @@ def wow_kalshi_scan():
     payload              = request.get_json(silent=True) or {}
     category             = payload.get("category", "sports")
     sport                = payload.get("sport")
-    scan_date            = payload.get("date")
+    scan_date            = payload.get("date")          # ISO "YYYY-MM-DD"
     mode                 = payload.get("mode", "scan_only")
     min_adjusted_edge    = float(payload.get("min_adjusted_edge") or 0.04)
     max_markets          = min(int(payload.get("max_markets") or 50), 100)
     model_probabilities  = payload.get("model_probabilities") or {}   # ticker → float
     include_raw_markets  = bool(payload.get("include_raw_markets", False))
+    # include_combo_markets: when False, combo/slate markets are silently skipped
+    # market_type input: "single_game" → forces include_combo_markets=False
+    _req_market_type     = payload.get("market_type", "all")   # "all"|"single_game"|"combo"
+    include_combo_markets = bool(payload.get("include_combo_markets", True))
+    if _req_market_type == "single_game":
+        include_combo_markets = False
+    elif _req_market_type == "combo":
+        include_combo_markets = True   # will filter out singles below
 
     _stub_rejected = {
         "ticker":           None,
@@ -14526,6 +14553,8 @@ def wow_kalshi_scan():
         "max_markets":                  max_markets,
         "model_probabilities_supplied": len(model_probabilities),
         "include_raw_markets":          include_raw_markets,
+        "include_combo_markets":        include_combo_markets,
+        "market_type_filter":           _req_market_type,
     }
 
     try:
@@ -14569,14 +14598,97 @@ def wow_kalshi_scan():
             return jsonify(resp), 200
 
         # ── Optional sport keyword filter ─────────────────────────────────────
+        # Kalshi market titles use team/player names, not league abbreviations,
+        # so we expand known sport abbreviations into their keyword sets.
+        _SPORT_KEYWORD_MAP = {
+            "mlb": {
+                "runs scored", "runs", "dodgers", "yankees", "mets", "cubs",
+                "red sox", "giants", "braves", "astros", "rangers", "phillies",
+                "padres", "cardinals", "brewers", "pirates", "reds", "nationals",
+                "marlins", "rockies", "diamondbacks", "athletics", "mariners",
+                "angels", "white sox", "twins", "royals", "tigers", "guardians",
+                "orioles", "rays", "blue jays", "milwaukee", "pittsburgh",
+                "baltimore", "tampa bay", "toronto", "cincinnati", "cleveland",
+                "detroit", "kansas city", "minnesota", "texas", "houston",
+                "seattle", "oakland", "los angeles a", "chicago a", "boston",
+                "miami", "colorado", "arizona", "san francisco", "san diego",
+                "washington nationals", "atlanta", "philadelphia",
+            },
+            "nfl": {
+                "touchdowns", "passing yards", "rushing yards", "field goal",
+                "chiefs", "eagles", "cowboys", "patriots", "packers", "bears",
+                "vikings", "lions", "buccaneers", "saints", "falcons",
+                "panthers", "cardinals", "rams", "49ers", "seahawks",
+                "broncos", "raiders", "chargers", "dolphins", "bills",
+                "jets", "ravens", "steelers", "browns", "bengals",
+                "titans", "jaguars", "colts", "texans", "commanders",
+                "giants nfl", "new york giants", "new york jets",
+            },
+            "nba": {
+                "points", "rebounds", "assists", "lakers", "celtics",
+                "warriors", "bucks", "heat", "nets", "knicks", "bulls",
+                "sixers", "nuggets", "suns", "clippers", "mavericks",
+                "rockets", "spurs", "pelicans", "grizzlies", "jazz",
+                "thunder", "blazers", "kings", "hornets", "hawks",
+                "wizards", "pistons", "pacers", "cavaliers", "raptors",
+                "magic", "timberwolves",
+            },
+            "nhl": {
+                "goals", "saves", "maple leafs", "bruins", "rangers nhl",
+                "penguins", "capitals", "blackhawks", "red wings",
+                "flames", "canucks", "oilers", "avalanche", "blues",
+                "wild", "predators", "jets nhl", "ducks", "sharks",
+                "stars", "flyers", "hurricanes", "lightning", "panthers nhl",
+                "senators", "sabres", "islanders", "devils", "coyotes",
+                "golden knights", "kraken",
+            },
+            "nba playoffs": {"playoffs", "series", "conference"},
+            "tennis": {
+                "sets", "wimbledon", "us open", "french open", "australian open",
+                "atp", "wta", "djokovic", "alcaraz", "sinner", "medvedev",
+                "swiatek", "sabalenka",
+            },
+            "soccer": {
+                "goals scored", "world cup", "premier league", "champions league",
+                "la liga", "bundesliga", "serie a", "mls", "concacaf",
+                "euros", "euro", "copa america",
+            },
+        }
         if sport:
             kw = sport.lower()
-            markets = [
-                m for m in markets
-                if kw in (m.get("title") or "").lower()
-                or kw in (m.get("subtitle") or "").lower()
-                or kw in (m.get("event_ticker") or "").lower()
-            ]
+            # Try the expanded keyword set first; fall back to literal substring
+            expand_kws = _SPORT_KEYWORD_MAP.get(kw, {kw})
+            def _sport_match(m: dict) -> bool:
+                haystack = " ".join([
+                    (m.get("title") or ""),
+                    (m.get("subtitle") or ""),
+                    (m.get("event_ticker") or ""),
+                    (m.get("series_ticker") or ""),
+                ]).lower()
+                return any(ek in haystack for ek in expand_kws)
+            markets = [m for m in markets if _sport_match(m)]
+
+        # ── Optional date filter ───────────────────────────────────────────────
+        # Keep markets whose close_time falls on or after scan_date.
+        # Semantics: "give me markets for this game date and beyond that are
+        # still open" — exact-match would silently drop all markets whenever
+        # the requested date is in the past (open markets always close in the future).
+        if scan_date:
+            try:
+                _target_date = scan_date.strip()[:10]  # "YYYY-MM-DD"
+                _filtered = []
+                for m in markets:
+                    ct = m.get("close_time") or m.get("expiration_time") or ""
+                    if ct:
+                        ct_date = ct[:10]   # "YYYY-MM-DD" prefix
+                        if ct_date >= _target_date:
+                            _filtered.append(m)
+                    else:
+                        # No close_time metadata — keep the market (conservative)
+                        _filtered.append(m)
+                markets = _filtered
+            except Exception:
+                pass  # malformed date — skip filter, don't crash
 
         # ── Classify market types before evaluation ───────────────────────────
         for m in markets:
@@ -14584,6 +14696,20 @@ def wow_kalshi_scan():
 
         n_single = sum(1 for m in markets if m["_market_type"] == "single")
         n_combo  = sum(1 for m in markets if m["_market_type"] == "combo")
+
+        # ── market_type input filter: strip unwanted types before evaluation ──
+        # include_combo_markets=False OR market_type="single_game" → singles only
+        # market_type="combo"                                       → combos only
+        # everything else                                           → all types
+        n_skipped_type = 0
+        if not include_combo_markets:
+            before = len(markets)
+            markets = [m for m in markets if m["_market_type"] == "single"]
+            n_skipped_type = before - len(markets)
+        elif _req_market_type == "combo":
+            before = len(markets)
+            markets = [m for m in markets if m["_market_type"] == "combo"]
+            n_skipped_type = before - len(markets)
 
         # ── Build raw_markets index (before orderbook fetches) ────────────────
         raw_markets_list = []
@@ -14775,9 +14901,10 @@ def wow_kalshi_scan():
                 rejected.append({**row, "reason": candidates_reason})
 
         resp = {
-            "markets_scanned":       len(markets),
+            "markets_scanned":       n_single + n_combo,   # pre-type-filter count
             "single_markets":        n_single,
             "combo_markets":         n_combo,
+            "skipped_type_filter":   n_skipped_type,        # dropped by market_type / include_combo_markets
             **counts,
             "candidates":            candidates,
             "rejected":              rejected,
@@ -14794,6 +14921,7 @@ def wow_kalshi_scan():
             "markets_scanned":       0,
             "single_markets":        0,
             "combo_markets":         0,
+            "skipped_type_filter":   0,
             "playable_limit_only":   0,
             "final_approved":        0,
             "watch":                 0,
