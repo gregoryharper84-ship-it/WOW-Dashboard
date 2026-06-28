@@ -14458,26 +14458,38 @@ _COMBO_TITLE_PHRASES = frozenset([
 ])
 # Minimum number of comma-separated leg tokens in the title to call it a multi-pick.
 # Kalshi's KXMV multi-pick slate markets encode picks as "yes Team,yes Team,..." lists.
-_COMBO_MIN_COMMA_LEGS = 3
+# Any ≥2 independent legs = combo (covers 2-leg SGP-style markets too).
+_COMBO_MIN_COMMA_LEGS = 2
 
 
 def _detect_market_type(m: dict) -> str:
     """Return 'combo' for genuine multi-leg / parlayed markets, else 'single'.
 
-    Three signals, in order of confidence:
+    Four signals, in order of confidence:
 
+    0. KXMV market-collection prefix: KXMVESPORTSMULTIGAMEEXTENDED and
+       KXMVECROSSCATEGORY are always multi-variant combo/cross-category slates.
     1. Ticker-level token: COMBO, PARLAY, SLATE, BUNDLE as a whole hyphen-segment.
     2. Title phrase match: explicit multi-leg language ("both teams to", "parlay", …).
     3. Comma-leg count: Kalshi KXMV multi-pick markets encode legs as a comma-
-       separated list ("yes Dodgers,yes Phillies,yes Padres,…"). ≥ _COMBO_MIN_COMMA_LEGS
-       comma-separated tokens that begin with "yes " or "no " signals a multi-pick slate.
+       separated list ("yes Dodgers,yes Phillies,…"). ≥ _COMBO_MIN_COMMA_LEGS (2)
+       comma-separated tokens beginning with "yes " or "no " signal a multi-pick.
     """
     title_raw = (m.get("title", "") or "") + " " + (m.get("subtitle", "") or "")
     title_text = title_raw.lower()
     ticker_text = (" ".join([
         m.get("ticker", "") or "",
         m.get("event_ticker", "") or "",
+        m.get("mve_collection_ticker", "") or "",
     ])).upper()
+
+    # 0. KXMV multi-variant collection prefixes → always combo
+    _KXMV_COMBO_PREFIXES = (
+        "KXMVESPORTSMULTIGAMEEXTENDED",
+        "KXMVECROSSCATEGORY",
+    )
+    if any(pfx in ticker_text for pfx in _KXMV_COMBO_PREFIXES):
+        return "combo"
 
     # 1. Ticker tokens
     ticker_segments = set(ticker_text.replace("-", " ").split())
@@ -14488,7 +14500,7 @@ def _detect_market_type(m: dict) -> str:
     if any(phrase in title_text for phrase in _COMBO_TITLE_PHRASES):
         return "combo"
 
-    # 3. Comma-separated multi-pick detection
+    # 3. Comma-separated multi-pick detection (≥2 yes/no legs)
     # Split on commas; count tokens that begin with "yes " or "no " (Kalshi pick syntax)
     parts = [p.strip() for p in title_raw.split(",")]
     pick_tokens = sum(
@@ -14952,9 +14964,70 @@ def wow_kalshi_scan():
             title       = m.get("title") or m.get("subtitle") or ticker
             market_type = m["_market_type"]
 
-            # ── Fetch orderbook ───────────────────────────────────────────────
-            raw_book = kalshi_client.safe_get_orderbook(ticker)
+            # ── Gate 1a: fetch orderbook ───────────────────────────────────────
+            raw_book  = kalshi_client.safe_get_orderbook(ticker)
+            _ob_err   = (raw_book.get("error") if raw_book else "orderbook fetch returned None")
             if not raw_book or raw_book.get("error"):
+                # Try to extract HTTP status code from the error string
+                _m = re.search(r"\b(4\d{2}|5\d{2})\b", str(_ob_err))
+                _ob_http = int(_m.group(1)) if _m else None
+                counts["data_unobtainable"] += 1
+                rejected.append({
+                    "ticker":              ticker,
+                    "event_title":         title,
+                    "contract_wording":    m.get("subtitle", ""),
+                    "market_type":         market_type,
+                    "final_label":         "KALSHI_DATA_UNOBTAINABLE",
+                    "reason":              f"Orderbook fetch failed: {_ob_err}",
+                    "price_status":        "missing",
+                    "price_source":        "orderbook",
+                    "orderbook_status":    "error",
+                    "orderbook_http_status": _ob_http,
+                    "price_parse_format":  "none",
+                    "raw_price_keys_seen": [],
+                    "price_error":         _ob_err,
+                    "can_approve_bets":    False,
+                })
+                continue
+
+            norm_book = orderbook_normalizer.normalize(raw_book, ticker=ticker)
+            _ob_cache[ticker] = norm_book   # cache for raw_markets enrichment
+
+            # ── Per-row price diagnostics ─────────────────────────────────────
+            _PRICE_KEYS_DIAG = [
+                "yes_bid", "yes_ask", "last_price", "volume", "open_interest",
+                "yes_bid_dollars", "yes_ask_dollars", "last_price_dollars",
+                "no_bid_dollars", "no_ask_dollars", "volume_fp", "open_interest_fp",
+            ]
+            _raw_price_keys = [k for k in _PRICE_KEYS_DIAG if m.get(k) is not None]
+            _price_fmt = ("kxmv_dollars"    if m.get("yes_bid_dollars") is not None
+                          else "standard_cents" if m.get("yes_bid")         is not None
+                          else "none")
+            _nb_bid  = norm_book.get("best_yes_bid")
+            _nb_ask  = norm_book.get("best_yes_ask")
+            _nb_mid  = norm_book.get("mid_price")
+            _has_any = (_nb_bid is not None or _nb_ask is not None or _nb_mid is not None)
+            # "available" = at least one side carries a real (non-zero / non-max) price
+            _active  = (_has_any and
+                        ((_nb_bid is not None and _nb_bid  > 0.0) or
+                         (_nb_ask is not None and _nb_ask  < 1.0)))
+            _row_price_status = ("available"       if _active
+                                 else "zero_liquidity" if _has_any
+                                 else "missing")
+            _price_diag = {
+                "price_status":          _row_price_status,
+                "price_source":          "orderbook",
+                "orderbook_status":      "success" if _active else "empty",
+                "orderbook_http_status": 200,
+                "price_parse_format":    _price_fmt,
+                "raw_price_keys_seen":   _raw_price_keys,
+                "price_error":           None,
+            }
+
+            # ── Gate 1b: price must be "available" to proceed ─────────────────
+            # Missing bid/ask (zero_liquidity or missing) is a data failure,
+            # not a calibration failure — label DATA_UNOBTAINABLE, not UNCALIBRATED.
+            if _row_price_status != "available":
                 counts["data_unobtainable"] += 1
                 rejected.append({
                     "ticker":           ticker,
@@ -14962,16 +15035,22 @@ def wow_kalshi_scan():
                     "contract_wording": m.get("subtitle", ""),
                     "market_type":      market_type,
                     "final_label":      "KALSHI_DATA_UNOBTAINABLE",
-                    "reason":           raw_book.get("error") if raw_book else "orderbook fetch failed",
+                    "yes_price":        _nb_mid,
+                    "best_yes_bid":     _nb_bid,
+                    "best_yes_ask":     _nb_ask,
+                    "spread":           norm_book.get("yes_spread"),
+                    "liquidity_grade":  norm_book.get("liquidity_grade"),
+                    "reason":           (
+                        f"Missing contract price/orderbook: "
+                        f"price_status={_row_price_status!r} "
+                        f"(best_yes_bid={_nb_bid}, best_yes_ask={_nb_ask})"
+                    ),
+                    **_price_diag,
                     "can_approve_bets": False,
                 })
                 continue
 
-            norm_book = orderbook_normalizer.normalize(raw_book, ticker=ticker)
-            _ob_cache[ticker] = norm_book   # cache for raw_markets enrichment
-
             # ── Model probability lookup ──────────────────────────────────────
-            # Exact match first, then case-insensitive prefix match
             model_prob = model_probabilities.get(ticker)
             if model_prob is None:
                 ticker_upper = ticker.upper()
@@ -14981,49 +15060,33 @@ def wow_kalshi_scan():
                         break
 
             # ── Combo/slate fast-path: SCOUT when no calibrated probability ──
-            # Multi-leg markets require a specialized model; without one we
-            # surface them as SCOUT so the GPT knows to supply a probability
-            # before they can be evaluated further.
             if market_type == "combo" and model_prob is None:
                 counts["scout"] += 1
                 rejected.append({
-                    "ticker":           ticker,
-                    "event_title":      title,
-                    "contract_wording": m.get("subtitle", ""),
-                    "market_type":      market_type,
-                    "final_label":      "KALSHI_SCOUT",
+                    "ticker":            ticker,
+                    "event_title":       title,
+                    "contract_wording":  m.get("subtitle", ""),
+                    "market_type":       market_type,
+                    "final_label":       "KALSHI_SCOUT",
                     "model_probability": None,
-                    "adjusted_edge":    None,
-                    "raw_edge":         None,
-                    "entry_price":      norm_book.get("best_yes_ask"),
-                    "liquidity_grade":  norm_book.get("liquidity_grade"),
-                    "reason":           (
+                    "adjusted_edge":     None,
+                    "raw_edge":          None,
+                    "yes_price":         _nb_mid,
+                    "best_yes_bid":      _nb_bid,
+                    "best_yes_ask":      _nb_ask,
+                    "entry_price":       _nb_ask,
+                    "spread":            norm_book.get("yes_spread"),
+                    "liquidity_grade":   norm_book.get("liquidity_grade"),
+                    "reason":            (
                         "Multi-leg combo/slate market: requires a specialized calibrated "
                         "model_probability. Supply one in model_probabilities to evaluate."
                     ),
-                    "can_approve_bets": False,
+                    **_price_diag,
+                    "can_approve_bets":  False,
                 })
                 continue
 
-            # ── Edge evaluation ───────────────────────────────────────────────
-            # model_prob=None (single market) → KALSHI_REJECT_UNCALIBRATED
-            ev = edge_engine.evaluate(
-                model_probability = model_prob,
-                normalized_book   = norm_book,
-                category          = category,
-                side              = "YES",
-            )
-            label = ev.get("label", "KALSHI_REJECT_UNCALIBRATED")
-
-            # Combo markets with a probability get extra warning
-            extra_warnings = []
-            if market_type == "combo" and model_prob is not None:
-                extra_warnings.append(
-                    "COMBO_MARKET: correlation risk not captured in single-leg edge model; "
-                    "apply additional discount before acting."
-                )
-
-            # ── Settlement grade ──────────────────────────────────────────────
+            # ── Gate 2: settlement grade F → KALSHI_REJECT_BAD_RULES ─────────
             sr = settlement_risk.grade_contract(
                 title                = title,
                 settlement_condition = m.get("subtitle"),
@@ -15031,6 +15094,96 @@ def wow_kalshi_scan():
                 category             = category,
                 contract_ticker      = ticker,
             )
+            if sr["resolution_clarity_grade"] == "F":
+                counts[LABEL_MAP.get("KALSHI_REJECT_BAD_RULES", "rejected_bad_rules")] += 1
+                rejected.append({
+                    "ticker":            ticker,
+                    "event_title":       title,
+                    "contract_wording":  m.get("subtitle", ""),
+                    "market_type":       market_type,
+                    "final_label":       "KALSHI_REJECT_BAD_RULES",
+                    "model_probability": model_prob,
+                    "yes_price":         _nb_mid,
+                    "best_yes_bid":      _nb_bid,
+                    "best_yes_ask":      _nb_ask,
+                    "spread":            norm_book.get("yes_spread"),
+                    "liquidity_grade":   norm_book.get("liquidity_grade"),
+                    "settlement_grade":  sr["resolution_clarity_grade"],
+                    "settlement_risk":   sr["settlement_risk"],
+                    "reason":            "Settlement grade F: unresolvable or highly subjective contract",
+                    **_price_diag,
+                    "can_approve_bets":  False,
+                })
+                continue
+
+            # ── Gate 3: liquidity grade F → KALSHI_REJECT_THIN_BOOK ──────────
+            if norm_book.get("liquidity_grade") == "F":
+                counts[LABEL_MAP.get("KALSHI_REJECT_THIN_BOOK", "rejected_thin_book")] += 1
+                rejected.append({
+                    "ticker":            ticker,
+                    "event_title":       title,
+                    "contract_wording":  m.get("subtitle", ""),
+                    "market_type":       market_type,
+                    "final_label":       "KALSHI_REJECT_THIN_BOOK",
+                    "model_probability": model_prob,
+                    "yes_price":         _nb_mid,
+                    "best_yes_bid":      _nb_bid,
+                    "best_yes_ask":      _nb_ask,
+                    "spread":            norm_book.get("yes_spread"),
+                    "liquidity_grade":   norm_book.get("liquidity_grade"),
+                    "settlement_grade":  sr["resolution_clarity_grade"],
+                    "settlement_risk":   sr["settlement_risk"],
+                    "reason":            (
+                        "Liquidity grade F: insufficient market depth "
+                        f"(spread={norm_book.get('yes_spread')}, "
+                        f"depth_within_2c={norm_book.get('depth_within_2c')})"
+                    ),
+                    **_price_diag,
+                    "can_approve_bets":  False,
+                })
+                continue
+
+            # ── Gate 4: no model probability → KALSHI_REJECT_UNCALIBRATED ────
+            if model_prob is None:
+                counts["rejected_uncalibrated"] += 1
+                rejected.append({
+                    "ticker":            ticker,
+                    "event_title":       title,
+                    "contract_wording":  m.get("subtitle", ""),
+                    "market_type":       market_type,
+                    "final_label":       "KALSHI_REJECT_UNCALIBRATED",
+                    "model_probability": None,
+                    "yes_price":         _nb_mid,
+                    "best_yes_bid":      _nb_bid,
+                    "best_yes_ask":      _nb_ask,
+                    "spread":            norm_book.get("yes_spread"),
+                    "liquidity_grade":   norm_book.get("liquidity_grade"),
+                    "settlement_grade":  sr["resolution_clarity_grade"],
+                    "settlement_risk":   sr["settlement_risk"],
+                    "reason":            (
+                        "No model probability supplied for this single-game contract. "
+                        f"Supply model_probabilities[\"{ticker}\"] to evaluate edge."
+                    ),
+                    **_price_diag,
+                    "can_approve_bets":  False,
+                })
+                continue
+
+            # ── Gate 5: edge engine ───────────────────────────────────────────
+            extra_warnings = []
+            if market_type == "combo" and model_prob is not None:
+                extra_warnings.append(
+                    "COMBO_MARKET: correlation risk not captured in single-leg edge model; "
+                    "apply additional discount before acting."
+                )
+
+            ev = edge_engine.evaluate(
+                model_probability = model_prob,
+                normalized_book   = norm_book,
+                category          = category,
+                side              = "YES",
+            )
+            label = ev.get("label", "KALSHI_REJECT_UNCALIBRATED")
 
             # ── Bucket ────────────────────────────────────────────────────────
             bucket = market_buckets.classify(
@@ -15044,7 +15197,6 @@ def wow_kalshi_scan():
 
             counts[LABEL_MAP.get(label, "rejected_uncalibrated")] += 1
 
-            # fee_detail breakdown for GPT transparency
             fd = ev.get("fee_detail") or {}
             fee_breakdown = {
                 "estimated_fee":   fd.get("estimated_fee"),
@@ -15064,23 +15216,17 @@ def wow_kalshi_scan():
                 "raw_edge":           ev.get("raw_edge"),
                 "adjusted_edge":      ev.get("adjusted_edge"),
                 "fee_detail":         fee_breakdown,
-                # ── Full price / order-book snapshot ──────────────────────────
-                "yes_price":          norm_book.get("mid_price"),
-                "no_price":           (round(1.0 - norm_book["mid_price"], 4)
-                                       if norm_book.get("mid_price") is not None else None),
-                "best_yes_bid":       norm_book.get("best_yes_bid"),
-                "best_yes_ask":       norm_book.get("best_yes_ask"),
+                "yes_price":          _nb_mid,
+                "no_price":           round(1.0 - _nb_mid, 4) if _nb_mid is not None else None,
+                "best_yes_bid":       _nb_bid,
+                "best_yes_ask":       _nb_ask,
                 "best_no_bid":        norm_book.get("best_no_bid"),
                 "best_no_ask":        norm_book.get("best_no_ask"),
                 "spread":             norm_book.get("yes_spread"),
-                "entry_price":        norm_book.get("best_yes_ask"),
+                "entry_price":        _nb_ask,
                 "max_playable_price": ev.get("max_playable_price"),
                 "liquidity_grade":    norm_book.get("liquidity_grade"),
-                "price_source":       "orderbook",
-                "price_status":       ("available"
-                                       if norm_book.get("best_yes_bid") is not None
-                                       else "missing"),
-                # ── Settlement / bucket ───────────────────────────────────────
+                **_price_diag,
                 "settlement_grade":   sr["resolution_clarity_grade"],
                 "settlement_risk":    sr["settlement_risk"],
                 "market_bucket":      bucket.get("market_bucket"),
