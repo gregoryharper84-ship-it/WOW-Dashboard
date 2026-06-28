@@ -124,17 +124,48 @@ def require_api_key(f):
             return jsonify({"error": "Server misconfiguration: SCORING_API_KEY is not set"}), 500
         # Try X-API-Key header first, then fall back to Authorization: Bearer <key>
         provided_key = request.headers.get("X-API-Key", "").strip()
+        auth_source = "X-API-Key"
         if not provided_key:
             auth = request.headers.get("Authorization", "")
             if auth.lower().startswith("bearer "):
                 provided_key = auth[7:].strip()
+                auth_source = "Authorization: Bearer"
+        # Safe auth debug logging — never logs the key itself
+        _key_present = bool(provided_key)
+        _key_len     = len(provided_key) if provided_key else 0
+        _key_tail    = provided_key[-4:] if _key_len >= 4 else "----"
+        _exp_len     = len(expected_key)
+        _exp_tail    = expected_key[-4:] if _exp_len >= 4 else "----"
+        app.logger.info(
+            "[AUTH] path=%s method=%s header_source=%s "
+            "key_present=%s provided_len=%d provided_tail=...%s "
+            "expected_len=%d expected_tail=...%s",
+            request.path, request.method, auth_source,
+            _key_present, _key_len, _key_tail,
+            _exp_len, _exp_tail,
+        )
         if not provided_key:
             return jsonify({
                 "error": "Missing API key",
-                "hint": "Include your key in the X-API-Key request header"
+                "hint": "Include your key in the X-API-Key request header",
+                "auth_debug": {
+                    "header_checked": "X-API-Key",
+                    "fallback_checked": "Authorization: Bearer",
+                    "key_present": False,
+                },
             }), 401
         if not secrets_equal(provided_key, expected_key):
-            return jsonify({"error": "Invalid API key"}), 401
+            return jsonify({
+                "error": "Invalid API key",
+                "auth_debug": {
+                    "key_present": True,
+                    "provided_len": _key_len,
+                    "provided_tail": f"...{_key_tail}",
+                    "expected_len": _exp_len,
+                    "expected_tail": f"...{_exp_tail}",
+                    "lengths_match": _key_len == _exp_len,
+                },
+            }), 401
         return f(*args, **kwargs)
     return decorated
 

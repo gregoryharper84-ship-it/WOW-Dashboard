@@ -1,0 +1,123 @@
+This is an **auth regression**, not a Kalshi/model issue.
+
+The scan route is live, but the Custom GPT is now being blocked before market retrieval:
+
+```text
+Invalid API key
+```
+
+So the current blocker is:
+
+```text
+Custom GPT Action is not sending the correct X-API-Key header
+```
+
+## Fix this in GPT Builder
+
+Go to the **existing Action** for:
+
+```text
+create-app-gregoryharper84.replit.app
+```
+
+Then check:
+
+```text
+Configure → Actions → Authentication
+```
+
+Set it exactly like this:
+
+```text
+Authentication Type: API Key
+Auth Type: Custom
+Header Name: X-API-Key
+API Key: <your Replit/WOW API key>
+```
+
+Then click:
+
+```text
+Save Action
+Save GPT
+```
+
+Do **not** put the key inside the YAML. The YAML only defines the API shape. The key belongs in the Action auth settings.
+
+## Most likely cause
+
+When you replaced the full YAML, the Action schema saved correctly, but the **authentication setting either reset, was not saved, or is using an old key**.
+
+That is why the request now fails before any rows come back.
+
+## Verify with curl
+
+Run this outside GPT with the exact same key you put in the Action auth field:
+
+```bash
+curl -i -X POST https://create-app-gregoryharper84.replit.app/wow/kalshi/scan \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_REAL_KEY" \
+  -d '{"category":"sports","sport":"MLB","date":"2026-06-27","mode":"scan_only","min_adjusted_edge":0.04,"max_markets":15,"include_raw_markets":true,"include_combo_markets":false,"market_type":"single_game"}'
+```
+
+Expected:
+
+```text
+HTTP 200
+```
+
+If curl works but GPT fails, the GPT Action auth is wrong.
+
+If curl also fails, the key in Replit Secrets and the key you are using do not match.
+
+## Ask Replit to confirm this
+
+```text
+Please confirm which environment secret the require_api_key decorator checks for /wow/kalshi/scan.
+
+The Custom GPT Action is sending requests to:
+POST /wow/kalshi/scan
+
+It is failing with Invalid API key.
+
+Confirm whether the expected header is exactly:
+X-API-Key
+
+Confirm the expected secret name, such as:
+WOW_API_KEY
+GPT_ACTION_API_KEY
+ACTION_API_KEY
+API_KEY
+
+Also add safe logging that confirms only:
+- X-API-Key header present: true/false
+- key length
+- last 4 characters hash/checksum if needed
+
+Do not log the full API key.
+```
+
+## Do not rerun scans yet
+
+Until auth is fixed, every scan will return:
+
+```text
+INPUT_FAILURE / Invalid API key
+```
+
+Once the Action auth is corrected, rerun:
+
+```text
+Scan Kalshi sports markets through WOW using scan_only mode. Use include_raw_markets=true, include_combo_markets=false, market_type=single_game, sport=MLB, max_markets=15. Return raw tickers and prices only. Do not approve anything.
+```
+
+Expected next good output:
+
+```text
+raw_markets: populated
+YES/NO prices: populated
+skipped_type_filter: >0
+final labels: mostly KALSHI_REJECT_UNCALIBRATED
+candidates: []
+```
