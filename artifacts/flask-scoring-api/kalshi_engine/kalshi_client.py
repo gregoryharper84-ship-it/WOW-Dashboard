@@ -30,10 +30,10 @@ import requests
 # Config
 # ---------------------------------------------------------------------------
 
-# Public market-data base URL (no auth needed for GET market/orderbook/trades)
-_PUBLIC_BASE  = "https://api.elections.kalshi.com/trade-api/v2"
-# External authenticated base URL
-_PRIVATE_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+# Primary production host for public market data (no auth required)
+_PUBLIC_BASE     = "https://external-api.kalshi.com/trade-api/v2"
+# Fallback host — identical API surface, different subdomain
+_PUBLIC_FALLBACK = "https://api.elections.kalshi.com/trade-api/v2"
 
 _TIMEOUT_MARKET = 5
 _TIMEOUT_BULK   = 10
@@ -54,8 +54,10 @@ def _get_session() -> requests.Session:
 
 def _base() -> str:
     """
-    Base URL — prefers KALSHI_BASE_URL env var so this can be overridden
-    at runtime (e.g. for demo vs prod).
+    Base URL priority:
+      1. KALSHI_BASE_URL env var (explicit override)
+      2. https://external-api.kalshi.com/trade-api/v2  (Kalshi-recommended prod host)
+      Fallback to api.elections.kalshi.com is handled in _get() on connection error.
     """
     return os.environ.get("KALSHI_BASE_URL", _PUBLIC_BASE).rstrip("/")
 
@@ -129,16 +131,37 @@ def _get(
 
     authenticated=False → public endpoint, no auth headers attached.
     authenticated=True  → RSA-signed headers added (if credentials are present).
-    """
-    url   = f"{_base()}{path}"
-    hdrs  = dict(_get_session().headers)
 
+    On connection error or 5xx with the primary base URL, automatically retries
+    once against _PUBLIC_FALLBACK (api.elections.kalshi.com).
+    """
+    hdrs = dict(_get_session().headers)
     if authenticated:
         hdrs.update(_build_auth_headers("GET", path))
 
-    resp = requests.get(url, headers=hdrs, params=params or {}, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
+    bases_to_try = [_base()]
+    fallback = _PUBLIC_FALLBACK.rstrip("/")
+    if fallback not in bases_to_try:
+        bases_to_try.append(fallback)
+
+    last_exc: Exception | None = None
+    for base in bases_to_try:
+        try:
+            url  = f"{base}{path}"
+            resp = requests.get(url, headers=hdrs, params=params or {}, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_exc = exc
+            continue  # try next base
+        except requests.HTTPError as exc:
+            # 4xx are definitive — don't retry with a different host
+            if exc.response is not None and exc.response.status_code < 500:
+                raise
+            last_exc = exc
+            continue
+
+    raise last_exc  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------

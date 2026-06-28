@@ -1,0 +1,134 @@
+That’s the right progression. The pipeline has moved from **Action/schema failure** to **live market-data intake working**, which is a real milestone.
+
+One small correction/clarification: Kalshi’s current docs list `https://external-api.kalshi.com/trade-api/v2` as the recommended production external API host for public market data, while also listing `https://api.elections.kalshi.com/trade-api/v2` as a supported production host. Their docs specifically note that despite the `elections` subdomain, it can access all Kalshi markets, not only elections. ([Kalshi API Documentation][1])
+
+So your current setup using `api.elections.kalshi.com` is acceptable if it is returning live sports markets, but I would still set this as the preferred default in Replit:
+
+```text id="mfgimy"
+KALSHI_BASE_URL=https://external-api.kalshi.com/trade-api/v2
+```
+
+and allow fallback to:
+
+```text id="9lwfau"
+https://api.elections.kalshi.com/trade-api/v2
+```
+
+## Current status
+
+```text id="1jt3dt"
+GPT Action → working
+Replit route → working
+Kalshi public market scan → working
+Credentials required for public scan → no
+Live trading → disabled
+Market rows retrieved → yes
+Playable candidates → correctly zero
+Failure reason → rejected_uncalibrated, not data failure
+```
+
+That is exactly what we want.
+
+## Why `rejected_uncalibrated: 10` is correct
+
+The engine now sees contracts, but WOW still cannot approve anything because it does not yet have a **model probability** for each contract.
+
+Kalshi scan gives:
+
+```text id="ef7t0j"
+contract
+price
+market
+order book
+settlement terms
+```
+
+WOW approval still needs:
+
+```text id="l3oofc"
+model_probability
+raw_edge
+fee/spread-adjusted edge
+liquidity grade
+settlement-risk grade
+max playable price
+```
+
+So this output is good:
+
+```text id="luz7c3"
+markets_scanned: 10
+data_unobtainable: 0
+rejected_uncalibrated: 10
+candidates: []
+```
+
+That means the engine is behaving safely instead of forcing action.
+
+## Next Replit addition
+
+Now add support for a `model_probabilities` map in the scan request.
+
+Example request:
+
+```json id="pq8i7i"
+{
+  "category": "sports",
+  "mode": "scan_only",
+  "date": "2026-06-27",
+  "min_adjusted_edge": 0.04,
+  "max_markets": 50,
+  "model_probabilities": {
+    "KXEXAMPLE-26JUN27-TEAM-A": 0.61,
+    "KXEXAMPLE-26JUN27-TEAM-B": 0.44
+  }
+}
+```
+
+Then Replit should do:
+
+```text id="1g6c6x"
+for each contract:
+  if ticker not in model_probabilities:
+    KALSHI_REJECT_UNCALIBRATED
+  else:
+    calculate raw_edge
+    subtract fee_drag, spread_drag, slippage_drag, uncertainty_tax
+    assign final Kalshi label
+```
+
+## Next GPT test after that
+
+Once Replit accepts `model_probabilities`, test with one fake/manual probability:
+
+```text id="ccg53h"
+Scan Kalshi sports markets through WOW using scan_only mode. For any returned MLB contract involving [TEAM], use a temporary model probability of 0.61 for YES only as a test input. Do not approve unless adjusted edge clears the Kalshi gate.
+```
+
+That should produce one of these:
+
+```text id="y8e1ll"
+KALSHI_PLAYABLE_LIMIT_ONLY
+KALSHI_REJECT_NO_EDGE
+KALSHI_REJECT_FEE_DRAG
+KALSHI_REJECT_THIN_BOOK
+```
+
+If it still returns `KALSHI_REJECT_UNCALIBRATED` on that ticker, the probability map is not being passed or matched correctly.
+
+## Do not add live execution yet
+
+Credentials are only needed later for account/portfolio/positions or private endpoints. Authenticated requests require signed headers with `KALSHI-ACCESS-KEY`, timestamp, and RSA signature, not a simple bearer key. ([Kalshi API Documentation][2])
+
+Keep these locked:
+
+```text id="be67qd"
+DRY_RUN_ONLY=true
+ALLOW_LIVE_TRADING=false
+ALLOW_MARKET_ORDERS=false
+```
+
+Bottom line: **market scan is now live; scoring is correctly waiting for model probabilities.** The next build is the bridge from WOW/LLP probabilities into the Kalshi scan payload.
+
+[1]: https://docs.kalshi.com/getting_started/quick_start_market_data?utm_source=chatgpt.com "Quick Start: Market Data - API Documentation"
+[2]: https://docs.kalshi.com/getting_started/api_keys?utm_source=chatgpt.com "API Keys - API Documentation"

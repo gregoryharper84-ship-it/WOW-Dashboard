@@ -14393,6 +14393,9 @@ def wow_kalshi_scan():
       min_adjusted_edge float   default 0.04  — minimum edge threshold to include
                                 in candidates list
       max_markets       int     default 50 (max 100)
+      model_probabilities  dict  optional — map of ticker → model probability (0–1)
+                                e.g. {"KXEXAMPLE-26JUN27-TEAM-A": 0.61}
+                                Contracts not in this map → KALSHI_REJECT_UNCALIBRATED
 
     Returns:
       {
@@ -14418,13 +14421,14 @@ def wow_kalshi_scan():
     ALLOW_LIVE_TRADING  = False
     ALLOW_MARKET_ORDERS = False
 
-    payload           = request.get_json(silent=True) or {}
-    category          = payload.get("category", "sports")
-    sport             = payload.get("sport")
-    scan_date         = payload.get("date")
-    mode              = payload.get("mode", "scan_only")
-    min_adjusted_edge = float(payload.get("min_adjusted_edge") or 0.04)
-    max_markets       = min(int(payload.get("max_markets") or 50), 100)
+    payload             = request.get_json(silent=True) or {}
+    category            = payload.get("category", "sports")
+    sport               = payload.get("sport")
+    scan_date           = payload.get("date")
+    mode                = payload.get("mode", "scan_only")
+    min_adjusted_edge   = float(payload.get("min_adjusted_edge") or 0.04)
+    max_markets         = min(int(payload.get("max_markets") or 50), 100)
+    model_probabilities = payload.get("model_probabilities") or {}  # ticker → float
 
     _stub_rejected = {
         "ticker":            None,
@@ -14434,12 +14438,13 @@ def wow_kalshi_scan():
         "reason":            "Scanner stub active. No live Kalshi rows retrieved.",
     }
     _echo = {
-        "category":          category,
-        "sport":             sport,
-        "date":              scan_date,
-        "mode":              mode,
-        "min_adjusted_edge": min_adjusted_edge,
-        "max_markets":       max_markets,
+        "category":                    category,
+        "sport":                       sport,
+        "date":                        scan_date,
+        "mode":                        mode,
+        "min_adjusted_edge":           min_adjusted_edge,
+        "max_markets":                 max_markets,
+        "model_probabilities_supplied": len(model_probabilities),
     }
 
     try:
@@ -14536,9 +14541,20 @@ def wow_kalshi_scan():
 
             norm_book = orderbook_normalizer.normalize(raw_book, ticker=ticker)
 
-            # ── Edge evaluation (no model probability → UNCALIBRATED) ─────────
+            # ── Model probability lookup ──────────────────────────────────────
+            # Exact ticker match first, then case-insensitive prefix match
+            model_prob = model_probabilities.get(ticker)
+            if model_prob is None:
+                ticker_upper = ticker.upper()
+                for k, v in model_probabilities.items():
+                    if ticker_upper.startswith(k.upper()) or k.upper().startswith(ticker_upper):
+                        model_prob = v
+                        break
+
+            # ── Edge evaluation ───────────────────────────────────────────────
+            # model_prob=None → edge_engine returns KALSHI_REJECT_UNCALIBRATED
             ev = edge_engine.evaluate(
-                model_probability = None,
+                model_probability = model_prob,
                 normalized_book   = norm_book,
                 category          = category,
                 side              = "YES",
@@ -14567,20 +14583,23 @@ def wow_kalshi_scan():
             counts[LABEL_MAP.get(label, "rejected_uncalibrated")] += 1
 
             row = {
-                "ticker":           ticker,
-                "event_title":      title,
-                "contract_wording": m.get("subtitle", ""),
-                "final_label":      label,
-                "adjusted_edge":    ev.get("adjusted_edge"),
-                "raw_edge":         ev.get("raw_edge"),
-                "entry_price":      norm_book.get("best_yes_ask"),
-                "liquidity_grade":  norm_book.get("liquidity_grade"),
-                "settlement_grade": sr["resolution_clarity_grade"],
-                "settlement_risk":  sr["settlement_risk"],
-                "market_bucket":    bucket.get("market_bucket"),
-                "blocking_reasons": (ev.get("blocking_reasons") or []) + (bucket.get("rationale") or []),
-                "warnings":         ev.get("warnings") or [],
-                "can_approve_bets": False,
+                "ticker":             ticker,
+                "event_title":        title,
+                "contract_wording":   m.get("subtitle", ""),
+                "final_label":        label,
+                "model_probability":  model_prob,
+                "adjusted_edge":      ev.get("adjusted_edge"),
+                "raw_edge":           ev.get("raw_edge"),
+                "max_playable_price": ev.get("max_playable_price"),
+                "entry_price":        norm_book.get("best_yes_ask"),
+                "liquidity_grade":    norm_book.get("liquidity_grade"),
+                "settlement_grade":   sr["resolution_clarity_grade"],
+                "settlement_risk":    sr["settlement_risk"],
+                "market_bucket":      bucket.get("market_bucket"),
+                "fee_detail":         ev.get("fee_detail", {}),
+                "blocking_reasons":   (ev.get("blocking_reasons") or []) + (bucket.get("rationale") or []),
+                "warnings":           ev.get("warnings") or [],
+                "can_approve_bets":   False,
             }
 
             adj = ev.get("adjusted_edge")
