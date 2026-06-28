@@ -1,0 +1,186 @@
+The Action is connected correctly. The failure is now **inside Replit routing**, not the GPT schema.
+
+## What the error means
+
+Your Custom GPT successfully called:
+
+```text
+POST /wow/kalshi/scan
+```
+
+But Replit returned:
+
+```text
+405 Method Not Allowed
+```
+
+That means one of these is true:
+
+```text
+/wow/kalshi/scan exists, but not as POST
+or
+Flask has a GET route for it but no POST method
+or
+a catch-all/error wrapper is catching the route and converting 405 into a 500 response
+```
+
+So the schema/action worked. The backend endpoint just is not accepting POST yet.
+
+## Correct fix
+
+Do **not** change the Action back. Keep:
+
+```yaml
+/wow/kalshi/scan:
+  post:
+```
+
+Now Replit needs to add a real Flask POST route.
+
+Send this to Replit/Codex:
+
+The Custom GPT Action is now correctly calling:
+
+POST /wow/kalshi/scan
+
+The call reached Replit, but Flask returned:
+
+405 Method Not Allowed
+
+Please add or fix the Flask route so `/wow/kalshi/scan` accepts POST requests.
+
+Required behavior:
+
+1. Endpoint:
+   POST /wow/kalshi/scan
+
+2. Accept JSON body:
+
+   * category
+   * sport
+   * date
+   * mode
+   * min_adjusted_edge
+   * max_markets
+
+3. Return a valid WOW Kalshi scan response with:
+
+   * markets_scanned
+   * playable_limit_only
+   * final_approved
+   * watch
+   * scout
+   * rejected_no_edge
+   * rejected_fee_drag
+   * rejected_thin_book
+   * rejected_bad_rules
+   * rejected_uncalibrated
+   * data_unobtainable
+   * candidates
+   * rejected
+
+4. Hard safety flags:
+
+   * DRY_RUN_ONLY = true
+   * ALLOW_LIVE_TRADING = false
+   * ALLOW_MARKET_ORDERS = false
+
+5. If Kalshi market-data code is not ready yet, return a clean stub response instead of throwing 405/500.
+
+Example stub response:
+
+{
+"markets_scanned": 0,
+"playable_limit_only": 0,
+"final_approved": 0,
+"watch": 0,
+"scout": 0,
+"rejected_no_edge": 0,
+"rejected_fee_drag": 0,
+"rejected_thin_book": 0,
+"rejected_bad_rules": 0,
+"rejected_uncalibrated": 0,
+"data_unobtainable": 1,
+"candidates": [],
+"rejected": [
+{
+"ticker": null,
+"event_title": "Kalshi scan unavailable",
+"contract_wording": "Backend route is live but Kalshi scanner is not fully implemented.",
+"final_label": "KALSHI_DATA_UNOBTAINABLE",
+"reason": "Scanner stub active. No live Kalshi rows retrieved."
+}
+]
+}
+
+## Minimal Flask route Replit can paste
+
+```python
+from flask import request, jsonify
+
+@app.route("/wow/kalshi/scan", methods=["POST"])
+def wow_kalshi_scan():
+    payload = request.get_json(silent=True) or {}
+
+    category = payload.get("category", "sports")
+    sport = payload.get("sport")
+    scan_date = payload.get("date")
+    mode = payload.get("mode", "scan_only")
+    min_adjusted_edge = payload.get("min_adjusted_edge", 0.04)
+    max_markets = payload.get("max_markets", 50)
+
+    # Safety lock
+    DRY_RUN_ONLY = True
+    ALLOW_LIVE_TRADING = False
+    ALLOW_MARKET_ORDERS = False
+
+    # Temporary safe stub until real Kalshi scanner is wired
+    return jsonify({
+        "markets_scanned": 0,
+        "playable_limit_only": 0,
+        "final_approved": 0,
+        "watch": 0,
+        "scout": 0,
+        "rejected_no_edge": 0,
+        "rejected_fee_drag": 0,
+        "rejected_thin_book": 0,
+        "rejected_bad_rules": 0,
+        "rejected_uncalibrated": 0,
+        "data_unobtainable": 1,
+        "candidates": [],
+        "rejected": [
+            {
+                "ticker": None,
+                "event_title": "Kalshi scan unavailable",
+                "contract_wording": "Backend route is live but Kalshi scanner is not fully implemented.",
+                "final_label": "KALSHI_DATA_UNOBTAINABLE",
+                "reason": "Scanner stub active. No live Kalshi rows retrieved."
+            }
+        ],
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        "request_echo": {
+            "category": category,
+            "sport": sport,
+            "date": scan_date,
+            "mode": mode,
+            "min_adjusted_edge": min_adjusted_edge,
+            "max_markets": max_markets
+        }
+    }), 200
+```
+
+## After Replit adds this
+
+Run the same GPT test again:
+
+```text
+Scan Kalshi sports markets through WOW using scan_only mode.
+```
+
+Expected result should no longer be 405. Even if the real scanner is not built yet, you should get a clean WOW response with:
+
+```text
+KALSHI_DATA_UNOBTAINABLE
+```
+
+That confirms the GPT → Replit route is working. Then the next step is wiring the actual Kalshi market-data fetcher behind that route.
