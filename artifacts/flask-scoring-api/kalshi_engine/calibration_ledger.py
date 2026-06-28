@@ -344,3 +344,51 @@ def get_brier_score() -> dict[str, Any]:
         }
     except Exception as exc:
         return {"error": str(exc), "can_approve_bets": False}
+
+
+def get_brier_score_by_bucket() -> list[dict[str, Any]]:
+    """
+    Return per-bucket calibration stats for all settled records.
+
+    Each entry contains:
+      bucket, count, mean_brier_score, mean_clv, insufficient_data (count < 5)
+    Buckets with zero settled rows are omitted.
+    """
+    ensure_table()
+    try:
+        import psycopg2.extras  # type: ignore
+        conn = _get_conn()
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            SELECT
+                COALESCE(market_bucket, 'UNKNOWN')     AS bucket,
+                COUNT(*)                               AS count,
+                ROUND(AVG(brier_score)::numeric, 5)    AS mean_brier_score,
+                ROUND(AVG(clv)::numeric, 5)            AS mean_clv,
+                COUNT(*) FILTER (WHERE result = 'YES') AS yes_wins
+            FROM kalshi_forecast_ledger
+            WHERE settlement_status = 'SETTLED'
+            GROUP BY COALESCE(market_bucket, 'UNKNOWN')
+            ORDER BY count DESC
+            """
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        result = []
+        for r in rows:
+            d = dict(r)
+            cnt = int(d["count"])
+            result.append({
+                "bucket":            d["bucket"],
+                "count":             cnt,
+                "mean_brier_score":  float(d["mean_brier_score"]) if d["mean_brier_score"] is not None else None,
+                "mean_clv":          float(d["mean_clv"]) if d["mean_clv"] is not None else None,
+                "yes_wins":          int(d["yes_wins"]),
+                "insufficient_data": cnt < 5,
+            })
+        return result
+    except Exception as exc:
+        return [{"error": str(exc)}]

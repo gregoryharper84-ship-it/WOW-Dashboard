@@ -739,14 +739,18 @@ function CalibrationPanel() {
   const milestoneGreen = gateCountOk && gateClvOk && gateBrierOk;
   const milestoneRed = gateCountOk && (!gateClvOk || !gateBrierOk);
 
-  // Per-bucket CLV
-  const bucketMap: Record<string, { count: number; clvSum: number; wins: number }> = {};
+  // Per-bucket CLV + Brier
+  const bucketMap: Record<string, { count: number; clvSum: number; wins: number; brierSum: number; brierCount: number }> = {};
   for (const row of settled) {
     const b = row.market_bucket ?? "UNKNOWN";
-    if (!bucketMap[b]) bucketMap[b] = { count: 0, clvSum: 0, wins: 0 };
+    if (!bucketMap[b]) bucketMap[b] = { count: 0, clvSum: 0, wins: 0, brierSum: 0, brierCount: 0 };
     bucketMap[b].count++;
     if (row.clv != null) bucketMap[b].clvSum += row.clv;
     if (row.result === "YES") bucketMap[b].wins++;
+    if (row.brier_score != null) {
+      bucketMap[b].brierSum += row.brier_score;
+      bucketMap[b].brierCount++;
+    }
   }
 
   // Failure tag freq
@@ -800,7 +804,7 @@ function CalibrationPanel() {
           </span>
         </div>
 
-        <div className="grid grid-cols-3 gap-3 text-sm">
+        <div className="grid grid-cols-3 gap-3 text-sm mb-4">
           <GateCheck
             label={`Settled (${n}/${threshold})`}
             ok={gateCountOk}
@@ -816,6 +820,60 @@ function CalibrationPanel() {
             ok={gateBrierOk}
             note={brier != null ? brier.toFixed(5) : "No data"}
           />
+        </div>
+
+        {/* Per-bucket breakdown required by Milestone 2 */}
+        <div>
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
+            Per-Bucket Breakdown
+          </p>
+          <div className="bg-black/20 rounded overflow-hidden">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-muted-foreground border-b border-border/60">
+                  <th className="text-left p-2 font-medium">Bucket</th>
+                  <th className="text-right p-2 font-medium">Settled</th>
+                  <th className="text-right p-2 font-medium">Mean CLV</th>
+                  <th className="text-right p-2 font-medium">Mean Brier</th>
+                  <th className="text-left p-2 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(["TRUSTED_TEST", "WATCH", "TEST_ONLY"] as const).map((bucket) => {
+                  const stats = bucketMap[bucket];
+                  if (!stats || stats.count === 0) {
+                    return (
+                      <tr key={bucket} className="border-b border-border/30">
+                        <td className="p-2 font-mono font-medium">{bucket}</td>
+                        <td className="p-2 text-right text-muted-foreground">0</td>
+                        <td className="p-2 text-right text-muted-foreground">—</td>
+                        <td className="p-2 text-right text-muted-foreground">—</td>
+                        <td className="p-2 text-amber-400/70 italic">No data yet</td>
+                      </tr>
+                    );
+                  }
+                  const insufficient = stats.count < 5;
+                  const meanBucketClv = stats.clvSum / stats.count;
+                  const meanBucketBrier = stats.brierCount > 0 ? stats.brierSum / stats.brierCount : null;
+                  return (
+                    <tr key={bucket} className="border-b border-border/30">
+                      <td className="p-2 font-mono font-medium">{bucket}</td>
+                      <td className="p-2 text-right">{stats.count}</td>
+                      <td className={`p-2 text-right font-mono ${insufficient ? "text-muted-foreground" : meanBucketClv >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                        {insufficient ? "—" : fmt4(meanBucketClv)}
+                      </td>
+                      <td className={`p-2 text-right font-mono ${insufficient ? "text-muted-foreground" : meanBucketBrier == null ? "text-muted-foreground" : meanBucketBrier < 0.25 ? "text-emerald-400" : "text-red-400"}`}>
+                        {insufficient ? "—" : meanBucketBrier != null ? meanBucketBrier.toFixed(5) : "—"}
+                      </td>
+                      <td className={`p-2 text-xs italic ${insufficient ? "text-amber-400" : "text-muted-foreground"}`}>
+                        {insufficient ? `insufficient data (${stats.count}/5)` : "ok"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
@@ -836,7 +894,7 @@ function CalibrationPanel() {
       {/* TRUSTED_TEST vs WATCH vs TEST_ONLY comparison — required for Milestone 2 gate */}
       <div>
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-          TRUSTED_TEST vs WATCH vs TEST_ONLY — CLV Comparison
+          TRUSTED_TEST vs WATCH vs TEST_ONLY — CLV &amp; Brier Comparison
         </p>
         <div className="bg-muted/20 rounded-lg overflow-hidden">
           <table className="w-full text-xs">
@@ -845,6 +903,7 @@ function CalibrationPanel() {
                 <th className="text-left p-2 font-medium">Bucket</th>
                 <th className="text-right p-2 font-medium">Settled</th>
                 <th className="text-right p-2 font-medium">Mean CLV</th>
+                <th className="text-right p-2 font-medium">Mean Brier</th>
                 <th className="text-right p-2 font-medium">Win Rate</th>
                 <th className="text-left p-2 font-medium">Signal</th>
               </tr>
@@ -859,17 +918,22 @@ function CalibrationPanel() {
                       <td className="p-2 text-right text-muted-foreground">0</td>
                       <td className="p-2 text-right text-muted-foreground">—</td>
                       <td className="p-2 text-right text-muted-foreground">—</td>
+                      <td className="p-2 text-right text-muted-foreground">—</td>
                       <td className="p-2 text-muted-foreground text-xs">No data yet</td>
                     </tr>
                   );
                 }
+                const insufficient = stats.count < 5;
                 const meanBucketClv = stats.count > 0 ? stats.clvSum / stats.count : 0;
+                const meanBucketBrier = stats.brierCount > 0 ? stats.brierSum / stats.brierCount : null;
                 const winRate = stats.count > 0 ? stats.wins / stats.count : 0;
                 const signal =
+                  insufficient ? "⚠ Insuff. data" :
                   meanBucketClv > 0.02 ? "✓ Positive edge" :
                   meanBucketClv > 0 ? "~ Marginal" :
                   "✗ Negative CLV";
                 const signalColor =
+                  insufficient ? "text-amber-400" :
                   meanBucketClv > 0.02 ? "text-emerald-400" :
                   meanBucketClv > 0 ? "text-amber-400" :
                   "text-red-400";
@@ -877,10 +941,13 @@ function CalibrationPanel() {
                   <tr key={bucket} className="border-b border-border/50">
                     <td className="p-2 font-mono font-medium">{bucket}</td>
                     <td className="p-2 text-right">{stats.count}</td>
-                    <td className={`p-2 text-right font-mono ${meanBucketClv >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                      {fmt4(meanBucketClv)}
+                    <td className={`p-2 text-right font-mono ${insufficient ? "text-muted-foreground" : meanBucketClv >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                      {insufficient ? "—" : fmt4(meanBucketClv)}
                     </td>
-                    <td className="p-2 text-right font-mono">{pct(winRate)}</td>
+                    <td className={`p-2 text-right font-mono ${insufficient ? "text-muted-foreground" : meanBucketBrier == null ? "text-muted-foreground" : meanBucketBrier < 0.25 ? "text-emerald-400" : "text-red-400"}`}>
+                      {insufficient ? "—" : meanBucketBrier != null ? meanBucketBrier.toFixed(5) : "—"}
+                    </td>
+                    <td className="p-2 text-right font-mono">{insufficient ? "—" : pct(winRate)}</td>
                     <td className={`p-2 text-xs ${signalColor}`}>{signal}</td>
                   </tr>
                 );
@@ -889,14 +956,14 @@ function CalibrationPanel() {
           </table>
         </div>
         <p className="text-xs text-muted-foreground mt-1.5">
-          TRUSTED_TEST should show highest CLV; TEST_ONLY should be positive or neutral.
+          TRUSTED_TEST should show highest CLV and lowest Brier; buckets with &lt;5 samples show "—" (insufficient data).
         </p>
       </div>
 
       {/* Full bucket CLV table (all buckets) */}
       {Object.keys(bucketMap).length > 0 && (
         <div>
-          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">All Buckets — CLV Detail</p>
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">All Buckets — CLV &amp; Brier Detail</p>
           <div className="bg-muted/20 rounded-lg overflow-hidden">
             <table className="w-full text-xs">
               <thead>
@@ -904,21 +971,32 @@ function CalibrationPanel() {
                   <th className="text-left p-2 font-medium">Bucket</th>
                   <th className="text-right p-2 font-medium">Count</th>
                   <th className="text-right p-2 font-medium">Mean CLV</th>
+                  <th className="text-right p-2 font-medium">Mean Brier</th>
                   <th className="text-right p-2 font-medium">Win Rate</th>
                 </tr>
               </thead>
               <tbody>
                 {Object.entries(bucketMap).map(([bucket, stats]) => {
+                  const insufficient = stats.count < 5;
                   const meanBucketClv = stats.count > 0 ? stats.clvSum / stats.count : 0;
+                  const meanBucketBrier = stats.brierCount > 0 ? stats.brierSum / stats.brierCount : null;
                   const winRate = stats.count > 0 ? stats.wins / stats.count : 0;
                   return (
                     <tr key={bucket} className="border-b border-border/50">
-                      <td className="p-2 font-mono">{bucket}</td>
-                      <td className="p-2 text-right">{stats.count}</td>
-                      <td className={`p-2 text-right font-mono ${meanBucketClv >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                        {fmt4(meanBucketClv)}
+                      <td className="p-2 font-mono">
+                        {bucket}
+                        {insufficient && (
+                          <span className="ml-1.5 text-amber-400/80 text-[10px] italic">insuff. data</span>
+                        )}
                       </td>
-                      <td className="p-2 text-right font-mono">{pct(winRate)}</td>
+                      <td className="p-2 text-right">{stats.count}</td>
+                      <td className={`p-2 text-right font-mono ${insufficient ? "text-muted-foreground" : meanBucketClv >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                        {insufficient ? "—" : fmt4(meanBucketClv)}
+                      </td>
+                      <td className={`p-2 text-right font-mono ${insufficient ? "text-muted-foreground" : meanBucketBrier == null ? "text-muted-foreground" : meanBucketBrier < 0.25 ? "text-emerald-400" : "text-red-400"}`}>
+                        {insufficient ? "—" : meanBucketBrier != null ? meanBucketBrier.toFixed(5) : "—"}
+                      </td>
+                      <td className="p-2 text-right font-mono">{insufficient ? "—" : pct(winRate)}</td>
                     </tr>
                   );
                 })}
