@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, Fragment } from "react";
 import {
   TrendingUp, RefreshCw, CheckCircle2, XCircle, AlertTriangle,
-  ChevronDown, BarChart2, FileText, Activity, X
+  ChevronDown, BarChart2, FileText, Activity, X, Loader2, Clock
 } from "lucide-react";
 
 const API_KEY = import.meta.env.VITE_SCORING_API_KEY || "";
@@ -415,13 +415,17 @@ function SettleModal({
   row,
   onClose,
   onSettled,
+  initialClosingPrice,
+  initialResult,
 }: {
   row: LedgerRow;
   onClose: () => void;
   onSettled: () => void;
+  initialClosingPrice?: string;
+  initialResult?: "YES" | "NO" | "VOID";
 }) {
-  const [result, setResult] = useState<"YES" | "NO" | "VOID">("YES");
-  const [closingPrice, setClosingPrice] = useState("");
+  const [result, setResult] = useState<"YES" | "NO" | "VOID">(initialResult ?? "YES");
+  const [closingPrice, setClosingPrice] = useState(initialClosingPrice ?? "");
   const [clvInput, setClvInput] = useState("");
   const [failureTag, setFailureTag] = useState("");
   const [notes, setNotes] = useState(row.notes ?? "");
@@ -734,12 +738,28 @@ function MiniStat({ label, value, highlight }: { label: string; value: string; h
   );
 }
 
+// Tracks a market that Kalshi has marked settled/closed — closing price pre-filled
+interface MarketCheck {
+  kalshiStatus: string;           // e.g. "settled", "closed"
+  lastPrice: number | null;       // last_price from market_meta → closing price hint
+  closeTime: string | null;
+}
+
 function LedgerPanel() {
   const [rows, setRows] = useState<LedgerRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<"ALL" | "OPEN" | "SETTLED">("ALL");
   const [settlingRow, setSettlingRow] = useState<LedgerRow | null>(null);
+  const [settlePreFill, setSettlePreFill] = useState<{ closingPrice: string } | undefined>();
   const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  // Auto-settlement scanner state
+  const [readyMap, setReadyMap] = useState<Map<number, MarketCheck>>(new Map());
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+
+  // Bulk-settle queue: rows to settle one-by-one with pre-filled closing price
+  const [settleQueue, setSettleQueue] = useState<Array<{ row: LedgerRow; preFill: { closingPrice: string } }>>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -761,8 +781,81 @@ function LedgerPanel() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Scan OPEN rows: call /kalshi/evaluate-contract per ticker, check market_meta.status
+  const scanOpenRows = useCallback(async (openRows: LedgerRow[]) => {
+    if (!openRows.length || scanning) return;
+    setScanning(true);
+    setScanError(null);
+    const results = new Map<number, MarketCheck>();
+    const BATCH = 3;
+    for (let i = 0; i < openRows.length; i += BATCH) {
+      const batch = openRows.slice(i, i + BATCH);
+      await Promise.allSettled(
+        batch.map(async (row) => {
+          try {
+            const res = await fetch("/kalshi/evaluate-contract", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+              body: JSON.stringify({ ticker: row.market_ticker, use_live_book: true }),
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            const rawStatus: string = (data.market_meta?.status ?? "").toLowerCase();
+            if (rawStatus === "settled" || rawStatus === "closed" || rawStatus === "finalized") {
+              results.set(row.id, {
+                kalshiStatus: rawStatus,
+                lastPrice: data.market_meta?.last_price ?? null,
+                closeTime: data.market_meta?.close_time ?? null,
+              });
+            }
+          } catch { /* ignore per-row network errors */ }
+        })
+      );
+    }
+    setReadyMap(results);
+    setScanning(false);
+  }, [scanning]);
+
+  const openRows = rows.filter((r) => r.settlement_status === "OPEN");
+  const readyRows = openRows.filter((r) => readyMap.has(r.id));
+
+  // Build a settle queue from all ready rows and open the first modal
+  const handleSettleAllReady = () => {
+    const queue = readyRows.map((row) => {
+      const check = readyMap.get(row.id)!;
+      const price = check.lastPrice != null ? check.lastPrice.toFixed(4) : "";
+      return { row, preFill: { closingPrice: price } };
+    });
+    if (!queue.length) return;
+    const [first, ...rest] = queue;
+    setSettleQueue(rest);
+    setSettlingRow(first.row);
+    setSettlePreFill(first.preFill);
+  };
+
+  // After each settled row, pop the next from the queue
+  const handleSettled = () => {
+    load();
+    if (settleQueue.length > 0) {
+      const [next, ...rest] = settleQueue;
+      setSettleQueue(rest);
+      setSettlingRow(next.row);
+      setSettlePreFill(next.preFill);
+    } else {
+      setSettlingRow(null);
+      setSettlePreFill(undefined);
+    }
+  };
+
+  const handleCloseModal = () => {
+    setSettlingRow(null);
+    setSettlePreFill(undefined);
+    setSettleQueue([]);
+  };
+
   return (
     <div className="space-y-3">
+      {/* ── Header bar ─────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex gap-1">
           {(["ALL", "OPEN", "SETTLED"] as const).map((f) => (
@@ -779,16 +872,58 @@ function LedgerPanel() {
             </button>
           ))}
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground border border-border rounded px-2 py-1 transition-colors"
-        >
-          <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
-          Refresh
-        </button>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Settle All Ready — only visible when scanner found expired rows */}
+          {readyRows.length > 0 && (
+            <button
+              onClick={handleSettleAllReady}
+              className="flex items-center gap-1.5 text-xs font-medium border border-amber-600 text-amber-300 bg-amber-900/20 rounded px-2 py-1 hover:bg-amber-900/40 transition-colors"
+            >
+              <Clock size={12} />
+              Settle All Ready ({readyRows.length})
+            </button>
+          )}
+
+          {/* Scan button */}
+          <button
+            onClick={() => scanOpenRows(openRows)}
+            disabled={scanning || openRows.length === 0}
+            title={openRows.length === 0 ? "No open rows to scan" : "Check Kalshi for expired markets"}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground border border-border rounded px-2 py-1 transition-colors disabled:opacity-40"
+          >
+            {scanning
+              ? <Loader2 size={12} className="animate-spin" />
+              : <Clock size={12} />}
+            {scanning ? "Scanning…" : `Scan Expired (${openRows.length})`}
+          </button>
+
+          <button
+            onClick={load}
+            disabled={loading}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground border border-border rounded px-2 py-1 transition-colors"
+          >
+            <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
       </div>
 
+      {/* Scanner summary */}
+      {!scanning && readyMap.size > 0 && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded border border-amber-700/50 bg-amber-900/10 text-xs text-amber-300">
+          <Clock size={12} />
+          <span>
+            {readyRows.length} open row{readyRows.length !== 1 ? "s" : ""} flagged as expired by Kalshi.
+            {readyRows.length > 0 && ' Click \u201cSettle All Ready\u201d or settle individually.'}
+          </span>
+        </div>
+      )}
+      {scanError && (
+        <p className="text-xs text-red-400">{scanError}</p>
+      )}
+
+      {/* ── Table ──────────────────────────────────────────────────────────── */}
       {loading ? (
         <div className="py-12 text-center text-muted-foreground text-sm">Loading…</div>
       ) : rows.length === 0 ? (
@@ -816,11 +951,20 @@ function LedgerPanel() {
             <tbody>
               {rows.map((row) => {
                 const isExpanded = expandedId === row.id;
+                const readyCheck = readyMap.get(row.id);
+                const isReady = row.settlement_status === "OPEN" && !!readyCheck;
+
                 return (
                   <Fragment key={row.id}>
                     <tr
                       onClick={() => setExpandedId(isExpanded ? null : row.id)}
-                      className={`border-b border-border/50 cursor-pointer transition-colors ${isExpanded ? "bg-muted/30" : "hover:bg-muted/20"}`}
+                      className={`border-b transition-colors cursor-pointer ${
+                        isReady
+                          ? "border-amber-800/40 bg-amber-900/10 hover:bg-amber-900/20"
+                          : isExpanded
+                          ? "border-border/50 bg-muted/30"
+                          : "border-border/50 hover:bg-muted/20"
+                      }`}
                     >
                       <td className="py-2 pr-1 text-muted-foreground">
                         <ChevronDown
@@ -848,7 +992,15 @@ function LedgerPanel() {
                       <td className="py-2 pr-3 font-mono">{row.depth_score ?? "—"}</td>
                       <td className="py-2 pr-3 font-mono">{row.settlement_grade ?? "—"}</td>
                       <td className="py-2 pr-3">
-                        <StatusBadge status={row.settlement_status} />
+                        <div className="flex items-center gap-1.5">
+                          <StatusBadge status={row.settlement_status} />
+                          {isReady && (
+                            <span className="flex items-center gap-0.5 text-[10px] font-medium text-amber-300 bg-amber-900/40 border border-amber-700/50 rounded px-1 py-0.5 whitespace-nowrap">
+                              <Clock size={9} />
+                              Needs Settlement
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-2 pr-3 font-mono">
                         {row.clv != null ? (
@@ -862,12 +1014,31 @@ function LedgerPanel() {
                       </td>
                       <td className="py-2" onClick={(e) => e.stopPropagation()}>
                         {row.settlement_status === "OPEN" && (
-                          <button
-                            onClick={() => setSettlingRow(row)}
-                            className="px-2 py-1 rounded text-xs border border-amber-700 text-amber-300 hover:bg-amber-900/30 transition-colors whitespace-nowrap"
-                          >
-                            Settle
-                          </button>
+                          isReady ? (
+                            <button
+                              onClick={() => {
+                                const price = readyCheck.lastPrice != null
+                                  ? readyCheck.lastPrice.toFixed(4)
+                                  : "";
+                                setSettlePreFill({ closingPrice: price });
+                                setSettlingRow(row);
+                              }}
+                              className="flex items-center gap-1 px-2 py-1 rounded text-xs border border-amber-600 text-amber-200 bg-amber-900/30 hover:bg-amber-900/50 transition-colors whitespace-nowrap font-medium"
+                            >
+                              <Clock size={10} />
+                              Settle ✓
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setSettlePreFill(undefined);
+                                setSettlingRow(row);
+                              }}
+                              className="px-2 py-1 rounded text-xs border border-amber-700 text-amber-300 hover:bg-amber-900/30 transition-colors whitespace-nowrap"
+                            >
+                              Settle
+                            </button>
+                          )
                         )}
                       </td>
                     </tr>
@@ -883,8 +1054,9 @@ function LedgerPanel() {
       {settlingRow && (
         <SettleModal
           row={settlingRow}
-          onClose={() => setSettlingRow(null)}
-          onSettled={() => { load(); }}
+          onClose={handleCloseModal}
+          onSettled={handleSettled}
+          initialClosingPrice={settlePreFill?.closingPrice}
         />
       )}
     </div>
