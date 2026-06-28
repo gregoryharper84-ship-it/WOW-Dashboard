@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, Fragment } from "react";
+import { useState, useCallback, useEffect, useRef, Fragment } from "react";
 import {
   TrendingUp, RefreshCw, CheckCircle2, XCircle, AlertTriangle,
   ChevronDown, BarChart2, FileText, Activity, X, Loader2, Clock
@@ -460,8 +460,7 @@ function SettleModal({
       });
       const data = await res.json();
       if (data.ok) {
-        onSettled();
-        onClose();
+        onSettled(); // caller (LedgerPanel) is responsible for advancing queue and closing modal
       } else {
         setError(data.detail ?? data.error ?? "Failed");
       }
@@ -757,6 +756,8 @@ function LedgerPanel() {
   const [readyMap, setReadyMap] = useState<Map<number, MarketCheck>>(new Map());
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  // Ref avoids putting `scanning` in useCallback deps (prevents stale-closure dep-cycle)
+  const scanningRef = useRef(false);
 
   // Bulk-settle queue: rows to settle one-by-one with pre-filled closing price
   const [settleQueue, setSettleQueue] = useState<Array<{ row: LedgerRow; preFill: { closingPrice: string } }>>([]);
@@ -781,9 +782,12 @@ function LedgerPanel() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Scan OPEN rows: call /kalshi/evaluate-contract per ticker, check market_meta.status
+  // Scan OPEN rows: call /kalshi/evaluate-contract per ticker, check market_meta.status.
+  // Uses a ref to gate concurrent runs so `scanning` state isn't in the dep array
+  // (which would cause a stale-closure dep-cycle via useEffect → useCallback → useEffect).
   const scanOpenRows = useCallback(async (openRows: LedgerRow[]) => {
-    if (!openRows.length || scanning) return;
+    if (!openRows.length || scanningRef.current) return;
+    scanningRef.current = true;
     setScanning(true);
     setScanError(null);
     const results = new Map<number, MarketCheck>();
@@ -813,8 +817,18 @@ function LedgerPanel() {
       );
     }
     setReadyMap(results);
+    scanningRef.current = false;
     setScanning(false);
-  }, [scanning]);
+  }, []); // intentionally empty deps — guarded by scanningRef
+
+  // Auto-scan: whenever rows reload, kick off a background check on open rows
+  useEffect(() => {
+    if (loading) return; // wait for load to finish
+    const open = rows.filter((r) => r.settlement_status === "OPEN");
+    if (open.length > 0) {
+      scanOpenRows(open);
+    }
+  }, [rows, loading, scanOpenRows]);
 
   const openRows = rows.filter((r) => r.settlement_status === "OPEN");
   const readyRows = openRows.filter((r) => readyMap.has(r.id));
@@ -1053,6 +1067,7 @@ function LedgerPanel() {
 
       {settlingRow && (
         <SettleModal
+          key={settlingRow.id}
           row={settlingRow}
           onClose={handleCloseModal}
           onSettled={handleSettled}
