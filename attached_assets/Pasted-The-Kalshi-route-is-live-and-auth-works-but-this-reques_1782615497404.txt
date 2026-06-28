@@ -1,0 +1,83 @@
+The Kalshi route is live and auth works, but this request returned zero rows:
+
+category=sports
+sport=MLB
+date=2026-06-27
+mode=scan_only
+include_raw_markets=true
+include_combo_markets=true
+market_type=all
+max_markets=25
+
+Because combo markets were allowed and market_type=all, zero rows means the issue is probably sport/date/fetch-depth filtering, not WOW approval logic.
+
+Please add filter_diagnostics to every /wow/kalshi/scan response:
+
+{
+"filter_diagnostics": {
+"raw_fetched": 0,
+"after_category_filter": 0,
+"after_sport_filter": 0,
+"after_date_filter": 0,
+"after_combo_filter": 0,
+"after_market_type_filter": 0,
+"returned": 0,
+"skipped_sport": 0,
+"skipped_date": 0,
+"skipped_combo": 0,
+"skipped_market_type": 0,
+"kalshi_endpoint_used": "",
+"kalshi_query_params": {},
+"first_10_raw_titles": [],
+"first_10_raw_tickers": []
+}
+}
+
+Also verify:
+
+1. max_markets is applied after all filtering, not before.
+2. raw fetch size should be larger than max_markets, for example fetch 100–250 then filter down to max_markets.
+3. sport=MLB should match team names and baseball language, not only the string “MLB”.
+4. date=2026-06-27 should not hard-filter close_date == 2026-06-27. Use close_time >= date or make date optional for discovery.
+5. For debugging, allow sport to be omitted or set to all.
+6. Return raw_markets when include_raw_markets=true, even if rows are later rejected.
+7. Do not treat zero rows as KALSHI_REJECT_UNCALIBRATED. Zero rows should be MARKET_UNAVAILABLE / INPUT_EMPTY with diagnostics.
+
+Please test these three payloads against production:
+
+A. Broad sports fetch:
+{
+"category": "sports",
+"mode": "scan_only",
+"max_markets": 25,
+"include_raw_markets": true,
+"include_combo_markets": true,
+"market_type": "all"
+}
+
+B. MLB broad no date:
+{
+"category": "sports",
+"sport": "MLB",
+"mode": "scan_only",
+"max_markets": 25,
+"include_raw_markets": true,
+"include_combo_markets": true,
+"market_type": "all"
+}
+
+C. MLB single-game:
+{
+"category": "sports",
+"sport": "MLB",
+"mode": "scan_only",
+"max_markets": 25,
+"include_raw_markets": true,
+"include_combo_markets": false,
+"market_type": "single_game"
+}
+
+Expected:
+A should return raw sports markets.
+B should return MLB/baseball-related rows or show exactly which filter removed them.
+C should return single-game MLB rows or show skipped_combo / skipped_market_type counts.

@@ -14597,18 +14597,41 @@ def wow_kalshi_scan():
             market_buckets,
         )
 
-        # ── Fetch open markets ────────────────────────────────────────────────
-        raw = kalshi_client.search_markets(
-            category=category,
-            status="open",
-            limit=max_markets,
-        )
+        # ── Fetch open markets — large pool, filter down to max_markets ─────
+        # Fetch 10× max_markets (min 100, max 250) so sport/date filters have
+        # enough rows to work with before we slice to max_markets for evaluation.
+        _RAW_FETCH_LIMIT = min(max(max_markets * 10, 100), 250)
+        _kalshi_qp = {"category": category, "status": "open", "limit": _RAW_FETCH_LIMIT}
+        raw = kalshi_client.search_markets(**_kalshi_qp)
         markets = raw.get("markets") or []
-        if not markets:
-            resp = {
+
+        # ── Initialise filter_diagnostics — updated at each stage ────────────
+        _diag = {
+            "raw_fetched":              len(markets),
+            "after_sport_filter":       len(markets),
+            "after_date_filter":        len(markets),
+            "after_combo_filter":       len(markets),
+            "after_market_type_filter": len(markets),
+            "returned":                 0,
+            "skipped_sport":            0,
+            "skipped_date":             0,
+            "skipped_combo":            0,
+            "skipped_market_type":      0,
+            "kalshi_endpoint_used":     "GET /markets (search_markets)",
+            "kalshi_query_params":      _kalshi_qp,
+            "first_10_raw_tickers":     [m.get("ticker", "") for m in markets[:10]],
+            "first_10_raw_titles":      [
+                (m.get("title") or m.get("subtitle") or "")[:80]
+                for m in markets[:10]
+            ],
+        }
+
+        def _zero_resp(reason: str) -> dict:
+            return {
                 "markets_scanned":       0,
                 "single_markets":        0,
                 "combo_markets":         0,
+                "skipped_type_filter":   0,
                 "playable_limit_only":   0,
                 "final_approved":        0,
                 "watch":                 0,
@@ -14618,12 +14641,27 @@ def wow_kalshi_scan():
                 "rejected_thin_book":    0,
                 "rejected_bad_rules":    0,
                 "rejected_uncalibrated": 0,
-                "data_unobtainable":     1,
+                "data_unobtainable":     0,
                 "candidates":            [],
-                "rejected":              [_stub_rejected],
+                "rejected":              [{
+                    "ticker":           None,
+                    "event_title":      "No markets matched filters",
+                    "contract_wording": reason,
+                    "final_label":      "INPUT_EMPTY",
+                    "market_type":      "n/a",
+                    "reason":           reason,
+                    "can_approve_bets": False,
+                }],
+                "filter_diagnostics":    _diag,
                 "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
                 "request_echo":          _echo,
             }
+
+        if not markets:
+            resp = _zero_resp(
+                f"Kalshi returned 0 open markets for category={category!r}. "
+                "Check that the category is valid (e.g. 'sports', 'financials')."
+            )
             if include_raw_markets:
                 resp["raw_markets"] = []
             return jsonify(resp), 200
@@ -14685,6 +14723,7 @@ def wow_kalshi_scan():
                 "euros", "euro", "copa america",
             },
         }
+        _before_sport = len(markets)
         if sport:
             kw = sport.lower()
             # Try the expanded keyword set first; fall back to literal substring
@@ -14698,12 +14737,14 @@ def wow_kalshi_scan():
                 ]).lower()
                 return any(ek in haystack for ek in expand_kws)
             markets = [m for m in markets if _sport_match(m)]
+        _diag["skipped_sport"]      = _before_sport - len(markets)
+        _diag["after_sport_filter"] = len(markets)
 
         # ── Optional date filter ───────────────────────────────────────────────
-        # Keep markets whose close_time falls on or after scan_date.
-        # Semantics: "give me markets for this game date and beyond that are
-        # still open" — exact-match would silently drop all markets whenever
-        # the requested date is in the past (open markets always close in the future).
+        # Keep markets whose close_time falls on or after scan_date (>= semantics).
+        # Exact-match would silently drop everything because open markets always
+        # close in the future.
+        _before_date = len(markets)
         if scan_date:
             try:
                 _target_date = scan_date.strip()[:10]  # "YYYY-MM-DD"
@@ -14719,7 +14760,26 @@ def wow_kalshi_scan():
                         _filtered.append(m)
                 markets = _filtered
             except Exception:
-                pass  # malformed date — skip filter, don't crash
+                pass  # malformed date — skip filter silently
+        _diag["skipped_date"]      = _before_date - len(markets)
+        _diag["after_date_filter"] = len(markets)
+
+        # Zero after filtering → return INPUT_EMPTY with diagnostics
+        if not markets:
+            _sport_note = (
+                f" sport={sport!r} matched nothing — try omitting sport for discovery."
+                if sport else ""
+            )
+            _date_note = (
+                f" date={scan_date!r} (>= filter) removed all remaining markets."
+                if scan_date and _diag["skipped_date"] == _before_date else ""
+            )
+            resp = _zero_resp(
+                f"All markets were removed by filters.{_sport_note}{_date_note}"
+            )
+            if include_raw_markets:
+                resp["raw_markets"] = []
+            return jsonify(resp), 200
 
         # ── Classify market types before evaluation ───────────────────────────
         for m in markets:
@@ -14727,25 +14787,46 @@ def wow_kalshi_scan():
 
         n_single = sum(1 for m in markets if m["_market_type"] == "single")
         n_combo  = sum(1 for m in markets if m["_market_type"] == "combo")
+        _diag["after_combo_filter"] = len(markets)   # classification, no drop yet
 
         # ── market_type input filter: strip unwanted types before evaluation ──
         # include_combo_markets=False OR market_type="single_game" → singles only
         # market_type="combo"                                       → combos only
         # everything else                                           → all types
+        _before_type = len(markets)
         n_skipped_type = 0
         if not include_combo_markets:
-            before = len(markets)
             markets = [m for m in markets if m["_market_type"] == "single"]
-            n_skipped_type = before - len(markets)
+            n_skipped_type = _before_type - len(markets)
         elif _req_market_type == "combo":
-            before = len(markets)
             markets = [m for m in markets if m["_market_type"] == "combo"]
-            n_skipped_type = before - len(markets)
+            n_skipped_type = _before_type - len(markets)
+        _diag["skipped_combo"]            = n_skipped_type
+        _diag["skipped_market_type"]      = n_skipped_type
+        _diag["after_market_type_filter"] = len(markets)
 
-        # ── Build raw_markets index (before orderbook fetches) ────────────────
+        # Zero after type filter
+        if not markets:
+            resp = _zero_resp(
+                f"All markets were removed by market_type filter "
+                f"({_req_market_type!r} / include_combo_markets={include_combo_markets}). "
+                f"Skipped {n_skipped_type} markets. "
+                "Try market_type='all' and include_combo_markets=true for discovery."
+            )
+            if include_raw_markets:
+                resp["raw_markets"] = []
+            return jsonify(resp), 200
+
+        # ── Apply max_markets cap for evaluation (filters come first) ─────────
+        _eval_markets = markets[:max_markets]
+        _diag["returned"] = len(_eval_markets)
+
+        # ── Build raw_markets from FULL filtered pool (not capped) ────────────
+        # include_raw_markets shows all markets that survived filters so the GPT
+        # can decide which tickers to supply model_probabilities for.
         raw_markets_list = []
         if include_raw_markets:
-            for m in markets[:max_markets]:
+            for m in markets:   # full post-filter pool, not just _eval_markets
                 mtype = m["_market_type"]
                 ticker = m.get("ticker") or ""
                 # Exact + prefix model_prob lookup
@@ -14796,7 +14877,7 @@ def wow_kalshi_scan():
         candidates = []
         rejected   = []
 
-        for m in markets[:max_markets]:
+        for m in _eval_markets:
             ticker      = m.get("ticker") or ""
             title       = m.get("title") or m.get("subtitle") or ticker
             market_type = m["_market_type"]
@@ -14935,10 +15016,11 @@ def wow_kalshi_scan():
             "markets_scanned":       n_single + n_combo,   # pre-type-filter count
             "single_markets":        n_single,
             "combo_markets":         n_combo,
-            "skipped_type_filter":   n_skipped_type,        # dropped by market_type / include_combo_markets
+            "skipped_type_filter":   n_skipped_type,
             **counts,
             "candidates":            candidates,
             "rejected":              rejected,
+            "filter_diagnostics":    _diag,
             "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
             "request_echo":          _echo,
         }
@@ -14968,6 +15050,18 @@ def wow_kalshi_scan():
                 **_stub_rejected,
                 "reason": f"Scanner error: {str(exc)[:300]}",
             }],
+            "filter_diagnostics":    {
+                "raw_fetched": 0, "after_sport_filter": 0,
+                "after_date_filter": 0, "after_combo_filter": 0,
+                "after_market_type_filter": 0, "returned": 0,
+                "skipped_sport": 0, "skipped_date": 0,
+                "skipped_combo": 0, "skipped_market_type": 0,
+                "kalshi_endpoint_used": "n/a",
+                "kalshi_query_params": {},
+                "first_10_raw_tickers": [],
+                "first_10_raw_titles": [],
+                "exception": str(exc)[:300],
+            },
             "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
             "request_echo":          _echo,
         }
