@@ -14409,6 +14409,8 @@ def kalshi_settle_result():
 
 
 # ── WOW / Kalshi Scan (Custom GPT entry point) ───────────────────────────────
+_KALSHI_SCAN_VERSION  = "2026-06-28-filter-diagnostics-v3"
+_KALSHI_BUILD_TS      = "2026-06-28T00:00:00Z"   # updated on each deploy
 
 # Multi-leg combo/slate market detector.
 # These markets carry extra correlation risk and need a specialized calibrated
@@ -14628,6 +14630,9 @@ def wow_kalshi_scan():
 
         def _zero_resp(reason: str) -> dict:
             return {
+                "kalshi_scan_version":   _KALSHI_SCAN_VERSION,
+                "build_timestamp":       _KALSHI_BUILD_TS,
+                "terminal_label":        "INPUT_EMPTY",
                 "markets_scanned":       0,
                 "single_markets":        0,
                 "combo_markets":         0,
@@ -14648,6 +14653,7 @@ def wow_kalshi_scan():
                     "event_title":      "No markets matched filters",
                     "contract_wording": reason,
                     "final_label":      "INPUT_EMPTY",
+                    "terminal_label":   "INPUT_EMPTY",
                     "market_type":      "n/a",
                     "reason":           reason,
                     "can_approve_bets": False,
@@ -15013,6 +15019,9 @@ def wow_kalshi_scan():
                 rejected.append({**row, "reason": candidates_reason})
 
         resp = {
+            "kalshi_scan_version":   _KALSHI_SCAN_VERSION,
+            "build_timestamp":       _KALSHI_BUILD_TS,
+            "terminal_label":        "SCAN_COMPLETE",
             "markets_scanned":       n_single + n_combo,   # pre-type-filter count
             "single_markets":        n_single,
             "combo_markets":         n_combo,
@@ -15031,6 +15040,9 @@ def wow_kalshi_scan():
     except Exception as exc:
         # Clean fallback — never return 500 to the GPT Action
         resp = {
+            "kalshi_scan_version":   _KALSHI_SCAN_VERSION,
+            "build_timestamp":       _KALSHI_BUILD_TS,
+            "terminal_label":        "SCANNER_ERROR",
             "markets_scanned":       0,
             "single_markets":        0,
             "combo_markets":         0,

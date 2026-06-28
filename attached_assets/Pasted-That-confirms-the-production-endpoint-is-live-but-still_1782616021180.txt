@@ -1,0 +1,124 @@
+That confirms the **production endpoint is live but still not exposing the new diagnostic version**.
+
+The key problem is this:
+
+```text
+Expected from new build:
+filter_diagnostics
+raw_fetched
+after_sport_filter
+after_market_type_filter
+raw_markets
+kalshi_scan_version
+
+Actual returned:
+markets_scanned: 0
+candidates: []
+final_approved: 0
+rejected: []
+execution_rule only
+```
+
+So this is **not a WOW approval issue** anymore. It is one of these:
+
+```text
+1. Production is still running an older handler.
+2. The new diagnostic fields are being built locally but not included in the deployed response.
+3. The Custom GPT schema/response model is hiding fields, but curl should still show them.
+4. The endpoint has an early-return path for zero markets that skips diagnostics.
+```
+
+## Next required fix
+
+Tell Replit this:
+
+```text
+The production /wow/kalshi/scan endpoint still returns the old minimal zero-row response:
+
+{
+  "markets_scanned": 0,
+  "candidates": [],
+  "final_approved": 0,
+  "rejected": [],
+  "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+}
+
+It does not return:
+- filter_diagnostics
+- raw_markets
+- kalshi_scan_version
+- build_timestamp
+- input_empty reason
+
+Please confirm the deployed production response includes diagnostics on EVERY path, including zero-row / INPUT_EMPTY paths.
+
+Required fields on all responses:
+kalshi_scan_version
+build_timestamp
+request_echo
+filter_diagnostics
+raw_markets when include_raw_markets=true
+terminal_label
+reason
+
+If no rows survive filters, return:
+terminal_label: INPUT_EMPTY
+reason: "No markets survived filters"
+filter_diagnostics: full counter object
+
+Do not return a minimal empty response.
+```
+
+## Add this version stamp
+
+Have Replit add:
+
+```json
+"kalshi_scan_version": "2026-06-27-filter-diagnostics-v3",
+"build_timestamp": "2026-06-27T..."
+```
+
+That field must appear even when zero markets are returned.
+
+## Run this broad test next
+
+Before using `sport=MLB`, test the least restrictive version:
+
+```bash
+curl -s -X POST "https://create-app-gregoryharper84.replit.app/wow/kalshi/scan" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $WOW_API_KEY" \
+  -d '{
+    "category": "sports",
+    "mode": "scan_only",
+    "max_markets": 25,
+    "include_raw_markets": true,
+    "include_combo_markets": true,
+    "market_type": "all"
+  }' | jq
+```
+
+Expected:
+
+```text
+raw_fetched: >0
+raw_markets: populated
+filter_diagnostics: present
+kalshi_scan_version: present
+```
+
+If this broad test still returns the old minimal response, the deployed route is not using the new diagnostics handler.
+
+## Current WOW interpretation
+
+```text
+Final label: NO_PLAY / MARKET_UNAVAILABLE
+Reason: zero returned rows and missing diagnostics
+Approval: blocked
+```
+
+Do not move to model probabilities yet. First get:
+
+```text
+production curl → raw_markets + filter_diagnostics + version stamp
+```
