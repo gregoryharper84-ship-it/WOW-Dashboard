@@ -432,9 +432,13 @@ function SettleModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const closingPriceNum = closingPrice.trim() ? parseFloat(closingPrice) : NaN;
+  const closingPriceOutOfRange =
+    closingPrice.trim() !== "" && !isNaN(closingPriceNum) && (closingPriceNum < 0 || closingPriceNum > 1);
+
   const computedClv = (() => {
     if (clvInput.trim()) return parseFloat(clvInput);
-    const cp = parseFloat(closingPrice);
+    const cp = closingPriceNum;
     const ep = row.entry_price ?? 0;
     if (isNaN(cp)) return null;
     if (result === "YES") return parseFloat((cp - ep).toFixed(4));
@@ -508,15 +512,21 @@ function SettleModal({
           <div>
             <label className="block text-xs text-muted-foreground mb-1">Closing Price</label>
             <input
-              className="w-full bg-input border border-border rounded px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              className={`w-full bg-input border rounded px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary ${
+                closingPriceOutOfRange ? "border-amber-500 focus:ring-amber-500" : "border-border"
+              }`}
               placeholder="0.71"
               type="number"
               step="0.01"
-              min="0"
-              max="1"
               value={closingPrice}
               onChange={(e) => setClosingPrice(e.target.value)}
             />
+            {closingPriceOutOfRange && (
+              <p className="mt-1 text-xs text-amber-400 flex items-center gap-1">
+                <AlertTriangle size={11} className="shrink-0" />
+                Kalshi prices are 0–1 (e.g. 0.71, not 71)
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-xs text-muted-foreground mb-1">
@@ -568,8 +578,8 @@ function SettleModal({
           </button>
           <button
             onClick={handleSubmit}
-            disabled={submitting}
-            className="px-4 py-2 rounded bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/80 disabled:opacity-50 transition-colors"
+            disabled={submitting || closingPriceOutOfRange}
+            className="px-4 py-2 rounded bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {submitting ? "Submitting…" : "Record Settlement"}
           </button>
