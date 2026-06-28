@@ -14379,6 +14379,76 @@ def kalshi_settle_result():
 
 # ── WOW / Kalshi Scan (Custom GPT entry point) ───────────────────────────────
 
+# Multi-leg combo/slate market detector.
+# These markets carry extra correlation risk and need a specialized calibrated
+# model; without one they default to SCOUT so the GPT can request a probability.
+#
+# Design note: keep this CONSERVATIVE to avoid false positives.
+#   - "MULTI" / "SERIES" in tickers often just means a multi-game match format
+#     (esports BO3, MLB series) — those are still single-outcome contracts.
+#   - Plain " and " in a title is ubiquitous in single-leg markets ("Will Nadal
+#     and Djokovic meet?") so we don't use it alone as a signal.
+#   - Only flag when there is an unambiguous multi-leg structure:
+#       ticker-level: COMBO, PARLAY, SLATE, BUNDLE
+#       title-level:  phrases that structurally require ≥2 independent events
+
+# Standalone words / substrings that are definitive combo indicators in tickers
+_COMBO_TICKER_TOKENS = frozenset([
+    "COMBO", "PARLAY", "SLATE", "BUNDLE",
+])
+
+# Phrases that indicate ≥2 independent outcomes must all resolve.
+# Each entry is checked as a substring of the lowercased title+subtitle.
+_COMBO_TITLE_PHRASES = frozenset([
+    "parlay",
+    "combo",
+    "slate",
+    "bundle",
+    "both teams to",
+    "both players to",
+    "both pitchers to",
+    "both starters to",
+    "both go over",
+    "both go under",
+    "both score over",
+    "both score under",
+    "both teams score",
+    "to win and ",
+    "and both ",
+    "all three to",
+    "all four to",
+    "all five to",
+    "at least two of",
+    "at least three of",
+    "any two of",
+    "any three of",
+])
+
+
+def _detect_market_type(m: dict) -> str:
+    """Return 'combo' for genuine multi-leg / parlayed markets, else 'single'.
+
+    Errs on the side of 'single' to avoid penalising normal series / multi-game
+    format markets that are still single-outcome contracts.
+    """
+    title_text = (" ".join([
+        m.get("title", "") or "",
+        m.get("subtitle", "") or "",
+    ])).lower()
+    ticker_text = (" ".join([
+        m.get("ticker", "") or "",
+        m.get("event_ticker", "") or "",
+    ])).upper()
+
+    if any(phrase in title_text for phrase in _COMBO_TITLE_PHRASES):
+        return "combo"
+    # Match whole tokens in the ticker (hyphen-delimited segments)
+    ticker_segments = set(ticker_text.replace("-", " ").split())
+    if _COMBO_TICKER_TOKENS & ticker_segments:
+        return "combo"
+    return "single"
+
+
 @app.route("/wow/kalshi/scan", methods=["POST", "OPTIONS"])
 @app.route("/wow/kalshi/scan/", methods=["POST", "OPTIONS"])
 @require_api_key
@@ -14386,71 +14456,76 @@ def wow_kalshi_scan():
     """
     Scan open Kalshi markets and classify each one through the WOW edge engine.
 
-    This is the Custom GPT Action entry point. It mirrors the internal
-    /kalshi/scan-event logic but works against the full market listing instead
-    of a single event ticker, and returns a WOW-shaped summary report.
+    This is the Custom GPT Action entry point.
 
     POST body (JSON):
-      category          str     default "sports"
-      sport             str     optional — free-text filter (matched against title)
-      date              str     optional — ISO date "YYYY-MM-DD" (not yet used for
-                                server-side filter; kept for future Kalshi API support)
-      mode              str     default "scan_only"  ("scan_only" | "evaluate_all")
-      min_adjusted_edge float   default 0.04  — minimum edge threshold to include
-                                in candidates list
-      max_markets       int     default 50 (max 100)
-      model_probabilities  dict  optional — map of ticker → model probability (0–1)
-                                e.g. {"KXEXAMPLE-26JUN27-TEAM-A": 0.61}
-                                Contracts not in this map → KALSHI_REJECT_UNCALIBRATED
+      category             str    default "sports"
+      sport                str    optional — free-text keyword filter on title/subtitle
+      date                 str    optional — ISO date "YYYY-MM-DD" (future server filter)
+      mode                 str    default "scan_only"  ("scan_only" | "evaluate_all")
+      min_adjusted_edge    float  default 0.04
+      max_markets          int    default 50 (max 100)
+      model_probabilities  dict   ticker → model probability (0–1).
+                                  Contracts not in this map:
+                                    single-game → KALSHI_REJECT_UNCALIBRATED
+                                    combo/slate → KALSHI_SCOUT
+      include_raw_markets  bool   default false.  When true, response includes
+                                  raw_markets: list of all scanned tickers + titles
+                                  so the GPT can decide which to supply probabilities for.
 
     Returns:
       {
-        markets_scanned:       int,
-        playable_limit_only:   int,
-        final_approved:        int,
-        watch:                 int,
-        scout:                 int,
-        rejected_no_edge:      int,
-        rejected_fee_drag:     int,
-        rejected_thin_book:    int,
-        rejected_bad_rules:    int,
-        rejected_uncalibrated: int,
-        data_unobtainable:     int,
-        candidates:            [...],    # edge ≥ min_adjusted_edge
-        rejected:              [...],
-        execution_rule:        str,
-        request_echo:          {...}
+        markets_scanned, single_markets, combo_markets,
+        playable_limit_only, final_approved, watch, scout,
+        rejected_no_edge, rejected_fee_drag, rejected_thin_book,
+        rejected_bad_rules, rejected_uncalibrated, data_unobtainable,
+        candidates:    [ { ticker, event_title, contract_wording, market_type,
+                           final_label, model_probability,
+                           raw_edge, adjusted_edge,
+                           fee_detail: { estimated_fee, spread_drag, slippage_drag,
+                                         uncertainty_tax, total_drag },
+                           entry_price, max_playable_price,
+                           liquidity_grade, settlement_grade, settlement_risk,
+                           market_bucket, blocking_reasons, warnings,
+                           can_approve_bets: false } ],
+        rejected:      [ same shape + reason: str ],
+        raw_markets:   [ { ticker, event_ticker, title, subtitle, close_time,
+                           market_type, has_model_prob } ]  # only when include_raw_markets
+        execution_rule, request_echo
       }
     """
     # ── Kill switches ─────────────────────────────────────────────────────────
-    DRY_RUN_ONLY        = True
-    ALLOW_LIVE_TRADING  = False
-    ALLOW_MARKET_ORDERS = False
+    DRY_RUN_ONLY        = True   # noqa: F841
+    ALLOW_LIVE_TRADING  = False  # noqa: F841
+    ALLOW_MARKET_ORDERS = False  # noqa: F841
 
-    payload             = request.get_json(silent=True) or {}
-    category            = payload.get("category", "sports")
-    sport               = payload.get("sport")
-    scan_date           = payload.get("date")
-    mode                = payload.get("mode", "scan_only")
-    min_adjusted_edge   = float(payload.get("min_adjusted_edge") or 0.04)
-    max_markets         = min(int(payload.get("max_markets") or 50), 100)
-    model_probabilities = payload.get("model_probabilities") or {}  # ticker → float
+    payload              = request.get_json(silent=True) or {}
+    category             = payload.get("category", "sports")
+    sport                = payload.get("sport")
+    scan_date            = payload.get("date")
+    mode                 = payload.get("mode", "scan_only")
+    min_adjusted_edge    = float(payload.get("min_adjusted_edge") or 0.04)
+    max_markets          = min(int(payload.get("max_markets") or 50), 100)
+    model_probabilities  = payload.get("model_probabilities") or {}   # ticker → float
+    include_raw_markets  = bool(payload.get("include_raw_markets", False))
 
     _stub_rejected = {
-        "ticker":            None,
-        "event_title":       "Kalshi scan unavailable",
-        "contract_wording":  "Backend route is live but Kalshi market data could not be retrieved.",
-        "final_label":       "KALSHI_DATA_UNOBTAINABLE",
-        "reason":            "Scanner stub active. No live Kalshi rows retrieved.",
+        "ticker":           None,
+        "event_title":      "Kalshi scan unavailable",
+        "contract_wording": "Backend route is live but Kalshi market data could not be retrieved.",
+        "final_label":      "KALSHI_DATA_UNOBTAINABLE",
+        "market_type":      "single",
+        "reason":           "Scanner stub active. No live Kalshi rows retrieved.",
     }
     _echo = {
-        "category":                    category,
-        "sport":                       sport,
-        "date":                        scan_date,
-        "mode":                        mode,
-        "min_adjusted_edge":           min_adjusted_edge,
-        "max_markets":                 max_markets,
+        "category":                     category,
+        "sport":                        sport,
+        "date":                         scan_date,
+        "mode":                         mode,
+        "min_adjusted_edge":            min_adjusted_edge,
+        "max_markets":                  max_markets,
         "model_probabilities_supplied": len(model_probabilities),
+        "include_raw_markets":          include_raw_markets,
     }
 
     try:
@@ -14470,8 +14545,10 @@ def wow_kalshi_scan():
         )
         markets = raw.get("markets") or []
         if not markets:
-            return jsonify({
+            resp = {
                 "markets_scanned":       0,
+                "single_markets":        0,
+                "combo_markets":         0,
                 "playable_limit_only":   0,
                 "final_approved":        0,
                 "watch":                 0,
@@ -14486,7 +14563,10 @@ def wow_kalshi_scan():
                 "rejected":              [_stub_rejected],
                 "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
                 "request_echo":          _echo,
-            }), 200
+            }
+            if include_raw_markets:
+                resp["raw_markets"] = []
+            return jsonify(resp), 200
 
         # ── Optional sport keyword filter ─────────────────────────────────────
         if sport:
@@ -14497,6 +14577,38 @@ def wow_kalshi_scan():
                 or kw in (m.get("subtitle") or "").lower()
                 or kw in (m.get("event_ticker") or "").lower()
             ]
+
+        # ── Classify market types before evaluation ───────────────────────────
+        for m in markets:
+            m["_market_type"] = _detect_market_type(m)
+
+        n_single = sum(1 for m in markets if m["_market_type"] == "single")
+        n_combo  = sum(1 for m in markets if m["_market_type"] == "combo")
+
+        # ── Build raw_markets index (before orderbook fetches) ────────────────
+        raw_markets_list = []
+        if include_raw_markets:
+            for m in markets[:max_markets]:
+                mtype = m["_market_type"]
+                ticker = m.get("ticker") or ""
+                # Exact + prefix model_prob lookup
+                mp = model_probabilities.get(ticker)
+                if mp is None:
+                    tu = ticker.upper()
+                    for k, v in model_probabilities.items():
+                        if tu.startswith(k.upper()) or k.upper().startswith(tu):
+                            mp = v
+                            break
+                raw_markets_list.append({
+                    "ticker":         ticker,
+                    "event_ticker":   m.get("event_ticker", ""),
+                    "series_ticker":  m.get("series_ticker", ""),
+                    "title":          m.get("title") or m.get("subtitle") or ticker,
+                    "subtitle":       m.get("subtitle", ""),
+                    "close_time":     m.get("close_time", ""),
+                    "market_type":    mtype,
+                    "has_model_prob": mp is not None,
+                })
 
         # ── Counters ──────────────────────────────────────────────────────────
         counts = {
@@ -14512,43 +14624,45 @@ def wow_kalshi_scan():
             "data_unobtainable":     0,
         }
         LABEL_MAP = {
-            "KALSHI_FINAL_APPROVED":          "final_approved",
-            "KALSHI_PLAYABLE_LIMIT_ONLY":     "playable_limit_only",
-            "KALSHI_WATCH":                   "watch",
-            "KALSHI_SCOUT":                   "scout",
-            "KALSHI_REJECT_NO_EDGE":          "rejected_no_edge",
-            "KALSHI_REJECT_FEE_DRAG":         "rejected_fee_drag",
-            "KALSHI_REJECT_THIN_BOOK":        "rejected_thin_book",
-            "KALSHI_REJECT_BAD_RULES":        "rejected_bad_rules",
-            "KALSHI_REJECT_UNCALIBRATED":     "rejected_uncalibrated",
-            "KALSHI_DATA_UNOBTAINABLE":       "data_unobtainable",
+            "KALSHI_FINAL_APPROVED":      "final_approved",
+            "KALSHI_PLAYABLE_LIMIT_ONLY": "playable_limit_only",
+            "KALSHI_WATCH":               "watch",
+            "KALSHI_SCOUT":               "scout",
+            "KALSHI_REJECT_NO_EDGE":      "rejected_no_edge",
+            "KALSHI_REJECT_FEE_DRAG":     "rejected_fee_drag",
+            "KALSHI_REJECT_THIN_BOOK":    "rejected_thin_book",
+            "KALSHI_REJECT_BAD_RULES":    "rejected_bad_rules",
+            "KALSHI_REJECT_UNCALIBRATED": "rejected_uncalibrated",
+            "KALSHI_DATA_UNOBTAINABLE":   "data_unobtainable",
         }
 
         candidates = []
         rejected   = []
 
         for m in markets[:max_markets]:
-            ticker = m.get("ticker") or ""
-            title  = m.get("title") or m.get("subtitle") or ticker
+            ticker      = m.get("ticker") or ""
+            title       = m.get("title") or m.get("subtitle") or ticker
+            market_type = m["_market_type"]
 
             # ── Fetch orderbook ───────────────────────────────────────────────
             raw_book = kalshi_client.safe_get_orderbook(ticker)
             if not raw_book or raw_book.get("error"):
-                label = "KALSHI_DATA_UNOBTAINABLE"
                 counts["data_unobtainable"] += 1
                 rejected.append({
                     "ticker":           ticker,
                     "event_title":      title,
                     "contract_wording": m.get("subtitle", ""),
-                    "final_label":      label,
+                    "market_type":      market_type,
+                    "final_label":      "KALSHI_DATA_UNOBTAINABLE",
                     "reason":           raw_book.get("error") if raw_book else "orderbook fetch failed",
+                    "can_approve_bets": False,
                 })
                 continue
 
             norm_book = orderbook_normalizer.normalize(raw_book, ticker=ticker)
 
             # ── Model probability lookup ──────────────────────────────────────
-            # Exact ticker match first, then case-insensitive prefix match
+            # Exact match first, then case-insensitive prefix match
             model_prob = model_probabilities.get(ticker)
             if model_prob is None:
                 ticker_upper = ticker.upper()
@@ -14557,8 +14671,33 @@ def wow_kalshi_scan():
                         model_prob = v
                         break
 
+            # ── Combo/slate fast-path: SCOUT when no calibrated probability ──
+            # Multi-leg markets require a specialized model; without one we
+            # surface them as SCOUT so the GPT knows to supply a probability
+            # before they can be evaluated further.
+            if market_type == "combo" and model_prob is None:
+                counts["scout"] += 1
+                rejected.append({
+                    "ticker":           ticker,
+                    "event_title":      title,
+                    "contract_wording": m.get("subtitle", ""),
+                    "market_type":      market_type,
+                    "final_label":      "KALSHI_SCOUT",
+                    "model_probability": None,
+                    "adjusted_edge":    None,
+                    "raw_edge":         None,
+                    "entry_price":      norm_book.get("best_yes_ask"),
+                    "liquidity_grade":  norm_book.get("liquidity_grade"),
+                    "reason":           (
+                        "Multi-leg combo/slate market: requires a specialized calibrated "
+                        "model_probability. Supply one in model_probabilities to evaluate."
+                    ),
+                    "can_approve_bets": False,
+                })
+                continue
+
             # ── Edge evaluation ───────────────────────────────────────────────
-            # model_prob=None → edge_engine returns KALSHI_REJECT_UNCALIBRATED
+            # model_prob=None (single market) → KALSHI_REJECT_UNCALIBRATED
             ev = edge_engine.evaluate(
                 model_probability = model_prob,
                 normalized_book   = norm_book,
@@ -14566,6 +14705,14 @@ def wow_kalshi_scan():
                 side              = "YES",
             )
             label = ev.get("label", "KALSHI_REJECT_UNCALIBRATED")
+
+            # Combo markets with a probability get extra warning
+            extra_warnings = []
+            if market_type == "combo" and model_prob is not None:
+                extra_warnings.append(
+                    "COMBO_MARKET: correlation risk not captured in single-leg edge model; "
+                    "apply additional discount before acting."
+                )
 
             # ── Settlement grade ──────────────────────────────────────────────
             sr = settlement_risk.grade_contract(
@@ -14588,46 +14735,65 @@ def wow_kalshi_scan():
 
             counts[LABEL_MAP.get(label, "rejected_uncalibrated")] += 1
 
+            # fee_detail breakdown for GPT transparency
+            fd = ev.get("fee_detail") or {}
+            fee_breakdown = {
+                "estimated_fee":   fd.get("estimated_fee"),
+                "spread_drag":     fd.get("spread_drag"),
+                "slippage_drag":   fd.get("slippage_drag"),
+                "uncertainty_tax": fd.get("uncertainty_tax"),
+                "total_drag":      fd.get("total_drag"),
+            }
+
             row = {
                 "ticker":             ticker,
                 "event_title":        title,
                 "contract_wording":   m.get("subtitle", ""),
+                "market_type":        market_type,
                 "final_label":        label,
                 "model_probability":  model_prob,
-                "adjusted_edge":      ev.get("adjusted_edge"),
                 "raw_edge":           ev.get("raw_edge"),
-                "max_playable_price": ev.get("max_playable_price"),
+                "adjusted_edge":      ev.get("adjusted_edge"),
+                "fee_detail":         fee_breakdown,
                 "entry_price":        norm_book.get("best_yes_ask"),
+                "max_playable_price": ev.get("max_playable_price"),
                 "liquidity_grade":    norm_book.get("liquidity_grade"),
                 "settlement_grade":   sr["resolution_clarity_grade"],
                 "settlement_risk":    sr["settlement_risk"],
                 "market_bucket":      bucket.get("market_bucket"),
-                "fee_detail":         ev.get("fee_detail", {}),
                 "blocking_reasons":   (ev.get("blocking_reasons") or []) + (bucket.get("rationale") or []),
-                "warnings":           ev.get("warnings") or [],
+                "warnings":           (ev.get("warnings") or []) + extra_warnings,
                 "can_approve_bets":   False,
             }
 
-            adj = ev.get("adjusted_edge")
+            adj         = ev.get("adjusted_edge")
             is_playable = label in ("KALSHI_FINAL_APPROVED", "KALSHI_PLAYABLE_LIMIT_ONLY")
             if is_playable and adj is not None and adj >= min_adjusted_edge:
                 candidates.append(row)
             else:
-                rejected.append({**row, "reason": "; ".join(row["blocking_reasons"]) or label})
+                candidates_reason = "; ".join(row["blocking_reasons"]) if row["blocking_reasons"] else label
+                rejected.append({**row, "reason": candidates_reason})
 
-        return jsonify({
+        resp = {
             "markets_scanned":       len(markets),
+            "single_markets":        n_single,
+            "combo_markets":         n_combo,
             **counts,
             "candidates":            candidates,
             "rejected":              rejected,
             "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
             "request_echo":          _echo,
-        }), 200
+        }
+        if include_raw_markets:
+            resp["raw_markets"] = raw_markets_list
+        return jsonify(resp), 200
 
     except Exception as exc:
         # Clean fallback — never return 500 to the GPT Action
-        return jsonify({
+        resp = {
             "markets_scanned":       0,
+            "single_markets":        0,
+            "combo_markets":         0,
             "playable_limit_only":   0,
             "final_approved":        0,
             "watch":                 0,
@@ -14641,11 +14807,14 @@ def wow_kalshi_scan():
             "candidates":            [],
             "rejected":              [{
                 **_stub_rejected,
-                "reason": f"Scanner error: {exc}",
+                "reason": f"Scanner error: {str(exc)[:300]}",
             }],
             "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
             "request_echo":          _echo,
-        }), 200
+        }
+        if include_raw_markets:
+            resp["raw_markets"] = []
+        return jsonify(resp), 200
 
 
 if __name__ == "__main__":
