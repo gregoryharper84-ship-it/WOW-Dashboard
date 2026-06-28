@@ -1,0 +1,66 @@
+That sequence is mostly right, but I’d tighten one important point:
+
+**Kalshi does not appear to use a simple single `KALSHI_API_KEY` bearer-token style for authenticated requests.** Kalshi docs say authenticated requests require signed headers using a **Key ID**, **timestamp**, and **signature generated from the private key**. ([Kalshi API Documentation][1])
+
+Also, **public market-data endpoints like markets/order book can be accessed without authentication** according to Kalshi’s quick-start market-data docs. ([Kalshi API Documentation][2]) So if your Replit endpoint is returning `KALSHI_DATA_UNOBTAINABLE until KALSHI_API_KEY is wired`, that is probably a **Replit implementation choice**, not strictly a Kalshi requirement for public market scans.
+
+## What I would do next
+
+In Replit Secrets, add these instead of only one generic key:
+
+```text
+KALSHI_ENV=prod
+KALSHI_BASE_URL=https://external-api.kalshi.com/trade-api/v2
+KALSHI_API_KEY_ID=<your Kalshi API key ID>
+KALSHI_PRIVATE_KEY=<your downloaded private key contents or mounted private key path>
+KALSHI_DRY_RUN_ONLY=true
+ALLOW_LIVE_TRADING=false
+ALLOW_MARKET_ORDERS=false
+```
+
+Do **not** paste the private key into ChatGPT or the Custom GPT instructions. Put it only in Replit Secrets.
+
+## Tell Replit this
+
+```text
+Update the Kalshi connector so public market-data scans can run without authentication when possible.
+
+For authenticated Kalshi calls, do not assume a single bearer-style KALSHI_API_KEY. Kalshi authenticated requests require:
+- KALSHI-ACCESS-KEY = API Key ID
+- KALSHI-ACCESS-TIMESTAMP = timestamp in ms
+- KALSHI-ACCESS-SIGNATURE = RSA signature using the private key
+
+Use Replit Secrets:
+KALSHI_API_KEY_ID
+KALSHI_PRIVATE_KEY
+KALSHI_BASE_URL
+KALSHI_DRY_RUN_ONLY=true
+ALLOW_LIVE_TRADING=false
+ALLOW_MARKET_ORDERS=false
+
+Keep /wow/kalshi/scan read-only and scan-only. It may fetch public market data, order books, prices, spreads, and volumes, but it must not submit orders.
+```
+
+## Expected next test result
+
+Once Replit updates the auth/client logic, your GPT test should move from:
+
+```text
+KALSHI_DATA_UNOBTAINABLE
+```
+
+to something like:
+
+```text
+markets_scanned: 50
+candidates: []
+rejected_no_edge: X
+rejected_fee_drag: X
+rejected_thin_book: X
+watch: X
+```
+
+That means the pipeline is working. **No candidate should become playable until WOW has price, order book, liquidity, fee drag, model probability, and adjusted edge.**
+
+[1]: https://docs.kalshi.com/getting_started/api_keys?utm_source=chatgpt.com "API Keys - API Documentation"
+[2]: https://docs.kalshi.com/getting_started/quick_start_market_data?utm_source=chatgpt.com "Quick Start: Market Data - API Documentation"

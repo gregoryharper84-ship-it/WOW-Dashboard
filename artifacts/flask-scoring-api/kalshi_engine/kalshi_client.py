@@ -2,9 +2,15 @@
 kalshi_client.py  —  Read-only Kalshi REST client
 WOW v16 Kalshi Exchange Layer
 
-Kalshi public REST API: https://trading-api.kalshi.com/trade-api/v2
-Some endpoints do not require auth (market data, orderbook).
-Authenticated endpoints require KALSHI_API_KEY_ID + KALSHI_API_KEY_PRIVATE_KEY.
+Public market-data endpoints (markets, orderbook, trades, events) do NOT
+require authentication and are served from external-api.kalshi.com.
+
+Authenticated endpoints (portfolio, account, orders) require RSA-signed
+headers:
+  KALSHI-ACCESS-KEY       = API Key ID   (env: KALSHI_API_KEY_ID)
+  KALSHI-ACCESS-TIMESTAMP = epoch ms (str)
+  KALSHI-ACCESS-SIGNATURE = base64(RSA-SHA256(timestamp + method + path))
+                            using the PEM private key  (env: KALSHI_PRIVATE_KEY)
 
 HARD RULES:
   - No order placement in this module (execution_guard enforces this).
@@ -13,6 +19,7 @@ HARD RULES:
 """
 from __future__ import annotations
 
+import base64
 import os
 import time
 from typing import Any, Optional
@@ -23,8 +30,10 @@ import requests
 # Config
 # ---------------------------------------------------------------------------
 
-BASE_URL    = "https://trading-api.kalshi.com/trade-api/v2"
-DEMO_URL    = "https://demo-api.kalshi.co/trade-api/v2"
+# Public market-data base URL (no auth needed for GET market/orderbook/trades)
+_PUBLIC_BASE  = "https://api.elections.kalshi.com/trade-api/v2"
+# External authenticated base URL
+_PRIVATE_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 
 _TIMEOUT_MARKET = 5
 _TIMEOUT_BULK   = 10
@@ -44,38 +53,103 @@ def _get_session() -> requests.Session:
 
 
 def _base() -> str:
-    return os.environ.get("KALSHI_API_URL", BASE_URL)
-
-
-def _auth_headers() -> dict[str, str]:
     """
-    Return auth headers if KALSHI_API_KEY_ID and KALSHI_API_KEY are set.
-    For read-only public endpoints, no auth is needed.
+    Base URL — prefers KALSHI_BASE_URL env var so this can be overridden
+    at runtime (e.g. for demo vs prod).
     """
-    key_id  = os.environ.get("KALSHI_API_KEY_ID")
-    key_val = os.environ.get("KALSHI_API_KEY")
-    if key_id and key_val:
-        return {"Authorization": f"Bearer {key_val}"}
-    return {}
+    return os.environ.get("KALSHI_BASE_URL", _PUBLIC_BASE).rstrip("/")
 
 
-def _get(path: str, params: dict | None = None, timeout: int = _TIMEOUT_MARKET) -> dict[str, Any]:
-    """Make a GET request. Returns the JSON body or raises."""
-    url     = f"{_base()}{path}"
-    headers = {**_get_session().headers, **_auth_headers()}
-    resp    = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
+# ---------------------------------------------------------------------------
+# RSA auth headers (only added when KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY set)
+# ---------------------------------------------------------------------------
+
+def _build_auth_headers(method: str, path: str) -> dict[str, str]:
+    """
+    Build Kalshi RSA-signed request headers.
+
+    Signing scheme (Kalshi v2):
+      message   = timestamp_ms_str + method.upper() + path_without_query
+      signature = RSA-SHA256(private_key, message), base64-encoded
+
+    Returns {} if credentials are not configured (safe for public endpoints).
+    """
+    key_id      = os.environ.get("KALSHI_API_KEY_ID", "").strip()
+    private_pem = os.environ.get("KALSHI_PRIVATE_KEY", "").strip()
+
+    if not key_id or not private_pem:
+        return {}
+
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        timestamp_ms = str(int(time.time() * 1000))
+
+        # Path must not include query string
+        clean_path = path.split("?")[0]
+        message    = (timestamp_ms + method.upper() + clean_path).encode("utf-8")
+
+        # Load private key — handle both raw PEM and escaped newlines
+        pem_str = private_pem.replace("\\n", "\n")
+        private_key = serialization.load_pem_private_key(
+            pem_str.encode("utf-8"),
+            password=None,
+        )
+
+        signature_bytes = private_key.sign(
+            message,
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+        signature_b64 = base64.b64encode(signature_bytes).decode("utf-8")
+
+        return {
+            "KALSHI-ACCESS-KEY":       key_id,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp_ms,
+            "KALSHI-ACCESS-SIGNATURE": signature_b64,
+        }
+    except Exception as exc:
+        # Never crash the scan — log and proceed without auth
+        import logging
+        logging.getLogger(__name__).warning(
+            "Kalshi auth header build failed: %s — falling back to unauthenticated", exc
+        )
+        return {}
+
+
+def _get(
+    path: str,
+    params: dict | None = None,
+    timeout: int = _TIMEOUT_MARKET,
+    authenticated: bool = False,
+) -> dict[str, Any]:
+    """
+    Make a GET request against the Kalshi API.
+
+    authenticated=False → public endpoint, no auth headers attached.
+    authenticated=True  → RSA-signed headers added (if credentials are present).
+    """
+    url   = f"{_base()}{path}"
+    hdrs  = dict(_get_session().headers)
+
+    if authenticated:
+        hdrs.update(_build_auth_headers("GET", path))
+
+    resp = requests.get(url, headers=hdrs, params=params or {}, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
 
 # ---------------------------------------------------------------------------
-# Market endpoints
+# Market endpoints  (all public — no auth required)
 # ---------------------------------------------------------------------------
 
 def get_market(ticker: str) -> dict[str, Any]:
     """
     GET /markets/{ticker}
     Returns full market details including status, yes_bid, yes_ask, last_price.
+    Public endpoint — no auth needed.
     """
     return _get(f"/markets/{ticker}")
 
@@ -84,6 +158,7 @@ def get_event(event_ticker: str) -> dict[str, Any]:
     """
     GET /events/{event_ticker}
     Returns event and all child markets.
+    Public endpoint — no auth needed.
     """
     return _get(f"/events/{event_ticker}")
 
@@ -92,6 +167,7 @@ def get_series(series_ticker: str) -> dict[str, Any]:
     """
     GET /series/{series_ticker}
     Returns the series (collection of events).
+    Public endpoint — no auth needed.
     """
     return _get(f"/series/{series_ticker}")
 
@@ -100,6 +176,7 @@ def get_orderbook(ticker: str, depth: int = 10) -> dict[str, Any]:
     """
     GET /markets/{ticker}/orderbook
     Returns YES and NO side order books (bids/asks with sizes).
+    Public endpoint — no auth needed.
     """
     return _get(f"/markets/{ticker}/orderbook", params={"depth": depth})
 
@@ -108,7 +185,7 @@ def get_market_status(ticker: str) -> dict[str, Any]:
     """
     Returns just market status fields: status, close_time, result.
     """
-    data = get_market(ticker)
+    data   = get_market(ticker)
     market = data.get("market") or data
     return {
         "ticker":     ticker,
@@ -123,14 +200,15 @@ def get_market_status(ticker: str) -> dict[str, Any]:
 
 
 def get_trades(
-    ticker:    str,
-    min_ts:    int | None = None,
-    max_ts:    int | None = None,
-    limit:     int        = 100,
+    ticker:  str,
+    min_ts:  int | None = None,
+    max_ts:  int | None = None,
+    limit:   int        = 100,
 ) -> dict[str, Any]:
     """
     GET /markets/{ticker}/trades
     Recent trades with timestamps and prices.
+    Public endpoint — no auth needed.
     """
     params: dict[str, Any] = {"limit": min(limit, 1000)}
     if min_ts:
@@ -151,13 +229,14 @@ def scan_event_markets(event_ticker: str) -> list[dict[str, Any]]:
 
 
 def search_markets(
-    category:    str | None  = None,
-    status:      str          = "open",
-    limit:       int          = 50,
-    cursor:      str | None  = None,
+    category: str | None = None,
+    status:   str        = "open",
+    limit:    int        = 50,
+    cursor:   str | None = None,
 ) -> dict[str, Any]:
     """
     GET /markets — paginated market listing.
+    Public endpoint — no auth needed.
     """
     params: dict[str, Any] = {"limit": min(limit, 200), "status": status}
     if category:
@@ -168,7 +247,37 @@ def search_markets(
 
 
 # ---------------------------------------------------------------------------
-# Safe wrappers (return None on error instead of raising)
+# Authenticated endpoints (require KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY)
+# ---------------------------------------------------------------------------
+
+def get_portfolio_balance() -> dict[str, Any]:
+    """
+    GET /portfolio/balance
+    Returns current account balance.
+    Authenticated — requires credentials.
+    PAPER-TRADE / READ-ONLY — no order submission.
+    """
+    return _get("/portfolio/balance", authenticated=True)
+
+
+def get_portfolio_positions(
+    limit:  int        = 100,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """
+    GET /portfolio/positions
+    Returns current open positions.
+    Authenticated — requires credentials.
+    PAPER-TRADE / READ-ONLY — no order submission.
+    """
+    params: dict[str, Any] = {"limit": min(limit, 1000)}
+    if cursor:
+        params["cursor"] = cursor
+    return _get("/portfolio/positions", params=params, authenticated=True)
+
+
+# ---------------------------------------------------------------------------
+# Safe wrappers (return error dict instead of raising)
 # ---------------------------------------------------------------------------
 
 def safe_get_market(ticker: str) -> dict[str, Any] | None:
@@ -183,3 +292,14 @@ def safe_get_orderbook(ticker: str, depth: int = 10) -> dict[str, Any] | None:
         return get_orderbook(ticker, depth=depth)
     except Exception as exc:
         return {"error": str(exc), "ticker": ticker}
+
+
+def safe_search_markets(
+    category: str | None = None,
+    status:   str        = "open",
+    limit:    int        = 50,
+) -> dict[str, Any]:
+    try:
+        return search_markets(category=category, status=status, limit=limit)
+    except Exception as exc:
+        return {"markets": [], "error": str(exc)}
