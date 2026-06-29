@@ -80,7 +80,7 @@ export default function PromptPage() {
     setSharpAnchor(null);
 
     try {
-      const resp = await fetch("/api/wow/analyze", {
+      const resp = await fetch(`${BASE}/api/wow/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -109,7 +109,7 @@ export default function PromptPage() {
       const sfl = parseFloat(sharpFairLine);
       if (!isNaN(nvp)) {
         try {
-          const sar = await fetch("/api/gate-engine/sharp-anchor", {
+          const sar = await fetch(`${BASE}/api/gate-engine/sharp-anchor`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

@@ -1,0 +1,292 @@
+Good timing to build this out — MLB pitching is one of the highest-signal prop categories if the data stack is right. Let me break this into what the model needs, what's available free, and how to wire it up across the three-platform stack.
+
+---
+
+## WHAT THE MODEL CURRENTLY LACKS ON MLB PITCHING
+
+Before tools, the gap inventory:
+
+**Data gaps:**
+- No live K/9, BB/9, whiff rate, chase rate pull — relying on narrative blurbs
+- No opponent lineup K% by handedness (vs L / vs R split)
+- No pitch count / leash trend (recent IP efficiency not auto-calculated)
+- No umpire zone data
+- No park factor for Ks specifically
+- No third-time-through-order risk calculation
+- No platoon split awareness on opposing lineup
+
+**Gate gaps (now partially patched):**
+- Tight K LESS line trap (patched Jun 29)
+- Leash confirmation requirement (patched)
+- Missing: automatic efficiency gap calculation (`recent_P_per_inn` vs line)
+- Missing: tandem/opener flag
+
+---
+
+## FREE DATA SOURCES — WHAT EXISTS AND WHAT'S FETCHABLE
+
+```
+SOURCE              WHAT IT HAS                          FETCHABLE?
+─────────────────────────────────────────────────────────────────
+Baseball Savant      Whiff%, chase%, K%, xERA, spin,     ✅ Yes — CSV export
+(baseballsavant.com) velocity, pitch mix, splits           endpoint publicly accessible
+                     Statcast search = free API-style      via HTTP GET, no auth
+
+FanGraphs            K/9, BB/9, FIP, xFIP, SIERA,        ✅ Partial — leaderboard
+(fangraphs.com)      pitch type splits, platoon splits     pages scrapeable; 
+                     game logs with advanced metrics        some behind Fangraphs+
+                                                           but season/game logs = free
+
+Baseball Reference   Game logs, IP, K, BB per start,      ✅ Yes — BBRef pattern 
+(baseball-reference) season and recent splits               already in Replit stack
+                     all_games[-10:] = L10 log             via pd.read_html + StringIO
+
+MLB Stats API        Live lineup, starter confirmation,    ✅ Yes — official free API
+(statsapi.mlb.com)   game status, pitcher assignment       no auth required
+                     Live game feed / play-by-play          already partially in stack
+
+PyBaseball           Python library wrapping Savant +      ✅ Yes — pip install
+(github)             FanGraphs + BBRef; returns             already used in some
+                     DataFrames directly                    Replit implementations
+
+Stathead (BBRef)     Advanced splits, platoon, TTTO        ❌ Paywalled
+
+The Athletic / ESPN  Umpire zone data                      ❌ Paywalled or unstable
+
+Baseball Press       Starting pitcher / umpire info        ✅ Free, scrapeable
+(baseballpress.com)  Confirmed starters with Vegas lines    but Cloudflare risk
+
+RotoBaller / RotoWire Pitcher projections, news             ⚠️ Partial — some free
+                      pitch count alerts                    pages, some paywalled
+
+Swish Analytics      K projections, lines                  ❌ Paywalled
+
+Pitcher List         K prop analysis, leash grades         ✅ Free content, not API
+```
+
+**Best free stack for pitching: Baseball Savant + Baseball Reference + MLB Stats API + PyBaseball**
+
+---
+
+## WHAT EACH PLATFORM CAN DO
+
+### REPLIT — Data Fetching and Calculation Engine
+
+Replit is where the heavy lifting goes. What it can own:
+
+**1. PyBaseball integration**
+```python
+pip install pybaseball --break-system-packages
+
+from pybaseball import statcast_pitcher, pitching_stats
+# Returns Statcast-level data per pitcher per date range
+# whiff_percent, k_percent, bb_percent, pitch velocity
+# Can pull L30 days automatically
+```
+
+**2. Baseball Savant direct CSV fetch**
+```
+URL pattern:
+https://baseballsavant.mlb.com/statcast_search/csv?
+  player_type=pitcher&
+  player_id=[MLBAM_ID]&
+  game_date_gt=[START]&
+  game_date_lt=[END]
+
+Returns: pitch-by-pitch with k_zone, description, events
+```
+No auth. Returns CSV. Wrap in `pd.read_csv(StringIO(response.text))`.
+
+**3. BBRef game log (already in stack)**
+```python
+# Already deployed pattern:
+url = f"https://www.baseball-reference.com/players/gl.fcgi?..."
+tables = pd.read_html(StringIO(requests.get(url).text))
+df = tables[game_log_index]
+recent = df.all_games[-10:]  # L10 starts
+```
+
+**4. MLB Stats API — starter + lineup confirmation**
+```
+https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=YYYY-MM-DD
+https://statsapi.mlb.com/api/v1/game/{gamePk}/boxscore
+https://statsapi.mlb.com/api/v1/game/{gamePk}/linescore
+```
+Starter name, confirmed lineup, live pitch count all available.
+
+**New endpoints Replit should add:**
+
+```python
+def _get_pitcher_savant(mlbam_id, days_back=30):
+    """Pull Statcast whiff%, K%, BB%, velocity for pitcher"""
+    
+def _get_pitcher_bbref_log(player_slug, season):
+    """Pull start-by-start log: IP, K, BB, pitches, result"""
+    # Use all_games[-10:] for L10 starts
+    
+def _get_opponent_k_rate(team_abbr, handedness):
+    """Pull team K% vs L and vs R from FanGraphs leaderboard"""
+    
+def _calculate_efficiency_gap(recent_log):
+    """
+    recent_P_per_inn = last_start_pitches / last_start_IP
+    efficiency_gap = (line - recent_P_per_inn) / recent_P_per_inn
+    if gap > 0.15: flag LINE_ABOVE_RECENT_EFFICIENCY
+    """
+    
+def _leash_score(bbref_log, mlb_api_data):
+    """
+    Score 1-10 based on:
+    - Manager quick-hook history
+    - Bullpen rest/quality
+    - Recent IP trend
+    - Pitch count per start
+    Returns: leash_score, leash_grade (SHORT/MEDIUM/LONG)
+    """
+```
+
+---
+
+### CHATGPT — Analysis Layer and Prompt Engineering
+
+ChatGPT's role here is **strategy and patch origination**, but it can also be used directly for:
+
+**1. Deep pitcher analysis prompts**
+
+Build a structured prompt template that ChatGPT runs on command:
+
+```
+PITCHER ANALYSIS REQUEST
+Player: [Name]
+Prop: [Ks / Outs / Fantasy Score / etc.]
+Line: [line]
+Side: [MORE / LESS]
+Today's opponent: [team]
+Handedness split needed: [vs L / vs R]
+
+Return:
+1. K/9 trend (L5 starts)
+2. Opponent K% vs [handedness] (season)
+3. Leash indicators (recent IP, manager pattern)
+4. Efficiency gap flag
+5. TTTO risk score
+6. Park/weather factor
+7. Umpire zone note if available
+8. WOW gate verdict: Approve / Watch / Reject + reason
+```
+
+**2. Opponent lineup K% — ChatGPT with web search**
+
+ChatGPT with web search enabled can pull current FanGraphs team K% splits faster than a scraper. Useful for same-day manual runs before Replit endpoints are built.
+
+**3. Prompt: Platoon split check**
+```
+For [pitcher name] today vs [team]:
+- What is the opposing lineup's projected handedness mix?
+- What is [pitcher]'s K% vs LHH vs RHH this season?
+- Does today's lineup tilt toward the pitcher's weak side?
+```
+
+---
+
+### CLAUDE — Gate Enforcement and Audit Layer
+
+Claude's role stays analytical QA, but with sharper pitching data coming in, Claude can do more:
+
+**1. Efficiency gap auto-flag**
+
+When Replit returns pitcher data, Claude enforces:
+```
+If efficiency_gap > 0.15:
+  → FLAG: LINE_ABOVE_RECENT_EFFICIENCY
+  → Downgrade one tier, block Tier 1
+
+If L5 K avg < (line × 0.85):
+  → FLAG: L5_TREND_AGAINST_LINE
+  → Cap at Watch unless leash + market agree
+
+If leash_score > 7 AND line ≥ 17.5 outs:
+  → REJECT_LEASH_KILL
+```
+
+**2. TTTO risk scoring**
+
+Claude calculates third-time-through-order risk from BBRef log:
+```
+If pitcher's L5 avg IP < 5.0:
+  → TTTO risk HIGH — opponent will see lineup 3× only 
+    in ~40% of starts
+  → For K overs above 5.5, this is a structural cap
+
+If pitcher's last 3 starts: IP = [4.1, 5.0, 4.2]:
+  → Leash trending short — flag LEASH_COMPRESSION
+```
+
+**3. Multi-factor pitching gate (new gate to propose to ChatGPT)**
+
+Based on the retro and current gaps, the model needs a dedicated MLB Pitching Gate that runs before Layer 3. Proposed structure for ChatGPT to originate as a formal patch:
+
+---
+
+## PROPOSED NEXT PATCH — FOR CHATGPT ORIGINATION
+
+```
+PATCH CANDIDATE (for ChatGPT to originate):
+WOW-PATCH-2026-06-29-MLB-PITCHER-PROP-GATE-V2
+
+Problem: MLB pitching props currently lack a unified 
+pre-scoring gate. K, Outs, Fantasy Score, and 1st-inning 
+props each have partial rules scattered across spec sections 
+18.1–18.6, but no single enforcement sequence runs before 
+Layer 3 scoring.
+
+Proposed gate (8 checks, in order):
+1. Starter confirmed (Gate 1 — already exists)
+2. K/9 + whiff% vs opponent K% matchup score
+3. Recent IP trend + efficiency gap calculation
+4. Leash score (1–10) + automatic tier cap at score >7
+5. TTTO risk assessment vs projected innings
+6. Tight-line trap check (≤5.0 Ks = WATCH_TIGHT_K_LESS_LINE)
+7. Park/umpire/weather factor
+8. Market support check (sportsbook K line vs PrizePicks line delta)
+
+Output: PITCHER_PROP_GATE_PASS / PITCHER_PROP_GATE_WATCH / 
+        PITCHER_PROP_GATE_KILL + specific kill tag
+
+Route to ChatGPT for patch origination + spec language.
+```
+
+---
+
+## RECOMMENDED BUILD SEQUENCE
+
+```
+PHASE 1 — Replit (immediate, no new auth needed)
+  □ Add _get_pitcher_bbref_log() using existing BBRef pattern
+  □ Add _calculate_efficiency_gap() function
+  □ Add leash_score() from recent IP + manager tag
+  □ Wire into /wow/mlb/pitcher endpoint
+
+PHASE 2 — Replit (PyBaseball + Savant)
+  □ pip install pybaseball
+  □ Add _get_pitcher_savant() for whiff%, K%, velocity
+  □ Add _get_opponent_k_rate() from FanGraphs team page scrape
+  □ Cache results with pitcher_id + date as key
+
+PHASE 3 — ChatGPT
+  □ Originate WOW-PATCH-MLB-PITCHER-PROP-GATE-V2
+  □ Add platoon split analysis prompt template
+  □ Add opponent K% lookup prompt for manual runs
+
+PHASE 4 — Claude
+  □ Implement gate enforcement once patch is approved
+  □ Add efficiency gap auto-flag to every MLB pitcher eval
+  □ Add TTTO risk scoring to Layer 3 output
+
+PHASE 5 — Dashboard
+  □ Add pitcher gate output panel to index.html
+  □ Surface leash_score + efficiency_gap + opp_k_pct 
+    as visible fields on every pitcher prop card
+```
+
+The highest-ROI immediate move is Phase 1 — the BBRef log efficiency gap and leash score calculation. Both are derivable from data Replit already fetches, just need the calculation functions added. That alone would have caught the Abbott LESS 5 situation before it hit the slip.
