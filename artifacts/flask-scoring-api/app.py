@@ -14425,7 +14425,7 @@ def kalshi_settle_result():
 
 
 # ── WOW / Kalshi Scan (Custom GPT entry point) ───────────────────────────────
-_KALSHI_SCAN_VERSION  = "2026-06-29-raw-markets-full-v4"
+_KALSHI_SCAN_VERSION  = "2026-06-29-cross-category-v5"
 _KALSHI_BUILD_TS      = "2026-06-28T00:00:00Z"   # updated on each deploy
 
 # Multi-leg combo/slate market detector.
@@ -14499,12 +14499,12 @@ def _detect_market_type(m: dict) -> str:
         m.get("mve_collection_ticker", "") or "",
     ])).upper()
 
-    # 0. KXMV multi-variant collection prefixes → always combo
-    _KXMV_COMBO_PREFIXES = (
-        "KXMVESPORTSMULTIGAMEEXTENDED",
-        "KXMVECROSSCATEGORY",
-    )
-    if any(pfx in ticker_text for pfx in _KXMV_COMBO_PREFIXES):
+    # 0. KXMV multi-variant collection prefixes → always combo/cross_category
+    # cross_category is a distinct type so the GPT can see it separately.
+    # Both are non-single and filtered out when include_combo_markets=False.
+    if "KXMVECROSSCATEGORY" in ticker_text:
+        return "cross_category"
+    if "KXMVESPORTSMULTIGAMEEXTENDED" in ticker_text:
         return "combo"
 
     # 1. Ticker tokens
@@ -14833,8 +14833,10 @@ def wow_kalshi_scan():
         for m in markets:
             m["_market_type"] = _detect_market_type(m)
 
+        _NON_SINGLE = ("combo", "cross_category")
         n_single = sum(1 for m in markets if m["_market_type"] == "single")
-        n_combo  = sum(1 for m in markets if m["_market_type"] == "combo")
+        n_combo  = sum(1 for m in markets if m["_market_type"] in _NON_SINGLE)
+        n_cross  = sum(1 for m in markets if m["_market_type"] == "cross_category")
 
         # Snapshot ALL classified markets BEFORE the type filter strips combos.
         # raw_markets must include filtered-out combos so the GPT can see what
@@ -14843,14 +14845,15 @@ def wow_kalshi_scan():
 
         _KXMV_PFX = ("KXMVESPORTSMULTIGAMEEXTENDED", "KXMVECROSSCATEGORY")
         _combo_by_prefix = sum(
-            1 for m in markets if m["_market_type"] == "combo" and any(
+            1 for m in markets if m["_market_type"] in _NON_SINGLE and any(
                 pfx in (m.get("ticker") or "").upper() for pfx in _KXMV_PFX
             )
         )
-        _diag["after_combo_filter"]       = len(markets)
-        _diag["combo_by_prefix_count"]    = _combo_by_prefix
-        _diag["combo_by_subtitle_count"]  = n_combo - _combo_by_prefix
-        _diag["classifier_version"]       = "kxmv-prefix+subtitle-split-v4"
+        _diag["after_combo_filter"]         = len(markets)
+        _diag["combo_by_prefix_count"]      = _combo_by_prefix
+        _diag["combo_by_subtitle_count"]    = n_combo - _combo_by_prefix
+        _diag["cross_category_count"]       = n_cross
+        _diag["classifier_version"]         = "kxmv-prefix+subtitle-cross-v5"
 
         # ── market_type input filter: strip unwanted types before evaluation ──
         # include_combo_markets=False OR market_type="single_game" → singles only
@@ -14862,14 +14865,14 @@ def wow_kalshi_scan():
             markets = [m for m in markets if m["_market_type"] == "single"]
             n_skipped_type = _before_type - len(markets)
         elif _req_market_type == "combo":
-            markets = [m for m in markets if m["_market_type"] == "combo"]
+            markets = [m for m in markets if m["_market_type"] in _NON_SINGLE]
             n_skipped_type = _before_type - len(markets)
         _diag["skipped_combo"]            = n_skipped_type
         _diag["skipped_market_type"]      = n_skipped_type
         _diag["after_market_type_filter"] = len(markets)
         _diag["first_10_filtered_out_combo_tickers"] = [
             m.get("ticker", "") for m in _all_classified
-            if m["_market_type"] == "combo"
+            if m["_market_type"] in _NON_SINGLE
         ][:10]
         _diag["first_10_returned_tickers"] = [
             m.get("ticker", "") for m in markets
@@ -14885,10 +14888,12 @@ def wow_kalshi_scan():
                 f"Skipped {n_skipped_type} markets. "
                 "Try market_type='all' and include_combo_markets=true for discovery."
             )
-            resp["markets_scanned"]     = n_single + n_combo
-            resp["single_markets"]      = n_single
-            resp["combo_markets"]       = n_combo
-            resp["skipped_type_filter"] = n_skipped_type
+            resp["markets_scanned"]                  = n_single + n_combo
+            resp["single_markets"]                   = n_single
+            resp["combo_markets"]                    = n_combo
+            resp["cross_category_markets"]           = n_cross
+            resp["skipped_type_filter"]              = n_skipped_type
+            resp["model_probability_testable_count"] = 0
             if include_raw_markets:
                 resp["raw_markets"] = [
                     {
@@ -14900,7 +14905,7 @@ def wow_kalshi_scan():
                         "subtitle":        m.get("subtitle", ""),
                         "close_time":      m.get("close_time", ""),
                         "market_type":     m["_market_type"],
-                        "is_combo_market": m["_market_type"] == "combo",
+                        "is_combo_market": m["_market_type"] in ("combo", "cross_category"),
                         "filtered_out_by": "market_type_filter",
                         "price_status":    "not_fetched",
                         "yes_price":       None,
@@ -14994,7 +14999,7 @@ def wow_kalshi_scan():
                     "subtitle":        m.get("subtitle", ""),
                     "close_time":      m.get("close_time", ""),
                     "market_type":     mtype,
-                    "is_combo_market": mtype == "combo",
+                    "is_combo_market": mtype in ("combo", "cross_category"),
                     "has_model_prob":  mp is not None,
                     # ── Prices (upgraded to orderbook after eval loop) ──────────
                     "yes_price":       _yes_price,
@@ -15059,7 +15064,7 @@ def wow_kalshi_scan():
                     "event_title":         title,
                     "contract_wording":    m.get("subtitle", ""),
                     "market_type":         market_type,
-                    "is_combo_market":     market_type == "combo",
+                    "is_combo_market":     market_type in ("combo", "cross_category"),
                     "final_label":         "KALSHI_DATA_UNOBTAINABLE",
                     "reason":              f"Orderbook fetch failed: {_ob_err}",
                     "price_status":        "missing",
@@ -15117,7 +15122,7 @@ def wow_kalshi_scan():
                     "event_title":      title,
                     "contract_wording": m.get("subtitle", ""),
                     "market_type":      market_type,
-                    "is_combo_market":  market_type == "combo",
+                    "is_combo_market":  market_type in ("combo", "cross_category"),
                     "final_label":      "KALSHI_DATA_UNOBTAINABLE",
                     "yes_price":        _nb_mid,
                     "best_yes_bid":     _nb_bid,
@@ -15144,7 +15149,8 @@ def wow_kalshi_scan():
                         break
 
             # ── Combo/slate fast-path: SCOUT when no calibrated probability ──
-            if market_type == "combo" and model_prob is None:
+            # Applies to both combo and cross_category (both are multi-leg slates).
+            if market_type in ("combo", "cross_category") and model_prob is None:
                 counts["scout"] += 1
                 rejected.append({
                     "ticker":            ticker,
@@ -15179,14 +15185,17 @@ def wow_kalshi_scan():
                 category             = category,
                 contract_ticker      = ticker,
             )
-            if sr["resolution_clarity_grade"] == "F":
+            # Fire BAD_RULES on grade F OR settlement_risk REJECT
+            # (hard-reject triggers can set settlement_risk=REJECT with non-F grade)
+            if (sr["resolution_clarity_grade"] == "F" or
+                    sr.get("settlement_risk") == "REJECT"):
                 counts[LABEL_MAP.get("KALSHI_REJECT_BAD_RULES", "rejected_bad_rules")] += 1
                 rejected.append({
                     "ticker":            ticker,
                     "event_title":       title,
                     "contract_wording":  m.get("subtitle", ""),
                     "market_type":       market_type,
-                    "is_combo_market":   market_type == "combo",
+                    "is_combo_market":   market_type in ("combo", "cross_category"),
                     "final_label":       "KALSHI_REJECT_BAD_RULES",
                     "model_probability": model_prob,
                     "yes_price":         _nb_mid,
@@ -15196,7 +15205,12 @@ def wow_kalshi_scan():
                     "liquidity_grade":   norm_book.get("liquidity_grade"),
                     "settlement_grade":  sr["resolution_clarity_grade"],
                     "settlement_risk":   sr["settlement_risk"],
-                    "reason":            "Settlement grade F: unresolvable or highly subjective contract",
+                    "reason":            (
+                        "Settlement rejected: "
+                        f"grade={sr['resolution_clarity_grade']} "
+                        f"risk={sr.get('settlement_risk')} "
+                        "(unresolvable or highly subjective contract)"
+                    ),
                     **_price_diag,
                     "can_approve_bets":  False,
                 })
@@ -15210,7 +15224,7 @@ def wow_kalshi_scan():
                     "event_title":       title,
                     "contract_wording":  m.get("subtitle", ""),
                     "market_type":       market_type,
-                    "is_combo_market":   market_type == "combo",
+                    "is_combo_market":   market_type in ("combo", "cross_category"),
                     "final_label":       "KALSHI_REJECT_THIN_BOOK",
                     "model_probability": model_prob,
                     "yes_price":         _nb_mid,
@@ -15238,7 +15252,7 @@ def wow_kalshi_scan():
                     "event_title":       title,
                     "contract_wording":  m.get("subtitle", ""),
                     "market_type":       market_type,
-                    "is_combo_market":   market_type == "combo",
+                    "is_combo_market":   market_type in ("combo", "cross_category"),
                     "final_label":       "KALSHI_REJECT_UNCALIBRATED",
                     "model_probability": None,
                     "yes_price":         _nb_mid,
@@ -15259,7 +15273,7 @@ def wow_kalshi_scan():
 
             # ── Gate 5: edge engine ───────────────────────────────────────────
             extra_warnings = []
-            if market_type == "combo" and model_prob is not None:
+            if market_type in ("combo", "cross_category") and model_prob is not None:
                 extra_warnings.append(
                     "COMBO_MARKET: correlation risk not captured in single-leg edge model; "
                     "apply additional discount before acting."
@@ -15299,7 +15313,7 @@ def wow_kalshi_scan():
                 "event_title":        title,
                 "contract_wording":   m.get("subtitle", ""),
                 "market_type":        market_type,
-                "is_combo_market":    market_type == "combo",
+                "is_combo_market":    market_type in ("combo", "cross_category"),
                 "final_label":        label,
                 "model_probability":  model_prob,
                 "raw_edge":           ev.get("raw_edge"),
@@ -15375,20 +15389,35 @@ def wow_kalshi_scan():
                         entry["price_status"] = "missing"
                         entry["final_label_hint"] = "KALSHI_DATA_UNOBTAINABLE"
 
+        # model_probability_testable_count: rows that cleared price+liquidity+settlement
+        # and are NOT cross_category or combo — the only rows where supplying a
+        # model_probability would unlock evaluation.  Must be > 0 before injecting
+        # model probabilities.
+        _testable = sum(
+            1 for r in rejected
+            if (r.get("final_label") == "KALSHI_REJECT_UNCALIBRATED" and
+                not r.get("is_combo_market", False))
+        ) + sum(
+            1 for c in candidates
+            if not c.get("is_combo_market", False)
+        )
+
         resp = {
-            "kalshi_scan_version":   _KALSHI_SCAN_VERSION,
-            "build_timestamp":       _KALSHI_BUILD_TS,
-            "terminal_label":        "SCAN_COMPLETE",
-            "markets_scanned":       n_single + n_combo,   # pre-type-filter count
-            "single_markets":        n_single,
-            "combo_markets":         n_combo,
-            "skipped_type_filter":   n_skipped_type,
+            "kalshi_scan_version":              _KALSHI_SCAN_VERSION,
+            "build_timestamp":                  _KALSHI_BUILD_TS,
+            "terminal_label":                   "SCAN_COMPLETE",
+            "markets_scanned":                  n_single + n_combo,
+            "single_markets":                   n_single,
+            "combo_markets":                    n_combo,
+            "cross_category_markets":           n_cross,
+            "skipped_type_filter":              n_skipped_type,
+            "model_probability_testable_count": _testable,
             **counts,
-            "candidates":            candidates,
-            "rejected":              rejected,
-            "filter_diagnostics":    _diag,
-            "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
-            "request_echo":          _echo,
+            "candidates":                       candidates,
+            "rejected":                         rejected,
+            "filter_diagnostics":               _diag,
+            "execution_rule":                   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+            "request_echo":                     _echo,
         }
         if include_raw_markets:
             resp["raw_markets"] = raw_markets_list

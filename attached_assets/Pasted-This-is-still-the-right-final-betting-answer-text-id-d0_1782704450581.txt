@@ -1,0 +1,105 @@
+This is still the right **final betting answer**:
+
+```text id="d0gczm"
+NO PLAY / SCAN_ONLY / NO APPROVALS
+```
+
+But the scan also shows one remaining **classification/gate-quality issue**.
+
+## What passed
+
+```text id="u1zmkz"
+raw_fetched: 200 ✅
+combo_markets: 193 ✅
+single_markets isolated: 7 ✅
+eligible model-probability rows: 0 ✅
+final_approved: 0 ✅
+execution_rule: DRY_RUN_ONLY ✅
+```
+
+WOW did the important thing: it refused to force a Kalshi trade.
+
+## What still needs cleanup
+
+This part is not ideal:
+
+```text id="1p9xi1"
+All 7 returned single-market rows were still KXMV-prefixed
+several were KXMVECROSSCATEGORY
+liquidity_grade = F
+settlement_risk = REJECT
+final_label = KALSHI_REJECT_UNCALIBRATED
+```
+
+If a row is KXMVECROSSCATEGORY, it should not be in the single-game lane. And if liquidity/settlement are failing, it should not end as “uncalibrated” first.
+
+Correct label order should still be:
+
+```text id="6hl5nj"
+1. KXMV cross-category / multi-leg → combo/cross_category filter
+2. Missing price → KALSHI_DATA_UNOBTAINABLE
+3. settlement_risk = REJECT → KALSHI_REJECT_BAD_RULES
+4. liquidity_grade = F → KALSHI_REJECT_THIN_BOOK
+5. no model probability → KALSHI_REJECT_UNCALIBRATED
+```
+
+So the no-play answer is right, but the terminal reason is still slightly misleading.
+
+## Small next patch
+
+Tell Replit this:
+
+```text id="pkdc1m"
+Final cleanup for Kalshi scan labels/classification:
+
+The eligible-discovery scan correctly returned 0 playable rows, but the 7 returned "single_game" rows were still KXMV-prefixed, with several KXMVECROSSCATEGORY rows.
+
+Required:
+1. Any ticker containing KXMVECROSSCATEGORY must always be:
+   is_combo_market=true
+   market_type=cross_category
+   filtered out when include_combo_markets=false or market_type=single_game
+
+2. Any ticker containing KXMVESPORTSMULTIGAMEEXTENDED must always be:
+   is_combo_market=true
+   market_type=combo
+   filtered out when include_combo_markets=false or market_type=single_game
+
+3. Any sports title/subtitle containing comma-separated independent legs must be:
+   is_combo_market=true
+   market_type=combo
+
+4. Gate label precedence:
+   - price_status missing/unavailable → KALSHI_DATA_UNOBTAINABLE
+   - settlement_risk=REJECT/F → KALSHI_REJECT_BAD_RULES
+   - liquidity_grade=F → KALSHI_REJECT_THIN_BOOK
+   - only then no model_probability → KALSHI_REJECT_UNCALIBRATED
+
+5. Add a top-level field:
+   model_probability_testable_count
+
+For this scan, expected:
+model_probability_testable_count=0
+final_approved=0
+NO PLAY
+```
+
+## Current operating rule
+
+Do **not** inject model probabilities until this count is greater than zero:
+
+```text id="f1qzqi"
+model_probability_testable_count > 0
+```
+
+A testable row must be:
+
+```text id="abc2m2"
+non-KXMV
+is_combo_market=false
+price_status=available
+liquidity_grade != F
+settlement_risk != REJECT/F
+```
+
+For now: the system is safe, but there is no usable Kalshi sports market candidate yet.
