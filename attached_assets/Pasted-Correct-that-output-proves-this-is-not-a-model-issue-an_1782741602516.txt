@@ -1,0 +1,96 @@
+Correct — that output proves this is **not a model issue anymore**. It is a **deployment/version-routing issue**.
+
+The live endpoint is still serving:
+
+```text
+kalshi_scan_version: 2026-06-28-filter-diagnostics-v3
+```
+
+So any v5 patch claims are not relevant until the endpoint returns the v5 version stamp.
+
+## Current status
+
+```text
+Route reachable: ✅
+Safety: ✅
+final_approved = 0: ✅
+DRY_RUN_ONLY: ✅
+Live code version: ❌ still v3
+Combo classifier: ❌ still old behavior
+Gate precedence: ❌ still old behavior
+Model-probability testing: ❌ blocked
+Final WOW call: NO PLAY
+```
+
+## Most likely causes
+
+One of these is happening:
+
+```text
+1. v5 code exists locally but was not deployed.
+2. Flask workflow restarted, but production deploy still points to older bundle.
+3. There are two /wow/kalshi/scan route definitions and the old one is shadowing the new one.
+4. Express/proxy layer is forwarding to an older Flask process.
+5. The version string was not updated inside the actual response path being hit.
+6. INPUT_EMPTY / scan_complete branches still return old v3 response builders.
+```
+
+## Tell Replit to verify this exact checklist
+
+```text
+Live endpoint is still returning:
+kalshi_scan_version = 2026-06-28-filter-diagnostics-v3
+
+Do not continue model-probability testing until live endpoint returns v5.
+
+Verify:
+1. grep the repo for all /wow/kalshi/scan route definitions.
+2. grep the repo for "2026-06-28-filter-diagnostics-v3".
+3. Replace every live response path with:
+   kalshi_scan_version = "2026-06-28-kxmv-classifier-v5"
+4. Confirm there is only one active scan handler or that the active route imports the v5 handler.
+5. Confirm the production workflow entrypoint is the same file that was patched.
+6. Restart all workflows, not only Flask if Express proxies requests.
+7. Publish/deploy again.
+8. Curl the public URL and confirm the response includes:
+   classifier_version
+   model_probability_testable_count
+   combo_by_prefix_count
+   combo_by_subtitle_count
+   first_10_filtered_out_combo_tickers
+   first_10_returned_tickers
+   request_echo.include_combo_markets
+   request_echo.market_type
+```
+
+## Hard pass condition
+
+Do not trust the patch until the live response shows:
+
+```text
+kalshi_scan_version: 2026-06-28-kxmv-classifier-v5
+classifier_version: kxmv-prefix+subtitle-split-v4 or newer
+```
+
+And with:
+
+```text
+include_combo_markets=false
+market_type=single_game
+```
+
+the returned rows must show:
+
+```text
+KXMVESPORTSMULTIGAMEEXTENDED returned: 0
+KXMVECROSSCATEGORY returned: 0
+model_probability_testable_count: 0 unless clean priced singles exist
+final_approved: 0
+execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+```
+
+## My read
+
+Your live scan is useful because it proves safety is intact, but it also proves **v5 is not the code path being served**.
+
+Next action: fix deployment/version routing first. No probability injection yet.
