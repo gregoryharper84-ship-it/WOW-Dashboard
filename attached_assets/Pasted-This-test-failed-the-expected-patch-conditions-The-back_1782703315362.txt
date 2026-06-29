@@ -1,0 +1,157 @@
+This test **failed the expected patch conditions**.
+
+The backend is still doing two wrong things:
+
+```text id="dzrxdu"
+1. KXMV rows are still passing through as single_game.
+2. Missing-price rows are still labeled KALSHI_REJECT_UNCALIBRATED.
+```
+
+So the checkpoint claim is not reflected in the live scan output yet.
+
+## What the output proves
+
+Every row shown should have been filtered out because the tickers start with:
+
+```text id="a7qoao"
+KXMVESPORTSMULTIGAMEEXTENDED
+KXMVECROSSCATEGORY
+```
+
+Those should default to:
+
+```text id="raopwf"
+is_combo_market: true
+market_type: combo or cross_category
+```
+
+But your output says:
+
+```text id="8766g9"
+market_type: single
+is_combo_market: false
+```
+
+That means either:
+
+```text id="dv93zq"
+A. The deployed route is still using the old combo classifier.
+B. The classifier runs, but the post-eval/raw_markets response rebuild overwrites is_combo_market back to false.
+C. The filter is being applied before the KXMV/combo annotation happens.
+D. The Custom GPT action did not actually pass include_combo_markets=false / market_type=single_game.
+```
+
+## Gate order is also still wrong
+
+These rows have:
+
+```text id="k9jbs8"
+price_status: PRICE_DATA_NOT_RETURNED
+yes_price: N/A
+best_yes_bid: N/A
+best_yes_ask: N/A
+settlement_risk: REJECT
+liquidity_grade: F
+```
+
+They should **not** end as:
+
+```text id="rc4eyp"
+KALSHI_REJECT_UNCALIBRATED
+```
+
+Correct terminal label should be:
+
+```text id="1f3ihe"
+KALSHI_DATA_UNOBTAINABLE
+```
+
+with reason:
+
+```text id="2ub8wu"
+Missing contract price/orderbook
+```
+
+## Send this exact fix/check to Replit
+
+```text id="alt9gf"
+Live scan still fails expected Kalshi combo/gate patch.
+
+Observed output with:
+include_raw_markets=true
+include_combo_markets=false
+market_type=single_game
+max_markets=20
+
+Returned rows are still:
+KXMVESPORTSMULTIGAMEEXTENDED...
+KXMVECROSSCATEGORY...
+
+But response says:
+market_type=single
+is_combo_market=false
+
+This is wrong. Required behavior:
+1. If ticker starts with KXMVESPORTSMULTIGAMEEXTENDED:
+   is_combo_market=true
+   market_type=combo
+2. If ticker starts with KXMVECROSSCATEGORY:
+   is_combo_market=true
+   market_type=cross_category
+3. Apply combo/single filter AFTER this annotation.
+4. If include_combo_markets=false, all KXMVESPORTSMULTIGAMEEXTENDED and KXMVECROSSCATEGORY rows must be removed.
+5. Make sure post-eval/raw_markets upgrade does not overwrite is_combo_market or market_type.
+
+Also gate order still wrong:
+Observed:
+price_status=PRICE_DATA_NOT_RETURNED
+yes_price=null
+best_yes_bid=null
+best_yes_ask=null
+final_label=KALSHI_REJECT_UNCALIBRATED
+
+Required:
+If price_status != available OR no price/bid/ask:
+final_label=KALSHI_DATA_UNOBTAINABLE
+reason="Missing contract price/orderbook"
+
+This must happen before no-model-probability logic.
+
+Add debug fields to every scan response:
+request_echo.include_combo_markets
+request_echo.market_type
+classifier_version
+combo_by_prefix_count
+combo_by_subtitle_count
+after_combo_filter
+after_market_type_filter
+first_10_filtered_out_combo_tickers
+first_10_returned_tickers
+
+Do not proceed to model_probabilities testing until the returned rows contain zero KXMV rows when include_combo_markets=false.
+```
+
+## Quick pass/fail rule
+
+The next scan only passes if:
+
+```text id="1f1tr8"
+KXMVESPORTSMULTIGAMEEXTENDED returned: 0
+KXMVECROSSCATEGORY returned: 0
+Any missing-price row: KALSHI_DATA_UNOBTAINABLE
+final_approved: 0
+execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+```
+
+## Current WOW status
+
+```text id="ky732r"
+Kalshi route: live
+Scan diagnostics: live
+Combo filter: still failing in production output
+Gate precedence: still failing
+Model probability testing: NOT READY
+Final call: NO PLAY
+```
+
+Do **not** inject model probabilities yet. The live output still has classification and gate-order bugs.

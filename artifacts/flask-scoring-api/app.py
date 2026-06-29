@@ -14425,7 +14425,7 @@ def kalshi_settle_result():
 
 
 # ── WOW / Kalshi Scan (Custom GPT entry point) ───────────────────────────────
-_KALSHI_SCAN_VERSION  = "2026-06-28-filter-diagnostics-v3"
+_KALSHI_SCAN_VERSION  = "2026-06-29-raw-markets-full-v4"
 _KALSHI_BUILD_TS      = "2026-06-28T00:00:00Z"   # updated on each deploy
 
 # Multi-leg combo/slate market detector.
@@ -14835,7 +14835,22 @@ def wow_kalshi_scan():
 
         n_single = sum(1 for m in markets if m["_market_type"] == "single")
         n_combo  = sum(1 for m in markets if m["_market_type"] == "combo")
-        _diag["after_combo_filter"] = len(markets)   # classification, no drop yet
+
+        # Snapshot ALL classified markets BEFORE the type filter strips combos.
+        # raw_markets must include filtered-out combos so the GPT can see what
+        # was scanned and confirm KXMV rows have is_combo_market=true.
+        _all_classified = markets[:]
+
+        _KXMV_PFX = ("KXMVESPORTSMULTIGAMEEXTENDED", "KXMVECROSSCATEGORY")
+        _combo_by_prefix = sum(
+            1 for m in markets if m["_market_type"] == "combo" and any(
+                pfx in (m.get("ticker") or "").upper() for pfx in _KXMV_PFX
+            )
+        )
+        _diag["after_combo_filter"]       = len(markets)
+        _diag["combo_by_prefix_count"]    = _combo_by_prefix
+        _diag["combo_by_subtitle_count"]  = n_combo - _combo_by_prefix
+        _diag["classifier_version"]       = "kxmv-prefix+subtitle-split-v4"
 
         # ── market_type input filter: strip unwanted types before evaluation ──
         # include_combo_markets=False OR market_type="single_game" → singles only
@@ -14852,8 +14867,17 @@ def wow_kalshi_scan():
         _diag["skipped_combo"]            = n_skipped_type
         _diag["skipped_market_type"]      = n_skipped_type
         _diag["after_market_type_filter"] = len(markets)
+        _diag["first_10_filtered_out_combo_tickers"] = [
+            m.get("ticker", "") for m in _all_classified
+            if m["_market_type"] == "combo"
+        ][:10]
+        _diag["first_10_returned_tickers"] = [
+            m.get("ticker", "") for m in markets
+        ][:10]
 
-        # Zero after type filter
+        # Zero after type filter — still emit raw_markets from _all_classified so
+        # the GPT can confirm KXMV rows are correctly classified as combos even
+        # though none pass the single_game filter.
         if not markets:
             resp = _zero_resp(
                 f"All markets were removed by market_type filter "
@@ -14861,8 +14885,35 @@ def wow_kalshi_scan():
                 f"Skipped {n_skipped_type} markets. "
                 "Try market_type='all' and include_combo_markets=true for discovery."
             )
+            resp["markets_scanned"]     = n_single + n_combo
+            resp["single_markets"]      = n_single
+            resp["combo_markets"]       = n_combo
+            resp["skipped_type_filter"] = n_skipped_type
             if include_raw_markets:
-                resp["raw_markets"] = []
+                resp["raw_markets"] = [
+                    {
+                        "ticker":          m.get("ticker", ""),
+                        "event_ticker":    m.get("event_ticker", ""),
+                        "series_ticker":   m.get("series_ticker", ""),
+                        "title":           (m.get("title") or m.get("subtitle") or
+                                            m.get("ticker", "")),
+                        "subtitle":        m.get("subtitle", ""),
+                        "close_time":      m.get("close_time", ""),
+                        "market_type":     m["_market_type"],
+                        "is_combo_market": m["_market_type"] == "combo",
+                        "filtered_out_by": "market_type_filter",
+                        "price_status":    "not_fetched",
+                        "yes_price":       None,
+                        "best_yes_bid":    None,
+                        "best_yes_ask":    None,
+                        "spread":          None,
+                        "liquidity_grade": None,
+                        "has_model_prob":  (
+                            model_probabilities.get(m.get("ticker", "")) is not None
+                        ),
+                    }
+                    for m in _all_classified
+                ]
             return jsonify(resp), 200
 
         # ── Apply max_markets cap for evaluation (filters come first) ─────────
@@ -14877,7 +14928,7 @@ def wow_kalshi_scan():
 
         raw_markets_list = []
         if include_raw_markets:
-            for m in markets:   # full post-filter pool, not just _eval_markets
+            for m in _all_classified:   # ALL classified markets — includes filtered-out combos
                 mtype = m["_market_type"]
                 ticker = m.get("ticker") or ""
                 # Exact + prefix model_prob lookup
@@ -14936,14 +14987,15 @@ def wow_kalshi_scan():
                               else "available"  if _has_snap
                               else "missing")
                 raw_markets_list.append({
-                    "ticker":         ticker,
-                    "event_ticker":   m.get("event_ticker", ""),
-                    "series_ticker":  m.get("series_ticker", ""),
-                    "title":          m.get("title") or m.get("subtitle") or ticker,
-                    "subtitle":       m.get("subtitle", ""),
-                    "close_time":     m.get("close_time", ""),
-                    "market_type":    mtype,
-                    "has_model_prob": mp is not None,
+                    "ticker":          ticker,
+                    "event_ticker":    m.get("event_ticker", ""),
+                    "series_ticker":   m.get("series_ticker", ""),
+                    "title":           m.get("title") or m.get("subtitle") or ticker,
+                    "subtitle":        m.get("subtitle", ""),
+                    "close_time":      m.get("close_time", ""),
+                    "market_type":     mtype,
+                    "is_combo_market": mtype == "combo",
+                    "has_model_prob":  mp is not None,
                     # ── Prices (upgraded to orderbook after eval loop) ──────────
                     "yes_price":       _yes_price,
                     "no_price":        _no_price,
