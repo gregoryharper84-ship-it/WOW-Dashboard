@@ -1,0 +1,89 @@
+Confirmed. The scan result proves:
+
+**Final betting safety:** good
+**Final WOW call:** **NO PLAY / NO APPROVALS**
+**Kalshi classifier:** failing
+**Gate precedence:** failing
+**Model-probability testing:** blocked until patched
+
+I can’t transmit a message to Replit from this chat because there is no bug-report/deploy endpoint available here. This is the exact report to paste/send:
+
+```text
+Live Kalshi scan still fails the single-game filter.
+
+Request:
+include_raw_markets=true
+include_combo_markets=false
+market_type=single_game
+max_markets=25
+
+Observed:
+first_10_returned_tickers still contains:
+- KXMVESPORTSMULTIGAMEEXTENDED...
+- KXMVECROSSCATEGORY...
+
+Returned rows show:
+market_type=single
+liquidity_grade=F
+settlement_risk=REJECT
+final_label=KALSHI_REJECT_UNCALIBRATED
+
+Required behavior:
+1. Any ticker starting with KXMVESPORTSMULTIGAMEEXTENDED must always be:
+   is_combo_market=true
+   market_type=combo
+
+2. Any ticker starting with KXMVECROSSCATEGORY must always be:
+   is_combo_market=true
+   market_type=cross_category
+
+3. Apply the market_type/single_game filter after this annotation.
+
+4. When include_combo_markets=false and market_type=single_game:
+   returned KXMVESPORTSMULTIGAMEEXTENDED rows must be 0
+   returned KXMVECROSSCATEGORY rows must be 0
+
+5. Do not allow any post-processing step to overwrite:
+   is_combo_market
+   market_type
+
+6. Gate precedence must be:
+   price missing/unavailable → KALSHI_DATA_UNOBTAINABLE
+   settlement_risk=REJECT/F → KALSHI_REJECT_BAD_RULES
+   liquidity_grade=F → KALSHI_REJECT_THIN_BOOK
+   no model_probability → KALSHI_REJECT_UNCALIBRATED
+
+7. Add these required top-level/debug fields:
+   classifier_version
+   model_probability_testable_count
+   combo_by_prefix_count
+   combo_by_subtitle_count
+   first_10_filtered_out_combo_tickers
+   first_10_returned_tickers
+   request_echo.include_combo_markets
+   request_echo.market_type
+```
+
+Pass condition for the next run:
+
+```text
+first_10_returned_tickers: []
+or only non-KXMV atomic single-game tickers
+
+KXMVESPORTSMULTIGAMEEXTENDED returned: 0
+KXMVECROSSCATEGORY returned: 0
+model_probability_testable_count: 0 unless a clean priced single exists
+final_approved: 0
+execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+```
+
+Current status:
+
+```text
+Kalshi route: live
+Safety: good
+Combo classifier in returned rows: failing
+Gate label precedence: failing
+Model probability testing: blocked
+Final WOW call: NO PLAY
+```
