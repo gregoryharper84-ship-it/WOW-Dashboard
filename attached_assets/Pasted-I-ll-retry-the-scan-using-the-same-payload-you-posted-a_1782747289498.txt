@@ -1,0 +1,50 @@
+I’ll retry the scan using the same payload you posted and keep the result limited to the requested audit fields, with approvals locked at zero.
+
+[debug] Calling HTTP endpoint
+[debug] Response received
+[debug] Failed Outbound Call
+Stopped talking to create-app-gregoryharper84.replit.app
+
+The endpoint now responds differently: the GPT proxy reached it, but the raw response was too large for the tool to return. I’m checking whether the compact scan metadata can still be retrieved without approving anything.
+
+[debug] Calling HTTP endpoint
+[debug] Response received
+Talked to create-app-gregoryharper84.replit.app
+Thought for 50s
+
+The exact include_raw_markets=true call reached the scan path but the tool response was too large to return. I reran the same filters in compact mode to recover the scan metadata. No markets passed the single_game filter, so there are no returned rows to approve.
+
+{
+  "ok": null,
+  "kalshi_scan_version": "2026-06-29-cross-category-v5",
+  "classifier_version": "kxmv-prefix+subtitle-cross-v5",
+  "terminal_label": "INPUT_EMPTY",
+  "model_probability_testable_count": 0,
+  "raw_fetched": 200,
+  "combo_markets": 200,
+  "cross_category_markets": 29,
+  "single_markets": 0,
+  "first_10_filtered_out_combo_tickers": [
+    "KXMVESPORTSMULTIGAMEEXTENDED-S20265B1B445DE85-24C9254063F",
+    "KXMVESPORTSMULTIGAMEEXTENDED-S2026CE49DA87E78-671BD7D5AE2",
+    "KXMVESPORTSMULTIGAMEEXTENDED-S2026FAA20EDC2E8-AFC7E7D73A8",
+    "KXMVESPORTSMULTIGAMEEXTENDED-S2026A7C351B14BF-3C8FE90F530",
+    "KXMVESPORTSMULTIGAMEEXTENDED-S20261BDC67A2186-315BEC6E026",
+    "KXMVECROSSCATEGORY-S202683BEA5E1019-42209A6AC4C",
+    "KXMVESPORTSMULTIGAMEEXTENDED-S2026AD1FD4F5D83-FCBF63F4E0E",
+    "KXMVESPORTSMULTIGAMEEXTENDED-S2026B17922D2A7C-DE10A9F9622",
+    "KXMVESPORTSMULTIGAMEEXTENDED-S2026C1DF87F3EFD-8677A0FB8F4",
+    "KXMVESPORTSMULTIGAMEEXTENDED-S2026DC599CAD3C3-CF235ACE7B5"
+  ],
+  "first_10_returned_tickers": [],
+  "returned_rows": [],
+  "final_approved": 0,
+  "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+  "error": null
+}
+Scan result
+
+NO PLAY / INPUT_EMPTY.
+All 200 fetched sports markets were filtered out by market_type=single_game with include_combo_markets=false; 200 were classified as combo/multigame-type markets and 0 were classified as single-game markets.
+
+No approvals were made. This matches the WOW v16 rule that incomplete or empty source paths cannot be converted into validation or approval.
