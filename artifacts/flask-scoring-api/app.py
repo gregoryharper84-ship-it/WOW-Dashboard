@@ -14208,11 +14208,23 @@ def kalshi_scan_event():
         if raw_b and not raw_b.get("error"):
             norm_b = orderbook_normalizer.normalize(raw_b, ticker=t)
         else:
-            norm_b = {"liquidity_grade": "F", "best_yes_ask": None}
+            norm_b = {"liquidity_grade": "F"}
 
-        ev = edge_engine.evaluate(mp, norm_b, category) if mp else {
-            "label": "KALSHI_REJECT_UNCALIBRATED", "adjusted_edge": None
-        }
+        # Gate 1: price must be available before checking model probability.
+        # Missing/empty orderbook → DATA_UNOBTAINABLE, not UNCALIBRATED.
+        _nb_bid = norm_b.get("best_yes_bid")
+        _nb_ask = norm_b.get("best_yes_ask")
+        _price_active = (
+            (_nb_bid is not None and _nb_bid > 0.0) or
+            (_nb_ask is not None and _nb_ask < 1.0)
+        )
+        if not (raw_b and not raw_b.get("error")) or not _price_active:
+            ev = {"label": "KALSHI_DATA_UNOBTAINABLE", "adjusted_edge": None}
+        elif mp:
+            ev = edge_engine.evaluate(mp, norm_b, category)
+        else:
+            ev = {"label": "KALSHI_REJECT_UNCALIBRATED", "adjusted_edge": None}
+
         sr = settlement_risk.grade_contract(
             title=t, settlement_condition=m.get("subtitle"),
             resolution_source=res_source, category=category, contract_ticker=t
@@ -14224,6 +14236,10 @@ def kalshi_scan_event():
             "adjusted_edge":    ev.get("adjusted_edge"),
             "settlement_grade": sr["resolution_clarity_grade"],
             "liquidity_grade":  norm_b.get("liquidity_grade"),
+            "yes_price":        norm_b.get("mid_price"),
+            "best_yes_bid":     _nb_bid,
+            "best_yes_ask":     _nb_ask,
+            "price_status":     ("available" if _price_active else "missing"),
             "can_approve_bets": False,
         })
 
@@ -14501,7 +14517,21 @@ def _detect_market_type(m: dict) -> str:
         return "combo"
 
     # 3. Comma-separated multi-pick detection (≥2 yes/no legs)
-    # Split on commas; count tokens that begin with "yes " or "no " (Kalshi pick syntax)
+    # Check subtitle alone first to avoid the title-prefix contamination bug:
+    # when title="EventName" + subtitle="yes A,yes B", the concatenated
+    # title_raw split produces "EventName yes A" as the first token which does
+    # NOT start with "yes ", causing the first leg to be missed.
+    _subtitle_only = (m.get("subtitle", "") or "")
+    _sub_parts = [p.strip() for p in _subtitle_only.split(",")]
+    _sub_picks = sum(
+        1 for p in _sub_parts
+        if p.lower().startswith("yes ") or p.lower().startswith("no ")
+    )
+    if _sub_picks >= _COMBO_MIN_COMMA_LEGS:
+        return "combo"
+
+    # Also check the full title_raw (handles cases where the whole title is the
+    # comma-separated pick list with no separate subtitle prefix).
     parts = [p.strip() for p in title_raw.split(",")]
     pick_tokens = sum(
         1 for p in parts
@@ -14977,6 +15007,7 @@ def wow_kalshi_scan():
                     "event_title":         title,
                     "contract_wording":    m.get("subtitle", ""),
                     "market_type":         market_type,
+                    "is_combo_market":     market_type == "combo",
                     "final_label":         "KALSHI_DATA_UNOBTAINABLE",
                     "reason":              f"Orderbook fetch failed: {_ob_err}",
                     "price_status":        "missing",
@@ -15034,6 +15065,7 @@ def wow_kalshi_scan():
                     "event_title":      title,
                     "contract_wording": m.get("subtitle", ""),
                     "market_type":      market_type,
+                    "is_combo_market":  market_type == "combo",
                     "final_label":      "KALSHI_DATA_UNOBTAINABLE",
                     "yes_price":        _nb_mid,
                     "best_yes_bid":     _nb_bid,
@@ -15067,6 +15099,7 @@ def wow_kalshi_scan():
                     "event_title":       title,
                     "contract_wording":  m.get("subtitle", ""),
                     "market_type":       market_type,
+                    "is_combo_market":   True,
                     "final_label":       "KALSHI_SCOUT",
                     "model_probability": None,
                     "adjusted_edge":     None,
@@ -15101,6 +15134,7 @@ def wow_kalshi_scan():
                     "event_title":       title,
                     "contract_wording":  m.get("subtitle", ""),
                     "market_type":       market_type,
+                    "is_combo_market":   market_type == "combo",
                     "final_label":       "KALSHI_REJECT_BAD_RULES",
                     "model_probability": model_prob,
                     "yes_price":         _nb_mid,
@@ -15124,6 +15158,7 @@ def wow_kalshi_scan():
                     "event_title":       title,
                     "contract_wording":  m.get("subtitle", ""),
                     "market_type":       market_type,
+                    "is_combo_market":   market_type == "combo",
                     "final_label":       "KALSHI_REJECT_THIN_BOOK",
                     "model_probability": model_prob,
                     "yes_price":         _nb_mid,
@@ -15151,6 +15186,7 @@ def wow_kalshi_scan():
                     "event_title":       title,
                     "contract_wording":  m.get("subtitle", ""),
                     "market_type":       market_type,
+                    "is_combo_market":   market_type == "combo",
                     "final_label":       "KALSHI_REJECT_UNCALIBRATED",
                     "model_probability": None,
                     "yes_price":         _nb_mid,
@@ -15211,6 +15247,7 @@ def wow_kalshi_scan():
                 "event_title":        title,
                 "contract_wording":   m.get("subtitle", ""),
                 "market_type":        market_type,
+                "is_combo_market":    market_type == "combo",
                 "final_label":        label,
                 "model_probability":  model_prob,
                 "raw_edge":           ev.get("raw_edge"),

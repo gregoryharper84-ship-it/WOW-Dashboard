@@ -1,0 +1,173 @@
+This test is useful, but it shows **two remaining backend logic problems** before model-probability testing.
+
+## Verdict
+
+**SCAN_COMPLETE is good.**
+**NO PLAY is correct.**
+But the row-level labels are still wrong.
+
+These rows should **not** be labeled:
+
+```text
+KALSHI_REJECT_UNCALIBRATED
+```
+
+They should be labeled:
+
+```text
+KALSHI_DATA_UNOBTAINABLE
+```
+
+because every row has:
+
+```text
+YES price: N/A
+NO price: N/A
+Best YES bid: N/A
+Best YES ask: N/A
+Spread: N/A
+price_status: PRICE_DATA_NOT_RETURNED
+liquidity: F
+settlement: F
+```
+
+Uncalibrated means: **price exists, but model probability is missing.**
+Here, **price does not exist**, so the market cannot even enter the probability/edge gate.
+
+## Problem 1 — Gate order still needs fixing
+
+Correct gate order should be:
+
+```text
+1. Missing price/orderbook → KALSHI_DATA_UNOBTAINABLE
+2. Settlement grade F → KALSHI_REJECT_BAD_RULES
+3. Liquidity grade F → KALSHI_REJECT_THIN_BOOK
+4. No model probability → KALSHI_REJECT_UNCALIBRATED
+5. Else run edge engine
+```
+
+Current behavior is skipping straight to:
+
+```text
+No model probability → KALSHI_REJECT_UNCALIBRATED
+```
+
+That is too late in the gate stack.
+
+## Problem 2 — “single_game” is still not truly single-game
+
+Every returned row is still a **multi-leg/cross-category combo**, not a clean atomic market.
+
+Examples:
+
+```text
+yes Over 3.5 runs scored, no Over 10.5 runs scored
+yes Aaron Nola: 3+, yes Nick Lodolo: 3+
+yes Ethan Quinn, yes Target Price: $1.0446
+```
+
+Those are not single-game markets. They should be:
+
+```text
+market_type: combo
+is_combo_market: true
+```
+
+or:
+
+```text
+market_type: cross_category
+is_combo_market: true
+```
+
+Especially these ticker families:
+
+```text
+KXMVESPORTSMULTIGAMEEXTENDED → combo by default
+KXMVECROSSCATEGORY → cross_category/combo by default
+```
+
+## Send this to Replit
+
+```text
+Patch /wow/kalshi/scan before model_probabilities testing.
+
+Current scan returns:
+price_status=PRICE_DATA_NOT_RETURNED
+yes_price=null
+best_yes_bid=null
+best_yes_ask=null
+spread=null
+liquidity_grade=F
+settlement_risk=F
+final_label=KALSHI_REJECT_UNCALIBRATED
+
+This is wrong gate precedence.
+
+Required gate order:
+1. If price_status != "available" OR yes_price/best_yes_bid/best_yes_ask are missing:
+   final_label = KALSHI_DATA_UNOBTAINABLE
+   reason = "Missing contract price/orderbook"
+2. Else if settlement_risk == "F":
+   final_label = KALSHI_REJECT_BAD_RULES
+3. Else if liquidity_grade == "F":
+   final_label = KALSHI_REJECT_THIN_BOOK
+4. Else if model_probability is missing:
+   final_label = KALSHI_REJECT_UNCALIBRATED
+5. Else run edge engine.
+
+Also fix market classification:
+- KXMVESPORTSMULTIGAMEEXTENDED must default to combo=true.
+- KXMVECROSSCATEGORY must default to combo=true or market_type=cross_category.
+- Any comma-separated independent legs count >= 2 must be combo=true.
+- Only atomic one-outcome binary contracts may be market_type=single_game.
+
+These examples must be combo, not single_game:
+"yes Over 3.5 runs scored,no Over 10.5 runs scored"
+"yes Aaron Nola: 3+,yes Nick Lodolo: 3+"
+"yes Ethan Quinn,yes Target Price: $1.0446"
+
+Add row diagnostics:
+price_status
+price_source
+orderbook_status
+orderbook_http_status
+price_parse_format
+raw_price_keys_seen
+price_error
+
+Do not proceed to model_probabilities testing until at least one returned row has:
+price_status=available
+yes_price populated
+best_yes_bid populated or best_yes_ask populated
+spread populated
+```
+
+## Next test after Replit patch
+
+Run:
+
+```text
+Scan Kalshi sports markets through WOW using scan_only mode. Use include_raw_markets=true, include_combo_markets=false, market_type=single_game, max_markets=20. Return ticker, title, price_status, yes_price, best_yes_bid, best_yes_ask, spread, liquidity_grade, settlement_risk, market_type, is_combo_market, final_label, and reason. Do not approve anything.
+```
+
+Expected improvement:
+
+```text
+KXMVESPORTSMULTIGAMEEXTENDED rows should disappear when include_combo_markets=false.
+KXMVECROSSCATEGORY rows should disappear when include_combo_markets=false.
+Rows with missing prices should show KALSHI_DATA_UNOBTAINABLE, not KALSHI_REJECT_UNCALIBRATED.
+```
+
+## Current status
+
+```text
+Kalshi discovery: working
+Diagnostics: working
+Combo filtering: partially broken
+Price enrichment: still failing
+Edge testing: not ready
+Final WOW label: NO_PLAY
+```
+
+Do **not** inject model probabilities yet. First, we need one clean row with `price_status=available`.
