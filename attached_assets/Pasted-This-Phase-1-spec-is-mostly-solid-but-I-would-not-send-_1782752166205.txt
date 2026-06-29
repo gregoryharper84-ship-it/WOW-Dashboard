@@ -1,0 +1,401 @@
+This Phase 1 spec is mostly solid, but I would **not send it exactly as written**. I’d make 5 small fixes so ChatGPT/Replit doesn’t implement a broken or misleading helper.
+
+### Fix before sending
+
+1. **`_calculate_efficiency_gap(bbref_log)` should accept `line_pitches_per_inn` directly**, not return an inner function. The current closure pattern is awkward and easy to misuse.
+
+2. **Do not call efficiency for strikeouts.** A K line like `7.5` is not “pitches per inning.” Efficiency should only apply to:
+
+   * 1st Inning Pitches
+   * Total Pitches
+   * maybe outs/IP-derived props later
+
+3. **Use `_pitcher_fs`, not `_pitcher_fantasy_score`**, because your audit says the existing anchor is `_pitcher_fs` around line 6780.
+
+4. **Savant K% approximation is wrong if denominator is total pitches.** Strikeouts / pitches is not K%. Better name it `strikeout_events_per_pitch` or compute true K% only if batters faced can be derived. For Phase 1, keep it as a pressure signal but don’t call it true K%.
+
+5. **FanGraphs team abbreviation matching may fail.** Team rows often use full names, not `CIN`, `PIT`, etc. Add a small alias map or fallback fuzzy match.
+
+Here’s the cleaner send block.
+
+# WOW v16 — MLB Pitching Phase 1 Build Spec
+
+File: app.py
+
+Existing anchors to build near:
+
+* _ip_to_outs at line 6771
+* _pitcher_fs at line 6780
+* _pb_statcast_ledgers at line 6966
+
+DO NOT touch or replace any existing functions.
+DO NOT consolidate the 3 BBRef clients yet.
+Add only.
+
+Add the following AFTER line 6986, at the end of the current pybaseball block.
+
+────────────────────────────────────────────────
+FUNCTION 1: _calculate_efficiency_gap(bbref_log, line_pitches_per_inn)
+────────────────────────────────────────────────
+
+Purpose:
+Detects when a pitch-count or inning-pitch line is set above/below the pitcher's recent per-inning efficiency.
+
+Important:
+Do NOT use this for strikeout lines. A K line is not pitches per inning.
+
+Logic:
+Use most recent BBRef row:
+most_recent_row = bbref_log[-1]
+
+Read:
+pitches = row["Pit"] or row["pitches"]
+ip = row["IP"]
+
+If missing:
+return {
+"recent_p_per_inn": None,
+"gap": None,
+"flag": "EFFICIENCY_DATA_MISSING"
+}
+
+ip_float = _ip_to_outs(ip) / 3
+
+If ip_float <= 0:
+return {
+"recent_p_per_inn": None,
+"gap": None,
+"flag": "EFFICIENCY_DATA_MISSING"
+}
+
+recent_p_per_inn = pitches / ip_float
+gap = (float(line_pitches_per_inn) - recent_p_per_inn) / recent_p_per_inn
+
+if gap > 0.15:
+flag = "LINE_ABOVE_RECENT_EFFICIENCY"
+elif gap < -0.15:
+flag = "LINE_BELOW_RECENT_EFFICIENCY"
+else:
+flag = "EFFICIENCY_ALIGNED"
+
+Returns:
+{
+"recent_p_per_inn": round(recent_p_per_inn, 2),
+"gap": round(gap, 3),
+"flag": flag
+}
+
+────────────────────────────────────────────────
+FUNCTION 2: _leash_score(bbref_log)
+────────────────────────────────────────────────
+
+Purpose:
+Numeric 1–10 leash score from recent start log.
+Higher = shorter leash / more pull risk.
+
+Logic:
+Use last 5 valid rows of bbref_log.
+
+recent_ip = [_ip_to_outs(row["IP"]) / 3 for row in L5 if IP exists]
+avg_ip = mean(recent_ip)
+
+If fewer than 2 valid starts:
+return {
+"leash_score": None,
+"leash_grade": "UNKNOWN",
+"avg_ip_l5": None,
+"trend": "UNKNOWN",
+"flag": "LEASH_DATA_MISSING"
+}
+
+Score components:
+
+ip_score:
+avg_ip >= 6.0  → 0
+avg_ip >= 5.0  → 1
+avg_ip >= 4.0  → 2
+avg_ip < 4.0   → 3
+
+trend_score:
+if recent_ip[-1] < recent_ip[0] - 0.5:
+trend_score = 2
+trend = "SHORTENING"
+elif recent_ip[-1] > recent_ip[0] + 0.5:
+trend_score = 0
+trend = "LENGTHENING"
+else:
+trend_score = 1
+trend = "STABLE"
+
+consistency_score:
+stdev < 0.5 → 0
+stdev < 1.0 → 1
+stdev >= 1.0 → 2
+
+raw_score = ip_score + trend_score + consistency_score
+
+Convert to 1–10 scale:
+leash_score = min(10, max(1, raw_score + 1))
+
+leash_grade:
+1–3  → "LONG"
+4–6  → "MEDIUM"
+7–10 → "SHORT"
+
+Returns:
+{
+"leash_score": int,
+"leash_grade": str,
+"avg_ip_l5": round(avg_ip, 2),
+"trend": trend
+}
+
+────────────────────────────────────────────────
+FUNCTION 3: _get_pitcher_savant(first, last, days_back=30)
+────────────────────────────────────────────────
+
+Purpose:
+Pull recent Baseball Savant / Statcast pitcher indicators using pybaseball.
+
+Logic:
+Use existing _pb_lookup_mlbam_id(first, last) to get mlbam_id.
+
+end_date = today
+start_date = today - timedelta(days=days_back)
+
+df = _pb.statcast_pitcher(
+start_dt=start_date.strftime("%Y-%m-%d"),
+end_dt=end_date.strftime("%Y-%m-%d"),
+player_id=mlbam_id
+)
+
+If no data:
+return {"error": "SAVANT_NO_DATA"}
+
+Aggregate:
+total_pitches = len(df)
+
+whiffs:
+description in ["swinging_strike", "swinging_strike_blocked"]
+
+strikeout_events:
+events == "strikeout"
+
+walk_events:
+events == "walk"
+
+whiff_pct = whiffs / total_pitches
+
+Important:
+Do not label strikeouts / total pitches as true K%.
+Name it strikeout_events_per_pitch unless true batters faced is calculated.
+
+avg_velocity = df["release_speed"].dropna().mean()
+
+Returns:
+{
+"mlbam_id": mlbam_id,
+"days_back": days_back,
+"total_pitches": total_pitches,
+"whiff_pct": round(whiff_pct, 3),
+"strikeout_events_per_pitch": round(strikeout_events / total_pitches, 3),
+"walk_events_per_pitch": round(walk_events / total_pitches, 3),
+"avg_velocity": round(avg_velocity, 1),
+"data_source": "pybaseball_statcast"
+}
+
+On failure:
+return {
+"error": "SAVANT_FETCH_FAILED",
+"detail": str(e)
+}
+
+────────────────────────────────────────────────
+FUNCTION 4: _get_opponent_k_rate(team_abbr, handedness="overall")
+────────────────────────────────────────────────
+
+Purpose:
+Pull opponent team batting K% from FanGraphs team batting leaderboard.
+
+Logic:
+Use current season 2026 FanGraphs team batting leaderboard.
+
+Fetch with _req.get(url, headers={"User-Agent": "..."}).
+
+Parse with pd.read_html(StringIO(html)).
+
+Find the table containing a "K%" column.
+
+Team matching:
+Add a small alias map for abbreviations:
+CIN → Reds
+PIT → Pirates
+LAD → Dodgers
+NYY → Yankees
+NYM → Mets
+CHC → Cubs
+CWS → White Sox
+BOS → Red Sox
+etc.
+
+Match team_abbr to the FanGraphs team row by abbreviation or alias.
+
+Extract K%.
+
+If K% is a string like "22.3%":
+convert to 0.223
+
+If handedness != "overall" and split is unavailable:
+return {
+"team": team_abbr,
+"k_pct": k_pct_overall,
+"handedness": "overall_only",
+"note": "SPLIT_NOT_AVAILABLE_FREE",
+"source": "fangraphs_team_batting"
+}
+
+Returns:
+{
+"team": team_abbr,
+"k_pct": float,
+"handedness": handedness,
+"source": "fangraphs_team_batting"
+}
+
+On failure:
+return {
+"error": "FANGRAPHS_FETCH_FAILED",
+"team": team_abbr,
+"detail": str(e)
+}
+
+────────────────────────────────────────────────
+ENDPOINT: /wow/mlb/pitcher  POST
+────────────────────────────────────────────────
+
+Purpose:
+Single endpoint that returns pitcher prop data needed for WOW gate enforcement.
+
+Request body:
+{
+"first": "Paul",
+"last": "Skenes",
+"opponent_team": "CIN",
+"prop": "Pitcher Strikeouts",
+"line": 7.5,
+"side": "MORE"
+}
+
+Logic:
+
+1. bbref_log = _l10_bbref(first, last, "mlb_pitcher")
+2. leash = _leash_score(bbref_log)
+3. savant = _get_pitcher_savant(first, last)
+4. opp_k = _get_opponent_k_rate(opponent_team)
+5. fantasy = _pitcher_fs(first, last) only if prop == "Pitcher Fantasy Score"
+
+Efficiency:
+Only call _calculate_efficiency_gap if prop is:
+- "1st Inning Pitches"
+- "Pitcher Pitches"
+- "Total Pitches"
+
+Do not call efficiency for Pitcher Strikeouts.
+
+Gate flags:
+gate_flags = []
+
+if leash["leash_score"] is not None and leash["leash_score"] >= 7:
+gate_flags.append("LEASH_KILL_RISK")
+
+if efficiency exists and efficiency["flag"] == "LINE_ABOVE_RECENT_EFFICIENCY":
+gate_flags.append("LINE_ABOVE_RECENT_EFFICIENCY")
+
+if prop == "Pitcher Strikeouts" and float(line) <= 5.0:
+gate_flags.append("WATCH_TIGHT_K_LESS_LINE")
+
+tight_k_trap = (
+prop == "Pitcher Strikeouts" and
+side == "LESS" and
+float(line) <= 5.0 and
+leash.get("leash_grade") != "SHORT"
+)
+
+if tight_k_trap:
+gate_flags.append("REJECT_ONE_K_MARGIN_TRAP")
+
+wow_verdict:
+if any flag starts with "REJECT_":
+"GATE_KILL"
+elif any flag starts with "WATCH_" or flag == "LEASH_KILL_RISK":
+"GATE_WATCH"
+else:
+"GATE_PASS"
+
+Response:
+{
+"player": "Paul Skenes",
+"prop": "Pitcher Strikeouts",
+"line": 7.5,
+"side": "MORE",
+"opponent": "CIN",
+"leash": {...},
+"savant": {...},
+"opponent_k_pct": {...},
+"efficiency": null or {...},
+"fantasy": null or {...},
+"gate_flags": [...],
+"wow_verdict": "GATE_PASS" | "GATE_WATCH" | "GATE_KILL",
+"data_sources": ["bbref", "statcast", "fangraphs"]
+}
+
+────────────────────────────────────────────────
+REGRESSION TESTS
+────────────────────────────────────────────────
+
+Test 1:
+
+POST /wow/mlb/pitcher
+{
+"first": "Andrew",
+"last": "Abbott",
+"opponent_team": "PIT",
+"prop": "Pitcher Strikeouts",
+"line": 5.0,
+"side": "LESS"
+}
+
+Expected:
+gate_flags includes "WATCH_TIGHT_K_LESS_LINE"
+gate_flags includes "REJECT_ONE_K_MARGIN_TRAP" if leash_grade != "SHORT"
+wow_verdict: "GATE_KILL" if REJECT_ONE_K_MARGIN_TRAP fires
+
+Test 2:
+
+POST /wow/mlb/pitcher
+{
+"first": "Paul",
+"last": "Skenes",
+"opponent_team": "CIN",
+"prop": "Pitcher Strikeouts",
+"line": 7.5,
+"side": "MORE"
+}
+
+Expected:
+gate_flags: [] or ["LEASH_KILL_RISK"] only if leash score is short-risk
+wow_verdict: "GATE_PASS" or "GATE_WATCH"
+savant.whiff_pct populated
+opponent_k_pct.k_pct populated
+efficiency: null because this is a strikeout prop
+
+════════════════════════════════════════════════
+DO NOT consolidate BBRef clients yet.
+DO NOT modify existing functions.
+Add only.
+Deploy.
+Run both regression tests.
+Report back endpoint response + both test outputs.
+════════════════════════════════════════════════
+
+That version keeps Phase 1 tight and avoids corrupting K props with a pitch-efficiency calculation.

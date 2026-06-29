@@ -7145,6 +7145,367 @@ def _pb_to_wow_format(pb_data: dict, prop: str, direction: str, line: float):
     }
 
 
+# ── WOW MLB Pitching Phase 1 helpers ─────────────────────────────────────────
+# Inserted after existing pybaseball block. DO NOT consolidate BBRef clients.
+
+def _calculate_efficiency_gap(bbref_log: list, line_pitches_per_inn: float) -> dict:
+    """Compare pitcher's most-recent P/inn to the prop line (pitch-count props only).
+    DO NOT call for strikeout lines — a K number is not pitches per inning.
+    Valid props: '1st Inning Pitches', 'Pitcher Pitches', 'Total Pitches'.
+    """
+    if not bbref_log:
+        return {"recent_p_per_inn": None, "gap": None, "flag": "EFFICIENCY_DATA_MISSING"}
+    most_recent = bbref_log[-1]
+    # WOW game objects use "value" for the stat and "context" for the ctx_col (IP).
+    # Raw BBRef rows use "Pit"/"pitches" and "IP" directly.
+    pitches = most_recent.get("value") or most_recent.get("Pit") or most_recent.get("pitches")
+    ip_raw   = most_recent.get("context") or most_recent.get("IP")
+    if pitches is None or ip_raw is None:
+        return {"recent_p_per_inn": None, "gap": None, "flag": "EFFICIENCY_DATA_MISSING"}
+    try:
+        pitches_f = float(pitches)
+        ip_float  = _ip_to_outs(ip_raw) / 3.0
+    except (TypeError, ValueError):
+        return {"recent_p_per_inn": None, "gap": None, "flag": "EFFICIENCY_DATA_MISSING"}
+    if ip_float <= 0:
+        return {"recent_p_per_inn": None, "gap": None, "flag": "EFFICIENCY_DATA_MISSING"}
+    recent_p_per_inn = pitches_f / ip_float
+    gap = (float(line_pitches_per_inn) - recent_p_per_inn) / recent_p_per_inn
+    if gap > 0.15:
+        flag = "LINE_ABOVE_RECENT_EFFICIENCY"
+    elif gap < -0.15:
+        flag = "LINE_BELOW_RECENT_EFFICIENCY"
+    else:
+        flag = "EFFICIENCY_ALIGNED"
+    return {
+        "recent_p_per_inn": round(recent_p_per_inn, 2),
+        "gap":               round(gap, 3),
+        "flag":              flag,
+    }
+
+
+def _leash_score(bbref_log: list) -> dict:
+    """Numeric 1–10 leash score from recent start log (higher = shorter leash).
+    Uses last 5 valid rows where IP is parseable.
+    """
+    import statistics as _stats
+    if not bbref_log:
+        return {"leash_score": None, "leash_grade": "UNKNOWN",
+                "avg_ip_l5": None, "trend": "UNKNOWN", "flag": "LEASH_DATA_MISSING"}
+    # Pull last 5 rows with parseable IP
+    valid = []
+    for row in bbref_log[-5:]:
+        # WOW game objects store IP in "context"; raw BBRef rows use "IP" directly.
+        ip_raw = row.get("context") or row.get("IP")
+        if ip_raw is None:
+            continue
+        try:
+            ip_f = _ip_to_outs(ip_raw) / 3.0
+            if ip_f > 0:
+                valid.append(ip_f)
+        except (TypeError, ValueError):
+            continue
+    if len(valid) < 2:
+        return {"leash_score": None, "leash_grade": "UNKNOWN",
+                "avg_ip_l5": None, "trend": "UNKNOWN", "flag": "LEASH_DATA_MISSING"}
+    avg_ip = sum(valid) / len(valid)
+    # ip_score
+    if avg_ip >= 6.0:
+        ip_score = 0
+    elif avg_ip >= 5.0:
+        ip_score = 1
+    elif avg_ip >= 4.0:
+        ip_score = 2
+    else:
+        ip_score = 3
+    # trend_score
+    if valid[-1] < valid[0] - 0.5:
+        trend_score = 2
+        trend = "SHORTENING"
+    elif valid[-1] > valid[0] + 0.5:
+        trend_score = 0
+        trend = "LENGTHENING"
+    else:
+        trend_score = 1
+        trend = "STABLE"
+    # consistency_score
+    stdev = _stats.stdev(valid) if len(valid) >= 2 else 0.0
+    if stdev < 0.5:
+        consistency_score = 0
+    elif stdev < 1.0:
+        consistency_score = 1
+    else:
+        consistency_score = 2
+    raw_score   = ip_score + trend_score + consistency_score
+    leash_score = min(10, max(1, raw_score + 1))
+    if leash_score <= 3:
+        leash_grade = "LONG"
+    elif leash_score <= 6:
+        leash_grade = "MEDIUM"
+    else:
+        leash_grade = "SHORT"
+    return {
+        "leash_score":  leash_score,
+        "leash_grade":  leash_grade,
+        "avg_ip_l5":    round(avg_ip, 2),
+        "trend":        trend,
+    }
+
+
+def _get_pitcher_savant(first: str, last: str, days_back: int = 30) -> dict:
+    """Pull recent Statcast pitcher indicators via pybaseball.
+    Note: strikeout_events_per_pitch ≠ true K% (denominator is pitches, not BF).
+    """
+    if not _PYBASEBALL_OK:
+        return {"error": "pybaseball not installed"}
+    from datetime import datetime, timedelta
+    try:
+        mlbam_id = _pb_lookup_mlbam_id(first, last)
+        if mlbam_id is None:
+            return {"error": "SAVANT_PLAYER_NOT_FOUND", "player": f"{first} {last}"}
+        end_dt   = datetime.now()
+        start_dt = end_dt - timedelta(days=days_back)
+        df = _pb.statcast_pitcher(
+            start_dt.strftime("%Y-%m-%d"),
+            end_dt.strftime("%Y-%m-%d"),
+            mlbam_id,
+        )
+        if df is None or df.empty:
+            return {"error": "SAVANT_NO_DATA", "mlbam_id": mlbam_id}
+        total_pitches = len(df)
+        desc = df.get("description", df.get("des", None))
+        if desc is not None:
+            whiffs = int(df["description"].isin(
+                ["swinging_strike", "swinging_strike_blocked"]).sum())
+        else:
+            whiffs = 0
+        events = df.get("events")
+        strikeout_events = int((events == "strikeout").sum())  if events is not None else 0
+        walk_events      = int(events.isin(["walk", "intent_walk"]).sum()) if events is not None else 0
+        whiff_pct = whiffs / total_pitches if total_pitches else 0.0
+        avg_vel   = df["release_speed"].dropna().mean() if "release_speed" in df.columns else None
+        return {
+            "mlbam_id":                  mlbam_id,
+            "days_back":                 days_back,
+            "total_pitches":             total_pitches,
+            "whiff_pct":                 round(whiff_pct, 3),
+            "strikeout_events_per_pitch": round(strikeout_events / total_pitches, 3) if total_pitches else None,
+            "walk_events_per_pitch":     round(walk_events      / total_pitches, 3) if total_pitches else None,
+            "avg_velocity":              round(float(avg_vel), 1) if avg_vel is not None and not (avg_vel != avg_vel) else None,
+            "data_source":               "pybaseball_statcast",
+        }
+    except Exception as e:
+        return {"error": "SAVANT_FETCH_FAILED", "detail": str(e)[:300]}
+
+
+# FanGraphs team name alias map (abbreviation → substring in FanGraphs full name)
+_FG_TEAM_ALIASES: dict[str, list[str]] = {
+    "ARI": ["Diamondbacks", "Arizona"],
+    "ATL": ["Braves", "Atlanta"],
+    "BAL": ["Orioles", "Baltimore"],
+    "BOS": ["Red Sox", "Boston"],
+    "CHC": ["Cubs", "Chicago C"],
+    "CWS": ["White Sox", "Chicago W"],
+    "CIN": ["Reds", "Cincinnati"],
+    "CLE": ["Guardians", "Cleveland"],
+    "COL": ["Rockies", "Colorado"],
+    "DET": ["Tigers", "Detroit"],
+    "HOU": ["Astros", "Houston"],
+    "KC":  ["Royals", "Kansas City"],
+    "LAA": ["Angels", "Los Angeles A", "L.A. Angels"],
+    "LAD": ["Dodgers", "Los Angeles D", "L.A. Dodgers"],
+    "MIA": ["Marlins", "Miami"],
+    "MIL": ["Brewers", "Milwaukee"],
+    "MIN": ["Twins", "Minnesota"],
+    "NYM": ["Mets", "New York M"],
+    "NYY": ["Yankees", "New York Y"],
+    "OAK": ["Athletics", "Oakland"],
+    "PHI": ["Phillies", "Philadelphia"],
+    "PIT": ["Pirates", "Pittsburgh"],
+    "SD":  ["Padres", "San Diego"],
+    "SF":  ["Giants", "San Francisco"],
+    "SEA": ["Mariners", "Seattle"],
+    "STL": ["Cardinals", "St. Louis"],
+    "TB":  ["Rays", "Tampa Bay"],
+    "TEX": ["Rangers", "Texas"],
+    "TOR": ["Blue Jays", "Toronto"],
+    "WSH": ["Nationals", "Washington"],
+}
+
+
+def _get_opponent_k_rate(team_abbr: str, handedness: str = "overall") -> dict:
+    """Pull opponent team batting K% — tries pybaseball.team_batting() first
+    (wraps FanGraphs natively), falls back to direct HTML scrape."""
+    import datetime as _dt
+
+    def _match_team(tbl, abbr):
+        """Return a matched DataFrame row or None, using _FG_TEAM_ALIASES."""
+        aliases = _FG_TEAM_ALIASES.get(abbr.upper(), [abbr])
+        team_col = next((c for c in tbl.columns
+                         if str(c).lower() in ("team", "tm", "name", "team name")), None)
+        if team_col is None:
+            return None, None
+        for _, row in tbl.iterrows():
+            cell = str(row[team_col])
+            if any(a.lower() in cell.lower() for a in aliases):
+                return row, team_col
+            if abbr.upper() in cell.upper():
+                return row, team_col
+        return None, team_col
+
+    # ── Primary: MLB Stats API (free, no auth, all 30 teams) ─────────────────
+    import requests as _req
+    try:
+        season = _dt.datetime.now().year
+        url = (
+            f"https://statsapi.mlb.com/api/v1/teams/stats"
+            f"?season={season}&sportId=1&stats=season&group=hitting"
+        )
+        resp = _req.get(url, timeout=10)
+        resp.raise_for_status()
+        splits = resp.json().get("stats", [{}])[0].get("splits", [])
+        aliases = _FG_TEAM_ALIASES.get(team_abbr.upper(), [team_abbr])
+        matched = None
+        for s in splits:
+            team_name = s.get("team", {}).get("name", "")
+            if any(a.lower() in team_name.lower() for a in aliases):
+                matched = s["stat"]
+                break
+        if matched:
+            pa = int(matched.get("plateAppearances", 0))
+            ks = int(matched.get("strikeOuts", 0))
+            if pa > 0:
+                k_pct = round(ks / pa, 4)
+                result = {
+                    "team":       team_abbr,
+                    "k_pct":      k_pct,
+                    "handedness": handedness,
+                    "source":     "mlb_stats_api",
+                    "strikeOuts": ks,
+                    "plateAppearances": pa,
+                }
+                if handedness != "overall":
+                    result["note"] = "SPLIT_NOT_AVAILABLE_FREE"
+                    result["handedness"] = "overall_only"
+                return result
+    except Exception:
+        pass  # fall through
+
+    # ── Fallback: pybaseball team_batting ─────────────────────────────────────
+    if _PYBASEBALL_OK:
+        try:
+            tbl = _pb.team_batting(_dt.datetime.now().year, _dt.datetime.now().year)
+            if tbl is not None and not tbl.empty:
+                tbl.columns = [str(c) for c in tbl.columns]
+                k_col = next((c for c in tbl.columns if c == "K%"), None)
+                matched_row, _ = _match_team(tbl, team_abbr)
+                if matched_row is not None and k_col:
+                    raw_k = str(matched_row[k_col]).replace("%", "").strip()
+                    k_pct = float(raw_k) / 100.0 if float(raw_k) > 1 else float(raw_k)
+                    result = {
+                        "team":       team_abbr,
+                        "k_pct":      round(k_pct, 4),
+                        "handedness": handedness,
+                        "source":     "pybaseball_team_batting",
+                    }
+                    if handedness != "overall":
+                        result["note"] = "SPLIT_NOT_AVAILABLE_FREE"
+                    return result
+        except Exception:
+            pass
+
+    # ── Final fallback: FanGraphs HTML ───────────────────────────────────────
+    import requests as _req
+    try:
+        url = (
+            "https://www.fangraphs.com/leaders/major-league"
+            "?pos=all&stats=bat&lg=all&qual=0&type=8&season=2026"
+            "&season1=2026&ind=0&team=0%2Cts&rost=0&age=0&filter=&players=0"
+        )
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml",
+        }
+        resp = _req.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        from io import StringIO as _SIO
+        tables = pd.read_html(_SIO(resp.text))
+        tbl = next((t for t in tables
+                    if any("K%" in str(c) for c in t.columns)), None)
+        if tbl is None:
+            return {"error": "FANGRAPHS_FETCH_FAILED", "team": team_abbr,
+                    "detail": "No K% column found in any parsed table"}
+        tbl.columns = [str(c) for c in tbl.columns]
+        k_col = next((c for c in tbl.columns if "K%" in c), None)
+        matched_row, _ = _match_team(tbl, team_abbr)
+        if matched_row is None:
+            return {"error": "FANGRAPHS_TEAM_NOT_FOUND", "team": team_abbr}
+        raw_k = str(matched_row[k_col]).replace("%", "").strip()
+        k_pct = float(raw_k) / 100.0 if float(raw_k) > 1 else float(raw_k)
+        result = {
+            "team":       team_abbr,
+            "k_pct":      round(k_pct, 4),
+            "handedness": handedness,
+            "source":     "fangraphs_html",
+        }
+        if handedness != "overall":
+            result["note"] = "SPLIT_NOT_AVAILABLE_FREE"
+        return result
+    except Exception as e:
+        return {"error": "FANGRAPHS_FETCH_FAILED", "team": team_abbr,
+                "detail": str(e)[:300]}
+
+
+def _leash_score_from_statcast(first: str, last: str, days_back: int = 90) -> dict:
+    """Leash score fallback when BBRef is unavailable.
+    Groups Statcast pitch-by-pitch data by game_date to reconstruct a per-start
+    log, using max inning reached as an IP proxy, then feeds _leash_score().
+    """
+    if not _PYBASEBALL_OK:
+        return {"leash_score": None, "leash_grade": "UNKNOWN",
+                "avg_ip_l5": None, "trend": "UNKNOWN", "flag": "LEASH_DATA_MISSING"}
+    from datetime import datetime, timedelta
+    try:
+        mlbam_id = _pb_lookup_mlbam_id(first, last)
+        if mlbam_id is None:
+            return {"leash_score": None, "leash_grade": "UNKNOWN",
+                    "avg_ip_l5": None, "trend": "UNKNOWN", "flag": "LEASH_DATA_MISSING"}
+        end_dt   = datetime.now()
+        start_dt = end_dt - timedelta(days=days_back)
+        df = _pb.statcast_pitcher(
+            start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"), mlbam_id)
+        if df is None or df.empty:
+            return {"leash_score": None, "leash_grade": "UNKNOWN",
+                    "avg_ip_l5": None, "trend": "UNKNOWN", "flag": "LEASH_DATA_MISSING"}
+        df["game_date"] = pd.to_datetime(df["game_date"])
+        # Per-start: use max inning pitched as IP proxy
+        per_game = (
+            df.groupby("game_date")
+              .agg(max_inning=("inning", "max"))
+              .reset_index()
+              .sort_values("game_date")
+        )
+        # Build synthetic log using "context" key (matches _leash_score key lookup)
+        synthetic_log = [
+            {"context": str(int(row["max_inning"])), "source": "statcast_proxy"}
+            for _, row in per_game.iterrows()
+        ]
+        result = _leash_score(synthetic_log)
+        result["leash_source"] = "statcast_inning_proxy"
+        return result
+    except Exception as e:
+        return {"leash_score": None, "leash_grade": "UNKNOWN",
+                "avg_ip_l5": None, "trend": "UNKNOWN",
+                "flag": "LEASH_DATA_MISSING", "error": str(e)[:200]}
+
+
+# ── END WOW MLB Pitching Phase 1 helpers ──────────────────────────────────────
+
+
 def _mlb_workflow_fields(first: str, last: str, sport: str, prop: str,
                          year: str, opponent: str = "", game_date: str = "",
                          statcast_data: dict = None):
@@ -7792,6 +8153,117 @@ def wow_l10_v2():
     if rows >= 3:
         _cache_set(_L10V2_CACHE, ck, resp)
     return jsonify({"ok": True, "cached": False, **resp})
+
+
+# ── WOW MLB Pitcher Prop Gate ─────────────────────────────────────────────────
+_PITCH_COUNT_PROPS = {"1st inning pitches", "pitcher pitches", "total pitches"}
+
+@app.route("/wow/mlb/pitcher", methods=["POST"])
+@require_api_key
+def wow_mlb_pitcher():
+    """POST /wow/mlb/pitcher
+    Returns leash score, Savant indicators, opponent K%, and gate flags
+    for a single MLB pitcher prop.
+
+    Body:
+      { "first": str, "last": str, "opponent_team": str,
+        "prop": str, "line": number, "side": "MORE"|"LESS" }
+    """
+    body = request.get_json(silent=True) or {}
+    first    = (body.get("first")         or "").strip()
+    last     = (body.get("last")          or "").strip()
+    opp      = (body.get("opponent_team") or "").strip().upper()
+    prop     = (body.get("prop")          or "").strip()
+    side     = (body.get("side")          or "MORE").strip().upper()
+    try:
+        line = float(body.get("line", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "line must be a number"}), 400
+
+    if not first or not last:
+        return jsonify({"ok": False, "error": "first and last are required"}), 400
+
+    year = str(datetime.now().year)
+
+    # 1. BBRef game log → leash score
+    try:
+        bbref_raw = _l10_bbref(first, last, "mlb_pitcher", prop, side, line, year)
+        bbref_log = bbref_raw.get("games", []) if isinstance(bbref_raw, dict) else []
+    except Exception as e:
+        bbref_log = []
+
+    if bbref_log:
+        leash = _leash_score(bbref_log)
+    else:
+        leash = _leash_score_from_statcast(first, last)
+    savant     = _get_pitcher_savant(first, last)
+    opp_k      = _get_opponent_k_rate(opp) if opp else {"error": "NO_OPPONENT_PROVIDED"}
+
+    # 2. Efficiency gap — pitch-count props only, NOT strikeouts
+    efficiency = None
+    if prop.lower() in _PITCH_COUNT_PROPS and line > 0:
+        efficiency = _calculate_efficiency_gap(bbref_log, line)
+
+    # 3. Fantasy score — only if requested
+    fantasy = None
+    if prop.lower() in ("pitcher fantasy score", "fantasy score"):
+        try:
+            fantasy = _pitcher_fantasy_score(first, last, side, line, year)
+        except Exception as e:
+            fantasy = {"error": str(e)[:200]}
+
+    # 4. Gate flags
+    gate_flags: list[str] = []
+
+    ls = leash.get("leash_score")
+    if ls is not None and ls >= 7:
+        gate_flags.append("LEASH_KILL_RISK")
+
+    if efficiency and efficiency.get("flag") == "LINE_ABOVE_RECENT_EFFICIENCY":
+        gate_flags.append("LINE_ABOVE_RECENT_EFFICIENCY")
+
+    if prop == "Pitcher Strikeouts" and line <= 5.0:
+        gate_flags.append("WATCH_TIGHT_K_LESS_LINE")
+
+    tight_k_trap = (
+        prop == "Pitcher Strikeouts"
+        and side == "LESS"
+        and line <= 5.0
+        and leash.get("leash_grade") != "SHORT"
+    )
+    if tight_k_trap:
+        gate_flags.append("REJECT_ONE_K_MARGIN_TRAP")
+
+    # 5. WOW verdict
+    if any(f.startswith("REJECT_") for f in gate_flags):
+        wow_verdict = "GATE_KILL"
+    elif any(f.startswith("WATCH_") or f == "LEASH_KILL_RISK" for f in gate_flags):
+        wow_verdict = "GATE_WATCH"
+    else:
+        wow_verdict = "GATE_PASS"
+
+    data_sources = ["bbref"]
+    if not savant.get("error"):
+        data_sources.append("statcast")
+    if not opp_k.get("error"):
+        data_sources.append("fangraphs")
+
+    return jsonify({
+        "ok":             True,
+        "player":         f"{first} {last}",
+        "prop":           prop,
+        "line":           line,
+        "side":           side,
+        "opponent":       opp,
+        "leash":          leash,
+        "savant":         savant,
+        "opponent_k_pct": opp_k,
+        "efficiency":     efficiency,
+        "fantasy":        fantasy,
+        "gate_flags":     gate_flags,
+        "wow_verdict":    wow_verdict,
+        "data_sources":   data_sources,
+    })
 
 
 # ── Component B: CSV export for MLB props ───────────────────────
