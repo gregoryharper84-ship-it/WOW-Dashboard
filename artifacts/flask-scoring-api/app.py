@@ -14425,7 +14425,7 @@ def kalshi_settle_result():
 
 
 # ── WOW / Kalshi Scan (Custom GPT entry point) ───────────────────────────────
-_KALSHI_SCAN_VERSION  = "2026-06-29-cross-category-v5"
+_KALSHI_SCAN_VERSION  = "2026-06-29-mve-prefilter-v6"
 _KALSHI_BUILD_TS      = "2026-06-28T00:00:00Z"   # updated on each deploy
 
 # Multi-leg combo/slate market detector.
@@ -14649,9 +14649,29 @@ def wow_kalshi_scan():
         raw = kalshi_client.search_markets(**_kalshi_qp)
         markets = raw.get("markets") or []
 
+        # ── MVE pre-filter: use Kalshi's own mve_collection_ticker field ──────
+        # Kalshi's GET /markets?category=sports returns KXMV multi-variant
+        # collection markets (esports parlays, cross-category slates) even
+        # though they aren't single-game sports markets.  Every KXMV market
+        # carries a non-null mve_collection_ticker field in the raw API
+        # response.  Drop them here before the classification loop so we never
+        # pay the orderbook-fetch cost for markets we can't use.
+        # When include_combo_markets=True we let them through for discovery.
+        _n_raw = len(markets)
+        _n_mve_dropped = 0
+        if not include_combo_markets:
+            _before_mve = len(markets)
+            markets = [
+                m for m in markets
+                if not (m.get("mve_collection_ticker") or "").strip()
+            ]
+            _n_mve_dropped = _before_mve - len(markets)
+
         # ── Initialise filter_diagnostics — updated at each stage ────────────
         _diag = {
-            "raw_fetched":              len(markets),
+            "raw_fetched":              _n_raw,
+            "dropped_by_mve_filter":    _n_mve_dropped,
+            "after_mve_filter":         len(markets),
             "after_sport_filter":       len(markets),
             "after_date_filter":        len(markets),
             "after_combo_filter":       len(markets),
@@ -14671,26 +14691,35 @@ def wow_kalshi_scan():
         }
 
         def _zero_resp(reason: str) -> dict:
+            # Ensure GPT-required fields are always present even in early-exit paths
+            _diag.setdefault("first_10_filtered_out_combo_tickers", [])
+            _diag.setdefault("first_10_returned_tickers", [])
+            _diag.setdefault("classifier_version", "kxmv-prefix+subtitle-cross-v5")
+            _diag.setdefault("combo_by_prefix_count", _n_mve_dropped)
+            _diag.setdefault("combo_by_subtitle_count", 0)
+            _diag.setdefault("cross_category_count", 0)
             return {
-                "kalshi_scan_version":   _KALSHI_SCAN_VERSION,
-                "build_timestamp":       _KALSHI_BUILD_TS,
-                "terminal_label":        "INPUT_EMPTY",
-                "markets_scanned":       0,
-                "single_markets":        0,
-                "combo_markets":         0,
-                "skipped_type_filter":   0,
-                "playable_limit_only":   0,
-                "final_approved":        0,
-                "watch":                 0,
-                "scout":                 0,
-                "rejected_no_edge":      0,
-                "rejected_fee_drag":     0,
-                "rejected_thin_book":    0,
-                "rejected_bad_rules":    0,
-                "rejected_uncalibrated": 0,
-                "data_unobtainable":     0,
-                "candidates":            [],
-                "rejected":              [{
+                "kalshi_scan_version":              _KALSHI_SCAN_VERSION,
+                "build_timestamp":                  _KALSHI_BUILD_TS,
+                "terminal_label":                   "INPUT_EMPTY",
+                "markets_scanned":                  0,
+                "single_markets":                   0,
+                "combo_markets":                    0,
+                "cross_category_markets":           0,
+                "skipped_type_filter":              0,
+                "model_probability_testable_count": 0,
+                "playable_limit_only":              0,
+                "final_approved":                   0,
+                "watch":                            0,
+                "scout":                            0,
+                "rejected_no_edge":                 0,
+                "rejected_fee_drag":                0,
+                "rejected_thin_book":               0,
+                "rejected_bad_rules":               0,
+                "rejected_uncalibrated":            0,
+                "data_unobtainable":                0,
+                "candidates":                       [],
+                "rejected":                         [{
                     "ticker":           None,
                     "event_title":      "No markets matched filters",
                     "contract_wording": reason,
@@ -14700,9 +14729,9 @@ def wow_kalshi_scan():
                     "reason":           reason,
                     "can_approve_bets": False,
                 }],
-                "filter_diagnostics":    _diag,
-                "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
-                "request_echo":          _echo,
+                "filter_diagnostics":               _diag,
+                "execution_rule":                   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+                "request_echo":                     _echo,
             }
 
         if not markets:
