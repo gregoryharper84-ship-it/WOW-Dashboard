@@ -3,7 +3,6 @@ import { Sparkles, Upload, X, Loader2, AlertTriangle, ChevronRight } from "lucid
 import { WowResultCard } from "@/components/wow-result-card";
 import { useLocation } from "wouter";
 
-const API_KEY = import.meta.env.VITE_SCORING_API_KEY || "";
 const BASE     = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
 
 const SLIP_FORMATS: Record<string, { breakeven: number; legs: number }> = {
@@ -81,9 +80,9 @@ export default function PromptPage() {
     setSharpAnchor(null);
 
     try {
-      const resp = await fetch(`${BASE}/wow/analyze`, {
+      const resp = await fetch("/api/wow/analyze", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt:       prompt.trim() || undefined,
           image_base64: imageB64 || undefined,
@@ -110,9 +109,9 @@ export default function PromptPage() {
       const sfl = parseFloat(sharpFairLine);
       if (!isNaN(nvp)) {
         try {
-          const sar = await fetch(`${BASE}/gate-engine/sharp-anchor`, {
+          const sar = await fetch("/api/gate-engine/sharp-anchor", {
             method: "POST",
-            headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               pp_line:           data.line,
               sharp_fair_line:   isNaN(sfl) ? null : sfl,

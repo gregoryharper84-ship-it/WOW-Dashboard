@@ -28,11 +28,6 @@ if (!basePath) {
 
 export default defineConfig({
   base: basePath,
-  define: {
-    "import.meta.env.VITE_SCORING_API_KEY": JSON.stringify(
-      process.env.SCORING_API_KEY ?? ""
-    ),
-  },
   plugins: [
     react(),
     tailwindcss(),

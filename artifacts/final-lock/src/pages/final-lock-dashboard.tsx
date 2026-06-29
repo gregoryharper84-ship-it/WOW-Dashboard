@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Lock, Zap, History, RefreshCw, CheckCircle2, XCircle, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 
-const API_KEY = import.meta.env.VITE_SCORING_API_KEY || "";
 
 const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
 
@@ -358,8 +357,8 @@ export default function FinalLockDashboard() {
   const fetchHistory = useCallback(async () => {
     setLoadingHistory(true);
     try {
-      const res = await fetch("/lock-api/history", {
-        headers: { "X-API-Key": API_KEY },
+      const res = await fetch("/api/lock-api/history", {
+        headers: {},
       });
       if (res.ok) {
         const data = await res.json();
@@ -385,12 +384,11 @@ export default function FinalLockDashboard() {
       const player = parts[0] || autofillQuery.trim();
       const market = parts[1] || "";
 
-      const res = await fetch("/wow/l10/v2", {
+      const res = await fetch("/api/wow/l10/v2", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-API-Key": API_KEY,
-        },
+                  },
         body: JSON.stringify({ player_name: player, market }),
       });
 
@@ -440,12 +438,11 @@ export default function FinalLockDashboard() {
         pick_count: form.pick_count,
       };
 
-      const res = await fetch("/lock-api/submit", {
+      const res = await fetch("/api/lock-api/submit", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-API-Key": API_KEY,
-        },
+                  },
         body: JSON.stringify(payload),
       });
 

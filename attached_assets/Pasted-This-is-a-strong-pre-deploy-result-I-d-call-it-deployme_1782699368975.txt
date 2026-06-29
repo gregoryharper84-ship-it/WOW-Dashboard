@@ -1,0 +1,106 @@
+This is a strong pre-deploy result. I’d call it **deployment-ready with one external blocker**:
+
+```text
+BLOCKER: Anthropic credits exhausted
+CODE STATUS: Green
+WOW / Kalshi safety: Green
+Frontend routes: Green
+Auth/error handling: Green
+```
+
+## Main thing to fix
+
+The only real blocker is:
+
+```text
+Claude API error: credit balance is too low
+```
+
+That is not a code problem. Fix in Anthropic billing, then rerun:
+
+```text
+POST /wow/analyze text prompt
+POST /wow/analyze image prompt
+```
+
+Once those return `ok:true`, deploy is clear.
+
+## One thing I would double-check
+
+This line worries me a little:
+
+```text
+No keys in bundle (all behind VITE_*) ✅ Clean
+```
+
+Be careful: **anything prefixed with `VITE_` is exposed to the browser bundle.**
+
+So the rule should be:
+
+```text
+Safe in VITE_:
+- public API base URL
+- public feature flags
+- frontend config
+
+Never in VITE_:
+- ANTHROPIC_API_KEY
+- SCORING_API_KEY
+- WOW_API_KEY
+- Kalshi private keys
+- any server secret
+```
+
+Correct setup should be:
+
+```text
+Frontend:
+VITE_API_BASE_URL=https://create-app-gregoryharper84.replit.app
+
+Backend secrets only:
+ANTHROPIC_API_KEY
+SCORING_API_KEY / WOW_API_KEY
+KALSHI_API_KEY_ID
+KALSHI_PRIVATE_KEY
+```
+
+If that’s already true, you’re fine.
+
+## Deploy decision
+
+I would deploy after one of these:
+
+### Option A — Full deploy
+
+Top up Anthropic credits first, then deploy.
+
+### Option B — Safe deploy now
+
+Deploy now, but expect `/analyze` to show a friendly “Claude credits exhausted” error until Anthropic billing is fixed.
+
+Since the UI handles the error cleanly and Kalshi scan works, Option B is safe from a system standpoint. But for user experience, Option A is better.
+
+## Post-deploy live checks
+
+After publish, run:
+
+```text
+1. Open /
+2. Open /analyze
+3. Open /kalshi
+4. Submit text prompt to /wow/analyze
+5. Submit image prompt to /wow/analyze
+6. Run /wow/kalshi/scan in scan_only
+```
+
+## Current milestone status
+
+```text
+WOW Analyze UI: ready
+Claude integration: code ready, billing blocked
+Kalshi lane: scan-only working
+Live execution: disabled correctly
+Final Lock: safe, not auto-executing
+```
+
+My verdict: **ready to publish once you confirm no secrets are exposed through `VITE_` and Anthropic credits are topped up.**

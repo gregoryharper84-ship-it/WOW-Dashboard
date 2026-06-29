@@ -4,7 +4,6 @@ import {
   ChevronDown, BarChart2, FileText, Activity, X, Loader2, Clock
 } from "lucide-react";
 
-const API_KEY = import.meta.env.VITE_SCORING_API_KEY || "";
 
 const CATEGORIES = ["sports", "weather", "macro", "politics", "news", "narrative", "crypto", "other"];
 
@@ -177,9 +176,9 @@ function EvaluatePanel() {
     setLogResult(null);
     try {
       const prob = modelProb.trim() ? parseFloat(modelProb) : null;
-      const res = await fetch("/kalshi/evaluate-contract", {
+      const res = await fetch("/api/kalshi/evaluate-contract", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ticker: ticker.trim(),
           side,
@@ -205,9 +204,9 @@ function EvaluatePanel() {
     setLogging(true);
     setLogResult(null);
     try {
-      const res = await fetch("/kalshi/paper-trade", {
+      const res = await fetch("/api/kalshi/paper-trade", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ticker: evalResult.ticker,
           side: evalResult.side,
@@ -450,9 +449,9 @@ function SettleModal({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/kalshi/settle-result", {
+      const res = await fetch("/api/kalshi/settle-result", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: row.id,
           result,
@@ -778,8 +777,8 @@ function LedgerPanel() {
     try {
       const params = new URLSearchParams({ limit: "100" });
       if (filter !== "ALL") params.set("settlement_status", filter);
-      const res = await fetch(`/kalshi/ledger?${params}`, {
-        headers: { "X-API-Key": API_KEY },
+      const res = await fetch(`/api/kalshi/ledger?${params}`, {
+        headers: {},
       });
       const data = await res.json();
       setRows(data.records ?? []);
@@ -807,9 +806,9 @@ function LedgerPanel() {
       await Promise.allSettled(
         batch.map(async (row) => {
           try {
-            const res = await fetch("/kalshi/evaluate-contract", {
+            const res = await fetch("/api/kalshi/evaluate-contract", {
               method: "POST",
-              headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+              headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ ticker: row.market_ticker, use_live_book: true }),
             });
             if (!res.ok) return;
@@ -1100,9 +1099,9 @@ function CalibrationPanel() {
     setLoading(true);
     try {
       const [sumRes, settledRes, openRes] = await Promise.all([
-        fetch("/kalshi/ledger?summary=true&limit=1", { headers: { "X-API-Key": API_KEY } }),
-        fetch("/kalshi/ledger?settlement_status=SETTLED&limit=500", { headers: { "X-API-Key": API_KEY } }),
-        fetch("/kalshi/ledger?settlement_status=OPEN&limit=1", { headers: { "X-API-Key": API_KEY } }),
+        fetch("/api/kalshi/ledger?summary=true&limit=1", { headers: {} }),
+        fetch("/api/kalshi/ledger?settlement_status=SETTLED&limit=500", { headers: {} }),
+        fetch("/api/kalshi/ledger?settlement_status=OPEN&limit=1", { headers: {} }),
       ]);
       const sumData = await sumRes.json();
       const settledData = await settledRes.json();
