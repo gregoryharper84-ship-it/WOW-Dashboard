@@ -8024,10 +8024,22 @@ def wow_analyze():
         return jsonify({"ok": False,
                         "error": "anthropic package not installed on server"}), 503
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
+    # Prefer Replit AI Integrations proxy; fall back to direct ANTHROPIC_API_KEY
+    _ai_base = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_BASE_URL", "").strip()
+    _ai_key  = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_API_KEY",  "").strip()
+    _direct  = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+    if _ai_base and _ai_key:
+        # Replit-managed proxy — billed to Replit credits
+        _client_kwargs = {"api_key": _ai_key, "base_url": _ai_base}
+        _model         = "claude-sonnet-4-6"
+    elif _direct:
+        # Direct Anthropic key (user-supplied)
+        _client_kwargs = {"api_key": _direct}
+        _model         = "claude-sonnet-4-6"
+    else:
         return jsonify({"ok": False,
-                        "error": "ANTHROPIC_API_KEY not configured on server"}), 503
+                        "error": "No Anthropic credentials — set ANTHROPIC_API_KEY or enable Replit AI Integration"}), 503
 
     body = request.get_json(silent=True) or {}
     prompt_text   = (body.get("prompt")       or "").strip()
@@ -8072,9 +8084,9 @@ def wow_analyze():
         content.append({"type": "text", "text": "Extract the player prop from this betting slip."})
 
     try:
-        client = _anthropic.Anthropic(api_key=api_key)
+        client = _anthropic.Anthropic(**_client_kwargs)
         msg = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model=_model,
             max_tokens=512,
             system=system_prompt,
             messages=[{"role": "user", "content": content}],
