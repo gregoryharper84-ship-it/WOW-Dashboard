@@ -31,6 +31,33 @@ function makeForwarder(prefix: string) {
   };
 }
 
+// Explicit route for the Kalshi scan endpoint — takes precedence over the
+// wildcard below so OPTIONS/preflight and POST are always handled correctly.
+router.post("/wow/kalshi/scan", async (req: Request, res: Response) => {
+  const target = `${FLASK_BASE}/wow/kalshi/scan`;
+  try {
+    const r = await fetch(target, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept":       "application/json",
+        "X-API-Key":    API_KEY,
+      },
+      body: JSON.stringify(req.body),
+    });
+    const body = await r.json() as unknown;
+    return res.status(r.status).json(body);
+  } catch (err) {
+    return res.status(502).json({
+      ok:             false,
+      terminal_label: "INPUT_FAILURE",
+      error:          "Scoring API unreachable",
+      detail:         String(err),
+      execution_rule: "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    });
+  }
+});
+
 router.use("/wow",           makeForwarder("wow"));
 router.use("/kalshi",        makeForwarder("kalshi"));
 router.use("/lock-api",      makeForwarder("lock-api"));
