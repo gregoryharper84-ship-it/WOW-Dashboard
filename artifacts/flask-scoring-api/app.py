@@ -15027,6 +15027,67 @@ def _detect_market_type(m: dict) -> str:
     return "single"
 
 
+@app.route("/wow/kalshi/debug-raw", methods=["GET"])
+@require_api_key
+def wow_kalshi_debug_raw():
+    """
+    Raw Kalshi inventory truth dump — no WOW gates, no classification.
+
+    Fetches 200 open markets with NO category filter and reports how many
+    have mve_collection_ticker == null (i.e. are NOT MVE combo products).
+
+    Returns:
+      total                 int   — markets returned by API
+      mve_null_count        int   — markets with mve_collection_ticker == null
+      mve_nonnull_count     int   — markets with mve_collection_ticker set
+      mve_null_sample       list  — first 10 null-mve {ticker, title, subtitle, category}
+      mve_nonnull_sample    list  — first 5 non-null {ticker, mve_collection_ticker}
+      category_breakdown    dict  — {category: count} for the null-mve group
+    """
+    from kalshi_engine import kalshi_client
+    try:
+        limit = min(int(request.args.get("limit", 200)), 1000)
+        raw = kalshi_client.search_markets(status="open", limit=limit)
+        markets = raw.get("markets") or []
+
+        null_mve  = [m for m in markets if not m.get("mve_collection_ticker")]
+        nonnull_mve = [m for m in markets if m.get("mve_collection_ticker")]
+
+        cat_breakdown = {}
+        for m in null_mve:
+            cat = m.get("category") or "unknown"
+            cat_breakdown[cat] = cat_breakdown.get(cat, 0) + 1
+
+        null_sample = [
+            {
+                "ticker":   m.get("ticker"),
+                "title":    m.get("title") or m.get("event_title"),
+                "subtitle": m.get("subtitle"),
+                "category": m.get("category"),
+            }
+            for m in null_mve[:10]
+        ]
+        nonnull_sample = [
+            {
+                "ticker":              m.get("ticker"),
+                "mve_collection_ticker": m.get("mve_collection_ticker"),
+            }
+            for m in nonnull_mve[:5]
+        ]
+
+        return jsonify({
+            "ok":                True,
+            "total":             len(markets),
+            "mve_null_count":    len(null_mve),
+            "mve_nonnull_count": len(nonnull_mve),
+            "mve_null_sample":   null_sample,
+            "mve_nonnull_sample": nonnull_sample,
+            "category_breakdown": cat_breakdown,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/wow/kalshi/scan", methods=["POST", "OPTIONS"])
 @app.route("/wow/kalshi/scan/", methods=["POST", "OPTIONS"])
 @require_api_key

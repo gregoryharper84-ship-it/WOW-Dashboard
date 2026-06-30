@@ -1,0 +1,39 @@
+The fastest path here isn't another diagnostic round-trip — it's letting Replit answer the actual question directly against the live API instead of you relaying speculation back and forth.
+
+**Send Replit this single, terminal instruction:**
+
+```
+Stop iterating on category=weather specifically. The category param 
+doesn't filter server-side at all — we already proved that.
+
+Run this directly against the Kalshi API and tell me the answer, 
+don't guess:
+
+1. Call GET /markets with no category filter, status=open, limit=200
+2. For each market, check mve_collection_ticker
+3. Count: how many of the 200 have mve_collection_ticker == null?
+4. Print the first 10 tickers + titles of the null group, regardless 
+   of what category they claim to be
+
+This answers one question: does Kalshi currently have ANY non-combo 
+markets open right now, in any category? If the null group is also 
+~0, the problem isn't weather discovery — it's that Kalshi's entire 
+open inventory right now is MVE combo products, and no category 
+filter will fix that because there's nothing to find.
+
+If the null group is non-trivial (20+), show me what categories 
+those tickers actually belong to so we route to the right one — 
+no more guessing "weather" vs "sports" by name.
+
+One Flask debug route is enough:
+GET /wow/kalshi/debug-raw?limit=200
+
+Return: total, mve_null_count, mve_null_sample (10 tickers+titles).
+No WOW gates, no classification, no proxy — raw Kalshi truth only.
+```
+
+**Why this is the efficient move:**
+
+Every round so far has assumed weather/sports category targeting was the lever. It might not be. You're three iterations deep treating this as a filter problem when it could simply be a Kalshi inventory problem — there may be almost nothing open right now that isn't an MVE combo product. One raw, ungated, unclassified API dump answers that in a single call instead of guessing at filter logic across categories.
+
+**When that comes back, paste the raw output here** — not through ChatGPT, not through another patch cycle. I'll tell you in one pass whether this is a "wait for inventory to change" situation or a "the discovery endpoint itself is wrong" situation, and that's the last diagnostic needed before you either move to weather/another category for real, or shelve Kalshi until single-game inventory exists and spend your tokens on the parts of WOW that are already producing plays.
