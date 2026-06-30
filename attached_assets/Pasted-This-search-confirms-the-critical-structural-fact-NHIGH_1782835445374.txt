@@ -1,0 +1,31 @@
+This search confirms the critical structural fact: **NHIGH is a single generic contract template that applies to all cities**, not separate per-city documents. That changes the verification task — there isn't a separate LA/Miami/Chicago/Austin PDF to find with a unique station name baked in. The station is a per-listing parameter Kalshi fills in, not a per-contract-family fact.
+
+Let me pull the actual live market pages for each city to get the specific station as listed, not inferred from secondary sources.Excellent — this is exactly the format needed, and it reveals the actual structure: each city has its own series ticker (`KXHIGHNY`), and the rule text links directly to the live NWS CLI product URL with the specific `issuedby` station code embedded. That URL pattern is the verification key for all 5 cities.
+
+NYC confirmed: `forecast.weather.gov/product.php?site=OKX&product=CLI&issuedby=NYC`. Let me pull the same live market page pattern for the other 4.That page is JS-rendered and gave nothing. Let me search for the specific series tickers directly — `KXHIGHLA`, `KXHIGHMIA`, `KXHIGHCHI`, `KXHIGHAUS` is the likely naming pattern based on `KXHIGHNY`.This is genuinely useful — independent confirmation of series tickers: `KXHIGHNY, KXHIGHCHI, KXHIGHMIA, KXHIGHLAX, KXHIGHDEN`. Note `LAX` not `LA`, which matters for the build. Austin isn't in this bot's list, suggesting it may use a different ticker or wasn't included — worth flagging, not assuming. Let me pull the live Miami and Chicago market pages directly to get the exact `issuedby` codes the way I did for NYC.That fetch hit a stale/empty cache. The series page without a specific dated event ticker doesn't render server-side reliably. Let me try fetching the NWS CLI product pages directly — these confirm the actual station regardless of how Kalshi's frontend renders, and that's the field that actually matters for the build.This is the critical finding worth stopping on: **`issuedby=MIA` does not exist as Miami's CLI code — `issuedby=PBI` is West Palm Beach, a different station entirely**, and that PBI search hit was a false-positive match on the word "Miami" in the office name, not the city. I don't yet have Miami-proper's actual CLI code confirmed, and guessing it would violate the exact rule this audit exists to enforce. Same caution applies to LA — `BUR` is Burbank, not necessarily what Kalshi's NHIGH-LA contract uses.
+
+I'm not going to extrapolate station codes from pattern-matching. This needs the actual live Kalshi rule text per city, the same way I got it for NYC. Let me fetch the specific market pages directly with the series tickers confirmed by the GitHub source.That resolves Miami cleanly: **Miami International Airport**, station code MIA in NWS terms (KMIA), not PBI. My earlier instinct to not guess was correct — PBI would have been a real error baked into a station mapping table. Now Chicago, LA, and Austin, the same way.Confirmed: **Chicago Midway (MDW)**, not O'Hare — this is exactly the kind of fact that would have been wrong if I'd guessed from generic "Chicago weather station" assumptions. Now LA and Austin.Confirmed: **Los Angeles International Airport (LAX)**, consistent across many dated instances of the contract. Now Austin — and note the GitHub bot's series list did not include Austin, which is a real signal worth verifying rather than assuming Austin exists in the same series family.Confirmed: **Austin Bergstrom** (KAUS), and series ticker `KXHIGHAUS` confirmed live. Good — Austin does exist as its own series; the GitHub bot's list was just incomplete, not evidence Austin is unavailable. Also worth flagging from that wethr.net station table: it lists `KMDW` for Chicago specifically (not KORD), which independently corroborates Midway as the correct station — strong cross-confirmation.
+
+That's all 5 cities verified from live Kalshi contract text, not secondary inference. Here's the completed table.All 5 cities verified. Quick summary, then what I'd flag before this goes further.
+
+```
+NYC      → KXHIGHNY  → Central Park, NY      → KNYC
+LA       → KXHIGHLAX → Los Angeles Airport    → KLAX
+Miami    → KXHIGHMIA → Miami Intl Airport     → KMIA
+Chicago  → KXHIGHCHI → Chicago Midway         → KMDW
+Austin   → KXHIGHAUS → Austin Bergstrom       → KAUS
+```
+
+**This audit caught two real errors before they could ship.** My first pass at pattern-matching NWS CLI codes returned `PBI` (West Palm Beach) as a false positive for Miami and `BUR` (Burbank) as a false positive for LA. Both were wrong — Miami uses Miami International specifically, LA uses LAX specifically, not the airports a generic search would suggest. I rejected both before writing them into the table and went back to the actual live Kalshi contract text instead. This is exactly the failure mode this whole audit step exists to prevent — if Replit had been asked to "verify from contract text" during implementation rather than before it, there's a real chance one of these wrong codes gets hardcoded and silently breaks settlement accuracy months later.
+
+**One genuine surprise worth your attention:** Chicago settles on **Midway (KMDW), not O'Hare (KORD)**. If your existing weather data pipeline anywhere in WOW currently defaults to O'Hare for Chicago (a very common assumption), that's a real calibration gap to close before this lane goes live — independently confirmed via a second source's station table, not just Kalshi's own wording.
+
+**Austin is confirmed live and active**, despite one third-party tracking bot's series list omitting it — that omission was that bot's incompleteness, not evidence Austin isn't tradeable.
+
+**What's still open before Replit builds anything**, per the conflict-check section in the file:
+
+1. Confirm with Replit there's no existing weather lane in `LLP_GROUND_TRUTH.md` this would duplicate
+2. Express proxy route pattern must follow the exact same explicit-route convention as `/api/wow/kalshi/scan` — given everything that's happened in this build, this is the single highest-risk item
+3. Deploy/publish verification step must be built in from day one, not bolted on after the third 502
+
+This is ready to go through the formal `WOW-PATCH-TEMPLATE.md` process next — problem statement, exact delta, test case — before it becomes a Replit build order.
