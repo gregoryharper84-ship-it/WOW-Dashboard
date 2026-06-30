@@ -169,6 +169,8 @@ weather_park
 | **The Odds API** v4 | `https://api.the-odds-api.com/v4` | Odds for all sports; MLB F5 markets pulled alongside full-game | `ODDS_API_KEY` (paid) |
 | **MLB Stats API** | `https://statsapi.mlb.com/api/v1` (+ `v1.1/game/{pk}/feed/live`) | Schedule, probable pitchers, lineup confirmation, live feed | none (free) |
 | **ESPN public JSON** | `site.api.espn.com` / `site.web.api.espn.com` | Injuries, team standings/ratings | none (free) |
+| **NWS CLI product** | `forecast.weather.gov/product.php?site={site}&product=CLI&issuedby={issuedby}&format=txt` | Kalshi NHIGH settlement — observed daily high per verified station | none (free) |
+| **NWS Forecast API** | `api.weather.gov/points/{lat},{lon}` → `/gridpoints/{id}/{x},{y}/forecast` | Kalshi NHIGH model high when CLI not yet issued | none (free) |
 
 **Odds cache:** in-process, TTL 120s, keyed by `(sport_key, markets, regions)`
 (legacy `sport_key`-only key kept warm for back-compat).
@@ -294,6 +296,53 @@ American price. Discipline by decimal price on that side:
 
 Both new tags are **HARD** (`_LLP_PRO_FAILURE_TAGS`, count toward the ≥3
 cardinality gate). The short-price tag is in `_LLP_PRO_CANDIDATE_CEILING_TAGS`.
+
+---
+
+## 12. Kalshi Daily High Temperature Weather Lane (WOW-PATCH-001, SHIPPED 2026-06-30)
+
+Evaluates Kalshi NHIGH bracket markets for 5 verified cities.
+
+### Station mapping (hardcoded — verified from live Kalshi contract rule text)
+
+| City key | Kalshi series | Settlement station | NWS code | Timezone |
+|----------|---------------|--------------------|----------|----------|
+| `NYC` | KXHIGHNY | Central Park, New York | KNYC | America/New_York |
+| `LA` | KXHIGHLAX | Los Angeles Airport, CA | KLAX | America/Los_Angeles |
+| `MIA` | KXHIGHMIA | Miami International Airport | KMIA | America/New_York |
+| `CHI` | KXHIGHCHI | Chicago Midway, IL | **KMDW** | America/Chicago |
+| `AUS` | KXHIGHAUS | Austin Bergstrom, TX | KAUS | America/Chicago |
+
+**Do not substitute:** Chicago = Midway (KMDW), NOT O'Hare (KORD). Miami = KMIA, NOT KPBI. LA = KLAX, NOT KBUR.
+
+### WEATHER_* internal labels (upstream only — never terminal)
+
+| Label | Meaning | Terminal resolution |
+|-------|---------|---------------------|
+| `WEATHER_MODEL_READY` | NWS CLI observed high fetched, brackets scored | `KALSHI_PLAYABLE_LIMIT_ONLY` or `KALSHI_WATCH` |
+| `WEATHER_WATCH` | Data present but edge below threshold | `KALSHI_WATCH` |
+| `WEATHER_SCOUT` | CLI not yet issued; forecast data only | `KALSHI_WATCH` |
+| `WEATHER_REJECT_DATA` | NWS fetch failed entirely | `KALSHI_REJECT_NO_EDGE` |
+| `WEATHER_REJECT_SETTLEMENT` | Bracket yes_prices sum > 1.05 | `KALSHI_REJECT_NO_EDGE` |
+
+### Settlement rules
+
+- **Source:** NWS Climatological Report (CLI product) ONLY. AccuWeather, Google Weather, Apple Weather do NOT determine settlement per Kalshi contract rules.
+- **Revision risk:** PRELIMINARY CLI data may be revised. Revisions before contract expiration count; revisions after expiration do not.
+- **LST/DST:** NWS CLI uses Local Standard Time reporting windows even during DST. Validate `forecast_timestamp` against LST, not naive calendar-day clock.
+
+### Endpoints
+
+- `GET /wow/kalshi/weather/stations` — no auth; health-check; returns station mapping table
+- `POST /wow/kalshi/weather/evaluate` — auth required; body: `{city, date (YYYY-MM-DD), brackets:[{label, yes_price}]}`
+
+### Bracket scoring
+
+Bracket labels parsed: `≤N` / `≥N` / `N–M`. Edge = `model_prob − yes_price`. Verdicts: PLAYABLE (≥0.10), WATCH (≥0.05), LEAN (≥0.00), NO_EDGE (<0). Mutual exclusivity enforced: yes_prices must sum within ±0.05 of 1.00.
+
+### No changes to core LLP engine
+
+This lane does not touch `_llp_decision`, badge ceilings (§4), the §7 field contract, failure-path tags (§6), or the odds-snapshot cron (§11).
 
 ---
 

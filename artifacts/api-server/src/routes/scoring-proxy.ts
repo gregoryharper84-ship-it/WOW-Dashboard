@@ -31,6 +31,44 @@ function makeForwarder(prefix: string) {
   };
 }
 
+// Explicit routes for Kalshi weather lane — take precedence over wildcard.
+// GET /wow/kalshi/weather/stations — no auth, health-check use after deploy
+router.get("/wow/kalshi/weather/stations", async (_req: Request, res: Response) => {
+  const target = `${FLASK_BASE}/wow/kalshi/weather/stations`;
+  try {
+    const r = await fetch(target, { headers: { "Accept": "application/json" } });
+    const body = await r.json() as unknown;
+    return res.status(r.status).json(body);
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: "Scoring API unreachable", detail: String(err) });
+  }
+});
+
+// POST /wow/kalshi/weather/evaluate — scored bracket evaluation
+router.post("/wow/kalshi/weather/evaluate", async (req: Request, res: Response) => {
+  const target = `${FLASK_BASE}/wow/kalshi/weather/evaluate`;
+  try {
+    const r = await fetch(target, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept":       "application/json",
+        "X-API-Key":    API_KEY,
+      },
+      body: JSON.stringify(req.body),
+    });
+    const body = await r.json() as unknown;
+    return res.status(r.status).json(body);
+  } catch (err) {
+    return res.status(502).json({
+      ok:             false,
+      terminal_label: "INPUT_FAILURE",
+      error:          "Scoring API unreachable",
+      detail:         String(err),
+    });
+  }
+});
+
 // Explicit route for the Kalshi scan endpoint — takes precedence over the
 // wildcard below so OPTIONS/preflight and POST are always handled correctly.
 router.post("/wow/kalshi/scan", async (req: Request, res: Response) => {

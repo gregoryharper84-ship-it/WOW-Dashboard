@@ -15619,6 +15619,462 @@ def kalshi_settle_result():
     }), (201 if result.get("ok") else 400)
 
 
+# ── WOW / Kalshi Daily High Temperature Weather Lane ─────────────────────────
+#
+# Verified station mapping — hardcoded from live Kalshi contract rule text.
+# See WOW-PATCH-001.md + kalshi-weather-station-verification.md for audit trail.
+# DO NOT substitute stations via pattern-matching or inference:
+#   Chicago → KMDW (Midway), NOT KORD (O'Hare)
+#   Miami   → KMIA (Miami Intl), NOT KPBI (West Palm Beach)
+#   LA      → KLAX (LAX), NOT KBUR (Burbank)
+
+_KALSHI_WEATHER_STATIONS = {
+    "NYC": {
+        "series":      "KXHIGHNY",
+        "name":        "Central Park, New York",
+        "station":     "KNYC",
+        "nws_site":    "OKX",
+        "nws_issuedby":"NYC",
+        "tz":          "America/New_York",
+        "lat":          40.7789,
+        "lon":         -73.9692,
+    },
+    "LA": {
+        "series":      "KXHIGHLAX",
+        "name":        "Los Angeles Airport, CA",
+        "station":     "KLAX",
+        "nws_site":    "LOX",
+        "nws_issuedby":"LAX",
+        "tz":          "America/Los_Angeles",
+        "lat":          33.9425,
+        "lon":        -118.4081,
+    },
+    "MIA": {
+        "series":      "KXHIGHMIA",
+        "name":        "Miami International Airport",
+        "station":     "KMIA",
+        "nws_site":    "MFL",
+        "nws_issuedby":"MIA",
+        "tz":          "America/New_York",
+        "lat":          25.7959,
+        "lon":         -80.2870,
+    },
+    "CHI": {
+        "series":      "KXHIGHCHI",
+        "name":        "Chicago Midway, IL",
+        "station":     "KMDW",
+        "nws_site":    "LOT",
+        "nws_issuedby":"MDW",
+        "tz":          "America/Chicago",
+        "lat":          41.7868,
+        "lon":         -87.7522,
+    },
+    "AUS": {
+        "series":      "KXHIGHAUS",
+        "name":        "Austin Bergstrom, TX",
+        "station":     "KAUS",
+        "nws_site":    "EWX",
+        "nws_issuedby":"AUS",
+        "tz":          "America/Chicago",
+        "lat":          30.1945,
+        "lon":         -97.6699,
+    },
+}
+
+# NWS gridpoint cache: city → {"gridId":..., "gridX":..., "gridY":..., "cached_at":...}
+_nws_gridpoint_cache: dict = {}
+_NWS_GRIDPOINT_CACHE_TTL = 86400  # 24h — gridpoints are stable
+
+def _fetch_nws_cli(city: str) -> dict:
+    """
+    Fetch the NWS Daily Climate Report (CLI product) for the given city.
+    Returns observed high temp, report date, and preliminary/final status.
+    Settlement source per Kalshi contract rules: NWS CLI product ONLY.
+    Consumer weather apps (AccuWeather, Google, Apple) do NOT determine settlement.
+    """
+    station = _KALSHI_WEATHER_STATIONS.get(city)
+    if not station:
+        return {"ok": False, "error": f"Unknown city: {city}", "observed_high": None,
+                "report_status": "ERROR", "revision_risk": False}
+
+    url = (
+        "https://forecast.weather.gov/product.php"
+        f"?site={station['nws_site']}&product=CLI"
+        f"&issuedby={station['nws_issuedby']}&format=txt"
+    )
+    try:
+        import requests
+        resp = requests.get(url, timeout=10,
+                            headers={"User-Agent": "WOW-scoring/1.0 weather-lane"})
+        if resp.status_code != 200:
+            return {"ok": False, "error": f"NWS CLI HTTP {resp.status_code}",
+                    "observed_high": None, "report_status": "ERROR", "revision_risk": False}
+
+        text = resp.text
+
+        # Parse maximum temperature line.
+        # NWS CLI products use several formats across offices:
+        #   "MAXIMUM             88   /  83"
+        #   "MAXIMUM TEMPERATURE   88"
+        #   "MAX TEMP             88"
+        import re as _re
+        max_match = _re.search(
+            r"(?:MAXIMUM\s+TEMPERATURE|MAXIMUM|MAX\s+TEMP)\s+(\d{1,3})",
+            text, _re.IGNORECASE
+        )
+        observed_high = int(max_match.group(1)) if max_match else None
+
+        # Detect preliminary flag
+        is_preliminary = bool(_re.search(r"PRELIMINARY", text, _re.IGNORECASE))
+
+        # Extract report date (e.g. "JUNE 30 2026" or "JUN 30 2026")
+        date_match = _re.search(
+            r"(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|"
+            r"JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:TEMBER)?|"
+            r"OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)"
+            r"\s+(\d{1,2})\s+(\d{4})",
+            text, _re.IGNORECASE
+        )
+        report_date = f"{date_match.group(1).title()} {date_match.group(2)} {date_match.group(3)}" \
+            if date_match else None
+
+        return {
+            "ok":            True,
+            "observed_high": observed_high,
+            "report_date":   report_date,
+            "report_status": "PRELIMINARY" if is_preliminary else (
+                             "NOT_YET_ISSUED" if observed_high is None else "FINAL"),
+            "revision_risk": is_preliminary,
+            "source_url":    url,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "observed_high": None,
+                "report_status": "ERROR", "revision_risk": False}
+
+
+def _fetch_nws_forecast_high(city: str, date_str: str) -> dict:
+    """
+    Fetch the NWS daily high temperature forecast for a given city and date.
+    Uses the NWS points → gridpoint → forecast API (free, no auth).
+    Returns {"forecast_high": int|None, "forecast_source": "nws_forecast"|"none", ...}
+    """
+    import re as _re
+    station = _KALSHI_WEATHER_STATIONS.get(city)
+    if not station:
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": f"Unknown city: {city}"}
+
+    lat, lon = station["lat"], station["lon"]
+    now_ts = time.time()
+
+    # Step 1: resolve gridpoint (cached 24h)
+    cached = _nws_gridpoint_cache.get(city, {})
+    if cached.get("cached_at", 0) + _NWS_GRIDPOINT_CACHE_TTL > now_ts:
+        grid_id, grid_x, grid_y = cached["gridId"], cached["gridX"], cached["gridY"]
+    else:
+        try:
+            import requests
+            pts = requests.get(
+                f"https://api.weather.gov/points/{lat},{lon}",
+                timeout=8,
+                headers={"User-Agent": "WOW-scoring/1.0 weather-lane",
+                         "Accept": "application/geo+json"},
+            )
+            if pts.status_code != 200:
+                return {"forecast_high": None, "forecast_source": "none",
+                        "error": f"NWS points HTTP {pts.status_code}"}
+            pdata = pts.json().get("properties", {})
+            grid_id = pdata.get("gridId")
+            grid_x  = pdata.get("gridX")
+            grid_y  = pdata.get("gridY")
+            if not all([grid_id, grid_x, grid_y]):
+                return {"forecast_high": None, "forecast_source": "none",
+                        "error": "NWS points returned incomplete grid"}
+            _nws_gridpoint_cache[city] = {
+                "gridId": grid_id, "gridX": grid_x, "gridY": grid_y,
+                "cached_at": now_ts
+            }
+        except Exception as exc:
+            return {"forecast_high": None, "forecast_source": "none", "error": str(exc)}
+
+    # Step 2: fetch daily forecast
+    try:
+        import requests
+        fc = requests.get(
+            f"https://api.weather.gov/gridpoints/{grid_id}/{grid_x},{grid_y}/forecast",
+            timeout=8,
+            headers={"User-Agent": "WOW-scoring/1.0 weather-lane",
+                     "Accept": "application/geo+json"},
+        )
+        if fc.status_code != 200:
+            return {"forecast_high": None, "forecast_source": "none",
+                    "error": f"NWS forecast HTTP {fc.status_code}"}
+        periods = fc.json().get("properties", {}).get("periods", [])
+        # Find the daytime period matching date_str (YYYY-MM-DD)
+        for period in periods:
+            start = period.get("startTime", "")
+            if start.startswith(date_str) and period.get("isDaytime", False):
+                return {
+                    "forecast_high":   period.get("temperature"),
+                    "forecast_source": "nws_forecast",
+                    "period_name":     period.get("name", ""),
+                }
+        # No exact date match — return nearest future daytime
+        for period in periods:
+            if period.get("isDaytime", False):
+                start = period.get("startTime", "")
+                return {
+                    "forecast_high":   period.get("temperature"),
+                    "forecast_source": "nws_forecast_nearest",
+                    "period_name":     period.get("name", ""),
+                    "note":            f"nearest daytime period ({start[:10]}), not exact date match",
+                }
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": "No daytime periods in NWS forecast"}
+    except Exception as exc:
+        return {"forecast_high": None, "forecast_source": "none", "error": str(exc)}
+
+
+def _score_weather_brackets(model_high, brackets: list) -> list:
+    """
+    Score Kalshi bracket markets against a model high temperature.
+    Each bracket has a label (e.g. "≤85", "86–89", "≥90") and a yes_price (0–1).
+    Returns a list of scored brackets with model_prob, edge, verdict.
+
+    Bracket parsing rules:
+      "≤N" or "under N"  → range (-inf, N]
+      "≥N" or "over N"   → range [N, +inf)
+      "N–M" or "N-M"     → range [N, M]
+    """
+    import re as _re
+
+    def _parse_bracket(label: str):
+        label = label.strip()
+        # ≤N or <=N or under N
+        m = _re.match(r"^[≤<][=]?\s*(\d+)$|^under\s+(\d+)$", label, _re.IGNORECASE)
+        if m:
+            hi = int(m.group(1) or m.group(2))
+            return (float("-inf"), hi)
+        # ≥N or >=N or over N
+        m = _re.match(r"^[≥>][=]?\s*(\d+)$|^over\s+(\d+)$", label, _re.IGNORECASE)
+        if m:
+            lo = int(m.group(1) or m.group(2))
+            return (lo, float("inf"))
+        # N–M or N-M
+        m = _re.match(r"^(\d+)\s*[–\-]\s*(\d+)$", label)
+        if m:
+            return (int(m.group(1)), int(m.group(2)))
+        return None
+
+    scored = []
+    for b in brackets:
+        label     = b.get("label", "")
+        yes_price = float(b.get("yes_price", 0))
+        no_price  = float(b.get("no_price", 1 - yes_price))
+        bounds    = _parse_bracket(label)
+
+        if model_high is None or bounds is None:
+            scored.append({
+                "label":      label,
+                "yes_price":  yes_price,
+                "no_price":   no_price,
+                "model_prob": None,
+                "edge":       None,
+                "verdict":    "UNKNOWN",
+                "parse_ok":   bounds is not None,
+            })
+            continue
+
+        lo, hi = bounds
+        in_bracket = (lo <= model_high <= hi)
+        model_prob = 1.0 if in_bracket else 0.0
+
+        edge = round(model_prob - yes_price, 4)
+
+        if edge >= 0.10:
+            verdict = "PLAYABLE"
+        elif edge >= 0.05:
+            verdict = "WATCH"
+        elif edge >= 0.0:
+            verdict = "LEAN"
+        else:
+            verdict = "NO_EDGE"
+
+        scored.append({
+            "label":      label,
+            "yes_price":  yes_price,
+            "no_price":   no_price,
+            "model_prob": model_prob,
+            "edge":       edge,
+            "verdict":    verdict,
+            "parse_ok":   True,
+        })
+
+    return scored
+
+
+def _weather_terminal_label(weather_label: str, brackets_scored: list) -> str:
+    """Map internal WEATHER_* label to a terminal KALSHI_* execution label."""
+    if weather_label in ("WEATHER_REJECT_DATA", "WEATHER_REJECT_SETTLEMENT"):
+        return "KALSHI_REJECT_NO_EDGE"
+    if weather_label == "WEATHER_SCOUT":
+        return "KALSHI_WATCH"
+    # Check if any bracket is PLAYABLE
+    playable = any(b.get("verdict") == "PLAYABLE" for b in brackets_scored)
+    watch    = any(b.get("verdict") == "WATCH"    for b in brackets_scored)
+    if playable:
+        return "KALSHI_PLAYABLE_LIMIT_ONLY"
+    if watch or weather_label == "WEATHER_WATCH":
+        return "KALSHI_WATCH"
+    return "KALSHI_REJECT_NO_EDGE"
+
+
+@app.route("/wow/kalshi/weather/stations", methods=["GET"])
+def wow_kalshi_weather_stations():
+    """
+    Health-check endpoint — returns the hardcoded station mapping table.
+    No auth required. Use this to verify the correct stations are deployed
+    (KMDW not KORD, KMIA not KPBI, KLAX not KBUR).
+    """
+    return jsonify({
+        "ok":       True,
+        "count":    len(_KALSHI_WEATHER_STATIONS),
+        "stations": _KALSHI_WEATHER_STATIONS,
+    }), 200
+
+
+@app.route("/wow/kalshi/weather/evaluate", methods=["POST"])
+@require_api_key
+def wow_kalshi_weather_evaluate():
+    """
+    Score Kalshi daily high temperature (NHIGH) bracket markets.
+
+    Body:
+      city       str   — one of NYC / LA / MIA / CHI / AUS
+      date       str   — YYYY-MM-DD, the event date
+      brackets   list  — [{label, yes_price, no_price?}, ...]
+
+    Returns scored brackets against NWS CLI observed high (if issued) or
+    NWS forecast high, with WEATHER_* internal label and KALSHI_* terminal label.
+
+    Settlement source per Kalshi contract rules: NWS Climatological Report (Daily).
+    Consumer apps (AccuWeather, Google Weather, Apple Weather) do NOT count.
+    """
+    try:
+        body = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"ok": False, "error": "Invalid JSON body"}), 400
+
+    city     = (body.get("city") or "").strip().upper()
+    date_str = (body.get("date") or "").strip()
+    brackets = body.get("brackets") or []
+
+    # Validate city
+    if city not in _KALSHI_WEATHER_STATIONS:
+        supported = ", ".join(sorted(_KALSHI_WEATHER_STATIONS.keys()))
+        return jsonify({
+            "ok":    False,
+            "error": f"Unknown city: {city}. Supported: {supported}",
+        }), 400
+
+    # Validate date
+    import re as _re
+    if not _re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
+
+    # Validate brackets
+    if not isinstance(brackets, list) or len(brackets) == 0:
+        return jsonify({"ok": False, "error": "brackets must be a non-empty list"}), 400
+
+    station = _KALSHI_WEATHER_STATIONS[city]
+
+    # Step 1: fetch NWS CLI observed high
+    cli_result = _fetch_nws_cli(city)
+
+    # Step 2: fetch NWS forecast high (used when CLI not yet issued)
+    fc_result  = _fetch_nws_forecast_high(city, date_str)
+
+    # Step 3: choose model_high — prefer observed (CLI final/preliminary) over forecast
+    observed_high   = cli_result.get("observed_high")
+    report_status   = cli_result.get("report_status", "ERROR")
+    revision_risk   = cli_result.get("revision_risk", False)
+    forecast_high   = fc_result.get("forecast_high")
+    forecast_source = fc_result.get("forecast_source", "none")
+
+    if observed_high is not None:
+        model_high   = observed_high
+        data_sources = ["nws_cli"]
+    elif forecast_high is not None:
+        model_high   = forecast_high
+        data_sources = [forecast_source]
+    else:
+        model_high   = None
+        data_sources = []
+
+    # Step 4: bracket mutual-exclusivity check (yes_prices should sum ≈ 1.00)
+    yes_sum = sum(float(b.get("yes_price", 0)) for b in brackets)
+    mutual_exclusivity_ok = abs(yes_sum - 1.0) <= 0.05
+
+    # Step 5: determine WEATHER_* internal label
+    if not cli_result.get("ok") and not fc_result.get("forecast_high"):
+        weather_label = "WEATHER_REJECT_DATA"
+    elif not mutual_exclusivity_ok:
+        weather_label = "WEATHER_REJECT_SETTLEMENT"
+    elif observed_high is None and forecast_high is not None:
+        weather_label = "WEATHER_SCOUT"
+    else:
+        weather_label = "WEATHER_MODEL_READY" if model_high is not None else "WEATHER_WATCH"
+
+    # Step 6: score brackets
+    brackets_scored = _score_weather_brackets(model_high, brackets)
+
+    # Step 7: determine terminal KALSHI_* label
+    terminal_label = _weather_terminal_label(weather_label, brackets_scored)
+
+    # LST/DST note
+    import datetime as _dt, zoneinfo as _zi
+    try:
+        tz      = _zi.ZoneInfo(station["tz"])
+        now_loc = _dt.datetime.now(tz)
+        lst_dst_note = (
+            f"DST active in {station['tz']} — NWS CLI uses LST window; "
+            "validate forecast_timestamp alignment"
+            if now_loc.dst() and now_loc.dst().total_seconds() > 0
+            else f"Standard time active in {station['tz']}"
+        )
+    except Exception:
+        lst_dst_note = "Could not determine DST status"
+
+    return jsonify({
+        "ok":                     True,
+        "city":                   city,
+        "series":                 station["series"],
+        "station":                station["station"],
+        "station_name":           station["name"],
+        "date":                   date_str,
+        "observed_high":          observed_high,
+        "report_status":          report_status,
+        "revision_risk":          revision_risk,
+        "forecast_high":          forecast_high,
+        "forecast_source":        forecast_source,
+        "model_high":             model_high,
+        "weather_label":          weather_label,
+        "terminal_label":         terminal_label,
+        "brackets_scored":        brackets_scored,
+        "mutual_exclusivity_ok":  mutual_exclusivity_ok,
+        "yes_price_sum":          round(yes_sum, 4),
+        "data_sources":           data_sources,
+        "lst_dst_note":           lst_dst_note,
+        "settlement_warning":     (
+            "NWS CLI data is PRELIMINARY — revisions before contract expiration "
+            "count toward settlement; revisions after expiration do not."
+            if revision_risk else None
+        ),
+        "cli_error":              cli_result.get("error") if not cli_result.get("ok") else None,
+        "forecast_error":         fc_result.get("error") if not fc_result.get("forecast_high") else None,
+    }), 200
+
+
 # ── WOW / Kalshi Scan (Custom GPT entry point) ───────────────────────────────
 _KALSHI_SCAN_VERSION  = "2026-06-29-mve-prefilter-v6"
 _KALSHI_BUILD_TS      = "2026-06-28T00:00:00Z"   # updated on each deploy

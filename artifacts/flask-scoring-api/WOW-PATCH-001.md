@@ -7,7 +7,7 @@
 External Claude planning thread + Replit agent conflict-check · 2026-06-30
 
 ## Status
-`READY`
+`SHIPPED`
 
 ---
 

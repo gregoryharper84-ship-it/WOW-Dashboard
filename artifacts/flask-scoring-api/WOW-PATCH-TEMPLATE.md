@@ -104,4 +104,4 @@ _After the patch ships, list the exact lines that must be updated in
 
 | Patch ID | Date | Status | Summary |
 |----------|------|--------|---------|
-| _(none yet — first shipped patch goes here)_ | | | |
+| WOW-PATCH-001 | 2026-06-30 | SHIPPED | Kalshi NHIGH weather lane — 5-city station map, NWS CLI fetcher, bracket scorer, `/wow/kalshi/weather/evaluate` + `/stations` |
