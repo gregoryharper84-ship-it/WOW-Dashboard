@@ -7507,6 +7507,391 @@ def _leash_score_from_statcast(first: str, last: str, days_back: int = 90) -> di
 # ── END WOW MLB Pitching Phase 1 helpers ──────────────────────────────────────
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW Cross-Sport Phase 2 helpers
+#  1. Line movement  (all sports)
+#  2. MLB pitcher handedness splits (platoon K%)
+#  3. WNBA / NBA defensive rating
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Prop → ODDS API market key ─────────────────────────────────────────────
+_PROP_TO_ODDS_MARKET: dict[str, str] = {
+    # MLB pitcher
+    "pitcher strikeouts":                "pitcher_strikeouts",
+    "pitcher outs recorded":             "pitcher_outs",
+    "pitcher hits allowed":              "pitcher_hits_allowed",
+    "pitcher walks":                     "pitcher_walks",
+    "pitcher earned runs":               "pitcher_earned_runs",
+    "pitcher pitches":                   "pitcher_pitches",
+    "total pitches":                     "pitcher_pitches",
+    "1st inning pitches":               "pitcher_strikeouts_1st_inning",
+    # MLB batter
+    "batter home runs":                  "batter_home_runs",
+    "batter hits":                       "batter_hits",
+    "batter total bases":                "batter_total_bases",
+    "batter rbi":                        "batter_rbis",
+    "batter runs scored":                "batter_runs_scored",
+    "batter stolen bases":               "batter_stolen_bases",
+    # NBA / WNBA
+    "player points":                     "player_points",
+    "player rebounds":                   "player_rebounds",
+    "player assists":                    "player_assists",
+    "player threes":                     "player_threes",
+    "player steals":                     "player_steals",
+    "player blocks":                     "player_blocks",
+    "player points rebounds assists":    "player_points_rebounds_assists",
+    "player points+rebounds+assists":    "player_points_rebounds_assists",
+    "player points + rebounds + assists":"player_points_rebounds_assists",
+    # NFL
+    "player passing yards":              "player_pass_yds",
+    "player rushing yards":              "player_rush_yds",
+    "player receiving yards":            "player_reception_yds",
+    "player receptions":                 "player_receptions",
+    "player passing touchdowns":         "player_pass_tds",
+    "player rushing touchdowns":         "player_rush_tds",
+    "player receiving touchdowns":       "player_reception_tds",
+    "player tackles":                    "player_solo_tackles",
+    "player kicking points":             "player_kicking_points",
+}
+
+# ── Sport → ODDS API sport key ─────────────────────────────────────────────
+_SPORT_TO_ODDS_KEY: dict[str, str] = {
+    "mlb":   "baseball_mlb",
+    "nba":   "basketball_nba",
+    "wnba":  "basketball_wnba",
+    "nfl":   "americanfootball_nfl",
+    "nhl":   "icehockey_nhl",
+    "ncaab": "basketball_ncaab",
+    "ncaaf": "americanfootball_ncaaf",
+}
+
+
+def _get_cross_book_variance(player_name: str, odds_market: str,
+                              sport_odds_key: str) -> dict:
+    """Fetch current line for a player across all books.  Returns consensus
+    (median), min/max, and per-book variance.  Uses ODDS API — costs quota.
+    Only called when the caller explicitly requests variance data."""
+    import requests as _req, statistics as _stats
+    odds_key = os.environ.get("ODDS_API_KEY", "")
+    if not odds_key:
+        return {"error": "ODDS_API_KEY_MISSING"}
+    base = "https://api.the-odds-api.com/v4"
+    try:
+        r = _req.get(f"{base}/sports/{sport_odds_key}/events",
+                     params={"apiKey": odds_key}, timeout=10)
+        r.raise_for_status()
+        events = r.json()
+        name_lower = player_name.lower()
+        points: list[float] = []
+        books:  list[str]   = []
+        for event in events:
+            r2 = _req.get(
+                f"{base}/sports/{sport_odds_key}/events/{event['id']}/odds",
+                params={"apiKey": odds_key, "regions": "us",
+                        "markets": odds_market, "oddsFormat": "american"},
+                timeout=10,
+            )
+            if r2.status_code != 200:
+                continue
+            for bk in r2.json().get("bookmakers", []):
+                for mkt in bk.get("markets", []):
+                    for outcome in mkt.get("outcomes", []):
+                        desc = (outcome.get("description") or "").lower()
+                        if name_lower in desc or desc in name_lower:
+                            pt = outcome.get("point")
+                            if pt is not None:
+                                points.append(float(pt))
+                                books.append(bk.get("key", "?"))
+        if not points:
+            return {"error": "PLAYER_NOT_FOUND_IN_PROPS"}
+        return {
+            "consensus_line":     _stats.median(points),
+            "books_sampled":      len(points),
+            "book_names":         list(set(books))[:6],
+            "line_range":         [min(points), max(points)],
+            "cross_book_variance": round(max(points) - min(points), 1),
+        }
+    except Exception as e:
+        return {"error": "ODDS_API_FETCH_FAILED", "detail": str(e)[:200]}
+
+
+def _get_line_movement(player_name: str, prop: str, sport: str,
+                       side: str, current_line: float,
+                       game_date: str = "",
+                       include_variance: bool = False) -> dict:
+    """Compare current line (from caller's request) against opening line in DB.
+
+    Movement = current_line - opening_line.
+    Positive = line moved up (harder to hit MORE / easier to hit LESS).
+    Negative = line moved down (easier to hit MORE / harder to hit LESS).
+    Steam threshold: |movement| >= 0.5.
+
+    When include_variance=True, also calls ODDS API for cross-book spread
+    (costs API quota — use sparingly).
+
+    Returns:
+      opening_line        float | None
+      current_line        float
+      movement            float | None
+      direction           STEAM_MORE | STEAM_LESS | STABLE | NO_OPENING_LINE
+      steam               bool
+      steam_favors        "BET" | "AGAINST" | "NONE"   (relative to `side`)
+      cross_book_variance float | None  (only if include_variance)
+      books_sampled       int           (only if include_variance)
+    """
+    import psycopg2 as _pg
+    from datetime import datetime as _dt, timezone as _tz
+
+    today    = game_date or _dt.now(_tz.utc).date().isoformat()
+    side_db  = side.lower().replace("more", "over").replace("less", "under")
+
+    # 1. Opening line from DB
+    opening_line = None
+    db_url = os.environ.get("DATABASE_URL", "")
+    if db_url:
+        try:
+            conn = _pg.connect(db_url)
+            try:
+                _ensure_lines_schema(conn)
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT opening_line FROM opening_lines
+                        WHERE player_lower = %s AND prop = %s
+                          AND side = %s AND line_date = %s
+                    """, (player_name.lower(), prop.lower(), side_db, today))
+                    row = cur.fetchone()
+                    if row:
+                        opening_line = float(row[0])
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+    # 2. Movement calculation
+    movement  = None
+    direction = "NO_OPENING_LINE"
+    steam     = False
+    steam_favors = "NONE"
+
+    if opening_line is not None:
+        movement = round(current_line - opening_line, 2)
+        steam    = abs(movement) >= 0.5
+        if abs(movement) < 0.1:
+            direction = "STABLE"
+        elif movement > 0:
+            direction = "STEAM_MORE"
+            # Line went UP: harder to hit MORE, easier to hit LESS
+            steam_favors = "AGAINST" if side.upper() in ("MORE", "OVER") else "BET"
+        else:
+            direction = "STEAM_LESS"
+            # Line went DOWN: easier to hit MORE, harder to hit LESS
+            steam_favors = "BET" if side.upper() in ("MORE", "OVER") else "AGAINST"
+
+    result: dict = {
+        "opening_line":  opening_line,
+        "current_line":  current_line,
+        "movement":      movement,
+        "direction":     direction,
+        "steam":         steam,
+        "steam_favors":  steam_favors,
+    }
+
+    # 3. Optional cross-book variance (ODDS API)
+    if include_variance:
+        odds_market   = _PROP_TO_ODDS_MARKET.get(prop.lower())
+        sport_api_key = _SPORT_TO_ODDS_KEY.get(sport.lower())
+        if odds_market and sport_api_key:
+            var_data = _get_cross_book_variance(player_name, odds_market, sport_api_key)
+            result["cross_book_variance"] = var_data.get("cross_book_variance")
+            result["books_sampled"]       = var_data.get("books_sampled", 0)
+            result["book_names"]          = var_data.get("book_names", [])
+            if var_data.get("error"):
+                result["variance_error"] = var_data["error"]
+        else:
+            result["cross_book_variance"] = None
+            result["variance_error"]      = "PROP_OR_SPORT_NOT_MAPPED"
+    return result
+
+
+# ── MLB pitcher platoon (handedness) splits ────────────────────────────────
+
+def _get_pitcher_platoon_splits(first: str, last: str) -> dict:
+    """Fetch season platoon K% splits for a pitcher vs RHB and LHB.
+    Uses MLB Stats API /stats?stats=season&sitCodes=vr|vl|ov.
+
+    The `statSplits` endpoint returns 0 results mid-season; the correct
+    approach is /api/v1/stats with sitCodes= (vr=vs RHB, vl=vs LHB).
+
+    Returns:
+      vs_rhb_k_pct   float | None   — K / BF vs right-handed batters
+      vs_lhb_k_pct   float | None   — K / BF vs left-handed batters
+      overall_k_pct  float | None   — K / BF overall (season stat)
+      source         str
+    """
+    import requests as _req
+    try:
+        season = datetime.now().year
+        # Search for player
+        r = _req.get(
+            "https://statsapi.mlb.com/api/v1/people/search",
+            params={"names": f"{first} {last}", "sportId": 1},
+            timeout=10,
+        )
+        r.raise_for_status()
+        people = r.json().get("people", [])
+        if not people:
+            return {"error": "PLAYER_NOT_FOUND", "vs_rhb_k_pct": None,
+                    "vs_lhb_k_pct": None, "overall_k_pct": None}
+        pid = people[0]["id"]
+
+        def _fetch_splits(sit_code: str) -> list[dict]:
+            params: dict = {
+                "stats": "season", "group": "pitching",
+                "season": season, "sportId": 1,
+                "playerPool": "All", "playerIds": pid,
+            }
+            if sit_code:
+                params["sitCodes"] = sit_code
+            r2 = _req.get("https://statsapi.mlb.com/api/v1/stats",
+                          params=params, timeout=10)
+            if r2.status_code != 200:
+                return []
+            return r2.json().get("stats", [{}])[0].get("splits", [])
+
+        def _sum_k_pct(splits: list[dict]) -> float | None:
+            total_so = sum(int(s.get("stat", {}).get("strikeOuts") or 0) for s in splits)
+            total_bf = sum(int(s.get("stat", {}).get("battersFaced") or 0) for s in splits)
+            return round(total_so / total_bf, 4) if total_bf > 0 else None
+
+        vs_rhb_splits   = _fetch_splits("vr")
+        vs_lhb_splits   = _fetch_splits("vl")
+        overall_splits  = _fetch_splits("")
+
+        return {
+            "vs_rhb_k_pct":  _sum_k_pct(vs_rhb_splits),
+            "vs_lhb_k_pct":  _sum_k_pct(vs_lhb_splits),
+            "overall_k_pct": _sum_k_pct(overall_splits),
+            "mlbam_id":      pid,
+            "source":        "mlb_stats_api_sitcodes",
+        }
+    except Exception as e:
+        return {"error": str(e)[:200], "vs_rhb_k_pct": None,
+                "vs_lhb_k_pct": None, "overall_k_pct": None}
+
+
+# ── WNBA / NBA defensive rating ────────────────────────────────────────────
+
+_WNBA_ESPN_TEAM_IDS: dict[str, int] = {
+    "ATL": 3,  "CHI": 4,  "CONN": 5,  "DAL": 6,  "IND": 8,
+    "LV":  9,  "LA":  6,  "MIN": 10,  "NY":  11, "PHX": 14,
+    "SEA": 17, "WAS": 19, "GS":  20,  "TOR": 24, "UTA": 18,
+    "CLE": 21,
+}
+
+def _get_wnba_def_rating(opponent_abbr: str) -> dict:
+    """Fetch WNBA opponent defensive rating from ESPN.
+    Returns def_rating, rank (1 = best defense), and points allowed per game."""
+    import requests as _req
+    try:
+        # ESPN WNBA standings has defensive data
+        r = _req.get(
+            "https://site.api.espn.com/apis/v2/sports/basketball/wnba/standings",
+            params={"season": datetime.now().year},
+            timeout=10,
+        )
+        r.raise_for_status()
+        children = r.json().get("children", [])
+        # Collect all team entries
+        team_stats: list[dict] = []
+        for conf in children:
+            for entry in conf.get("standings", {}).get("entries", []):
+                tm = entry.get("team", {})
+                abbr = tm.get("abbreviation", "")
+                stats_list = entry.get("stats", [])
+                pts_allowed = next(
+                    (float(s["value"]) for s in stats_list
+                     if s.get("name") == "avgPointsAgainst"), None)
+                team_stats.append({"abbr": abbr, "pts_allowed": pts_allowed})
+
+        if not team_stats:
+            raise ValueError("No standings data")
+
+        # Rank by pts_allowed ascending (lower = better defense)
+        ranked = sorted([t for t in team_stats if t["pts_allowed"] is not None],
+                        key=lambda t: t["pts_allowed"])
+        for i, t in enumerate(ranked):
+            t["def_rank"] = i + 1
+
+        match = next((t for t in ranked
+                      if t["abbr"].upper() == opponent_abbr.upper()), None)
+        if match:
+            return {
+                "team":         opponent_abbr,
+                "pts_allowed_pg": match["pts_allowed"],
+                "def_rank":     match["def_rank"],
+                "teams_ranked": len(ranked),
+                "tier":         ("ELITE" if match["def_rank"] <= 4
+                                 else "AVERAGE" if match["def_rank"] <= 10
+                                 else "WEAK"),
+                "source":       "espn_wnba_standings",
+            }
+        return {"error": "TEAM_NOT_FOUND", "team": opponent_abbr}
+    except Exception as e:
+        return {"error": str(e)[:200], "team": opponent_abbr}
+
+
+def _get_nba_def_rating(opponent_abbr: str) -> dict:
+    """Fetch NBA opponent defensive rating via nba_api LeagueDashTeamStats."""
+    if not _NBA_OK:
+        return {"error": "NBA_API_NOT_AVAILABLE", "team": opponent_abbr}
+    try:
+        from nba_api.stats.endpoints import leaguedashteamstats
+        import pandas as _pd
+        df = leaguedashteamstats.LeagueDashTeamStats(
+            measure_type_detailed_defense="Defense",
+            per_mode_simple="PerGame",
+            season="2025-26",
+        ).get_data_frames()[0]
+        # Match by team abbreviation
+        row = df[df["TEAM_ABBREVIATION"].str.upper() == opponent_abbr.upper()]
+        if row.empty:
+            return {"error": "TEAM_NOT_FOUND", "team": opponent_abbr}
+        r = row.iloc[0]
+        # Rank: sort all teams by DEF_RATING ascending to get rank
+        df_sorted = df.sort_values("DEF_RATING")
+        df_sorted["def_rank"] = range(1, len(df_sorted) + 1)
+        rank_row = df_sorted[df_sorted["TEAM_ABBREVIATION"].str.upper()
+                              == opponent_abbr.upper()]
+        def_rank = int(rank_row.iloc[0]["def_rank"]) if not rank_row.empty else None
+        n = len(df)
+        return {
+            "team":        opponent_abbr,
+            "def_rating":  round(float(r["DEF_RATING"]), 1),
+            "opp_pts_pg":  round(float(r["OPP_PTS_PAINT"]), 1) if "OPP_PTS_PAINT" in r else None,
+            "def_rank":    def_rank,
+            "teams_ranked": n,
+            "tier":        ("ELITE"   if def_rank and def_rank <= 8
+                            else "AVERAGE" if def_rank and def_rank <= 22
+                            else "WEAK"),
+            "source":      "nba_api_defense",
+        }
+    except Exception as e:
+        return {"error": str(e)[:200], "team": opponent_abbr}
+
+
+def _get_def_rating(opponent_abbr: str, sport: str) -> dict:
+    """Route defensive rating lookup to the correct sport helper."""
+    s = sport.lower()
+    if s == "wnba":
+        return _get_wnba_def_rating(opponent_abbr)
+    if s == "nba":
+        return _get_nba_def_rating(opponent_abbr)
+    return {"error": f"DEF_RATING_NOT_SUPPORTED_FOR_{s.upper()}", "team": opponent_abbr}
+
+
+# ── END WOW Cross-Sport Phase 2 helpers ───────────────────────────────────
+
+
 def _mlb_workflow_fields(first: str, last: str, sport: str, prop: str,
                          year: str, opponent: str = "", game_date: str = "",
                          statcast_data: dict = None):
@@ -8197,8 +8582,10 @@ def wow_mlb_pitcher():
         leash = _leash_score(bbref_log)
     else:
         leash = _leash_score_from_statcast(first, last)
-    savant     = _get_pitcher_savant(first, last)
-    opp_k      = _get_opponent_k_rate(opp) if opp else {"error": "NO_OPPONENT_PROVIDED"}
+    savant      = _get_pitcher_savant(first, last)
+    opp_k       = _get_opponent_k_rate(opp) if opp else {"error": "NO_OPPONENT_PROVIDED"}
+    platoon     = _get_pitcher_platoon_splits(first, last)
+    line_move   = _get_line_movement(f"{first} {last}", prop, "mlb", side, line)
 
     # 2. Efficiency gap — pitch-count props only, NOT strikeouts
     efficiency = None
@@ -8235,7 +8622,13 @@ def wow_mlb_pitcher():
     if tight_k_trap:
         gate_flags.append("REJECT_ONE_K_MARGIN_TRAP")
 
-    # 5. WOW verdict
+    # 5. Line movement gate flags
+    if line_move.get("steam") and line_move.get("steam_favors") == "AGAINST":
+        gate_flags.append("WATCH_STEAM_AGAINST_BET")
+    if line_move.get("steam") and line_move.get("steam_favors") == "BET":
+        gate_flags.append("NOTE_STEAM_FAVORS_BET")
+
+    # 6. WOW verdict
     if any(f.startswith("REJECT_") for f in gate_flags):
         wow_verdict = "GATE_KILL"
     elif any(f.startswith("WATCH_") or f == "LEASH_KILL_RISK" for f in gate_flags):
@@ -8247,7 +8640,11 @@ def wow_mlb_pitcher():
     if not savant.get("error"):
         data_sources.append("statcast")
     if not opp_k.get("error"):
-        data_sources.append("fangraphs")
+        data_sources.append("mlb_stats_api")
+    if not platoon.get("error"):
+        data_sources.append("mlb_platoon")
+    if line_move.get("opening_line") is not None:
+        data_sources.append("line_movement")
 
     return jsonify({
         "ok":             True,
@@ -8259,12 +8656,325 @@ def wow_mlb_pitcher():
         "leash":          leash,
         "savant":         savant,
         "opponent_k_pct": opp_k,
+        "platoon_splits": platoon,
+        "line_movement":  line_move,
         "efficiency":     efficiency,
         "fantasy":        fantasy,
         "gate_flags":     gate_flags,
         "wow_verdict":    wow_verdict,
         "data_sources":   data_sources,
     })
+
+
+# ── Cross-sport: line movement query ──────────────────────────────────────
+@app.route("/wow/line-movement", methods=["POST"])
+@require_api_key
+def wow_line_movement():
+    """POST /wow/line-movement
+    Compare current line to opening line for any sport/prop.
+
+    Body: { player, prop, sport, side, line, date (opt), variance (bool opt) }
+    Returns movement direction, steam flag, and optional cross-book spread.
+    """
+    body    = request.get_json(silent=True) or {}
+    player  = (body.get("player")  or "").strip()
+    prop    = (body.get("prop")    or "").strip()
+    sport   = (body.get("sport")   or "").strip().lower()
+    side    = (body.get("side")    or "MORE").strip().upper()
+    date    = (body.get("date")    or "").strip()
+    variance = bool(body.get("variance", False))
+    try:
+        line = float(body.get("line", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "line must be numeric"}), 400
+    if not player or not prop or not sport:
+        return jsonify({"ok": False, "error": "player, prop, and sport are required"}), 400
+    result = _get_line_movement(player, prop, sport, side, line,
+                                game_date=date, include_variance=variance)
+    return jsonify({"ok": True, "player": player, "prop": prop,
+                    "sport": sport, "side": side, **result})
+
+
+# ── WNBA player prop gate ──────────────────────────────────────────────────
+@app.route("/wow/wnba/player", methods=["POST"])
+@require_api_key
+def wow_wnba_player():
+    """POST /wow/wnba/player
+    WNBA player prop evaluator — L10 game log + opponent defensive rating
+    + line movement.
+
+    Body:
+      { "first": str, "last": str, "opponent_team": str,
+        "prop": str, "line": number, "side": "MORE"|"LESS" }
+
+    Returns:
+      l10           — last-10 game log + stats (via _l10_bbref/ESPN fallback)
+      def_rating    — opponent defensive rating (ESPN WNBA standings)
+      line_movement — opening vs current line
+      gate_flags    — WOW gate flags
+      wow_verdict   — GATE_PASS | GATE_WATCH | GATE_KILL
+    """
+    body  = request.get_json(silent=True) or {}
+    first = (body.get("first")         or "").strip()
+    last  = (body.get("last")          or "").strip()
+    opp   = (body.get("opponent_team") or "").strip().upper()
+    prop  = (body.get("prop")          or "").strip()
+    side  = (body.get("side")          or "MORE").strip().upper()
+    try:
+        line = float(body.get("line", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "line must be a number"}), 400
+    if not first or not last:
+        return jsonify({"ok": False, "error": "first and last are required"}), 400
+
+    year = str(datetime.now().year)
+
+    # L10 game log
+    try:
+        l10_raw = _l10_bbref(first, last, "wnba", prop, side, line, year)
+    except Exception:
+        l10_raw = {"games": [], "gap": "bbref_unavailable"}
+
+    # Opponent defensive rating
+    def_rating = _get_wnba_def_rating(opp) if opp else {"error": "NO_OPPONENT_PROVIDED"}
+
+    # Line movement
+    line_move = _get_line_movement(f"{first} {last}", prop, "wnba", side, line)
+
+    # Gate flags
+    gate_flags: list[str] = []
+    games = l10_raw.get("games", [])
+    hit_rate = l10_raw.get("hit_rate") or l10_raw.get("over_rate")
+
+    if hit_rate is not None and hit_rate < 0.30 and side == "MORE":
+        gate_flags.append("WATCH_LOW_HIT_RATE_MORE")
+    if hit_rate is not None and hit_rate > 0.70 and side == "LESS":
+        gate_flags.append("WATCH_LOW_HIT_RATE_LESS")
+
+    tier = def_rating.get("tier", "")
+    if tier == "ELITE" and side == "MORE":
+        gate_flags.append("WATCH_ELITE_DEF_VS_MORE")
+    if tier == "WEAK" and side == "LESS":
+        gate_flags.append("WATCH_WEAK_DEF_VS_LESS")
+
+    if line_move.get("steam") and line_move.get("steam_favors") == "AGAINST":
+        gate_flags.append("WATCH_STEAM_AGAINST_BET")
+    if line_move.get("steam") and line_move.get("steam_favors") == "BET":
+        gate_flags.append("NOTE_STEAM_FAVORS_BET")
+
+    if any(f.startswith("REJECT_") for f in gate_flags):
+        wow_verdict = "GATE_KILL"
+    elif any(f.startswith("WATCH_") for f in gate_flags):
+        wow_verdict = "GATE_WATCH"
+    else:
+        wow_verdict = "GATE_PASS"
+
+    data_sources = []
+    if games:
+        data_sources.append("bbref_wnba")
+    if not def_rating.get("error"):
+        data_sources.append("espn_wnba")
+    if line_move.get("opening_line") is not None:
+        data_sources.append("line_movement")
+
+    return jsonify({
+        "ok":          True,
+        "player":      f"{first} {last}",
+        "prop":        prop,
+        "line":        line,
+        "side":        side,
+        "opponent":    opp,
+        "l10":         l10_raw,
+        "def_rating":  def_rating,
+        "line_movement": line_move,
+        "gate_flags":  gate_flags,
+        "wow_verdict": wow_verdict,
+        "data_sources": data_sources,
+    })
+
+
+# ── CLV (Closing Line Value) tracker ─────────────────────────────────────
+_CLV_SCHEMA_READY = False
+_CLV_SCHEMA_LOCK  = threading.Lock()
+
+def _ensure_clv_schema(conn) -> None:
+    global _CLV_SCHEMA_READY
+    if _CLV_SCHEMA_READY:
+        return
+    with _CLV_SCHEMA_LOCK:
+        if _CLV_SCHEMA_READY:
+            return
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS closing_lines (
+                    id            SERIAL PRIMARY KEY,
+                    player        TEXT NOT NULL,
+                    player_lower  TEXT NOT NULL,
+                    prop          TEXT NOT NULL,
+                    sport         TEXT,
+                    side          TEXT NOT NULL DEFAULT 'over',
+                    line_date     DATE NOT NULL,
+                    pick_line     NUMERIC(8,2) NOT NULL,
+                    closing_line  NUMERIC(8,2),
+                    result        TEXT,
+                    notes         TEXT,
+                    captured_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    closed_at     TIMESTAMPTZ,
+                    UNIQUE (player_lower, prop, side, line_date)
+                );
+                CREATE INDEX IF NOT EXISTS closing_lines_date_idx
+                    ON closing_lines (line_date);
+                CREATE INDEX IF NOT EXISTS closing_lines_player_idx
+                    ON closing_lines (player_lower);
+            """)
+            conn.commit()
+        _CLV_SCHEMA_READY = True
+
+
+@app.route("/lines/closing", methods=["POST"])
+@require_api_key
+def lines_closing_store():
+    """Store or update a closing line for CLV tracking.
+
+    Body: { player, prop, sport, side, pick_line, closing_line,
+            result (opt: WIN|LOSS|PUSH), date (opt), notes (opt) }
+    - Call with only pick_line at bet time to create the record.
+    - Call again with closing_line (and result) after the game to close it.
+    """
+    import psycopg2 as _pg, psycopg2.extras as _pgx
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+
+    body        = request.get_json(silent=True) or {}
+    player      = (body.get("player")  or "").strip()
+    prop        = (body.get("prop")    or "").strip().lower()
+    sport       = (body.get("sport")   or "").strip().lower() or None
+    side        = (body.get("side")    or "over").strip().lower()
+    raw_date    = (body.get("date")    or "").strip() or _dt.now(_tz.utc).date().isoformat()
+    notes       = (body.get("notes")   or None)
+    result_val  = (body.get("result")  or None)
+
+    if not player or not prop:
+        return jsonify({"ok": False, "error": "player and prop are required"}), 400
+    try:
+        pick_line    = float(body["pick_line"])   if "pick_line"   in body else None
+        closing_line = float(body["closing_line"]) if "closing_line" in body else None
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "pick_line and closing_line must be numeric"}), 400
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+    try:
+        conn = _pg.connect(db_url)
+        try:
+            _ensure_clv_schema(conn)
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                if pick_line is not None:
+                    cur.execute("""
+                        INSERT INTO closing_lines
+                            (player, player_lower, prop, sport, side, line_date, pick_line, notes)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (player_lower, prop, side, line_date)
+                        DO UPDATE SET notes = EXCLUDED.notes
+                        RETURNING id, pick_line, closing_line, captured_at
+                    """, (player, player.lower(), prop, sport, side,
+                          raw_date, pick_line, notes))
+                elif closing_line is not None:
+                    cur.execute("""
+                        UPDATE closing_lines
+                           SET closing_line = %s,
+                               result       = %s,
+                               closed_at    = NOW()
+                         WHERE player_lower = %s AND prop = %s
+                           AND side = %s AND line_date = %s
+                        RETURNING id, pick_line, closing_line, closed_at
+                    """, (closing_line, result_val,
+                          player.lower(), prop, side, raw_date))
+                else:
+                    return jsonify({"ok": False, "error": "provide pick_line or closing_line"}), 400
+                row = cur.fetchone()
+                conn.commit()
+                return jsonify({"ok": True, "record": dict(row) if row else None})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"DB error: {e}"}), 500
+
+
+@app.route("/lines/clv", methods=["GET"])
+@require_api_key
+def lines_clv_summary():
+    """GET /lines/clv?player=X&prop=Y&sport=Z&days=30
+
+    Compute average closing line value for a player/prop/sport.
+    CLV = closing_line - pick_line  (positive = we beat the close).
+
+    Returns: avg_clv, records, win_rate, hit_rate_vs_close, sample.
+    """
+    import psycopg2 as _pg, psycopg2.extras as _pgx
+    from datetime import date as _date, timedelta as _td
+
+    player = request.args.get("player", "").strip()
+    prop   = request.args.get("prop",   "").strip().lower()
+    sport  = request.args.get("sport",  "").strip().lower() or None
+    try:
+        days = int(request.args.get("days", 90))
+    except ValueError:
+        days = 90
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+    try:
+        conn = _pg.connect(db_url)
+        try:
+            _ensure_clv_schema(conn)
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                since = (_date.today() - _td(days=days)).isoformat()
+                where_clauses = ["line_date >= %s"]
+                params: list = [since]
+                if player:
+                    where_clauses.append("player_lower = %s")
+                    params.append(player.lower())
+                if prop:
+                    where_clauses.append("prop = %s")
+                    params.append(prop)
+                if sport:
+                    where_clauses.append("sport = %s")
+                    params.append(sport)
+                where = " AND ".join(where_clauses)
+                cur.execute(f"""
+                    SELECT player, prop, sport, side, line_date,
+                           pick_line, closing_line, result
+                    FROM closing_lines
+                    WHERE {where}
+                    ORDER BY line_date DESC
+                    LIMIT 200
+                """, params)
+                rows = [dict(r) for r in cur.fetchall()]
+
+                closed = [r for r in rows if r["closing_line"] is not None]
+                clv_vals = [
+                    float(r["closing_line"]) - float(r["pick_line"])
+                    for r in closed
+                ]
+                wins = sum(1 for r in closed if r.get("result") == "WIN")
+                beat_close = sum(1 for v in clv_vals if v > 0)
+
+                return jsonify({
+                    "ok":              True,
+                    "records_total":   len(rows),
+                    "records_closed":  len(closed),
+                    "avg_clv":         round(sum(clv_vals)/len(clv_vals), 3) if clv_vals else None,
+                    "beat_close_pct":  round(beat_close/len(clv_vals), 3)   if clv_vals else None,
+                    "win_rate":        round(wins/len(closed), 3)            if closed   else None,
+                    "days_window":     days,
+                    "sample":          rows[:20],
+                })
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"DB error: {e}"}), 500
 
 
 # ── Component B: CSV export for MLB props ───────────────────────

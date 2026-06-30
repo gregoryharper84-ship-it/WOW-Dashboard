@@ -63,5 +63,6 @@ router.use("/kalshi",        makeForwarder("kalshi"));
 router.use("/lock-api",      makeForwarder("lock-api"));
 router.use("/gate-engine",   makeForwarder("gate-engine"));
 router.use("/analyze-board", makeForwarder("analyze-board"));
+router.use("/lines",         makeForwarder("lines"));
 
 export default router;
