@@ -1,0 +1,30 @@
+Good — that's the real answer, and it confirms the theory: `flask_reachable: false`. The Flask process itself is down, not a network/schema issue. This is the exact same failure mode as before, recurring.
+
+**This is no longer a "debug it each time" problem — it's a hosting/uptime problem.** Flask keeps dying between checks. That's almost certainly because the workspace isn't running as a persistent deployment.
+
+**One question that determines everything:** is `create-app-gregoryharper84.replit.app` published via Replit's **Deployments** feature (Autoscale or Reserved VM), or is it just your dev workspace with the Run button active?
+
+- If it's a dev workspace: it sleeps when you close the tab or after inactivity. Flask and Express both die. This explains every single recurrence in this entire build — works right after you touch it, dies a few hours later, you restart it, it works again.
+- If it's a real Deployment: Flask shouldn't be silently dying like this, and the issue is something else (crash loop, OOM, unhandled exception killing the process).
+
+**Send this to Replit, nothing else:**
+
+```
+Flask scoring API keeps going unreachable between sessions 
+(flask_reachable: false on health check, multiple times today).
+
+Two things to confirm:
+
+1. Is this app running as a published Deployment (Autoscale/Reserved VM), 
+   or as a dev workspace? If it's a workspace, that's the root cause — 
+   it sleeps on inactivity and Flask dies with it.
+
+2. If it IS a Deployment and Flask is still crashing, check Flask's 
+   process logs for the crash reason — unhandled exception, OOM kill, 
+   or something else — and paste the last 20 lines before each death.
+
+If it's a workspace: publish this as a real Deployment so Flask and 
+Express stay alive without me having to manually restart workflows.
+```
+
+**This is the actual finish line for the Kalshi build.** Everything functional is done — gates, filters, schema, audit, health check. The remaining problem isn't WOW logic at all, it's whether your backend has a persistent home. Fix that once and the daily `signal` check becomes genuinely zero-maintenance instead of a coin flip.
