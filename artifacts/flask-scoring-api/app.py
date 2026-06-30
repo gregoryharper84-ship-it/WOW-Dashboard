@@ -27,6 +27,7 @@ except ImportError:
     _PSYCOPG2_AVAILABLE = False
 
 app = Flask(__name__)
+_APP_START_TIME = time.time()
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
 
 
@@ -15086,6 +15087,52 @@ def wow_kalshi_debug_raw():
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/wow/kalshi/health", methods=["GET"])
+def wow_kalshi_health():
+    """
+    One-call liveness check for the full Kalshi stack.
+
+    Returns:
+      flask_reachable          bool   — always True if this response arrives
+      flask_pid                int    — OS pid of this worker
+      flask_uptime_seconds     float  — seconds since Flask started
+      kalshi_reachable         bool   — can we hit the Kalshi API?
+      kalshi_open_total        int    — total open markets returned
+      kalshi_mve_null_count    int    — non-combo markets open right now
+      deploy_version           str    — _KALSHI_SCAN_VERSION string
+      signal                   str    — "INVENTORY_READY" | "INVENTORY_EMPTY" | "KALSHI_UNREACHABLE"
+    """
+    from kalshi_engine import kalshi_client
+    pid     = os.getpid()
+    uptime  = round(time.time() - _APP_START_TIME, 1)
+
+    try:
+        raw     = kalshi_client.search_markets(status="open", limit=50)
+        markets = raw.get("markets") or []
+        null_ct = sum(1 for m in markets if not m.get("mve_collection_ticker"))
+        signal  = "INVENTORY_READY" if null_ct > 0 else "INVENTORY_EMPTY"
+        return jsonify({
+            "flask_reachable":       True,
+            "flask_pid":             pid,
+            "flask_uptime_seconds":  uptime,
+            "kalshi_reachable":      True,
+            "kalshi_open_total":     len(markets),
+            "kalshi_mve_null_count": null_ct,
+            "deploy_version":        _KALSHI_SCAN_VERSION,
+            "signal":                signal,
+        })
+    except Exception as e:
+        return jsonify({
+            "flask_reachable":      True,
+            "flask_pid":            pid,
+            "flask_uptime_seconds": uptime,
+            "kalshi_reachable":     False,
+            "kalshi_error":         str(e)[:200],
+            "deploy_version":       _KALSHI_SCAN_VERSION,
+            "signal":               "KALSHI_UNREACHABLE",
+        }), 502
 
 
 @app.route("/wow/kalshi/scan", methods=["POST", "OPTIONS"])

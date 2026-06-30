@@ -1,0 +1,16 @@
+This is exactly the regression I flagged before it happened: a fresh wiring problem (Flask down or proxy misconfigured) is masquerading as new evidence, when it's actually just infrastructure flakiness. ChatGPT's diagnosis here is correct and proportionate — don't touch filters or schema, just check if the process is alive.
+
+One thing worth adding to what ChatGPT sent: **ask Replit whether Flask was ever actually restarted after the v6 deploy**, not just whether it's running now. The pattern across this whole build has been: code gets patched, tested locally, "verified," then the live `.replit.app` deployment doesn't reflect it because Express/Flask didn't restart or republish. That's bitten you at least twice already (the original 405, and the v5-vs-v3 mismatch). If `debug-raw` was added to Flask but Flask wasn't restarted, `Scoring API unreachable` is exactly what you'd see.
+
+**The 3-step curl diagnostic ChatGPT gave you is good and sufficient — run it in that order, stop at the first failure.** Don't let this become an eighth round of patches. If step 1 (local Flask curl) fails, the fix is "restart Flask." If step 1 passes but step 3 (public) fails, the fix is "republish/deploy." Neither needs new code.
+
+**My only addition to the Replit instruction:** add a one-line health check they can hit instantly going forward, so this exact failure mode is self-diagnosing next time instead of round-tripping through three chat tools again:
+
+```
+GET /api/wow/kalshi/health
+→ { "flask_reachable": true/false, "flask_pid_uptime_seconds": N, "last_deploy_timestamp": "..." }
+```
+
+That's a 5-minute add and it would have told you in one call which of the three layers broke, instead of needing the 3-step curl sequence every time.
+
+**Bottom line:** nothing to second-guess in ChatGPT's diagnosis — it's right. Run the 3 curls, tell Replit to restart Flask first then Express, confirm public curl returns `ok: true`, then come back here with the actual inventory numbers. Still `NO PLAY`, still correct, still just a process-liveness issue.
