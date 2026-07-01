@@ -1,0 +1,185 @@
+Good. I’d mark **WOW-PATCH-011 as MVP shipped**, not “final mature ingestion.” It did the most important thing: moved WNBA ledger building away from manual article forensics and into structured rows.
+
+But I’d preserve two QA caveats:
+
+1. **ESPN fallback is acceptable for MVP, but it should be labeled as fallback**, not the final authoritative WNBA source layer.
+2. **“6 tables created on first hit” is okay for Replit MVP, but production should move to explicit migrations** so schema drift does not sneak in.
+
+Also, this line needs clarification:
+
+> `source_is_stale + has_missing_fields on every row`
+
+That is fine if the fields are accurately tracking row-level data quality. But if every row is being flagged stale/missing by default, then PATCH-011 is ingesting data but still producing **low-confidence rows**. PATCH-010 should solve that next.
+
+## My ruling
+
+**Accept PATCH-011 as shipped. Move to PATCH-010 next.**
+
+Now that ingestion exists, the next patch should validate whether each market has the exact fields needed before scoring.
+
+Send this back:
+
+PATCH-011 ACCEPTANCE + NEXT BUILD DIRECTIVE
+
+WOW-PATCH-011 is accepted as MVP shipped.
+
+Accepted:
+
+* WNBA schedule ingestion works.
+* WNBA player game-log ingestion works.
+* L5/L10-ready rows are being created with minutes and component stats.
+* missing_fields[] exists.
+* source_is_stale / has_missing_fields flags exist.
+* source_audit_log records ingestion runs.
+* no betting labels are created.
+* Gate 3 remains untouched.
+* DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS remains enforced.
+
+QA caveats to preserve:
+
+1. ESPN site/v2 fallback is acceptable for MVP, but source should be labeled clearly as ESPN_FALLBACK_MVP, not treated as final official-source maturity.
+2. Table creation on first hit is acceptable for Replit MVP, but production should eventually move to explicit schema migrations.
+3. Confirm source_is_stale and has_missing_fields are row-specific flags, not default true on every row. If every row is stale/missing, data_confidence must remain PARTIAL_STALE or DATA_CONTRACT_INCOMPLETE until PATCH-010 resolves contract-level requirements.
+
+Next patch:
+Proceed with WOW-PATCH-010 — Market Data Contract Registry.
+
+Purpose:
+Before any prop enters Gate 3 or downstream scoring, validate whether the ingested row set contains the exact fields required for that sport/market.
+
+PATCH-010 minimum behavior:
+
+* Define required fields by sport + market.
+* Return DATA_CONTRACT_COMPLETE or DATA_CONTRACT_INCOMPLETE.
+* Preserve every touched row.
+* Do not score incomplete rows as MODEL_QUALIFIED.
+* Allow DATA_BUILD_PRIORITY only when available evidence is directionally strong.
+* Expose missing_fields[] and contract_version.
+* Do not create betting approval labels.
+* Do not modify Gate 3 math.
+* Maintain DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS.
+
+Minimum WNBA contracts:
+
+WNBA PTS:
+
+* player_id or player_name
+* team
+* opponent
+* game_date
+* minutes
+* points
+* starter or role
+* source_timestamp
+* ingestion_timestamp
+* L5 values if scoring L5
+* L10 values if scoring L10
+
+WNBA REB:
+
+* player_id or player_name
+* team
+* opponent
+* game_date
+* minutes
+* rebounds
+* starter or role
+* source_timestamp
+* ingestion_timestamp
+* L5/L10 values as applicable
+
+WNBA AST:
+
+* player_id or player_name
+* team
+* opponent
+* game_date
+* minutes
+* assists
+* starter or role
+* teammate availability if available
+* source_timestamp
+* ingestion_timestamp
+* L5/L10 values as applicable
+
+WNBA PRA:
+
+* points
+* rebounds
+* assists
+* minutes
+* starter or role
+* source_timestamp
+* ingestion_timestamp
+* L5/L10 component values
+
+WNBA P+A:
+
+* points
+* assists
+* minutes
+* starter or role
+* source_timestamp
+* ingestion_timestamp
+* L5/L10 component values
+
+WNBA P+R:
+
+* points
+* rebounds
+* minutes
+* starter or role
+* source_timestamp
+* ingestion_timestamp
+* L5/L10 component values
+
+WNBA R+A:
+
+* rebounds
+* assists
+* minutes
+* starter or role
+* source_timestamp
+* ingestion_timestamp
+* L5/L10 component values
+
+Suggested endpoint:
+POST /wow/data-contract/check
+
+Required response fields:
+
+* contract_status
+* contract_version
+* sport
+* market
+* required_fields
+* present_fields
+* missing_fields
+* stale_fields
+* source_quality
+* data_confidence
+* approval_ceiling
+* blocker_code
+* execution_rule
+
+Required labels:
+
+* DATA_CONTRACT_COMPLETE
+* DATA_CONTRACT_INCOMPLETE
+* DATA_CONTRACT_STALE
+* DATA_CONTRACT_PARTIAL
+* DATA_BUILD_PRIORITY
+* NO_APPROVAL
+
+Acceptance tests:
+
+1. PTS market passes when points/minutes/date/player/team/opponent/source timestamps exist.
+2. PRA fails if any component is missing.
+3. AST returns partial if teammate availability is missing but core AST/minutes data exists.
+4. Stale source timestamp produces DATA_CONTRACT_STALE.
+5. Missing minutes blocks MODEL_QUALIFIED.
+6. Every row is preserved with blocker_code.
+7. No betting approval labels are created.
+8. Gate 3 remains unchanged.
+
+After 010, I’d go **009 Confidence Envelope**, because 010 will give the confidence system real inputs instead of abstract labels.

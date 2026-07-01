@@ -545,6 +545,75 @@ audit entry. `missing_fields[]` array tracks which core stat fields were absent.
 
 ---
 
+## §15 — Market Data Contract Registry (WOW-PATCH-010)
+
+### Endpoint
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/wow/data-contract/check` | Check a row against a sport+market contract |
+| GET  | `/wow/data-contract/registry` | List all contracts and required fields |
+
+### Request body for `check`
+
+```json
+{
+  "sport":       "wnba",
+  "market":      "PTS",
+  "window":      "L5",
+  "data":        { ... },
+  "player_id":   "...",
+  "player_name": "...",
+  "date_from":   "YYYY-MM-DD",
+  "date_to":     "YYYY-MM-DD"
+}
+```
+
+`data` (inline) takes precedence for field checks. `player_id`/`player_name` drives DB lookup for row_count (window sufficiency).
+
+### Contract status labels
+
+| Status | Trigger | approval_ceiling | data_confidence |
+|--------|---------|-----------------|-----------------|
+| `DATA_CONTRACT_COMPLETE` | All core fields present + not stale | `GATE_3_ELIGIBLE` | `HIGH` |
+| `DATA_CONTRACT_STALE` | All core present, source_timestamp > 25h | `WATCH` | `PARTIAL_STALE` |
+| `DATA_CONTRACT_PARTIAL` | Advisory missing OR window gap | `CONDITIONAL` | `MEDIUM` |
+| `DATA_BUILD_PRIORITY` | Only metadata missing (stat fields present) | `NO_APPROVAL` | `MEDIUM` |
+| `DATA_CONTRACT_INCOMPLETE` | Core stat or minutes missing | `NO_APPROVAL` | `DATA_CONTRACT_INCOMPLETE` |
+
+### Logical field aliases
+
+- `player_id_or_name` → at least one of `player_id`, `player_name` is non-null
+- `starter_or_role` → `starter` (bool) or `role` (text) is non-null
+- `ingestion_ts` → `ingestion_ts` or `ingestion_timestamp`
+
+### WNBA market contracts (v1.0.0)
+
+Base core fields (all markets): `player_id_or_name, team, opponent, game_date, minutes, starter_or_role, source_timestamp, ingestion_ts`
+
+| Market | Additional core | Advisory |
+|--------|----------------|----------|
+| PTS | `points` | — |
+| REB | `rebounds` | — |
+| AST | `assists` | `teammate_availability` |
+| PRA | `points, rebounds, assists` | — |
+| P+A | `points, assists` | — |
+| P+R | `points, rebounds` | — |
+| R+A | `rebounds, assists` | — |
+
+### Window sufficiency
+
+`window: "L5"` → requires `row_count >= 5`; `window: "L10"` → requires `row_count >= 10`. Row count from DB lookup only (not from inline data). Insufficient window → `DATA_CONTRACT_PARTIAL` + `INSUFFICIENT_{WINDOW}_ROWS:{n}/{min}` blocker.
+
+### Safety rails
+
+- No betting approval labels; `GATE_3_ELIGIBLE` is the highest ceiling (contract layer only)
+- Gate 3 math unchanged
+- `execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` on all responses
+- `contract_version: v1.0.0` on every response
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

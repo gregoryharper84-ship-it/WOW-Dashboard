@@ -20180,6 +20180,472 @@ def wow_wnba_source_audit():
         return jsonify({"ok": False, "error": str(exc)[:300]}), 500
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW-PATCH-010 — Market Data Contract Registry
+# v1.0.0 | 2026-07-01
+# Validates whether a data row (inline or from DB) satisfies the exact field
+# contract required for a given sport + market before Gate 3 scoring.
+# Does not create betting labels; does not modify Gate 3 math.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DATA_CONTRACT_VERSION      = "v1.0.0"
+_DATA_CONTRACT_BUILD_TS     = "2026-07-01"
+_DATA_CONTRACT_STALE_HOURS  = 25          # mirrors WNBA ingest stale threshold
+
+# ── Contract definitions ──────────────────────────────────────────────────────
+# Logical aliases resolved at check time:
+#   "player_id_or_name" → at least one of: player_id, player_name
+#   "starter_or_role"   → at least one of: starter (bool), role (text)
+#   "ingestion_ts"      → ingestion_ts OR ingestion_timestamp
+
+_WNBA_BASE_CORE: list[str] = [
+    "player_id_or_name",
+    "team",
+    "opponent",
+    "game_date",
+    "minutes",
+    "starter_or_role",
+    "source_timestamp",
+    "ingestion_ts",
+]
+
+_WNBA_CONTRACTS: dict[str, dict] = {
+    "PTS": {
+        "core":     [*_WNBA_BASE_CORE, "points"],
+        "advisory": [],
+    },
+    "REB": {
+        "core":     [*_WNBA_BASE_CORE, "rebounds"],
+        "advisory": [],
+    },
+    "AST": {
+        "core":     [*_WNBA_BASE_CORE, "assists"],
+        "advisory": ["teammate_availability"],
+    },
+    "PRA": {
+        "core":     [*_WNBA_BASE_CORE, "points", "rebounds", "assists"],
+        "advisory": [],
+    },
+    "P+A": {
+        "core":     [*_WNBA_BASE_CORE, "points", "assists"],
+        "advisory": [],
+    },
+    "P+R": {
+        "core":     [*_WNBA_BASE_CORE, "points", "rebounds"],
+        "advisory": [],
+    },
+    "R+A": {
+        "core":     [*_WNBA_BASE_CORE, "rebounds", "assists"],
+        "advisory": [],
+    },
+}
+
+_SPORT_CONTRACT_REGISTRY: dict[str, dict] = {
+    "wnba": _WNBA_CONTRACTS,
+}
+
+_WINDOW_MIN_ROWS: dict[str, int] = {"L5": 5, "L10": 10}
+
+# ── Field presence / staleness helpers ────────────────────────────────────────
+
+_DC_STAT_FIELDS: frozenset[str] = frozenset({
+    "points", "rebounds", "assists", "steals", "blocks",
+    "turnovers", "minutes",
+})
+
+
+def _dc_field_present(field_name: str, data: dict) -> bool:
+    """True if field is present and non-null/non-empty in data. Handles aliases."""
+    if field_name == "player_id_or_name":
+        return bool(data.get("player_id") or data.get("player_name"))
+    if field_name == "starter_or_role":
+        return (data.get("starter") is not None) or bool(data.get("role"))
+    if field_name == "ingestion_ts":
+        return bool(data.get("ingestion_ts") or data.get("ingestion_timestamp"))
+    val = data.get(field_name)
+    if val is None:
+        return False
+    try:
+        if isinstance(val, float) and math.isnan(val):
+            return False
+    except TypeError:
+        pass
+    if isinstance(val, str) and val.strip() in ("", "--", "None", "null"):
+        return False
+    return True
+
+
+def _dc_field_stale(field_name: str, data: dict) -> bool:
+    """True if field is a timestamp column and its value exceeds _DATA_CONTRACT_STALE_HOURS."""
+    ts_keys = {"source_timestamp", "ingestion_ts", "ingestion_timestamp"}
+    if field_name not in ts_keys:
+        return False
+    # Resolve alias
+    key = next((k for k in ts_keys if k in data and data[k]), None)
+    if not key:
+        return False
+    val = data[key]
+    try:
+        if isinstance(val, str):
+            ts = datetime.fromisoformat(val.replace("Z", "+00:00"))
+        else:
+            ts = val
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() > _DATA_CONTRACT_STALE_HOURS * 3600
+    except Exception:
+        return False
+
+
+def _dc_source_quality(data: dict) -> str:
+    """Classify source quality from the 'source' field."""
+    src = str(data.get("source") or "").lower()
+    if "espn" in src:
+        return "ESPN_FALLBACK_MVP"
+    if src:
+        return src.upper()
+    return "UNKNOWN"
+
+
+# ── Core contract evaluator ───────────────────────────────────────────────────
+
+def _dc_run_check(sport: str, market: str, data: dict,
+                  window: str | None, row_count: int | None) -> dict:
+    """
+    Evaluate field presence/staleness for sport+market against data row.
+    Returns the full contract-check result dict.
+    """
+    sport_lower  = sport.lower().strip()
+    market_upper = market.upper().strip()
+
+    sport_contracts = _SPORT_CONTRACT_REGISTRY.get(sport_lower)
+    if sport_contracts is None:
+        return {
+            "ok":               True,
+            "contract_status":  "DATA_CONTRACT_INCOMPLETE",
+            "contract_version": _DATA_CONTRACT_VERSION,
+            "sport":            sport,
+            "market":           market_upper,
+            "blocker_code":     f"UNSUPPORTED_SPORT:{sport}",
+            "data_confidence":  "DATA_CONTRACT_INCOMPLETE",
+            "approval_ceiling": "NO_APPROVAL",
+            "required_fields":  [],
+            "present_fields":   [],
+            "missing_fields":   [f"sport_contract_for:{sport}"],
+            "stale_fields":     [],
+            "advisory_fields":  [],
+            "advisory_missing": [],
+            "source_quality":   _dc_source_quality(data),
+            "window":           window,
+            "window_sufficient": None,
+            "row_count":        row_count,
+            "execution_rule":   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        }
+
+    contract = sport_contracts.get(market_upper)
+    if contract is None:
+        return {
+            "ok":               True,
+            "contract_status":  "DATA_CONTRACT_INCOMPLETE",
+            "contract_version": _DATA_CONTRACT_VERSION,
+            "sport":            sport,
+            "market":           market_upper,
+            "blocker_code":     f"UNSUPPORTED_MARKET:{market_upper}",
+            "data_confidence":  "DATA_CONTRACT_INCOMPLETE",
+            "approval_ceiling": "NO_APPROVAL",
+            "required_fields":  [],
+            "present_fields":   [],
+            "missing_fields":   [f"market_contract_for:{market_upper}"],
+            "stale_fields":     [],
+            "advisory_fields":  [],
+            "advisory_missing": [],
+            "source_quality":   _dc_source_quality(data),
+            "window":           window,
+            "window_sufficient": None,
+            "row_count":        row_count,
+            "known_markets":    sorted(sport_contracts.keys()),
+            "execution_rule":   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        }
+
+    core_fields:     list[str] = contract["core"]
+    advisory_fields: list[str] = contract.get("advisory", [])
+
+    present_fields:   list[str] = []
+    missing_fields:   list[str] = []
+    stale_fields:     list[str] = []
+    advisory_missing: list[str] = []
+
+    for f in core_fields:
+        if _dc_field_present(f, data):
+            present_fields.append(f)
+            if _dc_field_stale(f, data):
+                stale_fields.append(f)
+        else:
+            missing_fields.append(f)
+
+    for f in advisory_fields:
+        if not _dc_field_present(f, data):
+            advisory_missing.append(f)
+
+    # Window check
+    window_sufficient: bool | None = None
+    window_blocker:    str  | None = None
+    if window and window.upper() in _WINDOW_MIN_ROWS:
+        min_rows = _WINDOW_MIN_ROWS[window.upper()]
+        if row_count is not None:
+            window_sufficient = row_count >= min_rows
+            if not window_sufficient:
+                window_blocker = (f"INSUFFICIENT_{window.upper()}_ROWS:"
+                                  f"{row_count}/{min_rows}")
+
+    # Blocker codes (severity order: missing stat > missing meta > stale > window > advisory)
+    blockers: list[str] = []
+    for mf in missing_fields:
+        blockers.append(f"MISSING_FIELD:{mf}")
+    if stale_fields:
+        blockers.append("STALE_SOURCE")
+    if window_blocker:
+        blockers.append(window_blocker)
+    for af in advisory_missing:
+        blockers.append(f"ADVISORY_MISSING:{af}")
+    blocker_code = "|".join(blockers) if blockers else "NONE"
+
+    # Status classification
+    missing_stat_fields = [f for f in missing_fields if f in _DC_STAT_FIELDS]
+    has_core_missing    = bool(missing_fields)
+    has_stale           = bool(stale_fields)
+    has_window_gap      = window_blocker is not None
+    has_advisory_gap    = bool(advisory_missing)
+
+    if has_core_missing and missing_stat_fields:
+        # Missing a primary stat or minutes → hard block
+        contract_status  = "DATA_CONTRACT_INCOMPLETE"
+        data_confidence  = "DATA_CONTRACT_INCOMPLETE"
+        approval_ceiling = "NO_APPROVAL"
+    elif has_core_missing and not missing_stat_fields:
+        # Missing metadata only → directionally usable but no approval
+        contract_status  = "DATA_BUILD_PRIORITY"
+        data_confidence  = "MEDIUM"
+        approval_ceiling = "NO_APPROVAL"
+    elif has_stale:
+        # All core present but source timestamp exceeds stale threshold
+        contract_status  = "DATA_CONTRACT_STALE"
+        data_confidence  = "PARTIAL_STALE"
+        approval_ceiling = "WATCH"
+    elif has_window_gap:
+        # Fields fresh, but not enough rows for requested window
+        contract_status  = "DATA_CONTRACT_PARTIAL"
+        data_confidence  = "MEDIUM"
+        approval_ceiling = "CONDITIONAL"
+    elif has_advisory_gap:
+        # Core complete + fresh; only advisory fields missing
+        contract_status  = "DATA_CONTRACT_PARTIAL"
+        data_confidence  = "MEDIUM"
+        approval_ceiling = "CONDITIONAL"
+    else:
+        # Fully satisfied contract
+        contract_status  = "DATA_CONTRACT_COMPLETE"
+        data_confidence  = "HIGH"
+        approval_ceiling = "GATE_3_ELIGIBLE"
+
+    return {
+        "ok":               True,
+        "contract_status":  contract_status,
+        "contract_version": _DATA_CONTRACT_VERSION,
+        "sport":            sport,
+        "market":           market_upper,
+        "required_fields":  core_fields,
+        "present_fields":   present_fields,
+        "missing_fields":   missing_fields,
+        "stale_fields":     stale_fields,
+        "advisory_fields":  advisory_fields,
+        "advisory_missing": advisory_missing,
+        "source_quality":   _dc_source_quality(data),
+        "data_confidence":  data_confidence,
+        "approval_ceiling": approval_ceiling,
+        "blocker_code":     blocker_code,
+        "window":           window,
+        "window_sufficient": window_sufficient,
+        "row_count":        row_count,
+        "execution_rule":   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    }
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.route("/wow/data-contract/check", methods=["POST"])
+def wow_data_contract_check():
+    """
+    POST /wow/data-contract/check
+
+    Body (JSON):
+      sport        (str, required)  — "wnba"
+      market       (str, required)  — "PTS" | "REB" | "AST" | "PRA" | "P+A" | "P+R" | "R+A"
+      window       (str, optional)  — "L5" | "L10"  → checks row count sufficiency
+      data         (obj, optional)  — inline row dict; takes precedence for field checks
+      player_id    (str, optional)  — look up recent rows from wnba_player_game_logs
+      player_name  (str, optional)  — partial ILIKE match in DB
+      date_from    (str, optional)  — YYYY-MM-DD
+      date_to      (str, optional)  — YYYY-MM-DD
+
+    If both data + player_id/name are given: data drives field checks,
+    DB provides the row_count for window sufficiency.
+    """
+    body = request.get_json(silent=True) or {}
+
+    sport       = str(body.get("sport") or "").strip()
+    market      = str(body.get("market") or "").strip()
+    window      = (str(body.get("window") or "").strip().upper()) or None
+    inline_data = body.get("data")
+
+    player_id   = str(body.get("player_id") or "").strip()
+    player_name = str(body.get("player_name") or "").strip()
+    date_from   = str(body.get("date_from") or "").strip()
+    date_to     = str(body.get("date_to") or "").strip()
+
+    if not sport:
+        return jsonify({"ok": False, "error": "sport required"}), 400
+    if not market:
+        return jsonify({"ok": False, "error": "market required"}), 400
+    if window and window not in _WINDOW_MIN_ROWS:
+        return jsonify({
+            "ok": False,
+            "error": f"window must be one of: {sorted(_WINDOW_MIN_ROWS.keys())}",
+        }), 400
+
+    check_data: dict       = {}
+    row_count:  int | None = None
+    db_rows:    list[dict] = []
+
+    # ── DB lookup (when player_id or player_name provided) ──
+    if (player_id or player_name):
+        db_url = os.environ.get("DATABASE_URL", "")
+        if db_url:
+            try:
+                import psycopg2 as _pg
+                import psycopg2.extras as _pgx
+                conn = _pg.connect(db_url)
+                _ensure_wnba_schema(conn)
+
+                clauses: list[str] = []
+                params:  list      = []
+                if player_id:
+                    clauses.append("player_id = %s")
+                    params.append(player_id)
+                if player_name:
+                    clauses.append("player_name ILIKE %s")
+                    params.append(f"%{player_name}%")
+                if date_from:
+                    clauses.append("game_date >= %s")
+                    params.append(date_from)
+                if date_to:
+                    clauses.append("game_date <= %s")
+                    params.append(date_to)
+
+                where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+                with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                    cur.execute(f"""
+                        SELECT player_id, player_name, team, opponent, game_date,
+                               game_id, starter, minutes, points, rebounds,
+                               assists, steals, blocks, turnovers,
+                               field_goal_attempts, three_point_attempts,
+                               free_throw_attempts, personal_fouls, plus_minus,
+                               source, source_timestamp, ingestion_ts,
+                               missing_fields
+                        FROM wnba_player_game_logs
+                        {where}
+                        ORDER BY game_date DESC
+                        LIMIT 10
+                    """, params)
+                    db_rows = [dict(r) for r in cur.fetchall()]
+                conn.close()
+            except Exception:
+                db_rows = []
+
+        row_count = len(db_rows) if db_rows else 0
+        if db_rows and not inline_data:
+            # Serialize for field-presence check
+            most_recent = db_rows[0]
+            check_data = {
+                k: (str(v) if not isinstance(v, (bool, int, float, type(None))) else v)
+                for k, v in most_recent.items()
+            }
+
+    # ── Inline data overrides field checks ──
+    if inline_data and isinstance(inline_data, dict):
+        check_data = inline_data
+        # row_count still comes from DB if both provided
+
+    # ── Guard: nothing to check ──
+    if not check_data:
+        if player_id or player_name:
+            # DB lookup returned nothing
+            sport_lower  = sport.lower()
+            market_upper = market.upper()
+            return jsonify({
+                "ok":               True,
+                "contract_status":  "DATA_CONTRACT_INCOMPLETE",
+                "contract_version": _DATA_CONTRACT_VERSION,
+                "sport":            sport,
+                "market":           market_upper,
+                "blocker_code":     "NO_ROWS_FOUND",
+                "data_confidence":  "DATA_CONTRACT_INCOMPLETE",
+                "approval_ceiling": "NO_APPROVAL",
+                "required_fields":  (_SPORT_CONTRACT_REGISTRY.get(sport_lower, {})
+                                     .get(market_upper, {}).get("core", [])),
+                "present_fields":   [],
+                "missing_fields":   ["all_fields_unavailable"],
+                "stale_fields":     [],
+                "advisory_fields":  (_SPORT_CONTRACT_REGISTRY.get(sport_lower, {})
+                                     .get(market_upper, {}).get("advisory", [])),
+                "advisory_missing": [],
+                "source_quality":   "UNKNOWN",
+                "window":           window,
+                "window_sufficient": False if window else None,
+                "row_count":        0,
+                "execution_rule":   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+            }), 200
+        return jsonify({
+            "ok":   False,
+            "error": ("Provide 'data' (inline row dict) "
+                      "or 'player_id'/'player_name' for DB lookup"),
+        }), 400
+
+    result = _dc_run_check(sport, market, check_data, window, row_count)
+
+    if db_rows:
+        result["db_rows_checked"] = len(db_rows)
+        result["db_row_dates"]    = [str(r.get("game_date", "")) for r in db_rows[:5]]
+
+    return jsonify(result), 200
+
+
+@app.route("/wow/data-contract/registry", methods=["GET"])
+def wow_data_contract_registry():
+    """
+    GET /wow/data-contract/registry
+    List all available sport + market contracts and their field requirements.
+    """
+    registry: dict = {}
+    for sport_key, markets in _SPORT_CONTRACT_REGISTRY.items():
+        registry[sport_key] = {
+            mkt: {
+                "required_fields": spec["core"],
+                "advisory_fields": spec.get("advisory", []),
+            }
+            for mkt, spec in markets.items()
+        }
+    return jsonify({
+        "ok":                    True,
+        "contract_version":      _DATA_CONTRACT_VERSION,
+        "build_ts":              _DATA_CONTRACT_BUILD_TS,
+        "sports":                sorted(registry.keys()),
+        "registry":              registry,
+        "stale_threshold_hours": _DATA_CONTRACT_STALE_HOURS,
+        "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)
