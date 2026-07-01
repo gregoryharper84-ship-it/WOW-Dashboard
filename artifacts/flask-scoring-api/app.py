@@ -8541,6 +8541,527 @@ def wow_l10_v2():
     return jsonify({"ok": True, "cached": False, **resp})
 
 
+# ── WOW Gate 3 Proportional-Edge Classifier ───────────────────────────────────
+# PATCH: WOW-PATCH-2026-07-01-GATE3-PROPORTIONAL-EDGE-AND-WATCH-ELEVATED
+# Mechanical Gate 3 so all agents share one implementation, not one threshold doc.
+# QA edits (approved):
+#   1. 55–64% L5 hit-rate = DISCOVERY_ONLY (WATCH_ELEVATED max, never Power/MONEY)
+#   2. Deterministic winsor_cap_v1: L10 P90+median for N>=10; 2×median for 5–9;
+#      no Winsorization for N<5.
+
+_GATE3_VERSION  = "v1.0.0-qa"
+_GATE3_BUILD_TS = "2026-07-01"
+
+# Sport/market key → Winsorization cap multiplier (× median).
+# None = no median-based Winsorization (context-dependent stat).
+_GATE3_WINSOR_BY_MARKET: dict[str, float | None] = {
+    "points": 2.0,  "pts": 2.0,
+    "pra": 2.0,     "pts_rebs_asts": 2.0,
+    "pts_asts": 2.0, "p+a": 2.0,
+    "pts_rebs": 2.0, "p+r": 2.0,
+    "assists": 2.0,  "ast": 2.0,
+    "rebounds": 2.0, "reb": 2.0,
+    "blocks": 2.0,   "blk": 2.0,
+    "steals": 2.0,   "stl": 2.0,
+    "threes": 2.0,   "3pm": 2.0,
+    # Strikeouts: pitch-count, opponent K%, CSW context required — no median cap
+    "strikeouts": None, "ks": None, "k": None,
+    # Pitcher fantasy score: IP/ER/K formula context required — no median cap
+    "pitcher_fantasy_score": None, "pitcher fs": None,
+}
+
+
+def _gate3_winsorize(values: list[float], market: str, median_val: float) -> tuple:
+    """
+    Returns (method, cap, winsorized_values, winsorized_avg, outlier_flags).
+
+    winsor_cap_v1:
+      N >= 10 : cap = min(2×median, empirical_p90) where p90 = 9th-highest value,
+                but only when p90 > median; else cap = 2×median.
+      5 <= N < 10 : cap = 2×median (LOW_SAMPLE_WINSOR).
+      N < 5   : no Winsorization.
+    """
+    n = len(values)
+    if n == 0 or median_val is None or median_val <= 0:
+        return "NONE_N_LT_5", None, values, (round(sum(values)/n, 3) if n else None), []
+
+    mkey = market.lower().replace(" ", "_").replace("+", "_")
+    cap_mult = _GATE3_WINSOR_BY_MARKET.get(mkey)
+    if cap_mult is None:
+        # Try partial match
+        for k, v in _GATE3_WINSOR_BY_MARKET.items():
+            if k in mkey or mkey.startswith(k):
+                cap_mult = v
+                break
+
+    if cap_mult is None:
+        # No Winsorization defined for this market
+        raw_avg = round(sum(values) / n, 3)
+        return "NONE_MARKET_TYPE", None, values, raw_avg, []
+
+    if n < 5:
+        raw_avg = round(sum(values) / n, 3)
+        return "NONE_N_LT_5", None, values, raw_avg, []
+
+    median_cap = cap_mult * median_val
+
+    if n >= 10:
+        sorted_desc = sorted(values, reverse=True)
+        p90_anchor  = sorted_desc[1] if len(sorted_desc) > 1 else sorted_desc[0]
+        cap = min(median_cap, p90_anchor) if p90_anchor > median_val else median_cap
+        method = "L10_P90_MEDIAN_CAP_V1"
+    else:
+        cap    = median_cap
+        method = "MEDIAN_CAP_LOW_SAMPLE"
+
+    outlier_flags = []
+    winsorized    = []
+    for i, v in enumerate(values):
+        if v > cap:
+            outlier_flags.append({
+                "index":           i,
+                "raw_value":       v,
+                "cap_applied":     round(cap, 3),
+                "cap_rule":        f"{cap_mult}×median({median_val})",
+                "exceeds_2x_median": v > 2.0 * median_val,
+            })
+            winsorized.append(cap)
+        else:
+            winsorized.append(v)
+
+    winsor_avg = round(sum(winsorized) / len(winsorized), 3)
+    return method, round(cap, 3), winsorized, winsor_avg, outlier_flags
+
+
+@app.route("/wow/l10/gate3", methods=["POST"])
+@require_api_key
+def wow_l10_gate3():
+    """
+    POST /wow/l10/gate3 — Gate 3 proportional-edge classifier.
+
+    PATCH: WOW-PATCH-2026-07-01-GATE3-PROPORTIONAL-EDGE-AND-WATCH-ELEVATED
+    QA EDITS APPLIED:
+      1. 55–64% L5 hit-rate = DISCOVERY_ONLY — WATCH_ELEVATED ceiling, never
+         Power/MONEY_QUALIFIED/FINAL_APPROVED from L5 data alone.
+      2. Winsorization is deterministic via winsor_cap_v1 (not vague percentile
+         language). N>=10 uses P90+median; N 5-9 uses 2×median; N<5 no cap.
+
+    Approval safety (hard):
+      - Does NOT produce FINAL_APPROVED or MONEY_QUALIFIED.
+      - Does NOT bypass market verification, payout EV, slip structure,
+        correlation, final-lock refresh, or no-vig/price validation.
+      - Shadow-mode logging to gate3_shadow_log for threshold calibration.
+    """
+    import statistics as _stats
+
+    body   = request.get_json(silent=True) or {}
+    player           = (body.get("player")           or "").strip()
+    sport            = (body.get("sport")            or "").strip().lower()
+    market           = (body.get("market")           or "").strip().lower()
+    side             = (body.get("side")             or "MORE").strip().upper()
+    special_line_type = (body.get("special_line_type") or "normal").strip().lower()
+    role_context     = body.get("role_context")  or ""
+    data_quality_in  = body.get("data_quality")  or "UNKNOWN"
+    source_timestamp = body.get("source_timestamp") or None
+
+    try:
+        line = float(body["line"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"ok": False, "error": "line (float) is required"}), 400
+    if side not in ("MORE", "LESS"):
+        return jsonify({"ok": False, "error": "side must be MORE or LESS"}), 400
+    if line <= 0:
+        return jsonify({"ok": False, "error": "line must be > 0"}), 400
+
+    # ── Value arrays ─────────────────────────────────────────────────────────
+    values_l5  = [float(v) for v in (body.get("values_l5")  or []) if v is not None]
+    values_l10 = [float(v) for v in (body.get("values_l10") or []) if v is not None]
+    n5, n10    = len(values_l5), len(values_l10)
+
+    # Explicit hit/push/miss (optional — computed from values_l5 if absent)
+    hit_c5  = body.get("hit_count_l5")
+    push_c5 = body.get("push_count_l5")
+    miss_c5 = body.get("miss_count_l5")
+
+    # Pre-computed aggregates (fallbacks when values not supplied)
+    avg_l5_pre    = body.get("avg_l5")
+    avg_l10_pre   = body.get("avg_l10")
+    median_l10_pre = body.get("median_l10")
+
+    # ── Data floor ───────────────────────────────────────────────────────────
+    _floor = n5 if n5 > 0 else (
+        (int(hit_c5 or 0) + int(push_c5 or 0) + int(miss_c5 or 0))
+    )
+    _thin       = _floor in (3, 4)   # 3–4 games: cap at WATCH_ELEVATED
+    _insufficient = _floor < 3        # < 3 games: REJECT_DATA_QUALITY
+
+    # ── Averages & median ────────────────────────────────────────────────────
+    raw_avg_l5  = round(sum(values_l5)  / n5,  3) if n5  >= 1 else (
+        float(avg_l5_pre) if avg_l5_pre is not None else None)
+    raw_avg_l10 = round(sum(values_l10) / n10, 3) if n10 >= 1 else (
+        float(avg_l10_pre) if avg_l10_pre is not None else None)
+
+    if n10 >= 2:
+        median_val = round(_stats.median(values_l10), 3)
+    elif median_l10_pre is not None:
+        median_val = float(median_l10_pre)
+    elif n5 >= 2:
+        median_val = round(_stats.median(values_l5), 3)
+    else:
+        median_val = None
+
+    # ── Winsorization (winsor_cap_v1) ────────────────────────────────────────
+    _w_values = values_l10 if n10 >= 5 else (values_l5 if n5 >= 5 else [])
+    if _w_values and median_val:
+        winsor_method, winsor_cap, winsorized_values, winsorized_avg, outlier_flags = \
+            _gate3_winsorize(_w_values, market, median_val)
+    else:
+        winsor_method    = "NONE_N_LT_5"
+        winsor_cap       = None
+        winsorized_values = []
+        winsorized_avg   = None
+        outlier_flags    = []
+
+    # ── Hit rate ─────────────────────────────────────────────────────────────
+    if n5 >= 1:
+        _h5 = sum(1 for v in values_l5 if (v > line if side == "MORE" else v < line))
+        l5_hit_rate = round(_h5 / n5, 4)
+    elif all(x is not None for x in [hit_c5, miss_c5]):
+        _t = int(hit_c5) + int(miss_c5) + int(push_c5 or 0)
+        l5_hit_rate = round(int(hit_c5) / _t, 4) if _t > 0 else None
+    else:
+        l5_hit_rate = None
+
+    l10_hit_rate = (
+        round(sum(1 for v in values_l10 if (v > line if side == "MORE" else v < line)) / n10, 4)
+        if n10 >= 1 else None
+    )
+
+    # ── Hit-rate band (QA Edit 1) ─────────────────────────────────────────────
+    if l5_hit_rate is None:
+        hit_rate_band = "UNKNOWN"
+    elif l5_hit_rate >= 0.65:
+        hit_rate_band = "QUALIFICATION_ELIGIBLE_65_PLUS"
+    elif l5_hit_rate >= 0.55:
+        hit_rate_band = "DISCOVERY_ONLY_55_64"
+    else:
+        hit_rate_band = "BELOW_FLOOR"
+
+    power_eligible = False   # always False from Gate 3; must pass full final-lock
+    flex_eligible  = False   # always False when DISCOVERY_ONLY; recheck later
+
+    # ── Gap computation (uses winsorized avg as primary) ──────────────────────
+    _avg_for_gap = winsorized_avg if winsorized_avg is not None else raw_avg_l5
+    if _avg_for_gap is not None:
+        gap_units = round((_avg_for_gap - line) if side == "MORE" else (line - _avg_for_gap), 4)
+        gap_pct   = round(gap_units / line, 4)
+    else:
+        gap_units = gap_pct = None
+
+    # Raw gap for outlier-flip detection
+    _raw_gap_units = (
+        round((raw_avg_l5 - line) if side == "MORE" else (line - raw_avg_l5), 4)
+        if raw_avg_l5 is not None else None
+    )
+
+    # ── Recency regression (last 3 of L5 all on wrong side) ──────────────────
+    _recency_reg = (
+        all((v <= line if side == "MORE" else v >= line) for v in values_l5[:3])
+        if n5 >= 3 else False
+    )
+
+    # ── Outlier-flip detection ────────────────────────────────────────────────
+    _outlier_flips = (
+        _raw_gap_units is not None and _raw_gap_units > 0 and
+        gap_units is not None and gap_units <= 0 and
+        len(outlier_flags) > 0
+    )
+    _outlier_materially_reduced = (
+        not _outlier_flips and
+        _raw_gap_units is not None and gap_units is not None and
+        _raw_gap_units > 0 and gap_units < _raw_gap_units * 0.5 and
+        len(outlier_flags) > 0
+    )
+
+    # ── Gate 3 classification ─────────────────────────────────────────────────
+    gate3_label    = "WATCH"
+    signal_label   = "NEUTRAL"
+    blocker_code   = None
+    approval_ceiling = "WATCH_ELEVATED"
+
+    if _insufficient:
+        gate3_label = "REJECT_DATA_QUALITY"
+        signal_label = "INSUFFICIENT_DATA"
+        blocker_code = "DQ1_FEWER_THAN_3_GAMES"
+        approval_ceiling = "NO_LABEL"
+
+    elif gap_pct is None:
+        gate3_label = "REJECT_DATA_QUALITY"
+        signal_label = "NO_AVERAGE"
+        blocker_code = "DQ2_NO_AVG_COMPUTABLE"
+        approval_ceiling = "NO_LABEL"
+
+    elif _outlier_flips:
+        gate3_label = "REJECT_OUTLIER_CONTAMINATED"
+        signal_label = "OUTLIER_FLIPS_EDGE_NEGATIVE"
+        blocker_code = "OC1_WINSORIZED_AVG_BELOW_LINE"
+        approval_ceiling = "NO_LABEL"
+
+    elif gap_pct <= 0:
+        gate3_label = "REJECT_RECENCY_REGRESSION" if _recency_reg else "REJECT_TRUE_NO_EDGE"
+        signal_label = "NEGATIVE_EDGE_RECENCY" if _recency_reg else "NEGATIVE_EDGE"
+        blocker_code = "RR1_NEGATIVE_GAP_L3" if _recency_reg else "NE1_GAP_PCT_NEGATIVE"
+        approval_ceiling = "NO_LABEL"
+
+    elif gap_pct < 0.08:
+        # True coin-flip zone (0–8%)
+        if hit_rate_band == "BELOW_FLOOR" or l5_hit_rate is None:
+            gate3_label = "REJECT_COINFLIP"
+            signal_label = "MARGINAL_INCONSISTENT"
+            blocker_code = "CF1_GAP_LT_8PCT_HITRATE_LT_55"
+            approval_ceiling = "NO_LABEL"
+        else:
+            gate3_label = "WATCH"
+            signal_label = "MARGINAL_CONSISTENT_HITS"
+            approval_ceiling = "WATCH"
+
+    elif gap_pct < 0.15:
+        # Elevated signal zone (8–15%)
+        if l5_hit_rate is None:
+            gate3_label = "DATA_BUILD_PRIORITY"
+            signal_label = "ELEVATED_GAP_NO_HITRATE"
+            blocker_code = "DB1_NO_HIT_RATE"
+            approval_ceiling = "WATCH_ELEVATED"
+        elif _recency_reg:
+            gate3_label = "REJECT_RECENCY_REGRESSION"
+            signal_label = "ELEVATED_GAP_RECENT_REGRESSION"
+            blocker_code = "RR2_ELEVATED_GAP_L3_ALL_WRONG"
+            approval_ceiling = "NO_LABEL"
+        elif hit_rate_band in ("DISCOVERY_ONLY_55_64", "QUALIFICATION_ELIGIBLE_65_PLUS"):
+            gate3_label = "WATCH_ELEVATED"
+            signal_label = "ELEVATED_EDGE_CONSISTENT_HITS"
+            approval_ceiling = "WATCH_ELEVATED"
+        elif hit_rate_band == "BELOW_FLOOR":
+            if l5_hit_rate >= 0.40:
+                gate3_label = "WATCH"
+                signal_label = "ELEVATED_EDGE_INCONSISTENT"
+                blocker_code = "W1_ELEVATED_GAP_HITRATE_40_55"
+                approval_ceiling = "WATCH"
+            else:
+                gate3_label = "REJECT_RECENCY_REGRESSION"
+                signal_label = "ELEVATED_GAP_LOW_HITRATE"
+                blocker_code = "RR3_ELEVATED_GAP_HITRATE_LT_40"
+                approval_ceiling = "NO_LABEL"
+
+    else:
+        # Strong signal zone (≥15%)
+        if l5_hit_rate is None:
+            gate3_label = "DATA_BUILD_PRIORITY"
+            signal_label = "STRONG_GAP_NO_HITRATE"
+            blocker_code = "DB2_NO_HIT_RATE"
+            approval_ceiling = "MODEL_QUALIFIED_HOLD"
+        elif _recency_reg:
+            gate3_label = "REJECT_RECENCY_REGRESSION"
+            signal_label = "STRONG_GAP_RECENT_REGRESSION"
+            blocker_code = "RR4_STRONG_GAP_L3_ALL_WRONG"
+            approval_ceiling = "NO_LABEL"
+        elif hit_rate_band == "QUALIFICATION_ELIGIBLE_65_PLUS":
+            gate3_label = "GATE3_PASS"
+            signal_label = "STRONG_EDGE_CONFIRMED"
+            approval_ceiling = "MODEL_QUALIFIED_HOLD"
+        elif hit_rate_band == "DISCOVERY_ONLY_55_64":
+            gate3_label = "WATCH_ELEVATED"
+            signal_label = "STRONG_GAP_DISCOVERY_HITRATE"
+            blocker_code = "D1_HITRATE_55_64_DISCOVERY_ONLY"
+            approval_ceiling = "WATCH_ELEVATED"   # QA Edit 1: cap enforced
+        elif l5_hit_rate >= 0.40:
+            gate3_label = "WATCH_ELEVATED"
+            signal_label = "STRONG_GAP_MODEST_HITRATE"
+            blocker_code = "W2_STRONG_GAP_HITRATE_40_55"
+            approval_ceiling = "WATCH_ELEVATED"
+        else:
+            gate3_label = "REJECT_RECENCY_REGRESSION"
+            signal_label = "STRONG_GAP_VERY_LOW_HITRATE"
+            blocker_code = "RR5_STRONG_GAP_HITRATE_LT_40"
+            approval_ceiling = "NO_LABEL"
+
+    # ── Thin-sample ceiling ───────────────────────────────────────────────────
+    _thin_cap = False
+    if _thin and gate3_label == "GATE3_PASS":
+        gate3_label = "WATCH_ELEVATED"
+        signal_label += "_THIN_SAMPLE"
+        blocker_code = blocker_code or "TS1_FEWER_THAN_5_GAMES"
+        approval_ceiling = "WATCH_ELEVATED"
+        _thin_cap = True
+    elif _thin and gate3_label == "WATCH_ELEVATED":
+        blocker_code = blocker_code or "TS1_FEWER_THAN_5_GAMES"
+
+    # ── Outlier material-reduction note ──────────────────────────────────────
+    if _outlier_materially_reduced and gate3_label == "GATE3_PASS":
+        gate3_label = "WATCH_ELEVATED"
+        signal_label += "_OUTLIER_DAMPENED"
+        blocker_code = blocker_code or "OC2_OUTLIER_REDUCES_GAP_GT_50PCT"
+        approval_ceiling = "WATCH_ELEVATED"
+
+    # ── Special line type caps ────────────────────────────────────────────────
+    _special_cap = False
+    if special_line_type == "goblin" and gate3_label in ("GATE3_PASS", "WATCH_ELEVATED"):
+        gate3_label = "WATCH"; signal_label += "_GOBLIN_CAP"
+        blocker_code = blocker_code or "SL1_GOBLIN_LINE"
+        approval_ceiling = "WATCH"; _special_cap = True
+    elif special_line_type == "demon" and gate3_label == "WATCH_ELEVATED" and (gap_pct or 0) < 0.12:
+        gate3_label = "WATCH"; signal_label += "_DEMON_NARROW"
+        blocker_code = blocker_code or "SL2_DEMON_REQUIRE_12PCT"
+        approval_ceiling = "WATCH"; _special_cap = True
+
+    # ── QA Edit 1: DISCOVERY_ONLY ceiling enforcement ────────────────────────
+    # Any path that reaches MODEL_QUALIFIED_HOLD with a DISCOVERY_ONLY hit rate
+    # must be capped. (Belt-and-suspenders guard.)
+    if hit_rate_band == "DISCOVERY_ONLY_55_64" and approval_ceiling == "MODEL_QUALIFIED_HOLD":
+        approval_ceiling = "WATCH_ELEVATED"
+        blocker_code = blocker_code or "D1_HITRATE_55_64_DISCOVERY_ONLY"
+
+    # ── Bidirectional note ────────────────────────────────────────────────────
+    _BDN: dict[str, str] = {
+        "GATE3_PASS":                  "Strong edge confirmed. Route to MODEL_QUALIFIED_HOLD pending market/role/final-lock checks.",
+        "WATCH_ELEVATED":              "Real statistical signal. Prioritize for full L10, role check, and market comp before final-lock.",
+        "WATCH":                       "Directionally positive but below confirmation threshold. Do not commit without full ledger.",
+        "DATA_BUILD_PRIORITY":         "Gap supports the side but sample or hit rate uncomputable. Build complete ledger before returning.",
+        "REJECT_COINFLIP":             "Gap <8% of line with inconsistent hit rate. True coin-flip — no edge.",
+        "REJECT_TRUE_NO_EDGE":         "Winsorized average sits at or below line on specified side. Negative edge. Kill.",
+        "REJECT_RECENCY_REGRESSION":   "Recent games (L3/L5) show clear regression toward or below line despite historical average. Kill.",
+        "REJECT_OUTLIER_CONTAMINATED": "Edge entirely driven by one outlier. Winsorized average is below the line. Kill.",
+        "REJECT_DATA_QUALITY":         "Insufficient or uncomputable data. Cannot classify.",
+    }
+    bidirectional_note = _BDN.get(gate3_label, "")
+
+    # ── Shadow-mode logging (fire-and-forget) ─────────────────────────────────
+    try:
+        _conn = _get_db_conn()
+        _cur  = _conn.cursor()
+        _cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gate3_shadow_log (
+                id               SERIAL PRIMARY KEY,
+                logged_at        TIMESTAMPTZ DEFAULT NOW(),
+                player           TEXT,
+                sport            TEXT,
+                market           TEXT,
+                side             TEXT,
+                line             NUMERIC,
+                gate3_label      TEXT,
+                signal_label     TEXT,
+                approval_ceiling TEXT,
+                blocker_code     TEXT,
+                gap_pct          NUMERIC,
+                l5_hit_rate      NUMERIC,
+                l10_hit_rate     NUMERIC,
+                hit_rate_band    TEXT,
+                winsor_method    TEXT,
+                winsor_cap       NUMERIC,
+                n_l5             INT,
+                n_l10            INT,
+                outlier_count    INT,
+                recency_reg      BOOLEAN,
+                outlier_flips    BOOLEAN,
+                special_line_type TEXT,
+                role_context     TEXT,
+                data_quality     TEXT,
+                source_timestamp TEXT,
+                -- settlement fields (filled in post-game via UPDATE)
+                final_result     TEXT,
+                closing_line     NUMERIC,
+                clv_delta        NUMERIC,
+                settled_at       TIMESTAMPTZ
+            )
+            """,
+        )
+        _cur.execute(
+            """
+            INSERT INTO gate3_shadow_log
+              (player, sport, market, side, line,
+               gate3_label, signal_label, approval_ceiling, blocker_code,
+               gap_pct, l5_hit_rate, l10_hit_rate, hit_rate_band,
+               winsor_method, winsor_cap, n_l5, n_l10, outlier_count,
+               recency_reg, outlier_flips, special_line_type, role_context,
+               data_quality, source_timestamp)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (player or None, sport or None, market or None, side, line,
+             gate3_label, signal_label, approval_ceiling, blocker_code,
+             gap_pct, l5_hit_rate, l10_hit_rate, hit_rate_band,
+             winsor_method, winsor_cap, n5, n10, len(outlier_flags),
+             _recency_reg, _outlier_flips, special_line_type, role_context or None,
+             data_quality_in, source_timestamp),
+        )
+        _conn.commit()
+        _cur.close()
+        _conn.close()
+    except Exception:
+        pass   # shadow logging never breaks the response
+
+    return jsonify({
+        "ok":               True,
+        "gate3_version":    _GATE3_VERSION,
+        "gate3_build_ts":   _GATE3_BUILD_TS,
+        # ── Identity ─────────────────────────────────────────────────────────
+        "player":           player or None,
+        "sport":            sport  or None,
+        "market":           market or None,
+        "side":             side,
+        "line":             line,
+        "special_line_type": special_line_type,
+        # ── Sample size ──────────────────────────────────────────────────────
+        "n_l5":             n5,
+        "n_l10":            n10,
+        "thin_sample":      _thin,
+        "thin_sample_cap":  _thin_cap,
+        # ── Gap ──────────────────────────────────────────────────────────────
+        "gap_units":        gap_units,
+        "gap_pct":          gap_pct,
+        "gap_pct_display":  f"{round((gap_pct or 0)*100,1)}%" if gap_pct is not None else None,
+        "raw_gap_units":    _raw_gap_units,
+        # ── Hit rates ────────────────────────────────────────────────────────
+        "l5_hit_rate":      l5_hit_rate,
+        "l10_hit_rate":     l10_hit_rate,
+        "hit_rate_band":    hit_rate_band,
+        # ── Averages ─────────────────────────────────────────────────────────
+        "raw_avg_l5":       raw_avg_l5,
+        "raw_avg_l10":      raw_avg_l10,
+        "median":           median_val,
+        # ── Winsorization (QA Edit 2 — deterministic winsor_cap_v1) ──────────
+        "winsor_method":    winsor_method,
+        "winsor_cap":       winsor_cap,
+        "winsorized_values": [round(v, 3) for v in winsorized_values],
+        "winsorized_avg":   winsorized_avg,
+        "outlier_flags":    outlier_flags,
+        "outlier_flip":     _outlier_flips,
+        "outlier_materially_reduced": _outlier_materially_reduced,
+        # ── Recency ──────────────────────────────────────────────────────────
+        "recency_regression": _recency_reg,
+        # ── Verdict ──────────────────────────────────────────────────────────
+        "gate3_label":      gate3_label,
+        "signal_label":     signal_label,
+        "approval_ceiling": approval_ceiling,
+        "blocker_code":     blocker_code,
+        "bidirectional_note": bidirectional_note,
+        # ── Eligibility (QA Edit 1) ───────────────────────────────────────────
+        "power_eligible":   power_eligible,
+        "flex_eligible":    flex_eligible,
+        # ── Context ──────────────────────────────────────────────────────────
+        "role_context":     role_context or None,
+        "data_quality":     data_quality_in,
+        "source_timestamp": source_timestamp,
+        "special_line_cap": _special_cap,
+        # ── Safety (hard) ─────────────────────────────────────────────────────
+        "can_approve_bets": False,
+        "can_execute":      False,
+        "money_qualified":  False,
+        "final_approved":   False,
+        "execution_rule":   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    }), 200
+
+
 # ── WOW MLB Pitcher Prop Gate ─────────────────────────────────────────────────
 _PITCH_COUNT_PROPS = {"1st inning pitches", "pitcher pitches", "total pitches"}
 

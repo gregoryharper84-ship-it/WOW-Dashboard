@@ -406,6 +406,81 @@ This lane does not touch `_llp_decision`, badge ceilings (§4), the §7 field co
 
 ---
 
+## 13. Gate 3 Proportional-Edge Classifier (WOW-PATCH-2026-07-01-GATE3)
+
+**Shipped:** 2026-07-01. Replaces manual agent-side Gate 3 reasoning.
+
+### Endpoint
+
+`POST /wow/l10/gate3` (auth required)
+
+All agents **must call this endpoint** instead of computing Gate 3 manually.
+Agent-side threshold reasoning causes drift — this backend is the single source of truth.
+
+### Core rule changes vs old absolute-gap model
+
+| Old rule | New rule |
+|----------|----------|
+| `abs(avg − line) ≤ 1.5 AND hit_rate < 0.65` → KILL | `gap_pct < 0.08 AND hit_rate < 0.55` → REJECT_COINFLIP |
+| 65% L5 floor (kills 3/5) | 55% marginal floor; 55–64% = DISCOVERY_ONLY band |
+| Outlier > 2× median → delete game | Outlier flagged + Winsorized; raw ledger stays visible |
+
+### Gap zones (proportional, not absolute)
+
+| gap_pct | Zone | Minimum outcome |
+|---------|------|-----------------|
+| ≤ 0% | Negative | REJECT_TRUE_NO_EDGE |
+| 0–8% | Coin-flip | REJECT_COINFLIP if hit_rate < 0.55 |
+| 8–15% | Elevated | WATCH_ELEVATED if hit_rate ≥ 0.55 |
+| ≥ 15% | Strong | GATE3_PASS if hit_rate ≥ 0.65 |
+
+### Hit-rate bands (QA Edit 1)
+
+| Band | Range | Ceiling | Power eligible |
+|------|-------|---------|----------------|
+| `QUALIFICATION_ELIGIBLE_65_PLUS` | ≥ 65% | MODEL_QUALIFIED_HOLD | No (Gate 3 never approves) |
+| `DISCOVERY_ONLY_55_64` | 55–64% | **WATCH_ELEVATED max** | **Never** |
+| `BELOW_FLOOR` | < 55% | REJECT_COINFLIP or lower | Never |
+
+`DISCOVERY_ONLY_55_64` restrictions: never Power Play eligible; cannot become
+MONEY_QUALIFIED from L5 data alone; requires full L10 + market comp + role
+confirmation before any upgrade above WATCH_ELEVATED.
+
+### Winsorization — winsor_cap_v1 (QA Edit 2 — deterministic)
+
+| N | Method | Cap |
+|---|--------|-----|
+| N ≥ 10 | `L10_P90_MEDIAN_CAP_V1` | `min(2×median, p90_anchor)` where `p90 = 9th-highest value`; if `p90 ≤ median` use `2×median` |
+| 5 ≤ N < 10 | `MEDIAN_CAP_LOW_SAMPLE` | `2×median` |
+| N < 5 | `NONE_N_LT_5` | No cap — DATA_BUILD_PRIORITY/WATCH ceiling |
+
+Market cap multipliers: `points/pra/pts_asts/pts_rebs/assists/rebounds/blocks/steals/threes` = 2.0×.
+Strikeouts and pitcher fantasy score: no median-based Winsorization.
+
+Outlier ≠ delete. Raw average, median, and Winsorized average are **all** returned.
+If Winsorized average flips below line (`outlier_flip: true`) → `REJECT_OUTLIER_CONTAMINATED`.
+
+### Gate 3 labels
+
+`GATE3_PASS` · `WATCH_ELEVATED` · `WATCH` · `DATA_BUILD_PRIORITY` ·
+`REJECT_TRUE_NO_EDGE` · `REJECT_COINFLIP` · `REJECT_RECENCY_REGRESSION` ·
+`REJECT_OUTLIER_CONTAMINATED` · `REJECT_DATA_QUALITY`
+
+### Shadow-mode logging
+
+Every call writes to `gate3_shadow_log`. Settlement fields (`final_result`,
+`closing_line`, `clv_delta`) filled in post-game via UPDATE. New thresholds
+cannot produce FINAL_APPROVED until calibrated against settled outcomes.
+
+### Approval safety (hard)
+
+This endpoint never produces `FINAL_APPROVED` or `MONEY_QUALIFIED`. It feeds
+the discovery/candidate layer only. Full approval still requires: LLP badge
+`ANCHOR`/`BET`, positive edge, positive Kelly, verified market cause, confirmed
+starter/lineup, no failures, and a passing final-lock refresh.
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

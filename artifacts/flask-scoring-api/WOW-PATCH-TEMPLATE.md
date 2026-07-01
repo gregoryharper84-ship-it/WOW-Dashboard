@@ -111,3 +111,4 @@ _After the patch ships, list the exact lines that must be updated in
 | WOW-PATCH-005 | 2026-07-01 | DRAFT | Pitcher handedness splits — platoon-weighted opp K%, `vs_lhb_k_pct` / `vs_rhb_k_pct` from MLB Stats API `vsPlayer` stat group |
 | WOW-PATCH-006 | 2026-07-01 | DRAFT | Line movement tracker — `line_movement` advisory field from odds_snapshot history; `sharp_signal` POSSIBLE/UNLIKELY/UNKNOWN gate |
 | WOW-PATCH-007 | 2026-07-01 | DRAFT | CLV tracker — `clv_beat` to `llp_postmortem`; `/wow/clv/summary`; depends on closing snapshot within 4h of game start |
+| WOW-PATCH-008 | 2026-07-01 | SHIPPED | Gate 3 proportional-edge classifier — `POST /wow/l10/gate3`; proportional gap_pct replaces absolute 1.5-unit kill; 55–64% hit-rate = DISCOVERY_ONLY (WATCH_ELEVATED ceiling); winsor_cap_v1 deterministic Winsorization; WATCH_ELEVATED tier; shadow logging to `gate3_shadow_log` |

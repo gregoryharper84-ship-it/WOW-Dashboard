@@ -1,0 +1,393 @@
+Your deeper read is correct: **Gate 3 math is not the true ceiling. Data architecture is.**
+
+The model does not need to become “less strict.” It needs to become **more intelligent about why something failed** and **more automated about getting fresh, market-specific data**.
+
+The July 1 ledger proves the issue. The file explicitly says the WNBA ledgers were built around a cached ESPN snapshot and manually reconstructed from recap articles, AP wires, and team notes where direct data was missing.  That is not a scalable model pipeline. That is manual forensics.
+
+## My deeper diagnosis
+
+The model currently has a strong **gate philosophy**, but a weak **data operating system**.
+
+That creates three bad behaviors:
+
+1. **It over-rejects when data is incomplete.**
+   Shepard had a real directional rebound signal, but only five sourced rows and missing minutes, so she was downgraded. That is correct for approval, but the model should have labeled her as `DATA_BUILD_PRIORITY / WATCH_ELEVATED`, not treated her like a dead prop. 
+
+2. **It confuses stale or partial evidence with true negative evidence.**
+   Canada’s ledger had 3 clean hits in L5, a 6.8 average against 6.0, and a 13.3% positive gap, but it also had stale-data and role-change flags. The right answer is not “kill”; it is “good signal, stale role context, rebuild required.” 
+
+3. **It lacks a canonical backend brain.**
+   Claude, ChatGPT, and Replit are still interpreting rules in text. That creates drift. You already saw this with outlier deletion, hit-rate floors, and proportional gap logic.
+
+## The model should evolve from “gate engine” to “edge intelligence system”
+
+The next version should have five layers:
+
+| Layer        | Job                                                                   |
+| ------------ | --------------------------------------------------------------------- |
+| Data Layer   | Pull fresh box scores, schedules, injuries, transactions, odds, props |
+| Ledger Layer | Build L5/L10/full-season/role-split ledgers mechanically              |
+| Signal Layer | Estimate whether the stat side is likely to hit                       |
+| Market Layer | Decide whether the line is mispriced                                  |
+| Slip Layer   | Decide whether the bet structure is +EV and correlation-safe          |
+
+Right now, too much is happening inside one gate stack. That is why it feels strict and dumb at the same time.
+
+## Highest-priority upgrades
+
+### 1. Build the ingestion pipeline before tuning more gates
+
+This is the biggest unlock.
+
+Replit should stop relying on LLMs to reconstruct stats from articles. The backend needs scheduled jobs that pull:
+
+| Sport             | Required data                                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| WNBA              | schedule, box scores, player game logs, minutes, starters, usage proxies, injuries, transactions                |
+| MLB               | probable starters, pitcher game logs, pitch count, IP, K, BB, ER, hits, opponent K%, handedness splits, weather |
+| PrizePicks        | current prop board, line, market type, payout type, Goblin/Demon flag, timestamp                                |
+| Sportsbook market | closest comp line, odds, no-vig probability, timestamp                                                          |
+
+Until that exists, the model will keep confusing **research effort** with **model intelligence**.
+
+### 2. Add a market data contract registry
+
+Every market should declare exactly what raw fields it needs before scoring.
+
+Example:
+
+| Market         | Required fields                                                                                    |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| WNBA PTS       | PTS, minutes, FGA, usage/role, opponent defense, recent games                                      |
+| WNBA AST       | AST, minutes, potential assists proxy if available, teammate availability, opponent assist profile |
+| WNBA PRA       | PTS + REB + AST components, not just one combined number                                           |
+| MLB Ks         | K, IP, pitch count, opponent K%, pitcher K%, CSW/whiff if available                                |
+| MLB Pitcher FS | IP, ER, H, BB, K, win/quality-start scoring formula if relevant                                    |
+
+This would have prevented the Wheeler issue. The model had strong season and innings signals, but not the actual per-start fantasy-score components needed to score Pitcher FS. That should be detected immediately as `DATA_CONTRACT_INCOMPLETE`, not discovered mid-analysis. 
+
+### 3. Split every output into two confidence axes
+
+This is mandatory.
+
+Every prop should have:
+
+| Axis                  | Meaning                                                     |
+| --------------------- | ----------------------------------------------------------- |
+| `signal_confidence`   | Does the stat pattern support the side?                     |
+| `data_confidence`     | Is the data fresh, complete, and market-specific?           |
+| `market_confidence`   | Does an external market confirm mispricing?                 |
+| `approval_confidence` | Is this playable under payout/correlation/final-lock rules? |
+
+Example:
+
+```text
+Flau’jae Johnson P+R MORE 17.5
+signal_confidence: HIGH
+data_confidence: LOW
+market_confidence: UNKNOWN
+approval_confidence: WATCH_ONLY
+label: DATA_BUILD_PRIORITY / BREAKOUT_SIGNAL
+```
+
+That is much smarter than simply saying “WATCH.”
+
+### 4. Add role-state ledgers
+
+The June 6 audit already identified stale averages, outlier contamination, role-split ledgers, bidirectional coin-flip logic, assist volatility, slate purge, and primary-teammate availability as core problems. 
+
+The model should not use one L10 if the player has two different roles.
+
+It needs:
+
+```text
+full_role_ledger
+reduced_role_ledger
+starter_ledger
+bench_ledger
+with_key_teammate_ledger
+without_key_teammate_ledger
+post_trade_ledger
+post_injury_ledger
+```
+
+This is especially important for WNBA props, where one injury/trade can completely reshape minutes, assists, usage, and rebounds.
+
+### 5. Run new Gate 3 in shadow mode
+
+Claude is right: the 55%, 8%, and 15% thresholds are not calibrated yet. They are reasonable, but they are not proven.
+
+So the backend should log:
+
+```text
+old_gate3_label
+new_gate3_label
+final_actual_result
+line_result: hit/miss/push
+closing_line_delta
+market_move
+bucket
+dominant_failure_tag
+```
+
+Do not let the new thresholds create real-money approvals until you have enough settled rows.
+
+This should be treated like the Kalshi weather lane: **dry-run, track, review, then graduate.**
+
+## The new intelligence layer I would add
+
+The model needs a **Candidate Triage Score** before final gates.
+
+Not for approval. For prioritization.
+
+Score each prop 0–100 across:
+
+| Category                            | Weight |
+| ----------------------------------- | -----: |
+| Data freshness                      |     20 |
+| Market-specific ledger completeness |     20 |
+| Proportional gap vs line            |     15 |
+| Hit-rate support                    |     10 |
+| Median support                      |     10 |
+| Role stability / role upgrade       |     10 |
+| Market mispricing                   |     10 |
+| Failure-path cleanliness            |      5 |
+
+Then output:
+
+| Score    | Meaning                                         |
+| -------- | ----------------------------------------------- |
+| 80–100   | Build immediately / potential model-qualified   |
+| 65–79    | WATCH_ELEVATED / needs one missing confirmation |
+| 50–64    | Watch only                                      |
+| Below 50 | Reject or scout only                            |
+
+That solves your “hundreds of props” problem. The model should not manually deep-dive hundreds. It should **rank which 20 deserve deep work**, then which 5 deserve final-lock checks.
+
+## What I would send back to Replit/Claude
+
+WOW-PATCH-2026-07-01-EDGE-INTELLIGENCE-DATA-FIRST-UPGRADE
+
+Purpose:
+Upgrade WOW v16 from a gate-only model into a data-first edge intelligence system. The goal is not to loosen final approval. The goal is to identify more real opportunities, separate signal strength from data confidence, and prevent manual research drift.
+
+Core finding:
+The largest model ceiling is not Gate 3 math. It is data freshness and market-specific ledger completeness. Manual reconstruction from articles, blurbs, and partial gamelogs creates stale-data risk, sourcing drift, role-context misses, and false downgrades.
+
+Required Architecture Change 1 — Automated Ingestion Layer
+
+Build scheduled ingestion jobs for:
+
+* WNBA schedule
+* WNBA box scores
+* WNBA player game logs
+* WNBA injuries/status
+* WNBA roster transactions
+* MLB schedule
+* MLB probable starters
+* MLB pitcher game logs
+* MLB pitch count/IP/K/BB/ER/H data
+* opponent K% and handedness splits
+* PrizePicks board lines with timestamp
+* sportsbook comp lines and odds with timestamp
+
+Manual LLM ledger reconstruction should become fallback/audit only, not the primary data path.
+
+Required Architecture Change 2 — Pre-Analysis Slate Lock
+
+Before any prop enters scoring:
+
+* confirm game exists on the target slate date
+* confirm player team/opponent matches the board
+* confirm game has not already started unless live mode is explicitly supported
+* stale/non-today props must be preserved as rows but blocked from scoring
+
+Output labels:
+
+* SLATE_VALID
+* SLATE_MISMATCH
+* GAME_NOT_TODAY
+* STALE_BOARD
+* STARTED_OR_LOCKED
+
+Required Architecture Change 3 — Market Data Contract Registry
+
+Every market must declare required fields before scoring.
+
+Examples:
+WNBA PTS:
+
+* points, minutes, FGA, role, starter status, opponent defense, L5/L10
+
+WNBA AST:
+
+* assists, minutes, role, teammate availability, opponent assist allowance, L5/L10
+
+WNBA PRA:
+
+* points, rebounds, assists, minutes, component split, role, L5/L10
+
+MLB Ks:
+
+* K, IP, pitch count, opponent K%, pitcher K%, handedness split, workload
+
+MLB Pitcher FS:
+
+* IP, ER, H, BB, K, win/QS formula if applicable, pitch count, opponent context
+
+If required fields are missing:
+
+* label DATA_CONTRACT_INCOMPLETE
+* preserve row
+* assign DATA_BUILD_PRIORITY when available evidence is directionally strong
+* do not score as MODEL_QUALIFIED
+
+Required Architecture Change 4 — Dual Confidence Axes
+
+Every prop must output separate confidence fields:
+
+signal_confidence:
+
+* HIGH
+* MEDIUM
+* LOW
+* NEGATIVE
+
+data_confidence:
+
+* COMPLETE_FRESH
+* COMPLETE_STALE
+* PARTIAL_FRESH
+* PARTIAL_STALE
+* LOW_SAMPLE
+* DATA_CONTRACT_INCOMPLETE
+
+market_confidence:
+
+* MARKET_CONFIRMED
+* MARKET_CONFLICT
+* MARKET_UNVERIFIED
+* MARKET_STALE
+
+approval_confidence:
+
+* FINAL_APPROVED
+* MONEY_QUALIFIED
+* MODEL_QUALIFIED_HOLD
+* WATCH_ELEVATED
+* WATCH
+* REJECT
+
+A prop may be signal-strong but data-weak.
+A prop may be data-complete but signal-weak.
+A prop may be hit-probability strong but slip-structure negative.
+
+Required Architecture Change 5 — Role-State Ledger System
+
+For role-sensitive props, backend must support split ledgers:
+
+* all_games_l10
+* starter_l10
+* bench_l10
+* full_role_l10
+* reduced_role_l10
+* with_key_teammate_l10
+* without_key_teammate_l10
+* post_trade_l10
+* post_injury_l10
+
+If a role-changing event occurred in the last 10 games:
+
+* cap approval at WATCH_ELEVATED until the matching role-state ledger is built
+* do not use all-games L10 as primary if today’s role clearly matches a sub-ledger
+
+Required Architecture Change 6 — Candidate Triage Score
+
+Before deep research, assign every touched prop a 0–100 Candidate Triage Score:
+
+* data freshness: 20
+* market-specific data completeness: 20
+* proportional gap vs line: 15
+* hit-rate support: 10
+* median support: 10
+* role stability or role upgrade: 10
+* market mispricing: 10
+* failure-path cleanliness: 5
+
+Score bands:
+
+* 80–100: PRIORITY_BUILD
+* 65–79: WATCH_ELEVATED
+* 50–64: WATCH
+* below 50: REJECT/SCOUT
+
+This score is not approval. It determines research priority.
+
+Required Architecture Change 7 — Shadow-Mode Threshold Testing
+
+All new Gate 3 thresholds must run in shadow mode until enough settled data exists.
+
+For every prop, log:
+
+* old_gate3_label
+* new_gate3_label
+* signal_label
+* data_confidence
+* market_confidence
+* final_result: hit/miss/push
+* closing_line_delta
+* dominant_failure_tag
+* bucket
+* same-game/player correlation group
+
+New thresholds cannot create FINAL_APPROVED until reviewed against settled outcomes.
+
+Required Architecture Change 8 — Model-Wide Endpoint Centralization
+
+Do not stop at /wow/l10/gate3.
+
+Create canonical backend endpoints for:
+
+* /wow/slate/validate
+* /wow/ledger/build
+* /wow/data-contract/check
+* /wow/role/context
+* /wow/outlier/score
+* /wow/market/compare
+* /wow/correlation/check
+* /wow/slip/ev
+* /wow/settlement/log
+
+Agents may audit, explain, and flag conflicts, but they should not hand-apply core scoring logic.
+
+Safety:
+This patch does not loosen final approval.
+This patch does not authorize live betting.
+This patch does not bypass payout EV, market verification, final-lock refresh, correlation guard, or bankroll rules.
+
+Expected improvement:
+More useful candidates surface as WATCH_ELEVATED or DATA_BUILD_PRIORITY.
+Fewer props are falsely buried due to missing data.
+Final approvals remain strict.
+The model becomes better at ranking what deserves work before deciding what deserves money.
+
+## Bottom line
+
+The model’s next leap is not “approve more.”
+
+It is:
+
+> **Find better candidates faster, know exactly what data is missing, and only stay strict at the money layer.**
+
+Your real build priority should be:
+
+1. Automated stat ingestion
+2. Market-specific data contracts
+3. Dual confidence labels
+4. Role-state ledgers
+5. Shadow-mode calibration
+6. Centralized backend endpoints
+7. Candidate triage score
+8. Stricter correlation guard once more candidates surface
+
+That makes the model sharper and more productive without turning it loose.
