@@ -1,0 +1,140 @@
+Agreed. Claude’s pushback is correct. I would approve the patch **only with those two required edits**.
+
+The Canada ledger proves the proportional-gap flaw: 6.8 AST average vs 6.0 line is a 13.3% positive gap, but the old absolute 1.5-unit rule still killed it.  The Copper ledger proves why outlier handling needs to be visible and deterministic, not a silent delete/recompute process. 
+
+Send this cleaned version back:
+
+FINAL QA EDIT — WOW-PATCH-2026-07-01-GATE3-PROPORTIONAL-EDGE-AND-WATCH-ELEVATED
+
+Patch status:
+APPROVED FOR IMPLEMENTATION WITH REQUIRED QA EDITS.
+
+This patch may ship only with the following two edits included.
+
+Required Edit 1 — 55–64% Hit-Rate Band Is Discovery Only
+
+The 55% marginal hit-rate floor is approved only as a discovery/candidate-surfacing threshold, not as an approval threshold.
+
+Rule:
+Any prop with L5 hit rate between 55% and 64% may receive WATCH_ELEVATED only.
+
+Hard restrictions:
+
+* 55–64% L5 hit-rate props are never Power Play eligible.
+* 55–64% L5 hit-rate props cannot become MONEY_QUALIFIED from L5 data alone.
+* 55–64% L5 hit-rate props cannot become FINAL_APPROVED without a full L10 ledger.
+* 55–64% L5 hit-rate props require sportsbook/projection market comp before any upgrade above WATCH_ELEVATED.
+* 55–64% L5 hit-rate props require role/status confirmation and final-lock line refresh.
+* If L10 hit rate, L10 median, or market comp contradict the L5 signal, the prop must stay WATCH or downgrade to REJECT_NO_EDGE.
+
+Interpretation:
+The 55% floor exists to prevent useful candidates from being killed too early. It does not loosen slip approval.
+
+Label behavior:
+
+* L5 hit rate 55–64% + gap_pct 8–15% = WATCH_ELEVATED max.
+* L5 hit rate 55–64% + incomplete L10 = WATCH_ELEVATED / DATA_BUILD_PRIORITY.
+* L5 hit rate 55–64% + negative L10 or market contradiction = WATCH or REJECT_NO_EDGE.
+* L5 hit rate 65%+ may proceed toward MODEL_QUALIFIED_HOLD only if L10, median, role, market, and context checks also support.
+
+Required Edit 2 — Concrete Winsorization Proxy Definition
+
+The Winsorization rule must be deterministic. Remove vague language such as “90th percentile proxy if available.”
+
+Use this versioned definition:
+
+winsor_cap_v1:
+For a ledger with N >= 10:
+
+* Sort the full L10 values ascending.
+* Use the 9th-highest value as the empirical 90th-percentile anchor.
+* Compute median_l10.
+* Compute median_cap = 2.0 × median_l10.
+* winsor_cap = min(median_cap, empirical_p90_anchor) only when empirical_p90_anchor is above the median.
+* If empirical_p90_anchor is below or equal to median, use median_cap.
+
+For a ledger with 5 <= N < 10:
+
+* Do not use empirical percentile.
+* Use winsor_cap = 2.0 × median_available.
+* Add LOW_SAMPLE_WINSOR flag.
+* Approval ceiling is WATCH_ELEVATED unless full L10 is later built.
+
+For N < 5:
+
+* Do not Winsorize for approval scoring.
+* Label DATA_BUILD_PRIORITY or WATCH only.
+* No MODEL_QUALIFIED_HOLD.
+
+Outlier flag trigger:
+Flag a value as an outlier when any of the following are true:
+
+* value > 2.0 × median
+* value is a season high or career high
+* value occurred in overtime
+* value occurred with abnormal minutes
+* value occurred with material teammate absence or opponent injury/foul context
+* value materially changes the verdict tier
+
+Outlier scoring:
+
+* Keep raw average visible.
+* Keep median visible.
+* Keep Winsorized average visible.
+* Do not delete the game from the ledger.
+* If raw average supports MORE but median, hit rate, and Winsorized average do not, label OUTLIER_CONTAMINATED and cap at WATCH or REJECT_NO_EDGE.
+* If outlier is supported by repeatable role change, do not treat it as pure noise; require ROLE_SPLIT_LEDGER before downgrade.
+
+Example application:
+Kahleah Copper PTS MORE 18.5:
+
+* L10 median = 18.0
+* 2.0 × median = 36.0
+* 41-point game is flagged and capped at 36.0 for Winsorized average.
+* Raw ledger remains visible.
+* The game is not deleted.
+* Verdict depends on raw average, median, hit rate, Winsorized average, role context, and updated full ledger.
+
+Jessica Shepard correction:
+Her 13.4 avg vs 11.0 line equals +21.8%, but the sample is only five games and includes missing-minute rows.
+Correct label:
+DATA_BUILD_PRIORITY / WATCH_ELEVATED ceiling.
+Not MODEL_QUALIFIED_HOLD until additional dated rows and minutes are verified.
+
+Implementation requirement:
+Add these fields to /wow/l10/gate3 response:
+
+* hit_rate_band:
+
+  * BELOW_FLOOR
+  * DISCOVERY_ONLY_55_64
+  * QUALIFICATION_ELIGIBLE_65_PLUS
+
+* power_eligible:
+  boolean, default false when hit_rate_band = DISCOVERY_ONLY_55_64
+
+* flex_eligible:
+  boolean, default false when hit_rate_band = DISCOVERY_ONLY_55_64 unless full L10, market comp, and EV checks pass later
+
+* winsor_method:
+
+  * NONE_N_LT_5
+  * MEDIAN_CAP_LOW_SAMPLE
+  * L10_P90_MEDIAN_CAP_V1
+
+* winsor_cap
+
+* winsorized_values
+
+* winsorized_avg
+
+* outlier_flags
+
+* approval_ceiling
+
+* blocker_code
+
+Final implementation note:
+This patch recalibrates candidate discovery, not bet approval. It should produce more useful WATCH_ELEVATED and DATA_BUILD_PRIORITY rows without increasing FINAL_APPROVED rows unless full L10, market verification, payout EV, slip structure, and final-lock checks all pass.
+
+That version is clean. It preserves the fix Replit wanted, accepts Claude’s QA flags, and prevents the dangerous interpretation that **55% L5 suddenly means playable**.

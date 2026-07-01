@@ -1,0 +1,238 @@
+Yes — Replit’s diagnosis is **mostly correct**, and it identifies the real reason the model feels impossible to satisfy.
+
+But I would **not implement it exactly as written**. There is one important correction:
+
+**The proposed Copper outlier fix has a math issue.**
+If the rule is “Winsorize at 2.5× median,” Copper’s median is 18.0, so the cap is 45.0. Her 41-point game would **not be capped at all**. That means the proposed fix would not actually change Copper’s ledger. The better rule is not “2.5× median.” It should be:
+
+> Flag the outlier, keep it in the raw ledger, but score with median + Winsorized mean + hit rate. Do not delete the game unless it was caused by a non-repeatable context.
+
+The broader diagnosis is right, though. The model is using **near-certainty rules** at the **candidate-identification stage**, which is why too many props die before becoming useful leads.
+
+## My ruling
+
+Implement the patch, but with these changes:
+
+| Replit Proposal                               | My Ruling                    |
+| --------------------------------------------- | ---------------------------- |
+| Replace absolute gap with percentage gap      | **Yes. Mandatory.**          |
+| Lower marginal hit-rate floor from 65% to 55% | **Yes. Mandatory.**          |
+| Add `WATCH_ELEVATED`                          | **Yes. Mandatory.**          |
+| Winsorize instead of deleting outliers        | **Yes, but revise formula.** |
+| Add backend `/wow/l10/gate3` endpoint         | **Yes. Important.**          |
+| Let agents keep reasoning Gate 3 manually     | **No. This causes drift.**   |
+
+The Canada example proves the issue. Canada had an L5 average of 6.8 against a 6.0 assist line, a 60% clean-hit rate, plus one push and one miss. The old rule killed it because the absolute gap was only 0.8 and the hit rate was under 65%.  That is too harsh. A 0.8 edge on a 6.0 assist line is a **13.3% gap**, not a nothingburger.
+
+The existing patch history already recognized that coin-flip kills needed better bidirectional logic and that outlier rules needed more careful handling.  The new Replit diagnosis is the next step: make those rules mechanical and proportional.
+
+## Corrected patch to send Replit
+
+WOW-PATCH-2026-07-01-GATE3-PROPORTIONAL-EDGE-AND-WATCH-ELEVATED
+
+Purpose:
+Fix systematic over-rejection in WOW v16 Gate 3 by replacing absolute-gap kill logic with proportional gap logic, lowering unrealistic small-sample hit-rate floors, and adding an intermediate candidate tier between WATCH and MODEL_QUALIFIED_HOLD.
+
+Problem:
+Gate 3 currently kills too many viable candidates because it applies the same absolute margin threshold across all sports and stat types.
+
+Current rule:
+abs(avg − line) ≤ 1.5 AND hit_rate < 0.65 → KILL
+
+This is mathematically uneven:
+
+* 1.5 on a 6.0 assist line = 25% of the line
+* 1.5 on an 18.5 points line = 8.1% of the line
+* 1.5 on a 5.5 strikeout line = 27.3% of the line
+
+Result:
+Low-line props such as assists, strikeouts, rebounds, and steals/blocks are over-killed even when the proportional edge is meaningful.
+
+Core Rule Change 1 — Proportional Gap
+Replace the marginal-edge kill trigger with percentage gap:
+
+gap_units = avg - line for MORE
+gap_units = line - avg for LESS
+gap_pct = gap_units / line
+
+For MORE:
+
+* gap_pct <= 0 means negative signal
+* 0 < gap_pct < 0.08 = true marginal zone
+* 0.08 <= gap_pct < 0.15 = elevated signal zone
+* gap_pct >= 0.15 = strong statistical signal, subject to role/context/market checks
+
+For LESS:
+
+* use inverse direction:
+  gap_units = line - avg
+  gap_pct = gap_units / line
+
+Do not apply one universal absolute 1.5-unit kill across all stat types.
+
+Core Rule Change 2 — Realistic Small-Sample Hit Rate
+Replace the 65% marginal floor with 55%.
+
+Old:
+hit_rate < 0.65 kills marginal-edge props.
+
+New:
+hit_rate < 0.55 kills marginal-edge props.
+
+Reason:
+In an L5 sample, 3/5 = 60% and 4/5 = 80%. A 65% floor effectively requires 4/5 to pass, which is too strict for candidate qualification. A 3/5 record with positive average gap and supporting context should not be killed automatically.
+
+Core Rule Change 3 — Add WATCH_ELEVATED
+Add new terminal/intermediate label:
+
+WATCH_ELEVATED
+
+Definition:
+A prop with a real statistical signal that is not yet strong enough or complete enough for MODEL_QUALIFIED_HOLD.
+
+WATCH_ELEVATED applies when:
+
+* L5 hit rate >= 55%, and
+* proportional gap is between 8% and 15%, or
+* sample/data is incomplete but available evidence is directionally strong, or
+* hit rate is modest but median/average/role context all support the same side.
+
+WATCH_ELEVATED does not mean slip eligible.
+WATCH_ELEVATED does not mean MONEY_QUALIFIED.
+WATCH_ELEVATED means: prioritize for full L10 build, role check, market comp, and final-lock recheck.
+
+Core Rule Change 4 — Outlier Handling
+Do not automatically delete outlier games.
+
+Old behavior:
+If value > 2× median, remove it and recompute L9.
+
+New behavior:
+Use a three-part robust ledger:
+
+1. Raw average
+2. Median
+3. Winsorized average
+
+Outlier flag:
+A value is flagged if:
+
+* value > 2× median, or
+* value is a career-high/season-high, or
+* value is attached to non-repeatable context such as OT, abnormal teammate absence, foul trouble on opponent, blowout garbage time, or abnormal minutes.
+
+Scoring rule:
+
+* Keep the raw ledger visible.
+* Keep the outlier marked.
+* Compute Winsorized mean using sport/stat-specific cap.
+* Do not delete the game unless the context is clearly non-repeatable and materially changes the verdict.
+
+Default Winsorization:
+
+* Points/PRA/P+A: cap at max(2.0× median, 90th percentile proxy if available)
+* Assists for non-primary creators: cap at 2.0× median
+* Rebounds: cap at 2.0× median unless role/minutes expansion is confirmed
+* Strikeouts: do not Winsorize by median alone; use pitch count, opponent K%, CSW/whiff, and workload context
+
+Important:
+Outlier handling may downgrade from MODEL_QUALIFIED_HOLD to WATCH or WATCH_ELEVATED, but it should not automatically force REJECT unless hit rate, median, and context also fail.
+
+Core Rule Change 5 — Backend Gate 3 Endpoint
+Add backend endpoint:
+
+POST /wow/l10/gate3
+
+Purpose:
+Agents must call the backend endpoint for Gate 3 classification instead of manually applying threshold rules.
+
+Required input:
+
+* player
+* sport
+* market
+* line
+* side
+* values_l5
+* values_l10 when available
+* hit_count_l5
+* push_count_l5
+* miss_count_l5
+* median_l10
+* avg_l5
+* avg_l10
+* role_context
+* data_quality
+* special_line_type: normal / Goblin / Demon
+* source_timestamp
+
+Required output:
+
+* gap_units
+* gap_pct
+* l5_hit_rate
+* l10_hit_rate
+* raw_avg
+* median
+* winsorized_avg
+* outlier_flags
+* gate3_label
+* signal_label
+* approval_ceiling
+* blocker_code
+* bidirectional_note
+
+Allowed Gate 3 labels:
+
+* GATE3_PASS
+* WATCH_ELEVATED
+* WATCH
+* DATA_BUILD_PRIORITY
+* REJECT_TRUE_NO_EDGE
+* REJECT_COINFLIP
+* REJECT_RECENCY_REGRESSION
+* REJECT_OUTLIER_CONTAMINATED
+* REJECT_DATA_QUALITY
+
+Approval safety:
+This patch does not create FINAL_APPROVED.
+This patch does not create MONEY_QUALIFIED.
+This patch does not bypass market verification, payout EV, slip structure, correlation, final-lock refresh, or no-vig/price validation.
+
+Expected behavior on July 1 example:
+
+* Jordin Canada AST MORE 6.0:
+  L5 avg 6.8, line 6.0, gap +13.3%, L5 hit rate 60%.
+  Old result: REJECT.
+  New result: WATCH_ELEVATED, with stale-data and role-change blocker still active.
+
+* Kahleah Copper PTS MORE 18.5:
+  Outlier flagged. Raw avg visible. Median and hit rate remain weak.
+  New result: WATCH or REJECT_TRUE_NO_EDGE depending on updated full ledger, not auto-kill solely from outlier deletion.
+
+* Jessica Shepard REB MORE 11.0:
+  Partial sample but avg +21.8% above line.
+  New result: WATCH_ELEVATED / DATA_BUILD_PRIORITY, not full MODEL_QUALIFIED until more dated rows are built.
+
+* Payton Tolle Ks MORE 5.5:
+  L5 avg 4.6, 40% hit rate, negative gap.
+  New result: REJECT_RECENCY_REGRESSION. Kill preserved.
+
+* Flau’jae Johnson PTS MORE 12.5:
+  Four sourced games only; possible breakout but insufficient full ledger.
+  New result: DATA_BUILD_PRIORITY or WATCH_ELEVATED only if role/minutes confirm. Not MODEL_QUALIFIED.
+
+* Drohan Ks MORE 5.0:
+  Avg nearly on line, small sample, push in most recent same-opponent start.
+  New result: REJECT_COINFLIP. Kill preserved.
+
+Net effect:
+This patch recalibrates Gate 3 from “requires near certainty” to “requires genuine edge.” It increases useful candidate surfacing without weakening final approval discipline.
+
+## My final answer to Replit’s question
+
+Yes, implement it as a formal patch.
+
+But tell them: **do not use 2.5× median as the Winsorization cap**, because that fails to cap Copper’s 41-point game. Use the robust three-metric approach instead: raw average, median, and Winsorized average.
+
+The most important backend change is the `/wow/l10/gate3` endpoint. That is what stops Claude, ChatGPT, and Replit from each interpreting “marginal edge” differently. Right now, agent-side Gate 3 drift is the real leak.
