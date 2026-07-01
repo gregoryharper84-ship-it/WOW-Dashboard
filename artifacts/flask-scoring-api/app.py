@@ -18180,6 +18180,53 @@ def wow_kalshi_scan():
             )
             label = ev.get("label", "KALSHI_REJECT_UNCALIBRATED")
 
+            # ── Terminal-label normalizer ──────────────────────────────────────
+            # Guards against internal/status labels leaking into final_label.
+            # Any label not in the Kalshi terminal enum is remapped here;
+            # the original is preserved as internal_label on the row.
+            _KALSHI_TERMINAL_ENUM = frozenset({
+                "KALSHI_FINAL_APPROVED",
+                "KALSHI_PLAYABLE_LIMIT_ONLY",
+                "KALSHI_WATCH",
+                "KALSHI_SCOUT",
+                "KALSHI_REJECT_NO_EDGE",
+                "KALSHI_REJECT_BAD_RULES",
+                "KALSHI_REJECT_THIN_BOOK",
+                "KALSHI_REJECT_FEE_DRAG",
+                "KALSHI_REJECT_UNCALIBRATED",
+                "KALSHI_DATA_UNOBTAINABLE",
+                "KALSHI_SCAN_FALSE_EMPTY_AFTER_FILTER",
+                "KALSHI_SPORTS_INVENTORY_EMPTY",
+            })
+            _LABEL_REMAP = {
+                # Weather model labels → Kalshi terminal equivalents
+                "WEATHER_SCOUT":      "KALSHI_SCOUT",
+                "WEATHER_WATCH":      "KALSHI_WATCH",
+                "WEATHER_APPROVED":   "KALSHI_PLAYABLE_LIMIT_ONLY",
+                "WEATHER_REJECTED":   "KALSHI_REJECT_UNCALIBRATED",
+                # Data-state labels
+                "DATA_OPEN":          "KALSHI_SCOUT",
+                "DATA_UNAVAILABLE":   "KALSHI_DATA_UNOBTAINABLE",
+                "DATA_MISSING":       "KALSHI_DATA_UNOBTAINABLE",
+                # Input-status labels
+                "INPUT_INCOMPLETE":   "KALSHI_DATA_UNOBTAINABLE",
+                "INPUT_EMPTY":        "KALSHI_DATA_UNOBTAINABLE",
+                "INPUT_INVALID":      "KALSHI_DATA_UNOBTAINABLE",
+            }
+            _internal_label = None
+            _data_state     = None
+            _input_status   = None
+            if label not in _KALSHI_TERMINAL_ENUM:
+                _internal_label = label
+                label = _LABEL_REMAP.get(label, "KALSHI_REJECT_UNCALIBRATED")
+                # Set companion field based on which family the original belongs to
+                if _internal_label.startswith("WEATHER_"):
+                    pass  # internal_label carries the info
+                elif _internal_label.startswith("DATA_"):
+                    _data_state = _internal_label
+                elif _internal_label.startswith("INPUT_"):
+                    _input_status = _internal_label
+
             # ── Bucket ────────────────────────────────────────────────────────
             bucket = market_buckets.classify(
                 settlement_grade = sr["resolution_clarity_grade"],
@@ -18208,6 +18255,9 @@ def wow_kalshi_scan():
                 "market_type":        market_type,
                 "is_combo_market":    market_type in ("combo", "cross_category"),
                 "final_label":        label,
+                "internal_label":     _internal_label,
+                "data_state":         _data_state,
+                "input_status":       _input_status,
                 "model_probability":  model_prob,
                 "raw_edge":           ev.get("raw_edge"),
                 "adjusted_edge":      ev.get("adjusted_edge"),

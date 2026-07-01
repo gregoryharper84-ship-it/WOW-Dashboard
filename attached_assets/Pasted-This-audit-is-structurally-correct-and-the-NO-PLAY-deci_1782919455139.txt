@@ -1,0 +1,79 @@
+This audit is structurally correct and the **NO_PLAY** decision is right. The uploaded report clearly marks the scan as `KALSHI_SCAN_FALSE_EMPTY_AFTER_FILTER`, with `can_trade:false`, `can_execute:false`, and the dry-run execution rule intact. It also preserves visible Weather, Sports, and Climate rows instead of letting the backend’s zero-row result masquerade as true empty inventory. 
+
+One cleanup is still needed before this is considered fully clean:
+
+```text
+WEATHER_SCOUT, DATA_OPEN, and INPUT_INCOMPLETE should not be final Kalshi execution labels.
+They should be internal/status labels unless the Kalshi final-label enum is intentionally expanded.
+```
+
+Use this split:
+
+```text
+internal_label: WEATHER_SCOUT
+terminal_label: KALSHI_SCOUT or KALSHI_WATCH
+
+data_state: DATA_OPEN
+terminal_label: KALSHI_SCOUT or KALSHI_DATA_UNOBTAINABLE
+
+input_status: INPUT_INCOMPLETE
+terminal_label: KALSHI_DATA_UNOBTAINABLE
+```
+
+The current report’s decision is still valid because every row is non-executable, but the renderer should avoid taxonomy drift.
+
+Send this small patch forward:
+
+```text
+KALSHI AUDIT RENDERER PATCH — LABEL SPLIT CLEANUP
+
+Current audit output correctly preserves every visible/supplied row and correctly returns NO_PLAY.
+
+However, the report is using some internal/status labels as terminal labels:
+- WEATHER_SCOUT
+- DATA_OPEN
+- INPUT_INCOMPLETE
+
+Patch renderer/output contract:
+
+1. terminal_label must use the Kalshi terminal taxonomy only:
+   - KALSHI_PLAYABLE_LIMIT_ONLY
+   - KALSHI_WATCH
+   - KALSHI_SCOUT
+   - KALSHI_REJECT_NO_EDGE
+   - KALSHI_REJECT_BAD_RULES
+   - KALSHI_REJECT_THIN_BOOK
+   - KALSHI_REJECT_FEE_DRAG
+   - KALSHI_REJECT_UNCALIBRATED
+   - KALSHI_DATA_UNOBTAINABLE
+   - KALSHI_SCAN_FALSE_EMPTY_AFTER_FILTER
+   - KALSHI_SPORTS_INVENTORY_EMPTY
+
+2. WEATHER_* labels are internal weather model labels only:
+   internal_label = WEATHER_SCOUT
+   terminal_label = KALSHI_SCOUT or KALSHI_WATCH depending on route support and price gate.
+
+3. DATA_OPEN is a data_state, not a terminal_label:
+   data_state = DATA_OPEN
+   terminal_label = KALSHI_SCOUT unless data is unavailable, then KALSHI_DATA_UNOBTAINABLE.
+
+4. INPUT_INCOMPLETE is an input_status/blocker, not a terminal_label:
+   input_status = INPUT_INCOMPLETE
+   terminal_label = KALSHI_DATA_UNOBTAINABLE.
+
+5. Preserve blocker codes exactly:
+   B1, B2, B3, B4, S1, C1, F1.
+
+6. Do not loosen approval.
+   All rows remain:
+   can_trade=false
+   can_execute=false
+   execution_rule=DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+
+7. Final decision remains:
+   NO_PLAY
+   FINAL_APPROVED=0
+   MONEY_QUALIFIED=0
+```
+
+After that cleanup, this audit format is useful: it shows the false-empty backend failure, preserves the visible board, assigns every row a blocker, and prevents accidental approval from screenshot-only or synthetic/weather-only evidence.
