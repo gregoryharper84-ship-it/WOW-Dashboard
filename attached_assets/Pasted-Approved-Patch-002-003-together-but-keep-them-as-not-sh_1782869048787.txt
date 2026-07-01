@@ -1,0 +1,195 @@
+Approved. Patch **002 + 003 together**, but keep them as **not shipped** until Replit returns tests and deploy verification.
+
+Send Replit this:
+
+```text id="8q0yg2"
+Implement all queued WOW v16 Kalshi NHIGH Weather patches together.
+
+PATCH SET:
+1. WOW-PATCH-002-WEATHER-GAUSSIAN-PROB
+2. WOW-PATCH-003-WEATHER-PRICE-STALENESS-GATE
+3. Required dependency: live Kalshi orderbook / price-source integration for NHIGH weather markets
+
+Do not enable live trading.
+Do not enable market orders.
+Keep DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS.
+Do not change verified station mappings.
+Do not introduce new final labels.
+Internal WEATHER_* labels may exist, but terminal execution labels must remain existing KALSHI_* labels.
+
+Verified station mappings must remain:
+NYC → KXHIGHNY → KNYC → Central Park, New York
+LA → KXHIGHLAX → KLAX → Los Angeles Airport
+MIA → KXHIGHMIA → KMIA → Miami International
+CHI → KXHIGHCHI → KMDW → Chicago Midway
+AUS → KXHIGHAUS → KAUS → Austin Bergstrom
+
+Hard regression bans:
+Miami must not map to PBI.
+LA must not map to BUR.
+Chicago must not map to KORD.
+
+PATCH-002 REQUIREMENTS:
+Replace binary bracket model_prob with Gaussian probability distribution.
+
+Inputs:
+- forecast_high from NWS gridpoint forecast
+- sigma_f default = 3.5°F
+- city/station
+- forecast_horizon_hours
+- bracket list
+
+For closed brackets:
+model_prob = Φ((high - forecast_high) / sigma_f) - Φ((low - forecast_high) / sigma_f)
+
+For open-ended low bracket:
+model_prob = Φ((threshold - forecast_high) / sigma_f)
+
+For open-ended high bracket:
+model_prob = 1 - Φ((threshold - forecast_high) / sigma_f)
+
+Normalize bracket probabilities so full bracket set sums to 1.00.
+
+Confidence rules:
+WEATHER_MODEL_READY:
+- forecast_horizon_hours <= 24
+- sigma_f < 4.5
+- NWS gridpoint source available
+- full bracket distribution sums to 1.00
+
+WEATHER_WATCH:
+- forecast_horizon_hours > 24 and <= 48
+OR
+- sigma_f >= 4.5
+
+WEATHER_SCOUT:
+- forecast_horizon_hours > 48
+OR
+- no NWS gridpoint available
+OR
+- incomplete bracket coverage
+
+PATCH-003 REQUIREMENTS:
+Add price-source and staleness gate.
+
+Request/response must include:
+- price_source
+- price_timestamp
+- market_status
+- orderbook_source
+- live_orderbook_checked
+- price_age_minutes
+- can_trade
+- can_execute
+- execution_rule
+
+Allowed price_source:
+- kalshi_live_orderbook
+- operator_supplied
+- synthetic_test
+
+Rules:
+If price_source = synthetic_test:
+- can_trade = false
+- can_execute = false
+- max terminal_label = KALSHI_WATCH
+
+If price_source = operator_supplied:
+- can_trade = false
+- can_execute = false
+- max terminal_label = KALSHI_WATCH
+
+If report_status = FINAL and price_source != kalshi_live_orderbook:
+- internal_label = WEATHER_REJECT_DATA
+- terminal_label = KALSHI_DATA_UNOBTAINABLE
+- can_trade = false
+- can_execute = false
+- reason = "CLI FINAL — tradeable window closed or price not live."
+
+If price_source = kalshi_live_orderbook:
+- require price_timestamp within 10 minutes
+- require market_status = open
+- require bid/ask/spread/liquidity
+- require health signal not FAILED
+- still keep DRY_RUN_ONLY
+- allow edge calculation only, no live execution
+
+LIVE KALSHI PRICE INTEGRATION:
+Add weather/NHIGH orderbook fetching for the evaluated ticker/bracket.
+Do not rely only on user-supplied yes_price.
+If live price cannot be fetched:
+- price_source = operator_supplied or DATA_UNOBTAINABLE
+- can_trade = false
+- terminal_label cannot exceed KALSHI_WATCH
+
+EDGE RULE:
+adjusted_edge may only surface when:
+- confidence_bucket = WEATHER_MODEL_READY
+- price_source = kalshi_live_orderbook
+- price_age_minutes <= 10
+- market_status = open
+- liquidity/spread pass
+- full bracket probability distribution is valid
+- report_status is not post-settlement FINAL unless market remains open and rules explicitly allow the data
+
+KALSHI_PLAYABLE_LIMIT_ONLY remains blocked unless both PATCH-002 and PATCH-003 gates pass.
+
+FINAL LABEL MAPPING:
+Internal WEATHER_* labels are allowed:
+- WEATHER_MODEL_READY
+- WEATHER_WATCH
+- WEATHER_SCOUT
+- WEATHER_REJECT_DATA
+- WEATHER_REJECT_SETTLEMENT
+- WEATHER_REJECT_UNCALIBRATED
+
+Final terminal labels must remain:
+- KALSHI_PLAYABLE_LIMIT_ONLY
+- KALSHI_WATCH
+- KALSHI_REJECT_NO_EDGE
+- KALSHI_REJECT_BAD_RULES
+- KALSHI_REJECT_THIN_BOOK
+- KALSHI_REJECT_FEE_DRAG
+- KALSHI_DATA_UNOBTAINABLE
+- KALSHI_REJECT_UNCALIBRATED
+
+ACCEPTANCE TESTS:
+TF-WX-11: FINAL CLI mode must return can_trade=false unless live orderbook is present, fresh, market open, and rules permit use.
+TF-WX-12: FINAL CLI mode with synthetic_test or operator_supplied price must never return KALSHI_PLAYABLE_LIMIT_ONLY.
+TF-WX-13: operator_supplied and synthetic_test prices must be clearly tagged and non-executable.
+TF-WX-14: forecast/gridpoint mode must return non-binary bracket probabilities.
+TF-WX-15: full six-bracket model_prob_sum must normalize to 1.00.
+TF-WX-16: sigma_f must be returned in response.
+TF-WX-17: WEATHER_MODEL_READY requires forecast_horizon_hours <= 24 and sigma_f < 4.5.
+TF-WX-18: WEATHER_WATCH or WEATHER_SCOUT blocks KALSHI_PLAYABLE_LIMIT_ONLY regardless of raw edge.
+TF-WX-19: if live Kalshi orderbook cannot be fetched, can_execute=false and terminal_label cannot exceed KALSHI_WATCH.
+TF-WX-20: DRY_RUN_ONLY remains enforced.
+TF-WX-21: Chicago must remain KMDW, not KORD.
+TF-WX-22: Miami must remain KMIA, not PBI.
+TF-WX-23: LA must remain KLAX, not BUR.
+TF-WX-24: WEATHER_* labels must not appear as final terminal execution labels.
+TF-WX-25: health check must pass after deploy.
+
+DEPLOY VERIFICATION:
+After implementation, deploy and return:
+1. station health output
+2. /api/wow/kalshi/health output
+3. one forecast-mode sample before CLI final
+4. one FINAL CLI sample proving can_trade=false when price is synthetic/operator_supplied
+5. one live orderbook sample if inventory exists
+6. full test results TF-WX-11 through TF-WX-25
+7. deploy_version
+8. confirmation DRY_RUN_ONLY remains active
+
+Do not mark shipped until all tests pass.
+```
+
+Status after this instruction:
+
+```text id="30l05x"
+PATCH-002: approved for implementation
+PATCH-003: approved for implementation
+Live price integration: required dependency
+Weather playable labels: still blocked until tests pass
+Live execution: still prohibited
+```

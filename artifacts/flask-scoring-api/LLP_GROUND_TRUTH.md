@@ -299,7 +299,9 @@ cardinality gate). The short-price tag is in `_LLP_PRO_CANDIDATE_CEILING_TAGS`.
 
 ---
 
-## 12. Kalshi Daily High Temperature Weather Lane (WOW-PATCH-001, SHIPPED 2026-06-30)
+## 12. Kalshi Daily High Temperature Weather Lane
+
+**Patches shipped:** WOW-PATCH-001 (2026-06-30), WOW-PATCH-002 + WOW-PATCH-003 (2026-07-01)
 
 Evaluates Kalshi NHIGH bracket markets for 5 verified cities.
 
@@ -313,32 +315,90 @@ Evaluates Kalshi NHIGH bracket markets for 5 verified cities.
 | `CHI` | KXHIGHCHI | Chicago Midway, IL | **KMDW** | America/Chicago |
 | `AUS` | KXHIGHAUS | Austin Bergstrom, TX | KAUS | America/Chicago |
 
-**Do not substitute:** Chicago = Midway (KMDW), NOT O'Hare (KORD). Miami = KMIA, NOT KPBI. LA = KLAX, NOT KBUR.
+**Hard regression bans:** Chicago = KMDW (NOT KORD). Miami = KMIA (NOT KPBI). LA = KLAX (NOT KBUR).
 
-### WEATHER_* internal labels (upstream only — never terminal)
+### WEATHER_* internal labels (upstream only — never appear as terminal_label)
 
-| Label | Meaning | Terminal resolution |
+| Label | When set | Terminal resolution |
 |-------|---------|---------------------|
-| `WEATHER_MODEL_READY` | NWS CLI observed high fetched, brackets scored | `KALSHI_PLAYABLE_LIMIT_ONLY` or `KALSHI_WATCH` |
-| `WEATHER_WATCH` | Data present but edge below threshold | `KALSHI_WATCH` |
-| `WEATHER_SCOUT` | CLI not yet issued; forecast data only | `KALSHI_WATCH` |
-| `WEATHER_REJECT_DATA` | NWS fetch failed entirely | `KALSHI_REJECT_NO_EDGE` |
-| `WEATHER_REJECT_SETTLEMENT` | Bracket yes_prices sum > 1.05 | `KALSHI_REJECT_NO_EDGE` |
+| `WEATHER_MODEL_READY` | CLI issued for requested date (binary) OR horizon≤24h AND sigma_f<4.5 (Gaussian) | `KALSHI_PLAYABLE_LIMIT_ONLY` or `KALSHI_WATCH` (PATCH-003 gate applies) |
+| `WEATHER_WATCH` | horizon 24–48h OR sigma_f≥4.5 | `KALSHI_WATCH` |
+| `WEATHER_SCOUT` | horizon>48h OR no forecast data | `KALSHI_WATCH` |
+| `WEATHER_REJECT_DATA` | NWS fetch failed entirely | `KALSHI_DATA_UNOBTAINABLE` |
+| `WEATHER_REJECT_SETTLEMENT` | Bracket yes_prices sum outside ±0.05 of 1.00 | `KALSHI_REJECT_BAD_RULES` |
+| `WEATHER_REJECT_UNCALIBRATED` | Model not calibrated for scenario | `KALSHI_REJECT_UNCALIBRATED` |
 
-### Settlement rules
+### Terminal label set (complete, WOW-PATCH-003)
 
-- **Source:** NWS Climatological Report (CLI product) ONLY. AccuWeather, Google Weather, Apple Weather do NOT determine settlement per Kalshi contract rules.
-- **Revision risk:** PRELIMINARY CLI data may be revised. Revisions before contract expiration count; revisions after expiration do not.
-- **LST/DST:** NWS CLI uses Local Standard Time reporting windows even during DST. Validate `forecast_timestamp` against LST, not naive calendar-day clock.
+`KALSHI_PLAYABLE_LIMIT_ONLY` · `KALSHI_WATCH` · `KALSHI_REJECT_NO_EDGE` ·
+`KALSHI_REJECT_BAD_RULES` · `KALSHI_REJECT_THIN_BOOK` · `KALSHI_REJECT_FEE_DRAG` ·
+`KALSHI_REJECT_UNCALIBRATED` · `KALSHI_DATA_UNOBTAINABLE`
+
+### Bracket scoring (WOW-PATCH-002: Gaussian)
+
+**Pre-settlement (CLI not yet issued for requested date):** Gaussian CDF probabilities.
+
+```
+closed [lo, hi]:  P = Φ((hi − μ) / σ) − Φ((lo − μ) / σ)
+open-low  (≤ hi): P = Φ((hi − μ) / σ)
+open-high (≥ lo): P = 1 − Φ((lo − μ) / σ)
+```
+
+μ = NWS gridpoint forecast high. σ_f default = 3.5°F (user-overridable via `sigma_f` field).
+Full bracket set normalized so `model_prob_sum == 1.00`.
+
+**Post-settlement (CLI issued for requested date):** Binary scorer (1.0 / 0.0).
+PATCH-003 gate blocks `KALSHI_PLAYABLE_LIMIT_ONLY` on FINAL data without live orderbook.
+
+**Date-mismatch guard:** NWS API returns the latest CLI regardless of the requested date.
+The endpoint checks `cli_issuance_time[:10] == date_str`; mismatched CLI is discarded
+and `report_status` is set to `NOT_YET_ISSUED`, falling through to the Gaussian path.
+
+### Price-source and staleness gate (WOW-PATCH-003)
+
+`KALSHI_PLAYABLE_LIMIT_ONLY` requires ALL of:
+1. `weather_label == WEATHER_MODEL_READY`
+2. `price_source == kalshi_live_orderbook`
+3. `price_age_minutes ≤ 10`
+4. `market_status == open`
+5. `edge ≥ 0.10` on at least one bracket
+6. DRY_RUN_ONLY never disabled (can_execute is always false)
+
+| price_source | can_trade | can_execute | Max terminal_label |
+|---|---|---|---|
+| `kalshi_live_orderbook` (fresh+open) | false | false | KALSHI_PLAYABLE_LIMIT_ONLY (if gate passes) |
+| `operator_supplied` | false | false | KALSHI_WATCH |
+| `synthetic_test` | false | false | KALSHI_WATCH |
+| `not_found` | false | false | KALSHI_DATA_UNOBTAINABLE |
+
+**DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS** is enforced unconditionally.
 
 ### Endpoints
 
 - `GET /wow/kalshi/weather/stations` — no auth; health-check; returns station mapping table
-- `POST /wow/kalshi/weather/evaluate` — auth required; body: `{city, date (YYYY-MM-DD), brackets:[{label, yes_price}]}`
+- `POST /wow/kalshi/weather/evaluate` — auth required
 
-### Bracket scoring
+Request body:
+```json
+{
+  "city":         "CHI",
+  "date":         "YYYY-MM-DD",
+  "brackets":     [{"label": "≤79", "yes_price": 0.02}, ...],
+  "sigma_f":      3.5,
+  "price_source": "synthetic_test"
+}
+```
 
-Bracket labels parsed: `≤N` / `≥N` / `N–M`. Edge = `model_prob − yes_price`. Verdicts: PLAYABLE (≥0.10), WATCH (≥0.05), LEAN (≥0.00), NO_EDGE (<0). Mutual exclusivity enforced: yes_prices must sum within ±0.05 of 1.00.
+Key response fields: `scoring_mode`, `sigma_f`, `forecast_horizon_hours`, `weather_label`,
+`terminal_label`, `model_prob_sum`, `price_source`, `price_timestamp`, `market_status`,
+`live_orderbook_checked`, `price_age_minutes`, `can_trade`, `can_execute`, `execution_rule`,
+`trade_block_reason`, `cli_product_id`, `cli_issuance_time`.
+
+### Settlement rules
+
+- **Source:** NWS Climatological Report (CLI product) ONLY. AccuWeather, Google Weather, Apple Weather do NOT determine settlement.
+- **Revision risk:** PRELIMINARY CLI may be revised. Revisions before contract expiration count; after expiration do not.
+- **LST/DST:** NWS CLI uses Local Standard Time windows even during DST.
 
 ### No changes to core LLP engine
 

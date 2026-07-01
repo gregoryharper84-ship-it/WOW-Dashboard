@@ -15862,96 +15862,326 @@ def _fetch_nws_forecast_high(city: str, date_str: str) -> dict:
         return {"forecast_high": None, "forecast_source": "none", "error": str(exc)}
 
 
-def _score_weather_brackets(model_high, brackets: list) -> list:
-    """
-    Score Kalshi bracket markets against a model high temperature.
-    Each bracket has a label (e.g. "≤85", "86–89", "≥90") and a yes_price (0–1).
-    Returns a list of scored brackets with model_prob, edge, verdict.
+# ── WEATHER PATCH-002: Gaussian bracket probability ───────────────────────────
 
-    Bracket parsing rules:
-      "≤N" or "under N"  → range (-inf, N]
-      "≥N" or "over N"   → range [N, +inf)
-      "N–M" or "N-M"     → range [N, M]
-    """
+def _gaussian_cdf(x: float, mean: float, sigma: float) -> float:
+    """Φ((x − mean) / sigma) via math.erf. Returns 0 or 1 at sigma=0."""
+    from math import erf, sqrt as _sqrt
+    if sigma <= 0:
+        return 1.0 if x >= mean else 0.0
+    return 0.5 * (1.0 + erf((x - mean) / (sigma * _sqrt(2.0))))
+
+
+def _parse_bracket_bounds(label: str):
+    """Parse bracket label → (lo, hi) with ±inf for open ends. Returns None if unparseable."""
     import re as _re
+    label = label.strip()
+    m = _re.match(r"^[≤<][=]?\s*(\d+)$|^under\s+(\d+)$", label, _re.IGNORECASE)
+    if m:
+        return (float("-inf"), int(m.group(1) or m.group(2)))
+    m = _re.match(r"^[≥>][=]?\s*(\d+)$|^over\s+(\d+)$", label, _re.IGNORECASE)
+    if m:
+        return (int(m.group(1) or m.group(2)), float("inf"))
+    m = _re.match(r"^(\d+)\s*[–\-]\s*(\d+)$", label)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    return None
 
-    def _parse_bracket(label: str):
-        label = label.strip()
-        # ≤N or <=N or under N
-        m = _re.match(r"^[≤<][=]?\s*(\d+)$|^under\s+(\d+)$", label, _re.IGNORECASE)
-        if m:
-            hi = int(m.group(1) or m.group(2))
-            return (float("-inf"), hi)
-        # ≥N or >=N or over N
-        m = _re.match(r"^[≥>][=]?\s*(\d+)$|^over\s+(\d+)$", label, _re.IGNORECASE)
-        if m:
-            lo = int(m.group(1) or m.group(2))
-            return (lo, float("inf"))
-        # N–M or N-M
-        m = _re.match(r"^(\d+)\s*[–\-]\s*(\d+)$", label)
-        if m:
-            return (int(m.group(1)), int(m.group(2)))
-        return None
+
+def _score_weather_brackets_gaussian(forecast_high, sigma_f: float, brackets: list) -> list:
+    """PATCH-002: Score brackets using Gaussian probability distribution.
+
+    Per spec formulas:
+      closed [lo, hi]:  Φ((hi − μ) / σ) − Φ((lo − μ) / σ)
+      open-low  (≤hi):  Φ((hi − μ) / σ)
+      open-high (≥lo):  1 − Φ((lo − μ) / σ)
+
+    Probabilities are normalized so the full bracket set sums to 1.00.
+    """
+    if forecast_high is None:
+        return [{"label": b.get("label",""), "yes_price": float(b.get("yes_price",0)),
+                 "model_prob": None, "raw_edge": None, "edge": None,
+                 "verdict": "UNKNOWN", "parse_ok": False} for b in brackets]
+
+    raw_probs = []
+    for b in brackets:
+        bounds = _parse_bracket_bounds(b.get("label",""))
+        if bounds is None:
+            raw_probs.append(None)
+        else:
+            lo, hi = bounds
+            if lo == float("-inf"):
+                p = _gaussian_cdf(hi, forecast_high, sigma_f)
+            elif hi == float("inf"):
+                p = 1.0 - _gaussian_cdf(lo, forecast_high, sigma_f)
+            else:
+                p = _gaussian_cdf(hi, forecast_high, sigma_f) - _gaussian_cdf(lo, forecast_high, sigma_f)
+            raw_probs.append(max(0.0, min(1.0, p)))
+
+    valid_sum = sum(p for p in raw_probs if p is not None)
+    norm_probs = [None if p is None else (p / valid_sum if valid_sum > 0 else p)
+                  for p in raw_probs]
 
     scored = []
-    for b in brackets:
-        label     = b.get("label", "")
+    for i, b in enumerate(brackets):
+        label     = b.get("label","")
         yes_price = float(b.get("yes_price", 0))
-        no_price  = float(b.get("no_price", 1 - yes_price))
-        bounds    = _parse_bracket(label)
+        no_price  = float(b.get("no_price", 1.0 - yes_price))
+        model_prob = norm_probs[i]
 
-        if model_high is None or bounds is None:
-            scored.append({
-                "label":      label,
-                "yes_price":  yes_price,
-                "no_price":   no_price,
-                "model_prob": None,
-                "edge":       None,
-                "verdict":    "UNKNOWN",
-                "parse_ok":   bounds is not None,
-            })
+        if model_prob is None:
+            scored.append({"label": label, "yes_price": yes_price, "no_price": no_price,
+                           "model_prob": None, "raw_edge": None, "edge": None,
+                           "verdict": "UNKNOWN", "parse_ok": False})
             continue
 
-        lo, hi = bounds
-        in_bracket = (lo <= model_high <= hi)
-        model_prob = 1.0 if in_bracket else 0.0
-
-        edge = round(model_prob - yes_price, 4)
-
-        if edge >= 0.10:
-            verdict = "PLAYABLE"
-        elif edge >= 0.05:
-            verdict = "WATCH"
-        elif edge >= 0.0:
-            verdict = "LEAN"
-        else:
-            verdict = "NO_EDGE"
-
-        scored.append({
-            "label":      label,
-            "yes_price":  yes_price,
-            "no_price":   no_price,
-            "model_prob": model_prob,
-            "edge":       edge,
-            "verdict":    verdict,
-            "parse_ok":   True,
-        })
-
+        raw_edge = round(model_prob - yes_price, 4)
+        verdict  = ("PLAYABLE" if raw_edge >= 0.10 else
+                    "WATCH"    if raw_edge >= 0.05 else
+                    "LEAN"     if raw_edge >= 0.0  else "NO_EDGE")
+        scored.append({"label": label, "yes_price": yes_price, "no_price": no_price,
+                       "model_prob": round(model_prob, 4), "raw_edge": raw_edge,
+                       "edge": raw_edge, "verdict": verdict, "parse_ok": True})
     return scored
 
 
-def _weather_terminal_label(weather_label: str, brackets_scored: list) -> str:
-    """Map internal WEATHER_* label to a terminal KALSHI_* execution label."""
-    if weather_label in ("WEATHER_REJECT_DATA", "WEATHER_REJECT_SETTLEMENT"):
-        return "KALSHI_REJECT_NO_EDGE"
-    if weather_label == "WEATHER_SCOUT":
-        return "KALSHI_WATCH"
-    # Check if any bracket is PLAYABLE
+def _score_weather_brackets_binary(model_high, brackets: list) -> list:
+    """Binary scorer for FINAL CLI mode — used only for audit/verification.
+    model_prob is 1.0 or 0.0 based on observed temperature.
+    PATCH-003 prevents PLAYABLE verdict from reaching terminal label when FINAL.
+    """
+    if model_high is None:
+        return [{"label": b.get("label",""), "yes_price": float(b.get("yes_price",0)),
+                 "model_prob": None, "raw_edge": None, "edge": None,
+                 "verdict": "UNKNOWN", "parse_ok": False} for b in brackets]
+    scored = []
+    for b in brackets:
+        label     = b.get("label","")
+        yes_price = float(b.get("yes_price", 0))
+        no_price  = float(b.get("no_price", 1.0 - yes_price))
+        bounds    = _parse_bracket_bounds(label)
+        if bounds is None:
+            scored.append({"label": label, "yes_price": yes_price, "no_price": no_price,
+                           "model_prob": None, "raw_edge": None, "edge": None,
+                           "verdict": "UNKNOWN", "parse_ok": False})
+            continue
+        lo, hi = bounds
+        in_bracket = (model_high <= hi) if lo == float("-inf") else \
+                     (model_high >= lo) if hi == float("inf") else \
+                     (lo <= model_high <= hi)
+        model_prob = 1.0 if in_bracket else 0.0
+        raw_edge   = round(model_prob - yes_price, 4)
+        verdict    = ("PLAYABLE" if raw_edge >= 0.10 else
+                      "WATCH"    if raw_edge >= 0.05 else
+                      "LEAN"     if raw_edge >= 0.0  else "NO_EDGE")
+        scored.append({"label": label, "yes_price": yes_price, "no_price": no_price,
+                       "model_prob": model_prob, "raw_edge": raw_edge,
+                       "edge": raw_edge, "verdict": verdict, "parse_ok": True})
+    return scored
+
+
+def _compute_forecast_horizon_hours(date_str: str, tz_name: str) -> float:
+    """Hours from now (UTC) until midnight of event date in local timezone. ≥0."""
+    import datetime as _dt, zoneinfo as _zi
+    try:
+        tz          = _zi.ZoneInfo(tz_name)
+        now_utc     = _dt.datetime.now(_dt.timezone.utc)
+        event_local = _dt.datetime.strptime(date_str, "%Y-%m-%d").replace(
+            hour=0, minute=0, second=0, tzinfo=tz)
+        return max(0.0, (event_local - now_utc).total_seconds() / 3600.0)
+    except Exception:
+        return 0.0
+
+
+# ── WEATHER PATCH-003: Live Kalshi NHIGH price fetch + staleness gate ──────────
+
+def _fetch_kalshi_nhigh_prices(series: str, date_str: str, brackets: list) -> dict:
+    """Attempt to fetch live Kalshi prices for NHIGH bracket markets via search_markets.
+    Maps bracket labels to matching markets by threshold value in subtitle/ticker.
+
+    Returns:
+      price_source, price_timestamp, market_status, live_orderbook_checked,
+      tickers_found, prices_by_bracket {label: {ticker, yes_ask, yes_bid, ...}}
+    """
+    try:
+        from kalshi_engine import kalshi_client
+    except ImportError:
+        return {"price_source": "not_found", "live_orderbook_checked": True,
+                "error": "kalshi_engine not available", "tickers_found": [],
+                "prices_by_bracket": {}, "market_status": None, "price_timestamp": None}
+
+    import datetime as _dt
+    try:
+        dt          = _dt.datetime.strptime(date_str, "%Y-%m-%d")
+        date_short  = dt.strftime("%y%b%d").upper()   # e.g. 26JUL01
+        date_digits = date_str.replace("-", "")        # e.g. 20260701
+    except Exception:
+        date_short = date_digits = ""
+
+    # Search for open markets matching the series
+    markets = []
+    try:
+        res = kalshi_client.search_markets(series_ticker=series, status="open", limit=50)
+        markets = (res.get("markets") or []) if isinstance(res, dict) else []
+    except Exception:
+        pass
+
+    if not markets:
+        try:
+            res2    = kalshi_client.search_markets(status="open", limit=200)
+            all_m   = (res2.get("markets") or []) if isinstance(res2, dict) else []
+            markets = [m for m in all_m if (m.get("ticker") or "").startswith(series)]
+        except Exception as exc:
+            return {"price_source": "not_found", "live_orderbook_checked": True,
+                    "error": str(exc), "tickers_found": [], "prices_by_bracket": {},
+                    "market_status": None, "price_timestamp": None}
+
+    # Filter to event date
+    date_markets = [m for m in markets if any(
+        s in (m.get("ticker","") or "") for s in [date_short, date_digits]
+    )] or markets
+
+    tickers_found = [m.get("ticker","") for m in date_markets]
+    any_open      = any(m.get("status","") == "open" for m in date_markets)
+    market_status = "open" if any_open else ("closed" if date_markets else None)
+    fetch_time    = _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    # Map each bracket to best matching market
+    prices_by_bracket = {}
+    for b in brackets:
+        label  = b.get("label","")
+        bounds = _parse_bracket_bounds(label)
+        if not bounds:
+            continue
+        lo, hi    = bounds
+        threshold = int(hi) if lo == float("-inf") else int(lo)
+        for m in date_markets:
+            sub = ((m.get("subtitle") or m.get("title") or "")).upper()
+            tkr = (m.get("ticker") or "").upper()
+            if str(threshold) in sub or f"T{threshold}" in tkr:
+                prices_by_bracket[label] = {
+                    "ticker":    m.get("ticker"),
+                    "yes_ask":   m.get("yes_ask"),
+                    "yes_bid":   m.get("yes_bid"),
+                    "last_price":m.get("last_price"),
+                    "volume":    m.get("volume"),
+                    "status":    m.get("status"),
+                }
+                break
+
+    any_prices = bool(prices_by_bracket)
+    return {
+        "price_source":    "kalshi_live_orderbook" if any_prices else "not_found",
+        "price_timestamp": fetch_time if any_prices else None,
+        "market_status":   market_status,
+        "live_orderbook_checked": True,
+        "tickers_found":   tickers_found,
+        "prices_by_bracket": prices_by_bracket,
+    }
+
+
+def _apply_weather_price_gate(
+    price_source: str,
+    price_timestamp,
+    report_status: str,
+    kalshi_prices: dict,
+) -> dict:
+    """PATCH-003: Price-source and staleness gate.
+
+    Returns additional response fields:
+      can_trade, can_execute, execution_rule, price_age_minutes,
+      adjusted_terminal_label (overrides weather scorer when set), trade_block_reason.
+
+    KALSHI_PLAYABLE_LIMIT_ONLY is blocked unless BOTH patches pass.
+    DRY_RUN_ONLY is always enforced — even kalshi_live_orderbook path never enables live execution.
+    """
+    import datetime as _dt
+    EXECUTION_RULE = "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+
+    # Compute price age
+    price_age_minutes = None
+    if price_timestamp:
+        try:
+            ts_str = price_timestamp if isinstance(price_timestamp, str) else ""
+            ts = _dt.datetime.fromisoformat(ts_str.rstrip("Z")).replace(
+                tzinfo=_dt.timezone.utc)
+            price_age_minutes = round(
+                (_dt.datetime.now(_dt.timezone.utc) - ts).total_seconds() / 60, 1)
+        except Exception:
+            pass
+
+    def _block(reason, label):
+        return {"can_trade": False, "can_execute": False, "execution_rule": EXECUTION_RULE,
+                "price_age_minutes": price_age_minutes, "trade_block_reason": reason,
+                "adjusted_terminal_label": label}
+
+    # synthetic_test / operator_supplied → cap at KALSHI_WATCH (TF-WX-12, TF-WX-13)
+    if price_source in ("synthetic_test", "operator_supplied"):
+        return _block(
+            f"price_source={price_source}: non-live prices; max terminal_label=KALSHI_WATCH",
+            "KALSHI_WATCH")
+
+    # FINAL CLI + no live orderbook → trading window closed (TF-WX-11)
+    if report_status == "FINAL" and price_source != "kalshi_live_orderbook":
+        return _block(
+            "CLI FINAL — tradeable window closed or price not live. "
+            "Required: kalshi_live_orderbook with market_status=open.",
+            "KALSHI_DATA_UNOBTAINABLE")
+
+    # Live orderbook not found
+    if price_source == "not_found":
+        return _block(
+            "Live Kalshi orderbook could not be fetched (TF-WX-19)",
+            "KALSHI_DATA_UNOBTAINABLE")
+
+    # kalshi_live_orderbook path
+    if price_source == "kalshi_live_orderbook":
+        if price_age_minutes is not None and price_age_minutes > 10:
+            return _block(f"Price stale: {price_age_minutes}m > 10m maximum",
+                          "KALSHI_DATA_UNOBTAINABLE")
+        if kalshi_prices.get("market_status") != "open":
+            return _block(
+                f"Market not open (status={kalshi_prices.get('market_status')})",
+                "KALSHI_REJECT_BAD_RULES")
+        # Fresh + open → still DRY_RUN_ONLY
+        return {"can_trade": False, "can_execute": False, "execution_rule": EXECUTION_RULE,
+                "price_age_minutes": price_age_minutes,
+                "trade_block_reason": "DRY_RUN_ONLY: execution disabled per system policy",
+                "adjusted_terminal_label": None}
+
+    return _block("Unknown price_source", "KALSHI_DATA_UNOBTAINABLE")
+
+
+def _weather_terminal_label_v2(
+    weather_label: str, brackets_scored: list, price_gate: dict
+) -> str:
+    """Map internal WEATHER_* + PATCH-003 price gate to terminal KALSHI_* label.
+
+    Terminal label set (complete):
+      KALSHI_PLAYABLE_LIMIT_ONLY, KALSHI_WATCH, KALSHI_REJECT_NO_EDGE,
+      KALSHI_REJECT_BAD_RULES, KALSHI_REJECT_THIN_BOOK, KALSHI_REJECT_FEE_DRAG,
+      KALSHI_REJECT_UNCALIBRATED, KALSHI_DATA_UNOBTAINABLE
+    """
+    # PATCH-003 gate override always wins (TF-WX-12, TF-WX-18)
+    if price_gate.get("adjusted_terminal_label"):
+        return price_gate["adjusted_terminal_label"]
+
+    # Internal weather label gates
+    if weather_label == "WEATHER_REJECT_DATA":
+        return "KALSHI_DATA_UNOBTAINABLE"
+    if weather_label == "WEATHER_REJECT_SETTLEMENT":
+        return "KALSHI_REJECT_BAD_RULES"
+    if weather_label == "WEATHER_REJECT_UNCALIBRATED":
+        return "KALSHI_REJECT_UNCALIBRATED"
+    if weather_label in ("WEATHER_SCOUT", "WEATHER_WATCH"):
+        return "KALSHI_WATCH"   # TF-WX-18: WATCH/SCOUT blocks PLAYABLE
+
+    # WEATHER_MODEL_READY — bracket scores decide
     playable = any(b.get("verdict") == "PLAYABLE" for b in brackets_scored)
     watch    = any(b.get("verdict") == "WATCH"    for b in brackets_scored)
     if playable:
         return "KALSHI_PLAYABLE_LIMIT_ONLY"
-    if watch or weather_label == "WEATHER_WATCH":
+    if watch:
         return "KALSHI_WATCH"
     return "KALSHI_REJECT_NO_EDGE"
 
@@ -15974,92 +16204,162 @@ def wow_kalshi_weather_stations():
 @require_api_key
 def wow_kalshi_weather_evaluate():
     """
-    Score Kalshi daily high temperature (NHIGH) bracket markets.
+    Score Kalshi NHIGH bracket markets — PATCH-002 + PATCH-003 combined.
 
     Body:
-      city       str   — one of NYC / LA / MIA / CHI / AUS
-      date       str   — YYYY-MM-DD, the event date
-      brackets   list  — [{label, yes_price, no_price?}, ...]
+      city         str   — NYC / LA / MIA / CHI / AUS
+      date         str   — YYYY-MM-DD
+      brackets     list  — [{label, yes_price, no_price?, ticker?}]
+      sigma_f      float — Gaussian sigma in °F (default 3.5; TF-WX-16)
+      price_source str   — "synthetic_test" | "operator_supplied" (omit to attempt live fetch)
 
-    Returns scored brackets against NWS CLI observed high (if issued) or
-    NWS forecast high, with WEATHER_* internal label and KALSHI_* terminal label.
+    Scoring:
+      - Pre-settlement: Gaussian Φ-based probabilities (PATCH-002)
+      - FINAL CLI:      binary scorer for audit, PATCH-003 gate blocks PLAYABLE
+      - Live Kalshi orderbook fetched automatically unless price_source overridden
+      - KALSHI_PLAYABLE_LIMIT_ONLY only reachable when BOTH patches pass
 
-    Settlement source per Kalshi contract rules: NWS Climatological Report (Daily).
-    Consumer apps (AccuWeather, Google Weather, Apple Weather) do NOT count.
+    Execution: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS always enforced.
     """
+    import re as _re, datetime as _dt, zoneinfo as _zi
+
     try:
         body = request.get_json(force=True) or {}
     except Exception:
         return jsonify({"ok": False, "error": "Invalid JSON body"}), 400
 
-    city     = (body.get("city") or "").strip().upper()
-    date_str = (body.get("date") or "").strip()
-    brackets = body.get("brackets") or []
+    city              = (body.get("city") or "").strip().upper()
+    date_str          = (body.get("date") or "").strip()
+    brackets          = body.get("brackets") or []
+    sigma_f           = float(body.get("sigma_f", 3.5))
+    price_source_req  = (body.get("price_source") or "").strip().lower() or None
 
-    # Validate city
+    # Validate
     if city not in _KALSHI_WEATHER_STATIONS:
-        supported = ", ".join(sorted(_KALSHI_WEATHER_STATIONS.keys()))
-        return jsonify({
-            "ok":    False,
-            "error": f"Unknown city: {city}. Supported: {supported}",
-        }), 400
-
-    # Validate date
-    import re as _re
+        return jsonify({"ok": False, "error":
+            f"Unknown city: {city}. Supported: {', '.join(sorted(_KALSHI_WEATHER_STATIONS))}"}), 400
     if not _re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
         return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
-
-    # Validate brackets
     if not isinstance(brackets, list) or len(brackets) == 0:
         return jsonify({"ok": False, "error": "brackets must be a non-empty list"}), 400
+    if sigma_f <= 0 or sigma_f > 20:
+        return jsonify({"ok": False, "error": "sigma_f must be in (0, 20]"}), 400
 
     station = _KALSHI_WEATHER_STATIONS[city]
 
-    # Step 1: fetch NWS CLI observed high
-    cli_result = _fetch_nws_cli(city)
+    # ── Step 1: NWS data ──────────────────────────────────────────────────────
+    cli_result      = _fetch_nws_cli(city)
+    fc_result       = _fetch_nws_forecast_high(city, date_str)
 
-    # Step 2: fetch NWS forecast high (used when CLI not yet issued)
-    fc_result  = _fetch_nws_forecast_high(city, date_str)
-
-    # Step 3: choose model_high — prefer observed (CLI final/preliminary) over forecast
     observed_high   = cli_result.get("observed_high")
     report_status   = cli_result.get("report_status", "ERROR")
     revision_risk   = cli_result.get("revision_risk", False)
     forecast_high   = fc_result.get("forecast_high")
     forecast_source = fc_result.get("forecast_source", "none")
 
-    if observed_high is not None:
-        model_high   = observed_high
-        data_sources = ["nws_cli"]
-    elif forecast_high is not None:
-        model_high   = forecast_high
-        data_sources = [forecast_source]
-    else:
-        model_high   = None
-        data_sources = []
+    # Reject CLI data that is for a different calendar date than requested.
+    # The NWS API always returns the latest issued CLI; if the user is scoring
+    # a future (or past) date we must not treat a mismatched CLI as FINAL.
+    cli_issuance = cli_result.get("issuance_time") or ""
+    if observed_high is not None and cli_issuance:
+        try:
+            cli_date = cli_issuance[:10]   # "YYYY-MM-DD"
+            if cli_date != date_str:
+                observed_high = None
+                report_status = "NOT_YET_ISSUED"
+                revision_risk = False
+        except Exception:
+            pass
 
-    # Step 4: bracket mutual-exclusivity check (yes_prices should sum ≈ 1.00)
+    # ── Step 2: Forecast horizon (PATCH-002) ──────────────────────────────────
+    horizon_hours = _compute_forecast_horizon_hours(date_str, station["tz"])
+
+    # ── Step 3: Live Kalshi prices (PATCH-003) ────────────────────────────────
+    # Explicit price_source override → skip live fetch
+    if price_source_req in ("synthetic_test", "operator_supplied"):
+        kalshi_prices  = {"price_source": price_source_req, "price_timestamp": None,
+                          "market_status": None, "live_orderbook_checked": False,
+                          "tickers_found": [], "prices_by_bracket": {}}
+        effective_price_source = price_source_req
+    else:
+        kalshi_prices  = _fetch_kalshi_nhigh_prices(station["series"], date_str, brackets)
+        effective_price_source = kalshi_prices.get("price_source", "not_found")
+
+    # If user didn't override and live fetch failed, fall back based on yes_price
+    if effective_price_source == "not_found":
+        has_operator_prices = any(b.get("yes_price") is not None for b in brackets)
+        effective_price_source = "operator_supplied" if has_operator_prices else "not_found"
+        kalshi_prices["price_source"] = effective_price_source
+
+    # ── Step 4: Mutual exclusivity ────────────────────────────────────────────
     yes_sum = sum(float(b.get("yes_price", 0)) for b in brackets)
     mutual_exclusivity_ok = abs(yes_sum - 1.0) <= 0.05
 
-    # Step 5: determine WEATHER_* internal label
-    if not cli_result.get("ok") and not fc_result.get("forecast_high"):
+    # ── Step 5: WEATHER_* internal label (PATCH-002 confidence rules) ─────────
+    if not cli_result.get("ok") and not forecast_high:
         weather_label = "WEATHER_REJECT_DATA"
     elif not mutual_exclusivity_ok:
         weather_label = "WEATHER_REJECT_SETTLEMENT"
-    elif observed_high is None and forecast_high is not None:
-        weather_label = "WEATHER_SCOUT"
+    elif observed_high is not None:
+        # FINAL or PRELIMINARY CLI — binary mode, PATCH-003 gates the terminal label
+        weather_label = "WEATHER_MODEL_READY"
+    elif forecast_high is not None:
+        # Pre-settlement — PATCH-002 Gaussian confidence rules
+        if horizon_hours <= 24 and sigma_f < 4.5:
+            weather_label = "WEATHER_MODEL_READY"
+        elif horizon_hours <= 48:
+            weather_label = "WEATHER_WATCH"
+        else:
+            weather_label = "WEATHER_SCOUT"
     else:
-        weather_label = "WEATHER_MODEL_READY" if model_high is not None else "WEATHER_WATCH"
+        weather_label = "WEATHER_REJECT_DATA"
 
-    # Step 6: score brackets
-    brackets_scored = _score_weather_brackets(model_high, brackets)
+    # ── Step 6: Bracket scoring ───────────────────────────────────────────────
+    if observed_high is not None:
+        # FINAL/PRELIMINARY CLI: binary scorer (exact known temp)
+        brackets_scored = _score_weather_brackets_binary(observed_high, brackets)
+        scoring_mode    = "binary_final_cli"
+        model_high      = observed_high
+        data_sources    = ["nws_cli"]
+    elif forecast_high is not None:
+        # Pre-settlement: Gaussian scorer (PATCH-002)
+        brackets_scored = _score_weather_brackets_gaussian(forecast_high, sigma_f, brackets)
+        scoring_mode    = "gaussian_forecast"
+        model_high      = forecast_high
+        data_sources    = [forecast_source]
+    else:
+        brackets_scored = _score_weather_brackets_gaussian(None, sigma_f, brackets)
+        scoring_mode    = "no_data"
+        model_high      = None
+        data_sources    = []
 
-    # Step 7: determine terminal KALSHI_* label
-    terminal_label = _weather_terminal_label(weather_label, brackets_scored)
+    # Merge live orderbook prices into scored brackets (live yes_ask overrides yes_price)
+    live_prices = kalshi_prices.get("prices_by_bracket", {})
+    if live_prices:
+        for b in brackets_scored:
+            lp = live_prices.get(b.get("label"))
+            if lp and lp.get("yes_ask") is not None:
+                live_yes = float(lp["yes_ask"]) / 100.0 \
+                    if float(lp["yes_ask"]) > 1.0 else float(lp["yes_ask"])
+                # Recompute edge against live price
+                mp = b.get("model_prob")
+                if mp is not None:
+                    b["live_yes_ask"]  = round(live_yes, 4)
+                    b["live_raw_edge"] = round(mp - live_yes, 4)
+                b["live_ticker"]   = lp.get("ticker")
 
-    # LST/DST note
-    import datetime as _dt, zoneinfo as _zi
+    # ── Step 7: PATCH-003 price gate ─────────────────────────────────────────
+    price_gate = _apply_weather_price_gate(
+        effective_price_source,
+        kalshi_prices.get("price_timestamp"),
+        report_status,
+        kalshi_prices,
+    )
+
+    # ── Step 8: Terminal label ────────────────────────────────────────────────
+    terminal_label = _weather_terminal_label_v2(weather_label, brackets_scored, price_gate)
+
+    # ── DST note ─────────────────────────────────────────────────────────────
     try:
         tz      = _zi.ZoneInfo(station["tz"])
         now_loc = _dt.datetime.now(tz)
@@ -16072,34 +16372,61 @@ def wow_kalshi_weather_evaluate():
     except Exception:
         lst_dst_note = "Could not determine DST status"
 
+    # ── model_prob_sum (TF-WX-15) ─────────────────────────────────────────────
+    mp_sum = round(sum(
+        b["model_prob"] for b in brackets_scored if b.get("model_prob") is not None
+    ), 4)
+
     return jsonify({
+        # Identity
         "ok":                     True,
         "city":                   city,
         "series":                 station["series"],
         "station":                station["station"],
         "station_name":           station["name"],
         "date":                   date_str,
+        # NWS data
         "observed_high":          observed_high,
         "report_status":          report_status,
         "revision_risk":          revision_risk,
         "forecast_high":          forecast_high,
         "forecast_source":        forecast_source,
         "model_high":             model_high,
+        "data_sources":           data_sources,
+        # PATCH-002 model
+        "scoring_mode":           scoring_mode,
+        "sigma_f":                sigma_f,               # TF-WX-16
+        "forecast_horizon_hours": round(horizon_hours, 1),
         "weather_label":          weather_label,
-        "terminal_label":         terminal_label,
+        # Bracket scores
         "brackets_scored":        brackets_scored,
         "mutual_exclusivity_ok":  mutual_exclusivity_ok,
         "yes_price_sum":          round(yes_sum, 4),
-        "data_sources":           data_sources,
+        "model_prob_sum":         mp_sum,               # TF-WX-15
+        # PATCH-003 gate
+        "price_source":           effective_price_source,  # TF-WX-13
+        "price_timestamp":        kalshi_prices.get("price_timestamp"),
+        "market_status":          kalshi_prices.get("market_status"),
+        "orderbook_source":       kalshi_prices.get("price_source"),
+        "live_orderbook_checked": kalshi_prices.get("live_orderbook_checked", False),
+        "price_age_minutes":      price_gate.get("price_age_minutes"),
+        "can_trade":              price_gate["can_trade"],     # TF-WX-20
+        "can_execute":            price_gate["can_execute"],
+        "execution_rule":         price_gate["execution_rule"],
+        "trade_block_reason":     price_gate.get("trade_block_reason"),
+        # Terminal label
+        "terminal_label":         terminal_label,
+        # Convenience
         "lst_dst_note":           lst_dst_note,
         "settlement_warning":     (
             "NWS CLI data is PRELIMINARY — revisions before contract expiration "
             "count toward settlement; revisions after expiration do not."
             if revision_risk else None
         ),
+        # Errors
         "cli_error":              cli_result.get("error") if not cli_result.get("ok") else None,
         "forecast_error":         fc_result.get("error") if not fc_result.get("forecast_high") else None,
-        # Audit fields — source traceability per WOW-PATCH-001 audit requirement
+        # Audit traceability (WOW-PATCH-001 requirement)
         "cli_product_id":         cli_result.get("product_id"),
         "cli_issuance_time":      cli_result.get("issuance_time"),
         "cli_source_url":         cli_result.get("source_url"),
