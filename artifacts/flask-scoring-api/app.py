@@ -15687,69 +15687,96 @@ _NWS_GRIDPOINT_CACHE_TTL = 86400  # 24h — gridpoints are stable
 
 def _fetch_nws_cli(city: str) -> dict:
     """
-    Fetch the NWS Daily Climate Report (CLI product) for the given city.
-    Returns observed high temp, report date, and preliminary/final status.
+    Fetch the NWS Daily Climate Report (CLI product) via the NWS REST API.
+    Uses api.weather.gov/products (JSON), NOT the JS-rendered forecast.weather.gov page.
+
     Settlement source per Kalshi contract rules: NWS CLI product ONLY.
     Consumer weather apps (AccuWeather, Google, Apple) do NOT determine settlement.
+
+    Returns:
+      ok, observed_high, report_date, report_status (FINAL|PRELIMINARY|NOT_YET_ISSUED|ERROR),
+      revision_risk (bool), source_url, product_id, issuance_time, raw_text
     """
+    import requests, re as _re
     station = _KALSHI_WEATHER_STATIONS.get(city)
     if not station:
         return {"ok": False, "error": f"Unknown city: {city}", "observed_high": None,
                 "report_status": "ERROR", "revision_risk": False}
 
-    url = (
-        "https://forecast.weather.gov/product.php"
-        f"?site={station['nws_site']}&product=CLI"
-        f"&issuedby={station['nws_issuedby']}&format=txt"
-    )
+    location = station["nws_issuedby"]  # e.g. MDW, NYC, LAX, MIA, AUS
+
+    # Step 1: find the latest CLI product for this location
+    list_url = f"https://api.weather.gov/products?type=CLI&location={location}&limit=1"
     try:
-        import requests
-        resp = requests.get(url, timeout=10,
-                            headers={"User-Agent": "WOW-scoring/1.0 weather-lane"})
-        if resp.status_code != 200:
-            return {"ok": False, "error": f"NWS CLI HTTP {resp.status_code}",
+        lr = requests.get(list_url, timeout=10,
+                          headers={"User-Agent": "WOW-scoring/1.0 weather-lane",
+                                   "Accept": "application/geo+json"})
+        if lr.status_code != 200:
+            return {"ok": False, "error": f"NWS products list HTTP {lr.status_code}",
                     "observed_high": None, "report_status": "ERROR", "revision_risk": False}
-
-        text = resp.text
-
-        # Parse maximum temperature line.
-        # NWS CLI products use several formats across offices:
-        #   "MAXIMUM             88   /  83"
-        #   "MAXIMUM TEMPERATURE   88"
-        #   "MAX TEMP             88"
-        import re as _re
-        max_match = _re.search(
-            r"(?:MAXIMUM\s+TEMPERATURE|MAXIMUM|MAX\s+TEMP)\s+(\d{1,3})",
-            text, _re.IGNORECASE
-        )
-        observed_high = int(max_match.group(1)) if max_match else None
-
-        # Detect preliminary flag
-        is_preliminary = bool(_re.search(r"PRELIMINARY", text, _re.IGNORECASE))
-
-        # Extract report date (e.g. "JUNE 30 2026" or "JUN 30 2026")
-        date_match = _re.search(
-            r"(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|"
-            r"JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:TEMBER)?|"
-            r"OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)"
-            r"\s+(\d{1,2})\s+(\d{4})",
-            text, _re.IGNORECASE
-        )
-        report_date = f"{date_match.group(1).title()} {date_match.group(2)} {date_match.group(3)}" \
-            if date_match else None
-
-        return {
-            "ok":            True,
-            "observed_high": observed_high,
-            "report_date":   report_date,
-            "report_status": "PRELIMINARY" if is_preliminary else (
-                             "NOT_YET_ISSUED" if observed_high is None else "FINAL"),
-            "revision_risk": is_preliminary,
-            "source_url":    url,
-        }
+        graph = lr.json().get("@graph", [])
+        if not graph:
+            return {"ok": True, "observed_high": None, "report_status": "NOT_YET_ISSUED",
+                    "revision_risk": False, "report_date": None, "source_url": list_url,
+                    "product_id": None, "issuance_time": None, "raw_text": None}
+        product_id    = graph[0]["id"]
+        issuance_time = graph[0].get("issuanceTime", "")
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "observed_high": None,
-                "report_status": "ERROR", "revision_risk": False}
+        return {"ok": False, "error": f"NWS products list error: {exc}",
+                "observed_high": None, "report_status": "ERROR", "revision_risk": False}
+
+    # Step 2: fetch the product text
+    text_url = f"https://api.weather.gov/products/{product_id}"
+    try:
+        tr = requests.get(text_url, timeout=10,
+                          headers={"User-Agent": "WOW-scoring/1.0 weather-lane",
+                                   "Accept": "application/geo+json"})
+        if tr.status_code != 200:
+            return {"ok": False, "error": f"NWS product text HTTP {tr.status_code}",
+                    "observed_high": None, "report_status": "ERROR", "revision_risk": False}
+        text = tr.json().get("productText", "")
+    except Exception as exc:
+        return {"ok": False, "error": f"NWS product text error: {exc}",
+                "observed_high": None, "report_status": "ERROR", "revision_risk": False}
+
+    # Step 3: parse maximum temperature.
+    # NWS CLI product format (consistent across offices):
+    #   "  MAXIMUM         93   2:59 PM 101    1931  84      9       91"
+    # The first integer after MAXIMUM is the observed high; time follows it.
+    max_match = _re.search(
+        r"^\s+MAXIMUM\s+(\d{1,3})\b",
+        text, _re.IGNORECASE | _re.MULTILINE
+    )
+    observed_high = int(max_match.group(1)) if max_match else None
+
+    is_preliminary = bool(_re.search(r"PRELIMINARY", text, _re.IGNORECASE))
+
+    # Extract report date from "THE {CITY} CLIMATE SUMMARY FOR {MONTH} {DAY} {YEAR}"
+    date_match = _re.search(
+        r"CLIMATE\s+(?:SUMMARY|REPORT)\s+FOR\s+"
+        r"(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|"
+        r"JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:TEMBER)?|"
+        r"OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)"
+        r"\s+(\d{1,2})\s+(\d{4})",
+        text, _re.IGNORECASE
+    )
+    report_date = (
+        f"{date_match.group(1).title()} {date_match.group(2)} {date_match.group(3)}"
+        if date_match else None
+    )
+
+    return {
+        "ok":            True,
+        "observed_high": observed_high,
+        "report_date":   report_date,
+        "report_status": "PRELIMINARY" if is_preliminary else (
+                         "NOT_YET_ISSUED" if observed_high is None else "FINAL"),
+        "revision_risk": is_preliminary,
+        "source_url":    text_url,
+        "product_id":    product_id,
+        "issuance_time": issuance_time,
+        "raw_text":      text,   # included so evaluate endpoint can surface it for audit
+    }
 
 
 def _fetch_nws_forecast_high(city: str, date_str: str) -> dict:
@@ -16072,6 +16099,11 @@ def wow_kalshi_weather_evaluate():
         ),
         "cli_error":              cli_result.get("error") if not cli_result.get("ok") else None,
         "forecast_error":         fc_result.get("error") if not fc_result.get("forecast_high") else None,
+        # Audit fields — source traceability per WOW-PATCH-001 audit requirement
+        "cli_product_id":         cli_result.get("product_id"),
+        "cli_issuance_time":      cli_result.get("issuance_time"),
+        "cli_source_url":         cli_result.get("source_url"),
+        "cli_raw_text_excerpt":   (cli_result.get("raw_text") or "")[:800] or None,
     }), 200
 
 

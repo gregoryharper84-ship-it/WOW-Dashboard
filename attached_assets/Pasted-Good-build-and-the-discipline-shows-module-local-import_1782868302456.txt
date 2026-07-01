@@ -1,0 +1,50 @@
+Good build, and the discipline shows — module-local imports following your existing convention, ground-truth doc updated as part of the patch rather than after, label mapping kept inside the already-agreed boundary. Before this is treated as production-ready, here's the actual audit pass, because the 93°F/PLAYABLE result is the kind of thing that needs verification before it's trusted, not after.
+
+**First, run the station health check and post the output here:**
+
+```
+GET /api/wow/kalshi/weather/stations
+```
+
+I need to confirm the live table matches exactly what's in the verification doc — KMDW for Chicago specifically, not KORD, and KMIA not KPBI. Given that two wrong station codes were caught in research before they ever reached code, this is the one check that can't be skipped just because the build looks clean.
+
+**Second — the `edge: 0.65` result needs scrutiny before anyone calls this `PLAYABLE`.** A 65-point edge is not a normal outcome for a liquid, well-calibrated market like Kalshi temperature brackets. Per the research pulled earlier, even a well-calibrated NWS-based model is expected to surface real edges in the 5-12 percentage point range, not 65. Before this gets trusted:
+
+- Is `93°F FINAL` actually the settled CLI value, or is it today's *current* observed/forecast high being treated as final prematurely? If Chicago's CLI for today hasn't posted yet, this should have scored `WEATHER_SCOUT` via the gridpoint fallback, not `PLAYABLE` off a real CLI.
+- What was the actual Kalshi market price for the ≥85 bracket at evaluation time? `edge: 0.65` only means something next to a real yes_ask — if the bracket was already trading near $0.99 because the day's high was obviously going to clear 85°F (which it sounds like it did, being June), a 65-point "edge" against an already-correctly-priced market is a calculation bug, not a real opportunity.
+- Mutual exclusivity check — does the full bracket set for Chicago today actually sum to ~1.0 across all 6 brackets, or did this test only evaluate the one bracket in isolation? An edge that large on one bracket without checking the full distribution is a red flag for a normalization bug.
+
+**Send this exact diagnostic request to Replit before treating PLAYABLE as real:**
+
+```
+The Chicago weather/evaluate test returned edge: 0.65 on the ≥85°F bracket, 
+terminal_label: KALSHI_PLAYABLE_LIMIT_ONLY. This is implausibly large for a 
+liquid temperature market — real edges here should be in the 5-12pp range 
+per typical NWS-forecast-vs-market-price gaps.
+
+Before treating this as a real candidate, confirm:
+
+1. Was the 93°F value pulled from the actual issued CLI product, or from a 
+   same-day observation/forecast being mislabeled as FINAL? Print the raw 
+   CLI text or gridpoint source used.
+
+2. What was the real Kalshi yes_ask price for this specific bracket at 
+   evaluation time? Show raw_edge = model_probability - yes_price 
+   explicitly, not just the final adjusted_edge.
+
+3. Run the same evaluate call for ALL 6 brackets for Chicago today and 
+   confirm bracket_probabilities sum to within 0.05 of 1.0. If they don't, 
+   that's the bug — likely a normalization step is missing or only one 
+   bracket's probability is being computed instead of the full distribution.
+
+4. If the CLI was genuinely final and the market genuinely hadn't priced 
+   in an obvious 93°F day, that's worth knowing — but verify it's not 
+   stale/cached market price data before calling it real.
+
+Do not let this row reach KALSHI_PLAYABLE_LIMIT_ONLY status in any ledger 
+until these four are answered.
+```
+
+**This isn't a bigger problem than usual — it's the first real signal this whole build has produced, which is exactly when the most scrutiny is warranted, not the least.** Everything up to now has been infrastructure verification against an empty signal. This is the first time a number that looks like a real opportunity has come out the other end, and the instinct should be "prove this is real" before "great, found one" — same discipline as Task 1 of the auditor skill applied to the math itself, not just the contract wording.
+
+Bring me the station health check output and the answers to those four questions, and I'll do the real Task 1-3 audit on the Chicago contract itself.
