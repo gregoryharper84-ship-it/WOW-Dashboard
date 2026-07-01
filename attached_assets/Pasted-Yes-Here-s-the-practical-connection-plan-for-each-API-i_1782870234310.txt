@@ -1,0 +1,503 @@
+Yes. Here’s the practical connection plan for each API, in the order I would wire them into WOW.
+
+## Step 0 — Add environment variables in Replit
+
+Keep these **server-side only**. Do not put them in `VITE_*`, frontend config, or the Custom GPT schema.
+
+```bash
+NWS_USER_AGENT="WOW-v16-Kalshi-Weather gregory.harper84@gmail.com"
+
+NOAA_CDO_TOKEN="paste_free_noaa_token_here"
+
+KALSHI_API_BASE="https://external-api.kalshi.com/trade-api/v2"
+
+# Optional if using authenticated Kalshi routes later.
+# For public market data, Kalshi docs show unauthenticated access is available.
+KALSHI_ACCESS_KEY=""
+KALSHI_PRIVATE_KEY=""
+```
+
+NWS requires a `User-Agent` to identify your app, and its API is located at `api.weather.gov`; NWS also says the data is open/free with reasonable rate limits. ([Weather.gov][1]) Kalshi’s public market-data quick start says public market endpoints can be accessed without authentication from the production Trade API base. ([Kalshi API Documentation][2])
+
+---
+
+## 1. Connect NWS API — forecast/gridpoint source
+
+### Purpose in WOW
+
+Use this for **pre-settlement forecast mode**:
+
+```text
+forecast_high
+forecast_horizon_hours
+gridpoint forecast
+hourly forecast
+WEATHER_SCOUT / WEATHER_MODEL_READY inputs
+```
+
+### Replit build instruction
+
+Add a helper like:
+
+```python
+def nws_get(path_or_url: str) -> dict:
+    import os
+    import requests
+
+    base = "https://api.weather.gov"
+    url = path_or_url if path_or_url.startswith("http") else f"{base}{path_or_url}"
+
+    headers = {
+        "User-Agent": os.environ.get(
+            "NWS_USER_AGENT",
+            "WOW-v16-Kalshi-Weather contact@example.com"
+        ),
+        "Accept": "application/geo+json",
+    }
+
+    r = requests.get(url, headers=headers, timeout=15)
+    r.raise_for_status()
+    return r.json()
+```
+
+### Test it
+
+Use a known point, then cache the grid mapping.
+
+```bash
+curl -s "https://api.weather.gov/points/41.7868,-87.7522" \
+  -H "User-Agent: WOW-v16-Kalshi-Weather gregory.harper84@gmail.com" | jq '.properties.forecastGridData,.properties.forecastHourly'
+```
+
+For Chicago Midway, that should return NWS grid URLs. Then your app fetches the grid forecast and extracts the high temp.
+
+### WOW rule
+
+```text
+NWS API = forecast input
+NWS API ≠ final settlement source
+```
+
+NWS docs explain the `/points/{lat},{lon}` lookup returns grid forecast endpoints and that the grid mapping can change, so WOW should cache it but refresh periodically. ([Weather.gov][1])
+
+---
+
+## 2. Connect NWS CLI product fetch — settlement source
+
+### Purpose in WOW
+
+Use this for **actual settlement validation**:
+
+```text
+FINAL / PRELIMINARY CLI product
+actual max temperature
+revision_risk
+LST/DST note
+settlement validation
+```
+
+### Verified city mappings
+
+```text
+NYC → KNYC → Central Park
+LA  → KLAX → Los Angeles Airport
+MIA → KMIA → Miami International
+CHI → KMDW → Chicago Midway
+AUS → KAUS → Austin Bergstrom
+```
+
+### Replit build instruction
+
+Create a helper that fetches the CLI product for the verified `issuedby` code.
+
+```python
+CLI_ISSUEDBY = {
+    "NYC": "NYC",
+    "LA": "LAX",
+    "MIA": "MIA",
+    "CHI": "MDW",
+    "AUS": "AUS",
+}
+
+def fetch_nws_cli(city: str) -> dict:
+    import requests
+
+    issuedby = CLI_ISSUEDBY[city.upper()]
+    url = (
+        "https://forecast.weather.gov/product.php"
+        f"?site=NWS&issuedby={issuedby}&product=CLI&format=CI&version=1&glossary=0"
+    )
+
+    r = requests.get(url, timeout=15)
+    r.raise_for_status()
+
+    text = r.text
+    return {
+        "city": city.upper(),
+        "issuedby": issuedby,
+        "source": "nws_cli",
+        "raw_text": text,
+    }
+```
+
+### Test it
+
+```bash
+curl -s "https://forecast.weather.gov/product.php?site=NWS&issuedby=MDW&product=CLI&format=CI&version=1&glossary=0" | head -80
+```
+
+### WOW rule
+
+```text
+If CLI is FINAL:
+  source_mode = SETTLEMENT_VALIDATION
+  can_trade = false unless live Kalshi orderbook is fresh and market is open
+
+If CLI is missing/not issued:
+  fallback to NWS gridpoint forecast
+  max confidence depends on PATCH-002 Gaussian distribution rules
+```
+
+---
+
+## 3. Connect NOAA/NCEI CDO — historical calibration source
+
+### Purpose in WOW
+
+Use this for **backtesting and sigma tuning**:
+
+```text
+historical TMAX
+station-level forecast error
+sigma_f calibration
+Brier score
+hit/miss by bracket
+city-specific bias
+```
+
+### Get the free token
+
+Go to NOAA/NCEI’s CDO token request page, submit your email, and paste the token into Replit as:
+
+```bash
+NOAA_CDO_TOKEN="your_token"
+```
+
+NOAA/NCEI says registering by email returns a token that allows access to RESTful CDO web services. ([NCDC][3])
+
+### Replit build instruction
+
+```python
+def ncei_cdo_get(endpoint: str, params: dict) -> dict:
+    import os
+    import requests
+
+    token = os.environ.get("NOAA_CDO_TOKEN")
+    if not token:
+        return {
+            "ok": False,
+            "source_status": "DATA_UNOBTAINABLE",
+            "reason": "NOAA_CDO_TOKEN missing",
+        }
+
+    base = "https://www.ncei.noaa.gov/cdo-web/api/v2"
+    url = f"{base}/{endpoint.lstrip('/')}"
+
+    headers = {"token": token}
+    r = requests.get(url, headers=headers, params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
+```
+
+### Test token
+
+```bash
+curl -s "https://www.ncei.noaa.gov/cdo-web/api/v2/datasets" \
+  -H "token: $NOAA_CDO_TOKEN" | jq '.results[0:5]'
+```
+
+### Next calibration endpoint
+
+Ask Replit to add:
+
+```text
+GET /api/wow/kalshi/weather/calibration?city=CHI&days=365
+```
+
+Expected output:
+
+```json
+{
+  "city": "CHI",
+  "station_id": "KMDW",
+  "historical_days": 365,
+  "sigma_f_recommended": 3.8,
+  "mean_error": -0.4,
+  "mae": 3.6,
+  "source_status": "RETRIEVED"
+}
+```
+
+### WOW rule
+
+```text
+Missing NOAA token cannot 500 the app.
+It should return CALIBRATION_UNAVAILABLE or DATA_UNOBTAINABLE.
+```
+
+---
+
+## 4. Connect Kalshi public market/orderbook API — live price source
+
+### Purpose in WOW
+
+This is required for PATCH-003:
+
+```text
+price_source = kalshi_live_orderbook
+yes_bid
+yes_ask
+no_bid
+no_ask
+spread
+price_timestamp
+price_age_minutes
+market_status
+volume / open interest if available
+```
+
+Kalshi docs say public market data endpoints can be accessed without authentication, including series/events/markets/orderbook data. ([Kalshi API Documentation][2]) Kalshi’s orderbook docs also state the orderbook returns YES and NO bids only, not asks, because binary contract asks can be reconstructed from the opposite side. ([Kalshi API Documentation][4])
+
+### Step A — fetch NHIGH series markets
+
+Start with the five verified series:
+
+```text
+KXHIGHNY
+KXHIGHLAX
+KXHIGHMIA
+KXHIGHCHI
+KXHIGHAUS
+```
+
+```python
+def kalshi_get(path: str, params: dict | None = None) -> dict:
+    import os
+    import requests
+
+    base = os.environ.get(
+        "KALSHI_API_BASE",
+        "https://external-api.kalshi.com/trade-api/v2"
+    )
+    url = f"{base}/{path.lstrip('/')}"
+
+    r = requests.get(url, params=params or {}, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_kalshi_nhigh_markets(series_ticker: str) -> dict:
+    return kalshi_get(
+        "/markets",
+        {
+            "series_ticker": series_ticker,
+            "status": "open",
+            "limit": 100,
+        },
+    )
+```
+
+### Step B — fetch orderbook for ticker
+
+```python
+def fetch_kalshi_orderbook(ticker: str) -> dict:
+    import datetime as dt
+
+    data = kalshi_get(f"/markets/{ticker}/orderbook")
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+
+    orderbook = data.get("orderbook", {})
+    yes_bids = orderbook.get("yes", []) or []
+    no_bids = orderbook.get("no", []) or []
+
+    best_yes_bid = max([level[0] for level in yes_bids], default=None)
+    best_no_bid = max([level[0] for level in no_bids], default=None)
+
+    # Kalshi uses cents. A NO bid at X implies a YES ask at 100 - X.
+    best_yes_ask = (100 - best_no_bid) if best_no_bid is not None else None
+    best_no_ask = (100 - best_yes_bid) if best_yes_bid is not None else None
+
+    spread_cents = (
+        best_yes_ask - best_yes_bid
+        if best_yes_bid is not None and best_yes_ask is not None
+        else None
+    )
+
+    return {
+        "price_source": "kalshi_live_orderbook",
+        "orderbook_source": "kalshi_public_market_data",
+        "price_timestamp": now,
+        "best_yes_bid": best_yes_bid / 100 if best_yes_bid is not None else None,
+        "best_yes_ask": best_yes_ask / 100 if best_yes_ask is not None else None,
+        "best_no_bid": best_no_bid / 100 if best_no_bid is not None else None,
+        "best_no_ask": best_no_ask / 100 if best_no_ask is not None else None,
+        "spread": spread_cents / 100 if spread_cents is not None else None,
+        "live_orderbook_checked": True,
+    }
+```
+
+### Test series and orderbook
+
+```bash
+curl -s "https://external-api.kalshi.com/trade-api/v2/markets?series_ticker=KXHIGHCHI&status=open&limit=20" | jq '.markets[] | {ticker,title,status}'
+
+curl -s "https://external-api.kalshi.com/trade-api/v2/markets/PASTE_TICKER/orderbook" | jq '.orderbook'
+```
+
+### WOW rule
+
+```text
+No live Kalshi orderbook = no KALSHI_PLAYABLE_LIMIT_ONLY
+operator_supplied price = no executable/playable output
+synthetic_test price = no executable/playable output
+price_age_minutes > 10 = stale → no playable label
+```
+
+---
+
+## 5. Optional later: NOAA NOMADS / NBM
+
+### Purpose in WOW
+
+Use later for better ensemble/blend inputs:
+
+```text
+NBM / ensemble support
+distribution improvement
+city-specific weather regime adjustments
+```
+
+Do not block PATCH-002 on this.
+
+NOMADS’ GRIB filter lets you download subsets of GRIB2 datasets and generate URL queries for automated retrieval; the docs warn scripts with loops should wait 10 seconds between fetches to avoid excessive request behavior. ([NOMADS][5])
+
+### Replit rule
+
+```text
+Add as SCOUT connector only.
+Do not make it required for weather evaluation.
+Do not let NOMADS failure break NHIGH.
+```
+
+### Future env var
+
+```bash
+ENABLE_NOMADS_NBM=false
+```
+
+---
+
+## 6. Optional backup: Open-Meteo
+
+### Purpose in WOW
+
+Use only as **backup/proxy sanity check**, not settlement source.
+
+Open-Meteo says it provides free forecast and historical weather APIs with no API key, simple JSON HTTP GET, and no authentication for non-commercial use. ([Open Meteo][6])
+
+### Replit build instruction
+
+```python
+def open_meteo_forecast(lat: float, lon: float) -> dict:
+    import requests
+
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "daily": "temperature_2m_max",
+        "temperature_unit": "fahrenheit",
+        "timezone": "auto",
+    }
+
+    r = requests.get(url, params=params, timeout=15)
+    r.raise_for_status()
+    return r.json()
+```
+
+### WOW rule
+
+```text
+Open-Meteo = backup/proxy only
+Never settlement primary
+Never FINAL source for Kalshi NHIGH
+```
+
+---
+
+## Final Replit instruction
+
+Send this as one build order:
+
+```text
+Add API connectors for WOW v16 Kalshi NHIGH Weather lane.
+
+Required:
+1. NWS API connector
+2. NWS CLI product connector
+3. NOAA/NCEI CDO historical connector
+4. Kalshi public market/orderbook connector
+
+Optional/scout:
+5. NOMADS/NBM connector, disabled by default
+6. Open-Meteo backup connector, backup only
+
+Hard rules:
+- Keep all secrets server-side only.
+- Do not expose tokens in frontend, VITE variables, or Custom GPT schema.
+- Use local import requests inside helper functions.
+- NWS_USER_AGENT must be configured.
+- Missing NOAA_CDO_TOKEN must return DATA_UNOBTAINABLE, not 500.
+- Kalshi orderbook must reconstruct YES ask from NO bid.
+- Operator-supplied and synthetic prices cannot return KALSHI_PLAYABLE_LIMIT_ONLY.
+- No live trading.
+- DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS remains enforced.
+
+Add test endpoint:
+GET /api/wow/kalshi/weather/source-health
+
+Return:
+{
+  "nws_api": "OK|FAILED",
+  "nws_cli": "OK|FAILED",
+  "ncei_cdo": "OK|TOKEN_MISSING|FAILED",
+  "kalshi_market_data": "OK|FAILED",
+  "nomads_nbm": "DISABLED|OK|FAILED",
+  "open_meteo": "DISABLED|OK|FAILED",
+  "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+}
+
+After deploy, return:
+1. source-health output
+2. stations output
+3. one NWS gridpoint forecast test
+4. one NWS CLI fetch test
+5. one NCEI token test or TOKEN_MISSING
+6. one Kalshi NHIGH series market fetch
+7. one Kalshi orderbook fetch if a market exists
+```
+
+## Your action items
+
+1. Add `NWS_USER_AGENT` in Replit secrets.
+2. Request the free NOAA/NCEI CDO token and add `NOAA_CDO_TOKEN`.
+3. Confirm Replit keeps Kalshi orderbook reads server-side.
+4. Tell Replit to add `/api/wow/kalshi/weather/source-health`.
+5. After deploy, run source-health before running weather evaluate.
+
+[1]: https://www.weather.gov/documentation/services-web-api "API Web Service"
+[2]: https://docs.kalshi.com/getting_started/quick_start_market_data "Quick Start: Market Data - API Documentation"
+[3]: https://www.ncdc.noaa.gov/cdo-web/token "Web Services API Token Request | Climate Data Online (CDO) | National Climatic Data Center (NCDC)"
+[4]: https://docs.kalshi.com/api-reference/market/get-market-orderbook "Get Market Orderbook - API Documentation"
+[5]: https://nomads.ncep.noaa.gov/info.php?page=gribfilter "NOMADS Information"
+[6]: https://open-meteo.com/ "️ Free Open-Source Weather API | Open-Meteo.com"

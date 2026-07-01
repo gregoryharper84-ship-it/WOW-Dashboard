@@ -52,3 +52,11 @@ externalPort = 3003
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+NWS_USER_AGENT = "WOW-v16-Kalshi-Weather gregory.harper84@gmail.com"
+KALSHI_API_BASE = "https://external-api.kalshi.com/trade-api/v2"
+ENABLE_NOMADS_NBM = "false"
+ENABLE_OPEN_METEO = "false"
