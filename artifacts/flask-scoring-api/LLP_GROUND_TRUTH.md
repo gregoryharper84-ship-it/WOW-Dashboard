@@ -481,6 +481,70 @@ starter/lineup, no failures, and a passing final-lock refresh.
 
 ---
 
+## §14 — WNBA Ingestion Scheduler (WOW-PATCH-011)
+
+### Tables (all created on first run via `_ensure_wnba_schema`)
+
+| Table | PK | Key unique constraint |
+|-------|----|-----------------------|
+| `wnba_schedule` | `game_id` | PRIMARY KEY |
+| `wnba_player_game_logs` | `id` (bigserial) | `UNIQUE (player_id, game_id)` |
+| `wnba_box_scores` | `id` (bigserial) | `UNIQUE (game_id, team)` |
+| `wnba_injury_status` | `id` (bigserial) | none (inserts new row each run) |
+| `wnba_transactions` | `id` (bigserial) | `UNIQUE (transaction_id)` |
+| `source_audit_log` | `id` (bigserial) | `UNIQUE (run_id)` |
+
+### Player game log fields
+
+`player_id, player_name, team, opponent, game_date, game_id, starter,
+minutes, points, rebounds, assists, steals, blocks, turnovers,
+field_goal_attempts, three_point_attempts, free_throw_attempts,
+personal_fouls, plus_minus, source, source_timestamp, ingestion_ts,
+missing_fields[]`
+
+### Data source
+
+ESPN public WNBA APIs (no auth required, no API key spend):
+- Scoreboard: `site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard`
+- Boxscore: `site.api.espn.com/apis/site/v2/sports/basketball/wnba/summary`
+- Injuries: `site.api.espn.com/apis/site/v2/sports/basketball/wnba/injuries`
+- Transactions: `site.api.espn.com/apis/site/v2/sports/basketball/wnba/transactions`
+
+### Cron design
+
+In-process daemon thread (`wnba-ingest-cron`). Fires once per ET calendar day.
+Advisory lock key: `778597211` (distinct from LLP cron `778597203`).
+Disable: `WNBA_DISABLE_CRON=1`.
+
+### Staleness flag
+
+`source_is_stale = True` when `source_timestamp` is older than 25 hours.
+Exposed on every `/wow/wnba/player-log` row and `/wow/wnba/ingestion/health`.
+
+### Audit log behavior
+
+Every ingestion run writes a `source_audit_log` row immediately (status=RUNNING)
+and updates it on finish. No player row is written without a corresponding
+audit entry. `missing_fields[]` array tracks which core stat fields were absent.
+
+### Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/wow/wnba/ingestion/health` | none | Cron status, DB reachability, last run |
+| POST | `/wow/wnba/ingestion/refresh` | none | Manual full ingestion cycle |
+| GET | `/wow/wnba/player-log` | none | Query player logs with staleness flags |
+| GET | `/wow/wnba/schedule` | none | Schedule for a date; falls back to live ESPN |
+| GET | `/wow/wnba/source-audit` | none | source_audit_log + optional row detail |
+
+### Safety rails
+
+- No betting approval labels created or modified
+- Gate 3 classification logic unchanged
+- `execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` on all responses
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

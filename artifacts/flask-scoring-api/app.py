@@ -19010,6 +19010,1176 @@ def wow_kalshi_scan():
         return jsonify(resp), 200
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW-PATCH-011 — WNBA Ingestion Scheduler
+# v1.0.0 | 2026-07-01
+# Data source: ESPN public WNBA APIs (no auth required)
+# Cron: in-process daemon thread, pg_try_advisory_lock, fires once per ET day
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_WNBA_INGEST_VERSION      = "v1.0.0"
+_WNBA_INGEST_BUILD_TS     = "2026-07-01"
+_WNBA_INGEST_ADVISORY_KEY = 778597211      # distinct from LLP cron (778597203)
+_WNBA_STALE_HOURS         = 25             # source_timestamp older than this → stale
+_WNBA_SEASON_YEAR         = datetime.now().year
+
+_WNBA_CRON_ENABLED = (os.environ.get("WNBA_DISABLE_CRON", "").strip().lower()
+                      not in ("1", "true", "yes", "on"))
+_WNBA_CRON_STARTED = False
+_WNBA_CRON_LOCK    = threading.Lock()
+_WNBA_CRON_STATS: dict = {
+    "ticks": 0, "games_ingested": 0, "player_rows": 0,
+    "last_tick": None, "last_error": None,
+}
+
+
+# ── Schema bootstrap ──────────────────────────────────────────────────────────
+
+def _ensure_wnba_schema(conn) -> None:
+    """Create all WOW-PATCH-011 tables if they do not already exist."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS wnba_schedule (
+                game_id          TEXT PRIMARY KEY,
+                game_date        DATE NOT NULL,
+                home_team        TEXT,
+                away_team        TEXT,
+                home_score       INTEGER,
+                away_score       INTEGER,
+                status           TEXT,
+                status_detail    TEXT,
+                season_year      INTEGER,
+                source           TEXT DEFAULT 'espn_wnba',
+                source_timestamp TIMESTAMPTZ,
+                ingestion_ts     TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS wnba_schedule_date_idx
+                ON wnba_schedule (game_date DESC);
+
+            CREATE TABLE IF NOT EXISTS wnba_player_game_logs (
+                id                   BIGSERIAL PRIMARY KEY,
+                player_id            TEXT NOT NULL,
+                player_name          TEXT NOT NULL,
+                team                 TEXT,
+                opponent             TEXT,
+                game_date            DATE NOT NULL,
+                game_id              TEXT NOT NULL,
+                starter              BOOLEAN,
+                minutes              REAL,
+                points               REAL,
+                rebounds             REAL,
+                assists              REAL,
+                steals               REAL,
+                blocks               REAL,
+                turnovers            REAL,
+                field_goal_attempts  REAL,
+                three_point_attempts REAL,
+                free_throw_attempts  REAL,
+                personal_fouls       REAL,
+                plus_minus           REAL,
+                source               TEXT DEFAULT 'espn_wnba_boxscore',
+                source_timestamp     TIMESTAMPTZ,
+                ingestion_ts         TIMESTAMPTZ DEFAULT NOW(),
+                missing_fields       TEXT[],
+                UNIQUE (player_id, game_id)
+            );
+            CREATE INDEX IF NOT EXISTS wnba_pgl_player_date_idx
+                ON wnba_player_game_logs (player_id, game_date DESC);
+            CREATE INDEX IF NOT EXISTS wnba_pgl_game_idx
+                ON wnba_player_game_logs (game_id);
+            CREATE INDEX IF NOT EXISTS wnba_pgl_name_date_idx
+                ON wnba_player_game_logs (player_name, game_date DESC);
+
+            CREATE TABLE IF NOT EXISTS wnba_box_scores (
+                id               BIGSERIAL PRIMARY KEY,
+                game_id          TEXT NOT NULL,
+                team             TEXT NOT NULL,
+                game_date        DATE NOT NULL,
+                points           REAL,
+                rebounds         REAL,
+                assists          REAL,
+                field_goals_pct  REAL,
+                three_pct        REAL,
+                ft_pct           REAL,
+                source           TEXT DEFAULT 'espn_wnba_boxscore',
+                source_timestamp TIMESTAMPTZ,
+                ingestion_ts     TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (game_id, team)
+            );
+            CREATE INDEX IF NOT EXISTS wnba_box_game_idx
+                ON wnba_box_scores (game_id);
+
+            CREATE TABLE IF NOT EXISTS wnba_injury_status (
+                id               BIGSERIAL PRIMARY KEY,
+                player_id        TEXT NOT NULL,
+                player_name      TEXT NOT NULL,
+                team             TEXT,
+                status           TEXT,
+                comment          TEXT,
+                return_date      TEXT,
+                source           TEXT DEFAULT 'espn_wnba_injuries',
+                source_timestamp TIMESTAMPTZ,
+                ingestion_ts     TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS wnba_injury_player_idx
+                ON wnba_injury_status (player_id, ingestion_ts DESC);
+
+            CREATE TABLE IF NOT EXISTS wnba_transactions (
+                id               BIGSERIAL PRIMARY KEY,
+                transaction_id   TEXT UNIQUE,
+                player_name      TEXT,
+                team             TEXT,
+                transaction_type TEXT,
+                transaction_date DATE,
+                description      TEXT,
+                source           TEXT DEFAULT 'espn_wnba_transactions',
+                source_timestamp TIMESTAMPTZ,
+                ingestion_ts     TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS wnba_txn_date_idx
+                ON wnba_transactions (transaction_date DESC);
+
+            CREATE TABLE IF NOT EXISTS source_audit_log (
+                id                        BIGSERIAL PRIMARY KEY,
+                run_id                    TEXT NOT NULL UNIQUE,
+                source                    TEXT NOT NULL,
+                sport                     TEXT DEFAULT 'wnba',
+                trigger                   TEXT NOT NULL,
+                started_at                TIMESTAMPTZ NOT NULL,
+                finished_at               TIMESTAMPTZ,
+                status                    TEXT,
+                games_found               INTEGER DEFAULT 0,
+                player_rows_written       INTEGER DEFAULT 0,
+                schedule_rows_written     INTEGER DEFAULT 0,
+                box_score_rows_written    INTEGER DEFAULT 0,
+                injury_rows_written       INTEGER DEFAULT 0,
+                transaction_rows_written  INTEGER DEFAULT 0,
+                errors                    TEXT[],
+                metadata                  JSONB
+            );
+            CREATE INDEX IF NOT EXISTS source_audit_log_sport_idx
+                ON source_audit_log (sport, started_at DESC);
+        """)
+        conn.commit()
+
+
+# ── ESPN data helpers ─────────────────────────────────────────────────────────
+
+def _wnba_parse_minutes(raw) -> float | None:
+    """Convert '27:05' or '27' or 27.0 to decimal minutes. Returns None for DNP."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s or s in ("--", "0:00", "DNP", "DND", ""):
+        return None
+    try:
+        if ":" in s:
+            parts = s.split(":")
+            return round(int(parts[0]) + int(parts[1]) / 60, 2)
+        return round(float(s), 2)
+    except (ValueError, TypeError):
+        return None
+
+
+def _wnba_parse_fraction(raw, idx: int) -> float | None:
+    """Parse 'made-attempted' string, return idx-th value (0=made, 1=attempted)."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if "-" in s:
+        parts = s.split("-")
+        try:
+            return float(parts[idx])
+        except (ValueError, IndexError):
+            return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _wnba_safe_float(v) -> float | None:
+    """Safely cast a stat value to float; return None for blanks/dashes."""
+    try:
+        if v is None or str(v).strip() in ("--", ""):
+            return None
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+def _wnba_fetch_schedule_espn(date_str: str) -> list[dict]:
+    """
+    Pull WNBA scoreboard for a given date (YYYYMMDD).
+    Returns list of normalized game dicts, each with a '_final' boolean.
+    """
+    import requests as _req
+    pull_ts = datetime.now(timezone.utc).isoformat()
+    try:
+        r = _req.get(
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard",
+            params={"dates": date_str, "limit": 20},
+            timeout=12,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:
+        return [{"_error": str(exc)[:200]}]
+
+    games: list[dict] = []
+    for event in data.get("events", []):
+        gid  = event.get("id", "")
+        comp = (event.get("competitions") or [{}])[0]
+        comps = comp.get("competitors", [])
+        home = next((c for c in comps if c.get("homeAway") == "home"), {})
+        away = next((c for c in comps if c.get("homeAway") == "away"), {})
+        status_obj  = comp.get("status", {}).get("type", {})
+        status_name = status_obj.get("name", "")
+        is_final    = status_name == "STATUS_FINAL"
+
+        def _score(c):
+            try:
+                return int(c.get("score") or 0)
+            except (ValueError, TypeError):
+                return None
+
+        games.append({
+            "game_id":          gid,
+            "game_date":        date_str[:8],
+            "home_team":        home.get("team", {}).get("abbreviation", ""),
+            "away_team":        away.get("team", {}).get("abbreviation", ""),
+            "home_score":       _score(home) if status_name in ("STATUS_FINAL", "STATUS_IN_PROGRESS") else None,
+            "away_score":       _score(away) if status_name in ("STATUS_FINAL", "STATUS_IN_PROGRESS") else None,
+            "status":           status_name,
+            "status_detail":    status_obj.get("detail", ""),
+            "season_year":      _WNBA_SEASON_YEAR,
+            "source_timestamp": pull_ts,
+            "_final":           is_final,
+        })
+    return games
+
+
+def _wnba_fetch_boxscore_espn(game_id: str) -> dict:
+    """
+    Pull ESPN WNBA boxscore for a single completed game.
+    Returns {"player_logs": [...], "team_box": [...], "source_timestamp": "..."}.
+    """
+    import requests as _req
+    pull_ts = datetime.now(timezone.utc).isoformat()
+    try:
+        r = _req.get(
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/summary",
+            params={"event": game_id},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:
+        return {"_error": str(exc)[:200], "player_logs": [], "team_box": []}
+
+    # Determine matchup from header
+    hdr_comps = data.get("header", {}).get("competitions", [{}])[0].get("competitors", [])
+    home_abbr = next((c.get("team", {}).get("abbreviation", "")
+                      for c in hdr_comps if c.get("homeAway") == "home"), "")
+    away_abbr = next((c.get("team", {}).get("abbreviation", "")
+                      for c in hdr_comps if c.get("homeAway") == "away"), "")
+    opp_map   = {home_abbr: away_abbr, away_abbr: home_abbr}
+
+    bx           = data.get("boxscore", {})
+    player_logs: list[dict] = []
+    team_box:    list[dict] = []
+
+    # ── Player rows from boxscore.players ──
+    for team_entry in bx.get("players", []):
+        team_abbr = team_entry.get("team", {}).get("abbreviation", "")
+        opp_abbr  = opp_map.get(team_abbr, "")
+
+        for stat_group in team_entry.get("statistics", []):
+            keys: list[str] = [k.lower().replace(" ", "") for k in stat_group.get("keys", [])]
+            key_idx = {k: i for i, k in enumerate(keys)}
+
+            for athlete_entry in stat_group.get("athletes", []):
+                ath     = athlete_entry.get("athlete", {})
+                pid     = str(ath.get("id", ""))
+                pname   = ath.get("displayName", "")
+                starter = bool(athlete_entry.get("starter", False))
+                stats   = athlete_entry.get("stats", [])
+
+                def _g(key: str):
+                    idx = key_idx.get(key)
+                    return stats[idx] if idx is not None and idx < len(stats) else None
+
+                minutes  = _wnba_parse_minutes(_g("minutes"))
+                fga      = _wnba_parse_fraction(_g("fieldgoals"), 1)
+                threea   = _wnba_parse_fraction(_g("threepointfieldgoals"), 1)
+                fta      = _wnba_parse_fraction(_g("freethrows"), 1)
+
+                row = {
+                    "player_id":            pid,
+                    "player_name":          pname,
+                    "team":                 team_abbr,
+                    "opponent":             opp_abbr,
+                    "game_id":              game_id,
+                    "starter":              starter,
+                    "minutes":              minutes,
+                    "points":               _wnba_safe_float(_g("points")),
+                    "rebounds":             _wnba_safe_float(_g("totalrebounds")),
+                    "assists":              _wnba_safe_float(_g("assists")),
+                    "steals":               _wnba_safe_float(_g("steals")),
+                    "blocks":               _wnba_safe_float(_g("blocks")),
+                    "turnovers":            _wnba_safe_float(_g("turnovers")),
+                    "field_goal_attempts":  fga,
+                    "three_point_attempts": threea,
+                    "free_throw_attempts":  fta,
+                    "personal_fouls":       _wnba_safe_float(_g("fouls")),
+                    "plus_minus":           _wnba_safe_float(_g("plusminus")),
+                    "source_timestamp":     pull_ts,
+                }
+
+                # Track missing core fields
+                missing: list[str] = [
+                    f for f in ["minutes", "points", "rebounds", "assists",
+                                "steals", "blocks", "turnovers",
+                                "field_goal_attempts", "three_point_attempts",
+                                "free_throw_attempts"]
+                    if row.get(f) is None
+                ]
+                row["missing_fields"] = missing
+
+                if pid and pname:
+                    player_logs.append(row)
+
+    # ── Team box from boxscore.teams ──
+    for team_entry in bx.get("teams", []):
+        team_abbr  = team_entry.get("team", {}).get("abbreviation", "")
+        stats_list = team_entry.get("statistics", [])
+
+        def _ts(name: str) -> float | None:
+            for s in stats_list:
+                if s.get("name", "").lower() == name.lower():
+                    try:
+                        return float(str(s.get("displayValue", "")).replace("%", ""))
+                    except (ValueError, TypeError):
+                        return None
+            return None
+
+        team_box.append({
+            "game_id":          game_id,
+            "team":             team_abbr,
+            "points":           _ts("points"),
+            "rebounds":         _ts("totalRebounds"),
+            "assists":          _ts("assists"),
+            "field_goals_pct":  _ts("fieldGoalPct"),
+            "three_pct":        _ts("threePointPct"),
+            "ft_pct":           _ts("freeThrowPct"),
+            "source_timestamp": pull_ts,
+        })
+
+    return {"player_logs": player_logs, "team_box": team_box,
+            "source_timestamp": pull_ts}
+
+
+def _wnba_fetch_injuries_espn() -> list[dict]:
+    """Pull current WNBA injury report from ESPN."""
+    import requests as _req
+    pull_ts = datetime.now(timezone.utc).isoformat()
+    try:
+        r = _req.get(
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/injuries",
+            timeout=12,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:
+        return [{"_error": str(exc)[:200]}]
+
+    rows: list[dict] = []
+    for team_entry in data.get("injuries", []):
+        team_abbr = team_entry.get("team", {}).get("abbreviation", "")
+        for inj in team_entry.get("injuries", []):
+            ath     = inj.get("athlete", {})
+            details = inj.get("details", {})
+            rows.append({
+                "player_id":        str(ath.get("id", "")),
+                "player_name":      ath.get("displayName", ""),
+                "team":             team_abbr,
+                "status":           inj.get("status", ""),
+                "comment":          inj.get("longComment", ""),
+                "return_date":      details.get("returnDate", ""),
+                "source_timestamp": pull_ts,
+            })
+    return rows
+
+
+def _wnba_fetch_transactions_espn() -> list[dict]:
+    """Pull recent WNBA transactions from ESPN (best-effort; empty on 404)."""
+    import requests as _req
+    pull_ts = datetime.now(timezone.utc).isoformat()
+    try:
+        r = _req.get(
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/transactions",
+            params={"limit": 50},
+            timeout=12,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for txn in data.get("transactions", []):
+        txn_id   = str(txn.get("id", ""))
+        ath      = txn.get("athlete", {})
+        team_obj = txn.get("team", {})
+        raw_date = txn.get("date", "")
+        try:
+            txn_date = raw_date[:10] if raw_date else None
+        except Exception:
+            txn_date = None
+        rows.append({
+            "transaction_id":   txn_id,
+            "player_name":      ath.get("displayName", ""),
+            "team":             team_obj.get("abbreviation", ""),
+            "transaction_type": txn.get("type", {}).get("name", ""),
+            "transaction_date": txn_date,
+            "description":      txn.get("description", ""),
+            "source_timestamp": pull_ts,
+        })
+    return rows
+
+
+# ── Ingestion orchestrator ────────────────────────────────────────────────────
+
+def _wnba_run_ingestion(trigger: str = "scheduled") -> dict:
+    """
+    Full WNBA ingestion cycle.
+    Pulls yesterday + today schedules, boxscores for all STATUS_FINAL games,
+    current injury report, and recent transactions. Writes all rows to DB and
+    records a source_audit_log entry per run. Fire-and-forget per write.
+    """
+    import uuid as _uuid
+    run_id     = (f"wnba-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+                  f"-{_uuid.uuid4().hex[:6]}")
+    started_at = datetime.now(timezone.utc)
+    errors: list[str] = []
+    totals = {
+        "games_found":             0,
+        "schedule_rows_written":   0,
+        "player_rows_written":     0,
+        "box_score_rows_written":  0,
+        "injury_rows_written":     0,
+        "transaction_rows_written": 0,
+    }
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return {"ok": False, "error": "DATABASE_URL not configured", "run_id": run_id}
+
+    try:
+        import psycopg2 as _pg
+        conn = _pg.connect(db_url)
+    except Exception as exc:
+        return {"ok": False, "error": f"DB connect failed: {exc}", "run_id": run_id}
+
+    try:
+        _ensure_wnba_schema(conn)
+    except Exception as exc:
+        errors.append(f"schema_init: {exc}")
+
+    # Write STARTED audit row immediately (updated on finish)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO source_audit_log
+                    (run_id, source, sport, trigger, started_at, status)
+                VALUES (%s, %s, 'wnba', %s, %s, 'RUNNING')
+                ON CONFLICT (run_id) DO UPDATE SET status = 'RUNNING'
+            """, (run_id, "espn_wnba", trigger, started_at))
+            conn.commit()
+    except Exception as exc:
+        errors.append(f"audit_start: {exc}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+    # ── Fetch schedule: yesterday + today (ET) ──
+    now_utc   = datetime.now(timezone.utc)
+    today_str = (now_utc - timedelta(hours=5)).strftime("%Y%m%d")
+    yest_str  = ((now_utc - timedelta(hours=5)) - timedelta(days=1)).strftime("%Y%m%d")
+
+    all_games: list[dict] = []
+    for ds in [yest_str, today_str]:
+        game_date_iso = f"{ds[:4]}-{ds[4:6]}-{ds[6:8]}"
+        raw = _wnba_fetch_schedule_espn(ds)
+        for g in raw:
+            if "_error" in g:
+                errors.append(f"schedule_{ds}: {g['_error']}")
+                continue
+            g["_game_date_iso"] = game_date_iso
+            all_games.append(g)
+
+    totals["games_found"] = len(all_games)
+
+    # ── Upsert schedule rows ──
+    for g in all_games:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO wnba_schedule
+                        (game_id, game_date, home_team, away_team,
+                         home_score, away_score, status, status_detail,
+                         season_year, source_timestamp, ingestion_ts)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                    ON CONFLICT (game_id) DO UPDATE SET
+                        home_score       = EXCLUDED.home_score,
+                        away_score       = EXCLUDED.away_score,
+                        status           = EXCLUDED.status,
+                        status_detail    = EXCLUDED.status_detail,
+                        source_timestamp = EXCLUDED.source_timestamp,
+                        ingestion_ts     = NOW()
+                """, (
+                    g["game_id"], g["_game_date_iso"],
+                    g["home_team"], g["away_team"],
+                    g.get("home_score"), g.get("away_score"),
+                    g["status"], g["status_detail"],
+                    g["season_year"], g["source_timestamp"],
+                ))
+                conn.commit()
+                totals["schedule_rows_written"] += 1
+        except Exception as exc:
+            errors.append(f"schedule_upsert_{g.get('game_id','?')}: {str(exc)[:200]}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+    # ── Fetch boxscores for STATUS_FINAL games ──
+    for g in [x for x in all_games if x.get("_final")]:
+        gid      = g["game_id"]
+        gdate    = g["_game_date_iso"]
+        try:
+            bx = _wnba_fetch_boxscore_espn(gid)
+            if "_error" in bx:
+                errors.append(f"boxscore_{gid}: {bx['_error']}")
+                continue
+            src_ts = bx["source_timestamp"]
+
+            for plog in bx["player_logs"]:
+                if not plog["player_id"] or not plog["player_name"]:
+                    continue
+                missing_arr = plog.get("missing_fields", [])
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO wnba_player_game_logs
+                                (player_id, player_name, team, opponent,
+                                 game_date, game_id, starter,
+                                 minutes, points, rebounds, assists,
+                                 steals, blocks, turnovers,
+                                 field_goal_attempts, three_point_attempts,
+                                 free_throw_attempts, personal_fouls, plus_minus,
+                                 source_timestamp, ingestion_ts, missing_fields)
+                            VALUES
+                                (%s,%s,%s,%s,%s,%s,%s,
+                                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                                 %s,NOW(),%s)
+                            ON CONFLICT (player_id, game_id) DO UPDATE SET
+                                starter              = EXCLUDED.starter,
+                                minutes              = EXCLUDED.minutes,
+                                points               = EXCLUDED.points,
+                                rebounds             = EXCLUDED.rebounds,
+                                assists              = EXCLUDED.assists,
+                                steals               = EXCLUDED.steals,
+                                blocks               = EXCLUDED.blocks,
+                                turnovers            = EXCLUDED.turnovers,
+                                field_goal_attempts  = EXCLUDED.field_goal_attempts,
+                                three_point_attempts = EXCLUDED.three_point_attempts,
+                                free_throw_attempts  = EXCLUDED.free_throw_attempts,
+                                personal_fouls       = EXCLUDED.personal_fouls,
+                                plus_minus           = EXCLUDED.plus_minus,
+                                source_timestamp     = EXCLUDED.source_timestamp,
+                                ingestion_ts         = NOW(),
+                                missing_fields       = EXCLUDED.missing_fields
+                        """, (
+                            plog["player_id"], plog["player_name"],
+                            plog["team"], plog["opponent"],
+                            gdate, gid, plog["starter"],
+                            plog["minutes"], plog["points"], plog["rebounds"],
+                            plog["assists"], plog["steals"], plog["blocks"],
+                            plog["turnovers"], plog["field_goal_attempts"],
+                            plog["three_point_attempts"], plog["free_throw_attempts"],
+                            plog["personal_fouls"], plog["plus_minus"],
+                            src_ts, missing_arr,
+                        ))
+                        conn.commit()
+                        totals["player_rows_written"] += 1
+                except Exception as exc:
+                    errors.append(f"plog_{gid}_{plog.get('player_id','?')}: {str(exc)[:150]}")
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+
+            for tbox in bx["team_box"]:
+                if not tbox.get("team"):
+                    continue
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO wnba_box_scores
+                                (game_id, team, game_date,
+                                 points, rebounds, assists,
+                                 field_goals_pct, three_pct, ft_pct,
+                                 source_timestamp, ingestion_ts)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                            ON CONFLICT (game_id, team) DO UPDATE SET
+                                points           = EXCLUDED.points,
+                                rebounds         = EXCLUDED.rebounds,
+                                assists          = EXCLUDED.assists,
+                                field_goals_pct  = EXCLUDED.field_goals_pct,
+                                three_pct        = EXCLUDED.three_pct,
+                                ft_pct           = EXCLUDED.ft_pct,
+                                source_timestamp = EXCLUDED.source_timestamp,
+                                ingestion_ts     = NOW()
+                        """, (
+                            gid, tbox["team"], gdate,
+                            tbox["points"], tbox["rebounds"], tbox["assists"],
+                            tbox["field_goals_pct"], tbox["three_pct"], tbox["ft_pct"],
+                            src_ts,
+                        ))
+                        conn.commit()
+                        totals["box_score_rows_written"] += 1
+                except Exception as exc:
+                    errors.append(f"tbox_{gid}_{tbox.get('team','?')}: {str(exc)[:150]}")
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+
+        except Exception as exc:
+            errors.append(f"boxscore_outer_{gid}: {str(exc)[:200]}")
+
+    # ── Injuries ──
+    try:
+        inj_rows = _wnba_fetch_injuries_espn()
+        for inj in inj_rows:
+            if "_error" in inj:
+                errors.append(f"injury_fetch: {inj['_error']}")
+                continue
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO wnba_injury_status
+                            (player_id, player_name, team,
+                             status, comment, return_date,
+                             source_timestamp, ingestion_ts)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
+                    """, (
+                        inj["player_id"], inj["player_name"], inj["team"],
+                        inj["status"], inj.get("comment", ""),
+                        inj.get("return_date", ""),
+                        inj.get("source_timestamp"),
+                    ))
+                    conn.commit()
+                    totals["injury_rows_written"] += 1
+            except Exception as exc:
+                errors.append(f"injury_insert: {str(exc)[:150]}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+    except Exception as exc:
+        errors.append(f"injuries_outer: {str(exc)[:200]}")
+
+    # ── Transactions (best-effort) ──
+    try:
+        txn_rows = _wnba_fetch_transactions_espn()
+        for txn in txn_rows:
+            if not txn.get("transaction_id"):
+                continue
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO wnba_transactions
+                            (transaction_id, player_name, team,
+                             transaction_type, transaction_date, description,
+                             source_timestamp, ingestion_ts)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
+                        ON CONFLICT (transaction_id) DO NOTHING
+                    """, (
+                        txn["transaction_id"], txn["player_name"], txn["team"],
+                        txn["transaction_type"], txn.get("transaction_date"),
+                        txn.get("description", ""), txn.get("source_timestamp"),
+                    ))
+                    conn.commit()
+                    totals["transaction_rows_written"] += 1
+            except Exception as exc:
+                errors.append(f"txn_insert_{txn.get('transaction_id','?')}: {str(exc)[:150]}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+    except Exception as exc:
+        errors.append(f"transactions_outer: {str(exc)[:200]}")
+
+    # ── Finalize source_audit_log ──
+    finished_at   = datetime.now(timezone.utc)
+    final_status  = ("SUCCESS" if not errors
+                     else ("PARTIAL" if totals["player_rows_written"] > 0
+                           else "FAILED"))
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE source_audit_log SET
+                    finished_at              = %s,
+                    status                   = %s,
+                    games_found              = %s,
+                    player_rows_written      = %s,
+                    schedule_rows_written    = %s,
+                    box_score_rows_written   = %s,
+                    injury_rows_written      = %s,
+                    transaction_rows_written = %s,
+                    errors                   = %s,
+                    metadata                 = %s
+                WHERE run_id = %s
+            """, (
+                finished_at, final_status,
+                totals["games_found"],
+                totals["player_rows_written"],
+                totals["schedule_rows_written"],
+                totals["box_score_rows_written"],
+                totals["injury_rows_written"],
+                totals["transaction_rows_written"],
+                errors or None,
+                json.dumps({"trigger": trigger, "version": _WNBA_INGEST_VERSION}),
+                run_id,
+            ))
+            conn.commit()
+    except Exception as exc:
+        errors.append(f"audit_finish: {str(exc)[:150]}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+    _WNBA_CRON_STATS["ticks"]          += 1
+    _WNBA_CRON_STATS["games_ingested"] += totals["games_found"]
+    _WNBA_CRON_STATS["player_rows"]    += totals["player_rows_written"]
+    _WNBA_CRON_STATS["last_tick"]       = finished_at.isoformat()
+    if errors:
+        _WNBA_CRON_STATS["last_error"] = errors[-1]
+
+    return {
+        "ok":           final_status in ("SUCCESS", "PARTIAL"),
+        "run_id":       run_id,
+        "status":       final_status,
+        "started_at":   started_at.isoformat(),
+        "finished_at":  finished_at.isoformat(),
+        "trigger":      trigger,
+        "version":      _WNBA_INGEST_VERSION,
+        **totals,
+        "errors":       errors,
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    }
+
+
+# ── Daily cron daemon ─────────────────────────────────────────────────────────
+
+def _wnba_cron_tick() -> None:
+    """Single advisory-locked ingestion tick. No-op if another worker holds lock."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return
+    try:
+        import psycopg2 as _pg
+        conn = _pg.connect(db_url)
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s)", (_WNBA_INGEST_ADVISORY_KEY,))
+            got_lock = cur.fetchone()[0]
+        conn.close()
+        if not got_lock:
+            return
+    except Exception:
+        return
+
+    try:
+        _wnba_run_ingestion("scheduled")
+    except Exception as exc:
+        _WNBA_CRON_STATS["last_error"] = str(exc)[:200]
+
+    try:
+        import psycopg2 as _pg2
+        conn2 = _pg2.connect(db_url)
+        with conn2.cursor() as cur2:
+            cur2.execute("SELECT pg_advisory_unlock(%s)", (_WNBA_INGEST_ADVISORY_KEY,))
+        conn2.commit()
+        conn2.close()
+    except Exception:
+        pass
+
+
+def _wnba_cron_loop() -> None:
+    """
+    In-process daemon: fires a full ingestion once per ET calendar day.
+    Polls every hour; skips if last run date matches today.
+    """
+    last_run_date = ""
+    while True:
+        try:
+            now_et_date = ((datetime.now(timezone.utc) - timedelta(hours=5))
+                           .strftime("%Y-%m-%d"))
+            if now_et_date != last_run_date:
+                _wnba_cron_tick()
+                last_run_date = now_et_date
+        except Exception as exc:
+            _WNBA_CRON_STATS["last_error"] = str(exc)[:200]
+        time.sleep(3600)
+
+
+def _wnba_start_cron() -> None:
+    """Start the WNBA ingestion cron daemon (idempotent, safe to call at import)."""
+    global _WNBA_CRON_STARTED
+    with _WNBA_CRON_LOCK:
+        if _WNBA_CRON_STARTED:
+            return
+        t = threading.Thread(target=_wnba_cron_loop, daemon=True,
+                              name="wnba-ingest-cron")
+        t.start()
+        _WNBA_CRON_STARTED = True
+
+
+if _WNBA_CRON_ENABLED:
+    _wnba_start_cron()
+
+
+# ── Staleness helper ──────────────────────────────────────────────────────────
+
+def _wnba_is_stale(source_ts) -> bool:
+    """Return True if source_timestamp is older than _WNBA_STALE_HOURS or missing."""
+    if not source_ts:
+        return True
+    try:
+        if isinstance(source_ts, str):
+            ts = datetime.fromisoformat(source_ts.replace("Z", "+00:00"))
+        else:
+            ts = source_ts
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() > _WNBA_STALE_HOURS * 3600
+    except Exception:
+        return True
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.route("/wow/wnba/ingestion/health", methods=["GET"])
+def wow_wnba_ingestion_health():
+    """
+    GET /wow/wnba/ingestion/health
+    Returns cron status, last run metadata, and DB reachability.
+    """
+    db_ok    = False
+    last_run: dict = {}
+    db_url   = os.environ.get("DATABASE_URL", "")
+    if db_url:
+        try:
+            import psycopg2 as _pg
+            import psycopg2.extras as _pgx
+            conn = _pg.connect(db_url)
+            try:
+                _ensure_wnba_schema(conn)
+                with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT run_id, status, started_at, finished_at,
+                               games_found, player_rows_written, errors
+                        FROM source_audit_log
+                        WHERE sport = 'wnba'
+                        ORDER BY started_at DESC LIMIT 1
+                    """)
+                    row = cur.fetchone()
+                    if row:
+                        last_run = {
+                            "run_id":             row["run_id"],
+                            "status":             row["status"],
+                            "started_at":         str(row["started_at"]) if row["started_at"] else None,
+                            "finished_at":        str(row["finished_at"]) if row["finished_at"] else None,
+                            "games_found":        row["games_found"],
+                            "player_rows_written": row["player_rows_written"],
+                            "errors":             row["errors"] or [],
+                        }
+                db_ok = True
+            finally:
+                conn.close()
+        except Exception as exc:
+            last_run = {"db_error": str(exc)[:200]}
+
+    last_src_ts = last_run.get("started_at")
+    return jsonify({
+        "ok":                    True,
+        "version":               _WNBA_INGEST_VERSION,
+        "build_ts":              _WNBA_INGEST_BUILD_TS,
+        "cron_enabled":          _WNBA_CRON_ENABLED,
+        "cron_started":          _WNBA_CRON_STARTED,
+        "cron_stats":            _WNBA_CRON_STATS,
+        "db_reachable":          db_ok,
+        "last_run":              last_run,
+        "stale_threshold_hours": _WNBA_STALE_HOURS,
+        "source_is_stale":       _wnba_is_stale(last_src_ts),
+        "checked_at":            datetime.now(timezone.utc).isoformat(),
+        "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
+@app.route("/wow/wnba/ingestion/refresh", methods=["POST"])
+def wow_wnba_ingestion_refresh():
+    """
+    POST /wow/wnba/ingestion/refresh
+    Manually trigger a full WNBA ingestion cycle. No request body required.
+    """
+    result = _wnba_run_ingestion("manual")
+    return jsonify(result), (200 if result.get("ok") else 500)
+
+
+@app.route("/wow/wnba/player-log", methods=["GET"])
+def wow_wnba_player_log():
+    """
+    GET /wow/wnba/player-log
+    Query params (all optional, but player_id or player_name required):
+      player_id   — exact ESPN player ID
+      player_name — partial case-insensitive name match
+      date_from   — YYYY-MM-DD (inclusive)
+      date_to     — YYYY-MM-DD (inclusive)
+    Returns rows ready for L5/L10 construction with staleness + missing-field flags.
+    """
+    player_id   = (request.args.get("player_id") or "").strip()
+    player_name = (request.args.get("player_name") or "").strip()
+    date_from   = (request.args.get("date_from") or "").strip()
+    date_to     = (request.args.get("date_to") or "").strip()
+
+    if not player_id and not player_name:
+        return jsonify({"ok": False,
+                        "error": "player_id or player_name required"}), 400
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+
+    try:
+        import psycopg2 as _pg
+        import psycopg2.extras as _pgx
+        conn = _pg.connect(db_url)
+        _ensure_wnba_schema(conn)
+
+        clauses: list[str] = []
+        params:  list      = []
+        if player_id:
+            clauses.append("player_id = %s")
+            params.append(player_id)
+        if player_name:
+            clauses.append("player_name ILIKE %s")
+            params.append(f"%{player_name}%")
+        if date_from:
+            clauses.append("game_date >= %s")
+            params.append(date_from)
+        if date_to:
+            clauses.append("game_date <= %s")
+            params.append(date_to)
+
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT player_id, player_name, team, opponent, game_date,
+                       game_id, starter, minutes, points, rebounds, assists,
+                       steals, blocks, turnovers, field_goal_attempts,
+                       three_point_attempts, free_throw_attempts,
+                       personal_fouls, plus_minus,
+                       source, source_timestamp, ingestion_ts, missing_fields
+                FROM wnba_player_game_logs
+                {where}
+                ORDER BY game_date DESC
+                LIMIT 100
+            """, params)
+            rows = [dict(r) for r in cur.fetchall()]
+
+        conn.close()
+
+        now_utc = datetime.now(timezone.utc)
+        for row in rows:
+            src_ts = row.get("source_timestamp")
+            row["source_is_stale"]   = _wnba_is_stale(src_ts)
+            row["has_missing_fields"] = bool(row.get("missing_fields"))
+            for k in ("game_date", "source_timestamp", "ingestion_ts"):
+                if row.get(k) is not None:
+                    row[k] = str(row[k])
+
+        return jsonify({
+            "ok":    True,
+            "count": len(rows),
+            "rows":  rows,
+            "query": {
+                "player_id":   player_id or None,
+                "player_name": player_name or None,
+                "date_from":   date_from or None,
+                "date_to":     date_to or None,
+            },
+            "stale_threshold_hours": _WNBA_STALE_HOURS,
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:300]}), 500
+
+
+@app.route("/wow/wnba/schedule", methods=["GET"])
+def wow_wnba_schedule():
+    """
+    GET /wow/wnba/schedule?date=YYYY-MM-DD
+    Returns schedule rows from DB. Falls back to live ESPN fetch if DB is empty
+    for the requested date (e.g. first run before ingestion has run).
+    """
+    date_param = (request.args.get("date") or "").strip()
+    if not date_param:
+        date_param = (datetime.now(timezone.utc) - timedelta(hours=5)).strftime("%Y-%m-%d")
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+
+    try:
+        import psycopg2 as _pg
+        import psycopg2.extras as _pgx
+        conn = _pg.connect(db_url)
+        _ensure_wnba_schema(conn)
+
+        with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT game_id, game_date, home_team, away_team,
+                       home_score, away_score, status, status_detail,
+                       season_year, source, source_timestamp, ingestion_ts
+                FROM wnba_schedule
+                WHERE game_date = %s
+                ORDER BY game_id
+            """, (date_param,))
+            rows = [dict(r) for r in cur.fetchall()]
+
+        conn.close()
+
+        live_fetched = False
+        if not rows:
+            ds  = date_param.replace("-", "")
+            raw = _wnba_fetch_schedule_espn(ds)
+            rows = [r for r in raw if "_error" not in r]
+            live_fetched = True
+
+        for row in rows:
+            for k in ("game_date", "source_timestamp", "ingestion_ts"):
+                if row.get(k) is not None:
+                    row[k] = str(row[k])
+
+        return jsonify({
+            "ok":           True,
+            "date":         date_param,
+            "count":        len(rows),
+            "games":        rows,
+            "live_fetched": live_fetched,
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:300]}), 500
+
+
+@app.route("/wow/wnba/source-audit", methods=["GET"])
+def wow_wnba_source_audit():
+    """
+    GET /wow/wnba/source-audit
+    Query params (all optional):
+      player_id — filter player_game_logs by player_id
+      game_id   — filter player_game_logs by game_id
+      limit     — max audit log entries (default 20, max 100)
+    Returns source_audit_log entries + optional per-player or per-game row detail.
+    """
+    player_id = (request.args.get("player_id") or "").strip()
+    game_id   = (request.args.get("game_id") or "").strip()
+    try:
+        limit = min(int(request.args.get("limit", 20)), 100)
+    except (ValueError, TypeError):
+        limit = 20
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return jsonify({"ok": False, "error": "DATABASE_URL not configured"}), 500
+
+    try:
+        import psycopg2 as _pg
+        import psycopg2.extras as _pgx
+        conn = _pg.connect(db_url)
+        _ensure_wnba_schema(conn)
+
+        with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT run_id, source, sport, trigger, started_at, finished_at,
+                       status, games_found, player_rows_written,
+                       schedule_rows_written, box_score_rows_written,
+                       injury_rows_written, transaction_rows_written,
+                       errors, metadata
+                FROM source_audit_log
+                WHERE sport = 'wnba'
+                ORDER BY started_at DESC
+                LIMIT %s
+            """, (limit,))
+            audit_rows = [dict(r) for r in cur.fetchall()]
+
+        player_rows: list[dict] = []
+        if player_id or game_id:
+            clauses: list[str] = []
+            params:  list      = []
+            if player_id:
+                clauses.append("player_id = %s")
+                params.append(player_id)
+            if game_id:
+                clauses.append("game_id = %s")
+                params.append(game_id)
+            where = "WHERE " + " AND ".join(clauses)
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT player_id, player_name, game_id, game_date,
+                           source_timestamp, ingestion_ts, missing_fields
+                    FROM wnba_player_game_logs
+                    {where}
+                    ORDER BY game_date DESC
+                    LIMIT 50
+                """, params)
+                player_rows = [dict(r) for r in cur.fetchall()]
+
+        conn.close()
+
+        for row in audit_rows:
+            for k in ("started_at", "finished_at"):
+                if row.get(k) is not None:
+                    row[k] = str(row[k])
+        for row in player_rows:
+            for k in ("game_date", "source_timestamp", "ingestion_ts"):
+                if row.get(k) is not None:
+                    row[k] = str(row[k])
+
+        return jsonify({
+            "ok":          True,
+            "audit_log":   audit_rows,
+            "audit_count": len(audit_rows),
+            "player_rows": player_rows if (player_id or game_id) else None,
+            "query": {
+                "player_id": player_id or None,
+                "game_id":   game_id or None,
+                "limit":     limit,
+            },
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:300]}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)

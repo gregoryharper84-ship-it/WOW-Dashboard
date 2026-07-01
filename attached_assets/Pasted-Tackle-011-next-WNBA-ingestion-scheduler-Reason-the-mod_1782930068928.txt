@@ -1,0 +1,94 @@
+Tackle **011 next: WNBA ingestion scheduler**.
+
+Reason: the model’s biggest leak is still stale/manual data. Building confidence axes or contract checks before ingestion helps labeling, but it still labels incomplete manually reconstructed data. **011 creates the data foundation.** Then 010 and 009 become much more useful.
+
+One correction: your listed **013** says “Role-state ledger,” but the description is actually a **pick lifecycle state machine**: `CANDIDATE → APPROVED → LOCKED → SETTLED`. That is not the same thing as the earlier role-state ledger concept: starter/bench, post-trade, with/without teammate, full-role/reduced-role splits. Rename or split it later.
+
+Send this:
+
+NEXT BUILD DIRECTIVE — WOW-PATCH-011
+
+Proceed with WOW-PATCH-011: WNBA ingestion scheduler.
+
+Priority rationale:
+The model’s current ceiling is data freshness, not more gate math. Before adding more scoring labels or triage weights, the backend needs reliable structured WNBA data so the model stops reconstructing ledgers from recaps, AP wires, stale ESPN snapshots, and manual research.
+
+PATCH-011 scope:
+Build automated WNBA data ingestion into backend tables.
+
+Minimum MVP tables:
+
+* wnba_schedule
+* wnba_player_game_logs
+* wnba_box_scores
+* wnba_injury_status
+* wnba_transactions
+* source_audit_log
+
+Minimum player game log fields:
+
+* player_id
+* player_name
+* team
+* opponent
+* game_date
+* game_id
+* starter
+* minutes
+* points
+* rebounds
+* assists
+* steals
+* blocks
+* turnovers
+* field_goal_attempts
+* three_point_attempts
+* free_throw_attempts
+* personal_fouls
+* plus_minus if available
+* source
+* source_timestamp
+* ingestion_timestamp
+
+Required behavior:
+
+* scheduled daily pull
+* manual refresh endpoint
+* source freshness flag
+* stale-data flag when source timestamp exceeds threshold
+* row-preserving audit log
+* no overwrite without source_audit_log entry
+* expose freshness fields for later PATCH-009 confidence envelope
+* expose missing-field status for later PATCH-010 data contract registry
+
+Endpoints:
+
+* GET /wow/wnba/ingestion/health
+* POST /wow/wnba/ingestion/refresh
+* GET /wow/wnba/player-log?player_id=&player_name=&date_from=&date_to=
+* GET /wow/wnba/schedule?date=
+* GET /wow/wnba/source-audit?player_id=&game_id=
+
+Acceptance tests:
+
+1. Can pull today’s WNBA schedule.
+2. Can pull player game logs for at least three known players.
+3. Can return L5/L10-ready rows with minutes and component stats.
+4. Can flag stale or missing source data.
+5. Can preserve audit entries for every ingestion run.
+6. Does not create betting approval labels.
+7. Does not change Gate 3 classification logic.
+8. Does not bypass DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS.
+
+Do not build PATCH-012 triage score yet.
+Do not build PATCH-013 yet until naming is clarified.
+
+Recommended next order after 011:
+
+1. PATCH-010 — Market data contract registry
+2. PATCH-009 — Confidence envelope
+3. PATCH-013A — Role-state ledgers if intended
+4. PATCH-013B — Pick lifecycle state machine if intended
+5. PATCH-012 — Candidate triage score, after data/contracts/confidence exist
+
+Bottom line: **build ingestion first.** Without it, every other patch is scoring around the same stale-data problem.
