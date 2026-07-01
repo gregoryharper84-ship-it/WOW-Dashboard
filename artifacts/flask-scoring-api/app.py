@@ -16321,13 +16321,36 @@ def wow_kalshi_weather_stations():
     No auth required. Use this to verify the correct stations are deployed
     (KMDW not KORD, KMIA not KPBI, KLAX not KBUR).
     """
+    # Emit normalized field names alongside legacy aliases so the ChatGPT
+    # Action schema and any older callers both parse cleanly.
+    normalized = {}
+    for city_code, s in _KALSHI_WEATHER_STATIONS.items():
+        normalized[city_code] = {
+            # ── normalized names (Action schema v1.4+) ──────────────────────
+            "city":                    city_code,
+            "series_ticker":           s["series"],
+            "settlement_station_name": s["name"],
+            "nws_station_code":        s["station"],
+            "cli_issuedby":            s["nws_issuedby"],
+            "nws_site":                s["nws_site"],
+            "timezone":                s["tz"],
+            "lat":                     s["lat"],
+            "lon":                     s["lon"],
+            "verified":                True,
+            # ── legacy aliases (keep for backward-compat) ───────────────────
+            "series":                  s["series"],
+            "name":                    s["name"],
+            "station":                 s["station"],
+            "nws_issuedby":            s["nws_issuedby"],
+            "tz":                      s["tz"],
+        }
     return jsonify({
-        "ok":            True,
-        "station_count": len(_KALSHI_WEATHER_STATIONS),
-        "count":         len(_KALSHI_WEATHER_STATIONS),   # legacy alias
-        "stations":      _KALSHI_WEATHER_STATIONS,
+        "ok":             True,
+        "station_count":  len(normalized),
+        "count":          len(normalized),          # legacy alias
         "deploy_version": "2026-07-01-nhigh-connectors-v1",
         "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        "stations":       normalized,
     }), 200
 
 

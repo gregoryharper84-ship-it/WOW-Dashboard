@@ -1,0 +1,278 @@
+This curl result proves the **public backend route is alive** and the station table itself is good.
+
+```text id="dc5v8o"
+HTTP 200 ✅
+ok=true ✅
+count=5 ✅
+stations returned ✅
+Express public route working ✅
+KMDW / KMIA / KLAX regression bans intact ✅
+```
+
+So the earlier Action result was **not a real backend station failure**. It was an **Action/schema/client-layer failure** or stale Action publish issue.
+
+## What the curl also proves
+
+The deployed endpoint is still returning the **old station envelope**, not the cleaned-up PATCH-001 envelope you expected.
+
+Current live response has:
+
+```json id="g5q1qk"
+{
+  "count": 5,
+  "ok": true,
+  "stations": {
+    "AUS": {
+      "name": "Austin Bergstrom, TX",
+      "series": "KXHIGHAUS",
+      "station": "KAUS",
+      "nws_issuedby": "AUS",
+      "nws_site": "EWX",
+      "tz": "America/Chicago"
+    }
+  }
+}
+```
+
+But the expected cleaned-up response should include:
+
+```json id="6lbkjo"
+{
+  "ok": true,
+  "station_count": 5,
+  "count": 5,
+  "deploy_version": "2026-07-01-nhigh-connectors-v1",
+  "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+  "stations": { ... }
+}
+```
+
+Your uploaded v1.4.0 schema had the weather station route, but the station response schema expected `station_count`, `deploy_version`, `execution_rule`, and normalized field names like `series_ticker`, `settlement_station_name`, `nws_station_code`, and `cli_issuedby`.  
+
+## Diagnosis
+
+```text id="2b8x3o"
+Backend route: PASS
+Station mapping: PASS
+Public Express route: PASS
+Action call: FAIL
+Response envelope cleanup: NOT DEPLOYED or not wired to this public route
+Schema/backend field names: MISMATCH
+```
+
+## Send Replit this exact cleanup
+
+```text id="cfjqzv"
+PATCH-001 station endpoint envelope/field normalization:
+
+Public curl confirms:
+
+GET /api/wow/kalshi/weather/stations
+HTTP 200
+ok=true
+count=5
+stations object returned
+
+But public route is still returning the old envelope/field names:
+
+count
+stations.{CITY}.name
+stations.{CITY}.series
+stations.{CITY}.station
+stations.{CITY}.nws_issuedby
+stations.{CITY}.nws_site
+stations.{CITY}.tz
+
+Please update this public Express route response to the normalized PATCH-001 shape:
+
+{
+  "ok": true,
+  "station_count": 5,
+  "count": 5,
+  "deploy_version": "2026-07-01-nhigh-connectors-v1",
+  "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+  "stations": {
+    "AUS": {
+      "city": "AUS",
+      "series_ticker": "KXHIGHAUS",
+      "settlement_station_name": "Austin Bergstrom, TX",
+      "nws_station_code": "KAUS",
+      "cli_issuedby": "AUS",
+      "nws_site": "EWX",
+      "timezone": "America/Chicago",
+      "lat": 30.1945,
+      "lon": -97.6699,
+      "verified": true
+    },
+    "CHI": {
+      "city": "CHI",
+      "series_ticker": "KXHIGHCHI",
+      "settlement_station_name": "Chicago Midway, IL",
+      "nws_station_code": "KMDW",
+      "cli_issuedby": "MDW",
+      "nws_site": "LOT",
+      "timezone": "America/Chicago",
+      "lat": 41.7868,
+      "lon": -87.7522,
+      "verified": true
+    },
+    "LA": {
+      "city": "LA",
+      "series_ticker": "KXHIGHLAX",
+      "settlement_station_name": "Los Angeles Airport, CA",
+      "nws_station_code": "KLAX",
+      "cli_issuedby": "LAX",
+      "nws_site": "LOX",
+      "timezone": "America/Los_Angeles",
+      "lat": 33.9425,
+      "lon": -118.4081,
+      "verified": true
+    },
+    "MIA": {
+      "city": "MIA",
+      "series_ticker": "KXHIGHMIA",
+      "settlement_station_name": "Miami International Airport",
+      "nws_station_code": "KMIA",
+      "cli_issuedby": "MIA",
+      "nws_site": "MFL",
+      "timezone": "America/New_York",
+      "lat": 25.7959,
+      "lon": -80.287,
+      "verified": true
+    },
+    "NYC": {
+      "city": "NYC",
+      "series_ticker": "KXHIGHNY",
+      "settlement_station_name": "Central Park, New York",
+      "nws_station_code": "KNYC",
+      "cli_issuedby": "NYC",
+      "nws_site": "OKX",
+      "timezone": "America/New_York",
+      "lat": 40.7789,
+      "lon": -73.9692,
+      "verified": true
+    }
+  }
+}
+
+Keep count as a legacy alias.
+Do not remove existing data.
+No model logic change.
+No trading logic change.
+No evaluate logic change.
+No Kalshi scan change.
+
+After deploy, verify:
+
+curl -i https://create-app-gregoryharper84.replit.app/api/wow/kalshi/weather/stations
+
+Expected:
+HTTP 200
+ok=true
+station_count=5
+count=5
+deploy_version present
+execution_rule=DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+stations.CHI.nws_station_code=KMDW
+stations.MIA.nws_station_code=KMIA
+stations.LA.nws_station_code=KLAX
+```
+
+## Immediate schema safety patch
+
+Until Replit normalizes the backend, keep the schema tolerant by adding the current live aliases to `KalshiWeatherStation`:
+
+```yaml id="mdkjoo"
+    KalshiWeatherStation:
+      type: object
+      additionalProperties: true
+      properties:
+        city:
+          type:
+            - string
+            - "null"
+
+        series_ticker:
+          type:
+            - string
+            - "null"
+        series:
+          type:
+            - string
+            - "null"
+
+        settlement_station_name:
+          type:
+            - string
+            - "null"
+        name:
+          type:
+            - string
+            - "null"
+
+        nws_station_code:
+          type:
+            - string
+            - "null"
+        station:
+          type:
+            - string
+            - "null"
+
+        cli_issuedby:
+          type:
+            - string
+            - "null"
+        nws_issuedby:
+          type:
+            - string
+            - "null"
+
+        nws_site:
+          type:
+            - string
+            - "null"
+
+        timezone:
+          type:
+            - string
+            - "null"
+        tz:
+          type:
+            - string
+            - "null"
+
+        lat:
+          type:
+            - number
+            - "null"
+        lon:
+          type:
+            - number
+            - "null"
+
+        settlement_source:
+          type:
+            - string
+            - "null"
+        notes:
+          type:
+            - string
+            - "null"
+        verified:
+          type:
+            - boolean
+            - "null"
+```
+
+## Current status
+
+```text id="k3nh2j"
+Station endpoint availability: PASS
+Station data correctness: PASS
+Regression bans: PASS
+Response envelope: needs cleanup
+Action layer: retest after schema publish / backend envelope cleanup
+```
+
+The station lane is not broken. The issue is just the final response shape and Action parsing/publish layer.
