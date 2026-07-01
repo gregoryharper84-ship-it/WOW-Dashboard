@@ -1,0 +1,254 @@
+You’re right. I missed it.
+
+The mistake was that I accepted Replit’s **summary table** as proof of correctness instead of demanding the actual **trace against the real Copper ledger**. That is exactly the kind of thing this model is supposed to catch.
+
+I should have said:
+
+> “PATCH-008 is directionally accepted, but not closed until Replit shows the exact Copper input values, median, cap, Winsorized values, old label, new label, and deployed endpoint response.”
+
+Claude is correct to flag it.
+
+## What I missed
+
+### 1. I accepted “5 tests pass” without checking whether the tests used the real regression case
+
+The original Copper issue was not theoretical. The July 1 ledger had Copper’s 41-point OT career-high game driving the points/PRA/P+A profiles, and the old logic deleted that game entirely instead of preserving and adjusting it. 
+
+So the regression test needed to use the **exact real Copper values**, not a synthetic Copper-like case.
+
+Claude’s math is right on the updated values he gave:
+
+```text
+Copper actual values:
+27, 17, 26, 41, 13, 9, 16, 18, 16, 19
+
+Sorted:
+9, 13, 16, 16, 17, 18, 19, 26, 27, 41
+
+Median:
+(17 + 18) / 2 = 17.5
+
+2.0 × median cap:
+35.0
+
+Winsorized:
+27, 17, 26, 35, 13, 9, 16, 18, 16, 19
+
+Winsorized sum:
+196
+
+Winsorized avg:
+19.6
+```
+
+So if Replit reported **17.3**, either:
+
+1. the test did **not** use the real Copper values,
+2. the input order/window was different,
+3. the median/cap calculation is wrong,
+4. the endpoint is Winsorizing more than one value,
+5. or the test is using old stale values while calling it “Copper.”
+
+That cannot be closed without a trace.
+
+### 2. I did not hold firm enough on the proxy-definition requirement
+
+Claude is right again. If the response does not expose:
+
+```text
+winsor_method
+winsor_cap
+proxy_source
+winsorized_values
+winsorized_avg
+```
+
+then we still have drift. The whole point of moving Gate 3 into the backend was to prevent agents from interpreting the same ledger differently.
+
+### 3. I confused safety gating with calibration shadow mode
+
+`can_approve_bets: false` is good, but it only proves the endpoint cannot approve bets.
+
+It does **not** prove the new logic is being dual-logged against old logic.
+
+Those are different guarantees.
+
+The model needs:
+
+```text
+old_gate3_label
+new_gate3_label
+old_blocker_code
+new_blocker_code
+threshold_version
+settlement_result_later
+```
+
+Without that, we cannot learn whether the new 55% / 8% / 15% bands are better calibrated.
+
+### 4. I accepted local tests as “shipped”
+
+Claude is right about the deployment boundary. Local/unit tests do not prove the live route responds.
+
+This needs a deployed smoke test against `/wow/l10/gate3`.
+
+### 5. I let Replit start shaping 009–013 too much
+
+That is a role-boundary miss. Replit can recommend, but ChatGPT should approve strategy patches before build. Claude validates and flags conflicts. Replit implements after approval.
+
+## Corrected status
+
+**PATCH-008 is not closed.**
+
+New status:
+
+```text
+PATCH-008: DIRECTIONALLY ACCEPTED / IMPLEMENTATION UNDER AUDIT
+Not closed until Copper trace, deterministic Winsorization fields, shadow-mode logging, and deployed smoke test pass.
+```
+
+## Send this back to Replit
+
+PATCH-008 QA HOLD — DO NOT MARK CLOSED YET
+
+Status:
+PATCH-008 remains directionally accepted, but not closed.
+
+Reason:
+Claude identified four verification gaps that must be resolved before PATCH-008 can be considered shipped.
+
+Required Verification 1 — Copper Exact Ledger Trace
+
+Re-run /wow/l10/gate3 using the exact Copper PTS ledger values:
+
+values:
+27, 17, 26, 41, 13, 9, 16, 18, 16, 19
+
+line:
+18.5
+
+side:
+MORE
+
+Expected trace:
+
+* sorted_values: 9, 13, 16, 16, 17, 18, 19, 26, 27, 41
+* median: 17.5
+* median_cap_2x: 35.0
+* outlier_value: 41
+* winsorized_values: 27, 17, 26, 35, 13, 9, 16, 18, 16, 19
+* winsorized_avg: 19.6
+
+If endpoint returns winsorized_avg around 17.3, explain exactly why:
+
+* different input values?
+* different median method?
+* additional capped values?
+* synthetic test instead of real Copper ledger?
+* stale ledger window?
+
+Do not call the Copper regression passed until this exact trace is shown.
+
+Required Verification 2 — Deterministic Winsorization Fields
+
+Gate 3 response must expose:
+
+* winsor_method
+* winsor_cap
+* proxy_source
+* raw_values
+* sorted_values
+* winsorized_values
+* raw_avg
+* median
+* winsorized_avg
+* outlier_flags
+* outlier_flip
+
+Allowed winsor_method values:
+
+* NONE_N_LT_5
+* MEDIAN_CAP_LOW_SAMPLE
+* L10_P90_MEDIAN_CAP_V1
+* NONE_MARKET_TYPE
+
+Remove any vague “proxy if available” logic unless proxy_source is explicitly defined and returned.
+
+Required Verification 3 — Shadow-Mode Dual Logging
+
+Safety fields are not enough.
+
+Confirm the endpoint logs both old and new classifications:
+
+* old_gate3_label
+* new_gate3_label
+* old_blocker_code
+* new_blocker_code
+* old_approval_ceiling
+* new_approval_ceiling
+* threshold_version
+* shadow_mode: true
+* settlement_result: pending until settled
+
+PATCH-008 thresholds may not be treated as calibrated until old-vs-new outcomes are reviewed through the Reliability Freeze window.
+
+Required Verification 4 — Deployed Smoke Test
+
+Run smoke test against the deployed endpoint, not only local/unit tests.
+
+Required:
+
+* deployed URL route responds
+* POST /wow/l10/gate3 accepts Canada test
+* POST /wow/l10/gate3 accepts exact Copper trace test
+* response includes deterministic Winsorization fields
+* response includes safety fields
+* response includes shadow-mode fields
+* no NO_LABEL approval ceiling appears on rejected rows
+
+Required cleanup:
+Replace approval_ceiling: NO_LABEL with approval_ceiling: NO_APPROVAL.
+
+Role Boundary
+
+Do not begin PATCH-009 through PATCH-013 implementation yet.
+
+Replit may propose technical design, but strategy patch approval must route through ChatGPT first, with Claude validating conflicts before implementation.
+
+Patch sequencing and triage-score weights are still under review.
+
+Correct status:
+PATCH-008 = DIRECTIONALLY ACCEPTED / IMPLEMENTATION UNDER AUDIT
+Not CLOSED until all four verification items pass.
+
+## My corrected ruling on 009–013
+
+Claude is also right on sequencing.
+
+I previously accepted Replit’s order too quickly. The better order is:
+
+```text
+011 — WNBA ingestion MVP
+010 — Market data contract registry
+009 — Confidence envelope
+013 — Role-state ledgers
+012 — Candidate triage score
+```
+
+Reason: data must exist before contract checks and confidence labels become truly useful.
+
+And Claude is right that the triage score needs a guardrail. It must be a **separate discovery endpoint**, not a field that can leak into approval.
+
+## Bottom line
+
+I missed it because I audited the **concept** and the **reported test outcome**, not the **actual regression trace**.
+
+Claude caught the correct failure mode.
+
+PATCH-008 should be held at:
+
+```text
+DIRECTIONALLY ACCEPTED / NOT CLOSED
+```
+
+until Replit proves the real Copper case, proxy fields, shadow logging, and deployed route.
