@@ -1,0 +1,79 @@
+Good. That is the correct correction.
+
+The key improvement is this:
+
+```text
+0 returned rows ≠ true empty board
+0 returned rows + visible supported rows = KALSHI_SCAN_FALSE_EMPTY_AFTER_FILTER
+```
+
+That closes the exact failure mode from the prior Kalshi run: rows were being lost before they could receive a terminal label.
+
+## Updated operating interpretation
+
+```text
+Weather rows from screenshots/forecast
+→ KALSHI_WATCH max
+→ blocker: no fresh live Kalshi orderbook / price gate not passed
+
+Kalshi scan returned 0 rows despite visible supported rows
+→ KALSHI_SCAN_FALSE_EMPTY_AFTER_FILTER
+→ blocker: routing/filter row-preservation failure
+
+Sports rows visible in screenshots
+→ KALSHI_SPORTS_INVENTORY_EMPTY / menu-only
+→ blocker: health/inventory not ready for atomic sports scan
+
+Climate June/annual markets
+→ DATA_OPEN
+→ blocker: no validated macro/climate probability lane yet
+
+Executable plays
+→ 0
+→ NO PLAY
+```
+
+## Important: this patch does not make anything playable
+
+That part is right and should stay explicit:
+
+```text
+No fresh live orderbook = no playable label
+Synthetic/operator price = WATCH max
+Inventory not ready = no sports scan
+Menu screenshot = acquisition only
+can_execute = false always
+```
+
+## Next regression test to run
+
+Use this as the next scanner validation prompt:
+
+```text
+Run Kalshi WOW scan in audit-only mode.
+
+Return:
+- raw rows touched
+- rows preserved after route classification
+- weather rows
+- sports menu rows
+- climate/macro rows
+- false-empty detector status
+- terminal_label for every touched row
+- blocker for every touched row
+- can_trade
+- can_execute
+- execution_rule
+
+If visible/supplied rows exist but model-testable rows return 0, classify as KALSHI_SCAN_FALSE_EMPTY_AFTER_FILTER, not true empty inventory.
+Do not approve anything without fresh live Kalshi orderbook, market-open status, price timestamp, freshness check, fee/spread/friction audit, and settlement audit.
+```
+
+Current standing decision remains clean:
+
+```text
+NO PLAY
+0 FINAL_APPROVED
+0 MONEY_QUALIFIED
+0 executable Kalshi plays
+```

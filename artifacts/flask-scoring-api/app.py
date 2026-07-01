@@ -17537,10 +17537,15 @@ def wow_kalshi_scan():
             _diag.setdefault("combo_by_prefix_count", _n_mve_dropped)
             _diag.setdefault("combo_by_subtitle_count", 0)
             _diag.setdefault("cross_category_count", 0)
+            # False-empty: Kalshi returned rows but all were lost by filters
+            _rf  = _diag.get("raw_fetched", 0)
+            _ret = _diag.get("returned", 0)
+            _fe  = _rf > 0 and _ret == 0
+            _tlbl = "KALSHI_SCAN_FALSE_EMPTY_AFTER_FILTER" if _fe else "INPUT_EMPTY"
             return {
                 "kalshi_scan_version":              _KALSHI_SCAN_VERSION,
                 "build_timestamp":                  _KALSHI_BUILD_TS,
-                "terminal_label":                   "INPUT_EMPTY",
+                "terminal_label":                   _tlbl,
                 "markets_scanned":                  0,
                 "single_markets":                   0,
                 "combo_markets":                    0,
@@ -17562,15 +17567,35 @@ def wow_kalshi_scan():
                     "ticker":           None,
                     "event_title":      "No markets matched filters",
                     "contract_wording": reason,
-                    "final_label":      "INPUT_EMPTY",
-                    "terminal_label":   "INPUT_EMPTY",
+                    "final_label":      _tlbl,
+                    "terminal_label":   _tlbl,
                     "market_type":      "n/a",
                     "reason":           reason,
+                    "blocker":          ("routing_filter_row_loss" if _fe
+                                        else "no_markets_survived_filters"),
                     "can_approve_bets": False,
+                    "can_execute":      False,
+                    "execution_rule":   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
                 }],
-                "filter_diagnostics":               _diag,
-                "execution_rule":                   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
-                "request_echo":                     _echo,
+                "filter_diagnostics":  _diag,
+                "scan_audit_summary":  {
+                    "raw_rows_touched":                 _rf,
+                    "rows_preserved_after_routing":     _ret,
+                    "weather_rows":                     0,
+                    "sports_rows":                      0,
+                    "climate_macro_rows":               0,
+                    "false_empty_detected":             _fe,
+                    "false_empty_status":               (_tlbl if _fe else "NOT_TRIGGERED"),
+                    "final_approved":                   0,
+                    "watch":                            0,
+                    "scout":                            0,
+                    "data_unobtainable":                0,
+                    "executable_plays":                 0,
+                    "can_execute_any":                  False,
+                    "execution_rule":                   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+                },
+                "execution_rule":      "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+                "request_echo":        _echo,
             }
 
         if not markets:
@@ -18270,10 +18295,87 @@ def wow_kalshi_scan():
             if not c.get("is_combo_market", False)
         )
 
+        # ── False-empty detector ──────────────────────────────────────────────
+        # Fires when Kalshi returned rows (raw_fetched > 0) but zero rows
+        # survived into the eval loop (_diag["returned"] == 0).
+        # Distinguishes a real empty inventory from a filter/routing failure.
+        _raw_fetched    = _diag.get("raw_fetched", 0)
+        _rows_returned  = _diag.get("returned", 0)
+        _false_empty    = _raw_fetched > 0 and _rows_returned == 0
+        _terminal_label = "KALSHI_SCAN_FALSE_EMPTY_AFTER_FILTER" if _false_empty else "SCAN_COMPLETE"
+
+        # ── Route classification summary ──────────────────────────────────────
+        # Classifies every fetched row into a lane bucket so the audit can
+        # distinguish weather vs sports vs climate/macro without scanning titles.
+        _WEATHER_PREFIXES = ("KXHIGH",)
+        _CLIMATE_PREFIXES = ("KXCLIM", "KXANNUAL", "KXCO2", "KXCMA", "KXCMD",
+                             "KXCLIMAX", "KXCLIMIN")
+        _route_weather, _route_sports, _route_climate, _route_other = 0, 0, 0, 0
+        for _m in _all_classified:
+            _tk = (_m.get("ticker") or _m.get("series_ticker") or "").upper()
+            if any(_tk.startswith(p) for p in _WEATHER_PREFIXES):
+                _route_weather += 1
+            elif any(_tk.startswith(p) for p in _CLIMATE_PREFIXES):
+                _route_climate += 1
+            elif _m.get("_market_type") in ("single", "combo", "cross_category"):
+                _route_sports += 1
+            else:
+                _route_other += 1
+
+        # ── Per-row blocker annotation ────────────────────────────────────────
+        # Adds "blocker" field to every rejected row if not already present.
+        def _derive_blocker(row: dict) -> str:
+            lbl = row.get("final_label") or row.get("terminal_label") or ""
+            _BLOCKER_MAP = {
+                "KALSHI_DATA_UNOBTAINABLE":   "no_fresh_live_orderbook",
+                "KALSHI_REJECT_UNCALIBRATED": "no_model_probability_supplied",
+                "KALSHI_REJECT_BAD_RULES":    "settlement_grade_rejected",
+                "KALSHI_REJECT_NO_EDGE":      "negative_adjusted_edge",
+                "KALSHI_REJECT_FEE_DRAG":     "fee_drag_exceeds_edge",
+                "KALSHI_REJECT_THIN_BOOK":    "thin_orderbook_liquidity",
+                "KALSHI_SCOUT":               "combo_no_calibrated_probability",
+                "KALSHI_WATCH":               "watch_only_no_approval",
+                "KALSHI_PLAYABLE_LIMIT_ONLY": "pending_further_review",
+                "INPUT_EMPTY":                "no_markets_survived_filters",
+            }
+            return _BLOCKER_MAP.get(lbl, row.get("reason", lbl)[:120] if row.get("reason") else lbl)
+
+        for _r in rejected:
+            if "blocker" not in _r:
+                _r["blocker"] = _derive_blocker(_r)
+        for _c in candidates:
+            if "blocker" not in _c:
+                _c["blocker"] = "none"
+            if "can_execute" not in _c:
+                _c["can_execute"] = False
+            if "execution_rule" not in _c:
+                _c["execution_rule"] = "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+
+        # ── Scan audit summary ────────────────────────────────────────────────
+        _audit = {
+            "raw_rows_touched":                _raw_fetched,
+            "rows_preserved_after_routing":    _rows_returned,
+            "weather_rows":                    _route_weather,
+            "sports_rows":                     _route_sports,
+            "climate_macro_rows":              _route_climate,
+            "other_rows":                      _route_other,
+            "false_empty_detected":            _false_empty,
+            "false_empty_status":              (_terminal_label
+                                                if _false_empty
+                                                else "NOT_TRIGGERED"),
+            "final_approved":                  counts.get("final_approved", 0),
+            "watch":                           counts.get("watch", 0),
+            "scout":                           counts.get("scout", 0),
+            "data_unobtainable":               counts.get("data_unobtainable", 0),
+            "executable_plays":                len(candidates),
+            "can_execute_any":                 False,
+            "execution_rule":                  "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        }
+
         resp = {
             "kalshi_scan_version":              _KALSHI_SCAN_VERSION,
             "build_timestamp":                  _KALSHI_BUILD_TS,
-            "terminal_label":                   "SCAN_COMPLETE",
+            "terminal_label":                   _terminal_label,
             "markets_scanned":                  n_single + n_combo,
             "single_markets":                   n_single,
             "combo_markets":                    n_combo,
@@ -18284,6 +18386,7 @@ def wow_kalshi_scan():
             "candidates":                       candidates,
             "rejected":                         rejected,
             "filter_diagnostics":               _diag,
+            "scan_audit_summary":               _audit,
             "execution_rule":                   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
             "request_echo":                     _echo,
         }
