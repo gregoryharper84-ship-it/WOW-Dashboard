@@ -16509,6 +16509,373 @@ def wow_kalshi_weather_calibration():
     }), 200
 
 
+# ── WEATHER_SCOUT logging helpers ─────────────────────────────────────────────
+
+def _ensure_weather_scout_schema(conn):
+    """Create weather_scout_log table if it does not exist."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS weather_scout_log (
+                id              SERIAL PRIMARY KEY,
+                logged_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                city            TEXT NOT NULL,
+                scout_date      DATE NOT NULL,
+                forecast_high   INT,
+                sigma_f         REAL,
+                scoring_mode    TEXT,
+                report_status   TEXT,
+                weather_label   TEXT,
+                terminal_label  TEXT,
+                price_source    TEXT,
+                model_high      REAL,
+                model_prob_sum  REAL,
+                brackets_scored JSONB,
+                -- settlement fields (filled next morning)
+                settled_at      TIMESTAMPTZ,
+                observed_high   INT,
+                brier_score     REAL,
+                winning_bracket TEXT,
+                settlement_notes TEXT,
+                UNIQUE (city, scout_date)
+            );
+            CREATE INDEX IF NOT EXISTS wx_scout_city_date
+                ON weather_scout_log (city, scout_date DESC);
+            CREATE INDEX IF NOT EXISTS wx_scout_settled
+                ON weather_scout_log (settled_at)
+                WHERE settled_at IS NOT NULL;
+        """)
+    conn.commit()
+
+
+def _log_weather_scout_row(city, scout_date, forecast_high, sigma_f,
+                            scoring_mode, report_status, weather_label,
+                            terminal_label, price_source, model_high,
+                            model_prob_sum, brackets_scored):
+    """
+    Fire-and-forget: write or update a WEATHER_SCOUT row.
+    Only called for gaussian_forecast mode (NOT_YET_ISSUED pre-settlement rows).
+    Never raises — DB failures are logged to stderr, never propagate to the caller.
+    ON CONFLICT updates forecast data in case of re-evaluation with updated NWS forecast.
+    """
+    import json as _json, sys as _sys
+    try:
+        import psycopg2 as _pg
+        conn = get_db_conn()
+        try:
+            _ensure_weather_scout_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO weather_scout_log
+                        (city, scout_date, forecast_high, sigma_f, scoring_mode,
+                         report_status, weather_label, terminal_label, price_source,
+                         model_high, model_prob_sum, brackets_scored)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (city, scout_date) DO UPDATE SET
+                        forecast_high  = EXCLUDED.forecast_high,
+                        sigma_f        = EXCLUDED.sigma_f,
+                        scoring_mode   = EXCLUDED.scoring_mode,
+                        report_status  = EXCLUDED.report_status,
+                        weather_label  = EXCLUDED.weather_label,
+                        terminal_label = EXCLUDED.terminal_label,
+                        price_source   = EXCLUDED.price_source,
+                        model_high     = EXCLUDED.model_high,
+                        model_prob_sum = EXCLUDED.model_prob_sum,
+                        brackets_scored = EXCLUDED.brackets_scored,
+                        logged_at      = NOW()
+                    WHERE weather_scout_log.settled_at IS NULL
+                """, (
+                    city, scout_date, forecast_high, sigma_f, scoring_mode,
+                    report_status, weather_label, terminal_label, price_source,
+                    model_high, model_prob_sum,
+                    _json.dumps(brackets_scored),
+                ))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"[WEATHER_SCOUT] log error (non-fatal): {exc}", file=_sys.stderr)
+
+
+def _compute_brier_score(brackets_scored, observed_high):
+    """
+    Brier score for a single weather scout row.
+    BS = Σ (model_prob_i − outcome_i)²   where outcome_i ∈ {0, 1}
+    Lower = better; perfect forecast = 0.0.
+
+    Bracket label parsing: supports ≤N, ≥N, N-M formats.
+    Returns None if no brackets can be matched.
+    """
+    import re as _re
+
+    def _in_bracket(label, temp):
+        """Return True if temp falls inside label's range."""
+        label = label.strip()
+        m = _re.match(r"^[≤<=]+\s*(\d+(?:\.\d+)?)$", label)
+        if m:
+            return temp <= float(m.group(1))
+        m = _re.match(r"^[≥>=]+\s*(\d+(?:\.\d+)?)$", label)
+        if m:
+            return temp >= float(m.group(1))
+        m = _re.match(r"^(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)$", label)
+        if m:
+            return float(m.group(1)) <= temp <= float(m.group(2))
+        return False
+
+    bs = 0.0
+    matched = False
+    for b in (brackets_scored or []):
+        p  = b.get("model_prob", 0.0) or 0.0
+        o  = 1.0 if _in_bracket(b.get("label", ""), observed_high) else 0.0
+        bs += (p - o) ** 2
+        if o == 1.0:
+            matched = True
+
+    return round(bs, 6) if matched else None
+
+
+@app.route("/wow/kalshi/weather/scout/log", methods=["GET"])
+def wow_kalshi_weather_scout_log():
+    """
+    Return WEATHER_SCOUT ledger — all logged pre-settlement rows and
+    settled rows with Brier scores.
+
+    Query params:
+      city    str  — filter by city (optional)
+      limit   int  — max rows (default 60, max 200)
+      settled bool — "true" to show only settled; "false" for unsettled only
+    """
+    import psycopg2.extras as _pgx
+
+    city_filter = (request.args.get("city") or "").strip().upper() or None
+    try:
+        limit = min(int(request.args.get("limit", 60)), 200)
+    except (ValueError, TypeError):
+        limit = 60
+    settled_filter = request.args.get("settled", "").strip().lower()
+
+    try:
+        conn = get_db_conn()
+        try:
+            _ensure_weather_scout_schema(conn)
+            clauses = []
+            params  = []
+            if city_filter:
+                clauses.append("city = %s")
+                params.append(city_filter)
+            if settled_filter == "true":
+                clauses.append("settled_at IS NOT NULL")
+            elif settled_filter == "false":
+                clauses.append("settled_at IS NULL")
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT id, logged_at, city, scout_date, forecast_high,
+                           sigma_f, scoring_mode, report_status, weather_label,
+                           terminal_label, price_source, model_high, model_prob_sum,
+                           settled_at, observed_high, brier_score, winning_bracket,
+                           settlement_notes, brackets_scored
+                    FROM weather_scout_log
+                    {where}
+                    ORDER BY scout_date DESC, city
+                    LIMIT %s
+                """, params + [limit])
+                rows = [dict(r) for r in cur.fetchall()]
+                # Cast dates to strings for JSON serialisation
+                for r in rows:
+                    if r.get("scout_date"):
+                        r["scout_date"] = str(r["scout_date"])
+                    if r.get("logged_at"):
+                        r["logged_at"] = r["logged_at"].isoformat()
+                    if r.get("settled_at"):
+                        r["settled_at"] = r["settled_at"].isoformat()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    # Compute aggregate Brier summary for settled rows in result set
+    settled = [r for r in rows if r.get("brier_score") is not None]
+    brier_mean = (
+        round(sum(r["brier_score"] for r in settled) / len(settled), 4)
+        if settled else None
+    )
+
+    return jsonify({
+        "ok":                True,
+        "total_rows":        len(rows),
+        "settled_count":     len(settled),
+        "unsettled_count":   len(rows) - len(settled),
+        "brier_mean":        brier_mean,
+        "milestone_1_target": 25,
+        "milestone_1_ready": len(settled) >= 25,
+        "rows":              rows,
+        "execution_rule":    "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    }), 200
+
+
+@app.route("/wow/kalshi/weather/scout/settle", methods=["POST"])
+@require_api_key
+def wow_kalshi_weather_scout_settle():
+    """
+    Settle a WEATHER_SCOUT row with the observed FINAL CLI high.
+    Call this the morning after a scout date once NWS has issued the CLI.
+
+    Body:
+      city          str  — NYC / LA / MIA / CHI / AUS
+      date          str  — YYYY-MM-DD (the scout date to settle)
+      observed_high int  — optional override; omit to auto-fetch from NWS CLI
+      notes         str  — optional settlement notes
+
+    On success: updates the row with observed_high, brier_score, winning_bracket,
+    settled_at. Returns the updated row.
+    """
+    import psycopg2.extras as _pgx, json as _json
+
+    try:
+        body = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"ok": False, "error": "Invalid JSON body"}), 400
+
+    city     = (body.get("city") or "").strip().upper()
+    date_str = (body.get("date") or "").strip()
+    notes    = (body.get("notes") or "").strip() or None
+
+    if city not in _KALSHI_WEATHER_STATIONS:
+        return jsonify({"ok": False, "error":
+            f"Unknown city: {city}. Supported: {', '.join(sorted(_KALSHI_WEATHER_STATIONS))}"}), 400
+    if not date_str:
+        return jsonify({"ok": False, "error": "date required (YYYY-MM-DD)"}), 400
+
+    # ── Resolve observed_high ──────────────────────────────────────────────────
+    observed_high_override = body.get("observed_high")
+    if observed_high_override is not None:
+        try:
+            observed_high = int(observed_high_override)
+            obs_source    = "override"
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "error": "observed_high must be an integer"}), 400
+    else:
+        cli = _fetch_nws_cli(city)
+        if not cli.get("ok") or cli.get("observed_high") is None:
+            return jsonify({
+                "ok":    False,
+                "error": "NWS CLI has not yet issued a FINAL report for this city/date. "
+                         "Try again after the morning CLI, or supply observed_high manually.",
+                "cli_report_status": cli.get("report_status"),
+                "cli_issuance_time": cli.get("issuance_time"),
+            }), 422
+        # Guard: only accept CLI if issuance date matches scout date
+        cli_date = (cli.get("issuance_time") or "")[:10]
+        if cli_date and cli_date != date_str:
+            return jsonify({
+                "ok":    False,
+                "error": f"NWS CLI date mismatch: CLI is for {cli_date}, "
+                         f"but you are settling {date_str}. "
+                         "Supply observed_high manually if the CLI is for a different date.",
+                "cli_date":   cli_date,
+                "scout_date": date_str,
+            }), 422
+        observed_high = cli["observed_high"]
+        obs_source    = "nws_cli"
+
+    # ── Fetch the scout row ────────────────────────────────────────────────────
+    try:
+        conn = get_db_conn()
+        try:
+            _ensure_weather_scout_schema(conn)
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT * FROM weather_scout_log
+                    WHERE city = %s AND scout_date = %s
+                """, (city, date_str))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"DB read error: {exc}"}), 500
+
+    if not row:
+        return jsonify({
+            "ok":    False,
+            "error": f"No scout row found for {city} on {date_str}. "
+                     "Run /wow/kalshi/weather/evaluate first to create it.",
+        }), 404
+
+    row = dict(row)
+    if row.get("settled_at"):
+        return jsonify({
+            "ok":               False,
+            "error":            f"Row for {city} {date_str} is already settled.",
+            "settled_at":       row["settled_at"].isoformat(),
+            "observed_high":    row["observed_high"],
+            "brier_score":      row["brier_score"],
+        }), 409
+
+    # ── Compute Brier score ────────────────────────────────────────────────────
+    brackets_scored = row.get("brackets_scored") or []
+    if isinstance(brackets_scored, str):
+        brackets_scored = _json.loads(brackets_scored)
+
+    brier = _compute_brier_score(brackets_scored, observed_high)
+
+    # Determine winning bracket label
+    winning_bracket = None
+    for b in brackets_scored:
+        lbl = b.get("label", "")
+        p   = b.get("model_prob", 0)
+        # Re-use Brier helper's bracket test
+        import re as _re
+        def _in_bracket(label, temp):
+            label = label.strip()
+            m = _re.match(r"^[≤<=]+\s*(\d+(?:\.\d+)?)$", label)
+            if m: return temp <= float(m.group(1))
+            m = _re.match(r"^[≥>=]+\s*(\d+(?:\.\d+)?)$", label)
+            if m: return temp >= float(m.group(1))
+            m = _re.match(r"^(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)$", label)
+            if m: return float(m.group(1)) <= temp <= float(m.group(2))
+            return False
+        if _in_bracket(lbl, observed_high):
+            winning_bracket = lbl
+            break
+
+    # ── Update the row ─────────────────────────────────────────────────────────
+    try:
+        conn = get_db_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE weather_scout_log
+                    SET settled_at       = NOW(),
+                        observed_high    = %s,
+                        brier_score      = %s,
+                        winning_bracket  = %s,
+                        settlement_notes = %s
+                    WHERE city = %s AND scout_date = %s
+                """, (observed_high, brier, winning_bracket, notes, city, date_str))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"DB write error: {exc}"}), 500
+
+    return jsonify({
+        "ok":             True,
+        "city":           city,
+        "scout_date":     date_str,
+        "observed_high":  observed_high,
+        "observed_source": obs_source,
+        "winning_bracket": winning_bracket,
+        "brier_score":    brier,
+        "brier_note":     (
+            "Brier score = Σ(model_prob_i − outcome_i)². "
+            "Range 0–2; lower is better; perfect = 0.0. "
+            "Below 0.25 is good for a 6-bracket distribution."
+        ),
+        "settlement_notes": notes,
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    }), 200
+
+
 @app.route("/wow/kalshi/weather/evaluate", methods=["POST"])
 @require_api_key
 def wow_kalshi_weather_evaluate():
@@ -16685,6 +17052,26 @@ def wow_kalshi_weather_evaluate():
     mp_sum = round(sum(
         b["model_prob"] for b in brackets_scored if b.get("model_prob") is not None
     ), 4)
+
+    # ── WEATHER_SCOUT auto-log (pre-settlement rows only) ─────────────────────
+    # Only log gaussian_forecast mode — those are the calibration rows we need.
+    # binary_final_cli rows are already settled; skip them so the Brier record
+    # is not overwritten by a post-settlement re-evaluation call.
+    if scoring_mode == "gaussian_forecast":
+        _log_weather_scout_row(
+            city          = city,
+            scout_date    = date_str,
+            forecast_high = forecast_high,
+            sigma_f       = sigma_f,
+            scoring_mode  = scoring_mode,
+            report_status = report_status,
+            weather_label = weather_label,
+            terminal_label= terminal_label,
+            price_source  = effective_price_source,
+            model_high    = model_high,
+            model_prob_sum= mp_sum,
+            brackets_scored = brackets_scored,
+        )
 
     return jsonify({
         # Identity

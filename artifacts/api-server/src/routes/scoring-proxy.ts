@@ -71,6 +71,41 @@ router.get("/wow/kalshi/weather/calibration", async (req: Request, res: Response
   }
 });
 
+// GET /wow/kalshi/weather/scout/log — WEATHER_SCOUT calibration ledger
+router.get("/wow/kalshi/weather/scout/log", async (req: Request, res: Response) => {
+  const target = `${FLASK_BASE}/wow/kalshi/weather/scout/log`;
+  const qs     = new URLSearchParams(req.query as Record<string, string>).toString();
+  try {
+    const r = await fetch(qs ? `${target}?${qs}` : target, {
+      headers: { "Accept": "application/json" },
+    });
+    const body = await r.json() as unknown;
+    return res.status(r.status).json(body);
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: "Scoring API unreachable", detail: String(err) });
+  }
+});
+
+// POST /wow/kalshi/weather/scout/settle — settle a scout row with observed high
+router.post("/wow/kalshi/weather/scout/settle", async (req: Request, res: Response) => {
+  const target = `${FLASK_BASE}/wow/kalshi/weather/scout/settle`;
+  try {
+    const r = await fetch(target, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept":       "application/json",
+        "X-API-Key":    API_KEY,
+      },
+      body: JSON.stringify(req.body),
+    });
+    const body = await r.json() as unknown;
+    return res.status(r.status).json(body);
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: "Scoring API unreachable", detail: String(err) });
+  }
+});
+
 // POST /wow/kalshi/weather/evaluate — scored bracket evaluation
 router.post("/wow/kalshi/weather/evaluate", async (req: Request, res: Response) => {
   const target = `${FLASK_BASE}/wow/kalshi/weather/evaluate`;

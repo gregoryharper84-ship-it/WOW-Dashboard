@@ -105,3 +105,9 @@ _After the patch ships, list the exact lines that must be updated in
 | Patch ID | Date | Status | Summary |
 |----------|------|--------|---------|
 | WOW-PATCH-001 | 2026-06-30 | SHIPPED | Kalshi NHIGH weather lane — 5-city station map, NWS CLI fetcher, bracket scorer, `/wow/kalshi/weather/evaluate` + `/stations` |
+| WOW-PATCH-002 | 2026-07-01 | SHIPPED | Gaussian bracket probabilities — `_score_weather_brackets_gaussian`, `math.erf` CDF, sigma_f=3.5 default, full normalization, CLI date-mismatch guard |
+| WOW-PATCH-003 | 2026-07-01 | SHIPPED | Price-source staleness gate — `_apply_weather_price_gate`, `_weather_terminal_label_v2`, synthetic/operator_supplied capped at KALSHI_WATCH, FINAL+no-live → KALSHI_DATA_UNOBTAINABLE |
+| WOW-PATCH-004 | 2026-07-01 | DRAFT | Summer-only sigma calibration — filter NCEI CDO window to summer months; Phase 2: empirical MAE from WEATHER_SCOUT ledger |
+| WOW-PATCH-005 | 2026-07-01 | DRAFT | Pitcher handedness splits — platoon-weighted opp K%, `vs_lhb_k_pct` / `vs_rhb_k_pct` from MLB Stats API `vsPlayer` stat group |
+| WOW-PATCH-006 | 2026-07-01 | DRAFT | Line movement tracker — `line_movement` advisory field from odds_snapshot history; `sharp_signal` POSSIBLE/UNLIKELY/UNKNOWN gate |
+| WOW-PATCH-007 | 2026-07-01 | DRAFT | CLV tracker — `clv_beat` to `llp_postmortem`; `/wow/clv/summary`; depends on closing snapshot within 4h of game start |
