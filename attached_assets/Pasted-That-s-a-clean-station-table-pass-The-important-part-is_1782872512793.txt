@@ -1,0 +1,96 @@
+That’s a **clean station-table pass**.
+
+The important part is verified:
+
+```text
+AUS → KXHIGHAUS → KAUS
+CHI → KXHIGHCHI → KMDW
+LA  → KXHIGHLAX → KLAX
+MIA → KXHIGHMIA → KMIA
+NYC → KXHIGHNY → KNYC
+```
+
+The three regression bans are protected:
+
+```text
+Miami ≠ PBI
+LA ≠ BUR
+Chicago ≠ KORD
+```
+
+## Minor backend/schema mismatch
+
+The endpoint works, but it did **not** return:
+
+```text
+deploy_version
+execution_rule
+```
+
+Your current Action schema expects those fields in the weather station response, but they’re not coming back from the backend yet. That is not a blocker for station verification because `ok: true` and `count: 5` came back, but it should be patched for deploy discipline. 
+
+Send Replit this small cleanup:
+
+```text
+PATCH-001 station endpoint cleanup:
+
+GET /api/wow/kalshi/weather/stations is returning ok=true and count=5 with the correct station table, but it is not returning deploy_version or execution_rule.
+
+Please update the response envelope to include:
+
+deploy_version: "2026-06-29-mve-prefilter-v6" or current weather deploy version
+execution_rule: "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+
+Also include station_count if not already present.
+
+No model logic change.
+No trading logic change.
+No Kalshi scan change.
+This is response-shape cleanup only.
+```
+
+## One schema note
+
+The endpoint returns city codes:
+
+```text
+AUS, CHI, LA, MIA, NYC
+```
+
+So the evaluate request should support those codes, not only full city names. Update the `city` enum to:
+
+```yaml
+city:
+  type: string
+  description: One of NYC, LA, MIA, CHI, AUS. Full city aliases may also be accepted server-side.
+  enum:
+    - NYC
+    - LA
+    - MIA
+    - CHI
+    - AUS
+    - Miami
+    - Chicago
+    - Austin
+```
+
+## Next test
+
+Now run the evaluate endpoint in **forecast mode**, not final/settled mode if possible.
+
+Use a future or not-yet-final date:
+
+```text
+Evaluate Kalshi NHIGH weather for CHI for the next available forecast date with mutually exclusive brackets. Return source_mode, report_status, station, forecast_high_f, observed_high_f, revision_risk, model_prob_sum, yes_price_sum, results, terminal_label, can_execute, and execution_rule. Do not place orders.
+```
+
+Expected safe result:
+
+```text
+station.nws_station_code = KMDW
+source_mode = GRIDPOINT_FORECAST or CLI_PRELIMINARY
+can_execute = false
+execution_rule = DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+```
+
+Station mapping is good. Patch only the response metadata, then test probability/evaluate.

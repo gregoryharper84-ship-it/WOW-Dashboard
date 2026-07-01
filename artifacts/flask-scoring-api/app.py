@@ -16322,9 +16322,12 @@ def wow_kalshi_weather_stations():
     (KMDW not KORD, KMIA not KPBI, KLAX not KBUR).
     """
     return jsonify({
-        "ok":       True,
-        "count":    len(_KALSHI_WEATHER_STATIONS),
-        "stations": _KALSHI_WEATHER_STATIONS,
+        "ok":            True,
+        "station_count": len(_KALSHI_WEATHER_STATIONS),
+        "count":         len(_KALSHI_WEATHER_STATIONS),   # legacy alias
+        "stations":      _KALSHI_WEATHER_STATIONS,
+        "deploy_version": "2026-07-01-nhigh-connectors-v1",
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
     }), 200
 
 
