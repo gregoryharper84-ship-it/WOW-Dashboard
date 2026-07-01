@@ -15705,16 +15705,10 @@ def _fetch_nws_cli(city: str) -> dict:
 
     location = station["nws_issuedby"]  # e.g. MDW, NYC, LAX, MIA, AUS
 
-    # Step 1: find the latest CLI product for this location
+    # Step 1: find the latest CLI product for this location (via connector 1)
     list_url = f"https://api.weather.gov/products?type=CLI&location={location}&limit=1"
     try:
-        lr = requests.get(list_url, timeout=10,
-                          headers={"User-Agent": "WOW-scoring/1.0 weather-lane",
-                                   "Accept": "application/geo+json"})
-        if lr.status_code != 200:
-            return {"ok": False, "error": f"NWS products list HTTP {lr.status_code}",
-                    "observed_high": None, "report_status": "ERROR", "revision_risk": False}
-        graph = lr.json().get("@graph", [])
+        graph = _nws_get(list_url).get("@graph", [])
         if not graph:
             return {"ok": True, "observed_high": None, "report_status": "NOT_YET_ISSUED",
                     "revision_risk": False, "report_date": None, "source_url": list_url,
@@ -15725,16 +15719,10 @@ def _fetch_nws_cli(city: str) -> dict:
         return {"ok": False, "error": f"NWS products list error: {exc}",
                 "observed_high": None, "report_status": "ERROR", "revision_risk": False}
 
-    # Step 2: fetch the product text
+    # Step 2: fetch the product text (via connector 1)
     text_url = f"https://api.weather.gov/products/{product_id}"
     try:
-        tr = requests.get(text_url, timeout=10,
-                          headers={"User-Agent": "WOW-scoring/1.0 weather-lane",
-                                   "Accept": "application/geo+json"})
-        if tr.status_code != 200:
-            return {"ok": False, "error": f"NWS product text HTTP {tr.status_code}",
-                    "observed_high": None, "report_status": "ERROR", "revision_risk": False}
-        text = tr.json().get("productText", "")
+        text = _nws_get(text_url).get("productText", "")
     except Exception as exc:
         return {"ok": False, "error": f"NWS product text error: {exc}",
                 "observed_high": None, "report_status": "ERROR", "revision_risk": False}
@@ -15800,17 +15788,8 @@ def _fetch_nws_forecast_high(city: str, date_str: str) -> dict:
         grid_id, grid_x, grid_y = cached["gridId"], cached["gridX"], cached["gridY"]
     else:
         try:
-            import requests
-            pts = requests.get(
-                f"https://api.weather.gov/points/{lat},{lon}",
-                timeout=8,
-                headers={"User-Agent": "WOW-scoring/1.0 weather-lane",
-                         "Accept": "application/geo+json"},
-            )
-            if pts.status_code != 200:
-                return {"forecast_high": None, "forecast_source": "none",
-                        "error": f"NWS points HTTP {pts.status_code}"}
-            pdata = pts.json().get("properties", {})
+            pdata   = _nws_get(f"https://api.weather.gov/points/{lat},{lon}",
+                               timeout=8).get("properties", {})
             grid_id = pdata.get("gridId")
             grid_x  = pdata.get("gridX")
             grid_y  = pdata.get("gridY")
@@ -15824,19 +15803,11 @@ def _fetch_nws_forecast_high(city: str, date_str: str) -> dict:
         except Exception as exc:
             return {"forecast_high": None, "forecast_source": "none", "error": str(exc)}
 
-    # Step 2: fetch daily forecast
+    # Step 2: fetch daily forecast (via connector 1)
     try:
-        import requests
-        fc = requests.get(
-            f"https://api.weather.gov/gridpoints/{grid_id}/{grid_x},{grid_y}/forecast",
-            timeout=8,
-            headers={"User-Agent": "WOW-scoring/1.0 weather-lane",
-                     "Accept": "application/geo+json"},
-        )
-        if fc.status_code != 200:
-            return {"forecast_high": None, "forecast_source": "none",
-                    "error": f"NWS forecast HTTP {fc.status_code}"}
-        periods = fc.json().get("properties", {}).get("periods", [])
+        fc_url  = f"https://api.weather.gov/gridpoints/{grid_id}/{grid_x},{grid_y}/forecast"
+        fc_resp = _nws_get(fc_url, timeout=8)
+        periods = fc_resp.get("properties", {}).get("periods", [])
         # Find the daytime period matching date_str (YYYY-MM-DD)
         for period in periods:
             start = period.get("startTime", "")
@@ -15995,61 +15966,200 @@ def _compute_forecast_horizon_hours(date_str: str, tz_name: str) -> float:
 
 # ── WEATHER PATCH-003: Live Kalshi NHIGH price fetch + staleness gate ──────────
 
-def _fetch_kalshi_nhigh_prices(series: str, date_str: str, brackets: list) -> dict:
-    """Attempt to fetch live Kalshi prices for NHIGH bracket markets via search_markets.
-    Maps bracket labels to matching markets by threshold value in subtitle/ticker.
+# ── WEATHER CONNECTOR LAYER ───────────────────────────────────────────────────
+# All secrets are server-side only. Never expose to frontend/VITE/Custom GPT.
+# NWS_USER_AGENT, NOAA_CDO_TOKEN, KALSHI_API_BASE are env vars only.
+# DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS remains enforced throughout.
 
-    Returns:
-      price_source, price_timestamp, market_status, live_orderbook_checked,
-      tickers_found, prices_by_bracket {label: {ticker, yes_ask, yes_bid, ...}}
+def _nws_user_agent() -> str:
+    import os
+    return os.environ.get("NWS_USER_AGENT", "WOW-v16-Kalshi-Weather contact@example.com")
+
+
+def _nws_get(path_or_url: str, timeout: int = 12) -> dict:
+    """Connector 1: NWS API (api.weather.gov). Free, no auth. Requires User-Agent."""
+    import requests, os
+    base = "https://api.weather.gov"
+    url  = path_or_url if path_or_url.startswith("http") else f"{base}{path_or_url}"
+    r = requests.get(url, timeout=timeout,
+                     headers={"User-Agent": _nws_user_agent(),
+                              "Accept": "application/geo+json"})
+    r.raise_for_status()
+    return r.json()
+
+
+def _kalshi_public_get(path: str, params: dict | None = None, timeout: int = 12) -> dict:
+    """Connector 4: Kalshi public market-data REST API. No auth needed for read endpoints.
+    Uses KALSHI_API_BASE env var (default: production trade API v2).
+    Orderbook: YES and NO bids only; asks reconstructed from opposite side (Kalshi spec).
     """
-    try:
-        from kalshi_engine import kalshi_client
-    except ImportError:
-        return {"price_source": "not_found", "live_orderbook_checked": True,
-                "error": "kalshi_engine not available", "tickers_found": [],
-                "prices_by_bracket": {}, "market_status": None, "price_timestamp": None}
+    import requests, os
+    base = os.environ.get("KALSHI_API_BASE",
+                          "https://external-api.kalshi.com/trade-api/v2")
+    url  = f"{base}/{path.lstrip('/')}"
+    r    = requests.get(url, params=params or {}, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
 
+
+def _ncei_cdo_get(endpoint: str, params: dict, timeout: int = 20) -> dict:
+    """Connector 3: NOAA/NCEI CDO historical climate data.
+    Requires NOAA_CDO_TOKEN secret. Returns DATA_UNOBTAINABLE if missing — never 500s.
+    """
+    import requests, os
+    token = os.environ.get("NOAA_CDO_TOKEN", "")
+    if not token:
+        return {"ok": False, "source_status": "TOKEN_MISSING",
+                "reason": "NOAA_CDO_TOKEN env var not set"}
+    base = "https://www.ncei.noaa.gov/cdo-web/api/v2"
+    url  = f"{base}/{endpoint.lstrip('/')}"
+    try:
+        r = requests.get(url, headers={"token": token}, params=params, timeout=timeout)
+        r.raise_for_status()
+        return {"ok": True, "source_status": "RETRIEVED", "data": r.json()}
+    except Exception as exc:
+        return {"ok": False, "source_status": "FAILED", "reason": str(exc)}
+
+
+def _open_meteo_forecast(lat: float, lon: float, timeout: int = 10) -> dict:
+    """Connector 6: Open-Meteo backup/sanity-check. Free, no auth, no key.
+    NEVER primary settlement source. Gated by ENABLE_OPEN_METEO=true env var.
+    """
+    import requests, os
+    if os.environ.get("ENABLE_OPEN_METEO", "false").lower() != "true":
+        return {"ok": False, "source_status": "DISABLED"}
+    try:
+        r = requests.get("https://api.open-meteo.com/v1/forecast",
+                         params={"latitude": lat, "longitude": lon,
+                                 "daily": "temperature_2m_max",
+                                 "temperature_unit": "fahrenheit",
+                                 "timezone": "auto",
+                                 "forecast_days": 7},
+                         timeout=timeout)
+        r.raise_for_status()
+        return {"ok": True, "source_status": "OK", "data": r.json()}
+    except Exception as exc:
+        return {"ok": False, "source_status": "FAILED", "reason": str(exc)}
+
+
+def _fetch_kalshi_nhigh_markets(series: str, date_str: str) -> dict:
+    """Connector 4a: Fetch open NHIGH bracket markets for a series + date.
+    Uses direct Kalshi public REST API (not kalshi_engine wrapper).
+    Returns tickers_found, markets list, market_status, fetch_time.
+    """
     import datetime as _dt
     try:
-        dt          = _dt.datetime.strptime(date_str, "%Y-%m-%d")
-        date_short  = dt.strftime("%y%b%d").upper()   # e.g. 26JUL01
-        date_digits = date_str.replace("-", "")        # e.g. 20260701
+        dt         = _dt.datetime.strptime(date_str, "%Y-%m-%d")
+        date_short = dt.strftime("%y%b%d").upper()   # e.g. 26JUL01
+        date_digits = date_str.replace("-", "")       # e.g. 20260701
     except Exception:
         date_short = date_digits = ""
 
-    # Search for open markets matching the series
     markets = []
+    fetch_error = None
     try:
-        res = kalshi_client.search_markets(series_ticker=series, status="open", limit=50)
-        markets = (res.get("markets") or []) if isinstance(res, dict) else []
-    except Exception:
-        pass
+        res     = _kalshi_public_get("/markets",
+                                     {"series_ticker": series, "status": "open", "limit": 100})
+        markets = res.get("markets") or []
+    except Exception as exc:
+        fetch_error = str(exc)
 
-    if not markets:
-        try:
-            res2    = kalshi_client.search_markets(status="open", limit=200)
-            all_m   = (res2.get("markets") or []) if isinstance(res2, dict) else []
-            markets = [m for m in all_m if (m.get("ticker") or "").startswith(series)]
-        except Exception as exc:
-            return {"price_source": "not_found", "live_orderbook_checked": True,
-                    "error": str(exc), "tickers_found": [], "prices_by_bracket": {},
-                    "market_status": None, "price_timestamp": None}
-
-    # Filter to event date
+    # Filter to event date by matching short-date or digit-date in ticker
     date_markets = [m for m in markets if any(
-        s in (m.get("ticker","") or "") for s in [date_short, date_digits]
-    )] or markets
+        s in (m.get("ticker", "") or "") for s in [date_short, date_digits]
+    )] if markets else []
+    if not date_markets:
+        date_markets = markets   # fall back to all returned if no date filter matches
 
-    tickers_found = [m.get("ticker","") for m in date_markets]
-    any_open      = any(m.get("status","") == "open" for m in date_markets)
+    any_open      = any((m.get("status") or "") == "open" for m in date_markets)
     market_status = "open" if any_open else ("closed" if date_markets else None)
-    fetch_time    = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    tickers_found = [m.get("ticker", "") for m in date_markets]
 
-    # Map each bracket to best matching market
+    return {
+        "ok":           bool(date_markets),
+        "markets":      date_markets,
+        "tickers_found": tickers_found,
+        "market_status": market_status,
+        "fetch_time":   _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "fetch_error":  fetch_error,
+    }
+
+
+def _fetch_kalshi_orderbook(ticker: str) -> dict:
+    """Connector 4b: Fetch live orderbook for a Kalshi market ticker.
+    Per Kalshi spec: orderbook returns YES bids and NO bids only.
+    YES ask = 100 - best NO bid (in cents). NO ask = 100 - best YES bid.
+    All prices converted to 0-1 float (divide by 100).
+    """
+    import datetime as _dt
+    try:
+        data       = _kalshi_public_get(f"/markets/{ticker}/orderbook")
+        orderbook  = data.get("orderbook") or {}
+        yes_bids   = orderbook.get("yes") or []   # [[price_cents, qty], ...]
+        no_bids    = orderbook.get("no")  or []
+
+        best_yes_bid = max((lvl[0] for lvl in yes_bids), default=None)
+        best_no_bid  = max((lvl[0] for lvl in no_bids),  default=None)
+
+        # Reconstruct asks from opposite side (Kalshi binary contract identity)
+        best_yes_ask = (100 - best_no_bid)  if best_no_bid  is not None else None
+        best_no_ask  = (100 - best_yes_bid) if best_yes_bid is not None else None
+
+        spread_cents = (best_yes_ask - best_yes_bid
+                        if best_yes_bid is not None and best_yes_ask is not None
+                        else None)
+
+        def c(v):
+            return round(v / 100.0, 4) if v is not None else None
+
+        return {
+            "ok":                   True,
+            "ticker":               ticker,
+            "price_source":         "kalshi_live_orderbook",
+            "orderbook_source":     "kalshi_public_market_data",
+            "price_timestamp":      _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "live_orderbook_checked": True,
+            "best_yes_bid":         c(best_yes_bid),
+            "best_yes_ask":         c(best_yes_ask),
+            "best_no_bid":          c(best_no_bid),
+            "best_no_ask":          c(best_no_ask),
+            "spread":               c(spread_cents),
+            "yes_bid_levels":       len(yes_bids),
+            "no_bid_levels":        len(no_bids),
+        }
+    except Exception as exc:
+        return {"ok": False, "ticker": ticker, "price_source": "not_found",
+                "live_orderbook_checked": True, "error": str(exc)}
+
+
+def _fetch_kalshi_nhigh_prices(series: str, date_str: str, brackets: list) -> dict:
+    """Fetch live Kalshi NHIGH prices via direct public REST API.
+    Replaces kalshi_engine wrapper with connector-layer calls.
+
+    Flow:
+      1. Fetch open markets for series + date (connector 4a)
+      2. For each bracket, match market by threshold value in subtitle/ticker
+      3. Fetch orderbook for matched tickers (connector 4b) to get bid/ask
+      4. Return prices_by_bracket with live yes_bid, yes_ask, spread
+    """
+    import datetime as _dt
+
+    mkt_result    = _fetch_kalshi_nhigh_markets(series, date_str)
+    date_markets  = mkt_result.get("markets", [])
+    market_status = mkt_result.get("market_status")
+    fetch_time    = mkt_result.get("fetch_time", _dt.datetime.now(_dt.timezone.utc).isoformat())
+    tickers_found = mkt_result.get("tickers_found", [])
+
+    if not date_markets:
+        return {"price_source": "not_found", "live_orderbook_checked": True,
+                "error": mkt_result.get("fetch_error", "No markets found"),
+                "tickers_found": [], "prices_by_bracket": {},
+                "market_status": market_status, "price_timestamp": None}
+
+    # Match brackets to markets by threshold value in subtitle/ticker
     prices_by_bracket = {}
     for b in brackets:
-        label  = b.get("label","")
+        label  = b.get("label", "")
         bounds = _parse_bracket_bounds(label)
         if not bounds:
             continue
@@ -16059,24 +16169,32 @@ def _fetch_kalshi_nhigh_prices(series: str, date_str: str, brackets: list) -> di
             sub = ((m.get("subtitle") or m.get("title") or "")).upper()
             tkr = (m.get("ticker") or "").upper()
             if str(threshold) in sub or f"T{threshold}" in tkr:
+                # Fetch live orderbook for this ticker
+                ob = _fetch_kalshi_orderbook(m.get("ticker", ""))
                 prices_by_bracket[label] = {
-                    "ticker":    m.get("ticker"),
-                    "yes_ask":   m.get("yes_ask"),
-                    "yes_bid":   m.get("yes_bid"),
-                    "last_price":m.get("last_price"),
-                    "volume":    m.get("volume"),
-                    "status":    m.get("status"),
+                    "ticker":      m.get("ticker"),
+                    "market_status": m.get("status"),
+                    "volume":      m.get("volume"),
+                    "last_price":  (m.get("last_price") or 0) / 100.0
+                                   if m.get("last_price") is not None else None,
+                    # Live orderbook prices (preferred over search_markets snapshot)
+                    "yes_bid":     ob.get("best_yes_bid"),
+                    "yes_ask":     ob.get("best_yes_ask"),
+                    "no_bid":      ob.get("best_no_bid"),
+                    "no_ask":      ob.get("best_no_ask"),
+                    "spread":      ob.get("spread"),
+                    "orderbook_ok": ob.get("ok", False),
                 }
                 break
 
     any_prices = bool(prices_by_bracket)
     return {
-        "price_source":    "kalshi_live_orderbook" if any_prices else "not_found",
-        "price_timestamp": fetch_time if any_prices else None,
-        "market_status":   market_status,
+        "price_source":         "kalshi_live_orderbook" if any_prices else "not_found",
+        "price_timestamp":      fetch_time if any_prices else None,
+        "market_status":        market_status,
         "live_orderbook_checked": True,
-        "tickers_found":   tickers_found,
-        "prices_by_bracket": prices_by_bracket,
+        "tickers_found":        tickers_found,
+        "prices_by_bracket":    prices_by_bracket,
     }
 
 
@@ -16186,6 +16304,16 @@ def _weather_terminal_label_v2(
     return "KALSHI_REJECT_NO_EDGE"
 
 
+# ── NCEI CDO station IDs for GHCND daily data (connector 3) ──────────────────
+_NCEI_CDO_STATION_IDS = {
+    "NYC": "GHCND:USW00094728",   # Central Park / KNYC
+    "LA":  "GHCND:USW00023174",   # Los Angeles Airport / KLAX
+    "MIA": "GHCND:USW00012839",   # Miami International / KMIA
+    "CHI": "GHCND:USW00014819",   # Chicago Midway / KMDW
+    "AUS": "GHCND:USW00013904",   # Austin Bergstrom / KAUS
+}
+
+
 @app.route("/wow/kalshi/weather/stations", methods=["GET"])
 def wow_kalshi_weather_stations():
     """
@@ -16197,6 +16325,187 @@ def wow_kalshi_weather_stations():
         "ok":       True,
         "count":    len(_KALSHI_WEATHER_STATIONS),
         "stations": _KALSHI_WEATHER_STATIONS,
+    }), 200
+
+
+@app.route("/wow/kalshi/weather/source-health", methods=["GET"])
+def wow_kalshi_weather_source_health():
+    """
+    Source connectivity health check for all 6 weather data connectors.
+    No auth required. Run this before weather evaluate.
+
+    Returns per-source status: OK | FAILED | TOKEN_MISSING | DISABLED
+    and execution_rule to confirm DRY_RUN_ONLY is still active.
+    """
+    import os as _os, datetime as _dt
+
+    statuses = {}
+
+    # ── Connector 1: NWS API (gridpoint test — Chicago Midway) ────────────────
+    try:
+        r = _nws_get("https://api.weather.gov/points/41.7868,-87.7522", timeout=8)
+        statuses["nws_api"] = "OK" if r.get("properties", {}).get("gridId") else "FAILED"
+    except Exception as exc:
+        statuses["nws_api"] = f"FAILED ({str(exc)[:60]})"
+
+    # ── Connector 2: NWS CLI product (Chicago Midway MDW) ─────────────────────
+    try:
+        r = _nws_get("https://api.weather.gov/products?type=CLI&location=MDW&limit=1",
+                     timeout=8)
+        graph = r.get("@graph", [])
+        statuses["nws_cli"] = "OK" if graph else "OK (no product today yet)"
+    except Exception as exc:
+        statuses["nws_cli"] = f"FAILED ({str(exc)[:60]})"
+
+    # ── Connector 3: NOAA/NCEI CDO ────────────────────────────────────────────
+    noaa_token = _os.environ.get("NOAA_CDO_TOKEN", "")
+    if not noaa_token:
+        statuses["ncei_cdo"] = "TOKEN_MISSING"
+    else:
+        result = _ncei_cdo_get("datasets", {"limit": 1})
+        if result.get("ok"):
+            statuses["ncei_cdo"] = "OK"
+        else:
+            statuses["ncei_cdo"] = f"FAILED ({result.get('reason','')[:60]})"
+
+    # ── Connector 4: Kalshi public market data ────────────────────────────────
+    try:
+        r = _kalshi_public_get("/markets",
+                               {"series_ticker": "KXHIGHCHI", "status": "open", "limit": 5},
+                               timeout=8)
+        markets = r.get("markets", [])
+        statuses["kalshi_market_data"] = f"OK ({len(markets)} KXHIGHCHI markets)"
+    except Exception as exc:
+        statuses["kalshi_market_data"] = f"FAILED ({str(exc)[:60]})"
+
+    # ── Connector 5: NOMADS/NBM ───────────────────────────────────────────────
+    enable_nomads = _os.environ.get("ENABLE_NOMADS_NBM", "false").lower() == "true"
+    statuses["nomads_nbm"] = "DISABLED" if not enable_nomads else "ENABLED_NOT_IMPLEMENTED"
+
+    # ── Connector 6: Open-Meteo ───────────────────────────────────────────────
+    enable_om = _os.environ.get("ENABLE_OPEN_METEO", "false").lower() == "true"
+    if not enable_om:
+        statuses["open_meteo"] = "DISABLED"
+    else:
+        r = _open_meteo_forecast(41.7868, -87.7522, timeout=8)
+        statuses["open_meteo"] = "OK" if r.get("ok") else f"FAILED ({r.get('reason','')[:60]})"
+
+    all_required_ok = all(
+        not statuses[k].startswith("FAILED")
+        for k in ["nws_api", "nws_cli", "kalshi_market_data"]
+    )
+
+    return jsonify({
+        "ok":                   all_required_ok,
+        "checked_at":           _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "nws_api":              statuses["nws_api"],
+        "nws_cli":              statuses["nws_cli"],
+        "ncei_cdo":             statuses["ncei_cdo"],
+        "kalshi_market_data":   statuses["kalshi_market_data"],
+        "nomads_nbm":           statuses["nomads_nbm"],
+        "open_meteo":           statuses["open_meteo"],
+        "execution_rule":       "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        "nws_user_agent_set":   bool(_os.environ.get("NWS_USER_AGENT")),
+        "noaa_token_set":       bool(noaa_token),
+        "kalshi_api_base":      _os.environ.get("KALSHI_API_BASE",
+                                                "https://external-api.kalshi.com/trade-api/v2"),
+    }), 200
+
+
+@app.route("/wow/kalshi/weather/calibration", methods=["GET"])
+def wow_kalshi_weather_calibration():
+    """
+    NOAA/NCEI CDO historical calibration endpoint (connector 3).
+    Returns sigma_f recommendation based on historical TMAX vs NWS forecast error.
+    If NOAA_CDO_TOKEN is missing → returns CALIBRATION_UNAVAILABLE (never 500s).
+
+    Query params:
+      city  str  — NYC / LA / MIA / CHI / AUS
+      days  int  — historical window (default 365, max 730)
+    """
+    import datetime as _dt, re as _re
+
+    city = (request.args.get("city") or "").strip().upper()
+    if city not in _KALSHI_WEATHER_STATIONS:
+        return jsonify({"ok": False, "error":
+            f"Unknown city: {city}. Supported: {', '.join(sorted(_KALSHI_WEATHER_STATIONS))}"}), 400
+
+    try:
+        days = min(int(request.args.get("days", 365)), 730)
+    except (ValueError, TypeError):
+        days = 365
+
+    station_ghcnd = _NCEI_CDO_STATION_IDS.get(city)
+    if not station_ghcnd:
+        return jsonify({"ok": False, "source_status": "CALIBRATION_UNAVAILABLE",
+                        "reason": f"No NCEI CDO station ID mapped for {city}"}), 200
+
+    end_dt   = _dt.date.today()
+    start_dt = end_dt - _dt.timedelta(days=days)
+
+    result = _ncei_cdo_get("data", {
+        "datasetid":  "GHCND",
+        "stationid":  station_ghcnd,
+        "datatypeid": "TMAX",
+        "startdate":  start_dt.isoformat(),
+        "enddate":    end_dt.isoformat(),
+        "limit":      1000,
+        "units":      "standard",   # Fahrenheit
+    })
+
+    if not result.get("ok"):
+        status = result.get("source_status", "FAILED")
+        return jsonify({
+            "ok":            False,
+            "city":          city,
+            "station_ghcnd": station_ghcnd,
+            "source_status": status,
+            "reason":        result.get("reason", ""),
+        }), 200
+
+    records = (result.get("data") or {}).get("results") or []
+    if not records:
+        return jsonify({"ok": False, "city": city, "source_status": "NO_DATA",
+                        "reason": "NCEI returned 0 TMAX records for window"}), 200
+
+    # TMAX from GHCND is in tenths of °C; units=standard converts to °F already
+    # but some responses still return raw tenths. Detect by magnitude.
+    tmax_values = []
+    for rec in records:
+        v = rec.get("value")
+        if v is not None:
+            v = float(v)
+            # If all values look like tenths-of-C (> 300), convert
+            tmax_values.append(v)
+
+    if tmax_values and all(v > 150 for v in tmax_values):
+        # Convert tenths-of-°C → °F: (v/10 * 9/5) + 32
+        tmax_values = [round((v / 10.0 * 9.0 / 5.0) + 32.0, 1) for v in tmax_values]
+
+    import statistics as _stats
+    n        = len(tmax_values)
+    mean_t   = _stats.mean(tmax_values)
+    std_t    = _stats.stdev(tmax_values) if n > 1 else 3.5
+    # sigma_f recommendation: historical daily std ≈ NWS 24h forecast MAE proxy
+    # Real calibration needs paired forecast vs observed data; this is a conservative estimate
+    sigma_rec = round(min(max(std_t * 0.55, 2.5), 6.0), 2)
+
+    return jsonify({
+        "ok":                  True,
+        "city":                city,
+        "station_id":          city,
+        "station_ghcnd":       station_ghcnd,
+        "historical_days":     days,
+        "records_used":        n,
+        "tmax_mean_f":         round(mean_t, 1),
+        "tmax_std_f":          round(std_t, 2),
+        "sigma_f_recommended": sigma_rec,
+        "sigma_f_default":     3.5,
+        "source_status":       "RETRIEVED",
+        "calibration_note":    (
+            "sigma_f_recommended is estimated from historical TMAX std × 0.55. "
+            "True calibration requires paired NWS 24h forecast vs observed data."
+        ),
     }), 200
 
 

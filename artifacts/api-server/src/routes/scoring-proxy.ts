@@ -44,6 +44,33 @@ router.get("/wow/kalshi/weather/stations", async (_req: Request, res: Response) 
   }
 });
 
+// GET /wow/kalshi/weather/source-health — no auth, connector health check
+router.get("/wow/kalshi/weather/source-health", async (_req: Request, res: Response) => {
+  const target = `${FLASK_BASE}/wow/kalshi/weather/source-health`;
+  try {
+    const r = await fetch(target, { headers: { "Accept": "application/json" } });
+    const body = await r.json() as unknown;
+    return res.status(r.status).json(body);
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: "Scoring API unreachable", detail: String(err) });
+  }
+});
+
+// GET /wow/kalshi/weather/calibration — NCEI CDO historical sigma_f estimate
+router.get("/wow/kalshi/weather/calibration", async (req: Request, res: Response) => {
+  const target = `${FLASK_BASE}/wow/kalshi/weather/calibration`;
+  const qs     = new URLSearchParams(req.query as Record<string, string>).toString();
+  try {
+    const r = await fetch(qs ? `${target}?${qs}` : target, {
+      headers: { "Accept": "application/json" },
+    });
+    const body = await r.json() as unknown;
+    return res.status(r.status).json(body);
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: "Scoring API unreachable", detail: String(err) });
+  }
+});
+
 // POST /wow/kalshi/weather/evaluate — scored bracket evaluation
 router.post("/wow/kalshi/weather/evaluate", async (req: Request, res: Response) => {
   const target = `${FLASK_BASE}/wow/kalshi/weather/evaluate`;
