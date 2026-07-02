@@ -22586,6 +22586,470 @@ def _build_role_state_ledgers(rows: list, market: str, today_ctx: dict) -> dict:
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW-PATCH-2026-07-02-IMPORTED-LEDGER-PROVENANCE-AND-STATUS-ESCALATION-GATE
+# v1.0.0 | 2026-07-02
+# Pre-score provenance validator. Prevents imported/pasted/AI-generated rows
+# from reaching MODEL_QUALIFIED_HOLD, MONEY_QUALIFIED, FINAL_APPROVED, or any
+# playable-equivalent label unless source-stamped and row-level verified.
+# DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS enforced.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_PROV_VERSION  = "v1.0.0"
+_PROV_BUILD_TS = "2026-07-02"
+
+# Trusted input origins that bypass the full required-field contract
+_PROV_TRUSTED_ORIGINS: frozenset[str] = frozenset({
+    "model_reconstructed",
+    "verified_api_reconstructed",
+})
+
+# Labels that must never appear when blockers are active
+_PROV_PLAYABLE_LABELS: frozenset[str] = frozenset({
+    "MODEL_QUALIFIED_HOLD", "MONEY_QUALIFIED", "MARKET_VERIFIED_HOLD",
+    "FINAL_APPROVED", "KALSHI_PLAYABLE", "LLP_PLAYABLE",
+    "LLP_APPROVED", "LOCK", "LOCKED_DRY_RUN",
+})
+
+# Full 21-field required contract for unverified imported rows
+_PROV_REQUIRED_FIELDS: list[str] = [
+    "player", "team", "opponent", "game_date", "market", "line", "side",
+    "source_timestamp", "exact_query",
+    "l5_rows", "l10_rows",
+    "l5_avg", "l10_avg", "l5_median", "l10_median",
+    "l5_hit_count_at_line", "l10_hit_count_at_line",
+    "player_status_timestamp", "market_timestamp", "final_lock_timestamp",
+]
+# source_url OR source_path (at least one)
+_PROV_SOURCE_LOCATION_FIELDS: tuple[str, ...] = ("source_url", "source_path")
+
+# Vague-reasoning phrases that trigger REASONED_NOT_MODELED
+_PROV_VAGUE_PHRASES: list[str] = [
+    "directionally consistent",
+    "plausible",
+    "starter recheck",
+    "role should be stable",
+    "average is close",
+    "seems supported",
+]
+
+# MLB pitcher injury/status keywords that require explicit clearance
+_PROV_MLB_INJURY_KEYWORDS: list[str] = [
+    "tommy john",
+    "ucl repair",
+    "elbow comebacker",
+    "shoulder issue",
+    "forearm tightness",
+    "hand/wrist issue",
+    "hand issue",
+    "wrist issue",
+    "velocity drop",
+    "early exit",
+    "skipped bullpen",
+    "pending bullpen",
+    "pitch-count restriction",
+    "pitch count restriction",
+    "next-start uncertainty",
+    "next start uncertainty",
+    "workload uncertainty",
+]
+
+# MLB clearance fields — all required before ceiling lifts
+_PROV_MLB_CLEARANCE_FIELDS: list[str] = [
+    "next_start_confirmed",
+    "bullpen_cleared",
+    "role_confirmed",
+]
+
+
+# ── Pure helper functions ─────────────────────────────────────────────────────
+
+def _prov_check_required_fields(row: dict) -> list[str]:
+    """Returns list of missing required fields for an unverified imported row."""
+    missing = []
+    for f in _PROV_REQUIRED_FIELDS:
+        if row.get(f) is None or row.get(f) == "":
+            missing.append(f)
+    # source_url OR source_path (at least one must be present)
+    if not any(row.get(f) for f in _PROV_SOURCE_LOCATION_FIELDS):
+        missing.append("source_url_or_source_path")
+    return missing
+
+
+def _prov_check_summary_only(row: dict) -> bool:
+    """
+    True if row only has summary averages, not game-by-game rows.
+    A row is summary-only if l5_rows or l10_rows is absent/empty.
+    """
+    l5  = row.get("l5_rows")
+    l10 = row.get("l10_rows")
+    l5_empty  = l5  is None or (isinstance(l5, list)  and len(l5) == 0)
+    l10_empty = l10 is None or (isinstance(l10, list) and len(l10) == 0)
+    return l5_empty or l10_empty
+
+
+def _prov_check_pasted_contradictions(row: dict) -> dict:
+    """
+    Compares pasted_claim_* fields against reconstructed values.
+    Returns a contradiction report dict.
+    """
+    contradictions: list[str] = []
+    delta: dict = {}
+    side_flipped = False
+
+    # Average check (10%+ difference)
+    p_avg  = row.get("pasted_claim_l10_avg")
+    r_avg  = row.get("l10_avg")
+    if p_avg is not None and r_avg is not None and r_avg != 0:
+        diff_pct = abs(float(p_avg) - float(r_avg)) / abs(float(r_avg))
+        delta["l10_avg_diff_pct"] = round(diff_pct * 100, 2)
+        if diff_pct >= 0.10:
+            contradictions.append("L10_AVG_DIFFERS_10PCT")
+
+    # Median check (0.5+ units)
+    p_med = row.get("pasted_claim_l10_median")
+    r_med = row.get("l10_median")
+    if p_med is not None and r_med is not None:
+        med_diff = abs(float(p_med) - float(r_med))
+        delta["l10_median_diff"] = round(med_diff, 3)
+        if med_diff >= 0.5:
+            contradictions.append("L10_MEDIAN_DIFFERS_0_5")
+
+    # L5 hit count (1+ game difference)
+    p_l5_hits = row.get("pasted_claim_l5_hit_count")
+    r_l5_hits = row.get("l5_hit_count_at_line")
+    if p_l5_hits is not None and r_l5_hits is not None:
+        hit_diff = abs(int(p_l5_hits) - int(r_l5_hits))
+        delta["l5_hit_count_diff"] = hit_diff
+        if hit_diff >= 1:
+            contradictions.append("L5_HIT_COUNT_DIFFERS_1_GAME")
+
+    # L10 hit count
+    p_l10_hits = row.get("pasted_claim_l10_hit_count")
+    r_l10_hits = row.get("l10_hit_count_at_line")
+    if p_l10_hits is not None and r_l10_hits is not None:
+        hit_diff = abs(int(p_l10_hits) - int(r_l10_hits))
+        delta["l10_hit_count_diff"] = hit_diff
+        if hit_diff >= 1:
+            contradictions.append("L10_HIT_COUNT_DIFFERS_1_GAME")
+
+    # Side direction flip
+    p_side = str(row.get("pasted_claim_side") or "").upper()
+    r_side = str(row.get("side") or "").upper()
+    if p_side and r_side and p_side != r_side:
+        contradictions.append("SIDE_DIRECTION_FLIPPED")
+        side_flipped = True
+
+    # Injury/status context omitted in pasted claim
+    if row.get("pasted_claim_injury_omitted") is True:
+        contradictions.append("INJURY_CONTEXT_OMITTED")
+
+    return {
+        "contradictions_found": contradictions,
+        "side_flipped":         side_flipped,
+        "delta":                delta,
+    }
+
+
+def _prov_check_mlb_pitcher(row: dict) -> dict:
+    """
+    Returns pitcher status escalation result.
+    Triggers STATUS_GATE_REQUIRED if injury keywords found without clearance.
+    """
+    if str(row.get("sport") or "").lower() not in ("mlb", "baseball"):
+        return {"escalation_required": False, "matched_keywords": []}
+
+    # Only applies to pitcher rows
+    position = str(row.get("position") or row.get("pitcher_role") or "").lower()
+    if position and "pitch" not in position and "sp" not in position and "rp" not in position:
+        return {"escalation_required": False, "matched_keywords": []}
+
+    # Collect all text fields for keyword scanning
+    text_sources = []
+    for field in ("pitcher_notes", "injury_notes", "status_notes",
+                  "player_status", "injury_report", "game_notes", "notes"):
+        val = row.get(field)
+        if val:
+            text_sources.append(str(val).lower())
+    combined_text = " ".join(text_sources)
+
+    matched = [kw for kw in _PROV_MLB_INJURY_KEYWORDS if kw in combined_text]
+    if not matched:
+        return {"escalation_required": False, "matched_keywords": []}
+
+    # Check clearance fields
+    missing_clearance = [f for f in _PROV_MLB_CLEARANCE_FIELDS
+                         if not row.get(f)]
+
+    return {
+        "escalation_required": bool(missing_clearance),
+        "matched_keywords":    matched,
+        "missing_clearance":   missing_clearance,
+        "status_gate_tag":     "STATUS_GATE_REQUIRED" if missing_clearance else "STATUS_GATE_CLEARED",
+    }
+
+
+def _prov_check_reasoned_not_modeled(row: dict) -> list[str]:
+    """
+    Returns list of matched vague-reasoning phrases if the row attempts
+    to upgrade using language instead of data.
+    Checks: reasoning_notes, upgrade_reason, scoring_rationale fields.
+    """
+    text_sources = []
+    for field in ("reasoning_notes", "upgrade_reason", "scoring_rationale",
+                  "model_notes", "analyst_notes", "override_reason"):
+        val = row.get(field)
+        if val:
+            text_sources.append(str(val).lower())
+    combined = " ".join(text_sources)
+    return [phrase for phrase in _PROV_VAGUE_PHRASES if phrase in combined]
+
+
+# ── Main endpoint ─────────────────────────────────────────────────────────────
+
+@app.route("/wow/provenance/validate", methods=["POST"])
+def wow_provenance_validate():
+    """
+    POST /wow/provenance/validate
+
+    Pre-score provenance gate. Validates a single imported/pasted ledger row
+    before any scoring, ranking, slip construction, or final-label assignment.
+
+    Body (JSON):
+      One row object containing any/all of the required fields.
+
+      Key fields:
+        input_origin        (str) — e.g. "pasted", "screenshot", "ai_generated",
+                                    "model_reconstructed", "verified_api_reconstructed"
+        sport               (str) — "mlb", "wnba", etc.
+        player, team, opponent, game_date, market, line, side
+        source_url / source_path, source_timestamp, exact_query
+        l5_rows, l10_rows   (list[obj] — game-by-game data)
+        l5_avg, l10_avg, l5_median, l10_median
+        l5_hit_count_at_line, l10_hit_count_at_line
+        player_status_timestamp, market_timestamp, final_lock_timestamp
+
+        pasted_claim_l10_avg, pasted_claim_l10_median   (for contradiction check)
+        pasted_claim_l5_hit_count, pasted_claim_l10_hit_count
+        pasted_claim_side, pasted_claim_injury_omitted
+
+        pitcher_notes / injury_notes / status_notes     (MLB pitcher check)
+        next_start_confirmed, bullpen_cleared, role_confirmed
+
+        reasoning_notes / upgrade_reason / scoring_rationale
+          (if present with vague phrases → REASONED_NOT_MODELED)
+
+        proposed_label      (str, optional) — checked against playable list
+
+    Returns:
+      source_provenance_status, terminal_failure_tag[], approval_blockers[],
+      ceiling, can_execute (always false), all check details.
+    """
+    row = request.get_json(silent=True) or {}
+
+    input_origin    = str(row.get("input_origin") or "").strip().lower()
+    is_trusted      = input_origin in _PROV_TRUSTED_ORIGINS
+    proposed_label  = str(row.get("proposed_label") or "").strip().upper()
+    sport           = str(row.get("sport") or "").strip().lower()
+
+    terminal_failure_tags: list[str] = []
+    approval_blockers:     list[str] = []
+    ceiling                          = "WATCH"   # default conservative ceiling
+    provenance_status                = "IMPORTED_LEDGER_UNVERIFIED"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Check 1 — Required fields (skipped for trusted origins)
+    # ─────────────────────────────────────────────────────────────────────────
+    missing_fields: list[str] = []
+    if not is_trusted:
+        approval_blockers.append("IMPORTED_LEDGER_UNVERIFIED")
+        missing_fields = _prov_check_required_fields(row)
+        if missing_fields:
+            terminal_failure_tags.append("SOURCE_LEDGER_PROVENANCE_FAIL")
+            approval_blockers.append("SOURCE_LEDGER_PROVENANCE_FAIL")
+            ceiling = "DATA_CONTRACT_FAIL"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Check 2 — Summary-only detection (no game-by-game rows)
+    # ─────────────────────────────────────────────────────────────────────────
+    summary_only = _prov_check_summary_only(row)
+    if summary_only:
+        terminal_failure_tags.append("SUMMARY_ONLY_NOT_MODEL_VERIFIED")
+        approval_blockers.append("SUMMARY_ONLY_NOT_MODEL_VERIFIED")
+        ceiling = "WATCH"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Check 3 — Pasted claim contradictions
+    # ─────────────────────────────────────────────────────────────────────────
+    has_pasted_claims = any(
+        row.get(f) is not None
+        for f in ("pasted_claim_l10_avg", "pasted_claim_l10_median",
+                  "pasted_claim_l5_hit_count", "pasted_claim_l10_hit_count",
+                  "pasted_claim_side")
+    )
+    pasted_report = _prov_check_pasted_contradictions(row) if has_pasted_claims else {
+        "contradictions_found": [], "side_flipped": False, "delta": {}
+    }
+    if pasted_report["contradictions_found"]:
+        terminal_failure_tags.append("PASTED_LEDGER_CONTRADICTION")
+        approval_blockers.append("PASTED_LEDGER_CONTRADICTION")
+        if pasted_report["side_flipped"]:
+            ceiling = "REJECT_DATA_QUALITY"
+            terminal_failure_tags.append("SIDE_FLIP_DETECTED")
+        else:
+            ceiling = "WATCH"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Check 4 — MLB pitcher status escalation
+    # ─────────────────────────────────────────────────────────────────────────
+    pitcher_report = _prov_check_mlb_pitcher(row)
+    if pitcher_report.get("escalation_required"):
+        terminal_failure_tags.append("STATUS_GATE_REQUIRED")
+        approval_blockers.append("STATUS_GATE_REQUIRED")
+        if "STATUS_GATE_LATE" not in approval_blockers and \
+                any(kw in ("skipped bullpen", "pending bullpen", "next-start uncertainty",
+                           "next start uncertainty")
+                    for kw in pitcher_report.get("matched_keywords", [])):
+            approval_blockers.append("STATUS_GATE_LATE")
+        ceiling = "WATCH"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Check 5 — REASONED_NOT_MODELED
+    # ─────────────────────────────────────────────────────────────────────────
+    vague_phrases = _prov_check_reasoned_not_modeled(row)
+    if vague_phrases and missing_fields:
+        # Vague reasoning present AND required fields missing
+        terminal_failure_tags.append("REASONED_NOT_MODELED")
+        approval_blockers.append("REASONED_NOT_MODELED")
+        ceiling = "WATCH"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Check 6 — Proposed label gate
+    # ─────────────────────────────────────────────────────────────────────────
+    label_blocked = False
+    if proposed_label and proposed_label in _PROV_PLAYABLE_LABELS:
+        if approval_blockers:
+            terminal_failure_tags.append("PLAYABLE_LABEL_BLOCKED_BY_PROVENANCE")
+            label_blocked = True
+            # Force proposed label down
+            proposed_label = ceiling
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Determine final provenance status
+    # ─────────────────────────────────────────────────────────────────────────
+    if not approval_blockers:
+        provenance_status = "PROVENANCE_VERIFIED"
+        ceiling = "ELIGIBLE_FOR_SCORING"
+    elif is_trusted and not summary_only and not pasted_report["contradictions_found"] \
+            and not pitcher_report.get("escalation_required"):
+        provenance_status = "TRUSTED_ORIGIN_PASS"
+        ceiling = "ELIGIBLE_FOR_SCORING"
+    else:
+        provenance_status = "IMPORTED_LEDGER_UNVERIFIED"
+
+    # Ledger rows verified flag
+    ledger_rows_verified = (
+        not summary_only
+        and not missing_fields
+        and not pasted_report["contradictions_found"]
+    )
+
+    return jsonify({
+        "ok":                      True,
+        "provenance_version":      _PROV_VERSION,
+        "build_ts":                _PROV_BUILD_TS,
+
+        # Core output
+        "source_provenance_status": provenance_status,
+        "terminal_failure_tag":    terminal_failure_tags,
+        "approval_blockers":       approval_blockers,
+        "ceiling":                 ceiling,
+        "can_execute":             False,
+
+        # Detail fields
+        "input_origin":            input_origin or None,
+        "is_trusted_origin":       is_trusted,
+        "ledger_rows_verified":    ledger_rows_verified,
+        "summary_only_flag":       summary_only,
+        "missing_required_fields": missing_fields,
+
+        # Pasted claim check
+        "pasted_claim_verified":   has_pasted_claims and not pasted_report["contradictions_found"],
+        "pasted_claim_delta":      pasted_report["delta"],
+        "pasted_contradictions":   pasted_report["contradictions_found"],
+
+        # MLB pitcher
+        "injury_status_escalation": pitcher_report.get("status_gate_tag"),
+        "pitcher_matched_keywords": pitcher_report.get("matched_keywords", []),
+        "pitcher_missing_clearance": pitcher_report.get("missing_clearance", []),
+
+        # Role/reasoning
+        "role_status_escalation":  None,   # reserved for future gate
+        "vague_reasoning_phrases": vague_phrases,
+
+        # Label gate
+        "proposed_label_blocked":  label_blocked,
+        "effective_ceiling":       ceiling,
+
+        # Passthrough timestamps (echoed from input for downstream use)
+        "market_timestamp":        row.get("market_timestamp"),
+        "final_lock_timestamp":    row.get("final_lock_timestamp"),
+
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
+@app.route("/wow/provenance/validate-batch", methods=["POST"])
+def wow_provenance_validate_batch():
+    """
+    POST /wow/provenance/validate-batch
+    Validate a list of rows. Every row preserved in output.
+
+    Body: { "rows": [...], "sport": "wnba" (default per-row) }
+    """
+    body = request.get_json(silent=True) or {}
+    rows = body.get("rows") or []
+    default_sport = str(body.get("sport") or "").strip()
+
+    if not isinstance(rows, list):
+        return jsonify({"ok": False, "error": "'rows' must be an array"}), 400
+
+    results = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            row = {}
+        if not row.get("sport") and default_sport:
+            row = dict(row); row["sport"] = default_sport
+
+        # Re-use the single-row logic via internal call
+        with app.test_request_context(
+            "/wow/provenance/validate",
+            method="POST",
+            json=row,
+            content_type="application/json",
+        ):
+            resp = wow_provenance_validate()
+            if hasattr(resp, "get_json"):
+                result = resp.get_json()
+            else:
+                result = resp[0].get_json() if isinstance(resp, tuple) else {}
+        result["_row_index"] = i
+        results.append(result)
+
+    blocked  = sum(1 for r in results if r.get("approval_blockers"))
+    eligible = sum(1 for r in results if r.get("source_provenance_status") in
+                   ("PROVENANCE_VERIFIED", "TRUSTED_ORIGIN_PASS", "ELIGIBLE_FOR_SCORING"))
+
+    return jsonify({
+        "ok":      True,
+        "total":   len(results),
+        "blocked": blocked,
+        "eligible_for_scoring": eligible,
+        "results": results,
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)

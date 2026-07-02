@@ -837,6 +837,50 @@ Output per pick:
 
 ---
 
+---
+
+## §21 PATCH-IMPORTED-LEDGER-PROVENANCE-AND-STATUS-ESCALATION-GATE (SHIPPED 2026-07-02)
+
+Endpoints: `POST /wow/provenance/validate`, `POST /wow/provenance/validate-batch`
+
+**Purpose:** Pre-score gate — prevents imported/pasted/AI-generated/screenshot-derived rows from reaching any playable label (`MODEL_QUALIFIED_HOLD`, `MONEY_QUALIFIED`, `FINAL_APPROVED`, `KALSHI_PLAYABLE`, `LLP_PLAYABLE`, `LLP_APPROVED`, `LOCK`, `LOCKED_DRY_RUN`) unless the row is source-stamped and row-level verified.
+
+**Trusted origins** (bypass full field contract): `model_reconstructed`, `verified_api_reconstructed`
+
+**Required fields** for unverified imported rows (21 fields + source_url OR source_path):
+`player`, `team`, `opponent`, `game_date`, `market`, `line`, `side`, `source_url/source_path`, `source_timestamp`, `exact_query`, `l5_rows`, `l10_rows`, `l5_avg`, `l10_avg`, `l5_median`, `l10_median`, `l5_hit_count_at_line`, `l10_hit_count_at_line`, `player_status_timestamp`, `market_timestamp`, `final_lock_timestamp`
+
+**Checks (in order):**
+
+1. **Required-field contract** — any missing field → `SOURCE_LEDGER_PROVENANCE_FAIL`, ceiling `DATA_CONTRACT_FAIL`
+2. **Summary-only detection** — `l5_rows` or `l10_rows` absent/empty → `SUMMARY_ONLY_NOT_MODEL_VERIFIED`, ceiling `WATCH`
+3. **Pasted claim contradictions** — compares `pasted_claim_*` vs reconstructed values:
+   - avg diff ≥10% → `L10_AVG_DIFFERS_10PCT`
+   - median diff ≥0.5 → `L10_MEDIAN_DIFFERS_0_5`
+   - L5/L10 hit count diff ≥1 → `*_HIT_COUNT_DIFFERS_1_GAME`
+   - side flip → `SIDE_DIRECTION_FLIPPED` + `REJECT_DATA_QUALITY` ceiling
+   - injury context omitted → `INJURY_CONTEXT_OMITTED`
+   - Any contradiction → `PASTED_LEDGER_CONTRADICTION`
+4. **MLB pitcher status escalation** — scans `pitcher_notes`/`injury_notes`/`status_notes` for: `tommy john`, `ucl repair`, `elbow comebacker`, `shoulder issue`, `forearm tightness`, `hand/wrist issue`, `velocity drop`, `early exit`, `skipped bullpen`, `pending bullpen`, `pitch-count restriction`, `next-start uncertainty`, `workload uncertainty`. Missing `next_start_confirmed` + `bullpen_cleared` + `role_confirmed` → `STATUS_GATE_REQUIRED`, ceiling `WATCH`. Late/pending flags → `STATUS_GATE_LATE`
+5. **REASONED_NOT_MODELED** — vague phrases in `reasoning_notes`/`upgrade_reason`/`scoring_rationale` when required fields also missing: `directionally consistent`, `plausible`, `starter recheck`, `role should be stable`, `average is close`, `seems supported` → `REASONED_NOT_MODELED`, ceiling `WATCH`
+6. **Playable label gate** — if `proposed_label` is a playable label and any blockers are active → `PLAYABLE_LABEL_BLOCKED_BY_PROVENANCE`, proposed label forced to `ceiling`
+
+**New blocker/status tags** (not playable labels):
+`IMPORTED_LEDGER_UNVERIFIED`, `SOURCE_LEDGER_PROVENANCE_FAIL`, `SUMMARY_ONLY_NOT_MODEL_VERIFIED`, `PASTED_LEDGER_CONTRADICTION`, `STATUS_GATE_LATE`, `STATUS_GATE_REQUIRED`, `REASONED_NOT_MODELED`
+
+**Output fields added:**
+`input_origin`, `source_provenance_status`, `ledger_rows_verified`, `summary_only_flag`, `pasted_claim_verified`, `pasted_claim_delta`, `injury_status_escalation`, `role_status_escalation`, `market_timestamp`, `final_lock_timestamp`, `terminal_failure_tag[]`, `approval_blockers[]`
+
+**`ceiling` values:** `ELIGIBLE_FOR_SCORING` (clean pass), `WATCH` (advisory block), `DATA_CONTRACT_FAIL` (hard block), `REJECT_DATA_QUALITY` (side-flip contradiction)
+
+### Safety rails
+- `can_execute` always `false`
+- Every row preserved in batch output — no hidden cuts
+- `execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` on every response
+- Version: `v1.0.0`
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want
