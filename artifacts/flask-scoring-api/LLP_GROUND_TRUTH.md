@@ -614,6 +614,116 @@ Base core fields (all markets): `player_id_or_name, team, opponent, game_date, m
 
 ---
 
+---
+
+## §16 — Confidence Envelope (WOW-PATCH-009)
+
+### Endpoint
+
+`POST /wow/confidence-envelope`
+
+### Purpose
+
+Accepts Gate 3 + PATCH-010 outputs and returns four **independent** confidence axes. Each axis answers a different question; no single label can mask whether the bottleneck is signal, data, market, or approval structure.
+
+### Request body
+
+```json
+{
+  "sport": "wnba",
+  "market": "PTS",
+
+  // Gate 3 inputs (any of):
+  "gate3_result": { "label": "MODEL_QUALIFIED_HOLD", "edge_pct": 8.5 },
+  "gate3_label": "MODEL_QUALIFIED_HOLD",
+  "gate3_edge_pct": 8.5,
+  "gate3_hit_rate_band": "HIGH_70_100",
+
+  // Data contract inputs (any of):
+  "data_contract_result": { "contract_status": "DATA_CONTRACT_COMPLETE", ... },
+  "data_contract_status": "DATA_CONTRACT_COMPLETE",
+  "data_stale_fields": [],
+  "data_row_count": 8,
+  "data_window": "L5",
+  "data_window_sufficient": true,
+  "advisory_codes": ["TEAMMATE_AVAILABILITY_MISSING"],
+
+  // Market inputs (all optional):
+  "market_odds_available": false,
+  "market_edge_confirmed": null,
+  "market_line_direction": "FLAT",
+  "market_stale": false
+}
+```
+
+`gate3_result` and `data_contract_result` objects are unpacked automatically. Individual fields take precedence.
+
+### Four axes
+
+| Axis | Values |
+|------|--------|
+| `signal_confidence` | HIGH \| MEDIUM \| LOW \| NEGATIVE \| UNKNOWN |
+| `data_confidence` | COMPLETE_FRESH \| COMPLETE_STALE \| PARTIAL_FRESH \| PARTIAL_STALE \| LOW_SAMPLE \| DATA_CONTRACT_INCOMPLETE \| DATA_CONTRACT_PARTIAL \| UNKNOWN |
+| `market_confidence` | MARKET_CONFIRMED \| MARKET_CONFLICT \| MARKET_UNVERIFIED \| MARKET_STALE \| NOT_REQUIRED_FOR_THIS_GATE |
+| `approval_confidence` | MODEL_QUALIFIED_HOLD \| WATCH_ELEVATED \| WATCH \| REJECT \| NO_APPROVAL (+ orchestrator-only: FINAL_APPROVED, MONEY_QUALIFIED, MARKET_VERIFIED_HOLD) |
+
+### Approval confidence derivation (abbreviated)
+
+| Signal | Data | Market | advisory_codes | approval_confidence |
+|--------|------|--------|----------------|---------------------|
+| HIGH | COMPLETE_FRESH | confirmed/unverified/not required | empty | MODEL_QUALIFIED_HOLD |
+| HIGH | COMPLETE_FRESH | confirmed/unverified/not required | present | WATCH_ELEVATED |
+| HIGH | COMPLETE_STALE or PARTIAL_FRESH | any | any | WATCH_ELEVATED |
+| HIGH | LOW_SAMPLE / DATA_CONTRACT_PARTIAL | any | any | WATCH |
+| HIGH | any | MARKET_CONFLICT | any | WATCH |
+| MEDIUM | any | any | any | WATCH |
+| LOW | COMPLETE_FRESH | any | any | WATCH |
+| LOW | other | any | any | NO_APPROVAL |
+| NEGATIVE | any | any | any | REJECT |
+| UNKNOWN | any | any | any | NO_APPROVAL |
+| any | DATA_CONTRACT_INCOMPLETE | any | any | NO_APPROVAL |
+
+### Ceiling rule
+
+PATCH-009 max emittable = `MODEL_QUALIFIED_HOLD`. `FINAL_APPROVED`, `MONEY_QUALIFIED`, `MARKET_VERIFIED_HOLD` are reserved for multi-gate orchestrator; PATCH-009 never emits them.
+
+### Signal confidence map (Gate 3 → axis)
+
+```
+MODEL_QUALIFIED_HOLD → HIGH
+MARKET_VERIFIED_HOLD → HIGH
+MONEY_QUALIFIED      → HIGH
+FINAL_APPROVED       → HIGH
+WATCH_ELEVATED       → MEDIUM
+WATCH                → MEDIUM
+DISCOVERY_ONLY       → LOW
+DISCOVERY_ONLY_55_64 → LOW
+NO_LABEL             → UNKNOWN
+REJECT               → NEGATIVE
+```
+
+### Safety rails
+
+- Gate 3 math unchanged
+- No betting approvals created
+- `execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` on every response
+- `envelope_version: v1.0.0`
+
+---
+
+## PATCH-010 amendment (CLOSED)
+
+`approval_ceiling` enum corrected — `CONDITIONAL` removed from all outputs:
+
+| Scenario | Old (removed) | New |
+|----------|--------------|-----|
+| Advisory fields missing | CONDITIONAL | GATE_3_ELIGIBLE_WITH_ADVISORY |
+| Window row count insufficient | CONDITIONAL | WATCH |
+
+`advisory_code` field added: pipe-delimited string of `{FIELD}_MISSING` codes (e.g. `TEAMMATE_AVAILABILITY_MISSING`) or `NONE`.
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

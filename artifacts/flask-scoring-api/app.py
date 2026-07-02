@@ -20433,20 +20433,26 @@ def _dc_run_check(sport: str, market: str, data: dict,
         data_confidence  = "PARTIAL_STALE"
         approval_ceiling = "WATCH"
     elif has_window_gap:
-        # Fields fresh, but not enough rows for requested window
+        # Fields fresh, but not enough rows for requested window → conservative ceiling
         contract_status  = "DATA_CONTRACT_PARTIAL"
         data_confidence  = "MEDIUM"
-        approval_ceiling = "CONDITIONAL"
+        approval_ceiling = "WATCH"
     elif has_advisory_gap:
-        # Core complete + fresh; only advisory fields missing
+        # Core complete + fresh; only advisory fields missing → eligible with advisory flag
         contract_status  = "DATA_CONTRACT_PARTIAL"
         data_confidence  = "MEDIUM"
-        approval_ceiling = "CONDITIONAL"
+        approval_ceiling = "GATE_3_ELIGIBLE_WITH_ADVISORY"
     else:
         # Fully satisfied contract
         contract_status  = "DATA_CONTRACT_COMPLETE"
         data_confidence  = "HIGH"
         approval_ceiling = "GATE_3_ELIGIBLE"
+
+    # advisory_code: human-readable codes for each missing advisory field
+    advisory_code = (
+        "|".join(f.upper() + "_MISSING" for f in advisory_missing)
+        if advisory_missing else "NONE"
+    )
 
     return {
         "ok":               True,
@@ -20460,6 +20466,7 @@ def _dc_run_check(sport: str, market: str, data: dict,
         "stale_fields":     stale_fields,
         "advisory_fields":  advisory_fields,
         "advisory_missing": advisory_missing,
+        "advisory_code":    advisory_code,
         "source_quality":   _dc_source_quality(data),
         "data_confidence":  data_confidence,
         "approval_ceiling": approval_ceiling,
@@ -20643,6 +20650,340 @@ def wow_data_contract_registry():
         "registry":              registry,
         "stale_threshold_hours": _DATA_CONTRACT_STALE_HOURS,
         "execution_rule":        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW-PATCH-009 — Confidence Envelope
+# v1.0.0 | 2026-07-02
+# Normalizes Gate 3 + PATCH-010 data-contract outputs into four independent
+# confidence axes, making it impossible for one label to mask whether the
+# bottleneck is signal, data, market, or approval structure.
+# Does not alter Gate 3 math. Does not create betting approvals.
+# Max emittable approval_confidence from this patch: MODEL_QUALIFIED_HOLD.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_CE_VERSION  = "v1.0.0"
+_CE_BUILD_TS = "2026-07-02"
+
+# ── Signal confidence: Gate 3 label → axis value ──────────────────────────────
+_CE_GATE3_SIGNAL_MAP: dict[str, str] = {
+    "MODEL_QUALIFIED_HOLD":  "HIGH",
+    "MARKET_VERIFIED_HOLD":  "HIGH",
+    "MONEY_QUALIFIED":       "HIGH",
+    "FINAL_APPROVED":        "HIGH",
+    "WATCH_ELEVATED":        "MEDIUM",
+    "WATCH":                 "MEDIUM",
+    "DISCOVERY_ONLY":        "LOW",
+    "DISCOVERY_ONLY_55_64":  "LOW",
+    "NO_LABEL":              "UNKNOWN",
+    "REJECT":                "NEGATIVE",
+}
+
+# Approval labels PATCH-009 may never emit; reserved for multi-gate orchestrator
+_CE_RESERVED_APPROVALS: frozenset[str] = frozenset({
+    "FINAL_APPROVED",
+    "MONEY_QUALIFIED",
+    "MARKET_VERIFIED_HOLD",
+})
+
+# ── Axis derivation helpers ───────────────────────────────────────────────────
+
+def _ce_signal_confidence(
+    gate3_label: str | None,
+    gate3_edge_pct: float | None,
+) -> tuple[str, str]:
+    """Returns (signal_confidence, rationale)."""
+    if not gate3_label:
+        return "UNKNOWN", "No Gate 3 label provided"
+    label = gate3_label.upper().strip()
+    sig   = _CE_GATE3_SIGNAL_MAP.get(label, "UNKNOWN")
+    edge_note = f", edge_pct={gate3_edge_pct:.1f}%" if gate3_edge_pct is not None else ""
+    return sig, f"Gate 3 label {label}{edge_note}"
+
+
+def _ce_data_confidence(
+    contract_status:   str | None,
+    stale_fields:      list,
+    row_count:         int | None,
+    window:            str | None,
+    window_sufficient: bool | None,
+) -> tuple[str, str]:
+    """
+    Returns (data_confidence, rationale).
+    Maps PATCH-010 contract_status + freshness + window → CE data axis.
+    """
+    cs = (contract_status or "").upper().strip()
+
+    if cs == "DATA_CONTRACT_INCOMPLETE":
+        return "DATA_CONTRACT_INCOMPLETE", "Core stat or minutes missing in data contract"
+
+    if cs in ("DATA_CONTRACT_PARTIAL", "DATA_BUILD_PRIORITY"):
+        if stale_fields:
+            return "PARTIAL_STALE", f"Partial contract + stale fields: {stale_fields}"
+        return "DATA_CONTRACT_PARTIAL", "Advisory or metadata gaps present"
+
+    if window and window_sufficient is False:
+        min_r = _WINDOW_MIN_ROWS.get(window.upper(), 5)
+        return "LOW_SAMPLE", f"Insufficient rows for {window}: {row_count}/{min_r}"
+
+    if cs == "DATA_CONTRACT_STALE" or bool(stale_fields):
+        return "COMPLETE_STALE", "All fields present but source timestamp stale"
+
+    if cs == "DATA_CONTRACT_COMPLETE":
+        return "COMPLETE_FRESH", "Contract complete and data fresh"
+
+    if not cs:
+        return "UNKNOWN", "No data contract result provided"
+
+    return "UNKNOWN", f"Unrecognized contract status: {cs}"
+
+
+def _ce_market_confidence(
+    odds_available: bool | None,
+    edge_confirmed: bool | None,
+    line_direction: str | None,
+    market_stale:   bool,
+) -> tuple[str, str]:
+    """Returns (market_confidence, rationale)."""
+    if not odds_available:
+        return "NOT_REQUIRED_FOR_THIS_GATE", "No market data provided"
+    if market_stale:
+        return "MARKET_STALE", "Market odds data is stale"
+    if edge_confirmed is True:
+        ld = (line_direction or "").upper()
+        if ld in ("STEAM", "FLAT", ""):
+            return "MARKET_CONFIRMED", f"Edge confirmed by market (line: {ld or 'neutral'})"
+        return "MARKET_CONFLICT", f"Edge confirmed but line direction conflicts: {ld}"
+    if edge_confirmed is False:
+        return "MARKET_CONFLICT", "Edge not confirmed by market data"
+    return "MARKET_UNVERIFIED", "Odds available but edge unverifiable"
+
+
+def _ce_approval_confidence(
+    signal:        str,
+    data:          str,
+    market:        str,
+    advisory_codes: list[str],
+) -> tuple[str, str]:
+    """
+    Returns (approval_confidence, rationale).
+    PATCH-009 max ceiling = MODEL_QUALIFIED_HOLD.
+    FINAL_APPROVED / MONEY_QUALIFIED / MARKET_VERIFIED_HOLD require orchestrator.
+    """
+    # Hard blocks (order matters)
+    if data == "DATA_CONTRACT_INCOMPLETE":
+        return "NO_APPROVAL", "Data contract incomplete: core fields missing"
+    if signal == "NEGATIVE":
+        return "REJECT", "Negative signal from Gate 3"
+    if signal == "UNKNOWN":
+        return "NO_APPROVAL", "Signal unknown: Gate 3 not run or label absent"
+    if data == "UNKNOWN":
+        return "NO_APPROVAL", "Data confidence unknown: contract result absent"
+    if market == "MARKET_CONFLICT":
+        return "WATCH", "Market conflict detected; holding at WATCH"
+
+    # HIGH signal paths
+    if signal == "HIGH":
+        if data == "COMPLETE_FRESH":
+            if market in ("MARKET_CONFIRMED", "NOT_REQUIRED_FOR_THIS_GATE",
+                          "MARKET_UNVERIFIED"):
+                if advisory_codes:
+                    return "WATCH_ELEVATED", (
+                        "High signal + complete fresh data, advisory flags: "
+                        + ", ".join(advisory_codes)
+                    )
+                return "MODEL_QUALIFIED_HOLD", (
+                    "High signal + complete fresh data + market gate clear; "
+                    "ceiling MODEL_QUALIFIED_HOLD "
+                    "(orchestrator required for FINAL_APPROVED / MONEY_QUALIFIED)"
+                )
+            if market == "MARKET_STALE":
+                return "WATCH_ELEVATED", "High signal but market data stale"
+        if data in ("COMPLETE_STALE", "PARTIAL_FRESH"):
+            return "WATCH_ELEVATED", (
+                f"High signal but data freshness/completeness degraded ({data})"
+            )
+        if data in ("LOW_SAMPLE", "DATA_CONTRACT_PARTIAL", "PARTIAL_STALE"):
+            return "WATCH", f"High signal but data quality insufficient ({data})"
+        return "WATCH", f"High signal, data state {data}"
+
+    # MEDIUM signal paths
+    if signal == "MEDIUM":
+        if data in ("COMPLETE_FRESH", "COMPLETE_STALE"):
+            return "WATCH", f"Medium signal, data {data}"
+        return "WATCH", f"Medium signal with degraded data ({data})"
+
+    # LOW signal paths
+    if signal == "LOW":
+        if data == "COMPLETE_FRESH":
+            return "WATCH", "Low signal but data complete; monitor only"
+        return "NO_APPROVAL", f"Low signal with degraded data ({data})"
+
+    return "NO_APPROVAL", (
+        f"Unresolved axis combination: signal={signal}, data={data}, market={market}"
+    )
+
+
+# ── Endpoint ──────────────────────────────────────────────────────────────────
+
+@app.route("/wow/confidence-envelope", methods=["POST"])
+def wow_confidence_envelope():
+    """
+    POST /wow/confidence-envelope
+
+    Accepts Gate 3 and PATCH-010 data-contract outputs, returns the four
+    independent confidence axes that make bottlenecks explicit.
+
+    Request body (JSON):
+      sport                    (str, required)
+      market                   (str, required)
+
+      Gate 3 inputs (any of):
+        gate3_result           (obj)   — raw Gate 3 response to unpack
+        gate3_label            (str)   — e.g. "MODEL_QUALIFIED_HOLD"
+        gate3_edge_pct         (float)
+        gate3_hit_rate_band    (str)
+
+      Data contract inputs (any of):
+        data_contract_result   (obj)   — raw PATCH-010 response to unpack
+        data_contract_status   (str)   — e.g. "DATA_CONTRACT_COMPLETE"
+        data_stale_fields      (list)
+        data_row_count         (int)
+        data_window            (str)   — "L5" | "L10"
+        data_window_sufficient (bool)
+        advisory_codes         (list)  — e.g. ["TEAMMATE_AVAILABILITY_MISSING"]
+
+      Market inputs (all optional):
+        market_odds_available  (bool)  — false/absent → NOT_REQUIRED_FOR_THIS_GATE
+        market_edge_confirmed  (bool | null)
+        market_line_direction  (str)   — "STEAM" | "REVERSE" | "FLAT"
+        market_stale           (bool)
+
+    Response axes:
+      signal_confidence:    HIGH | MEDIUM | LOW | NEGATIVE | UNKNOWN
+      data_confidence:      COMPLETE_FRESH | COMPLETE_STALE | PARTIAL_FRESH |
+                            PARTIAL_STALE | LOW_SAMPLE |
+                            DATA_CONTRACT_INCOMPLETE | DATA_CONTRACT_PARTIAL | UNKNOWN
+      market_confidence:    MARKET_CONFIRMED | MARKET_CONFLICT | MARKET_UNVERIFIED |
+                            MARKET_STALE | NOT_REQUIRED_FOR_THIS_GATE
+      approval_confidence:  FINAL_APPROVED* | MONEY_QUALIFIED* |
+                            MARKET_VERIFIED_HOLD* | MODEL_QUALIFIED_HOLD |
+                            WATCH_ELEVATED | WATCH | REJECT | NO_APPROVAL
+                            (* reserved for orchestrator; PATCH-009 max = MODEL_QUALIFIED_HOLD)
+    """
+    body = request.get_json(silent=True) or {}
+
+    sport  = str(body.get("sport") or "").strip()
+    market = str(body.get("market") or "").strip()
+    if not sport:
+        return jsonify({"ok": False, "error": "sport required"}), 400
+    if not market:
+        return jsonify({"ok": False, "error": "market required"}), 400
+
+    # ── Gate 3 inputs ──
+    g3 = body.get("gate3_result") or {}
+    gate3_label = (
+        str(body.get("gate3_label") or
+            g3.get("label") or
+            g3.get("gate3_label") or "")
+        .strip().upper() or None
+    )
+    _g3_edge_raw  = body.get("gate3_edge_pct") if body.get("gate3_edge_pct") is not None \
+                    else g3.get("edge_pct")
+    gate3_edge_pct = float(_g3_edge_raw) if _g3_edge_raw is not None else None
+    gate3_band = (
+        str(body.get("gate3_hit_rate_band") or g3.get("hit_rate_band") or "")
+        .strip().upper() or None
+    )
+
+    # ── Data contract inputs ──
+    dc = body.get("data_contract_result") or {}
+    dc_status = (
+        str(body.get("data_contract_status") or dc.get("contract_status") or "")
+        .strip().upper() or None
+    )
+    dc_stale = list(
+        body.get("data_stale_fields") if body.get("data_stale_fields") is not None
+        else dc.get("stale_fields") or []
+    )
+    dc_row = (
+        body.get("data_row_count") if body.get("data_row_count") is not None
+        else dc.get("row_count")
+    )
+    dc_window = (
+        str(body.get("data_window") or dc.get("window") or "")
+        .strip().upper() or None
+    )
+    dc_win_ok = (
+        body.get("data_window_sufficient") if body.get("data_window_sufficient") is not None
+        else dc.get("window_sufficient")
+    )
+    # advisory_codes: from explicit list, or parse the advisory_code string from PATCH-010
+    _adv_raw = body.get("advisory_codes")
+    if _adv_raw is None:
+        _dc_adv_code = str(dc.get("advisory_code") or "NONE")
+        _adv_raw = [c for c in _dc_adv_code.split("|") if c and c.upper() != "NONE"]
+    advisory_codes = [str(c).strip() for c in (_adv_raw or []) if str(c).strip().upper() != "NONE"]
+
+    # ── Market inputs ──
+    odds_available = body.get("market_odds_available")
+    edge_confirmed = body.get("market_edge_confirmed")
+    line_direction = (
+        str(body.get("market_line_direction") or "").strip().upper() or None
+    )
+    market_stale = bool(body.get("market_stale") or False)
+
+    # ── Compute four axes ──
+    sig_conf,  sig_rat  = _ce_signal_confidence(gate3_label, gate3_edge_pct)
+    dat_conf,  dat_rat  = _ce_data_confidence(dc_status, dc_stale, dc_row, dc_window, dc_win_ok)
+    mkt_conf,  mkt_rat  = _ce_market_confidence(odds_available, edge_confirmed, line_direction, market_stale)
+    appr_conf, appr_rat = _ce_approval_confidence(sig_conf, dat_conf, mkt_conf, advisory_codes)
+
+    # ── Blocker axes: axes actively blocking approval ──
+    blocker_axes: list[str] = []
+    if sig_conf in ("UNKNOWN", "NEGATIVE"):
+        blocker_axes.append(f"SIGNAL:{sig_conf}")
+    if dat_conf in ("DATA_CONTRACT_INCOMPLETE", "UNKNOWN"):
+        blocker_axes.append(f"DATA:{dat_conf}")
+    elif dat_conf in ("LOW_SAMPLE", "COMPLETE_STALE", "PARTIAL_STALE",
+                      "DATA_CONTRACT_PARTIAL"):
+        blocker_axes.append(f"DATA:{dat_conf}")
+    if mkt_conf in ("MARKET_CONFLICT", "MARKET_STALE"):
+        blocker_axes.append(f"MARKET:{mkt_conf}")
+    if advisory_codes:
+        blocker_axes.append(f"ADVISORY:{','.join(advisory_codes)}")
+    if appr_conf in ("REJECT", "NO_APPROVAL"):
+        blocker_axes.append(f"APPROVAL:{appr_conf}")
+
+    return jsonify({
+        "ok":                  True,
+        "envelope_version":    _CE_VERSION,
+        "build_ts":            _CE_BUILD_TS,
+        "sport":               sport,
+        "market":              market.upper(),
+        "signal_confidence":   sig_conf,
+        "data_confidence":     dat_conf,
+        "market_confidence":   mkt_conf,
+        "approval_confidence": appr_conf,
+        "advisory_codes":      advisory_codes,
+        "blocker_axes":        blocker_axes,
+        "envelope_rationale":  {
+            "signal":   sig_rat,
+            "data":     dat_rat,
+            "market":   mkt_rat,
+            "approval": appr_rat,
+        },
+        "inputs_echo": {
+            "gate3_label":           gate3_label,
+            "gate3_edge_pct":        gate3_edge_pct,
+            "gate3_hit_rate_band":   gate3_band,
+            "data_contract_status":  dc_status,
+            "data_window":           dc_window,
+            "data_window_sufficient": dc_win_ok,
+            "data_row_count":        dc_row,
+        },
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
     })
 
 

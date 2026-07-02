@@ -1,0 +1,91 @@
+PATCH-010 ACCEPTANCE — CLEANUP REQUIRED BEFORE CLOSED
+
+WOW-PATCH-010 is accepted as MVP shipped.
+
+Accepted:
+
+* POST /wow/data-contract/check is live.
+* GET /wow/data-contract/registry is live.
+* Contract registry supports all 7 WNBA markets.
+* Missing fields correctly produce DATA_CONTRACT_INCOMPLETE.
+* Stale source timestamps correctly produce DATA_CONTRACT_STALE.
+* Missing minutes blocks MODEL_QUALIFIED.
+* Every row is preserved with blocker_code.
+* No betting approval labels are created.
+* Gate 3 logic remains unchanged.
+* DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS remains enforced.
+
+Required cleanup:
+Remove `CONDITIONAL` from approval_ceiling outputs.
+
+Reason:
+`CONDITIONAL` is not an approved WOW v16 terminal/ceiling enum and can reintroduce label drift.
+
+Replace with one of:
+
+Option A — preferred:
+contract_status: DATA_CONTRACT_PARTIAL
+advisory_code: TEAMMATE_AVAILABILITY_MISSING
+approval_ceiling: GATE_3_ELIGIBLE_WITH_ADVISORY
+
+Option B — conservative:
+contract_status: DATA_CONTRACT_PARTIAL
+advisory_code: TEAMMATE_AVAILABILITY_MISSING
+approval_ceiling: WATCH
+
+Do not use:
+approval_ceiling: CONDITIONAL
+
+Interpretation:
+For WNBA AST, missing teammate_availability is advisory-only when core assists/minutes/role/L5/L10 fields exist. It should not automatically block Gate 3, but it must carry an advisory flag into the confidence envelope and later role-context checks.
+
+After cleanup, mark:
+WOW-PATCH-010: CLOSED
+
+Next patch:
+Proceed to WOW-PATCH-009 — Confidence Envelope.
+
+PATCH-009 should consume PATCH-010 fields and standardize the model-wide output axes:
+
+signal_confidence:
+
+* HIGH
+* MEDIUM
+* LOW
+* NEGATIVE
+* UNKNOWN
+
+data_confidence:
+
+* COMPLETE_FRESH
+* COMPLETE_STALE
+* PARTIAL_FRESH
+* PARTIAL_STALE
+* LOW_SAMPLE
+* DATA_CONTRACT_INCOMPLETE
+* DATA_CONTRACT_PARTIAL
+* UNKNOWN
+
+market_confidence:
+
+* MARKET_CONFIRMED
+* MARKET_CONFLICT
+* MARKET_UNVERIFIED
+* MARKET_STALE
+* NOT_REQUIRED_FOR_THIS_GATE
+
+approval_confidence:
+
+* FINAL_APPROVED
+* MONEY_QUALIFIED
+* MARKET_VERIFIED_HOLD
+* MODEL_QUALIFIED_HOLD
+* WATCH_ELEVATED
+* WATCH
+* REJECT
+* NO_APPROVAL
+
+PATCH-009 must not alter Gate 3 math.
+PATCH-009 must not create betting approvals.
+PATCH-009 must preserve DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS.
+PATCH-009 should make it impossible for one label to hide whether the issue is signal, data, market, or approval structure.
