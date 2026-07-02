@@ -8914,6 +8914,19 @@ def wow_l10_gate3():
         blocker_code = blocker_code or "SL2_DEMON_REQUIRE_12PCT"
         approval_ceiling = "WATCH"; _special_cap = True
 
+    # ── Binary-event structural cap (PATCH-BINARY-EVENT-PURGE) ───────────────
+    # A 0.5 line is a single-occurrence "did it happen at all" threshold. Gap%
+    # and hit-rate stats can still look strong on these (REJECT_COINFLIP only
+    # fires on weak stats), so a structurally binary prop can otherwise sail
+    # straight to GATE3_PASS / MODEL_QUALIFIED_HOLD. Cap it at WATCH regardless
+    # of edge — this is a structural downgrade, not a statistical one.
+    _binary_event_cap = False
+    if line == 0.5 and gate3_label in ("GATE3_PASS", "WATCH_ELEVATED", "WATCH",
+                                        "DATA_BUILD_PRIORITY"):
+        gate3_label = "WATCH"; signal_label += "_BINARY_EVENT_CAP"
+        blocker_code = blocker_code or "BE1_BINARY_LINE_0PT5"
+        approval_ceiling = "WATCH"; _binary_event_cap = True
+
     # ── QA Edit 1: DISCOVERY_ONLY ceiling enforcement ────────────────────────
     # Any path that reaches MODEL_QUALIFIED_HOLD with a DISCOVERY_ONLY hit rate
     # must be capped. (Belt-and-suspenders guard.)
@@ -9053,6 +9066,7 @@ def wow_l10_gate3():
         "data_quality":     data_quality_in,
         "source_timestamp": source_timestamp,
         "special_line_cap": _special_cap,
+        "binary_event_cap": _binary_event_cap,
         # ── Safety (hard) ─────────────────────────────────────────────────────
         "can_approve_bets": False,
         "can_execute":      False,
@@ -10767,6 +10781,19 @@ def _jf_slate_purge(props):
         # Known auto-reject archetype: CS2 (HLTV behind Cloudflare → manual).
         if _cm_normalize_sport(sport) == "CS2":
             purged.append({**p, "purge_reason": "auto-reject archetype: CS2 (manual entry only)"})
+            continue
+        # PATCH-BINARY-EVENT-PURGE: 0.5 line is a single-occurrence "did it
+        # happen at all" threshold (e.g. MLB Hitter Hits LESS 0.5). Structurally
+        # near-binary regardless of gap%/hit-rate — purge before scoring so it
+        # can never reach MODEL_QUALIFIED_HOLD via the JF lane.
+        try:
+            _line_f = float(line)
+        except (TypeError, ValueError):
+            _line_f = None
+        if _line_f == 0.5:
+            purged.append({**p, "purge_reason":
+                "auto-reject archetype: binary-event 0.5 line "
+                "(single-occurrence threshold, structurally near-binary)"})
             continue
         key = (player.lower(), sport.lower(), prop.lower(),
                (p.get("side") or "").upper(), str(line))

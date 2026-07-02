@@ -912,6 +912,21 @@ Endpoints: `POST /wow/validation-queue/build`, `POST /wow/ledger-cache/upsert`, 
 
 ---
 
+## §23 PATCH-BINARY-EVENT-PURGE (SHIPPED 2026-07-02)
+
+**Problem:** the July 2 scan surfaced 21 "model-qualified" rows where most were 0.5-line MLB hitter-hit LESS props — a *structurally* near-binary single-occurrence threshold ("did it happen at all this game"). `REJECT_COINFLIP` only fires on **weak** gap%/hit-rate stats, so a 0.5-line prop with a strong gap% and hit-rate could still sail straight through Gate 3 / the main scan classifier to `MODEL_QUALIFIED_HOLD`. No prior rule purged on the *line shape itself*.
+
+**Fix — new structural cap, independent of stats, applied at three enforcement points:**
+- `POST /wow/l10/gate3` — `line == 0.5` forces `gate3_label`/`approval_ceiling` to `WATCH` (never `GATE3_PASS`/`MODEL_QUALIFIED_HOLD`), `blocker_code: BE1_BINARY_LINE_0PT5`, response field `binary_event_cap: true`.
+- `_jf_slate_purge()` (JF slip lane, `POST /wow/jf`) — props with `line == 0.5` are purged pre-scoring with `purge_reason: "auto-reject archetype: binary-event 0.5 line (single-occurrence threshold, structurally near-binary)"`.
+- `classify_prop()` (main daily scan, `jobs/wow_daily_scan.py`, used by `POST /wow/daily-scan`) — `line == 0.5` is checked immediately after the injury hard-reject and ahead of every scoring tier: `wow_score >= 45` → forced to `"Watch"` (never `Model Qualified — PrizePicks`/`Final Approved`/`Market Verified`), otherwise `Reject`/`Data Insufficient` as appropriate, with a `binary_event_structural_cap` blocker note.
+
+**Scope:** sport-agnostic on the numeric line value (`line == 0.5`), not a per-sport archetype allowlist — catches the reported MLB hitter-hit case and any other sport/prop combination that offers a 0.5 threshold line.
+
+**Safety:** downgrade-only — never raises a classification, never bypasses `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS`, and is transparent (surfaced via `blocker_code`/`purge_reason`/classification blocker text, never a silent drop).
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

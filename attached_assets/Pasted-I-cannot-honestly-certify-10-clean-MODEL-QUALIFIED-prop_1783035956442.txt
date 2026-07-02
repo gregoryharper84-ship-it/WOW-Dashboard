@@ -1,0 +1,28 @@
+I **cannot honestly certify 10 clean MODEL_QUALIFIED props** from the July 2 scan without violating WOW v16. The raw scan returned 21 model-qualified rows, but most were **0.5 MLB hitter-hit LESS props**, which are binary-event props and must be purged/downgraded under the active rules. MODEL_QUALIFIED_HOLD is also **not playable / not Power eligible** without live payout, role, market, and final-lock recheck.  
+
+July 2 WNBA slate verified: ATL–WSH, DAL–CON, SEA–PHX. ESPN lists all three games for Thursday, July 2, 2026, and The Odds API supports WNBA upcoming odds and player props via event-odds. ([ESPN][1]) ([The Odds API][2])
+
+## Cleanest MODEL_QUALIFIED_HOLD props — July 2
+
+|  # | Prop                       | Side | Line | Model support                                       | Terminal bucket                  | Blocker                          |
+| -: | -------------------------- | ---: | ---: | --------------------------------------------------- | -------------------------------- | -------------------------------- |
+|  1 | **Allisha Gray rebounds**  | MORE |  2.5 | L5 4/5, L10 6/10, median 3.5, proj 3.89             | MODEL_QUALIFIED_HOLD             | No PP payout/live lock           |
+|  2 | **Allisha Gray points**    | MORE | 16.5 | L5 4/5, L10 6/10, median 19.5, proj 20.12           | MODEL_QUALIFIED_HOLD             | No final projection/PP payout    |
+|  3 | **Jordin Canada points**   | MORE | 10.5 | L5 4/5, L10 7/10, median 11.0, proj 11.23           | MODEL_QUALIFIED_HOLD             | Thin edge, needs live role check |
+|  4 | **Sonia Citron assists**   | LESS |  3.5 | L5 4/5, L10 6/10, median 3.0, proj 2.58             | MODEL_QUALIFIED_HOLD             | Needs payout/role recheck        |
+|  5 | **Shakira Austin points**  | MORE | 12.5 | L5 3/5, L10 6/10, median 16.5, proj 16.5            | MODEL_QUALIFIED_HOLD             | Needs status + payout            |
+|  6 | **Jordin Canada assists**  | LESS |  6.5 | L5 4/5, L10 7/10, median 5.5, proj 5.62             | MODEL_QUALIFIED_HOLD             | EV marginal after friction       |
+|  7 | **Jared Jones strikeouts** | LESS |  4.5 | L5 4/5, 5/6 available sample, median 4.0, proj 4.01 | MODEL_QUALIFIED_HOLD / TEST_ONLY | Partial sample + starter recheck |
+
+## Next 3 are **not** clean model-qualified — closest watch upgrades only
+
+|  # | Prop                | Side | Line | Why it did not clear                                              |
+| -: | ------------------- | ---: | ---: | ----------------------------------------------------------------- |
+|  8 | Rhyne Howard points | LESS | 18.5 | Median/projection lean under, but model score stayed Watch        |
+|  9 | Shakira Austin PRA  | MORE | 23.5 | Median/projection strong, but hit-rate/model probability too thin |
+| 10 | Angel Reese points  | LESS | 14.5 | Projection supports under, but market/EV not strong enough        |
+
+**Run result:** 0 FINAL_APPROVED, 0 MARKET_VERIFIED, 7 clean usable MODEL_QUALIFIED_HOLD after purge. Stake = **$0** until live PrizePicks line, payout, status, role, and market recheck pass.
+
+[1]: https://www.espn.com/wnba/schedule?utm_source=chatgpt.com "WNBA Schedule - 2026 Season"
+[2]: https://the-odds-api.com/sports/wnba-odds.html?utm_source=chatgpt.com "WNBA Odds API"

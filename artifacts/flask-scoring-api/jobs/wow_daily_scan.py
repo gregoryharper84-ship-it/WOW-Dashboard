@@ -152,7 +152,7 @@ def classify_prop(
     wow_score, signal, log_status, inj_flag, sources,
     raw_l5=None, raw_l10=None,
     manual_fallback_used=False, environment="live",
-    projection_data=None,
+    projection_data=None, line=None,
 ):
     """
     WOW v14.9.1 — returns (classification_label, final_approval_blocker | None).
@@ -170,7 +170,18 @@ def classify_prop(
     Tier 4: Watch                          (score >= 45)
     Tier 5: Reject                         (score < 45 or injury >= 2)
     Tier 6: Data Insufficient              (no sources available)
+
+    PATCH-BINARY-EVENT-PURGE: a 0.5 line is a single-occurrence "did it
+    happen at all" threshold (e.g. MLB Hitter Hits LESS 0.5). This is a
+    structural trait, not a statistical one — wow_score/proj_margin can
+    still look strong on these — so it is capped at "Watch" (never Model
+    Qualified or above) regardless of score, ahead of every other tier.
     """
+    try:
+        _binary_event = (line is not None and float(line) == 0.5)
+    except (TypeError, ValueError):
+        _binary_event = False
+
     odds_ok   = "AVAILABLE" in (sources.get("odds", "") or "")
     logs_ok   = "AVAILABLE" in (log_status or "")
     inj_ok    = inj_flag < 2
@@ -193,6 +204,19 @@ def classify_prop(
     # --- Hard reject: injury ---
     if not inj_ok:
         return "Reject", f"injury_flag={inj_flag} (>= 2)"
+
+    # --- Binary-event structural cap (PATCH-BINARY-EVENT-PURGE) ---
+    # Ahead of every scoring tier: a 0.5-line prop is structurally near-binary
+    # (single occurrence decides the whole outcome) and must never reach
+    # Model Qualified, Final Approved, or Market Verified, no matter how
+    # strong wow_score/projection_margin look.
+    if _binary_event:
+        if wow_score >= 45:
+            return "Watch", "binary_event_structural_cap: 0.5 line is a single-occurrence binary outcome, capped below Model Qualified"
+        any_source = any("AVAILABLE" in str(v) for v in sources.values())
+        if not any_source:
+            return "Data Insufficient", "binary_event_structural_cap: 0.5 line is a single-occurrence binary outcome"
+        return "Reject", f"binary_event_structural_cap (score={wow_score} < 45)"
 
     # --- Final Approval tier ---
     if wow_score >= 75 and inj_ok and raw_logs_ok and not live_manual_block and proj_ok:
@@ -383,6 +407,7 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 manual_fallback_used=manual_fallback_used,
                 environment=environment,
                 projection_data=projection_data,
+                line=line,
             )
 
             # Audit validity
