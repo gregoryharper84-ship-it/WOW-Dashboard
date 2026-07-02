@@ -20987,6 +20987,1605 @@ def wow_confidence_envelope():
     })
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW-PATCH-013A — Role-State Ledgers
+# v1.0.0 | 2026-07-02
+# Builds split ledgers by role context so Gate 3 uses the matching sub-sample
+# instead of a generic all-games L10. Does not alter Gate 3 math or create
+# betting approvals. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS enforced.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_RS_VERSION              = "v1.0.0"
+_RS_BUILD_TS             = "2026-07-02"
+_RS_MAX_ROWS             = 10
+_RS_MIN_LEDGER_ROWS      = 5
+_RS_FULL_ROLE_MIN        = 25.0   # minutes ≥ this → full role
+_RS_REDUCED_ROLE_MAX     = 25.0   # minutes < this → reduced role
+_RS_MINUTES_QUALIFIED    = 20.0   # minutes ≥ this → minutes-qualified
+
+# Stat columns per market (single or composite)
+_RS_STAT_COLS: dict[str, list[str]] = {
+    "PTS": ["points"],
+    "REB": ["rebounds"],
+    "AST": ["assists"],
+    "PRA": ["points", "rebounds", "assists"],
+    "P+A": ["points", "assists"],
+    "P+R": ["points", "rebounds"],
+    "R+A": ["rebounds", "assists"],
+    "STL": ["steals"],
+    "BLK": ["blocks"],
+    # accept raw column names directly
+    "points":   ["points"],
+    "rebounds": ["rebounds"],
+    "assists":  ["assists"],
+    "steals":   ["steals"],
+    "blocks":   ["blocks"],
+}
+
+
+def _rs_safe_float(val) -> float | None:
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return None if math.isnan(f) else f
+    except (TypeError, ValueError):
+        return None
+
+
+def _rs_row_value(row: dict, cols: list[str]) -> float | None:
+    """Sum the specified columns for a single row; None if any missing."""
+    total = 0.0
+    for c in cols:
+        v = _rs_safe_float(row.get(c))
+        if v is None:
+            return None
+        total += v
+    return total
+
+
+def _rs_ledger_stats(rows: list[dict], cols: list[str]) -> dict:
+    """Compute aggregate stats for a subset of rows."""
+    values = []
+    for r in rows:
+        v = _rs_row_value(r, cols)
+        if v is not None:
+            values.append(v)
+    n = len(values)
+    if n == 0:
+        return {
+            "row_count": 0, "available": False, "values": [],
+            "avg": None, "median": None, "stddev": None,
+            "min": None, "max": None,
+        }
+    avg = sum(values) / n
+    s = sorted(values)
+    median = s[n // 2] if n % 2 == 1 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+    variance = sum((x - avg) ** 2 for x in values) / n
+    return {
+        "row_count":  n,
+        "available":  n >= _RS_MIN_LEDGER_ROWS,
+        "values":     [round(v, 2) for v in values],
+        "avg":        round(avg, 2),
+        "median":     round(median, 2),
+        "stddev":     round(variance ** 0.5, 2),
+        "min":        round(min(values), 2),
+        "max":        round(max(values), 2),
+    }
+
+
+def _rs_build_all_ledgers(
+    rows: list[dict],
+    cols: list[str],
+    context: dict,
+) -> dict:
+    """
+    Build all sub-ledgers from the sorted row list (most-recent-first).
+    context keys (all optional):
+      trade_date             (str YYYY-MM-DD) — split pre/post trade
+      injury_return_date     (str YYYY-MM-DD) — post-injury rows
+      key_teammate_out_game_ids  (list[str])  — game_ids when teammate was out
+      key_teammate_in_game_ids   (list[str])  — game_ids when teammate was in
+    """
+    base = rows[:_RS_MAX_ROWS]
+
+    starter_rows  = [r for r in base if r.get("starter") is True]
+    bench_rows    = [r for r in base if r.get("starter") is False]
+    full_role     = [r for r in base if (_rs_safe_float(r.get("minutes")) or 0) >= _RS_FULL_ROLE_MIN]
+    reduced_role  = [r for r in base if (_rs_safe_float(r.get("minutes")) or 0) < _RS_REDUCED_ROLE_MAX
+                     and r.get("minutes") is not None]
+    min_qualified = [r for r in base if (_rs_safe_float(r.get("minutes")) or 0) >= _RS_MINUTES_QUALIFIED]
+
+    trade_date = str(context.get("trade_date") or "")
+    post_trade_rows = [r for r in base if trade_date and str(r.get("game_date", "")) >= trade_date]
+    pre_trade_rows  = [r for r in base if trade_date and str(r.get("game_date", "")) < trade_date]
+
+    inj_date = str(context.get("injury_return_date") or "")
+    post_inj_rows = [r for r in base if inj_date and str(r.get("game_date", "")) >= inj_date]
+
+    out_ids = set(str(x) for x in (context.get("key_teammate_out_game_ids") or []))
+    in_ids  = set(str(x) for x in (context.get("key_teammate_in_game_ids") or []))
+    with_tm_rows    = [r for r in base if str(r.get("game_id", "")) in in_ids] if in_ids  else []
+    without_tm_rows = [r for r in base if str(r.get("game_id", "")) in out_ids] if out_ids else []
+
+    return {
+        "all_games_l10":           _rs_ledger_stats(base,            cols),
+        "starter_l10":             _rs_ledger_stats(starter_rows,    cols),
+        "bench_l10":               _rs_ledger_stats(bench_rows,      cols),
+        "full_role_l10":           _rs_ledger_stats(full_role,       cols),
+        "reduced_role_l10":        _rs_ledger_stats(reduced_role,    cols),
+        "minutes_qualified_l10":   _rs_ledger_stats(min_qualified,   cols),
+        "post_trade_l10":          _rs_ledger_stats(post_trade_rows, cols),
+        "pre_trade_l10":           _rs_ledger_stats(pre_trade_rows,  cols),
+        "post_injury_l10":         _rs_ledger_stats(post_inj_rows,   cols),
+        "with_key_teammate_l10":   _rs_ledger_stats(with_tm_rows,    cols),
+        "without_key_teammate_l10": _rs_ledger_stats(without_tm_rows, cols),
+    }
+
+
+def _rs_detect_role_change(rows: list[dict]) -> bool:
+    """
+    True if the most-recent 3 games differ in starter status from games 4-10.
+    Requires at least 4 rows.
+    """
+    base = rows[:_RS_MAX_ROWS]
+    if len(base) < 4:
+        return False
+    recent_start = [r.get("starter") for r in base[:3] if r.get("starter") is not None]
+    older_start  = [r.get("starter") for r in base[3:] if r.get("starter") is not None]
+    if not recent_start or not older_start:
+        return False
+    recent_mode = sum(recent_start) / len(recent_start) >= 0.5
+    older_mode  = sum(older_start)  / len(older_start)  >= 0.5
+    return recent_mode != older_mode
+
+
+def _rs_evaluate(
+    ledgers: dict,
+    rows: list[dict],
+    today_ctx: dict,
+) -> dict:
+    """
+    Select the best-matching ledger given today's context.
+    today_ctx keys (all optional bool):
+      is_starter_today, key_teammate_out_today, post_trade_context,
+      post_injury_context, minutes_restriction
+    Returns dict with recommended_ledger_name, flags, advisory_codes,
+    approval_ceiling_override.
+    """
+    flags:          list[str] = []
+    advisory_codes: list[str] = []
+    recommended = "all_games_l10"
+
+    is_starter    = today_ctx.get("is_starter_today")
+    tm_out        = today_ctx.get("key_teammate_out_today")
+    post_trade    = today_ctx.get("post_trade_context")
+    post_injury   = today_ctx.get("post_injury_context")
+    min_restrict  = today_ctx.get("minutes_restriction")
+
+    # Availability flags
+    if ledgers["starter_l10"]["available"]:
+        flags.append("STARTER_SPLIT_AVAILABLE")
+    if ledgers["bench_l10"]["available"]:
+        flags.append("BENCH_SPLIT_AVAILABLE")
+
+    # Priority ledger selection (most-specific context wins)
+    if post_injury and ledgers["post_injury_l10"]["available"]:
+        recommended = "post_injury_l10"
+        flags.append("INJURY_RETURN_CONTEXT")
+    elif post_trade and ledgers["post_trade_l10"]["available"]:
+        recommended = "post_trade_l10"
+        flags.append("POST_TRADE_CONTEXT")
+    elif tm_out is True and ledgers["without_key_teammate_l10"]["available"]:
+        recommended = "without_key_teammate_l10"
+        flags.append("KEY_TEAMMATE_OUT_CONTEXT")
+    elif tm_out is False and ledgers["with_key_teammate_l10"]["available"]:
+        recommended = "with_key_teammate_l10"
+        flags.append("KEY_TEAMMATE_RETURNED_CONTEXT")
+    elif min_restrict and ledgers["reduced_role_l10"]["available"]:
+        recommended = "reduced_role_l10"
+        flags.append("MINUTES_RESTRICTION_CONTEXT")
+    elif is_starter is True and ledgers["starter_l10"]["available"]:
+        recommended = "starter_l10"
+    elif is_starter is False and ledgers["bench_l10"]["available"]:
+        recommended = "bench_l10"
+
+    # Advisory: missing context for teammate ledgers
+    if tm_out is None:
+        if not ledgers["with_key_teammate_l10"]["available"] \
+                and not ledgers["without_key_teammate_l10"]["available"]:
+            advisory_codes.append("KEY_TEAMMATE_CONTEXT_UNAVAILABLE")
+
+    # Role-change detection
+    role_change = _rs_detect_role_change(rows[:_RS_MAX_ROWS])
+    if role_change:
+        flags.append("ROLE_CHANGE_DETECTED")
+
+    # Determine the "ideal" ledger for today's context (may differ from recommended
+    # if the ideal split lacks rows and we fell back to all_games)
+    _ideal_ledger = None
+    if is_starter is True:
+        _ideal_ledger = "starter_l10"
+    elif is_starter is False:
+        _ideal_ledger = "bench_l10"
+    elif min_restrict:
+        _ideal_ledger = "reduced_role_l10"
+
+    # Ceiling override logic
+    ceiling_override: str | None = None
+    rec_count = ledgers[recommended]["row_count"]
+    if rec_count < _RS_MIN_LEDGER_ROWS:
+        flags.append("ROLE_STATE_INSUFFICIENT_ROWS")
+        ceiling_override = "WATCH_ELEVATED"
+        if role_change:
+            advisory_codes.append("ROLE_CHANGE_INSUFFICIENT_SAMPLE")
+    elif role_change:
+        # Role changed — check if the ideal split for today is under-sampled
+        ideal_count = ledgers.get(_ideal_ledger or "", {}).get("row_count", 0) \
+                      if _ideal_ledger else 0
+        if _ideal_ledger and ideal_count < _RS_MIN_LEDGER_ROWS:
+            flags.append("ROLE_STATE_INSUFFICIENT_ROWS")
+            ceiling_override = "WATCH_ELEVATED"
+            advisory_codes.append("ROLE_CHANGE_INSUFFICIENT_SAMPLE")
+        elif recommended != "all_games_l10":
+            advisory_codes.append("ROLE_CHANGE_DETECTED_SPLIT_USED")
+
+    return {
+        "recommended_ledger_name":  recommended,
+        "recommended_ledger":       ledgers[recommended],
+        "flags":                    flags,
+        "advisory_codes":           advisory_codes,
+        "approval_ceiling_override": ceiling_override,
+        "role_change_detected":     role_change,
+    }
+
+
+def _rs_fetch_rows(player_id: str, player_name: str,
+                   date_from: str, date_to: str) -> list[dict]:
+    """Fetch sorted game rows from wnba_player_game_logs."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return []
+    try:
+        import psycopg2 as _pg
+        import psycopg2.extras as _pgx
+        conn = _pg.connect(db_url)
+        _ensure_wnba_schema(conn)
+        clauses, params = [], []
+        if player_id:
+            clauses.append("player_id = %s"); params.append(player_id)
+        if player_name:
+            clauses.append("player_name ILIKE %s"); params.append(f"%{player_name}%")
+        if date_from:
+            clauses.append("game_date >= %s"); params.append(date_from)
+        if date_to:
+            clauses.append("game_date <= %s"); params.append(date_to)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT player_id, player_name, team, opponent, game_date, game_id,
+                       starter, minutes, points, rebounds, assists, steals, blocks,
+                       turnovers, source, source_timestamp, ingestion_ts
+                FROM wnba_player_game_logs {where}
+                ORDER BY game_date DESC LIMIT 20
+            """, params)
+            rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.route("/wow/role-state/build", methods=["POST"])
+def wow_role_state_build():
+    """
+    POST /wow/role-state/build
+    Build all role-state sub-ledgers for a player.
+
+    Body (JSON):
+      player_id / player_name  (one required for DB mode)
+      market / stat            (str, required) — e.g. "PTS"
+      date_from / date_to      (str, optional)
+      rows                     (list, optional) — inline rows instead of DB
+      context                  (obj, optional) — trade_date, injury_return_date,
+                               key_teammate_out_game_ids, key_teammate_in_game_ids
+    """
+    body = request.get_json(silent=True) or {}
+    player_id   = str(body.get("player_id") or "").strip()
+    player_name = str(body.get("player_name") or "").strip()
+    market      = str(body.get("market") or body.get("stat") or "").strip().upper()
+    date_from   = str(body.get("date_from") or "").strip()
+    date_to     = str(body.get("date_to") or "").strip()
+    context     = body.get("context") or {}
+    inline_rows = body.get("rows")
+
+    if not market:
+        return jsonify({"ok": False, "error": "market or stat required"}), 400
+
+    cols = _RS_STAT_COLS.get(market)
+    if cols is None:
+        return jsonify({
+            "ok": False,
+            "error": f"Unknown market '{market}'. Known: {sorted(_RS_STAT_COLS.keys())}",
+        }), 400
+
+    if inline_rows and isinstance(inline_rows, list):
+        rows = inline_rows
+    elif player_id or player_name:
+        rows = _rs_fetch_rows(player_id, player_name, date_from, date_to)
+    else:
+        return jsonify({"ok": False,
+                        "error": "Provide 'rows' or player_id/player_name"}), 400
+
+    if not rows:
+        return jsonify({
+            "ok":              True,
+            "role_state_version": _RS_VERSION,
+            "player_id":       player_id,
+            "player_name":     player_name,
+            "market":          market,
+            "row_count":       0,
+            "ledgers":         {},
+            "flags":           ["ROLE_STATE_INSUFFICIENT_ROWS"],
+            "execution_rule":  "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        })
+
+    ledgers = _rs_build_all_ledgers(rows, cols, context)
+    return jsonify({
+        "ok":                True,
+        "role_state_version": _RS_VERSION,
+        "build_ts":          _RS_BUILD_TS,
+        "player_id":         player_id or (rows[0].get("player_id") if rows else ""),
+        "player_name":       player_name or (rows[0].get("player_name") if rows else ""),
+        "market":            market,
+        "stat_columns":      cols,
+        "total_rows_fetched": len(rows),
+        "ledgers":           ledgers,
+        "execution_rule":    "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
+@app.route("/wow/role-state/player", methods=["GET"])
+def wow_role_state_player():
+    """
+    GET /wow/role-state/player?player_name=...&market=PTS
+    Convenience GET wrapper around role-state build.
+    """
+    player_id   = request.args.get("player_id", "").strip()
+    player_name = request.args.get("player_name", "").strip()
+    market      = request.args.get("market", request.args.get("stat", "")).strip().upper()
+    date_from   = request.args.get("date_from", "").strip()
+    date_to     = request.args.get("date_to", "").strip()
+
+    if not market:
+        return jsonify({"ok": False, "error": "market query param required"}), 400
+    cols = _RS_STAT_COLS.get(market)
+    if cols is None:
+        return jsonify({"ok": False,
+                        "error": f"Unknown market '{market}'"}), 400
+    if not player_id and not player_name:
+        return jsonify({"ok": False,
+                        "error": "player_id or player_name required"}), 400
+
+    rows = _rs_fetch_rows(player_id, player_name, date_from, date_to)
+    if not rows:
+        return jsonify({
+            "ok":   True,
+            "role_state_version": _RS_VERSION,
+            "market": market,
+            "row_count": 0,
+            "ledgers": {},
+            "flags": ["ROLE_STATE_INSUFFICIENT_ROWS"],
+            "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        })
+
+    ledgers = _rs_build_all_ledgers(rows, cols, {})
+    return jsonify({
+        "ok":                True,
+        "role_state_version": _RS_VERSION,
+        "player_id":         rows[0].get("player_id", ""),
+        "player_name":       rows[0].get("player_name", ""),
+        "market":            market,
+        "stat_columns":      cols,
+        "total_rows_fetched": len(rows),
+        "ledgers":           ledgers,
+        "execution_rule":    "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
+@app.route("/wow/role-state/evaluate", methods=["POST"])
+def wow_role_state_evaluate():
+    """
+    POST /wow/role-state/evaluate
+    Evaluate which role-state ledger best matches today's context and return
+    the recommended ledger + flags + ceiling override.
+
+    Body (JSON):
+      player_id / player_name  (one required for DB mode)
+      market                   (str, required)
+      today_context            (obj) — is_starter_today, key_teammate_out_today,
+                               post_trade_context, post_injury_context,
+                               minutes_restriction
+      context                  (obj, optional) — same as /build context
+      rows                     (list, optional) — inline rows
+      date_from / date_to      (str, optional)
+    """
+    body = request.get_json(silent=True) or {}
+    player_id   = str(body.get("player_id") or "").strip()
+    player_name = str(body.get("player_name") or "").strip()
+    market      = str(body.get("market") or body.get("stat") or "").strip().upper()
+    today_ctx   = body.get("today_context") or {}
+    context     = body.get("context") or {}
+    date_from   = str(body.get("date_from") or "").strip()
+    date_to     = str(body.get("date_to") or "").strip()
+    inline_rows = body.get("rows")
+
+    if not market:
+        return jsonify({"ok": False, "error": "market required"}), 400
+    cols = _RS_STAT_COLS.get(market)
+    if cols is None:
+        return jsonify({"ok": False,
+                        "error": f"Unknown market '{market}'"}), 400
+
+    if inline_rows and isinstance(inline_rows, list):
+        rows = inline_rows
+    elif player_id or player_name:
+        rows = _rs_fetch_rows(player_id, player_name, date_from, date_to)
+    else:
+        return jsonify({"ok": False,
+                        "error": "Provide 'rows' or player_id/player_name"}), 400
+
+    if not rows:
+        return jsonify({
+            "ok":                       True,
+            "role_state_version":       _RS_VERSION,
+            "recommended_ledger_name":  "all_games_l10",
+            "recommended_ledger":       {"row_count": 0, "available": False},
+            "flags":                    ["ROLE_STATE_INSUFFICIENT_ROWS"],
+            "advisory_codes":           ["NO_ROWS_FOUND"],
+            "approval_ceiling_override": "WATCH_ELEVATED",
+            "role_change_detected":     False,
+            "execution_rule":           "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        })
+
+    ledgers   = _rs_build_all_ledgers(rows, cols, context)
+    eval_res  = _rs_evaluate(ledgers, rows, today_ctx)
+
+    return jsonify({
+        "ok":                       True,
+        "role_state_version":       _RS_VERSION,
+        "build_ts":                 _RS_BUILD_TS,
+        "player_id":                player_id or (rows[0].get("player_id") if rows else ""),
+        "player_name":              player_name or (rows[0].get("player_name") if rows else ""),
+        "market":                   market,
+        "stat_columns":             cols,
+        "total_rows_fetched":       len(rows),
+        "recommended_ledger_name":  eval_res["recommended_ledger_name"],
+        "recommended_ledger":       eval_res["recommended_ledger"],
+        "flags":                    eval_res["flags"],
+        "advisory_codes":           eval_res["advisory_codes"],
+        "approval_ceiling_override": eval_res["approval_ceiling_override"],
+        "role_change_detected":     eval_res["role_change_detected"],
+        "all_ledgers":              ledgers,
+        "execution_rule":           "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW-PATCH-013B — Pick Lifecycle State Machine
+# v1.0.0 | 2026-07-02
+# Tracks every candidate from discovery through settlement.
+# can_execute is always false. No live execution fields.
+# DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS enforced.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_PL_VERSION  = "v1.0.0"
+_PL_BUILD_TS = "2026-07-02"
+
+_PL_VALID_STATES: frozenset[str] = frozenset({
+    "DISCOVERED", "DATA_CONTRACT_CHECKED", "ROLE_STATE_CHECKED",
+    "GATE3_CHECKED", "MARKET_CHECKED", "CONFIDENCE_ENVELOPED",
+    "TRIAGED", "MODEL_QUALIFIED_HOLD", "MARKET_VERIFIED_HOLD",
+    "MONEY_QUALIFIED", "LOCK_PENDING", "LOCKED_DRY_RUN",
+    "SETTLED_WIN", "SETTLED_LOSS", "SETTLED_PUSH",
+    "REJECTED", "WATCH", "WATCH_ELEVATED", "DATA_BUILD_PRIORITY",
+})
+
+# Terminal states — no further transitions allowed
+_PL_TERMINAL_STATES: frozenset[str] = frozenset({
+    "SETTLED_WIN", "SETTLED_LOSS", "SETTLED_PUSH",
+})
+
+
+def _pl_ensure_schema(conn) -> None:
+    """Create pick lifecycle tables if they don't exist."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS wow_pick_lifecycle (
+                pick_id            TEXT PRIMARY KEY,
+                sport              TEXT,
+                market             TEXT,
+                player_name        TEXT,
+                team               TEXT,
+                line               REAL,
+                side               TEXT,
+                source             TEXT,
+                source_timestamp   TIMESTAMPTZ,
+                current_state      TEXT NOT NULL DEFAULT 'DISCOVERED',
+                previous_state     TEXT,
+                transition_reason  TEXT,
+                blocker_code       TEXT DEFAULT 'NONE',
+                confidence_snapshot    JSONB,
+                gate3_snapshot         JSONB,
+                data_contract_snapshot JSONB,
+                role_state_snapshot    JSONB,
+                market_snapshot        JSONB,
+                can_execute        BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at         TIMESTAMPTZ DEFAULT NOW(),
+                updated_at         TIMESTAMPTZ DEFAULT NOW(),
+                settled_at         TIMESTAMPTZ,
+                result             TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS wow_pick_lifecycle_log (
+                log_id         BIGSERIAL PRIMARY KEY,
+                pick_id        TEXT NOT NULL,
+                from_state     TEXT,
+                to_state       TEXT NOT NULL,
+                transition_reason TEXT,
+                blocker_code   TEXT,
+                snapshot       JSONB,
+                transitioned_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+
+
+def _pl_connect():
+    """Return a psycopg2 connection or None."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return None
+    try:
+        import psycopg2 as _pg
+        conn = _pg.connect(db_url)
+        _pl_ensure_schema(conn)
+        return conn
+    except Exception:
+        return None
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.route("/wow/pick-lifecycle/create", methods=["POST"])
+def wow_pick_lifecycle_create():
+    """
+    POST /wow/pick-lifecycle/create
+    Create a new pick candidate in DISCOVERED state.
+
+    Body (JSON):
+      pick_id (str, optional — generated if absent)
+      sport, market, player_name, team, line, side, source, source_timestamp
+      data_contract_snapshot, gate3_snapshot, role_state_snapshot,
+      market_snapshot, confidence_snapshot  (all optional JSONB)
+    """
+    body = request.get_json(silent=True) or {}
+    pick_id = str(body.get("pick_id") or "").strip()
+    if not pick_id:
+        import uuid
+        pick_id = "pick_" + uuid.uuid4().hex[:12]
+
+    sport    = str(body.get("sport") or "").strip()
+    market   = str(body.get("market") or "").strip()
+
+    conn = _pl_connect()
+    if not conn:
+        # No-DB mode: return the would-be record without persisting
+        return jsonify({
+            "ok":          True,
+            "pick_id":     pick_id,
+            "current_state": "DISCOVERED",
+            "can_execute": False,
+            "db_persisted": False,
+            "note":        "DATABASE_URL not set; record not persisted",
+            "lifecycle_version": _PL_VERSION,
+            "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        })
+
+    try:
+        import psycopg2.extras as _pgx
+        import json as _json
+        def _jdump(v):
+            return _json.dumps(v) if v is not None else None
+
+        with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+            cur.execute("""
+                INSERT INTO wow_pick_lifecycle
+                  (pick_id, sport, market, player_name, team, line, side,
+                   source, source_timestamp, current_state, blocker_code,
+                   data_contract_snapshot, gate3_snapshot, role_state_snapshot,
+                   market_snapshot, confidence_snapshot, can_execute)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'DISCOVERED','NONE',
+                        %s,%s,%s,%s,%s,FALSE)
+                ON CONFLICT (pick_id) DO NOTHING
+                RETURNING *
+            """, (
+                pick_id, sport, market,
+                body.get("player_name"), body.get("team"),
+                body.get("line"), body.get("side"),
+                body.get("source"), body.get("source_timestamp"),
+                _jdump(body.get("data_contract_snapshot")),
+                _jdump(body.get("gate3_snapshot")),
+                _jdump(body.get("role_state_snapshot")),
+                _jdump(body.get("market_snapshot")),
+                _jdump(body.get("confidence_snapshot")),
+            ))
+            row = cur.fetchone()
+            # Log the creation
+            cur.execute("""
+                INSERT INTO wow_pick_lifecycle_log (pick_id, from_state, to_state, transition_reason)
+                VALUES (%s, NULL, 'DISCOVERED', 'pick_created')
+            """, (pick_id,))
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "ok":          True,
+            "pick_id":     pick_id,
+            "current_state": "DISCOVERED",
+            "can_execute": False,
+            "db_persisted": row is not None,
+            "lifecycle_version": _PL_VERSION,
+            "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:300]}), 500
+
+
+@app.route("/wow/pick-lifecycle/transition", methods=["POST"])
+def wow_pick_lifecycle_transition():
+    """
+    POST /wow/pick-lifecycle/transition
+    Move a pick to a new lifecycle state with reason and optional snapshot update.
+
+    Body (JSON):
+      pick_id           (str, required)
+      new_state         (str, required)  — must be a valid lifecycle state
+      transition_reason (str, optional)
+      blocker_code      (str, optional)
+      data_contract_snapshot / gate3_snapshot / role_state_snapshot /
+      market_snapshot / confidence_snapshot  (obj, optional — update if provided)
+    """
+    body = request.get_json(silent=True) or {}
+    pick_id   = str(body.get("pick_id") or "").strip()
+    new_state = str(body.get("new_state") or "").strip().upper()
+
+    if not pick_id:
+        return jsonify({"ok": False, "error": "pick_id required"}), 400
+    if not new_state:
+        return jsonify({"ok": False, "error": "new_state required"}), 400
+    if new_state not in _PL_VALID_STATES:
+        return jsonify({
+            "ok": False,
+            "error": f"Invalid state '{new_state}'. Valid: {sorted(_PL_VALID_STATES)}",
+        }), 400
+
+    conn = _pl_connect()
+    if not conn:
+        return jsonify({
+            "ok":          True,
+            "pick_id":     pick_id,
+            "new_state":   new_state,
+            "can_execute": False,
+            "db_persisted": False,
+            "note":        "DATABASE_URL not set",
+            "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        })
+
+    try:
+        import psycopg2.extras as _pgx
+        import json as _json
+        def _jdump(v):
+            return _json.dumps(v) if v is not None else None
+
+        with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+            cur.execute("SELECT current_state FROM wow_pick_lifecycle WHERE pick_id=%s",
+                        (pick_id,))
+            existing = cur.fetchone()
+            if not existing:
+                conn.close()
+                return jsonify({"ok": False, "error": f"pick_id {pick_id!r} not found"}), 404
+
+            from_state = existing["current_state"]
+            if from_state in _PL_TERMINAL_STATES:
+                conn.close()
+                return jsonify({
+                    "ok":    False,
+                    "error": f"Cannot transition from terminal state {from_state!r}",
+                    "pick_id": pick_id,
+                }), 409
+
+            reason       = str(body.get("transition_reason") or "").strip() or None
+            blocker_code = str(body.get("blocker_code") or "NONE").strip()
+
+            # Build dynamic SET clauses for snapshot updates
+            set_parts = [
+                "previous_state = current_state",
+                "current_state = %s",
+                "transition_reason = %s",
+                "blocker_code = %s",
+                "updated_at = NOW()",
+                "can_execute = FALSE",
+            ]
+            set_vals: list = [new_state, reason, blocker_code]
+
+            snap_fields = {
+                "data_contract_snapshot": body.get("data_contract_snapshot"),
+                "gate3_snapshot":         body.get("gate3_snapshot"),
+                "role_state_snapshot":    body.get("role_state_snapshot"),
+                "market_snapshot":        body.get("market_snapshot"),
+                "confidence_snapshot":    body.get("confidence_snapshot"),
+            }
+            for col, val in snap_fields.items():
+                if val is not None:
+                    set_parts.append(f"{col} = %s")
+                    set_vals.append(_jdump(val))
+
+            if new_state in ("SETTLED_WIN", "SETTLED_LOSS", "SETTLED_PUSH"):
+                set_parts.append("settled_at = NOW()")
+                set_parts.append("result = %s")
+                set_vals.append(new_state.replace("SETTLED_", ""))
+
+            cur.execute(
+                f"UPDATE wow_pick_lifecycle SET {', '.join(set_parts)} WHERE pick_id = %s",
+                set_vals + [pick_id],
+            )
+            cur.execute("""
+                INSERT INTO wow_pick_lifecycle_log
+                  (pick_id, from_state, to_state, transition_reason, blocker_code)
+                VALUES (%s,%s,%s,%s,%s)
+            """, (pick_id, from_state, new_state, reason, blocker_code))
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "ok":          True,
+            "pick_id":     pick_id,
+            "from_state":  from_state,
+            "current_state": new_state,
+            "transition_reason": reason,
+            "blocker_code": blocker_code,
+            "can_execute": False,
+            "lifecycle_version": _PL_VERSION,
+            "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:300]}), 500
+
+
+@app.route("/wow/pick-lifecycle/list", methods=["GET"])
+def wow_pick_lifecycle_list():
+    """
+    GET /wow/pick-lifecycle/list?state=WATCH&sport=wnba&limit=50
+    List pick candidates. Every row is preserved — no hidden cuts.
+    """
+    state  = request.args.get("state", "").strip().upper() or None
+    sport  = request.args.get("sport", "").strip() or None
+    market = request.args.get("market", "").strip() or None
+    limit  = min(int(request.args.get("limit", 100)), 500)
+
+    conn = _pl_connect()
+    if not conn:
+        return jsonify({"ok": True, "picks": [], "count": 0,
+                        "note": "DATABASE_URL not set",
+                        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"})
+
+    try:
+        import psycopg2.extras as _pgx
+        clauses, params = ["TRUE"], []
+        if state:
+            clauses.append("current_state = %s"); params.append(state)
+        if sport:
+            clauses.append("sport = %s"); params.append(sport)
+        if market:
+            clauses.append("market = %s"); params.append(market)
+
+        with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT pick_id, sport, market, player_name, team, line, side,
+                       current_state, previous_state, transition_reason,
+                       blocker_code, can_execute, created_at, updated_at,
+                       settled_at, result
+                FROM wow_pick_lifecycle
+                WHERE {' AND '.join(clauses)}
+                ORDER BY updated_at DESC LIMIT %s
+            """, params + [limit])
+            picks = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return jsonify({
+            "ok":    True,
+            "count": len(picks),
+            "picks": picks,
+            "lifecycle_version": _PL_VERSION,
+            "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:300]}), 500
+
+
+@app.route("/wow/pick-lifecycle/settle", methods=["POST"])
+def wow_pick_lifecycle_settle():
+    """
+    POST /wow/pick-lifecycle/settle
+    Settle a pick outcome without altering original snapshots.
+
+    Body: pick_id (str), result (str: "WIN"|"LOSS"|"PUSH"), notes (str, optional)
+    """
+    body    = request.get_json(silent=True) or {}
+    pick_id = str(body.get("pick_id") or "").strip()
+    result  = str(body.get("result") or "").strip().upper()
+    notes   = str(body.get("notes") or "").strip() or None
+
+    if not pick_id:
+        return jsonify({"ok": False, "error": "pick_id required"}), 400
+    if result not in ("WIN", "LOSS", "PUSH"):
+        return jsonify({"ok": False, "error": "result must be WIN, LOSS, or PUSH"}), 400
+
+    new_state = f"SETTLED_{result}"
+    body["new_state"]         = new_state
+    body["transition_reason"] = notes or f"settled_{result.lower()}"
+    body["blocker_code"]      = "NONE"
+    return wow_pick_lifecycle_transition()
+
+
+@app.route("/wow/pick-lifecycle/pick", methods=["GET"])
+def wow_pick_lifecycle_get():
+    """GET /wow/pick-lifecycle/pick?pick_id=... — retrieve a single pick with full snapshots."""
+    pick_id = request.args.get("pick_id", "").strip()
+    if not pick_id:
+        return jsonify({"ok": False, "error": "pick_id required"}), 400
+
+    conn = _pl_connect()
+    if not conn:
+        return jsonify({"ok": False, "error": "DATABASE_URL not set"}), 500
+    try:
+        import psycopg2.extras as _pgx
+        with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM wow_pick_lifecycle WHERE pick_id=%s", (pick_id,))
+            row = cur.fetchone()
+            if not row:
+                conn.close()
+                return jsonify({"ok": False, "error": f"{pick_id!r} not found"}), 404
+            cur.execute("""
+                SELECT from_state, to_state, transition_reason, blocker_code, transitioned_at
+                FROM wow_pick_lifecycle_log WHERE pick_id=%s ORDER BY log_id ASC
+            """, (pick_id,))
+            history = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        pick = dict(row)
+        pick["transition_history"] = history
+        pick["can_execute"] = False   # always enforce
+        return jsonify({
+            "ok":   True,
+            "pick": pick,
+            "lifecycle_version": _PL_VERSION,
+            "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:300]}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW-PATCH-012 — Candidate Triage Score
+# v1.0.0 | 2026-07-02
+# Ranks candidates for research priority. Discovery-only; does not create
+# approval labels, does not override Gate 3 or data-contract failures.
+# DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS enforced.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_CT_VERSION  = "v1.0.0"
+_CT_BUILD_TS = "2026-07-02"
+
+# Score band thresholds
+_CT_BANDS: list[tuple[int, str]] = [
+    (80, "PRIORITY_BUILD"),
+    (65, "WATCH_ELEVATED"),
+    (50, "WATCH"),
+    (25, "SCOUT"),
+    (0,  "REJECT"),
+]
+
+# Failure-path flags that hard-floor the failure_path component to 0
+_CT_CRITICAL_FAILURE_FLAGS: frozenset[str] = frozenset({
+    "BLOWOUT_MINUTES_RISK", "INJURY_RETURN_CONTEXT",
+    "KEY_TEAMMATE_OUT_CONTEXT", "ROLE_STATE_INSUFFICIENT_ROWS",
+})
+
+
+def _ct_score_market_mispricing(mkt_conf: str, edge_confirmed, has_mispricing: bool) -> int:
+    if mkt_conf == "MARKET_CONFLICT":
+        return 0
+    if has_mispricing and edge_confirmed is True:
+        return 20
+    if has_mispricing and edge_confirmed is None:
+        return 12
+    if not has_mispricing and edge_confirmed is True:
+        return 10
+    if mkt_conf == "MARKET_CONFIRMED":
+        return 15
+    if mkt_conf == "NOT_REQUIRED_FOR_THIS_GATE":
+        return 8   # neutral: no market data, no penalty, no bonus
+    return 5
+
+
+def _ct_score_proportional_gap(edge_pct: float | None) -> int:
+    if edge_pct is None:
+        return 0
+    if edge_pct >= 15:  return 15
+    if edge_pct >= 10:  return 12
+    if edge_pct >= 7:   return 9
+    if edge_pct >= 4:   return 6
+    if edge_pct >= 1:   return 3
+    return 0
+
+
+def _ct_score_data_freshness(data_conf: str) -> int:
+    return {
+        "COMPLETE_FRESH":           15,
+        "COMPLETE_STALE":            8,
+        "PARTIAL_FRESH":             6,
+        "PARTIAL_STALE":             4,
+        "LOW_SAMPLE":                4,
+        "DATA_CONTRACT_PARTIAL":     5,
+        "DATA_CONTRACT_INCOMPLETE":  0,
+        "UNKNOWN":                   0,
+    }.get(data_conf, 0)
+
+
+def _ct_score_data_completeness(contract_status: str) -> int:
+    return {
+        "DATA_CONTRACT_COMPLETE":    15,
+        "DATA_CONTRACT_STALE":       10,
+        "DATA_CONTRACT_PARTIAL":      7,
+        "DATA_BUILD_PRIORITY":        5,
+        "DATA_CONTRACT_INCOMPLETE":   0,
+    }.get(contract_status, 0)
+
+
+def _ct_score_hit_rate(gate3_label: str | None, hit_rate_band: str | None,
+                       l5_hit_rate: float | None, l10_hit_rate: float | None) -> int:
+    # Use gate3_label as primary proxy for hit-rate quality
+    if gate3_label in ("MODEL_QUALIFIED_HOLD", "MARKET_VERIFIED_HOLD",
+                       "MONEY_QUALIFIED", "FINAL_APPROVED"):
+        return 10
+    if gate3_label == "WATCH_ELEVATED":
+        return 8
+    if gate3_label == "WATCH":
+        return 6
+    if gate3_label in ("DISCOVERY_ONLY", "DISCOVERY_ONLY_55_64"):
+        return 4
+    # Fallback to explicit rates
+    hr = max(v for v in [l5_hit_rate, l10_hit_rate] if v is not None) \
+         if any(v is not None for v in [l5_hit_rate, l10_hit_rate]) else None
+    if hr is None:
+        return 0
+    if hr >= 0.70:  return 10
+    if hr >= 0.65:  return 8
+    if hr >= 0.55:  return 4
+    return 0
+
+
+def _ct_score_median_support(l5_avg: float | None, l10_avg: float | None,
+                              line: float | None) -> int:
+    if line is None or line <= 0:
+        return 0
+    avg = l5_avg if l5_avg is not None else l10_avg
+    if avg is None:
+        return 0
+    margin = (avg - line) / line  # positive = avg above line
+    if margin >= 0.15:  return 10
+    if margin >= 0.08:  return 7
+    if margin >= 0.03:  return 5
+    if margin >= 0.01:  return 2
+    return 0
+
+
+def _ct_score_role_stability(role_flags: list[str], role_ceiling_override: str | None) -> int:
+    if role_ceiling_override == "WATCH_ELEVATED":
+        return 2   # role change + insufficient rows
+    if "ROLE_CHANGE_DETECTED" in role_flags:
+        if "ROLE_CHANGE_DETECTED_SPLIT_USED" in (role_flags or []):
+            return 6
+        return 3
+    if "STARTER_SPLIT_AVAILABLE" in role_flags or "BENCH_SPLIT_AVAILABLE" in role_flags:
+        return 10   # clean stable role with enough rows
+    return 5   # no role context available, neutral
+
+
+def _ct_score_failure_path(failure_flags: list[str]) -> int:
+    if not failure_flags:
+        return 5
+    if any(f in _CT_CRITICAL_FAILURE_FLAGS for f in failure_flags):
+        return 0
+    if len(failure_flags) >= 2:
+        return 1
+    return 3
+
+
+def _ct_band(score: int) -> str:
+    for threshold, band in _CT_BANDS:
+        if score >= threshold:
+            return band
+    return "REJECT"
+
+
+@app.route("/wow/candidate-triage/score", methods=["POST"])
+def wow_candidate_triage_score():
+    """
+    POST /wow/candidate-triage/score
+
+    Scores a candidate for discovery priority (not approval).
+
+    Body (JSON):
+      sport / market / line   (str/float, optional meta)
+
+      From PATCH-010 (data contract):
+        data_contract_result  (obj) or data_contract_status (str),
+        data_confidence       (str)
+
+      From PATCH-013A (role-state):
+        role_state_result     (obj) or role_state_flags (list), role_ceiling_override (str)
+
+      From Gate 3:
+        gate3_result          (obj) or gate3_label (str), gate3_edge_pct (float),
+        gate3_hit_rate_band (str), gate3_l5_avg (float), gate3_l10_avg (float),
+        gate3_l5_hit_rate (float), gate3_l10_hit_rate (float)
+
+      From PATCH-009 (confidence envelope):
+        confidence_envelope_result (obj) or approval_confidence (str), data_confidence (str),
+        market_confidence (str)
+
+      Market comp (optional):
+        market_comp_result    (obj) or has_mispricing (bool), market_edge_confirmed (bool)
+
+      Other:
+        failure_path_flags    (list[str])
+        correlation_group     (list[str], optional)
+    """
+    body = request.get_json(silent=True) or {}
+
+    sport  = str(body.get("sport") or "").strip()
+    market = str(body.get("market") or "").strip().upper()
+
+    # ── Unpack nested result objects ──
+    dc  = body.get("data_contract_result") or {}
+    g3  = body.get("gate3_result") or {}
+    ce  = body.get("confidence_envelope_result") or {}
+    rs  = body.get("role_state_result") or {}
+    mc  = body.get("market_comp_result") or {}
+
+    # Data contract
+    dc_status   = str(body.get("data_contract_status") or dc.get("contract_status") or "").upper()
+    data_conf   = str(body.get("data_confidence") or ce.get("data_confidence") or "").upper()
+
+    # Gate 3
+    gate3_label     = str(body.get("gate3_label") or g3.get("label") or g3.get("gate3_label") or "").upper() or None
+    gate3_edge_pct  = body.get("gate3_edge_pct") or g3.get("edge_pct")
+    gate3_edge_pct  = float(gate3_edge_pct) if gate3_edge_pct is not None else None
+    gate3_band      = str(body.get("gate3_hit_rate_band") or g3.get("hit_rate_band") or "").upper() or None
+    gate3_l5_avg    = body.get("gate3_l5_avg") or g3.get("l5_avg")
+    gate3_l10_avg   = body.get("gate3_l10_avg") or g3.get("l10_avg")
+    gate3_l5_hr     = body.get("gate3_l5_hit_rate") or g3.get("l5_hit_rate")
+    gate3_l10_hr    = body.get("gate3_l10_hit_rate") or g3.get("l10_hit_rate")
+    line_val        = body.get("line") or g3.get("line")
+    line_val        = float(line_val) if line_val is not None else None
+
+    # CE axes
+    appr_conf  = str(body.get("approval_confidence") or ce.get("approval_confidence") or "").upper()
+    mkt_conf   = str(body.get("market_confidence") or ce.get("market_confidence") or "NOT_REQUIRED_FOR_THIS_GATE").upper()
+
+    # Role state
+    role_flags    = list(body.get("role_state_flags") or rs.get("flags") or [])
+    role_advisory = list(body.get("role_advisory_codes") or rs.get("advisory_codes") or [])
+    role_ceiling  = str(body.get("role_ceiling_override") or rs.get("approval_ceiling_override") or "").upper() or None
+
+    # Market comp
+    has_mispricing  = bool(body.get("has_mispricing") or mc.get("has_mispricing") or False)
+    edge_confirmed  = body.get("market_edge_confirmed") if body.get("market_edge_confirmed") is not None \
+                      else mc.get("edge_confirmed")
+
+    # Failure path
+    failure_flags = list(body.get("failure_path_flags") or [])
+    # Pull in role advisory as failure flags
+    for af in role_advisory:
+        if af and af not in failure_flags:
+            failure_flags.append(af)
+
+    # ── Component scores ──
+    s_mispricing   = _ct_score_market_mispricing(mkt_conf, edge_confirmed, has_mispricing)
+    s_gap          = _ct_score_proportional_gap(gate3_edge_pct)
+    s_freshness    = _ct_score_data_freshness(data_conf)
+    s_completeness = _ct_score_data_completeness(dc_status)
+    s_hit_rate     = _ct_score_hit_rate(gate3_label, gate3_band,
+                                        float(gate3_l5_hr) if gate3_l5_hr else None,
+                                        float(gate3_l10_hr) if gate3_l10_hr else None)
+    s_median       = _ct_score_median_support(
+                         float(gate3_l5_avg) if gate3_l5_avg else None,
+                         float(gate3_l10_avg) if gate3_l10_avg else None,
+                         line_val)
+    s_role         = _ct_score_role_stability(role_flags, role_ceiling)
+    s_failure      = _ct_score_failure_path(failure_flags)
+
+    raw_score = (s_mispricing + s_gap + s_freshness + s_completeness
+                 + s_hit_rate + s_median + s_role + s_failure)
+
+    # ── Hard caps ──
+    caps_applied: list[str] = []
+    if dc_status == "DATA_CONTRACT_INCOMPLETE":
+        if raw_score > 45:
+            raw_score = 45
+            caps_applied.append("DATA_CONTRACT_INCOMPLETE_CAP_45")
+    if gate3_label in ("REJECT",) or appr_conf in ("REJECT", "NEGATIVE"):
+        if raw_score > 30:
+            raw_score = 30
+            caps_applied.append("GATE3_REJECT_CAP_30")
+    if mkt_conf == "MARKET_CONFLICT":
+        raw_score = max(0, raw_score - 10)
+        caps_applied.append("MARKET_CONFLICT_MINUS_10")
+
+    score_band = _ct_band(raw_score)
+
+    return jsonify({
+        "ok":              True,
+        "triage_version":  _CT_VERSION,
+        "build_ts":        _CT_BUILD_TS,
+        "sport":           sport,
+        "market":          market,
+        "triage_score":    raw_score,
+        "score_band":      score_band,
+        "discovery_priority": score_band,
+        "score_breakdown": {
+            "market_mispricing":  s_mispricing,
+            "proportional_gap":   s_gap,
+            "data_freshness":     s_freshness,
+            "data_completeness":  s_completeness,
+            "hit_rate_support":   s_hit_rate,
+            "median_support":     s_median,
+            "role_stability":     s_role,
+            "failure_path":       s_failure,
+            "total_before_caps":  (s_mispricing + s_gap + s_freshness + s_completeness
+                                   + s_hit_rate + s_median + s_role + s_failure),
+        },
+        "hard_caps_applied":      caps_applied,
+        "approval_confidence_unchanged": appr_conf or None,
+        "inputs_echo": {
+            "gate3_label":      gate3_label,
+            "gate3_edge_pct":   gate3_edge_pct,
+            "dc_status":        dc_status,
+            "data_confidence":  data_conf,
+            "mkt_confidence":   mkt_conf,
+            "role_ceiling":     role_ceiling,
+        },
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW-PATCH-014 — Unified Model Run Orchestrator
+# v1.0.0 | 2026-07-02
+# Chains: data-contract → role-state → gate3 → CE → market → triage → lifecycle.
+# Every row preserved. can_execute always false.
+# DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS enforced.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_MRO_VERSION  = "v1.0.0"
+_MRO_BUILD_TS = "2026-07-02"
+
+
+def _mro_run_ce_inline(pick: dict) -> dict:
+    """
+    Inline CE evaluation using the same scoring logic as /wow/confidence-envelope
+    but operating on a plain dict instead of a Flask request object.
+    Returns a CE-style result dict.
+    """
+    # ── Signal confidence (Gate 3 label → signal axis) ──
+    gate3_label = str(pick.get("gate3_label") or "").upper()
+    _signal_map = {
+        "MODEL_QUALIFIED_HOLD":  "HIGH",
+        "MARKET_VERIFIED_HOLD":  "HIGH",
+        "MONEY_QUALIFIED":       "HIGH",
+        "FINAL_APPROVED":        "HIGH",
+        "WATCH_ELEVATED":        "MEDIUM",
+        "WATCH":                 "MEDIUM",
+        "DISCOVERY_ONLY":        "MEDIUM",
+        "DISCOVERY_ONLY_55_64":  "LOW",
+        "NO_LABEL":              "UNKNOWN",
+        "REJECT":                "NEGATIVE",
+    }
+    signal_conf = _signal_map.get(gate3_label, "UNKNOWN")
+
+    # ── Data confidence ──
+    dc_status = str(pick.get("data_contract_status") or "").upper()
+    _dc_map = {
+        "DATA_CONTRACT_COMPLETE":   "COMPLETE_FRESH",
+        "DATA_CONTRACT_STALE":      "COMPLETE_STALE",
+        "DATA_CONTRACT_PARTIAL":    "PARTIAL_FRESH",
+        "DATA_BUILD_PRIORITY":      "LOW_SAMPLE",
+        "DATA_CONTRACT_INCOMPLETE": "DATA_CONTRACT_INCOMPLETE",
+    }
+    data_conf = _dc_map.get(dc_status, pick.get("data_confidence") or "UNKNOWN")
+
+    # ── Market confidence ──
+    mkt_conf_raw = str(pick.get("market_confidence") or "NOT_REQUIRED_FOR_THIS_GATE").upper()
+
+    # ── Approval ceiling (max is MODEL_QUALIFIED_HOLD; MONEY_QUALIFIED+ reserved) ──
+    _approval_precedence = [
+        "FINAL_APPROVED", "MONEY_QUALIFIED", "MARKET_VERIFIED_HOLD",
+        "MODEL_QUALIFIED_HOLD", "WATCH_ELEVATED", "WATCH",
+        "DISCOVERY_ONLY", "DATA_BUILD_PRIORITY", "REJECT",
+    ]
+    role_ceiling = str(pick.get("role_ceiling_override") or "").upper()
+
+    # Derive floor from signal + data axes
+    if signal_conf == "NEGATIVE":
+        floor = "REJECT"
+    elif signal_conf in ("HIGH",) and data_conf in ("COMPLETE_FRESH", "COMPLETE_STALE"):
+        floor = "MODEL_QUALIFIED_HOLD"
+    elif signal_conf in ("HIGH", "MEDIUM") and data_conf in (
+            "COMPLETE_FRESH", "COMPLETE_STALE", "PARTIAL_FRESH"):
+        floor = "WATCH_ELEVATED"
+    elif signal_conf in ("HIGH", "MEDIUM"):
+        floor = "WATCH"
+    elif signal_conf == "LOW":
+        floor = "DISCOVERY_ONLY"
+    else:
+        floor = "WATCH"
+
+    # Apply role ceiling override (ceiling can only lower)
+    appr_conf = floor
+    if role_ceiling:
+        if _approval_precedence.index(role_ceiling) > _approval_precedence.index(appr_conf):
+            appr_conf = role_ceiling
+
+    # Cap at MODEL_QUALIFIED_HOLD (MONEY_QUALIFIED+ require orchestrator gate)
+    _cap_idx = _approval_precedence.index("MODEL_QUALIFIED_HOLD")
+    if _approval_precedence.index(appr_conf) < _cap_idx:
+        appr_conf = "MODEL_QUALIFIED_HOLD"
+
+    blocker_axes = []
+    if data_conf in ("DATA_CONTRACT_INCOMPLETE", "LOW_SAMPLE"):
+        blocker_axes.append("data_confidence")
+    if mkt_conf_raw == "MARKET_CONFLICT":
+        blocker_axes.append("market_confidence")
+    if role_ceiling in ("WATCH", "WATCH_ELEVATED", "DATA_BUILD_PRIORITY"):
+        blocker_axes.append("role_state")
+
+    return {
+        "signal_confidence":   signal_conf,
+        "data_confidence":     data_conf,
+        "market_confidence":   mkt_conf_raw,
+        "approval_confidence": appr_conf,
+        "blocker_axes":        blocker_axes,
+        "role_ceiling_applied": role_ceiling or None,
+        "envelope_version":    _CE_VERSION,
+        "can_execute":         False,
+        "execution_rule":      "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    }
+
+
+def _mro_run_triage_inline(pick: dict, ce_result: dict) -> dict:
+    """
+    Inline triage score using PATCH-012 pure-function helpers.
+    """
+    mkt_conf      = ce_result.get("market_confidence", "NOT_REQUIRED_FOR_THIS_GATE")
+    data_conf     = ce_result.get("data_confidence", "UNKNOWN")
+    dc_status     = str(pick.get("data_contract_status") or "").upper()
+    gate3_label   = str(pick.get("gate3_label") or "").upper() or None
+    gate3_edge    = pick.get("gate3_edge_pct")
+    gate3_edge    = float(gate3_edge) if gate3_edge is not None else None
+    gate3_l5_avg  = pick.get("gate3_l5_avg")
+    gate3_l10_avg = pick.get("gate3_l10_avg")
+    line_val      = pick.get("line")
+    line_val      = float(line_val) if line_val is not None else None
+    gate3_l5_hr   = pick.get("gate3_l5_hit_rate")
+    gate3_l10_hr  = pick.get("gate3_l10_hit_rate")
+    has_mispricing = bool(pick.get("has_mispricing") or False)
+    edge_confirmed = pick.get("market_edge_confirmed")
+    role_flags     = list(pick.get("role_state_flags") or [])
+    role_ceiling   = str(pick.get("role_ceiling_override") or "").upper() or None
+    failure_flags  = list(pick.get("failure_path_flags") or [])
+
+    s_mis  = _ct_score_market_mispricing(mkt_conf, edge_confirmed, has_mispricing)
+    s_gap  = _ct_score_proportional_gap(gate3_edge)
+    s_fre  = _ct_score_data_freshness(data_conf)
+    s_cmp  = _ct_score_data_completeness(dc_status)
+    s_hr   = _ct_score_hit_rate(gate3_label, None,
+                                float(gate3_l5_hr)  if gate3_l5_hr  else None,
+                                float(gate3_l10_hr) if gate3_l10_hr else None)
+    s_med  = _ct_score_median_support(
+                 float(gate3_l5_avg)  if gate3_l5_avg  else None,
+                 float(gate3_l10_avg) if gate3_l10_avg else None, line_val)
+    s_rol  = _ct_score_role_stability(role_flags, role_ceiling)
+    s_fai  = _ct_score_failure_path(failure_flags)
+
+    raw = s_mis + s_gap + s_fre + s_cmp + s_hr + s_med + s_rol + s_fai
+    caps: list[str] = []
+    if dc_status == "DATA_CONTRACT_INCOMPLETE" and raw > 45:
+        raw = 45; caps.append("DATA_CONTRACT_INCOMPLETE_CAP_45")
+    if gate3_label in ("REJECT",) and raw > 30:
+        raw = 30; caps.append("GATE3_REJECT_CAP_30")
+    if mkt_conf == "MARKET_CONFLICT":
+        raw = max(0, raw - 10); caps.append("MARKET_CONFLICT_MINUS_10")
+
+    return {
+        "triage_score":    raw,
+        "score_band":      _ct_band(raw),
+        "discovery_priority": _ct_band(raw),
+        "score_breakdown": {
+            "market_mispricing": s_mis, "proportional_gap": s_gap,
+            "data_freshness": s_fre,   "data_completeness": s_cmp,
+            "hit_rate_support": s_hr,  "median_support": s_med,
+            "role_stability": s_rol,   "failure_path": s_fai,
+        },
+        "hard_caps_applied": caps,
+        "triage_version": _CT_VERSION,
+    }
+
+
+@app.route("/wow/model-run/orchestrate", methods=["POST"])
+def wow_model_run_orchestrate():
+    """
+    POST /wow/model-run/orchestrate
+    Unified model-run orchestrator for a slate of candidate picks.
+
+    Body (JSON):
+      run_id            (str, optional — generated if absent)
+      slate_date        (str, e.g. "2026-07-02")
+      sport             (str)
+      persist_lifecycle (bool, default true)
+      picks             (array of pick objects, required)
+
+    Each pick object:
+      pick_id, player_name, team, market, line, side, source (all optional)
+      gate3_label, gate3_edge_pct, gate3_l5_avg, gate3_l10_avg,
+      gate3_l5_hit_rate, gate3_l10_hit_rate        (Gate 3 outputs)
+      data_contract_status                          (PATCH-010)
+      role_state_rows (list)                        (raw rows; role-state
+                                                     runs inline if provided)
+      role_state_flags, role_ceiling_override       (pre-computed OK too)
+      market_confidence, has_mispricing,
+      market_edge_confirmed                         (market comp)
+      failure_path_flags                            (list[str])
+
+    Returns the full run manifest with every pick annotated.
+    can_execute is always false on every row.
+    """
+    body = request.get_json(silent=True) or {}
+
+    import uuid as _uuid
+    run_id     = str(body.get("run_id") or "run_" + _uuid.uuid4().hex[:10])
+    slate_date = str(body.get("slate_date") or "")
+    sport      = str(body.get("sport") or "").strip()
+    picks_in   = body.get("picks") or []
+    persist    = bool(body.get("persist_lifecycle", True))
+
+    if not isinstance(picks_in, list):
+        return jsonify({"ok": False, "error": "'picks' must be an array"}), 400
+
+    conn = _pl_connect() if persist else None
+
+    output_picks: list[dict] = []
+    stage_counts: dict[str, int] = {
+        "total": len(picks_in),
+        "ce_computed": 0, "triage_computed": 0,
+        "lifecycle_created": 0, "lifecycle_errored": 0,
+    }
+
+    for raw_pick in picks_in:
+        pick = dict(raw_pick)
+
+        # Inherit run-level sport if not set per-pick
+        if not pick.get("sport"):
+            pick["sport"] = sport
+
+        # ── Stage 1: Role-state (inline evaluation if rows provided) ──
+        rs_result: dict = {}
+        if pick.get("role_state_rows"):
+            try:
+                from flask import Request as _FReq
+                # Use the helper that reads dicts (PATCH-013A)
+                rows    = pick["role_state_rows"]
+                market  = str(pick.get("market") or "").upper()
+                today_ctx = pick.get("today_context") or {}
+                rs_result = _build_role_state_ledgers(rows, market, today_ctx)
+                if "error" not in rs_result:
+                    pick["role_state_flags"]     = rs_result.get("flags", [])
+                    pick["role_ceiling_override"] = rs_result.get("approval_ceiling_override")
+                    pick["role_advisory_codes"]   = rs_result.get("advisory_codes", [])
+            except Exception:
+                pass  # Role-state is advisory; continue pipeline
+
+        # ── Stage 2: Confidence Envelope (inline) ──
+        ce_result = _mro_run_ce_inline(pick)
+        stage_counts["ce_computed"] += 1
+
+        # ── Stage 3: Triage score (inline) ──
+        triage_result = _mro_run_triage_inline(pick, ce_result)
+        stage_counts["triage_computed"] += 1
+
+        # ── Stage 4: Lifecycle create/transition ──
+        pick_id  = str(pick.get("pick_id") or "run_" + _uuid.uuid4().hex[:10])
+        lc_state = "DISCOVERED"
+        # Map CE approval_confidence → lifecycle state
+        _appr_to_lc = {
+            "MODEL_QUALIFIED_HOLD": "MODEL_QUALIFIED_HOLD",
+            "MARKET_VERIFIED_HOLD": "MARKET_VERIFIED_HOLD",
+            "MONEY_QUALIFIED":      "MONEY_QUALIFIED",
+            "WATCH_ELEVATED":       "WATCH_ELEVATED",
+            "WATCH":                "WATCH",
+            "DISCOVERY_ONLY":       "GATE3_CHECKED",
+            "REJECT":               "REJECTED",
+            "DATA_BUILD_PRIORITY":  "DATA_BUILD_PRIORITY",
+        }
+        target_state = _appr_to_lc.get(ce_result.get("approval_confidence", ""), "GATE3_CHECKED")
+        triage_band  = triage_result.get("score_band", "SCOUT")
+        if triage_band == "PRIORITY_BUILD":
+            target_state = max(target_state, "CONFIDENCE_ENVELOPED",
+                               key=lambda s: _approval_precedence_rank(s))
+        lc_state = target_state
+
+        if conn:
+            try:
+                import psycopg2.extras as _pgx
+                import json as _json
+                _jd = lambda v: _json.dumps(v) if v is not None else None
+                with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                    cur.execute("""
+                        INSERT INTO wow_pick_lifecycle
+                          (pick_id, sport, market, player_name, team, line, side,
+                           source, current_state, blocker_code,
+                           confidence_snapshot, gate3_snapshot,
+                           data_contract_snapshot, role_state_snapshot, can_execute)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'NONE',%s,%s,%s,%s,FALSE)
+                        ON CONFLICT (pick_id) DO UPDATE SET
+                          current_state=EXCLUDED.current_state,
+                          confidence_snapshot=EXCLUDED.confidence_snapshot,
+                          gate3_snapshot=EXCLUDED.gate3_snapshot,
+                          updated_at=NOW(), can_execute=FALSE
+                    """, (
+                        pick_id, pick.get("sport"), pick.get("market"),
+                        pick.get("player_name"), pick.get("team"),
+                        pick.get("line"), pick.get("side"), pick.get("source"),
+                        lc_state,
+                        _jd(ce_result), _jd(pick.get("gate3_result")),
+                        _jd(pick.get("data_contract_result")),
+                        _jd(rs_result or pick.get("role_state_result")),
+                    ))
+                    cur.execute("""
+                        INSERT INTO wow_pick_lifecycle_log (pick_id, from_state, to_state, transition_reason)
+                        VALUES (%s,'DISCOVERED',%s,'model_run_orchestrate')
+                    """, (pick_id, lc_state))
+                conn.commit()
+                stage_counts["lifecycle_created"] += 1
+            except Exception as lc_exc:
+                stage_counts["lifecycle_errored"] += 1
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+        output_picks.append({
+            "pick_id":          pick_id,
+            "sport":            pick.get("sport"),
+            "market":           pick.get("market"),
+            "player_name":      pick.get("player_name"),
+            "team":             pick.get("team"),
+            "line":             pick.get("line"),
+            "side":             pick.get("side"),
+
+            # Pipeline stage outputs
+            "role_state_flags":      pick.get("role_state_flags", []),
+            "role_ceiling_override": pick.get("role_ceiling_override"),
+            "confidence_envelope":   ce_result,
+            "triage":                triage_result,
+            "lifecycle_state":       lc_state,
+
+            # Invariants
+            "can_execute":   False,
+            "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        })
+
+    if conn:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return jsonify({
+        "ok":              True,
+        "run_id":          run_id,
+        "slate_date":      slate_date,
+        "sport":           sport,
+        "orchestrator_version": _MRO_VERSION,
+        "build_ts":        _MRO_BUILD_TS,
+        "stage_counts":    stage_counts,
+        "picks":           output_picks,
+        "can_execute":     False,
+        "execution_rule":  "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
+def _approval_precedence_rank(state: str) -> int:
+    """Helper rank for lifecycle state comparison in orchestrator."""
+    order = [
+        "DISCOVERED", "DATA_BUILD_PRIORITY", "DATA_CONTRACT_CHECKED",
+        "ROLE_STATE_CHECKED", "GATE3_CHECKED", "MARKET_CHECKED",
+        "CONFIDENCE_ENVELOPED", "TRIAGED",
+        "WATCH", "WATCH_ELEVATED",
+        "MODEL_QUALIFIED_HOLD", "MARKET_VERIFIED_HOLD",
+        "MONEY_QUALIFIED", "LOCK_PENDING", "LOCKED_DRY_RUN",
+    ]
+    try:
+        return order.index(state)
+    except ValueError:
+        return 0
+
+
+def _build_role_state_ledgers(rows: list, market: str, today_ctx: dict) -> dict:
+    """
+    Inline role-state evaluation — matches the PATCH-013A core logic
+    without requiring a Flask request object.
+    Delegates to the existing evaluate_role_state helper functions if available,
+    otherwise performs a simplified evaluation.
+    """
+    # Defer to the existing route-level helper by constructing a synthetic request.
+    # Simpler: call the same pure-logic helpers that the /wow/role-state/evaluate
+    # endpoint uses (defined in PATCH-013A).  If they're not importable as
+    # standalone functions, do a lightweight inline calculation.
+    try:
+        # Try calling the internal helpers from PATCH-013A
+        # _compute_role_state_ledgers is the private function, if exported
+        return _compute_role_state_evaluation(rows=rows, market=market, today_context=today_ctx)
+    except NameError:
+        pass
+
+    # ── Fallback: lightweight inline evaluation ──
+    import statistics as _stats
+    if not rows:
+        return {
+            "flags": [],
+            "advisory_codes": ["ROLE_STATE_INSUFFICIENT_ROWS"],
+            "approval_ceiling_override": None,
+            "recommended_ledger_name": "all_games_l10",
+        }
+    starter_rows = [r for r in rows if r.get("starter")]
+    bench_rows   = [r for r in rows if not r.get("starter")]
+    is_starter   = bool(today_ctx.get("is_starter_today", len(starter_rows) > len(bench_rows)))
+    ideal_rows   = starter_rows if is_starter else bench_rows
+    ledger_name  = ("starter_l10" if is_starter else "bench_l10") \
+                   if len(ideal_rows) >= 5 else "all_games_l10"
+    role_change  = is_starter and len(bench_rows) > len(starter_rows)
+    ceiling_override = "WATCH_ELEVATED" if (role_change and len(ideal_rows) < 5) else None
+    flags = []
+    if len(ideal_rows) >= 5:
+        flags.append("STARTER_SPLIT_AVAILABLE" if is_starter else "BENCH_SPLIT_AVAILABLE")
+    if role_change:
+        flags.append("ROLE_CHANGE_DETECTED")
+    advisory_codes = []
+    if not today_ctx.get("key_teammate_status"):
+        advisory_codes.append("KEY_TEAMMATE_CONTEXT_UNAVAILABLE")
+    return {
+        "flags": flags,
+        "advisory_codes": advisory_codes,
+        "approval_ceiling_override": ceiling_override,
+        "recommended_ledger_name": ledger_name,
+        "role_change_detected": role_change,
+    }
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)

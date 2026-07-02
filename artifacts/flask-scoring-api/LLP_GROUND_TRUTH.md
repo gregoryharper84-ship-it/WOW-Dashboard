@@ -724,6 +724,119 @@ REJECT               → NEGATIVE
 
 ---
 
+---
+
+## §17 PATCH-013A — Role-State Ledgers (SHIPPED 2026-07-02)
+
+Endpoint: `POST /wow/role-state/build`, `GET /wow/role-state/player`, `POST /wow/role-state/evaluate`
+
+11 sub-ledgers per player/market:
+`starter_l10`, `bench_l10`, `full_role_l10`, `reduced_role_l10`, `minutes_qualified_l10`, `post_trade_l10`, `pre_trade_l10`, `post_injury_l10`, `with_key_teammate_l10`, `without_key_teammate_l10`, `all_games_l10`
+
+Role-change detection:
+- If ideal split (starter vs bench) has < 5 rows → `ROLE_CHANGE_DETECTED`, ceiling raised to `WATCH_ELEVATED`
+- `recommended_ledger_name` = ideal split if ≥5 rows, else `all_games_l10`
+- Advisory codes: `KEY_TEAMMATE_CONTEXT_UNAVAILABLE`, `ROLE_CHANGE_INSUFFICIENT_SAMPLE`, `ROLE_STATE_INSUFFICIENT_ROWS`
+- `approval_ceiling_override: WATCH_ELEVATED` when role-change + insufficient split rows
+
+### Safety rails
+- No approval labels created
+- `execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` on every response
+- Version: `v1.0.0`
+
+---
+
+## §18 PATCH-013B — Pick Lifecycle State Machine (SHIPPED 2026-07-02)
+
+DB tables: `wow_pick_lifecycle` (PK: `pick_id`), `wow_pick_lifecycle_log` (append-only audit)
+
+Valid states:
+`DISCOVERED`, `DATA_CONTRACT_CHECKED`, `ROLE_STATE_CHECKED`, `GATE3_CHECKED`, `MARKET_CHECKED`, `CONFIDENCE_ENVELOPED`, `TRIAGED`, `MODEL_QUALIFIED_HOLD`, `MARKET_VERIFIED_HOLD`, `MONEY_QUALIFIED`, `LOCK_PENDING`, `LOCKED_DRY_RUN`, `SETTLED_WIN`, `SETTLED_LOSS`, `SETTLED_PUSH`, `REJECTED`, `WATCH`, `WATCH_ELEVATED`, `DATA_BUILD_PRIORITY`
+
+Terminal states: `SETTLED_WIN`, `SETTLED_LOSS`, `SETTLED_PUSH` — no further transitions allowed.
+
+Endpoints:
+- `POST /wow/pick-lifecycle/create` — create in DISCOVERED state
+- `POST /wow/pick-lifecycle/transition` — move to new state with reason + optional snapshot update
+- `GET /wow/pick-lifecycle/list?state=&sport=&limit=` — list all picks, no hidden cuts
+- `POST /wow/pick-lifecycle/settle` — convenience wrapper for WIN/LOSS/PUSH
+- `GET /wow/pick-lifecycle/pick?pick_id=` — full pick + transition_history
+
+### Safety rails
+- `can_execute` field: always `false`, enforced in DB schema (`DEFAULT FALSE`) and every endpoint
+- No live execution fields present anywhere in the schema
+- Every row persists (no deletes)
+- Version: `v1.0.0`
+
+---
+
+## §19 PATCH-012 — Candidate Triage Score (SHIPPED 2026-07-02)
+
+Endpoint: `POST /wow/candidate-triage/score`
+
+Scoring weights (max 100):
+
+| Component | Max pts | Key inputs |
+|-----------|---------|-----------|
+| Market mispricing | 20 | `has_mispricing`, `market_edge_confirmed`, `market_confidence` |
+| Proportional gap | 15 | `gate3_edge_pct` |
+| Data freshness | 15 | `data_confidence` axis from CE |
+| Data completeness | 15 | `data_contract_status` |
+| Hit-rate support | 10 | `gate3_label` or explicit hit-rate fields |
+| Median support | 10 | `gate3_l5_avg` / `gate3_l10_avg` vs `line` |
+| Role stability | 10 | `role_state_flags`, `role_ceiling_override` |
+| Failure-path cleanliness | 5 | `failure_path_flags` |
+
+Score bands:
+- 80–100: `PRIORITY_BUILD`
+- 65–79: `WATCH_ELEVATED`
+- 50–64: `WATCH`
+- 25–49: `SCOUT`
+- 0–24: `REJECT`
+
+Hard caps:
+- `DATA_CONTRACT_INCOMPLETE` → caps raw score at 45
+- `gate3_label=REJECT` → caps at 30
+- `MARKET_CONFLICT` → subtracts 10
+
+Invariants:
+- `approval_confidence_unchanged`: echoes the CE output unchanged — triage never alters it
+- `discovery_priority` = `score_band` (discovery label, not approval label)
+- `execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS`
+- Version: `v1.0.0`
+
+---
+
+## §20 PATCH-014 — Unified Model Run Orchestrator (SHIPPED 2026-07-02)
+
+Endpoint: `POST /wow/model-run/orchestrate`
+
+Pipeline order (inline, no HTTP self-calls):
+1. Role-state evaluation (if `role_state_rows` provided)
+2. Confidence Envelope (inline `_mro_run_ce_inline`)
+3. Triage score (inline `_mro_run_triage_inline`)
+4. Lifecycle create/upsert (if `persist_lifecycle=true`, default true)
+
+Input:
+- `run_id` (generated if absent), `slate_date`, `sport`, `persist_lifecycle`
+- `picks[]` — each pick carries its own stage inputs (gate3/dc/role/market results)
+- Accepts pre-computed results for every stage; computes CE + triage inline always
+
+Output per pick:
+- `confidence_envelope`, `triage`, `lifecycle_state`, `role_state_flags`, `role_ceiling_override`
+- `can_execute: false` (always)
+- `execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS`
+
+`stage_counts`: `{total, ce_computed, triage_computed, lifecycle_created, lifecycle_errored}`
+
+### Invariants
+- Every pick in → every pick out (no hidden cuts)
+- `persist_lifecycle=false` skips all DB writes
+- `can_execute` is `false` on every pick and at top level
+- Version: `v1.0.0`
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

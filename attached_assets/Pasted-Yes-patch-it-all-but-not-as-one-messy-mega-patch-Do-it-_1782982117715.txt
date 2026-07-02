@@ -1,0 +1,323 @@
+Yes — patch it all, but **not as one messy mega-patch**.
+
+Do it as a staged bundle with separate commits, tests, and rollback points:
+
+```text
+Step 0 — PATCH-009 cleanup
+Step 1 — PATCH-013A Role-State Ledgers
+Step 2 — PATCH-013B Pick Lifecycle State Machine
+Step 3 — PATCH-012 Candidate Triage Score
+Step 4 — PATCH-014 Orchestrator / Unified Model Run
+```
+
+The key advice: **013A must come before 012.**
+Do not build the triage score until role-state context exists, or the score will rank bad all-games L10 signals too highly.
+
+Send this to Replit:
+
+FULL PATCH BUNDLE DIRECTIVE — WOW v16 CLEAN CORE
+
+Execution mode:
+DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS remains enforced.
+
+Patch everything, but stage it in separate commits with independent tests and rollback points.
+
+Required build order:
+
+0. PATCH-009 cleanup
+1. PATCH-013A — Role-State Ledgers
+2. PATCH-013B — Pick Lifecycle State Machine
+3. PATCH-012 — Candidate Triage Score
+4. PATCH-014 — Unified Model Run Orchestrator
+
+Do not combine all logic into one endpoint.
+Do not allow any new patch to create FINAL_APPROVED, MONEY_QUALIFIED, or live execution.
+All patches are intelligence/scoring infrastructure only.
+
+STEP 0 — PATCH-009 ENUM CLEANUP
+
+Normalize confidence envelope enum:
+
+Replace:
+market_confidence: NOT_REQUIRED
+
+With:
+market_confidence: NOT_REQUIRED_FOR_THIS_GATE
+
+Acceptance:
+
+* no NOT_REQUIRED remains in confidence-envelope output
+* all tests still pass
+* PATCH-009 remains closed after cleanup
+
+STEP 1 — PATCH-013A ROLE-STATE LEDGERS
+
+Purpose:
+Stop the model from using generic all-games L5/L10 when today’s role context differs from historical games.
+
+Build endpoints:
+
+* POST /wow/role-state/build
+* GET /wow/role-state/player
+* POST /wow/role-state/evaluate
+
+Required ledger splits:
+
+* all_games_l10
+* starter_l10
+* bench_l10
+* full_role_l10
+* reduced_role_l10
+* with_key_teammate_l10
+* without_key_teammate_l10
+* post_trade_l10
+* pre_trade_l10
+* post_injury_l10
+* minutes_qualified_l10
+
+Required flags:
+
+* STARTER_SPLIT_AVAILABLE
+* BENCH_SPLIT_AVAILABLE
+* ROLE_CHANGE_DETECTED
+* POST_TRADE_CONTEXT
+* KEY_TEAMMATE_OUT_CONTEXT
+* KEY_TEAMMATE_RETURNED_CONTEXT
+* INJURY_RETURN_CONTEXT
+* MINUTES_RESTRICTION_CONTEXT
+* BLOWOUT_MINUTES_RISK
+* ROLE_STATE_INSUFFICIENT_ROWS
+
+Rules:
+
+* If today’s role clearly matches a sub-ledger, do not use all_games_l10 as primary.
+* If role change exists and matching role-state ledger has fewer than 5 rows, cap approval at WATCH_ELEVATED.
+* Missing teammate/transaction context should create advisory flags, not silent approval.
+* Role-state may raise or lower confidence, but cannot create betting approval.
+
+Acceptance tests:
+
+1. 10 starter rows returns starter_l10.
+2. Mixed starter/bench rows select the matching ledger.
+3. Recent role change with fewer than 5 matching rows returns WATCH_ELEVATED.
+4. Missing key-teammate context returns advisory flag.
+5. all_games_l10 is not used when a stronger matching sub-ledger exists.
+6. Confidence Envelope can consume role-state result.
+7. Gate 3 math unchanged.
+8. No betting labels created.
+9. DRY_RUN_ONLY enforced.
+
+STEP 2 — PATCH-013B PICK LIFECYCLE STATE MACHINE
+
+Rename this correctly:
+PATCH-013B is not Role-State Ledger.
+It is Pick Lifecycle State Machine.
+
+Purpose:
+Track every candidate from discovery through settlement without losing state.
+
+Allowed lifecycle states:
+
+* DISCOVERED
+* DATA_CONTRACT_CHECKED
+* ROLE_STATE_CHECKED
+* GATE3_CHECKED
+* MARKET_CHECKED
+* CONFIDENCE_ENVELOPED
+* TRIAGED
+* MODEL_QUALIFIED_HOLD
+* MARKET_VERIFIED_HOLD
+* MONEY_QUALIFIED
+* LOCK_PENDING
+* LOCKED_DRY_RUN
+* SETTLED_WIN
+* SETTLED_LOSS
+* SETTLED_PUSH
+* REJECTED
+* WATCH
+* WATCH_ELEVATED
+* DATA_BUILD_PRIORITY
+
+Required fields:
+
+* pick_id
+* sport
+* market
+* player/team
+* line
+* side
+* source
+* source_timestamp
+* current_state
+* previous_state
+* transition_reason
+* blocker_code
+* confidence_snapshot
+* gate3_snapshot
+* data_contract_snapshot
+* role_state_snapshot
+* market_snapshot
+* created_at
+* updated_at
+* settled_at
+* result
+
+Rules:
+
+* Every state transition must be logged.
+* No row may disappear.
+* Rejected rows remain visible.
+* WATCH_ELEVATED and DATA_BUILD_PRIORITY rows remain trackable.
+* No live execution fields may become true.
+* can_execute must always remain false.
+
+Acceptance tests:
+
+1. Candidate can move DISCOVERED → DATA_CONTRACT_CHECKED.
+2. Incomplete data moves to DATA_BUILD_PRIORITY or REJECTED with blocker.
+3. Complete data can move to ROLE_STATE_CHECKED.
+4. Gate 3 reject preserves row and blocker.
+5. WATCH_ELEVATED persists as trackable.
+6. Dry-run lock creates LOCKED_DRY_RUN only, not live execution.
+7. Settlement updates result without changing original snapshots.
+8. can_execute remains false.
+9. No market orders possible.
+
+STEP 3 — PATCH-012 CANDIDATE TRIAGE SCORE
+
+Purpose:
+Rank which props deserve research first. This is discovery-only, not approval.
+
+Important boundary:
+The triage score must live in a separate endpoint/table and must not become part of Gate 3 approval math.
+
+Build endpoint:
+
+* POST /wow/candidate-triage/score
+
+Required inputs:
+
+* data_contract_result
+* role_state_result
+* gate3_result if available
+* confidence_envelope_result
+* market_comp_result if available
+* failure_path_flags
+* correlation_group if available
+
+Revised weights:
+
+* market mispricing / price dislocation: 20
+* proportional gap vs line: 15
+* data freshness: 15
+* market-specific data completeness: 15
+* hit-rate support: 10
+* median support: 10
+* role stability or role upgrade: 10
+* failure-path cleanliness: 5
+
+Reason:
+Market edge should not be underweighted. WOW v16 is cross-market-first and edge-driven. Data freshness matters, but price dislocation and proportional edge need heavier discovery weight.
+
+Score bands:
+
+* 80–100: PRIORITY_BUILD
+* 65–79: WATCH_ELEVATED
+* 50–64: WATCH
+* below 50: SCOUT / REJECT depending blocker
+
+Rules:
+
+* Triage score cannot create MODEL_QUALIFIED_HOLD.
+* Triage score cannot create MONEY_QUALIFIED.
+* Triage score cannot override data-contract failure.
+* Triage score cannot override Gate 3 rejection.
+* Triage score is only a sorting/prioritization layer.
+
+Acceptance tests:
+
+1. Strong market mispricing + complete data ranks high.
+2. Strong signal but incomplete data caps at DATA_BUILD_PRIORITY / WATCH_ELEVATED.
+3. Negative Gate 3 cannot be rescued by triage score.
+4. Market conflict lowers score.
+5. Low sample lowers score.
+6. Role uncertainty lowers score.
+7. Triage score does not change approval_confidence.
+8. Triage score endpoint is separate from Gate 3 and Confidence Envelope.
+9. No betting labels created.
+
+STEP 4 — PATCH-014 UNIFIED MODEL RUN ORCHESTRATOR
+
+Purpose:
+Create one dry-run model endpoint that calls the other endpoints in the correct order and returns a full row-preserved board.
+
+Build endpoint:
+
+* POST /wow/model-run
+
+Execution order:
+
+1. slate validation
+2. ingestion freshness check
+3. data contract check
+4. role-state evaluation
+5. Gate 3 check
+6. confidence envelope
+7. market comparison if available
+8. candidate triage score
+9. lifecycle state update
+10. final row-preserved output
+
+Required output per row:
+
+* original prop
+* slate_status
+* data_contract_status
+* role_state_status
+* gate3_label
+* signal_confidence
+* data_confidence
+* market_confidence
+* approval_confidence
+* triage_score
+* lifecycle_state
+* blocker_code
+* advisory_codes
+* approval_ceiling
+* can_execute: false
+* execution_rule
+
+Rules:
+
+* Preserve every row.
+* No approval-filter mode.
+* No hidden cuts.
+* No live execution.
+* No market orders.
+* No FINAL_APPROVED from orchestrator alone.
+* Output should rank candidates but still show rejects.
+
+Acceptance tests:
+
+1. Full board input returns same number of output rows.
+2. Bad slate row preserved with blocker.
+3. Missing data row preserved with DATA_CONTRACT_INCOMPLETE.
+4. Role-change row capped at WATCH_ELEVATED.
+5. Gate 3 reject preserved.
+6. Strong candidate ranked PRIORITY_BUILD but not approved.
+7. All rows include confidence axes.
+8. All rows include lifecycle state.
+9. can_execute false on every row.
+10. DRY_RUN_ONLY rule visible in response.
+
+Final build policy:
+Patch all, but one patch at a time:
+
+* commit after each patch
+* test after each patch
+* update LLP_GROUND_TRUTH.md after each patch
+* update patch log after each patch
+* do not begin the next patch until the prior patch tests pass
+
+My actual recommendation: **yes, patch all — but the real unlock is PATCH-014.**
+That is where the model becomes a system instead of separate tools.
