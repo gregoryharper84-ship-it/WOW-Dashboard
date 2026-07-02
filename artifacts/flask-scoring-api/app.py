@@ -23050,6 +23050,461 @@ def wow_provenance_validate_batch():
     })
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# WOW-PATCH-2026-07-02-VALIDATION-QUEUE-CACHE
+# Validation Queue output + reusable player/pitcher ledger cache.
+# ══════════════════════════════════════════════════════════════════════════
+
+_VQ_VERSION   = "v1.0.0"
+_VQ_BUILD_TS  = "2026-07-02"
+
+_VQ_PLAYABLE_LABELS = {
+    "FINAL_APPROVED", "MONEY_QUALIFIED", "LLP_APPROVED",
+    "LLP_PLAYABLE", "KALSHI_PLAYABLE",
+}
+_VQ_REJECTED_LABELS = {
+    "REJECT_BAD_STRUCTURE", "REJECT_NO_EDGE", "REJECT_DATA_QUALITY",
+}
+_VQ_BANNED_PHRASES = [
+    "model-approved", "model approved", "approved", "lock", "submit",
+    "playable", "money-qualified", "money qualified", "final",
+    "safe", "high-confidence winner",
+]
+_VQ_NARRATIVE_FIELDS = ("narrative", "display_text", "candidate_summary", "commentary")
+
+_VQ_UPGRADE_PATH_MAP = {
+    "ledger_debt":            "Needs exact L10 rows (game-by-game) and 7/10 exact-line hit count.",
+    "median_debt":            "Needs L5 and L10 median values calculated from source data.",
+    "hit_count_debt":         "Needs L5 and L10 exact-line hit counts confirmed.",
+    "status_debt":            "Needs player status confirmed active with no minutes/role restriction.",
+    "role_debt":              "Needs role confirmation because teammate availability changes usage.",
+    "market_debt":            "Needs market edge >= 2.5% after no-vig conversion and a current line timestamp.",
+    "payout_debt":            "Needs final lock line timestamp within the allowed freshness window.",
+    "failure_path_debt":      "Needs unresolved failure-path blockers cleared.",
+    "source_provenance_debt": "Needs a source-stamped ledger that passes provenance validation.",
+    "cache_debt":             "Needs the player ledger cache refreshed after the most recent completed game.",
+}
+
+
+def _vq_empty_debt() -> dict:
+    return {
+        "ledger_debt": False, "median_debt": False, "hit_count_debt": False,
+        "status_debt": False, "role_debt": False, "market_debt": False,
+        "payout_debt": False, "failure_path_debt": False,
+        "source_provenance_debt": False, "cache_debt": False,
+    }
+
+
+def _vq_compute_confidence_debt(row: dict) -> dict:
+    """
+    Computes the confidence_debt object for a single candidate row.
+    Conservative default: any missing/unclear field counts as debt.
+    Returns {"debt": {...}, "missing_fields": [...], "blockers": [...]}
+    """
+    debt = _vq_empty_debt()
+    missing_fields: list[str] = []
+    blockers: list[str] = []
+
+    # ledger_debt — summary-only (no game-by-game rows)
+    l5_rows  = row.get("l5_rows")
+    l10_rows = row.get("l10_rows")
+    l5_empty  = l5_rows  is None or (isinstance(l5_rows,  list) and len(l5_rows)  == 0)
+    l10_empty = l10_rows is None or (isinstance(l10_rows, list) and len(l10_rows) == 0)
+    if l5_empty or l10_empty:
+        debt["ledger_debt"] = True
+        missing_fields.append("l10_rows" if l10_empty else "l5_rows")
+        blockers.append("SUMMARY_ONLY_NOT_MODEL_VERIFIED")
+
+    # median_debt
+    if row.get("l5_median") is None or row.get("l10_median") is None:
+        debt["median_debt"] = True
+        missing_fields.append("l5_median/l10_median")
+
+    # hit_count_debt
+    if row.get("l5_hit_count_at_line") is None or row.get("l10_hit_count_at_line") is None:
+        debt["hit_count_debt"] = True
+        missing_fields.append("l5_hit_count_at_line/l10_hit_count_at_line")
+
+    # status_debt
+    if row.get("player_status_confirmed") is not True:
+        debt["status_debt"] = True
+        missing_fields.append("player_status_confirmed")
+
+    # role_debt
+    role_flags = row.get("role_flags") or []
+    if row.get("role_confirmed") is False or "KEY_TEAMMATE_CONTEXT_UNAVAILABLE" in role_flags:
+        debt["role_debt"] = True
+        missing_fields.append("role_confirmed")
+
+    # market_debt
+    edge_pct = row.get("edge_pct")
+    if row.get("market_timestamp") is None:
+        debt["market_debt"] = True
+        missing_fields.append("market_timestamp")
+    elif edge_pct is not None and float(edge_pct) < 2.5:
+        debt["market_debt"] = True
+        missing_fields.append("edge_pct>=2.5")
+
+    # payout_debt
+    if row.get("final_lock_timestamp") is None:
+        debt["payout_debt"] = True
+        missing_fields.append("final_lock_timestamp")
+
+    # failure_path_debt
+    failure_flags = row.get("failure_path_flags") or []
+    if failure_flags:
+        debt["failure_path_debt"] = True
+        blockers.extend(f for f in failure_flags if f not in blockers)
+
+    # source_provenance_debt
+    prov_status   = row.get("source_provenance_status")
+    prov_blockers = row.get("approval_blockers") or []
+    if prov_status not in ("PROVENANCE_VERIFIED", "TRUSTED_ORIGIN_PASS") or prov_blockers:
+        debt["source_provenance_debt"] = True
+        blockers.extend(b for b in prov_blockers if b not in blockers)
+
+    # cache_debt
+    cache_status = row.get("cache_status")
+    if cache_status in ("stale", "no_cache"):
+        debt["cache_debt"] = True
+        blockers.append("LEDGER_CACHE_STALE" if cache_status == "stale" else "LEDGER_CACHE_MISSING")
+
+    return {"debt": debt, "missing_fields": missing_fields, "blockers": blockers}
+
+
+def _vq_build_upgrade_path(debt: dict) -> str:
+    active = [k for k, v in debt.items() if v]
+    if not active:
+        return "No upgrade needed \u2014 all confidence checks passed."
+    return " ".join(_VQ_UPGRADE_PATH_MAP[k] for k in active)
+
+
+def _vq_scrub_banned_phrases(row: dict) -> list[str]:
+    """Scans narrative-style fields for banned playable-sounding language."""
+    violations = []
+    for field in _VQ_NARRATIVE_FIELDS:
+        val = row.get(field)
+        if not val:
+            continue
+        lowered = str(val).lower()
+        for phrase in _VQ_BANNED_PHRASES:
+            if phrase in lowered:
+                violations.append(f"{field}:{phrase}")
+    return violations
+
+
+def _vq_determine_bucket(terminal_label: str, debt: dict) -> tuple[str, str]:
+    """Returns (display_bucket, effective_label)."""
+    label = str(terminal_label or "").strip().upper()
+    has_debt = any(debt.values())
+
+    if label in _VQ_REJECTED_LABELS:
+        return "REJECTED_BOARD", label
+
+    if label in _VQ_PLAYABLE_LABELS:
+        if has_debt:
+            return "VALIDATION_QUEUE", "WATCH"
+        return "APPROVED_BOARD", label
+
+    return "VALIDATION_QUEUE", label or "WATCH"
+
+
+def _vq_build_candidate_output(row: dict) -> dict:
+    debt_report = _vq_compute_confidence_debt(row)
+    debt        = debt_report["debt"]
+    bucket, effective_label = _vq_determine_bucket(row.get("terminal_label"), debt)
+    language_violations = _vq_scrub_banned_phrases(row) if bucket == "VALIDATION_QUEUE" else []
+
+    return {
+        "candidate":            row.get("candidate") or row.get("player"),
+        "market":               row.get("market"),
+        "line":                 row.get("line"),
+        "side":                 row.get("side"),
+        "terminal_label":       str(row.get("terminal_label") or "").strip().upper(),
+        "display_bucket":       bucket,
+        "effective_label":      effective_label,
+        "confidence_debt":      debt,
+        "debt_count":           sum(1 for v in debt.values() if v),
+        "missing_fields":       debt_report["missing_fields"],
+        "active_blocker_tags":  debt_report["blockers"],
+        "cache_status":         row.get("cache_status"),
+        "upgrade_path":         _vq_build_upgrade_path(debt),
+        "edge_pct":             row.get("edge_pct"),
+        "language_violations":  language_violations,
+        "can_execute":          False,
+    }
+
+
+@app.route("/wow/validation-queue/build", methods=["POST"])
+def wow_validation_queue_build():
+    """
+    POST /wow/validation-queue/build
+
+    Run-level output builder. Buckets every candidate into Approved Board,
+    Validation Queue, or Rejected Board based on terminal_label + confidence
+    debt. Every touched row is preserved; nothing is hidden. Validation Queue
+    is a display bucket only \u2014 it never grants a playable label.
+
+    Body: { "rows": [ {candidate fields...}, ... ] }
+    """
+    body = request.get_json(silent=True) or {}
+    rows = body.get("rows") or []
+    if not isinstance(rows, list):
+        return jsonify({"ok": False, "error": "'rows' must be an array"}), 400
+
+    approved_board:    list[dict] = []
+    validation_queue:  list[dict] = []
+    rejected_board:    list[dict] = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out = _vq_build_candidate_output(row)
+        if out["display_bucket"] == "APPROVED_BOARD":
+            approved_board.append(out)
+        elif out["display_bucket"] == "REJECTED_BOARD":
+            rejected_board.append(out)
+        else:
+            validation_queue.append(out)
+
+    # Sort Validation Queue: lowest confidence debt first, then highest edge
+    validation_queue.sort(
+        key=lambda c: (c["debt_count"], -(c["edge_pct"] or 0))
+    )
+
+    final_action = (
+        "NO PLAY / STAKE $0" if not approved_board
+        else f"{len(approved_board)} APPROVED PICK(S)"
+    )
+
+    return jsonify({
+        "ok":               True,
+        "vq_version":       _VQ_VERSION,
+        "build_ts":         _VQ_BUILD_TS,
+        "approved_board":   approved_board,
+        "validation_queue": validation_queue,
+        "rejected_board":   rejected_board,
+        "final_action":     final_action,
+        "can_execute":      False,
+        "execution_rule":   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
+# ── Player / pitcher ledger cache ───────────────────────────────────────────
+
+def _vq_ensure_cache_schema(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS player_game_log_cache (
+                id                  BIGSERIAL PRIMARY KEY,
+                player_id           TEXT NOT NULL,
+                player_name         TEXT,
+                league              TEXT NOT NULL,
+                team                TEXT,
+                opponent            TEXT,
+                game_date           DATE NOT NULL,
+                home_away           TEXT,
+                minutes             REAL,
+                pts                 REAL,
+                reb                 REAL,
+                ast                 REAL,
+                stl                 REAL,
+                blk                 REAL,
+                turnovers           REAL,
+                threes_made         REAL,
+                pra                 REAL,
+                pts_reb             REAL,
+                pts_ast             REAL,
+                reb_ast             REAL,
+                source              TEXT,
+                source_url          TEXT,
+                source_timestamp    TIMESTAMPTZ,
+                ingestion_timestamp TIMESTAMPTZ DEFAULT NOW(),
+                data_quality_status TEXT DEFAULT 'unverified',
+                UNIQUE(player_id, league, game_date)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pitcher_game_log_cache (
+                id                  BIGSERIAL PRIMARY KEY,
+                player_id           TEXT NOT NULL,
+                player_name         TEXT,
+                team                TEXT,
+                opponent            TEXT,
+                game_date           DATE NOT NULL,
+                innings_pitched     REAL,
+                pitch_count         INTEGER,
+                strikeouts          INTEGER,
+                walks               INTEGER,
+                earned_runs         INTEGER,
+                hits_allowed        INTEGER,
+                velocity_notes      TEXT,
+                injury_notes        TEXT,
+                workload_notes      TEXT,
+                source              TEXT,
+                source_url          TEXT,
+                source_timestamp    TIMESTAMPTZ,
+                ingestion_timestamp TIMESTAMPTZ DEFAULT NOW(),
+                data_quality_status TEXT DEFAULT 'unverified',
+                UNIQUE(player_id, game_date)
+            )
+        """)
+        conn.commit()
+
+
+def _vq_connect():
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        return None
+    try:
+        import psycopg2 as _pg
+        conn = _pg.connect(db_url)
+        _vq_ensure_cache_schema(conn)
+        return conn
+    except Exception:
+        return None
+
+
+_PLAYER_CACHE_COLS = [
+    "player_id", "player_name", "league", "team", "opponent", "game_date",
+    "home_away", "minutes", "pts", "reb", "ast", "stl", "blk", "turnovers",
+    "threes_made", "pra", "pts_reb", "pts_ast", "reb_ast",
+    "source", "source_url", "source_timestamp", "data_quality_status",
+]
+_PITCHER_CACHE_COLS = [
+    "player_id", "player_name", "team", "opponent", "game_date",
+    "innings_pitched", "pitch_count", "strikeouts", "walks", "earned_runs",
+    "hits_allowed", "velocity_notes", "injury_notes", "workload_notes",
+    "source", "source_url", "source_timestamp", "data_quality_status",
+]
+
+
+@app.route("/wow/ledger-cache/upsert", methods=["POST"])
+def wow_ledger_cache_upsert():
+    """
+    POST /wow/ledger-cache/upsert
+    Body: { "cache_type": "player"|"pitcher", "rows": [ {...} ] }
+    """
+    body       = request.get_json(silent=True) or {}
+    cache_type = str(body.get("cache_type") or "player").strip().lower()
+    rows       = body.get("rows") or []
+    if not isinstance(rows, list) or not rows:
+        return jsonify({"ok": False, "error": "'rows' must be a non-empty array"}), 400
+
+    conn = _vq_connect()
+    if conn is None:
+        return jsonify({"ok": False, "error": "database unavailable"}), 503
+
+    table = "pitcher_game_log_cache" if cache_type == "pitcher" else "player_game_log_cache"
+    cols  = _PITCHER_CACHE_COLS if cache_type == "pitcher" else _PLAYER_CACHE_COLS
+    conflict_cols = "(player_id, game_date)" if cache_type == "pitcher" else "(player_id, league, game_date)"
+
+    upserted = 0
+    try:
+        with conn.cursor() as cur:
+            for row in rows:
+                if not isinstance(row, dict) or not row.get("player_id") or not row.get("game_date"):
+                    continue
+                values = [row.get(c) for c in cols]
+                placeholders = ", ".join(["%s"] * len(cols))
+                update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in ("player_id", "game_date", "league"))
+                sql = f"""
+                    INSERT INTO {table} ({", ".join(cols)})
+                    VALUES ({placeholders})
+                    ON CONFLICT {conflict_cols} DO UPDATE SET
+                        {update_clause}, ingestion_timestamp = NOW()
+                """
+                cur.execute(sql, values)
+                upserted += 1
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        conn.close()
+
+    return jsonify({
+        "ok": True, "cache_type": cache_type, "upserted": upserted,
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
+@app.route("/wow/ledger-cache/lookup", methods=["GET"])
+def wow_ledger_cache_lookup():
+    """
+    GET /wow/ledger-cache/lookup
+    Query params: player_id, league, cache_type (player|pitcher, default player),
+                  latest_completed_game_date (YYYY-MM-DD, optional),
+                  status_changed_at (ISO timestamp, optional)
+
+    Determines cache_status: no_cache | stale | fresh
+    """
+    player_id   = request.args.get("player_id", "").strip()
+    league      = request.args.get("league", "").strip().lower()
+    cache_type  = request.args.get("cache_type", "player").strip().lower()
+    latest_game = request.args.get("latest_completed_game_date", "").strip()
+    status_chg  = request.args.get("status_changed_at", "").strip()
+
+    if not player_id:
+        return jsonify({"ok": False, "error": "player_id is required"}), 400
+
+    conn = _vq_connect()
+    if conn is None:
+        return jsonify({"ok": False, "error": "database unavailable"}), 503
+
+    table = "pitcher_game_log_cache" if cache_type == "pitcher" else "player_game_log_cache"
+
+    try:
+        import psycopg2.extras as _pgx
+        with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+            if cache_type == "pitcher":
+                cur.execute(
+                    f"SELECT * FROM {table} WHERE player_id = %s ORDER BY game_date DESC LIMIT 15",
+                    (player_id,),
+                )
+            else:
+                if league:
+                    cur.execute(
+                        f"SELECT * FROM {table} WHERE player_id = %s AND league = %s ORDER BY game_date DESC LIMIT 15",
+                        (player_id, league),
+                    )
+                else:
+                    cur.execute(
+                        f"SELECT * FROM {table} WHERE player_id = %s ORDER BY game_date DESC LIMIT 15",
+                        (player_id,),
+                    )
+            rows = cur.fetchall()
+    except Exception as e:
+        conn.close()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    conn.close()
+
+    if not rows:
+        cache_status = "no_cache"
+    else:
+        cache_status = "fresh"
+        max_game_date = str(max(r["game_date"] for r in rows))
+        if latest_game and max_game_date < latest_game:
+            cache_status = "stale"
+        if status_chg:
+            max_ingest = max((r.get("ingestion_timestamp") for r in rows if r.get("ingestion_timestamp")), default=None)
+            if max_ingest is not None and str(max_ingest) < status_chg:
+                cache_status = "stale"
+
+    return jsonify({
+        "ok":           True,
+        "player_id":    player_id,
+        "league":       league or None,
+        "cache_type":   cache_type,
+        "cache_status": cache_status,
+        "ledger_debt":  cache_status == "no_cache",
+        "cache_debt":   cache_status in ("stale", "no_cache"),
+        "row_count":    len(rows),
+        "rows":         [dict(r) for r in rows],
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)

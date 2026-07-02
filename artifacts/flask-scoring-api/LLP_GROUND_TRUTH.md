@@ -881,6 +881,37 @@ Endpoints: `POST /wow/provenance/validate`, `POST /wow/provenance/validate-batch
 
 ---
 
+## §22 PATCH-VALIDATION-QUEUE-CACHE (SHIPPED 2026-07-02)
+
+Endpoints: `POST /wow/validation-queue/build`, `POST /wow/ledger-cache/upsert`, `GET /wow/ledger-cache/lookup`
+
+**Purpose:** Amends Section 29.2 (Run-Level Output). A correct NO PLAY run must still be useful — every touched candidate is bucketed into **Approved Board / Validation Queue / Rejected Board** with a machine-readable `confidence_debt` object, missing fields, active blockers, cache status, and a specific `upgrade_path`. Validation Queue is a **display bucket**, not a new playable label — it never grants approval.
+
+**Display bucket rule** (`/wow/validation-queue/build`):
+- `terminal_label` in `REJECT_BAD_STRUCTURE` / `REJECT_NO_EDGE` / `REJECT_DATA_QUALITY` → **Rejected Board**
+- `terminal_label` in `FINAL_APPROVED` / `MONEY_QUALIFIED` / `LLP_APPROVED` / `LLP_PLAYABLE` / `KALSHI_PLAYABLE` **and zero confidence debt** → **Approved Board**
+- Same playable label **with any confidence debt** → forced down to **Validation Queue**, `effective_label` becomes `WATCH` (never leaks a playable label)
+- Everything else (`WATCH`, `MODEL_QUALIFIED_HOLD`, `MARKET_VERIFIED_HOLD`, `DATA_CONTRACT_FAIL`, `SOURCE_CONFLICT`, imported-ledger blocker states) → **Validation Queue**
+
+**`confidence_debt` fields** (any `true` blocks approval): `ledger_debt`, `median_debt`, `hit_count_debt`, `status_debt`, `role_debt`, `market_debt`, `payout_debt`, `failure_path_debt`, `source_provenance_debt`, `cache_debt`
+
+**Per-candidate output:** `candidate`, `market`, `line`, `side`, `terminal_label`, `display_bucket`, `effective_label`, `confidence_debt`, `debt_count`, `missing_fields[]`, `active_blocker_tags[]`, `cache_status`, `upgrade_path` (specific/testable text per active debt, mapped from `_VQ_UPGRADE_PATH_MAP`), `edge_pct`, `language_violations[]`, `can_execute: false`
+
+**Banned phrasing for Validation Queue rows** (scanned in `narrative`/`display_text`/`candidate_summary`/`commentary` fields, flagged as `language_violations`, never silently dropped): `model-approved`, `approved`, `lock`, `submit`, `playable`, `money-qualified`, `final`, `safe`, `high-confidence winner`
+
+**Run-level output:** `approved_board[]`, `validation_queue[]` (sorted by lowest `debt_count` then highest `edge_pct`), `rejected_board[]`, `final_action` (`"NO PLAY / STAKE $0"` when `approved_board` is empty)
+
+**Ledger cache** — `player_game_log_cache` / `pitcher_game_log_cache` tables (per-league game-by-game rows, keyed on `player_id`+`game_date`, `player_game_log_cache` also keyed on `league`). `GET /wow/ledger-cache/lookup` compares cached `game_date`/`ingestion_timestamp` against caller-supplied `latest_completed_game_date` / `status_changed_at` to return `cache_status: no_cache | stale | fresh`. Stale cache may be used for scouting only — `cache_debt=true` blocks approval until refreshed.
+
+### Safety rails
+- `can_execute` always `false` on every candidate and at top level
+- Every row preserved in Approved/Validation Queue/Rejected output — no hidden cuts, no rows dropped for failing data contract
+- Validation Queue rows can never surface a playable label, even if `terminal_label` originally was one
+- `execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` on every response
+- Version: `v1.0.0`
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

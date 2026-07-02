@@ -1,0 +1,383 @@
+Yes — this patch is the right fix. I’d tighten it in four places before sending to Replit/Claude:
+
+1. Mark Spec amendment = X because it changes Section 29.2 output requirements.
+2. Define Validation Queue as a display bucket, not a new model label.
+3. Add confidence debt as a machine-readable field.
+4. Add acceptance tests so Replit cannot ship only a UI change without backend enforcement.
+
+Here’s the cleaned continuation / final version to paste in.
+
+═══════════════════════════════════════════════════
+WOW PATCH — VALIDATION QUEUE OUTPUT + LEDGER CACHE
+═══════════════════════════════════════════════════
+
+PATCH ID:          WOW-PATCH-2026-07-02-VALIDATION-QUEUE-CACHE
+
+BASE SPEC:         WOW v16 Clean Core / Framework v2.2.0
+
+PATCH TYPE:        [X] Analytical rule
+[X] Dashboard code
+[X] Spec amendment
+[ ] Memory update
+[ ] Skill update
+
+ORIGIN:            [ ] Postmortem
+[X] Pattern identified after multiple sessions
+[X] Proactive model improvement
+
+─────────────────────────────────────────────────
+PROBLEM STATEMENT
+─────────────────────────────────────────────────
+Sessions returning NO PLAY are correct process outputs under WOW v16, but the current output format often collapses the run into “0 approved” without showing which candidates were close, which exact fields blocked them, and what would be required to upgrade.
+
+This creates two problems:
+
+1. The user gets low operational value from a correct NO PLAY run.
+2. Future runs repeat the same L5/L10 reconstruction work for recurring players, increasing latency and hallucination risk.
+
+This patch does not loosen approval thresholds. It adds a standardized Validation Queue and reusable player ledger cache so the system can preserve near-miss candidates without corrupting model-approved labels.
+
+FAILURE TAGS:
+
+* missing-l10-ledger
+* reasoned-not-modeled
+* source-ledger-provenance-fail
+* output-completeness-gap
+* recurring-ledger-rebuild-risk
+
+─────────────────────────────────────────────────
+RULE CHANGE
+─────────────────────────────────────────────────
+
+AFFECTED SECTIONS:
+
+* WOW-MASTER-SPEC.md Section 29.2 — Run-Level Output
+* WOW-MASTER-SPEC.md Section 9 — 6-Checkpoint Gate Output Requirements
+* Gate -1 Evidence Provenance Lock
+* Dashboard candidate renderer
+
+CURRENT RULE:
+Run-level output lists approved/qualified/watch/rejected candidates, but no standardized blocker field, confidence-debt field, or upgrade path is required per candidate.
+
+NEW RULE:
+Every candidate that lands in MODEL_QUALIFIED_HOLD, WATCH, DATA_CONTRACT_FAIL, MARKET_VERIFIED_HOLD, or any non-approved near-miss bucket must report:
+
+* terminal label
+* display bucket
+* missing fields
+* confidence debt
+* active blocker tags
+* upgrade path
+* next verification action
+* cache status
+
+This is an output and workflow requirement layered on the existing label taxonomy. It is not a parallel approval system and does not create a new playable label.
+
+─────────────────────────────────────────────────
+VALIDATION QUEUE DEFINITION
+─────────────────────────────────────────────────
+
+Validation Queue is a display bucket, not a final model label.
+
+A row enters the Validation Queue when:
+
+* the candidate is directionally interesting, but
+* one or more required approval fields are missing, stale, contradicted, or not yet reconstructed, and
+* the row is not structurally rejected.
+
+Validation Queue rows cannot be submitted, played, promoted, or described as model-approved.
+
+Allowed underlying labels:
+
+* WATCH
+* MODEL_QUALIFIED_HOLD
+* MARKET_VERIFIED_HOLD
+* DATA_CONTRACT_FAIL
+* SOURCE_CONFLICT
+* imported-ledger blocker states
+
+Disallowed underlying labels:
+
+* FINAL_APPROVED
+* MONEY_QUALIFIED
+* LLP_APPROVED
+* LLP_PLAYABLE
+* KALSHI_PLAYABLE
+* REJECT_BAD_STRUCTURE
+* REJECT_NO_EDGE
+* REJECT_DATA_QUALITY
+
+If a row is truly rejected, it belongs on the Rejected Board, not the Validation Queue.
+
+─────────────────────────────────────────────────
+CONFIDENCE DEBT
+─────────────────────────────────────────────────
+
+Every non-approved candidate must carry a confidence_debt object.
+
+Required debt fields:
+
+{
+  "ledger_debt": false,
+  "median_debt": false,
+  "hit_count_debt": false,
+  "status_debt": false,
+  "role_debt": false,
+  "market_debt": false,
+  "payout_debt": false,
+  "failure_path_debt": false,
+  "source_provenance_debt": false,
+  "cache_debt": false
+}
+
+Any true value blocks approval.
+
+A row may only move from Validation Queue to Approved Board when all confidence debt fields are false and all normal WOW gates pass.
+
+─────────────────────────────────────────────────
+UPGRADE PATH REQUIREMENT
+─────────────────────────────────────────────────
+
+Every Validation Queue row must include a plain-English upgrade_path.
+
+Examples:
+
+* “Needs exact L10 rows and 7/10 exact-line hits.”
+* “Needs market edge ≥ 2.5% after no-vig conversion.”
+* “Needs player status confirmed active with no minutes restriction.”
+* “Needs final PrizePicks line timestamp within allowed freshness window.”
+* “Needs role confirmation because teammate availability changes usage.”
+* “Needs pitcher workload confirmation after recent throwing-arm injury.”
+
+Upgrade paths must be specific and testable.
+
+Bad upgrade path:
+
+“Needs more confirmation.”
+
+Good upgrade path:
+
+“Needs confirmed starter status, current line timestamp, and L10 exact-line hit count ≥ 7/10.”
+
+─────────────────────────────────────────────────
+PLAYER LEDGER CACHE
+─────────────────────────────────────────────────
+
+Add or enforce a reusable player ledger cache.
+
+Required cache table/schema:
+
+player_game_log_cache
+- player_id
+- player_name
+- league
+- team
+- opponent
+- game_date
+- home_away
+- minutes
+- pts
+- reb
+- ast
+- stl
+- blk
+- turnovers
+- threes_made
+- pra
+- pts_reb
+- pts_ast
+- reb_ast
+- source
+- source_url
+- source_timestamp
+- ingestion_timestamp
+- data_quality_status
+
+For MLB pitcher props, include:
+
+pitcher_game_log_cache
+- player_id
+- player_name
+- team
+- opponent
+- game_date
+- innings_pitched
+- pitch_count
+- strikeouts
+- walks
+- earned_runs
+- hits_allowed
+- velocity_notes
+- injury_notes
+- workload_notes
+- source
+- source_url
+- source_timestamp
+- ingestion_timestamp
+- data_quality_status
+
+Cache use rule:
+
+Before web/manual reconstruction, WOW must check whether a fresh cached ledger exists.
+
+Cache freshness rules:
+
+* Same-day prop evaluation: cache must be refreshed after the player’s most recent completed game.
+* If a new game was played after the cache timestamp, cache is stale.
+* If status/injury changed after cache timestamp, status cache is stale even if game log cache is fresh.
+* Stale cache may be used for scouting only, not approval.
+
+─────────────────────────────────────────────────
+RUN-LEVEL OUTPUT REQUIREMENT
+─────────────────────────────────────────────────
+
+Every run must output:
+
+1. Approved Board
+2. Validation Queue
+3. Rejected Board
+
+If Approved Board = 0, the system must still output the top Validation Queue candidates, sorted by lowest confidence debt and highest potential edge.
+
+Required candidate output format:
+
+Candidate:
+Market:
+Line:
+Side:
+Terminal label:
+Display bucket:
+Confidence debt:
+Missing fields:
+Active blocker tags:
+Cache status:
+Upgrade path:
+Can execute: false
+
+No-play output must become:
+
+APPROVED BOARD
+0
+VALIDATION QUEUE
+[near-miss candidates with blockers and upgrade paths]
+REJECTED BOARD
+[structural rejects, wrong-side rows, stale rows, binary traps, bad data rows]
+FINAL ACTION
+NO PLAY / STAKE $0
+
+─────────────────────────────────────────────────
+APPROVAL SAFETY
+─────────────────────────────────────────────────
+
+Validation Queue is not playable.
+
+The following phrases are banned for Validation Queue rows:
+
+* model-approved
+* approved
+* lock
+* submit
+* playable
+* money-qualified
+* final
+* safe
+* high-confidence winner
+
+Allowed phrasing:
+
+* validation candidate
+* watch only
+* blocked
+* near-miss
+* upgrade path candidate
+* not playable yet
+
+─────────────────────────────────────────────────
+DASHBOARD / REPLIT REQUIREMENTS
+─────────────────────────────────────────────────
+
+Add UI sections:
+
+* Approved Board
+* Validation Queue
+* Rejected Board
+
+For Validation Queue rows, show:
+
+* missing_fields
+* confidence_debt
+* active_blockers
+* upgrade_path
+* cache_status
+* can_execute=false
+
+Renderer must preserve every touched row.
+
+Do not hide rows because they failed data contract.
+
+Do not promote Validation Queue rows into Approved Board.
+
+─────────────────────────────────────────────────
+ACCEPTANCE TESTS
+─────────────────────────────────────────────────
+
+Test 1 — No approved picks, useful output:
+Input: full slate scan with 0 approved rows and 5 watch candidates.
+Expected:
+Approved Board = 0.
+Validation Queue contains all eligible watch candidates with missing fields and upgrade paths.
+Final action = NO PLAY / STAKE $0.
+
+Test 2 — Missing L10 rows:
+Input: candidate with L10 average but no l10_rows.
+Expected:
+Display bucket = Validation Queue.
+confidence_debt.ledger_debt = true.
+Blocker includes SUMMARY_ONLY_NOT_MODEL_VERIFIED.
+can_execute=false.
+
+Test 3 — Market timestamp missing:
+Input: candidate with complete L10 but no market_timestamp.
+Expected:
+market_debt=true.
+Validation Queue only.
+No MODEL_APPROVED language.
+
+Test 4 — Rejected row does not enter queue:
+Input: binary 0.5 hitter-hit LESS prop blocked by structure.
+Expected:
+Rejected Board.
+Not Validation Queue.
+
+Test 5 — Cached ledger fresh:
+Input: player has fresh cached L10 after most recent game.
+Expected:
+cache_status=fresh.
+ledger_debt=false.
+Candidate may proceed to normal scoring.
+
+Test 6 — Cached ledger stale:
+Input: player played a game after cache timestamp.
+Expected:
+cache_status=stale.
+cache_debt=true.
+Candidate cannot approve until refreshed.
+
+Test 7 — Confidence debt blocks promotion:
+Input: row has any confidence_debt=true.
+Expected:
+Cannot reach FINAL_APPROVED, MONEY_QUALIFIED, LLP_APPROVED, LLP_PLAYABLE, or playable-equivalent label.
+
+─────────────────────────────────────────────────
+FINAL PATCH PRINCIPLE
+─────────────────────────────────────────────────
+
+NO PLAY is a valid result, but NO PLAY must still be useful.
+
+WOW does not force picks.
+WOW preserves candidates.
+WOW shows blockers.
+WOW shows upgrade paths.
+WOW only approves rows with zero confidence debt.
+
+Main thing: don’t let Replit implement this as just a pretty “watch list.” The backend must calculate confidence_debt, and the renderer must only display what the backend says.
