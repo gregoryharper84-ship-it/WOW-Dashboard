@@ -27,6 +27,7 @@ Classification gates (v14.9.1):
 import sys
 import os
 import json
+import re
 import statistics as _stats
 from datetime import date, datetime, timezone
 
@@ -145,6 +146,47 @@ def compute_internal_projection(log_stats, line, side):
 
 
 # -------------------------------------------------------------------
+# Line normalization (PATCH-BINARY-EVENT-POSTSCAN-INVARIANT)
+# -------------------------------------------------------------------
+
+_LINE_NUMBER_RE = re.compile(r"-?(?:\d+\.\d+|\.\d+|\d+)")
+
+
+def normalize_line(line):
+    """
+    Best-effort extraction of the numeric line value from either a plain
+    number or an OCR/string-style row, e.g.:
+      0.5, "0.5", "0.50", ".5", "0.5 Hits", "LESS 0.5", "More Than 0.5"
+
+    Returns a float, or None if no numeric token could be found. This is
+    intentionally permissive (first numeric token wins) since it is only
+    used to detect the binary-event 0.5 line shape, never to price/settle
+    anything.
+    """
+    if line is None:
+        return None
+    if isinstance(line, (int, float)):
+        try:
+            return float(line)
+        except (TypeError, ValueError):
+            return None
+    match = _LINE_NUMBER_RE.search(str(line))
+    if not match:
+        return None
+    try:
+        return float(match.group())
+    except ValueError:
+        return None
+
+
+def is_binary_event_line(line):
+    """True when the normalized line is exactly 0.5 (single-occurrence
+    "did it happen at all" threshold)."""
+    val = normalize_line(line)
+    return val is not None and val == 0.5
+
+
+# -------------------------------------------------------------------
 # Classification logic (v14.9.1)
 # -------------------------------------------------------------------
 
@@ -177,10 +219,7 @@ def classify_prop(
     still look strong on these — so it is capped at "Watch" (never Model
     Qualified or above) regardless of score, ahead of every other tier.
     """
-    try:
-        _binary_event = (line is not None and float(line) == 0.5)
-    except (TypeError, ValueError):
-        _binary_event = False
+    _binary_event = is_binary_event_line(line)
 
     odds_ok   = "AVAILABLE" in (sources.get("odds", "") or "")
     logs_ok   = "AVAILABLE" in (log_status or "")
@@ -496,6 +535,36 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 no_play_list.append(card)
             else:
                 reject_list.append(card)
+
+    # ── PATCH-BINARY-EVENT-POSTSCAN-INVARIANT ────────────────────────────────
+    # Final safety net, independent of classify_prop(): guarantee no output
+    # list can ever contain a 0.5-line row above WATCH, even if some future
+    # code path bypasses classify_prop() entirely. Downgrades any offending
+    # card out of its current bucket and into watch_list.
+    _INVARIANT_GUARDED_BUCKETS = (
+        ("market_verified",         market_verified),
+        ("final_approved_internal", final_approved_internal),
+        ("model_qualified",         model_qualified),
+        ("conditional",             conditional),
+    )
+    for _bucket_name, _bucket in _INVARIANT_GUARDED_BUCKETS:
+        _keep = []
+        for _card in _bucket:
+            if is_binary_event_line(_card.get("line")):
+                _downgraded = dict(_card)
+                _downgraded["final_approval_blocker"] = "BE1_BINARY_LINE_0PT5"
+                _downgraded["binary_event_cap"] = True
+                _downgraded["can_execute"] = False
+                _downgraded["postscan_invariant_downgraded_from"] = _bucket_name
+                watch_list.append(_downgraded)
+                execution_notes.append(
+                    f"POSTSCAN INVARIANT: downgraded {_card.get('player')} / "
+                    f"{_card.get('prop')} (line=0.5) out of {_bucket_name} to watch "
+                    f"[BE1_BINARY_LINE_0PT5]"
+                )
+            else:
+                _keep.append(_card)
+        _bucket[:] = _keep
 
     # Sport coverage validation
     missing_sports = [s for s in requested_sports if s not in scanned_sports]

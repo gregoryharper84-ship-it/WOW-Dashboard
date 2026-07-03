@@ -8920,8 +8920,9 @@ def wow_l10_gate3():
     # fires on weak stats), so a structurally binary prop can otherwise sail
     # straight to GATE3_PASS / MODEL_QUALIFIED_HOLD. Cap it at WATCH regardless
     # of edge — this is a structural downgrade, not a statistical one.
+    from jobs.wow_daily_scan import is_binary_event_line as _is_binary_event_line
     _binary_event_cap = False
-    if line == 0.5 and gate3_label in ("GATE3_PASS", "WATCH_ELEVATED", "WATCH",
+    if _is_binary_event_line(line) and gate3_label in ("GATE3_PASS", "WATCH_ELEVATED", "WATCH",
                                         "DATA_BUILD_PRIORITY"):
         gate3_label = "WATCH"; signal_label += "_BINARY_EVENT_CAP"
         blocker_code = blocker_code or "BE1_BINARY_LINE_0PT5"
@@ -10785,12 +10786,11 @@ def _jf_slate_purge(props):
         # PATCH-BINARY-EVENT-PURGE: 0.5 line is a single-occurrence "did it
         # happen at all" threshold (e.g. MLB Hitter Hits LESS 0.5). Structurally
         # near-binary regardless of gap%/hit-rate — purge before scoring so it
-        # can never reach MODEL_QUALIFIED_HOLD via the JF lane.
-        try:
-            _line_f = float(line)
-        except (TypeError, ValueError):
-            _line_f = None
-        if _line_f == 0.5:
+        # can never reach MODEL_QUALIFIED_HOLD via the JF lane. Uses the shared
+        # normalize_line() helper so OCR/string-style lines ("0.50 Hits",
+        # "LESS 0.5", ".5") are caught too, not just strict numeric 0.5.
+        from jobs.wow_daily_scan import is_binary_event_line as _is_binary_event_line
+        if _is_binary_event_line(line):
             purged.append({**p, "purge_reason":
                 "auto-reject archetype: binary-event 0.5 line "
                 "(single-occurrence threshold, structurally near-binary)"})

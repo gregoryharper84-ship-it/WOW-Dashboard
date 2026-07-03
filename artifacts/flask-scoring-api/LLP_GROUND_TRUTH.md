@@ -927,6 +927,30 @@ Endpoints: `POST /wow/validation-queue/build`, `POST /wow/ledger-cache/upsert`, 
 
 ---
 
+## §24 PATCH-BINARY-EVENT-POSTSCAN-INVARIANT (SHIPPED 2026-07-02)
+
+**Purpose:** close the loophole completely — guarantee no output lane can ever emit a 0.5-line row as `MODEL_QUALIFIED_HOLD`/`MARKET_VERIFIED`/`FINAL_APPROVED`/playable, even if a future code path bypasses Gate 3, the JF purge, or `classify_prop()` entirely. This is a belt-and-suspenders safety net layered on top of §23, not a replacement for it.
+
+**1. Shared `normalize_line()` / `is_binary_event_line()` helper** (`jobs/wow_daily_scan.py`):
+- All three §23 enforcement points (`wow_l10_gate3`, `_jf_slate_purge`, `classify_prop`) now call the same helper instead of duplicating `float(line) == 0.5` checks.
+- `normalize_line()` extracts the first numeric token from either a plain number or a string/OCR-style row — handles `0.5`, `"0.5"`, `"0.50"`, `".5"`, `"0.5 Hits"`, `"LESS 0.5"`, `"More Than 0.5"` — so future manual/OCR-entry lanes can't slip a binary-event line through on a formatting technicality. (Existing structured-JSON entry points already hard-require a strict numeric `line` upstream, so this mainly hardens future/manual-entry paths.)
+
+**2. Post-scan invariant in `run_scan()`** (`jobs/wow_daily_scan.py`):
+- Runs once per scan, immediately after all props are classified and bucketed, before the result dict is built.
+- Sweeps `market_verified`, `final_approved_internal`, `model_qualified`, and `conditional` for any card whose `line` normalizes to `0.5`.
+- Any match is removed from its bucket and moved into `watch`, with `final_approval_blocker: "BE1_BINARY_LINE_0PT5"`, `binary_event_cap: true`, `can_execute: false`, and a `postscan_invariant_downgraded_from` tag; an `execution_notes` entry records the downgrade.
+- Counts (`counts.model_qualified`, `counts.playable_count`, etc.) reflect the buckets **after** this sweep — the invariant cannot be silently bypassed by a stale count.
+
+**Regression coverage:**
+- `classify_prop()` with an OCR-style string line (`line="0.50"`, strong stats: score 82, 80% L10 hit rate) → confirmed `"Watch"` with `binary_event_structural_cap` blocker, not `"Model Qualified — PrizePicks"`.
+- Scan-level invariant simulation: a mixed bucket (`line=0.5` + `line=1.5`) run through the same downgrade logic as `run_scan()` → confirmed the 0.5-line card is moved to `watch` with `binary_event_cap: true`, the 1.5-line card is untouched, and no bucket retains a 0.5-line row.
+- Live verification: `POST /wow/l10/gate3` with strong-edge data (`gap_pct: 80%`) at `line=0.5` → `WATCH`/`BE1_BINARY_LINE_0PT5`/`binary_event_cap: true`; identical data at `line=1.5` → unaffected `GATE3_PASS`/`MODEL_QUALIFIED_HOLD`.
+- Full `gate_engine/tests` suite: 329/329 pass (no regression).
+
+**Scope note (explicitly deferred, per review):** this patch does **not** extend the hard cap to 1.5/2.5-type lines — those are volatile but not structurally binary (e.g. rebounds, assists, strikeouts at 1.5) and need a separate low-line volatility tax, not a hard cap. Tracked as a future patch, not bundled here.
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

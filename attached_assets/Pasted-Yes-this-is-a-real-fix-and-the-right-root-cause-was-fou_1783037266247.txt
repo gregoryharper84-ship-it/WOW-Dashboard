@@ -1,0 +1,129 @@
+Yes — this is a real fix, and the right root cause was found.
+
+The most important part is this:
+
+They patched classify_prop() in jobs/wow_daily_scan.py.
+That was the production path leaking the bad “Model Qualified — PrizePicks” rows. If they had only patched /wow/l10/gate3, the daily scan would still leak.
+
+My read
+
+This patch should be accepted as shipped.
+
+It correctly handles the binary-event issue:
+
+line == 0.5
+→ binary_event_cap = true
+→ approval ceiling = WATCH
+→ can_execute = false
+→ cannot become MODEL_QUALIFIED_HOLD / FINAL_APPROVED / MONEY_QUALIFIED
+
+That is exactly what should happen for props like:
+
+MLB Hitter Hits LESS 0.5
+Player to record 0 hits
+Player to record 1+ hits
+0.5 strikeouts / hits / threes / goals / assists / etc.
+
+Those are single-event binary props, not normal projection props. A strong L10 hit rate can still be structurally fragile.
+
+One thing I would still harden
+
+Tell Replit to add a post-scan invariant, not just classifier logic.
+
+At the end of run_scan(), before output/rendering, add a final safety check:
+
+If line == 0.5 and final_label is in any playable or model-qualified label:
+    downgrade to WATCH
+    add blocker_code = BE1_BINARY_LINE_0PT5
+    binary_event_cap = true
+    can_execute = false
+
+Reason: this protects against future code paths that bypass classify_prop().
+
+Also make sure line parsing is normalized
+
+The cap should catch all of these:
+
+0.5
+"0.5"
+"0.50"
+".5"
+"0.5 Hits"
+"LESS 0.5"
+"More Than 0.5"
+
+If the code only checks strict numeric line == 0.5, OCR/string rows may slip through later.
+
+Recommended helper:
+
+def normalize_line(line):
+    """
+    Return float line value when possible.
+    Handles strings like '0.5', '.5', '0.50 Hits', 'Less 0.5'.
+    """
+
+Then all three paths should use the same helper.
+
+Do not extend this blindly yet
+
+I would not automatically extend this cap to 1.5, 2.5, or other small lines yet.
+
+Those can be volatile, but they are not always binary. Example:
+
+* Rebounds 1.5
+* Assists 1.5
+* Strikeouts 1.5
+* Hits allowed 1.5
+* Threes made 1.5
+
+Those need a separate low-threshold volatility tax, not the hard binary cap.
+
+So the current scope is right:
+
+Hard cap: line == 0.5
+Future patch: low-line volatility tax for 1.5 / 2.5 by market type
+
+Add this final regression test
+
+Tell Replit to add this if they have not:
+
+Input:
+sport = MLB
+market = Hitter Hits
+side = LESS
+line = "0.50"
+l10_hit_rate = 80%
+gap_pct = strong
+Expected:
+terminal_label = WATCH
+binary_event_cap = true
+blocker_code = BE1_BINARY_LINE_0PT5
+can_execute = false
+not MODEL_QUALIFIED_HOLD
+
+And one final scan-level invariant test:
+
+Run scan output cannot contain any row where:
+line == 0.5
+AND final_label in [
+  MODEL_QUALIFIED_HOLD,
+  MARKET_VERIFIED_HOLD,
+  MONEY_QUALIFIED,
+  FINAL_APPROVED,
+  LLP_PLAYABLE,
+  LLP_APPROVED
+]
+
+Final recommendation
+
+Accept the merge.
+
+Next patch should be small:
+
+WOW-PATCH-2026-07-02-BINARY-LINE-POSTSCAN-INVARIANT
+
+Purpose:
+
+Guarantee no future lane can emit model-qualified/playable labels for 0.5-line binary event props, even if it bypasses Gate 3, JF purge, or classify_prop().
+
+This closes the loophole completely.
