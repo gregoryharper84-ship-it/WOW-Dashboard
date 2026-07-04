@@ -1,0 +1,154 @@
+Correct call. This is not closed yet.
+
+The additive report sounds useful, but because it touched every /gate-engine/run response, it should be logged as:
+
+DEPLOYED — RETROACTIVE PR REVIEW REQUIRED
+
+Not simply “safe shipped.”
+
+Here’s the formal patch entry I’d use:
+
+WOW-PATCH-2026-07-04-GATE-ENGINE-MARKET-ENRICHMENT-REPORT
+
+Status
+
+DEPLOYED — RETROACTIVE PR REVIEW REQUIRED
+
+Lane
+
+WOW v16 Clean Core
+Dashboard / Gate Engine Observability
+
+Trigger
+
+A prior diagnosis incorrectly attributed MODEL_QUALIFIED_HOLD approval-rate issues to the /wow/daily-scan scoring path. Source review later confirmed that the exact label MODEL_QUALIFIED_HOLD is produced by the separate /gate-engine/run path.
+
+Source-confirmed behavior:
+
+* MODEL_QUALIFIED_HOLD is applied inside gate_engine when market data is unavailable.
+* This is structurally correct under WOW v16 because no prop can advance beyond model qualification without sportsbook or consensus market comparison.
+* The remaining unresolved issue is whether upstream callers are failing to pass market enrichment into /gate-engine/run.
+
+Change Shipped
+
+Added a read-only market_enrichment_report field to every /gate-engine/run response.
+
+The report includes:
+
+* total_rows
+* rows_with_any_market_field
+* rows_with_all_market_fields_missing
+* rows_capped_model_qualified_hold_no_market
+* blocker_samples_by_prop
+
+Intended Purpose
+
+Provide immediate scan-level visibility into whether MODEL_QUALIFIED_HOLD clusters are caused by missing market enrichment rather than gate/classifier malfunction.
+
+Behavior Change
+
+None intended.
+
+This patch must not alter:
+
+* market_gate.py pass/fail logic
+* classifier.py terminal-label logic
+* Edge/EV math
+* Approval thresholds
+* Existing blockers
+* Existing terminal labels
+
+Risk Classification
+
+Medium blast radius despite additive intent.
+
+Reason: /gate-engine/run response shape changed globally. Downstream consumers, dashboards, strict JSON parsers, snapshot tests, or schema validators may break if they assume a fixed response shape.
+
+Required Retroactive PR Review
+
+Run through wow-pr-checker with emphasis on:
+
+Check 2 — Null Safety
+
+Verify the report does not fail when:
+
+* rows is empty
+* row["gates"] is missing
+* row["blockers"] is missing
+* market fields are missing entirely
+* market fields exist under None, empty string, or malformed values
+
+Check 6 — QA Coverage
+
+Confirm tests cover:
+
+* All market fields missing
+* At least one market field populated
+* Rows capped specifically by NO_MARKET_AVAILABLE
+* Rows rejected earlier for unrelated data-contract issues
+* Mixed batch with both market-enriched and non-market-enriched rows
+
+Check 8 — Blast Radius
+
+Confirm downstream response consumers tolerate the new top-level field.
+
+If any consumer has strict schema expectations, either update the schema or place the report behind an explicit observability/version flag.
+
+Required Evidence Before Closure
+
+Paste the actual diff for:
+
+* _build_output changes
+* Any helper used to build market_enrichment_report
+* New or modified tests
+
+Also paste one live /gate-engine/run response showing the new field.
+
+Open Incident Question
+
+Still unresolved:
+
+Was the Thornton/Gray MODEL_QUALIFIED_HOLD cluster caused by:
+
+1. Caller-side omission of market fields,
+2. Market data genuinely unavailable at scan time,
+3. Schema mismatch between caller enrichment fields and gate_engine,
+4. Or a true internal gate bug?
+
+Closure requires the actual /gate-engine/run request body or a re-run of the affected slate with the new market_enrichment_report.
+
+Final Closure Criteria
+
+This patch can move from DEPLOYED — RETROACTIVE PR REVIEW REQUIRED to DEPLOYED — VERIFIED only after:
+
+* Diff is reviewed.
+* Tests pass.
+* wow-pr-checker passes.
+* Downstream schema risk is checked.
+* One affected prop batch is re-run and the report explains the MODEL_QUALIFIED_HOLD cap path.
+
+And here’s the exact ask I’d send back to whoever deployed it:
+
+Good observability patch, but we need to retroactively PR-check it before calling it closed.
+
+Please paste:
+
+1. The full diff touching _build_output.
+2. Any helper function that builds market_enrichment_report.
+3. The two new test cases.
+4. One live /gate-engine/run response showing the new field.
+5. If available, a re-run of the Thornton/Gray batch with:
+    * market_enrichment_report
+    * the Thornton/Gray output rows
+    * their blockers
+    * their input market/enrichment fields
+
+Status should remain:
+
+DEPLOYED — RETROACTIVE PR REVIEW REQUIRED
+
+Not DEPLOYED — VERIFIED.
+
+This was additive, but it changed the global /gate-engine/run response shape, so Check 8 still applies.
+
+I would not ask them to roll it back unless the diff shows schema-breaking behavior or brittle null handling. The patch idea is good. The issue is process discipline: shipped first, checklist second.
