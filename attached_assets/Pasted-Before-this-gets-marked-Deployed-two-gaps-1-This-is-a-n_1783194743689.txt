@@ -1,0 +1,16 @@
+Before this gets marked Deployed, two gaps:
+
+**1. This is a narrative summary again, not a diff.** Same issue as the enrichment-report patch — I can't run wow-pr-checker (null safety, field-name consistency, blast radius) against prose. I need the actual `_build_market_join_audit()` function body and the diff to `_build_output()`, plus the new test cases as written, not a description of them.
+
+**2. The Thornton/Gray acceptance test wasn't actually run — and it should have been.** The approval explicitly required: *"Thornton/Gray replay must show whether each failed due to true market unavailability, caller omission, schema mismatch, prop-name mismatch, or filtered market."* We already have the Thornton/Gray payload — it was pasted two turns ago. That data was sitting there before this implementation started. The summary says "Thornton/Gray remains blocked on the payload you mentioned," which is stale — the payload isn't missing anymore, so this acceptance test is just unrun, not blocked. That's the single most important test in the approval and it's the one skipped.
+
+Per Complete System Enforcement Mode, I'm not marking this Deployed on a "trust me, 359/359 passed" basis. Required before I sign off:
+
+- The actual diff (`_build_market_join_audit`, the `_build_output` wiring, `market_gate.py` if touched)
+- The specific new test bodies, not just a count
+- The Thornton/Gray rows re-run through the new field set, showing `market_join_status` + `market_rejection_reason` for both — this is the whole point of the patch and it's the one thing not shown
+- Confirmation the other 5 acceptance tests from the approval (JOINED on a known-good row, non-null rejection reason, `market_verified_count` reconciliation, null-safety, no terminal-bucket drift) ran with actual output, not just "all passing"
+
+Also worth logging as a minor finding, not a blocker: the discovery that `/gate-engine/run` doesn't forward `skip_data_contract`/`skip_health_gate`/`skip_settlement_check` over HTTP is legitimate and worth a one-line note in WOW-SHARED-NOTES.md as a known limitation — separate from this patch's review.
+
+Paste the diff and the Thornton/Gray replay output and I'll run the full checklist.
