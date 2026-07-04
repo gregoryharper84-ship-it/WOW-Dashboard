@@ -1,0 +1,50 @@
+DRY RUN ONLY — no live execution.
+
+After deeper research, this list does not upgrade to FINAL_APPROVED. It actually gets weaker. The scan’s WNBA ranking was wrong, and the MLB batch is mostly a restricted “hit under” cluster with binary/low-line exposure.
+
+Main correction
+
+Kayla Thornton MORE 8.5 points is not the best hold anymore. It downgrades.
+Her current season average is exactly 8.5 PPG, but her last 10 average is only 7.1 PPG, and her last 5 average is 6.6 PPG. That means the scan’s “4/5 and 7/10” read is not trustworthy for this line.  
+
+Updated WNBA read
+
+Prop	New label	Advice
+Allisha Gray LESS 2.5 assists	MODEL_QUALIFIED_HOLD / low-confidence	Best WNBA hold from this list, but not final. Season APG is 2.1, L10 AST average is 2.4, and recent assists are tight around the line: 3, 2, 2, 0, 3.  
+Veronica Burton MORE 11.5 points	WATCH / pass	Season PPG is 12.2, but L10 is only 10.7, so recent form is below the line.  
+Kayla Thornton MORE 8.5 points	REJECT / no edge	L10 and L5 both sit below the line; also volatile vs Atlanta: 17 then 0 in the two recent meetings.  
+
+Golden State is a bad matchup for Atlanta-based overs and assist props: the Valkyries already beat Atlanta twice during this skid, and CBS notes Golden State is holding opponents to 77.9 PPG, best in the league.  
+
+MLB deeper read
+
+The Pirates/Nationals game is real and the current lineup confirms most of these players are active. Pittsburgh has Konnor Griffin, Brandon Lowe, Bryan Reynolds, Esmerlyn Valdez, Ryan O’Hearn, Nick Gonzales, Jake Mangum, Tyler Callihan, and Henry Davis starting; Washington has James Wood, Luis García Jr., Curtis Mead, CJ Abrams, Daylen Lile, Dylan Crews, Drew Millas, and Nasim Nuñez starting.  
+
+The problem: this is a bad environment for broad hit unders. RotoWire shows 95°, only light wind, and a 10.5 run total. Pittsburgh also gets Zack Littell, who is listed with a 5.29 ERA, while Washington faces the stronger Braxton Ashcraft at 3.33 ERA.  
+
+Yesterday’s game also showed a hot-contact warning: Daylen Lile and Luis García Jr. each homered twice; James Wood had a double and triple; Bryan Reynolds homered and doubled; Esmerlyn Valdez went 3-for-5. That specifically weakens several of the LESS candidates from your list.  
+
+Best remaining holds — not final
+
+Rank	Prop	New status	Why
+1	Drew Millas LESS 0.5 hits	WATCH / restricted hold	Batting 8th vs Ashcraft. Best setup among the 0.5 hit unders, but still binary and not Power eligible.
+2	Nasim Nuñez LESS 0.5 hits	WATCH / restricted hold	Batting 9th vs Ashcraft. Low PA path helps, but same 0.5-hit binary restriction applies.
+3	Allisha Gray LESS 2.5 assists	MODEL_QUALIFIED_HOLD	Best WNBA hold, but edge is thin because her L10 assist average is 2.4, barely below the line.
+4	Daylen Lile LESS 1.5 total bases	WATCH only	Better prop type than 0.5 hits, but last night’s 2-HR/double game is a hard volatility warning.
+5	Henry Davis LESS 0.5 hits	WATCH only	Batting 9th helps, but he faces the weaker pitcher in a high-total game.
+
+Cut list
+
+I would not carry forward these as playable: Kayla Thornton MORE 8.5 points, Veronica Burton MORE 11.5 points, Luis García Jr. LESS 1.5 hits, Ryan O’Hearn LESS 1.5 hits, Bryan Reynolds LESS 1.5 hits, Brandon Lowe LESS 1.5 hits, James Wood LESS 0.5 hits, CJ Abrams LESS 0.5 hits, Dylan Crews LESS 0.5 hits, Daylen Lile LESS 0.5 hits, Esmerlyn Valdez LESS 1.5 hits, and Konnor Griffin LESS 1.5 hits.
+
+Also purge Endy Rodríguez, Keibert Ruiz, and Jacob Young unless PrizePicks/MLB lineups changed after this check; they are not in the current listed starting lineups I found.  
+
+Final advice
+
+No FINAL_APPROVED plays from this list.
+The only two I would still watch are:
+
+1. Allisha Gray LESS 2.5 assists
+2. Drew Millas LESS 0.5 hits or Nasim Nuñez LESS 0.5 hits
+
+But I would not use them in a Power Play. At most, they remain 2-pick Flex/watch candidates after final PP board recheck. The strongest Reese angle from the earlier screen still outgrades these WNBA holds.
