@@ -14869,6 +14869,8 @@ _llp_start_snapshot_cron()
 # ---------------------------------------------------------------------------
 from gate_engine.pipeline import run_pipeline as _ge_run_pipeline
 from gate_engine import tracker as _ge_tracker
+from gate_engine import auto_enrichment as _ge_auto_enrichment
+from gate_engine import board_intake as _ge_board_intake
 
 
 @app.route("/gate-engine/run", methods=["POST"])
@@ -14908,8 +14910,22 @@ def gate_engine_run():
             }
           }
         },
-        "record_entries": false
+        "record_entries": false,
+        "auto_enrich": false   (optional, default false)
       }
+
+    auto_enrich (opt-in, default false — omitting it is 100% backward
+    compatible with existing callers):
+      When true, before running the pipeline this endpoint auto-fetches
+      market lines (The Odds API) and status/injury flags (ESPN) for the
+      sports present in `rows`, and merges them into `enrichment`.
+      Caller-supplied enrichment fields always win — auto-fetch only fills
+      fields the caller left blank. Does not auto-fetch L10/L5 game logs
+      (those remain caller-supplied) and does not change any gate logic
+      or classification threshold — it only supplies better-populated
+      inputs to the existing market_gate / status_role gates.
+      The response includes "auto_enrichment_status" reporting what was
+      actually fetched per sport (never silently fabricated).
 
     Response:
       {
@@ -14939,8 +14955,20 @@ def gate_engine_run():
         except ValueError:
             return jsonify({"error": f"Invalid target_date: {body['target_date']}"}), 400
 
-    enrichment    = body.get("enrichment") or {}
+    enrichment     = body.get("enrichment") or {}
     record_entries = bool(body.get("record_entries", False))
+    auto_enrich    = bool(body.get("auto_enrich", False))
+
+    auto_enrichment_status = None
+    if auto_enrich:
+        try:
+            normalized_rows = _ge_board_intake.normalize_board(raw_rows)
+            enrichment, auto_enrichment_status = _ge_auto_enrichment.build_auto_enrichment(
+                normalized_rows, base_enrichment=enrichment,
+            )
+        except Exception as exc:
+            req.log.error("gate_engine_run auto_enrich error: %s", exc)
+            auto_enrichment_status = {"error": str(exc)}
 
     try:
         result = _ge_run_pipeline(
@@ -14955,6 +14983,8 @@ def gate_engine_run():
 
     result["can_approve_bets"] = False
     result["disclaimer"]       = DISCLAIMER
+    if auto_enrichment_status is not None:
+        result["auto_enrichment_status"] = auto_enrichment_status
     return jsonify(result), 200
 
 
