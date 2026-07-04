@@ -117,13 +117,42 @@ Any future route, caller, or test helper using `skip_data_contract` must make th
 
 ---
 
+## 2026-07-04 — WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE (Staged — approved for implementation, pending backend source confirmation)
+
+**Problem addressed:** the Custom GPT "LLP Team Betting Engine" persona instructions (used by the ChatGPT leg of the 3-agent workflow to reason about LLP bets independently of this Flask app) had drifted from the actual coded engine — original essay-style instructions used a different label taxonomy (`LEAN`, `FLIP_CANDIDATE`, `SOURCE_CONFLICT`, `DATA_UNOBTAINABLE`, `NO_BET` as terminal buckets) than `gate_engine/llp_governance.py`'s `LLPLabel` enum, used a flat 3% edge threshold instead of the coded tiered thresholds, had no absolute-probability ceiling, no Game Winner h2h price floor, and no session exposure caps. Original draft was also 8,027 characters — 27 over the Custom GPT 8,000-character instruction limit.
+
+**Rewrite:** instructions restructured from prose into discrete, testable rules (label set, tiered edge thresholds, absolute probability cap, hard kills, data-contract ladder, session exposure caps, board-scan-vs-full-run distinction, required output schema). Final size ~4,921 characters (well under the 8,000 limit).
+
+**Backend confirmation (this session)** — verified every numeric/behavioral claim directly against `gate_engine/llp_governance.py` (all 10 validators) and `_llp_game_winner_discipline` in `app.py`:
+- Six terminal labels (`LLP_APPROVED/PLAYABLE/WATCH/SCOUT/REJECT/CUT`) and the 7 banned-as-final terms — exact match with `LLPLabel` / `BANNED_AS_FINAL`.
+- Tiered edge thresholds (1.5%/2.0%/2.5%/3.0% by market type) — exact match with `EDGE_THRESHOLD`.
+- Absolute probability cap bands — match `_prob_ceiling`, **except** the instructions' ">60% requires independent validation" line, which is a GPT-side safety margin, not a coded rule (the engine allows unconditional APPROVED above 60% once other gates clear). Instructions text now explicitly flags this as GPT-added, not backend-enforced.
+- Game Winner h2h price floor (<1.35x hard reject; 1.35–1.50x requires edge≥3% + confirmed starter + confirmed lineup + non-empty model_adjustments + positive Kelly) — exact match with `_llp_game_winner_discipline` constants.
+- Session exposure caps (3 bets/day, 1.5u/2.0u daily, 1.0u per-game, 1.25u same-script) — exact match with `DEFAULT_EXPOSURE`.
+- Hard-kill fields — exact match with `HARD_KILL_FIELDS`.
+
+**Corrections applied to the staged draft (both proposed by the ChatGPT leg, confirmed correct against backend):**
+1. "NO PLAY / LLP_CUT is a valid...output" → reworded so "no play" cannot be read as a pseudo-label; final_label must still be one of the six, typically REJECT/CUT/WATCH/SCOUT depending on cause.
+2. Game Winner 1.35x–1.50x failure case: "cap LLP_WATCH" → "max LLP_WATCH; if edge/data is absent or contradicted, LLP_REJECT" — because in code, a short-price-unverified case caps the internal `CANDIDATE` badge, which the board-scan endpoint's `_llp_requested_label_from_analysis` catch-all resolves to a **requested REJECT** (not WATCH); since governance can only cap a requested label down, starting from REJECT makes "cap at WATCH" a no-op unless the failure is more clearly a soft/incomplete-data case.
+
+**Known architectural seam (not fixed by instruction text, flagged for future patch):** the six-label `LLPLabel` vocabulary is only guaranteed at the governance validator itself and the new `/llp/board-scan-to-full-run` endpoint. The core `_llp_analyze_one`/`_llp_team_analysis` pipeline still emits its own badge ladder (`ANCHOR/BET/QUALIFIED/CANDIDATE/WATCH/PASS`) and a `final_decision` field, not `LLP_*` names — there is no coded translation table yet mapping every badge value to a definitive `LLPLabel` outside the board-scan endpoint's heuristic.
+
+**Where the instructions now live:** `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md` (repo root) — full staged instructions block plus this review trail pointer, so the text isn't only living in chat/attached-file history.
+
+**DRY_RUN_ONLY_NO_LIVE_TRADING:** unaffected — this is a persona-instruction rewrite for an external reasoning agent, not a code change to the Flask engine; no orders, no trades.
+
+**Status:** Staged — approved for implementation, pending Greg/backend source confirmation before Step 6 (deploy to Custom GPT config). Backend confirmation completed in this session (see above); still holding on deploy per explicit instruction until the user does a final eyeball pass against the live source.
+
+---
+
 ## 2026-07-04 — Next-session carryover
 
-1. **WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION** — do not lose. Status: **Proposed**, needs formal patch approval. Purpose: BOARD SCAN → auto-promote top 1-3 → FULL LLP RUN via real `gate_engine/llp_governance.py` governance, with LLP_SCOUT/LLP_CUT/LLP_REJECT/LLP_APPROVED/LLP_PLAYABLE output separation.
-2. **WOW-PATCH-EXTERNAL-LEDGER-SOURCE-PATH-GATE** — do not lose. Status: **Proposed**, needs ChatGPT approval/sign-off. Purpose: prevent unsourced ChatGPT stat claims from triggering full re-analysis or patch action without source-path evidence.
-3. **WOW-PATCH-2026-07-02-VALIDATION-QUEUE-CACHE** — remains separate. Status: **Pending ChatGPT approval**.
-4. **Thornton/Gray original payload** — remains `NOT_DETERMINABLE`. Do not retroactively close this or fabricate replay evidence in a future session.
-5. **Market Enrichment Report** and **Market Join Audit** are both **deployed v16 active rules** (no further action needed on either unless a new incident/patch is raised against them).
-6. **Next `/wow start` must confirm** before any new prop work:
+1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — do not lose. Status: **Staged**, backend-confirmed this session, still holding on Step 6 deploy pending final user sign-off. Instructions text lives in `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md`.
+2. **WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION** — do not lose. Status: **Proposed**, needs formal patch approval. Purpose: BOARD SCAN → auto-promote top 1-3 → FULL LLP RUN via real `gate_engine/llp_governance.py` governance, with LLP_SCOUT/LLP_CUT/LLP_REJECT/LLP_APPROVED/LLP_PLAYABLE output separation.
+3. **WOW-PATCH-EXTERNAL-LEDGER-SOURCE-PATH-GATE** — do not lose. Status: **Proposed**, needs ChatGPT approval/sign-off. Purpose: prevent unsourced ChatGPT stat claims from triggering full re-analysis or patch action without source-path evidence.
+4. **WOW-PATCH-2026-07-02-VALIDATION-QUEUE-CACHE** — remains separate. Status: **Pending ChatGPT approval**.
+5. **Thornton/Gray original payload** — remains `NOT_DETERMINABLE`. Do not retroactively close this or fabricate replay evidence in a future session.
+6. **Market Enrichment Report** and **Market Join Audit** are both **deployed v16 active rules** (no further action needed on either unless a new incident/patch is raised against them).
+7. **Next `/wow start` must confirm** before any new prop work:
    - Replit UP
    - today's balance
