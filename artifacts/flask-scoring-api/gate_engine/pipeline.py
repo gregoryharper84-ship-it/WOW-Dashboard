@@ -263,14 +263,17 @@ def _build_market_enrichment_report(rows: list[dict]) -> dict[str, Any]:
     rows_with_any_field = 0
     rows_all_missing = 0
     rows_capped_no_market = 0
+    rows_without_market_gate_result = 0
     blocker_samples_by_prop: dict[str, list[dict[str, Any]]] = {}
 
     for row in rows:
         if not isinstance(row, dict):
+            rows_without_market_gate_result += 1
             continue
 
         mkt = (row.get("gates") or {}).get("market_gate")
         if not mkt or not isinstance(mkt, dict):
+            rows_without_market_gate_result += 1
             continue
 
         has_field = any(
@@ -300,6 +303,7 @@ def _build_market_enrichment_report(rows: list[dict]) -> dict[str, Any]:
         "rows_with_any_market_field":             rows_with_any_field,
         "rows_with_all_market_fields_missing":    rows_all_missing,
         "rows_capped_model_qualified_hold_no_market": rows_capped_no_market,
+        "rows_without_market_gate_result":        rows_without_market_gate_result,
         "blocker_samples_by_prop":                blocker_samples_by_prop,
     }
 

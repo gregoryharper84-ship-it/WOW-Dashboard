@@ -136,16 +136,23 @@ def test_market_enrichment_report_empty_rows():
     assert report["rows_with_any_market_field"] == 0
     assert report["rows_with_all_market_fields_missing"] == 0
     assert report["rows_capped_model_qualified_hold_no_market"] == 0
+    assert report["rows_without_market_gate_result"] == 0
     assert report["blocker_samples_by_prop"] == {}
 
 
 def test_market_enrichment_report_row_missing_gates_key():
-    # No "gates" key at all — must not raise.
+    # No "gates" key at all — must not raise, and must be explicitly
+    # counted as "no market_gate result" rather than silently folded into
+    # the market-field counters (this is the follow-up enhancement from
+    # the retroactive PR review: rows that never reached market_gate,
+    # e.g. because they failed an earlier gate, are now distinguishable
+    # from rows that reached market_gate with genuinely empty fields).
     rows = [{"row_id": "r1", "player": "X", "prop_type": "Points"}]
     report = _build_market_enrichment_report(rows)
     assert report["total_rows"] == 1
     assert report["rows_with_any_market_field"] == 0
     assert report["rows_with_all_market_fields_missing"] == 0
+    assert report["rows_without_market_gate_result"] == 1
 
 
 def test_market_enrichment_report_row_missing_blockers_key():
@@ -158,6 +165,7 @@ def test_market_enrichment_report_row_missing_blockers_key():
     assert report["total_rows"] == 1
     assert report["rows_with_all_market_fields_missing"] == 1
     assert report["rows_capped_model_qualified_hold_no_market"] == 0
+    assert report["rows_without_market_gate_result"] == 0
 
 
 def test_market_enrichment_report_malformed_market_fields():
@@ -183,6 +191,9 @@ def test_market_enrichment_report_malformed_market_fields():
     assert report["total_rows"] == 4
     assert report["rows_with_all_market_fields_missing"] == 1  # r1 (empty string treated as missing)
     assert report["rows_with_any_market_field"] == 1           # r2 (malformed-but-non-empty counts as present)
+    # r3 (market_gate: None) + "not-a-row" (non-dict) never produced a
+    # usable market_gate result.
+    assert report["rows_without_market_gate_result"] == 2
 
 
 # -------------------------------------------------------------------

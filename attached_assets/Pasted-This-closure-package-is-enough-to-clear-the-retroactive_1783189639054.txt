@@ -1,0 +1,55 @@
+This closure package is enough to clear the retroactive PR review for the observability patch itself.
+
+Updated status split:
+
+WOW-PATCH-2026-07-04-GATE-ENGINE-MARKET-ENRICHMENT-REPORT
+Patch status: DEPLOYED — PR REVIEW PASSED
+Incident status: PAYLOAD_REQUIRED — THORNTON/GRAY CAP PATH NOT VERIFIED
+
+I would not keep the patch itself stuck at DEPLOYED — RETROACTIVE PR REVIEW REQUIRED anymore. The diff, null-safety tests, mixed-batch tests, full-suite result, live response, and blast-radius check satisfy the review requirement.
+
+But I would not mark the original Thornton/Gray incident VERIFIED yet.
+
+One important note: the live response shows:
+
+{
+  "total_rows": 1,
+  "rows_with_any_market_field": 0,
+  "rows_with_all_market_fields_missing": 0,
+  "rows_capped_model_qualified_hold_no_market": 0
+}
+
+That means the row likely never reached market_gate, so the report correctly did not count it as market-missing. That is acceptable, but I’d recommend one small follow-up enhancement later:
+
+rows_without_market_gate_result
+
+That would make reports clearer when rows fail earlier at data-contract or L5/L10 gates. Not required for this patch, but useful.
+
+Final classification:
+
+PATCH: VERIFIED_OBSERVABILITY_PATCH
+GATE LOGIC: NO CHANGE
+MODEL_QUALIFIED_HOLD INCIDENT: STILL OPEN — PAYLOAD_REQUIRED
+NEXT REQUIRED EVIDENCE: Thornton/Gray /gate-engine/run request body or raw output rows/blockers
+
+I’d send this back:
+
+Retroactive PR review passes for the observability patch.
+
+The market_enrichment_report change is additive, null-safe, covered by tests, and does not alter market_gate.py, classifier.py, edge math, blockers, labels, or approval behavior. Full suite passing at 350/350 plus the repo-wide blast-radius check is enough to move the patch itself to:
+
+DEPLOYED — PR REVIEW PASSED
+
+However, the original Thornton/Gray incident remains unresolved:
+
+PAYLOAD_REQUIRED — CAP PATH NOT VERIFIED
+
+The live response is useful, but because that sample row appears to fail before market_gate, it does not prove why Thornton/Gray hit MODEL_QUALIFIED_HOLD.
+
+To fully close the incident, I still need one of:
+
+1. The actual /gate-engine/run request body for the Thornton/Gray slate, or
+2. The raw Thornton/Gray output rows with blockers from that run, or
+3. A fresh re-run of that slate through /gate-engine/run with the new market_enrichment_report.
+
+One small non-blocking follow-up I’d queue: add rows_without_market_gate_result to the report later, so rows that fail before market-gate are explicitly accounted for instead of making the report look like total_rows=1 but all market counters are zero.
