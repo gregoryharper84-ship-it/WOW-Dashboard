@@ -1,0 +1,137 @@
+Correct posture: do not mark this deployed/approved yet.
+
+This should be classified as:
+
+WOW-PATCH-2026-07-04-PREGATE-AUTO-ENRICHMENT
+STATUS: IMPLEMENTED BY REPLIT / LIVE-VERIFIED BY REPLIT / NOT YET CHATGPT-APPROVED
+Current label: v16 TEST CANDIDATE
+Playable impact: NONE
+Approval impact: BLOCKED pending diff review
+
+The Replit summary sounds promising, but it is still self-reported implementation evidence, not an auditable PR review.
+
+My review verdict
+
+Do not reject it. Do not approve it yet.
+
+The concept is valid because it fixes the exact bottleneck we identified:
+
+* holds were stuck because enrichment JSON had to be manually supplied
+* live PP/market/status fields were often blank
+* internal projection alone was creating MODEL_QUALIFIED_HOLD
+* failure-path and market-confirmation artifacts were missing
+
+So the module direction is right.
+
+But per WOW v16 Clean Core, this cannot become active until the actual code passes review.
+
+Required before approval
+
+Ask Replit/Claude for these exact artifacts:
+
+1. New auto-enrichment module file
+2. New test file with all 11 tests
+3. app.py diff showing:
+   - import added
+   - /gate-engine/run auto_enrich flag wiring
+   - backward compatibility preserved
+4. Example request/response:
+   - auto_enrich=false
+   - auto_enrich=true
+5. Confirmation that caller-supplied enrichment overrides auto-fetched values
+6. Confirmation that failed enrichment never fabricates values
+7. Confirmation that auto_enrichment_status is included only when auto_enrich=true
+8. Full pytest output showing 357/357 or current full suite passing
+
+Main audit concerns
+
+1. Good: opt-in flag
+
+auto_enrich=false default is correct. That protects backward compatibility.
+
+2. Good: caller-supplied values win
+
+This is mandatory. Auto-enrichment should only fill blanks, not overwrite manually audited data.
+
+3. Good: no fabrication
+
+The “no NBA events today” live check is actually a positive sign. Honest null results are better than fake enrichment.
+
+4. Still missing: actual diff
+
+The summary says:
+
+board_intake isn’t imported in app.py — I need to add the import.
+
+That matters. I need to see whether the import was clean, whether naming is consistent, and whether the endpoint wiring uses the correct normalized payload.
+
+5. Still missing: failure-mode proof
+
+The summary says injuries_by_sport[sport] can be None and was fixed. I need the actual test showing this does not crash:
+
+injuries_by_sport = {"WNBA": None}
+
+Expected behavior should be:
+
+No crash
+No fabricated injury flag
+auto_enrichment_status reports status fetch unavailable/failed
+row remains DATA_CONTRACT_FAIL or HOLD if required fields remain missing
+
+Approval recommendation
+
+Use this response:
+
+WOW-PR-CHECKER REVIEW — PREGATE AUTO-ENRICHMENT
+
+Patch ID:
+WOW-PATCH-2026-07-04-PREGATE-AUTO-ENRICHMENT
+
+Current Status:
+v16 TEST CANDIDATE — not approved for active deployment yet.
+
+Preliminary Verdict:
+HOLD FOR DIFF REVIEW.
+
+Reason:
+The reported implementation direction is valid and aligned with WOW v16 Clean Core. The opt-in auto_enrich flag, backward compatibility, caller-supplied override priority, non-fabrication behavior, and honest failure reporting are all correct design choices.
+
+However, approval cannot be granted from a narrative summary alone. The actual code diff, test file, endpoint wiring, and response examples are required before this can be promoted to active v16 rule.
+
+Required Review Artifacts:
+
+1. New auto-enrichment module file.
+2. New unit test file containing the 11 new tests.
+3. app.py diff showing the import and /gate-engine/run wiring.
+4. Live response examples for auto_enrich=false and auto_enrich=true.
+5. Proof that caller-supplied enrichment overrides auto-fetched enrichment.
+6. Proof that failed API calls leave fields empty and report failure honestly.
+7. Proof that injuries_by_sport[sport] = None does not crash.
+8. Full pytest output showing no regression against existing gate_engine tests.
+
+Approval Gates:
+
+* Must not alter market_gate.py, classifier.py, status_role.py, scoring thresholds, or approval labels.
+* Must not allow auto-enrichment to promote a row by itself.
+* Must not fabricate market, status, injury, or projection data.
+* Must preserve backward compatibility when auto_enrich=false or omitted.
+* Must expose missing enrichment as blocker/status, not silently pass.
+
+Temporary Operational Rule:
+Until diff review is complete, auto_enrich=true may be used only for scouting/debugging. It cannot be used as the basis for FINAL_APPROVED, MONEY_QUALIFIED, or Power Play eligibility.
+
+Final Label:
+BLOCKED_PENDING_DIFF_REVIEW
+
+Bottom line
+
+This patch is probably useful and likely worth approving after code review, but right now it stays:
+
+Implemented: yes, per Replit report
+Tested: self-reported
+Live verified: self-reported
+ChatGPT approved: no
+Claude PR reviewed: not shown
+Final status: v16 TEST CANDIDATE / BLOCKED_PENDING_DIFF_REVIEW
+
+The next move is simple: paste the actual diff. Then I can run the real approval audit.

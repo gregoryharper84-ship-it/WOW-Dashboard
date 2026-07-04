@@ -161,6 +161,36 @@ def test_status_failure_leaves_status_payload_unset(monkeypatch):
     assert status["sports"]["NBA"]["status"] == "FAILED: HTTP 503"
 
 
+def test_injuries_by_sport_none_does_not_crash_and_reports_failure(monkeypatch):
+    """
+    Explicit regression test for the injuries_by_sport[sport] = None path:
+    when ESPN status fetch fails, get_player_injury_flag() must NOT be
+    called with a None cache (that would crash inside status.py, which
+    only special-cases injuries_cache=None to mean "go fetch it yourself" —
+    here it means "fetch already failed, don't retry, don't fabricate").
+    Expected: no exception, no status_payload written, honest failure
+    reported in auto_enrichment_status, row is otherwise unaffected.
+    """
+    _patch_odds(monkeypatch, [])
+    _patch_injuries_failure(monkeypatch)  # get_injuries -> ({}, "FAILED: HTTP 503")
+
+    row = _row(sport="WNBA")
+
+    # Must not raise.
+    enrichment, status = auto_enrichment.build_auto_enrichment([row])
+
+    key = "lebron james:points"
+    assert "status_payload" not in enrichment.get(key, {})
+    assert status["sports"]["WNBA"]["status"] == "FAILED: HTTP 503"
+    assert status["sports"]["WNBA"]["status_players_found"] == 0
+    # Row itself is untouched by auto-enrichment failure — no blockers added,
+    # no terminal_label set. run_pipeline's own gates (data_contract,
+    # status_role, etc.) are solely responsible for any DATA_CONTRACT_FAIL /
+    # HOLD outcome, not this module.
+    assert row.get("terminal_label") is None
+    assert row.get("blockers") == []
+
+
 def test_unsupported_sport_is_skipped_cleanly(monkeypatch):
     row = _row(sport="PGA", prop_type="Points")
     enrichment, status = auto_enrichment.build_auto_enrichment([row])
