@@ -10,3 +10,4 @@
 - [WEATHER_SCOUT logging pattern](weather-scout-logging.md) — auto-log guard: gaussian_forecast only; binary_final_cli skipped; ON CONFLICT updates only when settled_at IS NULL; Brier=Σ(p−o)²; milestone_1=25 settled rows; settle endpoint has CLI date-guard + 409 on dupe.
 - [gate_engine report semantics](gate-engine-report-semantics.md) — most gates run unconditionally per row; a per-gate observability counter can fire even when the row's final terminal label is unrelated to that gate.
 - [WOW binary-event line structural cap](wow-binary-event-lines.md) — 0.5-line props (e.g. MLB Hitter Hits) are structurally near-binary and bypass REJECT_COINFLIP; must cap at every scoring entry point, not just one.
+- [gate-engine/run route param wiring](gate-engine-run-route-params.md) — the HTTP route only forwards raw_rows/target_date/enrichment/record_entries; skip_data_contract etc. are pipeline-only, ignored if sent in the body.

@@ -1,0 +1,91 @@
+Approved.
+
+═══════════════════════════════════════════════════
+WOW PATCH APPROVAL — MARKET JOIN AUDIT FIELDS
+═══════════════════════════════════════════════════
+
+PATCH ID:     WOW-PATCH-2026-07-04-MARKET-JOIN-AUDIT
+STATUS:       APPROVED FOR IMPLEMENTATION
+PATCH TYPE:   Dashboard code / gate_engine per-row diagnostics
+SCOPE:        Observability only
+CLASSIFICATION IMPACT: None
+THRESHOLD IMPACT: None
+GATE-LOGIC IMPACT: None
+
+APPROVAL DECISION:
+Approved as an additive diagnostic patch to expose why market enrichment does or does not attach to individual prop rows.
+
+This patch may add per-row audit fields, but it may not alter:
+
+* terminal bucket assignment
+* market gate thresholds
+* model probability logic
+* classifier promotion/demotion logic
+* FINAL_APPROVED requirements
+* existing cap behavior for MARKET_UNAVAILABLE / no market verified rows
+
+APPROVED FIELDS:
+
+* market_join_status
+* market_source_called
+* matching_market_found
+* sportsbook_line_present
+* consensus_line_present
+* best_available_present
+* odds_join_key
+* prop_join_key
+* market_rejection_reason
+
+REQUIRED ENUM / NULL-SAFE BEHAVIOR:
+market_source_called:
+true | false
+
+matching_market_found:
+true | false | null
+
+sportsbook_line_present:
+true | false | null
+
+consensus_line_present:
+true | false | null
+
+best_available_present:
+true | false | null
+
+market_join_status:
+JOINED
+NO_MARKET_FOUND
+SOURCE_NOT_CALLED
+SOURCE_FAILED
+JOIN_KEY_MISMATCH
+PROP_MAPPING_UNSUPPORTED
+MARKET_FILTERED_OUT
+SCHEMA_MISSING_FIELD
+UNKNOWN
+
+market_rejection_reason:
+null when JOINED
+otherwise short machine-readable reason string
+
+IMPLEMENTATION RULES:
+
+1. Every touched prop row must remain visible.
+2. Missing audit fields must never hide or drop a row.
+3. A failed market join must explain itself per row.
+4. Aggregate market_verified_count must remain reconciled with row-level market statuses.
+5. Existing cap behavior remains unchanged.
+6. No row may be upgraded because these fields exist.
+7. No row may be downgraded solely because diagnostic metadata is missing unless the underlying market data itself is missing, failed, or conflicted under existing WOW v16 rules.
+
+ACCEPTANCE TESTS:
+
+* Thornton/Gray replay must show whether each failed due to true market unavailability, caller omission, schema mismatch, prop-name mismatch, or filtered market.
+* A known market-verified row must return market_join_status: JOINED.
+* A no-market row must return a non-null market_rejection_reason.
+* market_verified_count must equal the number of rows with usable market-verified enrichment.
+* Null fields must not break downstream dashboard consumers.
+* No change in terminal buckets compared with the pre-patch run unless market data itself changes.
+
+FINAL APPROVAL LANGUAGE:
+WOW-PATCH-2026-07-04-MARKET-JOIN-AUDIT is approved for implementation as observability-only dashboard/gate_engine diagnostics. It is not a classification patch and must not modify gate logic, classifier logic, thresholds, bucket assignment, or FINAL_APPROVED eligibility.
+═══════════════════════════════════════════════════

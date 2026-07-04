@@ -245,7 +245,7 @@ def run_pipeline(
             if row.get("terminal_label") == PropLabel.FINAL_APPROVED.value:
                 tracker.record_entry(row)
 
-    return _build_output(rows, ledger, health_report, settlement_status)
+    return _build_output(rows, ledger, health_report, settlement_status, enrichment)
 
 
 MARKET_NO_DATA_BLOCKER = "MARKET:NO_MARKET_AVAILABLE:MAX_LABEL=MODEL_QUALIFIED_HOLD"
@@ -308,18 +308,138 @@ def _build_market_enrichment_report(rows: list[dict]) -> dict[str, Any]:
     }
 
 
+# -------------------------------------------------------------------
+# WOW-PATCH-2026-07-04-MARKET-JOIN-AUDIT
+# Per-row diagnostics explaining *why* market enrichment did or did not
+# attach to a given prop row. Observability only — never alters
+# classification, thresholds, or terminal labels.
+# -------------------------------------------------------------------
+JOIN_STATUS_JOINED               = "JOINED"
+JOIN_STATUS_NO_MARKET_FOUND      = "NO_MARKET_FOUND"
+JOIN_STATUS_SOURCE_NOT_CALLED    = "SOURCE_NOT_CALLED"
+JOIN_STATUS_SOURCE_FAILED        = "SOURCE_FAILED"
+JOIN_STATUS_JOIN_KEY_MISMATCH    = "JOIN_KEY_MISMATCH"
+JOIN_STATUS_PROP_MAPPING_UNSUPPORTED = "PROP_MAPPING_UNSUPPORTED"
+JOIN_STATUS_MARKET_FILTERED_OUT  = "MARKET_FILTERED_OUT"
+JOIN_STATUS_SCHEMA_MISSING_FIELD = "SCHEMA_MISSING_FIELD"
+JOIN_STATUS_UNKNOWN              = "UNKNOWN"
+
+_JOIN_MARKET_FIELDS = ("sportsbook_line", "best_available", "consensus_line")
+
+
+def _present(value: Any) -> bool:
+    return value not in (None, "")
+
+
+def _build_market_join_audit(row: dict, enrichment: dict) -> dict[str, Any]:
+    """
+    Per-row market join audit — approved fields:
+      market_join_status, market_source_called, matching_market_found,
+      sportsbook_line_present, consensus_line_present, best_available_present,
+      odds_join_key, prop_join_key, market_rejection_reason
+
+    Computed from the enrichment payload actually supplied by the caller
+    for this row, not from classification results — this never upgrades
+    or downgrades a row, it only explains the market_gate input.
+    """
+    if not isinstance(row, dict):
+        return {
+            "market_join_status":      JOIN_STATUS_UNKNOWN,
+            "market_source_called":    False,
+            "matching_market_found":   None,
+            "sportsbook_line_present": None,
+            "consensus_line_present":  None,
+            "best_available_present":  None,
+            "odds_join_key":           None,
+            "prop_join_key":           None,
+            "market_rejection_reason": JOIN_STATUS_UNKNOWN,
+        }
+
+    rid = row.get("row_id", "")
+    player = (row.get("player") or "").lower()
+    prop   = (row.get("prop_type") or "").lower()
+    prop_join_key = f"{player}:{prop}"
+    odds_join_key = rid
+
+    enrichment = enrichment if isinstance(enrichment, dict) else {}
+    enr_by_rid = enrichment.get(rid) if rid else None
+    enr_by_key = enrichment.get(prop_join_key)
+    enr_for_row = enr_by_rid if isinstance(enr_by_rid, dict) else (
+        enr_by_key if isinstance(enr_by_key, dict) else None
+    )
+    source_called = enr_for_row is not None
+
+    sportsbook_line_present: bool | None = None
+    consensus_line_present:  bool | None = None
+    best_available_present:  bool | None = None
+    matching_market_found:   bool | None = None
+
+    # Prefer the actual market_gate result when the row reached that gate —
+    # it also accounts for a row-level `market_line` override, not just
+    # caller-supplied enrichment.
+    mkt = (row.get("gates") or {}).get("market_gate")
+    if isinstance(mkt, dict):
+        sportsbook_line_present = _present(mkt.get("sportsbook_line"))
+        consensus_line_present  = _present(mkt.get("consensus_line"))
+        best_available_present  = _present(mkt.get("best_available"))
+        matching_market_found   = mkt.get("market_status") != market_gate.MARKET_STATUS_NONE
+    elif source_called:
+        sportsbook_line_present = _present(enr_for_row.get("sportsbook_line"))
+        consensus_line_present  = _present(enr_for_row.get("consensus_line"))
+        best_available_present  = _present(enr_for_row.get("best_available"))
+        matching_market_found   = (
+            sportsbook_line_present or consensus_line_present or best_available_present
+        )
+
+    if matching_market_found:
+        market_join_status = JOIN_STATUS_JOINED
+        market_rejection_reason = None
+    elif source_called:
+        market_join_status = JOIN_STATUS_NO_MARKET_FOUND
+        market_rejection_reason = market_join_status
+    elif enrichment:
+        # Caller supplied an enrichment payload for the batch, but nothing
+        # in it matched this row's row_id or player:prop key.
+        market_join_status = JOIN_STATUS_JOIN_KEY_MISMATCH
+        market_rejection_reason = market_join_status
+    else:
+        # No enrichment payload was supplied for the whole batch at all.
+        market_join_status = JOIN_STATUS_SOURCE_NOT_CALLED
+        market_rejection_reason = market_join_status
+
+    return {
+        "market_join_status":      market_join_status,
+        "market_source_called":    source_called,
+        "matching_market_found":   matching_market_found,
+        "sportsbook_line_present": sportsbook_line_present,
+        "consensus_line_present":  consensus_line_present,
+        "best_available_present":  best_available_present,
+        "odds_join_key":           odds_join_key,
+        "prop_join_key":           prop_join_key,
+        "market_rejection_reason": market_rejection_reason,
+    }
+
+
 def _build_output(rows: list[dict], ledger: ExposureLedger,
                   health_report: dict | None = None,
-                  settlement_status: dict | None = None) -> dict[str, Any]:
+                  settlement_status: dict | None = None,
+                  enrichment: dict | None = None) -> dict[str, Any]:
     label_counts: dict[str, int] = {}
     terminal_labels  = []
     final_card       = []
     clv_table        = []
     data_status_ledger = []
 
+    market_join_audits: list[dict[str, Any]] = []
+
     for row in rows:
         label = row.get("terminal_label") or PropLabel.NO_PLAY.value
         label_counts[label] = label_counts.get(label, 0) + 1
+
+        join_audit = _build_market_join_audit(row, enrichment or {})
+        if isinstance(row.get("gates"), dict):
+            row["gates"]["market_join_audit"] = join_audit
+        market_join_audits.append(join_audit)
 
         terminal_labels.append({
             "row_id":   row["row_id"],
@@ -366,6 +486,19 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
 
     no_play = len(final_card) == 0
 
+    market_enrichment_report = _build_market_enrichment_report(rows)
+
+    join_status_counts: dict[str, int] = {}
+    rows_market_joined = 0
+    for audit in market_join_audits:
+        status = audit.get("market_join_status") or JOIN_STATUS_UNKNOWN
+        join_status_counts[status] = join_status_counts.get(status, 0) + 1
+        if status == JOIN_STATUS_JOINED:
+            rows_market_joined += 1
+
+    market_enrichment_report["rows_market_joined"] = rows_market_joined
+    market_enrichment_report["rows_by_market_join_status"] = join_status_counts
+
     return {
         "prop_ledger":        rows,
         "data_status_ledger": data_status_ledger,
@@ -375,7 +508,7 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "clv_table":          clv_table,
         "health_report":      health_report or {},
         "settlement_status":  settlement_status or {},
-        "market_enrichment_report": _build_market_enrichment_report(rows),
+        "market_enrichment_report": market_enrichment_report,
         "summary": {
             "total_rows":   len(rows),
             "by_label":     label_counts,
