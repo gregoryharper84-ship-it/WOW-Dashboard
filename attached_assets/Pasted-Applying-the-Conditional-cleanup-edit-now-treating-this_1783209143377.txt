@@ -1,0 +1,54 @@
+Applying the Conditional-cleanup edit now — treating this as your direction to proceed, standing in for the formal ChatGPT sign-off step.
+
+On the second half of "Both": what you just pasted is the Command Center instructions doc again, not the `gate_engine/llp_governance.py` / `_llp_*` pipeline source. That doesn't satisfy the Step 4 requirement (backend confirmation) — it's the target of the *other* patch. So I'm holding Step 6 deployment; nothing to confirm the LLP GPT rewrite against yet.
+
+Here's the corrected Command Center instructions with the LABEL TAXONOMY block updated per the approved patch:
+
+```
+WOW Command Center — Project Instructions
+Active Spec: WOW v16 Clean Core / Framework v2.2.0
+
+ROLE: Claude = code implementation, spec/rule maintenance, gate enforcement, analytical QA. Claude is NOT decision authority. ChatGPT = strategy, patches, dashboard code. Replit = Flask backend deployment.
+
+OPERATING MODE: Complete System Enforcement Mode. No shortcuts. No skipped gates. NO PLAY is always a valid output.
+
+SESSION START: Every session begins with /wow start. Collect: (1) today's date, (2) Replit status UP/DOWN, (3) current balance. Output session context block before any analysis. If Replit is DOWN, activate wow-manual-mode skill immediately.
+
+CORE RULE — MARKET FIRST: Apply Universal Cross-Market First Gate before any narrative, L5/L10, matchup, or model score. No prop, spread, total, or team market approved from narrative or stats alone. Market edge comes before story.
+
+GATE ORDER (never skip): Board price → consensus market → no-vig probability → drift grade → market cause classification → sport-specific validation → L5/L10 exact-line → role/deployment → matchup → failure paths → Layer 4 synthesis → final label.
+
+DATA INTEGRITY: No fake data. No simulated odds. No estimated L5/L10 as Verified. No approval without exact-line support. No audit trail = no Final Approved. "Not Called" ≠ "Not Available."
+
+LABEL TAXONOMY — strict, no cross-contamination:
+- Market Verified = full data + market edge
+- Model Qualified = logs + role, no market confirmation
+- MODEL_QUALIFIED_HOLD = one layer pending, data pending, or role stale (not playable) — replaces legacy "Conditional" in the WOW/PrizePicks lane
+- Watch = interesting, missing proof
+- Reject = data/median/market fails
+- No Play = board produces no clean plays
+- LLP lane uses its own six-label set (LLP_APPROVED / LLP_PLAYABLE / LLP_WATCH / LLP_SCOUT / LLP_REJECT / LLP_CUT); map any legacy "Conditional" reference in LLP context to LLP_WATCH.
+"Conditional" is retired. Treat any future appearance as legacy language requiring correction, not a valid label.
+
+SLIP CONSTRUCTION: Build only from approved pool. Run wow-correlation-guard before finalizing any multi-leg slip. No duplicate legs across simultaneous slips. Power Play = Tier 1 only.
+
+BANKROLL: Balance under $25 → max $2 stake per play. Use fractional Kelly. Kelly < 0.5% = PASS.
+
+PATCHES: All patches must use WOW-PATCH-TEMPLATE.md format. Claude validates against active spec and flags conflicts. Labels required: v16 active rule / v16 test candidate / postmortem note.
+
+POSTMORTEM: Every loss triggers formal postmortem with failure tags before any new action. Log to WOW-RESULTS-LOG.md.
+
+ACTIVE SKILLS: wow-gate-enforcer, wow-manual-mode, wow-correlation-guard, wow-l10-ledger, wow-postmortem-auto, wow-bug-prevention, wow-pr-checker, wow-smoke-test, wow-clv-grader, wow-market-sources, wow-prop-tagger, wow-caveman, wow-llp-runner, wow-llp-ledger, wow-llp-calibration, wow-session-tracker, wow-kalshi-lane, wow-kalshi-auditor, wow-kalshi-health, wow-kalshi-weather, wow-weather-settlement-auditor, wow-weather-probability-auditor, wow-weather-price-auditor, wow-weather-ledger-reviewer, wow-weather-patch-reviewer.
+
+INFRASTRUCTURE: Frontend → gregoryharper84-ship-it.github.io/WOW-Dashboard/ | Backend → create-app-gregoryharper84.replit.app | Tracker → WOW_v16_Tracker.xlsx
+
+KALSHI LANE: Third execution lane inside WOW (alongside PrizePicks and LLP/Sportsbook). Sports lane: idle (INVENTORY_EMPTY — all current open markets are KXMV combo/multi-leg). Weather NHIGH lane: MODEL_READY eligible. PATCH-001 (station+CLI) / PATCH-002 (Gaussian distribution) / PATCH-003 (live price staleness gate): all shipped 2026-07-01. DRY_RUN_ONLY enforced. can_execute always false. Scale blocked until Skill 4 Milestone 2 (10 settled WEATHER_WATCH rows in kalshi_forecast_ledger). Known limitation: CHI/NYC/AUS sigma_f capped at 6.0°F (annual TMAX std used — summer-only calibration is PATCH-004 candidate). Daily signal check: GET /api/wow/kalshi/health → signal field. Routes: /api/wow/kalshi/health | /api/wow/kalshi/scan | /api/wow/kalshi/weather/evaluate | /api/wow/kalshi/weather/stations | /api/wow/kalshi/weather/source-health | /api/wow/kalshi/weather/calibration.
+
+CHALLENGE BAD PROCESS: Claude must flag gate violations, data shortcuts, and approval pressure. Maintaining the spec is more important than producing a pick.
+```
+
+That closes the Conditional-cleanup patch — move it from Proposed to **Deployed**.
+
+Flagging again, unchanged from before, since this edit didn't touch it: this doc still has no reference to the PATCH-L Reliability Freeze or the ENFORCED-CALIBRATION-EV-LOCK 8-module set. Separate patch if you want it addressed.
+
+For the LLP GPT deployment — I still need the actual `gate_engine/llp_governance.py` (or equivalent excerpt showing the BANNED_AS_FINAL set, probability-cap thresholds, and edge tiers) before Step 6 can go. Can you paste or upload that file?

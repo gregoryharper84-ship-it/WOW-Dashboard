@@ -143,16 +143,40 @@ Any future route, caller, or test helper using `skip_data_contract` must make th
 
 **Status:** Staged — approved for implementation, pending Greg/backend source confirmation before Step 6 (deploy to Custom GPT config). Backend confirmation completed in this session (see above); still holding on deploy per explicit instruction until the user does a final eyeball pass against the live source.
 
+**Follow-up (same day):** Greg (ChatGPT leg) clarified that the backend confirmation he received for Step 4 was the Command Center instructions doc (a different, unrelated patch target — see entry below), not the actual `gate_engine/llp_governance.py` source. That does NOT satisfy Step 4 for this patch. Replit-side confirmation in this session (against the real file) stands as valid on the Replit/Claude leg, but Greg's own sign-off is still open pending the literal source excerpt — provided to the user this session for pasting into the ChatGPT thread (see "LLP GPT Step-4 source excerpt" below). Step 6 deploy remains held until Greg confirms against that excerpt AND the user does the final eyeball pass.
+
+---
+
+## 2026-07-04 — WOW Command Center instructions — "Conditional" retirement / LABEL TAXONOMY cleanup
+
+**Scope note:** this is a *different* artifact than the LLP GPT patch above — it is the "WOW Command Center — Project Instructions" doc (the system-level instructions for the Claude/ChatGPT project threads themselves), not a file that lives in this repo, and not the Custom GPT LLP Team Betting persona. No corresponding file exists under version control here; it's maintained externally by the user in their Claude/ChatGPT project settings.
+
+**Change:** LABEL TAXONOMY block rewritten to retire the ambiguous legacy term "Conditional" everywhere:
+- WOW/PrizePicks lane: introduces `MODEL_QUALIFIED_HOLD` as the explicit replacement (one layer pending / data pending / role stale — not playable).
+- LLP lane: any legacy "Conditional" reference maps to `LLP_WATCH`, staying inside the existing six-label `LLPLabel` vocabulary (no new label introduced in the LLP lane).
+- Explicit instruction added: "Conditional" is retired; any future appearance is legacy language requiring correction, not a valid label.
+
+**Status:** Reported by the ChatGPT/Greg leg as applied and requested to move from Proposed → **Deployed**. Recording here as **Deployed per ChatGPT-leg report** — flagging for the user: since this doc lives outside this repo (not a file Replit/Claude can read or diff), this status reflects Greg's assertion only. Please confirm you've actually pasted the corrected LABEL TAXONOMY block into the live Command Center project instructions if you haven't already, so this can be fully closed with confidence.
+
+**Unresolved, unchanged by this edit (Greg re-flagged, no action taken):** the Command Center doc still has no reference to the PATCH-L Reliability Freeze or the ENFORCED-CALIBRATION-EV-LOCK 8-module set. Treat as a separate patch if/when the user wants it addressed — not started.
+
+---
+
+## 2026-07-04 — LLP GPT Step-4 source excerpt (provided to user for pasting to Greg)
+
+Greg needs the literal `gate_engine/llp_governance.py` source (not the instructions doc) to independently confirm the `WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE` rewrite before Step 6. Verbatim excerpt covering the `LLPLabel` enum, `BANNED_AS_FINAL` set, edge-tier thresholds, and probability-cap logic was pulled from `artifacts/flask-scoring-api/gate_engine/llp_governance.py` (lines 27–108) and handed to the user in-chat this session for relay to the ChatGPT thread. Once Greg confirms against that excerpt, Step 6 can proceed pending the user's own final eyeball pass.
+
 ---
 
 ## 2026-07-04 — Next-session carryover
 
-1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — do not lose. Status: **Staged**, backend-confirmed this session, still holding on Step 6 deploy pending final user sign-off. Instructions text lives in `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md`.
-2. **WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION** — do not lose. Status: **Proposed**, needs formal patch approval. Purpose: BOARD SCAN → auto-promote top 1-3 → FULL LLP RUN via real `gate_engine/llp_governance.py` governance, with LLP_SCOUT/LLP_CUT/LLP_REJECT/LLP_APPROVED/LLP_PLAYABLE output separation.
-3. **WOW-PATCH-EXTERNAL-LEDGER-SOURCE-PATH-GATE** — do not lose. Status: **Proposed**, needs ChatGPT approval/sign-off. Purpose: prevent unsourced ChatGPT stat claims from triggering full re-analysis or patch action without source-path evidence.
-4. **WOW-PATCH-2026-07-02-VALIDATION-QUEUE-CACHE** — remains separate. Status: **Pending ChatGPT approval**.
-5. **Thornton/Gray original payload** — remains `NOT_DETERMINABLE`. Do not retroactively close this or fabricate replay evidence in a future session.
-6. **Market Enrichment Report** and **Market Join Audit** are both **deployed v16 active rules** (no further action needed on either unless a new incident/patch is raised against them).
-7. **Next `/wow start` must confirm** before any new prop work:
+1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — do not lose. Status: **Staged**, Replit-side backend-confirmed this session; Greg's Step-4 sign-off still open (he was given the wrong doc, not the actual source) — real source excerpt now provided, awaiting his confirmation. Still holding Step 6 deploy pending final user sign-off. Instructions text lives in `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md`.
+2. **WOW Command Center "Conditional" retirement / LABEL TAXONOMY cleanup** — reported Deployed by Greg; confirm with the user that the live external Command Center config was actually updated, since this repo has no copy of that doc to verify against.
+3. **WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION** — do not lose. Status: **Proposed**, needs formal patch approval. Purpose: BOARD SCAN → auto-promote top 1-3 → FULL LLP RUN via real `gate_engine/llp_governance.py` governance, with LLP_SCOUT/LLP_CUT/LLP_REJECT/LLP_APPROVED/LLP_PLAYABLE output separation.
+4. **WOW-PATCH-EXTERNAL-LEDGER-SOURCE-PATH-GATE** — do not lose. Status: **Proposed**, needs ChatGPT approval/sign-off. Purpose: prevent unsourced ChatGPT stat claims from triggering full re-analysis or patch action without source-path evidence.
+5. **WOW-PATCH-2026-07-02-VALIDATION-QUEUE-CACHE** — remains separate. Status: **Pending ChatGPT approval**.
+6. **Thornton/Gray original payload** — remains `NOT_DETERMINABLE`. Do not retroactively close this or fabricate replay evidence in a future session.
+7. **Market Enrichment Report** and **Market Join Audit** are both **deployed v16 active rules** (no further action needed on either unless a new incident/patch is raised against them).
+8. **Next `/wow start` must confirm** before any new prop work:
    - Replit UP
    - today's balance
