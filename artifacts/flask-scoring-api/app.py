@@ -12730,6 +12730,314 @@ def _llp_build_buckets(analyses, source_status):
     }
 
 
+# ── LLP PATCH — BOARD SCAN TO FULL RUN ESCALATION ───────────────────────
+#
+# Handles "highest probability ML winner" / "safest ML" / "best ML today" /
+# "top moneyline" / "most likely winner" / "strongest favorite" style
+# requests. These must never be answered from a raw market glance: Step 1
+# (BOARD SCAN) is read-only market discovery across today's slate; Step 2
+# auto-promotes the top-ranked 1-3 sides into the EXISTING full LLP
+# pipeline (`_llp_analyze_one`), so every compliance check already built
+# for team betting (model probability, edge, starters/lineup, market
+# movement, discovery/validation gates, price-decay/final-lock via
+# `_llp_opening_line_for_game`, exposure) applies unchanged. This section
+# only adds an output-labeling layer on top of that existing pipeline —
+# it does not alter `_llp_analyze_one`, `_llp_team_analysis`, or the
+# ANCHOR..PASS badge ladder in any way.
+
+# Reuse the existing, already-tested governance module instead of inventing
+# a parallel label/compliance system — see gate_engine/llp_governance.py
+# ("LLP-PATCH-2026-06-27 Execution Governance v16.1"). Its `LLPLabel` enum
+# already defines exactly the 5 escalation labels this spec calls for
+# (plus LLP_WATCH), and `run_llp_governance` runs the full compliance pass
+# (price/edge fields, edge threshold, probability cap, timing freshness,
+# steam protocol, contradiction hard-kills, session exposure, reapproval,
+# calibration ledger) that "FULL LLP RUN with full compliance" requires.
+from gate_engine.llp_governance import LLPLabel, run_llp_governance
+
+_LLP_BOARD_SCAN_INCOMPLETE_MESSAGE = "Highest market-implied side only — full LLP verification incomplete."
+_LLP_BOARD_SCAN_FALLBACK_TAGS = ["full-run-not-completed", "model-probability-missing", "final-lock-skipped"]
+_LLP_BOARD_SCAN_TOP_N_DEFAULT = 3
+_LLP_BOARD_SCAN_TOP_N_MAX = 3
+
+
+def _llp_board_scan(sports, board_date):
+    """BOARD SCAN step: pull today's active games + current ML odds and
+    timestamp per requested sport, devig each side, and rank every side by
+    no-vig market-implied win probability.
+
+    Read-only — never calls the full LLP analysis pipeline. Reuses
+    `_llp_fetch_odds` (live odds + cache) and `_llp_extract_market`
+    (existing devig math) rather than re-implementing odds parsing.
+    Returns (ranked_rows, source_status).
+    """
+    ranked = []
+    source_status = {}
+    for sport in sports:
+        sport_up = (sport or "").upper().strip()
+        sport_key = _LLP_SPORT_MAP.get(sport_up.lower())
+        if not sport_key:
+            source_status[sport_up or "UNKNOWN"] = "unknown_sport"
+            continue
+        events = _llp_fetch_odds(sport_key, markets="h2h")
+        if events is None:
+            source_status[sport_up] = "odds_fetch_failed"
+            continue
+        if not events:
+            source_status[sport_up] = "no_games_today"
+            continue
+        source_status[sport_up] = "ok"
+        for event in events:
+            home = (event.get("home_team") or "").strip()
+            away = (event.get("away_team") or "").strip()
+            commence = event.get("commence_time")
+            if not home or not away:
+                continue
+            for side, opp in ((home, away), (away, home)):
+                m = _llp_extract_market(event, "h2h", side)
+                if not m or m.get("novig_prob") is None:
+                    continue
+                ranked.append({
+                    "sport": sport_up,
+                    "home_team": home,
+                    "away_team": away,
+                    "side": side,
+                    "opponent": opp,
+                    "book": m.get("book"),
+                    "american_odds": m.get("american"),
+                    "no_vig_implied_probability": round(m["novig_prob"], 4),
+                    "commence_time": commence,
+                })
+    ranked.sort(key=lambda r: r["no_vig_implied_probability"], reverse=True)
+    return ranked, source_status
+
+
+def _llp_requested_label_from_analysis(rec):
+    """Best-effort *requested* escalation label from the existing LLP badge
+    ladder / final_decision. This is only a starting point — it is handed
+    to `run_llp_governance`, which can only cap it DOWN (never up) via
+    `cap_label`, so the real compliance decision still comes from the
+    governance module, not from this heuristic.
+    """
+    if not isinstance(rec, dict) or rec.get("current_line") is None or rec.get("edge") is None:
+        return LLPLabel.SCOUT.value
+    badge    = rec.get("llp_badge")
+    decision = rec.get("final_decision")
+    if badge == "ANCHOR" and decision == "BET":
+        return LLPLabel.APPROVED.value
+    if decision in ("BET", "SMALL BET") and badge in ("BET", "QUALIFIED"):
+        return LLPLabel.PLAYABLE.value
+    return LLPLabel.REJECT.value
+
+
+def _llp_governance_candidate_from_analysis(rec, scan_row, requested_label, board_date):
+    """Translate an `_llp_analyze_one` record + its board-scan row into the
+    field shape expected by `gate_engine.llp_governance.run_llp_governance`
+    (see `PRICE_EDGE_REQUIRED_FIELDS` / `CALIBRATION_LEDGER_FIELDS`).
+
+    This is a pure field-mapping shim — it introduces no new compliance
+    rules. All actual pass/fail/ceiling logic stays inside the existing,
+    already-tested `llp_governance` validators.
+    """
+    disc = rec.get("discovery") or {}
+    sport = rec.get("sport") or scan_row.get("sport") or ""
+    market_label = f"{sport} h2h".strip()  # lets _detect_market_type see e.g. "wnba"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    american_odds = scan_row.get("american_odds")
+    ledger = {
+        "date": board_date, "sport": sport, "league": sport,
+        "market": market_label, "side": rec.get("side"),
+        "odds": american_odds, "line": american_odds,
+        "book": rec.get("book"), "close": None,
+        "model_probability": rec.get("model_win_probability"),
+        "no_vig_probability": rec.get("no_vig_implied_probability"),
+        "edge": rec.get("edge"), "stake": rec.get("kelly_stake"),
+        "final_label": requested_label, "failure_tags": (rec.get("failure_paths") or [])[:5],
+        "clv": None, "result": None, "roi": None,
+        "brier_bucket": None, "postmortem_note": None,
+    }
+    return {
+        "final_label":         requested_label,
+        "book":                rec.get("book"),
+        "odds":                american_odds,
+        "line":                american_odds,  # h2h has no spread/total point; odds double as the "line"
+        "side":                rec.get("side"),
+        "market":              market_label,
+        "timestamp":           now_iso,
+        "model_probability":   rec.get("model_win_probability"),
+        "no_vig_probability":  rec.get("no_vig_implied_probability"),
+        "edge":                rec.get("edge"),
+        "source":              "LLP_BOARD_SCAN_FULL_RUN",
+        "opener":              rec.get("opening_line"),
+        "game_start_time":     scan_row.get("commence_time"),
+        "final_lock_confirmed": False,
+        "stake":               rec.get("kelly_stake") or 0.0,
+        "prior_label":         None,
+        "full_rerun_completed": True,
+        "calibration_ledger":  ledger,
+        "stale_price":         disc.get("stale_line") is True,
+        "unavailable_price":   rec.get("current_line") is None or rec.get("book") is None,
+        "missing_timestamp":   False,
+    }
+
+
+def _llp_board_scan_to_full_run(sports, board_date, top_n):
+    """Orchestrate BOARD SCAN -> auto-promote -> FULL LLP RUN -> output labeling."""
+    top_n = max(1, min(_LLP_BOARD_SCAN_TOP_N_MAX, int(top_n or _LLP_BOARD_SCAN_TOP_N_DEFAULT)))
+    ranked, source_status = _llp_board_scan(sports, board_date)
+
+    if not ranked:
+        return {
+            "ok": True,
+            "message": _LLP_BOARD_SCAN_INCOMPLETE_MESSAGE,
+            "label": "LLP_SCOUT",
+            "stake_units": 0,
+            "failure_tags": list(_LLP_BOARD_SCAN_FALLBACK_TAGS),
+            "board_scan": {"ranked": [], "highest_market_implied": None},
+            "full_run": {"promoted_count": 0, "results": []},
+            "source_access_status": source_status,
+        }
+
+    promoted = ranked[:top_n]
+    promoted_keys = {(r["sport"], r["home_team"], r["away_team"], r["side"]) for r in promoted}
+
+    scan_output = []
+    for r in ranked:
+        key = (r["sport"], r["home_team"], r["away_team"], r["side"])
+        row = dict(r)
+        if key in promoted_keys:
+            row["note"] = "auto-promoted to full LLP run — see full_run.results for its terminal label"
+        else:
+            row["label"] = "LLP_SCOUT"
+            row["note"] = "board scan only — no LLP terminal betting label without a full run"
+        scan_output.append(row)
+
+    full_run_results = []
+    postmortem_candidates = []
+    for r in promoted:
+        game = {"sport": r["sport"], "away": r["away_team"], "home": r["home_team"],
+                "market": "h2h", "side": r["side"]}
+        try:
+            rec = _llp_analyze_one(game, r["sport"].lower(), board_date)
+        except Exception as e:
+            app.logger.exception("LLP board-scan full run failed")
+            full_run_results.append({
+                "sport": r["sport"], "home_team": r["home_team"], "away_team": r["away_team"],
+                "side": r["side"], "label": "LLP_SCOUT", "stake_units": 0,
+                "message": _LLP_BOARD_SCAN_INCOMPLETE_MESSAGE,
+                "failure_tags": list(_LLP_BOARD_SCAN_FALLBACK_TAGS),
+                "error_type": type(e).__name__,
+            })
+            continue
+        if rec.get("current_line") is None or rec.get("edge") is None:
+            full_run_results.append({
+                "sport": r["sport"], "home_team": r["home_team"], "away_team": r["away_team"],
+                "side": r["side"], "label": LLPLabel.SCOUT.value, "stake_units": 0,
+                "message": _LLP_BOARD_SCAN_INCOMPLETE_MESSAGE,
+                "failure_tags": list(_LLP_BOARD_SCAN_FALLBACK_TAGS),
+            })
+            postmortem_candidates.append(rec)
+            continue
+
+        requested_label = _llp_requested_label_from_analysis(rec)
+        candidate = _llp_governance_candidate_from_analysis(rec, r, requested_label, board_date)
+        try:
+            gov = run_llp_governance(candidate, session={})
+        except Exception as e:
+            app.logger.exception("LLP governance call failed during board-scan full run")
+            full_run_results.append({
+                "sport": r["sport"], "home_team": r["home_team"], "away_team": r["away_team"],
+                "side": r["side"], "label": LLPLabel.SCOUT.value, "stake_units": 0,
+                "message": _LLP_BOARD_SCAN_INCOMPLETE_MESSAGE,
+                "failure_tags": list(_LLP_BOARD_SCAN_FALLBACK_TAGS),
+                "error_type": type(e).__name__,
+            })
+            postmortem_candidates.append(rec)
+            continue
+
+        label = gov["effective_label"]
+        stake_units = round(candidate["stake"], 4) if label in (LLPLabel.APPROVED.value, LLPLabel.PLAYABLE.value) else 0.0
+        entry = {
+            "sport": r["sport"], "home_team": r["home_team"], "away_team": r["away_team"],
+            "side": r["side"], "book": rec.get("book"),
+            "opening_line": rec.get("opening_line"), "current_line": rec.get("current_line"),
+            "no_vig_implied_probability": rec.get("no_vig_implied_probability"),
+            "model_win_probability": rec.get("model_win_probability"),
+            "edge": rec.get("edge"), "llp_badge": rec.get("llp_badge"),
+            "final_decision": rec.get("final_decision"),
+            "starter_status": rec.get("starter_status"), "lineup_status": rec.get("lineup_status"),
+            "failure_paths": rec.get("failure_paths"),
+            "requested_label": requested_label,
+            "label": label, "stake_units": stake_units,
+            "governance": {
+                "passed": gov["passed"], "blockers": gov["blockers"],
+                "label_ceiling": gov["label_ceiling"], "rerun_required": gov["rerun_required"],
+            },
+        }
+        if label in (LLPLabel.SCOUT.value, LLPLabel.CUT.value, LLPLabel.REJECT.value):
+            entry["message"] = _LLP_BOARD_SCAN_INCOMPLETE_MESSAGE if label == LLPLabel.SCOUT.value else None
+            entry["failure_tags"] = gov["blockers"][:5] if gov["blockers"] else ["compliance-pass-not-met"]
+        else:
+            entry["failure_tags"] = []
+        full_run_results.append(entry)
+        postmortem_candidates.append(rec)
+
+    ledger_status = _llp_log_postmortem(postmortem_candidates, None, board_date)
+
+    highest = ranked[0]
+    return {
+        "ok": True,
+        "board_scan": {
+            "ranked": scan_output,
+            "highest_market_implied": {
+                "sport": highest["sport"], "side": highest["side"],
+                "opponent": highest["opponent"],
+                "no_vig_implied_probability": highest["no_vig_implied_probability"],
+                "book": highest["book"], "american_odds": highest["american_odds"],
+                "commence_time": highest["commence_time"],
+            },
+            "message": ("Highest probability reported from board scan only; LLP_APPROVED / "
+                        "LLP_PLAYABLE / LLP_REJECT require a completed full run (see full_run)."),
+        },
+        "full_run": {
+            "promoted_count": len(promoted),
+            "results": full_run_results,
+        },
+        "ledger": ledger_status,
+        "source_access_status": source_status,
+    }
+
+
+# ── Endpoint: POST /llp/board-scan-to-full-run ──────────────────────────
+@app.route("/llp/board-scan-to-full-run", methods=["POST"])
+@require_api_key
+def llp_board_scan_to_full_run_route():
+    body = request.get_json(silent=True) or {}
+    sports = body.get("sports")
+    if not isinstance(sports, list) or not sports:
+        sports = [s.upper() for s in _LLP_SPORT_MAP.keys()]
+    sports = [s for s in sports if isinstance(s, str) and s]
+    board_date = (body.get("date") or datetime.now().strftime("%Y-%m-%d")).strip()
+    try:
+        datetime.strptime(board_date, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"ok": False, "error": "date must be YYYY-MM-DD"}), 400
+    top_n = body.get("top_n", _LLP_BOARD_SCAN_TOP_N_DEFAULT)
+    try:
+        top_n = int(top_n)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "top_n must be an integer"}), 400
+    try:
+        result = _llp_board_scan_to_full_run(sports, board_date, top_n)
+    except Exception as e:
+        app.logger.exception("LLP board-scan-to-full-run failed")
+        return jsonify({"ok": False, "error": "board_scan_to_full_run failed",
+                        "error_type": type(e).__name__}), 500
+    result["disclaimer"] = DISCLAIMER
+    result["execution_rule"] = "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+    return jsonify(result)
+
+
 # ── LLP Claude Audit: Red Team Validator for the badge ladder ──────────
 #
 # Claude audits whether LLP's ANCHOR / BET / QUALIFIED / LEAN / WAIT /

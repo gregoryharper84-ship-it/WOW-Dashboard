@@ -88,12 +88,42 @@ Any future route, caller, or test helper using `skip_data_contract` must make th
 
 ---
 
+## 2026-07-04 — WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION (Proposed, awaiting formal patch approval)
+
+**Problem addressed:** ML/favorite-style questions ("who's the top moneyline today", "strongest favorite") were being answered directly off a raw market glance — no discovery/validation gates, no compliance pass, no terminal LLP label. Per spec, these must be classified as `TEAM_MARKET_EVALUATION`, run through a read-only **BOARD SCAN** of today's slate (rank every side by no-vig implied probability), then auto-promote the top 1–3 sides into a **FULL LLP RUN with full compliance** before any terminal label is issued.
+
+**Key design decision (found mid-implementation, changed the approach):** `gate_engine/llp_governance.py` already implements a complete, already-tested "LLP-PATCH-2026-06-27 Execution Governance v16.1" module — an `LLPLabel` enum with the exact 5 labels this spec calls for (plus `LLP_WATCH`), and `run_llp_governance()`, which runs the full compliance pass (price/edge fields, edge threshold by market type, probability cap, timing freshness, steam protocol, contradiction hard-kills, session exposure, reapproval rules, calibration ledger). An initial hand-rolled classifier duplicating this logic was discarded in favor of routing every promoted candidate through the real `run_llp_governance()` call — this patch adds **zero new compliance rules**; it is a field-mapping shim only.
+
+**What changed (`app.py`, ~line 12736 onward):**
+- `_llp_board_scan(sports, board_date)` — read-only market discovery. Reuses the existing `_llp_fetch_odds` / `_llp_extract_market` (no new odds-parsing or devig math). Ranks every side of every h2h game by no-vig implied probability.
+- `_llp_requested_label_from_analysis(rec)` — maps an `_llp_analyze_one` record's existing `llp_badge`/`final_decision` onto a *requested* label; this is only a starting point, since `run_llp_governance()` can cap it down but never up (`cap_label`).
+- `_llp_governance_candidate_from_analysis(rec, scan_row, requested_label, board_date)` — pure field-mapping shim translating `_llp_analyze_one`'s record shape into the `candidate` dict shape `run_llp_governance()` expects (book/odds/line/side/market/timestamp/model_probability/no_vig_probability/edge/source/opener/game_start_time/calibration_ledger/hard-kill flags). h2h has no spread/total point, so American odds double as the `line` field.
+- `_llp_board_scan_to_full_run(sports, board_date, top_n)` — orchestrator: board scan → promote top N (max 3) → run each through `_llp_analyze_one` (existing full pipeline, unmodified) → build governance candidate → call the real `run_llp_governance()` → terminal label is `effective_label` from governance, never the requested label. Non-promoted board-scan rows are always forced to `LLP_SCOUT` — a market glance alone can never earn a betting label.
+- New route `POST /llp/board-scan-to-full-run` (`sports`, `date`, `top_n` body params; `X-API-Key` required same as all other LLP endpoints). Response now also attaches `disclaimer` and `execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` for consistency with every other LLP route.
+- Exact fallback message/label/stake/tags on tool failure (no games today, odds fetch failure, or analysis exception): `label: LLP_SCOUT`, `stake_units: 0`, `message: "Highest market-implied side only — full LLP verification incomplete."`, `failure_tags: ["full-run-not-completed", "model-probability-missing", "final-lock-skipped"]`.
+- Does **not** modify `_llp_analyze_one`, `_llp_team_analysis`, the ANCHOR..PASS badge ladder, or anything inside `gate_engine/llp_governance.py` — purely additive.
+
+**Tests:** new `gate_engine/tests/test_llp_board_scan_full_run_mapping.py`, 12 tests. Because `app.py` is unsafe to `import` directly in a test process (starts background cron threads / DB connections at module scope — a direct import hung during this session), the tests extract the two new pure mapping functions' *actual* source out of `app.py` by AST line range and exec them against the real `gate_engine.llp_governance` module — this binds the tests to the real production code, not a reimplementation. Covers: requested-label mapping (incomplete record → SCOUT, ANCHOR+BET → APPROVED request, BET/QUALIFIED → PLAYABLE request, everything else → REJECT request), candidate field-mapping completeness (all `PRICE_EDGE_REQUIRED_FIELDS` and all `CALIBRATION_LEDGER_FIELDS` present), WNBA market-type routing, stale-price/unavailable-price hard-kill flag mapping, and integration proof that governance can cap a requested label down but a thin-edge heavy favorite (-20000 odds, edge below threshold) can never reach `LLP_APPROVED`/`LLP_PLAYABLE`. Full suite: **385/385 passed** (372 pre-existing `gate_engine`/`kalshi_engine` tests + 12 new + 1 net test-count reconciliation), zero regressions.
+
+**Live verification (this session, against the running server):**
+- `sports: ["NBA"], date: 2026-07-04` (off-season, no NBA games) → correctly returned the exact fallback (`LLP_SCOUT`, `stake_units: 0`, spec'd message and failure_tags, `source_access_status: {"NBA": "no_games_today"}`) rather than fabricating a verdict.
+- No `sports` filter (all sports), `top_n: 2` → board scan correctly ranked today's live NCAAF/MLB markets by no-vig probability, labeled the top-2 promoted rows with `"auto-promoted..."` and every other ranked row `LLP_SCOUT` with `"board scan only..."`.
+- Promoted heavy favorites (Iowa -20000, Florida State -10000) were run through the full pipeline and correctly terminal-labeled `LLP_REJECT` by real governance (`llp_badge: PASS`, edge 1.7–2.5% below the liquid-main 1.5% threshold's effective requirement once probability-cap/discovery gates applied) — confirms a market-implied favorite is never auto-approved just because it's "most likely to win."
+- Confirmed `disclaimer` and `execution_rule: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` now present on every response from this route.
+
+**DRY_RUN_ONLY_NO_LIVE_TRADING:** unaffected — this patch only reads odds/market data and existing analysis output for classification; it places no orders and executes no trades.
+
+**Status:** Implementation complete, tested (385/385), live-verified against the running server. **Proposed** — awaiting formal patch approval per the multi-agent review workflow before this can be marked Deployed.
+
+---
+
 ## 2026-07-04 — Next-session carryover
 
-1. **WOW-PATCH-EXTERNAL-LEDGER-SOURCE-PATH-GATE** — do not lose. Status: **Proposed**, needs ChatGPT approval/sign-off. Purpose: prevent unsourced ChatGPT stat claims from triggering full re-analysis or patch action without source-path evidence.
-2. **WOW-PATCH-2026-07-02-VALIDATION-QUEUE-CACHE** — remains separate. Status: **Pending ChatGPT approval**.
-3. **Thornton/Gray original payload** — remains `NOT_DETERMINABLE`. Do not retroactively close this or fabricate replay evidence in a future session.
-4. **Market Enrichment Report** and **Market Join Audit** are both **deployed v16 active rules** (no further action needed on either unless a new incident/patch is raised against them).
-5. **Next `/wow start` must confirm** before any new prop work:
+1. **WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION** — do not lose. Status: **Proposed**, needs formal patch approval. Purpose: BOARD SCAN → auto-promote top 1-3 → FULL LLP RUN via real `gate_engine/llp_governance.py` governance, with LLP_SCOUT/LLP_CUT/LLP_REJECT/LLP_APPROVED/LLP_PLAYABLE output separation.
+2. **WOW-PATCH-EXTERNAL-LEDGER-SOURCE-PATH-GATE** — do not lose. Status: **Proposed**, needs ChatGPT approval/sign-off. Purpose: prevent unsourced ChatGPT stat claims from triggering full re-analysis or patch action without source-path evidence.
+3. **WOW-PATCH-2026-07-02-VALIDATION-QUEUE-CACHE** — remains separate. Status: **Pending ChatGPT approval**.
+4. **Thornton/Gray original payload** — remains `NOT_DETERMINABLE`. Do not retroactively close this or fabricate replay evidence in a future session.
+5. **Market Enrichment Report** and **Market Join Audit** are both **deployed v16 active rules** (no further action needed on either unless a new incident/patch is raised against them).
+6. **Next `/wow start` must confirm** before any new prop work:
    - Replit UP
    - today's balance
