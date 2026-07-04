@@ -1,0 +1,53 @@
+Agreed. This is the clean final disposition:
+
+WOW-PATCH-2026-07-04-MARKET-JOIN-AUDIT
+STATUS: DEPLOYED — v16 ACTIVE RULE
+Code/test acceptance: PASSED
+Thornton/Gray replay acceptance: NOT_DETERMINABLE
+Gate logic change: NONE
+market_gate.py modified: NO
+classifier.py modified: NO
+Incident root cause: upstream market enrichment/join failure class confirmed
+Specific original payload cause: unresolved unless raw historical request logs surface
+
+Key distinction:
+
+The tool is verified.
+The historical Thornton/Gray replay is not verified.
+
+That is the correct no-fake-data outcome.
+
+For the WOW-SHARED-NOTES.md loose end, I’d use this rule:
+
+Search first. If WOW-SHARED-NOTES.md exists anywhere in the repo, append there.
+If it does not exist, create it at repo root as /WOW-SHARED-NOTES.md.
+
+Useful Replit commands:
+
+find . -iname "WOW-SHARED-NOTES.md" -o -iname "*SHARED*NOTES*"
+
+If nothing returns:
+
+touch WOW-SHARED-NOTES.md
+
+Suggested note to append:
+
+2026-07-04 — skip_data_contract Routing Note
+
+Context: During review of WOW-PATCH-2026-07-04-MARKET-JOIN-AUDIT, the market-join audit patch was approved and deployed as additive observability. It does not modify market_gate.py, classifier.py, terminal labels, approval thresholds, EV logic, or gate pass/fail behavior.
+
+Important routing note:
+
+skip_data_contract must not be used to bypass required validation in production scoring paths. It may only be used for controlled tests, diagnostics, or explicitly isolated internal tooling where the test objective requires bypassing the data-contract gate.
+
+Production /gate-engine/run behavior should continue to enforce the data-contract gate before downstream market, projection, EV, and classifier logic.
+
+Any future route, caller, or test helper using skip_data_contract must make the bypass explicit in the request/test name and must not be confused with a production-valid approval path.
+
+Status: Shared note logged for future dashboard/gate-engine work.
+
+Final status language I’d carry forward:
+
+Market Join Audit: deployed and active.
+Thornton/Gray historical replay: not determinable from available logs.
+Future similar incidents: use market_join_audit fields to classify source_called, join status, missing fields, and rejection reason without reconstructing fake payloads.
