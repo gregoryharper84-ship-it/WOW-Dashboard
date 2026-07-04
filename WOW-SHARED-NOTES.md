@@ -141,9 +141,11 @@ Any future route, caller, or test helper using `skip_data_contract` must make th
 
 **DRY_RUN_ONLY_NO_LIVE_TRADING:** unaffected — this is a persona-instruction rewrite for an external reasoning agent, not a code change to the Flask engine; no orders, no trades.
 
-**Status:** Staged — approved for implementation, pending Greg/backend source confirmation before Step 6 (deploy to Custom GPT config). Backend confirmation completed in this session (see above); still holding on deploy per explicit instruction until the user does a final eyeball pass against the live source.
+**Follow-up (same day):** Greg (ChatGPT leg) clarified that the backend confirmation he received for Step 4 was the Command Center instructions doc (a different, unrelated patch target — see entry below), not the actual `gate_engine/llp_governance.py` source. That does NOT satisfy Step 4 for this patch. Replit-side confirmation in this session (against the real file) stands as valid on the Replit/Claude leg. Literal source excerpt (lines 27–108 of `gate_engine/llp_governance.py`) was then provided to the user in-chat for relay to Greg.
 
-**Follow-up (same day):** Greg (ChatGPT leg) clarified that the backend confirmation he received for Step 4 was the Command Center instructions doc (a different, unrelated patch target — see entry below), not the actual `gate_engine/llp_governance.py` source. That does NOT satisfy Step 4 for this patch. Replit-side confirmation in this session (against the real file) stands as valid on the Replit/Claude leg, but Greg's own sign-off is still open pending the literal source excerpt — provided to the user this session for pasting into the ChatGPT thread (see "LLP GPT Step-4 source excerpt" below). Step 6 deploy remains held until Greg confirms against that excerpt AND the user does the final eyeball pass.
+**Final sign-off (same day):** User replied "Approved" to close Step 6. Treating this as the final eyeball pass the deploy was being held for.
+
+**Status: Deployed** (content-approved). The instructions text in `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md` is now the approved, final version — no further edits pending. Note the literal act of pasting this block into the Custom GPT builder UI is a manual step outside this repo/session; Replit/Claude has no access to that config surface. If it hasn't been pasted into the live Custom GPT yet, that paste is the only remaining action.
 
 ---
 
@@ -170,7 +172,7 @@ Greg needs the literal `gate_engine/llp_governance.py` source (not the instructi
 
 ## 2026-07-04 — Next-session carryover
 
-1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — do not lose. Status: **Staged**, Replit-side backend-confirmed this session; Greg's Step-4 sign-off still open (he was given the wrong doc, not the actual source) — real source excerpt now provided, awaiting his confirmation. Still holding Step 6 deploy pending final user sign-off. Instructions text lives in `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md`.
+1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — Status: **Deployed** (content-approved by user, "Approved" received this session). Instructions text lives in `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md` — that is now the final version. Remaining action, if not already done: paste that block into the live Custom GPT builder UI (manual, outside this repo/session — Replit/Claude cannot do this step).
 2. **WOW Command Center "Conditional" retirement / LABEL TAXONOMY cleanup** — reported Deployed by Greg; confirm with the user that the live external Command Center config was actually updated, since this repo has no copy of that doc to verify against.
 3. **WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION** — do not lose. Status: **Proposed**, needs formal patch approval. Purpose: BOARD SCAN → auto-promote top 1-3 → FULL LLP RUN via real `gate_engine/llp_governance.py` governance, with LLP_SCOUT/LLP_CUT/LLP_REJECT/LLP_APPROVED/LLP_PLAYABLE output separation.
 4. **WOW-PATCH-EXTERNAL-LEDGER-SOURCE-PATH-GATE** — do not lose. Status: **Proposed**, needs ChatGPT approval/sign-off. Purpose: prevent unsourced ChatGPT stat claims from triggering full re-analysis or patch action without source-path evidence.
