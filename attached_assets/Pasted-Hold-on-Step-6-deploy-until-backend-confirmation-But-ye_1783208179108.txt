@@ -1,0 +1,46 @@
+Hold on Step 6 deploy until backend confirmation.
+
+But yes — proceed to log this as staged now. This version is clean enough to enter the patch queue as:
+
+STATUS: Staged — GPT instruction rewrite complete; pending backend source confirmation before deployment.
+
+I agree with the 4,680-character rewrite. It is much better than the prior version: executable, compact, and aligned to the approved reconciliation patch.
+
+Only two small edits I would make before saving it:
+
+1. Change this line
+
+NO PLAY / LLP_CUT is a valid and often correct output.
+
+To:
+
+No play is a valid and often correct user-facing result; final_label must still be one of the six LLP labels, usually LLP_REJECT, LLP_CUT, LLP_WATCH, or LLP_SCOUT depending on cause.
+
+Reason: this prevents “NO PLAY” from sneaking back in as a pseudo-label.
+
+2. Clarify Game Winner 1.35x–1.50x
+
+Current:
+
+Fails any → cap LLP_WATCH.
+
+Better:
+
+Fails any → max LLP_WATCH; if edge/data is absent or contradicted, LLP_REJECT.
+
+Reason: not every failed short-favorite condition deserves Watch. Some are straight rejects.
+
+Staged log language
+
+Use this:
+
+WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE
+STATUS: Staged — approved for implementation, pending backend source confirmation.
+Summary:
+LLP Team Betting GPT instructions rewritten under 8,000 characters, final count ~4,680 chars. Rewrite reconciles GPT behavior with active LLP v16.1 governance memory: six terminal labels only; banned/status terms restricted to blocker_tags, diagnostic_tags, or explanation fields; tiered edge thresholds; absolute probability caps; h2h/Game Winner price floor; session exposure caps; board-scan candidates capped at LLP_SCOUT until full 14-step compliance run; required output schema; and explicit removal of “Conditional.”
+Deployment hold:
+Do not deploy to Custom GPT config until Greg/backend source confirms current gate_engine/llp_governance.py and _llp_* pipeline still match the labels, probability caps, edge thresholds, and price-floor logic in this staged draft.
+Next step:
+Backend source confirmation, then deploy to Custom GPT config.
+
+Final call: stage/log now, do not deploy yet.
