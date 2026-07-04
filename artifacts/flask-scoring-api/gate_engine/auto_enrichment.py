@@ -114,6 +114,18 @@ def build_auto_enrichment(
     enrichment: dict[str, dict[str, Any]] = {
         k: dict(v) for k, v in base_enrichment.items() if isinstance(v, dict)
     }
+    # Keys the CALLER already populated, captured before this function
+    # writes anything. Used to decide whether a row's data belongs at its
+    # row_id or at the legacy player:prop key — see write-key priority below.
+    _caller_supplied_keys = set(enrichment.keys())
+    # Keys already claimed by an earlier row in *this* batch (no caller data
+    # involved). Lets a single, unique player+prop pair keep using the
+    # simple player:prop key (matches every existing caller/test that never
+    # supplies row_id), while a SECOND row sharing the same player+prop
+    # (different game, doubleheader, duplicate paste) is forced onto its own
+    # row_id instead of silently overwriting/merging into the first row's
+    # entry.
+    _claimed_keys_this_batch: set[str] = set()
 
     sports = sorted({(r.get("sport") or "").upper() for r in rows if r.get("sport")})
 
@@ -156,9 +168,28 @@ def build_auto_enrichment(
 
         rid = row.get("row_id", "")
         key = f"{player.lower()}:{prop_type.lower()}"
-        # Preserve whichever key the caller already used, matching
-        # pipeline._get_enrichment's lookup order (row_id, then key).
-        write_key = rid if rid and rid in enrichment else key
+
+        # Write-key priority (matches pipeline._get_enrichment's read order:
+        # it checks enrichment[row_id] before enrichment[player:prop]):
+        #   1. Caller already has data at this row's row_id           -> rid
+        #   2. Caller already has data at the player:prop key         -> key
+        #   3. First row this batch to use this player:prop pair      -> key
+        #      (back-compat: single-row-per-player-prop boards, and every
+        #      existing caller/test that never supplies row_id, keep
+        #      resolving to the simple player:prop key exactly as before)
+        #   4. A LATER row in this batch reusing the same player:prop -> rid
+        #      (duplicate player+prop rows — different games, doubleheaders,
+        #      duplicate paste — must not collide into one shared entry)
+        if rid and rid in _caller_supplied_keys:
+            write_key = rid
+        elif key in _caller_supplied_keys:
+            write_key = key
+        elif key not in _claimed_keys_this_batch:
+            write_key = key
+            _claimed_keys_this_batch.add(key)
+        else:
+            write_key = rid or key
+
         entry = dict(enrichment.get(write_key) or {})
 
         # --- Market lines ---

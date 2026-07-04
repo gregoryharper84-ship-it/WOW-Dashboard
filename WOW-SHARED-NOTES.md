@@ -62,7 +62,29 @@ Any future route, caller, or test helper using `skip_data_contract` must make th
 
 **DRY_RUN_ONLY_NO_LIVE_TRADING:** unaffected — this patch only reads market/status data for classification, it places no orders and executes no trades.
 
-**Status:** Proposed. Diff is in the working tree (not yet a formal git commit record beyond the environment's own checkpointing) — ready for ChatGPT/wow-pr-checker review and formal approval before being marked Deployed.
+**Status:** Superseded by the follow-up entry below (reviewer found a real bug during CONDITIONAL PASS review; fixed and retested in this session). Still **Proposed** overall — not Deployed.
+
+---
+
+## 2026-07-04 — WOW-PATCH-2026-07-04-PREGATE-AUTO-ENRICHMENT — reviewer CONDITIONAL PASS fixes
+
+**Reviewer finding (confirmed real, not a false positive):** `app.py`'s `/gate-engine/run` auto-enrich pre-pass called `board_intake.normalize_board(raw_rows)` to generate row_ids for the enrichment write-keys, but `run_pipeline()` (`pipeline.py`) internally calls `normalize_board(raw_rows)` again on the *original* `raw_rows`. Since `normalize_row` mints a fresh random `uuid4` row_id whenever the caller didn't supply one, the two passes produced **different row_ids** — so any enrichment written keyed strictly by row_id could never be found by the pipeline's row_id lookup. It was only appearing to work via an accidental fallback to the `player:prop` key.
+
+**Fixes applied:**
+1. `app.py` (`/gate-engine/run`, auto_enrich block): after the pre-pass `normalize_board()` call, the route now mutates `raw_rows` in place — copying each generated `row_id` back onto the matching raw row via `zip()` — so when `run_pipeline()` re-normalizes internally, `normalize_row` sees the row_id already present and reuses it instead of minting a new one. Row_id is now identical across both normalization passes.
+2. `gate_engine/auto_enrichment.py` write-key logic: added explicit priority so a single call can safely mix caller-supplied and auto-fetched data without the same `player:prop` key silently overwriting a different row's line: (1) if caller's `base_enrichment` already has data at this row's row_id → write there; (2) else if caller's `base_enrichment` already has data at the `player:prop` key → write there; (3) else if this is the first row this batch to want that `player:prop` key → use the key (preserves 100% of prior single-row-per-player-prop behavior); (4) else (a *second* row in the same batch wants the same already-claimed key, e.g. a doubleheader) → fall back to that row's own row_id, so the two rows' enrichment can never cross-contaminate.
+
+**New tests** (`gate_engine/tests/test_auto_enrichment.py`):
+- `test_duplicate_player_prop_rows_do_not_collide` — two rows, same player+prop (doubleheader shape); asserts each resolves (via the same rid-then-key lookup pipeline uses) to its own correct, non-shared entry.
+- `test_row_key_end_to_end_attachment_through_pipeline` — reproduces the *exact* `app.py` route flow end-to-end (normalize → carry row_id back onto raw_rows → `build_auto_enrichment` → `run_pipeline`), then asserts: (a) `run_pipeline`'s own internal re-normalization produced the identical row_id as the pre-pass (no desync), and (b) the auto-fetched market line is actually visible inside `result["prop_ledger"][0]["gates"]["market_gate"]["sportsbook_line"]` — proving real attachment through the full production call path, not just that `build_auto_enrichment()` returned a populated dict nobody consumed.
+
+**Test results:** All 12 pre-existing `test_auto_enrichment.py` tests still pass unchanged after the write-key fix (zero regressions to existing behavior/back-compat). Both new tests pass. Full `gate_engine/tests/` suite: **360/360 passed** (up from 357 — the 3 new tests referenced above net of one dropped/merged assertion during iteration).
+
+**Live verification (this session, against the running server, `auto_enrich: true`):** `row_id` (`row_0_f6f57f`) appears identical across `prop_ledger[0].row_id`, `data_status_ledger[0].row_id`, `exposure_report.registered_rows[0].row_id`, `terminal_labels[0].row_id`, AND critically as `gates.market_join_audit.odds_join_key` — confirming the pipeline's internal re-normalization reused the exact row_id the auto-enrichment pre-pass generated, end to end, on a live request (not just in a unit test). `market_join_status: NO_MARKET_FOUND` on this call is an honest result (no live NBA odds exist for the 2026-07-04 off-season test date) — not a symptom of the bug.
+
+**DRY_RUN_ONLY_NO_LIVE_TRADING:** unaffected — still read-only market/status enrichment, no order placement.
+
+**Status:** Fixes complete and tested; service-interface snippets requested by reviewer (`board_intake` row_id generation, `odds_api.SPORT_KEYS`, `status_service.SPORT_ESPN`/`get_injuries`/`get_player_injury_flag`) being sent in the same review reply. Still **Proposed** — awaiting reviewer's final sign-off before this can be marked Deployed.
 
 ---
 

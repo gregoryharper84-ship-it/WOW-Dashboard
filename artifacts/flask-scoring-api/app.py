@@ -14963,6 +14963,16 @@ def gate_engine_run():
     if auto_enrich:
         try:
             normalized_rows = _ge_board_intake.normalize_board(raw_rows)
+            # CRITICAL: run_pipeline() below calls board_intake.normalize_board()
+            # again internally. normalize_row() generates a random row_id
+            # (uuid4) whenever the caller didn't supply one — a second call
+            # would mint a DIFFERENT row_id than the one used here, silently
+            # breaking the row_id join between this enrichment dict and the
+            # pipeline's own rows. Carry the row_id generated in this pass
+            # back onto raw_rows so the pipeline's normalize_board() call
+            # reuses the identical id instead of generating a new one.
+            for _raw_row, _normalized_row in zip(raw_rows, normalized_rows):
+                _raw_row["row_id"] = _normalized_row["row_id"]
             enrichment, auto_enrichment_status = _ge_auto_enrichment.build_auto_enrichment(
                 normalized_rows, base_enrichment=enrichment,
             )

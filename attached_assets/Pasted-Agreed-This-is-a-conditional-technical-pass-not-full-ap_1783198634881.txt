@@ -1,0 +1,70 @@
+Agreed. This is a conditional technical pass, not full approval.
+
+Keep the status exactly here:
+
+WOW-PATCH-2026-07-04-PREGATE-AUTO-ENRICHMENT
+STATUS: v16 TEST CANDIDATE
+RESULT: CONDITIONAL PASS
+USE: Scouting/debug only
+FULL APPROVAL: BLOCKED pending row_id determinism + service interface confirmation
+
+The two blockers you identified are the right ones. The important one is row-key desync because it can silently make the whole patch useless while still passing tests.
+
+Required next ask to Replit/Claude
+
+For WOW-PATCH-2026-07-04-PREGATE-AUTO-ENRICHMENT, the diff has passed conditional review, but two approval blockers remain before this can move from v16 TEST CANDIDATE to active rule.
+
+Please provide:
+
+1. board_intake.py row ID generation logic:
+    * show how row_id is assigned
+    * confirm whether it is deterministic for identical raw input
+    * confirm whether duplicate rows receive stable IDs
+2. /gate-engine/run normalization flow:
+    * show whether raw_rows are normalized once or multiple times
+    * show the exact rows object passed into run_pipeline
+    * confirm build_auto_enrichment() uses the same row IDs that pipeline._get_enrichment() later reads
+3. Relevant service interface snippets:
+    * odds_api.SPORT_KEYS
+    * status_service.SPORT_ESPN
+    * get_injuries(...)
+    * get_player_injury_flag(...)
+4. Add or show an end-to-end test proving:
+    * auto_enrich=true builds enrichment
+    * the enriched field attaches to the same row consumed by run_pipeline
+    * pipeline._get_enrichment can retrieve it by the expected row key
+    * no silent no-op occurs from row ID mismatch
+
+Until those are shown, patch status remains:
+
+v16 TEST CANDIDATE / CONDITIONAL PASS / BLOCKED_PENDING_ROW_KEY_AND_INTERFACE_CONFIRMATION
+
+Extra test I would require
+
+They should add a production-shape test like this:
+
+Given raw_rows
+When /gate-engine/run normalizes rows
+And auto_enrich=true builds enrichment
+Then the enrichment key must match the row_id consumed by run_pipeline
+And the enriched field must be visible inside the pipeline gate result
+
+Not just:
+
+normalize_row once → build_auto_enrichment works
+
+That unit test is useful, but it does not prove route-level attachment.
+
+Approval line
+
+Once they provide those snippets and the end-to-end row-key test passes, I would be comfortable moving this to:
+
+Recommendation: APPROVE AS v16 ACTIVE SUPPORT MODULE
+Scope: pre-gate enrichment only
+Playable impact: none by itself
+Final approval impact: cannot promote without downstream gates
+
+Until then, the correct operational stance is:
+
+auto_enrich=true may help populate missing artifacts,
+but it cannot be trusted as an approval input until row-key attachment is proven end-to-end.

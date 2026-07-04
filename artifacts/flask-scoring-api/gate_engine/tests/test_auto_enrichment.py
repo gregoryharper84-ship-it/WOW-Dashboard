@@ -214,6 +214,135 @@ def test_preserves_row_id_key_when_caller_used_it(monkeypatch):
     assert "lebron james:points" not in enrichment
 
 
+def test_duplicate_player_prop_rows_do_not_collide(monkeypatch):
+    """
+    Two rows for the SAME player + prop_type (e.g. a doubleheader, or two
+    separate board entries) must each keep their own enrichment — not merge
+    into one shared player:prop entry. Distinguished only by row_id.
+    """
+    _patch_odds(monkeypatch, [
+        {"player": "LeBron James", "prop": "player_points", "side": "MORE",
+         "line": 26.5, "bookmaker": "draftkings", "price": -110},
+    ])
+    _patch_injuries(monkeypatch, {
+        "lebron james": {"flag": 1, "status_raw": "questionable"},
+    })
+
+    row_a = _row(row_id="row_0_aaa000")
+    row_b = _row(row_id="row_1_bbb111")
+
+    enrichment, _ = auto_enrichment.build_auto_enrichment([row_a, row_b])
+
+    # First row in the batch resolves to the simple "player:prop" key
+    # (back-compat with single-row-per-player-prop boards). The SECOND row
+    # sharing that same player+prop must NOT merge into it — it gets its
+    # own entry at its own row_id instead.
+    assert enrichment["lebron james:points"]["sportsbook_line"] == 26.5
+    assert enrichment["row_1_bbb111"]["sportsbook_line"] == 26.5
+    assert "row_0_aaa000" not in enrichment
+    assert enrichment["lebron james:points"] is not enrichment["row_1_bbb111"]
+
+    # Simulate exactly how pipeline._get_enrichment() reads each row: check
+    # row_id first, fall back to player:prop key. Both rows resolve to a
+    # DISTINCT, correctly-populated entry — no cross-contamination.
+    def _resolve(row):
+        rid = row["row_id"]
+        key = f"{row['player'].lower()}:{row['prop_type'].lower()}"
+        return enrichment.get(rid) or enrichment.get(key) or {}
+
+    resolved_a = _resolve(row_a)
+    resolved_b = _resolve(row_b)
+    assert resolved_a["sportsbook_line"] == 26.5
+    assert resolved_b["sportsbook_line"] == 26.5
+    assert resolved_a is not resolved_b
+
+
+def test_row_key_end_to_end_attachment_through_pipeline(monkeypatch):
+    """
+    Production-shape end-to-end test proving the ACTUAL /gate-engine/run
+    route flow — not just build_auto_enrichment() in isolation:
+
+      Given raw_rows (as received from the HTTP request body, no row_id
+        supplied by the caller — the common case)
+      When the route normalizes rows once, carries the generated row_id
+        back onto raw_rows (the fix for the row_id-desync bug), and
+        build_auto_enrichment() attaches enrichment keyed by that row_id
+      And run_pipeline() is then called with the SAME raw_rows (which now
+        carry the row_id) and the resulting enrichment dict
+      Then pipeline._get_enrichment() must retrieve the auto-fetched entry
+        by the expected row_id (not silently miss it)
+      And the auto-fetched market line must be visible inside the
+        pipeline's own gate result (market_gate's "sportsbook_line"),
+        proving real route-level attachment, not just a passing unit test.
+    """
+    from gate_engine import board_intake
+    from gate_engine.pipeline import run_pipeline
+
+    _patch_odds(monkeypatch, [
+        {"player": "LeBron James", "prop": "player_points", "side": "MORE",
+         "line": 26.5, "bookmaker": "draftkings", "price": -110},
+    ])
+    _patch_injuries(monkeypatch, {})
+
+    # Step 1: raw_rows exactly as they arrive in the HTTP body — no row_id.
+    # (Minimal canonical shape, matching the fixture used throughout
+    # test_pipeline.py — data-contract completeness is out of scope here,
+    # skip_data_contract=True below isolates this test to enrichment
+    # attachment only.)
+    raw_rows = [{
+        "player": "LeBron James", "sport": "NBA", "prop_type": "Points",
+        "line": 27.5, "direction": "MORE", "slate_date": "2026-07-04",
+        "board_source": "PrizePicks",
+    }]
+
+    # Step 2: replicate the exact app.py /gate-engine/run auto_enrich block.
+    normalized_rows = board_intake.normalize_board(raw_rows)
+    for raw_row, normalized_row in zip(raw_rows, normalized_rows):
+        raw_row["row_id"] = normalized_row["row_id"]
+
+    enrichment, _status = auto_enrichment.build_auto_enrichment(normalized_rows)
+
+    generated_row_id = normalized_rows[0]["row_id"]
+    assert generated_row_id.startswith("row_0_")
+    # For a single, first-occurrence player:prop pair with no pre-existing
+    # caller enrichment, build_auto_enrichment resolves to the simple
+    # "player:prop" key (back-compat with every existing caller that never
+    # supplies row_id). The critical property under test is NOT which key
+    # it lands on — it's that pipeline._get_enrichment(), which checks
+    # row_id first and falls back to player:prop, can actually retrieve it.
+    # A row_id-desync bug (two different normalize_board() calls minting
+    # two different uuids) would still pass this specific lookup by luck
+    # via the key fallback — the desync is proven separately below by
+    # comparing generated_row_id against the pipeline's own row_id.
+    resolved = enrichment.get(generated_row_id) or enrichment.get("lebron james:points")
+    assert resolved is not None, "enrichment not retrievable by row_id or player:prop key"
+    assert resolved["sportsbook_line"] == 26.5
+
+    # Step 3: call run_pipeline exactly as the route does — with the
+    # now-row_id-carrying raw_rows and the auto-built enrichment.
+    result = run_pipeline(
+        raw_rows,
+        enrichment=enrichment,
+        skip_data_contract=True,
+    )
+
+    # Step 4: pipeline normalized raw_rows AGAIN internally (pipeline.py's
+    # own board_intake.normalize_board call) — prove it produced the SAME
+    # row_id as the pre-pass, i.e. no desync.
+    pipeline_row_id = result["prop_ledger"][0]["row_id"]
+    assert pipeline_row_id == generated_row_id, (
+        "row_id desync: pipeline's internal normalize_board() minted a "
+        "different row_id than the auto-enrichment pre-pass — enrichment "
+        "would silently fail to attach for callers who don't supply row_id."
+    )
+
+    # Step 5: the auto-fetched market line is visible inside the pipeline's
+    # own gate result for this row — proves real attachment, not just that
+    # build_auto_enrichment() returned a dict nobody consumed.
+    market_result = result["prop_ledger"][0]["gates"].get("market_gate", {})
+    assert market_result.get("sportsbook_line") == 26.5
+
+
 def test_multi_sport_batch_fetches_each_sport_once(monkeypatch):
     calls = []
 
