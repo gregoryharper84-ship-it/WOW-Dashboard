@@ -1,0 +1,60 @@
+You handled this correctly. The earlier diagnosis should be fully retracted as the cause of the approval-rate problem unless those affected rows were actually coming from /wow/daily-scan.
+
+The real current finding is narrower:
+
+Finding: MODEL_QUALIFIED_HOLD is produced by gate_engine, not jobs/wow_daily_scan.py.
+
+Current status: SOURCE_VERIFIED_BEHAVIOR / PAYLOAD_REQUIRED
+
+Do not patch yet. The gate behavior sounds correct: if all market fields are None, MODEL_QUALIFIED_HOLD is the intended ceiling. The unresolved issue is whether the caller failed to pass market enrichment.
+
+I’d send this back:
+
+Good correction. This changes the target completely.
+
+Please do not patch compute_wow_score() or jobs/wow_daily_scan.py for the MODEL_QUALIFIED_HOLD issue unless we confirm those rows came from /wow/daily-scan. The exact label MODEL_QUALIFIED_HOLD is produced by gate_engine, specifically through the market gate/classifier path.
+
+Current source-verified read:
+
+* /gate-engine/run is the relevant path.
+* MODEL_QUALIFIED_HOLD is applied when market fields are missing.
+* That is structurally correct under WOW v16: no market comparison means no approval.
+* The remaining question is upstream payload quality, not necessarily gate logic.
+
+Please export one flagged prop’s full /gate-engine/run request body, ideally Kayla Thornton or Allisha Gray, including:
+
+1. The exact rows[] object for the prop.
+2. The matching enrichment object.
+3. Any fields intended to populate:
+    * market_line
+    * sportsbook_line
+    * consensus_line
+    * best_available
+    * market_gap
+    * book
+    * odds
+    * timestamp
+    * game_log
+
+Decision rule:
+
+* If those fields are absent or None in the request body, this is not a gate_engine bug. It is an upstream market-enrichment/caller issue.
+* If those fields are present but market_gate.py still treats them as None, then it becomes a real Dashboard code bug in gate_engine, high blast radius, requiring before/after tier-distribution QA.
+* If market fields are present under different names, then the fix is a schema-mapping patch between the caller and /gate-engine/run.
+
+Until that payload is reviewed, label this:
+
+SOURCE_VERIFIED_BEHAVIOR — PAYLOAD_REQUIRED
+
+Not patch-ready yet.
+
+I’d also add one QA requirement before shipping anything:
+
+Add a market-enrichment coverage report to /gate-engine/run output:
+- total rows
+- rows with any market field populated
+- rows with all market fields missing
+- rows capped to MODEL_QUALIFIED_HOLD because of NO_MARKET_AVAILABLE
+- sample blocker list by prop
+
+That prevents this from happening again silently. It tells you whether the engine is rejecting because the market truly wasn’t fetched, or because the caller forgot to pass the market fields.

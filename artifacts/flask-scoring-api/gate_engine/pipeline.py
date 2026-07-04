@@ -248,6 +248,56 @@ def run_pipeline(
     return _build_output(rows, ledger, health_report, settlement_status)
 
 
+MARKET_NO_DATA_BLOCKER = "MARKET:NO_MARKET_AVAILABLE:MAX_LABEL=MODEL_QUALIFIED_HOLD"
+MARKET_ENRICHMENT_FIELDS = ("sportsbook_line", "best_available", "consensus_line")
+
+
+def _build_market_enrichment_report(rows: list[dict]) -> dict[str, Any]:
+    """
+    Diagnostic-only coverage report: tells us whether MODEL_QUALIFIED_HOLD
+    caps are coming from a genuinely absent market (upstream caller never
+    sent sportsbook_line/best_available/consensus_line) vs. some other
+    cause. Does not affect classification — read-only over gate results.
+    """
+    total_rows = len(rows)
+    rows_with_any_field = 0
+    rows_all_missing = 0
+    rows_capped_no_market = 0
+    blocker_samples_by_prop: dict[str, list[dict[str, Any]]] = {}
+
+    for row in rows:
+        mkt = row.get("gates", {}).get("market_gate")
+        if not mkt:
+            continue
+
+        has_field = any(mkt.get(k) is not None for k in MARKET_ENRICHMENT_FIELDS)
+        if has_field:
+            rows_with_any_field += 1
+        else:
+            rows_all_missing += 1
+
+        if MARKET_NO_DATA_BLOCKER in row.get("blockers", []):
+            rows_capped_no_market += 1
+            prop = row.get("prop_type") or "UNKNOWN"
+            samples = blocker_samples_by_prop.setdefault(prop, [])
+            if len(samples) < 3:
+                samples.append({
+                    "row_id":   row.get("row_id"),
+                    "player":   row.get("player"),
+                    "line":     row.get("line"),
+                    "direction": row.get("direction"),
+                    "blockers": row.get("blockers", []),
+                })
+
+    return {
+        "total_rows":                            total_rows,
+        "rows_with_any_market_field":             rows_with_any_field,
+        "rows_with_all_market_fields_missing":    rows_all_missing,
+        "rows_capped_model_qualified_hold_no_market": rows_capped_no_market,
+        "blocker_samples_by_prop":                blocker_samples_by_prop,
+    }
+
+
 def _build_output(rows: list[dict], ledger: ExposureLedger,
                   health_report: dict | None = None,
                   settlement_status: dict | None = None) -> dict[str, Any]:
@@ -315,6 +365,7 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "clv_table":          clv_table,
         "health_report":      health_report or {},
         "settlement_status":  settlement_status or {},
+        "market_enrichment_report": _build_market_enrichment_report(rows),
         "summary": {
             "total_rows":   len(rows),
             "by_label":     label_counts,

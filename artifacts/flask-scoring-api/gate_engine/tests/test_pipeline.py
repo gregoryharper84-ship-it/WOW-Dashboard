@@ -89,3 +89,38 @@ def test_input_failure_row_classified():
     result = run_pipeline(rows, target_date=TODAY, skip_data_contract=True)
     label = result["terminal_labels"][0]["label"]
     assert label in (PropLabel.REJECT_DATA_QUALITY.value, PropLabel.SLATE_PURGE.value)
+
+
+def test_market_enrichment_report_flags_missing_market_data():
+    rows = [_good_row()]
+    enrichment = {
+        "lebron james:points": {
+            "game_log": [26, 28, 24, 30, 25, 27, 26, 29, 24, 28],
+            "season_log": [25, 26, 27, 24, 28, 26, 25, 27, 26, 28],
+        }
+    }
+    result = run_pipeline(rows, target_date=TODAY, enrichment=enrichment, skip_data_contract=True)
+    report = result["market_enrichment_report"]
+    assert report["total_rows"] == 1
+    assert report["rows_with_all_market_fields_missing"] == 1
+    assert report["rows_with_any_market_field"] == 0
+    assert report["rows_capped_model_qualified_hold_no_market"] == 1
+    assert "Points" in report["blocker_samples_by_prop"]
+    assert result["terminal_labels"][0]["label"] == PropLabel.MODEL_QUALIFIED_HOLD.value
+
+
+def test_market_enrichment_report_counts_supplied_market_data():
+    rows = [_good_row()]
+    enrichment = {
+        "lebron james:points": {
+            "game_log": [26, 28, 24, 30, 25, 27, 26, 29, 24, 28],
+            "season_log": [25, 26, 27, 24, 28, 26, 25, 27, 26, 28],
+            "sportsbook_line": 25.5,
+            "best_available": 25.0,
+        }
+    }
+    result = run_pipeline(rows, target_date=TODAY, enrichment=enrichment, skip_data_contract=True)
+    report = result["market_enrichment_report"]
+    assert report["rows_with_any_market_field"] == 1
+    assert report["rows_with_all_market_fields_missing"] == 0
+    assert report["rows_capped_model_qualified_hold_no_market"] == 0
