@@ -1,0 +1,58 @@
+To get **Replit aligned with Claude + ChatGPT**, Replit needs to treat the final WOW GPT prompt as a **staged source-of-truth artifact**, not a backend code change.
+
+Send Replit this:
+
+Replit alignment request for WOW v16 Clean Core:
+
+Claude + ChatGPT are now aligned on:
+
+`WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE`
+
+Final status:
+
+`APPROVED FOR STAGING — deployment HOLD until Greg pastes exact block into live WOW Betting Engine Custom GPT config.`
+
+Please align Replit/repo state as follows:
+
+1. Confirm `WOW-BETTING-ENGINE-GPT-INSTRUCTIONS.md` contains the final approved 7,038-character instruction block.
+
+2. Confirm the final block preserves these backend-confirmed rules:
+
+   * terminal labels are exactly the confirmed `PropLabel` enum members:
+     `RESEARCH_INTEREST`, `MODEL_QUALIFIED_HOLD`, `MARKET_VERIFIED_HOLD`, `MONEY_QUALIFIED`, `FINAL_APPROVED`, `REJECT_NO_EDGE`, `REJECT_BAD_STRUCTURE`, `REJECT_DATA_QUALITY`, `SOURCE_CONFLICT`, `SLATE_PURGE`, `DUPLICATE_EXPOSURE_BLOCK`, `NO_PLAY`
+   * `NO_MARKET_AVAILABLE` is market status, not terminal label
+   * `NO_PLAY` is a real per-row fallback and may also appear as a session outcome
+   * `SOURCE_CONFLICT` has two paths:
+     classifier data-status conflict can produce terminal `SOURCE_CONFLICT`; source-grade conflict may only cap at `MODEL_QUALIFIED_HOLD`
+   * source grades use backend vocabulary: `A`, `A-`, `B`, `C`, `D`, `N/T`
+   * `MARKET_CONTRADICTION` and `SEVERE_BOARD_VS_BOOK_DRIFT` are market-status tokens, not automatic approval labels
+   * `GPT_ADVISORY_BUCKET` is caution-only and never a backend gate
+   * WNBA triple-risk is advisory only, not backend-enforced
+   * Kelly remains composite slip-level only, never per-leg
+
+3. Confirm the final `SLIP/EXPOSURE` paragraph contains the approved wording:
+   `GPT_ADVISORY_BUCKET may recommend avoiding Power or Flex, but it is caution-only and never a backend gate.`
+
+4. Update `WOW-SHARED-NOTES.md` with:
+   `WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE — APPROVED FOR STAGING. Final block 7,038 characters. Smoke test PASS. Deployment HOLD until Greg confirms exact block pasted into live Custom GPT config.`
+
+5. Do not mark this patch `DEPLOYED` yet.
+   Repo/docs staging is approved.
+   Live Custom GPT deployment is not complete until Greg manually pastes the exact block into the builder and confirms.
+
+6. Do not change backend code for this patch.
+   This is documentation/custom-GPT alignment only.
+
+7. Keep this separate item open:
+   `WOW-PATCH-2026-07-04-CONDITIONAL-CLEANUP`
+   Status remains open because the live Command Center text still contains:
+   `Conditional = one layer pending`
+
+8. Optional but preferred: add a carryover note:
+   `Verify exact trigger logic for SLATE_PURGE and DUPLICATE_EXPOSURE_BLOCK if future patch requires it. They are confirmed PropLabel enum members, but their firing conditions were not shown in the reviewed excerpts.`
+
+Expected final Replit status:
+
+`WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE — staged in repo/docs, approved for Custom GPT paste, not yet deployed live.`
+
+In plain English: Replit should **stage the final source file + notes**, preserve the backend vocabulary, and wait for your manual Custom GPT paste before marking it deployed.
