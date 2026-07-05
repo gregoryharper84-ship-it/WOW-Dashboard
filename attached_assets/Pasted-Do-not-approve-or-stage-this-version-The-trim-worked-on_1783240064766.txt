@@ -1,0 +1,138 @@
+Do not approve or stage this version.
+
+The trim worked on length, but the final block reintroduced several issues we had already flagged. It is not backend-aligned and not internally consistent yet.
+
+Review decision
+
+WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE
+CHATGPT FINAL EYEBALL: HOLD
+Reason: 7,589-char block is under limit, but reopened label/status/cap conflicts.
+Do not stage. Do not deploy.
+
+Blockers still in the pasted text
+
+1. Approval language still says “or no contradiction”
+
+Current:
+
+market/projection support (or no contradiction)
+
+That must be removed. Absence of contradiction cannot create approval or money qualification.
+
+Use:
+
+market/projection support, positive EV, and clean failure paths.
+
+⸻
+
+2. MARKET_VERIFIED_HOLD definition reopened the loophole
+
+Current:
+
+MARKET_VERIFIED_HOLD = external market/projection affirmatively supports or does not contradict
+
+That is wrong. It should require affirmative support.
+
+Use:
+
+MARKET_VERIFIED_HOLD = external market/projection affirmatively supports the side or a validated projection-market equivalent supports it, but execution is not clean.
+
+“No contradiction” can support MODEL_QUALIFIED_HOLD, not MARKET_VERIFIED_HOLD.
+
+⸻
+
+3. Generic HOLD/WATCH came back
+
+Examples still present:
+
+max HOLD/WATCH
+missing recheck = HOLD/NO_PLAY
+HOLD/kill
+
+These violate the generic-cap-word ban. Replace with specific buckets:
+
+max MODEL_QUALIFIED_HOLD or MARKET_VERIFIED_HOLD
+missing recheck = MODEL_QUALIFIED_HOLD or REJECT_DATA_QUALITY, depending on cause
+
+Never use bare HOLD, WATCH, or NO_PLAY as row-level outputs.
+
+⸻
+
+4. NO_PLAY is still listed as a terminal bucket
+
+The text says NO_PLAY is session-level, but then includes it in TERMINAL BUCKETS.
+
+Remove NO_PLAY from row terminal buckets unless the backend actually emits it as a row label. Keep:
+
+NO_PLAY = session outcome only when no row reaches FINAL_APPROVED.
+
+⸻
+
+5. Source statuses are still mixed with terminal buckets
+
+The text says source statuses are not terminal buckets, but terminal bucket list still includes things that may be statuses depending on backend behavior:
+
+SOURCE_CONFLICT
+MARKET_UNAVAILABLE
+
+This needs backend-confirmed naming. If backend uses NO_MARKET_AVAILABLE, use that instead of MARKET_UNAVAILABLE. If SOURCE_CONFLICT is a status/blocker and not a classifier label, remove it from terminal buckets.
+
+⸻
+
+6. Backend alias cleanup still not done
+
+The block still uses:
+
+MODEL_SIGNAL_ONLY
+MARKET_UNAVAILABLE
+
+Earlier audit said backend uses:
+
+RESEARCH_INTEREST
+NO_MARKET_AVAILABLE
+
+If that is still true, the GPT prompt should use the backend names and optionally mention aliases only as explanations.
+
+⸻
+
+7. T0/T1/T2/T3 source tiers are still present
+
+Earlier audit said backend uses source letter grades, not T0–T3. This draft still uses T0/T1/T2/T3.
+
+Either replace with the actual backend source-grade vocabulary or clearly mark these as GPT advisory. Since the chosen path was “align to backend as-is,” I’d replace them.
+
+⸻
+
+8. Market buckets still function like gates
+
+The text says:
+
+Internal GPT judgment only, not backend-enforced
+
+That is better, but later it still says:
+
+Power requires MONEY_QUALIFIED/FINAL_APPROVED and trusted/calibrated bucket
+no 4–6 Power during TEST/WATCH
+bucket allows execution
+
+That makes the advisory bucket act like an enforced gate. If backend doesn’t have prop market buckets, remove these enforcement dependencies or rename them to advisory only.
+
+⸻
+
+Tell Claude/Replit this
+
+Hold staging. The 7,589-character trim is under the limit, but the final block is not approved.
+It reintroduced these blockers:
+1. Role line still says market/projection support “or no contradiction.”
+2. MARKET_VERIFIED_HOLD definition still allows “does not contradict.”
+3. Generic HOLD/WATCH/NO_PLAY row-cap language is still present.
+4. NO_PLAY is still listed as a terminal bucket despite being session-level.
+5. Source statuses and terminal buckets are still mixed.
+6. Backend alias cleanup is incomplete: MODEL_SIGNAL_ONLY / MARKET_UNAVAILABLE remain if backend uses RESEARCH_INTEREST / NO_MARKET_AVAILABLE.
+7. T0/T1/T2/T3 source tiers remain despite backend using source letter grades.
+8. GPT advisory market buckets still affect slip eligibility as if backend-enforced.
+Do another cleanup pass focused only on backend vocabulary and row-output consistency. Do not trim rules for character count until these blockers are fixed. After the cleanup, paste the full block again for final review.
+Status:
+WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE — HOLD; length fixed but backend-vocabulary cleanup still required.
+
+Bottom line: length is fixed, but logic alignment is not.
