@@ -1,0 +1,37 @@
+Agreed — that's the audit-safe framing, and I'll hold to it going forward: instruction-level smoke tests confirm the GPT is following its own new contract, not that it matches the live Flask engine. Those are different claims and shouldn't be blurred in the record.
+
+Two things to note before the formatted note:
+
+**1. The Command Center text you just pasted is still the pre-cleanup version** — it shows `Conditional = one layer pending` in the LABEL TAXONOMY block, not the `MODEL_QUALIFIED_HOLD` version I applied earlier in this thread. That's consistent with your own instruction just now ("do not close CONDITIONAL-CLEANUP until the live Command Center config is verified with Conditional removed") — so I'm treating this as further evidence the live config hasn't been updated yet, not as a regression on my end.
+
+**2. No Replit connector is available to me** — I can't send this directly. Here's the corrected note, ready to paste wherever you relay it:
+
+---
+
+**Replit update for WOW v16 / LLP:**
+
+**WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE**
+Status: Custom GPT instructions deployed/pasted and instruction-level smoke-tested; backend-faithful status remains user-/Replit-reported unless the actual `gate_engine/llp_governance.py` source excerpt or path is attached to the audit trail.
+
+Clarification: LLP Custom GPT instructions are deployed/pasted and passed two instruction-level smoke tests. Backend parity is pending source-path confirmation unless already verified externally against `gate_engine/llp_governance.py` and the `_llp_*` pipeline source.
+
+Test #1 — PASS: model_prob 0.50, edge 4.2%, liquid main market, no-vig available, valid price/timestamp, no contradictions. Expected LLP_REJECT. Actual LLP_REJECT. Reason: absolute probability cap applies before edge — under 52% model probability cannot be playable or approved.
+
+Test #2 — PASS: run_type board_scan_only, auto-promoted from scan, model_prob 0.59, edge 4.0%, liquid main market, no-vig available, valid price/timestamp, no contradictions, full 14-step workflow not completed. Expected LLP_SCOUT. Actual LLP_SCOUT. Reason: board-scan-only candidates are market-glance only and remain capped at LLP_SCOUT until the full LLP workflow completes.
+
+These two tests prove the Custom GPT is following the new instruction contract. They do not prove backend parity.
+
+Please confirm:
+- `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md` remains the source-of-truth file.
+- `WOW-SHARED-NOTES.md` logs this patch as: deployed/pasted to GPT config, instruction-smoke-tested, backend parity pending source-path confirmation.
+- No backend gate logic changes unless there's a confirmed mismatch with `gate_engine/llp_governance.py`.
+- Regression coverage exists (or gets added) for: <52% model_prob cannot exceed LLP_REJECT even with strong edge; board_scan_only cannot exceed LLP_SCOUT without full 14-step workflow; banned/status terms cannot be returned as final_label; "Conditional" cannot appear in any LLP final output field.
+
+**Separate, still open:**
+WOW-PATCH-2026-07-04-CONDITIONAL-CLEANUP remains pending live-config verification. Do not close it until the live Command Center config is confirmed with "Conditional" removed as an active label and mapped to `MODEL_QUALIFIED_HOLD` (WOW/PrizePicks) or `LLP_WATCH` (LLP).
+
+Final process rule: do not represent "smoke-tested GPT instructions" as "backend confirmed" unless the backend source path/excerpt is present in the audit trail.
+
+---
+
+Let me know when the live Command Center config and/or `gate_engine/llp_governance.py` excerpt come back — that's what closes both open items.

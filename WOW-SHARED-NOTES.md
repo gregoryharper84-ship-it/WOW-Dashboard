@@ -143,13 +143,25 @@ Any future route, caller, or test helper using `skip_data_contract` must make th
 
 **Follow-up (same day):** Greg (ChatGPT leg) clarified that the backend confirmation he received for Step 4 was the Command Center instructions doc (a different, unrelated patch target — see entry below), not the actual `gate_engine/llp_governance.py` source. That does NOT satisfy Step 4 for this patch. Replit-side confirmation in this session (against the real file) stands as valid on the Replit/Claude leg. Literal source excerpt (lines 27–108 of `gate_engine/llp_governance.py`) was then provided to the user in-chat for relay to Greg.
 
-**Final sign-off (same day):** User replied "Approved" to close Step 6. Treating this as the final eyeball pass the deploy was being held for.
+**Final sign-off (same day):** User replied "Approved" to close Step 6.
 
-**Status: Deployed** (content-approved). The instructions text in `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md` is now the approved, final version — no further edits pending. Note the literal act of pasting this block into the Custom GPT builder UI is a manual step outside this repo/session; Replit/Claude has no access to that config surface. If it hasn't been pasted into the live Custom GPT yet, that paste is the only remaining action.
+**Correction (same day, per Greg/ChatGPT leg):** the prior "Deployed" status above blurred two distinct claims. Corrected per Greg's audit-safe framing:
+
+> Status: Custom GPT instructions deployed/pasted and instruction-level smoke-tested; backend-faithful status remains user-/Replit-reported unless the actual `gate_engine/llp_governance.py` source excerpt or path is attached to the audit trail.
+
+- **Instructions deployed/pasted:** yes — `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md` is the source-of-truth file and has been pasted into the live Custom GPT config.
+- **Instruction-level smoke tests (2/2 PASS, run by Greg against the live Custom GPT):**
+  - Test #1: model_prob 0.50, edge 4.2%, liquid main, no-vig available, valid price/timestamp, no contradictions → expected `LLP_REJECT`, actual `LLP_REJECT`. Reason: absolute probability cap applies before edge — sub-52% model probability cannot be playable or approved.
+  - Test #2: `run_type=board_scan_only`, auto-promoted from scan, model_prob 0.59, edge 4.0%, liquid main, no-vig available, valid price/timestamp, no contradictions, full 14-step workflow NOT completed → expected `LLP_SCOUT`, actual `LLP_SCOUT`. Reason: board-scan-only candidates are market-glance only and stay capped at `LLP_SCOUT` until the full LLP workflow completes.
+  - **These two tests prove the Custom GPT is following its own new instruction contract. They do NOT prove backend parity with the live Flask engine** — that is a separate claim and must not be blurred with it in this record.
+- **Backend parity:** now independently re-confirmed by Replit/Claude this session with the literal source embedded directly below (not just a path reference) — see "LLP GPT Step-4 source excerpt" entry. Both scenarios above were checked line-by-line against that source and match: `_prob_ceiling(0.50) = LLP_REJECT` (below 0.52 band); the board-scan-to-full-run orchestrator caps every non-promoted row at `LLP_SCOUT` regardless of its board-scan probability (see new regression tests below).
+- **Regression coverage added this session** (`artifacts/flask-scoring-api/gate_engine/tests/test_llp_board_scan_full_run_mapping.py`, extracted directly from the real `app.py` functions via AST — not a reimplementation): sub-52% model probability cannot exceed `LLP_REJECT` even with strong edge (pre-existing, `test_below_52_is_reject`); board-scan-only (unpromoted) rows cannot exceed `LLP_SCOUT` regardless of ranking (`TestBoardScanOnlyCappedAtScout`, new); every `BANNED_AS_FINAL` term including `CONDITIONAL` is rejected by the label validator and never survives into board-scan/full-run output labels (`TestBannedAndConditionalNeverInFinalOutput`, new). Full suite: 391 passed / 1 pre-existing unrelated failure in `test_auto_enrichment.py` (row_id/market_gate attachment — untouched by this patch, not introduced by this session's changes).
+
+**Status:** Deployed/pasted to GPT config, instruction-smoke-tested (2/2 PASS by Greg), backend parity independently confirmed by Replit/Claude against the literal source excerpt + new regression tests this session. No backend gate logic was changed — this patch only ships documentation (the GPT instructions file) and new test coverage.
 
 ---
 
-## 2026-07-04 — WOW Command Center instructions — "Conditional" retirement / LABEL TAXONOMY cleanup
+## 2026-07-04 — WOW-PATCH-2026-07-04-CONDITIONAL-CLEANUP (Command Center "Conditional" retirement / LABEL TAXONOMY cleanup)
 
 **Scope note:** this is a *different* artifact than the LLP GPT patch above — it is the "WOW Command Center — Project Instructions" doc (the system-level instructions for the Claude/ChatGPT project threads themselves), not a file that lives in this repo, and not the Custom GPT LLP Team Betting persona. No corresponding file exists under version control here; it's maintained externally by the user in their Claude/ChatGPT project settings.
 
@@ -158,27 +170,72 @@ Any future route, caller, or test helper using `skip_data_contract` must make th
 - LLP lane: any legacy "Conditional" reference maps to `LLP_WATCH`, staying inside the existing six-label `LLPLabel` vocabulary (no new label introduced in the LLP lane).
 - Explicit instruction added: "Conditional" is retired; any future appearance is legacy language requiring correction, not a valid label.
 
-**Status:** Reported by the ChatGPT/Greg leg as applied and requested to move from Proposed → **Deployed**. Recording here as **Deployed per ChatGPT-leg report** — flagging for the user: since this doc lives outside this repo (not a file Replit/Claude can read or diff), this status reflects Greg's assertion only. Please confirm you've actually pasted the corrected LABEL TAXONOMY block into the live Command Center project instructions if you haven't already, so this can be fully closed with confidence.
+**Live-config verification (same day):** the Command Center text pasted back into this thread for review still showed the pre-cleanup wording ("Conditional = one layer pending"), not `MODEL_QUALIFIED_HOLD`. Per Greg's explicit instruction, **this patch is NOT closed** until the live Command Center config is independently confirmed to have "Conditional" removed as an active label and correctly mapped (`MODEL_QUALIFIED_HOLD` for WOW/PrizePicks, `LLP_WATCH` for LLP).
+
+**Status: Proposed / pending live-config verification — do NOT mark Deployed** until a fresh paste of the live Command Center config confirms the taxonomy fix is actually in place. (Superseded the earlier "Deployed per ChatGPT-leg report" note in this file — that was premature.)
 
 **Unresolved, unchanged by this edit (Greg re-flagged, no action taken):** the Command Center doc still has no reference to the PATCH-L Reliability Freeze or the ENFORCED-CALIBRATION-EV-LOCK 8-module set. Treat as a separate patch if/when the user wants it addressed — not started.
 
 ---
 
-## 2026-07-04 — LLP GPT Step-4 source excerpt (provided to user for pasting to Greg)
+## 2026-07-04 — LLP GPT Step-4 source excerpt (embedded in audit trail per Greg's process rule)
 
-Greg needs the literal `gate_engine/llp_governance.py` source (not the instructions doc) to independently confirm the `WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE` rewrite before Step 6. Verbatim excerpt covering the `LLPLabel` enum, `BANNED_AS_FINAL` set, edge-tier thresholds, and probability-cap logic was pulled from `artifacts/flask-scoring-api/gate_engine/llp_governance.py` (lines 27–108) and handed to the user in-chat this session for relay to the ChatGPT thread. Once Greg confirms against that excerpt, Step 6 can proceed pending the user's own final eyeball pass.
+Per Greg's rule — "do not represent 'smoke-tested GPT instructions' as 'backend confirmed' unless the backend source path/excerpt is present in the audit trail" — the literal excerpt is embedded here (not just referenced by path), from `artifacts/flask-scoring-api/gate_engine/llp_governance.py`, lines 27–108, confirmed unchanged as of this session:
+
+```python
+class LLPLabel(str, Enum):
+    APPROVED  = "LLP_APPROVED"
+    PLAYABLE  = "LLP_PLAYABLE"
+    WATCH     = "LLP_WATCH"
+    SCOUT     = "LLP_SCOUT"
+    REJECT    = "LLP_REJECT"
+    CUT       = "LLP_CUT"
+
+BANNED_AS_FINAL = {
+    "LEAN", "CONDITIONAL", "FLIP_CANDIDATE",
+    "SOURCE_CONFLICT", "DATA_UNOBTAINABLE", "NO_BET", "STALE_LINE",
+}
+
+class MarketType(str, Enum):
+    LIQUID_MAIN     = "LIQUID_MAIN"
+    WNBA_LOW_LIQ    = "WNBA_LOW_LIQ"
+    DERIVATIVES     = "DERIVATIVES"
+    ALT_NICHE       = "ALT_NICHE"
+
+EDGE_THRESHOLD = {
+    MarketType.LIQUID_MAIN:  0.015,
+    MarketType.WNBA_LOW_LIQ: 0.020,
+    MarketType.DERIVATIVES:  0.025,
+    MarketType.ALT_NICHE:    0.030,
+}
+
+def _prob_ceiling(prob: float) -> str:
+    """Return max allowed LLP label for a given model probability."""
+    if prob < 0.52:
+        return LLPLabel.REJECT.value
+    if prob < 0.55:
+        return LLPLabel.WATCH.value
+    if prob < 0.58:
+        return LLPLabel.PLAYABLE.value
+    if prob <= 0.60:
+        return LLPLabel.APPROVED.value
+    return LLPLabel.APPROVED.value
+```
+
+Cross-checked against Greg's two instruction-level smoke tests: `_prob_ceiling(0.50) → LLP_REJECT` (matches Test #1); board-scan-only rows are capped at `LLP_SCOUT` by the separate `_llp_board_scan_to_full_run` orchestrator regardless of ranked probability (matches Test #2 — confirmed by new regression tests, see entry above).
 
 ---
 
 ## 2026-07-04 — Next-session carryover
 
-1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — Status: **Deployed** (content-approved by user, "Approved" received this session). Instructions text lives in `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md` — that is now the final version. Remaining action, if not already done: paste that block into the live Custom GPT builder UI (manual, outside this repo/session — Replit/Claude cannot do this step).
-2. **WOW Command Center "Conditional" retirement / LABEL TAXONOMY cleanup** — reported Deployed by Greg; confirm with the user that the live external Command Center config was actually updated, since this repo has no copy of that doc to verify against.
+1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — Status: Deployed/pasted to GPT config, instruction-smoke-tested (2/2 PASS), backend parity independently confirmed by Replit/Claude against the embedded source excerpt + new regression tests. Do not re-blur "smoke-tested" with "backend confirmed" in future notes — keep them as separate claims per Greg's process rule.
+2. **WOW-PATCH-2026-07-04-CONDITIONAL-CLEANUP** — do NOT close. Live Command Center config still shows pre-cleanup "Conditional = one layer pending" wording as of this session. Needs a fresh paste of the live config confirming `MODEL_QUALIFIED_HOLD`/`LLP_WATCH` mapping is actually in place before this can move to Deployed.
 3. **WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION** — do not lose. Status: **Proposed**, needs formal patch approval. Purpose: BOARD SCAN → auto-promote top 1-3 → FULL LLP RUN via real `gate_engine/llp_governance.py` governance, with LLP_SCOUT/LLP_CUT/LLP_REJECT/LLP_APPROVED/LLP_PLAYABLE output separation.
 4. **WOW-PATCH-EXTERNAL-LEDGER-SOURCE-PATH-GATE** — do not lose. Status: **Proposed**, needs ChatGPT approval/sign-off. Purpose: prevent unsourced ChatGPT stat claims from triggering full re-analysis or patch action without source-path evidence.
 5. **WOW-PATCH-2026-07-02-VALIDATION-QUEUE-CACHE** — remains separate. Status: **Pending ChatGPT approval**.
 6. **Thornton/Gray original payload** — remains `NOT_DETERMINABLE`. Do not retroactively close this or fabricate replay evidence in a future session.
-7. **Market Enrichment Report** and **Market Join Audit** are both **deployed v16 active rules** (no further action needed on either unless a new incident/patch is raised against them).
-8. **Next `/wow start` must confirm** before any new prop work:
+7. **Pre-existing unrelated test failure:** `gate_engine/tests/test_auto_enrichment.py::test_row_key_end_to_end_attachment_through_pipeline` fails on `main` independent of this session's changes (market_gate not carrying `sportsbook_line` through the pipeline). Not touched by any patch above — flag as its own investigation if picked up.
+8. **Market Enrichment Report** and **Market Join Audit** are both **deployed v16 active rules** (no further action needed on either unless a new incident/patch is raised against them).
+9. **Next `/wow start` must confirm** before any new prop work:
    - Replit UP
    - today's balance
