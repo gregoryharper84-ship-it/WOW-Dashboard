@@ -12,6 +12,7 @@ Run:
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 import pytest
 
@@ -20,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from kalshi_engine.llp_bridge.market_mapper import KalshiMarketMapper
 from kalshi_engine.llp_bridge.price_normalizer import KalshiPriceNormalizer
 from kalshi_engine.llp_bridge import ml_evaluate
+from kalshi_engine.llp_bridge import consensus_odds as _consensus_odds_mod
 
 
 # ---------------------------------------------------------------------------
@@ -202,12 +204,26 @@ class TestEvaluateStub:
         np["liquidity_grade"] = liquidity_grade
         return np
 
+    def _consensus(self, fair_probability=0.6, status="AVAILABLE", single_book=False, book_count=2):
+        return {
+            "status": status,
+            "consensus_fair_probability": fair_probability,
+            "books_used": ["fanduel", "draftkings"][:max(book_count, 0)] or [],
+            "book_count": book_count,
+            "single_book_fallback": single_book,
+            "max_book_spread": 0.01,
+            "oldest_book_age_seconds": 60.0,
+            "source": "the_odds_api",
+            "blocker_tags": [] if status == "AVAILABLE" and not single_book else [f"ODDS_CONSENSUS_{status}"],
+            "detail": "test fixture",
+        }
+
     def test_missing_settlement_fields_cap_scout(self):
         result = ml_evaluate.evaluate_stub(
             ticker="T", event_ticker=None, market_title="Some Game",
             settlement_condition="Official box score", model_probability=0.6,
             match_type="EXACT", normalized_price=self._full_normalized_price(),
-            inventory_signal="INVENTORY_READY",
+            inventory_signal="INVENTORY_READY", consensus_odds=self._consensus(),
         )
         assert result["label"] == "LLP_SCOUT"
         assert result["dry_run_only"] is True
@@ -261,10 +277,13 @@ class TestEvaluateStub:
             settlement_condition="Official final score from league box score",
             model_probability=0.85, match_type="EXACT",
             normalized_price=self._full_normalized_price(),
-            inventory_signal="INVENTORY_READY",
+            inventory_signal="INVENTORY_READY", consensus_odds=self._consensus(),
         )
         names = [s["name"] for s in result["steps"]]
-        assert names == ["spread", "fee_friction", "staleness_grade", "shrinkage", "compare_to_floor"]
+        assert names == [
+            "sportsbook_no_vig_consensus", "spread", "fee_friction",
+            "staleness_grade", "shrinkage", "compare_to_floor",
+        ]
 
     def test_shrinkage_applied_only_above_threshold(self):
         below = ml_evaluate.evaluate_stub(
@@ -339,6 +358,7 @@ class TestEvaluateStub:
             model_probability=0.75, match_type="EXACT",
             normalized_price=self._full_normalized_price(age_seconds=5, liquidity_grade="A"),
             inventory_signal="INVENTORY_READY",
+            consensus_odds=self._consensus(fair_probability=0.75),
         )
         assert result["label"] == "LLP_PLAYABLE"
         assert result["ceilings_applied"] == []
@@ -369,6 +389,318 @@ class TestEvaluateStub:
         assert result["connected"] is False
         assert result["connected_status"] == "DRY_RUN_READY"
         assert result["stub"] is True
+
+    # -- 2026-07-05 Kalshi Sports ML Edge Rule (WNBA/MLB Only) — mandatory
+    #    sportsbook no-vig consensus HARD GATE, evaluated via evaluate_stub's
+    #    consensus_odds param (dict shape identical to
+    #    consensus_odds.get_consensus_no_vig_probability's return). --------
+
+    def test_consensus_missing_caps_scout(self):
+        # NOT_CALLED (e.g. odds API key unset / unknown sport) — no consensus
+        # quote exists at all, so a money edge can never be computed from
+        # model_probability alone. Must cap at LLP_SCOUT even with otherwise
+        # perfect data.
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.75, match_type="EXACT",
+            normalized_price=self._full_normalized_price(age_seconds=5, liquidity_grade="A"),
+            inventory_signal="INVENTORY_READY",
+            consensus_odds=self._consensus(status="NOT_CALLED", fair_probability=None,
+                                            book_count=0),
+        )
+        assert result["label"] == "LLP_SCOUT"
+        assert any("ODDS_CONSENSUS_NOT_CALLED" in w for w in result["warnings"])
+        assert result["dry_run_only"] is True
+        assert result["can_execute"] is False
+
+    def test_consensus_failed_caps_scout(self):
+        # FAILED (e.g. odds API returned 401/timeout) is distinct from
+        # NOT_CALLED but must be capped identically — never fabricate a
+        # fallback probability when the real lookup errored.
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.75, match_type="EXACT",
+            normalized_price=self._full_normalized_price(age_seconds=5, liquidity_grade="A"),
+            inventory_signal="INVENTORY_READY",
+            consensus_odds=self._consensus(status="FAILED", fair_probability=None,
+                                            book_count=0),
+        )
+        assert result["label"] == "LLP_SCOUT"
+        assert any("ODDS_CONSENSUS_FAILED" in w for w in result["warnings"])
+
+    def test_consensus_stale_caps_watch_not_playable(self):
+        # A real consensus once existed but the newest usable quote exceeds
+        # the freshness window — real data, but not trustworthy enough to
+        # approve off. Ceiling is LLP_WATCH, not LLP_SCOUT and not PLAYABLE.
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.75, match_type="EXACT",
+            normalized_price=self._full_normalized_price(age_seconds=5, liquidity_grade="A"),
+            inventory_signal="INVENTORY_READY",
+            consensus_odds=self._consensus(status="STALE", fair_probability=None,
+                                            book_count=1),
+        )
+        assert result["label"] == "LLP_WATCH"
+        assert result["label"] != "LLP_PLAYABLE"
+        assert any("ODDS_CONSENSUS_STALE" in w for w in result["warnings"])
+
+    def test_consensus_single_book_fallback_caps_watch(self):
+        # Exactly one live bookmaker quote — per the rule, a single raw ML
+        # price is NEVER treated as fair probability outright. Must cap at
+        # LLP_WATCH even though the quote itself is fresh and would
+        # otherwise clear the edge floor.
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.75, match_type="EXACT",
+            normalized_price=self._full_normalized_price(age_seconds=5, liquidity_grade="A"),
+            inventory_signal="INVENTORY_READY",
+            consensus_odds=self._consensus(status="AVAILABLE", fair_probability=0.75,
+                                            single_book=True, book_count=1),
+        )
+        assert result["label"] == "LLP_WATCH"
+        assert result["label"] != "LLP_PLAYABLE"
+        assert any("ODDS_CONSENSUS_SINGLE_BOOK" in w for w in result["warnings"])
+
+    def test_consensus_contradiction_caps_watch(self):
+        # Two-plus fresh books disagree beyond the tolerance spread — a
+        # real consensus attempt was made, but it isn't trustworthy/
+        # independent enough to approve off. Ceiling is LLP_WATCH.
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.75, match_type="EXACT",
+            normalized_price=self._full_normalized_price(age_seconds=5, liquidity_grade="A"),
+            inventory_signal="INVENTORY_READY",
+            consensus_odds=self._consensus(status="CONTRADICTORY", fair_probability=0.60,
+                                            book_count=2),
+        )
+        assert result["label"] == "LLP_WATCH"
+        assert result["label"] != "LLP_PLAYABLE"
+        assert any("ODDS_CONSENSUS_CONTRADICTORY" in w for w in result["warnings"])
+
+    def test_consensus_successful_gate_reaches_playable(self):
+        # A fresh, non-contradictory, 2+-book consensus that independently
+        # clears the edge floor alongside the model probability is the only
+        # path to LLP_PLAYABLE under the new rule.
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.75, match_type="EXACT",
+            normalized_price=self._full_normalized_price(age_seconds=5, liquidity_grade="A"),
+            inventory_signal="INVENTORY_READY",
+            consensus_odds=self._consensus(status="AVAILABLE", fair_probability=0.75,
+                                            single_book=False, book_count=2),
+        )
+        assert result["label"] == "LLP_PLAYABLE"
+        assert result["ceilings_applied"] == []
+        assert result["blocker_tags"] == []
+        compare_step = next(s for s in result["steps"] if s["name"] == "compare_to_floor")
+        assert compare_step["consensus_adjusted_edge"] is not None
+        assert compare_step["consensus_adjusted_edge"] >= ml_evaluate.EDGE_FLOOR
+        assert compare_step["meets_floor"] is True
+
+    def test_consensus_edge_floor_checked_independently_of_model_edge(self):
+        # A model that clears its own edge floor must still be blocked when
+        # the independent consensus-derived edge does not clear the floor —
+        # the model can never manufacture approval-eligible edge alone.
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.80, match_type="EXACT",
+            normalized_price=self._full_normalized_price(age_seconds=5, liquidity_grade="A"),
+            inventory_signal="INVENTORY_READY",
+            # consensus fair probability barely above executable_price(0.59) +
+            # fee drag -> consensus-side edge should fail to clear EDGE_FLOOR
+            # even though the model side (0.80, shrunk) clears it.
+            consensus_odds=self._consensus(status="AVAILABLE", fair_probability=0.60,
+                                            single_book=False, book_count=2),
+        )
+        compare_step = next(s for s in result["steps"] if s["name"] == "compare_to_floor")
+        assert compare_step["meets_floor"] is False
+        assert result["label"] != "LLP_PLAYABLE"
+
+
+# ---------------------------------------------------------------------------
+# consensus_odds.get_consensus_no_vig_probability — sportsbook no-vig
+# consensus gate (Kalshi Sports ML Edge Rule, WNBA/MLB Only, 2026-07-05).
+# The Odds API is mocked as primary source; TheRundown is mocked as
+# fallback/corroboration only. Both are patched at the module boundary the
+# consensus_odds module actually imports (`_odds_api` / `_rundown`), never
+# hitting the network.
+# ---------------------------------------------------------------------------
+
+class TestConsensusNoVigProbability:
+    def _odds_api_event(self, home="Seattle Storm", away="Las Vegas Aces",
+                         books=None, seconds_ago=60):
+        ts = _iso_seconds_ago(seconds_ago)
+        default_books = books if books is not None else [
+            {"key": "fanduel",   "price_home": -150, "price_away": 130},
+            {"key": "draftkings", "price_home": -145, "price_away": 125},
+        ]
+        bookmakers = []
+        for b in default_books:
+            bookmakers.append({
+                "key": b["key"],
+                "markets": [{
+                    "key": "h2h",
+                    "last_update": ts,
+                    "outcomes": [
+                        {"name": home, "price": b["price_home"]},
+                        {"name": away, "price": b["price_away"]},
+                    ],
+                }],
+            })
+        return {"home_team": home, "away_team": away, "bookmakers": bookmakers}
+
+    def test_missing_odds_returns_not_called_when_no_key(self):
+        # services.odds_api._get already handles the "no API key" case by
+        # returning (None, "NOT_CALLED: ...") — get_h2h_odds propagates that
+        # as ([], status). With Rundown also producing nothing, the overall
+        # result must be NOT_CALLED (or FAILED if Rundown hard-errors),
+        # never a fabricated probability.
+        with mock.patch.object(_consensus_odds_mod._odds_api, "get_h2h_odds",
+                                return_value=([], "NOT_CALLED: ODDS_API_KEY not set")), \
+             mock.patch.object(_consensus_odds_mod._rundown, "get_moneyline_events_for_sport",
+                                return_value=([], "NOT_CALLED: RUNDOWN_API_KEY not set")):
+            result = _consensus_odds_mod.get_consensus_no_vig_probability(
+                "WNBA", "Seattle Storm", "Las Vegas Aces", "Seattle Storm",
+            )
+        assert result["status"] == "NOT_CALLED"
+        assert result["consensus_fair_probability"] is None
+        assert result["book_count"] == 0
+        assert "ODDS_CONSENSUS_UNAVAILABLE" in result["blocker_tags"]
+
+    def test_missing_odds_returns_failed_on_hard_error(self):
+        # A hard failure (e.g. invalid key / timeout) is distinct from
+        # NOT_CALLED and must be surfaced as FAILED, not silently treated
+        # the same or papered over with a fabricated value.
+        with mock.patch.object(_consensus_odds_mod._odds_api, "get_h2h_odds",
+                                return_value=([], "FAILED: invalid ODDS_API_KEY")), \
+             mock.patch.object(_consensus_odds_mod._rundown, "get_moneyline_events_for_sport",
+                                return_value=([], "FAILED: invalid RUNDOWN_API_KEY")):
+            result = _consensus_odds_mod.get_consensus_no_vig_probability(
+                "WNBA", "Seattle Storm", "Las Vegas Aces", "Seattle Storm",
+            )
+        assert result["status"] == "FAILED"
+        assert result["consensus_fair_probability"] is None
+
+    def test_stale_odds_returns_stale_status_not_available(self):
+        # Both books are older than STALE_SECONDS -> STALE, not AVAILABLE.
+        # Never treat an old snapshot as a live fair probability.
+        stale_event = self._odds_api_event(
+            seconds_ago=_consensus_odds_mod.STALE_SECONDS + 600,
+        )
+        with mock.patch.object(_consensus_odds_mod._odds_api, "get_h2h_odds",
+                                return_value=([stale_event], "AVAILABLE (remaining=10)")), \
+             mock.patch.object(_consensus_odds_mod._rundown, "get_moneyline_events_for_sport",
+                                return_value=([], "NOT_CALLED: RUNDOWN_API_KEY not set")):
+            result = _consensus_odds_mod.get_consensus_no_vig_probability(
+                "WNBA", "Seattle Storm", "Las Vegas Aces", "Seattle Storm",
+            )
+        assert result["status"] == "STALE"
+        assert result["consensus_fair_probability"] is None
+        assert result["oldest_book_age_seconds"] > _consensus_odds_mod.STALE_SECONDS
+
+    def test_single_book_fallback_flagged(self):
+        # Only one fresh bookmaker reports this game -> AVAILABLE but
+        # single_book_fallback=True; a single raw ML price is never treated
+        # as fair probability outright (caller must cap at LLP_WATCH).
+        one_book_event = self._odds_api_event(books=[
+            {"key": "fanduel", "price_home": -150, "price_away": 130},
+        ])
+        with mock.patch.object(_consensus_odds_mod._odds_api, "get_h2h_odds",
+                                return_value=([one_book_event], "AVAILABLE (remaining=10)")), \
+             mock.patch.object(_consensus_odds_mod._rundown, "get_moneyline_events_for_sport",
+                                return_value=([], "NOT_CALLED: RUNDOWN_API_KEY not set")):
+            result = _consensus_odds_mod.get_consensus_no_vig_probability(
+                "WNBA", "Seattle Storm", "Las Vegas Aces", "Seattle Storm",
+            )
+        assert result["status"] == "AVAILABLE"
+        assert result["single_book_fallback"] is True
+        assert result["book_count"] == 1
+        assert "ODDS_CONSENSUS_SINGLE_BOOK" in result["blocker_tags"]
+
+    def test_consensus_contradiction_flagged(self):
+        # Two fresh books disagree by more than CONTRADICTION_SPREAD ->
+        # CONTRADICTORY, not silently averaged into a trusted consensus.
+        contradictory_event = self._odds_api_event(books=[
+            {"key": "fanduel",   "price_home": -400, "price_away": 320},  # ~0.80 fair
+            {"key": "draftkings", "price_home": 150,  "price_away": -180},  # ~0.40 fair
+        ])
+        with mock.patch.object(_consensus_odds_mod._odds_api, "get_h2h_odds",
+                                return_value=([contradictory_event], "AVAILABLE (remaining=10)")), \
+             mock.patch.object(_consensus_odds_mod._rundown, "get_moneyline_events_for_sport",
+                                return_value=([], "NOT_CALLED: RUNDOWN_API_KEY not set")):
+            result = _consensus_odds_mod.get_consensus_no_vig_probability(
+                "WNBA", "Seattle Storm", "Las Vegas Aces", "Seattle Storm",
+            )
+        assert result["status"] == "CONTRADICTORY"
+        assert result["max_book_spread"] > _consensus_odds_mod.CONTRADICTION_SPREAD
+        assert "ODDS_CONSENSUS_CONTRADICTORY" in result["blocker_tags"]
+
+    def test_successful_no_vig_gate_two_books_available(self):
+        # Two fresh, agreeing books -> AVAILABLE, not single_book_fallback,
+        # no blocker tags — the only shape that lets ml_evaluate proceed to
+        # a real edge comparison.
+        agreeing_event = self._odds_api_event(books=[
+            {"key": "fanduel",   "price_home": -150, "price_away": 130},
+            {"key": "draftkings", "price_home": -145, "price_away": 125},
+        ])
+        with mock.patch.object(_consensus_odds_mod._odds_api, "get_h2h_odds",
+                                return_value=([agreeing_event], "AVAILABLE (remaining=10)")), \
+             mock.patch.object(_consensus_odds_mod._rundown, "get_moneyline_events_for_sport",
+                                return_value=([], "NOT_CALLED: RUNDOWN_API_KEY not set")):
+            result = _consensus_odds_mod.get_consensus_no_vig_probability(
+                "WNBA", "Seattle Storm", "Las Vegas Aces", "Seattle Storm",
+            )
+        assert result["status"] == "AVAILABLE"
+        assert result["single_book_fallback"] is False
+        assert result["book_count"] == 2
+        assert 0.0 < result["consensus_fair_probability"] < 1.0
+        assert result["blocker_tags"] == []
+
+    def test_rundown_fallback_used_only_when_odds_api_has_no_fresh_books(self):
+        # Odds API returns zero events; Rundown corroborates with a single
+        # fresh book -> should still surface as AVAILABLE/single_book, using
+        # the Rundown fallback path, not silently NOT_CALLED.
+        rundown_event = {
+            "teams_normalized": [{"name": "Seattle Storm"}, {"name": "Las Vegas Aces"}],
+            "lines": {
+                "1": {
+                    "moneyline": {
+                        "moneyline_home": -150,
+                        "moneyline_away": 130,
+                        "date_updated": _iso_seconds_ago(60),
+                    },
+                },
+            },
+        }
+        with mock.patch.object(_consensus_odds_mod._odds_api, "get_h2h_odds",
+                                return_value=([], "AVAILABLE (remaining=10)")), \
+             mock.patch.object(_consensus_odds_mod._rundown, "get_moneyline_events_for_sport",
+                                return_value=([rundown_event], "AVAILABLE")):
+            result = _consensus_odds_mod.get_consensus_no_vig_probability(
+                "WNBA", "Seattle Storm", "Las Vegas Aces", "Seattle Storm",
+            )
+        assert result["status"] == "AVAILABLE"
+        assert result["single_book_fallback"] is True
+        assert result["source"] == "rundown"
+
+    def test_never_calls_rundown_when_odds_api_has_fresh_books(self):
+        # Rundown is fallback/corroboration only — must not be consulted at
+        # all once Odds API already produced fresh usable books.
+        agreeing_event = self._odds_api_event()
+        with mock.patch.object(_consensus_odds_mod._odds_api, "get_h2h_odds",
+                                return_value=([agreeing_event], "AVAILABLE (remaining=10)")), \
+             mock.patch.object(_consensus_odds_mod._rundown, "get_moneyline_events_for_sport") as rd_mock:
+            _consensus_odds_mod.get_consensus_no_vig_probability(
+                "WNBA", "Seattle Storm", "Las Vegas Aces", "Seattle Storm",
+            )
+        rd_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

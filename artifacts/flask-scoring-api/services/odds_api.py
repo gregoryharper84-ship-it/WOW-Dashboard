@@ -93,6 +93,22 @@ def get_events(sport_key):
     return data or [], status
 
 
+def get_h2h_odds(sport_key):
+    """
+    Return today's moneyline (h2h) odds across all events for a sport key
+    in one call — used by kalshi_engine.llp_bridge.consensus_odds for the
+    no-vig sportsbook consensus gate. Read-only; no order placement.
+    Returns (events_list, status_string).
+    """
+    data, status = _get(f"/sports/{sport_key}/odds", {
+        "regions":    "us",
+        "markets":    "h2h",
+        "oddsFormat": "american",
+        "dateFormat": "iso",
+    })
+    return data or [], status
+
+
 def get_player_props(sport_key, event_id, markets):
     """Return player prop odds for a specific event + market list."""
     data, status = _get(f"/sports/{sport_key}/events/{event_id}/odds", {

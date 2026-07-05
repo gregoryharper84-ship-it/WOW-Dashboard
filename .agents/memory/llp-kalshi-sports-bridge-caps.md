@@ -51,3 +51,19 @@ this endpoint by design (stateless single-shot call; WATCH→APPROVED needs a
 full session-scoped governance rerun this endpoint can't perform) — this is
 a structural ceiling, not a data-availability stub, and must not be "fixed"
 later by trying to make APPROVED reachable here.
+
+**Update 2026-07-05 — Kalshi Sports ML Edge Rule (WNBA/MLB only): mandatory
+sportsbook no-vig consensus gate added.** `ml-evaluate` must never compute a
+money edge from `model_probability` alone. A live no-vig consensus fair
+probability for the exact Kalshi YES-side team (`kalshi_engine/llp_bridge/
+consensus_odds.py`, Odds API primary / TheRundown fallback-corroboration
+only) is now a mandatory upstream gate, and Step 5's post-friction edge must
+independently clear the floor against BOTH the model probability and the
+consensus. Ceilings: `NOT_CALLED`/`FAILED` (no consensus) -> `LLP_SCOUT`;
+`STALE`/`CONTRADICTORY`/`single_book_fallback=True` -> `LLP_WATCH`.
+**Gotcha:** a `STALE` consensus result legitimately has
+`consensus_fair_probability=None` (same as NOT_CALLED/FAILED) — any status
+gate here must branch on `status` first and only treat "probability is
+None" as a fallback/defensive case afterward, or STALE gets silently
+misrouted into the harsher SCOUT ceiling instead of WATCH. This exact bug
+was caught by a dedicated unit test before reaching a live call.

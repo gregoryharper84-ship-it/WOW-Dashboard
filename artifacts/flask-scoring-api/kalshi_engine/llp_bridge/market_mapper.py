@@ -142,6 +142,7 @@ class KalshiMarketMapper:
             "ticker":            market.get("ticker"),
             "event_ticker":      market.get("event_ticker"),
             "market_title":      market.get("title") or market.get("subtitle"),
+            "yes_sub_title":     market.get("yes_sub_title"),
             "label_ceiling":     label_ceiling,
             "reasoning":         reasoning,
             "can_approve_bets":  False,

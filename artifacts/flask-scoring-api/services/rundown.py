@@ -58,6 +58,19 @@ def get_events_for_sport(sport, date_str=None):
     return events, status
 
 
+def get_moneyline_events_for_sport(sport, date_str=None):
+    """
+    Fallback/corroboration-only moneyline source for
+    kalshi_engine.llp_bridge.consensus_odds. Returns (events, status) —
+    events keep their raw `teams_normalized` and `lines[affiliate].moneyline`
+    shape so the caller can extract per-affiliate American moneyline prices.
+    This is never used as a primary consensus source (see consensus_odds.py
+    module docstring): a single TheRundown affiliate is one book, not a
+    consensus, and must be tagged single_book_fallback downstream.
+    """
+    return get_events_for_sport(sport, date_str=date_str)
+
+
 def get_line_movements(event_id):
     """Get line movement history for an event."""
     data, status = _get(f"/events/{event_id}/lines")

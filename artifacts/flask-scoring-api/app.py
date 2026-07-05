@@ -19154,21 +19154,28 @@ def wow_llp_kalshi_ml_evaluate():
 
     Real MLB/WNBA winner-market inventory exists as of 2026-07-05. This
     endpoint re-checks the LIVE inventory signal on every call (a caller
-    cannot self-report their way to a trusted label). When the live signal
-    is exactly INVENTORY_READY and every real gate passes (exact match,
-    settlement clarity, fee/friction, staleness, edge), a result may reach
-    LLP_PLAYABLE. LLP_APPROVED is never emitted here — that requires the
-    full session-scoped `gate_engine.llp_governance` rerun this stateless
-    endpoint does not have access to (see ml_evaluate.py docstring). This
-    endpoint never places orders and never will.
+    cannot self-report their way to a trusted label). Per the Kalshi Sports
+    ML Edge Rule (WNBA/MLB Only, approved 2026-07-05), it also re-fetches a
+    LIVE sportsbook no-vig consensus fair probability for the exact Kalshi
+    YES-side team on every call — a caller cannot supply model_probability
+    alone and expect a money edge. When the live inventory signal is
+    exactly INVENTORY_READY, the consensus is AVAILABLE/fresh/non-
+    contradictory (or corroborated by 2+ books), and every real gate passes
+    (exact match, settlement clarity, fee/friction, staleness, edge vs BOTH
+    model and consensus), a result may reach LLP_PLAYABLE. LLP_APPROVED is
+    never emitted here — that requires the full session-scoped
+    `gate_engine.llp_governance` rerun this stateless endpoint does not
+    have access to (see ml_evaluate.py docstring). This endpoint never
+    places orders and never will.
 
     POST body (JSON):
       llp_home_team          str    required
       llp_away_team          str    required
-      llp_sport              str    required
+      llp_sport              str    required — "MLB" or "WNBA"
       candidate_markets      list   Kalshi market dicts (ticker/title/subtitle/
-                                     event_ticker/mve_collection_ticker), as
-                                     returned by KalshiInventoryAdapter.
+                                     event_ticker/mve_collection_ticker/
+                                     yes_sub_title), as returned by
+                                     KalshiInventoryAdapter.
       raw_orderbook           dict  optional — raw Kalshi orderbook for the
                                      matched ticker (if candidate_markets is
                                      omitted or empty, price steps are skipped).
@@ -19176,7 +19183,12 @@ def wow_llp_kalshi_ml_evaluate():
       settlement_condition    str   optional — settlement wording for the market.
       model_probability       float optional 0-1.
 
-    Returns: { mapping, normalized_price, evaluation, execution_rule }
+    Sportsbook consensus odds (The Odds API primary, TheRundown fallback/
+    corroboration only) are fetched server-side from
+    kalshi_engine.llp_bridge.consensus_odds — never supplied by the caller.
+
+    Returns: { mapping, normalized_price, inventory_signal, consensus_odds,
+               evaluation, blocker_tags, execution_rule }
     """
     if request.method == "OPTIONS":
         return ("", 204)
@@ -19185,6 +19197,7 @@ def wow_llp_kalshi_ml_evaluate():
     from kalshi_engine.llp_bridge.market_mapper import KalshiMarketMapper
     from kalshi_engine.llp_bridge.price_normalizer import KalshiPriceNormalizer
     from kalshi_engine.llp_bridge.ml_evaluate import evaluate_stub
+    from kalshi_engine.llp_bridge.consensus_odds import get_consensus_no_vig_probability
 
     payload = request.get_json(silent=True) or {}
     llp_home_team     = payload.get("llp_home_team", "")
@@ -19221,6 +19234,33 @@ def wow_llp_kalshi_ml_evaluate():
             orderbook_timestamp_utc=orderbook_ts,
         )
 
+    # Sportsbook consensus no-vig gate (Kalshi Sports ML Edge Rule — WNBA/
+    # MLB Only, approved 2026-07-05). `yes_sub_title` is the exact team the
+    # Kalshi YES contract resolves on — the consensus fair probability must
+    # be computed for that same team, not an assumed home/away side.
+    consensus_odds = None
+    yes_team = mapping.get("yes_sub_title")
+    if yes_team and llp_home_team and llp_away_team and llp_sport:
+        consensus_odds = get_consensus_no_vig_probability(
+            sport=llp_sport,
+            team_a=llp_home_team,
+            team_b=llp_away_team,
+            target_team=yes_team,
+        )
+    else:
+        consensus_odds = {
+            "status": "NOT_CALLED",
+            "consensus_fair_probability": None,
+            "books_used": [],
+            "book_count": 0,
+            "single_book_fallback": False,
+            "max_book_spread": None,
+            "oldest_book_age_seconds": None,
+            "source": None,
+            "blocker_tags": ["ODDS_CONSENSUS_UNAVAILABLE"],
+            "detail": "NOT_CALLED: no exact ticker mapping (missing yes_sub_title/home/away/sport)",
+        }
+
     evaluation = evaluate_stub(
         ticker=mapping.get("ticker"),
         event_ticker=mapping.get("event_ticker"),
@@ -19230,6 +19270,7 @@ def wow_llp_kalshi_ml_evaluate():
         match_type=mapping.get("match_type", "NONE"),
         normalized_price=normalized_price,
         inventory_signal=inventory_signal,
+        consensus_odds=consensus_odds,
     )
 
     connected_status = evaluation.get("connected_status", "DRY_RUN_READY")
@@ -19237,7 +19278,9 @@ def wow_llp_kalshi_ml_evaluate():
         "mapping":           mapping,
         "normalized_price":  normalized_price,
         "inventory_signal":  inventory_signal,
+        "consensus_odds":    consensus_odds,
         "evaluation":        evaluation,
+        "blocker_tags":      evaluation.get("blocker_tags", []),
         "execution_rule":    (
             f"READ_ONLY_NO_ORDERS — dry_run_only=true, can_execute=false, "
             f"connected_status={connected_status}"

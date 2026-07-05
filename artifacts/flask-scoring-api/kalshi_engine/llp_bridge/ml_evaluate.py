@@ -34,6 +34,14 @@ Hard caps (never bypassed regardless of raw edge):
   - Settlement-rule auditor: ticker, event_ticker, market_title, and
     settlement_condition must ALL be present and unambiguous, or the row
     is capped at LLP_SCOUT.
+  - Sportsbook consensus no-vig gate (Kalshi Sports ML Edge Rule — WNBA/
+    MLB Only, approved 2026-07-05): a no-vig fair probability for the
+    exact Kalshi YES-side team must be AVAILABLE from
+    kalshi_engine.llp_bridge.consensus_odds. If it is NOT_CALLED/FAILED,
+    cap at LLP_SCOUT (no consensus at all — never compute a money edge
+    from model_probability alone). If it is STALE or CONTRADICTORY, or
+    single_book_fallback=True, cap at LLP_WATCH (a real consensus quote
+    exists but is not trustworthy/independent enough to approve off).
   - Fee/friction buffer: if fee/friction cannot be computed (e.g. no
     executable price, no liquidity grade), cap at LLP_WATCH — never
     LLP_PLAYABLE from raw price edge alone.
@@ -45,6 +53,13 @@ Hard caps (never bypassed regardless of raw edge):
 Model-probability shrinkage: when model_probability >= 0.80, shrink toward
 0.80 by SHRINKAGE_FACTOR to penalize overconfident high-probability claims
 before comparing to the post-friction floor.
+
+Edge floor comparison (post-2026-07-05 consensus amendment): the post-
+friction edge must clear EDGE_FLOOR against BOTH the LLP model probability
+AND the sportsbook no-vig consensus fair probability. Only comparing
+against the LLP model (as before the amendment) let an overconfident or
+buggy model manufacture edge on its own say-so — the consensus figure is
+an independent floor, not merely informational.
 """
 from __future__ import annotations
 
@@ -83,14 +98,18 @@ def evaluate_stub(
     match_type:           str,                  # "EXACT" | "FUZZY" | "NONE" from KalshiMarketMapper
     normalized_price:     Optional[dict[str, Any]],  # output of KalshiPriceNormalizer, or None
     inventory_signal:     str = "INVENTORY_EMPTY",  # live signal from KalshiInventoryAdapter
+    consensus_odds:       Optional[dict[str, Any]] = None,  # output of consensus_odds.get_consensus_no_vig_probability, or None
 ) -> dict[str, Any]:
     """
     Evaluate a single LLP<->Kalshi sports candidate through the required
-    edge sequence, subject to the settlement/fuzzy/fee/inventory hard caps.
+    edge sequence, subject to the settlement/fuzzy/fee/inventory/consensus
+    hard caps.
 
-    Returns a dict with `label` in {LLP_SCOUT, LLP_WATCH} only — this stub
-    can never emit LLP_PLAYABLE or LLP_APPROVED, since sports inventory is
-    currently empty and no real ticker has passed regression tests.
+    Returns a dict with `label` in {LLP_SCOUT, LLP_WATCH, LLP_PLAYABLE} —
+    LLP_PLAYABLE is only reachable when every real gate (inventory,
+    settlement, exact match, sportsbook consensus, fee/friction,
+    staleness, edge) passes. LLP_APPROVED is never emitted here (see
+    module docstring).
 
     `inventory_signal` is the LIVE result of KalshiInventoryAdapter at call
     time — not something the caller can spoof via candidate_markets/
@@ -98,10 +117,16 @@ def evaluate_stub(
     additionally hard-capped at LLP_SCOUT: a caller cannot self-report
     their way to a trusted label while the exchange has no real sports
     winner markets.
+
+    `consensus_odds` is the LIVE result of
+    `consensus_odds.get_consensus_no_vig_probability` at call time — same
+    non-spoofable contract as `inventory_signal`. See module docstring for
+    the ODDS_CONSENSUS_* hard-cap rules.
     """
     steps: list[dict[str, Any]] = []
     warnings: list[str] = []
     ceilings: list[str] = []
+    blocker_tags: list[str] = []
 
     # ── Live inventory gate (mandatory — cannot be bypassed by request body) ──
     if inventory_signal != "INVENTORY_READY":
@@ -150,6 +175,63 @@ def evaluate_stub(
             f"MATCH_TYPE_{match_type}: only EXACT ticker matches are approval-eligible."
         )
 
+    # ── Sportsbook consensus no-vig gate (mandatory — Kalshi Sports ML Edge
+    #    Rule, WNBA/MLB Only, approved 2026-07-05). ml-evaluate must never
+    #    compute a money edge from model_probability alone; a real no-vig
+    #    consensus quote is required, fresh, and non-contradictory. ─────────
+    consensus_status = (consensus_odds or {}).get("status", "NOT_CALLED")
+    consensus_fair_probability = (consensus_odds or {}).get("consensus_fair_probability")
+    consensus_single_book = bool((consensus_odds or {}).get("single_book_fallback"))
+    blocker_tags.extend((consensus_odds or {}).get("blocker_tags") or [])
+
+    # NOTE: check status BEFORE the generic "probability is None" fallback —
+    # a STALE result legitimately carries consensus_fair_probability=None
+    # (stale books are never used to compute a probability) and must still
+    # be capped at LLP_WATCH, not misrouted into the harsher LLP_SCOUT
+    # NOT_CALLED/FAILED branch just because the probability field is empty.
+    if consensus_status in ("NOT_CALLED", "FAILED"):
+        ceilings.append("LLP_SCOUT")
+        warnings.append(
+            f"ODDS_CONSENSUS_{consensus_status}: no sportsbook no-vig consensus "
+            f"fair probability available — capped at LLP_SCOUT; a money edge "
+            f"can never be computed from model_probability alone."
+        )
+    elif consensus_status == "STALE":
+        ceilings.append("LLP_WATCH")
+        warnings.append(
+            "ODDS_CONSENSUS_STALE: newest usable sportsbook quote exceeds the "
+            "freshness window — capped at LLP_WATCH."
+        )
+    elif consensus_status == "CONTRADICTORY":
+        ceilings.append("LLP_WATCH")
+        warnings.append(
+            "ODDS_CONSENSUS_CONTRADICTORY: fresh sportsbook books disagree beyond "
+            "the tolerance spread — capped at LLP_WATCH, consensus not trustworthy."
+        )
+    elif consensus_fair_probability is None:
+        # Defensive fallback: an AVAILABLE-labeled result with no usable
+        # probability should never happen from a well-formed consensus_odds
+        # payload, but if it does, never compute an edge from nothing.
+        ceilings.append("LLP_SCOUT")
+        warnings.append(
+            f"ODDS_CONSENSUS_{consensus_status}_NO_PROBABILITY: consensus status "
+            f"'{consensus_status}' but no usable fair probability was returned — "
+            f"capped at LLP_SCOUT."
+        )
+    elif consensus_single_book:
+        ceilings.append("LLP_WATCH")
+        warnings.append(
+            "ODDS_CONSENSUS_SINGLE_BOOK: only one sportsbook quote available — "
+            "a single raw ML price is never treated as fair probability; "
+            "capped at LLP_WATCH."
+        )
+    steps.append({
+        "step": "consensus_gate", "name": "sportsbook_no_vig_consensus",
+        "status": consensus_status,
+        "consensus_fair_probability": consensus_fair_probability,
+        "single_book_fallback": consensus_single_book,
+    })
+
     # ── Step 1: spread (recorded via liquidity_grade from the normalized book) ──
     steps.append({
         "step": 1, "name": "spread",
@@ -191,20 +273,40 @@ def evaluate_stub(
         shrunk_probability, was_shrunk = _apply_shrinkage(model_probability)
     steps.append({"step": 4, "name": "shrinkage", "applied": was_shrunk, "shrunk_probability": shrunk_probability})
 
-    # ── Step 5: compare to 2.5% floor (post-friction) ─────────────────────
-    adjusted_edge = None
+    # ── Step 5: compare to 2.5% floor (post-friction), against BOTH the LLP
+    #    model probability AND the sportsbook no-vig consensus (2026-07-05
+    #    amendment — see module docstring). Both must independently clear
+    #    EDGE_FLOOR; the model alone can never manufacture approval-eligible
+    #    edge without independent sportsbook corroboration. ──────────────
+    model_adjusted_edge = None
+    consensus_adjusted_edge = None
     meets_floor = False
-    if model_probability is not None and fee_result is not None:
-        raw_edge = round(shrunk_probability - executable_price, 6)
-        adjusted_edge = round(raw_edge - fee_result["total_drag"], 6)
-        meets_floor = adjusted_edge >= EDGE_FLOOR
+    if fee_result is not None:
+        if model_probability is not None:
+            model_raw_edge = round(shrunk_probability - executable_price, 6)
+            model_adjusted_edge = round(model_raw_edge - fee_result["total_drag"], 6)
+        if consensus_fair_probability is not None:
+            consensus_raw_edge = round(consensus_fair_probability - executable_price, 6)
+            consensus_adjusted_edge = round(consensus_raw_edge - fee_result["total_drag"], 6)
+
+        model_meets_floor = model_adjusted_edge is not None and model_adjusted_edge >= EDGE_FLOOR
+        consensus_meets_floor = consensus_adjusted_edge is not None and consensus_adjusted_edge >= EDGE_FLOOR
+        meets_floor = model_meets_floor and consensus_meets_floor
+
         if not meets_floor:
-            warnings.append(
-                f"EDGE_BELOW_FLOOR: adjusted_edge={adjusted_edge} < EDGE_FLOOR={EDGE_FLOOR}"
-            )
+            if not model_meets_floor:
+                warnings.append(
+                    f"EDGE_BELOW_FLOOR (model): adjusted_edge={model_adjusted_edge} < EDGE_FLOOR={EDGE_FLOOR}"
+                )
+            if not consensus_meets_floor:
+                warnings.append(
+                    f"EDGE_BELOW_FLOOR (consensus): adjusted_edge={consensus_adjusted_edge} < EDGE_FLOOR={EDGE_FLOOR}"
+                )
     steps.append({
         "step": 5, "name": "compare_to_floor",
-        "adjusted_edge": adjusted_edge, "edge_floor": EDGE_FLOOR, "meets_floor": meets_floor,
+        "model_adjusted_edge": model_adjusted_edge,
+        "consensus_adjusted_edge": consensus_adjusted_edge,
+        "edge_floor": EDGE_FLOOR, "meets_floor": meets_floor,
     })
 
     # ── Final label: apply all ceilings via the canonical cap_label ordering,
@@ -228,6 +330,8 @@ def evaluate_stub(
         "steps":               steps,
         "warnings":            warnings,
         "ceilings_applied":    sorted(set(ceilings)),
+        "blocker_tags":        sorted(set(blocker_tags)),
+        "consensus_odds":      consensus_odds,
         "can_approve_bets":    False,
         "dry_run_only":        True,
         "can_execute":         False,
