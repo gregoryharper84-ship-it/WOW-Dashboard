@@ -248,7 +248,7 @@ Cross-checked against Greg's two instruction-level smoke tests: `_prob_ceiling(0
 
 **Where the instructions now live:** `WOW-BETTING-ENGINE-GPT-INSTRUCTIONS.md` (repo root) — corrected, annotation-free deployable instructions block plus a separate "Reconciliation summary" section with all backend-name corrections and gap flags.
 
-**Status (updated 2026-07-05, Step 4 smoke test):** Rewritten and smoke-tested; pending Greg/ChatGPT final review before staging/deployment. The corrected text is still NOT pasted into the live Custom GPT config. No backend gate logic was changed this session — this remains a documentation-only reconciliation. `DRY_RUN_ONLY_NO_LIVE_TRADING` unaffected.
+**Status:** WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE — Step 4 smoke-tested 8/8 PASS; final instruction block requires safety trim and final review before staging/deployment. Trim to 7,589 chars is done (see Step 5 entry below); the exact final block has been pasted back to the user for the required Greg/ChatGPT eyeball pass. The corrected text is still NOT pasted into the live Custom GPT config. No backend gate logic was changed this session — this remains a documentation-only reconciliation. `DRY_RUN_ONLY_NO_LIVE_TRADING` unaffected.
 
 ---
 
@@ -268,13 +268,25 @@ Cross-checked against Greg's two instruction-level smoke tests: `_prob_ceiling(0
 7. Proprietary/no-market guard (WNBA triple-risk is GPT-advisory only, not backend-enforced) — PASS, doc already stated this correctly; no change needed.
 8. Conditional cleanup guard — PASS: the word "Conditional" does not appear anywhere in this document (unrelated to the still-open `WOW-PATCH-2026-07-04-CONDITIONAL-CLEANUP` item, which stays open).
 
-**Final status:** WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE — rewritten and smoke-tested; pending Greg/ChatGPT final review before staging/deployment.
+**Final status (superseded by Step 5 below):** rewritten and smoke-tested; pending Greg/ChatGPT final review before staging/deployment.
+
+---
+
+## 2026-07-05 — WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE Step 5: character-safety trim + final block paste-back
+
+**Trigger:** user flagged that 7,997 chars was too close to the 8,000-char Custom GPT instruction limit (paste/build formatting drift risk) and required (1) a trim to ≤7,700, ideally ≤7,500, without removing any rule, and (2) the exact final block pasted back for a Greg/ChatGPT eyeball pass — smoke-test summaries alone are not sufficient since the block was rewritten from scratch.
+
+**Trim approach:** wording-only cuts — removed duplicate qualifiers ("advisory, never terminal" stated twice → once), shortened example lists in MARKET BUCKETS (kept every category, trimmed adjective padding), dropped a few redundant restatement sentences (e.g. "FINAL_APPROVED expires without live recheck" — already implied by the LIVE RECHECK rule immediately above it) and duplicate parentheticals like "(advisory)" repeated across CAPS/PROBABILITY-EV. No terminal bucket, label, threshold, or gate name was removed. Verified: all 12 terminal buckets, all label definitions, and every numeric threshold (3h staleness, 0.5 line-move/L5-tolerance, 3% UNCALIBRATED haircut, quarter-Kelly cap, <3 book equivalents, structural-failure count ≥3, 0.5 drift threshold) are present verbatim in the trimmed block.
+
+**Result:** 7,996 → **7,589 characters** (407-char reduction), under both the 7,700 ceiling and the 7,500 ideal target with margin.
+
+**Final status:** WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE — Step 4 smoke-tested 8/8 PASS; final instruction block requires safety trim and final review before staging/deployment. (Trim is done; final review by Greg/ChatGPT on the exact pasted-back block is the only remaining gate before staging.) Still NOT pasted into the live Custom GPT config.
 
 ---
 
 ## 2026-07-04 — Next-session carryover
 
-0. **WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE** — do not lose. Status: **Rewritten and smoke-tested (Step 4, 8/8 PASS)**; pending Greg/ChatGPT final review before staging/deployment. Corrected text is a clean 7,997-char block (annotation-free, under the 8,000-char Custom GPT limit) but still NOT pasted into the live Custom GPT config. Real backend gaps flagged (no props-side MARKET BUCKETS system, no `REJECT_ROLE_STATUS`/`REJECT_LINE_VALUE`/`REJECT_CONTEXT` labels, no WNBA triple-risk kill rule, no T0–T3 source tiers) still need a user decision on whether to (a) leave the GPT instructions matching backend reality as-is, or (b) file a follow-up patch to build the missing backend mechanisms. See `WOW-BETTING-ENGINE-GPT-INSTRUCTIONS.md` for full detail.
+0. **WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE** — do not lose. Status: **Step 4 smoke-tested 8/8 PASS; final instruction block requires safety trim and final review before staging/deployment.** Trim is done — corrected text is now a clean 7,589-char block (annotation-free, safety margin below the 8,000-char Custom GPT limit; user required ≤7,700/ideally ≤7,500 after flagging 7,997 as too close to the ceiling). Exact final block pasted back to the user this session for the required Greg/ChatGPT eyeball pass. Still NOT pasted into the live Custom GPT config — do not deploy until the user confirms. Real backend gaps flagged (no props-side MARKET BUCKETS system, no `REJECT_ROLE_STATUS`/`REJECT_LINE_VALUE`/`REJECT_CONTEXT` labels, no WNBA triple-risk kill rule, no T0–T3 source tiers) still need a user decision on whether to (a) leave the GPT instructions matching backend reality as-is, or (b) file a follow-up patch to build the missing backend mechanisms. See `WOW-BETTING-ENGINE-GPT-INSTRUCTIONS.md` for full detail.
 1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — Status: Deployed/pasted to GPT config, instruction-smoke-tested (2/2 PASS), backend parity independently confirmed by Replit/Claude against the embedded source excerpt + new regression tests. Do not re-blur "smoke-tested" with "backend confirmed" in future notes — keep them as separate claims per Greg's process rule.
 2. **WOW-PATCH-2026-07-04-CONDITIONAL-CLEANUP** — do NOT close. Live Command Center config still shows pre-cleanup "Conditional = one layer pending" wording as of this session. Needs a fresh paste of the live config confirming `MODEL_QUALIFIED_HOLD`/`LLP_WATCH` mapping is actually in place before this can move to Deployed.
 3. **WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION** — do not lose. Status: **Proposed**, needs formal patch approval. Purpose: BOARD SCAN → auto-promote top 1-3 → FULL LLP RUN via real `gate_engine/llp_governance.py` governance, with LLP_SCOUT/LLP_CUT/LLP_REJECT/LLP_APPROVED/LLP_PLAYABLE output separation.
