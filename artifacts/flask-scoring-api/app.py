@@ -18278,6 +18278,127 @@ def wow_kalshi_health():
         }), 502
 
 
+@app.route("/wow/kalshi/health/sports", methods=["GET"])
+def wow_kalshi_health_sports():
+    """
+    LLP-Kalshi Sports Bridge inventory check (WOW-PATCH-2026-07-05-LLP-KALSHI-
+    SPORTS-BRIDGE v2, Step 4). Scoped to sports/winner markets only — this is
+    a separate signal from the generic /wow/kalshi/health above.
+
+    NOTE: this bridge is NOT "connected". CONNECTED status requires
+    INVENTORY_READY + a real ticker + Grade A/B orderbook + passing
+    regression tests — none of which are possible while sports inventory
+    is empty. Do not mark this integration connected anywhere until that
+    bar is met.
+
+    Returns:
+      signal                    "INVENTORY_READY" | "INVENTORY_EMPTY"
+                                 | "KALSHI_DATA_UNOBTAINABLE"
+      open_total                int
+      sports_candidate_count    int
+      sample_tickers            list[str]
+      connected                 always False
+      dry_run_only              always True
+      can_execute               always False
+    """
+    from kalshi_engine.llp_bridge.inventory_adapter import KalshiInventoryAdapter
+
+    pid    = os.getpid()
+    uptime = round(time.time() - _APP_START_TIME, 1)
+    result = KalshiInventoryAdapter().check_sports_inventory(limit=100)
+
+    status_code = 502 if result["signal"] == "KALSHI_DATA_UNOBTAINABLE" else 200
+    return jsonify({
+        "flask_reachable":      True,
+        "flask_pid":            pid,
+        "flask_uptime_seconds": uptime,
+        "deploy_version":       _KALSHI_SCAN_VERSION,
+        "connected":            False,
+        **result,
+    }), status_code
+
+
+@app.route("/wow/llp/kalshi/ml-evaluate", methods=["POST", "OPTIONS"])
+@require_api_key
+def wow_llp_kalshi_ml_evaluate():
+    """
+    LLP-Kalshi Sports Bridge stub evaluator (WOW-PATCH-2026-07-05-LLP-KALSHI-
+    SPORTS-BRIDGE v2, Step 5).
+
+    STUB ENDPOINT — Kalshi sports inventory is currently empty. This route
+    exists to validate wiring (mapper -> normalizer -> edge sequence ->
+    caps) end-to-end, and can only ever emit LLP_SCOUT or LLP_WATCH. It can
+    never emit LLP_PLAYABLE or LLP_APPROVED, and it never places orders.
+
+    POST body (JSON):
+      llp_home_team          str    required
+      llp_away_team          str    required
+      llp_sport              str    required
+      candidate_markets      list   Kalshi market dicts (ticker/title/subtitle/
+                                     event_ticker/mve_collection_ticker), as
+                                     returned by KalshiInventoryAdapter.
+      raw_orderbook           dict  optional — raw Kalshi orderbook for the
+                                     matched ticker (if candidate_markets is
+                                     omitted or empty, price steps are skipped).
+      orderbook_timestamp_utc str   optional ISO-8601 timestamp of raw_orderbook.
+      settlement_condition    str   optional — settlement wording for the market.
+      model_probability       float optional 0-1.
+
+    Returns: { mapping, normalized_price, evaluation, execution_rule }
+    """
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    from kalshi_engine.llp_bridge.market_mapper import KalshiMarketMapper
+    from kalshi_engine.llp_bridge.price_normalizer import KalshiPriceNormalizer
+    from kalshi_engine.llp_bridge.ml_evaluate import evaluate_stub
+
+    payload = request.get_json(silent=True) or {}
+    llp_home_team     = payload.get("llp_home_team", "")
+    llp_away_team     = payload.get("llp_away_team", "")
+    llp_sport         = payload.get("llp_sport", "")
+    candidate_markets = payload.get("candidate_markets") or []
+    raw_orderbook     = payload.get("raw_orderbook")
+    orderbook_ts      = payload.get("orderbook_timestamp_utc")
+    settlement_cond   = payload.get("settlement_condition")
+    model_probability = payload.get("model_probability")
+
+    mapping = KalshiMarketMapper().map_game_to_ticker(
+        llp_home_team=llp_home_team,
+        llp_away_team=llp_away_team,
+        llp_sport=llp_sport,
+        candidate_markets=candidate_markets,
+    )
+
+    normalized_price = None
+    if raw_orderbook and mapping.get("ticker"):
+        normalized_price = KalshiPriceNormalizer().normalize_for_side(
+            raw_orderbook=raw_orderbook,
+            ticker=mapping["ticker"],
+            side="YES",
+            orderbook_timestamp_utc=orderbook_ts,
+        )
+
+    evaluation = evaluate_stub(
+        ticker=mapping.get("ticker"),
+        event_ticker=mapping.get("event_ticker"),
+        market_title=mapping.get("market_title"),
+        settlement_condition=settlement_cond,
+        model_probability=model_probability,
+        match_type=mapping.get("match_type", "NONE"),
+        normalized_price=normalized_price,
+    )
+
+    return jsonify({
+        "mapping":          mapping,
+        "normalized_price": normalized_price,
+        "evaluation":       evaluation,
+        "execution_rule":   "READ_ONLY_NO_ORDERS — dry_run_only=true, can_execute=false, stub endpoint, empty sports inventory",
+        "connected":        False,
+        "stub":             True,
+    })
+
+
 @app.route("/wow/kalshi/scan", methods=["POST", "OPTIONS"])
 @app.route("/wow/kalshi/scan/", methods=["POST", "OPTIONS"])
 @require_api_key

@@ -388,3 +388,28 @@ This closes the reconciliation cycle (Steps 1–10). `DRY_RUN_ONLY_NO_LIVE_TRADI
 9. **Next `/wow start` must confirm** before any new prop work:
    - Replit UP
    - today's balance
+
+---
+
+## 2026-07-05 — WOW-PATCH-2026-07-05-LLP-KALSHI-SPORTS-BRIDGE v2 (Steps 1-5) built
+
+Built the read-only LLP<->Kalshi sports/winner-market bridge, per Greg's (ChatGPT) approved spec with amendments. New subpackage `artifacts/flask-scoring-api/kalshi_engine/llp_bridge/`:
+
+- **`inventory_adapter.py` (Step 1)** — `KalshiInventoryAdapter.check_sports_inventory()`. Public `/markets` data only, no auth, no order endpoints. Filters combo/collection markets (`mve_collection_ticker` set) out — LLP bridge only targets single winner markets. Signal: `INVENTORY_READY` / `INVENTORY_EMPTY` / `KALSHI_DATA_UNOBTAINABLE`.
+- **`market_mapper.py` (Step 2)** — `KalshiMarketMapper.map_game_to_ticker()`. Exact team-name match (with a fixed alias table, not similarity scoring) is the only match type that is approval-eligible. Any fuzzy/ambiguous/multi-candidate match is hard-capped `LLP_SCOUT`.
+- **`price_normalizer.py` (Step 3)** — `KalshiPriceNormalizer.normalize_for_side()`. Edge math must use the executable-side price (YES ask derived as `1 - best_no_bid`); midpoint is computed for display only and never feeds edge math. Staleness grading is exact per spec: `<60s=A`, `60-300s=B`, `300-600s=C`, `>=600s=KALSHI_DATA_UNOBTAINABLE` (missing/invalid timestamp also grades unobtainable).
+- **`ml_evaluate.py` (Step 5 core logic)** — `evaluate_stub()`. Enforces the exact edge sequencing order (spread -> fee/friction -> staleness -> shrinkage if `model_probability>=0.80` -> compare to 2.5% floor), and three hard caps that always win regardless of raw edge: settlement-rule auditor (ticker+event_ticker+market_title+settlement_condition all required, else `LLP_SCOUT`), fuzzy/ambiguous ticker match (`LLP_SCOUT`), and fee/friction unavailable (`LLP_WATCH`). This stub can never emit `LLP_PLAYABLE`/`LLP_APPROVED` — hard-ceilinged at `LLP_WATCH` even when edge math clears every gate, because sports inventory is currently empty.
+
+New routes in `app.py`:
+- `GET /wow/kalshi/health/sports` (no auth, matches existing `/wow/kalshi/health` convention) — sports-scoped inventory signal, always includes `connected: false`, `dry_run_only: true`, `can_execute: false`.
+- `POST /wow/llp/kalshi/ml-evaluate` (requires `X-API-Key` / `SCORING_API_KEY`, matches existing `@require_api_key` convention) — stub evaluator wiring mapper -> normalizer -> edge sequence -> caps end to end. Every response includes `stub: true`, `connected: false`, `dry_run_only: true`, `can_execute: false`.
+
+**Verification performed:**
+- 23 new unit tests in `kalshi_engine/tests/test_llp_bridge.py`, all passing: exact/fuzzy/ambiguous/no-match mapping, all 4 staleness buckets + boundary values, missing-timestamp handling, executable-price-vs-midpoint divergence, settlement-incomplete cap, fuzzy-match cap, fee/friction-unavailable cap, edge-sequencing step order, shrinkage threshold behavior, never-emits-PLAYABLE/APPROVED, dry_run_only/can_execute always present.
+- Live smoke test against the running Flask app (port 25643, via shared proxy): `GET /wow/kalshi/health/sports` correctly returned `INVENTORY_EMPTY` (100 open markets scanned, 0 sports winner-market candidates — matches known empty-sports-inventory state). `POST /wow/llp/kalshi/ml-evaluate` returned 401 without an API key (auth enforced), and with a full valid payload correctly produced an EXACT mapping, executable price 0.59 vs midpoint 0.58 (correctly divergent), staleness grade A, shrinkage applied (0.85→0.825), edge 0.1923 clearing the 2.5% floor — but still hard-capped at `LLP_WATCH`, never `LLP_PLAYABLE`/`LLP_APPROVED`, exactly as specified.
+
+**Explicitly NOT done (out of scope per spec):** no order placement, no live trading, and this integration is **NOT marked "connected"** anywhere — that requires `INVENTORY_READY` + a real ticker + Grade A/B orderbook + passing regression tests against real inventory, none of which are possible while Kalshi sports inventory is empty. `/wow/kalshi/health/sports` and the `ml-evaluate` stub response both explicitly carry `connected: false`.
+
+**Status:** `WOW-PATCH-2026-07-05-LLP-KALSHI-SPORTS-BRIDGE v2` — Steps 1-5 **BUILT, TESTED, SMOKE-VERIFIED**. Not deployed to any GPT/Custom-GPT config (this is backend-only). Awaiting Greg's/user's review before any further step (real inventory wiring, dashboard surfacing) is undertaken.
+
+**Remaining priority-list connectors — queued, NOT started this session** (from the broader WOW/LLP read-only API-integration priority list delivered alongside this sub-task): The Odds API, MLB Stats API, NBA/WNBA (`nba_api`), NWS+Open-Meteo (Priority 1); API-Football/football-data.org, balldontlie (Priority 2). Global rules for all of them per the delivered spec: every response needs source/endpoint/timestamp/source_grade/data_status; `NOT_CALLED != FAILED`; no gate bypass; no paid-tier upgrades assumed; no ToS-violating scraping; no execution endpoints anywhere.

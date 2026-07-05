@@ -1,0 +1,25 @@
+Task: Build WOW-PATCH-2026-07-05-LLP-KALSHI-SPORTS-BRIDGE v2 — read-only Kalshi sports/winner-market adapter for LLP. Scope: Steps 1–5 only, today.
+In scope now:
+
+KalshiInventoryAdapter — public market data only, no auth, no order endpoints.
+KalshiMarketMapper — LLP game → Kalshi ticker, exact match only (fuzzy match = SCOUT cap, never approval).
+KalshiPriceNormalizer — YES/NO orderbook → probability, using executable-side price (YES ask / derived from best NO bid), not midpoint. Midpoint may be computed for display only — it must never feed edge math.
+Extend /api/wow/kalshi/health — confirm sports signal logic (INVENTORY_READY / INVENTORY_EMPTY / KALSHI_DATA_UNOBTAINABLE).
+Stub POST /api/wow/llp/kalshi/ml-evaluate — build the endpoint and response schema now; it can return stub/test data since sports inventory is currently INVENTORY_EMPTY.
+
+Hard requirements baked into this build (not optional, not later):
+
+dry_run_only: true and can_execute: false in every response, no exceptions, no execution code path anywhere.
+Fee/friction buffer: if fee/friction data can't be loaded, cap output at LLP_WATCH — never LLP_PLAYABLE/LLP_APPROVED from raw price edge.
+Settlement-rule auditor: a row can't exceed LLP_SCOUT unless ticker, event, market title, and settlement rule are all captured and unambiguous.
+Orderbook staleness: age <60s = Grade A, 60–300s = Grade B, 300–600s = Grade C, >600s = KALSHI_DATA_UNOBTAINABLE.
+Edge sequencing must be: spread → fee/friction → staleness grade → shrinkage (if model prob ≥80%) → compare to 2.5% floor. Skip nothing, don't reorder.
+
+Explicitly NOT in scope today:
+
+No order placement, authenticated trading, or execution hooks of any kind.
+No trusting any label above LLP_SCOUT — real sports inventory doesn't exist yet, so full-run labels can't be validated end-to-end.
+Don't mark this "connected" anywhere in your tracking — that status requires INVENTORY_READY + a real ticker + Grade A/B orderbook + passing regression tests, none of which can happen while sports inventory is empty.
+
+Tests to include: the 8 listed in the original draft plus fee-friction-missing-caps-at-watch and settlement-ambiguous-caps-at-scout from the v2 amendment.
+Want the corrected "Conditional" taxonomy block drafted next, or should we let that sit until you're ready to address it?

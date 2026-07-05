@@ -1,0 +1,51 @@
+ChatGPT review of `WOW-PATCH-2026-07-05-LLP-KALSHI-SPORTS-BRIDGE`:
+
+Approve with amendments.
+
+The patch direction is correct: read-only Kalshi sports/winner-market bridge, no execution, no order placement, `can_execute=false`, and no CONNECTED status until `/api/wow/kalshi/health` returns sports `INVENTORY_READY` and a real winner-market ticker maps cleanly with a fresh Grade A/B orderbook.
+
+Required amendments before Replit build:
+
+1. Edge calculation must use executable-side Kalshi price, not midpoint.
+
+   * YES candidate uses YES ask when available/derivable.
+   * Midpoint is diagnostic only.
+   * Edge = model_probability - executable_market_probability_after_spread_and_fee_friction.
+
+2. Add Kalshi fee/friction buffer.
+
+   * If Kalshi fee/friction cannot be calculated or loaded, cap at `LLP_WATCH`.
+   * No `LLP_PLAYABLE` or `LLP_APPROVED` from raw price edge alone.
+
+3. Settlement-rule auditor is mandatory.
+
+   * No Kalshi row may exceed `LLP_SCOUT` unless ticker, event, market title, and settlement rule are captured.
+   * Ambiguous settlement or fuzzy team/event mapping cannot create approval.
+
+4. Keep Kalshi binary sports edge threshold at derivatives/low-liquidity tier ≥2.5%, but make it post-friction:
+
+   * after spread,
+   * after fee/friction,
+   * after staleness grade,
+   * after model-probability shrinkage if applicable.
+
+5. Keep CONNECTED forbidden until all are true:
+
+   * health returns sports `INVENTORY_READY`,
+   * one real winner-market ticker maps cleanly,
+   * orderbook is Grade A/B,
+   * bridge response shows `dry_run_only=true`,
+   * bridge response shows `can_execute=false`,
+   * regression tests pass.
+
+6. Replit scope today:
+
+   * Steps 1–5 only.
+   * Build adapter, mapper, normalizer, health check, and stub endpoint.
+   * Do not trust any label above `LLP_SCOUT` until real sports inventory exists and backend source confirmation passes.
+   * No backend trading endpoints.
+   * No authenticated order placement.
+   * No live market orders.
+
+Status:
+`APPROVED — pending dashboard build/stub-test only. Not connected. Not live.`
