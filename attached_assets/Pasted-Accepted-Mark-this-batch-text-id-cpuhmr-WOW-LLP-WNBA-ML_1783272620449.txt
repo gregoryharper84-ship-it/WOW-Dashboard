@@ -1,0 +1,78 @@
+Accepted. Mark this batch:
+
+```text id="cpuhmr"
+WOW/LLP WNBA + MLB CONNECTOR PRIORITY BATCH
+STATUS: BUILT_AND_SAFE_DRY_RUN
+LIVE VERIFIED: YES
+EXECUTION: DISABLED
+DRY_RUN_ONLY: TRUE
+can_execute: false
+```
+
+The important win is that Replit followed the narrowed focus correctly: **WNBA + MLB first**, Kalshi settlement hardening held unless real Kalshi sports winner inventory appears.
+
+## Tell Replit
+
+```text id="1eb5o7"
+Accepted.
+
+Log the WNBA/MLB connector priority batch as BUILT_AND_SAFE_DRY_RUN.
+
+Verified live:
+- /wow/balldontlie/health
+  NBA/WNBA/MLB fallback source confirmed live.
+
+- /wow/wnba-nba-stats/health
+  WNBA healthy on primary.
+  NBA correctly degraded to fallback because stats.nba.com remains unavailable from host.
+
+- /wow/mlb/context/health
+  Real MLB schedule/pitcher/lineup context confirmed against current slate.
+
+- /wow/mlb/weather/health
+  NWS primary and Open-Meteo fallback both confirmed live.
+
+Global status:
+- read-only only
+- dry_run_only=true
+- can_execute=false
+- NOT_CALLED / FAILED / AVAILABLE contract followed
+- documented in WOW-SHARED-NOTES.md
+
+Do not proceed to Kalshi settlement metadata hardening yet unless:
+1. real Kalshi sports winner inventory appears, or
+2. user explicitly reprioritizes Kalshi.
+
+Next recommended WNBA/MLB work:
+Run an end-to-end health-to-scoring smoke test proving the new connector statuses are consumed by the actual WNBA/MLB scoring paths and not just standalone health endpoints.
+```
+
+## My recommendation: don’t start Kalshi yet
+
+Hold Kalshi for now. The highest-value next step is not another connector; it is proving the connector health layer actually feeds the scoring layer.
+
+Next task should be:
+
+```text id="gd3s96"
+WOW-PATCH-2026-07-05-WNBA-MLB-CONNECTOR-TO-SCORING-SMOKE
+```
+
+Purpose:
+
+```text id="ckxueq"
+Verify that WNBA/MLB scoring routes consume the new source health states, timestamps, fallback statuses, and source grades before assigning MODEL_QUALIFIED_HOLD, MONEY_QUALIFIED, FINAL_APPROVED, LLP_PLAYABLE, or LLP_APPROVED.
+```
+
+Expected checks:
+
+```text id="joqyaa"
+1. If balldontlie is FAILED, WNBA/NBA rows show fallback missing or degraded.
+2. If stats.nba.com is FAILED, NBA does not fabricate primary data.
+3. If WNBA primary is AVAILABLE, WNBA props can use it as primary context.
+4. MLB context route must pass pitcher/lineup/schedule status into scoring.
+5. MLB weather route must pass NWS/Open-Meteo timestamp and source grade.
+6. Any unavailable connector must cap or block according to source-grade rules.
+7. No health endpoint alone can upgrade a play.
+```
+
+That’s the right next move before trusting any new WNBA/MLB output.

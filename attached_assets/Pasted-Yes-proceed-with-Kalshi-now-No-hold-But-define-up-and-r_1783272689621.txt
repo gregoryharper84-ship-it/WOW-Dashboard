@@ -1,0 +1,190 @@
+Yes — proceed with Kalshi now. No hold.
+
+But define “up and running” correctly:
+
+```text id="vbzv2r"
+Kalshi up today = read-only live market-data connection, inventory scanner, settlement metadata auditor, orderbook normalizer, and dry-run LLP bridge.
+
+Kalshi up today ≠ live trading, order placement, or can_execute=true.
+```
+
+Kalshi’s docs support this path: public market-data endpoints can be accessed without authentication at `https://external-api.kalshi.com/trade-api/v2`, including markets and orderbook data. ([API Documentation][1]) The orderbook returns YES bids and NO bids only, so executable asks must be derived from the opposite side rather than using midpoint. ([API Documentation][2]) Markets also carry binary YES/NO structure, volume, prices, and settlement rules, so settlement metadata has to be captured before any LLP label trust. ([API Documentation][3])
+
+## Send this to Replit now
+
+```text id="dx4pgd"
+Proceed with Kalshi now. No hold.
+
+Goal today:
+Make Kalshi fully up in READ-ONLY / DRY-RUN mode for MLB/WNBA sports winner-market discovery, settlement metadata, orderbook normalization, and LLP bridge evaluation.
+
+Hard constraints:
+- No order placement.
+- No trade execution.
+- No Create Order endpoint.
+- No authenticated portfolio/order APIs.
+- dry_run_only=true on every response.
+- can_execute=false on every response.
+- DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS remains enforced.
+
+Build/verify these today:
+
+1. Kalshi public API health
+   Confirm:
+   - external-api.kalshi.com/trade-api/v2 reachable
+   - /markets reachable
+   - timestamp/source_status/source_grade/data_status returned
+   - dry_run_only=true
+   - can_execute=false
+
+2. Sports winner-market inventory scanner
+   Scope:
+   - MLB
+   - WNBA
+   - winner / game winner / head-to-head style binary markets only
+   Exclude:
+   - combos
+   - parlays
+   - multi-leg
+   - unrelated sports
+   - non-winner markets unless explicitly tagged SCOUT only
+
+3. Settlement metadata hardening
+   For every candidate ticker, capture:
+   - ticker
+   - event_ticker
+   - series_ticker if available
+   - market title
+   - event title
+   - close time
+   - status/open status
+   - settlement rule / resolution source / rule text if available
+   - category/sport tags if available
+   Missing or ambiguous settlement metadata caps at LLP_SCOUT or rejects.
+
+4. Orderbook normalizer
+   For every mapped candidate:
+   - fetch orderbook
+   - derive YES ask from best NO bid
+   - derive NO ask from best YES bid
+   - compute executable price
+   - compute spread
+   - compute orderbook_age_seconds
+   - map source grade:
+     A: <60s
+     B: 60–300s
+     C: 300–600s
+     D: >600s / unobtainable
+   - empty/no executable book = NO_EXECUTABLE_PRICE
+   - stale >600s = KALSHI_DATA_UNOBTAINABLE
+
+5. LLP bridge dry-run endpoint
+   Add or harden:
+   - GET /wow/kalshi/sports/live-board
+   - POST /wow/llp/kalshi/ml-evaluate
+
+   Output every row with:
+   - league
+   - game
+   - side
+   - ticker
+   - event_ticker
+   - market title
+   - settlement metadata status
+   - yes_bid
+   - yes_ask
+   - no_bid
+   - no_ask
+   - executable_price
+   - spread_cents
+   - orderbook_age_seconds
+   - source_grade
+   - model_probability if available
+   - kalshi_market_probability
+   - post_friction_edge
+   - final LLP label
+   - blocker_tags
+   - dry_run_only=true
+   - can_execute=false
+
+6. Inventory gate rule
+   If no eligible MLB/WNBA winner markets exist:
+   - endpoint still returns 200
+   - status = INVENTORY_EMPTY or NO_ELIGIBLE_WINNER_MARKETS
+   - no crash
+   - no fabricated candidate
+   - no label above LLP_SCOUT
+
+7. Connected status wording
+   Use these terms:
+   - API_AVAILABLE if Kalshi public API responds
+   - INVENTORY_READY only if real eligible MLB/WNBA winner markets exist
+   - DRY_RUN_READY if metadata + orderbook + bridge work
+   - CONNECTED_READONLY only if API + real inventory + fresh orderbook pass
+   Never use CONNECTED in a way that implies execution.
+
+8. Regression tests
+   Add tests for:
+   - public API health 200
+   - empty inventory returns 200 with INVENTORY_EMPTY
+   - combo/multi-leg markets excluded
+   - fuzzy team mapping caps at LLP_SCOUT
+   - missing settlement caps at LLP_SCOUT
+   - empty orderbook = NO_EXECUTABLE_PRICE
+   - stale orderbook >600s = KALSHI_DATA_UNOBTAINABLE
+   - executable YES price derived from NO bid, not midpoint
+   - dry_run_only=true always
+   - can_execute=false always
+   - grep confirms no order-placement functions/routes
+
+Acceptance target today:
+Kalshi status should become one of:
+
+A. CONNECTED_READONLY / DRY_RUN_READY
+   if real MLB/WNBA winner inventory exists and fresh orderbook passes.
+
+OR
+
+B. API_AVAILABLE / INVENTORY_EMPTY
+   if Kalshi API works but no eligible MLB/WNBA winner markets exist.
+
+Either outcome is acceptable today.
+What is not acceptable:
+- order placement
+- live execution
+- fabricated inventory
+- bypassing inventory gate
+- treating combo markets as winner markets
+```
+
+## My direction
+
+Do it now. Kalshi should move from “on hold” to:
+
+```text id="loz1j3"
+ACTIVE BUILD: KALSHI READ-ONLY LIVE MARKET DATA
+```
+
+But the safety line stays:
+
+```text id="5ie3me"
+No live trading. No order placement. can_execute=false.
+```
+
+If Replit finds real MLB/WNBA winner markets today, then we can label it:
+
+```text id="spqpap"
+CONNECTED_READONLY / DRY_RUN_READY
+```
+
+If it finds none, still mark progress as:
+
+```text id="t2ztjz"
+API_AVAILABLE / INVENTORY_EMPTY
+```
+
+That still counts as Kalshi up from an infrastructure standpoint.
+
+[1]: https://docs.kalshi.com/getting_started/quick_start_market_data?utm_source=chatgpt.com "Quick Start: Market Data - API Documentation"
+[2]: https://docs.kalshi.com/api-reference/market/get-market-orderbook?utm_source=chatgpt.com "Get Market Orderbook - API Documentation"
+[3]: https://docs.kalshi.com/api-reference/market/get-market?utm_source=chatgpt.com "Get Market - API Documentation"
