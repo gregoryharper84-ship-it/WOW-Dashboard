@@ -1,0 +1,85 @@
+Got it — that changes the connector priority.
+
+Since the current focus is **WNBA + MLB**, do **not** spread effort across every sport right now. Tell Replit to prioritize connectors that directly improve those two lanes.
+
+## Updated connector priority
+
+```text
+1. balldontlie health/fallback connector
+2. WNBA/NBA stats source-review endpoint
+3. MLB Stats API hardening beyond health
+4. Weather stack for MLB: NWS + Open-Meteo
+5. Kalshi settlement metadata hardening
+6. Other sports later
+```
+
+## What to tell Replit
+
+```text
+Current engine focus is WNBA and MLB.
+
+Please prioritize connector work only if it improves one of those two lanes.
+
+Accepted current health endpoints:
+- /wow/odds/health
+- /wow/mlb-stats/health
+- /wow/open-meteo/health
+- /wow/nba-stats/health
+
+Next build order:
+
+1. balldontlie health/fallback connector
+   Purpose: WNBA/NBA/MLB fallback stat source.
+   Must be read-only, source-graded, timestamped, dry_run_only=true, can_execute=false.
+   Never approval source by itself.
+
+2. WNBA/NBA stats source-review endpoint
+   Purpose: WNBA player/team game logs, minutes, pace, role context, L5/L10 support.
+   Current stats.nba.com host timeout should remain visible as FAILED.
+   Add fallback path through ESPN/balldontlie/manual reconstruction where available.
+
+3. MLB Stats API hardening
+   Purpose: schedule, game status, probable pitchers, box scores, player logs.
+   Add deeper route-level health/context endpoint if not already present:
+   /wow/mlb/context/health or /wow/mlb/probables/health.
+   MLB Stats API remains a priority because MLB is active focus.
+
+4. MLB weather stack
+   NWS primary, Open-Meteo fallback/model comparison.
+   Add park/weather context only as read-only source input.
+   Weather cannot approve a bet alone.
+
+5. Kalshi settlement metadata hardening
+   Keep this behind WNBA/MLB connector work unless a real Kalshi sports winner inventory appears.
+   Still DRY_RUN_ONLY, can_execute=false, CONNECTED: NO.
+
+Do not spend time on soccer/API-Football or football-data.org right now unless explicitly requested. Current focus is WNBA and MLB.
+```
+
+## Practical impact
+
+For **WNBA**, the biggest needs are:
+
+```text
+player game logs
+minutes/role
+status/injury/lineup context
+team pace
+usage/splits
+opponent defensive context
+market/projection support
+```
+
+For **MLB**, the biggest needs are:
+
+```text
+probable pitchers
+confirmed starters/lineups
+bullpen context
+game status
+player logs
+park/weather
+market consensus
+```
+
+So yes — keep building, but narrow the lane. The next best step is **balldontlie**, then WNBA/NBA fallback routing, then MLB context hardening.

@@ -10002,6 +10002,541 @@ def wow_nba_stats_health():
         }), 502
 
 
+@app.route("/wow/balldontlie/health", methods=["GET"])
+def wow_balldontlie_health():
+    """
+    Read-only source-review health check for balldontlie.io — used as a
+    FALLBACK/CORROBORATION stat source across NBA, WNBA, and MLB (all three
+    are exposed under one API key: /v1, /wnba/v1, /mlb/v1). balldontlie now
+    requires an API key (401 without one as of 2026-07-05); the key is read
+    from the `balldontlie` env var (note: not `BALLDONTLIE_API_KEY`).
+
+    This connector NEVER approves a bet by itself — it exists purely to
+    corroborate/backfill stats when stats.nba.com or another primary source
+    is unreachable. Current WNBA/MLB focus means the wnba/mlb lanes are the
+    ones that matter operationally; nba is included for parity/monitoring.
+
+    balldontlie's free tier is tightly rate-limited (observed: 5 req/min),
+    so this probes each lane with a single lightweight `/teams` call rather
+    than anything data-heavy, and surfaces the live rate-limit headers so
+    callers can see how much headroom remains.
+
+    Returns the full source-review contract per lane: source, endpoint,
+    timestamp, source_status, source_grade, data_status. NOT_CALLED covers
+    the case where no API key is configured at all (distinct from a live
+    call failing with 401/429/5xx against a reachable host).
+
+    Read-only: only ever issues GET /teams, never writes/executes anything.
+    """
+    import requests as _req
+    checked_at = datetime.now(timezone.utc).isoformat()
+    api_key = os.environ.get("balldontlie")
+
+    if not api_key:
+        return jsonify({
+            "source":       "balldontlie.io",
+            "role":         "fallback_corroboration_only",
+            "timestamp":    checked_at,
+            "source_status": "NOT_CALLED",
+            "source_grade": None,
+            "data_status":  "NOT_CALLED: no balldontlie API key configured",
+            "dry_run_only": True,
+            "can_execute":  False,
+        })
+
+    lanes = [
+        ("nba",  "https://api.balldontlie.io/v1/teams"),
+        ("wnba", "https://api.balldontlie.io/wnba/v1/teams"),
+        ("mlb",  "https://api.balldontlie.io/mlb/v1/teams"),
+    ]
+    results = {}
+    overall_ok = True
+    rate_limit_info = None
+
+    for sport, url in lanes:
+        endpoint = url.replace("https://api.balldontlie.io", "")
+        try:
+            resp = _req.get(url, headers={"Authorization": api_key}, timeout=10)
+            if rate_limit_info is None and resp.headers.get("x-ratelimit-limit"):
+                rate_limit_info = {
+                    "limit":     resp.headers.get("x-ratelimit-limit"),
+                    "remaining": resp.headers.get("x-ratelimit-remaining"),
+                    "reset":     resp.headers.get("x-ratelimit-reset"),
+                }
+            if resp.status_code == 200:
+                teams_count = len(resp.json().get("data", []))
+                if teams_count > 0:
+                    results[sport] = {
+                        "source":        "balldontlie.io",
+                        "endpoint":      endpoint,
+                        "source_status": "AVAILABLE",
+                        "source_grade":  "B",
+                        "data_status":   f"AVAILABLE: {teams_count} teams returned",
+                    }
+                else:
+                    overall_ok = False
+                    results[sport] = {
+                        "source":        "balldontlie.io",
+                        "endpoint":      endpoint,
+                        "source_status": "FAILED",
+                        "source_grade":  None,
+                        "data_status":   "FAILED: 200 but 0 teams returned (empty payload)",
+                    }
+            elif resp.status_code == 401:
+                overall_ok = False
+                results[sport] = {
+                    "source":        "balldontlie.io",
+                    "endpoint":      endpoint,
+                    "source_status": "FAILED",
+                    "source_grade":  None,
+                    "data_status":   "FAILED: 401 unauthorized (bad/expired API key)",
+                }
+            elif resp.status_code == 429:
+                overall_ok = False
+                results[sport] = {
+                    "source":        "balldontlie.io",
+                    "endpoint":      endpoint,
+                    "source_status": "FAILED",
+                    "source_grade":  None,
+                    "data_status":   "FAILED: 429 rate limited",
+                }
+            else:
+                overall_ok = False
+                results[sport] = {
+                    "source":        "balldontlie.io",
+                    "endpoint":      endpoint,
+                    "source_status": "FAILED",
+                    "source_grade":  None,
+                    "data_status":   f"FAILED: HTTP {resp.status_code}",
+                }
+        except Exception as e:
+            overall_ok = False
+            results[sport] = {
+                "source":        "balldontlie.io",
+                "endpoint":      endpoint,
+                "source_status": "FAILED",
+                "source_grade":  None,
+                "data_status":   f"FAILED: {str(e)[:150]}",
+            }
+
+    return jsonify({
+        "role":            "fallback_corroboration_only",
+        "note":            "balldontlie NEVER approves a bet by itself; corroboration/backfill only.",
+        "timestamp":       checked_at,
+        "rate_limit":      rate_limit_info,
+        "lanes":           results,
+        "overall_status":  "AVAILABLE" if overall_ok else "DEGRADED",
+        "dry_run_only":    True,
+        "can_execute":     False,
+    }), (200 if overall_ok else 502)
+
+
+@app.route("/wow/wnba-nba-stats/health", methods=["GET"])
+def wow_wnba_nba_stats_health():
+    """
+    Unified source-review endpoint for the WNBA/NBA stats lane. Current
+    engine focus is WNBA + MLB, so this exists to make the *effective*
+    stats source for WNBA/NBA visible at a glance, including automatic
+    fallback awareness — not just a single upstream's raw reachability.
+
+    Per sport, checks a PRIMARY source and, if it's down, reports whether a
+    FALLBACK source is available so callers know whether they're currently
+    getting real (if degraded-path) data or nothing at all:
+
+      - wnba: primary = ESPN public scoreboard JSON (site.api.espn.com).
+              fallback = balldontlie.io (/wnba/v1/teams).
+      - nba:  primary = stats.nba.com via nba_api (LeagueDashTeamStats).
+              fallback = balldontlie.io (/v1/teams).
+
+    `effective_status` is AVAILABLE if EITHER primary or fallback works,
+    DEGRADED if only the fallback works, FAILED if both are down. This
+    endpoint never fabricates data — it only reports reachability of each
+    source so the caller can decide which one to actually pull stats from.
+
+    Read-only: issues lightweight GET probes only (ESPN scoreboard,
+    nba_api team stats, balldontlie /teams). Never writes/executes.
+    """
+    import requests as _req
+    checked_at = datetime.now(timezone.utc).isoformat()
+    bdl_key = os.environ.get("balldontlie")
+
+    def _check_balldontlie(url: str) -> dict:
+        if not bdl_key:
+            return {
+                "source":        "balldontlie.io",
+                "endpoint":      url.replace("https://api.balldontlie.io", ""),
+                "source_status": "NOT_CALLED",
+                "source_grade":  None,
+                "data_status":   "NOT_CALLED: no balldontlie API key configured",
+            }
+        try:
+            resp = _req.get(url, headers={"Authorization": bdl_key}, timeout=10)
+            if resp.status_code == 200:
+                n = len(resp.json().get("data", []))
+                if n > 0:
+                    return {
+                        "source":        "balldontlie.io",
+                        "endpoint":      url.replace("https://api.balldontlie.io", ""),
+                        "source_status": "AVAILABLE",
+                        "source_grade":  "B",
+                        "data_status":   f"AVAILABLE: {n} teams returned",
+                    }
+                return {
+                    "source":        "balldontlie.io",
+                    "endpoint":      url.replace("https://api.balldontlie.io", ""),
+                    "source_status": "FAILED",
+                    "source_grade":  None,
+                    "data_status":   "FAILED: 200 but 0 teams returned",
+                }
+            return {
+                "source":        "balldontlie.io",
+                "endpoint":      url.replace("https://api.balldontlie.io", ""),
+                "source_status": "FAILED",
+                "source_grade":  None,
+                "data_status":   f"FAILED: HTTP {resp.status_code}",
+            }
+        except Exception as e:
+            return {
+                "source":        "balldontlie.io",
+                "endpoint":      url.replace("https://api.balldontlie.io", ""),
+                "source_status": "FAILED",
+                "source_grade":  None,
+                "data_status":   f"FAILED: {str(e)[:150]}",
+            }
+
+    def _effective(primary: dict, fallback: dict) -> str:
+        if primary["source_status"] == "AVAILABLE":
+            return "AVAILABLE"
+        if fallback["source_status"] == "AVAILABLE":
+            return "DEGRADED"
+        return "FAILED"
+
+    # ── WNBA: primary = ESPN scoreboard ──────────────────────────────
+    try:
+        r = _req.get(
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard",
+            timeout=10,
+        )
+        wnba_primary = {
+            "source":        "espn_wnba_scoreboard",
+            "endpoint":      "/apis/site/v2/sports/basketball/wnba/scoreboard",
+            "source_status": "AVAILABLE" if r.ok else "FAILED",
+            "source_grade":  "A" if r.ok else None,
+            "data_status":   "AVAILABLE: scoreboard returned" if r.ok
+                              else f"FAILED: HTTP {r.status_code}",
+        }
+    except Exception as e:
+        wnba_primary = {
+            "source":        "espn_wnba_scoreboard",
+            "endpoint":      "/apis/site/v2/sports/basketball/wnba/scoreboard",
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   f"FAILED: {str(e)[:150]}",
+        }
+    wnba_fallback = _check_balldontlie("https://api.balldontlie.io/wnba/v1/teams")
+
+    # ── NBA: primary = stats.nba.com via nba_api ─────────────────────
+    if not _NBA_OK:
+        nba_primary = {
+            "source":        "stats.nba.com (nba_api)",
+            "endpoint":      "LeagueDashTeamStats",
+            "source_status": "NOT_CALLED",
+            "source_grade":  None,
+            "data_status":   "NOT_CALLED: nba_api package not installed",
+        }
+    else:
+        try:
+            from nba_api.stats.endpoints import leaguedashteamstats
+            df = leaguedashteamstats.LeagueDashTeamStats(
+                measure_type_detailed_defense="Defense",
+                per_mode_detailed="PerGame",
+                season="2025-26",
+                timeout=10,
+            ).get_data_frames()[0]
+            n = len(df)
+            nba_primary = {
+                "source":        "stats.nba.com (nba_api)",
+                "endpoint":      "LeagueDashTeamStats",
+                "source_status": "AVAILABLE" if n > 0 else "FAILED",
+                "source_grade":  "A" if n > 0 else None,
+                "data_status":   f"AVAILABLE: {n} teams returned" if n > 0
+                                  else "FAILED: 200 but 0 teams returned",
+            }
+        except Exception as e:
+            nba_primary = {
+                "source":        "stats.nba.com (nba_api)",
+                "endpoint":      "LeagueDashTeamStats",
+                "source_status": "FAILED",
+                "source_grade":  None,
+                "data_status":   f"FAILED: {str(e)[:150]}",
+            }
+    nba_fallback = _check_balldontlie("https://api.balldontlie.io/v1/teams")
+
+    lanes = {
+        "wnba": {
+            "primary":           wnba_primary,
+            "fallback":          wnba_fallback,
+            "effective_status":  _effective(wnba_primary, wnba_fallback),
+        },
+        "nba": {
+            "primary":           nba_primary,
+            "fallback":          nba_fallback,
+            "effective_status":  _effective(nba_primary, nba_fallback),
+        },
+    }
+    overall_ok = all(lane["effective_status"] != "FAILED" for lane in lanes.values())
+
+    return jsonify({
+        "timestamp":      checked_at,
+        "focus_note":     "Current engine focus is WNBA + MLB; NBA included for parity/monitoring only.",
+        "lanes":          lanes,
+        "overall_status": "AVAILABLE" if overall_ok else "DEGRADED",
+        "dry_run_only":   True,
+        "can_execute":    False,
+    }), (200 if overall_ok else 502)
+
+
+@app.route("/wow/mlb/context/health", methods=["GET"])
+def wow_mlb_context_health():
+    """
+    Deeper MLB Stats API source-review, beyond the basic /wow/mlb-stats/health
+    reachability ping. MLB is a current active-focus lane, so this checks the
+    actual data the engine depends on day-to-day: today's schedule, probable
+    pitchers, and confirmed lineups — using the exact same statsapi.mlb.com
+    schedule call (`hydrate=probablePitcher,lineups`) that the live LLP MLB
+    workflow (`_llp_fetch_mlb_schedule`) already relies on, so this health
+    check reflects the real production path rather than a synthetic probe.
+
+    Reports, for today's date (UTC):
+      - games_scheduled_today: how many MLB games statsapi has for today.
+      - games_with_probable_pitchers: how many of those have both probable
+        pitchers populated (0 is often legitimate hours before first pitch,
+        not a failure — see `data_status` for the honest caveat).
+      - games_with_confirmed_lineups: how many have >=9 batters listed for
+        both teams (lineups typically post ~1-2hr before first pitch).
+
+    source_status is AVAILABLE/FAILED based on whether the schedule endpoint
+    itself is reachable and returns a well-formed payload — NOT based on
+    whether pitchers/lineups happen to be posted yet (that's expected to be
+    zero outside the pre-game window and must not be conflated with an
+    outage). This mirrors the existing honest-degradation pattern used
+    elsewhere: fields report what they see, they never fabricate readiness.
+
+    Read-only: only ever issues a single GET /api/v1/schedule call.
+    """
+    checked_at = datetime.now(timezone.utc).isoformat()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    try:
+        data = _llp_fetch_mlb_schedule(date_str)
+    except Exception as e:
+        return jsonify({
+            "source":        "statsapi.mlb.com",
+            "endpoint":      "/api/v1/schedule?hydrate=probablePitcher,lineups",
+            "timestamp":     checked_at,
+            "date_checked":  date_str,
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   f"FAILED: {str(e)[:150]}",
+            "dry_run_only":  True,
+            "can_execute":   False,
+        }), 502
+
+    if not data:
+        return jsonify({
+            "source":        "statsapi.mlb.com",
+            "endpoint":      "/api/v1/schedule?hydrate=probablePitcher,lineups",
+            "timestamp":     checked_at,
+            "date_checked":  date_str,
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   "FAILED: schedule call returned empty/unreachable",
+            "dry_run_only":  True,
+            "can_execute":   False,
+        }), 502
+
+    games = []
+    for d in (data.get("dates") or []):
+        if isinstance(d, dict):
+            games.extend(g for g in (d.get("games") or []) if isinstance(g, dict))
+
+    games_scheduled = len(games)
+    games_with_pitchers = 0
+    games_with_lineups = 0
+    for g in games:
+        teams = g.get("teams") or {}
+        if not isinstance(teams, dict):
+            continue
+        pp_away = ((teams.get("away") or {}).get("probablePitcher") or {}).get("fullName")
+        pp_home = ((teams.get("home") or {}).get("probablePitcher") or {}).get("fullName")
+        if pp_away and pp_home:
+            games_with_pitchers += 1
+        lineups = g.get("lineups") or {}
+        if isinstance(lineups, dict):
+            away_bo = lineups.get("awayPlayers") or []
+            home_bo = lineups.get("homePlayers") or []
+            if len(away_bo) >= 9 and len(home_bo) >= 9:
+                games_with_lineups += 1
+
+    return jsonify({
+        "source":                       "statsapi.mlb.com",
+        "endpoint":                     "/api/v1/schedule?hydrate=probablePitcher,lineups",
+        "timestamp":                    checked_at,
+        "date_checked":                 date_str,
+        "source_status":                "AVAILABLE",
+        "source_grade":                 "A",
+        "data_status":                  f"AVAILABLE: {games_scheduled} games scheduled",
+        "games_scheduled_today":        games_scheduled,
+        "games_with_probable_pitchers": games_with_pitchers,
+        "games_with_confirmed_lineups": games_with_lineups,
+        "pregame_data_caveat":          "0 pitchers/lineups is expected outside the pre-game window (lineups typically post ~1-2hr before first pitch); not itself a failure signal.",
+        "dry_run_only":                 True,
+        "can_execute":                  False,
+    })
+
+
+# MLB ballpark coordinates (outdoor/roof-open-relevant parks; used only to
+# resolve a lat/lon for weather-source health checks — not a betting signal
+# by itself). Roof status is not tracked here; that's separate follow-up.
+_MLB_PARK_COORDS: dict[str, tuple[float, float]] = {
+    "ARI": (33.4455, -112.0667), "ATL": (33.8907, -84.4677),
+    "BAL": (39.2839, -76.6217),  "BOS": (42.3467, -71.0972),
+    "CHC": (41.9484, -87.6553),  "CWS": (41.8299, -87.6338),
+    "CIN": (39.0975, -84.5071),  "CLE": (41.4962, -81.6852),
+    "COL": (39.7559, -104.9942), "DET": (42.3390, -83.0485),
+    "HOU": (29.7573, -95.3555),  "KC":  (39.0517, -94.4803),
+    "LAA": (33.8003, -117.8827), "LAD": (34.0739, -118.2400),
+    "MIA": (25.7781, -80.2196),  "MIL": (43.0280, -87.9712),
+    "MIN": (44.9817, -93.2776),  "NYM": (40.7571, -73.8458),
+    "NYY": (40.8296, -73.9262),  "OAK": (37.7516, -122.2005),
+    "PHI": (39.9061, -75.1665),  "PIT": (40.4469, -80.0057),
+    "SD":  (32.7073, -117.1566), "SEA": (47.5914, -122.3325),
+    "SF":  (37.7786, -122.3893), "STL": (38.6226, -90.1928),
+    "TB":  (27.7683, -82.6534),  "TEX": (32.7473, -97.0842),
+    "TOR": (43.6414, -79.3894),  "WSH": (38.8730, -77.0074),
+}
+
+
+@app.route("/wow/mlb/weather/health", methods=["GET"])
+def wow_mlb_weather_health():
+    """
+    Read-only MLB ballpark weather-stack source-review. NWS (api.weather.gov)
+    is PRIMARY for official U.S. weather; Open-Meteo is a FALLBACK/model-
+    comparison source only — per reviewer instruction, weather can never
+    approve a bet alone, and Open-Meteo is not treated as settlement truth.
+
+    Probes one real MLB ballpark (Wrigley Field / CHC, always outdoor, no
+    retractable roof — deterministic probe target) against both sources:
+      - primary:  NWS gridpoint forecast (api.weather.gov points -> forecast).
+      - fallback: Open-Meteo current-conditions forecast for the same coords.
+
+    `effective_status` is AVAILABLE if NWS (primary) works, DEGRADED if only
+    Open-Meteo works, FAILED if both are down — matching the pattern used by
+    /wow/wnba-nba-stats/health for primary/fallback source review.
+
+    This is a reachability/source-review check only. It does not yet wire
+    weather into MLB prop scoring (that requires resolving each day's actual
+    home-team park + roof status, which is separate follow-up work) — see
+    `_MLB_PARK_COORDS` for the full 30-team coordinate table this can build
+    on. Read-only: only issues GET calls, never writes/executes.
+    """
+    import requests as _req
+    checked_at = datetime.now(timezone.utc).isoformat()
+    probe_team = "CHC"
+    lat, lon = _MLB_PARK_COORDS[probe_team]
+
+    # ── Primary: NWS ──────────────────────────────────────────────────
+    try:
+        pdata = _nws_get(f"/points/{lat},{lon}", timeout=10)
+        props = pdata.get("properties", {}) if isinstance(pdata, dict) else {}
+        forecast_url = props.get("forecast")
+        if forecast_url:
+            fdata = _nws_get(forecast_url, timeout=10)
+            periods = (fdata.get("properties", {}) or {}).get("periods", [])
+            if periods:
+                nws_primary = {
+                    "source":        "api.weather.gov",
+                    "endpoint":      "/points -> /gridpoints/.../forecast",
+                    "source_status": "AVAILABLE",
+                    "source_grade":  "A",
+                    "data_status":   f"AVAILABLE: {len(periods)} forecast periods returned",
+                }
+            else:
+                nws_primary = {
+                    "source":        "api.weather.gov",
+                    "endpoint":      "/points -> /gridpoints/.../forecast",
+                    "source_status": "FAILED",
+                    "source_grade":  None,
+                    "data_status":   "FAILED: 200 but no forecast periods returned",
+                }
+        else:
+            nws_primary = {
+                "source":        "api.weather.gov",
+                "endpoint":      "/points",
+                "source_status": "FAILED",
+                "source_grade":  None,
+                "data_status":   "FAILED: gridpoint resolved but no forecast URL present",
+            }
+    except Exception as e:
+        nws_primary = {
+            "source":        "api.weather.gov",
+            "endpoint":      "/points",
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   f"FAILED: {str(e)[:150]}",
+        }
+
+    # ── Fallback: Open-Meteo ─────────────────────────────────────────
+    try:
+        r = _req.get("https://api.open-meteo.com/v1/forecast",
+                     params={"latitude": lat, "longitude": lon,
+                             "current": "temperature_2m", "timezone": "UTC"},
+                     timeout=10)
+        if r.status_code == 200 and "temperature_2m" in (r.json() or {}).get("current", {}):
+            open_meteo_fallback = {
+                "source":        "api.open-meteo.com",
+                "endpoint":      "/v1/forecast",
+                "source_status": "AVAILABLE",
+                "source_grade":  "B",
+                "data_status":   "AVAILABLE: current forecast returned",
+            }
+        else:
+            open_meteo_fallback = {
+                "source":        "api.open-meteo.com",
+                "endpoint":      "/v1/forecast",
+                "source_status": "FAILED",
+                "source_grade":  None,
+                "data_status":   f"FAILED: HTTP {r.status_code}",
+            }
+    except Exception as e:
+        open_meteo_fallback = {
+            "source":        "api.open-meteo.com",
+            "endpoint":      "/v1/forecast",
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   f"FAILED: {str(e)[:150]}",
+        }
+
+    if nws_primary["source_status"] == "AVAILABLE":
+        effective_status = "AVAILABLE"
+    elif open_meteo_fallback["source_status"] == "AVAILABLE":
+        effective_status = "DEGRADED"
+    else:
+        effective_status = "FAILED"
+
+    return jsonify({
+        "timestamp":         checked_at,
+        "probe_park":        probe_team,
+        "note":              "Weather is a read-only context source; it can never approve a bet alone. NWS is primary/settlement-grade; Open-Meteo is fallback/model-comparison only.",
+        "primary":           nws_primary,
+        "fallback":          open_meteo_fallback,
+        "effective_status":  effective_status,
+        "parks_available":   sorted(_MLB_PARK_COORDS.keys()),
+        "dry_run_only":      True,
+        "can_execute":       False,
+    }), (200 if effective_status != "FAILED" else 502)
+
+
 # ── /wow/analyze — Claude-powered prompt & screenshot extractor ──────
 @app.route("/wow/analyze", methods=["POST"])
 @require_api_key

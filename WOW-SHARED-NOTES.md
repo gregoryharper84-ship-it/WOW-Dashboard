@@ -510,3 +510,65 @@ Confirmed no existing Open-Meteo usage anywhere in the codebase before this sess
 **Incidental bug found and fixed (pre-existing, unrelated to this task):** `_get_nba_def_rating()` (NBA opponent defensive-rating helper, ~line 7843) called `nba_api`'s `LeagueDashTeamStats` with `per_mode_simple="PerGame"` — not a valid parameter in the installed `nba_api` version (confirmed via `inspect.signature`; the correct name is `per_mode_detailed`). This would have raised `TypeError` on every call. **Fixed** by correcting the parameter name. Confirmed via `grep` that `_get_nba_def_rating`/`_get_def_rating` are currently **dead code** — not called anywhere in the live NBA prop pipeline (only the separate `_get_wnba_def_rating` is wired into the WNBA lane at ~line 9275). So this bug had zero production impact today, but the fix is needed for whenever NBA opponent defensive-rating context gets wired in — and it would have failed silently into an `{"error": ...}` dict either way (the existing pattern degrades honestly, never fabricates), so no scoring was ever at risk.
 
 **Status:** `GET /wow/nba-stats/health` — **BUILT_AND_SAFE_DRY_RUN**. Currently reporting live `FAILED` against stats.nba.com (real upstream connectivity issue, not a code defect). Read-only, no order/execution code. Next: balldontlie (pending user's API key), then Kalshi settlement metadata hardening.
+
+---
+
+## 2026-07-05 — Reviewer re-prioritization: WNBA + MLB focus
+
+Reviewer (Greg/ChatGPT) narrowed scope: **current engine focus is WNBA and MLB only.** New accepted build order:
+
+1. balldontlie health/fallback connector — **DONE, this entry**
+2. WNBA/NBA stats source-review endpoint (fallback path via ESPN/balldontlie when stats.nba.com is down)
+3. MLB Stats API hardening beyond health (`/wow/mlb/context/health` or `/wow/mlb/probables/health` — schedule, probable pitchers, box scores)
+4. MLB weather stack: NWS primary, Open-Meteo fallback/model comparison
+5. Kalshi settlement metadata hardening (deprioritized — behind WNBA/MLB work unless a real Kalshi sports winner inventory appears)
+6. Other sports (soccer/API-Football, football-data.org) — explicitly NOT now, no work planned unless user asks.
+
+## 2026-07-05 — balldontlie health/fallback connector (`/wow/balldontlie/health`)
+
+**Built:** `GET /wow/balldontlie/health` (no auth) — probes all three balldontlie.io lanes under one API key: NBA (`/v1/teams`), WNBA (`/wnba/v1/teams`), MLB (`/mlb/v1/teams`). Explicitly framed as `role: "fallback_corroboration_only"` — this source is documented in-response as never able to approve a bet by itself, only to corroborate/backfill when a primary source (e.g. stats.nba.com) is down.
+
+**Key setup:** the API key the user added landed as env var `balldontlie` (lowercase) — **not** `BALLDONTLIE_API_KEY`. Code reads `os.environ.get("balldontlie")`. Confirmed via direct curl (`Authorization: <key>` header, no `Bearer` prefix) — 200 on `/v1/teams`, `/wnba/v1/teams`, and `/mlb/v1/teams`.
+
+**Rate limit observed:** free tier is tight — `x-ratelimit-limit: 5` per minute. Health check does one lightweight `/teams` call per lane (3 total per health check) and surfaces the live `x-ratelimit-remaining`/`reset` headers in the response so callers can see headroom before hitting a 429. Do not add more probes per lane without accounting for this budget.
+
+**Verification performed:** Live curl smoke test via the shared proxy after restart. All three lanes returned `AVAILABLE` (45 NBA teams, 33 WNBA teams, 30 MLB teams), `overall_status: AVAILABLE`, HTTP 200, `rate_limit.remaining: 4` after the call.
+
+**Status:** `GET /wow/balldontlie/health` — **BUILT_AND_SAFE_DRY_RUN**. Read-only, `dry_run_only: true`, `can_execute: false`. Next: WNBA/NBA stats source-review endpoint (item 2), wiring balldontlie in as an explicit fallback path when stats.nba.com fails.
+
+## 2026-07-05 — WNBA/NBA stats source-review endpoint (`/wow/wnba-nba-stats/health`)
+
+**Built:** `GET /wow/wnba-nba-stats/health` (no auth) — unified source-review across both lanes, each with an explicit primary + fallback pair and a computed `effective_status`:
+- **wnba:** primary = ESPN public scoreboard JSON, fallback = balldontlie `/wnba/v1/teams`.
+- **nba:** primary = stats.nba.com via `nba_api` (`LeagueDashTeamStats`), fallback = balldontlie `/v1/teams`.
+
+`effective_status` = `AVAILABLE` if primary works, `DEGRADED` if only the fallback works, `FAILED` if both are down. This is distinct from (and complements) the existing single-source `/wow/nba-stats/health` — that one stays as a pure stats.nba.com reachability probe; this new endpoint is the "which source should I actually trust right now" view across both sports, per the reviewer's ask for fallback-aware WNBA/NBA source review.
+
+**Verification performed:** Live curl smoke test via the shared proxy after restart.
+- `wnba.effective_status: AVAILABLE` — ESPN primary healthy (`scoreboard returned`), balldontlie fallback also healthy (33 teams) as a bonus corroboration signal.
+- `nba.effective_status: DEGRADED` — stats.nba.com primary still failing (`Read timed out`, consistent with the earlier finding), but balldontlie fallback is `AVAILABLE` (45 teams), so NBA is not fully dark — exactly the scenario this endpoint was built to surface honestly.
+- `overall_status: AVAILABLE` (DEGRADED lanes don't fail the whole check, since a working fallback still means real data is obtainable).
+
+**Status:** `GET /wow/wnba-nba-stats/health` — **BUILT_AND_SAFE_DRY_RUN**. Read-only, `dry_run_only: true`, `can_execute: false`. Confirms current live state: WNBA fully healthy on primary, NBA running in degraded/fallback-only mode. Next: MLB Stats API hardening beyond health (item 3) — `/wow/mlb/context/health` or `/wow/mlb/probables/health` for schedule/probable pitchers/box scores.
+
+## 2026-07-05 — MLB Stats API hardening beyond health (`/wow/mlb/context/health`)
+
+**Built:** `GET /wow/mlb/context/health` (no auth) — goes beyond the existing basic `/wow/mlb-stats/health` (which only pings `/api/v1/sports`) to check the actual data the live engine depends on: today's schedule, probable pitchers, and confirmed lineups. Deliberately reuses the exact same production call — `_llp_fetch_mlb_schedule()` (statsapi.mlb.com `/api/v1/schedule?hydrate=probablePitcher,lineups`, already used by the live LLP MLB workflow) — so this health check reflects the real production path, not a synthetic probe.
+
+**Key design point — don't conflate "no data yet" with "outage":** `source_status` is AVAILABLE/FAILED based purely on schedule-endpoint reachability. `games_with_probable_pitchers`/`games_with_confirmed_lineups` being 0 is expected and normal hours before first pitch (lineups typically post ~1-2hr before game time) — the response carries an explicit `pregame_data_caveat` field so this is never misread as a failure.
+
+**Verification performed:** Live curl smoke test via the shared proxy after restart, against today's real slate (2026-07-05): `source_status: AVAILABLE`, `games_scheduled_today: 15`, `games_with_probable_pitchers: 15` (all games have both starters posted), `games_with_confirmed_lineups: 10` (5 games still pre-lineup-post window) — real, correct, in-window data.
+
+**Status:** `GET /wow/mlb/context/health` — **BUILT_AND_SAFE_DRY_RUN**. Read-only, `dry_run_only: true`, `can_execute: false`. Next: MLB weather stack (item 4) — NWS primary + Open-Meteo fallback/model comparison, park/weather as read-only context input only.
+
+## 2026-07-05 — MLB weather stack: NWS primary + Open-Meteo fallback (`/wow/mlb/weather/health`)
+
+**Built:** `GET /wow/mlb/weather/health` (no auth) — primary/fallback source-review for MLB ballpark weather, same pattern as `/wow/wnba-nba-stats/health`. NWS (`api.weather.gov`) is primary; Open-Meteo is fallback/model-comparison only. Response carries an explicit `note` reiterating the reviewer's constraint: **weather is read-only context, never a bet-approval signal by itself**, and Open-Meteo is not settlement truth.
+
+**Added `_MLB_PARK_COORDS`:** a new 30-team ballpark lat/lon coordinate table (module-level constant). This is infrastructure for future weather-context wiring into MLB prop scoring — not done yet, this task is source-review only. Roof/dome status is intentionally not tracked here (e.g. retractable-roof parks aren't flagged) — flagged as follow-up if/when weather actually gets wired into scoring.
+
+**Probe target:** Wrigley Field (CHC) — chosen because it's a fixed outdoor park with no retractable roof, giving a deterministic reachability probe. Calls NWS `/points/{lat},{lon}` → gridpoint forecast URL → forecast periods; falls back to Open-Meteo `/v1/forecast` current-conditions for the same coordinates.
+
+**Verification performed:** Live curl smoke test via the shared proxy after restart. `primary` (NWS): `AVAILABLE`, 14 forecast periods returned. `fallback` (Open-Meteo): `AVAILABLE`. `effective_status: AVAILABLE`. Both real weather sources confirmed reachable in one call.
+
+**Status:** `GET /wow/mlb/weather/health` — **BUILT_AND_SAFE_DRY_RUN**. Read-only, `dry_run_only: true`, `can_execute: false`. Next: Kalshi settlement metadata hardening (item 5, still deprioritized behind WNBA/MLB unless a real Kalshi sports winner inventory appears — will confirm with reviewer before starting since it's explicitly lower priority now).
