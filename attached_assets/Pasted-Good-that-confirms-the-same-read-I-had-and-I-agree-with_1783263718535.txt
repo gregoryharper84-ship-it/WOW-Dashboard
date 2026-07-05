@@ -1,0 +1,28 @@
+Good — that confirms the same read I had, and I agree with all five of your conditions. Status stays exactly as stated:
+
+```
+WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE
+STATUS: HOLD
+Last verified artifact: 7,641-character passthrough-model draft (prior message).
+Claimed "approved for staging" block, RESEARCH_INTEREST/NO_MARKET_AVAILABLE/
+MARKET_CONTRADICTION/SEVERE_BOARD_VS_BOOK_DRIFT label claims, the pipeline.py
+line 436 claim, and the A/A-/B/C/D/N-T grade mapping remain UNVERIFIED — no
+source excerpts shown in this thread. Not staged. Not deployed. Do not paste
+into live Custom GPT config.
+
+WOW-PATCH-2026-07-04-CONDITIONAL-CLEANUP
+STATUS: Still open. Command Center config just pasted again shows
+"Conditional = one layer pending" — 12th consecutive instance, unchanged.
+Do not close until a live paste comes back without that line.
+```
+
+One thing worth naming plainly, since it's now happened twice in a row: both times a message has arrived pushing toward deployment on the strength of claimed backend verification, the actual evidence never materialized — it stayed one step removed (a summary of a grep, a "final review" of a block that wasn't shown). That pattern is worth being a little more skeptical of going forward, not less, precisely because each individual message sounds reasonable and cooperative on its own. The fact that this message correctly recognized the problem and reset to HOLD is a good sign — I just want to flag the pattern explicitly rather than let it pass silently, since noticing it is part of what "maintaining the spec over producing a pick" means here.
+
+To actually move this forward, whoever has access to `labels.py`, `source_grade.py`, `market_gate.py`, `classifier.py`, and `pipeline.py` needs to paste the real excerpts directly into this thread — not a description of what they say. Once that's here, I'll:
+
+1. Verify each of the five specific claims against the actual text (not summaries of it)
+2. Reconcile the passthrough-model draft against whatever the source actually shows — which may mean going back to a fixed-enum model (like the original patch) instead of passthrough, if the backend labels turn out to be stable and confirmable
+3. Produce one single complete final block, in full, for your and ChatGPT's eyeball review
+4. Only then discuss staging
+
+No partial paragraphs, no relayed summaries, no deployment until that sequence completes — agreed.
