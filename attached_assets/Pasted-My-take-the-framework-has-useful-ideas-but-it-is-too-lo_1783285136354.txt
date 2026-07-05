@@ -1,0 +1,114 @@
+My take: the framework has useful ideas, but it is too loose for WOW/LLP approval. I would use it as a scouting memo, not as an engine rule.
+
+What is good
+
+The best part is the sports-moneyline concept:
+
+Compare sportsbook no-vig fair probability vs Kalshi executable YES/NO price.
+
+That is exactly what your LLP-Kalshi bridge should do. Kalshi markets are binary contracts where prices represent market-implied probability, and the orderbook returns YES bids and NO bids rather than normal sportsbook odds.  
+
+The second useful idea is line lag. For WNBA/MLB, the best Kalshi opportunities would likely come from delayed reaction to:
+
+confirmed lineups
+pitcher scratches
+late injury/status changes
+weather/roof changes
+starting lineup confirmations
+bullpen availability
+
+That fits your current WNBA/MLB focus.
+
+What is dangerous or incomplete
+
+1. The moneyline conversion table is too simple
+
+The table is directionally right, but it uses raw implied probability, not no-vig fair probability.
+
+Example:
+
+-150 raw implied probability = 150 / (150 + 100) = 60%
+
+But if the other side is +130:
+
++130 raw implied probability = 100 / (130 + 100) = 43.48%
+Total raw book probability = 103.48%
+No-vig favorite probability = 60 / 103.48 = 57.98%
+
+So comparing Kalshi 52¢ against “60%” overstates the edge. The engine must compare Kalshi price against consensus no-vig, not one book’s raw ML.
+
+2. It ignores executable price
+
+The example says “buy at 52¢,” but the engine must verify that 52¢ is actually executable. Kalshi orderbooks show active YES and NO bids only; a YES ask has to be derived from the NO bid side, because a YES bid at X¢ is equivalent to a NO ask at 100-X¢.  
+
+So the rule should be:
+
+Use YES ask / executable price, not midpoint or last traded price.
+
+3. It ignores fees and spread
+
+Kalshi charges trading fees, and some markets can have different fee treatment.  
+
+So “52¢ vs 58% fair” is not automatically playable. Your bridge needs:
+
+edge after spread
+edge after fee/friction
+edge after liquidity check
+edge after settlement audit
+edge after source freshness
+
+4. The AI-market section is not useful for your current goal
+
+The AI-market section is mostly narrative trading. It may be interesting, but it does not help your immediate WNBA/MLB edge build. Also, those examples require current, source-verified market and news validation every time. I would not let AI/tech contracts into your money engine right now.
+
+Label it:
+
+RESEARCH_INTEREST only
+
+5. The “quant bot” section conflicts with your current safety rule
+
+Building a model is fine. Automated execution is not.
+
+For your system:
+
+Allowed: scanner, fair-price model, alert, dry-run ledger, calibration.
+Not allowed: live auto-trading, order placement, market orders, can_execute=true.
+
+How I would convert this into a WOW/LLP rule
+
+Use this cleaned-up version:
+
+Kalshi Sports ML Edge Rule — WNBA/MLB Only
+A Kalshi sports winner candidate may be evaluated only when:
+1. Real MLB/WNBA winner-market inventory exists.
+2. Market maps exactly to a game/team.
+3. Settlement rule is captured and unambiguous.
+4. Orderbook is fresh Grade A/B.
+5. Executable YES/NO price is available.
+6. Sportsbook consensus no-vig fair probability is available.
+7. Model probability is available from LLP.
+8. Edge is calculated after:
+   - no-vig normalization
+   - Kalshi executable price
+   - spread
+   - fees/friction
+   - shrinkage
+   - liquidity
+9. Minimum post-friction edge is ≥2.5%.
+10. dry_run_only=true and can_execute=false always.
+No midpoint approvals.
+No raw-moneyline approvals.
+No single-book approvals.
+No AI/tech market bleed into WNBA/MLB moneyline logic.
+
+My verdict
+
+Useful concept, bad execution if taken literally.
+
+For your system, keep only the sports ML part and rewrite it into this:
+
+Find WNBA/MLB Kalshi winner markets where:
+LLP true probability > Kalshi executable probability + friction by at least 2.5%,
+with fresh orderbook, exact mapping, clean settlement rules, and no execution.
+
+That is the sharp version.
