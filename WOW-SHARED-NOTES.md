@@ -226,8 +226,35 @@ Cross-checked against Greg's two instruction-level smoke tests: `_prob_ceiling(0
 
 ---
 
+## 2026-07-05 — WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE (Proposed — reconciliation done, NOT yet pasted to live GPT config)
+
+**Problem addressed:** the Custom GPT "WOW Betting Engine — WOW v16 CLEAN CORE" persona (used for props/PrizePicks reasoning, separate from the LLP team-betting persona) had never been reconciled against the actual `gate_engine/*` modules. Unlike the LLP persona, this one was already condensed/bullet-style (not prose), so the work this session was pure correctness reconciliation, not a character-limit rewrite.
+
+**Backend confirmation (this session)** — read and checked every relevant module directly: `labels.py`, `ev_gate.py`, `source_grade.py`, `calibration_health.py`, `role_timestamp.py`, `final_lock_orchestrator.py`, `slip_structure.py`, `correlation_gate.py`, `prob_ledger.py`, `classifier.py`, `execution_friction.py`, `sharp_anchor.py`, `house_rules.py`, `audit_closure.py`, plus `kalshi_engine/market_buckets.py` (to rule it out as the props-side bucket system) and targeted greps of `app.py` for `MARKET_UNAVAILABLE`/`DATA_OPEN`/WNBA-triple-risk terms.
+
+**Confirmed exact matches:** probability-component ledger bounds and UNCALIBRATED penalty (+3% haircut, quarter-Kelly cap) in `prob_ledger.py`; no-market → max `MODEL_QUALIFIED_HOLD` in `classifier.py`; approval staleness >3h and line-move ≥0.5 rerun rules in `audit_closure.py` (`APPROVAL_STALE_HOURS=3`, `LINE_MOVEMENT_THRESHOLD=0.5`); `l5_line_used` within 0.5 of current line (`L5_LINE_TOLERANCE=0.5`, persona states this verbatim); `edge_vs_friction`/`market_edge_confirmed` gating; SOURCE_CONFLICT and DES-conflict persistence blocking approval unconditionally; structural-failure-count≥3 kill; coin-flip-kill restart requirement; correlation-gate same-player/UNKNOWN-correlation Power blocks; sharp-anchor directional reject logic. Full detail with file:constant pointers is in `WOW-BETTING-ENGINE-GPT-INSTRUCTIONS.md`.
+
+**Naming mismatches found (behavior matches, token does not):**
+- Persona `MODEL_SIGNAL_ONLY` = backend `PropLabel.RESEARCH_INTEREST`. No `MODEL_SIGNAL_ONLY` string exists in code.
+- Persona `MARKET_UNAVAILABLE` (as a market/data state) = backend market_gate status string `"NO_MARKET_AVAILABLE"`.
+
+**Structural mismatch found:** the persona's "TERMINAL BUCKETS" list conflates real `PropLabel` classifier outputs with upstream `DataStatus` states (`PROXY_ONLY`, `MARKET_UNAVAILABLE`, `DATA_UNOBTAINABLE`, `INPUT_FAILURE`) and one Kalshi-only token (`DATA_OPEN`, which appears nowhere in the props vocabulary — its only use in the repo is an unrelated Kalshi event-contract mapping). None of those five can ever literally be a row's `terminal_label` in the props pipeline; the persona's own "SOURCE STATUS" section already describes the correct separation, so the fix is to stop repeating those five tokens inside "TERMINAL BUCKETS."
+
+**Real backend gaps found (the described mechanism does not exist in code, not just a naming difference):**
+1. `REJECT_ROLE_STATUS` / `REJECT_LINE_VALUE` / `REJECT_CONTEXT` do not exist as literal labels anywhere in `labels.py`. Role staleness is a cap (`MODEL_QUALIFIED_HOLD`), not a reject; line-value problems split into three separate real labels (`REJECT_SHARP_CONFLICT`, `REJECT_FALLING_KNIFE`, `REJECT_LINE_MOVED_AGAINST_SIDE`); no context-reject equivalent beyond the narrower `REJECT_HOUSE_RULES_VULNERABILITY`.
+2. MARKET BUCKETS (`BANNED`/`TEST_ONLY`/`WATCH`/`PRIMARY_CANDIDATE`/`TRUSTED` as a per-prop `bucket_name`/status field) is **not implemented anywhere in the player-props pipeline**. Only `kalshi_engine/market_buckets.py` has an analogous but differently-scoped system (`TRUSTED_TEST`/`WATCH`/`TEST_ONLY`/`SCOUT`/`REJECT`) for Kalshi event contracts, a different product.
+3. SOURCE TIERS T0–T3 have no literal backend constant — the real mechanism is letter grades (A/A-/B/C/D/N-T) in `source_grade.py`. T0≈A/A-, T1≈B map reasonably; there's no dedicated T2 grade (closest analog: corroborated-B upgrade). The persona's claim that T3 blocks raising `model_prob`/`edge_vs_friction`/`market_edge_confirmed` specifically was not found enforced anywhere tying source grade to those three fields.
+4. **WNBA triple-risk kill rule** (no book + non-verified L10 + <15 season games = kill) — grepped `gate_engine/*.py` and `app.py`; no matching code exists anywhere. This is currently pure GPT-side judgment with zero backend enforcement.
+
+**Where the instructions now live:** `WOW-BETTING-ENGINE-GPT-INSTRUCTIONS.md` (repo root) — corrected instructions block (annotated inline with backend-name corrections and gap flags) plus this full review trail pointer.
+
+**Status:** Proposed. The corrected text has NOT been pasted into the live Custom GPT config yet, and no instruction-level smoke tests have been run by Greg. Per the same audit-safe discipline used for the LLP GPT patch: do not mark this Deployed until (1) the user confirms the corrected instructions are live in the GPT config, and (2) Greg reports smoke-test results distinguishing "instruction-level smoke-tested" from "backend-parity confirmed." No backend gate logic was changed this session — this is a documentation-only reconciliation. `DRY_RUN_ONLY_NO_LIVE_TRADING` unaffected.
+
+---
+
 ## 2026-07-04 — Next-session carryover
 
+0. **WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE** — do not lose. Status: **Proposed**, reconciliation complete but corrected text has NOT been pasted into the live Custom GPT config and Greg has not run smoke tests. Real backend gaps flagged (no props-side MARKET BUCKETS system, no `REJECT_ROLE_STATUS`/`REJECT_LINE_VALUE`/`REJECT_CONTEXT` labels, no WNBA triple-risk kill rule, no T0–T3 source tiers) need a user decision on whether to (a) update the GPT instructions to match backend reality, or (b) file a follow-up patch to build the missing backend mechanisms. See `WOW-BETTING-ENGINE-GPT-INSTRUCTIONS.md` for full detail.
 1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — Status: Deployed/pasted to GPT config, instruction-smoke-tested (2/2 PASS), backend parity independently confirmed by Replit/Claude against the embedded source excerpt + new regression tests. Do not re-blur "smoke-tested" with "backend confirmed" in future notes — keep them as separate claims per Greg's process rule.
 2. **WOW-PATCH-2026-07-04-CONDITIONAL-CLEANUP** — do NOT close. Live Command Center config still shows pre-cleanup "Conditional = one layer pending" wording as of this session. Needs a fresh paste of the live config confirming `MODEL_QUALIFIED_HOLD`/`LLP_WATCH` mapping is actually in place before this can move to Deployed.
 3. **WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION** — do not lose. Status: **Proposed**, needs formal patch approval. Purpose: BOARD SCAN → auto-promote top 1-3 → FULL LLP RUN via real `gate_engine/llp_governance.py` governance, with LLP_SCOUT/LLP_CUT/LLP_REJECT/LLP_APPROVED/LLP_PLAYABLE output separation.
