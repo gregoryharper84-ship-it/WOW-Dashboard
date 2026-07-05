@@ -38,6 +38,16 @@ approval-grade signal from incomplete or ambiguous data.
 **How to apply:** treat these as invariants when extending the bridge (e.g.
 wiring real sports inventory). Do not mark the integration "connected"
 anywhere until `INVENTORY_READY` + a real ticker + Grade A/B orderbook +
-passing regression tests all hold simultaneously — sports inventory was
-empty as of 2026-07-05, so the ml-evaluate endpoint is a stub incapable of
-emitting `LLP_PLAYABLE`/`LLP_APPROVED` by design.
+passing regression tests all hold simultaneously.
+
+**Update 2026-07-05 — real inventory found, STUB_CEILING removed:** real
+MLB/WNBA single-game winner-market inventory now exists on Kalshi (was
+previously believed permanently empty). Per explicit user sign-off, the
+`ml_evaluate.py` blanket `LLP_WATCH` ceiling was removed — the endpoint now
+routes through the canonical `cap_label`/`LLPLabel` from
+`gate_engine/llp_governance.py`, so `LLP_PLAYABLE` is reachable whenever
+every cap above passes. `LLP_APPROVED` remains permanently unreachable from
+this endpoint by design (stateless single-shot call; WATCH→APPROVED needs a
+full session-scoped governance rerun this endpoint can't perform) — this is
+a structural ceiling, not a data-availability stub, and must not be "fixed"
+later by trying to make APPROVED reachable here.

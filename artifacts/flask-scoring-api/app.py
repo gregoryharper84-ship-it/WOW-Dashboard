@@ -19077,6 +19077,9 @@ def wow_kalshi_health():
             "kalshi_mve_null_count": null_ct,
             "deploy_version":        _KALSHI_SCAN_VERSION,
             "signal":                signal,
+            "connected_status":      "API_AVAILABLE",
+            "dry_run_only":          True,
+            "can_execute":           False,
         })
     except Exception as e:
         return jsonify({
@@ -19087,6 +19090,9 @@ def wow_kalshi_health():
             "kalshi_error":         str(e)[:200],
             "deploy_version":       _KALSHI_SCAN_VERSION,
             "signal":               "KALSHI_UNREACHABLE",
+            "connected_status":     "KALSHI_UNREACHABLE",
+            "dry_run_only":         True,
+            "can_execute":          False,
         }), 502
 
 
@@ -19097,11 +19103,18 @@ def wow_kalshi_health_sports():
     SPORTS-BRIDGE v2, Step 4). Scoped to sports/winner markets only — this is
     a separate signal from the generic /wow/kalshi/health above.
 
-    NOTE: this bridge is NOT "connected". CONNECTED status requires
-    INVENTORY_READY + a real ticker + Grade A/B orderbook + passing
-    regression tests — none of which are possible while sports inventory
-    is empty. Do not mark this integration connected anywhere until that
-    bar is met.
+    As of 2026-07-05, real MLB (KXMLBGAME) and WNBA (KXWNBAGAME) winner
+    markets exist and INVENTORY_READY is achievable. This is still NOT the
+    same as "CONNECTED" in the sense of order execution — no order code
+    exists anywhere in this stack and none will be added. Status wording:
+      API_AVAILABLE      — Kalshi public API is reachable.
+      INVENTORY_READY     — real, non-combo single-game winner markets exist
+                             for MLB and/or WNBA right now (this endpoint).
+      DRY_RUN_READY        — the full mapper->normalizer->evaluate pipeline
+                              can run end-to-end against real data, read-only.
+      CONNECTED_READONLY   — a full round trip (inventory + orderbook +
+                              settlement + evaluation) has been exercised
+                              successfully read-only. Never implies execution.
 
     Returns:
       signal                    "INVENTORY_READY" | "INVENTORY_EMPTY"
@@ -19109,7 +19122,8 @@ def wow_kalshi_health_sports():
       open_total                int
       sports_candidate_count    int
       sample_tickers            list[str]
-      connected                 always False
+      connected_status          "INVENTORY_READY" | "INVENTORY_EMPTY" | "KALSHI_DATA_UNOBTAINABLE"
+      connected                 always False (reserved boolean; execution-status only)
       dry_run_only              always True
       can_execute               always False
     """
@@ -19126,6 +19140,7 @@ def wow_kalshi_health_sports():
         "flask_uptime_seconds": uptime,
         "deploy_version":       _KALSHI_SCAN_VERSION,
         "connected":            False,
+        "connected_status":     result["signal"],
         **result,
     }), status_code
 
@@ -19134,13 +19149,18 @@ def wow_kalshi_health_sports():
 @require_api_key
 def wow_llp_kalshi_ml_evaluate():
     """
-    LLP-Kalshi Sports Bridge stub evaluator (WOW-PATCH-2026-07-05-LLP-KALSHI-
+    LLP-Kalshi Sports Bridge evaluator (WOW-PATCH-2026-07-05-LLP-KALSHI-
     SPORTS-BRIDGE v2, Step 5).
 
-    STUB ENDPOINT — Kalshi sports inventory is currently empty. This route
-    exists to validate wiring (mapper -> normalizer -> edge sequence ->
-    caps) end-to-end, and can only ever emit LLP_SCOUT or LLP_WATCH. It can
-    never emit LLP_PLAYABLE or LLP_APPROVED, and it never places orders.
+    Real MLB/WNBA winner-market inventory exists as of 2026-07-05. This
+    endpoint re-checks the LIVE inventory signal on every call (a caller
+    cannot self-report their way to a trusted label). When the live signal
+    is exactly INVENTORY_READY and every real gate passes (exact match,
+    settlement clarity, fee/friction, staleness, edge), a result may reach
+    LLP_PLAYABLE. LLP_APPROVED is never emitted here — that requires the
+    full session-scoped `gate_engine.llp_governance` rerun this stateless
+    endpoint does not have access to (see ml_evaluate.py docstring). This
+    endpoint never places orders and never will.
 
     POST body (JSON):
       llp_home_team          str    required
@@ -19212,15 +19232,191 @@ def wow_llp_kalshi_ml_evaluate():
         inventory_signal=inventory_signal,
     )
 
+    connected_status = evaluation.get("connected_status", "DRY_RUN_READY")
     return jsonify({
         "mapping":           mapping,
         "normalized_price":  normalized_price,
         "inventory_signal":  inventory_signal,
         "evaluation":        evaluation,
-        "execution_rule":    "READ_ONLY_NO_ORDERS — dry_run_only=true, can_execute=false, stub endpoint, empty sports inventory",
+        "execution_rule":    (
+            f"READ_ONLY_NO_ORDERS — dry_run_only=true, can_execute=false, "
+            f"connected_status={connected_status}"
+        ),
         "connected":         False,
-        "stub":              True,
+        "connected_status":  connected_status,
+        "stub":              evaluation.get("stub", True),
+        "dry_run_only":      True,
+        "can_execute":       False,
     })
+
+
+@app.route("/wow/kalshi/sports/live-board", methods=["GET"])
+def wow_kalshi_sports_live_board():
+    """
+    Read-only live board of real Kalshi MLB/WNBA winner markets
+    (WOW-PATCH-2026-07-05-LLP-KALSHI-SPORTS-BRIDGE v2, Step 5b).
+
+    For each candidate ticker from KalshiInventoryAdapter, fetches its live
+    orderbook (public, unauthenticated GET /markets/{ticker}/orderbook),
+    normalizes it, and grades its settlement clarity from the market's own
+    rules_primary wording. This never fabricates data: if inventory is
+    empty or an individual orderbook fetch fails, that row is marked
+    NOT_CALLED/FAILED — it is never silently skipped or backfilled with
+    placeholder values.
+
+    Query params:
+      league   "MLB" | "WNBA" | "ALL" (default "ALL")
+      limit    max markets to pull live orderbooks for (default 15, cap 50) —
+               capped to bound the number of live Kalshi API calls per request.
+
+    Returns the full source/endpoint/timestamp/source_status/source_grade/
+    data_status contract at the board level, plus a `rows` list where each
+    row carries its own per-ticker source_status/data_status (a partial
+    orderbook failure never gets folded into a false "AVAILABLE" board
+    signal — the board's own source_status only reflects the inventory
+    scan itself; per-row status is separate and explicit).
+
+    dry_run_only=true and can_execute=false always. No order code exists
+    anywhere in this stack.
+    """
+    from kalshi_engine import kalshi_client
+    from kalshi_engine.llp_bridge.inventory_adapter import KalshiInventoryAdapter
+    from kalshi_engine.llp_bridge.price_normalizer import KalshiPriceNormalizer
+    from kalshi_engine import settlement_risk as _settlement_risk
+
+    league = (request.args.get("league") or "ALL").strip().upper()
+    try:
+        limit = int(request.args.get("limit", 15))
+    except (TypeError, ValueError):
+        limit = 15
+    limit = max(1, min(limit, 50))
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    inventory = KalshiInventoryAdapter().check_sports_inventory(limit=100)
+
+    if inventory["signal"] == "KALSHI_DATA_UNOBTAINABLE":
+        return jsonify({
+            "source":           "kalshi.com (public API)",
+            "endpoint":         "/wow/kalshi/sports/live-board",
+            "timestamp":        checked_at,
+            "source_status":    "FAILED",
+            "source_grade":     None,
+            "data_status":      f"FAILED: inventory scan unobtainable — {inventory.get('error')}",
+            "connected_status": "KALSHI_UNREACHABLE",
+            "league":           league,
+            "rows":             [],
+            "dry_run_only":     True,
+            "can_execute":      False,
+        }), 502
+
+    candidates = inventory.get("candidates", [])
+    if league != "ALL":
+        candidates = [c for c in candidates if c.get("league") == league]
+
+    if not candidates:
+        return jsonify({
+            "source":           "kalshi.com (public API)",
+            "endpoint":         "/wow/kalshi/sports/live-board",
+            "timestamp":        checked_at,
+            "source_status":    "AVAILABLE",
+            "source_grade":     "A",
+            "data_status":      f"AVAILABLE: 0 {league} winner-market candidates open right now",
+            "connected_status": "INVENTORY_EMPTY" if league == "ALL" else f"INVENTORY_EMPTY:{league}",
+            "league":           league,
+            "rows":             [],
+            "dry_run_only":     True,
+            "can_execute":      False,
+        })
+
+    scoped = candidates[:limit]
+    normalizer = KalshiPriceNormalizer()
+    rows = []
+    grade_a_or_b_count = 0
+
+    for cand in scoped:
+        ticker = cand.get("ticker")
+        row_checked_at = datetime.now(timezone.utc).isoformat()
+        row = {
+            "league":       cand.get("league"),
+            "ticker":       ticker,
+            "event_ticker": cand.get("event_ticker"),
+            "title":        cand.get("title"),
+            "close_time":   cand.get("close_time"),
+            "status":       cand.get("status"),
+            "timestamp":    row_checked_at,
+        }
+        try:
+            raw_ob = kalshi_client.get_orderbook(ticker)
+        except Exception as e:
+            row.update({
+                "source_status": "FAILED",
+                "source_grade":  None,
+                "data_status":   f"FAILED: orderbook fetch error — {str(e)[:150]}",
+                "normalized_price": None,
+                "settlement_grade": None,
+            })
+            rows.append(row)
+            continue
+
+        normalized = normalizer.normalize_for_side(
+            raw_orderbook=raw_ob,
+            ticker=ticker,
+            side="YES",
+            orderbook_timestamp_utc=row_checked_at,  # just-fetched, live
+        )
+
+        settlement = _settlement_risk.grade_contract(
+            title=cand.get("title") or "",
+            settlement_condition=cand.get("rules_primary"),
+            resolution_source="Kalshi settlement rules (as captured from market rules_primary)",
+            category="sports_game_result",
+            contract_ticker=ticker or "",
+        )
+
+        if normalized.get("staleness_grade") in ("A", "B") and normalized.get("usable"):
+            grade_a_or_b_count += 1
+
+        row.update({
+            "source_status":    "AVAILABLE" if normalized.get("usable") else "FAILED",
+            "source_grade":     normalized.get("staleness_grade"),
+            "data_status": (
+                f"AVAILABLE: liquidity_grade={normalized.get('liquidity_grade')} "
+                f"staleness_grade={normalized.get('staleness_grade')}"
+                if normalized.get("usable")
+                else f"FAILED: {'; '.join(normalized.get('blocking_reasons', [])) or 'orderbook unusable'}"
+            ),
+            "normalized_price": normalized,
+            "settlement_grade": settlement,
+        })
+        rows.append(row)
+
+    any_ok = any(r["source_status"] == "AVAILABLE" for r in rows)
+    if not any_ok:
+        connected_status = "DRY_RUN_READY"  # inventory real, but no row round-tripped cleanly
+    elif grade_a_or_b_count > 0:
+        connected_status = "CONNECTED_READONLY"
+    else:
+        connected_status = "DRY_RUN_READY"
+
+    return jsonify({
+        "source":           "kalshi.com (public API)",
+        "endpoint":         "/wow/kalshi/sports/live-board",
+        "timestamp":        checked_at,
+        "source_status":    "AVAILABLE" if any_ok else "FAILED",
+        "source_grade":     "A" if grade_a_or_b_count > 0 else ("C" if any_ok else None),
+        "data_status": (
+            f"AVAILABLE: {len(rows)} rows fetched, {grade_a_or_b_count} at Grade A/B orderbook freshness"
+            if any_ok else
+            f"FAILED: all {len(rows)} orderbook fetches failed or were unusable"
+        ),
+        "connected_status": connected_status,
+        "league":           league,
+        "candidate_total":  len(candidates),
+        "rows_returned":    len(rows),
+        "rows":             rows,
+        "dry_run_only":     True,
+        "can_execute":      False,
+    }), (200 if any_ok or not rows else 502)
 
 
 @app.route("/wow/kalshi/scan", methods=["POST", "OPTIONS"])

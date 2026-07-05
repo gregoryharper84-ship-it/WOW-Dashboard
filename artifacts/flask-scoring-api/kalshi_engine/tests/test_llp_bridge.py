@@ -212,8 +212,11 @@ class TestEvaluateStub:
         assert result["label"] == "LLP_SCOUT"
         assert result["dry_run_only"] is True
         assert result["can_execute"] is False
-        assert result["stub"] is True
-        assert result["connected"] is False
+        # 2026-07-05: "stub"/"connected" now reflect live inventory_signal only,
+        # not per-row gate outcomes — this row is capped at SCOUT for missing
+        # settlement fields, but inventory itself is READY, so it's connected.
+        assert result["stub"] is False
+        assert result["connected"] is True
 
     def test_fuzzy_match_caps_scout_even_with_full_settlement(self):
         result = ml_evaluate.evaluate_stub(
@@ -238,7 +241,11 @@ class TestEvaluateStub:
         assert "LLP_WATCH" in result["ceilings_applied"] or "LLP_SCOUT" in result["ceilings_applied"]
         assert result["can_execute"] is False
 
-    def test_never_emits_playable_or_approved(self):
+    def test_never_emits_approved_even_at_high_probability(self):
+        # 2026-07-05: STUB_CEILING removed — LLP_PLAYABLE is now reachable
+        # (see TestEvaluateStub playable-reachability tests below), but
+        # LLP_APPROVED must remain permanently unreachable from this
+        # stateless endpoint regardless of how favorable the inputs are.
         result = ml_evaluate.evaluate_stub(
             ticker="T", event_ticker="E", market_title="Team A vs Team B",
             settlement_condition="Official final score from league box score",
@@ -246,8 +253,7 @@ class TestEvaluateStub:
             normalized_price=self._full_normalized_price(),
             inventory_signal="INVENTORY_READY",
         )
-        assert result["label"] not in ("LLP_PLAYABLE", "LLP_APPROVED")
-        assert result["stub"] is True
+        assert result["label"] != "LLP_APPROVED"
 
     def test_edge_sequencing_order_present_and_in_order(self):
         result = ml_evaluate.evaluate_stub(
@@ -319,3 +325,205 @@ class TestEvaluateStub:
             inventory_signal="INVENTORY_READY",
         )
         assert result["label"] == "LLP_SCOUT"
+
+    # -- 2026-07-05 STUB_CEILING removal regression: LLP_PLAYABLE must now be
+    #    reachable when every real gate passes, but LLP_APPROVED must remain
+    #    permanently unreachable from this stateless endpoint. --------------
+    def test_playable_reachable_when_all_real_gates_pass(self):
+        # executable_price is 0.59 here (yes_bid=0.57/no_bid=0.41), so the
+        # model probability must clear price + post-friction floor (~0.62)
+        # to produce a real positive edge, not just a plausible-looking one.
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.75, match_type="EXACT",
+            normalized_price=self._full_normalized_price(age_seconds=5, liquidity_grade="A"),
+            inventory_signal="INVENTORY_READY",
+        )
+        assert result["label"] == "LLP_PLAYABLE"
+        assert result["ceilings_applied"] == []
+        assert result["connected"] is True
+        assert result["connected_status"] == "CONNECTED_READONLY"
+        assert result["stub"] is False
+        assert result["dry_run_only"] is True
+        assert result["can_execute"] is False
+
+    def test_approved_never_reachable_even_with_perfect_inputs(self):
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.55, match_type="EXACT",
+            normalized_price=self._full_normalized_price(age_seconds=1, liquidity_grade="A"),
+            inventory_signal="INVENTORY_READY",
+        )
+        assert result["label"] != "LLP_APPROVED"
+
+    def test_disconnected_stub_status_when_inventory_not_ready(self):
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.55, match_type="EXACT",
+            normalized_price=self._full_normalized_price(),
+            inventory_signal="INVENTORY_EMPTY",
+        )
+        assert result["connected"] is False
+        assert result["connected_status"] == "DRY_RUN_READY"
+        assert result["stub"] is True
+
+
+# ---------------------------------------------------------------------------
+# orderbook_normalizer — live dollar-format (orderbook_fp) parsing
+# 2026-07-05 root-cause fix: live Kalshi orderbook responses use
+# orderbook_fp: {yes_dollars, no_dollars} with dollar-STRING prices
+# (e.g. "0.4600"), not the previously-assumed integer-cents format.
+# ---------------------------------------------------------------------------
+
+class TestOrderbookNormalizerDollarFormat:
+    def _raw_orderbook_fp(self, yes_dollars=None, no_dollars=None):
+        return {
+            "orderbook_fp": {
+                "yes_dollars": yes_dollars if yes_dollars is not None else [["0.5500", "300.00"]],
+                "no_dollars":  no_dollars  if no_dollars  is not None else [["0.4100", "300.00"]],
+            }
+        }
+
+    def test_dollar_format_detected_and_parsed_correctly(self):
+        from kalshi_engine.orderbook_normalizer import normalize
+        result = normalize(self._raw_orderbook_fp(), ticker="TEST-DOLLARS")
+        # yes_bid=0.55 -> yes_ask = 1 - no_bid(0.41) = 0.59
+        assert result["best_yes_bid"] == 0.55
+        assert result["best_yes_ask"] == 0.59
+        assert result["mid_price"] == 0.57
+
+    def test_dollar_format_not_misread_as_cents(self):
+        # If this were mistakenly parsed as cents, "0.5500" -> 0.0055, which
+        # would be wildly wrong. Confirm it stays in the 0-1 decimal range
+        # as an actual dollar price, not divided by 100 again.
+        from kalshi_engine.orderbook_normalizer import normalize
+        result = normalize(self._raw_orderbook_fp(), ticker="TEST-DOLLARS")
+        assert result["best_yes_bid"] == 0.55
+        assert result["best_yes_bid"] != 0.0055
+
+    def test_legacy_cents_format_still_works(self):
+        from kalshi_engine.orderbook_normalizer import normalize
+        legacy = {"orderbook": {"yes": [{"price": 57, "quantity": 300}],
+                                 "no":  [{"price": 41, "quantity": 300}]}}
+        result = normalize(legacy, ticker="TEST-CENTS")
+        assert result["best_yes_bid"] == 0.57
+
+    def test_liquidity_grade_present_for_dollar_format(self):
+        from kalshi_engine.orderbook_normalizer import normalize
+        result = normalize(
+            self._raw_orderbook_fp(
+                yes_dollars=[["0.5500", "600.00"]],
+                no_dollars=[["0.4400", "600.00"]],
+            ),
+            ticker="TEST-DOLLARS",
+        )
+        assert result["liquidity_grade"] in ("A", "B", "C", "D", "F")
+
+
+# ---------------------------------------------------------------------------
+# KalshiInventoryAdapter — combo exclusion + signal semantics
+# ---------------------------------------------------------------------------
+
+class TestInventoryAdapterSignals:
+    def test_combo_market_excluded_from_candidates(self):
+        from kalshi_engine.llp_bridge.inventory_adapter import KalshiInventoryAdapter
+        adapter = KalshiInventoryAdapter()
+        real_game = {"ticker": "KXMLBGAME-1-A", "event_ticker": "KXMLBGAME-1",
+                     "title": "A vs B", "mve_collection_ticker": None}
+        combo = {"ticker": "KXMVE-COMBO-1", "event_ticker": "KXMVE-COMBO",
+                 "title": "Multi-game combo", "mve_collection_ticker": "KXMVE-COMBO"}
+        assert adapter._looks_like_sports_winner_market(real_game) is True
+        assert adapter._looks_like_sports_winner_market(combo) is False
+
+    def test_summarize_trims_to_expected_fields(self):
+        from kalshi_engine.llp_bridge.inventory_adapter import KalshiInventoryAdapter
+        raw = {
+            "ticker": "KXMLBGAME-1-A", "event_ticker": "KXMLBGAME-1",
+            "title": "A vs B", "status": "active", "close_time": "2026-07-06T00:00:00Z",
+            "rules_primary": "Official box score", "mve_collection_ticker": None,
+            "some_internal_field_we_never_forward": "should not leak",
+        }
+        summary = KalshiInventoryAdapter._summarize(raw, "MLB")
+        assert summary["ticker"] == "KXMLBGAME-1-A"
+        assert summary["league"] == "MLB"
+        assert "some_internal_field_we_never_forward" not in summary
+
+    def test_empty_inventory_signal_is_inventory_empty_not_error(self, monkeypatch):
+        from kalshi_engine.llp_bridge import inventory_adapter as _ia_module
+
+        def _fake_search_markets(series_ticker, status, limit):
+            return {"markets": []}
+
+        monkeypatch.setattr(_ia_module.kalshi_client, "search_markets", _fake_search_markets)
+        result = _ia_module.KalshiInventoryAdapter().check_sports_inventory(limit=10)
+        assert result["signal"] == "INVENTORY_EMPTY"
+        assert result["candidates"] == []
+        assert result["error"] is None
+        assert result["dry_run_only"] is True
+        assert result["can_execute"] is False
+
+    def test_all_series_failing_is_unobtainable_not_empty(self, monkeypatch):
+        from kalshi_engine.llp_bridge import inventory_adapter as _ia_module
+
+        def _fake_search_markets(series_ticker, status, limit):
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr(_ia_module.kalshi_client, "search_markets", _fake_search_markets)
+        result = _ia_module.KalshiInventoryAdapter().check_sports_inventory(limit=10)
+        assert result["signal"] == "KALSHI_DATA_UNOBTAINABLE"
+        assert result["candidates"] == []
+
+
+# ---------------------------------------------------------------------------
+# Read-only guarantee — no order-placement code exists anywhere in this stack
+# ---------------------------------------------------------------------------
+
+class TestNoOrderPlacementCode:
+    _FORBIDDEN_PATTERNS = (
+        "place_order", "create_order", "/orders\"", "'/orders'",
+        "cancel_order", "\"POST\", \"/portfolio", "amend_order",
+    )
+
+    def _kalshi_engine_dir(self):
+        return os.path.join(os.path.dirname(__file__), "..")
+
+    def test_no_order_placement_keywords_in_kalshi_engine_source(self):
+        base = self._kalshi_engine_dir()
+        hits = []
+        for root, _dirs, files in os.walk(base):
+            if "tests" in root.split(os.sep):
+                continue
+            for fname in files:
+                if not fname.endswith(".py"):
+                    continue
+                path = os.path.join(root, fname)
+                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                    content = fh.read()
+                for pattern in self._FORBIDDEN_PATTERNS:
+                    if pattern in content:
+                        hits.append(f"{path}: {pattern}")
+        assert hits == [], f"Forbidden order-placement pattern(s) found: {hits}"
+
+    def test_kalshi_client_only_exposes_get_helpers(self):
+        # "orderbook" is a legitimate read-only market-data noun (public
+        # GET /markets/{ticker}/orderbook) — only flag callables that look
+        # like actual order-PLACEMENT/management verbs.
+        _ORDER_VERB_SUBSTRINGS = (
+            "place_order", "create_order", "cancel_order", "amend_order",
+            "submit_order", "modify_order", "delete_order",
+        )
+        from kalshi_engine import kalshi_client
+        public_callables = [
+            name for name in dir(kalshi_client)
+            if not name.startswith("_") and callable(getattr(kalshi_client, name))
+        ]
+        for name in public_callables:
+            lowered = name.lower()
+            for verb in _ORDER_VERB_SUBSTRINGS:
+                assert verb not in lowered, (
+                    f"kalshi_client exposes an order-placement callable: {name} — "
+                    f"this module must remain public-market-data-only."
+                )

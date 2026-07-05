@@ -2,10 +2,23 @@
 ml_evaluate.py  —  core logic for POST /wow/llp/kalshi/ml-evaluate
 WOW-PATCH-2026-07-05-LLP-KALSHI-SPORTS-BRIDGE v2, Step 5
 
-Stub evaluation endpoint logic. Sports inventory is currently
-INVENTORY_EMPTY, so this can only ever return stub/test-shaped output —
-no label produced here may be trusted above LLP_SCOUT until real sports
-inventory exists (see WOW-SHARED-NOTES.md carryover).
+As of 2026-07-05, real MLB/WNBA winner-market inventory exists on Kalshi
+(INVENTORY_READY is achievable — see inventory_adapter.py). Per explicit
+user sign-off on 2026-07-05, the prior blanket "STUB_CEILING" that forced
+every result to LLP_WATCH regardless of real gate outcomes has been
+REMOVED. Results may now legitimately reach LLP_PLAYABLE when every real
+gate (inventory, settlement, exact match, fee/friction, staleness, edge)
+passes.
+
+LLP_APPROVED is intentionally NOT reachable from this endpoint: per
+`gate_engine/llp_governance.py` (the canonical LLP label engine, see
+`validate_reapproval`), WATCH → APPROVED requires a full session-scoped
+governance rerun (session exposure ledger, calibration history, steam
+protocol) that this stateless, single-shot dry-run bridge call does not
+have access to. This endpoint reuses `cap_label`/`LLPLabel` from
+`gate_engine.llp_governance` for label ordering so the ceiling logic here
+never diverges from the canonical engine, but it does not reinvent or
+bypass the full governance pipeline.
 
 Edge sequencing (per Greg's approved amendment #4 — exact order, skip
 nothing, never reorder):
@@ -16,13 +29,17 @@ nothing, never reorder):
   5. compare to 2.5% floor (derivatives/low-liquidity sports tier)
 
 Hard caps (never bypassed regardless of raw edge):
+  - Live inventory gate: inventory_signal must be exactly INVENTORY_READY,
+    or the row is capped at LLP_SCOUT regardless of caller-supplied data.
   - Settlement-rule auditor: ticker, event_ticker, market_title, and
     settlement_condition must ALL be present and unambiguous, or the row
     is capped at LLP_SCOUT.
   - Fee/friction buffer: if fee/friction cannot be computed (e.g. no
     executable price, no liquidity grade), cap at LLP_WATCH — never
-    LLP_PLAYABLE/LLP_APPROVED from raw price edge alone.
+    LLP_PLAYABLE from raw price edge alone.
   - Fuzzy/ambiguous ticker mapping (match_type != EXACT) caps at LLP_SCOUT.
+  - LLP_APPROVED is never emitted by this endpoint (see above) — ceiling
+    is LLP_PLAYABLE.
   - dry_run_only=True and can_execute=False on every response, no exceptions.
 
 Model-probability shrinkage: when model_probability >= 0.80, shrink toward
@@ -35,9 +52,14 @@ from typing import Any, Optional
 
 from .. import fee_model as _fee_model
 from .. import settlement_risk as _settlement_risk
+from gate_engine.llp_governance import LLPLabel, cap_label
 
 # Binary sports edge threshold — derivatives/low-liquidity tier, POST-friction.
 EDGE_FLOOR = 0.025
+
+# This bridge endpoint is stateless (no session-scoped governance rerun),
+# so LLP_APPROVED is never reachable here — see module docstring.
+_ENDPOINT_LABEL_CEILING = LLPLabel.PLAYABLE.value
 
 # Shrinkage applied to model probabilities >= this value.
 SHRINKAGE_TRIGGER = 0.80
@@ -185,19 +207,19 @@ def evaluate_stub(
         "adjusted_edge": adjusted_edge, "edge_floor": EDGE_FLOOR, "meets_floor": meets_floor,
     })
 
-    # ── Final label: most-restrictive ceiling always wins; never above SCOUT
-    #    for this stub regardless of edge math, since inventory is empty. ──
-    label_priority = {"LLP_SCOUT": 0, "LLP_WATCH": 1}
+    # ── Final label: apply all ceilings via the canonical cap_label ordering,
+    #    then cap at this endpoint's structural ceiling (LLP_PLAYABLE — see
+    #    module docstring for why LLP_APPROVED is never reachable here). ──
     if ceilings:
-        label = min(ceilings, key=lambda c: label_priority.get(c, 0))
+        label = LLPLabel.APPROVED.value  # start unrestricted, then fold in ceilings
+        for c in ceilings:
+            label = cap_label(label, c)
     elif meets_floor:
-        label = "LLP_WATCH"  # stub ceiling — cannot go higher until inventory is real
-        warnings.append(
-            "STUB_CEILING: edge math passed all gates, but this is a stub endpoint "
-            "against empty sports inventory — capped at LLP_WATCH, not a real signal."
-        )
+        label = _ENDPOINT_LABEL_CEILING  # LLP_PLAYABLE — all real gates passed
     else:
-        label = "LLP_SCOUT"
+        label = LLPLabel.SCOUT.value
+
+    label = cap_label(label, _ENDPOINT_LABEL_CEILING)
 
     return {
         "label":               label,
@@ -209,6 +231,13 @@ def evaluate_stub(
         "can_approve_bets":    False,
         "dry_run_only":        True,
         "can_execute":         False,
-        "stub":                True,
-        "connected":           False,
+        # "stub" is retired terminology (see WOW-SHARED-NOTES.md 2026-07-05):
+        # this is real evaluation logic against live inventory whenever
+        # inventory_signal == INVENTORY_READY. "connected" reflects whether
+        # this call was actually checked against live, real Kalshi
+        # inventory (CONNECTED_READONLY) vs. running with no live inventory
+        # backing it at all.
+        "stub":                inventory_signal != "INVENTORY_READY",
+        "connected":           inventory_signal == "INVENTORY_READY",
+        "connected_status":    "CONNECTED_READONLY" if inventory_signal == "INVENTORY_READY" else "DRY_RUN_READY",
     }
