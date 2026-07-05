@@ -19296,38 +19296,83 @@ def wow_llp_kalshi_ml_evaluate():
 @app.route("/wow/kalshi/sports/live-board", methods=["GET"])
 def wow_kalshi_sports_live_board():
     """
-    Read-only live board of real Kalshi MLB/WNBA winner markets
-    (WOW-PATCH-2026-07-05-LLP-KALSHI-SPORTS-BRIDGE v2, Step 5b).
+    Read-only live dry-run board of every touched real Kalshi MLB/WNBA
+    winner market (WOW-PATCH-2026-07-05-KALSHI-WNBA-MLB-ML-EDGE-RULE —
+    live-board step, approved 2026-07-05). Lists EVERY row the scan
+    touches, not just approved ones — SCOUT/WATCH rows and their blockers
+    are first-class output here, not filtered out.
 
-    For each candidate ticker from KalshiInventoryAdapter, fetches its live
-    orderbook (public, unauthenticated GET /markets/{ticker}/orderbook),
-    normalizes it, and grades its settlement clarity from the market's own
-    rules_primary wording. This never fabricates data: if inventory is
-    empty or an individual orderbook fetch fails, that row is marked
-    NOT_CALLED/FAILED — it is never silently skipped or backfilled with
-    placeholder values.
+    Each row is run through the full read-only LLP<->Kalshi bridge
+    pipeline: live orderbook fetch + normalization (KalshiPriceNormalizer),
+    settlement-rule grading, the Kalshi Sports ML Edge Rule sportsbook
+    no-vig consensus gate (consensus_odds.get_consensus_no_vig_probability
+    — The Odds API primary, TheRundown fallback/corroboration only), and
+    the shared ml_evaluate.evaluate_stub terminal-label logic (identical
+    ceiling rules to /wow/llp/kalshi/ml-evaluate).
+
+    IMPORTANT — model_probability is never supplied here: this is a
+    market-side scan with no LLP game object attached to each row, so
+    `model_probability_status` is always "NOT_CALLED" and
+    `model_adjusted_edge` is always null. Per the mandatory consensus gate,
+    a money edge can never be manufactured from model_probability alone —
+    this board therefore reports `consensus_adjusted_edge` (the real,
+    independently-checkable post-friction edge vs. the sportsbook no-vig
+    consensus) but a row can only reach LLP_PLAYABLE from THIS endpoint
+    once a real model_probability is supplied via
+    /wow/llp/kalshi/ml-evaluate — this is intentional, not a bug: it is
+    honest about what a market-only scan can and cannot certify.
+
+    `match_type` is reported as "EXACT" for every row because each row IS
+    the real Kalshi ticker/contract identity taken directly from live
+    inventory (not a fuzzy team-name guess against an LLP game) — the
+    fuzzy/EXACT distinction from KalshiMarketMapper only applies when
+    mapping an LLP game to a ticker, which does not happen on this board.
 
     Query params:
-      league   "MLB" | "WNBA" | "ALL" (default "ALL")
-      limit    max markets to pull live orderbooks for (default 15, cap 50) —
-               capped to bound the number of live Kalshi API calls per request.
+      leagues  comma-separated list, e.g. "MLB,WNBA" (preferred). Values
+               are matched case-insensitively against known leagues.
+      league   single-league legacy param, "MLB" | "WNBA" | "ALL"
+               (default "ALL" when neither `leagues` nor `league` given).
+               Ignored if `leagues` is present.
+      limit    max markets to run through the full pipeline (default 15,
+               cap 50) — capped to bound live Kalshi/Odds-API calls/request.
 
     Returns the full source/endpoint/timestamp/source_status/source_grade/
-    data_status contract at the board level, plus a `rows` list where each
-    row carries its own per-ticker source_status/data_status (a partial
-    orderbook failure never gets folded into a false "AVAILABLE" board
+    data_status contract at the board level, plus a `rows` list. Each row
+    carries: league, ticker, event_ticker, game, yes_side_team, close_time,
+    settlement_status, orderbook_status, liquidity_grade,
+    consensus_odds_status, model_probability_status,
+    consensus_adjusted_edge, model_adjusted_edge, final_llp_label,
+    blocker_tags, warnings. A partial per-row failure (bad orderbook, no
+    consensus, etc.) never gets folded into a false "AVAILABLE" board
     signal — the board's own source_status only reflects the inventory
-    scan itself; per-row status is separate and explicit).
+    scan itself; per-row status is separate and explicit, and NOT_CALLED
+    is always distinct from FAILED.
 
-    dry_run_only=true and can_execute=false always. No order code exists
-    anywhere in this stack.
+    dry_run_only=true and can_execute=false always, at both board and row
+    level. No order-placement code exists anywhere in this stack.
     """
     from kalshi_engine import kalshi_client
     from kalshi_engine.llp_bridge.inventory_adapter import KalshiInventoryAdapter
     from kalshi_engine.llp_bridge.price_normalizer import KalshiPriceNormalizer
-    from kalshi_engine import settlement_risk as _settlement_risk
+    from kalshi_engine.llp_bridge.ml_evaluate import evaluate_stub
+    from kalshi_engine.llp_bridge.consensus_odds import get_consensus_no_vig_probability
+    from kalshi_engine.llp_bridge.title_parser import parse_opponent_team
 
-    league = (request.args.get("league") or "ALL").strip().upper()
+    _KNOWN_LEAGUES = {"MLB", "WNBA"}
+
+    leagues_param = request.args.get("leagues")
+    league_param  = request.args.get("league")
+    if leagues_param:
+        requested_leagues = [l.strip().upper() for l in leagues_param.split(",") if l.strip()]
+    elif league_param:
+        requested_leagues = [league_param.strip().upper()]
+    else:
+        requested_leagues = ["ALL"]
+
+    league_display = ",".join(requested_leagues)
+    filter_all = "ALL" in requested_leagues
+
     try:
         limit = int(request.args.get("limit", 15))
     except (TypeError, ValueError):
@@ -19336,36 +19381,39 @@ def wow_kalshi_sports_live_board():
 
     checked_at = datetime.now(timezone.utc).isoformat()
     inventory = KalshiInventoryAdapter().check_sports_inventory(limit=100)
+    inventory_signal = inventory["signal"]
 
-    if inventory["signal"] == "KALSHI_DATA_UNOBTAINABLE":
+    if inventory_signal == "KALSHI_DATA_UNOBTAINABLE":
         return jsonify({
-            "source":           "kalshi.com (public API)",
+            "source":           "kalshi.com (public API) + The Odds API + TheRundown",
             "endpoint":         "/wow/kalshi/sports/live-board",
             "timestamp":        checked_at,
             "source_status":    "FAILED",
             "source_grade":     None,
             "data_status":      f"FAILED: inventory scan unobtainable — {inventory.get('error')}",
             "connected_status": "KALSHI_UNREACHABLE",
-            "league":           league,
+            "inventory_signal": inventory_signal,
+            "leagues":          league_display,
             "rows":             [],
             "dry_run_only":     True,
             "can_execute":      False,
         }), 502
 
     candidates = inventory.get("candidates", [])
-    if league != "ALL":
-        candidates = [c for c in candidates if c.get("league") == league]
+    if not filter_all:
+        candidates = [c for c in candidates if c.get("league") in requested_leagues]
 
     if not candidates:
         return jsonify({
-            "source":           "kalshi.com (public API)",
+            "source":           "kalshi.com (public API) + The Odds API + TheRundown",
             "endpoint":         "/wow/kalshi/sports/live-board",
             "timestamp":        checked_at,
             "source_status":    "AVAILABLE",
             "source_grade":     "A",
-            "data_status":      f"AVAILABLE: 0 {league} winner-market candidates open right now",
-            "connected_status": "INVENTORY_EMPTY" if league == "ALL" else f"INVENTORY_EMPTY:{league}",
-            "league":           league,
+            "data_status":      f"AVAILABLE: 0 {league_display} winner-market candidates open right now",
+            "connected_status": "INVENTORY_EMPTY" if filter_all else f"INVENTORY_EMPTY:{league_display}",
+            "inventory_signal": inventory_signal,
+            "leagues":          league_display,
             "rows":             [],
             "dry_run_only":     True,
             "can_execute":      False,
@@ -19374,88 +19422,160 @@ def wow_kalshi_sports_live_board():
     scoped = candidates[:limit]
     normalizer = KalshiPriceNormalizer()
     rows = []
+    playable_count = 0
+    watch_count = 0
+    scout_count = 0
     grade_a_or_b_count = 0
 
     for cand in scoped:
         ticker = cand.get("ticker")
+        league = cand.get("league")
+        title = cand.get("title")
+        yes_team = cand.get("yes_sub_title")
+        # NOTE: Kalshi's `no_sub_title` field on these winner markets is NOT
+        # the opposing team — it duplicates `yes_sub_title` on every ticker
+        # observed (verified live 2026-07-05). The only reliable source for
+        # the opposing team is parsing the market `title`, which follows a
+        # fixed "TeamA vs TeamB Winner?" wording for this series. If the
+        # title doesn't match that exact pattern, we never guess — the
+        # opposing team is left None and the consensus lookup correctly
+        # falls through to NOT_CALLED rather than querying a wrong/self pair.
+        opponent_team = parse_opponent_team(title, yes_team)
         row_checked_at = datetime.now(timezone.utc).isoformat()
+
         row = {
-            "league":       cand.get("league"),
-            "ticker":       ticker,
-            "event_ticker": cand.get("event_ticker"),
-            "title":        cand.get("title"),
-            "close_time":   cand.get("close_time"),
-            "status":       cand.get("status"),
-            "timestamp":    row_checked_at,
+            "league":         league,
+            "ticker":         ticker,
+            "event_ticker":   cand.get("event_ticker"),
+            "game":           title,
+            "yes_side_team":  yes_team,
+            "close_time":     cand.get("close_time"),
+            "status":         cand.get("status"),
+            "timestamp":      row_checked_at,
         }
+
+        # ── Live orderbook fetch + normalization ─────────────────────────
+        normalized = None
+        orderbook_error = None
         try:
             raw_ob = kalshi_client.get_orderbook(ticker)
+            normalized = normalizer.normalize_for_side(
+                raw_orderbook=raw_ob,
+                ticker=ticker,
+                side="YES",
+                orderbook_timestamp_utc=row_checked_at,  # just-fetched, live
+            )
         except Exception as e:
-            row.update({
-                "source_status": "FAILED",
-                "source_grade":  None,
-                "data_status":   f"FAILED: orderbook fetch error — {str(e)[:150]}",
-                "normalized_price": None,
-                "settlement_grade": None,
-            })
-            rows.append(row)
-            continue
+            orderbook_error = str(e)[:150]
 
-        normalized = normalizer.normalize_for_side(
-            raw_orderbook=raw_ob,
-            ticker=ticker,
-            side="YES",
-            orderbook_timestamp_utc=row_checked_at,  # just-fetched, live
-        )
-
-        settlement = _settlement_risk.grade_contract(
-            title=cand.get("title") or "",
-            settlement_condition=cand.get("rules_primary"),
-            resolution_source="Kalshi settlement rules (as captured from market rules_primary)",
-            category="sports_game_result",
-            contract_ticker=ticker or "",
-        )
-
-        if normalized.get("staleness_grade") in ("A", "B") and normalized.get("usable"):
-            grade_a_or_b_count += 1
-
-        row.update({
-            "source_status":    "AVAILABLE" if normalized.get("usable") else "FAILED",
-            "source_grade":     normalized.get("staleness_grade"),
-            "data_status": (
+        if normalized is not None and normalized.get("usable"):
+            row["orderbook_status"] = (
                 f"AVAILABLE: liquidity_grade={normalized.get('liquidity_grade')} "
                 f"staleness_grade={normalized.get('staleness_grade')}"
-                if normalized.get("usable")
-                else f"FAILED: {'; '.join(normalized.get('blocking_reasons', [])) or 'orderbook unusable'}"
-            ),
-            "normalized_price": normalized,
-            "settlement_grade": settlement,
-        })
+            )
+            if normalized.get("staleness_grade") in ("A", "B"):
+                grade_a_or_b_count += 1
+        elif normalized is not None:
+            row["orderbook_status"] = (
+                f"FAILED: {'; '.join(normalized.get('blocking_reasons', [])) or 'orderbook unusable'}"
+            )
+        else:
+            row["orderbook_status"] = f"FAILED: orderbook fetch error — {orderbook_error}"
+
+        row["liquidity_grade"] = normalized.get("liquidity_grade") if normalized else None
+
+        # ── Sportsbook no-vig consensus (Kalshi Sports ML Edge Rule) ─────
+        consensus_odds = None
+        if yes_team and opponent_team and league:
+            consensus_odds = get_consensus_no_vig_probability(
+                sport=league, team_a=yes_team, team_b=opponent_team, target_team=yes_team,
+            )
+        else:
+            consensus_odds = {
+                "status": "NOT_CALLED",
+                "consensus_fair_probability": None,
+                "books_used": [], "book_count": 0,
+                "single_book_fallback": False,
+                "max_book_spread": None, "oldest_book_age_seconds": None,
+                "source": None,
+                "blocker_tags": ["ODDS_CONSENSUS_UNAVAILABLE"],
+                "detail": "NOT_CALLED: missing yes_sub_title/opponent_team (unparsed title)/league on this candidate",
+            }
+        row["consensus_odds_status"] = consensus_odds.get("status")
+
+        # ── Settlement grading is performed inside evaluate_stub itself ──
+        # (see settlement-rule auditor in ml_evaluate.py) — no separate call
+        # needed here; we surface its result from the evaluation below.
+
+        # model_probability is never available on a market-only scan row —
+        # NOT_CALLED, distinct from FAILED, and never fabricated.
+        row["model_probability_status"] = "NOT_CALLED"
+
+        evaluation = evaluate_stub(
+            ticker=ticker,
+            event_ticker=cand.get("event_ticker"),
+            market_title=title,
+            settlement_condition=cand.get("rules_primary"),
+            model_probability=None,
+            match_type="EXACT",  # real live ticker identity, not a fuzzy team-name guess
+            normalized_price=normalized,
+            inventory_signal=inventory_signal,
+            consensus_odds=consensus_odds,
+        )
+
+        settlement_grade_result = evaluation.get("settlement_grade")
+        row["settlement_status"] = (
+            "AVAILABLE" if settlement_grade_result and
+            settlement_grade_result.get("resolution_clarity_grade") in ("A", "B", "C")
+            else "FAILED/AMBIGUOUS"
+        ) if settlement_grade_result else "FAILED: settlement fields incomplete"
+
+        step5 = next((s for s in evaluation["steps"] if s.get("step") == 5), {})
+        row["model_adjusted_edge"] = step5.get("model_adjusted_edge")
+        row["consensus_adjusted_edge"] = step5.get("consensus_adjusted_edge")
+        row["final_llp_label"] = evaluation["label"]
+        row["blocker_tags"] = evaluation.get("blocker_tags", [])
+        row["warnings"] = evaluation.get("warnings", [])
+        row["dry_run_only"] = True
+        row["can_execute"] = False
+
+        if evaluation["label"] == "LLP_PLAYABLE":
+            playable_count += 1
+        elif evaluation["label"] == "LLP_WATCH":
+            watch_count += 1
+        else:
+            scout_count += 1
+
         rows.append(row)
 
-    any_ok = any(r["source_status"] == "AVAILABLE" for r in rows)
+    any_ok = any(r["orderbook_status"].startswith("AVAILABLE") for r in rows)
     if not any_ok:
-        connected_status = "DRY_RUN_READY"  # inventory real, but no row round-tripped cleanly
+        connected_status = "DRY_RUN_READY"
     elif grade_a_or_b_count > 0:
         connected_status = "CONNECTED_READONLY"
     else:
         connected_status = "DRY_RUN_READY"
 
     return jsonify({
-        "source":           "kalshi.com (public API)",
+        "source":           "kalshi.com (public API) + The Odds API + TheRundown",
         "endpoint":         "/wow/kalshi/sports/live-board",
         "timestamp":        checked_at,
         "source_status":    "AVAILABLE" if any_ok else "FAILED",
         "source_grade":     "A" if grade_a_or_b_count > 0 else ("C" if any_ok else None),
         "data_status": (
-            f"AVAILABLE: {len(rows)} rows fetched, {grade_a_or_b_count} at Grade A/B orderbook freshness"
+            f"AVAILABLE: {len(rows)} rows evaluated, {grade_a_or_b_count} at Grade A/B orderbook "
+            f"freshness, {playable_count} LLP_PLAYABLE / {watch_count} LLP_WATCH / {scout_count} LLP_SCOUT"
             if any_ok else
             f"FAILED: all {len(rows)} orderbook fetches failed or were unusable"
         ),
         "connected_status": connected_status,
-        "league":           league,
+        "inventory_signal": inventory_signal,
+        "leagues":          league_display,
         "candidate_total":  len(candidates),
         "rows_returned":    len(rows),
+        "playable_count":   playable_count,
+        "watch_count":      watch_count,
+        "scout_count":      scout_count,
         "rows":             rows,
         "dry_run_only":     True,
         "can_execute":      False,

@@ -67,3 +67,16 @@ gate here must branch on `status` first and only treat "probability is
 None" as a fallback/defensive case afterward, or STALE gets silently
 misrouted into the harsher SCOUT ceiling instead of WATCH. This exact bug
 was caught by a dedicated unit test before reaching a live call.
+
+**Update 2026-07-05 — `no_sub_title` does NOT name the opponent team.**
+On the MLB/WNBA winner-market series, Kalshi's `no_sub_title` candidate
+field duplicates `yes_sub_title` on every ticker observed live — it is
+not a reliable source for "who is the other team". Any code needing the
+opponent (e.g. for a consensus-odds lookup) must instead parse the
+market's own `title` text (fixed `"TeamA vs TeamB Winner?"` wording) via
+`kalshi_engine/llp_bridge/title_parser.py::parse_opponent_team`, which
+returns `None` rather than guessing if the title doesn't match or
+`yes_team` isn't one of the two parsed teams. Silently trusting
+`no_sub_title` caused every consensus lookup to search for a team against
+itself, producing a misleading `FAILED` status on games that actually had
+a real, fresh sportsbook consensus available.

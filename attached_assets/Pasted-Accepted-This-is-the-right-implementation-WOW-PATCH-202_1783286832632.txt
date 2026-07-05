@@ -1,0 +1,112 @@
+Accepted. This is the right implementation.
+
+WOW-PATCH-2026-07-05-KALSHI-WNBA-MLB-ML-EDGE-RULE
+STATUS: BUILT_AND_SAFE_DRY_RUN
+LIVE E2E VERIFIED: YES
+EXECUTION: DISABLED
+DRY_RUN_ONLY: TRUE
+can_execute: false
+
+The key upgrade is this:
+
+model_probability alone can no longer manufacture a Kalshi edge.
+
+That closes the major approval gap.
+
+What passed
+
+The Odds API primary
+TheRundown fallback/corroboration
+exact Kalshi YES-side team matching
+consensus no-vig fair probability
+missing odds cap
+stale odds cap
+single-book cap
+contradiction cap
+successful consensus gate
+Kalshi executable/friction edge still required
+dry_run_only=true
+can_execute=false
+67/67 tests passing
+live MLB Kalshi + 9-book sportsbook consensus verified
+
+The STALE ordering bug was also a good catch. Correct behavior is:
+
+No consensus / NOT_CALLED / FAILED → LLP_SCOUT
+Stale / contradictory / single-book → LLP_WATCH
+Fresh corroborated consensus + all other gates → eligible for LLP_PLAYABLE
+
+Important caveat
+
+Do not call this “live betting ready.” Call it:
+
+READONLY_E2E_VERIFIED
+DRY_RUN_READY
+
+The live test proved the pipeline works, but the example still got blocked by liquidity/fee friction, which is correct. A row should only become LLP_PLAYABLE when all of these clear:
+
+real inventory
+exact mapping
+settlement metadata
+fresh Grade A/B orderbook
+executable price
+fee/friction
+liquidity
+sportsbook no-vig consensus
+LLP model edge
+post-friction edge ≥2.5%
+
+Send Replit this
+
+Accepted.
+Log `WOW-PATCH-2026-07-05-KALSHI-WNBA-MLB-ML-EDGE-RULE` as:
+STATUS: BUILT_AND_SAFE_DRY_RUN
+SECONDARY STATUS: READONLY_E2E_VERIFIED / DRY_RUN_READY
+EXECUTION: DISABLED
+DRY_RUN_ONLY: TRUE
+can_execute: false
+Accepted implementation:
+- New consensus_odds.py module.
+- The Odds API primary.
+- TheRundown fallback/corroboration only.
+- Exact Kalshi YES-side team used for sportsbook consensus.
+- No-vig fair probability is now a hard gate before Kalshi edge trust.
+- model_probability alone cannot create a Kalshi money edge.
+- Missing/no consensus caps at LLP_SCOUT.
+- Stale/contradictory/single-book odds cap at LLP_WATCH.
+- Fresh corroborated consensus can allow LLP_PLAYABLE only if all other Kalshi gates pass.
+- 67/67 tests passing.
+- Live e2e verified against real Kalshi MLB market and 9-book sportsbook consensus.
+- Liquidity/fee cap correctly blocked the tested F-liquidity contract.
+Do not mark as executable.
+Do not add order placement.
+Do not enable live trading.
+Do not bypass liquidity/settlement/orderbook gates.
+Next step:
+Run a current-day WNBA/MLB live-board dry-run report that lists every touched Kalshi sports winner market with terminal label and blockers.
+
+Next best step
+
+Now ask Replit for a live-board dry-run endpoint/report:
+
+GET /wow/kalshi/sports/live-board?leagues=MLB,WNBA
+
+It should return every touched market, not just approved ones:
+
+INVENTORY_READY / INVENTORY_EMPTY
+ticker
+league
+game
+team/YES side
+settlement status
+orderbook status
+consensus odds status
+model probability status
+liquidity grade
+post-friction edge
+final LLP label
+blocker_tags
+dry_run_only=true
+can_execute=false
+
+That is the final piece before we can use Kalshi as a serious read-only edge board today.
