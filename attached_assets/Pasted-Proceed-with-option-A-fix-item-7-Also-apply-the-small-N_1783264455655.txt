@@ -1,0 +1,46 @@
+Proceed with **option A: fix item 7**. Also apply the small **N-T → N/T** correction for fidelity.
+
+Do **not** proceed with the unified `SOURCE_CONFLICT` wording. We already have backend evidence that there are two different paths, so the prompt should reflect that.
+
+Send Replit this:
+
+Proceed with a targeted cleanup only.
+
+Do not rewrite the whole file. Do not stage or deploy yet.
+
+Apply these two edits to `WOW-BETTING-ENGINE-GPT-INSTRUCTIONS.md`:
+
+1. **Fix SOURCE_CONFLICT two-path wording**
+
+Replace any broad/unified wording like:
+
+`SOURCE_CONFLICT blocks money labels until resolved.`
+
+With:
+
+`SOURCE_CONFLICT has two backend paths. Classifier path: row/gate data_status == SOURCE_CONFLICT can assign terminal_label = SOURCE_CONFLICT directly. Source-grade path: source_grade conflict applies a ceiling, usually max MODEL_QUALIFIED_HOLD, and is not automatically terminal by itself. In all cases, unresolved conflict prevents MONEY_QUALIFIED and FINAL_APPROVED.`
+
+Reason:
+This matches the confirmed backend excerpts: `classifier.py` can hard-terminal `SOURCE_CONFLICT`, while `source_grade.py` conflict only applies a ceiling.
+
+2. **Correct source-grade token**
+
+Replace `N-T` with backend literal `N/T`.
+
+Reason:
+The raw `source_grade.py` excerpt uses `N/T` as the actual key, so the prompt should use the exact backend token.
+
+After edits, verify and report:
+
+* final character count / byte count
+* the exact updated SOURCE_CONFLICT wording
+* confirmation `N/T` appears and `N-T` no longer appears
+* confirmation terminal bucket list still has exactly the 12 confirmed `PropLabel` enum members
+* confirmation no backend code was touched
+* confirmation not staged, not deployed, not pasted into live Custom GPT config
+
+Expected status after this targeted cleanup:
+
+`WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE — repo artifact reconciled; SOURCE_CONFLICT two-path wording fixed; N/T token corrected; pending final review before staging/deployment.`
+
+My call: **fix item 7 and item 4 now**. After that, this should be ready for final review.
