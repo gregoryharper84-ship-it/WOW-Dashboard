@@ -1,0 +1,63 @@
+This is a good update. I would accept it as **connector hardening complete** for The Odds API and MLB Stats API.
+
+```text
+WOW/LLP CONNECTOR HEALTH HARDENING
+STATUS: ACCEPTED
+Scope: The Odds API + MLB Stats API
+Deployment class: Read-only health/source verification endpoints
+Execution: Disabled
+DRY_RUN_ONLY: TRUE
+```
+
+What matters most:
+
+* Replit did **not** rebuild working connectors unnecessarily.
+* They identified the real gap: missing formal health/source-contract endpoints.
+* Both new endpoints are read-only.
+* Both return the correct audit fields.
+* Both were live-smoke-tested with 200 responses.
+* `dry_run_only=true` and `can_execute=false` remain enforced.
+* Open-Meteo and balldontlie were correctly deferred instead of rushed.
+
+Tell Replit:
+
+```text
+Accepted.
+
+The Odds API and MLB Stats API connector hardening is complete.
+
+Please log:
+
+STATUS: BUILT_AND_SAFE_DRY_RUN
+Endpoints added:
+- GET /wow/odds/health
+- GET /wow/mlb-stats/health
+
+Verified:
+- Both endpoints are read-only GET checks.
+- Both returned 200 in live curl tests.
+- /wow/odds/health reports live quota and source status.
+- /wow/mlb-stats/health reports MLB Stats API availability and source grade.
+- dry_run_only=true.
+- can_execute=false.
+- No order/execution code added.
+- Existing connectors were reused instead of duplicated.
+
+Do not mark this as a betting-signal upgrade by itself. These endpoints improve source verification and auditability only.
+
+Next connector work should be separate:
+1. Open-Meteo health + weather comparison connector
+2. balldontlie health + fallback stat connector
+3. NBA/WNBA stats route hardening if stats.nba.com / nba_api is already partially present
+```
+
+My recommendation for next build order:
+
+```text
+1. Open-Meteo connector/health
+2. balldontlie connector/health
+3. NBA/WNBA stats source-review endpoint
+4. Kalshi settlement metadata hardening
+```
+
+The reason I’d do **Open-Meteo next** is that it gives you a free fallback/model-comparison weather source without affecting betting execution. Then do **balldontlie** as a fallback stats source, but keep it capped unless corroborated.

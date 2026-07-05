@@ -9845,6 +9845,82 @@ def wow_mlb_stats_health():
         }), 502
 
 
+@app.route("/wow/open-meteo/health", methods=["GET"])
+def wow_open_meteo_health():
+    """
+    Read-only source-review health check for Open-Meteo
+    (api.open-meteo.com — free, no auth, no API key required).
+
+    Net-new connector (Priority-1 gap): no existing Open-Meteo usage anywhere
+    in this codebase prior to this route. This endpoint verifies reachability
+    only — it does not yet feed into any weather-comparison/model logic; that
+    is separate follow-up work.
+
+    Returns the full source-review contract: source, endpoint, timestamp,
+    source_status, source_grade, data_status. Public/unauthenticated so only
+    AVAILABLE/FAILED apply (no key-based NOT_CALLED case).
+
+    Read-only: this only hits GET /v1/forecast for a single fixed probe
+    coordinate, never places anything.
+    """
+    import requests as _req
+    checked_at = datetime.now(timezone.utc).isoformat()
+    endpoint = "https://api.open-meteo.com/v1/forecast"
+    # Fixed probe coordinate (Chicago) — connectivity check only, not tied to
+    # any specific WOW weather-lane market.
+    params = {"latitude": 41.8781, "longitude": -87.6298,
+              "current": "temperature_2m", "timezone": "UTC"}
+
+    try:
+        r = _req.get(endpoint, params=params, timeout=8)
+        if r.status_code == 200:
+            body = r.json() or {}
+            has_current = "current" in body and "temperature_2m" in body.get("current", {})
+            return jsonify({
+                "source":        "api.open-meteo.com",
+                "endpoint":      "/v1/forecast",
+                "timestamp":     checked_at,
+                "source_status": "AVAILABLE",
+                "source_grade":  "A" if has_current else "B",
+                "data_status":   "AVAILABLE: current forecast returned" if has_current
+                                 else "AVAILABLE: 200 but response missing expected fields",
+                "dry_run_only":  True,
+                "can_execute":   False,
+            })
+        return jsonify({
+            "source":        "api.open-meteo.com",
+            "endpoint":      "/v1/forecast",
+            "timestamp":     checked_at,
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   f"FAILED: HTTP {r.status_code}",
+            "dry_run_only":  True,
+            "can_execute":   False,
+        }), 502
+    except _req.exceptions.Timeout:
+        return jsonify({
+            "source":        "api.open-meteo.com",
+            "endpoint":      "/v1/forecast",
+            "timestamp":     checked_at,
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   "FAILED: timeout",
+            "dry_run_only":  True,
+            "can_execute":   False,
+        }), 502
+    except Exception as e:
+        return jsonify({
+            "source":        "api.open-meteo.com",
+            "endpoint":      "/v1/forecast",
+            "timestamp":     checked_at,
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   f"FAILED: {str(e)[:150]}",
+            "dry_run_only":  True,
+            "can_execute":   False,
+        }), 502
+
+
 # ── /wow/analyze — Claude-powered prompt & screenshot extractor ──────
 @app.route("/wow/analyze", methods=["POST"])
 @require_api_key

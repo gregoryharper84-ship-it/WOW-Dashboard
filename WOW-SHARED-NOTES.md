@@ -459,3 +459,38 @@ No dedicated pytest coverage was added for these two routes — unlike `kalshi_e
 **Explicitly NOT done (out of scope for this pass):** Open-Meteo and balldontlie (Priority 2, plus Open-Meteo nominally Priority 1) have **no existing integration anywhere** in the codebase — these are genuine net-new connectors, not audit/health-check work, and were intentionally left for a separate build task rather than folded into this audit pass. NBA/WNBA already has a formal `/wow/health` probe (`_NBA_OK` + ESPN WNBA scoreboard check) and was judged sufficiently covered without a dedicated `/wow/nba/health` route this session. No order-placement or execution code exists in either new route — both are pure read-only `GET` health checks.
 
 **Status:** Priority-1 connector audit for **The Odds API** and **MLB Stats API** — **VERIFIED EXISTING + HEALTH ENDPOINTS ADDED**. Remaining Priority-1 gap: Open-Meteo (net-new). Remaining Priority-2 gap: API-Football/football-data.org (partially covered via existing `/wow/health` soccer probe), balldontlie (net-new).
+
+**Reviewer sign-off (Greg/ChatGPT review, accepted as-is):**
+
+```
+STATUS: BUILT_AND_SAFE_DRY_RUN
+Endpoints added:
+- GET /wow/odds/health
+- GET /wow/mlb-stats/health
+
+Verified:
+- Both endpoints are read-only GET checks.
+- Both returned 200 in live curl tests.
+- /wow/odds/health reports live quota and source status.
+- /wow/mlb-stats/health reports MLB Stats API availability and source grade.
+- dry_run_only=true.
+- can_execute=false.
+- No order/execution code added.
+- Existing connectors were reused instead of duplicated.
+```
+
+Explicitly noted by reviewer: this is **not** a betting-signal upgrade — source-verification/auditability only. Accepted next-connector build order: (1) Open-Meteo health + weather comparison, (2) balldontlie health + fallback stat connector, (3) NBA/WNBA stats source-review endpoint, (4) Kalshi settlement metadata hardening.
+
+---
+
+## 2026-07-05 — Open-Meteo connector (net-new)
+
+Confirmed no existing Open-Meteo usage anywhere in the codebase before this session — this is genuinely net-new, unlike the Odds API / MLB Stats API work above which was audit-and-harden of existing connectors.
+
+**Built:** `GET /wow/open-meteo/health` (no auth) — full source-review contract for `api.open-meteo.com` (free, no API key required). Probes `GET /v1/forecast` at a fixed coordinate (Chicago) for connectivity only; distinguishes HTTP-error/timeout/exception failure modes; grades `A` when the expected `current.temperature_2m` field is present, `B` if the response is 200 but missing expected fields, `None` on failure. Always `dry_run_only: true`, `can_execute: false`.
+
+**Scope note:** this endpoint verifies reachability/source-health only. It does **not** yet feed into any weather-comparison, model-vs-Gaussian, or WOW weather-lane logic (that logic already exists separately via NWS/`api.weather.gov` — see `Kalshi weather lane stations`/`Kalshi weather NWS CLI date-mismatch` memory notes). Wiring Open-Meteo in as an actual second weather source for comparison is separate follow-up work, not done here.
+
+**Verification performed:** Live curl smoke test via the shared proxy. First attempt returned `FAILED: HTTP 503` — a genuine transient upstream error from Open-Meteo (confirmed independently via direct shell curl to the same URL, which also failed once then succeeded on retry). This is the correct, honest behavior: the endpoint reported the real failure rather than masking it. Retry immediately after returned `source_status: AVAILABLE`, `source_grade: A`, `data_status: "AVAILABLE: current forecast returned"`.
+
+**Status:** `GET /wow/open-meteo/health` — **BUILT_AND_SAFE_DRY_RUN**. Read-only, no order/execution code. Next accepted build order per reviewer: (2) balldontlie health + fallback stat connector, (3) NBA/WNBA stats source-review endpoint, (4) Kalshi settlement metadata hardening.

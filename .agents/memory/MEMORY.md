@@ -15,3 +15,4 @@
 - [gate-engine/run route param wiring](gate-engine-run-route-params.md) — the HTTP route only forwards raw_rows/target_date/enrichment/record_entries; skip_data_contract etc. are pipeline-only, ignored if sent in the body.
 - [LLP-Kalshi sports bridge hard caps](llp-kalshi-sports-bridge-caps.md) — exact-match/executable-price/staleness-A-B-C-unobtainable/fee-missing-caps-watch/edge-sequence invariants for kalshi_engine/llp_bridge/.
 - [WOW connector health-check contract](wow-connector-health-contract.md) — new /wow/<connector>/health routes need source/endpoint/timestamp/source_status/source_grade/data_status + dry_run_only/can_execute; NOT_CALLED != FAILED; verify via curl, no route-level pytest suite exists.
+- [Open-Meteo health-check flakiness](open-meteo-health-flakiness.md) — api.open-meteo.com occasionally returns transient 503s even when reachable; retry once before treating a FAILED health result as a real outage.
