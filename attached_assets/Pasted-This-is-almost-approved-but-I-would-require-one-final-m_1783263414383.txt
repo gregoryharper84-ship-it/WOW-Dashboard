@@ -1,0 +1,63 @@
+This is **almost approved**, but I would require **one final micro-edit** before staging/deployment.
+
+The backend vocabulary cleanup looks good now:
+
+* `RESEARCH_INTEREST` used instead of `MODEL_SIGNAL_ONLY`
+* `NO_MARKET_AVAILABLE` used instead of `MARKET_UNAVAILABLE`
+* `SOURCE_CONFLICT` preserved as a real terminal bucket
+* `NO_PLAY` preserved as row fallback + session outcome
+* A/A-/B/C/D/N-T source grades used
+* `MARKET_VERIFIED_HOLD` requires affirmative support
+* `MARKET_CONTRADICTION` / `SEVERE_BOARD_VS_BOOK_DRIFT` included
+* generic `HOLD/WATCH/PASS/LEAN/CONDITIONAL/NO BET` banned as final output
+* advisory market buckets are mostly scoped correctly
+
+## One required fix
+
+Current line:
+
+```text
+WNBA triple-risk (no book + unverified L10 + <15 season games) is advisory, not automatic kill — two of three caps at RESEARCH_INTEREST/Flex-ineligible.
+```
+
+Problem: **“caps at”** makes the GPT-only advisory rule sound enforceable again.
+
+Replace with:
+
+```text
+WNBA triple-risk (no book + unverified L10 + <15 season games) is GPT-advisory only, not backend-enforced; flag in advisory_notes and recommend RESEARCH_INTEREST / Flex-ineligible review, but do not cap or kill unless a backend label/gate independently supports it.
+```
+
+Then I would mark it:
+
+```text
+WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE
+STATUS: APPROVED FOR STAGING after WNBA triple-risk micro-edit
+DEPLOYMENT: HOLD until final pasted config is confirmed
+```
+
+Tell Replit:
+
+Final review result: approve with one required micro-edit.
+
+The block is backend-aligned now except for one advisory/enforcement wording issue.
+
+Replace this line:
+
+“WNBA triple-risk (no book + unverified L10 + <15 season games) is advisory, not automatic kill — two of three caps at RESEARCH_INTEREST/Flex-ineligible.”
+
+With:
+
+“WNBA triple-risk (no book + unverified L10 + <15 season games) is GPT-advisory only, not backend-enforced; flag in advisory_notes and recommend RESEARCH_INTEREST / Flex-ineligible review, but do not cap or kill unless a backend label/gate independently supports it.”
+
+Reason:
+The phrase “caps at” makes GPT-only advisory logic sound backend-enforced. The replacement keeps the risk flag while preserving backend parity.
+
+After this edit:
+
+* rerun only the proprietary/no-market / WNBA advisory smoke test,
+* confirm final character count remains under 8,000,
+* stage `WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE` in `WOW-SHARED-NOTES.md` as approved for Custom GPT paste,
+* do not mark fully deployed until the final block is actually pasted into the live Custom GPT config.
+
+Everything else in the current block is approved.
