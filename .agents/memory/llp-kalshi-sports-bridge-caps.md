@@ -24,6 +24,12 @@ hard caps that must never be loosened or bypassed by future edits:
   -> compare to 2.5% floor.
 - Every response includes `dry_run_only: true` and `can_execute: false`,
   no exceptions, no order-placement code anywhere in this package.
+- The ml-evaluate route re-checks the LIVE `KalshiInventoryAdapter` signal on
+  every call (not just caller-supplied `candidate_markets`); unless the live
+  signal is exactly `INVENTORY_READY`, the row is hard-capped at `LLP_SCOUT`
+  regardless of what data the caller supplies. This closes a gap where a
+  caller could otherwise self-report a clean EXACT match + settlement grade
+  and get LLP_WATCH even while the exchange has zero real sports markets.
 
 **Why:** approved by the user's external reviewer (ChatGPT) with amendments
 specifically to prevent a connector from ever silently producing an

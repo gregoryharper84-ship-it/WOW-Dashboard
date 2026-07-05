@@ -18349,6 +18349,7 @@ def wow_llp_kalshi_ml_evaluate():
     if request.method == "OPTIONS":
         return ("", 204)
 
+    from kalshi_engine.llp_bridge.inventory_adapter import KalshiInventoryAdapter
     from kalshi_engine.llp_bridge.market_mapper import KalshiMarketMapper
     from kalshi_engine.llp_bridge.price_normalizer import KalshiPriceNormalizer
     from kalshi_engine.llp_bridge.ml_evaluate import evaluate_stub
@@ -18362,6 +18363,15 @@ def wow_llp_kalshi_ml_evaluate():
     orderbook_ts      = payload.get("orderbook_timestamp_utc")
     settlement_cond   = payload.get("settlement_condition")
     model_probability = payload.get("model_probability")
+
+    # Live inventory gate: every evaluate call re-checks the real sports
+    # signal (not just the caller-supplied candidate_markets). If Kalshi's
+    # live sports inventory is not INVENTORY_READY, the evaluation is
+    # additionally hard-capped regardless of what the caller-supplied
+    # candidate_markets/orderbook claim — a caller cannot self-report their
+    # way to a trusted label while the exchange has no real sports markets.
+    inventory_result = KalshiInventoryAdapter().check_sports_inventory(limit=100)
+    inventory_signal  = inventory_result["signal"]
 
     mapping = KalshiMarketMapper().map_game_to_ticker(
         llp_home_team=llp_home_team,
@@ -18387,15 +18397,17 @@ def wow_llp_kalshi_ml_evaluate():
         model_probability=model_probability,
         match_type=mapping.get("match_type", "NONE"),
         normalized_price=normalized_price,
+        inventory_signal=inventory_signal,
     )
 
     return jsonify({
-        "mapping":          mapping,
-        "normalized_price": normalized_price,
-        "evaluation":       evaluation,
-        "execution_rule":   "READ_ONLY_NO_ORDERS — dry_run_only=true, can_execute=false, stub endpoint, empty sports inventory",
-        "connected":        False,
-        "stub":             True,
+        "mapping":           mapping,
+        "normalized_price":  normalized_price,
+        "inventory_signal":  inventory_signal,
+        "evaluation":        evaluation,
+        "execution_rule":    "READ_ONLY_NO_ORDERS — dry_run_only=true, can_execute=false, stub endpoint, empty sports inventory",
+        "connected":         False,
+        "stub":              True,
     })
 
 

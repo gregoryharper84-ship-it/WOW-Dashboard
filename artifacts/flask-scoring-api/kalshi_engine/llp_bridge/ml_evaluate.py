@@ -60,18 +60,35 @@ def evaluate_stub(
     model_probability:    Optional[float],
     match_type:           str,                  # "EXACT" | "FUZZY" | "NONE" from KalshiMarketMapper
     normalized_price:     Optional[dict[str, Any]],  # output of KalshiPriceNormalizer, or None
+    inventory_signal:     str = "INVENTORY_EMPTY",  # live signal from KalshiInventoryAdapter
 ) -> dict[str, Any]:
     """
     Evaluate a single LLP<->Kalshi sports candidate through the required
-    edge sequence, subject to the settlement/fuzzy/fee hard caps.
+    edge sequence, subject to the settlement/fuzzy/fee/inventory hard caps.
 
     Returns a dict with `label` in {LLP_SCOUT, LLP_WATCH} only — this stub
     can never emit LLP_PLAYABLE or LLP_APPROVED, since sports inventory is
     currently empty and no real ticker has passed regression tests.
+
+    `inventory_signal` is the LIVE result of KalshiInventoryAdapter at call
+    time — not something the caller can spoof via candidate_markets/
+    raw_orderbook. Unless it is exactly "INVENTORY_READY", the row is
+    additionally hard-capped at LLP_SCOUT: a caller cannot self-report
+    their way to a trusted label while the exchange has no real sports
+    winner markets.
     """
     steps: list[dict[str, Any]] = []
     warnings: list[str] = []
     ceilings: list[str] = []
+
+    # ── Live inventory gate (mandatory — cannot be bypassed by request body) ──
+    if inventory_signal != "INVENTORY_READY":
+        ceilings.append("LLP_SCOUT")
+        warnings.append(
+            f"INVENTORY_NOT_READY: live sports inventory signal is "
+            f"'{inventory_signal}', not INVENTORY_READY — capped at LLP_SCOUT "
+            f"regardless of caller-supplied data."
+        )
 
     # ── Settlement-rule auditor (mandatory — gates everything else) ─────────
     settlement_complete = all([ticker, event_ticker, market_title, settlement_condition])

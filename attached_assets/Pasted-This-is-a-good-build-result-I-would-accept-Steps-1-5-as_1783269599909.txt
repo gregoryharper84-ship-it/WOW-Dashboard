@@ -1,0 +1,126 @@
+This is a good build result. I would **accept Steps 1–5 as complete**, but **do not call it connected yet**.
+
+The correct status is:
+
+```text
+WOW-PATCH-2026-07-05-LLP-KALSHI-SPORTS-BRIDGE v2
+STATUS: BUILT / STUB-TESTED / SMOKE-VERIFIED
+CONNECTED: NO
+LIVE LABEL TRUST: NO
+EXECUTION: DISABLED
+DRY_RUN_ONLY: TRUE
+```
+
+Key reason:
+
+```text
+/wow/kalshi/health/sports = INVENTORY_EMPTY
+```
+
+So the adapter exists, the endpoint works, and the edge math path works in stub mode, but the Kalshi sports lane is **not live-connected** until real sports winner inventory exists.
+
+## Tell Claude/Replit this
+
+Confirmed. Treat this as accepted for Steps 1–5.
+
+Log status as:
+
+`WOW-PATCH-2026-07-05-LLP-KALSHI-SPORTS-BRIDGE v2`
+`STATUS: BUILT / STUB-TESTED / SMOKE-VERIFIED`
+`CONNECTED: NO`
+`DEPLOYMENT CLASS: read-only adapter + stub endpoint`
+`DRY_RUN_ONLY: true`
+`can_execute: false`
+
+What passed:
+
+* `KalshiInventoryAdapter` built.
+* `KalshiMarketMapper` built.
+* `KalshiPriceNormalizer` built with executable-side pricing and staleness grade.
+* `ml_evaluate.py` built with edge sequence:
+  spread → fee/friction → staleness → shrinkage → 2.5% Kalshi binary floor.
+* Routes added:
+
+  * `GET /wow/kalshi/health/sports`
+  * `POST /wow/llp/kalshi/ml-evaluate`
+* Auth enforcement verified: unauthenticated request returns 401.
+* Authenticated stub flow verified: executable price differs from midpoint, shrinkage applies, edge clears math, but output remains capped at `LLP_WATCH`.
+* Full test suite passed: 36/36.
+* No backend order-placement code exists.
+* No live trading path exists.
+* No “CONNECTED” status should be used yet.
+
+Important status rule:
+Because `/wow/kalshi/health/sports` currently returns `INVENTORY_EMPTY`, this patch is not connected to live sports winner markets and cannot emit trusted live LLP labels above the stub ceiling.
+
+Keep these as remaining gates:
+
+1. PR review / source review.
+2. Confirm no order-placement functions exist by grep:
+
+   * `create_order`
+   * `place_order`
+   * `submit_order`
+   * `market_order`
+   * `limit_order`
+   * `/portfolio/orders`
+3. Confirm `can_execute=false` is hardcoded/forced in every Kalshi bridge response.
+4. Confirm `dry_run_only=true` appears in every response.
+5. Wait for `/wow/kalshi/health/sports` to return real `INVENTORY_READY`.
+6. Once real inventory exists, verify one real sports winner ticker maps cleanly.
+7. Verify fresh Grade A/B orderbook.
+8. Verify settlement rule captured.
+9. Verify fee/friction is loaded.
+10. Only then allow labels above `LLP_SCOUT`/`LLP_WATCH` per gate results — still dry-run only.
+
+Do not mark this `CONNECTED`.
+Do not mark this `LIVE`.
+Do not mark this `EXECUTABLE`.
+Do not add order placement.
+
+## My review
+
+I agree with the design if the reported test results are accurate. The most important thing is that it correctly stayed capped at `LLP_WATCH` even when the math cleared, because inventory is still empty. That means the bridge did **not** accidentally turn a stub into a live betting signal.
+
+The next patch should not be “make picks.” The next patch should be:
+
+```text
+WOW-PATCH-2026-07-05-LLP-KALSHI-BRIDGE-SOURCE-REVIEW
+```
+
+Purpose:
+
+```text
+Verify no execution path, verify dry-run enforcement, verify health behavior, verify market mapping cannot fuzzy-approve, and verify labels cannot exceed inventory/staleness/settlement caps.
+```
+
+## What you should ask for next
+
+Ask Replit for one concise verification report:
+
+```text
+Please provide the source-review checklist for the LLP-Kalshi bridge:
+
+1. grep results proving no order-placement code exists
+2. confirmation every response has dry_run_only=true
+3. confirmation every response has can_execute=false
+4. confirmation INVENTORY_EMPTY stops live scan/label trust
+5. confirmation fuzzy market matches cap at LLP_SCOUT
+6. confirmation empty orderbook returns KALSHI_DATA_UNOBTAINABLE
+7. confirmation stale orderbook >600s returns KALSHI_DATA_UNOBTAINABLE
+8. confirmation missing settlement rule caps at LLP_SCOUT or rejects
+9. confirmation missing fee/friction caps at LLP_WATCH
+10. confirmation Kalshi binary threshold is 2.5% post-friction
+```
+
+If that report checks out, you can mark:
+
+```text
+BUILT_AND_SAFE_DRY_RUN
+```
+
+But not:
+
+```text
+CONNECTED
+```

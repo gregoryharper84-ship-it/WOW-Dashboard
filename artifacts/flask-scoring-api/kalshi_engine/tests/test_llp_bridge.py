@@ -207,6 +207,7 @@ class TestEvaluateStub:
             ticker="T", event_ticker=None, market_title="Some Game",
             settlement_condition="Official box score", model_probability=0.6,
             match_type="EXACT", normalized_price=self._full_normalized_price(),
+            inventory_signal="INVENTORY_READY",
         )
         assert result["label"] == "LLP_SCOUT"
         assert result["dry_run_only"] is True
@@ -220,6 +221,7 @@ class TestEvaluateStub:
             settlement_condition="Official final score from league box score",
             model_probability=0.6, match_type="FUZZY",
             normalized_price=self._full_normalized_price(),
+            inventory_signal="INVENTORY_READY",
         )
         assert result["label"] == "LLP_SCOUT"
 
@@ -229,6 +231,7 @@ class TestEvaluateStub:
             settlement_condition="Official final score from league box score",
             model_probability=0.6, match_type="EXACT",
             normalized_price=None,
+            inventory_signal="INVENTORY_READY",
         )
         # fee/friction unavailable -> LLP_WATCH ceiling; no SCOUT-forcing condition here
         assert result["label"] in ("LLP_WATCH", "LLP_SCOUT")
@@ -241,6 +244,7 @@ class TestEvaluateStub:
             settlement_condition="Official final score from league box score",
             model_probability=0.95, match_type="EXACT",
             normalized_price=self._full_normalized_price(),
+            inventory_signal="INVENTORY_READY",
         )
         assert result["label"] not in ("LLP_PLAYABLE", "LLP_APPROVED")
         assert result["stub"] is True
@@ -251,6 +255,7 @@ class TestEvaluateStub:
             settlement_condition="Official final score from league box score",
             model_probability=0.85, match_type="EXACT",
             normalized_price=self._full_normalized_price(),
+            inventory_signal="INVENTORY_READY",
         )
         names = [s["name"] for s in result["steps"]]
         assert names == ["spread", "fee_friction", "staleness_grade", "shrinkage", "compare_to_floor"]
@@ -261,12 +266,14 @@ class TestEvaluateStub:
             settlement_condition="Official final score from league box score",
             model_probability=0.70, match_type="EXACT",
             normalized_price=self._full_normalized_price(),
+            inventory_signal="INVENTORY_READY",
         )
         above = ml_evaluate.evaluate_stub(
             ticker="T", event_ticker="E", market_title="Team A vs Team B",
             settlement_condition="Official final score from league box score",
             model_probability=0.90, match_type="EXACT",
             normalized_price=self._full_normalized_price(),
+            inventory_signal="INVENTORY_READY",
         )
         below_shrink_step = next(s for s in below["steps"] if s["name"] == "shrinkage")
         above_shrink_step = next(s for s in above["steps"] if s["name"] == "shrinkage")
@@ -282,3 +289,33 @@ class TestEvaluateStub:
         assert result["dry_run_only"] is True
         assert result["can_execute"] is False
         assert result["can_approve_bets"] is False
+
+    def test_inventory_not_ready_caps_scout_even_with_full_data(self):
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.95, match_type="EXACT",
+            normalized_price=self._full_normalized_price(),
+            inventory_signal="INVENTORY_EMPTY",
+        )
+        assert result["label"] == "LLP_SCOUT"
+        assert any("INVENTORY_NOT_READY" in w for w in result["warnings"])
+
+    def test_inventory_signal_defaults_to_empty_when_unspecified(self):
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.95, match_type="EXACT",
+            normalized_price=self._full_normalized_price(),
+        )
+        assert result["label"] == "LLP_SCOUT"
+
+    def test_inventory_ready_alone_does_not_bypass_other_caps(self):
+        result = ml_evaluate.evaluate_stub(
+            ticker="T", event_ticker="E", market_title="Team A vs Team B",
+            settlement_condition="Official final score from league box score",
+            model_probability=0.6, match_type="FUZZY",
+            normalized_price=self._full_normalized_price(),
+            inventory_signal="INVENTORY_READY",
+        )
+        assert result["label"] == "LLP_SCOUT"
