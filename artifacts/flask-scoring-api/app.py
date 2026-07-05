@@ -7849,7 +7849,7 @@ def _get_nba_def_rating(opponent_abbr: str) -> dict:
         import pandas as _pd
         df = leaguedashteamstats.LeagueDashTeamStats(
             measure_type_detailed_defense="Defense",
-            per_mode_simple="PerGame",
+            per_mode_detailed="PerGame",
             season="2025-26",
         ).get_data_frames()[0]
         # Match by team abbreviation
@@ -9916,6 +9916,87 @@ def wow_open_meteo_health():
             "source_status": "FAILED",
             "source_grade":  None,
             "data_status":   f"FAILED: {str(e)[:150]}",
+            "dry_run_only":  True,
+            "can_execute":   False,
+        }), 502
+
+
+@app.route("/wow/nba-stats/health", methods=["GET"])
+def wow_nba_stats_health():
+    """
+    Read-only source-review health check for NBA stats via nba_api
+    (stats.nba.com — free, no auth, unofficial but widely-used client library).
+
+    WNBA is intentionally NOT covered here: it already has a formal probe via
+    ESPN's public scoreboard JSON inside /wow/health (`results["wnba"]`), which
+    is a different upstream source than stats.nba.com. Folding it into this
+    endpoint would misrepresent which source is actually being checked.
+
+    Returns the full source-review contract: source, endpoint, timestamp,
+    source_status, source_grade, data_status. NOT_CALLED covers the case
+    where the nba_api package itself isn't installed (distinct from a live
+    call failing against a reachable-but-erroring/blocked stats.nba.com).
+
+    Read-only: this only reads LeagueDashTeamStats (a stats query), never
+    places anything.
+    """
+    checked_at = datetime.now(timezone.utc).isoformat()
+    endpoint = "stats.nba.com LeagueDashTeamStats"
+
+    if not _NBA_OK:
+        return jsonify({
+            "source":        "stats.nba.com (nba_api)",
+            "endpoint":      endpoint,
+            "timestamp":     checked_at,
+            "source_status": "NOT_CALLED",
+            "source_grade":  None,
+            "data_status":   "NOT_CALLED: nba_api package not installed",
+            "teams_count":   0,
+            "dry_run_only":  True,
+            "can_execute":   False,
+        })
+
+    try:
+        from nba_api.stats.endpoints import leaguedashteamstats
+        df = leaguedashteamstats.LeagueDashTeamStats(
+            measure_type_detailed_defense="Defense",
+            per_mode_detailed="PerGame",
+            season="2025-26",
+            timeout=10,
+        ).get_data_frames()[0]
+        teams_count = len(df)
+        if teams_count > 0:
+            return jsonify({
+                "source":        "stats.nba.com (nba_api)",
+                "endpoint":      endpoint,
+                "timestamp":     checked_at,
+                "source_status": "AVAILABLE",
+                "source_grade":  "A",
+                "data_status":   f"AVAILABLE: {teams_count} teams returned",
+                "teams_count":   teams_count,
+                "dry_run_only":  True,
+                "can_execute":   False,
+            })
+        return jsonify({
+            "source":        "stats.nba.com (nba_api)",
+            "endpoint":      endpoint,
+            "timestamp":     checked_at,
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   "FAILED: 200 but 0 teams returned (empty payload)",
+            "teams_count":   0,
+            "dry_run_only":  True,
+            "can_execute":   False,
+        }), 502
+    except Exception as e:
+        return jsonify({
+            "source":        "stats.nba.com (nba_api)",
+            "endpoint":      endpoint,
+            "timestamp":     checked_at,
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   f"FAILED: {str(e)[:150]}",
+            "teams_count":   0,
             "dry_run_only":  True,
             "can_execute":   False,
         }), 502
