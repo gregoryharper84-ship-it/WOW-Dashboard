@@ -9725,6 +9725,126 @@ def wow_health():
     return jsonify({"status": overall, "sports": results})
 
 
+@app.route("/wow/odds/health", methods=["GET"])
+def wow_odds_health():
+    """
+    Read-only source-review health check for The Odds API connector
+    (services/odds_api.py — https://api.the-odds-api.com/v4).
+
+    Returns the full source-review contract: source, endpoint, timestamp,
+    source_status, source_grade, data_status. NOT_CALLED (no API key
+    configured) is reported distinctly from FAILED (key present but the
+    call errored) per WOW connector rules — never conflated.
+
+    Read-only: this only hits GET /v4/sports, never places anything.
+    """
+    from services import odds_api as _odds
+    checked_at = datetime.now(timezone.utc).isoformat()
+
+    if not _odds.ODDS_API_KEY:
+        return jsonify({
+            "source":         "api.the-odds-api.com",
+            "endpoint":       "/v4/sports",
+            "timestamp":      checked_at,
+            "source_status":  "NOT_CALLED",
+            "source_grade":   None,
+            "data_status":    "NOT_CALLED: ODDS_API_KEY not set",
+            "sports_count":   0,
+            "dry_run_only":   True,
+            "can_execute":    False,
+        })
+
+    sports, status = _odds.get_sports()
+    is_available = status.startswith("AVAILABLE")
+    # Grade A when live and quota confirmed available; degrade if quota info
+    # is unreadable, and hard-fail (no grade) on any FAILED status.
+    if is_available:
+        grade = "A" if "remaining=" in status and "remaining=?" not in status else "B"
+    else:
+        grade = None
+
+    return jsonify({
+        "source":         "api.the-odds-api.com",
+        "endpoint":       "/v4/sports",
+        "timestamp":      checked_at,
+        "source_status":  "AVAILABLE" if is_available else "FAILED",
+        "source_grade":   grade,
+        "data_status":    status,
+        "sports_count":   len(sports) if sports else 0,
+        "dry_run_only":   True,
+        "can_execute":    False,
+    }), (200 if is_available else 502)
+
+
+@app.route("/wow/mlb-stats/health", methods=["GET"])
+def wow_mlb_stats_health():
+    """
+    Read-only source-review health check for the MLB Stats API connector
+    (statsapi.mlb.com — official, free, no auth).
+
+    Returns the full source-review contract: source, endpoint, timestamp,
+    source_status, source_grade, data_status. This is a public unauthenticated
+    endpoint, so there is no NOT_CALLED-for-missing-key case — only
+    AVAILABLE/FAILED based on live reachability.
+
+    Read-only: this only hits GET /api/v1/sports, never places anything.
+    """
+    import requests as _req
+    checked_at = datetime.now(timezone.utc).isoformat()
+    endpoint = "https://statsapi.mlb.com/api/v1/sports"
+
+    try:
+        r = _req.get(endpoint, timeout=8)
+        if r.status_code == 200:
+            sports = (r.json() or {}).get("sports", [])
+            return jsonify({
+                "source":        "statsapi.mlb.com",
+                "endpoint":      "/api/v1/sports",
+                "timestamp":     checked_at,
+                "source_status": "AVAILABLE",
+                "source_grade":  "A",
+                "data_status":   f"AVAILABLE: {len(sports)} sports returned",
+                "sports_count":  len(sports),
+                "dry_run_only":  True,
+                "can_execute":   False,
+            })
+        return jsonify({
+            "source":        "statsapi.mlb.com",
+            "endpoint":      "/api/v1/sports",
+            "timestamp":     checked_at,
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   f"FAILED: HTTP {r.status_code}",
+            "sports_count":  0,
+            "dry_run_only":  True,
+            "can_execute":   False,
+        }), 502
+    except _req.exceptions.Timeout:
+        return jsonify({
+            "source":        "statsapi.mlb.com",
+            "endpoint":      "/api/v1/sports",
+            "timestamp":     checked_at,
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   "FAILED: timeout",
+            "sports_count":  0,
+            "dry_run_only":  True,
+            "can_execute":   False,
+        }), 502
+    except Exception as e:
+        return jsonify({
+            "source":        "statsapi.mlb.com",
+            "endpoint":      "/api/v1/sports",
+            "timestamp":     checked_at,
+            "source_status": "FAILED",
+            "source_grade":  None,
+            "data_status":   f"FAILED: {str(e)[:150]}",
+            "sports_count":  0,
+            "dry_run_only":  True,
+            "can_execute":   False,
+        }), 502
+
+
 # ── /wow/analyze — Claude-powered prompt & screenshot extractor ──────
 @app.route("/wow/analyze", methods=["POST"])
 @require_api_key

@@ -1,0 +1,230 @@
+Your current LLP connectors are a solid start, but they are **price/context heavy and stat-depth light**.
+
+From the screenshot, you currently have:
+
+```text
+therundown.io
+api.the-odds-api.com
+site.api.espn.com
+api.balldontlie.io
+create-app-gregoryharper84.replit.app
+```
+
+## What each connector should be used for
+
+| Connector                               | Role in LLP                                                  | Status                                                  |
+| --------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------- |
+| `therundown.io`                         | Secondary odds / line feed                                   | Keep                                                    |
+| `api.the-odds-api.com`                  | Primary sportsbook consensus / no-vig / market contradiction | Keep — this is one of the most important LLP connectors |
+| `site.api.espn.com`                     | Schedule, scoreboard, team/player context, fallback status   | Keep, but do not treat as market consensus              |
+| `api.balldontlie.io`                    | Backup stats feed                                            | Keep, but use as fallback/corroboration                 |
+| `create-app-gregoryharper84.replit.app` | Your custom WOW/LLP backend                                  | Core connector                                          |
+
+The Odds API free starter plan is useful because it provides 500 credits/month and covers sports/bookmakers/markets, making it the best immediate free connector for no-vig comparison and line-value checks. ([The Odds API][1])
+
+Kalshi public market data should also be added because public market endpoints can be accessed without authentication at `https://external-api.kalshi.com/trade-api/v2`, and orderbooks expose YES/NO bids for binary markets. ([API Documentation][2])
+
+## What you are missing
+
+### 1. Kalshi public market-data connector
+
+Add:
+
+```text
+external-api.kalshi.com
+```
+
+Purpose:
+
+```text
+market inventory
+event metadata
+market ticker
+settlement rule
+YES/NO orderbook
+freshness check
+```
+
+Do **not** add authenticated trading or order endpoints. This should stay read-only.
+
+### 2. MLB Stats API connector
+
+Add:
+
+```text
+statsapi.mlb.com
+```
+
+Purpose:
+
+```text
+MLB schedule
+game status
+probable pitchers
+box scores
+player game logs
+team stats
+```
+
+This is important because MLB sides/totals need starter confirmation, bullpen/game status, and game-log context. The public MLB Stats API ecosystem includes schedule/game/status style endpoints through the MLB StatsAPI wrapper docs. ([GitHub][3])
+
+### 3. NWS weather connector
+
+Add:
+
+```text
+api.weather.gov
+```
+
+Purpose:
+
+```text
+official weather
+MLB park wind/rain/temperature
+Kalshi weather lane backup
+forecast timestamp
+```
+
+The National Weather Service API provides forecasts, alerts, observations, and other weather data. ([National Weather Service][4])
+
+### 4. Open-Meteo connector
+
+Add:
+
+```text
+api.open-meteo.com
+```
+
+Purpose:
+
+```text
+weather fallback
+model comparison
+non-NWS cross-check
+```
+
+Use NWS as primary for U.S. official weather and Open-Meteo as fallback/model comparison.
+
+### 5. NBA/WNBA stats connector
+
+Possible connector:
+
+```text
+stats.nba.com
+```
+
+or through your backend via `nba_api`.
+
+Purpose:
+
+```text
+WNBA/NBA game logs
+minutes
+usage context
+team pace
+player recent splits
+```
+
+`api.balldontlie.io` is useful, but I would not rely on it alone for WNBA props or role-sensitive markets.
+
+---
+
+# Best connector priority
+
+## Add next, in this order
+
+```text
+1. external-api.kalshi.com
+2. statsapi.mlb.com
+3. api.weather.gov
+4. api.open-meteo.com
+5. stats.nba.com
+```
+
+Your stack after this would be much stronger:
+
+```text
+Odds:
+- api.the-odds-api.com
+- therundown.io
+
+Prediction markets:
+- external-api.kalshi.com
+
+Sports context:
+- site.api.espn.com
+- statsapi.mlb.com
+- api.balldontlie.io
+- stats.nba.com / nba_api
+
+Weather:
+- api.weather.gov
+- api.open-meteo.com
+
+Custom engine:
+- create-app-gregoryharper84.replit.app
+```
+
+## What to tell Replit
+
+```text
+Current LLP connectors reviewed:
+
+Existing:
+- therundown.io
+- api.the-odds-api.com
+- site.api.espn.com
+- api.balldontlie.io
+- create-app-gregoryharper84.replit.app
+
+Add these read-only connectors next:
+
+1. external-api.kalshi.com
+   Purpose: Kalshi public market data, sports inventory, event/market metadata, settlement rules, orderbooks.
+   Scope: read-only only. No auth trading, no orders, no execution.
+
+2. statsapi.mlb.com
+   Purpose: MLB schedule, game status, probable pitchers, box scores, player/team game logs.
+   Source grade: A-/B depending endpoint/timestamp.
+
+3. api.weather.gov
+   Purpose: official NWS weather for MLB and weather-lane context.
+   Source grade: A/A- when timestamped.
+
+4. api.open-meteo.com
+   Purpose: weather fallback/model comparison, not settlement truth.
+   Source grade: B unless corroborated by NWS.
+
+5. stats.nba.com or backend nba_api route
+   Purpose: NBA/WNBA player and team game logs, minutes, pace, splits, status context.
+   Cap if stale or unavailable.
+
+Connector rules:
+- Read-only only.
+- Every response must include source, endpoint, timestamp, source_status, source_grade, and data_status.
+- NOT_CALLED is not FAILED.
+- No connector can approve a play by itself.
+- No connector can bypass WOW/LLP gates.
+- No live execution.
+- No market orders.
+- DRY_RUN_ONLY remains enforced.
+```
+
+## My verdict
+
+You already have the **two best free-ish odds connectors**: The Odds API and TheRundown. The biggest missing pieces are:
+
+```text
+Kalshi public market data
+MLB Stats API
+NWS weather
+Open-Meteo
+NBA/WNBA stats
+```
+
+Add those and the LLP engine becomes sharper without needing paid premium data yet.
+
+[1]: https://the-odds-api.com/?utm_source=chatgpt.com "The Odds API: Sports Odds API"
+[2]: https://docs.kalshi.com/getting_started/quick_start_market_data?utm_source=chatgpt.com "Quick Start: Market Data - API Documentation"
+[3]: https://github.com/toddrob99/MLB-StatsAPI/wiki/Endpoints?utm_source=chatgpt.com "Endpoints · toddrob99/MLB-StatsAPI Wiki"
+[4]: https://www.weather.gov/documentation/services-web-api?utm_source=chatgpt.com "API Web Service"

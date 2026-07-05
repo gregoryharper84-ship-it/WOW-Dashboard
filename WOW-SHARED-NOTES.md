@@ -434,3 +434,28 @@ Source-review of Steps 1-5 above, per Greg's/user's requested 10-item verificati
 **Net result:** 9/10 items verified exactly as claimed; 1 item (#4) had a real gap that is now closed and covered by 3 new regression tests; 1 item (#6) needed a wording correction, not a code fix. Full suite: **39/39 tests passing** (36 prior + 3 new inventory-gate tests). Live curl smoke test against the running app confirms the new gate fires correctly under real (empty) inventory conditions.
 
 **Status:** `WOW-PATCH-2026-07-05-LLP-KALSHI-SPORTS-BRIDGE v2` — **BUILT_AND_SAFE_DRY_RUN**. Still **`CONNECTED: NO`**, **`LIVE LABEL TRUST: NO`**, **`EXECUTION: DISABLED`**, **`DRY_RUN_ONLY: TRUE`** — unchanged from before, since `/wow/kalshi/health/sports` still reports `INVENTORY_EMPTY`. No order placement added. No labels above `LLP_SCOUT`/`LLP_WATCH` possible.
+
+---
+
+## 2026-07-05 — Priority-1 connector audit: The Odds API + MLB Stats API
+
+Per the delivered connector-audit spec, moved to "read-only Priority-1 connectors, starting with The Odds API and MLB Stats API." Audited existing coverage before building anything new:
+
+- **The Odds API** — already substantially built in `services/odds_api.py` (events, player props, sport keys, market lists), already follows the `NOT_CALLED`/`FAILED`/`AVAILABLE` status-tuple convention, and is wired into the daily scan job (`jobs/wow_daily_scan.py`) and gate-engine auto-enrichment. Confirmed real live quota tracking (`AVAILABLE (remaining=N)`).
+- **MLB Stats API** (`statsapi.mlb.com`) — already extensively integrated directly in `app.py` across many call sites (pitcher data, schedule, team stats, sports check). No auth required, official public API.
+- **NWS (`api.weather.gov`)** — already extensively integrated (CLI product fetch, gridpoint forecast, used by the WOW weather lane). `nba_api` and `pybaseball` are both already in `requirements.txt` and wired into `/wow/health`'s per-sport probe.
+- **Gap found:** none of the above connectors had a dedicated source-review health endpoint with the full `source`/`endpoint`/`timestamp`/`source_status`/`source_grade`/`data_status` contract (only the existing coarse `/wow/health` per-sport `Available`/`Degraded` probe, and the Kalshi-specific `/wow/kalshi/health/sports`).
+
+**Built this session:**
+- `GET /wow/odds/health` (no auth) — full source-review contract for The Odds API. Distinguishes `NOT_CALLED` (no `ODDS_API_KEY` configured) from `FAILED` (key present, call errored) from `AVAILABLE`; grades `A` when live quota is confirmed readable, `B` if quota info is present but unparseable, `None` on failure. Always `dry_run_only: true`, `can_execute: false` (read-only GET `/v4/sports` only).
+- `GET /wow/mlb-stats/health` (no auth) — full source-review contract for MLB Stats API. Public/unauthenticated so only `AVAILABLE`/`FAILED` apply (no key-based `NOT_CALLED` case). Distinguishes HTTP-error, timeout, and generic-exception failure modes. Always `dry_run_only: true`, `can_execute: false` (read-only GET `/api/v1/sports` only).
+
+**Verification performed:** Live smoke test via curl against the running Flask app (shared proxy, port 25643):
+- `GET /wow/mlb-stats/health` → `source_status: AVAILABLE`, `source_grade: A`, `sports_count: 20`.
+- `GET /wow/odds/health` → `source_status: AVAILABLE`, `source_grade: A`, `data_status: "AVAILABLE (remaining=92945)"`, `sports_count: 57`.
+
+No dedicated pytest coverage was added for these two routes — unlike `kalshi_engine`/`gate_engine`, `app.py` has no existing Flask-test-client test suite for HTTP routes (its tests exercise internal modules directly), so adding route-level tests here would be inconsistent with the established pattern; live curl verification was used instead, matching how `/wow/health` and `/wow/kalshi/health/sports` were originally verified.
+
+**Explicitly NOT done (out of scope for this pass):** Open-Meteo and balldontlie (Priority 2, plus Open-Meteo nominally Priority 1) have **no existing integration anywhere** in the codebase — these are genuine net-new connectors, not audit/health-check work, and were intentionally left for a separate build task rather than folded into this audit pass. NBA/WNBA already has a formal `/wow/health` probe (`_NBA_OK` + ESPN WNBA scoreboard check) and was judged sufficiently covered without a dedicated `/wow/nba/health` route this session. No order-placement or execution code exists in either new route — both are pure read-only `GET` health checks.
+
+**Status:** Priority-1 connector audit for **The Odds API** and **MLB Stats API** — **VERIFIED EXISTING + HEALTH ENDPOINTS ADDED**. Remaining Priority-1 gap: Open-Meteo (net-new). Remaining Priority-2 gap: API-Football/football-data.org (partially covered via existing `/wow/health` soccer probe), balldontlie (net-new).
