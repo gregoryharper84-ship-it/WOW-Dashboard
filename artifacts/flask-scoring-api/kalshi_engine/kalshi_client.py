@@ -252,18 +252,28 @@ def scan_event_markets(event_ticker: str) -> list[dict[str, Any]]:
 
 
 def search_markets(
-    category: str | None = None,
-    status:   str        = "open",
-    limit:    int        = 50,
-    cursor:   str | None = None,
+    category:      str | None = None,
+    status:        str        = "open",
+    limit:         int        = 50,
+    cursor:        str | None = None,
+    series_ticker: str | None = None,
 ) -> dict[str, Any]:
     """
     GET /markets — paginated market listing.
     Public endpoint — no auth needed.
+
+    `series_ticker` scopes the listing to a single Kalshi series (e.g.
+    "KXMLBGAME", "KXWNBAGAME") and is the reliable way to find single-game
+    winner markets — generic pagination without series_ticker is dominated
+    by dynamically-generated MVE combo/parlay markets and will not
+    reliably surface single-game markets within a bounded page scan (see
+    memory: kalshi-scan-arch).
     """
     params: dict[str, Any] = {"limit": min(limit, 200), "status": status}
     if category:
         params["category"] = category
+    if series_ticker:
+        params["series_ticker"] = series_ticker
     if cursor:
         params["cursor"] = cursor
     return _get("/markets", params=params, timeout=_TIMEOUT_BULK)

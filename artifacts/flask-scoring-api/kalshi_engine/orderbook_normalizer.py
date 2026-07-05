@@ -34,25 +34,31 @@ def _to_decimal(price_cents: int | float | None) -> Optional[float]:
     return round(float(price_cents) / 100.0, 4)
 
 
-def _parse_levels(raw: list[dict | list] | None) -> list[tuple[float, int]]:
+def _parse_levels(raw: list[dict | list] | None, dollars: bool = False) -> list[tuple[float, int]]:
     """
     Parse an orderbook level list into [(price_decimal, size), ...].
 
-    Kalshi returns levels as {"price": int_cents, "quantity": int}
-    or as [price_cents, size] in some API versions.
+    Live Kalshi `GET /markets/{ticker}/orderbook` responses observed
+    2026-07-05 use `orderbook_fp: {yes_dollars, no_dollars}` with levels as
+    `[price_dollar_string, size_dollar_string]` — prices already in decimal
+    dollars (e.g. "0.4600"), NOT integer cents. Older/alternate API shapes
+    return `{"price": int_cents, "quantity": int}` dicts or `[price_cents,
+    size]` pairs. `dollars=True` selects the already-decimal dollar-string
+    parse path; otherwise cents are converted via `_to_decimal`.
     """
     out = []
     for item in (raw or []):
         if isinstance(item, dict):
             p = item.get("price") or item.get("yes_price")
             s = item.get("quantity") or item.get("size") or 0
+            dec = float(p) if dollars and p is not None else _to_decimal(p)
         elif isinstance(item, (list, tuple)) and len(item) >= 2:
             p, s = item[0], item[1]
+            dec = float(p) if dollars else _to_decimal(p)
         else:
             continue
-        dec = _to_decimal(p)
         if dec is not None:
-            out.append((dec, int(s)))
+            out.append((round(dec, 4), int(float(s))))
     return out
 
 
@@ -101,17 +107,25 @@ def normalize(raw_orderbook: dict[str, Any], ticker: str = "") -> dict[str, Any]
         "yes_bids": [...], "yes_asks": [...],
         "no_bids":  [...], "no_asks":  [...],
       }
+    or the LIVE format observed 2026-07-05 (dollar-denominated, not cents):
+      {
+        "orderbook_fp": {
+          "yes_dollars": [["0.4600", "21.00"], ...],  # [price_str, size_str]
+          "no_dollars":  [["0.3000", "5000.00"], ...],
+        }
+      }
 
     Returns a NormalizedBook-shaped dict.
     """
-    ob = raw_orderbook.get("orderbook") or raw_orderbook
+    ob = raw_orderbook.get("orderbook_fp") or raw_orderbook.get("orderbook") or raw_orderbook
+    is_dollars = "orderbook_fp" in raw_orderbook or "yes_dollars" in ob or "no_dollars" in ob
 
     # New API format: yes/no bids only (asks derived)
-    yes_bids_raw = ob.get("yes") or ob.get("yes_bids") or []
-    no_bids_raw  = ob.get("no")  or ob.get("no_bids")  or []
+    yes_bids_raw = ob.get("yes_dollars") or ob.get("yes") or ob.get("yes_bids") or []
+    no_bids_raw  = ob.get("no_dollars")  or ob.get("no")  or ob.get("no_bids")  or []
 
-    yes_bids = sorted(_parse_levels(yes_bids_raw), key=lambda x: -x[0])
-    no_bids  = sorted(_parse_levels(no_bids_raw),  key=lambda x: -x[0])
+    yes_bids = sorted(_parse_levels(yes_bids_raw, dollars=is_dollars), key=lambda x: -x[0])
+    no_bids  = sorted(_parse_levels(no_bids_raw, dollars=is_dollars),  key=lambda x: -x[0])
 
     # Derive: YES ask from best NO bid complement, NO ask from best YES bid complement
     best_yes_bid = yes_bids[0][0] if yes_bids else None
