@@ -1011,6 +1011,95 @@ non-destructive `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
 
 ---
 
+## §33 — Cross-Market Reject-Proof Output Contract + Degraded Run Gate (WOW-PATCH-2026-07-06-CROSS-MARKET-REJECT-PROOF-AND-DEGRADED-RUN-GATE, SHIPPED 2026-07-06)
+
+**Scope:** legacy `/wow-daily-scan` route only (`jobs/wow_daily_scan.py::run_scan` +
+`classify_prop()`) — a separate pipeline from `gate_engine`/`_llp_decision`, which already
+has its own no-vig math, ledger, and correlation gate.
+
+**Problem:** the legacy scanner gave no board line, no consensus line/odds, no no-vig
+probability, no explicit edge math, no drift grade, and no machine-readable reason for why
+a prop wasn't playable — only a free-text blocker string. Rejections for "no edge" showed
+no math. An uncaught upstream fetch exception (odds/rundown/injury/pitcher service)
+propagated as a bare 500 instead of a labeled degraded run.
+
+**New module:** `jobs/market_math.py` — `american_to_prob`, `no_vig_pair`,
+`pp_cash_threshold`, `compute_threshold_hit_rate`, `compute_drift_grade`,
+`MARKET_CAUSE_TAGS`, `classify_market_cause`.
+
+**Full output-row contract (every prop, every bucket):** `board_line`,
+`pp_cash_threshold`, `consensus_line`, `consensus_price_more`, `consensus_price_less`,
+`no_vig_probability`, `model_probability`, `adjusted_edge`, `edge_math` (literal
+`"a - b = c"` string), `board_consensus_delta`, `drift_grade` (A–F, `U` if unavailable),
+`market_cause`, `terminal_bucket`, `threshold_hit_rate`, `source_conflict`,
+`mutex_group_id`, `preferred_candidate`.
+
+**REJECT_NO_EDGE:** when a prop is terminally `Reject` on score/edge grounds (not the
+injury hard-reject or the binary-event structural cap, §23/§24, which keep their own
+blocker text), `final_approval_blocker` becomes
+`"REJECT_NO_EDGE: {edge_math} (no verified positive edge vs. no-vig consensus)"`.
+
+**9 mandatory market-cause tags** (`market_cause`, non-null for any bucket below Final
+Approved): `NO_VERIFIED_MISPRICE`, `MARKET_AGAINST_SIDE`, `STALE_BOARD`,
+`SOURCE_CONFLICT`, `EXACT_MARKET_UNAVAILABLE`, `ADJACENT_MARKET_ONLY`,
+`ROLE_DEPLOYMENT_UNCERTAIN`, `PUBLIC_OVERREACTION_UNVERIFIED`, `PAYOUT_EV_FAIL`.
+
+**Scoped SOURCE_CONFLICT (Layer-0 event reconciliation, item 4 — partial):**
+`build_consensus_map()` groups raw props by `(player, prop)` across bookmakers; a >1.0
+line disagreement sets `source_conflict: true` and caps any `Conditional`-or-above
+classification down to `Watch`. This is cross-bookmaker line agreement only, **not** full
+independent event/team/game_id/start_time identity reconciliation across data sources —
+that remains unbuilt in this legacy job.
+
+**Pitcher deployment (item 5 — reused, not rebuilt):** the pre-existing "not listed as
+probable pitcher" MLB check is unchanged and now also feeds `ROLE_DEPLOYMENT_UNCERTAIN`
+into `market_cause`. A full deployment module (opponent lineup K%, bullpen leash) was not
+built for this job.
+
+**WNBA L5/L10 (item 6):** already satisfied structurally — `services/player_logs.py`'s
+`get_player_log_stats()` is sport-agnostic (ESPN core-API eventlog via the `SPORT_LEAGUE`
+map, which already includes WNBA), so no MLB-specific special-casing blocks WNBA props
+from this scanner's L5/L10 path. This is a distinct code path from the bbref-based
+pipeline that fails for WNBA elsewhere in this codebase.
+
+**PP whole-line threshold conversion (item 7):** `market_math.pp_cash_threshold()`
+converts the display line into the real cash/push/loss threshold; `threshold_hit_rate` and
+`model_probability` are computed against that threshold, not the bare display line.
+`PAYOUT_EV_FAIL` fires when the threshold-adjusted hit rate is materially worse (>5pts)
+than the display-line hit rate.
+
+**Scoped mutex guard (item 8 — partial):** `assign_mutex_groups()` groups all
+playable-tier cards by `(sport, player, game_date)`; 2+ candidates in a group get a shared
+`mutex_group_id`, with the single highest-`wow_score` candidate marked
+`preferred_candidate: true`. This is same-player collision detection only, **not** the
+richer stat-family/game-script correlation logic already implemented in
+`gate_engine/correlation_gate.py` for slip construction — that was not ported into this
+legacy job.
+
+**DEGRADED_ENGINE_RUN gate (item 9):** every backend fetch in `run_scan()`
+(`fetch_all_props`, `fetch_backup_props`, `get_injuries`, `get_mlb_probable_pitchers`) is
+wrapped in `try/except`; failures accumulate in `failed_modules` instead of raising. If
+`failed_modules` is non-empty, the run's top-level `run_status` is
+`"DEGRADED_ENGINE_RUN"` and every card in `market_verified`/`final_approved_internal`/
+`model_qualified` is force-moved into `watch` with `degraded_run_hold: true` — a degraded
+run can never silently present a Final Approved/Model Qualified pick. Clean runs report
+`run_status: "COMPLETE"`.
+
+**Deferred (documented scope decision, not built in this patch):** full Layer-0 event
+reconciliation beyond scoped `SOURCE_CONFLICT`; full pitcher-deployment module beyond the
+reused probable-pitcher signal; full stat-family/correlation guard beyond scoped
+same-player mutex grouping; a true PrizePicks board feed (`board_line`/`consensus_line`
+here are the scanner's own cross-bookmaker consensus, not a real PrizePicks snapshot).
+
+**DB:** `scan_results` gained 17 new nullable columns (see patch doc for full list) via
+non-destructive `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
+
+**Live-verified (2026-07-06):** `POST /wow-daily-scan` returns `run_status`/
+`failed_modules` at top level; every bucket's props carry the full new field set;
+`Reject` rows show `REJECT_NO_EDGE:` blocker text with populated `edge_math`.
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

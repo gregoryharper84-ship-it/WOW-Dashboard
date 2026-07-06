@@ -1,0 +1,118 @@
+Yes — **this patch should go to Replit first**, because the failure is mainly an **engine/output-contract problem**, not just an analyst-prompt problem.
+
+The correct order:
+
+```text
+1. Replit / WOW Engine patch first
+2. Claude PR-checker review second
+3. GPT prompt/instructions cleanup third
+4. Rerun July 6 queue after patch
+5. Only then send candidate pool back through final approval
+```
+
+## Why Replit first
+
+The missing pieces are things the backend should calculate and print every run:
+
+* board line / price
+* consensus no-vig probability
+* model probability
+* edge
+* drift grade
+* market-cause tag
+* L5/L10 exact stat ledger
+* PP cash/push/loss threshold
+* pitcher role/deployment
+* event/opponent reconciliation
+* correlation/mutex group
+* payout EV status
+* degraded-run label when backend fetch fails
+
+Claude/GPT can **audit** those, but Replit has to **produce** them.
+
+## What to send Replit
+
+Send this as the priority patch:
+
+```text
+WOW-PATCH-2026-07-06-CROSS-MARKET-REJECT-PROOF-AND-DEGRADED-RUN-GATE
+
+Problem:
+July 6 WOW Engine run correctly blocked FINAL_APPROVED, but output was not v16-auditable. It returned terminal buckets without required Cross-Market First math, L5/L10 ledgers, market-cause tags, PP threshold conversion, event reconciliation, or formal correlation/mutex output. A ClientResponseError occurred but the run was not clearly labeled DEGRADED_ENGINE_RUN.
+
+Required backend changes:
+
+1. Every candidate row must output:
+- PrizePicks board line
+- PrizePicks cash/push/loss threshold
+- board price / payout type
+- sportsbook consensus line
+- sportsbook odds
+- consensus no-vig probability
+- model probability
+- adjusted edge
+- board-vs-consensus delta
+- drift grade
+- market cause
+- terminal bucket
+
+2. REJECT_NO_EDGE cannot be narrative-only.
+Every reject must show:
+model_probability - no_vig_probability = adjusted_edge
+and compare to the required threshold.
+
+3. Add mandatory market-cause tags:
+NO_VERIFIED_MISPRICE
+MARKET_AGAINST_SIDE
+STALE_BOARD
+SOURCE_CONFLICT
+EXACT_MARKET_UNAVAILABLE
+ADJACENT_MARKET_ONLY
+ROLE_DEPLOYMENT_UNCERTAIN
+PUBLIC_OVERREACTION_UNVERIFIED
+PAYOUT_EV_FAIL
+
+4. Add Layer 0 event reconciliation:
+player, team, opponent, game_id, start_time, source list, conflict status.
+If source/opponent conflict exists, cap at SOURCE_CONFLICT until resolved.
+
+5. Add pitcher deployment module:
+confirmed starter / opener / bulk / piggyback / relief profile conflict.
+Include L5/L10 starts, IP, pitches, Ks, batters faced, pitch-count ceiling, opponent projected lineup K%.
+
+6. Add WNBA L5/L10 exact-stat module:
+exact stat ledger, avg, median, hit rate, outlier flag, teammate role-split flag.
+
+7. Add PrizePicks whole-line threshold conversion:
+MORE 5 requires 6+ to cash.
+MORE 10 requires 11+ to cash.
+LESS 20 requires platform-specific push/loss handling.
+Market comparisons must be against cash threshold, not display line only.
+
+8. Add formal correlation/mutex guard:
+same player, same pitcher, same stat-family, same game-script conflicts.
+Output mutex_group_id and preferred candidate.
+
+9. If backend scan returns ClientResponseError:
+label run as DEGRADED_ENGINE_RUN.
+FINAL_APPROVED = 0.
+MONEY_QUALIFIED = 0.
+List failed modules.
+Do not call it a full Final WOW check.
+```
+
+## What Claude should do after Replit
+
+Claude should PR-check that patch for:
+
+```text
+- schema completeness
+- no-vig math present on rejects and holds
+- whole-line PP threshold handling
+- degraded-run behavior
+- no narrative-only terminal buckets
+- mutex group output
+- regression tests for ClientResponseError
+```
+
+Bottom line: **yes, Replit first.** Claude can help write/review it, but the Engine has to own the missing calculations and audit trail.

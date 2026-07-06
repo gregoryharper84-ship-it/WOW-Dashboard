@@ -1211,6 +1211,9 @@ def wow_daily_scan():
     scanned_sports   = scan_result.get("scanned_sports",   [])
     missing_sports   = scan_result.get("missing_sports",   [])
     scan_valid       = scan_result.get("scan_valid",       True)
+    # WOW-PATCH-2026-07-06 item 9 — DEGRADED_ENGINE_RUN gate
+    run_status       = scan_result.get("run_status",       "COMPLETE")
+    failed_modules   = scan_result.get("failed_modules",   [])
 
     # Build compact response from what was just saved to the DB
     try:
@@ -1291,6 +1294,8 @@ def wow_daily_scan():
         return jsonify({
             "ok":                       True,
             "status":                   "completed",
+            "run_status":               run_status,
+            "failed_modules":           failed_modules,
             "scan_valid":               scan_valid,
             "run_date":                 run_date,
             "requested_sports":         requested_sports,
@@ -1725,6 +1730,23 @@ def _compact_prop(row):
         "projection_margin":      float(row["projection_margin"]) if row.get("projection_margin") is not None else None,
         "projection_source":      row.get("projection_source"),
         "final_approval_blocker": row.get("final_approval_blocker"),
+        # WOW-PATCH-2026-07-06 — full output-row contract
+        "board_line":             _f(row.get("board_line")),
+        "pp_cash_threshold":      row.get("pp_cash_threshold"),
+        "consensus_line":         _f(row.get("consensus_line")),
+        "consensus_price_more":   row.get("consensus_price_more"),
+        "consensus_price_less":   row.get("consensus_price_less"),
+        "no_vig_probability":     _f(row.get("no_vig_probability")),
+        "adjusted_edge":          _f(row.get("adjusted_edge")),
+        "edge_math":              row.get("edge_math"),
+        "board_consensus_delta":  _f(row.get("board_consensus_delta")),
+        "drift_grade":            row.get("drift_grade"),
+        "market_cause":           row.get("market_cause"),
+        "terminal_bucket":        row.get("terminal_bucket"),
+        "threshold_hit_rate":     _f(row.get("threshold_hit_rate")),
+        "source_conflict":        bool(row.get("source_conflict")),
+        "mutex_group_id":         row.get("mutex_group_id"),
+        "preferred_candidate":    row.get("preferred_candidate"),
     }
 
 

@@ -666,3 +666,34 @@ proxy.
 **Status:** `classify_prop()` (`jobs/wow_daily_scan.py`) and `POST /final-lock`
 (`app.py`) — **SHIPPED**, sub-tag never terminal, always blocks Power/Flex, DB columns
 added non-destructively to `scan_results`.
+
+---
+
+## 2026-07-06 — WOW-PATCH-2026-07-06-CROSS-MARKET-REJECT-PROOF-AND-DEGRADED-RUN-GATE
+
+**Scope note:** this patch targets the legacy `/wow-daily-scan` route
+(`jobs/wow_daily_scan.py`) only — a separate pipeline from `gate_engine`/`_llp_decision`,
+which already has its own no-vig math, ledger, and correlation gate. Full spec had 9
+required items; 4 were deferred by a documented scope decision (not user-confirmed before
+build, recorded here and in the patch doc / §33):
+
+1. Full Layer-0 event reconciliation (independent team/opponent/game_id/start_time
+   identity matching across sources) — **not built**. Implemented instead: scoped
+   cross-bookmaker `SOURCE_CONFLICT` on player/prop/line agreement only.
+2. Full pitcher-deployment module (opponent lineup K%, bullpen leash) — **not built**.
+   Implemented instead: reuse of the existing "not listed as probable pitcher" MLB signal.
+3. Full stat-family/game-script correlation guard
+   (`gate_engine/correlation_gate.py`-equivalent) — **not built**. Implemented instead:
+   scoped same-`(sport, player, game_date)` mutex grouping with one preferred candidate.
+4. A true PrizePicks board feed — this scanner has no dedicated PrizePicks ingestion;
+   `board_line`/`consensus_line`/`no_vig_probability` are this scanner's own
+   cross-bookmaker consensus, not a real PrizePicks board snapshot.
+
+WNBA L5/L10 (item 6) required no new code: `services/player_logs.py` is already
+sport-agnostic via ESPN's core API and the `SPORT_LEAGUE` map already includes WNBA — a
+different code path from the bbref-based pipeline referenced elsewhere in this codebase
+that is known to fail for WNBA/MLB-batter lookups from this host.
+
+**Status:** SHIPPED (scoped). See
+`WOW-PATCH-2026-07-06-CROSS-MARKET-REJECT-PROOF-AND-DEGRADED-RUN-GATE.md` and
+`LLP_GROUND_TRUTH.md` §33 for full detail.

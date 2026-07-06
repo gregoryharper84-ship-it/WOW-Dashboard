@@ -43,7 +43,13 @@ def save_scan_result(result: dict) -> bool:
                         projection_status, projection_value, projection_margin,
                         projection_source, final_approval_blocker,
                         used_average_only, data_quality_tag, block_power_flex,
-                        live_cushion_margin, retro_result_margin, final_result
+                        live_cushion_margin, retro_result_margin, final_result,
+                        board_line, pp_cash_threshold, consensus_line,
+                        consensus_price_more, consensus_price_less,
+                        no_vig_probability, model_probability, adjusted_edge,
+                        edge_math, board_consensus_delta, drift_grade,
+                        market_cause, terminal_bucket, threshold_hit_rate,
+                        source_conflict, mutex_group_id, preferred_candidate
                     ) VALUES (
                         %(run_date)s, %(sport)s, %(player)s, %(prop)s, %(line)s, %(side)s,
                         %(game_date)s, %(wow_score)s, %(signal)s, %(message)s,
@@ -58,7 +64,13 @@ def save_scan_result(result: dict) -> bool:
                         %(projection_status)s, %(projection_value)s, %(projection_margin)s,
                         %(projection_source)s, %(final_approval_blocker)s,
                         %(used_average_only)s, %(data_quality_tag)s, %(block_power_flex)s,
-                        %(live_cushion_margin)s, %(retro_result_margin)s, %(final_result)s
+                        %(live_cushion_margin)s, %(retro_result_margin)s, %(final_result)s,
+                        %(board_line)s, %(pp_cash_threshold)s, %(consensus_line)s,
+                        %(consensus_price_more)s, %(consensus_price_less)s,
+                        %(no_vig_probability)s, %(model_probability)s, %(adjusted_edge)s,
+                        %(edge_math)s, %(board_consensus_delta)s, %(drift_grade)s,
+                        %(market_cause)s, %(terminal_bucket)s, %(threshold_hit_rate)s,
+                        %(source_conflict)s, %(mutex_group_id)s, %(preferred_candidate)s
                     )
                 """, {
                     "run_date":       result.get("run_date", date.today().isoformat()),
@@ -102,6 +114,23 @@ def save_scan_result(result: dict) -> bool:
                     "live_cushion_margin":  result.get("live_cushion_margin"),
                     "retro_result_margin":  result.get("retro_result_margin"),
                     "final_result":         result.get("final_result"),
+                    "board_line":             result.get("board_line"),
+                    "pp_cash_threshold":      result.get("pp_cash_threshold"),
+                    "consensus_line":         result.get("consensus_line"),
+                    "consensus_price_more":   result.get("consensus_price_more"),
+                    "consensus_price_less":   result.get("consensus_price_less"),
+                    "no_vig_probability":     result.get("no_vig_probability"),
+                    "model_probability":      result.get("model_probability"),
+                    "adjusted_edge":          result.get("adjusted_edge"),
+                    "edge_math":              result.get("edge_math"),
+                    "board_consensus_delta":  result.get("board_consensus_delta"),
+                    "drift_grade":            result.get("drift_grade"),
+                    "market_cause":           result.get("market_cause"),
+                    "terminal_bucket":        result.get("terminal_bucket"),
+                    "threshold_hit_rate":     result.get("threshold_hit_rate"),
+                    "source_conflict":        result.get("source_conflict", False),
+                    "mutex_group_id":         result.get("mutex_group_id"),
+                    "preferred_candidate":    result.get("preferred_candidate"),
                 })
         conn.close()
         return True
@@ -189,7 +218,13 @@ def get_compact_scan_rows(run_date, category=None, limit=80):
                    projection_status, projection_value, projection_margin,
                    projection_source, final_approval_blocker,
                    used_average_only, data_quality_tag, block_power_flex,
-                   live_cushion_margin, retro_result_margin, final_result
+                   live_cushion_margin, retro_result_margin, final_result,
+                   board_line, pp_cash_threshold, consensus_line,
+                   consensus_price_more, consensus_price_less,
+                   no_vig_probability, model_probability, adjusted_edge,
+                   edge_math, board_consensus_delta, drift_grade,
+                   market_cause, terminal_bucket, threshold_hit_rate,
+                   source_conflict, mutex_group_id, preferred_candidate
             FROM scan_results {where}
             ORDER BY wow_score DESC NULLS LAST
             LIMIT %s

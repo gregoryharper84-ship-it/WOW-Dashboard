@@ -38,6 +38,10 @@ from services.rundown    import fetch_backup_props
 from services.player_logs import get_player_log_stats
 from services.status     import get_injuries, get_player_injury_flag, get_mlb_probable_pitchers
 from storage.results     import save_scan_result, get_scan_summary
+from jobs.market_math import (
+    no_vig_pair, pp_cash_threshold, compute_threshold_hit_rate,
+    compute_drift_grade, classify_market_cause,
+)
 
 import importlib.util
 _app_path = os.path.join(os.path.dirname(__file__), "..", "app.py")
@@ -412,6 +416,92 @@ def dedup_props(props):
 
 
 # -------------------------------------------------------------------
+# WOW-PATCH-2026-07-06 — cross-book consensus + mutex grouping
+# -------------------------------------------------------------------
+
+def build_consensus_map(props):
+    """
+    Group raw props (pre-dedup, all bookmakers) by (player, prop, side) to
+    build a cross-book consensus view: average line, average price, and a
+    conflict flag when bookmakers disagree on the line by more than a small
+    tolerance. Returns {(player, prop): {"MORE": {...}, "LESS": {...},
+    "conflict": bool}}.
+
+    This is the cross-market consensus used for board_consensus_delta and
+    no_vig_probability — a scoped stand-in for a dedicated PrizePicks board
+    feed, which this scanner does not currently ingest separately from the
+    sportsbook odds it pulls (see WOW-PATCH-2026-07-06 doc, "Deferred").
+    """
+    by_key = {}
+    for p in props:
+        key = (p.get("player", ""), p.get("prop", ""))
+        side = (p.get("side") or "MORE").upper()
+        line = p.get("line")
+        price = p.get("price")
+        if line is None:
+            continue
+        entry = by_key.setdefault(key, {"MORE": [], "LESS": []})
+        if side in ("MORE", "OVER"):
+            entry["MORE"].append((float(line), price))
+        elif side in ("LESS", "UNDER"):
+            entry["LESS"].append((float(line), price))
+
+    consensus = {}
+    for key, sides in by_key.items():
+        lines_seen = [ln for ln, _ in sides["MORE"]] + [ln for ln, _ in sides["LESS"]]
+        conflict = bool(lines_seen) and (max(lines_seen) - min(lines_seen) > 1.0)
+
+        def _avg(entries):
+            if not entries:
+                return None, None
+            avg_line = sum(ln for ln, _ in entries) / len(entries)
+            prices = [pr for _, pr in entries if pr is not None]
+            avg_price = sum(prices) / len(prices) if prices else None
+            return round(avg_line, 4), (round(avg_price, 2) if avg_price is not None else None)
+
+        more_line, more_price = _avg(sides["MORE"])
+        less_line, less_price = _avg(sides["LESS"])
+        consensus[key] = {
+            "consensus_line": more_line if more_line is not None else less_line,
+            "consensus_price_more": more_price,
+            "consensus_price_less": less_price,
+            "conflict": conflict,
+        }
+    return consensus
+
+
+def assign_mutex_groups(cards):
+    """
+    WOW-PATCH-2026-07-06 item 8 (scoped) — same-player mutex grouping.
+
+    Groups playable-tier cards by (sport, player, game_date). When a group
+    has more than one candidate, tags all of them with a shared
+    mutex_group_id and marks exactly one (highest wow_score) as the
+    preferred_candidate; the rest get preferred_candidate=False.
+
+    Full stat-family / same-pitcher / same-game-script correlation (as
+    implemented for slip construction in gate_engine/correlation_gate.py) is
+    deferred — see WOW-PATCH-2026-07-06 doc, "Deferred".
+    """
+    groups = {}
+    for card in cards:
+        key = (card.get("sport"), card.get("player"), card.get("game_date"))
+        groups.setdefault(key, []).append(card)
+
+    for key, group in groups.items():
+        if len(group) < 2:
+            for card in group:
+                card["mutex_group_id"] = None
+                card["preferred_candidate"] = True
+            continue
+        mutex_id = f"MUTEX_{key[0]}_{key[1]}_{key[2]}".replace(" ", "_")
+        best = max(group, key=lambda c: c.get("wow_score") or 0)
+        for card in group:
+            card["mutex_group_id"] = mutex_id
+            card["preferred_candidate"] = (card is best)
+
+
+# -------------------------------------------------------------------
 # Main scan function
 # -------------------------------------------------------------------
 
@@ -438,19 +528,36 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
     no_play_list             = []
     execution_notes          = []
     scanned_sports           = []
+    failed_modules           = []  # WOW-PATCH-2026-07-06 item 9 — DEGRADED_ENGINE_RUN
 
     for sport in requested_sports:
         execution_notes.append(f"--- {sport} ---")
 
         # Step 1-3: Props (Odds API primary, Rundown backup)
-        props, odds_status = fetch_all_props(sport)
+        # WOW-PATCH-2026-07-06 item 9: a raw fetch exception here previously
+        # propagated out of run_scan uncaught (surfacing as a bare 500 to the
+        # caller, e.g. a ClientResponseError from the upstream odds/rundown
+        # HTTP client) instead of being recorded and labeled. Catch and
+        # record it as a failed module so the run can be marked
+        # DEGRADED_ENGINE_RUN instead of silently erroring out mid-scan.
+        try:
+            props, odds_status = fetch_all_props(sport)
+        except Exception as exc:
+            failed_modules.append(f"{sport}:fetch_all_props:{exc}")
+            source_access[f"{sport}_odds"] = f"FAILED: {exc}"
+            props, odds_status = [], f"FAILED: {exc}"
+
         source_access[f"{sport}_odds"] = (
             odds_status.get("props", odds_status)
             if isinstance(odds_status, dict) else odds_status
         )
 
         if not props:
-            rundown_props, rd_status = fetch_backup_props(sport)
+            try:
+                rundown_props, rd_status = fetch_backup_props(sport)
+            except Exception as exc:
+                failed_modules.append(f"{sport}:fetch_backup_props:{exc}")
+                rundown_props, rd_status = [], f"FAILED: {exc}"
             source_access[f"{sport}_rundown"] = rd_status
             if rundown_props:
                 props = rundown_props
@@ -465,18 +572,34 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
         else:
             source_access[f"{sport}_rundown"] = "NOT_CALLED: primary succeeded"
 
+        # WOW-PATCH-2026-07-06 item 4 (scoped) — cross-book consensus, used
+        # for board_consensus_delta / no_vig_probability, and a SOURCE_CONFLICT
+        # flag when bookmakers disagree on the same player/prop line by more
+        # than 1.0. Full Layer-0 event reconciliation (team/opponent/game_id/
+        # start_time identity matching across independent sources) is
+        # deferred — see WOW-PATCH-2026-07-06 doc, "Deferred".
+        consensus_map = build_consensus_map(props)
+
         props = dedup_props(props)
         if len(props) > limit_per_sport:
             props = props[:limit_per_sport]
         execution_notes.append(f"{sport}: {len(props)} unique props to evaluate")
         scanned_sports.append(sport)
 
-        injuries_cache, inj_source = get_injuries(sport)
+        try:
+            injuries_cache, inj_source = get_injuries(sport)
+        except Exception as exc:
+            failed_modules.append(f"{sport}:get_injuries:{exc}")
+            injuries_cache, inj_source = {}, f"FAILED: {exc}"
         source_access[f"{sport}_status"] = inj_source
 
         mlb_pitchers = {}
         if sport == "MLB":
-            mlb_pitchers, _ = get_mlb_probable_pitchers(run_date)
+            try:
+                mlb_pitchers, _ = get_mlb_probable_pitchers(run_date)
+            except Exception as exc:
+                failed_modules.append(f"MLB:get_mlb_probable_pitchers:{exc}")
+                mlb_pitchers = {}
 
         for p in props:
             player    = p.get("player", "")
@@ -563,6 +686,97 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
             else:
                 invalid_reason = None
 
+            # ── WOW-PATCH-2026-07-06 — full output-row contract math ────────
+            odds_ok_flag = "AVAILABLE" in (source_access.get(f"{sport}_odds", "") or "")
+            logs_ok_flag = "AVAILABLE" in (log_status or "")
+
+            cmap = consensus_map.get((player, prop_key), {})
+            consensus_line        = cmap.get("consensus_line")
+            consensus_price_more  = cmap.get("consensus_price_more")
+            consensus_price_less  = cmap.get("consensus_price_less")
+            source_conflict       = bool(cmap.get("conflict"))
+
+            no_vig_more, no_vig_less = no_vig_pair(consensus_price_more, consensus_price_less)
+            no_vig_probability = no_vig_more if side == "MORE" else no_vig_less
+
+            pp_threshold = pp_cash_threshold(side, line)
+            threshold_value = pp_threshold.get("cash_requires") if side == "MORE" else pp_threshold.get("cash_at_or_below")
+            threshold_hit_rate = compute_threshold_hit_rate(raw_l10 or raw_l5, side, threshold_value)
+
+            # model_probability: prefer the threshold-adjusted hit rate (the
+            # empirical rate against the real PrizePicks cash threshold, item 7)
+            # falling back to the line-based L10/L5 hit rate when unavailable.
+            model_probability = (
+                threshold_hit_rate
+                if threshold_hit_rate is not None
+                else (log_stats.get("l10_hit_rate") if log_stats.get("l10_hit_rate") is not None
+                      else log_stats.get("l5_hit_rate"))
+            )
+
+            adjusted_edge = (
+                round(model_probability - no_vig_probability, 4)
+                if model_probability is not None and no_vig_probability is not None
+                else None
+            )
+            edge_math = (
+                f"{model_probability} - {no_vig_probability} = {adjusted_edge}"
+                if adjusted_edge is not None else None
+            )
+
+            board_consensus_delta = (
+                round(line - consensus_line, 4)
+                if consensus_line is not None else None
+            )
+            drift_grade = compute_drift_grade(adjusted_edge)
+
+            role_deployment_uncertain = bool(
+                sport == "MLB" and "pitcher" in prop_key and not mlb_pitchers
+            )
+            payout_ev_fail = bool(
+                threshold_hit_rate is not None
+                and log_stats.get("l10_hit_rate") is not None
+                and threshold_hit_rate < log_stats.get("l10_hit_rate") - 0.05
+            )
+            stale_board = bool(
+                "AVAILABLE" not in (source_access.get(f"{sport}_odds", "") or "")
+                and "AVAILABLE" in (source_access.get(f"{sport}_rundown", "") or "")
+            )
+
+            market_cause = classify_market_cause(
+                classification=classification,
+                odds_ok=odds_ok_flag,
+                logs_ok=logs_ok_flag,
+                adjusted_edge=adjusted_edge,
+                used_average_only=bool(projection_data.get("used_average_only")),
+                manual_fallback_used=manual_fallback_used,
+                source_conflict=source_conflict,
+                role_deployment_uncertain=role_deployment_uncertain,
+                payout_ev_fail=payout_ev_fail,
+                stale_board=stale_board,
+            )
+
+            # SOURCE_CONFLICT caps classification until resolved (item 4)
+            if source_conflict and classification in (
+                "Market Verified Approved", "Final Approved — Internal Projection",
+                "Model Qualified — PrizePicks", "Conditional",
+            ):
+                final_approval_blocker = (
+                    (final_approval_blocker + "; " if final_approval_blocker else "")
+                    + "SOURCE_CONFLICT: bookmakers disagree on this player/prop line by > 1.0 — capped until resolved"
+                )
+                classification = "Watch"
+
+            # WOW-PATCH-2026-07-06 item 2 — REJECT_NO_EDGE explicit no-vig math
+            # Whenever the terminal bucket is "Reject" purely on score/edge
+            # grounds (not injury or the binary-event structural cap, which
+            # already set their own explicit blocker text above), replace the
+            # generic "score=X < 45" blocker with the literal no-vig
+            # calculation so a rejected row always shows its math.
+            if classification == "Reject" and edge_math is not None and (
+                final_approval_blocker or ""
+            ).startswith("score="):
+                final_approval_blocker = f"REJECT_NO_EDGE: {edge_math} (no verified positive edge vs. no-vig consensus)"
+
             result_row = {
                 "run_date":            run_date,
                 "sport":               sport,
@@ -607,6 +821,24 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 "live_cushion_margin":    projection_data.get("live_cushion_margin"),
                 "retro_result_margin":    None,  # populated later by retro/settlement QA, never at scan time
                 "final_result":           None,
+                # WOW-PATCH-2026-07-06 — full output-row contract (items 1-3, 7, 9)
+                "board_line":             line,
+                "pp_cash_threshold":      json.dumps(pp_threshold),
+                "consensus_line":         consensus_line,
+                "consensus_price_more":   consensus_price_more,
+                "consensus_price_less":   consensus_price_less,
+                "no_vig_probability":     no_vig_probability,
+                "model_probability":      model_probability,
+                "adjusted_edge":          adjusted_edge,
+                "edge_math":              edge_math,
+                "board_consensus_delta":  board_consensus_delta,
+                "drift_grade":            drift_grade,
+                "market_cause":           market_cause,
+                "terminal_bucket":        classification,
+                "threshold_hit_rate":     threshold_hit_rate,
+                "source_conflict":        source_conflict,
+                "mutex_group_id":         None,       # filled in post-scan by assign_mutex_groups
+                "preferred_candidate":    None,
             }
             save_scan_result(result_row)
 
@@ -627,6 +859,22 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 "block_power_flex":   block_power_flex,
                 "live_cushion_margin": projection_data.get("live_cushion_margin"),
                 "final_approval_blocker": final_approval_blocker,
+                # WOW-PATCH-2026-07-06
+                "board_line":            line,
+                "pp_cash_threshold":     pp_threshold,
+                "consensus_line":        consensus_line,
+                "consensus_price_more":  consensus_price_more,
+                "consensus_price_less":  consensus_price_less,
+                "no_vig_probability":    no_vig_probability,
+                "model_probability":     model_probability,
+                "adjusted_edge":         adjusted_edge,
+                "edge_math":             edge_math,
+                "board_consensus_delta": board_consensus_delta,
+                "drift_grade":           drift_grade,
+                "market_cause":          market_cause,
+                "terminal_bucket":       classification,
+                "threshold_hit_rate":    threshold_hit_rate,
+                "source_conflict":       source_conflict,
             }
 
             if classification == "Market Verified Approved":
@@ -676,6 +924,39 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 _keep.append(_card)
         _bucket[:] = _keep
 
+    # ── WOW-PATCH-2026-07-06 item 8 (scoped) — same-player mutex grouping ──
+    assign_mutex_groups(
+        market_verified + final_approved_internal + model_qualified + conditional
+    )
+
+    # ── WOW-PATCH-2026-07-06 item 9 — DEGRADED_ENGINE_RUN gate ──────────────
+    # Any backend fetch failure recorded in failed_modules means this run
+    # cannot be trusted as a full Final WOW check: playable buckets are
+    # cleared (moved to watch_list with an explicit degraded marker) and the
+    # run is labeled so callers never mistake a partial/degraded run for a
+    # complete one.
+    run_status = "DEGRADED_ENGINE_RUN" if failed_modules else "COMPLETE"
+    if failed_modules:
+        execution_notes.append(
+            f"DEGRADED_ENGINE_RUN — {len(failed_modules)} module(s) failed: "
+            f"{'; '.join(failed_modules)}"
+        )
+        for _bucket_name, _bucket in (
+            ("market_verified",         market_verified),
+            ("final_approved_internal", final_approved_internal),
+            ("model_qualified",         model_qualified),
+        ):
+            for _card in _bucket:
+                _degraded = dict(_card)
+                _degraded["final_approval_blocker"] = (
+                    "DEGRADED_ENGINE_RUN: backend fetch failure during this run — "
+                    "not eligible for FINAL_APPROVED/MONEY_QUALIFIED until rerun"
+                )
+                _degraded["degraded_run_hold"] = True
+                _degraded["postscan_invariant_downgraded_from"] = _bucket_name
+                watch_list.append(_degraded)
+            _bucket[:] = []
+
     # Sport coverage validation
     missing_sports = [s for s in requested_sports if s not in scanned_sports]
     scan_valid     = len(missing_sports) == 0
@@ -705,6 +986,8 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
     return {
         "run_date":  run_date,
         "run_at":    run_at,
+        "run_status":               run_status,
+        "failed_modules":           failed_modules,
         "requested_sports":         requested_sports,
         "scanned_sports":           scanned_sports,
         "missing_sports":           missing_sports,
