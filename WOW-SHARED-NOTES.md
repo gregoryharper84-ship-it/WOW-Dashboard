@@ -630,3 +630,39 @@ Reviewer (Greg/ChatGPT) narrowed scope: **current engine focus is WNBA and MLB o
 **Live end-to-end verification performed** (after workflow restart, via the shared proxy, real Kalshi + Odds API data): `GET /wow/kalshi/sports/live-board?leagues=MLB,WNBA&limit=5` returned real MLB rows including Toronto vs San Francisco (`consensus_odds_status: AVAILABLE`, correctly capped at `LLP_WATCH` for an unrelated pre-existing reason — thin orderbook, `liquidity_grade: F`) and Colorado vs Los Angeles D (`consensus_odds_status: FAILED`, `blocker_tags: [ODDS_CONSENSUS_UNAVAILABLE]`, correctly capped at `LLP_SCOUT` — genuine lack of odds coverage on that far-out contract, not fabricated). `dry_run_only: true` and `can_execute: false` confirmed at board and row level; no order-placement code exists anywhere in this stack.
 
 **Status:** `GET /wow/kalshi/sports/live-board` — **BUILT_AND_SAFE_DRY_RUN**, live-verified against real Kalshi MLB/WNBA data with the opponent-team bug fixed and regression-tested.
+
+---
+
+## 2026-07-06 — `DATA_QUALITY_HOLD` Section 32 sub-tag shipped; `live_cushion_margin` / `retro_result_margin` split
+
+**Context:** User-approved ruling: internal projections that fall back to "average-only"
+support (`l10_median` missing, only `l10_avg` available) needed an official Section 32
+sub-tag — `DATA_QUALITY_HOLD` — rather than silently flowing through to
+`Model Qualified`/`Final Approved` with full Power/Flex slip-eligibility. Full rules and
+enforcement points are in `LLP_GROUND_TRUTH.md` §32 and `WOW-PATCH-DATA-QUALITY-HOLD.md`.
+
+**Root-cause bug found and fixed during implementation:** `POST /final-lock`'s Gate 3
+(L10 data) originally hard-rejected with `L10_UNVERIFIED` whenever `l10_median` was
+`None`, even when `l10_values`/`recent_avg` were present — this made the average-only
+`DATA_QUALITY_HOLD` path structurally unreachable in that endpoint (it would always
+reject before ever calling `compute_internal_projection()`). Narrowed the gate to only
+reject when there is truly no data to project from at all.
+
+**Key design note:** `live_cushion_margin` (live scoring: `projection_or_median − line`)
+and `retro_result_margin` (retro QA only: `final_result − line`) are now two distinct
+fields/functions. `compute_retro_result_margin()` is a standalone helper with **no**
+call site in any live gating path — it exists for retro grading/QA tooling only. Any
+future code that needs a settled-result margin must call that helper explicitly rather
+than reusing `live_cushion_margin`, which is always computed off a projection/median at
+scoring time and is never valid once a game has actually settled.
+
+**Live-verified (2026-07-06):** average-only + no odds → `WATCH`/`DATA_QUALITY_HOLD`/
+`block_power_flex: true`; average-only + odds present + strong score →
+`Model Qualified — PrizePicks`/`DATA_QUALITY_HOLD`/`block_power_flex: true` (via
+`classify_prop()` ad-hoc script test); median present → unaffected `Final Approved`;
+no l10 data at all → still rejects `L10_UNVERIFIED` via `/final-lock` over the shared
+proxy.
+
+**Status:** `classify_prop()` (`jobs/wow_daily_scan.py`) and `POST /final-lock`
+(`app.py`) — **SHIPPED**, sub-tag never terminal, always blocks Power/Flex, DB columns
+added non-destructively to `scan_results`.

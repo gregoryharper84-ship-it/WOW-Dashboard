@@ -951,6 +951,66 @@ Endpoints: `POST /wow/validation-queue/build`, `POST /wow/ledger-cache/upsert`, 
 
 ---
 
+## §32 — DATA_QUALITY_HOLD Sub-Tag (WOW-PATCH-DATA-QUALITY-HOLD, SHIPPED 2026-07-06)
+
+**Problem:** internal projections silently fell back to "average-only" support
+(`l10_median` missing, only `l10_avg` available) with no distinct signal — the
+resulting prop could still reach `Model Qualified`/`Final Approved` and be treated as
+Power/Flex slip-eligible despite weaker support than a true median-backed projection.
+User-approved ruling: this needs an official sub-tag, not a terminal label.
+
+**Rules (sub-tag, never terminal):**
+- `DATA_QUALITY_HOLD` defaults the parent label to `Watch`.
+- Max parent label is `Model Qualified` and **only** with independent market/projection
+  support (e.g. odds available) alongside score/projection thresholds — it can never
+  reach `Final Approved`/`Market Verified` while the tag is set.
+- Never overrides `THIN_MARGIN_RISK` (not yet implemented anywhere in this codebase as
+  of this patch — treated as a no-op/future concern, not fabricated).
+- Always sets `block_power_flex: true` when it fires — average-only support alone can
+  never grant Power/Flex slip-eligibility, regardless of parent label.
+
+**Enforcement points:**
+- `classify_prop()` (`jobs/wow_daily_scan.py`, used by `POST /wow/daily-scan`) — checked
+  after the injury hard-reject and the binary-event structural cap (§23/§24), before the
+  Final Approval tier. Returns a 4-tuple
+  `(classification, final_approval_blocker, data_quality_tag, block_power_flex)`.
+- `POST /final-lock` (`app.py`) — new Gate 4b, immediately after projection resolution
+  (Gate 4) and before the margin gate (Gate 5): if `used_average_only` is `True`,
+  downgrades to `WATCH`/`DATA_QUALITY_HOLD` with `block_power_flex: true`. Gate 3 (L10
+  data) was narrowed from "reject whenever `l10_median` is missing" to "reject only when
+  there is truly no data to project from at all" (`l10_values` empty **and**
+  `l10_median` **and** `recent_avg` all missing) — otherwise the average-only path was
+  unreachable and this gate could never fire.
+
+**New field contract additions (§7):**
+- `used_average_only` (bool) — `True` when `l10_median` was `None` and `l10_avg` was
+  used to compute the internal projection.
+- `data_quality_tag` (string | null) — `"DATA_QUALITY_HOLD"` when the sub-tag fires,
+  else `null`.
+- `block_power_flex` (bool) — `True` whenever any sub-tag disqualifies Power/Flex
+  slip-eligibility (currently only `DATA_QUALITY_HOLD`, extensible to future sub-tags).
+- `live_cushion_margin` (float | null) — **live scoring only**:
+  `projection_or_median_value − line`. Computed inside `compute_internal_projection()`.
+- `retro_result_margin` (float | null) — **retro QA only**: `final_result − line`.
+  Computed by the standalone `compute_retro_result_margin(final_result, line)` helper,
+  which has no call site in any live gating path — never used for live approval
+  decisions, tracking/QA use only.
+- `final_result` (float | null) — the actual settled stat line, populated only at
+  retro-grading time (always `None` at scan/lock time).
+
+**DB:** `scan_results` gained 6 new columns (`used_average_only`, `data_quality_tag`,
+`block_power_flex`, `live_cushion_margin`, `retro_result_margin`, `final_result`) via
+non-destructive `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
+
+**Live-verified (2026-07-06):**
+- Average-only + no odds → `WATCH`/`DATA_QUALITY_HOLD`/`block_power_flex: true`,
+  `live_cushion_margin` populated.
+- Median present → unaffected, reaches `FINAL APPROVED — INTERNAL PROJECTION`,
+  `data_quality_tag: null`, `block_power_flex: false`.
+- No l10 data at all → still rejects `L10_UNVERIFIED` (unchanged failure mode).
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

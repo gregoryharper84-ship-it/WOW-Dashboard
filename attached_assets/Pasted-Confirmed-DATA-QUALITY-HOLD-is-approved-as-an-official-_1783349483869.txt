@@ -1,0 +1,76 @@
+Confirmed. **`DATA_QUALITY_HOLD` is approved as an official Section 32 sub-tag, not a terminal label.**
+
+It should **not** become a new final label, and it should **not** allow a prop into Power/Flex by itself.
+
+## Final taxonomy ruling
+
+```text
+DATA_QUALITY_HOLD
+Type: Section 32 sub-tag
+Terminal label: No
+Allowed parent labels: WATCH, MODEL_QUALIFIED_HOLD
+Default parent label: WATCH
+Meaning: Prop has enough data to score or scout, but not enough verified support for slip construction.
+```
+
+## Required correction to the Replit code
+
+The current code returns this:
+
+```javascript
+return { status: 'PASS', tag: 'DATA_QUALITY_HOLD', blockPowerFlex: false };
+```
+
+That needs to be changed. Correct behavior:
+
+```javascript
+if (usedAverageOnly) {
+  return {
+    status: 'WATCH',
+    tag: 'DATA_QUALITY_HOLD',
+    blockPowerFlex: true
+  };
+}
+```
+
+Reason: **average-only support is not enough for Power/Flex.** It can be ranked, tracked, and reviewed, but it cannot become slip-eligible until a true projection or L10 median is retrieved.
+
+## Add this to Section 32
+
+```text
+DATA_QUALITY_HOLD:
+Sub-tag only. Used when a prop has enough information for preliminary scoring but lacks the required quality layer for approval, such as missing L10 median, missing true projection, average-only support, unresolved source conflict, or incomplete role/context verification.
+
+Default parent label: WATCH.
+Maximum parent label: MODEL_QUALIFIED_HOLD only if independent market/projection support exists.
+Never a terminal label.
+Never overrides THIN_MARGIN_RISK.
+Never allows Power/Flex construction by itself.
+```
+
+## One more implementation note
+
+For live scoring, cushion must use **pregame projection / L10 median / L10 average**, not final result. The screenshot results are valid for retro QA only.
+
+So the scorer should treat:
+
+```text
+live_cushion_margin = projection_or_median - line
+retro_result_margin = final_result - line
+```
+
+as separate fields.
+
+## Final status
+
+| Item                    | Ruling                                              |
+| ----------------------- | --------------------------------------------------- |
+| `DATA_QUALITY_HOLD`     | Approved Section 32 sub-tag                         |
+| Terminal label?         | No                                                  |
+| Default cap             | WATCH                                               |
+| Can enter Power/Flex?   | No                                                  |
+| Code correction needed? | Yes — change average-only return from PASS to WATCH |
+| Patch 1 status          | Approved, code-required                             |
+| Patch 2 status          | Approved, analytical active                         |
+
+This keeps the label ladder clean and prevents `DATA_QUALITY_HOLD` from becoming another “Conditional” drift path.

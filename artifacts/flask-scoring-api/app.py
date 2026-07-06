@@ -1386,10 +1386,14 @@ def final_lock():
             "projection_margin":  None,
             "projection_source":  None,
             "final_approval_blocker": code,
+            "used_average_only":  False,
+            "data_quality_tag":   None,
+            "block_power_flex":   False,
+            "live_cushion_margin": None,
             "saved_to_lobby": False,
         }
 
-    def _downgrade(tier, code, detail=None):
+    def _downgrade(tier, code, detail=None, data_quality_tag=None, block_power_flex=False):
         return {
             "ok":             True,
             "classification": tier,
@@ -1400,6 +1404,10 @@ def final_lock():
             "projection_margin":  proj_margin,
             "projection_source":  proj_source,
             "final_approval_blocker": code,
+            "used_average_only":  used_average_only,
+            "data_quality_tag":   data_quality_tag,
+            "block_power_flex":   block_power_flex,
+            "live_cushion_margin": live_cushion_margin,
             "saved_to_lobby": False,
         }
 
@@ -1408,6 +1416,8 @@ def final_lock():
     proj_value  = None
     proj_margin = None
     proj_source = None
+    used_average_only  = False
+    live_cushion_margin = None
 
     # ---- Gate 1: Official status ----
     if not status_confirmed:
@@ -1420,10 +1430,17 @@ def final_lock():
             "Line could not be verified against an active market")}), 200
 
     # ---- Gate 3: L10 data ----
-    if not l10_values or l10_median is None:
+    # A true median is preferred, but per WOW-PATCH-2026-07-05 (Section 32,
+    # DATA_QUALITY_HOLD), an average-only fallback (l10_median missing, only
+    # recent_avg/l10_values available) is not a hard reject — it is allowed
+    # through to projection resolution, where compute_internal_projection()
+    # flags used_average_only and Gate 4b caps the result at
+    # Watch/DATA_QUALITY_HOLD with block_power_flex=True. Only reject here
+    # when there is truly no data to compute any projection from.
+    if not l10_values and l10_median is None and recent_avg is None:
         proj_status = "MISSING"
         return jsonify({**_downgrade("MODEL_QUALIFIED", "L10_UNVERIFIED",
-            "l10_values or l10_median not provided — cannot compute projection")}), 200
+            "l10_values, l10_median, and recent_avg all missing — cannot compute projection")}), 200
 
     # ---- Gate 4: Projection resolution ----
     log_stats = {
@@ -1459,10 +1476,28 @@ def final_lock():
         proj_value  = result["projection_value"]
         proj_margin = result["projection_margin"]
         proj_source = result["projection_source"]
+        used_average_only   = result.get("used_average_only", False)
+        live_cushion_margin  = result.get("live_cushion_margin")
 
         if proj_status == "MISSING":
             return jsonify({**_downgrade("MODEL_QUALIFIED", "PROJECTION_MISSING",
                 result["final_approval_blocker"])}), 200
+
+    # ---- Gate 4b: DATA_QUALITY_HOLD sub-tag (WOW-PATCH-2026-07-05, Section 32) ----
+    # Average-only internal projection support (L10 median missing, only L10
+    # avg available) is a real signal for ranking/tracking/review, but it is
+    # NOT sufficient data quality for Power/Flex slip eligibility. This is a
+    # sub-tag, never a terminal label, so it never returns REJECT — it caps
+    # the parent label at WATCH (default) here since /final-lock has no
+    # "Model Qualified" ceiling path with independent market support at this
+    # gate; block_power_flex is always True when the tag fires.
+    if used_average_only:
+        return jsonify({**_downgrade(
+            "WATCH", "DATA_QUALITY_HOLD",
+            "average-only support (L10 median missing) — not eligible for "
+            "Power/Flex until a true projection or L10 median is retrieved",
+            data_quality_tag="DATA_QUALITY_HOLD", block_power_flex=True,
+        )}), 200
 
     # ---- Gate 5: Projection margin ----
     if proj_margin is None or proj_margin < REQUIRED_MARGIN:
@@ -1530,6 +1565,10 @@ def final_lock():
             "projection_margin":    proj_margin,
             "projection_source":    proj_source,
             "final_approval_blocker": None,
+            "used_average_only":    used_average_only,
+            "data_quality_tag":     None,
+            "block_power_flex":     False,
+            "live_cushion_margin":  live_cushion_margin,
         })
         saved = True
     except Exception as save_err:
@@ -1548,6 +1587,10 @@ def final_lock():
         "projection_margin":     proj_margin,
         "projection_source":     proj_source,
         "final_approval_blocker": None,
+        "used_average_only":     used_average_only,
+        "data_quality_tag":      None,
+        "block_power_flex":      False,
+        "live_cushion_margin":   live_cushion_margin,
         "gates_passed": {
             "status_confirmed": True,
             "line_verified":    True,

@@ -78,6 +78,17 @@ def compute_internal_projection(log_stats, line, side):
       projection_margin      — % clearance (positive = favourable for side)
       projection_source      — "internal_l10_model" | None
       final_approval_blocker — None (pass) or reason string (fail)
+      used_average_only      — True when L10 median was unavailable and the
+                                projection fell back to L10 average as its
+                                base anchor (WOW-PATCH-2026-07-05-DATA-QUALITY-HOLD).
+                                Average-only support is a real signal for
+                                ranking/tracking/review, but is not sufficient
+                                data quality for Power/Flex slip construction.
+      live_cushion_margin     — raw (unsigned-to-side) live scoring margin:
+                                projection_or_median − line. This is the LIVE
+                                scoring signal, distinct from retro QA margins
+                                (see `compute_retro_result_margin` below) —
+                                never mix the two. None when no base anchor.
     """
     l10_median      = log_stats.get("l10_median")
     l10_avg         = log_stats.get("l10_avg")
@@ -96,9 +107,15 @@ def compute_internal_projection(log_stats, line, side):
                 "internal projection requires >= 5 verified games with L10 median/avg; "
                 f"got {games_available} games"
             ),
+            "used_average_only":       False,
+            "live_cushion_margin":     None,
         }
 
-    # Base anchor: L10 median preferred for stability
+    # Base anchor: L10 median preferred for stability. Falling back to the
+    # average alone (no true median) is flagged so downstream classification
+    # can apply the DATA_QUALITY_HOLD sub-tag — average-only support is not
+    # enough for Power/Flex slip eligibility (WOW-PATCH-2026-07-05).
+    used_average_only = l10_median is None and l10_avg is not None
     base = l10_median if l10_median is not None else l10_avg
 
     # L5 and L10 raw values for trend calculation
@@ -136,13 +153,44 @@ def compute_internal_projection(log_stats, line, side):
     else:
         blocker = None
 
+    # LIVE cushion margin: projection_or_median − line, raw (not side-signed,
+    # not a %). This is the live-scoring field; it must never be confused
+    # with `compute_retro_result_margin` below, which is retro QA-only and
+    # uses the settled final_result instead of the projection/median.
+    live_cushion_margin = round(projection_value - line, 4)
+
     return {
         "projection_status":      "INTERNAL",
         "projection_value":       projection_value,
         "projection_margin":      margin,
         "projection_source":      "internal_l10_model",
         "final_approval_blocker": blocker,
+        "used_average_only":      used_average_only,
+        "live_cushion_margin":    live_cushion_margin,
     }
+
+
+def compute_retro_result_margin(final_result, line):
+    """
+    RETRO QA ONLY — never used for live scoring/classification.
+
+    retro_result_margin = final_result - line
+
+    This measures how a prop actually settled relative to its line, for
+    post-hoc grading/calibration review. It is distinct from
+    `live_cushion_margin` (projection_or_median − line), which is the
+    live-scoring signal computed BEFORE the game and used for gating.
+    Mixing the two would silently leak retro/settlement information into
+    the live approval pipeline — keep them separate fields end-to-end.
+
+    Returns None if either input is missing/invalid.
+    """
+    if final_result is None or line is None:
+        return None
+    try:
+        return round(float(final_result) - float(line), 4)
+    except (TypeError, ValueError):
+        return None
 
 
 # -------------------------------------------------------------------
@@ -197,7 +245,9 @@ def classify_prop(
     projection_data=None, line=None,
 ):
     """
-    WOW v14.9.1 — returns (classification_label, final_approval_blocker | None).
+    WOW v14.9.1 — returns
+    (classification_label, final_approval_blocker | None,
+     data_quality_tag | None, block_power_flex: bool).
 
     Tier 1: Market Verified Approved
       score >= 75, injury OK, odds AVAILABLE, raw L5+L10, external projection,
@@ -218,6 +268,24 @@ def classify_prop(
     structural trait, not a statistical one — wow_score/proj_margin can
     still look strong on these — so it is capped at "Watch" (never Model
     Qualified or above) regardless of score, ahead of every other tier.
+
+    WOW-PATCH-2026-07-05-DATA-QUALITY-HOLD (Section 32 ruling):
+    DATA_QUALITY_HOLD is a SUB-TAG, never a terminal label. It is applied
+    when the internal projection fell back to L10-average-only support
+    (L10 median missing). Rules:
+      - Default parent label: "Watch".
+      - Ceiling: "Model Qualified — PrizePicks", and only when there is
+        independent market/projection support (odds_ok AND proj_ok AND
+        score/log thresholds are otherwise met). Never Final Approved or
+        Market Verified.
+      - Never a terminal label by itself — it rides alongside whatever
+        parent label it caps, surfaced via data_quality_tag.
+      - Never overrides a harder cap that already ran (injury reject,
+        binary-event structural cap) and never overrides THIN_MARGIN_RISK
+        if/when that tag is implemented elsewhere in the pipeline.
+      - block_power_flex=True whenever the tag is set — average-only
+        support is not sufficient data quality for Power/Flex slip
+        construction, even at the Model Qualified ceiling.
     """
     _binary_event = is_binary_event_line(line)
 
@@ -239,10 +307,11 @@ def classify_prop(
         and proj_margin >= PROJECTION_MARGIN_THRESHOLD
         and not proj_blocker
     )
+    used_average_only = bool(proj.get("used_average_only"))
 
     # --- Hard reject: injury ---
     if not inj_ok:
-        return "Reject", f"injury_flag={inj_flag} (>= 2)"
+        return "Reject", f"injury_flag={inj_flag} (>= 2)", None, False
 
     # --- Binary-event structural cap (PATCH-BINARY-EVENT-PURGE) ---
     # Ahead of every scoring tier: a 0.5-line prop is structurally near-binary
@@ -251,19 +320,49 @@ def classify_prop(
     # strong wow_score/projection_margin look.
     if _binary_event:
         if wow_score >= 45:
-            return "Watch", "binary_event_structural_cap: 0.5 line is a single-occurrence binary outcome, capped below Model Qualified"
+            return (
+                "Watch",
+                "binary_event_structural_cap: 0.5 line is a single-occurrence binary outcome, capped below Model Qualified",
+                None, False,
+            )
         any_source = any("AVAILABLE" in str(v) for v in sources.values())
         if not any_source:
-            return "Data Insufficient", "binary_event_structural_cap: 0.5 line is a single-occurrence binary outcome"
-        return "Reject", f"binary_event_structural_cap (score={wow_score} < 45)"
+            return (
+                "Data Insufficient",
+                "binary_event_structural_cap: 0.5 line is a single-occurrence binary outcome",
+                None, False,
+            )
+        return "Reject", f"binary_event_structural_cap (score={wow_score} < 45)", None, False
+
+    # --- DATA_QUALITY_HOLD sub-tag (WOW-PATCH-2026-07-05, Section 32) ---
+    # Average-only internal projection support (L10 median missing) is a
+    # real signal worth ranking/tracking/reviewing, but it is not enough
+    # data quality for Power/Flex slip eligibility. Default to "Watch";
+    # only rise to "Model Qualified — PrizePicks" with independent
+    # market/projection support, and never above that.
+    if used_average_only:
+        data_quality_tag = "DATA_QUALITY_HOLD"
+        if wow_score >= 65 and logs_ok and odds_ok and proj_ok and not live_manual_block:
+            return (
+                "Model Qualified — PrizePicks",
+                "DATA_QUALITY_HOLD: average-only support (L10 median missing) — "
+                "independent market/projection support present, capped below Final Approved",
+                data_quality_tag, True,
+            )
+        return (
+            "Watch",
+            "DATA_QUALITY_HOLD: average-only support (L10 median missing) — "
+            "not eligible for Power/Flex until a true projection or L10 median is retrieved",
+            data_quality_tag, True,
+        )
 
     # --- Final Approval tier ---
     if wow_score >= 75 and inj_ok and raw_logs_ok and not live_manual_block and proj_ok:
         if odds_ok and proj_status == "EXTERNAL":
             # Full external verification — highest label
-            return "Market Verified Approved", None
+            return "Market Verified Approved", None, None, False
         # Internal projection (may still have odds_ok = True)
-        return "Final Approved — Internal Projection", None
+        return "Final Approved — Internal Projection", None, None, False
 
     # Build blocker reason for lower tiers
     blocker_parts = []
@@ -286,17 +385,17 @@ def classify_prop(
     blocker = "; ".join(blocker_parts) if blocker_parts else None
 
     if wow_score >= 65 and logs_ok:
-        return "Model Qualified — PrizePicks", blocker
+        return "Model Qualified — PrizePicks", blocker, None, False
     if wow_score >= 55:
-        return "Conditional", blocker
+        return "Conditional", blocker, None, False
     if wow_score >= 45:
-        return "Watch", blocker
+        return "Watch", blocker, None, False
 
     any_source = any("AVAILABLE" in str(v) for v in sources.values())
     if not any_source:
-        return "Data Insufficient", blocker
+        return "Data Insufficient", blocker, None, False
 
-    return "Reject", f"score={wow_score} < 45"
+    return "Reject", f"score={wow_score} < 45", None, False
 
 
 # -------------------------------------------------------------------
@@ -438,7 +537,7 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
             projection_data = compute_internal_projection(log_stats, line, side)
 
             # Classify (returns tuple)
-            classification, final_approval_blocker = classify_prop(
+            classification, final_approval_blocker, data_quality_tag, block_power_flex = classify_prop(
                 wow_score, signal, log_status, inj_flag,
                 {"odds": source_access.get(f"{sport}_odds", "NOT_CALLED")},
                 raw_l5=raw_l5,
@@ -501,6 +600,13 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 "projection_margin":      projection_data.get("projection_margin"),
                 "projection_source":      projection_data.get("projection_source"),
                 "final_approval_blocker": final_approval_blocker,
+                # WOW-PATCH-2026-07-05 — DATA_QUALITY_HOLD sub-tag + margin split
+                "used_average_only":      projection_data.get("used_average_only", False),
+                "data_quality_tag":       data_quality_tag,
+                "block_power_flex":       block_power_flex,
+                "live_cushion_margin":    projection_data.get("live_cushion_margin"),
+                "retro_result_margin":    None,  # populated later by retro/settlement QA, never at scan time
+                "final_result":           None,
             }
             save_scan_result(result_row)
 
@@ -516,6 +622,10 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 "projection_value":   projection_data.get("projection_value"),
                 "projection_margin":  projection_data.get("projection_margin"),
                 "projection_source":  projection_data.get("projection_source"),
+                "used_average_only":  projection_data.get("used_average_only", False),
+                "data_quality_tag":   data_quality_tag,
+                "block_power_flex":   block_power_flex,
+                "live_cushion_margin": projection_data.get("live_cushion_margin"),
                 "final_approval_blocker": final_approval_blocker,
             }
 

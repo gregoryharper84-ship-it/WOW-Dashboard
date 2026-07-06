@@ -41,7 +41,9 @@ def save_scan_result(result: dict) -> bool:
                         cross_season_used, manual_fallback_used,
                         audit_valid, invalid_reason,
                         projection_status, projection_value, projection_margin,
-                        projection_source, final_approval_blocker
+                        projection_source, final_approval_blocker,
+                        used_average_only, data_quality_tag, block_power_flex,
+                        live_cushion_margin, retro_result_margin, final_result
                     ) VALUES (
                         %(run_date)s, %(sport)s, %(player)s, %(prop)s, %(line)s, %(side)s,
                         %(game_date)s, %(wow_score)s, %(signal)s, %(message)s,
@@ -54,7 +56,9 @@ def save_scan_result(result: dict) -> bool:
                         %(cross_season_used)s, %(manual_fallback_used)s,
                         %(audit_valid)s, %(invalid_reason)s,
                         %(projection_status)s, %(projection_value)s, %(projection_margin)s,
-                        %(projection_source)s, %(final_approval_blocker)s
+                        %(projection_source)s, %(final_approval_blocker)s,
+                        %(used_average_only)s, %(data_quality_tag)s, %(block_power_flex)s,
+                        %(live_cushion_margin)s, %(retro_result_margin)s, %(final_result)s
                     )
                 """, {
                     "run_date":       result.get("run_date", date.today().isoformat()),
@@ -92,6 +96,12 @@ def save_scan_result(result: dict) -> bool:
                     "projection_margin":    result.get("projection_margin"),
                     "projection_source":    result.get("projection_source"),
                     "final_approval_blocker": result.get("final_approval_blocker"),
+                    "used_average_only":    result.get("used_average_only", False),
+                    "data_quality_tag":     result.get("data_quality_tag"),
+                    "block_power_flex":     result.get("block_power_flex", False),
+                    "live_cushion_margin":  result.get("live_cushion_margin"),
+                    "retro_result_margin":  result.get("retro_result_margin"),
+                    "final_result":         result.get("final_result"),
                 })
         conn.close()
         return True
@@ -177,7 +187,9 @@ def get_compact_scan_rows(run_date, category=None, limit=80):
                    cross_season_used, manual_fallback_used,
                    audit_valid, invalid_reason,
                    projection_status, projection_value, projection_margin,
-                   projection_source, final_approval_blocker
+                   projection_source, final_approval_blocker,
+                   used_average_only, data_quality_tag, block_power_flex,
+                   live_cushion_margin, retro_result_margin, final_result
             FROM scan_results {where}
             ORDER BY wow_score DESC NULLS LAST
             LIMIT %s
