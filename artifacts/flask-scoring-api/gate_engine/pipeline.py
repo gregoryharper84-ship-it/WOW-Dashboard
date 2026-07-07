@@ -587,6 +587,29 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
     _degraded = run_status == "DEGRADED_ENGINE_RUN"
     _effective_final_count = 0 if _degraded else len(final_card)
 
+    # Phase 2: market validation ledger — one entry per row showing cash threshold
+    # status, exact/adjacent market classification, and confidence cap applied.
+    market_validation_ledger: list[dict] = []
+    for row in rows:
+        mkt = (row.get("gates") or {}).get("market_gate") or {}
+        market_validation_ledger.append({
+            "row_id":               row.get("row_id"),
+            "player":               row.get("player"),
+            "prop_type":            row.get("prop_type"),
+            "line":                 row.get("line"),
+            "direction":            row.get("direction"),
+            "cash_threshold":       (row.get("pp_thresholds") or {}).get("cash_threshold"),
+            "whole_number_line":    (row.get("pp_thresholds") or {}).get("whole_number_line"),
+            "cash_threshold_status": mkt.get("cash_threshold_status"),
+            "exact_market_found":   mkt.get("exact_market_found"),
+            "exact_market_line":    mkt.get("exact_market_line"),
+            "adjacent_market_used": mkt.get("adjacent_market_used"),
+            "adjacent_market_line": mkt.get("adjacent_market_line"),
+            "substitution_allowed": mkt.get("substitution_allowed"),
+            "confidence_cap":       mkt.get("confidence_cap"),
+            "terminal_label":       row.get("terminal_label"),
+        })
+
     return {
         "prop_ledger":        rows,
         "data_status_ledger": data_status_ledger,
@@ -602,6 +625,8 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "failed_modules":     failed_modules or [],
         "pp_threshold_ledger": pp_threshold_ledger or [],
         "mutex_report":       mutex_report or [],
+        # Phase 2 addition
+        "market_validation_ledger": market_validation_ledger,
         "summary": {
             "total_rows":          len(rows),
             "by_label":            label_counts,

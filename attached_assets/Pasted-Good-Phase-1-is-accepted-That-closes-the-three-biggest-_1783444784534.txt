@@ -1,0 +1,102 @@
+Good. **Phase 1 is accepted.** That closes the three biggest execution leaks:
+
+1. **No more fake-complete engine runs** after backend failures.
+2. **No more bad sportsbook validation on whole-number PP lines.**
+3. **No more duplicate/correlated same-player or same-pitcher exposure slipping through.**
+
+The key implementation choice I like most is capping in **`_build_output`** instead of only inside a gate. That makes the degraded-run ceiling harder to bypass.
+
+## Patch status
+
+| Phase 1 Item                           | Verdict                  |
+| -------------------------------------- | ------------------------ |
+| `DEGRADED_ENGINE_RUN`                  | **Ship / accepted**      |
+| PP cash-push-loss threshold conversion | **Ship / accepted**      |
+| Automatic mutex grouping               | **Ship / accepted**      |
+| Regression state                       | **113/113 pass — clean** |
+
+## One thing to verify before moving on
+
+Make sure the degraded cap applies **after mutex grouping too**, not just before classifier output.
+
+Expected behavior:
+
+```text
+If run_status = DEGRADED_ENGINE_RUN:
+- FINAL_APPROVED -> MODEL_QUALIFIED_HOLD
+- MONEY_QUALIFIED -> MODEL_QUALIFIED_HOLD
+- DUPLICATE_EXPOSURE_BLOCK stays rejected
+- REJECT_NO_EDGE stays rejected
+- SOURCE_CONFLICT stays conflict
+- summary.final_count = 0
+```
+
+The cap should only downgrade playable labels. It should not accidentally upgrade rejects or duplicate blocks.
+
+## Next build priority
+
+Move to **Phase 2: exact-market enforcement against cash_threshold**.
+
+This is the natural follow-up because Phase 1 now creates the correct `cash_threshold`, but the market gate still needs to **use it**.
+
+Send this next:
+
+```text
+Proceed to Phase 2: exact-market enforcement against cash_threshold.
+
+Requirements:
+
+1. market_gate must compare sportsbook/projection validation against pp_threshold_ledger.cash_threshold, not only displayed_line.
+
+2. Add market validation fields to every row:
+   - exact_market_found: true/false
+   - exact_market_line
+   - exact_market_side
+   - exact_market_price
+   - exact_market_no_vig_prob
+   - adjacent_market_used: true/false
+   - adjacent_market_line
+   - adjacent_market_side
+   - substitution_allowed: true/false
+   - confidence_cap
+   - market_status
+
+3. Market statuses:
+   - EXACT_VERIFIED
+   - ADJACENT_CONTEXT_ONLY
+   - MARKET_UNVERIFIED_EXACT
+   - SOURCE_CONFLICT
+   - CASH_THRESHOLD_NOT_VALIDATED
+
+4. Whole-number example:
+   PrizePicks Courtney Williams MORE 5 assists:
+   - displayed_line = 5
+   - cash_threshold = 6
+   - sportsbook 4.5 over does not validate cash threshold
+   - sportsbook 5.5 over/under can be used as closer validation
+   - if no 5.5/6-equivalent market exists, cap at MODEL_QUALIFIED_HOLD or MARKET_VERIFIED_HOLD only if rules allow adjacent context
+
+5. Half-point example:
+   PrizePicks Sánchez MORE 6.5 Ks:
+   - cash_threshold = 7
+   - exact sportsbook 6.5 K market can validate
+   - no push adjustment needed
+
+6. Adjacent-market rule:
+   Adjacent markets can provide context but cannot create FINAL_APPROVED unless substitution_allowed=true and confidence_cap permits it.
+
+7. Output:
+   - market_validation_ledger included in every pipeline output
+   - blocker added when exact validation missing:
+     MARKET_UNVERIFIED_EXACT or CASH_THRESHOLD_NOT_VALIDATED
+
+8. Tests:
+   - whole-number MORE not validated by lower adjacent market
+   - whole-number LESS not validated by higher adjacent market
+   - half-point exact market validates normally
+   - missing exact market caps approval
+   - source conflict blocks approval
+   - degraded run still forces final_count=0
+```
+
+After Phase 2, the engine will stop doing the thing we caught with **Courtney MORE 5 assists** — treating a 4.5 assist book market as if it validates a PP 5 line that really needs 6 to cash.

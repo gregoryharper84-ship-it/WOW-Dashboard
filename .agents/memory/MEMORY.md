@@ -14,3 +14,4 @@
 - [WOW binary-event line structural cap](wow-binary-event-lines.md) — 0.5-line props (e.g. MLB Hitter Hits) are structurally near-binary and bypass REJECT_COINFLIP; must cap at every scoring entry point, not just one.
 - [gate-engine/run route param wiring](gate-engine-run-route-params.md) — the HTTP route only forwards raw_rows/target_date/enrichment/record_entries; skip_data_contract etc. are pipeline-only, ignored if sent in the body.
 - [Phase 1 pipeline test pattern](phase1-pipeline-test-pattern.md) — slate_validation purges minimal test rows before they reach l5_l10_ledger; mock slate + skip flags required; DEGRADED ceiling lives in _build_output not run_pipeline.
+- [Phase 2 cash threshold enforcement](phase2-cash-threshold.md) — market_gate validates sportsbook_line against cash_threshold (not displayed_line); tolerance=0.5; whole-number sb@displayed → NOT_VALIDATED→MODEL_QUALIFIED_HOLD; MARKET_CONTRADICTION overrides to SOURCE_CONFLICT.

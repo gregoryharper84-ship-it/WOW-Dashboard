@@ -3,6 +3,11 @@ classifier.py
 Assign the terminal PropLabel to every row based on all gate results.
 Hard rules enforced exactly per spec.
 No row can be FINAL_APPROVED unless ALL gates pass.
+
+Phase 2 addition: cash threshold enforcement via market_gate.confidence_cap.
+  confidence_cap == "MODEL_QUALIFIED_HOLD" → hard cap to MODEL_QUALIFIED_HOLD
+  confidence_cap == "MONEY_QUALIFIED_MAX"  → soft cap to MONEY_QUALIFIED (not FINAL_APPROVED)
+  confidence_cap == None / "NO_PP_THRESHOLDS" → no additional cap (legacy / exact-verified)
 """
 from __future__ import annotations
 
@@ -81,6 +86,33 @@ def classify(row: dict[str, Any]) -> dict[str, Any]:
         return row
 
     if mkt_status in ("MARKET_VERIFIED", "MARKET_EDGE_DETECTED"):
+        # ------------------------------------------------------------------
+        # Phase 2: cash threshold enforcement
+        # confidence_cap is set by market_gate._validate_cash_threshold()
+        #   "MODEL_QUALIFIED_HOLD" — hard cap: whole-number line not validated,
+        #                            unverified market, or source conflict
+        #   "MONEY_QUALIFIED_MAX"  — soft cap: adjacent context on half-point line;
+        #                            cannot reach FINAL_APPROVED
+        #   None / absent          — no additional cap (EXACT_VERIFIED or legacy)
+        # ------------------------------------------------------------------
+        confidence_cap = market.get("confidence_cap")
+        cash_status    = market.get("cash_threshold_status", "")
+
+        if confidence_cap == "MODEL_QUALIFIED_HOLD":
+            row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
+            row["blockers"].append(
+                f"CLASSIFIER:MARKET_CASH_CAP:{cash_status}"
+            )
+            return row
+
+        if confidence_cap == "MONEY_QUALIFIED_MAX":
+            row["terminal_label"] = PropLabel.MONEY_QUALIFIED.value
+            row["blockers"].append(
+                f"CLASSIFIER:MARKET_CASH_CAP:{cash_status}"
+            )
+            return row
+
+        # No Phase 2 cap — proceed with normal approval logic
         if has_outlier_flags:
             row["terminal_label"] = PropLabel.MARKET_VERIFIED_HOLD.value
             row["blockers"].append("CLASSIFIER:MARKET_VERIFIED_HOLD:OUTLIER_FLAGS")

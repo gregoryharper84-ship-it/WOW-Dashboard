@@ -12,12 +12,20 @@ CLV formula (v16.1-RC1):
     entry +140 (41.7% implied), close +120 (45.5% implied) → CLV = +3.8% → CLV_BEAT
 
   Total (OVER): closing_line > entry_line → CLV_BEAT
-  Total (UNDER): closing_line < entry_line → CLV_BEAT
+  UNDER: closing_line < entry_line → CLV_BEAT
   Spread (bettor's perspective): entry_line > closing_line → CLV_BEAT
 
 Opener vs closing:
   Opener unavailable → OPENER_UNAVAILABLE (caps confidence; does NOT block CLV grading)
   Closing line unavailable → NO_CLOSE_AVAILABLE (blocks CLV grading)
+
+Phase 2 — Cash Threshold Validation:
+  PrizePicks whole-number MORE/LESS lines require clearing a cash_threshold that differs
+  from the displayed line by 1 (e.g. MORE 5 → cash 6, LESS 20 → cash 19). A sportsbook
+  market at the displayed line or below (e.g. 4.5 OVER for MORE 5) does NOT validate the
+  cash threshold — it is classified as CASH_THRESHOLD_NOT_VALIDATED and caps the row at
+  MODEL_QUALIFIED_HOLD.  Half-point lines cash at displayed+0.5 so the sportsbook market
+  exactly at the displayed line always validates (EXACT_VERIFIED).
 """
 from __future__ import annotations
 
@@ -35,8 +43,19 @@ MARKET_STATUS_VERIFIED      = "MARKET_VERIFIED"
 MARKET_STATUS_OPENER_UNAVAILABLE = "OPENER_UNAVAILABLE"
 MARKET_STATUS_NO_CLOSE           = "NO_CLOSE_AVAILABLE"
 
+# Phase 2 — cash threshold validation statuses
+CASH_STATUS_EXACT_VERIFIED        = "EXACT_VERIFIED"
+CASH_STATUS_ADJACENT_CONTEXT_ONLY = "ADJACENT_CONTEXT_ONLY"
+CASH_STATUS_NOT_VALIDATED         = "CASH_THRESHOLD_NOT_VALIDATED"
+CASH_STATUS_MARKET_UNVERIFIED     = "MARKET_UNVERIFIED_EXACT"
+CASH_STATUS_SOURCE_CONFLICT       = "SOURCE_CONFLICT"
+CASH_STATUS_NO_THRESHOLDS         = "NO_PP_THRESHOLDS"
+
 DRIFT_THRESHOLD = 0.5
 EDGE_THRESHOLD  = 0.04
+
+# Tolerance for "sportsbook line is close to cash_threshold / displayed_line"
+_CASH_TOLERANCE = 0.5
 
 
 def run(row: dict[str, Any],
@@ -54,6 +73,7 @@ def run(row: dict[str, Any],
     clv_entry_price   — odds at entry (American format)
     closing_price     — line at close (for CLV calc)
 
+    Phase 2: also validates sportsbook_line against row["pp_thresholds"]["cash_threshold"].
     Gate result at row["gates"]["market_gate"].
     """
     pp_line = row.get("line")
@@ -61,6 +81,10 @@ def run(row: dict[str, Any],
     row_consensus = row.get("consensus_line") or consensus_line
 
     if row_market is None and row_consensus is None and best_available is None:
+        # No market data — compute cash threshold status from pp_thresholds alone
+        cash_val = _validate_cash_threshold(
+            pp_line, row.get("direction"), row.get("pp_thresholds"), None
+        )
         result = {
             "passed":        True,
             "market_status": MARKET_STATUS_NONE,
@@ -72,6 +96,7 @@ def run(row: dict[str, Any],
             "clv_status":    MARKET_STATUS_CLV_PENDING if clv_entry_price else None,
             "note":          "No market data available — max label is MODEL_QUALIFIED_HOLD",
         }
+        result.update(cash_val)
         row["gates"]["market_gate"] = result
         row["blockers"].append("MARKET:NO_MARKET_AVAILABLE:MAX_LABEL=MODEL_QUALIFIED_HOLD")
         return row
@@ -97,6 +122,19 @@ def run(row: dict[str, Any],
     if market_status == MARKET_STATUS_DRIFT:
         row["blockers"].append(f"MARKET:SEVERE_DRIFT:delta={delta}")
 
+    # Phase 2: cash threshold validation
+    cash_val = _validate_cash_threshold(
+        pp_line, row.get("direction"), row.get("pp_thresholds"), reference_line
+    )
+    # Override cash_threshold_status to SOURCE_CONFLICT when market itself contradicts
+    if market_status == MARKET_STATUS_CONTRADICTION:
+        cash_val["cash_threshold_status"] = CASH_STATUS_SOURCE_CONFLICT
+        cash_val["substitution_allowed"]  = False
+        cash_val["confidence_cap"]        = "MODEL_QUALIFIED_HOLD"
+        cash_val["exact_market_found"]    = False
+
+    _apply_cash_threshold_blockers(row, cash_val)
+
     result = {
         "passed":          market_status != MARKET_STATUS_CONTRADICTION,
         "market_status":   market_status,
@@ -111,8 +149,157 @@ def run(row: dict[str, Any],
         "closing_price":   closing_price,
         "clv_status":      clv_status,
     }
+    result.update(cash_val)
     row["gates"]["market_gate"] = result
     return row
+
+
+def _validate_cash_threshold(
+    pp_line: float | None,
+    direction: str | None,
+    pp_thresholds: dict | None,
+    sportsbook_line: float | None,
+) -> dict[str, Any]:
+    """
+    Phase 2 cash threshold validation.
+
+    Returns a dict of exact_market_found, adjacent_market_used, cash_threshold_status,
+    substitution_allowed, confidence_cap, and related market detail fields.
+
+    Whole-number MORE n (cash = n+1):
+      - Sportsbook ≥ n+0.5   → EXACT_VERIFIED        (within 0.5 of cash threshold)
+      - Sportsbook ≈ n−0.5   → CASH_THRESHOLD_NOT_VALIDATED  (adjacent to displayed, below cash)
+      - No sportsbook         → MARKET_UNVERIFIED_EXACT
+
+    Half-point MORE n.5 (cash = n+1):
+      - Sportsbook ≈ n.5     → EXACT_VERIFIED         (displayed IS within 0.5 of cash)
+      - Sportsbook ≈ n       → ADJACENT_CONTEXT_ONLY   (softer cap)
+      - No sportsbook         → MARKET_UNVERIFIED_EXACT
+    """
+    _empty = {
+        "exact_market_found":       None,
+        "exact_market_line":        None,
+        "exact_market_side":        None,
+        "exact_market_price":       None,
+        "exact_market_no_vig_prob": None,
+        "adjacent_market_used":     None,
+        "adjacent_market_line":     None,
+        "adjacent_market_side":     None,
+        "substitution_allowed":     True,
+        "confidence_cap":           None,
+        "cash_threshold_status":    CASH_STATUS_NO_THRESHOLDS,
+    }
+
+    if not pp_thresholds:
+        return _empty
+
+    cash_thr   = pp_thresholds.get("cash_threshold")
+    whole_line = bool(pp_thresholds.get("whole_number_line", False))
+    direction_upper = (direction or "").upper()
+
+    if cash_thr is None:
+        return dict(_empty, substitution_allowed=False,
+                    confidence_cap="MODEL_QUALIFIED_HOLD",
+                    cash_threshold_status=CASH_STATUS_MARKET_UNVERIFIED)
+
+    if sportsbook_line is None:
+        return {
+            "exact_market_found":       False,
+            "exact_market_line":        None,
+            "exact_market_side":        None,
+            "exact_market_price":       None,
+            "exact_market_no_vig_prob": None,
+            "adjacent_market_used":     False,
+            "adjacent_market_line":     None,
+            "adjacent_market_side":     None,
+            "substitution_allowed":     False,
+            "confidence_cap":           "MODEL_QUALIFIED_HOLD",
+            "cash_threshold_status":    CASH_STATUS_MARKET_UNVERIFIED,
+        }
+
+    cash_delta    = abs(sportsbook_line - cash_thr)
+    display_delta = abs(sportsbook_line - pp_line) if pp_line is not None else None
+
+    # --- EXACT_VERIFIED: sportsbook within tolerance of cash_threshold ---
+    if cash_delta <= _CASH_TOLERANCE:
+        return {
+            "exact_market_found":       True,
+            "exact_market_line":        sportsbook_line,
+            "exact_market_side":        direction_upper,
+            "exact_market_price":       None,
+            "exact_market_no_vig_prob": None,
+            "adjacent_market_used":     False,
+            "adjacent_market_line":     None,
+            "adjacent_market_side":     None,
+            "substitution_allowed":     True,
+            "confidence_cap":           None,
+            "cash_threshold_status":    CASH_STATUS_EXACT_VERIFIED,
+        }
+
+    # --- ADJACENT: sportsbook near displayed_line but not cash_threshold ---
+    if display_delta is not None and display_delta <= _CASH_TOLERANCE:
+        if whole_line:
+            # Whole-number: sportsbook at displayed ≈ cash_threshold − 1 → hard fail
+            return {
+                "exact_market_found":       False,
+                "exact_market_line":        None,
+                "exact_market_side":        None,
+                "exact_market_price":       None,
+                "exact_market_no_vig_prob": None,
+                "adjacent_market_used":     True,
+                "adjacent_market_line":     sportsbook_line,
+                "adjacent_market_side":     direction_upper,
+                "substitution_allowed":     False,
+                "confidence_cap":           "MODEL_QUALIFIED_HOLD",
+                "cash_threshold_status":    CASH_STATUS_NOT_VALIDATED,
+            }
+        else:
+            # Half-point: sportsbook 1 unit below displayed (and 1 below cash) → soft cap
+            return {
+                "exact_market_found":       False,
+                "exact_market_line":        None,
+                "exact_market_side":        None,
+                "exact_market_price":       None,
+                "exact_market_no_vig_prob": None,
+                "adjacent_market_used":     True,
+                "adjacent_market_line":     sportsbook_line,
+                "adjacent_market_side":     direction_upper,
+                "substitution_allowed":     False,
+                "confidence_cap":           "MONEY_QUALIFIED_MAX",
+                "cash_threshold_status":    CASH_STATUS_ADJACENT_CONTEXT_ONLY,
+            }
+
+    # --- Neither exact nor adjacent: no useful market ---
+    return {
+        "exact_market_found":       False,
+        "exact_market_line":        None,
+        "exact_market_side":        None,
+        "exact_market_price":       None,
+        "exact_market_no_vig_prob": None,
+        "adjacent_market_used":     False,
+        "adjacent_market_line":     None,
+        "adjacent_market_side":     None,
+        "substitution_allowed":     False,
+        "confidence_cap":           "MODEL_QUALIFIED_HOLD",
+        "cash_threshold_status":    CASH_STATUS_MARKET_UNVERIFIED,
+    }
+
+
+def _apply_cash_threshold_blockers(row: dict[str, Any], cash_val: dict[str, Any]) -> None:
+    """
+    Add blockers to row based on cash threshold validation result.
+    Only adds blockers for actionable failures — not for EXACT_VERIFIED or legacy NO_PP_THRESHOLDS.
+    """
+    cash_status = cash_val.get("cash_threshold_status")
+    if cash_status in (CASH_STATUS_NOT_VALIDATED, CASH_STATUS_MARKET_UNVERIFIED,
+                       CASH_STATUS_SOURCE_CONFLICT):
+        row["blockers"].append(
+            f"MARKET:{cash_status}:MAX_LABEL=MODEL_QUALIFIED_HOLD"
+        )
+    elif cash_status == CASH_STATUS_ADJACENT_CONTEXT_ONLY:
+        row["blockers"].append(
+            f"MARKET:{cash_status}:MAX_LABEL=MONEY_QUALIFIED"
+        )
 
 
 def _classify_market(pp_line: float | None, ref_line: float | None,
