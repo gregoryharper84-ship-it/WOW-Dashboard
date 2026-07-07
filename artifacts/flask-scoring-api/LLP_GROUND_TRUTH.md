@@ -1100,6 +1100,95 @@ non-destructive `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
 
 ---
 
+## §34 — Kalshi Sports Final-Lock Edge Gate (WOW-PATCH-2026-07-07-KALSHI-FINAL-LOCK-EDGE-DISCOVERY, SHIPPED 2026-07-07)
+
+**Governance rule (both spec and enforcement):**
+No Kalshi sports contract may advance beyond LLP_WATCH from
+`/wow/llp/kalshi/ml-evaluate` unless fresh direct Kalshi orderbook data,
+sportsbook no-vig consensus, final-lock recheck, market trading_active status,
+and edge threshold ALL pass simultaneously.
+
+**Problem:** Before this patch the route accepted `raw_orderbook` from the
+caller as the price source — a caller could supply web UI / display prices (not
+executable), fake a recent timestamp, and potentially satisfy price-related gates
+off non-API data. The endpoint also had no market-is-open check, no final-lock
+recheck gate, and no per-market-type edge floor differentiation.
+
+**Three new gates in `evaluate_stub()` (run before all pre-existing gates):**
+
+*Gate A — orderbook source enforcement*
+- `kalshi_orderbook_source = "direct_api"` is the ONLY value that passes.
+- Only `kalshi_engine/llp_bridge/orderbook_fetcher.py::fetch()` may produce
+  "direct_api" — it calls `GET /markets/{ticker}/orderbook` directly.
+- Any other source ("caller_supplied", "fetch_failed", "no_ticker") → cap at
+  LLP_WATCH with `KALSHI_ORDERBOOK_SOURCE_NOT_DIRECT_API` blocker.
+- The `/wow/llp/kalshi/ml-evaluate` route now auto-fetches the orderbook
+  server-side after ticker mapping. The `raw_orderbook` body field is still
+  accepted as a diagnostic/testing fallback but is ALWAYS tagged
+  "caller_supplied" → Gate A caps the row.
+
+*Gate B — market status / trading_active*
+- Route fetches `GET /markets/{ticker}` at the same time as the orderbook.
+  `trading_active = (status == "open")`.
+- If `trading_active is False`: cap at LLP_SCOUT with `MARKET_NOT_TRADING`
+  blocker — no executable price can exist, so LLP_PLAYABLE is structurally
+  impossible regardless of other gate outcomes.
+- If `trading_active is None` (fetch failed): Gate A already fires
+  (kalshi_orderbook_source = "fetch_failed"), capping at LLP_WATCH.
+
+*Gate C — final-lock recheck freshness*
+- Route accepts optional `final_lock_timestamp_utc` (ISO-8601) in the POST body.
+- If absent or older than `FINAL_LOCK_WINDOW_SECONDS = 1800` (30 min): cap at
+  LLP_WATCH with `FINAL_LOCK_RECHECK_REQUIRED` blocker.
+- Gate C runs unconditionally so the exact age is always surfaced in
+  `final_lock_age_seconds`.
+
+**Market-type-aware edge floor (Step 5 in evaluate_stub):**
+- `market_type` is detected from the matched ticker's series prefix by
+  `orderbook_fetcher.detect_market_type()`.
+- `"main_winner"` (KXMLBGAME-*, KXWNBAGAME-*): `EDGE_FLOOR_MAIN = 0.015` (1.5%)
+- `"derivative"` (F5, 3-way, props, all other series): `EDGE_FLOOR_DERIVATIVE = 0.025` (2.5%)
+- Old `EDGE_FLOOR = 0.025` constant retained as a backward-compat alias for
+  any code that imported it directly — it always resolves to the derivative
+  floor and is not used inside `evaluate_stub` itself any more.
+
+**New module: `kalshi_engine/llp_bridge/orderbook_fetcher.py`**
+- `fetch(ticker)` → `{kalshi_orderbook_source, raw_orderbook,
+  orderbook_timestamp_utc, market_status, trading_active, yes_bid, yes_ask,
+  last_price, volume, fetch_error, dry_run_only, can_execute}`.
+- `detect_market_type(ticker, series_ticker)` → "main_winner" | "derivative".
+
+**New module: `kalshi_engine/llp_bridge/kalshi_watch_ledger.py`**
+- `ensure_schema(conn)` / `log_candidate(conn, ...)` — every
+  `/wow/llp/kalshi/ml-evaluate` call now logs to `kalshi_candidate_ledger`
+  (WATCH, PLAYABLE, SCOUT — all labels logged, not just approved ones).
+- Fields: ticker, sport, home/away team, market_type, market_status,
+  trading_active, kalshi_orderbook_source, orderbook_age_seconds,
+  staleness_grade, scan_price, no_vig_probability, model_probability,
+  adjusted_edge, edge_floor, label, blocker_tags, final_lock_checked_at,
+  final_lock_fresh, closing_price (null at scan), settlement_result (null),
+  clv_beat (null).
+
+**`/wow/llp/kalshi/ml-evaluate` response changes:**
+- New top-level fields: `kalshi_orderbook_source`, `market_type`,
+  `market_status`, `trading_active`, `final_lock_fresh`, `ledger_row_id`.
+- `execution_rule` string updated to
+  `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS`.
+- `can_execute` remains False on every response, no exceptions.
+
+**Regression tests (6 required, 6/6 pass):**
+- web-price-only (caller_supplied) → not LLP_PLAYABLE
+- fetch_failed → not LLP_PLAYABLE
+- stale orderbook (age >=600s) → not LLP_PLAYABLE
+- final_lock_rechecked_at absent → not LLP_PLAYABLE
+- edge below floor → not LLP_PLAYABLE
+- all gates pass → LLP_PLAYABLE, can_execute=False (verified live)
+
+**DB:** new `kalshi_candidate_ledger` table (7 indexes, nullable settlement/CLV
+columns). `llp_postmortem` table unchanged.
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

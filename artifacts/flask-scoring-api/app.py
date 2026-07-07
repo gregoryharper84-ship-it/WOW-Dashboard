@@ -19263,16 +19263,28 @@ def wow_llp_kalshi_ml_evaluate():
     from kalshi_engine.llp_bridge.price_normalizer import KalshiPriceNormalizer
     from kalshi_engine.llp_bridge.ml_evaluate import evaluate_stub
     from kalshi_engine.llp_bridge.consensus_odds import get_consensus_no_vig_probability
+    from kalshi_engine.llp_bridge import orderbook_fetcher as _ob_fetcher
+    from kalshi_engine.llp_bridge import kalshi_watch_ledger as _watch_ledger
 
     payload = request.get_json(silent=True) or {}
-    llp_home_team     = payload.get("llp_home_team", "")
-    llp_away_team     = payload.get("llp_away_team", "")
-    llp_sport         = payload.get("llp_sport", "")
-    candidate_markets = payload.get("candidate_markets") or []
-    raw_orderbook     = payload.get("raw_orderbook")
-    orderbook_ts      = payload.get("orderbook_timestamp_utc")
-    settlement_cond   = payload.get("settlement_condition")
-    model_probability = payload.get("model_probability")
+    llp_home_team          = payload.get("llp_home_team", "")
+    llp_away_team          = payload.get("llp_away_team", "")
+    llp_sport              = payload.get("llp_sport", "")
+    candidate_markets      = payload.get("candidate_markets") or []
+    settlement_cond        = payload.get("settlement_condition")
+    model_probability      = payload.get("model_probability")
+    final_lock_ts          = payload.get("final_lock_timestamp_utc")
+    # raw_orderbook accepted ONLY as a testing fallback; always tagged "caller_supplied"
+    # which caps the row at LLP_WATCH via Gate A in evaluate_stub.
+    caller_raw_orderbook   = payload.get("raw_orderbook")
+    caller_orderbook_ts    = payload.get("orderbook_timestamp_utc")
+
+    # ── Lazy-init candidate ledger schema ────────────────────────────────────
+    try:
+        _db = get_db()
+        _watch_ledger.ensure_schema(_db)
+    except Exception:
+        _db = None  # ledger unavailable — evaluation continues, logging skipped
 
     # Live inventory gate: every evaluate call re-checks the real sports
     # signal (not just the caller-supplied candidate_markets). If Kalshi's
@@ -19290,20 +19302,55 @@ def wow_llp_kalshi_ml_evaluate():
         candidate_markets=candidate_markets,
     )
 
+    matched_ticker = mapping.get("ticker")
+
+    # ── Detect market type from ticker/series (affects edge floor) ───────────
+    market_type = _ob_fetcher.detect_market_type(
+        ticker=matched_ticker,
+        series_ticker=mapping.get("series_ticker"),
+    )
+
+    # ── WOW-PATCH-2026-07-07: server-side orderbook fetch (Gate A) ──────────
+    # RULE: web UI / caller-supplied prices are display-only and NEVER satisfy
+    # direct API freshness. When a matched ticker is known, this route auto-
+    # fetches the live orderbook from Kalshi and tags source="direct_api".
+    # If the caller supplied a raw_orderbook without a matched ticker (e.g. for
+    # testing), it is tagged "caller_supplied" → cap LLP_WATCH in evaluate_stub.
+    fetch_result: dict = {}
     normalized_price = None
-    if raw_orderbook and mapping.get("ticker"):
+    kalshi_orderbook_source = "no_ticker"
+    trading_active = None
+    market_status_value = None
+
+    if matched_ticker:
+        # Auto-fetch from Kalshi — the ONLY valid path to "direct_api" source
+        fetch_result = _ob_fetcher.fetch(matched_ticker)
+        kalshi_orderbook_source = fetch_result["kalshi_orderbook_source"]
+        trading_active          = fetch_result.get("trading_active")
+        market_status_value     = fetch_result.get("market_status")
+
+        if fetch_result.get("raw_orderbook"):
+            normalized_price = KalshiPriceNormalizer().normalize_for_side(
+                raw_orderbook=fetch_result["raw_orderbook"],
+                ticker=matched_ticker,
+                side="YES",
+                orderbook_timestamp_utc=fetch_result.get("orderbook_timestamp_utc"),
+            )
+    elif caller_raw_orderbook:
+        # No matched ticker — fall back to caller-supplied book for diagnostics;
+        # always tagged "caller_supplied" → Gate A caps at LLP_WATCH.
+        kalshi_orderbook_source = "caller_supplied"
         normalized_price = KalshiPriceNormalizer().normalize_for_side(
-            raw_orderbook=raw_orderbook,
-            ticker=mapping["ticker"],
+            raw_orderbook=caller_raw_orderbook,
+            ticker="UNKNOWN",
             side="YES",
-            orderbook_timestamp_utc=orderbook_ts,
+            orderbook_timestamp_utc=caller_orderbook_ts,
         )
 
     # Sportsbook consensus no-vig gate (Kalshi Sports ML Edge Rule — WNBA/
     # MLB Only, approved 2026-07-05). `yes_sub_title` is the exact team the
     # Kalshi YES contract resolves on — the consensus fair probability must
     # be computed for that same team, not an assumed home/away side.
-    consensus_odds = None
     yes_team = mapping.get("yes_sub_title")
     if yes_team and llp_home_team and llp_away_team and llp_sport:
         consensus_odds = get_consensus_no_vig_probability(
@@ -19327,7 +19374,7 @@ def wow_llp_kalshi_ml_evaluate():
         }
 
     evaluation = evaluate_stub(
-        ticker=mapping.get("ticker"),
+        ticker=matched_ticker,
         event_ticker=mapping.get("event_ticker"),
         market_title=mapping.get("market_title"),
         settlement_condition=settlement_cond,
@@ -19336,19 +19383,67 @@ def wow_llp_kalshi_ml_evaluate():
         normalized_price=normalized_price,
         inventory_signal=inventory_signal,
         consensus_odds=consensus_odds,
+        # WOW-PATCH-2026-07-07 new params
+        market_type=market_type,
+        trading_active=trading_active,
+        final_lock_rechecked_at=final_lock_ts,
+        kalshi_orderbook_source=kalshi_orderbook_source,
     )
+
+    # ── Log every candidate to kalshi_candidate_ledger (WATCH + PLAYABLE + SCOUT) ──
+    # Logging never raises — it must not break the primary evaluation flow.
+    ledger_row_id = None
+    if _db is not None:
+        try:
+            np = normalized_price or {}
+            step5 = next(
+                (s for s in evaluation.get("steps", []) if s.get("step") == 5), {}
+            )
+            ledger_row_id = _watch_ledger.log_candidate(
+                _db,
+                sport=llp_sport or None,
+                home_team=llp_home_team or None,
+                away_team=llp_away_team or None,
+                ticker=matched_ticker,
+                event_ticker=mapping.get("event_ticker"),
+                market_title=mapping.get("market_title"),
+                market_type=market_type,
+                market_status=market_status_value,
+                trading_active=trading_active,
+                kalshi_orderbook_source=kalshi_orderbook_source,
+                orderbook_age_seconds=np.get("staleness_seconds"),
+                staleness_grade=np.get("staleness_grade"),
+                scan_price=np.get("executable_price"),
+                no_vig_probability=(consensus_odds or {}).get("consensus_fair_probability"),
+                model_probability=model_probability,
+                adjusted_edge=step5.get("consensus_adjusted_edge"),
+                edge_floor=evaluation.get("edge_floor"),
+                label=evaluation.get("label", "LLP_SCOUT"),
+                blocker_tags=evaluation.get("blocker_tags") or [],
+                final_lock_checked_at=final_lock_ts,
+                final_lock_fresh=evaluation.get("final_lock_fresh", False),
+                notes=fetch_result.get("fetch_error"),
+            )
+        except Exception as _le:
+            app.logger.warning("kalshi_candidate_ledger insert failed: %s", _le)
 
     connected_status = evaluation.get("connected_status", "DRY_RUN_READY")
     return jsonify({
-        "mapping":           mapping,
-        "normalized_price":  normalized_price,
-        "inventory_signal":  inventory_signal,
-        "consensus_odds":    consensus_odds,
-        "evaluation":        evaluation,
-        "blocker_tags":      evaluation.get("blocker_tags", []),
-        "execution_rule":    (
-            f"READ_ONLY_NO_ORDERS — dry_run_only=true, can_execute=false, "
-            f"connected_status={connected_status}"
+        "mapping":                   mapping,
+        "normalized_price":          normalized_price,
+        "inventory_signal":          inventory_signal,
+        "consensus_odds":            consensus_odds,
+        "evaluation":                evaluation,
+        "blocker_tags":              evaluation.get("blocker_tags", []),
+        "kalshi_orderbook_source":   kalshi_orderbook_source,
+        "market_type":               market_type,
+        "market_status":             market_status_value,
+        "trading_active":            trading_active,
+        "final_lock_fresh":          evaluation.get("final_lock_fresh", False),
+        "ledger_row_id":             ledger_row_id,
+        "execution_rule":            (
+            f"DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS — dry_run_only=true, "
+            f"can_execute=false, connected_status={connected_status}"
         ),
         "connected":         False,
         "connected_status":  connected_status,

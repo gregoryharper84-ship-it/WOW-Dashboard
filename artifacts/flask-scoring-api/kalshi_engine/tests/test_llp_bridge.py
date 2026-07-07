@@ -352,6 +352,11 @@ class TestEvaluateStub:
         # executable_price is 0.59 here (yes_bid=0.57/no_bid=0.41), so the
         # model probability must clear price + post-friction floor (~0.62)
         # to produce a real positive edge, not just a plausible-looking one.
+        # WOW-PATCH-2026-07-07: must also supply the three new gate params
+        # (direct_api source, market open, fresh final-lock) to avoid Gate A/C.
+        fresh_ts = (
+            datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        )
         result = ml_evaluate.evaluate_stub(
             ticker="T", event_ticker="E", market_title="Team A vs Team B",
             settlement_condition="Official final score from league box score",
@@ -359,6 +364,9 @@ class TestEvaluateStub:
             normalized_price=self._full_normalized_price(age_seconds=5, liquidity_grade="A"),
             inventory_signal="INVENTORY_READY",
             consensus_odds=self._consensus(fair_probability=0.75),
+            kalshi_orderbook_source="direct_api",
+            trading_active=True,
+            final_lock_rechecked_at=fresh_ts,
         )
         assert result["label"] == "LLP_PLAYABLE"
         assert result["ceilings_applied"] == []
@@ -486,6 +494,10 @@ class TestEvaluateStub:
         # A fresh, non-contradictory, 2+-book consensus that independently
         # clears the edge floor alongside the model probability is the only
         # path to LLP_PLAYABLE under the new rule.
+        # WOW-PATCH-2026-07-07: must also supply the three new gate params.
+        fresh_ts = (
+            datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        )
         result = ml_evaluate.evaluate_stub(
             ticker="T", event_ticker="E", market_title="Team A vs Team B",
             settlement_condition="Official final score from league box score",
@@ -494,6 +506,9 @@ class TestEvaluateStub:
             inventory_signal="INVENTORY_READY",
             consensus_odds=self._consensus(status="AVAILABLE", fair_probability=0.75,
                                             single_book=False, book_count=2),
+            kalshi_orderbook_source="direct_api",
+            trading_active=True,
+            final_lock_rechecked_at=fresh_ts,
         )
         assert result["label"] == "LLP_PLAYABLE"
         assert result["ceilings_applied"] == []
@@ -859,3 +874,158 @@ class TestNoOrderPlacementCode:
                     f"kalshi_client exposes an order-placement callable: {name} — "
                     f"this module must remain public-market-data-only."
                 )
+
+
+# ---------------------------------------------------------------------------
+# WOW-PATCH-2026-07-07-KALSHI-FINAL-LOCK-EDGE-DISCOVERY regression tests
+# ---------------------------------------------------------------------------
+
+class TestFinalLockEdgeDiscovery:
+    """
+    Six required regression tests:
+      1. web-price-only cannot return LLP_PLAYABLE
+      2. missing orderbook cannot return LLP_PLAYABLE
+      3. stale orderbook cannot return LLP_PLAYABLE
+      4. final-lock-skipped cannot return LLP_PLAYABLE
+      5. edge below threshold cannot return LLP_PLAYABLE
+      6. fresh orderbook + market open + final lock + edge above threshold
+         → LLP_PLAYABLE is reachable, can_execute always False
+    """
+
+    def _full_np(self, age_seconds=5, liquidity_grade="B"):
+        np = KalshiPriceNormalizer().normalize_for_side(
+            raw_orderbook=_raw_orderbook(),
+            ticker="KXMLBGAME-TEST/W",
+            side="YES",
+            orderbook_timestamp_utc=_iso_seconds_ago(age_seconds),
+        )
+        np["liquidity_grade"] = liquidity_grade
+        return np
+
+    def _good_consensus(self):
+        return {
+            "status": "AVAILABLE",
+            "consensus_fair_probability": 0.70,
+            "books_used": ["fanduel", "draftkings"],
+            "book_count": 2,
+            "single_book_fallback": False,
+            "max_book_spread": 0.01,
+            "oldest_book_age_seconds": 30.0,
+            "source": "the_odds_api",
+            "blocker_tags": [],
+            "detail": "test fixture",
+        }
+
+    def _fresh_final_lock_ts(self, seconds_ago=60):
+        from datetime import timedelta
+        ts = datetime.now(tz=timezone.utc) - timedelta(seconds=seconds_ago)
+        return ts.isoformat().replace("+00:00", "Z")
+
+    def _base_kwargs(self):
+        """Full passing inputs — individual tests override one field to fail."""
+        return dict(
+            ticker="KXMLBGAME-25JUL07COL/W",
+            event_ticker="KXMLBGAME-25JUL07COL",
+            market_title="Colorado Rockies vs Atlanta Braves winner",
+            settlement_condition="Official box score from MLB.com determines the winner",
+            model_probability=0.72,
+            match_type="EXACT",
+            normalized_price=self._full_np(age_seconds=5, liquidity_grade="B"),
+            inventory_signal="INVENTORY_READY",
+            consensus_odds=self._good_consensus(),
+            market_type="main_winner",
+            trading_active=True,
+            final_lock_rechecked_at=self._fresh_final_lock_ts(seconds_ago=60),
+            kalshi_orderbook_source="direct_api",
+        )
+
+    # ── Test 1: web-price-only (caller_supplied) cannot reach LLP_PLAYABLE ──
+    def test_web_price_only_cannot_return_playable(self):
+        kwargs = self._base_kwargs()
+        kwargs["kalshi_orderbook_source"] = "caller_supplied"
+        result = ml_evaluate.evaluate_stub(**kwargs)
+        assert result["label"] != "LLP_PLAYABLE", (
+            "caller_supplied orderbook source must never reach LLP_PLAYABLE"
+        )
+        assert "KALSHI_ORDERBOOK_SOURCE_NOT_DIRECT_API" in result["blocker_tags"]
+        assert "LLP_WATCH" in result["ceilings_applied"]
+        assert result["can_execute"] is False
+
+    # ── Test 2: missing orderbook (fetch_failed) cannot reach LLP_PLAYABLE ──
+    def test_missing_orderbook_cannot_return_playable(self):
+        kwargs = self._base_kwargs()
+        kwargs["kalshi_orderbook_source"] = "fetch_failed"
+        # No normalized_price when fetch fails
+        kwargs["normalized_price"] = None
+        result = ml_evaluate.evaluate_stub(**kwargs)
+        assert result["label"] != "LLP_PLAYABLE", (
+            "fetch_failed orderbook source must never reach LLP_PLAYABLE"
+        )
+        assert "KALSHI_ORDERBOOK_SOURCE_NOT_DIRECT_API" in result["blocker_tags"]
+        assert result["can_execute"] is False
+
+    # ── Test 3: stale orderbook (age >= 600s) cannot reach LLP_PLAYABLE ──────
+    def test_stale_orderbook_cannot_return_playable(self):
+        kwargs = self._base_kwargs()
+        kwargs["normalized_price"] = self._full_np(age_seconds=600, liquidity_grade="B")
+        result = ml_evaluate.evaluate_stub(**kwargs)
+        assert result["label"] != "LLP_PLAYABLE", (
+            "orderbook aged >= 600s (KALSHI_DATA_UNOBTAINABLE) must never reach LLP_PLAYABLE"
+        )
+        step3 = next(s for s in result["steps"] if s.get("name") == "staleness_grade")
+        assert step3["grade"] == "KALSHI_DATA_UNOBTAINABLE"
+        assert result["can_execute"] is False
+
+    # ── Test 4: final-lock not supplied → cap at LLP_WATCH, not LLP_PLAYABLE ─
+    def test_final_lock_skipped_cannot_return_playable(self):
+        kwargs = self._base_kwargs()
+        kwargs["final_lock_rechecked_at"] = None
+        result = ml_evaluate.evaluate_stub(**kwargs)
+        assert result["label"] != "LLP_PLAYABLE", (
+            "missing final_lock_rechecked_at must never reach LLP_PLAYABLE"
+        )
+        assert "FINAL_LOCK_RECHECK_REQUIRED" in result["blocker_tags"]
+        assert "LLP_WATCH" in result["ceilings_applied"]
+        assert result["final_lock_fresh"] is False
+        assert result["can_execute"] is False
+
+    # ── Test 5: edge below threshold cannot reach LLP_PLAYABLE ───────────────
+    def test_edge_below_threshold_cannot_return_playable(self):
+        kwargs = self._base_kwargs()
+        # Consensus fair probability close to executable price (0.59) → near-zero edge
+        kwargs["consensus_odds"] = {
+            "status": "AVAILABLE",
+            "consensus_fair_probability": 0.595,  # barely above 0.59 ask, below any floor
+            "books_used": ["fanduel", "draftkings"],
+            "book_count": 2,
+            "single_book_fallback": False,
+            "max_book_spread": 0.01,
+            "oldest_book_age_seconds": 30.0,
+            "source": "the_odds_api",
+            "blocker_tags": [],
+            "detail": "test fixture — near-zero consensus edge",
+        }
+        result = ml_evaluate.evaluate_stub(**kwargs)
+        assert result["label"] != "LLP_PLAYABLE", (
+            "post-friction consensus edge below EDGE_FLOOR must never reach LLP_PLAYABLE"
+        )
+        compare_step = next(s for s in result["steps"] if s["name"] == "compare_to_floor")
+        assert compare_step["meets_floor"] is False
+        assert result["can_execute"] is False
+
+    # ── Test 6: all gates pass → LLP_PLAYABLE reachable; can_execute always False
+    def test_all_gates_pass_returns_playable_with_no_execution(self):
+        kwargs = self._base_kwargs()
+        # Consensus at 0.70 vs executable 0.59 ask gives ~0.11 raw edge,
+        # well above EDGE_FLOOR_MAIN=0.015 even after fee drag.
+        result = ml_evaluate.evaluate_stub(**kwargs)
+        assert result["label"] == "LLP_PLAYABLE", (
+            "all gates passing with strong edge on a main_winner market must reach LLP_PLAYABLE"
+        )
+        assert result["can_execute"] is False, "can_execute must always be False"
+        assert result["dry_run_only"] is True
+        assert result["kalshi_orderbook_source"] == "direct_api"
+        assert result["trading_active"] is True
+        assert result["final_lock_fresh"] is True
+        assert result["market_type"] == "main_winner"
+        assert result["edge_floor"] == ml_evaluate.EDGE_FLOOR_MAIN

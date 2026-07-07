@@ -63,14 +63,23 @@ an independent floor, not merely informational.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .. import fee_model as _fee_model
 from .. import settlement_risk as _settlement_risk
 from gate_engine.llp_governance import LLPLabel, cap_label
 
-# Binary sports edge threshold — derivatives/low-liquidity tier, POST-friction.
-EDGE_FLOOR = 0.025
+# ── Edge floors (POST-friction, market-type-aware) ──────────────────────────
+# main_winner  = KXMLBGAME/KXWNBAGAME series — most liquid, 1.5% floor
+# derivative   = F5, 3-way, run-total, props — less liquid, 2.5% floor
+EDGE_FLOOR_MAIN       = 0.015  # MLB/WNBA main winner markets
+EDGE_FLOOR_DERIVATIVE = 0.025  # derivative / low-liquidity sports tier
+EDGE_FLOOR = EDGE_FLOOR_DERIVATIVE  # backward-compat alias (old callers)
+
+# Final-lock recheck window: a fresh final-lock check must have run within
+# this many seconds before the ml-evaluate call; otherwise cap at LLP_WATCH.
+FINAL_LOCK_WINDOW_SECONDS = 1800  # 30 minutes
 
 # This bridge endpoint is stateless (no session-scoped governance rerun),
 # so LLP_APPROVED is never reachable here — see module docstring.
@@ -99,6 +108,11 @@ def evaluate_stub(
     normalized_price:     Optional[dict[str, Any]],  # output of KalshiPriceNormalizer, or None
     inventory_signal:     str = "INVENTORY_EMPTY",  # live signal from KalshiInventoryAdapter
     consensus_odds:       Optional[dict[str, Any]] = None,  # output of consensus_odds.get_consensus_no_vig_probability, or None
+    # ── WOW-PATCH-2026-07-07-KALSHI-FINAL-LOCK-EDGE-DISCOVERY ───────────
+    market_type:              str            = "main_winner",  # "main_winner" | "derivative"
+    trading_active:           Optional[bool] = None,           # False → cap LLP_SCOUT
+    final_lock_rechecked_at:  Optional[str]  = None,           # ISO-8601; None/stale → cap LLP_WATCH
+    kalshi_orderbook_source:  str            = "no_ticker",    # "direct_api" | "caller_supplied" | "fetch_failed" | "no_ticker"
 ) -> dict[str, Any]:
     """
     Evaluate a single LLP<->Kalshi sports candidate through the required
@@ -127,6 +141,67 @@ def evaluate_stub(
     warnings: list[str] = []
     ceilings: list[str] = []
     blocker_tags: list[str] = []
+
+    # ── Select market-type-aware edge floor ──────────────────────────────────
+    edge_floor = EDGE_FLOOR_MAIN if market_type == "main_winner" else EDGE_FLOOR_DERIVATIVE
+
+    # ── WOW-PATCH-2026-07-07 Gate A: orderbook source enforcement ────────────
+    # Web UI / caller-supplied prices CANNOT satisfy direct API freshness.
+    # Only orderbook_fetcher.fetch() produces source="direct_api".
+    # Any other source caps at LLP_WATCH so that a caller cannot manufacture
+    # LLP_PLAYABLE off non-executable display prices.
+    if kalshi_orderbook_source != "direct_api":
+        ceilings.append("LLP_WATCH")
+        blocker_tags.append("KALSHI_ORDERBOOK_SOURCE_NOT_DIRECT_API")
+        warnings.append(
+            f"KALSHI_ORDERBOOK_SOURCE_NOT_DIRECT_API: source='{kalshi_orderbook_source}' — "
+            f"only server-side direct_api orderbook fetches satisfy executable price "
+            f"freshness; web UI / caller-supplied prices are display-only, capped at LLP_WATCH."
+        )
+
+    # ── WOW-PATCH-2026-07-07 Gate B: market status / trading_active ──────────
+    # If the market is known to not be open/trading, no executable price can
+    # exist — cap at LLP_SCOUT so the row cannot ever reach LLP_PLAYABLE.
+    if trading_active is False:
+        ceilings.append("LLP_SCOUT")
+        blocker_tags.append("MARKET_NOT_TRADING")
+        warnings.append(
+            "MARKET_NOT_TRADING: Kalshi market is not open/trading_active — "
+            "no executable price can exist; capped at LLP_SCOUT."
+        )
+
+    # ── WOW-PATCH-2026-07-07 Gate C: final-lock recheck freshness ────────────
+    # The final-lock recheck must have run within FINAL_LOCK_WINDOW_SECONDS
+    # before this evaluate call; otherwise cap at LLP_WATCH.
+    final_lock_fresh = False
+    final_lock_age_seconds: float | None = None
+    if final_lock_rechecked_at:
+        try:
+            fl_ts = datetime.fromisoformat(
+                final_lock_rechecked_at.replace("Z", "+00:00")
+            )
+            if fl_ts.tzinfo is None:
+                fl_ts = fl_ts.replace(tzinfo=timezone.utc)
+            final_lock_age_seconds = (datetime.now(tz=timezone.utc) - fl_ts).total_seconds()
+            final_lock_fresh = final_lock_age_seconds <= FINAL_LOCK_WINDOW_SECONDS
+        except (ValueError, TypeError):
+            final_lock_age_seconds = None
+
+    if not final_lock_fresh:
+        ceilings.append("LLP_WATCH")
+        blocker_tags.append("FINAL_LOCK_RECHECK_REQUIRED")
+        if final_lock_rechecked_at is None:
+            warnings.append(
+                "FINAL_LOCK_RECHECK_REQUIRED: final_lock_rechecked_at not supplied — "
+                f"a final-lock recheck within {FINAL_LOCK_WINDOW_SECONDS}s is required "
+                f"before a candidate may advance beyond LLP_WATCH."
+            )
+        else:
+            warnings.append(
+                f"FINAL_LOCK_RECHECK_REQUIRED: final_lock_rechecked_at is "
+                f"{final_lock_age_seconds:.0f}s ago, exceeds window of "
+                f"{FINAL_LOCK_WINDOW_SECONDS}s — cap at LLP_WATCH."
+            )
 
     # ── Live inventory gate (mandatory — cannot be bypassed by request body) ──
     if inventory_signal != "INVENTORY_READY":
@@ -289,24 +364,26 @@ def evaluate_stub(
             consensus_raw_edge = round(consensus_fair_probability - executable_price, 6)
             consensus_adjusted_edge = round(consensus_raw_edge - fee_result["total_drag"], 6)
 
-        model_meets_floor = model_adjusted_edge is not None and model_adjusted_edge >= EDGE_FLOOR
-        consensus_meets_floor = consensus_adjusted_edge is not None and consensus_adjusted_edge >= EDGE_FLOOR
+        model_meets_floor = model_adjusted_edge is not None and model_adjusted_edge >= edge_floor
+        consensus_meets_floor = consensus_adjusted_edge is not None and consensus_adjusted_edge >= edge_floor
         meets_floor = model_meets_floor and consensus_meets_floor
 
         if not meets_floor:
             if not model_meets_floor:
                 warnings.append(
-                    f"EDGE_BELOW_FLOOR (model): adjusted_edge={model_adjusted_edge} < EDGE_FLOOR={EDGE_FLOOR}"
+                    f"EDGE_BELOW_FLOOR (model): adjusted_edge={model_adjusted_edge} < edge_floor={edge_floor} "
+                    f"(market_type={market_type})"
                 )
             if not consensus_meets_floor:
                 warnings.append(
-                    f"EDGE_BELOW_FLOOR (consensus): adjusted_edge={consensus_adjusted_edge} < EDGE_FLOOR={EDGE_FLOOR}"
+                    f"EDGE_BELOW_FLOOR (consensus): adjusted_edge={consensus_adjusted_edge} < edge_floor={edge_floor} "
+                    f"(market_type={market_type})"
                 )
     steps.append({
         "step": 5, "name": "compare_to_floor",
         "model_adjusted_edge": model_adjusted_edge,
         "consensus_adjusted_edge": consensus_adjusted_edge,
-        "edge_floor": EDGE_FLOOR, "meets_floor": meets_floor,
+        "edge_floor": edge_floor, "market_type": market_type, "meets_floor": meets_floor,
     })
 
     # ── Final label: apply all ceilings via the canonical cap_label ordering,
@@ -335,6 +412,13 @@ def evaluate_stub(
         "can_approve_bets":    False,
         "dry_run_only":        True,
         "can_execute":         False,
+        # WOW-PATCH-2026-07-07 fields
+        "market_type":             market_type,
+        "edge_floor":              edge_floor,
+        "kalshi_orderbook_source": kalshi_orderbook_source,
+        "trading_active":          trading_active,
+        "final_lock_fresh":        final_lock_fresh,
+        "final_lock_age_seconds":  final_lock_age_seconds,
         # "stub" is retired terminology (see WOW-SHARED-NOTES.md 2026-07-05):
         # this is real evaluation logic against live inventory whenever
         # inventory_signal == INVENTORY_READY. "connected" reflects whether

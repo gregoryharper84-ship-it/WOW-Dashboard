@@ -697,3 +697,42 @@ that is known to fail for WNBA/MLB-batter lookups from this host.
 **Status:** SHIPPED (scoped). See
 `WOW-PATCH-2026-07-06-CROSS-MARKET-REJECT-PROOF-AND-DEGRADED-RUN-GATE.md` and
 `LLP_GROUND_TRUTH.md` §33 for full detail.
+
+---
+
+## 2026-07-07 — WOW-PATCH-2026-07-07-KALSHI-FINAL-LOCK-EDGE-DISCOVERY
+
+**Context:** This patch enforces that Kalshi sports contracts cannot advance
+beyond LLP_WATCH from `/wow/llp/kalshi/ml-evaluate` without ALL of the
+following simultaneously passing:
+1. A direct Kalshi API orderbook pull (not web UI / caller-supplied prices)
+2. Market status open/trading_active
+3. A final-lock recheck within the configured 30-minute window
+4. Adjusted edge above the market-type-appropriate floor (1.5% main winner, 2.5% derivative)
+
+**Governance rule** (also added to LLP_GROUND_TRUTH.md §34):
+*No Kalshi sports contract may advance beyond LLP_WATCH unless fresh direct
+Kalshi orderbook data, sportsbook no-vig consensus, final-lock recheck,
+market trading_active status, and edge threshold all pass.*
+
+**Enforcement points:**
+- New `kalshi_engine/llp_bridge/orderbook_fetcher.py` — only source that can
+  tag `kalshi_orderbook_source = "direct_api"`. All caller-supplied prices are
+  tagged "caller_supplied" → Gate A caps at LLP_WATCH.
+- `ml_evaluate.evaluate_stub()` — three new gates: Gate A (orderbook source),
+  Gate B (trading_active), Gate C (final-lock recheck freshness).
+- `/wow/llp/kalshi/ml-evaluate` route — now auto-fetches orderbook from Kalshi
+  instead of accepting caller-supplied raw_orderbook as the authority.
+  `final_lock_timestamp_utc` accepted in body; missing/stale → LLP_WATCH cap.
+- New `kalshi_engine/llp_bridge/kalshi_watch_ledger.py` — logs ALL candidates
+  (WATCH, PLAYABLE, SCOUT) to `kalshi_candidate_ledger` table for CLV tracking.
+
+**Edge floor changes:**
+- `main_winner` (KXMLBGAME/KXWNBAGAME): EDGE_FLOOR_MAIN = 0.015 (1.5%)
+- `derivative` (F5, 3-way, props): EDGE_FLOOR_DERIVATIVE = 0.025 (2.5%)
+  Old EDGE_FLOOR = 0.025 alias kept for backward compat.
+
+**can_execute remains False** under DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS.
+
+**Status:** SHIPPED. See `WOW-PATCH-2026-07-07-KALSHI-FINAL-LOCK-EDGE-DISCOVERY.md`
+and `LLP_GROUND_TRUTH.md` §34 for full spec.
