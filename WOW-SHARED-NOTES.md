@@ -736,3 +736,80 @@ market trading_active status, and edge threshold all pass.*
 
 **Status:** SHIPPED. See `WOW-PATCH-2026-07-07-KALSHI-FINAL-LOCK-EDGE-DISCOVERY.md`
 and `LLP_GROUND_TRUTH.md` §34 for full spec.
+
+---
+
+## WOW-PATCH-2026-07-07-JS-STYLE-CONVERSION-LAYER
+
+**Status:** SHIPPED  
+**Module:** `gate_engine/js_style_conversion.py`  
+**Tests:** `gate_engine/tests/test_js_style_conversion.py` — 17/17 pass
+
+### Purpose
+
+Separates true JS-style edges from fake-discount traps *before* slip_builder /
+final_approval. Assigns a `js_style_label` sub-tag to every row. Sub-tags do NOT
+replace the row's `terminal_label` — they feed the final ladder as additional
+evidence and blockers.
+
+### Pipeline Position
+
+```
+directional_exposure.run(row)          ← already existed
+js_style_conversion.run(row, enr)      ← NEW (per-row)
+slip_structure.run_single(row)         ← already existed
+slip_structure.run_slip(rows)          ← already existed
+js_style_conversion.run_slip(rows)     ← NEW (slip-level)
+ledger.check_and_register(row)
+classifier.classify(row)
+```
+
+### Sub-tag Labels
+
+| Label | slip_structure_allowed | Notes |
+|---|---|---|
+| `JS_VALID` | True | ≥2 substance features; all gates clear |
+| `JS_WATCH_FAKE_DISCOUNT` | True* | Only discount/goblin features, or trap present |
+| `JS_CLOSE_NO_UPGRADE` | True | Cushion in [0.5, 1.0] — advisory; no archetype upgrade |
+| `JS_REJECT_BAD_STRUCTURE` | False | Zero valid features |
+| `JS_REJECT_MARKET_CONFLICT` | False | Gate B: pitcher outs+K conflict unproven |
+| `JS_REJECT_LOW_K_LESS_TRAP` | False | Gate C: K LESS ≤4.0 without restriction proof |
+| `JS_REJECT_SAME_GAME_PRA_CLUSTER` | False | Gate A: WNBA PRA MORE pair without env support |
+| `JS_REJECT_THIN_CUSHION` | False | Gate D: cushion below market-specific hard floor |
+
+*WATCH labels recorded in blockers but do not block 2-pick Power.
+
+### Cushion Floors (Gate D)
+
+| Market | Hard Floor | Notes |
+|---|---|---|
+| WNBA PRA / P+R+A | 2.5 | Combo variance demands strong separation |
+| WNBA Points+Rebounds | 2.5 | |
+| WNBA Rebounds | 1.5 | |
+| MLB Pitcher Ks MORE | 1.0 | |
+| MLB Pitcher Ks LESS | 1.25 | 1.5 preferred |
+| All other markets | 0.5 | Below 0.5 = hard reject; 0.5–1.0 = advisory (CLOSE_NO_UPGRADE) |
+
+### Slip Builder Rules (run_slip)
+
+- 2-pick Power: JS_VALID + slip_structure_allowed=True
+- 3-pick Power/Flex: ALL rows must be JS_VALID and no same-game PRA MORE pair
+- 4–5 pick Flex: ALL rows JS_VALID + slip_ok + no pair + no duplicate exposure
+- Duplicate exposure (same player:market:side): blocks 4–5 Flex unless `js_anchor_of_slate=True`
+
+### Feature Vocabulary
+
+Valid: `low_threshold_relative_to_role`, `one_stat_simplicity`, `participation_or_workload_floor`,
+`discount_goblin_demon_line`, `clear_less_inflation`, `strong_cushion_vs_projection_or_median`,
+`minimal_shooting_efficiency_dependence`
+
+Traps (FAKE_JS): `high_volatility_pra_more`, `scoring_efficiency_dependent`,
+`low_k_less_4_or_lower_without_restriction_proof`, `soccer_shots_1_5_without_projection_above_2`,
+`same_game_wnba_pra_more_stack`, `thin_cushion_0_5_to_1_0`, `pitcher_market_conflict`
+
+### Caller Responsibilities
+
+- Supply `js_features` / `js_traps` in enrichment for analyst-known intelligence
+- Supply `js_env_support` dict for Gate A WNBA PRA env check (pace/total/minutes/role/usage/game_environment)
+- Supply `pitcher_conflict_proof` for Gate B (5 required sub-proofs)
+- Supply `k_less_proof` for Gate C (4 required sub-proofs)

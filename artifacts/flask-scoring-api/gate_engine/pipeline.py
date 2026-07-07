@@ -16,6 +16,7 @@ from . import data_contract, source_grade, role_timestamp as role_ts_mod
 from . import prob_ledger, failure_path, payout_context
 from . import directional_exposure
 from . import sharp_anchor, house_rules, settlement_loopback
+from . import js_style_conversion
 from .labels import PropLabel
 from .exposure_gate import ExposureLedger
 
@@ -217,9 +218,19 @@ def run_pipeline(
         # -------------------------------------------------------------------
         directional_exposure.run(row, session_ledger=session_exposure)
 
+        # -------------------------------------------------------------------
+        # WOW-PATCH-2026-07-07 — JS Style Conversion Layer
+        # Runs after projection/cushion data is available (L5/L10 complete)
+        # and before slip_builder / final_approval.
+        # -------------------------------------------------------------------
+        js_style_conversion.run(row, enrichment=enr)
+
         slip_structure.run_single(row)
 
     slip_structure.run_slip(rows)
+
+    # WOW-PATCH-2026-07-07 — JS Style slip-level gate (same-game PRA cluster, etc.)
+    js_style_conversion.run_slip(rows)
 
     for row in rows:
         if row.get("terminal_label") in (

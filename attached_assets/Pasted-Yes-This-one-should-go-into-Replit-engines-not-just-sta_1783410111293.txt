@@ -1,0 +1,279 @@
+Yes. This one **should go into Replit/engines**, not just stay as a ChatGPT memory patch, because it affects **slip construction and gate labels**.
+
+Add it as a **JS Style Conversion Layer** between candidate scoring and slip building.
+
+## What to add
+
+### 1. New engine module
+
+Add:
+
+```text
+gate_engine/js_style_conversion.py
+```
+
+Purpose:
+
+```text
+Separate true JS-style edges from fake-discount traps before Power/Flex construction.
+```
+
+It should run after:
+
+```text
+data intake → L5/L10/projection → cushion tax
+```
+
+and before:
+
+```text
+slip_builder / final_approval
+```
+
+---
+
+## Required logic
+
+```python
+JS_VALID_FEATURES = [
+    "low_threshold_relative_to_role",
+    "one_stat_simplicity",
+    "participation_or_workload_floor",
+    "discount_goblin_demon_line",
+    "clear_less_inflation",
+    "strong_cushion_vs_projection_or_median",
+    "minimal_shooting_efficiency_dependence",
+]
+
+FAKE_JS_TRAPS = [
+    "high_volatility_pra_more",
+    "scoring_efficiency_dependent",
+    "low_k_less_4_or_lower_without_restriction_proof",
+    "soccer_shots_1_5_without_projection_above_2",
+    "same_game_wnba_pra_more_stack",
+    "thin_cushion_0_5_to_1_0",
+    "pitcher_market_conflict",
+]
+```
+
+A candidate needs **at least 2 JS-valid features** to remain JS eligible.
+
+If it has only discount/Goblin/Demon and nothing else, it becomes:
+
+```text
+JS_WATCH_FAKE_DISCOUNT
+```
+
+---
+
+## Labels to add
+
+```text
+JS_VALID
+JS_WATCH_FAKE_DISCOUNT
+JS_CLOSE_NO_UPGRADE
+JS_REJECT_BAD_STRUCTURE
+JS_REJECT_MARKET_CONFLICT
+JS_REJECT_LOW_K_LESS_TRAP
+JS_REJECT_SAME_GAME_PRA_CLUSTER
+JS_REJECT_THIN_CUSHION
+```
+
+These do not replace final labels. They are **sub-tags** that feed the final ladder.
+
+Example:
+
+```text
+final_label: MODEL_QUALIFIED_HOLD
+sub_tag: JS_WATCH_FAKE_DISCOUNT
+```
+
+or:
+
+```text
+final_label: REJECT_BAD_STRUCTURE
+sub_tag: JS_REJECT_SAME_GAME_PRA_CLUSTER
+```
+
+---
+
+## Slip builder rules to enforce
+
+```text
+1. JS cards default to 2-pick Power first.
+2. 3-pick Power/Flex is allowed only if all 3 are JS_VALID and independent.
+3. 4–5 pick Flex is blocked unless every leg is:
+   - JS_VALID
+   - high cushion
+   - independent
+   - no repeated cluster
+   - no same-game PRA MORE pair
+4. Same player/market/side cannot appear across multiple paid cards unless marked JS_ANCHOR_OF_SLATE.
+5. If a 5-pick Flex pays only stake or near-stake after one miss, require positive EV proof or block.
+```
+
+---
+
+## Hard gates to add
+
+### A. Same-game WNBA PRA MORE gate
+
+```python
+if sport == "WNBA" and market == "PRA" and side == "MORE":
+    if count_same_game_pra_more >= 2:
+        require_all = [
+            pace_support,
+            total_support,
+            minutes_support,
+            role_support,
+            usage_support,
+            game_environment_support,
+        ]
+        if not all(require_all):
+            return REJECT_BAD_STRUCTURE, "JS_REJECT_SAME_GAME_PRA_CLUSTER"
+```
+
+---
+
+### B. Pitcher consistency gate
+
+```python
+if same_pitcher_has_outs_more and same_pitcher_has_k_less:
+    if not contact_outs_path_proven:
+        return REJECT_BAD_STRUCTURE, "JS_REJECT_MARKET_CONFLICT"
+```
+
+Required proof for contact-outs path:
+
+```text
+low whiff profile
+low K projection
+opponent low K%
+pitch count/workload supports outs
+market does not imply strikeout upside
+```
+
+---
+
+### C. Low K LESS floor
+
+```python
+if market == "Pitcher Ks" and side == "LESS" and line <= 4.0:
+    if not all([pitch_count_restriction, low_whiff_profile, low_opp_k_rate, early_hook_risk]):
+        return WATCH_OR_REJECT, "JS_REJECT_LOW_K_LESS_TRAP"
+```
+
+For Replit, I’d make this a **reject for Power/Flex**, not merely Watch.
+
+---
+
+### D. Thin cushion gate
+
+```python
+if projected_cushion <= 1.0:
+    return MODEL_QUALIFIED_HOLD, "JS_REJECT_THIN_CUSHION"
+```
+
+For WNBA PRA/P+R:
+
+```text
+minimum cushion = 2.5
+```
+
+For WNBA rebounds:
+
+```text
+minimum cushion = 1.5
+```
+
+For MLB K MORE:
+
+```text
+minimum cushion = 1.0
+```
+
+For MLB K LESS:
+
+```text
+minimum cushion = 1.25 minimum / 1.5 preferred
+```
+
+For soccer shots 1.5 MORE:
+
+```text
+projection must be clearly above 2.0
+```
+
+---
+
+## Ledger fields to add
+
+Add these to every JS candidate row:
+
+```text
+js_valid_feature_count
+js_valid_features
+js_trap_flags
+js_style_label
+js_close_no_upgrade
+projected_cushion
+same_game_cluster_id
+duplicate_exposure_count
+pitcher_market_conflict
+slip_structure_allowed
+```
+
+---
+
+## Regression tests Replit should add
+
+```text
+1. Discount-only Goblin line returns JS_WATCH_FAKE_DISCOUNT.
+2. WNBA same-game PRA MORE pair without full environment support returns JS_REJECT_SAME_GAME_PRA_CLUSTER.
+3. Pitcher outs MORE + same pitcher K LESS without contact-outs proof returns JS_REJECT_MARKET_CONFLICT.
+4. Pitcher K LESS 4.0 without restrictions returns JS_REJECT_LOW_K_LESS_TRAP.
+5. JS leg with only 0.5–1.0 cushion cannot enter Power/Flex.
+6. 2-pick Power with two JS_VALID independent anchors is allowed.
+7. 4–5 pick Flex with repeated exposure is blocked.
+8. Thin 0.5 win/loss logs JS_CLOSE_NO_UPGRADE and does not upgrade archetype.
+```
+
+---
+
+## Copy/paste to Replit or Claude
+
+```text
+Implement WOW-PATCH-2026-07-07-JS-STYLE-CONVERSION-LAYER in Replit.
+
+Create gate_engine/js_style_conversion.py and wire it after projection/cushion scoring but before slip_builder/final approval.
+
+A JS-style leg is valid only if it has at least 2 of:
+low threshold relative to role, one-stat simplicity, participation/workload floor, discount/Goblin/Demon line, clear LESS inflation, strong cushion vs projection/median, minimal shooting-efficiency dependence.
+
+Discount alone cannot qualify a leg.
+
+Cap or reject fake JS traps:
+high-volatility PRA MORE, scoring-efficiency-dependent props, pitcher K LESS at 4.0 or lower without restriction/contact proof, soccer shots 1.5 MORE without projection clearly above 2.0, same-game WNBA PRA MORE stacks, pitcher market conflicts, and legs with only 0.5–1.0 projected cushion.
+
+Add sub-tags:
+JS_VALID, JS_WATCH_FAKE_DISCOUNT, JS_CLOSE_NO_UPGRADE, JS_REJECT_BAD_STRUCTURE, JS_REJECT_MARKET_CONFLICT, JS_REJECT_LOW_K_LESS_TRAP, JS_REJECT_SAME_GAME_PRA_CLUSTER, JS_REJECT_THIN_CUSHION.
+
+Slip builder rules:
+JS cards default to 2-pick Power first. 3-pick Power/Flex only if all legs are JS_VALID and independent. 4–5 pick Flex is blocked unless every leg is JS_VALID, high-cushion, independent, and no repeated cluster exists. Same player/market/side cannot repeat across multiple paid cards unless marked JS_ANCHOR_OF_SLATE.
+
+Hard gates:
+1. Same-game WNBA PRA MORE pair requires pace, total, minutes, role, usage, and game environment support. Otherwise REJECT_BAD_STRUCTURE + JS_REJECT_SAME_GAME_PRA_CLUSTER.
+2. Pitcher outs MORE + same pitcher K LESS requires proven contact-outs path. Otherwise REJECT_BAD_STRUCTURE + JS_REJECT_MARKET_CONFLICT.
+3. Pitcher K LESS at 4.0 or lower requires pitch restriction, low whiff profile, low opponent K rate, and early-hook risk. Otherwise block Power/Flex.
+4. Thin cushion legs cannot enter Power/Flex. Respect active cushion thresholds: WNBA PRA/P+R 2.5, WNBA rebounds 1.5, MLB K MORE 1.0, MLB K LESS 1.25 minimum / 1.5 preferred, soccer shots 1.5 must project clearly above 2.0.
+
+Add ledger fields:
+js_valid_feature_count, js_valid_features, js_trap_flags, js_style_label, js_close_no_upgrade, projected_cushion, same_game_cluster_id, duplicate_exposure_count, pitcher_market_conflict, slip_structure_allowed.
+
+Add regression tests for discount-only fake JS, same-game WNBA PRA cluster rejection, pitcher outs/K conflict, low K LESS trap, thin cushion block, valid 2-pick Power, 4–5 Flex exposure block, and JS_CLOSE_NO_UPGRADE handling.
+
+Do not loosen existing Reliability Freeze, PrizePicks EV gate, half-point cushion tax, or no-forced-action rules.
+```
+
+Main answer: **yes — add this to Replit.**
+It is too important to leave as analyst memory only.
