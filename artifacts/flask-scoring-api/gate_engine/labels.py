@@ -39,6 +39,8 @@ class PropLabel(str, Enum):
     CALIBRATION_STALE_HOLD              = "CALIBRATION_STALE_HOLD"
     # Patch 2026-06-27 — Correlation Gate
     REJECT_POWER_CORRELATED             = "REJECT_POWER_CORRELATED"
+    # Phase 1 2026-07-07 — Degraded Engine Run
+    DEGRADED_ENGINE_RUN                 = "DEGRADED_ENGINE_RUN"
 
 
 class DataStatus(str, Enum):
@@ -70,6 +72,7 @@ REJECT_LABELS   = {
     PropLabel.REJECT_LOW_LIQUIDITY,
     PropLabel.REJECT_LINE_MOVED_AGAINST_SIDE,
     PropLabel.REJECT_POWER_CORRELATED,
+    PropLabel.DEGRADED_ENGINE_RUN,
 }
 
 GATE_ORDER = [

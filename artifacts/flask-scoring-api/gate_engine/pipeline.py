@@ -17,6 +17,7 @@ from . import prob_ledger, failure_path, payout_context
 from . import directional_exposure
 from . import sharp_anchor, house_rules, settlement_loopback
 from . import js_style_conversion
+from . import pp_thresholds, mutex_groups
 from .labels import PropLabel
 from .exposure_gate import ExposureLedger
 
@@ -57,9 +58,17 @@ def run_pipeline(
           settlement_status   dict         — loopback freshness result
         }
     """
-    enrichment = enrichment or {}
+    enrichment    = enrichment or {}
+    failed_modules: list[str] = []
 
     rows = board_intake.normalize_board(raw_rows)
+
+    # -------------------------------------------------------------------
+    # Phase 1: PP Threshold Conversion (whole-number push rules)
+    # Must run before any gate that compares a sportsbook line to the
+    # displayed PrizePicks line, so cash_threshold is available.
+    # -------------------------------------------------------------------
+    pp_threshold_ledger = pp_thresholds.run_batch(rows)
 
     # -------------------------------------------------------------------
     # Layer 0.4: Settlement Loopback Freshness
@@ -158,23 +167,41 @@ def run_pipeline(
 
         # -------------------------------------------------------------------
         # Layers 1–2: Data Intake + Adjustments
+        # DEGRADED_ENGINE_RUN: wrap critical data-source modules so a
+        # ClientResponseError or fetch failure on one row doesn't crash
+        # the entire run. Failures are logged in failed_modules; the row
+        # is capped at REJECT_DATA_QUALITY so it never reaches approvals.
         # -------------------------------------------------------------------
-        l5_l10_ledger.run(
-            row,
-            game_log=enr.get("game_log"),
-            season_log=enr.get("season_log"),
-        )
+        try:
+            l5_l10_ledger.run(
+                row,
+                game_log=enr.get("game_log"),
+                season_log=enr.get("season_log"),
+            )
+        except Exception as _exc:
+            _tag = f"l5_l10_ledger:{type(_exc).__name__}:{str(_exc)[:100]}"
+            failed_modules.append(_tag)
+            row.setdefault("blockers", []).append(f"MODULE_FAILURE:l5_l10_ledger")
+            if row.get("terminal_label") is None:
+                row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
 
         outlier_gate.run(row)
 
-        market_gate.run(
-            row,
-            sportsbook_line = enr.get("sportsbook_line"),
-            best_available  = enr.get("best_available"),
-            consensus_line  = enr.get("consensus_line"),
-            clv_entry_price = enr.get("clv_entry_price"),
-            closing_price   = enr.get("closing_price"),
-        )
+        try:
+            market_gate.run(
+                row,
+                sportsbook_line = enr.get("sportsbook_line"),
+                best_available  = enr.get("best_available"),
+                consensus_line  = enr.get("consensus_line"),
+                clv_entry_price = enr.get("clv_entry_price"),
+                closing_price   = enr.get("closing_price"),
+            )
+        except Exception as _exc:
+            _tag = f"market_gate:{type(_exc).__name__}:{str(_exc)[:100]}"
+            failed_modules.append(_tag)
+            row.setdefault("blockers", []).append("MODULE_FAILURE:market_gate")
+            if row.get("terminal_label") is None:
+                row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
 
         # -------------------------------------------------------------------
         # Patch 2026-06-27 — Sharp Market Anchor (Directional)
@@ -193,7 +220,14 @@ def run_pipeline(
             ):
                 continue
 
-        ev_gate.run(row)
+        try:
+            ev_gate.run(row)
+        except Exception as _exc:
+            _tag = f"ev_gate:{type(_exc).__name__}:{str(_exc)[:100]}"
+            failed_modules.append(_tag)
+            row.setdefault("blockers", []).append("MODULE_FAILURE:ev_gate")
+            if row.get("terminal_label") is None:
+                row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
 
         # -------------------------------------------------------------------
         # Module D: Probability Component Ledger + Shrinkage
@@ -232,6 +266,16 @@ def run_pipeline(
     # WOW-PATCH-2026-07-07 — JS Style slip-level gate (same-game PRA cluster, etc.)
     js_style_conversion.run_slip(rows)
 
+    # -------------------------------------------------------------------
+    # Phase 1: Mutex Grouping + Best-Candidate Selection
+    # Runs after ev_gate (edge scores available) and before classifier
+    # so rejected mutex candidates get DUPLICATE_EXPOSURE_BLOCK before
+    # the classifier counts buckets.
+    # Same-player/same-stat-family and same-pitcher-script conflicts are
+    # resolved here. Only the best candidate per group survives.
+    # -------------------------------------------------------------------
+    mutex_report = mutex_groups.run(rows)
+
     for row in rows:
         if row.get("terminal_label") in (
             PropLabel.SLATE_PURGE.value,
@@ -256,7 +300,18 @@ def run_pipeline(
             if row.get("terminal_label") == PropLabel.FINAL_APPROVED.value:
                 tracker.record_entry(row)
 
-    return _build_output(rows, ledger, health_report, settlement_status, enrichment)
+    run_status = "DEGRADED_ENGINE_RUN" if failed_modules else "COMPLETE"
+
+    return _build_output(
+        rows, ledger,
+        health_report      = health_report,
+        settlement_status  = settlement_status,
+        enrichment         = enrichment,
+        failed_modules     = failed_modules,
+        run_status         = run_status,
+        pp_threshold_ledger = pp_threshold_ledger,
+        mutex_report       = mutex_report,
+    )
 
 
 MARKET_NO_DATA_BLOCKER = "MARKET:NO_MARKET_AVAILABLE:MAX_LABEL=MODEL_QUALIFIED_HOLD"
@@ -434,7 +489,24 @@ def _build_market_join_audit(row: dict, enrichment: dict) -> dict[str, Any]:
 def _build_output(rows: list[dict], ledger: ExposureLedger,
                   health_report: dict | None = None,
                   settlement_status: dict | None = None,
-                  enrichment: dict | None = None) -> dict[str, Any]:
+                  enrichment: dict | None = None,
+                  failed_modules: list[str] | None = None,
+                  run_status: str = "COMPLETE",
+                  pp_threshold_ledger: list[dict] | None = None,
+                  mutex_report: list[dict] | None = None) -> dict[str, Any]:
+    # -------------------------------------------------------------------
+    # DEGRADED_ENGINE_RUN ceiling: applied here (not only in run_pipeline)
+    # so that _build_output works correctly when called directly in tests.
+    # If any critical module failed, no row may carry FINAL_APPROVED or
+    # MONEY_QUALIFIED — downgrade both to MODEL_QUALIFIED_HOLD.
+    # -------------------------------------------------------------------
+    if run_status == "DEGRADED_ENGINE_RUN":
+        for row in rows:
+            _lbl = row.get("terminal_label") or ""
+            if _lbl in (PropLabel.FINAL_APPROVED.value, PropLabel.MONEY_QUALIFIED.value):
+                row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
+                row.setdefault("blockers", []).append("DEGRADED_ENGINE_RUN")
+
     label_counts: dict[str, int] = {}
     terminal_labels  = []
     final_card       = []
@@ -510,6 +582,11 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
     market_enrichment_report["rows_market_joined"] = rows_market_joined
     market_enrichment_report["rows_by_market_join_status"] = join_status_counts
 
+    # DEGRADED_ENGINE_RUN: re-count after ceiling enforcement so the summary
+    # accurately reflects 0 final/money-qualified when the run degraded.
+    _degraded = run_status == "DEGRADED_ENGINE_RUN"
+    _effective_final_count = 0 if _degraded else len(final_card)
+
     return {
         "prop_ledger":        rows,
         "data_status_ledger": data_status_ledger,
@@ -520,11 +597,20 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "health_report":      health_report or {},
         "settlement_status":  settlement_status or {},
         "market_enrichment_report": market_enrichment_report,
+        # Phase 1 additions
+        "run_status":         run_status,
+        "failed_modules":     failed_modules or [],
+        "pp_threshold_ledger": pp_threshold_ledger or [],
+        "mutex_report":       mutex_report or [],
         "summary": {
-            "total_rows":   len(rows),
-            "by_label":     label_counts,
-            "final_count":  len(final_card),
-            "no_play":      no_play,
+            "total_rows":          len(rows),
+            "by_label":            label_counts,
+            "final_count":         _effective_final_count,
+            "no_play":             no_play,
+            "run_status":          run_status,
+            "degraded_run":        _degraded,
+            "failed_module_count": len(failed_modules or []),
+            "mutex_group_count":   len(mutex_report or []),
         },
     }
 

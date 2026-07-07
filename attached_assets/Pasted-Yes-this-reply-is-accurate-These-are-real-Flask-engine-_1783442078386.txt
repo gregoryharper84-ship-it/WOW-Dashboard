@@ -1,0 +1,106 @@
+Yes — this reply is accurate. These are **real Flask engine build tasks**, not GPT/adaptor wording fixes.
+
+My recommendation: **tell them to scope all 8, but start immediately with Items 3, 8, and 6** because those are self-contained and unblock cleaner daily decisioning without needing blocked data sources.
+
+Send this back:
+
+```text
+Scope all 8 items as Flask engine tasks, but start with a Phase 1 quick patch on Items 3, 8, and 6.
+
+Priority order:
+
+PHASE 1 — quick engine hardening
+1. Add DEGRADED_ENGINE_RUN label whenever backend scan/API module fails with ClientResponseError or similar fetch/runtime failure.
+   - FINAL_APPROVED must remain 0
+   - MONEY_QUALIFIED must remain 0
+   - output failed module list
+   - distinguish degraded triage from full WOW approval
+
+2. Add PrizePicks threshold conversion.
+   For every prop:
+   - displayed_line
+   - side
+   - cash_threshold
+   - push_threshold
+   - loss_threshold
+   - whole_number_line flag
+   - sportsbook comparison must use cash threshold, not just displayed line
+
+   Example:
+   MORE 5 assists -> cash threshold 6+, push at 5
+   MORE 10 points -> cash threshold 11+
+   LESS 20 pitching outs -> cash threshold <=19, push at 20 if PP rules push/reboot
+
+3. Add automatic mutex grouping + best-candidate selection.
+   Group by:
+   - same player
+   - same game
+   - same stat family
+   - overlapping combo stats
+   - same pitcher script
+
+   Examples:
+   Howard points vs Howard Pts+Rebs
+   Atkins points vs Atkins Pts+Asts
+   Freeland outs vs Freeland pitches
+   Cameron outs vs Cameron pitches
+   Sánchez Ks vs Sánchez outs
+
+   Engine should return:
+   - mutex_group_id
+   - candidates in group
+   - selected_best_candidate
+   - rejected_due_to_mutex
+   - reason selected
+
+PHASE 2 — market validation schema
+4. Build exact-market validation schema:
+   - exact_market_found: true/false
+   - adjacent_market_used: true/false
+   - substitution_allowed: true/false
+   - confidence_cap
+   - market_status: EXACT_VERIFIED / ADJACENT_CONTEXT_ONLY / MARKET_UNVERIFIED_EXACT / SOURCE_CONFLICT
+
+PHASE 3 — role-state logic
+5. Build injury-status decision trees.
+   Start with WNBA:
+   - Courtney Williams depends on Olivia Miles status
+   - Amoore/McMahon depend on Sonia Citron status
+   - Atkins/Hamby depend on Plum/Brink status
+   Output:
+   - status dependency
+   - active role state
+   - upgrade/downgrade path
+   - final role timestamp
+
+PHASE 4 — EV gate
+6. Build payout EV gate:
+   - slip type
+   - pick count
+   - payout multiplier
+   - break-even probability
+   - leg probability
+   - combined slip probability
+   - correlation penalty
+   - Goblin/Demon tax
+   - final slip EV label
+
+PHASE 5 — data ledgers
+7. WNBA L5/L10 exact-stat ledger
+8. MLB pitcher recent-form ledger
+
+For Items 7–8, do not block Phase 1 on bbref/FanGraphs 403. Build the source abstraction first:
+- primary source
+- fallback source
+- manual/uploaded ledger support
+- DATA_UNOBTAINABLE if all fail
+- no FINAL_APPROVED without ledger
+
+Start directly on Phase 1 now.
+```
+
+The most important part is this: **do not let them start with WNBA/MLB ledgers first**. Those are important, but they are blocked by Replit source access. The immediate value comes from:
+
+**DEGRADED_ENGINE_RUN + PP threshold conversion + mutex best-pick selection.**
+
+Those three stop the engine from falsely sounding complete, stop bad whole-number market comparisons, and stop correlated duplicate exposure.
