@@ -1,0 +1,463 @@
+Paste this into **Replit Agent** as one complete instruction:
+
+We already have the WOW Flask backend running with these existing pieces:
+
+* Scoring engine
+* Kalshi adapter/scanner
+* Odds API adapter
+* ESPN adapter
+* Props Intake page
+* Request Log page
+* Leaderboard page
+* Normalized props endpoints:
+
+  * GET /api/props/providers
+  * POST /api/props/normalize
+  * POST /api/props/score-batch
+* MCP server scaffold in artifacts/mcp-server with tools wrapping Flask routes
+
+Do not rebuild the app from scratch. Do not duplicate existing scoring logic. Upgrade the current system with a free reliability, validation, and audit layer.
+
+Primary objective:
+Make the system safer, more testable, and harder to fool. The biggest model upgrade right now is proving that bad, missing, stale, mocked, or conflicted data cannot reach MONEY_QUALIFIED or FINAL_APPROVED.
+
+Build the following upgrades.
+
+---
+
+## 1. Terminal Bucket Regression Test Suite
+
+Create regression tests proving the scoring engine enforces WOW v16 terminal bucket discipline.
+
+Valid terminal buckets only:
+
+* FINAL_APPROVED
+* MONEY_QUALIFIED
+* MARKET_VERIFIED_HOLD
+* MODEL_QUALIFIED_HOLD
+* RESEARCH_INTEREST
+* SOURCE_CONFLICT
+* REJECT_NO_EDGE
+* REJECT_BAD_STRUCTURE
+* REJECT_DATA_QUALITY
+* SLATE_PURGE
+* DUPLICATE_EXPOSURE_BLOCK
+* NO_PLAY
+
+Invalid final labels:
+
+* HOLD
+* WATCH
+* PASS
+* LEAN
+* CONDITIONAL
+* NO BET
+* APPROVED unless mapped to FINAL_APPROVED
+* TEMP APPROVED
+* SAFE
+* LOCK
+
+Test cases required:
+
+A. Missing L10
+Input prop has market data and status but missing l10_values / l10_median / l10_mean.
+Expected: cannot reach MONEY_QUALIFIED or FINAL_APPROVED.
+Expected bucket: REJECT_DATA_QUALITY or MODEL_QUALIFIED_HOLD.
+
+B. Missing payout context
+Input prop has market, status, and L10 but missing payout_context.
+Expected: cannot enter slip.
+Expected cap: MODEL_QUALIFIED_HOLD or RESEARCH_INTEREST.
+
+C. Missing status timestamp
+Input prop has market and L10 but no status_timestamp / role_timestamp.
+Expected: cannot approve.
+Expected bucket: REJECT_DATA_QUALITY or MODEL_QUALIFIED_HOLD.
+
+D. Missing market
+Input prop has L10 and status but no market comparison.
+Expected: max MODEL_QUALIFIED_HOLD unless proprietary module explicitly supports it.
+Expected: no MONEY_QUALIFIED or FINAL_APPROVED.
+
+E. Source conflict
+Input prop has conflicting market lines or conflicting player status.
+Expected terminal bucket: SOURCE_CONFLICT or cap below money labels.
+Expected: no MONEY_QUALIFIED or FINAL_APPROVED.
+
+F. Mock/fallback data
+Input prop source is mock, fallback, DATA_UNOBTAINABLE, or PROXY_ONLY.
+Expected: cannot reach MONEY_QUALIFIED or FINAL_APPROVED.
+Expected: RESEARCH_INTEREST, MODEL_QUALIFIED_HOLD, or REJECT_DATA_QUALITY depending on fields.
+
+G. Negative edge
+Input prop has complete data but edge_vs_friction <= 0 or final_model_prob <= effective_floor.
+Expected bucket: REJECT_NO_EDGE.
+
+H. Bad slip structure
+Input slip has 3+ correlated same-script legs without correlation EV math.
+Expected terminal slip label: DUPLICATE_EXPOSURE_BLOCK or REJECT_BAD_STRUCTURE.
+
+I. Row count reconciliation
+Input board has N props.
+Expected output rows = N.
+Expected bucket counts sum to N.
+If mismatch, return RUN_INVALID / ROW_COUNT_MISMATCH in execution report.
+
+Acceptance:
+
+* Add tests under tests/ or existing test folder.
+* Tests must run with pytest or current project test runner.
+* Add npm/python script if needed:
+
+  * python -m pytest
+  * or npm test if frontend tests exist.
+* Do not require real API keys for regression tests.
+
+---
+
+## 2. Source Status Simulator
+
+Build a dev/test utility that can simulate all source statuses through the scoring pipeline.
+
+Allowed source statuses:
+
+* RETRIEVED
+* RECONSTRUCTED
+* PROXY_ONLY
+* DATA_UNOBTAINABLE
+* INPUT_FAILURE
+* SOURCE_CONFLICT
+* NOT_CALLED
+* FAILED
+
+Add a route:
+POST /api/dev/source-status-sim
+
+Request body:
+{
+"source_status": "DATA_UNOBTAINABLE",
+"sport": "WNBA",
+"prop_type": "points",
+"side": "LESS",
+"line": 20.5,
+"include_market": true,
+"include_l10": false,
+"include_status": true,
+"include_payout": true
+}
+
+Response body should include:
+{
+"input_source_status": "...",
+"normalized_prop": {...},
+"scored_result": {...},
+"terminal_bucket": "...",
+"approval_cap": "...",
+"blockers": [...],
+"can_reach_money_qualified": false,
+"can_reach_final_approved": false
+}
+
+Rules:
+
+* RETRIEVED + complete clean data may score normally.
+* RECONSTRUCTED may score normally only if reconstruction method and source rows are documented.
+* PROXY_ONLY cannot approve; max MODEL_QUALIFIED_HOLD or RESEARCH_INTEREST.
+* DATA_UNOBTAINABLE cannot approve; usually REJECT_DATA_QUALITY.
+* INPUT_FAILURE means raw data was present but scoring did not run; terminal INPUT_FAILURE internally or map to REJECT_DATA_QUALITY if dashboard requires v16 bucket only.
+* SOURCE_CONFLICT blocks money labels.
+* NOT_CALLED is not the same as unavailable; cap below money labels.
+* FAILED blocks approval.
+
+Acceptance:
+
+* Add UI panel or dev-only button if easy, but route is enough.
+* Add tests covering all source statuses.
+* Do not expose this route as production betting guidance. Label it DEV ONLY.
+
+---
+
+## 3. Postmortem and CLV Tracker
+
+Extend the request log schema to support postmortem learning without paid feeds.
+
+Add fields to request log entries:
+
+* actual_result
+* closing_line
+* closing_price
+* result_status: WIN | LOSS | PUSH | VOID | UNKNOWN
+* clv_result: BEAT_CLOSE | LOST_TO_CLOSE | TIED_CLOSE | UNKNOWN
+* process_grade: CLEAN_WIN | FRAGILE_WIN | LUCKY_WIN | FALSE_SIGNAL_WIN | BAD_BEAT | GOOD_PROCESS_LOSS | BAD_PROCESS_WIN | MODEL_FAILURE | UNKNOWN
+* dominant_failure_tag
+* patch_needed
+* future_rule
+* settled_at
+* postmortem_notes
+
+Add endpoints:
+GET /api/postmortem/pending
+POST /api/postmortem/update/:request_id
+GET /api/postmortem/summary
+GET /api/postmortem/failure-tags
+
+POST body for update:
+{
+"actual_result": 18,
+"closing_line": 20.5,
+"closing_price": -115,
+"result_status": "WIN",
+"clv_result": "BEAT_CLOSE",
+"process_grade": "CLEAN_WIN",
+"dominant_failure_tag": null,
+"patch_needed": false,
+"future_rule": "",
+"postmortem_notes": "Market moved in our favor and player role held."
+}
+
+Dashboard upgrade:
+
+* Add postmortem fields to Request Log detail drawer.
+* Add filter for unsettled / settled / failure tag / process grade.
+* Add summary cards:
+
+  * total settled
+  * win rate by terminal bucket
+  * approval rate by sport
+  * CLV beat rate
+  * most common failure tags
+  * NO_PLAY count
+  * SOURCE_CONFLICT count
+
+Acceptance:
+
+* Existing logs must not break.
+* Migration must be safe.
+* Empty postmortem fields default to UNKNOWN/null.
+* No paid data required; manual postmortem update is acceptable.
+
+---
+
+## 4. Daily Smoke Test Runner
+
+Add a smoke test utility that checks the health of the hub using current routes and available keys.
+
+Add endpoint:
+POST /api/admin/smoke-test
+
+Also add CLI script:
+python scripts/smoke_test.py
+or
+npm run smoke:test
+
+Smoke test should check:
+
+1. /health reachable
+2. GET /api/props/providers works
+3. POST /api/props/normalize works with mock/fallback
+4. Mock/fallback props cannot approve
+5. If ODDS_API_KEY exists, pull a small MLB or WNBA odds sample
+6. Score 3–5 sample props through /api/props/score-batch
+7. Confirm row count reconciliation
+8. Confirm request logs receive entries
+9. Confirm leaderboard updates
+10. Confirm Kalshi read-only scan route works if configured
+11. Confirm ESPN adapter route works if available
+12. Confirm MCP server package exists and tool list can be loaded
+
+Response:
+{
+"status": "PASS" | "WARN" | "FAIL",
+"timestamp": "...",
+"checks": [
+{
+"name": "props_providers",
+"status": "PASS",
+"details": "..."
+}
+],
+"critical_failures": [],
+"warnings": []
+}
+
+Acceptance:
+
+* Missing optional provider keys should be WARN, not FAIL.
+* Core route failure should be FAIL.
+* Mock data approving should be FAIL.
+* Score-batch row mismatch should be FAIL.
+* No API key should be printed in logs.
+
+If Replit scheduled jobs/cron is already available in this project, schedule this once daily. If not, just add the script and document how to run it.
+
+---
+
+## 5. MCP Security Hardening
+
+The MCP server must stay read-only and safe.
+
+Add:
+
+* Tool allowlist
+* Read-only mode
+* Optional MCP_AUTH_TOKEN env var
+* Rate limiting if simple to add
+* Audit log for every tool call
+* Explicit rejection for any execution/trading/submission tool unless ENABLE_LIVE_EXECUTION=true
+
+Allowed MCP tools:
+
+* scan_board
+* normalize_props
+* fetch_sportsbook_odds
+* fetch_kalshi_markets
+* fetch_player_status
+* fetch_l10_ledger
+* compare_market_edge
+* score_wow_prop
+* run_final_lock
+* build_slip_candidates
+* export_no_play_report
+* get_request_log
+* get_leaderboard
+
+Disallowed for now:
+
+* place_bet
+* submit_entry
+* execute_trade
+* kalshi_place_order
+* prizepicks_submit
+* sportsbook_bet
+* withdraw
+* deposit
+
+If a disallowed tool is called, return:
+{
+"error": "LIVE_EXECUTION_DISABLED",
+"message": "Money actions are disabled. Manual confirmation required.",
+"requires_env": "ENABLE_LIVE_EXECUTION=true"
+}
+
+Acceptance:
+
+* MCP tool calls log:
+
+  * tool_name
+  * timestamp
+  * request_id
+  * source
+  * success/failure
+  * terminal bucket if scoring occurred
+* MCP server must never expose secrets.
+* README must include Claude Desktop config and safety warning.
+* MCP tools must wrap Flask routes, not duplicate scoring logic.
+
+---
+
+## 6. Dashboard Filter Upgrades
+
+Upgrade Request Log and Leaderboard filters.
+
+Request Log filters:
+
+* sport
+* prop_type
+* terminal_bucket
+* source_status
+* source_grade
+* blocker
+* provider
+* settled/unsettled
+* process_grade
+* date range
+
+Leaderboard filters:
+
+* sport
+* prop_type
+* side
+* terminal_bucket
+* source_status
+* minimum sample size
+* date range
+
+Add export buttons:
+
+* Export request log CSV
+* Export postmortem CSV
+* Export NO_PLAY report JSON
+
+Acceptance:
+
+* Filters work without page reload if current frontend supports it.
+* No breaking changes to existing three nav pages.
+* Empty states are clean and readable.
+
+---
+
+## 7. Documentation Update
+
+Update README or create docs/WOW_DATA_HUB_RELIABILITY.md.
+
+Include:
+
+* What the reliability layer does
+* How to run regression tests
+* How to run smoke test
+* How to use source-status simulator
+* How postmortem updates work
+* MCP security model
+* Required vs optional environment variables
+* Why NO_PLAY is valid
+* Why mock/fallback data cannot approve
+* How to add future providers safely
+
+Environment variables:
+
+* ODDS_API_KEY
+* OPTICODDS_API_KEY
+* PROPLINE_API_KEY
+* SPORTSGAMEODDS_API_KEY
+* KALSHI_API_KEY
+* KALSHI_API_SECRET
+* MCP_AUTH_TOKEN
+* ENABLE_LIVE_EXECUTION=false
+
+Important:
+
+* Do not print secrets.
+* Do not enable live execution.
+* Do not fabricate missing values.
+* Do not approve mock data.
+* Do not allow row count mismatch.
+* Do not output invalid terminal labels.
+
+---
+
+## Final deliverable
+
+Return a concise completion report with:
+
+1. Files changed
+2. New routes added
+3. Tests added
+4. Smoke test result
+5. MCP security changes
+6. Dashboard changes
+7. Any known limitations
+8. Exact commands to run tests and smoke test
+
+Build this as an incremental upgrade on the existing Flask app.
+
+After Replit finishes, ask it this:
+
+Run the new regression test suite and smoke test now. Return only:
+
+1. test command used
+2. smoke test command used
+3. pass/fail counts
+4. any failing test names
+5. one example showing mock/fallback data blocked from approval
+6. one example showing SOURCE_CONFLICT blocked from approval
+7. final confirmation that no live execution endpoint is enabled

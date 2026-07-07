@@ -1,5 +1,8 @@
-import { useState, useCallback } from "react";
-import { RefreshCw, Trophy, TrendingUp, TrendingDown, AlertTriangle, BarChart2 } from "lucide-react";
+import { useState, useCallback, useMemo } from "react";
+import {
+  RefreshCw, Trophy, TrendingUp, TrendingDown,
+  AlertTriangle, BarChart2, Download,
+} from "lucide-react";
 
 const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
 const API  = BASE.replace("/final-lock", "/api");
@@ -41,20 +44,73 @@ const LABEL_COLORS: Record<string, string> = {
   REJECT_NO_EDGE:       "text-red-400",
 };
 
+const SPORTS_OPTIONS = ["ALL", "NBA", "WNBA", "MLB", "NFL", "NHL", "TENNIS"];
+const MIN_RUNS_OPTIONS = [1, 3, 5, 10, 25];
+
+const TERMINAL_LABEL_FILTERS = [
+  "ALL",
+  "FINAL_APPROVED",
+  "MONEY_QUALIFIED",
+  "MODEL_QUALIFIED_HOLD",
+  "NO_PLAY",
+  "REJECT_NO_EDGE",
+  "REJECT_BAD_STRUCTURE",
+  "SOURCE_CONFLICT",
+  "DATA_UNOBTAINABLE",
+];
+
 function pct(n: number) { return (n * 100).toFixed(1) + "%"; }
 function fmtDate(iso: string) {
   try { return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" }); }
   catch { return iso; }
 }
 
+function escapeCsv(v: unknown): string {
+  const s = v == null ? "" : String(v);
+  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function exportCsv(rows: LeaderRow[]) {
+  const headers = [
+    "player", "sport", "market", "total_runs", "final_approved",
+    "money_qualified", "no_play", "reject_no_edge",
+    "approval_rate_pct", "avg_edge_pct", "last_label", "last_run",
+  ];
+  const csv = [
+    headers.join(","),
+    ...rows.map(r => [
+      r.player, r.sport, r.market, r.total_runs, r.final_approved,
+      r.money_qualified, r.no_play, r.reject_no_edge,
+      (r.approval_rate * 100).toFixed(2),
+      r.avg_edge_pct != null ? (r.avg_edge_pct * 100).toFixed(2) : "",
+      r.last_label, r.last_run,
+    ].map(escapeCsv).join(",")),
+  ].join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `wow_leaderboard_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function LeaderboardPage() {
-  const [rows, setRows]         = useState<LeaderRow[]>([]);
-  const [summary, setSummary]   = useState<SummaryStats | null>(null);
-  const [loading, setLoading]   = useState(false);
-  const [error, setError]       = useState<string | null>(null);
-  const [sortKey, setSortKey]   = useState<keyof LeaderRow>("approval_rate");
-  const [sortDir, setSortDir]   = useState<"asc" | "desc">("desc");
-  const [sport, setSport]       = useState("ALL");
+  const [rows, setRows]                   = useState<LeaderRow[]>([]);
+  const [summary, setSummary]             = useState<SummaryStats | null>(null);
+  const [loading, setLoading]             = useState(false);
+  const [error, setError]                 = useState<string | null>(null);
+  const [sortKey, setSortKey]             = useState<keyof LeaderRow>("approval_rate");
+  const [sortDir, setSortDir]             = useState<"asc" | "desc">("desc");
+  const [sport, setSport]                 = useState("ALL");
+  const [minRuns, setMinRuns]             = useState(1);
+  const [lastLabelFilter, setLastLabel]   = useState("ALL");
+  const [approvalBand, setApprovalBand]   = useState<"ALL" | "HIGH" | "MED" | "LOW">("ALL");
+  const [edgeFilter, setEdgeFilter]       = useState<"ALL" | "POS" | "NEG">("ALL");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -67,10 +123,8 @@ export default function LeaderboardPage() {
       if (!lbRes.ok) throw new Error(`Leaderboard HTTP ${lbRes.status}`);
       const lbData = await lbRes.json() as { leaderboard?: LeaderRow[]; data?: LeaderRow[] };
       setRows(lbData.leaderboard ?? lbData.data ?? []);
-
       if (statsRes.ok) {
-        const sd = await statsRes.json() as SummaryStats;
-        setSummary(sd);
+        setSummary(await statsRes.json() as SummaryStats);
       }
     } catch (e) {
       setError(String(e));
@@ -79,21 +133,31 @@ export default function LeaderboardPage() {
     }
   }, []);
 
-  const sports = ["ALL", ...Array.from(new Set(rows.map(r => r.sport))).sort()];
-
-  const sorted = [...rows]
-    .filter(r => sport === "ALL" || r.sport === sport)
-    .sort((a, b) => {
-      const av = a[sortKey];
-      const bv = b[sortKey];
-      if (av == null && bv == null) return 0;
-      if (av == null) return 1;
-      if (bv == null) return -1;
-      const diff = typeof av === "number" && typeof bv === "number"
-        ? av - bv
-        : String(av).localeCompare(String(bv));
-      return sortDir === "desc" ? -diff : diff;
-    });
+  const sorted = useMemo(() => {
+    return [...rows]
+      .filter(r => {
+        if (sport !== "ALL" && r.sport !== sport) return false;
+        if (r.total_runs < minRuns) return false;
+        if (lastLabelFilter !== "ALL" && r.last_label !== lastLabelFilter) return false;
+        if (approvalBand === "HIGH" && r.approval_rate < 0.5)   return false;
+        if (approvalBand === "MED"  && (r.approval_rate < 0.2 || r.approval_rate >= 0.5)) return false;
+        if (approvalBand === "LOW"  && r.approval_rate >= 0.2)   return false;
+        if (edgeFilter === "POS" && (r.avg_edge_pct == null || r.avg_edge_pct <= 0)) return false;
+        if (edgeFilter === "NEG" && (r.avg_edge_pct == null || r.avg_edge_pct  > 0)) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const av = a[sortKey];
+        const bv = b[sortKey];
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        const diff = typeof av === "number" && typeof bv === "number"
+          ? av - bv
+          : String(av).localeCompare(String(bv));
+        return sortDir === "desc" ? -diff : diff;
+      });
+  }, [rows, sport, minRuns, lastLabelFilter, approvalBand, edgeFilter, sortKey, sortDir]);
 
   function toggleSort(key: keyof LeaderRow) {
     if (sortKey === key) setSortDir(d => d === "desc" ? "asc" : "desc");
@@ -104,13 +168,16 @@ export default function LeaderboardPage() {
     const active = sortKey === k;
     return (
       <th
-        className="text-left px-3 py-2 text-xs font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none"
+        className="text-left px-3 py-2 text-xs font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none whitespace-nowrap"
         onClick={() => toggleSort(k)}
       >
         {label}{active ? (sortDir === "desc" ? " ↓" : " ↑") : ""}
       </th>
     );
   }
+
+  const anyFilter = sport !== "ALL" || minRuns > 1 || lastLabelFilter !== "ALL" ||
+    approvalBand !== "ALL" || edgeFilter !== "ALL";
 
   return (
     <div className="min-h-screen bg-background text-foreground p-6">
@@ -127,14 +194,26 @@ export default function LeaderboardPage() {
               Player/market approval rates and terminal bucket history
             </p>
           </div>
-          <button
-            onClick={fetchData}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
-          >
-            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-            {loading ? "Loading…" : "Load Data"}
-          </button>
+          <div className="flex gap-2">
+            {sorted.length > 0 && (
+              <button
+                onClick={() => exportCsv(sorted)}
+                className="flex items-center gap-2 px-3 py-2 bg-card border border-border rounded-lg text-sm font-medium hover:bg-muted/40 transition-colors"
+                title="Export visible rows as CSV"
+              >
+                <Download size={14} />
+                Export CSV ({sorted.length})
+              </button>
+            )}
+            <button
+              onClick={fetchData}
+              disabled={loading}
+              className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              {loading ? "Loading…" : "Load Data"}
+            </button>
+          </div>
         </div>
 
         {error && (
@@ -148,13 +227,13 @@ export default function LeaderboardPage() {
         {summary && (
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
             {[
-              { label: "Total Runs",     value: summary.total_requests,    color: "text-foreground" },
-              { label: "Final Approved", value: summary.final_approved,    color: "text-emerald-400" },
-              { label: "Money Qual.",    value: summary.money_qualified,    color: "text-green-400" },
-              { label: "Model Hold",     value: summary.model_qualified_hold, color: "text-blue-400" },
-              { label: "No Play",        value: summary.no_play,            color: "text-slate-400" },
-              { label: "Rejects",        value: summary.reject_total,       color: "text-red-400" },
-              { label: "Approval Rate",  value: pct(summary.approval_rate), color: "text-primary" },
+              { label: "Total Runs",     value: summary.total_requests,       color: "text-foreground" },
+              { label: "Final Approved", value: summary.final_approved,       color: "text-emerald-400" },
+              { label: "Money Qual.",    value: summary.money_qualified,       color: "text-green-400" },
+              { label: "Model Hold",     value: summary.model_qualified_hold,  color: "text-blue-400" },
+              { label: "No Play",        value: summary.no_play,               color: "text-slate-400" },
+              { label: "Rejects",        value: summary.reject_total,          color: "text-red-400" },
+              { label: "Approval Rate",  value: pct(summary.approval_rate),    color: "text-primary" },
             ].map(s => (
               <div key={s.label} className="bg-card border border-border rounded-lg px-3 py-2.5 text-center">
                 <div className={`text-lg font-bold ${s.color}`}>{s.value}</div>
@@ -164,10 +243,11 @@ export default function LeaderboardPage() {
           </div>
         )}
 
-        {/* Sport filter */}
+        {/* Filters */}
         {rows.length > 0 && (
           <div className="flex gap-2 flex-wrap mb-4">
-            {sports.map(s => (
+            {/* Sport filter pills */}
+            {SPORTS_OPTIONS.filter(s => s === "ALL" || rows.some(r => r.sport === s)).map(s => (
               <button
                 key={s}
                 onClick={() => setSport(s)}
@@ -180,6 +260,77 @@ export default function LeaderboardPage() {
                 {s}
               </button>
             ))}
+
+            <div className="h-4 w-px bg-border self-center mx-1" />
+
+            {/* Min runs */}
+            <div className="flex items-center gap-1.5 bg-card border border-border rounded-full px-3 py-1">
+              <span className="text-xs text-muted-foreground">Min runs:</span>
+              <select
+                className="bg-transparent text-xs outline-none"
+                value={minRuns}
+                onChange={e => setMinRuns(Number(e.target.value))}
+              >
+                {MIN_RUNS_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+
+            {/* Last label filter */}
+            <div className="flex items-center gap-1.5 bg-card border border-border rounded-full px-3 py-1">
+              <span className="text-xs text-muted-foreground">Last:</span>
+              <select
+                className="bg-transparent text-xs outline-none"
+                value={lastLabelFilter}
+                onChange={e => setLastLabel(e.target.value)}
+              >
+                {TERMINAL_LABEL_FILTERS.map(l => <option key={l} value={l}>{l === "ALL" ? "Any label" : l}</option>)}
+              </select>
+            </div>
+
+            {/* Approval band */}
+            <div className="flex items-center gap-1.5 bg-card border border-border rounded-full px-3 py-1">
+              <span className="text-xs text-muted-foreground">Rate:</span>
+              <select
+                className="bg-transparent text-xs outline-none"
+                value={approvalBand}
+                onChange={e => setApprovalBand(e.target.value as "ALL" | "HIGH" | "MED" | "LOW")}
+              >
+                <option value="ALL">All</option>
+                <option value="HIGH">≥50%</option>
+                <option value="MED">20–49%</option>
+                <option value="LOW">&lt;20%</option>
+              </select>
+            </div>
+
+            {/* Edge filter */}
+            <div className="flex items-center gap-1.5 bg-card border border-border rounded-full px-3 py-1">
+              <span className="text-xs text-muted-foreground">Edge:</span>
+              <select
+                className="bg-transparent text-xs outline-none"
+                value={edgeFilter}
+                onChange={e => setEdgeFilter(e.target.value as "ALL" | "POS" | "NEG")}
+              >
+                <option value="ALL">All</option>
+                <option value="POS">Positive</option>
+                <option value="NEG">Negative</option>
+              </select>
+            </div>
+
+            {anyFilter && (
+              <button
+                className="text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded border border-border/50"
+                onClick={() => {
+                  setSport("ALL"); setMinRuns(1); setLastLabel("ALL");
+                  setApprovalBand("ALL"); setEdgeFilter("ALL");
+                }}
+              >
+                Clear
+              </button>
+            )}
+
+            <span className="text-xs text-muted-foreground self-center ml-auto">
+              {sorted.length} of {rows.length} rows
+            </span>
           </div>
         )}
 
@@ -214,6 +365,7 @@ export default function LeaderboardPage() {
               <tbody>
                 {sorted.map((row, i) => {
                   const labelColor = LABEL_COLORS[row.last_label] ?? "text-slate-400";
+                  const approvalHigh = row.approval_rate >= 0.5;
                   return (
                     <tr key={i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
                       <td className="px-3 py-2.5 font-medium">{row.player}</td>
@@ -226,10 +378,10 @@ export default function LeaderboardPage() {
                       <td className="px-3 py-2.5 text-center text-red-400">{row.reject_no_edge}</td>
                       <td className="px-3 py-2.5 text-center">
                         <div className="flex items-center justify-center gap-1">
-                          {row.approval_rate >= 0.5
+                          {approvalHigh
                             ? <TrendingUp size={11} className="text-emerald-400" />
                             : <TrendingDown size={11} className="text-red-400" />}
-                          <span className={row.approval_rate >= 0.5 ? "text-emerald-400" : "text-red-400"}>
+                          <span className={approvalHigh ? "text-emerald-400" : "text-red-400"}>
                             {pct(row.approval_rate)}
                           </span>
                         </div>

@@ -18,10 +18,75 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { appendFileSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
-const FLASK_BASE = process.env.SCORING_API_URL  ?? "http://localhost:25643";
-const API_KEY    = process.env.SCORING_API_KEY   ?? "";
-const API_BASE   = process.env.API_SERVER_URL    ?? "http://localhost:8080/api";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const FLASK_BASE  = process.env.SCORING_API_URL  ?? "http://localhost:25643";
+const API_KEY     = process.env.SCORING_API_KEY  ?? "";
+const API_BASE    = process.env.API_SERVER_URL   ?? "http://localhost:8080/api";
+const AUTH_TOKEN  = process.env.MCP_AUTH_TOKEN   ?? "";   // optional; empty = open
+const LIVE_EXEC   = (process.env.ENABLE_LIVE_EXECUTION ?? "").toLowerCase() === "true";
+
+// ── Audit log ─────────────────────────────────────────────────────────────────
+const AUDIT_LOG_DIR  = join(__dirname, "../../logs");
+const AUDIT_LOG_PATH = join(AUDIT_LOG_DIR, "mcp_audit.jsonl");
+
+function writeAudit(entry) {
+  try {
+    mkdirSync(AUDIT_LOG_DIR, { recursive: true });
+    appendFileSync(AUDIT_LOG_PATH, JSON.stringify(entry) + "\n");
+  } catch { /* best-effort — never crash server on log failure */ }
+}
+
+function audit(toolName, args, success, terminalBucket, durationMs, errorMsg) {
+  writeAudit({
+    tool_name:       toolName,
+    timestamp:       new Date().toISOString(),
+    request_id:      `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    source:          "mcp-stdio",
+    success,
+    terminal_bucket: terminalBucket ?? null,
+    duration_ms:     durationMs,
+    error:           errorMsg ?? null,
+    arg_keys:        args ? Object.keys(args) : [],  // NEVER log values (may contain PII)
+  });
+}
+
+// ── Rate limiting (in-memory, per session) ────────────────────────────────────
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX_CALLS = 30;
+const _rateCounts    = new Map();
+
+function checkRate(toolName) {
+  const now   = Date.now();
+  const times = (_rateCounts.get(toolName) ?? []).filter(t => now - t < RATE_WINDOW_MS);
+  if (times.length >= RATE_MAX_CALLS) {
+    throw new Error(
+      `RATE_LIMIT: ${toolName} called ${times.length} times in the last minute (max ${RATE_MAX_CALLS})`
+    );
+  }
+  times.push(now);
+  _rateCounts.set(toolName, times);
+}
+
+// ── Security: disallowed tools (live execution) ────────────────────────────────
+const DISALLOWED_TOOLS = new Set([
+  "place_bet", "submit_entry", "execute_trade", "kalshi_place_order",
+  "prizepicks_submit", "sportsbook_bet", "withdraw", "deposit",
+  "send_money", "create_order", "fill_order",
+]);
+
+// ── Security: explicit allowlist ──────────────────────────────────────────────
+const ALLOWED_TOOLS = new Set([
+  "scan_board", "normalize_props", "fetch_sportsbook_odds",
+  "fetch_kalshi_markets", "fetch_player_status", "fetch_l10_ledger",
+  "compare_market_edge", "score_wow_prop", "run_final_lock",
+  "build_slip_candidates", "export_no_play_report",
+  "get_request_log", "get_leaderboard",
+]);
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
@@ -573,9 +638,56 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
+  const t0 = Date.now();
+
+  // Security: disallowed tool check (live execution block)
+  if (DISALLOWED_TOOLS.has(name)) {
+    audit(name, args, false, null, Date.now() - t0, "LIVE_EXECUTION_DISABLED");
+    return {
+      content: [{ type: "text", text: JSON.stringify({
+        error:        "LIVE_EXECUTION_DISABLED",
+        message:      "Money actions are disabled. Manual confirmation required before any live execution.",
+        requires_env: "ENABLE_LIVE_EXECUTION=true",
+        tool:         name,
+        timestamp:    new Date().toISOString(),
+      }) }],
+      isError: true,
+    };
+  }
+
+  // Security: allowlist check
+  if (!ALLOWED_TOOLS.has(name)) {
+    audit(name, args, false, null, Date.now() - t0, "TOOL_NOT_IN_ALLOWLIST");
+    return {
+      content: [{ type: "text", text: JSON.stringify({
+        error:   "TOOL_NOT_IN_ALLOWLIST",
+        message: `Tool '${name}' is not in the server allowlist.`,
+        allowed: [...ALLOWED_TOOLS],
+      }) }],
+      isError: true,
+    };
+  }
+
+  // Rate limiting
   try {
-    return await handleTool(name, args ?? {});
+    checkRate(name);
+  } catch (rateErr) {
+    audit(name, args, false, null, Date.now() - t0, rateErr.message);
+    return err(rateErr);
+  }
+
+  // Execute
+  try {
+    const result = await handleTool(name, args ?? {});
+    let terminalBucket = null;
+    try {
+      const parsed = JSON.parse(result.content?.[0]?.text ?? "{}");
+      terminalBucket = parsed.terminal_label ?? parsed.classification ?? null;
+    } catch { /* best-effort */ }
+    audit(name, args, true, terminalBucket, Date.now() - t0, null);
+    return result;
   } catch (e) {
+    audit(name, args, false, null, Date.now() - t0, e.message ?? String(e));
     return err(e);
   }
 });

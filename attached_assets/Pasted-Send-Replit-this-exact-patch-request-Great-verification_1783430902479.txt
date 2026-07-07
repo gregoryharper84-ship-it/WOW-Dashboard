@@ -1,0 +1,168 @@
+Send Replit this exact patch request:
+
+Great verification pass. Now apply a small WOW v16 compliance patch. The system is operational, but three items must be fixed before we call it production-ready.
+
+Do not rebuild anything. Patch the current adapter/wrapper layer only.
+
+## 1. Fix invalid WOW labels
+
+Current verification shows:
+
+* source_status: LIVE
+* terminal bucket distribution: { REJECT: 8 }
+* mock gate result: REJECT
+
+These are not valid WOW v16 terminal/source labels.
+
+Allowed source_status values only:
+
+* RETRIEVED
+* RECONSTRUCTED
+* PROXY_ONLY
+* DATA_UNOBTAINABLE
+* INPUT_FAILURE
+* SOURCE_CONFLICT
+* NOT_CALLED
+* FAILED
+
+Mapping:
+
+* LIVE → RETRIEVED
+* MOCK/FALLBACK unavailable → DATA_UNOBTAINABLE
+* API error → FAILED or DATA_UNOBTAINABLE depending on whether request failed or data was absent
+* conflicting lines/status → SOURCE_CONFLICT
+
+Allowed terminal buckets only:
+
+* FINAL_APPROVED
+* MONEY_QUALIFIED
+* MARKET_VERIFIED_HOLD
+* MODEL_QUALIFIED_HOLD
+* RESEARCH_INTEREST
+* SOURCE_CONFLICT
+* REJECT_NO_EDGE
+* REJECT_BAD_STRUCTURE
+* REJECT_DATA_QUALITY
+* SLATE_PURGE
+* DUPLICATE_EXPOSURE_BLOCK
+* NO_PLAY
+
+Mapping:
+
+* REJECT + STATUS_NOT_CONFIRMED → REJECT_DATA_QUALITY
+* REJECT + DATA_UNOBTAINABLE → REJECT_DATA_QUALITY
+* REJECT + NO_EDGE / NEGATIVE_EDGE → REJECT_NO_EDGE
+* REJECT + CORRELATION / BAD_SLIP / STRUCTURE → REJECT_BAD_STRUCTURE
+* UNKNOWN → INPUT_FAILURE internally or REJECT_DATA_QUALITY externally
+* PASS / WATCH / HOLD / CONDITIONAL must never appear as final labels
+
+Acceptance:
+
+* No API response should expose LIVE as source_status.
+* No score-batch or final-lock response should expose bare REJECT as terminal_label.
+* Add tests proving invalid labels are normalized before response.
+
+## 2. Fix player-team assignment in Odds API props
+
+The example normalized prop showed:
+
+Jacob Misiorowski
+team: St. Louis Cardinals
+opponent: Milwaukee Brewers
+
+That is likely unsafe because The Odds API player prop outcomes often include player name but not the player’s actual team. Do not infer player team from home_team by default.
+
+Patch logic:
+
+* If provider includes participant/team for the player, use it.
+* If provider does not include player team, set:
+  team: UNKNOWN
+  opponent: UNKNOWN
+  team_confidence: LOW
+  source_status: RETRIEVED
+  blocker: PLAYER_TEAM_UNVERIFIED
+* Do not guess player team from event home/away.
+* For pitcher props, if a reliable starter/roster adapter confirms player team, then fill team/opponent and set team_confidence: HIGH.
+* If team remains UNKNOWN, cap terminal bucket at REJECT_DATA_QUALITY or MODEL_QUALIFIED_HOLD. Never MONEY_QUALIFIED / FINAL_APPROVED.
+
+Acceptance:
+
+* Jacob Misiorowski should not be assigned to Cardinals unless confirmed by roster/starter adapter.
+* Any prop with team_confidence LOW cannot approve.
+* Add `team_confidence` to normalized prop schema.
+
+## 3. Make score-batch audit-log visible
+
+Verification said /final-lock does not auto-write to /request-log because that is populated by /random-forest-score.
+
+For WOW workflow, batch scoring still needs an audit trail.
+
+Patch:
+
+* POST /api/props/score-batch should write a lightweight request-log entry for every prop it evaluates.
+* Log fields:
+  request_id
+  timestamp
+  player
+  sport
+  prop_type
+  side
+  line
+  platform
+  provider
+  source_status
+  source_grade
+  team_confidence
+  terminal_label
+  blocker
+  can_execute
+  execution_rule
+  final_lock_response_id if available
+  run_source: score_batch
+
+Do not duplicate full scoring logic.
+Just log the normalized final-lock result.
+
+Acceptance:
+
+* After scoring 8 props through score-batch, Request Log count increases by 8.
+* Request Log can filter `run_source=score_batch`.
+* Leaderboard may include or exclude score_batch rows, but the behavior must be documented.
+
+## 4. Fix DATA_UNOBTAINABLE blocker priority
+
+Mock/fallback test currently returns:
+
+* source_status: DATA_UNOBTAINABLE
+* blocker: STATUS_NOT_CONFIRMED
+
+That is acceptable but less precise. If the source itself is mock/fallback/DATA_UNOBTAINABLE, the primary blocker should include:
+
+* DATA_UNOBTAINABLE
+* MOCK_FALLBACK_SOURCE
+* STATUS_NOT_CONFIRMED if applicable as secondary
+
+Acceptance:
+
+* Mock rows show DATA_UNOBTAINABLE / MOCK_FALLBACK_SOURCE before status blockers.
+* Mock rows still cannot approve.
+
+## 5. Re-run verification
+
+Return only:
+
+1. Tests run
+2. Source label normalization result
+3. Terminal label normalization result
+4. Player-team assignment fix result
+5. Score-batch logging result
+6. Mock/fallback blocker example
+7. One live Odds API normalized prop example
+8. Final confirmation:
+
+   * no LIVE source_status exposed
+   * no bare REJECT terminal labels exposed
+   * no LOW team_confidence prop can approve
+   * no live execution enabled
+
+Your system is close. The main issue is not functionality; it is **WOW taxonomy discipline**. We cannot allow `LIVE` or bare `REJECT` into the final interface because the engine rules require exact terminal buckets and source statuses.
