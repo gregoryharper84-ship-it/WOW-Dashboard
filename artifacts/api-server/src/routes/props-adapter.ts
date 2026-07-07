@@ -520,8 +520,12 @@ function dedup(props: WowProp[]): WowProp[] {
 }
 
 // ── Score-batch audit log ─────────────────────────────────────────────────────
-// Writes lightweight entries to `scoring_requests` (Flask's table) so
-// /request-log returns score_batch rows. Filter: environment=score_batch.
+// Writes lightweight entries to `scoring_requests` using environment='score_batch'.
+// Flask's /request-log normalizes environments to 'test'/'live' only, so these
+// rows are queried directly via GET /api/props/score-batch-log (api-server route).
+//
+// score column is numeric(6,2) — store 0.00 as the numeric score placeholder.
+// label column stores the WOW v16 terminal bucket string.
 async function writeBatchAuditEntry(
   prop: WowProp,
   terminal_label: string,
@@ -538,8 +542,8 @@ async function writeBatchAuditEntry(
         prop.prop_type,
         prop.side,
         prop.line,
-        terminal_label,
-        terminal_label,
+        0.00,            // numeric(6,2) — score is not a float here, label carries the bucket
+        terminal_label,  // WOW v16 bucket string stored in label column
         prop.game_date,
         "score_batch",
       ],
@@ -778,6 +782,65 @@ router.post("/score-batch", async (req: Request, res: Response) => {
     execution_rule: "READ_ONLY_NO_EXECUTION",
     audit_note:  "Each scored prop written to scoring_requests (environment=score_batch). Filter via GET /request-log?environment=score_batch.",
   });
+});
+
+/**
+ * GET /api/props/score-batch-log
+ * Returns audit rows written by score-batch (environment='score_batch').
+ * Flask's /request-log only accepts 'test'/'live' environment values, so
+ * these rows are exposed here via a direct DB query.
+ *
+ * Query params: limit (default 50), player, sport, since (ISO date)
+ */
+router.get("/score-batch-log", async (req: Request, res: Response) => {
+  const limit  = Math.min(parseInt(String(req.query["limit"] ?? "50"), 10) || 50, 200);
+  const player = String(req.query["player"] ?? "").trim() || null;
+  const sport  = String(req.query["sport"]  ?? "").trim().toUpperCase() || null;
+  const since  = String(req.query["since"]  ?? "").trim() || null;
+
+  const conditions: string[] = ["environment = 'score_batch'"];
+  const params: (string | number)[] = [];
+
+  if (player) { params.push(`%${player}%`); conditions.push(`player ILIKE $${params.length}`); }
+  if (sport)  { params.push(sport);          conditions.push(`sport = $${params.length}`); }
+  if (since)  { params.push(since);          conditions.push(`timestamp >= $${params.length}`); }
+
+  params.push(limit);
+  const where = `WHERE ${conditions.join(" AND ")}`;
+
+  try {
+    const result = await pool.query(
+      `SELECT id, timestamp, player, sport, prop, side, line, label, game_date, environment
+       FROM scoring_requests
+       ${where}
+       ORDER BY timestamp DESC
+       LIMIT $${params.length}`,
+      params,
+    );
+    return res.json({
+      ok:          true,
+      count:       result.rows.length,
+      run_source:  "score_batch",
+      environment: "score_batch",
+      note:        "Audit rows written by POST /api/props/score-batch. Filter Flask /request-log?environment=test for non-batch rows.",
+      rows:        result.rows.map(r => ({
+        id:             r.id,
+        timestamp:      r.timestamp,
+        player:         r.player,
+        sport:          r.sport,
+        prop_type:      r.prop,
+        side:           r.side,
+        line:           parseFloat(r.line),
+        terminal_label: r.label,
+        game_date:      r.game_date,
+        run_source:     "score_batch",
+        can_execute:    false,
+        execution_rule: "READ_ONLY_NO_EXECUTION",
+      })),
+    });
+  } catch (err) {
+    return res.status(503).json({ ok: false, error: "Database unavailable", detail: String(err) });
+  }
 });
 
 /**

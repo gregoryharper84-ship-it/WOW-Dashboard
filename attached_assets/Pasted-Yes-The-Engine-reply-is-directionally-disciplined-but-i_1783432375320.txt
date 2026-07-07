@@ -1,0 +1,240 @@
+Yes. The Engine reply is directionally disciplined, but it exposes several things the engine **should be able to confirm autonomously** instead of kicking back as incomplete.
+
+The key issue: once the backend says **`ClientResponseError`**, this should be treated as a **degraded engine run**, not a clean final WOW check. It can still produce a triage table, but it should not imply the full engine completed.
+
+## Things the Engine should confirm on its own
+
+### 1. L5/L10 exact-stat ledgers
+
+For every WNBA player prop, the engine should be able to pull or reconstruct:
+
+* L5 exact stat
+* L10 exact stat
+* L10 average
+* L10 median
+* hit rate at the exact PrizePicks line
+* outlier flag
+* role-split flag if teammate status matters
+
+So when it says:
+
+> “No final without L10/projection…”
+
+That is a backend gap. The engine should not need you or GPT to provide L10 manually for Natasha Howard, Ariel Atkins, Courtney Williams, Dearica Hamby, Georgia Amoore, or Coti McMahon.
+
+It may still cap at **MODEL_QUALIFIED_HOLD**, but it should produce the ledger.
+
+### 2. MLB pitcher L5/L10 workload + K ledger
+
+For pitcher props, the engine should confirm on its own:
+
+* last 5 / last 10 Ks
+* last 5 / last 10 innings pitched
+* last 5 / last 10 pitches thrown
+* last 5 batters faced
+* recent pitch-count ceiling
+* opponent projected lineup K%
+* pitcher handedness vs opponent split
+* bullpen/short-hook risk
+
+So for Sánchez, Schlittler, Gausman, Freeland, Cameron, Jax, and López, the engine should not stop at “FanGraphs likes him” or “market leans under.” It should have a pitcher ledger and projection.
+
+### 3. Push / whole-number line handling
+
+This is a major one.
+
+The engine needs to understand PrizePicks whole-number lines correctly.
+
+Example:
+
+**Courtney Williams MORE 5 Assists**
+
+A sportsbook line at **4.5 assists** supporting the over does **not automatically validate** PrizePicks MORE 5. On PrizePicks, 5 is usually a push/reboot-style outcome, so the real cashing path is **6+ assists**.
+
+Same issue for any whole-number line:
+
+* **Ariel Atkins MORE 10 Points** needs 11+ to cash.
+* **Courtney Williams MORE 5 Assists** needs 6+ to cash.
+* **Cristopher Sánchez LESS 20 Outs** depends on whether 20 pushes or loses depending platform rules.
+
+The Engine should convert every PP line into:
+
+```text
+cash threshold
+push threshold
+loss threshold
+```
+
+Then compare sportsbook/projection markets against the **cash threshold**, not just the displayed number.
+
+### 4. Exact market comp versus adjacent-market comp
+
+The Engine correctly says exact P+A markets do not substitute for points/PRA, but it should do this more formally.
+
+For each leg it should report:
+
+```text
+exact sportsbook market found: yes/no
+adjacent market used: yes/no
+market substitution allowed: yes/no
+confidence cap if substituted
+```
+
+Example:
+
+**Dearica Hamby MORE 18 Pts+Asts**
+
+If no exact P+A book market exists, the Engine should still be able to use:
+
+* player projection source
+* points market
+* assists market if available
+* PRA only as context, not validation
+
+Then label:
+
+```text
+MODEL_QUALIFIED_HOLD
+MARKET_UNVERIFIED_EXACT
+```
+
+Not just “no exact market found.”
+
+### 5. Injury/status confirmation and role effect
+
+The Engine should not just say “Miles questionable” or “Citron questionable.”
+
+It should convert that into a role-state tree:
+
+```text
+Courtney Williams MORE 5 AST
+- Miles OUT: upgrade path
+- Miles limited: still viable
+- Miles active full-go: downgrade/cut
+- lineup timestamp: missing/pending/confirmed
+```
+
+Same for:
+
+* Georgia Amoore / Coti McMahon with Sonia Citron
+* Ariel Atkins / Dearica Hamby with Kelsey Plum out
+* Sparks usage with Brink out
+* Natasha Howard blowout/minutes risk
+
+Right now it identifies the dependency, but it does not finish the dependency logic.
+
+### 6. Correlation / mutex logic
+
+The Engine did a decent job here, but it should formalize the conflicts.
+
+It should automatically mark these as **mutex groups**:
+
+```text
+Sánchez group:
+- Sánchez MORE 6.5 Ks
+- Sánchez LESS 20 Pitching Outs
+
+Howard group:
+- Howard MORE 15.5 Points
+- Howard MORE 23 Pts+Rebs
+
+Freeland group:
+- Freeland LESS 16 Outs
+- Freeland LESS 87.5 Pitches
+
+Cameron group:
+- Cameron LESS 16.5 Outs
+- Cameron LESS 92.5 Pitches
+
+Atkins group:
+- Atkins MORE 10 Points
+- Atkins MORE 12.5 Pts+Asts
+```
+
+The Engine should choose the best edge inside each group instead of sending both forward.
+
+### 7. Payout EV / slip structure
+
+This is the biggest approval blocker. The engine should be able to calculate:
+
+* slip type
+* pick count
+* payout multiplier
+* break-even probability
+* projected leg probabilities
+* combined slip probability
+* correlation penalty
+* Goblin/Demon payout tax
+* whether Flex or Power is structurally better
+
+If it cannot do that, it should say:
+
+```text
+SLIP_EV_NOT_CALCULATED
+FINAL_APPROVAL_BLOCKED
+```
+
+That part should not be manual.
+
+## Things the Engine may not be able to confirm on its own
+
+These are acceptable holds:
+
+* Final WNBA starting lineups if official lineups are not released yet.
+* Exact sportsbook market if no book offers that exact stat type.
+* PrizePicks line movement after the screenshot unless it has live PP access.
+* Final player status if the official report still says questionable/GTD.
+* True no-vig if only one book has a market.
+
+Those can remain **HOLD**, but they should be explicitly labeled.
+
+## What I would send back to Replit/Claude
+
+```text
+Engine gap audit from July 6 run:
+
+The WOW Engine correctly treated GPT output as pre-engine, but the run degraded after ClientResponseError. This should be labeled DEGRADED_ENGINE_RUN, not Final WOW check.
+
+Required fixes:
+
+1. Engine must auto-generate L5/L10 exact-stat ledgers for WNBA props:
+   L5, L10, avg, median, hit rate at PP line, outlier flag, role-split flag.
+
+2. Engine must auto-generate MLB pitcher recent-form ledgers:
+   L5/L10 Ks, outs, pitches, batters faced, pitch-count ceiling, opponent projected lineup K%, handedness split, short-hook risk.
+
+3. Add PrizePicks threshold conversion:
+   displayed line -> cash threshold / push threshold / loss threshold.
+   Whole-number MORE lines cannot be validated by adjacent 4.5/5.5 markets without push adjustment.
+
+4. Add exact-market validation schema:
+   exact market found yes/no,
+   adjacent market used yes/no,
+   substitution allowed yes/no,
+   confidence cap if substituted.
+
+5. Add injury-status decision trees:
+   e.g. Courtney Williams AST depends on Olivia Miles OUT/limited/full-go;
+   Amoore/McMahon depend on Sonia Citron;
+   Atkins/Hamby depend on Plum/Brink.
+
+6. Add automatic mutex grouping:
+   same player / same stat-family / same pitcher-script conflicts should be grouped, with one best candidate selected.
+
+7. Add payout EV gate:
+   slip type, payout multiplier, break-even probability, projected leg probability, combined slip probability, correlation tax, Goblin/Demon tax.
+
+8. If backend scan fails with ClientResponseError, output should be:
+   DEGRADED_ENGINE_RUN
+   FINAL_APPROVED = 0
+   MONEY_QUALIFIED = 0
+   and list which modules failed.
+```
+
+## Bottom line
+
+Yes — the Engine should be able to confirm **L5/L10 ledgers, pitcher recent-form ledgers, PP cash thresholds, mutex groups, payout EV, and role-state trees** on its own.
+
+The valid reason for no final approval is **not** just “missing L10/projection.” The stronger diagnosis is:
+
+**The Engine failed a backend scan, then returned a degraded audit using partial market/status context. That is useful for triage, but it is not a full WOW approval run.**
