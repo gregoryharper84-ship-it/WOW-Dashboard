@@ -1,0 +1,74 @@
+Nice — Replit delivered the right structure. Now the next step is **verification + live provider wiring**, not more features.
+
+Send Replit this:
+
+Great. Now run a full WOW Data Hub smoke test and verification pass.
+
+Please do the following:
+
+1. Confirm all new routes are reachable:
+
+* GET /api/props/providers
+* POST /api/props/normalize
+* POST /api/props/score-batch
+* existing /final-lock
+* request log routes
+* leaderboard routes
+
+2. Run one mock-data test:
+
+* Normalize props with no provider keys
+* Confirm every mock/fallback row is clearly labeled DATA_UNOBTAINABLE or mock/fallback
+* Confirm no fallback prop can reach MONEY_QUALIFIED or FINAL_APPROVED
+
+3. Run one real Odds API test:
+
+* Use ODDS_API_KEY
+* Pull today’s MLB or WNBA props
+* Normalize them into WOW schema
+* Score 5–10 props through /api/props/score-batch
+* Confirm terminal buckets reconcile with row counts
+
+4. Verify MCP server:
+
+* Start artifacts/mcp-server
+* Call tools manually through stdio if possible:
+  scan_board
+  normalize_props
+  score_wow_prop
+  run_final_lock
+  get_request_log
+  get_leaderboard
+* Confirm MCP tools wrap existing Flask routes and do not duplicate scoring logic
+
+5. Confirm logging:
+
+* Every score-batch prop creates a request-log entry
+* Each entry includes terminal bucket, blocker, source_status, source_grade, and timestamp
+* Leaderboard updates after scoring
+
+6. Confirm safety gates:
+
+* No auto-betting
+* No Kalshi order placement
+* No PrizePicks entry submission
+* Any execution endpoint remains disabled unless ENABLE_LIVE_EXECUTION=true
+* Missing L10, payout, projection, or status must cap/reject, not approve
+
+7. Return a concise verification report:
+
+* Routes tested
+* MCP tools tested
+* Provider keys detected/missing
+* Any failed tests
+* Example normalized prop object
+* Example scored prop result
+* Final row-count reconciliation
+
+After that, the next secrets to add are:
+
+**Required first:** `OPTICODDS_API_KEY` or `SPORTSGAMEODDS_API_KEY`
+**Already wired:** `ODDS_API_KEY`
+**Optional later:** `PROPLINE_API_KEY`, paid stat/log feed key, Kalshi API credentials if you want authenticated portfolio/trading views.
+
+Do **not** turn on live execution yet. Keep it read-only until the final-lock workflow proves it can reject bad data consistently.

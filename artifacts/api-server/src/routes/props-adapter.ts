@@ -88,7 +88,7 @@ function mockProps(sport: string): WowProp[] {
     sport: normSport(sport || "NBA"),
     game_date: new Date().toISOString().slice(0, 10),
     payout_context: "2-pick Power",
-    source_status: "UNAVAILABLE" as const,
+    source_status: "DATA_UNOBTAINABLE" as const,
     source_grade: "UNKNOWN" as const,
     source: "mock",
     timestamp: nowIso(),
@@ -249,6 +249,9 @@ async function fetchSportsGameOdds(sport: string, date?: string): Promise<Normal
 }
 
 // ── The Odds API player props adapter ────────────────────────────────────────
+// Player props require a 2-step call:
+//   Step 1: GET /v4/sports/{sport}/events  → list of event IDs
+//   Step 2: GET /v4/sports/{sport}/events/{id}/odds?markets=... → per-event player props
 async function fetchOddsApiProps(sport: string, date?: string): Promise<NormalizeResult> {
   const key = PROVIDER_KEYS.odds_api;
   if (!key) {
@@ -262,67 +265,100 @@ async function fetchOddsApiProps(sport: string, date?: string): Promise<Normaliz
   };
   const sportKey = SPORT_KEYS[normSport(sport)] ?? sport.toLowerCase();
 
-  // Odds API player prop markets by sport
+  // Odds API v4 player prop market keys by sport
   const MARKETS: Record<string, string> = {
-    basketball_nba:   "player_points,player_rebounds,player_assists,player_threes",
-    basketball_wnba:  "player_points,player_rebounds,player_assists",
-    baseball_mlb:     "batter_hits,batter_home_runs,pitcher_strikeouts",
+    basketball_nba:       "player_points,player_rebounds,player_assists,player_threes",
+    basketball_wnba:      "player_points,player_rebounds,player_assists",
+    baseball_mlb:         "batter_hits,batter_home_runs,pitcher_strikeouts",
     americanfootball_nfl: "player_reception_yards,player_rush_yards,player_receptions",
-    icehockey_nhl:    "player_shots_on_goal,player_points",
+    icehockey_nhl:        "player_shots_on_goal,player_points",
   };
   const markets = MARKETS[sportKey] ?? "player_points";
 
   try {
-    const params = new URLSearchParams({
-      apiKey: key,
-      regions: "us",
-      markets,
-      bookmakers: "draftkings,fanduel,betmgm",
-    });
-    if (date) params.set("dateFormat", "iso");
-    const url = `${ODDS_API_BASE}/sports/${sportKey}/events/odds?${params}`;
-    const r = await fetch(url, {
+    // Step 1: fetch upcoming events for the sport
+    const eventsUrl = `${ODDS_API_BASE}/sports/${sportKey}/events?apiKey=${key}&dateFormat=iso`;
+    const eventsResp = await fetch(eventsUrl, {
       headers: { "Accept": "application/json" },
       signal: AbortSignal.timeout(10000),
     });
-    if (!r.ok) {
-      return { ok: false, props: [], errors: [`Odds API HTTP ${r.status}`], provider: "odds_api", raw_count: 0 };
+    if (!eventsResp.ok) {
+      const txt = await eventsResp.text().catch(() => "");
+      return { ok: false, props: [], errors: [`Odds API events HTTP ${eventsResp.status}: ${txt.slice(0,120)}`], provider: "odds_api", raw_count: 0 };
     }
-    const events = await r.json() as Record<string, unknown>[];
-    const props: WowProp[] = [];
+    const events = await eventsResp.json() as Record<string, unknown>[];
+    if (!events.length) {
+      return { ok: false, props: [], errors: [`Odds API: no ${sportKey} events found`], provider: "odds_api", raw_count: 0 };
+    }
 
-    for (const evt of events) {
-      const bookmakers = (evt["bookmakers"] ?? []) as Record<string, unknown>[];
-      for (const bm of bookmakers) {
-        const markets_arr = (bm["markets"] ?? []) as Record<string, unknown>[];
-        for (const mkt of markets_arr) {
-          const outcomes = (mkt["outcomes"] ?? []) as Record<string, unknown>[];
-          for (const out of outcomes) {
-            const line = parseFloat(String(out["point"] ?? ""));
-            if (isNaN(line)) continue;
-            const desc = String(out["description"] ?? "");
-            const name = String(out["name"] ?? "");
-            props.push({
-              player:         desc || name,
-              team:           String(evt["home_team"] ?? ""),
-              opponent:       String(evt["away_team"] ?? ""),
-              sport:          normSport(String(evt["sport_key"] ?? sport)),
-              game_date:      String((evt["commence_time"] as string)?.slice(0, 10) ?? nowIso().slice(0, 10)),
-              prop_type:      String(mkt["key"] ?? "").replace(/_/g, " "),
-              side:           normSide(name),
-              line,
-              platform:       String(bm["key"] ?? "odds_api"),
-              payout_context: null,
-              source_status:  "LIVE",
-              source_grade:   "A",
-              source:         "odds_api",
-              timestamp:      nowIso(),
-            });
+    // Filter by date if supplied; cap at 6 events to stay within API quota
+    const targetDate = date ?? nowIso().slice(0, 10);
+    const filtered = events
+      .filter(e => !date || String(e["commence_time"] ?? "").startsWith(targetDate))
+      .slice(0, 6);
+
+    if (!filtered.length) {
+      return { ok: false, props: [], errors: [`Odds API: no ${sportKey} events for ${targetDate}`], provider: "odds_api", raw_count: 0 };
+    }
+
+    // Step 2: fetch per-event player prop odds (parallel, up to 6 events)
+    const props: WowProp[] = [];
+    const oddsResults = await Promise.allSettled(
+      filtered.map(async evt => {
+        const evtId = String(evt["id"] ?? "");
+        const oddsParams = new URLSearchParams({
+          apiKey:    key,
+          regions:   "us",
+          markets,
+          bookmakers:"draftkings,fanduel,betmgm",
+          dateFormat:"iso",
+        });
+        const oddsUrl = `${ODDS_API_BASE}/sports/${sportKey}/events/${evtId}/odds?${oddsParams}`;
+        const oddsResp = await fetch(oddsUrl, {
+          headers: { "Accept": "application/json" },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!oddsResp.ok) return [];
+        const evtOdds = await oddsResp.json() as Record<string, unknown>;
+        const bookmakers = (evtOdds["bookmakers"] ?? []) as Record<string, unknown>[];
+        const out: WowProp[] = [];
+        for (const bm of bookmakers) {
+          const mkts = (bm["markets"] ?? []) as Record<string, unknown>[];
+          for (const mkt of mkts) {
+            const outcomes = (mkt["outcomes"] ?? []) as Record<string, unknown>[];
+            for (const o of outcomes) {
+              const line = parseFloat(String(o["point"] ?? ""));
+              if (isNaN(line)) continue;
+              const desc = String(o["description"] ?? "");
+              const name = String(o["name"] ?? "");
+              out.push({
+                player:         desc || name,
+                team:           String(evt["home_team"] ?? ""),
+                opponent:       String(evt["away_team"] ?? ""),
+                sport:          normSport(String(evt["sport_key"] ?? sport)),
+                game_date:      String((evt["commence_time"] as string)?.slice(0, 10) ?? targetDate),
+                prop_type:      String(mkt["key"] ?? "").replace(/_/g, " "),
+                side:           normSide(name),
+                line,
+                platform:       String(bm["key"] ?? "odds_api"),
+                payout_context: null,
+                source_status:  "LIVE",
+                source_grade:   "A",
+                source:         "odds_api",
+                timestamp:      nowIso(),
+              });
+            }
           }
         }
-      }
+        return out;
+      })
+    );
+
+    for (const r of oddsResults) {
+      if (r.status === "fulfilled") props.push(...r.value);
     }
-    return { ok: true, props, errors: [], provider: "odds_api", raw_count: events.length };
+
+    return { ok: props.length > 0, props, errors: props.length === 0 ? ["Odds API: no player prop markets in response"] : [], provider: "odds_api", raw_count: filtered.length };
   } catch (err) {
     return { ok: false, props: [], errors: [String(err)], provider: "odds_api", raw_count: 0 };
   }
@@ -407,20 +443,26 @@ router.post("/normalize", async (req: Request, res: Response) => {
     const mocks = mockProps(sport);
     return res.json({
       ok: false,
+      data_unobtainable: true,
+      provider_used: "mock_fallback",
       props: mocks,
       errors: allErrors,
-      provider: "mock_fallback",
-      source_status: "DATA_UNOBTAINABLE",
       raw_count: 0,
-      note: "All provider fetches failed. Mock data returned. Do not use for approval.",
+      note: "All provider fetches failed. Mock data returned. source_status=DATA_UNOBTAINABLE on every row. Do not use for approval.",
     });
   }
 
+  // Determine which provider(s) actually contributed
+  const successProviders = results
+    .map(r => (r.status === "fulfilled" && r.value?.ok) ? r.value.provider : null)
+    .filter(Boolean);
+
   return res.json({
     ok: true,
+    data_unobtainable: false,
+    provider_used: successProviders.length === 1 ? successProviders[0] : "multi",
     props: dedup(allProps),
     errors: allErrors.length > 0 ? allErrors : undefined,
-    provider: "multi",
     raw_count: allProps.length,
   });
 });
@@ -468,8 +510,9 @@ router.post("/score-batch", async (req: Request, res: Response) => {
           team:              prop.team,
           opponent:          prop.opponent,
           sport:             prop.sport,
-          market:            prop.prop_type,
+          prop:              prop.prop_type,   // Flask expects "prop" not "market"
           side:              prop.side,
+          line:              prop.line,
           pp_line:           prop.line,
           platform:          prop.platform,
           payout_context:    prop.payout_context ?? "2-pick Power",
@@ -478,8 +521,21 @@ router.post("/score-batch", async (req: Request, res: Response) => {
         }),
         signal: AbortSignal.timeout(15000),
       });
-      const body = await r.json() as unknown;
-      return { prop, result: body, ok: true };
+      const raw = await r.json() as Record<string, unknown>;
+      // Normalize Flask /final-lock response to consistent WOW schema fields
+      const terminal_label =
+        (raw["terminal_label"] as string | undefined) ??
+        (raw["classification"] as string | undefined) ??
+        (raw["label"] as string | undefined) ??
+        "UNKNOWN";
+      const result = {
+        ...raw,
+        terminal_label,
+        blocker: raw["blocker_code"] ?? raw["blocker"] ?? null,
+        score:   raw["score"] ?? raw["wow_score"] ?? null,
+        can_execute: false,  // enforced: never true from this adapter
+      };
+      return { prop, result, ok: true };
     } catch (err) {
       return { prop, result: { error: String(err), terminal_label: "DATA_UNOBTAINABLE" }, ok: false };
     }
