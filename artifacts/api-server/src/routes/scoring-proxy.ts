@@ -165,4 +165,31 @@ router.use("/gate-engine",   makeForwarder("gate-engine"));
 router.use("/analyze-board", makeForwarder("analyze-board"));
 router.use("/lines",         makeForwarder("lines"));
 
+// Generic catch-all: forward unmatched routes directly to Flask root.
+// This covers /request-log, /leaderboard, /stats, /final-lock, /gpt-score, etc.
+// Routes already handled above (api-server-native /props, /dev, /admin, /postmortem,
+// /health) will never reach here because they were registered in routes/index.ts first.
+router.use(async (req: Request, res: Response) => {
+  const qs     = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+  const target = `${FLASK_BASE}${req.path}${qs}`;
+  try {
+    const opts: RequestInit = {
+      method:  req.method,
+      headers: {
+        "Content-Type": "application/json",
+        "Accept":       "application/json",
+        "X-API-Key":    API_KEY,
+      },
+    };
+    if (req.body != null && req.method !== "GET" && req.method !== "HEAD") {
+      opts.body = JSON.stringify(req.body);
+    }
+    const r    = await fetch(target, opts);
+    const body = await r.json() as unknown;
+    return res.status(r.status).json(body);
+  } catch {
+    return res.status(502).json({ ok: false, error: "Scoring API unreachable" });
+  }
+});
+
 export default router;

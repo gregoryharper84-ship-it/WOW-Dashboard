@@ -1,0 +1,77 @@
+Excellent. That means the backend is now past the **reliability layer** milestone.
+
+The next move is **not more features**. It is the **production readiness gate**: confirm taxonomy, provider wiring, and one end-to-end real-board run.
+
+Send Replit this:
+
+Great. Now run the final WOW v16 production-readiness verification.
+
+Do not build new features unless a verification failure requires a small patch.
+
+Verify the following:
+
+1. Label discipline
+
+* No exposed `LIVE` source_status.
+* Source statuses must only be:
+  RETRIEVED, RECONSTRUCTED, PROXY_ONLY, DATA_UNOBTAINABLE, INPUT_FAILURE, SOURCE_CONFLICT, NOT_CALLED, FAILED.
+* No bare `REJECT`, `HOLD`, `WATCH`, `PASS`, `LEAN`, `CONDITIONAL`, `SAFE`, or `LOCK` as final terminal labels.
+* Terminal labels must only be:
+  FINAL_APPROVED, MONEY_QUALIFIED, MARKET_VERIFIED_HOLD, MODEL_QUALIFIED_HOLD, RESEARCH_INTEREST, SOURCE_CONFLICT, REJECT_NO_EDGE, REJECT_BAD_STRUCTURE, REJECT_DATA_QUALITY, SLATE_PURGE, DUPLICATE_EXPOSURE_BLOCK, NO_PLAY.
+
+2. Team-confidence safety
+
+* Confirm Odds API props do not infer player team from home/away unless roster/starter confirmation exists.
+* Any `team_confidence=LOW` prop must be capped below MONEY_QUALIFIED and FINAL_APPROVED.
+* Return one live Odds API prop example showing team_confidence.
+
+3. Score-batch audit logging
+
+* Run 5 live props through `/api/props/score-batch`.
+* Confirm Request Log increases by 5.
+* Confirm each row has:
+  run_source=score_batch, source_status, source_grade, terminal_label, blocker, can_execute=false, execution_rule=READ_ONLY_NO_EXECUTION.
+
+4. Mock/fallback safety
+
+* Run mock/fallback normalize.
+* Confirm all mock rows show DATA_UNOBTAINABLE and MOCK_FALLBACK_SOURCE.
+* Confirm 0 mock rows reach MONEY_QUALIFIED or FINAL_APPROVED.
+
+5. End-to-end real-board dry run
+
+* Use live Odds API props for today’s MLB or WNBA.
+* Normalize 10 props.
+* Score all 10.
+* Return bucket distribution.
+* Confirm row count reconciliation.
+* Confirm no live execution is enabled.
+
+6. MCP safety
+
+* Call tools/list.
+* Confirm all 13 allowed tools exist.
+* Attempt one disallowed execution-style tool call if the harness supports it.
+* Confirm it returns LIVE_EXECUTION_DISABLED.
+* Confirm MCP audit log records the call without exposing secrets.
+
+Return only:
+
+1. commands run
+2. pass/fail summary
+3. label normalization status
+4. team_confidence status
+5. score-batch logging result
+6. mock/fallback safety result
+7. real-board dry-run bucket distribution
+8. MCP safety result
+9. remaining blockers, if any
+10. final confirmation that live execution is disabled
+
+After that passes, the build is ready for the next real upgrade: **add one PrizePicks-compatible provider key**. I’d add them in this order:
+
+1. `OPTICODDS_API_KEY`
+2. `SPORTSGAMEODDS_API_KEY`
+3. `PROPLINE_API_KEY`
+
+Keep `ENABLE_LIVE_EXECUTION=false`. The system should stay read-only until it proves a full slate can produce clean **NO_PLAY / HOLD / REJECT** outcomes without taxonomy drift.

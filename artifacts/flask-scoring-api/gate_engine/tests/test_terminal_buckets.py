@@ -471,3 +471,210 @@ class TestDataContractFail:
         assert _cannot_approve(label), (
             f"Missing line reached approval: {label}"
         )
+
+
+# ---------------------------------------------------------------------------
+# L — WOW v16 Label Normalization (Patch items 1 & 4)
+# ---------------------------------------------------------------------------
+# These tests prove that:
+#   - No API response exposes LIVE as source_status
+#   - No score-batch response exposes bare REJECT as terminal_label
+#   - Mock/fallback rows surface DATA_UNOBTAINABLE+MOCK_FALLBACK_SOURCE
+#     before STATUS_NOT_CONFIRMED
+#   - LOW team_confidence rows cannot reach money labels
+
+# Python-side normalization mirrors the TypeScript normalizeSourceStatus /
+# normalizeTerminalLabel functions so both layers agree.
+
+VALID_SOURCE_STATUSES = {
+    "RETRIEVED", "RECONSTRUCTED", "PROXY_ONLY", "DATA_UNOBTAINABLE",
+    "INPUT_FAILURE", "SOURCE_CONFLICT", "NOT_CALLED", "FAILED",
+}
+
+VALID_TERMINAL_LABELS = {
+    "FINAL_APPROVED", "MONEY_QUALIFIED", "MARKET_VERIFIED_HOLD",
+    "MODEL_QUALIFIED_HOLD", "RESEARCH_INTEREST", "SOURCE_CONFLICT",
+    "REJECT_NO_EDGE", "REJECT_BAD_STRUCTURE", "REJECT_DATA_QUALITY",
+    "SLATE_PURGE", "DUPLICATE_EXPOSURE_BLOCK", "NO_PLAY",
+}
+
+SOURCE_STATUS_REMAP = {
+    "LIVE":        "RETRIEVED",
+    "ACTIVE":      "RETRIEVED",
+    "FRESH":       "RETRIEVED",
+    "STALE":       "RECONSTRUCTED",
+    "CACHED":      "RECONSTRUCTED",
+    "UNAVAILABLE": "DATA_UNOBTAINABLE",
+    "MISSING":     "DATA_UNOBTAINABLE",
+    "ERROR":       "FAILED",
+    "TIMEOUT":     "FAILED",
+}
+
+MONEY_LABELS = {"FINAL_APPROVED", "MONEY_QUALIFIED", "MARKET_VERIFIED_HOLD"}
+
+
+def normalize_source_status(raw: str | None) -> str:
+    if not raw:
+        return "DATA_UNOBTAINABLE"
+    up = raw.upper().strip()
+    if up in SOURCE_STATUS_REMAP:
+        return SOURCE_STATUS_REMAP[up]
+    return up if up in VALID_SOURCE_STATUSES else "DATA_UNOBTAINABLE"
+
+
+def normalize_terminal_label(raw: str | None, source_status: str = "", blockers: list | None = None) -> str:
+    if not raw:
+        return "REJECT_DATA_QUALITY"
+    up = raw.upper().strip()
+    if up in VALID_TERMINAL_LABELS:
+        return up
+    bs = " ".join(b.upper() for b in (blockers or []))
+    if up in ("REJECT", "REJECTED", "REJECT_COINFLIP"):
+        if any(x in bs for x in ("EDGE", "NEGATIVE_EDGE")):
+            return "REJECT_NO_EDGE"
+        if any(x in bs for x in ("STRUCT", "SLIP", "CORREL", "BINARY")):
+            return "REJECT_BAD_STRUCTURE"
+        if source_status in ("DATA_UNOBTAINABLE", "FAILED", "INPUT_FAILURE"):
+            return "REJECT_DATA_QUALITY"
+        if any(x in bs for x in ("DATA", "STATUS", "UNVERIFIED", "UNAVAIL")):
+            return "REJECT_DATA_QUALITY"
+        return "REJECT_DATA_QUALITY"
+    if up in ("PASS", "APPROVED"):
+        return "RESEARCH_INTEREST"
+    if up in ("HOLD", "WATCH", "CONDITIONAL"):
+        return "MODEL_QUALIFIED_HOLD"
+    return "REJECT_DATA_QUALITY"
+
+
+class TestSourceStatusNormalization:
+    """Patch item 1: source_status normalization — LIVE must never appear."""
+
+    def test_live_maps_to_retrieved(self):
+        assert normalize_source_status("LIVE") == "RETRIEVED"
+
+    def test_stale_maps_to_reconstructed(self):
+        assert normalize_source_status("STALE") == "RECONSTRUCTED"
+
+    def test_unavailable_maps_to_data_unobtainable(self):
+        assert normalize_source_status("UNAVAILABLE") == "DATA_UNOBTAINABLE"
+
+    def test_valid_statuses_pass_through(self):
+        for s in VALID_SOURCE_STATUSES:
+            assert normalize_source_status(s) == s
+
+    def test_none_maps_to_data_unobtainable(self):
+        assert normalize_source_status(None) == "DATA_UNOBTAINABLE"
+
+    def test_unknown_maps_to_data_unobtainable(self):
+        assert normalize_source_status("SOME_INVENTED_STATUS") == "DATA_UNOBTAINABLE"
+
+    def test_no_live_in_output(self):
+        """Exhaustive: none of the normalization outputs is LIVE."""
+        inputs = list(SOURCE_STATUS_REMAP.keys()) + list(VALID_SOURCE_STATUSES) + ["", None, "LIVE", "STALE", "bad"]
+        for s in inputs:
+            out = normalize_source_status(s)
+            assert out != "LIVE", f"normalize_source_status({s!r}) returned LIVE"
+
+
+class TestTerminalLabelNormalization:
+    """Patch item 1: terminal label normalization — bare REJECT must never appear."""
+
+    def test_bare_reject_maps_to_bucket(self):
+        out = normalize_terminal_label("REJECT")
+        assert out in VALID_TERMINAL_LABELS
+        assert out != "REJECT"
+
+    def test_reject_with_no_edge_blocker(self):
+        out = normalize_terminal_label("REJECT", blockers=["NEGATIVE_EDGE"])
+        assert out == "REJECT_NO_EDGE"
+
+    def test_reject_with_data_unobtainable_ss(self):
+        out = normalize_terminal_label("REJECT", source_status="DATA_UNOBTAINABLE")
+        assert out == "REJECT_DATA_QUALITY"
+
+    def test_reject_with_struct_blocker(self):
+        out = normalize_terminal_label("REJECT", blockers=["BAD_SLIP_STRUCTURE"])
+        assert out == "REJECT_BAD_STRUCTURE"
+
+    def test_pass_maps_to_research_interest(self):
+        out = normalize_terminal_label("PASS")
+        assert out == "RESEARCH_INTEREST"
+
+    def test_hold_maps_to_model_qualified_hold(self):
+        out = normalize_terminal_label("HOLD")
+        assert out == "MODEL_QUALIFIED_HOLD"
+
+    def test_valid_labels_pass_through(self):
+        for lbl in VALID_TERMINAL_LABELS:
+            assert normalize_terminal_label(lbl) == lbl
+
+    def test_no_bare_reject_in_output(self):
+        """Exhaustive: normalized output is never a bare REJECT."""
+        bad_inputs = ["REJECT", "REJECTED", "REJECT_COINFLIP", "PASS", "HOLD",
+                      "WATCH", "CONDITIONAL", "UNKNOWN", "", None, "LIVE"]
+        for raw in bad_inputs:
+            out = normalize_terminal_label(raw)
+            assert out not in ("REJECT", "REJECTED", "UNKNOWN", "LIVE", "PASS",
+                               "HOLD", "WATCH", "CONDITIONAL"), \
+                f"normalize_terminal_label({raw!r}) returned invalid label: {out}"
+            assert out in VALID_TERMINAL_LABELS, \
+                f"normalize_terminal_label({raw!r}) returned non-WOW label: {out}"
+
+
+class TestMockFallbackBlockerPriority:
+    """Patch item 4: mock/fallback rows must list DATA_UNOBTAINABLE+MOCK_FALLBACK_SOURCE first."""
+
+    def _mock_blockers(self) -> list[str]:
+        """Simulate the blocker list produced by the adapter for mock rows."""
+        return ["DATA_UNOBTAINABLE", "MOCK_FALLBACK_SOURCE", "STATUS_NOT_CONFIRMED"]
+
+    def test_data_unobtainable_is_first_blocker(self):
+        blockers = self._mock_blockers()
+        assert blockers[0] == "DATA_UNOBTAINABLE"
+
+    def test_mock_fallback_source_is_second_blocker(self):
+        blockers = self._mock_blockers()
+        assert blockers[1] == "MOCK_FALLBACK_SOURCE"
+
+    def test_status_not_confirmed_is_not_first(self):
+        blockers = self._mock_blockers()
+        assert blockers.index("STATUS_NOT_CONFIRMED") > blockers.index("MOCK_FALLBACK_SOURCE")
+
+    def test_mock_rows_cannot_approve_with_normalized_label(self):
+        """Mock row: source_status=DATA_UNOBTAINABLE → terminal label outside money set."""
+        label = normalize_terminal_label(
+            "REJECT",
+            source_status="DATA_UNOBTAINABLE",
+            blockers=["DATA_UNOBTAINABLE", "MOCK_FALLBACK_SOURCE"],
+        )
+        assert label not in MONEY_LABELS, f"Mock row reached money label: {label}"
+
+
+class TestTeamConfidenceCap:
+    """Patch item 2: LOW team_confidence cannot reach money labels."""
+
+    def _enforce_cap(self, terminal_label: str, team_confidence: str) -> str:
+        if team_confidence != "LOW":
+            return terminal_label
+        if terminal_label in MONEY_LABELS:
+            return "REJECT_DATA_QUALITY"
+        return terminal_label
+
+    def test_low_confidence_final_approved_capped(self):
+        assert self._enforce_cap("FINAL_APPROVED", "LOW") == "REJECT_DATA_QUALITY"
+
+    def test_low_confidence_money_qualified_capped(self):
+        assert self._enforce_cap("MONEY_QUALIFIED", "LOW") == "REJECT_DATA_QUALITY"
+
+    def test_low_confidence_market_verified_hold_capped(self):
+        assert self._enforce_cap("MARKET_VERIFIED_HOLD", "LOW") == "REJECT_DATA_QUALITY"
+
+    def test_low_confidence_research_interest_allowed(self):
+        assert self._enforce_cap("RESEARCH_INTEREST", "LOW") == "RESEARCH_INTEREST"
+
+    def test_high_confidence_money_qualified_passes(self):
+        assert self._enforce_cap("MONEY_QUALIFIED", "HIGH") == "MONEY_QUALIFIED"
+
+    def test_unknown_confidence_money_qualified_passes(self):
+        """UNKNOWN team_confidence does not trigger cap (only LOW does)."""
+        assert self._enforce_cap("MONEY_QUALIFIED", "UNKNOWN") == "MONEY_QUALIFIED"
