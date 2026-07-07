@@ -329,3 +329,73 @@ class TestClassifierCashThresholdEnforcement:
         row["terminal_label"] = PropLabel.DUPLICATE_EXPOSURE_BLOCK.value
         classify(row)
         assert row["terminal_label"] == PropLabel.DUPLICATE_EXPOSURE_BLOCK.value
+
+
+class TestExactVerifiedDirectionCheck:
+    """
+    Regression: EXACT_VERIFIED requires market direction alignment.
+
+    When the sportsbook line implies the wrong direction for MORE
+    (sportsbook prices the line ABOVE the PP displayed line, within the drift
+    threshold), _classify_market() returns MARKET_CONTRADICTION and
+    _validate_cash_threshold() overrides to SOURCE_CONFLICT.
+
+    This prevents a sportsbook 8.2 OVER from accidentally validating a MORE 8
+    bet: the sportsbook is saying the outcome is ~50/50 at 8.2 (harder than 8),
+    which contradicts MORE 8 rather than confirming it.
+    """
+
+    def test_sportsbook_above_pp_for_more_is_source_conflict(self):
+        """MORE 8.0, sportsbook 8.2 → delta=-0.2 → MARKET_CONTRADICTION
+        → cash_threshold_status=SOURCE_CONFLICT (direction conflict, not just line mismatch)."""
+        row = _row(8.0, "MORE", _pp_thresholds_more(8.0))
+        market_gate.run(row, sportsbook_line=8.2)
+        gate = row["gates"]["market_gate"]
+        assert gate["market_status"] == "MARKET_CONTRADICTION", (
+            "Sportsbook above PP line for MORE must register MARKET_CONTRADICTION"
+        )
+        assert gate["cash_threshold_status"] == CASH_STATUS_SOURCE_CONFLICT, (
+            "MARKET_CONTRADICTION must override cash_threshold_status to SOURCE_CONFLICT"
+        )
+        assert gate["confidence_cap"] == "MODEL_QUALIFIED_HOLD"
+        assert gate.get("exact_market_found") is False
+
+    def test_sportsbook_below_pp_for_more_is_not_contradiction(self):
+        """MORE 8.0, sportsbook 7.8 → delta=+0.2 → MARKET_EDGE_DETECTED (favorable).
+        Direction is aligned; cash threshold validation runs normally."""
+        row = _row(8.0, "MORE", _pp_thresholds_more(8.0))
+        market_gate.run(row, sportsbook_line=7.8)
+        gate = row["gates"]["market_gate"]
+        assert gate["market_status"] == "MARKET_EDGE_DETECTED", (
+            "Sportsbook below PP line for MORE is favorable (edge), not contradiction"
+        )
+        assert gate["cash_threshold_status"] != CASH_STATUS_SOURCE_CONFLICT
+
+    def test_direction_conflict_caps_classifier_at_model_qualified(self):
+        """End-to-end: a row with SOURCE_CONFLICT cash status cannot reach FINAL_APPROVED.
+        Even if all other gates pass, SOURCE_CONFLICT from direction conflict → MODEL_QUALIFIED_HOLD."""
+        from gate_engine.classifier import classify
+        gates = {
+            "slate_validation": {"passed": True},
+            "status_role":      {"passed": True},
+            "l5_l10_ledger":    {"passed": True},
+            "market_gate": {
+                "passed":               True,
+                "market_status":        "MARKET_CONTRADICTION",
+                "cash_threshold_status": CASH_STATUS_SOURCE_CONFLICT,
+                "confidence_cap":       "MODEL_QUALIFIED_HOLD",
+            },
+            "ev_gate":       {"passed": True, "money_qualified": True, "edge_score": 0.06},
+            "slip_structure": {"passed": True},
+            "exposure_gate":  {"passed": True},
+        }
+        row = {
+            "row_id": "dir-conflict-1",
+            "player": "Test Player",
+            "blockers": [],
+            "gates": gates,
+        }
+        classify(row)
+        assert row["terminal_label"] == PropLabel.MODEL_QUALIFIED_HOLD.value, (
+            "Direction conflict (MARKET_CONTRADICTION → SOURCE_CONFLICT) must cap at MODEL_QUALIFIED_HOLD"
+        )

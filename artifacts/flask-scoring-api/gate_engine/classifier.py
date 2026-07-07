@@ -8,6 +8,17 @@ Phase 2 addition: cash threshold enforcement via market_gate.confidence_cap.
   confidence_cap == "MODEL_QUALIFIED_HOLD" → hard cap to MODEL_QUALIFIED_HOLD
   confidence_cap == "MONEY_QUALIFIED_MAX"  → soft cap to MONEY_QUALIFIED (not FINAL_APPROVED)
   confidence_cap == None / "NO_PP_THRESHOLDS" → no additional cap (legacy / exact-verified)
+
+Phase 3 addition: injury decision tree enforcement via injury_decision_tree.injury_tree_status.
+  DEPENDENCY_CONFLICT   → hard cap to MODEL_QUALIFIED_HOLD
+  DEPENDENCY_UNRESOLVED → soft cap to MONEY_QUALIFIED (blocks FINAL_APPROVED)
+  ROLE_STATE_STALE      → soft cap to MONEY_QUALIFIED (blocks FINAL_APPROVED)
+  All other statuses    → no additional cap
+
+Phase 2 and Phase 3 caps are applied together after the EV gate check, before
+market routing. This ensures they fire regardless of market_status (including
+MARKET_CONTRADICTION which would otherwise fall through to the fallback).
+MODEL_QUALIFIED_HOLD is the most restrictive; it wins over MONEY_QUALIFIED_MAX.
 """
 from __future__ import annotations
 
@@ -35,8 +46,7 @@ def classify(row: dict[str, Any]) -> dict[str, Any]:
     if row.get("terminal_label") is not None:
         return row
 
-    gates    = row.get("gates", {})
-    blockers = row.get("blockers", [])
+    gates = row.get("gates", {})
 
     if _has_data_failure(row):
         row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
@@ -63,8 +73,8 @@ def classify(row: dict[str, Any]) -> dict[str, Any]:
         row["terminal_label"] = PropLabel.RESEARCH_INTEREST.value
         return row
 
-    ev = gates.get("ev_gate", {})
-    market = gates.get("market_gate", {})
+    ev         = gates.get("ev_gate", {})
+    market     = gates.get("market_gate", {})
     mkt_status = market.get("market_status", "")
 
     no_market = mkt_status == "NO_MARKET_AVAILABLE"
@@ -85,34 +95,52 @@ def classify(row: dict[str, Any]) -> dict[str, Any]:
             row["terminal_label"] = PropLabel.REJECT_NO_EDGE.value
         return row
 
-    if mkt_status in ("MARKET_VERIFIED", "MARKET_EDGE_DETECTED"):
-        # ------------------------------------------------------------------
-        # Phase 2: cash threshold enforcement
-        # confidence_cap is set by market_gate._validate_cash_threshold()
-        #   "MODEL_QUALIFIED_HOLD" — hard cap: whole-number line not validated,
-        #                            unverified market, or source conflict
-        #   "MONEY_QUALIFIED_MAX"  — soft cap: adjacent context on half-point line;
-        #                            cannot reach FINAL_APPROVED
-        #   None / absent          — no additional cap (EXACT_VERIFIED or legacy)
-        # ------------------------------------------------------------------
-        confidence_cap = market.get("confidence_cap")
-        cash_status    = market.get("cash_threshold_status", "")
+    # ------------------------------------------------------------------
+    # Phase 2 + Phase 3 caps — applied unconditionally after the EV check.
+    #
+    # This ensures confidence_cap (Phase 2, from market_gate) and
+    # injury_tree_status (Phase 3) are enforced regardless of market_status.
+    # MARKET_CONTRADICTION, SEVERE_DRIFT, etc. all route through here before
+    # reaching the market-routing section below.
+    #
+    # Priority (most restrictive wins):
+    #   MODEL_QUALIFIED_HOLD (Phase 2 or Phase 3) > MONEY_QUALIFIED_MAX (Phase 2) or
+    #   DEPENDENCY_UNRESOLVED/ROLE_STATE_STALE (Phase 3)
+    # ------------------------------------------------------------------
+    confidence_cap = market.get("confidence_cap")
+    cash_status    = market.get("cash_threshold_status", "")
+    inj            = gates.get("injury_decision_tree", {})
+    inj_status     = inj.get("injury_tree_status", "")
 
+    hard_cap = (
+        confidence_cap == "MODEL_QUALIFIED_HOLD"
+        or inj_status == "DEPENDENCY_CONFLICT"
+    )
+    soft_cap = (
+        confidence_cap == "MONEY_QUALIFIED_MAX"
+        or inj_status in ("DEPENDENCY_UNRESOLVED", "ROLE_STATE_STALE")
+    )
+
+    if hard_cap:
+        row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
         if confidence_cap == "MODEL_QUALIFIED_HOLD":
-            row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
-            row["blockers"].append(
-                f"CLASSIFIER:MARKET_CASH_CAP:{cash_status}"
-            )
-            return row
+            row["blockers"].append(f"CLASSIFIER:MARKET_CASH_CAP:{cash_status}")
+        if inj_status == "DEPENDENCY_CONFLICT":
+            row["blockers"].append(f"CLASSIFIER:INJURY_TREE_CAP:{inj_status}")
+        return row
 
+    if soft_cap:
+        row["terminal_label"] = PropLabel.MONEY_QUALIFIED.value
         if confidence_cap == "MONEY_QUALIFIED_MAX":
-            row["terminal_label"] = PropLabel.MONEY_QUALIFIED.value
-            row["blockers"].append(
-                f"CLASSIFIER:MARKET_CASH_CAP:{cash_status}"
-            )
-            return row
+            row["blockers"].append(f"CLASSIFIER:MARKET_CASH_CAP:{cash_status}")
+        if inj_status in ("DEPENDENCY_UNRESOLVED", "ROLE_STATE_STALE"):
+            row["blockers"].append(f"CLASSIFIER:INJURY_TREE_CAP:{inj_status}")
+        return row
 
-        # No Phase 2 cap — proceed with normal approval logic
+    # ------------------------------------------------------------------
+    # No Phase 2 or Phase 3 cap — normal market routing
+    # ------------------------------------------------------------------
+    if mkt_status in ("MARKET_VERIFIED", "MARKET_EDGE_DETECTED"):
         if has_outlier_flags:
             row["terminal_label"] = PropLabel.MARKET_VERIFIED_HOLD.value
             row["blockers"].append("CLASSIFIER:MARKET_VERIFIED_HOLD:OUTLIER_FLAGS")

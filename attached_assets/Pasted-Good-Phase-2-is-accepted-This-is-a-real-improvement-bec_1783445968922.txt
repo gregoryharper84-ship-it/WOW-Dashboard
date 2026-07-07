@@ -1,0 +1,133 @@
+Good. **Phase 2 is accepted.** This is a real improvement because the engine now validates against the **PrizePicks cash threshold**, not the surface line.
+
+That closes the exact issue we flagged:
+
+**Courtney Williams MORE 5 AST**
+
+* Displayed PP line: 5
+* Cash threshold: 6
+* Sportsbook 4.5 over: **context only / not validation**
+* Sportsbook 5.5: validates the 6+ cash path
+
+That is the correct behavior.
+
+## Phase 2 verdict
+
+| Item                       | Verdict                |
+| -------------------------- | ---------------------- |
+| Degraded cap behavior      | **Correct**            |
+| Exact-market enforcement   | **Shipped / accepted** |
+| Classifier confidence caps | **Correct**            |
+| Market validation ledger   | **Correct**            |
+| Regression tests           | **137/137 pass**       |
+| Flask status               | **Clean**              |
+
+The `test_auto_enrichment.py` issue should be logged as a **separate test-hygiene bug**, not a Phase 2 failure. It sounds like the test is date-sensitive and stale because `slate_date="2026-07-04"` now auto-purges. That should eventually be fixed with either a dynamic slate date or frozen-time fixture.
+
+## One small QA check before moving to Phase 3
+
+Make sure `EXACT_VERIFIED` also checks **side direction**, not only line distance.
+
+For example:
+
+```text
+PP MORE 5 assists
+cash_threshold = 6
+sportsbook line = 5.5
+```
+
+This is line-valid, but the engine still needs the market probability to support the **MORE** side, not merely find a close line.
+
+Expected:
+
+```text
+line_match = true
+direction_support = true/false
+cash_threshold_status = EXACT_VERIFIED only if both are true
+```
+
+If direction is against us, it should stay:
+
+```text
+SOURCE_CONFLICT
+```
+
+You said “Market contradicts direction → SOURCE_CONFLICT,” so it sounds like this is already handled. I would still add one explicit regression test for it.
+
+## Next step: Phase 3
+
+Move to **injury-status decision trees** next. This is the best next build because Phase 1/2 now stop structural leaks, but the engine still needs to understand conditional role paths.
+
+Send this:
+
+```text
+Proceed to Phase 3: injury-status decision trees.
+
+Build role-state logic before final classification for WNBA props.
+
+Required output fields per row:
+- injury_dependency_flag: true/false
+- dependency_player
+- dependency_status
+- role_state
+- role_state_timestamp
+- role_effect_direction
+- approval_condition
+- injury_tree_status
+- injury_tree_blocker
+
+Supported statuses:
+- DEPENDENCY_CLEAR
+- DEPENDENCY_SUPPORTS_MORE
+- DEPENDENCY_SUPPORTS_LESS
+- DEPENDENCY_CONFLICT
+- DEPENDENCY_UNRESOLVED
+- ROLE_STATE_STALE
+- NO_DEPENDENCY
+
+Initial hardcoded dependency rules:
+1. Courtney Williams MORE assists
+   - depends on Olivia Miles
+   - Miles OUT/limited supports Williams assists MORE
+   - Miles active full-go downgrades or cuts Williams assists MORE
+
+2. Georgia Amoore / Coti McMahon MORE points
+   - depends on Sonia Citron
+   - Citron OUT/limited supports role/minutes/usage path
+   - Citron active full-go downgrades to WATCH or CUT
+
+3. Ariel Atkins / Dearica Hamby MORE points or combos
+   - depends on Kelsey Plum and Cameron Brink
+   - Plum OUT supports usage/creation
+   - Brink OUT may alter frontcourt/rebound context
+   - if both confirmed OUT, role path can upgrade from RESEARCH_INTEREST to MODEL_QUALIFIED_HOLD, but still requires market/projection and EV gates
+
+4. Natasha Howard MORE points / P+R
+   - dependency is not teammate injury but blowout/minutes risk
+   - add game-script dependency flag:
+     heavy favorite / blowout risk can cap combos and rebounds at HOLD unless minutes projection confirms full run
+
+Classification rules:
+- DEPENDENCY_UNRESOLVED cannot be FINAL_APPROVED
+- ROLE_STATE_STALE cannot be FINAL_APPROVED
+- DEPENDENCY_CONFLICT should cap at MODEL_QUALIFIED_HOLD or SOURCE_CONFLICT depending severity
+- Dependency support can upgrade confidence only if market and projection gates also pass
+- Injury tree cannot create FINAL_APPROVED by itself
+
+Output:
+- injury_decision_ledger in every pipeline output
+- summary.injury_dependency_count
+- summary.unresolved_dependency_count
+
+Tests:
+- Miles OUT upgrades Courtney Williams assist path
+- Miles active full-go downgrades Courtney Williams assist path
+- Miles questionable blocks final approval
+- Citron OUT supports Amoore/McMahon
+- Citron active cuts/downgrades Amoore/McMahon
+- Plum OUT supports Atkins/Hamby usage path
+- stale status timestamp blocks final approval
+- no dependency returns NO_DEPENDENCY
+```
+
+After Phase 3, the engine will be much better at handling the exact kind of conditional legs that show up on PrizePicks boards: **role only works if the injury tree resolves the right way.**

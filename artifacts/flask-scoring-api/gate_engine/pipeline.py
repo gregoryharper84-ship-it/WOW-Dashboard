@@ -18,6 +18,7 @@ from . import directional_exposure
 from . import sharp_anchor, house_rules, settlement_loopback
 from . import js_style_conversion
 from . import pp_thresholds, mutex_groups
+from . import injury_decision_tree
 from .labels import PropLabel
 from .exposure_gate import ExposureLedger
 
@@ -154,6 +155,17 @@ def run_pipeline(
         role_ts_mod.run(row, enrichment=enr)
 
         status_role.run(row, status_payload=enr.get("status_payload"))
+
+        # -------------------------------------------------------------------
+        # Phase 3: Injury Decision Tree
+        # Runs after status_role so the main player's status is available.
+        # dependency_status_payload is a dict of {lowercased_player_name: {status, confirmed_at}}
+        # for the teammate(s) / game-script risk this row depends on.
+        # -------------------------------------------------------------------
+        injury_decision_tree.run(
+            row,
+            dependency_status_payload=enr.get("dependency_status_payload"),
+        )
 
         # -------------------------------------------------------------------
         # Patch 2026-06-27 — House Rules Matrix
@@ -587,6 +599,18 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
     _degraded = run_status == "DEGRADED_ENGINE_RUN"
     _effective_final_count = 0 if _degraded else len(final_card)
 
+    # Phase 3: injury decision ledger — one entry per row showing dependency
+    # player, status, role state, and injury_tree_status / blocker.
+    injury_decision_ledger = injury_decision_tree.build_injury_decision_ledger(rows)
+    _dep_count       = sum(1 for e in injury_decision_ledger if e.get("injury_dependency_flag"))
+    _unresolved_count = sum(
+        1 for e in injury_decision_ledger
+        if e.get("injury_tree_status") in (
+            injury_decision_tree.STATUS_DEPENDENCY_UNRESOLVED,
+            injury_decision_tree.STATUS_ROLE_STATE_STALE,
+        )
+    )
+
     # Phase 2: market validation ledger — one entry per row showing cash threshold
     # status, exact/adjacent market classification, and confidence cap applied.
     market_validation_ledger: list[dict] = []
@@ -627,15 +651,19 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "mutex_report":       mutex_report or [],
         # Phase 2 addition
         "market_validation_ledger": market_validation_ledger,
+        # Phase 3 addition
+        "injury_decision_ledger": injury_decision_ledger,
         "summary": {
-            "total_rows":          len(rows),
-            "by_label":            label_counts,
-            "final_count":         _effective_final_count,
-            "no_play":             no_play,
-            "run_status":          run_status,
-            "degraded_run":        _degraded,
-            "failed_module_count": len(failed_modules or []),
-            "mutex_group_count":   len(mutex_report or []),
+            "total_rows":               len(rows),
+            "by_label":                 label_counts,
+            "final_count":              _effective_final_count,
+            "no_play":                  no_play,
+            "run_status":               run_status,
+            "degraded_run":             _degraded,
+            "failed_module_count":      len(failed_modules or []),
+            "mutex_group_count":        len(mutex_report or []),
+            "injury_dependency_count":  _dep_count,
+            "unresolved_dependency_count": _unresolved_count,
         },
     }
 
