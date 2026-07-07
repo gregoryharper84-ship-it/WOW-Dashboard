@@ -6,34 +6,23 @@ import NotFound from "@/pages/not-found";
 import FinalLockDashboard from "@/pages/final-lock-dashboard";
 import PromptPage from "@/pages/prompt";
 import KalshiPage from "@/pages/kalshi";
-import { Lock, Sparkles, TrendingUp } from "lucide-react";
+import RequestLogPage from "@/pages/request-log";
+import LeaderboardPage from "@/pages/leaderboard";
+import PropsIntakePage from "@/pages/props-intake";
+import { Lock, Sparkles, TrendingUp, ScrollText, Trophy, Database } from "lucide-react";
 
 const queryClient = new QueryClient();
 
 function IconRail() {
   const [loc] = useLocation();
-  const isPrompt = loc.startsWith("/analyze");
-  const isKalshi = loc.startsWith("/kalshi");
 
   const navItems = [
-    {
-      href: "/",
-      label: "Final Lock",
-      icon: Lock,
-      active: !isPrompt && !isKalshi,
-    },
-    {
-      href: "/analyze",
-      label: "Prompt",
-      icon: Sparkles,
-      active: isPrompt,
-    },
-    {
-      href: "/kalshi",
-      label: "Kalshi",
-      icon: TrendingUp,
-      active: isKalshi,
-    },
+    { href: "/",        label: "Final Lock",  icon: Lock,       match: (l: string) => l === "/" },
+    { href: "/props",   label: "Props Intake",icon: Database,   match: (l: string) => l.startsWith("/props") },
+    { href: "/analyze", label: "Prompt",      icon: Sparkles,   match: (l: string) => l.startsWith("/analyze") },
+    { href: "/kalshi",  label: "Kalshi",      icon: TrendingUp, match: (l: string) => l.startsWith("/kalshi") },
+    { href: "/logs",    label: "Request Log", icon: ScrollText, match: (l: string) => l.startsWith("/logs") },
+    { href: "/leaderboard", label: "Leaderboard", icon: Trophy, match: (l: string) => l.startsWith("/leaderboard") },
   ];
 
   return (
@@ -43,13 +32,13 @@ function IconRail() {
         <span className="text-primary font-black text-xs leading-none">W</span>
       </div>
 
-      {navItems.map(({ href, label, icon: Icon, active }) => (
+      {navItems.map(({ href, label, icon: Icon, match }) => (
         <Link
           key={href}
           href={href}
           title={label}
           className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
-            active
+            match(loc)
               ? "bg-primary/20 text-primary"
               : "text-muted-foreground hover:bg-muted hover:text-foreground"
           }`}
@@ -67,9 +56,12 @@ function Router() {
       <IconRail />
       <div className="pl-14">
         <Switch>
-          <Route path="/" component={FinalLockDashboard} />
-          <Route path="/analyze" component={PromptPage} />
-          <Route path="/kalshi" component={KalshiPage} />
+          <Route path="/"            component={FinalLockDashboard} />
+          <Route path="/props"       component={PropsIntakePage} />
+          <Route path="/analyze"     component={PromptPage} />
+          <Route path="/kalshi"      component={KalshiPage} />
+          <Route path="/logs"        component={RequestLogPage} />
+          <Route path="/leaderboard" component={LeaderboardPage} />
           <Route component={NotFound} />
         </Switch>
       </div>

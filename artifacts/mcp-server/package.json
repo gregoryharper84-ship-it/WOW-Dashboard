@@ -1,0 +1,14 @@
+{
+  "name": "@workspace/mcp-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --env-file=../../.env src/index.js 2>/dev/null || node --watch src/index.js",
+    "start": "node src/index.js",
+    "typecheck": "echo 'mcp-server: no TS compile step'"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  }
+}
