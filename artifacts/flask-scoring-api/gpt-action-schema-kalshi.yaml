@@ -1,0 +1,333 @@
+openapi: 3.1.0
+info:
+  title: WOW Kalshi Read-Only Proxy
+  description: >
+    Read-only proxy to the Replit Kalshi engine. All operations are
+    DRY_RUN_ONLY — no order placement, no trade execution of any kind.
+    `can_execute` is always false on every response.
+    Use this action to check market inventory, orderbook state, weather
+    bracket markets, and Gaussian weather evaluations for educational
+    and analysis purposes only.
+  version: 1.0.0
+
+# NOTE: update servers.url if the Replit deployment domain changes.
+# Current domain is read from the REPLIT_DOMAINS env var at boot.
+servers:
+  - url: https://create-app-gregoryharper84.replit.app
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        Pass your SCORING_API_KEY value in the X-API-Key header.
+        The /kalshi/health endpoint is public and does not require this key.
+
+paths:
+
+  /kalshi/health:
+    get:
+      operationId: kalshiHealth
+      x-openai-isConsequential: false
+      summary: Proxy health and connectivity check
+      description: >
+        Returns proxy status, Kalshi API reachability, auth credential
+        presence, and dry-run mode flags. Public — no API key required.
+        Call this first to verify the proxy is up before making other calls.
+      responses:
+        '200':
+          description: Proxy is up (Kalshi may or may not be reachable)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  kalshi_reachable:
+                    type: boolean
+                  auth_configured:
+                    type: boolean
+                    description: True if KALSHI_API_KEY_ID env var is set
+                  dry_run_only:
+                    type: boolean
+                    description: Always true — no trade execution exists
+                  can_execute:
+                    type: boolean
+                    description: Always false
+                  signal:
+                    type: string
+                    enum: [INVENTORY_READY, INVENTORY_EMPTY, KALSHI_UNREACHABLE]
+                  fetched_at:
+                    type: string
+                    format: date-time
+
+  /kalshi/markets:
+    get:
+      operationId: kalshiMarkets
+      x-openai-isConsequential: false
+      summary: Search open Kalshi markets
+      description: >
+        Paginated market listing. Use series_ticker to scope to a specific
+        series (e.g. KXMLBGAME, KXWNBAGAME, KXHIGHNY). Returns raw market
+        data with a dry_run_only envelope stamp.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: series_ticker
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Scope to one series (e.g. KXHIGHNY, KXMLBGAME)
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            default: open
+            enum: [open, closed, settled]
+          description: Market status filter (default open)
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+          description: Max markets to return (default 50, max 100)
+      responses:
+        '200':
+          description: Market listing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  markets:
+                    type: array
+                    items:
+                      type: object
+                  market_count:
+                    type: integer
+                  source:
+                    type: string
+                    example: direct_api
+                  fetched_at:
+                    type: string
+                    format: date-time
+                  dry_run_only:
+                    type: boolean
+                  can_execute:
+                    type: boolean
+        '401':
+          description: Missing or invalid API key
+
+  /kalshi/orderbook/{ticker}:
+    get:
+      operationId: kalshiOrderbook
+      x-openai-isConsequential: false
+      summary: Normalized orderbook for a Kalshi market ticker
+      description: >
+        Fetches and normalizes the live orderbook for a single ticker.
+        Applies the WOW freshness check: data older than 10 minutes is
+        marked STALE with ok=false. can_execute is always false.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: ticker
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Kalshi market ticker (e.g. KXMLBGAME-25-LAD-MIA-JUL09)
+        - name: depth
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 50
+          description: Orderbook depth levels per side (default 10)
+      responses:
+        '200':
+          description: Normalized orderbook (ok=true FRESH or ok=false STALE)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  ticker:
+                    type: string
+                  freshness:
+                    type: string
+                    enum: [FRESH, STALE]
+                  best_yes_bid:
+                    type: number
+                  best_yes_ask:
+                    type: number
+                  best_no_bid:
+                    type: number
+                  best_no_ask:
+                    type: number
+                  mid_price:
+                    type: number
+                  spread:
+                    type: number
+                  fetched_at:
+                    type: string
+                    format: date-time
+                  source:
+                    type: string
+                  can_execute:
+                    type: boolean
+        '401':
+          description: Missing or invalid API key
+
+  /kalshi/weather/highs/{city}:
+    get:
+      operationId: kalshiWeatherHighs
+      x-openai-isConsequential: false
+      summary: Open NHIGH bracket markets for a city
+      description: >
+        Returns currently open Kalshi daily high-temperature bracket markets
+        for one of the five supported cities. Maps city code to the canonical
+        Kalshi NHIGH series and station codes (e.g. CHI → KMDW not KORD).
+        Rejects unsupported city codes with 400.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: city
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [NYC, LA, MIA, CHI, AUS]
+          description: City code (NYC, LA, MIA, CHI, or AUS)
+      responses:
+        '200':
+          description: Open NHIGH markets for the city
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  city:
+                    type: string
+                  series_ticker:
+                    type: string
+                    example: KXHIGHCHI
+                  station:
+                    type: string
+                    example: KMDW
+                  market_count:
+                    type: integer
+                  markets:
+                    type: array
+                    items:
+                      type: object
+                  fetched_at:
+                    type: string
+                    format: date-time
+                  dry_run_only:
+                    type: boolean
+                  can_execute:
+                    type: boolean
+        '400':
+          description: Unsupported city code
+        '401':
+          description: Missing or invalid API key
+
+  /kalshi/evaluate/weather/{city}:
+    get:
+      operationId: kalshiEvaluateWeather
+      x-openai-isConsequential: false
+      summary: Dry-run Gaussian weather evaluation for a city
+      description: >
+        Fetches today's (or a specified date's) NWS forecast high for the
+        city, auto-discovers open Kalshi NHIGH bracket markets, and scores
+        each bracket using a Gaussian probability model. Returns model
+        probabilities, implied edges, and verdict per bracket.
+        This is always dry-run only — can_execute is always false.
+        Use sigma_f to adjust the temperature forecast uncertainty (default 3.5°F).
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: city
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [NYC, LA, MIA, CHI, AUS]
+          description: City code (NYC, LA, MIA, CHI, or AUS)
+        - name: sigma_f
+          in: query
+          required: false
+          schema:
+            type: number
+            default: 3.5
+            minimum: 0.5
+            maximum: 20.0
+          description: Gaussian sigma in °F (default 3.5; per TF-WX-16)
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Target date YYYY-MM-DD (default today in city local time)
+      responses:
+        '200':
+          description: >
+            Gaussian evaluation results. ok=true with scored_brackets when
+            live markets exist; ok=false with error when no open markets found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  city:
+                    type: string
+                  date:
+                    type: string
+                  sigma_f:
+                    type: number
+                  station:
+                    type: string
+                  series_ticker:
+                    type: string
+                  forecast_high:
+                    type: number
+                    nullable: true
+                  observed_high:
+                    type: number
+                    nullable: true
+                  brackets_discovered:
+                    type: integer
+                  scored_brackets:
+                    type: array
+                    items:
+                      type: object
+                  dry_run_only:
+                    type: boolean
+                  can_execute:
+                    type: boolean
+                  fetched_at:
+                    type: string
+                    format: date-time
+        '400':
+          description: Unsupported city code or invalid sigma_f
+        '401':
+          description: Missing or invalid API key

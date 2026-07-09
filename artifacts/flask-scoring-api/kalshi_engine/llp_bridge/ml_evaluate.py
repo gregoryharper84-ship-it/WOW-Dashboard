@@ -68,7 +68,7 @@ from typing import Any, Optional
 
 from .. import fee_model as _fee_model
 from .. import settlement_risk as _settlement_risk
-from gate_engine.llp_governance import LLPLabel, cap_label
+from gate_engine.llp_governance import LLPLabel, cap_label, compute_stake_confidence
 
 # ── Edge floors (POST-friction, market-type-aware) ──────────────────────────
 # main_winner  = KXMLBGAME/KXWNBAGAME series — most liquid, 1.5% floor
@@ -400,6 +400,19 @@ def evaluate_stub(
 
     label = cap_label(label, _ENDPOINT_LABEL_CEILING)
 
+    # ── WOW-PATCH-v16.1A: stake/confidence sizing ────────────────────────────
+    _sc = compute_stake_confidence(
+        final_label=label,
+        model_probability=model_probability,
+        edge=model_adjusted_edge,
+        blocker_tags=list(blocker_tags),
+        context_flags={
+            "final_lock":        final_lock_fresh,
+            "timestamp_present": final_lock_rechecked_at is not None,
+            "exposure_ok":       True,   # not tracked at this stateless layer
+        },
+    )
+
     return {
         "label":               label,
         "settlement_grade":    settlement_grade_result,
@@ -428,4 +441,13 @@ def evaluate_stub(
         "stub":                inventory_signal != "INVENTORY_READY",
         "connected":           inventory_signal == "INVENTORY_READY",
         "connected_status":    "CONNECTED_READONLY" if inventory_signal == "INVENTORY_READY" else "DRY_RUN_READY",
+        # WOW-PATCH-v16.1A stake/confidence fields
+        "confidence_tier":     _sc["confidence_tier"],
+        "stake_tier":          _sc["stake_tier"],
+        "recommended_stake":   _sc["recommended_stake"],
+        "max_allowed_stake":   _sc["max_allowed_stake"],
+        "stake_cap_reason":    _sc["stake_cap_reason"],
+        "confidence_reason":   _sc["confidence_reason"],
+        "big_stake_status":    _sc["big_stake_status"],
+        "big_stake_blockers":  _sc["big_stake_blockers"],
     }

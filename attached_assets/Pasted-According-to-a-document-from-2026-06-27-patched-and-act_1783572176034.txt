@@ -1,0 +1,107 @@
+According to a document from **2026-06-27**, patched and active for future LLP runs in this chat. The six final LLP labels remain locked, `LLP_PLAYABLE` remains small-stake only, and scaling still requires ledger/CLV maturity, exposure clearance, and final-lock discipline.   
+
+```text
+LLP STAKE-CONFIDENCE PATCH — v16.1A — ACTIVE
+
+Purpose:
+Add stake_tier and confidence_tier to every LLP candidate without changing the six-label final taxonomy.
+
+New required output fields:
+final_label:
+confidence_tier: LOW / MEDIUM / HIGH
+stake_tier: PASS / SMALL / MEDIUM / HIGH
+recommended_stake:
+max_allowed_stake:
+stake_cap_reason:
+confidence_reason:
+big_stake_status: ELIGIBLE / BLOCKED
+big_stake_blockers:
+
+Label-to-stake ceiling:
+LLP_CUT      -> PASS
+LLP_REJECT   -> PASS
+LLP_SCOUT    -> PASS
+LLP_WATCH    -> PASS
+LLP_PLAYABLE -> SMALL only
+LLP_APPROVED -> SMALL / MEDIUM / HIGH eligible
+
+Core rule:
+confidence_tier cannot override final_label.
+stake_tier cannot outrank final_label.
+A HIGH-confidence pick can still be SMALL stake if final label, CLV, bankroll, exposure, or final-lock rules cap it.
+
+SMALL stake:
+Allowed for clean LLP_PLAYABLE or capped LLP_APPROVED.
+Range: 0.10u–0.25u, subject to bankroll and session cap.
+
+MEDIUM stake:
+Allowed only for LLP_APPROVED.
+Requires:
+- verified no-vig edge
+- model probability 58%+
+- edge clears tier threshold
+- timestamp current
+- final-lock recheck complete
+- no contradiction
+- no exposure breach
+Range: 0.25u–0.50u.
+
+HIGH stake:
+Allowed only for elite LLP_APPROVED.
+Requires:
+- model probability 60%+ or independently validated severe price edge
+- edge 5%+
+- final-lock recheck complete
+- no steam against side
+- no injury/starter/lineup/weather contradiction
+- no exposure cap conflict
+- ledger maturity supports scaling
+- CLV bucket supports graduation
+Range: 0.50u–1.00u max.
+
+Hard blockers for MEDIUM/HIGH:
+- final_label is not LLP_APPROVED
+- no no-vig edge
+- no timestamp
+- final lock skipped
+- market moved against side
+- missing or incomplete ledger
+- fewer than 25 logged candidates
+- CLV rate below required graduation level
+- bankroll/session cap conflict
+- same-game or same-script exposure breach
+```
+
+The exposure caps remain unchanged: max 3 LLP bets/day, 1.5u normal daily cap, 2.0u hard cap only after calibration maturity, 1.0u max per game, and 1.25u same-script cap. 
+
+## New output example
+
+```text
+final_label: LLP_PLAYABLE
+confidence_tier: HIGH
+stake_tier: SMALL
+recommended_stake: 0.25u
+max_allowed_stake: 0.25u
+stake_cap_reason: LLP_PLAYABLE is capped at SMALL
+big_stake_status: BLOCKED
+big_stake_blockers: final_label not LLP_APPROVED; CLV sample not mature
+```
+
+```text
+final_label: LLP_APPROVED
+confidence_tier: HIGH
+stake_tier: HIGH
+recommended_stake: 0.75u
+max_allowed_stake: 1.00u
+stake_cap_reason: all stake gates clear
+big_stake_status: ELIGIBLE
+big_stake_blockers: none
+```
+
+## Patch status
+
+**Patch applied:** PASS
+**Big-stake lane added:** PASS
+**Big-stake lane unrestricted:** NO
+**Reason:** no ledger/CLV graduation = no unit scaling. ROI alone is not enough. 
+**Future LLP runs:** will include final label, confidence tier, stake tier, recommended stake, max stake, and big-stake status.

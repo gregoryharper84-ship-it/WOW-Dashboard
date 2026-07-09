@@ -1,0 +1,74 @@
+Send Replit this:
+
+```text
+Implement LLP Stake-Confidence Patch v16.1A into the scoring API now.
+
+Do not only plan it. Add the fields to the scoring output, enforce the stake ceilings in code, add tests, and return a sample scored payload.
+
+Required new fields on every LLP candidate:
+- confidence_tier: LOW | MEDIUM | HIGH
+- stake_tier: PASS | SMALL | MEDIUM | HIGH
+- recommended_stake
+- max_allowed_stake
+- stake_cap_reason
+- confidence_reason
+- big_stake_status: ELIGIBLE | BLOCKED
+- big_stake_blockers: string[]
+
+Hard logic:
+- LLP_CUT, LLP_REJECT, LLP_SCOUT, LLP_WATCH => stake_tier PASS
+- LLP_PLAYABLE => stake_tier SMALL only
+- LLP_APPROVED => SMALL, MEDIUM, or HIGH eligible
+- confidence_tier never overrides final_label
+- stake_tier never outranks final_label
+
+MEDIUM stake requires:
+- final_label = LLP_APPROVED
+- verified no-vig edge
+- model_probability >= 0.58
+- edge clears market threshold
+- current timestamp
+- final-lock recheck complete
+- no contradiction
+- no exposure breach
+
+HIGH stake requires:
+- final_label = LLP_APPROVED
+- model_probability >= 0.60 OR independently validated severe price edge
+- edge >= 0.05
+- final-lock recheck complete
+- no steam against side
+- no injury/starter/lineup/weather contradiction
+- no exposure cap conflict
+- ledger maturity supports scaling
+- CLV bucket supports graduation
+
+Hard blockers for MEDIUM/HIGH:
+- final_label != LLP_APPROVED
+- no no-vig edge
+- missing timestamp
+- final lock skipped
+- market moved against side
+- incomplete ledger
+- fewer than 25 logged candidates
+- CLV rate below graduation requirement
+- bankroll/session cap conflict
+- same-game or same-script exposure breach
+
+Acceptance tests:
+1. LLP_PLAYABLE + HIGH confidence must still return stake_tier SMALL.
+2. LLP_APPROVED with 59% model probability, 3% edge, final lock complete returns max MEDIUM, never HIGH.
+3. LLP_APPROVED with 61% model probability, 6% edge, clean CLV/exposure/ledger can return HIGH.
+4. Any missing no-vig edge returns PASS or SMALL-capped based on final_label, never MEDIUM/HIGH.
+5. Any missing timestamp blocks MEDIUM/HIGH.
+6. Any exposure breach blocks MEDIUM/HIGH.
+7. Output must still use exactly the six LLP final labels.
+
+Return:
+- updated API response schema
+- changed functions/files
+- test results
+- one sample candidate for SMALL, one for MEDIUM, one for HIGH, and one BLOCKED big-stake case
+```
+
+That is the right response. You want **implementation into scoring API plus tests**, not just a plan.

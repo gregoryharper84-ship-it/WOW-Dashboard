@@ -781,3 +781,233 @@ def _fmt_delta(d: timedelta) -> str:
     h, rem = divmod(total, 3600)
     m = rem // 60
     return f"{h}h{m:02d}m" if h else f"{m}m"
+
+
+# ---------------------------------------------------------------------------
+# Stake-confidence sizing helper  (v16.1A patch)
+# ---------------------------------------------------------------------------
+
+_STAKE_ZERO_LABELS = {
+    LLPLabel.CUT.value, LLPLabel.REJECT.value,
+    LLPLabel.SCOUT.value, LLPLabel.WATCH.value,
+}
+
+# MEDIUM gate thresholds
+_MEDIUM_PROB_MIN   = 0.58
+_MEDIUM_EDGE_MIN   = 0.025
+_MEDIUM_LEDGER_MIN = 25
+
+# HIGH gate thresholds
+_HIGH_PROB_MIN   = 0.61
+_HIGH_EDGE_MIN   = 0.050
+_HIGH_LEDGER_MIN = 100
+
+
+def compute_stake_confidence(
+    final_label:       str,
+    model_probability: float | None,
+    edge:              float | None,
+    blocker_tags:      list[str] | None = None,
+    context_flags:     dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Compute stake sizing and confidence classification for an LLP candidate.
+    (v16.1A patch — see llp-stake-confidence-patch-v16.md)
+
+    Parameters
+    ----------
+    final_label       : one of the 6 LLP labels (never introduces new labels)
+    model_probability : float 0–1 or None
+    edge              : post-friction edge float or None if unavailable
+    blocker_tags      : list of blocker/warning codes already on the candidate
+    context_flags     : optional sizing context dict with boolean/int keys:
+        final_lock              bool  — fresh final-lock recheck ran?
+        exposure_ok             bool  — session exposure within limits?
+        ledger_candidate_count  int   — settled candidates in the ledger
+        clv_graduation_ok       bool  — CLV graduation passed?
+        timestamp_present       bool  — line timestamp present on candidate?
+
+    Returns 8 fields:
+        confidence_tier    str   — INSUFFICIENT | LOW | MODERATE | HIGH | VERY_HIGH
+        stake_tier         str   — PASS | SMALL | MEDIUM | HIGH
+        recommended_stake  float — suggested unit size
+        max_allowed_stake  float — hard ceiling in units
+        stake_cap_reason   str   — machine-readable cap code
+        confidence_reason  str   — human-readable explanation
+        big_stake_status   str   — NOT_ELIGIBLE | CAPPED_BY_LABEL | BLOCKED | APPROVED
+        big_stake_blockers list  — failing gate codes (empty when APPROVED)
+
+    IMPORTANT: this function NEVER introduces new LLP label values.
+    `stake_tier` is orthogonal to `final_label`.
+    """
+    if blocker_tags is None:
+        blocker_tags = []
+    if context_flags is None:
+        context_flags = {}
+
+    label = (final_label or "").strip().upper()
+    prob  = float(model_probability) if model_probability is not None else None
+    edg   = float(edge) if edge is not None else None
+
+    # ── 1. Non-actionable labels → PASS immediately ──────────────────────────
+    if label in _STAKE_ZERO_LABELS:
+        conf_tier = "LOW" if (prob is None or prob < 0.55) else "MODERATE"
+        return {
+            "confidence_tier":    conf_tier,
+            "stake_tier":         "PASS",
+            "recommended_stake":  0.0,
+            "max_allowed_stake":  0.0,
+            "stake_cap_reason":   f"LABEL_CEILING:{label}",
+            "confidence_reason":  f"label={label} is not actionable",
+            "big_stake_status":   "NOT_ELIGIBLE",
+            "big_stake_blockers": [f"LABEL_CEILING:{label}"],
+        }
+
+    if label not in (LLPLabel.PLAYABLE.value, LLPLabel.APPROVED.value):
+        return {
+            "confidence_tier":    "INSUFFICIENT",
+            "stake_tier":         "PASS",
+            "recommended_stake":  0.0,
+            "max_allowed_stake":  0.0,
+            "stake_cap_reason":   "UNKNOWN_LABEL",
+            "confidence_reason":  f"label={label!r} not recognized",
+            "big_stake_status":   "NOT_ELIGIBLE",
+            "big_stake_blockers": ["UNKNOWN_LABEL"],
+        }
+
+    # ── 2. Confidence tier ────────────────────────────────────────────────────
+    if prob is None:
+        conf_tier = "INSUFFICIENT"
+    elif prob < 0.55:
+        conf_tier = "LOW"
+    elif prob < 0.58:
+        conf_tier = "MODERATE"
+    elif prob < 0.61:
+        conf_tier = "HIGH"
+    else:
+        conf_tier = "VERY_HIGH"
+
+    prob_str = f"model_probability={prob:.4f}" if prob is not None else "model_probability=None"
+    edge_str = f"edge={edg:.4f}" if edg is not None else "edge=None"
+    confidence_reason = f"{prob_str}, {edge_str}"
+
+    # ── 3. LLP_PLAYABLE hard cap — SMALL only, no MEDIUM/HIGH ────────────────
+    if label == LLPLabel.PLAYABLE.value:
+        ledger_count = int(context_flags.get("ledger_candidate_count", 0))
+        if ledger_count < _MEDIUM_LEDGER_MIN:
+            rec = max_u = PLAYABLE_STAKE_CAPS["pre_25_candidates_max_units"]
+            cap_reason  = "PLAYABLE_PRE_25_CAP"
+        else:
+            rec = max_u = PLAYABLE_STAKE_CAPS["pre_100_candidates_max_units"]
+            cap_reason  = "PLAYABLE_LABEL_CEILING"
+        return {
+            "confidence_tier":    conf_tier,
+            "stake_tier":         "SMALL",
+            "recommended_stake":  rec,
+            "max_allowed_stake":  max_u,
+            "stake_cap_reason":   cap_reason,
+            "confidence_reason":  confidence_reason,
+            "big_stake_status":   "CAPPED_BY_LABEL",
+            "big_stake_blockers": ["PLAYABLE_CANNOT_EXCEED_SMALL"],
+        }
+
+    # ── 4. LLP_APPROVED — gate evaluation for MEDIUM and HIGH ────────────────
+    final_lock_ok     = bool(context_flags.get("final_lock", False))
+    exposure_ok       = bool(context_flags.get("exposure_ok", True))
+    ledger_count      = int(context_flags.get("ledger_candidate_count", 0))
+    clv_ok            = bool(context_flags.get("clv_graduation_ok", False))
+    timestamp_present = bool(context_flags.get("timestamp_present", True))
+
+    medium_blockers: list[str] = []
+    high_blockers:   list[str] = []
+
+    # Edge availability & floor
+    if edg is None:
+        medium_blockers.append("NO_EDGE_VALUE")
+        high_blockers.append("NO_EDGE_VALUE")
+    else:
+        if edg < _MEDIUM_EDGE_MIN:
+            medium_blockers.append(f"EDGE_BELOW_MEDIUM_FLOOR:{edg:.4f}<{_MEDIUM_EDGE_MIN}")
+            high_blockers.append(f"EDGE_BELOW_HIGH_FLOOR:{edg:.4f}<{_HIGH_EDGE_MIN}")
+        elif edg < _HIGH_EDGE_MIN:
+            high_blockers.append(f"EDGE_BELOW_HIGH_FLOOR:{edg:.4f}<{_HIGH_EDGE_MIN}")
+
+    # Probability floors
+    if prob is None:
+        medium_blockers.append("NO_MODEL_PROBABILITY")
+        high_blockers.append("NO_MODEL_PROBABILITY")
+    else:
+        if prob < _MEDIUM_PROB_MIN:
+            medium_blockers.append(f"PROB_BELOW_MEDIUM_MIN:{prob:.4f}<{_MEDIUM_PROB_MIN}")
+            high_blockers.append(f"PROB_BELOW_HIGH_MIN:{prob:.4f}<{_HIGH_PROB_MIN}")
+        elif prob < _HIGH_PROB_MIN:
+            high_blockers.append(f"PROB_BELOW_HIGH_MIN:{prob:.4f}<{_HIGH_PROB_MIN}")
+
+    # Timestamp
+    if not timestamp_present:
+        medium_blockers.append("NO_TIMESTAMP")
+        high_blockers.append("NO_TIMESTAMP")
+
+    # Final-lock
+    if not final_lock_ok:
+        medium_blockers.append("FINAL_LOCK_NOT_CONFIRMED")
+        high_blockers.append("FINAL_LOCK_NOT_CONFIRMED")
+
+    # Exposure
+    if not exposure_ok:
+        medium_blockers.append("EXPOSURE_BREACH")
+        high_blockers.append("EXPOSURE_BREACH")
+
+    # Ledger maturity
+    if ledger_count < _MEDIUM_LEDGER_MIN:
+        medium_blockers.append(f"LEDGER_IMMATURE:{ledger_count}<{_MEDIUM_LEDGER_MIN}")
+        high_blockers.append(f"LEDGER_IMMATURE:{ledger_count}<{_HIGH_LEDGER_MIN}")
+    elif ledger_count < _HIGH_LEDGER_MIN:
+        high_blockers.append(f"LEDGER_IMMATURE:{ledger_count}<{_HIGH_LEDGER_MIN}")
+
+    # CLV graduation (HIGH only)
+    if not clv_ok:
+        high_blockers.append("CLV_GRADUATION_REQUIRED")
+
+    # ── 5. Determine tier ────────────────────────────────────────────────────
+    can_high   = len(high_blockers)   == 0
+    can_medium = len(medium_blockers) == 0
+
+    if can_high:
+        return {
+            "confidence_tier":    conf_tier,
+            "stake_tier":         "HIGH",
+            "recommended_stake":  1.25,
+            "max_allowed_stake":  1.50,
+            "stake_cap_reason":   "APPROVED_HIGH_TIER",
+            "confidence_reason":  confidence_reason,
+            "big_stake_status":   "APPROVED",
+            "big_stake_blockers": [],
+        }
+    if can_medium:
+        return {
+            "confidence_tier":    conf_tier,
+            "stake_tier":         "MEDIUM",
+            "recommended_stake":  0.75,
+            "max_allowed_stake":  1.00,
+            "stake_cap_reason":   "APPROVED_MEDIUM_TIER",
+            "confidence_reason":  confidence_reason,
+            "big_stake_status":   "APPROVED",
+            "big_stake_blockers": high_blockers,
+        }
+
+    # APPROVED but MEDIUM/HIGH blocked → SMALL
+    if ledger_count < _MEDIUM_LEDGER_MIN:
+        rec = max_u = PLAYABLE_STAKE_CAPS["pre_25_candidates_max_units"]
+    else:
+        rec = max_u = PLAYABLE_STAKE_CAPS["pre_100_candidates_max_units"]
+    return {
+        "confidence_tier":    conf_tier,
+        "stake_tier":         "SMALL",
+        "recommended_stake":  rec,
+        "max_allowed_stake":  max_u,
+        "stake_cap_reason":   "APPROVED_MEDIUM_BLOCKED",
+        "confidence_reason":  confidence_reason,
+        "big_stake_status":   "BLOCKED",
+        "big_stake_blockers": medium_blockers,
+    }
