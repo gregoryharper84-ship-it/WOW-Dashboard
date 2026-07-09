@@ -46,6 +46,22 @@ max_buy_price formula
                       - estimated_fee_per_contract_cents
                       - slippage_buffer × 100
 
+Dry-run fill ledger
+-------------------
+  fill_status values:
+    FILLED_DRY_RUN        — ask ≤ max_buy_price AND depth ≥ quantity
+    PARTIAL_FILL_DRY_RUN  — ask ≤ max_buy_price BUT depth < quantity
+    NO_FILL               — ask > max_buy_price, hard reject, or fee model missing
+    INVALID_STALE_BOOK    — orderbook stale; any fill figure is unreliable
+
+  Settlement-time fields (closing_price_cents, settlement_value_cents,
+  gross_pnl_cents, net_pnl_after_fees_cents, clv_cents, final_result) are
+  always None at decision time.  A separate settle pass writes them.
+
+  CALIBRATION RULE: only FILLED_DRY_RUN rows may enter model ROI or hit-rate
+  calculations after settlement.  NO_FILL and PARTIAL_FILL_DRY_RUN rows must
+  be excluded regardless of which side the market settled on.
+
 Execution guarantee
 -------------------
   can_execute   = False   (unconditional — no live trading, ever)
@@ -72,6 +88,15 @@ MAKER_FEE_RATE = 0.0175       # 1.75 %
 
 _EXECUTION_MODE = "LIMIT_ONLY_DRY_RUN"
 _EXECUTION_RULE = "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+
+# ── Fill-status constants ─────────────────────────────────────────────────────
+FILL_STATUS_FILLED   = "FILLED_DRY_RUN"        # ask ≤ max_buy AND depth ≥ qty
+FILL_STATUS_PARTIAL  = "PARTIAL_FILL_DRY_RUN"   # ask ≤ max_buy BUT depth < qty
+FILL_STATUS_NO_FILL  = "NO_FILL"                # ask > max_buy, hard reject, or no fee model
+FILL_STATUS_STALE    = "INVALID_STALE_BOOK"     # orderbook stale — figures unreliable
+
+# Only FILLED_DRY_RUN rows may enter calibration after settlement.
+CALIBRATION_ELIGIBLE_STATUSES = frozenset({FILL_STATUS_FILLED})
 
 
 # ── Label constants and normalization ────────────────────────────────────────
@@ -307,6 +332,54 @@ def evaluate(
         blockers.append("KALSHI_DEPTH_INSUFFICIENT")
         _watch = True
 
+    # ── Gate 8b: dry-run fill status ──────────────────────────────────────────
+    # Derived from the results of Gates 5–8; no new hard/soft flags added here.
+    # Priority: INVALID_STALE_BOOK > FILLED/PARTIAL (price ok) > NO_FILL
+    #
+    # Both KALSHI_ORDERBOOK_STALE and KALSHI_ORDERBOOK_SOURCE_NOT_DIRECT_API
+    # make the fill price non-executable: a display-only / screenshot price
+    # carries the same reliability risk as a stale timestamp.
+    _unreliable_book = (
+        "KALSHI_ORDERBOOK_STALE"                in blockers
+        or "KALSHI_ORDERBOOK_SOURCE_NOT_DIRECT_API" in blockers
+    )
+    if _unreliable_book:
+        fill_status = FILL_STATUS_STALE
+    elif would_fill:
+        fill_status = FILL_STATUS_FILLED if available_depth >= quantity else FILL_STATUS_PARTIAL
+    else:
+        fill_status = FILL_STATUS_NO_FILL
+
+    # Ledger: quantities and fees at decision time
+    # effective_quantity_filled — the contracts that would theoretically fill
+    if fill_status == FILL_STATUS_FILLED:
+        effective_quantity_filled: int = quantity
+    elif fill_status == FILL_STATUS_PARTIAL:
+        effective_quantity_filled = min(available_depth, quantity)
+    else:
+        effective_quantity_filled = 0
+
+    hypothetical_fill_price_cents: Optional[float] = (
+        executable_price_cents
+        if fill_status in (FILL_STATUS_FILLED, FILL_STATUS_PARTIAL)
+        else None
+    )
+
+    total_fee_cents: Optional[float] = None
+    if (
+        estimated_fee_per_contract_cents is not None
+        and effective_quantity_filled > 0
+    ):
+        total_fee_cents = round(estimated_fee_per_contract_cents * effective_quantity_filled, 4)
+
+    # Settlement-time fields — always None at decision time; written by settle pass
+    closing_price_cents:      Optional[float] = None
+    settlement_value_cents:   Optional[float] = None   # 100 for win, 0 for loss
+    gross_pnl_cents:          Optional[float] = None
+    net_pnl_after_fees_cents: Optional[float] = None
+    clv_cents:                Optional[float] = None   # closing_price − fill_price
+    final_result:             Optional[str]   = None   # WIN_DRY_RUN / LOSS_DRY_RUN / NO_FILL
+
     # ── Gate 9: market-order policy (permanent) ───────────────────────────────
     # KALSHI_MARKET_ORDER_BANNED is always present to signal that market orders
     # are unconditionally prohibited.  It does not affect label rank — the
@@ -368,4 +441,23 @@ def evaluate(
         "can_execute":                          False,
         "dry_run_only":                         True,
         "execution_rule":                       _EXECUTION_RULE,
+        # ── Dry-run fill ledger (decision-time) ───────────────────────────────
+        # fill_status drives calibration eligibility.  Only FILLED_DRY_RUN rows
+        # may enter model ROI / hit-rate calculations after settlement.
+        "intended_quantity":                    quantity,
+        "executable_ask_at_decision_cents":     executable_price_cents,
+        "recommended_limit_price_cents":        would_place_limit_at_cents,
+        "fill_status":                          fill_status,
+        "effective_quantity_filled":            effective_quantity_filled,
+        "hypothetical_fill_price_cents":        hypothetical_fill_price_cents,
+        "fee_per_contract_cents":               estimated_fee_per_contract_cents,
+        "total_fee_cents":                      total_fee_cents,
+        "calibration_eligible":                 fill_status in CALIBRATION_ELIGIBLE_STATUSES,
+        # Settlement-time fields — always None at decision time; written by settle pass
+        "closing_price_cents":                  closing_price_cents,
+        "settlement_value_cents":               settlement_value_cents,
+        "gross_pnl_cents":                      gross_pnl_cents,
+        "net_pnl_after_fees_cents":             net_pnl_after_fees_cents,
+        "clv_cents":                            clv_cents,
+        "final_result":                         final_result,
     }

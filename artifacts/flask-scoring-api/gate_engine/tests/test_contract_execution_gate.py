@@ -436,3 +436,146 @@ def test_14_normalize_label_converts_bare_to_dry_run():
         f"Gate emitted '{result['final_label']}' instead of canonical '{_CANONICAL}'"
     )
     assert result["can_execute"] is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tests 15–19 — Dry-run fill ledger
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_15_filled_dry_run_ask_at_or_below_max_buy_full_depth():
+    """
+    Ask ≤ max_buy_price AND depth ≥ quantity → FILLED_DRY_RUN.
+    hypothetical_fill_price_cents == executable ask.
+    total_fee_cents == fee_per_contract × quantity.
+    calibration_eligible == True.
+    can_execute == False unconditionally.
+    """
+    result = ceg.evaluate(
+        **{**_BASE, "model_probability": _STRONG_MODEL_PROB, "quantity": 5},
+        normalized_book=_book(yes_bid=0.60, no_bid=0.38, depth=200),
+        orderbook_fetched_at=_fresh_ts(30),
+    )
+    assert result["fill_status"]               == ceg.FILL_STATUS_FILLED
+    assert result["effective_quantity_filled"] == 5
+    assert result["hypothetical_fill_price_cents"] == result["executable_ask_at_decision_cents"]
+    assert result["total_fee_cents"] is not None
+    assert result["total_fee_cents"]           == pytest.approx(
+        result["fee_per_contract_cents"] * 5, rel=1e-6
+    )
+    assert result["calibration_eligible"]      is True
+    assert result["can_execute"]               is False
+    # Settlement-time placeholders must all be None at decision time
+    for field in ("closing_price_cents", "settlement_value_cents",
+                  "gross_pnl_cents", "net_pnl_after_fees_cents",
+                  "clv_cents", "final_result"):
+        assert result[field] is None, f"{field} should be None at decision time"
+
+
+def test_16_no_fill_ask_above_max_buy_price():
+    """
+    Ask > max_buy_price → LLP_REJECT and fill_status == NO_FILL.
+    hypothetical_fill_price_cents must be None.
+    total_fee_cents must be None.
+    calibration_eligible == False (NO_FILL rows must not enter ROI calc).
+    """
+    # Force ask above max_buy by using a very low model probability
+    result = ceg.evaluate(
+        **{**_BASE, "model_probability": 0.40},   # ask ~62¢ but max_buy well below
+        normalized_book=_book(yes_bid=0.60, no_bid=0.38, depth=200),
+        orderbook_fetched_at=_fresh_ts(30),
+    )
+    assert "KALSHI_MAX_BUY_PRICE_FAIL"          in result["blockers"]
+    assert result["fill_status"]               == ceg.FILL_STATUS_NO_FILL
+    assert result["hypothetical_fill_price_cents"] is None
+    assert result["total_fee_cents"]           is None
+    assert result["effective_quantity_filled"] == 0
+    assert result["calibration_eligible"]      is False
+    assert result["can_execute"]               is False
+
+
+def test_17_partial_fill_dry_run_insufficient_depth():
+    """
+    Ask ≤ max_buy_price BUT available depth < quantity → PARTIAL_FILL_DRY_RUN.
+    effective_quantity_filled == available_depth.
+    total_fee_cents == fee_per_contract × available_depth.
+    calibration_eligible == False.
+    """
+    result = ceg.evaluate(
+        **{**_BASE, "model_probability": _STRONG_MODEL_PROB, "quantity": 10},
+        normalized_book=_book(yes_bid=0.60, no_bid=0.38, depth=2),  # only 2 available
+        orderbook_fetched_at=_fresh_ts(30),
+    )
+    assert "KALSHI_DEPTH_INSUFFICIENT"         in result["blockers"]
+    assert result["fill_status"]               == ceg.FILL_STATUS_PARTIAL
+    assert result["effective_quantity_filled"] == 2
+    assert result["hypothetical_fill_price_cents"] == result["executable_ask_at_decision_cents"]
+    assert result["total_fee_cents"]           == pytest.approx(
+        result["fee_per_contract_cents"] * 2, rel=1e-6
+    )
+    assert result["calibration_eligible"]      is False
+    assert result["can_execute"]               is False
+
+
+def test_18_no_fill_rows_excluded_from_calibration():
+    """
+    Exhaustive: any row with fill_status != FILLED_DRY_RUN must have
+    calibration_eligible == False, regardless of the final_label path.
+    This is the guard that prevents NO_FILL / PARTIAL / STALE rows from
+    entering model ROI or hit-rate calculations after settlement.
+    """
+    scenarios = [
+        # (override kwargs, book kwargs, expected fill_status)
+        ({"model_probability": 0.40}, {"yes_bid": 0.60, "no_bid": 0.38, "depth": 200},
+         ceg.FILL_STATUS_NO_FILL),                              # ask > max_buy
+        ({"trading_active": False}, {}, ceg.FILL_STATUS_NO_FILL),   # hard reject
+        ({"kalshi_orderbook_source": "screenshot"}, {},
+         ceg.FILL_STATUS_STALE),                                # stale wins over partial
+        ({"model_probability": _STRONG_MODEL_PROB},
+         {"yes_bid": 0.60, "no_bid": 0.38, "depth": 1},
+         ceg.FILL_STATUS_PARTIAL),                              # depth < qty=5
+    ]
+    for override, book_kw, expected_status in scenarios:
+        result = ceg.evaluate(
+            **{**_BASE, "quantity": 5, **override},
+            normalized_book=_book(**book_kw) if book_kw else _book(),
+            orderbook_fetched_at=_fresh_ts(30),
+        )
+        assert result["fill_status"]          == expected_status, (
+            f"Expected {expected_status}, got {result['fill_status']} for {override}"
+        )
+        assert result["calibration_eligible"] is False, (
+            f"calibration_eligible must be False for {expected_status} (override={override})"
+        )
+        assert result["can_execute"]          is False
+
+
+def test_19_can_execute_false_on_every_ledger_row():
+    """
+    can_execute must remain False for EVERY fill_status path.
+    No ledger entry — even a clean FILLED_DRY_RUN — may set can_execute=True.
+    """
+    scenarios = [
+        # FILLED_DRY_RUN
+        ({"model_probability": _STRONG_MODEL_PROB},
+         {"yes_bid": 0.60, "no_bid": 0.38, "depth": 100}),
+        # PARTIAL_FILL_DRY_RUN
+        ({"model_probability": _STRONG_MODEL_PROB},
+         {"yes_bid": 0.60, "no_bid": 0.38, "depth": 1}),
+        # NO_FILL via max_buy
+        ({"model_probability": 0.40},
+         {"yes_bid": 0.60, "no_bid": 0.38, "depth": 200}),
+        # NO_FILL via reject
+        ({"trading_active": False}, {}),
+        # INVALID_STALE_BOOK
+        ({"kalshi_orderbook_source": "screenshot"}, {}),
+    ]
+    for override, book_kw in scenarios:
+        result = ceg.evaluate(
+            **{**_BASE, "quantity": 5, **override},
+            normalized_book=_book(**book_kw) if book_kw else _book(),
+            orderbook_fetched_at=_fresh_ts(30),
+        )
+        assert result["can_execute"] is False, (
+            f"can_execute was True for fill_status={result['fill_status']} "
+            f"override={override}"
+        )

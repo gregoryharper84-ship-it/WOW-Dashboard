@@ -1,0 +1,104 @@
+Good. This is a clean closeout.
+
+**Verdict: ACCEPT / DEPLOY.**
+
+The important part is this:
+
+```text id="vz29wl"
+Canonical playable Kalshi label:
+LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN
+```
+
+And this is now protected:
+
+```text id="l31i45"
+LLP_PLAYABLE_LIMIT_ONLY
+```
+
+That bare label can no longer leak into final output unless normalized first. That matters because the bare version sounds executable, while the canonical version preserves the project-wide rule:
+
+```text id="pc6n73"
+DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+can_execute=false
+```
+
+## Final acceptance note
+
+```text id="ihxaqk"
+WOW-PATCH-2026-07-09-KALSHI-CONTRACT-EXECUTION-OVERLAY
+Implementation status: ACCEPTED
+
+Replit confirmed:
+- Canonical label renamed to LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN.
+- Bare LLP_PLAYABLE_LIMIT_ONLY is forbidden as final output.
+- normalize_label() maps legacy/bare label to canonical dry-run label.
+- Non-playable labels pass through unchanged.
+- Gate module no longer emits bare playable label.
+- Regression test added.
+- Full contract execution gate test suite passes: 17/17.
+
+Deployment verdict:
+DEPLOY.
+```
+
+## One thing to tell Replit next
+
+Now that label drift is fixed, the next required addition is **ledger tracking for no-fill vs hypothetical-fill**. This prevents the model from counting a correct prediction as a “win” if the limit price never would have filled.
+
+Send this:
+
+Next patch request:
+
+Add Kalshi dry-run fill ledger tracking to the contract execution gate.
+
+Purpose:
+A Kalshi candidate that is only playable at a limit price cannot count as a model win unless the order would actually have filled. If the market never trades at or below our max buy price, the ledger result is NO_FILL, not WIN or LOSS.
+
+Add ledger fields:
+
+* market_ticker
+* event_id
+* side
+* outcome
+* model_probability
+* consensus_no_vig_probability
+* max_buy_price_cents
+* recommended_limit_price_cents
+* executable_ask_at_decision_cents
+* orderbook_fetched_at
+* intended_quantity
+* available_depth_at_limit
+* would_fill_at_decision
+* fill_status: FILLED_DRY_RUN / NO_FILL / PARTIAL_FILL_DRY_RUN / INVALID_STALE_BOOK
+* hypothetical_fill_price_cents
+* fee_per_contract_cents
+* total_fees
+* settlement_value_cents
+* gross_pnl
+* net_pnl_after_fees
+* closing_price_cents
+* clv_cents
+* final_result
+* blockers
+
+Rules:
+
+1. If ask > max_buy_price, fill_status = NO_FILL.
+2. If depth < intended_quantity, fill_status = PARTIAL_FILL_DRY_RUN or KALSHI_DEPTH_INSUFFICIENT.
+3. NO_FILL rows cannot count as model wins/losses.
+4. FILLED_DRY_RUN rows can enter calibration after settlement.
+5. Track CLV from hypothetical fill price to closing price when available.
+6. can_execute remains false.
+7. No live orders.
+8. No market orders.
+9. Preserve DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS.
+
+Add regression tests:
+
+* Playable limit candidate with ask ≤ max_buy_price and enough depth creates FILLED_DRY_RUN.
+* Candidate with ask above max_buy_price creates NO_FILL and cannot enter win/loss calibration.
+* Candidate with insufficient depth creates PARTIAL_FILL_DRY_RUN or KALSHI_DEPTH_INSUFFICIENT.
+* NO_FILL rows are excluded from model ROI and hit-rate calculations.
+* can_execute remains false for every ledger row.
+
+That is the next engine protection. Without it, the model could falsely grade “we liked the right side” as profit even though Kalshi never offered the required contract price.
