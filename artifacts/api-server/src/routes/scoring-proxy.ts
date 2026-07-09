@@ -31,7 +31,71 @@ function makeForwarder(prefix: string) {
   };
 }
 
-// Explicit routes for Kalshi weather lane — take precedence over wildcard.
+const GPT_BASE = {
+  execution_rule: "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+  can_execute:    false,
+} as const;
+
+// ── GPT Action hard-contract routes ───────────────────────────────────────────
+// These must always return HTTP 200 application/json, never HTML or 4xx/5xx.
+// They use an 8-second AbortSignal timeout so OpenAI never gets a TCP hang.
+
+// GET /wow/kalshi/health — PUBLIC, no API key required
+router.get("/wow/kalshi/health", async (_req: Request, res: Response) => {
+  try {
+    const r = await fetch(`${FLASK_BASE}/wow/kalshi/health`, {
+      headers: { Accept: "application/json" },
+      signal:  AbortSignal.timeout(8_000),
+    });
+    let data: Record<string, unknown> = {};
+    try { data = await r.json() as Record<string, unknown>; } catch { /* non-JSON fallback */ }
+    return res.status(200).json({
+      ok:             Boolean(data.ok ?? false),
+      signal:         String(data.signal ?? "FAILED"),
+      source_status:  r.ok ? "ROUTE_REACHABLE" : "UPSTREAM_ERROR",
+      flask_reachable: true,
+      kalshi_reachable: data.kalshi_reachable ?? null,
+      kalshi_open_total:     data.kalshi_open_total     ?? null,
+      kalshi_mve_null_count: data.kalshi_mve_null_count ?? null,
+      deploy_version:  data.deploy_version ?? null,
+      ...GPT_BASE,
+    });
+  } catch (err) {
+    return res.status(200).json({
+      ok:             false,
+      signal:         "FAILED",
+      source_status:  "UPSTREAM_FAILED",
+      flask_reachable: false,
+      kalshi_reachable: null,
+      message:        String((err as Error)?.message ?? err),
+      ...GPT_BASE,
+    });
+  }
+});
+
+// GET /wow/kalshi/debug-raw — forwarded with API key, 8s timeout
+router.get("/wow/kalshi/debug-raw", async (req: Request, res: Response) => {
+  const qs  = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+  try {
+    const r = await fetch(`${FLASK_BASE}/wow/kalshi/debug-raw${qs}`, {
+      headers: { Accept: "application/json", "X-API-Key": API_KEY },
+      signal:  AbortSignal.timeout(8_000),
+    });
+    let data: unknown = {};
+    try { data = await r.json(); } catch { /* non-JSON fallback */ }
+    return res.status(200).json(data);
+  } catch (err) {
+    return res.status(200).json({
+      ok:           false,
+      signal:       "FAILED",
+      source_status: "UPSTREAM_FAILED",
+      message:      String((err as Error)?.message ?? err),
+      ...GPT_BASE,
+    });
+  }
+});
+
+// ── Explicit routes for Kalshi weather lane — take precedence over wildcard.
 // GET /wow/kalshi/weather/stations — no auth, health-check use after deploy
 router.get("/wow/kalshi/weather/stations", async (_req: Request, res: Response) => {
   const target = `${FLASK_BASE}/wow/kalshi/weather/stations`;

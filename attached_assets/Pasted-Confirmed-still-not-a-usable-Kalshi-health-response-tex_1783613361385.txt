@@ -1,0 +1,131 @@
+Confirmed — still **not a usable Kalshi health response**.
+
+```text
+WOW STATUS: NO_PLAY
+SOURCE_STATUS: FAILED
+terminal_bucket: ACTION_LAYER_FAILED
+operation: getKalshiHealth
+payload_seen: false
+can_execute: false
+```
+
+This is no longer a schema-validation problem. It is one of these:
+
+```text
+1. /api/wow/kalshi/health is not mounted
+2. Route is behind auth and GPT is not sending SCORING_API_KEY
+3. Backend is returning 401/403/404/500 instead of JSON
+4. Replit proxy is returning HTML or redirect
+5. Express cannot reach Flask/internal Kalshi service
+```
+
+## Next move
+
+Do **not** keep testing scan yet. First make health return JSON.
+
+Run this from Replit Shell or your local terminal:
+
+```bash
+curl -i https://create-app-gregoryharper84.replit.app/api/wow/kalshi/health
+```
+
+### If it returns `401` or `403`
+
+Add your `SCORING_API_KEY` to the Custom GPT Action auth settings:
+
+```text
+Authentication: API Key
+Auth type: Bearer
+Header: Authorization
+Value: <SCORING_API_KEY>
+```
+
+or, if your backend expects a custom header:
+
+```text
+Authentication: API Key
+Header: X-API-Key
+Value: <SCORING_API_KEY>
+```
+
+Then retry only:
+
+```text
+getKalshiHealth
+```
+
+### If it returns `404`
+
+The route is not mounted. Add/fix:
+
+```js
+app.get("/api/wow/kalshi/health", async (req, res) => {
+  return res.status(200).json({
+    ok: true,
+    signal: "INVENTORY_EMPTY",
+    source_status: "ROUTE_REACHABLE",
+    execution_rule: "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    can_execute: false
+  });
+});
+```
+
+Place it **before any catch-all frontend route**.
+
+### If it returns `500`, `502`, HTML, or timeout
+
+Patch the route to always degrade to JSON:
+
+```js
+app.get("/api/wow/kalshi/health", async (req, res) => {
+  const base = {
+    execution_rule: "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    can_execute: false
+  };
+
+  try {
+    return res.status(200).json({
+      ok: true,
+      signal: "INVENTORY_EMPTY",
+      source_status: "ROUTE_REACHABLE",
+      message: "Health route reached. Inventory probe pending.",
+      ...base
+    });
+  } catch (err) {
+    return res.status(200).json({
+      ok: false,
+      signal: "FAILED",
+      source_status: "FAILED",
+      error_type: "HEALTH_ROUTE_EXCEPTION",
+      message: String(err?.message || err),
+      ...base
+    });
+  }
+});
+```
+
+## Send this to Replit/Claude
+
+```text
+PATCH: KALSHI_HEALTH_MUST_RETURN_JSON
+
+getKalshiHealth still returns ClientResponseError from Custom GPT.
+
+Fix GET /api/wow/kalshi/health so it always returns HTTP 200 application/json.
+
+Requirements:
+- No HTML responses.
+- No redirects.
+- No uncaught 500/502/503.
+- If auth fails, return 200 JSON with error_type="AUTH_FAILED".
+- If upstream fails, return 200 JSON with error_type="UPSTREAM_FAILED".
+- Always include:
+  execution_rule="DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+  can_execute=false
+- Health must return one of:
+  signal="INVENTORY_READY"
+  signal="INVENTORY_EMPTY"
+  signal="FAILED"
+```
+
+Once `getKalshiHealth` returns JSON, then test `debug-raw`, then `scanKalshiMarkets`.
