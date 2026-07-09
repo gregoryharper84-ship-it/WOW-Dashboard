@@ -2,6 +2,27 @@
 kalshi_client.py  —  Read-only Kalshi REST client
 WOW v16 Kalshi Exchange Layer
 
+─── Environment Variables ────────────────────────────────────────────────────
+
+Optional (public market-data endpoints work WITHOUT these):
+  KALSHI_BASE_URL     Override the primary API host. Default:
+                        https://external-api.kalshi.com/trade-api/v2
+                      Fallback (auto-retried on connection error):
+                        https://api.elections.kalshi.com/trade-api/v2
+
+Optional (required ONLY for authenticated endpoints: portfolio balance/positions):
+  KALSHI_API_KEY_ID   Kalshi API Key ID (UUID string from dashboard).
+  KALSHI_PRIVATE_KEY  RSA private key in PEM format. Newlines may be literal
+                      or escaped as \\n — the client normalises both forms.
+
+Note: The GPT Action proxy endpoints (/kalshi/health, /kalshi/markets,
+/kalshi/orderbook/<ticker>, /kalshi/weather/highs/<city>,
+/kalshi/evaluate/weather/<city>) use only the PUBLIC market-data surface and
+never require KALSHI_API_KEY_ID or KALSHI_PRIVATE_KEY.  The /kalshi/health
+endpoint reports `auth_configured` to indicate whether credentials are set.
+
+─── Security ─────────────────────────────────────────────────────────────────
+
 Public market-data endpoints (markets, orderbook, trades, events) do NOT
 require authentication and are served from external-api.kalshi.com.
 

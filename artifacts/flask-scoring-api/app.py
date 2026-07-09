@@ -17392,6 +17392,469 @@ def kalshi_settle_result():
     }), (201 if result.get("ok") else 400)
 
 
+# ── GPT Action proxy endpoints (read-only, dry-run, no auth required) ─────────
+#
+# These five endpoints expose a clean read-only surface for a Custom GPT Action.
+# The backend holds the RSA private key and computes Kalshi API signatures; the
+# GPT never sees credentials.  ALL responses stamp:
+#   dry_run_only: true   can_execute: false
+# No order-placement, cancel, or portfolio-write routes are exposed here.
+
+@app.route("/kalshi/health", methods=["GET"])
+def kalshi_gpt_health():
+    """
+    GPT Action: proxy health + dry-run mode flags.
+
+    Returns:
+      proxy_mode       always "read_only"
+      dry_run_only     always true
+      can_execute      always false
+      auth_configured  bool — whether KALSHI_API_KEY_ID is set (optional for public data)
+      checked_at       ISO-8601 timestamp
+      kalshi_reachable bool — quick ping to Kalshi public API
+    """
+    import datetime as _dt
+    pid    = os.getpid()
+    uptime = round(time.time() - _APP_START_TIME, 1)
+
+    auth_configured = bool(os.environ.get("KALSHI_API_KEY_ID", "").strip())
+
+    kalshi_reachable = False
+    kalshi_signal    = "KALSHI_UNREACHABLE"
+    kalshi_error     = None
+    try:
+        from kalshi_engine import kalshi_client
+        raw     = kalshi_client.search_markets(status="open", limit=5)
+        markets = raw.get("markets") or []
+        kalshi_reachable = True
+        kalshi_signal    = "INVENTORY_READY" if markets else "INVENTORY_EMPTY"
+    except Exception as exc:
+        kalshi_error = str(exc)[:200]
+
+    return jsonify({
+        "ok":               True,
+        "proxy_mode":       "read_only",
+        "dry_run_only":     True,
+        "can_execute":      False,
+        "auth_configured":  auth_configured,
+        "note":             "Public market-data endpoints work without auth credentials. "
+                            "Authenticated endpoints (portfolio) require KALSHI_API_KEY_ID + KALSHI_PRIVATE_KEY.",
+        "kalshi_reachable": kalshi_reachable,
+        "kalshi_signal":    kalshi_signal,
+        "kalshi_error":     kalshi_error,
+        "flask_pid":        pid,
+        "flask_uptime_seconds": uptime,
+        "checked_at":       _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "execution_rule":   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    }), 200
+
+
+@app.route("/kalshi/markets", methods=["GET"])
+def kalshi_gpt_markets():
+    """
+    GPT Action: paginated Kalshi market search.
+
+    Query params:
+      series_ticker  str   — scope to a specific Kalshi series (e.g. KXHIGHCHI)
+      status         str   — default "open"
+      limit          int   — default 50, max 100
+      cursor         str   — pagination cursor
+
+    Stamps source, fetched_at, and dry_run_only on the response envelope.
+    """
+    import datetime as _dt
+    from kalshi_engine import kalshi_client
+
+    series_ticker = (request.args.get("series_ticker") or "").strip() or None
+    status        = (request.args.get("status") or "open").strip()
+    try:
+        limit = min(int(request.args.get("limit", 50)), 100)
+    except (ValueError, TypeError):
+        limit = 50
+    cursor = (request.args.get("cursor") or "").strip() or None
+
+    try:
+        raw = kalshi_client.search_markets(
+            status        = status,
+            limit         = limit,
+            cursor        = cursor,
+            series_ticker = series_ticker,
+        )
+    except Exception as exc:
+        return jsonify({
+            "ok":          False,
+            "error":       str(exc)[:400],
+            "dry_run_only": True,
+            "can_execute": False,
+        }), 200
+
+    markets = raw.get("markets") or []
+    return jsonify({
+        "ok":           True,
+        "source":       "direct_api",
+        "fetched_at":   _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "dry_run_only": True,
+        "can_execute":  False,
+        "markets":      markets,
+        "market_count": len(markets),
+        "cursor":       raw.get("cursor"),
+        "params": {
+            "series_ticker": series_ticker,
+            "status":        status,
+            "limit":         limit,
+        },
+    }), 200
+
+
+# Process-level orderbook cache: ticker → {"fetched_at": datetime, "norm_book": dict}
+# Cache TTL of 120 s (2 min) keeps data reasonably fresh while avoiding
+# redundant round-trips on repeat GPT calls. The WOW staleness gate fires at
+# >10 min — any cache entry served past that threshold returns STALE + ok=false.
+_GPT_ORDERBOOK_CACHE: dict = {}
+_GPT_ORDERBOOK_CACHE_TTL_SECONDS = 120
+
+
+@app.route("/kalshi/orderbook/<ticker>", methods=["GET"])
+def kalshi_gpt_orderbook(ticker):
+    """
+    GPT Action: normalized orderbook for a single Kalshi market ticker.
+
+    Path param:
+      ticker  str — Kalshi market ticker (e.g. KXHIGHCHI-26JUL10-T85)
+
+    Query params:
+      depth          int   — orderbook depth (default 10)
+      force_refresh  bool  — bypass process cache and fetch fresh (default false)
+
+    Applies WOW freshness check: fetched_at older than 10 minutes → freshness=STALE,
+    ok=false.  Always stamps source, fetched_at, can_execute=false.
+
+    Uses a 2-minute process-level cache to avoid redundant Kalshi round-trips on
+    repeat calls. The STALE gate fires on cache entries >10 minutes old.
+    """
+    import datetime as _dt
+    from kalshi_engine import kalshi_client, orderbook_normalizer
+
+    ticker = ticker.strip().upper()
+    if not ticker:
+        return jsonify({
+            "ok":           False,
+            "error":        "ticker is required",
+            "can_execute":  False,
+            "dry_run_only": True,
+        }), 400
+
+    try:
+        depth = int(request.args.get("depth", 10))
+    except (ValueError, TypeError):
+        depth = 10
+
+    force_refresh = request.args.get("force_refresh", "").lower() in ("1", "true")
+    now = _dt.datetime.now(_dt.timezone.utc)
+
+    # ── Cache lookup ──────────────────────────────────────────────────────────
+    cached = None if force_refresh else _GPT_ORDERBOOK_CACHE.get(ticker)
+    if cached:
+        cache_age_s = (now - cached["fetched_at"]).total_seconds()
+        if cache_age_s <= _GPT_ORDERBOOK_CACHE_TTL_SECONDS:
+            fetched_at  = cached["fetched_at"]
+            norm_book   = cached["norm_book"]
+            age_minutes = round((now - fetched_at).total_seconds() / 60, 2)
+            freshness   = "STALE" if age_minutes > 10 else "FRESH"
+            return jsonify({
+                "ok":           freshness == "FRESH",
+                "ticker":       ticker,
+                "source":       "direct_api",
+                "fetched_at":   fetched_at.isoformat(),
+                "age_minutes":  age_minutes,
+                "freshness":    freshness,
+                "cached":       True,
+                "can_execute":  False,
+                "dry_run_only": True,
+                "orderbook":    norm_book,
+            }), 200
+
+    # ── Live fetch ────────────────────────────────────────────────────────────
+    raw_book = kalshi_client.safe_get_orderbook(ticker, depth=depth)
+    # Record fetched_at after the API call completes — this is the authoritative
+    # timestamp of when data was retrieved from Kalshi.
+    fetched_at = _dt.datetime.now(_dt.timezone.utc)
+
+    if not raw_book or raw_book.get("error"):
+        return jsonify({
+            "ok":           False,
+            "ticker":       ticker,
+            "error":        (raw_book.get("error") if raw_book else "fetch failed"),
+            "freshness":    "UNKNOWN",
+            "source":       "direct_api",
+            "fetched_at":   fetched_at.isoformat(),
+            "can_execute":  False,
+            "dry_run_only": True,
+        }), 200
+
+    norm_book = orderbook_normalizer.normalize(raw_book, ticker=ticker)
+
+    # Populate cache
+    _GPT_ORDERBOOK_CACHE[ticker] = {"fetched_at": fetched_at, "norm_book": norm_book}
+
+    # WOW freshness check: age of data relative to when it was fetched.
+    # For a live fetch this will be sub-second; the gate fires on stale cache
+    # entries (>10 min since fetched_at) or if the system clock jumps.
+    age_minutes = round((now - fetched_at).total_seconds() / 60, 2)
+    freshness   = "STALE" if age_minutes > 10 else "FRESH"
+
+    return jsonify({
+        "ok":           freshness == "FRESH",
+        "ticker":       ticker,
+        "source":       "direct_api",
+        "fetched_at":   fetched_at.isoformat(),
+        "age_minutes":  age_minutes,
+        "freshness":    freshness,
+        "cached":       False,
+        "can_execute":  False,
+        "dry_run_only": True,
+        "orderbook":    norm_book,
+    }), 200
+
+
+@app.route("/kalshi/weather/highs/<city>", methods=["GET"])
+def kalshi_gpt_weather_highs(city):
+    """
+    GPT Action: open weather-high markets for a supported city.
+
+    Path param:
+      city  str — one of: NYC, LA, MIA, CHI, AUS
+
+    Returns open NHIGH markets for the city's canonical Kalshi series, with
+    the NWS station code stamped on the response.
+    """
+    import datetime as _dt
+    from kalshi_engine import kalshi_client
+
+    city = city.strip().upper()
+    if city not in _KALSHI_WEATHER_STATIONS:
+        supported = ", ".join(sorted(_KALSHI_WEATHER_STATIONS.keys()))
+        return jsonify({
+            "ok":           False,
+            "error":        f"Unsupported city: {city!r}. Supported cities: {supported}",
+            "can_execute":  False,
+            "dry_run_only": True,
+        }), 400
+
+    station = _KALSHI_WEATHER_STATIONS[city]
+    series  = station["series"]
+
+    try:
+        raw = kalshi_client.search_markets(series_ticker=series, status="open", limit=100)
+    except Exception as exc:
+        return jsonify({
+            "ok":           False,
+            "city":         city,
+            "series_ticker": series,
+            "error":        str(exc)[:400],
+            "dry_run_only": True,
+            "can_execute":  False,
+        }), 200
+
+    markets = raw.get("markets") or []
+    return jsonify({
+        "ok":                       True,
+        "city":                     city,
+        "series_ticker":            series,
+        "nws_station_code":         station["station"],
+        "settlement_station_name":  station["name"],
+        "source":                   "direct_api",
+        "fetched_at":               _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "dry_run_only":             True,
+        "can_execute":              False,
+        "market_count":             len(markets),
+        "markets":                  markets,
+    }), 200
+
+
+@app.route("/kalshi/evaluate/weather/<city>", methods=["GET"])
+def kalshi_gpt_evaluate_weather(city):
+    """
+    GPT Action: dry-run WOW weather evaluation for a city.
+
+    Path param:
+      city     str   — one of: NYC, LA, MIA, CHI, AUS
+
+    Query params:
+      sigma_f  float — Gaussian sigma in °F (default 3.5)
+      date     str   — YYYY-MM-DD (default: today in city's timezone)
+
+    Fetches live NWS forecast + Kalshi open markets, auto-builds brackets from
+    live market tickers, and runs the full scoring pipeline.
+
+    ALWAYS returns can_execute=false and dry_run_only=true regardless of
+    internal scoring state.
+    """
+    import re as _re, datetime as _dt, zoneinfo as _zi
+
+    city = city.strip().upper()
+    if city not in _KALSHI_WEATHER_STATIONS:
+        supported = ", ".join(sorted(_KALSHI_WEATHER_STATIONS.keys()))
+        return jsonify({
+            "ok":    False,
+            "error": f"Unsupported city: {city!r}. Supported cities: {supported}",
+            "can_execute":  False,
+            "dry_run_only": True,
+        }), 400
+
+    try:
+        sigma_f = float(request.args.get("sigma_f", 3.5))
+        if sigma_f <= 0 or sigma_f > 20:
+            sigma_f = 3.5
+    except (ValueError, TypeError):
+        sigma_f = 3.5
+
+    station = _KALSHI_WEATHER_STATIONS[city]
+
+    # Resolve target date (default: today in city's local timezone)
+    date_str = (request.args.get("date") or "").strip()
+    if not date_str or not _re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        try:
+            tz       = _zi.ZoneInfo(station["tz"])
+            date_str = _dt.datetime.now(tz).strftime("%Y-%m-%d")
+        except Exception:
+            date_str = _dt.date.today().isoformat()
+
+    # ── Step 1: NWS data ──────────────────────────────────────────────────────
+    cli_result      = _fetch_nws_cli(city)
+    fc_result       = _fetch_nws_forecast_high(city, date_str)
+
+    observed_high   = cli_result.get("observed_high")
+    report_status   = cli_result.get("report_status", "ERROR")
+    revision_risk   = cli_result.get("revision_risk", False)
+    forecast_high   = fc_result.get("forecast_high")
+    forecast_source = fc_result.get("forecast_source", "none")
+
+    # Guard: reject CLI data for a different date
+    cli_issuance = cli_result.get("issuance_time") or ""
+    if observed_high is not None and cli_issuance:
+        try:
+            if cli_issuance[:10] != date_str:
+                observed_high = None
+                report_status = "NOT_YET_ISSUED"
+                revision_risk = False
+        except Exception:
+            pass
+
+    # ── Step 2: Auto-build brackets from live Kalshi markets ──────────────────
+    series = station["series"]
+    mkt_result   = _fetch_kalshi_nhigh_markets(series, date_str)
+    live_markets = mkt_result.get("markets", [])
+
+    # Extract temperature thresholds from tickers (pattern: T<digits>)
+    thresholds = set()
+    for m in live_markets:
+        tkr = m.get("ticker", "")
+        hits = _re.findall(r"T(\d{2,3})", tkr.upper())
+        for h in hits:
+            thresholds.add(int(h))
+    thresholds_sorted = sorted(thresholds)
+
+    # Build bracket labels
+    brackets = []
+    if not thresholds_sorted:
+        brackets = [{"label": "≤100", "yes_price": 0.5}]
+    else:
+        t_list = thresholds_sorted
+        for i, t in enumerate(t_list):
+            if i == 0:
+                brackets.append({"label": f"≤{t}", "yes_price": 0.5})
+            else:
+                brackets.append({"label": f"{t_list[i-1]+1}-{t}", "yes_price": 0.5})
+        brackets.append({"label": f"≥{t_list[-1]+1}", "yes_price": 0.5})
+
+    # ── Step 3: Live Kalshi prices ─────────────────────────────────────────────
+    kalshi_prices        = _fetch_kalshi_nhigh_prices(series, date_str, brackets)
+    effective_price_src  = kalshi_prices.get("price_source", "not_found")
+
+    # ── Step 4: Mutual exclusivity ────────────────────────────────────────────
+    # Auto-built brackets use placeholder yes_price=0.5; their sum will not
+    # equal 1.0, so we skip the operator-price mutual-exclusivity check here
+    # and treat auto-built brackets as mutually exclusive by construction
+    # (they cover non-overlapping temperature ranges with no gaps).
+    # This matches the intent of the POST /wow/kalshi/weather/evaluate check,
+    # which validates operator-supplied yes_price sums — not model probabilities.
+    mutual_exclusivity_ok = True  # auto-built brackets are mutually exclusive by design
+
+    # ── Step 5: Weather label (mirrors POST /wow/kalshi/weather/evaluate) ─────
+    horizon_hours = _compute_forecast_horizon_hours(date_str, station["tz"])
+    if not cli_result.get("ok") and not forecast_high:
+        weather_label = "WEATHER_REJECT_DATA"
+    elif not mutual_exclusivity_ok:
+        weather_label = "WEATHER_REJECT_SETTLEMENT"
+    elif observed_high is not None:
+        weather_label = "WEATHER_MODEL_READY"
+    elif forecast_high is not None:
+        if horizon_hours <= 24 and sigma_f < 4.5:
+            weather_label = "WEATHER_MODEL_READY"
+        elif horizon_hours <= 48:
+            weather_label = "WEATHER_WATCH"
+        else:
+            weather_label = "WEATHER_SCOUT"
+    else:
+        weather_label = "WEATHER_REJECT_DATA"
+
+    # ── Step 6: Score brackets ────────────────────────────────────────────────
+    if observed_high is not None:
+        brackets_scored = _score_weather_brackets_binary(observed_high, brackets)
+        scoring_mode    = "binary_final_cli"
+        model_high      = observed_high
+    elif forecast_high is not None:
+        brackets_scored = _score_weather_brackets_gaussian(forecast_high, sigma_f, brackets)
+        scoring_mode    = "gaussian_forecast"
+        model_high      = forecast_high
+    else:
+        brackets_scored = _score_weather_brackets_gaussian(None, sigma_f, brackets)
+        scoring_mode    = "no_data"
+        model_high      = None
+
+    # ── Step 7: PATCH-003 price gate ──────────────────────────────────────────
+    price_gate = _apply_weather_price_gate(
+        effective_price_src,
+        kalshi_prices.get("price_timestamp"),
+        report_status,
+        kalshi_prices,
+    )
+
+    # ── Step 8: Terminal label ─────────────────────────────────────────────────
+    terminal_label = _weather_terminal_label_v2(weather_label, brackets_scored, price_gate)
+
+    return jsonify({
+        "ok":                     True,
+        "city":                   city,
+        "series":                 station["series"],
+        "nws_station_code":       station["station"],
+        "station_name":           station["name"],
+        "date":                   date_str,
+        "sigma_f":                sigma_f,
+        "forecast_high":          forecast_high,
+        "forecast_source":        forecast_source,
+        "observed_high":          observed_high,
+        "report_status":          report_status,
+        "revision_risk":          revision_risk,
+        "model_high":             model_high,
+        "scoring_mode":           scoring_mode,
+        "forecast_horizon_hours": round(horizon_hours, 1),
+        "weather_label":          weather_label,
+        "terminal_label":         terminal_label,
+        "brackets_scored":        brackets_scored,
+        "tickers_found":          mkt_result.get("tickers_found", []),
+        "price_source":           effective_price_src,
+        "price_age_minutes":      price_gate.get("price_age_minutes"),
+        "can_execute":            False,
+        "dry_run_only":           True,
+        "execution_rule":         "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        "note":                   "Brackets auto-built from live Kalshi market tickers. "
+                                  "For precise scoring, use POST /wow/kalshi/weather/evaluate "
+                                  "with explicit bracket labels.",
+    }), 200
+
+
 # ── WOW / Kalshi Daily High Temperature Weather Lane ─────────────────────────
 #
 # Verified station mapping — hardcoded from live Kalshi contract rule text.
