@@ -70,7 +70,7 @@ _STRONG_MODEL_PROB = 0.80
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 1 — Happy path: all gates pass → LLP_PLAYABLE_LIMIT_ONLY
+# Test 1 — Happy path: all gates pass → LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_01_happy_path_returns_playable_limit_only():
@@ -80,7 +80,7 @@ def test_01_happy_path_returns_playable_limit_only():
         normalized_book=_book(yes_bid=0.60, no_bid=0.38, depth=200),
         orderbook_fetched_at=_fresh_ts(30),
     )
-    assert result["final_label"] == "LLP_PLAYABLE_LIMIT_ONLY"
+    assert result["final_label"] == "LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN"
     assert result["can_execute"]  is False
     assert result["dry_run_only"] is True
     assert result["would_fill"]   is True
@@ -305,10 +305,11 @@ def test_10_ask_reconstruction_arithmetic():
 def test_11_label_never_approved_or_plain_playable():
     """
     The contract gate may only emit:
-      LLP_REJECT | LLP_WATCH | LLP_PLAYABLE_LIMIT_ONLY
-    It must NEVER emit LLP_APPROVED or plain LLP_PLAYABLE.
+      LLP_REJECT | LLP_WATCH | LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN
+    It must NEVER emit LLP_APPROVED, plain LLP_PLAYABLE, or
+    the bare LLP_PLAYABLE_LIMIT_ONLY (without _DRY_RUN suffix).
     """
-    _ALLOWED = {"LLP_REJECT", "LLP_WATCH", "LLP_PLAYABLE_LIMIT_ONLY"}
+    _ALLOWED = {"LLP_REJECT", "LLP_WATCH", "LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN"}
     scenarios = [
         {"model_probability": _STRONG_MODEL_PROB},   # all gates pass
         {"model_probability": 0.99},                  # very strong model
@@ -326,7 +327,9 @@ def test_11_label_never_approved_or_plain_playable():
         assert result["final_label"] in _ALLOWED, (
             f"Unexpected label '{result['final_label']}' for override={override}"
         )
-        assert result["final_label"] not in ("LLP_APPROVED", "LLP_PLAYABLE"), (
+        assert result["final_label"] not in (
+            "LLP_APPROVED", "LLP_PLAYABLE", "LLP_PLAYABLE_LIMIT_ONLY"
+        ), (
             f"Forbidden label '{result['final_label']}' emitted for override={override}"
         )
 
@@ -346,7 +349,7 @@ def test_12_can_execute_always_false():
     assert result["can_execute"] is False
     # Also verify the label IS playable so we know can_execute isn't just a side-effect
     # of a reject/watch path
-    assert result["final_label"] == "LLP_PLAYABLE_LIMIT_ONLY"
+    assert result["final_label"] == "LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN"
 
 
 def test_12b_can_execute_false_on_every_path():
@@ -394,3 +397,42 @@ def test_13_dry_run_only_always_true():
         assert result["execution_rule"] == (
             "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
         ), f"execution_rule wrong for override={override}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 14 — normalize_label() converts bare LLP_PLAYABLE_LIMIT_ONLY → canonical
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_14_normalize_label_converts_bare_to_dry_run():
+    """
+    If a renderer or legacy path produces the bare 'LLP_PLAYABLE_LIMIT_ONLY'
+    label (without the _DRY_RUN suffix), normalize_label() must silently
+    upgrade it to 'LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN' while preserving
+    can_execute=False semantics.
+
+    This guard ensures label drift between older callers and the canonical
+    gate is caught and corrected automatically.
+    """
+    _CANONICAL = "LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN"
+
+    # Core: bare label is normalized
+    assert ceg.normalize_label("LLP_PLAYABLE_LIMIT_ONLY") == _CANONICAL
+
+    # Idempotent: canonical label passes through unchanged
+    assert ceg.normalize_label(_CANONICAL) == _CANONICAL
+
+    # Other labels pass through unchanged
+    assert ceg.normalize_label("LLP_REJECT")  == "LLP_REJECT"
+    assert ceg.normalize_label("LLP_WATCH")   == "LLP_WATCH"
+    assert ceg.normalize_label("GATE_ERROR")  == "GATE_ERROR"
+
+    # Verify the gate itself never emits the bare label directly
+    result = ceg.evaluate(
+        **{**_BASE, "model_probability": 0.99},
+        normalized_book=_book(yes_bid=0.60, no_bid=0.38, depth=1000),
+        orderbook_fetched_at=_fresh_ts(10),
+    )
+    assert result["final_label"] == _CANONICAL, (
+        f"Gate emitted '{result['final_label']}' instead of canonical '{_CANONICAL}'"
+    )
+    assert result["can_execute"] is False

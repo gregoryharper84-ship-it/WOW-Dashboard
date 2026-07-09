@@ -6,7 +6,7 @@ Purpose
 -------
 Prevent sportsbook-style "winner pick" logic from promoting Kalshi candidates
 without contract execution math.  A Kalshi sports Game Winner candidate cannot
-reach LLP_PLAYABLE_LIMIT_ONLY unless it clears ALL of:
+reach LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN unless it clears ALL of:
 
   1. kalshi_orderbook_source == "direct_api"
   2. fresh orderbook  (age <= STALE_SECONDS = 600 s)
@@ -21,7 +21,7 @@ reach LLP_PLAYABLE_LIMIT_ONLY unless it clears ALL of:
 
 Labels emitted (never LLP_APPROVED or LLP_PLAYABLE)
 -----------------------------------------------------
-  LLP_PLAYABLE_LIMIT_ONLY  — all gates pass; can_execute=False unconditionally
+  LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN — all gates pass; can_execute=False unconditionally
   LLP_WATCH                — soft gate failed (source, staleness, fee, depth)
   LLP_REJECT               — hard gate failed (empty book, reconstruction failure,
                              not trading, ask > max_buy_price)
@@ -72,6 +72,35 @@ MAKER_FEE_RATE = 0.0175       # 1.75 %
 
 _EXECUTION_MODE = "LIMIT_ONLY_DRY_RUN"
 _EXECUTION_RULE = "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+
+
+# ── Label constants and normalization ────────────────────────────────────────
+
+# Canonical playable label. Any caller or renderer that produced the bare
+# "LLP_PLAYABLE_LIMIT_ONLY" (without _DRY_RUN suffix) must normalize it.
+LABEL_PLAYABLE      = "LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN"
+LABEL_WATCH         = "LLP_WATCH"
+LABEL_REJECT        = "LLP_REJECT"
+
+# Legacy alias that must never appear in final output
+_LABEL_BARE_PLAYABLE = "LLP_PLAYABLE_LIMIT_ONLY"
+
+_NORMALIZATION_MAP: dict[str, str] = {
+    _LABEL_BARE_PLAYABLE: LABEL_PLAYABLE,
+}
+
+
+def normalize_label(label: str) -> str:
+    """
+    Normalize a contract-gate final_label to its canonical form.
+
+    The only normalization currently required is:
+      LLP_PLAYABLE_LIMIT_ONLY  →  LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN
+
+    All other labels (LLP_REJECT, LLP_WATCH, GATE_ERROR, …) pass through
+    unchanged.  can_execute remains False regardless of the normalized label.
+    """
+    return _NORMALIZATION_MAP.get(label, label)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -291,7 +320,7 @@ def evaluate(
     elif _watch:
         final_label = "LLP_WATCH"
     else:
-        final_label = "LLP_PLAYABLE_LIMIT_ONLY"
+        final_label = "LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN"
 
     # ── Informational: raw model edge vs sportsbook ───────────────────────────
     raw_model_edge: Optional[float] = None
