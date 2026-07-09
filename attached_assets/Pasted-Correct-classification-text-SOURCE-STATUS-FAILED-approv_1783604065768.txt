@@ -1,0 +1,204 @@
+Correct classification:
+
+```text
+SOURCE_STATUS = FAILED
+approval_evidence = false
+terminal_cap = KALSHI_DATA_GATE_FAILED / HOLD
+can_execute = false
+```
+
+This is **not a model result** and not a Kalshi inventory result. It means the Custom GPT action successfully attempted the route, but your Replit endpoint did **not** return a clean 200 JSON health response.
+
+## What this means
+
+Your schema likely saved correctly. This is now a **runtime/backend route issue**, not an OpenAPI schema issue.
+
+The route in the schema is:
+
+```text
+GET https://create-app-gregoryharper84.replit.app/api/wow/kalshi/health
+```
+
+That endpoint must always return JSON like:
+
+```json
+{
+  "ok": true,
+  "signal": "INVENTORY_READY",
+  "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+  "can_execute": false
+}
+```
+
+Or, on failure, it should still return HTTP **200** with:
+
+```json
+{
+  "ok": false,
+  "signal": "FAILED",
+  "message": "Kalshi health check failed",
+  "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+  "can_execute": false
+}
+```
+
+The key fix: **health should never throw a 500/502/404/HTML error to the GPT Action.** It should degrade to `signal: "FAILED"` in JSON.
+
+## Replit test
+
+Run this in Replit Shell:
+
+```bash
+curl -i https://create-app-gregoryharper84.replit.app/api/wow/kalshi/health
+```
+
+Then classify:
+
+```text
+200 + JSON = action should work
+404 = route not mounted
+401/403 = auth mismatch
+500 = backend exception
+502/503 = Flask/Replit service not reachable
+HTML response = wrong route or app fallback page
+timeout = Replit cold start or route hanging
+```
+
+## Backend patch to send Claude/Replit
+
+Use this:
+
+```text
+PATCH: KALSHI_HEALTH_ACTION_SAFE_RESPONSE
+
+Fix GET /api/wow/kalshi/health so it always returns HTTP 200 JSON for GPT Actions.
+
+Requirements:
+- Never return HTML.
+- Never allow uncaught exception to propagate.
+- Never require auth for this health route, or document the exact auth expected by the Custom GPT Action.
+- If Flask/Kalshi inventory check fails, return ok=false and signal="FAILED" with reason.
+- If inventory is reachable but empty, return ok=true and signal="INVENTORY_EMPTY".
+- If inventory has supported markets, return ok=true and signal="INVENTORY_READY".
+- Always include:
+  execution_rule="DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+  can_execute=false
+- Do not expose any order/create/cancel/amend endpoints.
+```
+
+## Express route example
+
+If your Replit app uses Express as the GPT-safe proxy, add/repair this:
+
+```js
+app.get("/api/wow/kalshi/health", async (req, res) => {
+  const base = {
+    execution_rule: "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    can_execute: false
+  };
+
+  try {
+    // Replace this with your actual Flask/internal health URL.
+    const flaskUrl = process.env.FLASK_BASE_URL || "http://127.0.0.1:5000";
+    const r = await fetch(`${flaskUrl}/api/wow/kalshi/health`, {
+      method: "GET",
+      headers: { "Accept": "application/json" }
+    });
+
+    let data = {};
+    try {
+      data = await r.json();
+    } catch {
+      return res.status(200).json({
+        ok: false,
+        signal: "FAILED",
+        message: "Flask health route did not return JSON",
+        upstream_status: r.status,
+        ...base
+      });
+    }
+
+    return res.status(200).json({
+      ok: Boolean(data.ok),
+      flask_reachable: true,
+      kalshi_reachable: data.kalshi_reachable ?? null,
+      signal: data.signal || "FAILED",
+      inventory_count: data.inventory_count ?? null,
+      mve_null_count: data.mve_null_count ?? null,
+      mve_non_null_count: data.mve_non_null_count ?? null,
+      deploy_version: data.deploy_version ?? null,
+      message: data.message ?? null,
+      ...base
+    });
+  } catch (err) {
+    return res.status(200).json({
+      ok: false,
+      flask_reachable: false,
+      kalshi_reachable: null,
+      signal: "FAILED",
+      message: "Kalshi health proxy failed",
+      detail: String(err?.message || err),
+      ...base
+    });
+  }
+});
+```
+
+## Flask route fallback example
+
+If Flask owns the endpoint directly:
+
+```python
+@app.get("/api/wow/kalshi/health")
+def kalshi_health():
+    base = {
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        "can_execute": False,
+    }
+
+    try:
+        # Replace with your real inventory probe.
+        inventory_count = check_kalshi_inventory_count()
+
+        if inventory_count and inventory_count > 0:
+            return jsonify({
+                "ok": True,
+                "signal": "INVENTORY_READY",
+                "inventory_count": inventory_count,
+                **base
+            }), 200
+
+        return jsonify({
+            "ok": True,
+            "signal": "INVENTORY_EMPTY",
+            "inventory_count": inventory_count or 0,
+            **base
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "signal": "FAILED",
+            "message": "Kalshi health check failed",
+            "detail": str(e),
+            **base
+        }), 200
+```
+
+## After patch, rerun in this order
+
+```text
+1. curl -i /api/wow/kalshi/health
+2. Custom GPT action: getKalshiHealth
+3. curl -i /api/wow/kalshi/debug-raw?limit=25
+4. Custom GPT action: getKalshiRawInventoryDebug
+5. Custom GPT action: scanKalshiMarkets
+```
+
+Until `getKalshiHealth` returns a clean JSON signal, every Kalshi scan stays:
+
+```text
+NO PLAY
+SOURCE_STATUS = FAILED
+can_execute = false
+```
