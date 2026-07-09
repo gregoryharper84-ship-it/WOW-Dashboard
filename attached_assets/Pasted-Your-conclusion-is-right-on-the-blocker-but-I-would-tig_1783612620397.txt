@@ -1,0 +1,149 @@
+Your conclusion is right on the blocker, but I would tighten the WOW label one level:
+
+```text
+NO_PLAY
+SOURCE_STATUS = FAILED
+terminal_bucket = ACTION_LAYER_FAILED
+approval_evidence = false
+kalshi_payload_seen = false
+raw_inventory_seen = false
+orderbook_seen = false
+can_execute = false
+```
+
+I would **not** call this true `DATA_UNOBTAINABLE` yet, because the failure is happening before the API layer returns a Kalshi payload. It is an **action/proxy/runtime failure**, not evidence that Kalshi inventory is empty or unavailable.
+
+Your schema is pointed at the Replit server and already declares the Kalshi health, scan, debug, station, and weather routes. The uploaded schema has the server set to `https://create-app-gregoryharper84.replit.app` and includes `/api/wow/kalshi/health`, `/api/wow/kalshi/scan`, `/api/wow/kalshi/debug-raw`, `/api/wow/kalshi/weather/stations`, and `/api/wow/kalshi/weather/evaluate`.  So the next fix is almost certainly **Replit backend routing**, not the Custom GPT schema.
+
+## What the repeated ClientResponseError means
+
+Because all three action calls failed:
+
+```text
+getKalshiHealth = FAILED
+getKalshiRawInventoryDebug = FAILED
+scanKalshiMarkets = FAILED
+```
+
+the common failure point is likely one of these:
+
+```text
+1. Replit app not returning HTTP 200 for /api/wow/kalshi/*
+2. Route exists in schema but not mounted in backend
+3. Backend returns HTML instead of JSON
+4. Backend requires auth but Custom GPT action is not sending it
+5. Express proxy cannot reach Flask/internal service
+6. Replit cold start / timeout
+7. Upstream exception is escaping as 500/502 instead of JSON
+```
+
+## Immediate Replit-side test
+
+Run these from **Replit Shell**, not from the Custom GPT:
+
+```bash
+curl -i https://create-app-gregoryharper84.replit.app/api/wow/kalshi/health
+curl -i "https://create-app-gregoryharper84.replit.app/api/wow/kalshi/debug-raw?limit=25"
+```
+
+You need to see:
+
+```text
+HTTP/2 200
+content-type: application/json
+```
+
+Anything else is the problem.
+
+## Patch to send Replit/Claude
+
+```text
+PATCH: WOW-KALSHI-ACTION-LAYER-HEALTH-FAILSAFE
+
+Problem:
+Custom GPT action calls to getKalshiHealth, getKalshiRawInventoryDebug, and scanKalshiMarkets are returning ClientResponseError before any Kalshi payload is visible.
+
+Classification:
+This is SOURCE_STATUS=FAILED / ACTION_LAYER_FAILED, not approval-grade evidence and not a playable Kalshi scan.
+
+Required fix:
+All GPT-safe Kalshi routes must return HTTP 200 application/json, even when upstream Kalshi, Flask, credentials, or inventory checks fail.
+
+Routes to harden:
+GET /api/wow/kalshi/health
+GET /api/wow/kalshi/debug-raw
+POST /api/wow/kalshi/scan
+
+Rules:
+- Never return HTML to GPT Actions.
+- Never return uncaught 500/502/503 exceptions to GPT Actions.
+- Never require auth unless the Custom GPT Action is configured to send that auth.
+- If upstream fails, return ok=false with source_status="FAILED".
+- If inventory is reachable but empty, return signal="INVENTORY_EMPTY".
+- If inventory is reachable with supported markets, return signal="INVENTORY_READY".
+- Always include execution_rule="DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS".
+- Always include can_execute=false.
+- Do not expose order placement/cancel/amend endpoints.
+
+Minimum health response:
+{
+  "ok": false,
+  "signal": "FAILED",
+  "source_status": "FAILED",
+  "message": "Kalshi health route reached, upstream failed",
+  "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+  "can_execute": false
+}
+```
+
+## Express failsafe wrapper
+
+Have Replit add this **before any catch-all frontend route**:
+
+```js
+app.get("/api/wow/kalshi/health", async (req, res) => {
+  const base = {
+    execution_rule: "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    can_execute: false
+  };
+
+  try {
+    return res.status(200).json({
+      ok: true,
+      signal: "INVENTORY_EMPTY",
+      source_status: "ROUTE_REACHABLE",
+      message: "Kalshi health route is reachable. Inventory probe not yet confirmed.",
+      ...base
+    });
+  } catch (err) {
+    return res.status(200).json({
+      ok: false,
+      signal: "FAILED",
+      source_status: "FAILED",
+      message: String(err?.message || err),
+      ...base
+    });
+  }
+});
+```
+
+Once that route works, wire the real Kalshi/Flask probe behind it. The first goal is simply to make the Custom GPT action receive JSON.
+
+## Validation order after patch
+
+```text
+1. Replit curl health
+2. Custom GPT getKalshiHealth
+3. Replit curl debug-raw
+4. Custom GPT getKalshiRawInventoryDebug
+5. Custom GPT scanKalshiMarkets
+```
+
+Until step 2 returns JSON, every Kalshi scan remains:
+
+```text
+NO_PLAY
+SOURCE_STATUS = FAILED
+ACTION_LAYER_FAILED
+can_execute = false
+```

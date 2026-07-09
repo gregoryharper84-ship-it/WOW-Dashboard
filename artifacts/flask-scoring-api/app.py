@@ -19642,7 +19642,13 @@ def wow_kalshi_debug_raw():
             "category_breakdown": cat_breakdown,
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({
+            "ok":             False,
+            "signal":         "FAILED",
+            "error":          str(e)[:300],
+            "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+            "can_execute":    False,
+        }), 200
 
 
 @app.route("/wow/kalshi/health", methods=["GET"])
