@@ -19934,6 +19934,49 @@ def wow_llp_kalshi_ml_evaluate():
         kalshi_orderbook_source=kalshi_orderbook_source,
     )
 
+    # ── WOW-PATCH-2026-07-09: contract execution overlay ────────────────────
+    # Applies ask reconstruction, Kalshi fee model, max_buy_price, EV, and
+    # depth checks AFTER sportsbook consensus and BEFORE final label promotion.
+    # Always runs; result is informational and never raises on failure.
+    contract_overlay: dict = {}
+    try:
+        from kalshi_engine import contract_execution_gate as _ceg
+        from kalshi_engine import orderbook_normalizer as _ob_norm_ceg
+        _raw_ob = fetch_result.get("raw_orderbook") if fetch_result else None
+        _norm_book = (
+            _ob_norm_ceg.normalize(_raw_ob, ticker=matched_ticker or "")
+            if _raw_ob else None
+        )
+        _series_ticker = (
+            matched_ticker.split("-")[0] if matched_ticker else ""
+        )
+        contract_overlay = _ceg.evaluate(
+            series_ticker=_series_ticker,
+            market_ticker=matched_ticker or "",
+            event_id=mapping.get("event_ticker"),
+            side="YES",
+            outcome=mapping.get("yes_sub_title"),
+            model_probability=model_probability,
+            consensus_no_vig_probability=(
+                (consensus_odds or {}).get("consensus_fair_probability")
+            ),
+            normalized_book=_norm_book,
+            orderbook_fetched_at=fetch_result.get("orderbook_timestamp_utc") if fetch_result else None,
+            trading_active=trading_active,
+            kalshi_orderbook_source=kalshi_orderbook_source,
+            quantity=1,
+            slippage_buffer=0.005,
+            fee_multiplier=1.0,
+        )
+    except Exception as _ceg_err:
+        contract_overlay = {
+            "final_label": "GATE_ERROR",
+            "blockers":    ["CONTRACT_GATE_EXCEPTION"],
+            "error":       str(_ceg_err),
+            "can_execute": False,
+            "dry_run_only": True,
+        }
+
     # ── Log every candidate to kalshi_candidate_ledger (WATCH + PLAYABLE + SCOUT) ──
     # Logging never raises — it must not break the primary evaluation flow.
     ledger_row_id = None
@@ -19978,6 +20021,7 @@ def wow_llp_kalshi_ml_evaluate():
         "inventory_signal":          inventory_signal,
         "consensus_odds":            consensus_odds,
         "evaluation":                evaluation,
+        "contract_execution_overlay": contract_overlay,
         "blocker_tags":              evaluation.get("blocker_tags", []),
         "kalshi_orderbook_source":   kalshi_orderbook_source,
         "market_type":               market_type,

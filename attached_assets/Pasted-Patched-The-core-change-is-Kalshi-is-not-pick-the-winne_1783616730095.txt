@@ -1,0 +1,269 @@
+Patched. The core change is:
+
+**Kalshi is not “pick the winner.” Kalshi is “only buy the contract when the executable contract price is below our fee-adjusted max buy price.”**
+
+Kalshi’s API orderbook matters because it returns **YES bids and NO bids only**, so the engine must reconstruct asks by reciprocity: `YES ask = 100 - best NO bid`, and `NO ask = 100 - best YES bid`. ([API Documentation][1]) Kalshi’s current fee schedule also makes fees a real edge tax: immediately matched orders are charged trading fees, and the general trading-fee formula is `round up(M × 0.07 × C × P × (1-P))`; the July 2026 schedule lists **KXMLBGAME** and **KXWNBAGAME** with maker/taker multipliers of 1/1. ([Kalshi][2]) Limit orders are the correct default because Kalshi says they let you specify the maximum price you are willing to pay, though they may remain unfilled. ([Kalshi Help Center][3])
+
+## Patch now active
+
+```text
+WOW-PATCH-2026-07-09-KALSHI-CONTRACT-EXECUTION-OVERLAY
+
+Status: ACTIVE
+Lane: LLP Kalshi Sports — MLB / WNBA / Game Winner
+Execution: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+
+Purpose:
+Prevent sportsbook-style “winner pick” logic from leaking into Kalshi. A Kalshi candidate is not playable just because model probability beats consensus. It must also clear contract price, bid/ask spread, depth, fee, staleness, and limit-order gates.
+
+Core rule:
+A Kalshi sports Game Winner candidate cannot be LLP_PLAYABLE unless:
+
+1. sportsbook no-vig consensus is fresh and clears edge,
+2. LLP model probability clears edge,
+3. Kalshi orderbook source is direct_api,
+4. orderbook is fresh,
+5. market is trading/open,
+6. YES/NO asks are reconstructed correctly,
+7. executable ask is at or below max_buy_price,
+8. available depth supports intended size,
+9. final-lock recheck is fresh,
+10. execution mode is LIMIT_ONLY_DRY_RUN,
+11. can_execute=false.
+
+Formula:
+YES EV = model_probability - yes_executable_price - fee_per_contract
+NO EV = (1 - model_probability) - no_executable_price - fee_per_contract
+
+max_buy_price =
+fair_probability
+- required_edge_threshold
+- estimated_fee_per_contract
+- slippage_buffer
+
+Required edge floors:
+MLB KXMLBGAME main market: 1.5% after fees/spread
+WNBA KXWNBAGAME main market: 2.0% after fees/spread
+Derivative / thin markets: 2.5%+ after fees/spread
+
+Mandatory blocker tags:
+KALSHI_ORDERBOOK_SOURCE_NOT_DIRECT_API
+KALSHI_ORDERBOOK_STALE
+KALSHI_MARKET_NOT_TRADING
+KALSHI_EMPTY_ORDERBOOK
+KALSHI_ASK_RECONSTRUCTION_FAILED
+KALSHI_FEE_MODEL_MISSING
+KALSHI_MAX_BUY_PRICE_FAIL
+KALSHI_DEPTH_INSUFFICIENT
+KALSHI_MARKET_ORDER_BANNED
+FINAL_LOCK_RECHECK_REQUIRED
+DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+```
+
+## What to add to the engine
+
+Add a new module after sportsbook consensus and before final label promotion:
+
+```text
+/wow/llp/kalshi/contract_execution_gate.py
+```
+
+It should consume the current LLP candidate and return a contract-level verdict.
+
+Required output fields:
+
+```python
+{
+    "series_ticker": "KXMLBGAME",
+    "market_ticker": "...",
+    "event_id": "...",
+    "side": "YES",
+    "outcome": "Phillies",
+    "model_probability": 0.615,
+    "consensus_no_vig_probability": 0.598,
+    "raw_model_edge": 0.017,
+
+    "kalshi_orderbook_source": "direct_api",
+    "orderbook_fetched_at": "...",
+    "orderbook_age_seconds": 42,
+    "trading_active": True,
+
+    "best_yes_bid_cents": 60,
+    "best_no_bid_cents": 38,
+    "best_yes_ask_cents": 62,
+    "best_no_ask_cents": 40,
+    "spread_cents": 2,
+    "available_depth_at_price": 125,
+
+    "executable_price_cents": 62,
+    "estimated_fee_per_contract_cents": 1.65,
+    "fee_adjusted_breakeven_probability": 0.6365,
+    "required_edge_threshold": 0.015,
+    "slippage_buffer": 0.005,
+    "max_buy_price_cents": 59.5,
+
+    "contract_ev_per_contract_cents": -2.65,
+    "execution_mode": "LIMIT_ONLY_DRY_RUN",
+    "would_place_limit_at_cents": null,
+    "would_fill": false,
+
+    "final_label": "LLP_REJECT",
+    "blockers": ["KALSHI_MAX_BUY_PRICE_FAIL"],
+    "can_execute": false,
+    "dry_run_only": true
+}
+```
+
+The key logic:
+
+```python
+best_yes_ask = 100 - best_no_bid
+best_no_ask = 100 - best_yes_bid
+
+yes_fee = kalshi_fee(price=yes_ask, contracts=quantity, maker_or_taker="taker")
+yes_fee_per_contract = yes_fee / quantity
+
+yes_max_buy = (
+    model_probability * 100
+    - required_edge_threshold_cents
+    - yes_fee_per_contract
+    - slippage_buffer_cents
+)
+
+if yes_ask <= yes_max_buy and depth >= intended_quantity:
+    label = "LLP_PLAYABLE_LIMIT_ONLY"
+else:
+    label = "LLP_REJECT" or "LLP_WATCH"
+```
+
+But because your project rule still bans live execution, even `LLP_PLAYABLE_LIMIT_ONLY` must output:
+
+```python
+can_execute = False
+execution_mode = "LIMIT_ONLY_DRY_RUN"
+```
+
+## Replit instructions
+
+Send this to Replit:
+
+Implement WOW-PATCH-2026-07-09-KALSHI-CONTRACT-EXECUTION-OVERLAY in the LLP Kalshi sports lane.
+
+Scope:
+Apply to `/wow/llp/kalshi/ml-evaluate` and any Kalshi sports Game Winner evaluator for KXMLBGAME and KXWNBAGAME.
+
+Goal:
+Prevent sportsbook-style winner-pick logic from promoting Kalshi candidates without contract execution math. A Kalshi candidate cannot become LLP_PLAYABLE unless it clears sportsbook no-vig edge, model probability edge, direct Kalshi orderbook, ask reconstruction, fee-adjusted breakeven, depth, final-lock, and limit-only dry-run gates.
+
+Add module:
+`contract_execution_gate.py`
+
+Required behavior:
+
+1. Require `kalshi_orderbook_source == "direct_api"`.
+2. Reject/cap screenshots, operator-supplied prices, synthetic prices, or caller-supplied raw orderbooks.
+3. Require fresh orderbook age ≤10 minutes, preferably ≤2 minutes inside final-lock window.
+4. Require `trading_active == true`.
+5. Require non-empty orderbook.
+6. Kalshi API returns YES bids and NO bids only, so reconstruct asks:
+
+   * `best_yes_ask_cents = 100 - best_no_bid_cents`
+   * `best_no_ask_cents = 100 - best_yes_bid_cents`
+7. Compute spread:
+
+   * YES spread = `best_yes_ask_cents - best_yes_bid_cents`
+   * NO spread = `best_no_ask_cents - best_no_bid_cents`
+8. Add Kalshi fee model:
+
+   * taker fee = `round_up(M * 0.07 * C * P * (1-P))`
+   * maker fee = `round_up(M * 0.0175 * C * P * (1-P))`
+   * default multiplier M=1 unless the fee table says otherwise.
+   * KXMLBGAME and KXWNBAGAME currently use maker/taker multiplier 1/1.
+9. Compute:
+
+   * `fee_per_contract_cents`
+   * `fee_adjusted_breakeven_probability`
+   * `max_buy_price_cents`
+   * `contract_ev_per_contract_cents`
+10. Formula:
+
+* YES EV = `model_probability - yes_executable_price - fee_per_contract`
+* NO EV = `(1 - model_probability) - no_executable_price - fee_per_contract`
+* `max_buy_price = fair_probability - required_edge_threshold - fee_per_contract - slippage_buffer`
+
+11. Required edge floors after fees/spread:
+
+* MLB main KXMLBGAME: 1.5%
+* WNBA main KXWNBAGAME: 2.0%
+* derivative/thin markets: 2.5%+
+
+12. Require available depth at executable price to cover intended dry-run size.
+13. Ban market orders from recommendations.
+14. Allowed execution mode is only `LIMIT_ONLY_DRY_RUN`.
+15. Keep `can_execute=false` unconditionally.
+16. Keep `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true` unconditionally.
+
+Required final output fields:
+`series_ticker`, `market_ticker`, `event_id`, `side`, `outcome`, `model_probability`, `consensus_no_vig_probability`, `raw_model_edge`, `kalshi_orderbook_source`, `orderbook_fetched_at`, `orderbook_age_seconds`, `trading_active`, `best_yes_bid_cents`, `best_yes_ask_cents`, `best_no_bid_cents`, `best_no_ask_cents`, `spread_cents`, `available_depth_at_price`, `executable_price_cents`, `estimated_fee_per_contract_cents`, `fee_adjusted_breakeven_probability`, `required_edge_threshold`, `slippage_buffer`, `max_buy_price_cents`, `contract_ev_per_contract_cents`, `execution_mode`, `would_place_limit_at_cents`, `would_fill`, `final_label`, `blockers`, `can_execute`, `dry_run_only`.
+
+New blocker tags:
+`KALSHI_ORDERBOOK_SOURCE_NOT_DIRECT_API`
+`KALSHI_ORDERBOOK_STALE`
+`KALSHI_MARKET_NOT_TRADING`
+`KALSHI_EMPTY_ORDERBOOK`
+`KALSHI_ASK_RECONSTRUCTION_FAILED`
+`KALSHI_FEE_MODEL_MISSING`
+`KALSHI_MAX_BUY_PRICE_FAIL`
+`KALSHI_DEPTH_INSUFFICIENT`
+`KALSHI_MARKET_ORDER_BANNED`
+`FINAL_LOCK_RECHECK_REQUIRED`
+`DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS`
+
+Regression tests:
+
+1. Direct API + fresh orderbook + clear edge + ask ≤ max_buy_price + sufficient depth returns `LLP_PLAYABLE_LIMIT_ONLY`, but `can_execute=false`.
+2. Screenshot/operator/synthetic orderbook caps at `LLP_WATCH` or lower.
+3. Stale orderbook returns `KALSHI_ORDERBOOK_STALE`.
+4. Empty orderbook returns `KALSHI_EMPTY_ORDERBOOK`.
+5. Closed/non-trading market returns `KALSHI_MARKET_NOT_TRADING`.
+6. Missing fee model blocks playable output.
+7. Ask above max_buy_price returns `KALSHI_MAX_BUY_PRICE_FAIL`.
+8. Insufficient depth returns `KALSHI_DEPTH_INSUFFICIENT`.
+9. Market-order execution request is rejected with `KALSHI_MARKET_ORDER_BANNED`.
+10. YES/NO ask reconstruction test:
+
+* yes_bid=48, no_bid=49
+* yes_ask=51
+* no_ask=52
+
+11. Final label never becomes LLP_APPROVED or LLP_PLAYABLE from model probability alone.
+12. `can_execute` is always false.
+13. dry-run flag is always true.
+
+Do not add live trading. Do not place orders. Do not generate market-order instructions. This is a dry-run evaluator only.
+
+## My advice
+
+Add this **before** any more Kalshi sports scans are trusted. Your existing no-vig gate is good, but without this overlay it can still falsely promote a “small edge” that disappears after Kalshi spread and fee. The engine should now classify Kalshi outputs like this:
+
+```text
+LLP_REJECT
+LLP_WATCH
+LLP_SCOUT
+LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN
+```
+
+And the final user-facing advice should never be “buy this.” It should be:
+
+```text
+Model says fair price is X¢.
+Max dry-run limit price is Y¢.
+Current executable ask is Z¢.
+Verdict: play / wait / reject.
+```
+
+For the July 9 slate you pasted, this patch would make the answer even stricter: **still no entry**, because those candidates were already thin before fees, and the contract overlay would tax them further.
+
+[1]: https://docs.kalshi.com/api-reference/market/get-market-orderbook "Get Market Orderbook - API Documentation"
+[2]: https://kalshi.com/docs/kalshi-fee-schedule.pdf "Fee Schedule for July 2026  - 7.7.26 Update"
+[3]: https://help.kalshi.com/en/articles/13823811-limit-orders "Limit Orders | Kalshi Help Center"
