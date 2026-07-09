@@ -17450,6 +17450,7 @@ def kalshi_gpt_health():
 
 
 @app.route("/kalshi/markets", methods=["GET"])
+@require_api_key
 def kalshi_gpt_markets():
     """
     GPT Action: paginated Kalshi market search.
@@ -17515,6 +17516,7 @@ _GPT_ORDERBOOK_CACHE_TTL_SECONDS = 120
 
 
 @app.route("/kalshi/orderbook/<ticker>", methods=["GET"])
+@require_api_key
 def kalshi_gpt_orderbook(ticker):
     """
     GPT Action: normalized orderbook for a single Kalshi market ticker.
@@ -17618,6 +17620,7 @@ def kalshi_gpt_orderbook(ticker):
 
 
 @app.route("/kalshi/weather/highs/<city>", methods=["GET"])
+@require_api_key
 def kalshi_gpt_weather_highs(city):
     """
     GPT Action: open weather-high markets for a supported city.
@@ -17673,6 +17676,7 @@ def kalshi_gpt_weather_highs(city):
 
 
 @app.route("/kalshi/evaluate/weather/<city>", methods=["GET"])
+@require_api_key
 def kalshi_gpt_evaluate_weather(city):
     """
     GPT Action: dry-run WOW weather evaluation for a city.
