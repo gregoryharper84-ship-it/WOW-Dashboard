@@ -1,0 +1,454 @@
+# WOW v16 Postmortem — July 9, 2026
+
+## 1. Settlement reconstruction
+
+### Kalshi 5-market combo — **Loss**
+
+Cost: **$29.98**
+Payout: **$0.00**
+Net: **–$29.98**
+
+| Selection           | Result |
+| ------------------- | -----: |
+| Philadelphia to win |    Win |
+| Milwaukee to win    |    Win |
+| Seattle to win      |   Loss |
+| Phoenix to win      |   Loss |
+| Atlanta to win      |    Win |
+
+The combo finished **3–2**, but because it was an all-or-nothing five-market structure, two incorrect selections erased the three correct ones.
+
+The Seattle result was not merely a random one-run swing. Miami won 8–4, completed a three-game sweep, extended its winning streak to six, and had won 16 of its previous 18 home games. Seattle starter Bryce Miller allowed six runs, while Seattle committed costly defensive mistakes. ([Reuters][1])
+
+Milwaukee’s selection was supported by the actual game path: the Brewers won 8–4 after building an early 6–0 lead. ([Brew Crew Ball][2])
+
+### PrizePicks 1-Pick Game Winners
+
+| Entry    |   Paid | Displayed return | Visible result |
+| -------- | -----: | ---------------: | -------------: |
+| Phillies | $49.14 |           $78.00 |            Win |
+| Phillies | $49.14 |           $78.00 |            Win |
+| Mariners | $48.72 |            $5.04 |     Marked Win |
+
+Each Phillies entry produced an apparent **$28.86 profit**, or **+$57.72 combined**.
+
+The Mariners row requires settlement reconciliation. It is marked “Win,” but a $48.72 entry displaying only $5.04 paid is incompatible with an ordinary winning full-settlement payout. It could represent a partial recovery, promotional treatment, early payout, cash-out, or UI-field interpretation. It also conflicts with the visible Kalshi Seattle loss and the recorded 8–4 Miami result. ([Reuters][1])
+
+**Do not count the Mariners entry as a clean model win until its event ID, game date, entry mechanics, and actual bankroll credit are reconciled.**
+
+Possible session totals:
+
+* If $5.04 was the **total return**, Mariners net was –$43.68 and the visible session net was **–$15.94**.
+* If $5.04 was **profit added to returned stake**, the visible session net was **+$32.78**.
+* Until ledger reconciliation, the correct session label is **SETTLEMENT_CONFLICT — P&L UNRESOLVED**.
+
+---
+
+# 2. What actually went wrong
+
+## Failure 1 — A good selection pool was converted into a bad five-leg product
+
+The underlying side selection went:
+
+* Kalshi combo: 3–2
+* Two duplicated Phillies singles: 2–0
+* Mariners single: settlement conflict
+
+The most damaging mistake was not simply picking Seattle and Phoenix incorrectly. It was requiring **all five independent selections to win simultaneously**.
+
+Even when every leg has a seemingly strong 65% probability:
+
+[
+0.65^5 \approx 11.6%
+]
+
+At 70% per leg:
+
+[
+0.70^5 \approx 16.8%
+]
+
+Thus, a five-team combo can lose most of the time even when every component is individually better than a coin flip. Yesterday transformed a decent 3–2 card into a complete loss.
+
+### Verdict
+
+**Primary failure: execution structure, not total model collapse.**
+
+The near-perfect prior days likely hid this risk because favorable variance allowed several correlated execution mistakes to survive without punishment.
+
+---
+
+## Failure 2 — Seattle ignored a strong opponent-state signal
+
+Miami entered the finale having:
+
+* Won the first two games of the series.
+* Shut Seattle out 2–0 the previous night.
+* Produced the best MLB record since June 1 at 25–8.
+* Reached five consecutive wins before winning the finale.
+* Received a returning starter while Seattle was exposed to series-sweep and road-form risk. ([Reuters][3])
+
+The Seattle side appears to have been selected primarily from baseline team or starting-pitcher strength while underweighting:
+
+* Miami’s current form.
+* Miami’s home performance.
+* Seattle’s failure to score in Game 2.
+* Sweep dynamics.
+* Defensive execution risk.
+* Whether the market price already incorporated Bryce Miller’s strong season numbers.
+
+Bryce Miller’s pregame profile may have looked attractive, but he allowed nine hits, four walks and six runs in five innings. This is not evidence that pitcher metrics are useless; it shows that the price and opposing-team context were not sufficiently stress-tested. ([Reuters][1])
+
+### Correct retrospective label
+
+**Seattle: LLP_REJECT_SERIES_STATE_AND_PRICE**, or at best **LLP_WATCH**.
+
+It should not have been eligible for both a single-entry exposure and a five-market combo without a stronger independent consensus edge.
+
+---
+
+## Failure 3 — Phoenix likely passed on team reputation rather than verified game-specific edge
+
+The Phoenix selection lost while Atlanta won. Unlike the clean Milwaukee and Philadelphia outcomes, the screenshots provide no evidence that Phoenix had:
+
+* A fresh consensus no-vig advantage.
+* A confirmed injury/rotation edge.
+* A model probability exceeding market breakeven.
+* A market move in Phoenix’s direction.
+* A strong enough adjusted edge to survive the combo correlation and multiplicative payout tax.
+
+This is exactly what the current LLP rules are designed to prevent: **a probable team is not automatically a mispriced team**.
+
+### Correct retrospective label
+
+**Phoenix: EDGE_UNPROVEN / LLP_WATCH**, unless the archived recommendation row can show fresh odds, no-vig consensus, model probability and adjusted edge.
+
+A result alone cannot establish that Phoenix was a bad prediction. The process problem is that Phoenix was allowed into a five-market product without visible proof that its probability exceeded its purchase price.
+
+---
+
+## Failure 4 — Duplicate Phillies exposure overstated apparent model success
+
+The two Phillies entries are the same event, same side and apparently the same price/payout.
+
+They generated two bankroll wins, but analytically they are:
+
+* **One prediction**
+* **One event outcome**
+* **Two financial exposures**
+
+They cannot be counted as two independent model wins, two calibration observations, or evidence that the model found two separate edges.
+
+### Correct ledger treatment
+
+```text
+event_id: MLB_2026-07-09_PHI_CIN
+model_decisions: 1
+settled_model_wins: 1
+financial_entries: 2
+gross_stake: 98.28
+gross_return: 156.00
+net_event_result: +57.72
+duplicate_exposure_count: 1
+```
+
+This distinction is important because yesterday can appear to be “four wins and two losses” when it was closer to:
+
+* Phillies prediction: win
+* Milwaukee prediction: win
+* Atlanta prediction: win
+* Seattle prediction: loss
+* Phoenix prediction: loss
+
+That is **3–2 at the event level**, not a near-perfect day.
+
+---
+
+## Failure 5 — Cross-platform exposure reconciliation failed
+
+Seattle appeared in:
+
+* The losing Kalshi combination.
+* A PrizePicks Mariners single marked “Win.”
+
+The ledger should automatically group these by normalized event identity and detect that the same team, opponent and date appear across platforms.
+
+The current evidence produces an impossible clean settlement state:
+
+```text
+SEA vs MIA
+Kalshi: Seattle loss
+PrizePicks: Mariners win
+Official result: Miami 8, Seattle 4
+```
+
+That should trigger an immediate:
+
+```text
+SETTLEMENT_SOURCE_CONFLICT
+BANKROLL_RESULT_PENDING_RECONCILIATION
+MODEL_RESULT_NOT_CREDITED
+```
+
+The entry must not graduate, improve calibration or be included in win-rate reporting merely because the UI displays a green “Win.”
+
+---
+
+# 3. Root-cause ranking
+
+| Rank | Root cause                                                                           | Severity    |
+| ---: | ------------------------------------------------------------------------------------ | ----------- |
+|    1 | Five-market all-or-nothing combo construction                                        | Critical    |
+|    2 | Seattle opponent-form/series-state underweighting                                    | High        |
+|    3 | Cross-platform settlement reconciliation failure                                     | High        |
+|    4 | Duplicate Phillies exposure counted too generously                                   | High        |
+|    5 | Phoenix allowed without clearly documented price edge                                | Medium–High |
+|    6 | Previous winning streak created false confidence in oversized combination structures | Medium      |
+
+## Bottom-line diagnosis
+
+**The model was not suddenly broken yesterday.**
+
+The card produced three correct and two incorrect event calls. What broke was the conversion layer:
+
+1. Five selections were bundled into an extremely fragile product.
+2. Duplicate exposure was concentrated on Philadelphia.
+3. Seattle was exposed across multiple products.
+4. Settlement records were not reconciled before grading.
+5. A 3–2 event card became a total Kalshi loss.
+
+This was an **execution-governance failure with one meaningful matchup-evaluation leak: Seattle**.
+
+---
+
+# 4. Required WOW v16 patch
+
+## WOW-PATCH-2026-07-10-CROSS-PLATFORM-COMBO-AND-SETTLEMENT-GOVERNANCE
+
+**Purpose:** Prevent individually reasonable winner selections from being converted into negative-EV multi-market combinations, stop duplicate events from inflating model performance, and reconcile contradictory settlements across Kalshi and PrizePicks.
+
+### Rule A — Combo size restriction
+
+During Reliability Freeze:
+
+```text
+Kalshi sports combo maximum: 2 markets
+3+ market sports combos: REJECT_BAD_STRUCTURE
+4–5 market combos: HARD_REJECT_COMBO_MULTIPLICATION
+```
+
+No exception based solely on individual win probability.
+
+A two-market combo may only reach dry-run playable status when:
+
+* Both legs independently qualify.
+* Fresh direct orderbook data exists.
+* Both clear their individual edge floors after execution friction.
+* Joint probability and offered combo payout produce positive EV.
+* There is no duplicated event exposure elsewhere in the session.
+
+### Rule B — Joint-EV calculation required
+
+For every combination:
+
+```python
+joint_model_probability = product(adjusted_leg_probabilities)
+combo_breakeven_probability = combo_cost / combo_max_return
+combo_edge = joint_model_probability - combo_breakeven_probability
+```
+
+If dependence exists, apply correlation adjustment rather than multiplying raw probabilities.
+
+Missing combo payout or missing adjusted leg probability:
+
+```text
+COMBO_EV_UNOBTAINABLE
+REJECT_BAD_STRUCTURE
+```
+
+### Rule C — One analytical result per event
+
+Multiple entries on the same side of the same event:
+
+```text
+financial_entries += N
+model_observation_count = 1
+calibration_observation_count = 1
+```
+
+Duplicates cannot increase:
+
+* Model win count.
+* Accuracy percentage.
+* Calibration sample size.
+* Archetype graduation evidence.
+
+### Rule D — Cross-platform event normalization
+
+Normalize all entries using:
+
+```text
+sport
+league
+event_date
+away_team
+home_team
+selected_side
+market_type
+```
+
+Examples:
+
+```text
+Seattle = Mariners = SEA
+Miami = Marlins = MIA
+Philadelphia = Phillies = PHI
+```
+
+Before final settlement, aggregate PrizePicks, Kalshi and sportsbook entries under one canonical `event_id`.
+
+### Rule E — Contradictory settlement gate
+
+When platforms disagree:
+
+```text
+final_label = SETTLEMENT_SOURCE_CONFLICT
+bankroll_status = PENDING_RECONCILIATION
+model_result = DO_NOT_CREDIT
+calibration_eligible = false
+```
+
+Resolution priority:
+
+1. Official league result.
+2. Platform transaction/bankroll credit.
+3. Platform settlement display.
+4. Screenshot interpretation.
+
+The green “Win” label alone cannot override the official event result.
+
+### Rule F — Series-state audit for MLB winner markets
+
+For Games 2–4 of an MLB series, require:
+
+* Current series score.
+* Previous-game run production.
+* Opponent streak.
+* Home/away recent performance.
+* Bullpen workload.
+* Starter change/return context.
+* Whether the current market price has already absorbed starting-pitcher strength.
+
+Trigger:
+
+```text
+Opponent won first two games
+OR opponent streak >= 5
+OR selected team scored <= 1 run in previous game
+```
+
+Then:
+
+```text
+SERIES_STATE_CAUTION
+```
+
+Two or more triggers cap the selection at `LLP_WATCH` unless sportsbook consensus and model probability still clear the edge floor after an additional uncertainty tax.
+
+### Rule G — No streak-based confidence upgrade
+
+Previous near-perfect days cannot raise today’s playability tier.
+
+```text
+recent_win_streak is reporting metadata only
+recent_win_streak cannot alter model_probability
+recent_win_streak cannot loosen edge_floor
+recent_win_streak cannot increase combo_size
+recent_win_streak cannot increase stake
+```
+
+---
+
+# 5. Replit implementation prompt
+
+```text
+Implement WOW-PATCH-2026-07-10-CROSS-PLATFORM-COMBO-AND-SETTLEMENT-GOVERNANCE.
+
+1. Add canonical event normalization across Kalshi, PrizePicks and sportsbook rows:
+   event_id = league + event_date + normalized_away + normalized_home.
+   Add team alias mapping such as Mariners/Seattle/SEA and
+   Phillies/Philadelphia/PHI.
+
+2. Group multiple entries for the same event and side.
+   Track:
+   - financial_entry_count
+   - gross_stake
+   - gross_return
+   - net_event_result
+   - model_observation_count, always 1 per unique event prediction
+   - duplicate_exposure_count
+   Duplicate entries must not increase model or calibration win counts.
+
+3. Add settlement conflict detection.
+   If platform results disagree for the same event, return:
+   final_label=SETTLEMENT_SOURCE_CONFLICT
+   bankroll_status=PENDING_RECONCILIATION
+   calibration_eligible=false
+   model_result=null
+   Do not credit a model win until official result and transaction credit agree.
+
+4. Add Kalshi sports-combo gate.
+   During Reliability Freeze:
+   - 1–2 markets allowed for evaluation
+   - 3+ markets => REJECT_BAD_STRUCTURE
+   - 4–5 markets => HARD_REJECT_COMBO_MULTIPLICATION
+   can_execute must remain false and dry_run_only true.
+
+5. For every allowed combo, require:
+   - adjusted probability for every leg
+   - combo cost and maximum return
+   - joint model probability
+   - combo breakeven probability
+   - joint adjusted edge
+   - correlation review
+   Missing fields => COMBO_EV_UNOBTAINABLE / REJECT_BAD_STRUCTURE.
+
+6. Add MLB series-state features:
+   series_score, opponent_win_streak, previous_game_runs,
+   home_recent_record, selected_team_recent_record,
+   bullpen_workload, returning_starter_flag.
+   Trigger SERIES_STATE_CAUTION when:
+   opponent won first two games, opponent streak >=5, or selected team
+   scored <=1 run in the prior game.
+   Two or more triggers cap at LLP_WATCH unless fresh corroborated
+   no-vig consensus and model edge clear the required floor after tax.
+
+7. Add regression tests:
+   - 5-market 3-2 combo returns HARD_REJECT before construction
+   - two duplicate Phillies entries create one model observation
+   - Seattle loss on Kalshi plus Seattle win on PrizePicks creates
+     SETTLEMENT_SOURCE_CONFLICT
+   - official Miami win prevents Seattle model-win credit
+   - previous winning streak cannot raise tier, stake or combo size
+   - dry_run_only=true and can_execute=false remain unconditional.
+```
+
+## Final grade for July 9
+
+**Prediction layer:** C+
+Three correct sides and two incorrect sides is not disastrous, but it is not near-perfect.
+
+**Execution layer:** F
+The five-market structure converted a serviceable card into a complete loss.
+
+**Exposure control:** D
+Duplicate Philadelphia stakes and repeated Seattle exposure were not properly normalized.
+
+**Settlement integrity:** Incomplete
+The Mariners PrizePicks row must be reconciled before final P&L and calibration grading.
+
+**Primary lesson:** Keep the strongest winner edges isolated. Do not make five independent outcomes survive together merely because recent cards have been winning.
+
+[1]: https://www.reuters.com/sports/baseball/janson-junk-returns-help-marlins-top-mariners-6th-straight-win--flm-2026-07-10/?utm_source=chatgpt.com "Janson Junk returns to help Marlins top Mariners for 6th straight win"
+[2]: https://www.brewcrewball.com/milwaukee-brewers-scores-standings/85713/bauers-powers-brewers-to-an-8-4-series-finale-win?utm_source=chatgpt.com "Bauers powers Brewers to 8-4 series finale win over Cardinals"
+[3]: https://www.reuters.com/sports/baseball/kyle-stowers-provides-power-marlins-shut-out-mariners--flm-2026-07-09/?utm_source=chatgpt.com "Kyle Stowers provides power as Marlins shut out Mariners"

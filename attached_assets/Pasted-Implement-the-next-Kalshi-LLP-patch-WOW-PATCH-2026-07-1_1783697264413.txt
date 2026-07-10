@@ -1,0 +1,117 @@
+Implement the next Kalshi LLP patch:
+
+WOW-PATCH-2026-07-10-KALSHI-SETTLEMENT-CLV-RECONCILIATION
+
+Scope:
+Apply to Kalshi sports Game Winner dry-run ledger rows created by `contract_execution_gate.py`.
+
+Purpose:
+Decision-time dry-run rows already track fill_status and calibration eligibility. Now add post-market reconciliation so only actually filled dry-run rows can be settled, scored, and used for calibration. NO_FILL, PARTIAL_FILL_DRY_RUN, INVALID_STALE_BOOK, and non-filled rows must not pollute hit rate, ROI, or model calibration.
+
+Add module:
+`kalshi_engine/settlement_reconciliation.py`
+
+Inputs:
+
+* Existing dry-run ledger row
+* Market ticker
+* Event ID
+* Side YES/NO
+* Hypothetical fill price
+* Effective quantity filled
+* Total fee cents
+* Fill status
+* Kalshi market close / settlement data when available
+* Closing price snapshot when available
+
+Required reconciliation fields:
+
+* market_ticker
+* event_id
+* side
+* outcome
+* fill_status
+* calibration_eligible
+* settlement_status: OPEN / CLOSED_UNSETTLED / SETTLED / VOID_OR_CANCELLED / DATA_UNOBTAINABLE
+* closing_price_cents
+* settlement_value_cents
+* hypothetical_fill_price_cents
+* effective_quantity_filled
+* total_fee_cents
+* gross_pnl_cents
+* net_pnl_after_fees_cents
+* clv_cents
+* clv_percent
+* final_result: WIN / LOSS / PUSH_VOID / NO_FILL / PARTIAL_FILL_EXCLUDED / INVALID / UNSETTLED
+* calibration_include
+* calibration_exclusion_reason
+* settled_at
+* reconciled_at
+* blockers
+
+Rules:
+
+1. Only `FILLED_DRY_RUN` rows are eligible for settlement scoring.
+2. `NO_FILL` rows must return final_result=`NO_FILL`, calibration_include=false.
+3. `PARTIAL_FILL_DRY_RUN` rows default to calibration_include=false unless a later explicit rule enables partial-fill calibration.
+4. `INVALID_STALE_BOOK` rows must return final_result=`INVALID`, calibration_include=false.
+5. If market is not settled yet, return final_result=`UNSETTLED`, settlement_status=`OPEN` or `CLOSED_UNSETTLED`, calibration_include=false.
+6. If settlement data cannot be retrieved, return settlement_status=`DATA_UNOBTAINABLE`, calibration_include=false.
+7. For YES:
+
+   * settlement_value_cents = 100 if YES wins, 0 if YES loses.
+8. For NO:
+
+   * settlement_value_cents = 100 if NO wins, 0 if NO loses.
+9. gross_pnl_cents = `(settlement_value_cents - hypothetical_fill_price_cents) * effective_quantity_filled`
+10. net_pnl_after_fees_cents = `gross_pnl_cents - total_fee_cents`
+11. clv_cents = `closing_price_cents - hypothetical_fill_price_cents` for YES.
+12. For NO, CLV should compare the NO closing price to NO fill price, not the opposite YES price.
+13. calibration_include=true only when:
+
+* fill_status=`FILLED_DRY_RUN`
+* settlement_status=`SETTLED`
+* final_result is WIN or LOSS
+* all required price and fee fields are present.
+
+14. can_execute remains false.
+15. No live orders.
+16. No market orders.
+17. Preserve `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS`.
+
+Add blocker tags:
+
+* KALSHI_SETTLEMENT_DATA_UNOBTAINABLE
+* KALSHI_MARKET_NOT_SETTLED
+* KALSHI_CLOSING_PRICE_UNOBTAINABLE
+* KALSHI_PARTIAL_FILL_EXCLUDED_FROM_CALIBRATION
+* KALSHI_NO_FILL_EXCLUDED_FROM_CALIBRATION
+* KALSHI_INVALID_BOOK_EXCLUDED_FROM_CALIBRATION
+* KALSHI_SETTLEMENT_FIELD_MISSING
+* KALSHI_CLV_FIELD_MISSING
+
+Add tests:
+
+1. FILLED_DRY_RUN YES win settles as WIN, net P/L after fees calculated correctly, calibration_include=true.
+2. FILLED_DRY_RUN YES loss settles as LOSS, net P/L after fees calculated correctly, calibration_include=true.
+3. FILLED_DRY_RUN NO win settles correctly using NO settlement value.
+4. FILLED_DRY_RUN NO loss settles correctly.
+5. NO_FILL row returns final_result=NO_FILL and calibration_include=false.
+6. PARTIAL_FILL_DRY_RUN returns final_result=PARTIAL_FILL_EXCLUDED and calibration_include=false.
+7. INVALID_STALE_BOOK returns final_result=INVALID and calibration_include=false.
+8. Unsettled market returns final_result=UNSETTLED and calibration_include=false.
+9. Missing settlement data returns KALSHI_SETTLEMENT_DATA_UNOBTAINABLE.
+10. Missing closing price blocks CLV but does not block settlement P/L if settlement value is known.
+11. CLV for YES uses YES closing price.
+12. CLV for NO uses NO closing price.
+13. Rows with missing fill price, quantity, or fee cannot enter calibration.
+14. can_execute remains false in all reconciliation outputs.
+15. dry_run_only remains true in all reconciliation outputs.
+
+Acceptance:
+
+* Existing 22 contract execution tests still pass.
+* New settlement reconciliation tests pass.
+* No label drift.
+* No live execution path added.
+* No NO_FILL row can be counted as a win/loss.
