@@ -152,5 +152,97 @@ class TestRegressionKalshiFreshnessExactBoundary(unittest.TestCase):
         self.assertEqual(result.label, SkillLabel.DATA_UNOBTAINABLE.value)
 
 
+class TestCanonicalIDIntegrity(unittest.TestCase):
+    """
+    Six-part canonicalization suite — registry IDs must be the single source of
+    truth across adapters, orchestrator results, Flask responses, and handoffs.
+    """
+
+    def setUp(self):
+        from skills.registry import SkillRegistry
+        from skills.adapters import ADAPTER_MAP
+        self._reg = SkillRegistry.get()
+        self._adapter_map = ADAPTER_MAP
+
+    # ── Test 1 ──────────────────────────────────────────────────────────────
+    def test_every_registry_id_has_exactly_one_adapter(self):
+        """Each of the 21 registry IDs maps to exactly one adapter class."""
+        registry_ids = {s["id"] for s in self._reg.all_skills()}
+        for skill_id in registry_ids:
+            with self.subTest(skill_id=skill_id):
+                self.assertIn(
+                    skill_id, self._adapter_map,
+                    f"Registry ID {skill_id!r} has no adapter in ADAPTER_MAP.",
+                )
+
+    # ── Test 2 ──────────────────────────────────────────────────────────────
+    def test_every_adapter_key_exists_in_registry(self):
+        """Every key in ADAPTER_MAP must appear in the registry (no orphans)."""
+        registry_ids = {s["id"] for s in self._reg.all_skills()}
+        for adapter_key in self._adapter_map:
+            with self.subTest(adapter_key=adapter_key):
+                self.assertIn(
+                    adapter_key, registry_ids,
+                    f"Adapter key {adapter_key!r} is not in the registry (orphan).",
+                )
+
+    # ── Test 3 ──────────────────────────────────────────────────────────────
+    def test_no_adapter_aliases_or_orphan_ids(self):
+        """Registry and ADAPTER_MAP must have the same set — no extras either way."""
+        registry_ids = {s["id"] for s in self._reg.all_skills()}
+        adapter_keys = set(self._adapter_map.keys())
+        self.assertEqual(
+            registry_ids, adapter_keys,
+            f"Mismatch — registry only: {registry_ids - adapter_keys!r}  "
+            f"adapter only: {adapter_keys - registry_ids!r}",
+        )
+
+    # ── Test 4 ──────────────────────────────────────────────────────────────
+    def test_every_result_skill_id_equals_registry_id_used_to_invoke_it(self):
+        """Each adapter's run() emits the exact SKILL_ID constant declared in that module."""
+        ctx = {}
+        for skill_id, adapter_cls in self._adapter_map.items():
+            with self.subTest(skill_id=skill_id):
+                adapter = adapter_cls()
+                result = adapter.run(ctx)
+                self.assertEqual(
+                    result.skill_id, skill_id,
+                    f"Adapter invoked as {skill_id!r} but result.skill_id={result.skill_id!r}",
+                )
+
+    # ── Test 5 ──────────────────────────────────────────────────────────────
+    def test_registry_endpoint_and_run_endpoint_use_same_canonical_ids(self):
+        """
+        GET /wow/skills/registry IDs and the skill_ids emitted by the orchestrator
+        must be drawn from the same canonical set.
+        """
+        registry_ids = {s["id"] for s in self._reg.ordered_skills()}
+        orch = SkillOrchestrator()
+        result = orch.run({"market_type": "player_prop"})
+        returned_ids = {r["skill_id"] for r in result.get("skill_results", [])}
+        unexpected = returned_ids - registry_ids
+        self.assertFalse(
+            unexpected,
+            f"Orchestrator returned non-registry skill_ids: {unexpected!r}",
+        )
+
+    # ── Test 6 ──────────────────────────────────────────────────────────────
+    def test_downstream_handoffs_reference_only_registered_ids(self):
+        """
+        Every downstream handoff ID in every adapter result must be a registered ID.
+        """
+        registry_ids = {s["id"] for s in self._reg.all_skills()}
+        ctx = {}
+        for skill_id, adapter_cls in self._adapter_map.items():
+            with self.subTest(skill_id=skill_id):
+                result = adapter_cls().run(ctx)
+                for downstream_id in result.downstream:
+                    self.assertIn(
+                        downstream_id, registry_ids,
+                        f"{skill_id!r} has downstream handoff {downstream_id!r} "
+                        f"which is not in the registry.",
+                    )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

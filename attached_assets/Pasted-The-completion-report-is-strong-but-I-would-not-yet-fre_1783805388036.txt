@@ -1,0 +1,107 @@
+The completion report is strong, but I would not yet freeze it as fully canonical until Replit resolves one important registry issue.
+
+Main issue: skill IDs do not match the uploaded registry
+
+Several reported adapter IDs differ from the canonical IDs in skill-registry.json. The registry is supposed to be the authoritative identity layer. skill-registry.json
+
+Examples:
+
+Canonical registry ID	Reported implementation ID
+wow.weather-intelligence	wow.weather-intel-analyst
+wow.mlb-pitching-expert	wow.mlb-pitching-matchup
+wow.mlb-hitting-expert	wow.mlb-hitting-intel
+wow.patch-governance-architect	wow.patch-governance-auditor
+wow.sportsbook-promo-optimizer	wow.promo-optimizer
+wow.dfs-analyst	wow.dfs-lineup-analyst
+wow.sports-psychology-context	wow.sports-psychology-analyst
+wow.referee-umpire-tendency	wow.referee-umpire-tendencies
+
+This can cause:
+
+* Registry lookup failures
+* Missing adapter resolution
+* Incorrect persistence keys
+* Broken downstream handoffs
+* Historical runs splitting one skill into multiple identities
+* Tests passing against local aliases while production registry calls fail
+
+The contract requires each result to preserve the registered skill_id, version, run ID, sources, blockers and downstream handoffs. SHARED_CONTRACT.md
+
+Required correction
+
+Send Replit this:
+
+The WOW v16 Skills Pack implementation is functionally complete, but one canonicalization pass is required before final freeze.
+
+Several adapter-reported skill IDs do not exactly match the authoritative IDs in skills/skill-registry.json.
+
+The registry IDs must be used unchanged across:
+
+* SkillResult.skill_id
+* ADAPTER_MAP
+* orchestrator routing
+* schema-valid output
+* persistence records
+* downstream handoffs
+* tests
+* Flask registry and run responses
+
+Correct these reported aliases to the canonical registry values:
+
+* wow.weather-intel-analyst → wow.weather-intelligence
+* wow.mlb-pitching-matchup → wow.mlb-pitching-expert
+* wow.mlb-hitting-intel → wow.mlb-hitting-expert
+* wow.patch-governance-auditor → wow.patch-governance-architect
+* wow.promo-optimizer → wow.sportsbook-promo-optimizer
+* wow.dfs-lineup-analyst → wow.dfs-analyst
+* wow.sports-psychology-analyst → wow.sports-psychology-context
+* wow.referee-umpire-tendencies → wow.referee-umpire-tendency
+
+Audit all 21 IDs, not only the eight listed above.
+
+Add tests that assert:
+
+1. Every registry skill ID has exactly one adapter.
+2. Every adapter key exists in the registry.
+3. No adapter aliases or orphan IDs exist.
+4. Every result’s skill_id equals the registry ID used to invoke it.
+5. GET /wow/skills/registry and POST /wow/skills/run use the same canonical IDs.
+6. Persisted downstream handoffs reference only registered IDs.
+
+Re-run the Skills Pack suite and full regression suite after the changes.
+
+Return:
+
+* The final canonical 21-skill registry-to-adapter mapping
+* Test counts
+* Flask restart status
+* Example registry response
+* Example orchestration response showing canonical IDs
+
+Do not modify or begin the separate v16.1A stake-confidence patch during this canonicalization task.
+
+Secondary reporting correction
+
+The statement:
+
+“690 passed … full suite minus pre-existing auto_enrichment failure”
+
+means the complete repository suite is not technically fully green. That does not block the Skills Pack when the failure is proven pre-existing and unrelated, but the release record should say:
+
+Skills Pack: PASS. Full repository suite: PASS except one documented pre-existing date-sensitive auto_enrichment failure.
+
+It should not simply say “all tests pass.”
+
+Final status
+
+Functional status: complete
+Skills Pack acceptance tests: passing
+Flask endpoint: running
+Safety invariants: confirmed
+Canonical integration status: READY_WITH_REGISTRY_ID_FIX
+
+After the ID reconciliation tests pass and Flask restarts cleanly, the Skills Pack can be marked:
+
+SHIPPED — WOW v16 SKILLS ORCHESTRATION LAYER
+
+The v16.1A stake-confidence patch should remain a separate follow-up, as Replit correctly stated.
