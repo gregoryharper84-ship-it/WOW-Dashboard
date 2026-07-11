@@ -1,0 +1,202 @@
+Implement a targeted odds-ingestion fallback patch. Do not change LLP governance thresholds, taxonomy, approval gates, probability caps, or exposure rules.
+
+PATCH NAME
+LLP Odds Fallback Patch v16.1B
+
+GOAL
+Prevent a single odds-provider failure from causing a global board shutdown when enough board data exists to continue at a capped label.
+
+CURRENT STATE
+- ODDS_API_KEY is wired.
+- _llp_no_vig_two_way() exists.
+- no_vig_implied_probability already flows through scoring.
+- LLP_SCOUT already exists as the ceiling when full validation is incomplete.
+- LLP_APPROVED already requires complete validation and must remain unchanged.
+- ESPN fallback patterns already exist elsewhere in the codebase.
+
+REQUIRED SOURCE PRIORITY
+For each game/market, attempt sources in this order:
+
+1. The Odds API live h2h market
+2. Secondary sportsbook/market source already available in the repo, if any
+3. ESPN event/schedule data for event identity, start time, teams, and slate validation
+4. PrizePicks Teams board reconstruction from submitted two-way decimal payouts
+5. Manual/proxy reconstruction only when explicitly tagged and reproducible
+
+IMPORTANT
+ESPN is not a sportsbook price source. Use it only to validate:
+- event exists
+- event date/time
+- teams
+- status
+- event not started/settled
+
+Do not fabricate consensus odds from ESPN.
+
+PRIZEPICKS RECONSTRUCTION
+When a two-way PrizePicks Teams board provides decimal payouts for both sides:
+
+raw_prob_a = 1 / decimal_a
+raw_prob_b = 1 / decimal_b
+overround = raw_prob_a + raw_prob_b
+reconstructed_no_vig_a = raw_prob_a / overround
+reconstructed_no_vig_b = raw_prob_b / overround
+
+Store:
+- source_type: prizepicks_reconstructed
+- source_quality: proxy
+- raw_implied_probability
+- reconstructed_no_vig_probability
+- reconstruction_timestamp
+- board_price_timestamp
+- reconstruction_method: two_way_decimal_normalization
+
+This reconstruction is not sportsbook consensus.
+
+LABEL RULES
+A. Full sportsbook no-vig available and all other gates pass:
+- normal full scoring path
+- LLP_APPROVED remains eligible
+
+B. No sportsbook no-vig, but valid PrizePicks two-way reconstruction exists:
+- continue scoring
+- final_label ceiling = LLP_SCOUT
+- confidence_tier ceiling = LOW
+- stake_tier = PASS
+- big_stake_status = BLOCKED
+- diagnostic_tags must include:
+  - NO_SPORTSBOOK_COMP
+  - PROXY_NO_VIG
+  - PRIZEPICKS_RECONSTRUCTION
+
+C. Event validation exists, but no usable two-way prices:
+- final_label = LLP_REJECT or LLP_SCOUT according to current data-contract logic
+- never global-board shutdown unless every candidate is unusable
+- evaluate candidates independently
+
+D. Event started, settled, missing from slate, or board unavailable:
+- preserve current hard-kill behavior
+
+BOARD-LEVEL BEHAVIOR
+Remove the current behavior where one failed odds fetch causes a global NO PLAY for the entire board.
+
+Replace it with per-candidate source resolution:
+- each candidate attempts the fallback ladder independently
+- one failed candidate must not invalidate other candidates
+- global failure only when all candidates fail the data contract
+
+NEW REQUIRED OUTPUT FIELDS
+Per candidate:
+- odds_source_primary
+- odds_source_fallback_used: true | false
+- odds_source_quality: live | official | reconstructed | proxy | unavailable
+- sportsbook_no_vig_available: true | false
+- reconstructed_no_vig_available: true | false
+- reconstructed_no_vig_probability
+- source_resolution_path: string[]
+- source_failure_reasons: string[]
+- label_ceiling_reason
+- data_contract_status
+
+DIAGNOSTIC TAGS
+Use existing diagnostic fields only:
+- ODDS_API_FAILED
+- ESPN_EVENT_VALIDATED
+- NO_SPORTSBOOK_COMP
+- PROXY_NO_VIG
+- PRIZEPICKS_RECONSTRUCTION
+- DATA_UNOBTAINABLE
+
+Do not use any of these as final_label.
+
+ACCEPTANCE TESTS
+
+1. Odds API succeeds
+Input:
+- valid live sportsbook h2h
+Expected:
+- sportsbook_no_vig_available = true
+- normal scoring path
+- no LLP_SCOUT cap caused by odds sourcing
+
+2. Odds API fails, PrizePicks has both sides
+Input:
+- board odds 1.85 and 1.88
+Expected:
+- reconstruction succeeds
+- no global shutdown
+- final_label ceiling = LLP_SCOUT
+- stake_tier = PASS
+- diagnostic_tags include NO_SPORTSBOOK_COMP, PROXY_NO_VIG, PRIZEPICKS_RECONSTRUCTION
+
+3. Odds API fails for one game but succeeds for another
+Expected:
+- successful game completes full scoring
+- failed game uses fallback path
+- board does not return global NO PLAY
+
+4. ESPN validates event, but only one PrizePicks side is present
+Expected:
+- no two-way reconstruction
+- candidate capped according to current incomplete-data rules
+- no fake no-vig probability
+
+5. Event already started
+Expected:
+- preserve hard kill
+- final_label = LLP_REJECT or LLP_CUT according to existing status logic
+
+6. All candidates fail all sources
+Expected:
+- global failure permitted
+- each candidate includes DATA_UNOBTAINABLE diagnostic
+- final labels remain within six-label taxonomy
+
+7. Approval protection
+Input:
+- reconstructed PrizePicks no-vig only
+Expected:
+- LLP_APPROVED impossible
+- LLP_PLAYABLE impossible
+- LLP_WATCH impossible
+- maximum final_label = LLP_SCOUT
+
+8. Taxonomy protection
+Expected:
+- final_label always one of:
+  LLP_APPROVED
+  LLP_PLAYABLE
+  LLP_WATCH
+  LLP_SCOUT
+  LLP_REJECT
+  LLP_CUT
+
+9. Output patch compliance
+Expected:
+- Six-label taxonomy PASS
+- No banned/status term as final_label PASS
+- No-vig/fair-price check PASS
+- Data contract status PASS
+- Final label reproducibility PASS
+
+IMPLEMENTATION NOTES
+- Reuse _llp_no_vig_two_way() for PrizePicks two-way normalization if compatible.
+- Keep source provenance explicit.
+- Do not relabel reconstructed board probability as consensus.
+- Do not infer line movement or CLV from a single reconstructed snapshot.
+- Do not alter edge thresholds.
+- Do not alter probability caps.
+- Do not alter stake-confidence patch v16.1A.
+- Do not alter exposure caps.
+- DRY_RUN_ONLY remains active.
+
+RETURN
+1. Files changed
+2. Functions changed
+3. API schema changes
+4. Test results
+5. One sample payload for:
+   - live sportsbook path
+   - PrizePicks reconstruction path
+   - mixed-success board
+   - all-sources-failed board

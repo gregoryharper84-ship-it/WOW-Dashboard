@@ -12656,6 +12656,15 @@ def _llp_failure_paths(sport, market, side, ctx):
     return fp
 
 
+from gate_engine.llp_odds_resolver import (
+    resolve_odds_source as _resolve_odds_source,
+    SOURCE_QUALITY_UNAVAILABLE as _SQ_UNAVAILABLE,
+    PROXY_STAKE_TIER as _PROXY_STAKE_TIER,
+    PROXY_BIG_STAKE_STATUS as _PROXY_BIG_STAKE_STATUS,
+    PROXY_CONFIDENCE_CEILING as _PROXY_CONFIDENCE_CEILING,
+)
+
+
 def _llp_analyze_one(game, default_sport, board_date):
     """Analyze a single game/market and return the per-game record."""
     sport_in = (game.get("sport") or default_sport or "").lower().strip()
@@ -12722,29 +12731,44 @@ def _llp_analyze_one(game, default_sport, board_date):
         record["failure_paths"] = [f"Sport {sport!r} not mapped to Odds API"]
         return record
 
-    events = _llp_fetch_odds(sport_key)
-    if not events:
-        record["notes"].append("odds-api unavailable or no events")
-        record["failure_paths"] = ["Odds API returned no data for this sport"]
+    # ── LLP Odds Fallback Patch v16.1B: per-candidate source resolution ───────
+    # Replaces the previous hard-exit pattern (Odds API fail → return empty
+    # record immediately).  The resolver attempts:
+    #   1. Odds API live h2h  →  2. ESPN event validation (identity only)
+    #   →  3. PrizePicks two-way reconstruction  →  4. DATA_UNOBTAINABLE
+    # Only step 4 causes an early return; steps 2-3 allow scoring to continue
+    # at a capped label (LLP_SCOUT max, stake_tier=PASS, big_stake=BLOCKED).
+    _resolution = _resolve_odds_source(
+        game=game, sport_key=sport_key, sport=sport,
+        fetch_odds_fn=_llp_fetch_odds,
+        match_event_fn=_llp_match_event,
+        extract_market_fn=_llp_extract_market,
+        board_date=board_date,
+    )
+    if not _resolution.usable:
+        record["notes"].append(
+            "all odds sources exhausted: " +
+            "; ".join(_resolution.source_failure_reasons[:3]))
+        record["failure_paths"] = (
+            ["DATA_UNOBTAINABLE: " +
+             "; ".join(_resolution.source_failure_reasons[:2])]
+            + [t for t in _resolution.diagnostic_tags])
+        record.update(_resolution.to_record_fields())
         return record
 
-    event = _llp_match_event(events, away, home)
-    if not event:
-        record["notes"].append("event not found in odds feed")
-        record["failure_paths"] = ["Game not found in current odds feed (check team names / date)"]
-        return record
+    event = _resolution.event
+    sel   = _resolution.sel
+    # Inject all ten source-provenance fields so they appear in every
+    # downstream response (even after early returns from F5 chooser, etc.).
+    record.update(_resolution.to_record_fields())
 
-    sel = _llp_extract_market(event, market, side)
-    if not sel:
-        record["notes"].append(f"market/side not found: {market}/{side}")
-        record["failure_paths"] = [f"Market {market} side {side!r} not offered by tracked books"]
-        return record
-
-    # LLP Pro Data Ingestion: persist every matched market snapshot.
-    _llp_persist_odds_snapshot(sport, away, home, market, sel)
+    # Only persist live sportsbook snapshots — never proxy/reconstructed data.
+    if not _resolution.is_proxy and event is not None:
+        _llp_persist_odds_snapshot(sport, away, home, market, sel)
 
     record["book"]         = sel.get("book")
-    record["current_line"] = sel.get("point") if sel.get("point") is not None else sel.get("american")
+    record["current_line"] = (sel.get("point") if sel.get("point") is not None
+                              else sel.get("american"))
     record["implied_probability"]        = round(sel["implied_prob"], 4) if sel.get("implied_prob") is not None else None
     record["no_vig_implied_probability"] = round(sel["novig_prob"], 4)   if sel.get("novig_prob")   is not None else None
 
@@ -13026,6 +13050,18 @@ def _llp_analyze_one(game, default_sport, board_date):
                                              record["favorite_trap_flag"],
                                              record["failure_paths"])
 
+    # ── LLP Odds Fallback Patch v16.1B: proxy path final_decision ceiling ────
+    # PrizePicks-reconstructed no-vig cannot reach BET or SMALL BET.
+    # Cap to WATCH so the record lands in watchlist/conditional (never in
+    # approved / winners_ranked / best_bets). Diagnostic tags are appended
+    # to failure_paths so run_llp_governance and downstream consumers see them.
+    if _resolution.is_proxy:
+        if record.get("final_decision") in ("BET", "SMALL BET"):
+            record["final_decision"] = "WATCH"
+        for _dt in (_resolution.diagnostic_tags or []):
+            if _dt not in record["failure_paths"]:
+                record["failure_paths"].append(_dt)
+
     # LLP Verified-Data-Layer Step 5: when this is an MLB full-game h2h
     # record, peek at the SAME event for F5 (first-5-innings) availability
     # so the chooser below can route to F5_ML if full-game isn't actionable.
@@ -13110,6 +13146,18 @@ def _llp_analyze_one(game, default_sport, board_date):
         # board for review but never surfaces in winners_ranked / best_bets.
         record["final_decision"] = "WATCH"
     record["llp_badge"]        = _llp_compute_badge(record)
+
+    # ── LLP Odds Fallback Patch v16.1B: stake/confidence caps for proxy ───────
+    # When only a reconstructed PrizePicks no-vig is available, hard-cap the
+    # stake tier and confidence tier regardless of what the model computed.
+    # These fields are read by run_llp_governance and the dashboard.
+    if _resolution.is_proxy:
+        record["stake_tier"]         = _PROXY_STAKE_TIER        # "PASS"
+        record["big_stake_status"]   = _PROXY_BIG_STAKE_STATUS  # "BLOCKED"
+        if record.get("confidence_tier") not in (_PROXY_CONFIDENCE_CEILING,
+                                                  "UNKNOWN", "PASS"):
+            record["confidence_tier"] = _PROXY_CONFIDENCE_CEILING  # "LOW"
+        record["label_ceiling_reason"] = _resolution.label_ceiling_reason
 
     # LLP spec field: `lock_line` — snapshot the current_line at the moment
     # the validation engine clears the play. NULL when validation isn't clean
