@@ -1,0 +1,54 @@
+I reran what I could through the connected LLP pipeline.
+
+Result
+
+The engine did not produce any model-qualified plays.
+
+Instead, it returned a global NO PLAY for the requested board because it could not verify the live market data required by the governance rules:
+
+* No verified sportsbook odds feed for the requested games.
+* No confirmed no-vig probabilities.
+* No verified line movement / CLV.
+* No confirmed lineup/starter validation.
+* Therefore, no Kelly sizing, edge calculation, or reproducible approval.
+
+The connected model summary was:
+
+* Board status: NO PLAY
+* Approved plays: 0
+* Model-qualified plays: 0
+* Pass traps: 8
+* Reason: market verification unavailable; governance blocked approval.
+
+That is actually the correct behavior under your patched LLP governance. The model is designed to refuse approval when it cannot complete the required validation, rather than guessing.
+
+My assessment
+
+This exposed something important about your stack.
+
+The LLP logic is working, but the data layer is not.
+
+Right now the engine is failing at Step 2 (“Live Board Confirm”) because it isn’t successfully ingesting current odds/market data. Once that happens, every downstream step—no-vig, edge, Kelly, confidence, stake tier, game script—cannot be completed, so the engine correctly outputs PASS.
+
+What I would patch next
+
+I would make the engine more resilient instead of stopping immediately when one odds provider fails.
+
+The data contract should become:
+
+1. PrizePicks Teams board (your input)
+2. The Odds API
+3. ESPN schedule/starters
+4. MLB probable pitchers
+5. Consensus sportsbook prices
+6. Manual reconstruction from PrizePicks if all else fails
+
+Then:
+
+* If Steps 1–4 succeed, allow full game-script modeling.
+* If live no-vig cannot be computed, cap the result at LLP_SCOUT instead of attempting LLP_APPROVED.
+* Only issue LLP_APPROVED after all validation gates pass.
+
+That keeps the governance intact while avoiding a complete shutdown when a single feed is unavailable.
+
+I think this is the next major improvement for LLP: a fault-tolerant data layer. Right now your decision engine is stricter than the infrastructure supporting it. Once the engine can seamlessly fall back across multiple verified sources, you’ll get many more fully qualified evaluations without sacrificing reproducibility.
