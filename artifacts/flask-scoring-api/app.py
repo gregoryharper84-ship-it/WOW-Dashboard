@@ -26136,6 +26136,63 @@ def wow_ledger_cache_lookup():
     })
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW v16 Skills Pack — orchestration endpoint
+# GET  /wow/skills/registry  — list all 21 registered skills
+# POST /wow/skills/run       — run the orchestration sequence for a market context
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/wow/skills/registry', methods=['GET'])
+def skills_registry():
+    try:
+        from skills.registry import SkillRegistry
+        reg = SkillRegistry.get()
+        return jsonify({
+            'ok':       True,
+            'pack':     reg.pack,
+            'version':  reg.version,
+            'count':    len(reg.all_skills()),
+            'skills':   reg.ordered_skills(),
+            'execution_rule': 'DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS',
+        })
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)[:300]}), 500
+
+
+@app.route('/wow/skills/run', methods=['POST'])
+def skills_run():
+    """
+    Run the WOW v16 skill orchestration sequence for the provided market context.
+
+    Body (JSON):
+      market_type:              player_prop | team_winner | team_total | team_spread
+                                | kalshi_sports | kalshi_weather | lottery
+      event_id:                 optional str
+      market_id:                optional str
+      reliability_freeze:       bool (default false)
+      kalshi_inventory_health:  INVENTORY_EMPTY | INVENTORY_READY
+      kalshi_combo_markets:     list[str]
+      inputs:                   dict of domain-specific inputs
+
+    Returns:
+      run_id, final_label, skill_results, blockers, can_execute (always false),
+      stopped_early, stop_reason, skill_count.
+    """
+    try:
+        from skills.orchestrator import SkillOrchestrator
+        import json as _json
+        context = request.get_json(force=True) or {}
+        orch = SkillOrchestrator()
+        result = orch.run(context)
+        # Ensure can_execute is always False at the HTTP boundary
+        result['can_execute'] = False
+        result['execution_rule'] = 'DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS'
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)[:400]}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)

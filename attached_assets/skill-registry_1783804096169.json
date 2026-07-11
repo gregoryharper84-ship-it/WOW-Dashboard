@@ -1,0 +1,132 @@
+{
+  "pack": "WOW v16 Clean Core Skills Pack",
+  "version": "1.0.0",
+  "skills": [
+    {
+      "priority": 1,
+      "id": "wow.sports-research-analyst",
+      "name": "Sports Research Analyst",
+      "path": "skills/sports-research-analyst/SKILL.md"
+    },
+    {
+      "priority": 2,
+      "id": "wow.market-odds-intelligence",
+      "name": "Market & Odds Intelligence",
+      "path": "skills/market-odds-intelligence/SKILL.md"
+    },
+    {
+      "priority": 3,
+      "id": "wow.kalshi-contract-intelligence",
+      "name": "Kalshi Contract Intelligence",
+      "path": "skills/kalshi-contract-intelligence/SKILL.md"
+    },
+    {
+      "priority": 4,
+      "id": "wow.player-prop-intelligence",
+      "name": "Player Prop Intelligence",
+      "path": "skills/player-prop-intelligence/SKILL.md"
+    },
+    {
+      "priority": 5,
+      "id": "wow.game-script-simulator",
+      "name": "Game Script Simulator",
+      "path": "skills/game-script-simulator/SKILL.md"
+    },
+    {
+      "priority": 6,
+      "id": "wow.mlb-pitching-expert",
+      "name": "MLB Pitching Expert",
+      "path": "skills/mlb-pitching-expert/SKILL.md"
+    },
+    {
+      "priority": 7,
+      "id": "wow.mlb-hitting-expert",
+      "name": "MLB Hitting Expert",
+      "path": "skills/mlb-hitting-expert/SKILL.md"
+    },
+    {
+      "priority": 8,
+      "id": "wow.wnba-specialist",
+      "name": "WNBA Specialist",
+      "path": "skills/wnba-specialist/SKILL.md"
+    },
+    {
+      "priority": 9,
+      "id": "wow.correlation-slip-auditor",
+      "name": "Correlation & Slip Auditor",
+      "path": "skills/correlation-slip-auditor/SKILL.md"
+    },
+    {
+      "priority": 10,
+      "id": "wow.probability-ev-auditor",
+      "name": "Probability & EV Auditor",
+      "path": "skills/probability-ev-auditor/SKILL.md"
+    },
+    {
+      "priority": 11,
+      "id": "wow.weather-intelligence",
+      "name": "Weather Intelligence",
+      "path": "skills/weather-intelligence/SKILL.md"
+    },
+    {
+      "priority": 12,
+      "id": "wow.bankroll-risk-manager",
+      "name": "Bankroll & Risk Manager",
+      "path": "skills/bankroll-risk-manager/SKILL.md"
+    },
+    {
+      "priority": 13,
+      "id": "wow.qa-hallucination-auditor",
+      "name": "QA & Hallucination Auditor",
+      "path": "skills/qa-hallucination-auditor/SKILL.md"
+    },
+    {
+      "priority": 14,
+      "id": "wow.patch-governance-architect",
+      "name": "Patch Governance & Architecture Manager",
+      "path": "skills/patch-governance-architect/SKILL.md"
+    },
+    {
+      "priority": 15,
+      "id": "wow.lottery-analyst",
+      "name": "Lottery Analyst",
+      "path": "skills/lottery-analyst/SKILL.md"
+    },
+    {
+      "priority": 16,
+      "id": "wow.financial-market-analyst",
+      "name": "Financial Market Analyst",
+      "path": "skills/financial-market-analyst/SKILL.md"
+    },
+    {
+      "priority": 17,
+      "id": "wow.historical-trend-researcher",
+      "name": "Historical Trend Researcher",
+      "path": "skills/historical-trend-researcher/SKILL.md"
+    },
+    {
+      "priority": 18,
+      "id": "wow.sportsbook-promo-optimizer",
+      "name": "Sportsbook Promotion Optimizer",
+      "path": "skills/sportsbook-promo-optimizer/SKILL.md"
+    },
+    {
+      "priority": 19,
+      "id": "wow.dfs-analyst",
+      "name": "DFS Analyst",
+      "path": "skills/dfs-analyst/SKILL.md"
+    },
+    {
+      "priority": 20,
+      "id": "wow.sports-psychology-context",
+      "name": "Sports Psychology Context Analyst",
+      "path": "skills/sports-psychology-context/SKILL.md"
+    },
+    {
+      "priority": 21,
+      "id": "wow.referee-umpire-tendency",
+      "name": "Referee & Umpire Tendency Analyst",
+      "path": "skills/referee-umpire-tendency/SKILL.md"
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WOW Skill Result",
+  "type": "object",
+  "required": [
+    "skill_id",
+    "skill_version",
+    "run_id",
+    "as_of",
+    "inputs_used",
+    "sources",
+    "data_quality",
+    "findings",
+    "blockers",
+    "label",
+    "confidence",
+    "can_execute"
+  ],
+  "properties": {
+    "skill_id": {
+      "type": "string"
+    },
+    "skill_version": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "as_of": {
+      "type": "string"
+    },
+    "event_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "market_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inputs_used": {
+      "type": "object"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "source_timestamps": {
+      "type": "array"
+    },
+    "data_quality": {
+      "type": "string"
+    },
+    "conflicts": {
+      "type": "array"
+    },
+    "assumptions": {
+      "type": "array"
+    },
+    "calculations": {
+      "type": "array"
+    },
+    "findings": {
+      "type": "array"
+    },
+    "blockers": {
+      "type": "array"
+    },
+    "label": {
+      "enum": [
+        "READY",
+        "WATCH",
+        "SCOUT",
+        "HOLD",
+        "REJECT_BAD_RULES",
+        "REJECT_DATA_QUALITY",
+        "DATA_UNOBTAINABLE"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "can_execute": {
+      "const": false
+    },
+    "downstream": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}
