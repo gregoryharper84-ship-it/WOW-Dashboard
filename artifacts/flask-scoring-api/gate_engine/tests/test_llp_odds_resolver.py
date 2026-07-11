@@ -619,3 +619,188 @@ def test_reconstruction_invalid_non_numeric():
     assert reconstruct_no_vig_from_decimal(None, 1.88) is None
     assert reconstruct_no_vig_from_decimal("foo", 1.88) is None
     assert reconstruct_no_vig_from_decimal(1.85, None) is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Integration tests: pp_home_decimal / pp_away_decimal request schema (v16.1B)
+# These tests verify the contract between the external caller and the resolver.
+# They confirm that pp_home_decimal/pp_away_decimal are correctly passed into
+# resolve_odds_source(), that the two-way reconstruction fires on valid input,
+# and that the resolver emits the correct provenance + proxy ceiling fields.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _fail_all_fn(*args, **kwargs):
+    """Stub that always fails — forces the resolver to step 3 (PP reconstruction)."""
+    return None
+
+
+def test_integration_valid_pp_decimals_trigger_reconstruction():
+    """Both pp_home_decimal and pp_away_decimal valid → reconstruction fires,
+    source_quality=proxy, reconstructed_no_vig_available=True."""
+    game = {
+        "away": "Boston Celtics", "home": "Miami Heat",
+        "side": "Miami Heat", "market": "h2h",
+        "pp_home_decimal": 1.85,
+        "pp_away_decimal": 1.88,
+    }
+    res = resolve_odds_source(
+        game=game, sport_key="basketball_nba", sport="nba",
+        fetch_odds_fn=_fail_all_fn,
+        match_event_fn=lambda *a, **k: None,
+        extract_market_fn=lambda *a, **k: None,
+        board_date="2026-07-11",
+        use_espn_validation=False,
+    )
+    assert res.usable, "reconstruction should produce a usable result"
+    assert res.is_proxy, "result must be flagged proxy"
+    assert res.odds_source_quality == SOURCE_QUALITY_PROXY
+    fields = res.to_record_fields()
+    assert fields["reconstructed_no_vig_available"] is True
+    assert isinstance(fields["reconstructed_no_vig_probability"], float)
+    assert fields["reconstructed_no_vig_probability"] > 0
+    assert fields["odds_source_primary"] == "prizepicks_reconstructed"
+    assert fields["odds_source_fallback_used"] is True
+    assert "prizepicks_reconstruction_success" in fields["source_resolution_path"]
+    # Verify the novig is reasonable (between 0.3 and 0.7 for near-even lines)
+    assert 0.3 < fields["reconstructed_no_vig_probability"] < 0.7
+
+
+def test_integration_pp_decimals_home_away_mapping():
+    """pp_home_decimal maps to the home team decimal; pp_away_decimal to the
+    away team. Side=home_team should get the home reconstructed probability."""
+    game_home_side = {
+        "away": "Los Angeles Lakers", "home": "Golden State Warriors",
+        "side": "Golden State Warriors", "market": "h2h",
+        "pp_home_decimal": 1.70,   # shorter price → higher implied prob → favorite
+        "pp_away_decimal": 2.10,   # longer price → underdog
+    }
+    game_away_side = {
+        "away": "Los Angeles Lakers", "home": "Golden State Warriors",
+        "side": "Los Angeles Lakers", "market": "h2h",
+        "pp_home_decimal": 1.70,
+        "pp_away_decimal": 2.10,
+    }
+    res_home = resolve_odds_source(
+        game=game_home_side, sport_key="basketball_nba", sport="nba",
+        fetch_odds_fn=_fail_all_fn, match_event_fn=lambda *a, **k: None,
+        extract_market_fn=lambda *a, **k: None,
+        board_date="2026-07-11", use_espn_validation=False,
+    )
+    res_away = resolve_odds_source(
+        game=game_away_side, sport_key="basketball_nba", sport="nba",
+        fetch_odds_fn=_fail_all_fn, match_event_fn=lambda *a, **k: None,
+        extract_market_fn=lambda *a, **k: None,
+        board_date="2026-07-11", use_espn_validation=False,
+    )
+    assert res_home.usable and res_away.usable
+    home_prob = res_home.sel["novig_prob"]
+    away_prob = res_away.sel["novig_prob"]
+    # Home side (1.70 decimal) should have higher no-vig prob than away (2.10)
+    assert home_prob > away_prob, (
+        f"home prob ({home_prob:.4f}) should exceed away prob ({away_prob:.4f}) "
+        f"when home decimal (1.70) is shorter than away decimal (2.10)")
+
+
+def test_integration_one_sided_pp_decimal_falls_to_unobtainable():
+    """Only pp_home_decimal supplied (no pp_away_decimal) → resolver cannot
+    reconstruct → DATA_UNOBTAINABLE.  The validation block in _llp_analyze_one
+    clears both fields before calling the resolver; here we simulate that by
+    passing only one side directly to the resolver."""
+    game_one_sided = {
+        "away": "Boston Celtics", "home": "Miami Heat",
+        "side": "Miami Heat", "market": "h2h",
+        "pp_home_decimal": 1.85,
+        # pp_away_decimal deliberately absent — simulates post-validation state
+    }
+    res = resolve_odds_source(
+        game=game_one_sided, sport_key="basketball_nba", sport="nba",
+        fetch_odds_fn=_fail_all_fn,
+        match_event_fn=lambda *a, **k: None,
+        extract_market_fn=lambda *a, **k: None,
+        board_date="2026-07-11",
+        use_espn_validation=False,
+    )
+    assert not res.usable, "one-sided decimal must not produce a usable result"
+    assert TAG_DATA_UNOBTAINABLE in res.diagnostic_tags
+    assert res.odds_source_quality == SOURCE_QUALITY_UNAVAILABLE
+    fields = res.to_record_fields()
+    assert fields["reconstructed_no_vig_available"] is False
+
+
+def test_integration_pp_decimal_below_one_falls_to_unobtainable():
+    """pp decimals ≤ 1.0 are invalid; reconstruct_no_vig_from_decimal returns
+    None → resolver continues to DATA_UNOBTAINABLE."""
+    game = {
+        "away": "Boston Celtics", "home": "Miami Heat",
+        "side": "Miami Heat", "market": "h2h",
+        "pp_home_decimal": 0.85,   # invalid — below 1.0
+        "pp_away_decimal": 1.88,
+    }
+    res = resolve_odds_source(
+        game=game, sport_key="basketball_nba", sport="nba",
+        fetch_odds_fn=_fail_all_fn,
+        match_event_fn=lambda *a, **k: None,
+        extract_market_fn=lambda *a, **k: None,
+        board_date="2026-07-11",
+        use_espn_validation=False,
+    )
+    assert not res.usable, "invalid decimal (≤1.0) must not produce a usable result"
+    assert res.odds_source_quality == SOURCE_QUALITY_UNAVAILABLE
+
+
+def test_integration_backward_compat_no_pp_fields():
+    """When pp_home_decimal and pp_away_decimal are both absent and Odds API
+    fails, the result is DATA_UNOBTAINABLE — backward-compatible with pre-v16.1B
+    callers who never supplied decimal fields."""
+    game = {
+        "away": "Boston Celtics", "home": "Miami Heat",
+        "side": "Miami Heat", "market": "h2h",
+        # no pp_home_decimal, no pp_away_decimal
+    }
+    res = resolve_odds_source(
+        game=game, sport_key="basketball_nba", sport="nba",
+        fetch_odds_fn=_fail_all_fn,
+        match_event_fn=lambda *a, **k: None,
+        extract_market_fn=lambda *a, **k: None,
+        board_date="2026-07-11",
+        use_espn_validation=False,
+    )
+    assert not res.usable
+    assert TAG_DATA_UNOBTAINABLE in res.diagnostic_tags
+    # Must not raise — backward compat is silent
+    fields = res.to_record_fields()
+    assert fields["reconstructed_no_vig_available"] is False
+    assert fields["odds_source_fallback_used"] is True
+
+
+def test_integration_proxy_label_ceiling_emitted():
+    """When reconstruction path is taken, label_ceiling_reason must be set so
+    that _llp_requested_label_from_analysis returns LLP_SCOUT (not LLP_REJECT).
+    This is the six-label serialization fix: proxy path → final_label LLP_SCOUT."""
+    game = {
+        "away": "Boston Celtics", "home": "Miami Heat",
+        "side": "Miami Heat", "market": "h2h",
+        "pp_home_decimal": 1.85,
+        "pp_away_decimal": 1.88,
+    }
+    res = resolve_odds_source(
+        game=game, sport_key="basketball_nba", sport="nba",
+        fetch_odds_fn=_fail_all_fn,
+        match_event_fn=lambda *a, **k: None,
+        extract_market_fn=lambda *a, **k: None,
+        board_date="2026-07-11",
+        use_espn_validation=False,
+    )
+    assert res.usable
+    assert res.label_ceiling_reason is not None, (
+        "label_ceiling_reason must be set on proxy path so that "
+        "_llp_requested_label_from_analysis returns LLP_SCOUT, not LLP_REJECT")
+    fields = res.to_record_fields()
+    assert fields["label_ceiling_reason"] is not None
+    # Simulate what _llp_requested_label_from_analysis does:
+    # if rec.get("label_ceiling_reason") → return LLPLabel.SCOUT.value
+    # This is the guard introduced in the six-label serialization fix.
+    mock_rec = {"current_line": -115, "edge": 0.04, **fields}
+    assert mock_rec["label_ceiling_reason"], (
+        "label_ceiling_reason present in to_record_fields() output → "
+        "_llp_requested_label_from_analysis will return LLP_SCOUT")

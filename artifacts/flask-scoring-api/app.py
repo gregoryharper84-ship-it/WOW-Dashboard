@@ -2227,6 +2227,77 @@ def openapi_schema():
                         "filters":     {"type": "object"},
                         "leaderboard": {"type": "array", "items": {"$ref": "#/components/schemas/LeaderboardEntry"}}
                     }
+                },
+                "LLPGameObject": {
+                    "type": "object",
+                    "description": (
+                        "A single team-betting game submitted to the LLP analysis pipeline "
+                        "via /input-board (board_type: team_betting), /run-connected-model "
+                        "(model: llp_team), or /llp/board-scan-to-full-run. "
+                        "pp_home_decimal and pp_away_decimal are optional fallback fields "
+                        "used when the Odds API returns no live h2h event: the resolver "
+                        "performs two-way decimal normalization to reconstruct a no-vig "
+                        "probability. When only a reconstructed probability is available "
+                        "the output label is capped at LLP_SCOUT with stake_tier: PASS "
+                        "and big_stake_status: BLOCKED."
+                    ),
+                    "required": ["away", "home", "side"],
+                    "properties": {
+                        "sport":   {"type": "string", "example": "NBA",
+                                    "description": "Sport key (NBA, NFL, MLB, NHL, WNBA, MLS, EPL, …). Case-insensitive."},
+                        "away":    {"type": "string", "example": "Boston Celtics",
+                                    "description": "Away team full name."},
+                        "home":    {"type": "string", "example": "Miami Heat",
+                                    "description": "Home team full name."},
+                        "side":    {"type": "string", "example": "Miami Heat",
+                                    "description": "The team side being analyzed. Must match away or home."},
+                        "market":  {"type": "string", "example": "h2h", "default": "h2h",
+                                    "description": "Market key. Currently h2h (moneyline) only for team-betting."},
+                        "line":    {"type": "number", "nullable": True, "example": -110,
+                                    "description": "Optional requested line for drift detection."},
+                        "pp_home_decimal": {
+                            "type": "number", "nullable": True,
+                            "example": 1.85,
+                            "description": (
+                                "PrizePicks decimal odds for the HOME team. "
+                                "Used only when the Odds API has no live event (fallback step 3). "
+                                "Must be a number greater than 1.0. "
+                                "Both pp_home_decimal AND pp_away_decimal are required together — "
+                                "one-sided input is rejected with source_failure_reason "
+                                "'pp_away_decimal_missing:one_sided_input_rejected'. "
+                                "pp_home_decimal maps to the home team; pp_away_decimal to the away team."
+                            ),
+                        },
+                        "pp_away_decimal": {
+                            "type": "number", "nullable": True,
+                            "example": 1.88,
+                            "description": (
+                                "PrizePicks decimal odds for the AWAY team. "
+                                "Used only when the Odds API has no live event (fallback step 3). "
+                                "Must be a number greater than 1.0. "
+                                "Both pp_home_decimal AND pp_away_decimal are required together — "
+                                "one-sided input is rejected with source_failure_reason "
+                                "'pp_home_decimal_missing:one_sided_input_rejected'."
+                            ),
+                        },
+                        "board_source": {
+                            "type": "string", "nullable": True,
+                            "example": "PrizePicks",
+                            "description": (
+                                "Optional free-text label identifying where the board data "
+                                "originated (e.g. 'PrizePicks', 'Underdog', 'manual'). "
+                                "Carried through to the output record for audit/lineage."
+                            ),
+                        },
+                        "board_timestamp": {
+                            "type": "string", "nullable": True,
+                            "example": "2026-07-11T09:00:00+00:00",
+                            "description": (
+                                "Optional ISO-8601 timestamp recording when the board data "
+                                "was captured. Carried through to the output record unchanged."
+                            ),
+                        },
+                    }
                 }
             }
         }
@@ -12731,6 +12802,69 @@ def _llp_analyze_one(game, default_sport, board_date):
         record["failure_paths"] = [f"Sport {sport!r} not mapped to Odds API"]
         return record
 
+    # ── LLP Odds Fallback Patch v16.1B: validate PrizePicks decimal fields ──────
+    # pp_home_decimal / pp_away_decimal are optional request fields that allow
+    # the resolver to reconstruct a no-vig probability when the Odds API has no
+    # live event.  Validate them here — before the resolver call — so malformed
+    # or one-sided input produces an explicit source_failure_reason rather than
+    # a silent reconstruction attempt or a TypeError inside the math helper.
+    #
+    # Validation rules (per spec):
+    #   1. Both fields must be numeric (float-castable).
+    #   2. Both must be > 1.0 (decimal odds below or equal to 1.0 are invalid).
+    #   3. One-sided input (only one of the two provided) is rejected; the
+    #      resolver needs both sides to normalize the overround correctly.
+    #   4. board_source and board_timestamp are optional provenance strings
+    #      carried through to the output record unchanged.
+    #
+    # Backward-compatible: when both fields are absent the block is a no-op and
+    # the game dict is passed through unmodified.
+    _pp_validation_errors = []
+    _pp_h_raw = game.get("pp_home_decimal")
+    _pp_a_raw = game.get("pp_away_decimal")
+    if _pp_h_raw is not None or _pp_a_raw is not None:
+        _pp_h_ok = _pp_a_ok = True
+        for _ppfname, _ppfraw in (("pp_home_decimal", _pp_h_raw),
+                                   ("pp_away_decimal", _pp_a_raw)):
+            if _ppfraw is None:
+                continue
+            try:
+                _ppfloat = float(_ppfraw)
+                if _ppfloat <= 1.0:
+                    _pp_validation_errors.append(
+                        f"{_ppfname}_invalid:must_be_greater_than_1.0")
+                    if _ppfname == "pp_home_decimal": _pp_h_ok = False
+                    else: _pp_a_ok = False
+            except (TypeError, ValueError):
+                _pp_validation_errors.append(f"{_ppfname}_invalid:not_numeric")
+                if _ppfname == "pp_home_decimal": _pp_h_ok = False
+                else: _pp_a_ok = False
+        if _pp_h_raw is None and _pp_a_raw is not None:
+            _pp_validation_errors.append(
+                "pp_home_decimal_missing:one_sided_input_rejected")
+            _pp_a_ok = False
+        if _pp_a_raw is None and _pp_h_raw is not None:
+            _pp_validation_errors.append(
+                "pp_away_decimal_missing:one_sided_input_rejected")
+            _pp_h_ok = False
+        if _pp_validation_errors:
+            # Clear the fields so the resolver skips reconstruction (step 3)
+            # and falls through to DATA_UNOBTAINABLE rather than attempting
+            # math with bad values.
+            game = dict(game)
+            game["pp_home_decimal"] = None
+            game["pp_away_decimal"] = None
+            record["failure_paths"].extend(_pp_validation_errors)
+
+    # board_source / board_timestamp: optional provenance strings supplied by
+    # external callers (e.g. the ChatGPT orchestrator) to identify where the
+    # board data came from and when it was captured.  Carry them through to
+    # the output record so downstream consumers can audit the data lineage.
+    if game.get("board_source"):
+        record["board_source"]    = str(game["board_source"])
+    if game.get("board_timestamp"):
+        record["board_timestamp"] = str(game["board_timestamp"])
+
     # ── LLP Odds Fallback Patch v16.1B: per-candidate source resolution ───────
     # Replaces the previous hard-exit pattern (Odds API fail → return empty
     # record immediately).  The resolver attempts:
@@ -13746,6 +13880,15 @@ def _llp_requested_label_from_analysis(rec):
     """
     if not isinstance(rec, dict) or rec.get("current_line") is None or rec.get("edge") is None:
         return LLPLabel.SCOUT.value
+    # ── v16.1B: proxy path (PrizePicks reconstruction) is capped at LLP_SCOUT.
+    # label_ceiling_reason is the canonical proxy indicator written by
+    # _llp_analyze_one when _resolution.is_proxy is True.  Requesting SCOUT
+    # here ensures governance cannot raise the label; it can only confirm or
+    # lower it.  Without this guard the function falls through to LLP_REJECT
+    # (because final_decision=WATCH doesn't match BET/SMALL BET), causing
+    # the public six-label field to emit LLP_REJECT instead of LLP_SCOUT.
+    if rec.get("label_ceiling_reason"):
+        return LLPLabel.SCOUT.value
     badge    = rec.get("llp_badge")
     decision = rec.get("final_decision")
     if badge == "ANCHOR" and decision == "BET":
@@ -13898,6 +14041,19 @@ def _llp_board_scan_to_full_run(sports, board_date, top_n):
                 "passed": gov["passed"], "blockers": gov["blockers"],
                 "label_ceiling": gov["label_ceiling"], "rerun_required": gov["rerun_required"],
             },
+            # ── v16.1B: source provenance fields for external consumers ──────
+            # These are emitted unconditionally so callers can always audit the
+            # odds ingestion path regardless of which label was assigned.
+            "odds_source_primary":       rec.get("odds_source_primary"),
+            "odds_source_fallback_used": rec.get("odds_source_fallback_used"),
+            "odds_source_quality":       rec.get("odds_source_quality"),
+            "sportsbook_no_vig_available":    rec.get("sportsbook_no_vig_available"),
+            "reconstructed_no_vig_available": rec.get("reconstructed_no_vig_available"),
+            "reconstructed_no_vig_probability": rec.get("reconstructed_no_vig_probability"),
+            "data_contract_status":      rec.get("data_contract_status"),
+            "label_ceiling_reason":      rec.get("label_ceiling_reason"),
+            "board_source":              rec.get("board_source"),
+            "board_timestamp":           rec.get("board_timestamp"),
         }
         if label in (LLPLabel.SCOUT.value, LLPLabel.CUT.value, LLPLabel.REJECT.value):
             entry["message"] = _LLP_BOARD_SCAN_INCOMPLETE_MESSAGE if label == LLPLabel.SCOUT.value else None
