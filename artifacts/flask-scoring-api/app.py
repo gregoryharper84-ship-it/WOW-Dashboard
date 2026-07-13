@@ -12457,16 +12457,170 @@ def _llp_norm_team(name):
     return "".join(c for c in name.lower() if c.isalnum())
 
 
+# ── Team alias table — screenshot display names → canonical feed names ────────
+# Keys are canonical Odds API / ESPN team names; values are lists of alternate
+# display names used by PrizePicks Predict, ESPN graphics, and other screenshot
+# sources. _llp_match_event tries all alias forms before falling back to plain
+# substring normalization, so "MIN Lynx" matches "Minnesota Lynx" in the feed.
+_LLP_TEAM_ALIASES: dict = {
+    # WNBA
+    "Atlanta Dream":          ["ATL", "ATL Dream", "Dream"],
+    "Chicago Sky":            ["CHI", "CHI Sky", "Sky"],
+    "Connecticut Sun":        ["CON", "CT Sun", "Sun"],
+    "Dallas Wings":           ["DAL", "DAL Wings", "Wings"],
+    "Golden State Valkyries": ["GSV", "GS Valkyries", "Valkyries"],
+    "Indiana Fever":          ["IND", "IND Fever", "Fever"],
+    "Las Vegas Aces":         ["LVA", "LV Aces", "Aces"],
+    "Los Angeles Sparks":     ["LA", "LA Sparks", "Sparks"],
+    "Minnesota Lynx":         ["MIN", "MIN Lynx", "Lynx"],
+    "New York Liberty":       ["NY", "NY Liberty", "Liberty"],
+    "Phoenix Mercury":        ["PHX", "PHO", "Mercury"],
+    "Portland Fire":          ["POR", "POR Fire", "Fire"],
+    "Seattle Storm":          ["SEA", "SEA Storm", "Storm"],
+    "Toronto Tempo":          ["TOR", "TOR Tempo", "Tempo"],
+    "Washington Mystics":     ["WAS", "WSH", "Mystics"],
+    # NBA
+    "Atlanta Hawks":          ["ATL", "Hawks"],
+    "Boston Celtics":         ["BOS", "Celtics"],
+    "Brooklyn Nets":          ["BKN", "BRK", "Nets"],
+    "Charlotte Hornets":      ["CHA", "CHO", "Hornets"],
+    "Chicago Bulls":          ["CHI", "Bulls"],
+    "Cleveland Cavaliers":    ["CLE", "Cavaliers", "Cavs"],
+    "Dallas Mavericks":       ["DAL", "Mavericks", "Mavs"],
+    "Denver Nuggets":         ["DEN", "Nuggets"],
+    "Detroit Pistons":        ["DET", "Pistons"],
+    "Golden State Warriors":  ["GSW", "GS Warriors", "Warriors"],
+    "Houston Rockets":        ["HOU", "Rockets"],
+    "Indiana Pacers":         ["IND", "Pacers"],
+    "Los Angeles Clippers":   ["LAC", "Clippers"],
+    "Los Angeles Lakers":     ["LAL", "Lakers"],
+    "Memphis Grizzlies":      ["MEM", "Grizzlies"],
+    "Miami Heat":             ["MIA", "Heat"],
+    "Milwaukee Bucks":        ["MIL", "Bucks"],
+    "Minnesota Timberwolves": ["MIN", "Timberwolves", "Wolves"],
+    "New Orleans Pelicans":   ["NOP", "NOR", "Pelicans"],
+    "New York Knicks":        ["NYK", "NY Knicks", "Knicks"],
+    "Oklahoma City Thunder":  ["OKC", "Thunder"],
+    "Orlando Magic":          ["ORL", "Magic"],
+    "Philadelphia 76ers":     ["PHI", "76ers", "Sixers"],
+    "Phoenix Suns":           ["PHX", "PHO", "Suns"],
+    "Portland Trail Blazers": ["POR", "Trail Blazers", "Blazers"],
+    "Sacramento Kings":       ["SAC", "Kings"],
+    "San Antonio Spurs":      ["SAS", "Spurs"],
+    "Toronto Raptors":        ["TOR", "Raptors"],
+    "Utah Jazz":              ["UTA", "Jazz"],
+    "Washington Wizards":     ["WAS", "WSH", "Wizards"],
+    # MLB
+    "Arizona Diamondbacks":   ["ARI", "ARZ", "D-backs", "Diamondbacks"],
+    "Atlanta Braves":         ["ATL", "Braves"],
+    "Baltimore Orioles":      ["BAL", "Orioles"],
+    "Boston Red Sox":         ["BOS", "Red Sox", "Sox"],
+    "Chicago Cubs":           ["CHC", "Cubs"],
+    "Chicago White Sox":      ["CWS", "CHW", "White Sox"],
+    "Cincinnati Reds":        ["CIN", "Reds"],
+    "Cleveland Guardians":    ["CLE", "Guardians"],
+    "Colorado Rockies":       ["COL", "Rockies"],
+    "Detroit Tigers":         ["DET", "Tigers"],
+    "Houston Astros":         ["HOU", "Astros"],
+    "Kansas City Royals":     ["KC", "KCR", "Royals"],
+    "Los Angeles Angels":     ["LAA", "Angels"],
+    "Los Angeles Dodgers":    ["LAD", "Dodgers"],
+    "Miami Marlins":          ["MIA", "MRL", "Marlins"],
+    "Milwaukee Brewers":      ["MIL", "Brewers"],
+    "Minnesota Twins":        ["MIN", "Twins"],
+    "New York Mets":          ["NYM", "Mets"],
+    "New York Yankees":       ["NYY", "Yankees"],
+    "Oakland Athletics":      ["OAK", "Athletics"],
+    "Philadelphia Phillies":  ["PHI", "Phillies"],
+    "Pittsburgh Pirates":     ["PIT", "Pirates"],
+    "San Diego Padres":       ["SD", "SDP", "Padres"],
+    "San Francisco Giants":   ["SF", "SFG", "Giants"],
+    "Seattle Mariners":       ["SEA", "Mariners"],
+    "St. Louis Cardinals":    ["STL", "Cardinals"],
+    "Tampa Bay Rays":         ["TB", "TBR", "Rays"],
+    "Texas Rangers":          ["TEX", "Rangers"],
+    "Toronto Blue Jays":      ["TOR", "Blue Jays"],
+    "Washington Nationals":   ["WSH", "WAS", "Nationals"],
+    # NFL
+    "Arizona Cardinals":      ["ARI", "Cardinals"],
+    "Atlanta Falcons":        ["ATL", "Falcons"],
+    "Baltimore Ravens":       ["BAL", "Ravens"],
+    "Buffalo Bills":          ["BUF", "Bills"],
+    "Carolina Panthers":      ["CAR", "Panthers"],
+    "Chicago Bears":          ["CHI", "Bears"],
+    "Cincinnati Bengals":     ["CIN", "Bengals"],
+    "Cleveland Browns":       ["CLE", "Browns"],
+    "Dallas Cowboys":         ["DAL", "Cowboys"],
+    "Denver Broncos":         ["DEN", "Broncos"],
+    "Detroit Lions":          ["DET", "Lions"],
+    "Green Bay Packers":      ["GB", "GNB", "Packers"],
+    "Houston Texans":         ["HOU", "Texans"],
+    "Indianapolis Colts":     ["IND", "Colts"],
+    "Jacksonville Jaguars":   ["JAX", "JAC", "Jaguars"],
+    "Kansas City Chiefs":     ["KC", "KCC", "Chiefs"],
+    "Las Vegas Raiders":      ["LV", "LVR", "Raiders"],
+    "Los Angeles Chargers":   ["LAC", "Chargers"],
+    "Los Angeles Rams":       ["LAR", "LA Rams", "Rams"],
+    "Miami Dolphins":         ["MIA", "Dolphins"],
+    "Minnesota Vikings":      ["MIN", "Vikings"],
+    "New England Patriots":   ["NE", "NEP", "Patriots"],
+    "New Orleans Saints":     ["NO", "NOS", "Saints"],
+    "New York Giants":        ["NYG", "Giants"],
+    "New York Jets":          ["NYJ", "Jets"],
+    "Philadelphia Eagles":    ["PHI", "Eagles"],
+    "Pittsburgh Steelers":    ["PIT", "Steelers"],
+    "San Francisco 49ers":    ["SF", "SFO", "49ers", "Niners"],
+    "Seattle Seahawks":       ["SEA", "Seahawks"],
+    "Tampa Bay Buccaneers":   ["TB", "TBB", "Buccaneers", "Bucs"],
+    "Tennessee Titans":       ["TEN", "Titans"],
+    "Washington Commanders":  ["WAS", "WSH", "Commanders"],
+}
+
+
+def _llp_resolve_team_alias(name: str) -> list:
+    """Return all normalized forms of ``name``: itself plus every alias whose
+    canonical key or alias list matches ``name`` (case-insensitive, alnum-only).
+    Used by ``_llp_match_event`` to widen the search for screenshot team names."""
+    n = _llp_norm_team(name)
+    if not n:
+        return []
+    forms = [n]
+    for canonical, aliases in _LLP_TEAM_ALIASES.items():
+        canon_norm  = _llp_norm_team(canonical)
+        alias_norms = [_llp_norm_team(a) for a in aliases]
+        if n == canon_norm or n in alias_norms:
+            forms.extend([canon_norm] + alias_norms)
+            break
+    return list(dict.fromkeys(f for f in forms if f))
+
+
 def _llp_match_event(events, away, home):
-    """Best-effort fuzzy match of an event by team names."""
+    """Best-effort fuzzy match of an event by team names, with alias expansion.
+
+    Tries all normalized alias forms for each team before falling back to the
+    plain substring comparison from the original implementation. This lets a
+    screenshot input like "MIN Lynx" match the Odds API's "Minnesota Lynx".
+    """
     if not events: return None
-    a, h = _llp_norm_team(away), _llp_norm_team(home)
+    a_forms = _llp_resolve_team_alias(away)
+    h_forms = _llp_resolve_team_alias(home)
+    if not a_forms: a_forms = [_llp_norm_team(away)]
+    if not h_forms: h_forms = [_llp_norm_team(home)]
+
+    def _overlaps(forms_x, forms_y):
+        return any(
+            x and y and (x == y or x in y or y in x)
+            for x in forms_x for y in forms_y
+        )
+
     for e in events:
-        ea = _llp_norm_team(e.get("away_team",""))
-        eh = _llp_norm_team(e.get("home_team",""))
-        if (a in ea or ea in a) and (h in eh or eh in h):
+        ea_forms = _llp_resolve_team_alias(e.get("away_team", ""))
+        eh_forms = _llp_resolve_team_alias(e.get("home_team", ""))
+        if not ea_forms: ea_forms = [_llp_norm_team(e.get("away_team", ""))]
+        if not eh_forms: eh_forms = [_llp_norm_team(e.get("home_team", ""))]
+        if _overlaps(a_forms, ea_forms) and _overlaps(h_forms, eh_forms):
             return e
-        if (a in eh or eh in a) and (h in ea or ea in h):
+        if _overlaps(a_forms, eh_forms) and _overlaps(h_forms, ea_forms):
             return e
     return None
 
@@ -12530,6 +12684,86 @@ def _llp_extract_market(event, market_key, side, line=None):
     chosen["implied_prob"] = chosen_p
     chosen["novig_prob"]   = novig_chosen
     return chosen
+
+
+def _llp_consensus_market(event, market_key, side):
+    """Aggregate consensus odds for a side across ALL bookmakers in an event.
+
+    Returns a dict with:
+      best_book                    — key of bookmaker offering the best value
+      best_book_odds               — American odds at that bookmaker
+      consensus_odds               — average American odds across all books (int)
+      consensus_no_vig_probability — devigged probability from consensus odds
+      books_sampled                — number of bookmakers in the average
+
+    Returns None if no outcomes matching ``side`` are found.
+    """
+    if not event: return None
+    side_norm = _llp_norm_team(side or "")
+    base      = _llp_market_base(market_key)
+    bms       = event.get("bookmakers") or []
+
+    chosen_prices = []
+    opp_prices    = []
+    best_book     = None
+    best_odds     = None
+
+    for bm in bms:
+        for mk in (bm.get("markets") or []):
+            if mk.get("key") != market_key:
+                continue
+            outs = mk.get("outcomes") or []
+            if len(outs) < 2:
+                continue
+            chosen_price = opp_price = None
+            for o in outs:
+                name   = (o.get("name") or "").lower()
+                n_norm = _llp_norm_team(name)
+                if base == "totals":
+                    is_match = name == (side or "").lower()
+                else:
+                    is_match = bool(
+                        n_norm and side_norm and
+                        (n_norm == side_norm or n_norm in side_norm or side_norm in n_norm)
+                    )
+                if is_match:
+                    chosen_price = o.get("price")
+                else:
+                    opp_price = o.get("price")
+            if chosen_price is None:
+                continue
+            try:
+                chosen_prices.append(float(chosen_price))
+                if opp_price is not None:
+                    opp_prices.append(float(opp_price))
+                chosen_ip = _llp_american_to_prob(chosen_price)
+                best_ip   = _llp_american_to_prob(best_odds) if best_odds is not None else None
+                if (chosen_ip is not None
+                        and (best_ip is None or chosen_ip < best_ip)):
+                    best_odds = chosen_price
+                    best_book = bm.get("key")
+            except (TypeError, ValueError):
+                continue
+
+    if not chosen_prices:
+        return None
+
+    consensus_american = round(sum(chosen_prices) / len(chosen_prices))
+    if opp_prices:
+        avg_opp  = sum(opp_prices) / len(opp_prices)
+        p_chosen = _llp_american_to_prob(consensus_american)
+        p_opp    = _llp_american_to_prob(avg_opp)
+        novig, _ = _llp_no_vig_two_way(p_chosen, p_opp)
+    else:
+        novig = _llp_american_to_prob(consensus_american)
+
+    return {
+        "best_book":                    best_book,
+        "best_book_odds":               best_odds,
+        "consensus_odds":               consensus_american,
+        "consensus_no_vig_probability": round(novig, 4) if novig is not None else None,
+        "books_sampled":                len(chosen_prices),
+    }
 
 
 def _llp_opening_line_for_game(away, home, market, side, board_date, current_point):
@@ -12784,6 +13018,23 @@ def _llp_analyze_one(game, default_sport, board_date):
             "discovery_clean": False,
             "validation_clean": False,
             "llp_badge": "PASS",
+            # ── Screenshot / platform intake fields ──────────────────────────
+            "platform":                     None,
+            "platform_market_type":         None,
+            "platform_side":                None,
+            "platform_line":                None,
+            "platform_multiplier":          None,
+            "platform_implied_probability": None,
+            "platform_capture_timestamp":   None,
+            "board_multiplier":             None,
+            "board_implied_probability":    None,
+            "best_book":                    None,
+            "best_book_odds":               None,
+            "consensus_odds":               None,
+            "consensus_no_vig_probability": None,
+            "edge_vs_consensus":            None,
+            "board_vs_consensus_delta":     None,
+            "contract_status":              "BOARD_COMPLETE",
             "notes": list(extra_notes or []),
         }
 
@@ -12794,6 +13045,28 @@ def _llp_analyze_one(game, default_sport, board_date):
         return rec
 
     record = _empty_record()
+
+    # ── Provenance carry-through: runs before every early-return path ──────────
+    # board_source / board_timestamp are legacy provenance strings; the new
+    # platform_* / board_multiplier fields come from the screenshot intake
+    # pipeline.  We capture them here so they appear even when sport is unknown
+    # or teams are missing — callers can always inspect contract_status.
+    if game.get("board_source"):
+        record["board_source"]    = str(game["board_source"])
+    if game.get("board_timestamp"):
+        record["board_timestamp"] = str(game["board_timestamp"])
+    for _pf in ("platform", "platform_market_type", "platform_side", "platform_line",
+                "platform_multiplier", "platform_implied_probability",
+                "platform_capture_timestamp", "board_multiplier"):
+        if game.get(_pf) is not None:
+            record[_pf] = game[_pf]
+    if record.get("board_multiplier") is not None and record.get("board_implied_probability") is None:
+        try:
+            _bm = float(record["board_multiplier"])
+            if _bm > 0:
+                record["board_implied_probability"] = round(1.0 / _bm, 4)
+        except (TypeError, ValueError):
+            pass
 
     if not away or not home:
         record["notes"].append("missing away/home team")
@@ -12859,15 +13132,6 @@ def _llp_analyze_one(game, default_sport, board_date):
             game["pp_away_decimal"] = None
             record["failure_paths"].extend(_pp_validation_errors)
 
-    # board_source / board_timestamp: optional provenance strings supplied by
-    # external callers (e.g. the ChatGPT orchestrator) to identify where the
-    # board data came from and when it was captured.  Carry them through to
-    # the output record so downstream consumers can audit the data lineage.
-    if game.get("board_source"):
-        record["board_source"]    = str(game["board_source"])
-    if game.get("board_timestamp"):
-        record["board_timestamp"] = str(game["board_timestamp"])
-
     # ── LLP Odds Fallback Patch v16.1B: per-candidate source resolution ───────
     # Replaces the previous hard-exit pattern (Odds API fail → return empty
     # record immediately).  The resolver attempts:
@@ -12891,6 +13155,7 @@ def _llp_analyze_one(game, default_sport, board_date):
              "; ".join(_resolution.source_failure_reasons[:2])]
             + [t for t in _resolution.diagnostic_tags])
         record.update(_resolution.to_record_fields())
+        record["contract_status"] = "EXTERNAL_MARKET_PENDING"
         return record
 
     event = _resolution.event
@@ -12898,6 +13163,17 @@ def _llp_analyze_one(game, default_sport, board_date):
     # Inject all ten source-provenance fields so they appear in every
     # downstream response (even after early returns from F5 chooser, etc.).
     record.update(_resolution.to_record_fields())
+    # Populate consensus / best-book fields and advance contract_status
+    if _resolution.event is not None:
+        _cns = _llp_consensus_market(_resolution.event, market, side)
+        if _cns:
+            record["best_book"]                    = _cns.get("best_book")
+            record["best_book_odds"]               = _cns.get("best_book_odds")
+            record["consensus_odds"]               = _cns.get("consensus_odds")
+            record["consensus_no_vig_probability"] = _cns.get("consensus_no_vig_probability")
+    record["contract_status"] = (
+        "EXTERNAL_MARKET_PENDING" if _resolution.event is None else "STATUS_PENDING"
+    )
 
     # Only persist live sportsbook snapshots — never proxy/reconstructed data.
     if not _resolution.is_proxy and event is not None:
@@ -13314,6 +13590,15 @@ def _llp_analyze_one(game, default_sport, board_date):
     # LLP Pro Data Ingestion: write the final per-game decision to
     # `bet_decisions` for postmortem/learning. Best-effort; logging
     # failures must never break analysis.
+    # edge_vs_consensus and board_vs_consensus_delta (spec fields)
+    _novig_p  = record.get("no_vig_implied_probability")
+    _model_p  = record.get("model_win_probability")
+    _board_ip = record.get("board_implied_probability")
+    if _model_p is not None and _novig_p is not None:
+        record["edge_vs_consensus"] = round(float(_model_p) - float(_novig_p), 4)
+    if _board_ip is not None and _novig_p is not None:
+        record["board_vs_consensus_delta"] = round(float(_board_ip) - float(_novig_p), 4)
+    record["contract_status"] = "FULL_CONTRACT_COMPLETE"
     _llp_log_bet_decision(record)
 
     return record
@@ -13509,6 +13794,23 @@ def _llp_clean_item(rec):
         "top_failure_paths":    (rec.get("failure_paths") or [])[:3],
         "discovery":            rec.get("discovery"),
         "plain_english_reason": _llp_plain_english_reason(rec),
+        # ── Two-stage screenshot pipeline fields ────────────────────────
+        "platform":                     rec.get("platform"),
+        "platform_market_type":         rec.get("platform_market_type"),
+        "platform_side":                rec.get("platform_side"),
+        "platform_line":                rec.get("platform_line"),
+        "platform_multiplier":          rec.get("platform_multiplier"),
+        "platform_implied_probability": rec.get("platform_implied_probability"),
+        "platform_capture_timestamp":   rec.get("platform_capture_timestamp"),
+        "board_multiplier":             rec.get("board_multiplier"),
+        "board_implied_probability":    rec.get("board_implied_probability"),
+        "best_book":                    rec.get("best_book"),
+        "best_book_odds":               rec.get("best_book_odds"),
+        "consensus_odds":               rec.get("consensus_odds"),
+        "consensus_no_vig_probability": rec.get("consensus_no_vig_probability"),
+        "edge_vs_consensus":            rec.get("edge_vs_consensus"),
+        "board_vs_consensus_delta":     rec.get("board_vs_consensus_delta"),
+        "contract_status":              rec.get("contract_status"),
     }
 
 
@@ -15586,13 +15888,67 @@ def cm_run_connected_model():
     games      = body.get("games") if isinstance(body.get("games"), list) else []
     meta       = body.get("meta") or {}
 
+    # ── Screenshot-enriched input mode ─────────────────────────────────────────
+    # When input_mode == "screenshot_enriched", callers supply candidates[] from
+    # POST /wow/llp/team/analyze-board instead of games[].  Each candidate is
+    # normalized into the game dict expected by _llp_team_analysis so that
+    # platform_multiplier, board_implied_probability, etc. flow through to output.
+    input_mode          = (body.get("input_mode") or "").strip()
+    enrichment_required = bool(body.get("enrichment_required", False))
+    board_timestamp     = body.get("board_timestamp")
+    candidates_raw      = body.get("candidates") if isinstance(body.get("candidates"), list) else []
+
+    if input_mode == "screenshot_enriched" and candidates_raw:
+        board_type = "team_betting"
+        for c in candidates_raw:
+            if not isinstance(c, dict):
+                continue
+            pm  = c.get("platform_multiplier")
+            pip = c.get("platform_implied_probability")
+            if pm is not None and pip is None:
+                try:
+                    bm_f = float(pm)
+                    if bm_f > 0:
+                        pip = round(1.0 / bm_f, 4)
+                except (TypeError, ValueError):
+                    pass
+            g = {
+                "away":                       (c.get("away_team") or c.get("away") or "").strip(),
+                "home":                       (c.get("home_team") or c.get("home") or "").strip(),
+                "market":                     (c.get("market") or "h2h").strip(),
+                "side":                       (c.get("side") or "").strip(),
+                "line":                       c.get("platform_line") or c.get("line"),
+                "sport":                      (c.get("sport") or body.get("sport") or "").strip(),
+                "platform":                   (c.get("platform") or body.get("platform") or ""),
+                "platform_market_type":       c.get("platform_market_type", "event_contract"),
+                "platform_side":              c.get("platform_side") or c.get("side") or "",
+                "platform_line":              c.get("platform_line") or c.get("line"),
+                "platform_multiplier":        pm,
+                "platform_implied_probability": pip,
+                "platform_capture_timestamp": (c.get("platform_capture_timestamp")
+                                                or board_timestamp),
+                "board_multiplier":           pm,
+                "board_implied_probability":  pip,
+                "board_source":               c.get("platform") or body.get("platform") or "",
+                "board_timestamp":            (c.get("platform_capture_timestamp")
+                                               or board_timestamp),
+                "event_date":                 c.get("event_date"),
+                "event_time_local":           c.get("event_time_local"),
+                "timezone":                   c.get("timezone"),
+            }
+            games.append(g)
+        if enrichment_required:
+            meta = dict(meta)
+            meta["enrichment_required"] = True
+            meta["input_mode"]          = "screenshot_enriched"
+
     is_team_board = (board_type == "team_betting") or (model == "llp_team")
     if is_team_board and board_type == "prizepicks":
         board_type = "team_betting"
 
     if not props and not games:
         return jsonify({"ok": False,
-                        "error": "Either props or games must be a non-empty array."}), 400
+                        "error": "Either props, games, or candidates must be a non-empty array."}), 400
     if is_team_board and not games:
         return jsonify({"ok": False, "error": "games must be a non-empty array"}), 400
     if not is_team_board and board_type == "prizepicks" and not props:
@@ -26456,6 +26812,202 @@ def skills_run():
         return jsonify(result)
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc)[:400]}), 500
+
+
+@app.route("/wow/llp/team/analyze-board", methods=["POST"])
+@require_api_key
+def wow_llp_team_analyze_board():
+    """
+    POST /wow/llp/team/analyze-board
+
+    Two-stage screenshot intake for team betting markets (moneyline, spread,
+    total). Uses Claude vision to extract structured board records from a
+    PrizePicks Predict (or similar) screenshot. Returns normalized candidates
+    with contract_status: "BOARD_COMPLETE" — ready to be enriched via
+    POST /run-connected-model with input_mode: "screenshot_enriched".
+
+    Body (JSON or multipart):
+      image_base64 / image_url / file upload — screenshot image
+      platform   — platform hint (default: "PrizePicks Predict")
+      sport      — optional sport hint: "WNBA", "NBA", "MLB", etc.
+
+    Returns:
+      ok            — bool
+      candidates    — normalized board records with contract_status: BOARD_COMPLETE
+      count         — number of contracts found
+      model         — Claude model used
+      enrichment_hint — next-step payload template
+    """
+    if not _ANTHROPIC_AVAILABLE:
+        return jsonify({"ok": False, "error": "anthropic package not installed"}), 503
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"ok": False,
+                        "error": "ANTHROPIC_API_KEY secret is not set"}), 503
+
+    import base64 as _b64
+    body         = request.get_json(silent=True) or {}
+    form         = request.form
+    platform     = body.get("platform") or form.get("platform", "PrizePicks Predict")
+    sport_hint   = body.get("sport")    or form.get("sport", "")
+    image_base64 = None
+    image_url    = None
+    media_type   = body.get("media_type") or form.get("media_type", "image/jpeg")
+
+    file = (request.files.get("image") or request.files.get("file")
+            or request.files.get("screenshot")
+            or (list(request.files.values())[0] if request.files else None))
+    if file:
+        file_bytes   = file.read()
+        image_base64 = _b64.b64encode(file_bytes).decode("utf-8")
+        mime         = (file.content_type or "").lower()
+        if mime and mime not in ("application/octet-stream", ""):
+            media_type = mime
+
+    if not image_base64 and not image_url:
+        for key in ("image_b64", "image_base64", "imageBase64", "image_data",
+                    "imageData", "data", "image", "screenshot"):
+            val = body.get(key) or form.get(key)
+            if val and isinstance(val, str) and len(val) > 100:
+                image_base64 = val
+                break
+
+    if not image_base64:
+        for key in ("image_url", "imageUrl", "url"):
+            val = body.get(key) or form.get(key)
+            if val and isinstance(val, str) and val.startswith("http"):
+                image_url = val
+                break
+
+    if not image_base64 and not image_url:
+        ct = request.content_type or ""
+        if ct.startswith("image/"):
+            raw = request.get_data()
+            if raw:
+                image_base64 = _b64.b64encode(raw).decode("utf-8")
+                media_type   = ct.split(";")[0].strip()
+
+    if not image_base64 and not image_url:
+        return jsonify({"ok": False, "error": "No image found in request"}), 422
+
+    if image_base64:
+        if "," in image_base64:
+            image_base64 = image_base64.split(",", 1)[1]
+        try:
+            header = _b64.b64decode(image_base64[:16])
+            if   header[:8] == b'\x89PNG\r\n\x1a\n': media_type = "image/png"
+            elif header[:2] == b'\xff\xd8':           media_type = "image/jpeg"
+            elif header[8:12] == b'WEBP':             media_type = "image/webp"
+        except Exception:
+            pass
+        try:
+            import io as _io
+            from PIL import Image as _Image
+            raw_bytes = _b64.b64decode(image_base64)
+            if len(raw_bytes) > 400_000:
+                img = _Image.open(_io.BytesIO(raw_bytes)).convert("RGB")
+                img.thumbnail((1024, 1024), _Image.LANCZOS)
+                buf = _io.BytesIO()
+                img.save(buf, format="JPEG", quality=85, optimize=True)
+                image_base64 = _b64.b64encode(buf.getvalue()).decode("utf-8")
+                media_type   = "image/jpeg"
+        except Exception:
+            pass
+        image_block = {"type": "image", "source": {
+            "type": "base64", "media_type": media_type, "data": image_base64}}
+    else:
+        image_block = {"type": "image", "source": {"type": "url", "url": image_url}}
+
+    sport_line  = f"Sport context hint: {sport_hint}\n" if sport_hint else ""
+    capture_ts  = datetime.now().isoformat()
+
+    prompt = f"""You are a sports team-market extraction assistant. Analyze this {platform} screenshot and extract every visible TEAM BETTING CONTRACT.
+
+{sport_line}This is a TEAM market board (NOT player props). Each contract shows a team, a market type, a payout multiplier, and possibly a line.
+
+For each contract return a JSON array. Each element must have exactly these fields:
+- "event":                    full matchup e.g. "Phoenix Mercury vs Minnesota Lynx"
+- "away_team":                away team name as shown
+- "home_team":                home team name as shown
+- "event_date":               date in YYYY-MM-DD if visible, else null
+- "event_time_local":         time string if visible e.g. "8:00 PM", else null
+- "timezone":                 timezone abbreviation if visible e.g. "ET", else null
+- "market":                   "moneyline" | "spread" | "total"
+- "side":                     team name for moneyline/spread (as shown); "over" or "under" for total
+- "line":                     numeric spread or total line as a number, null for moneyline
+- "platform":                 platform name if visible, else "{platform}"
+- "platform_market_type":     "event_contract"
+- "platform_multiplier":      the PAYOUT MULTIPLIER shown (e.g. 1.12, 1.78)
+- "platform_implied_probability": 1.0 / platform_multiplier rounded to 4 decimal places
+- "contract_status":          "BOARD_COMPLETE"
+
+CRITICAL: platform_multiplier is a PAYOUT MULTIPLIER, not sportsbook odds.
+  Example: 1.12 means you win 1.12x your stake if correct.
+  platform_implied_probability = 1.0 / platform_multiplier (e.g. 1/1.12 = 0.8929).
+
+Return ONLY valid JSON — a single array, no markdown, no explanation. Return [] if nothing found.
+
+Example:
+[
+  {{"event": "Phoenix Mercury vs Minnesota Lynx", "away_team": "Phoenix Mercury", "home_team": "Minnesota Lynx", "event_date": "2026-07-13", "event_time_local": "8:00 PM", "timezone": "ET", "market": "moneyline", "side": "Minnesota Lynx", "line": null, "platform": "{platform}", "platform_market_type": "event_contract", "platform_multiplier": 1.12, "platform_implied_probability": 0.8929, "contract_status": "BOARD_COMPLETE"}}
+]"""
+
+    try:
+        client  = _anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=2048,
+            messages=[{"role": "user", "content": [
+                image_block, {"type": "text", "text": prompt}
+            ]}],
+        )
+        raw_text = message.content[0].text.strip() if message.content else "[]"
+        try:
+            candidates = json.loads(raw_text)
+        except json.JSONDecodeError:
+            m = re.search(r"\[.*\]", raw_text, re.DOTALL)
+            try:
+                candidates = json.loads(m.group()) if m else []
+            except Exception:
+                candidates = []
+
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            c.setdefault("contract_status", "BOARD_COMPLETE")
+            c.setdefault("platform_market_type", "event_contract")
+            c["platform_capture_timestamp"] = capture_ts
+            bm = c.get("platform_multiplier")
+            if bm is not None:
+                try:
+                    bm_f = float(bm)
+                    if bm_f > 0:
+                        c["platform_implied_probability"] = round(1.0 / bm_f, 4)
+                except (TypeError, ValueError):
+                    pass
+
+        return jsonify({
+            "ok":              True,
+            "candidates":      candidates,
+            "count":           len(candidates),
+            "model":           message.model,
+            "capture_timestamp": capture_ts,
+            "enrichment_hint": {
+                "next_step":         "POST /run-connected-model",
+                "input_mode":        "screenshot_enriched",
+                "board_type":        "team_betting",
+                "board_timestamp":   capture_ts,
+                "enrichment_required": True,
+                "run_full_data_ladder": True,
+            },
+            "usage": {
+                "input_tokens":  message.usage.input_tokens,
+                "output_tokens": message.usage.output_tokens,
+            },
+        }), 200
+    except Exception as e:
+        app.logger.exception("/wow/llp/team/analyze-board failed")
+        return jsonify({"ok": False, "error": str(e)[:300]}), 500
 
 
 if __name__ == "__main__":

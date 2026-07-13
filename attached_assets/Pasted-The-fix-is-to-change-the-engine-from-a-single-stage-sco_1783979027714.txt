@@ -1,0 +1,204 @@
+The fix is to change the engine from a single-stage scorer into a two-stage intake + scoring pipeline.
+
+Right now, the screenshot is being treated as if it already contains both the board and the sportsbook consensus. It does not. The screenshot provides the board; the engine must then enrich it before scoring.
+
+1. Add a screenshot-intake layer
+
+The screenshot parser should produce a normalized board record like this:
+
+{
+  "board_source": "PrizePicks Predict",
+  "sport": "WNBA",
+  "event": "Phoenix Mercury vs Minnesota Lynx",
+  "event_date": "2026-07-13",
+  "event_time_local": "8:00 PM",
+  "timezone": "ET",
+  "market": "moneyline",
+  "side": "Minnesota Lynx",
+  "board_multiplier": 1.12,
+  "board_implied_probability": 0.8929,
+  "screenshot_capture_time": "2026-07-13T13:51:00-04:00",
+  "extraction_source": "screenshot"
+}
+
+For spreads and totals, preserve both the line and multiplier:
+
+{
+  "market": "spread",
+  "side": "Phoenix Mercury",
+  "line": 12.5,
+  "board_multiplier": 1.78,
+  "board_implied_probability": 0.5618
+}
+
+The key correction is that 1.78x is a payout multiplier, not a sportsbook line or ordinary decimal odds field.
+
+2. Expand the connected-model schema
+
+The current runLLPConnectedModel payload only has generic fields such as:
+
+away_line
+home_line
+spread
+total
+book
+
+That is too ambiguous for screenshot contracts.
+
+Add explicit fields:
+
+{
+  "platform": "PrizePicks Predict",
+  "platform_market_type": "event_contract",
+  "platform_side": "Minnesota Lynx",
+  "platform_line": null,
+  "platform_multiplier": 1.12,
+  "platform_implied_probability": 0.8929,
+  "platform_capture_timestamp": "2026-07-13T13:51:00-04:00",
+  "best_book": "DraftKings",
+  "best_book_odds": -950,
+  "consensus_odds": -900,
+  "consensus_no_vig_probability": 0.885,
+  "consensus_timestamp": "2026-07-13T13:53:00-04:00",
+  "model_probability": 0.90,
+  "edge_vs_consensus": 0.015,
+  "board_vs_consensus_delta": 0.0079
+}
+
+Do not overload away_line or home_line with payout multipliers.
+
+3. Add an enrichment step before LLP scoring
+
+The flow should be:
+
+Screenshot
+→ parse board market
+→ normalize team/event names
+→ match event ID
+→ retrieve sportsbook prices
+→ calculate consensus no-vig probability
+→ retrieve status/lineups
+→ run model probability
+→ calculate edge
+→ send completed contract to LLP engine
+
+The engine should not declare DATA_UNOBTAINABLE after one API misses. It should follow the escalation ladder required by your governance: live API, official league source, stat site, sportsbook, projection source, web, manual reconstruction, then proxy. LLP-PATCH-2026-06-27-EXECUTION-GOVERNANCE-v16.1.pdf
+
+4. Fix event matching
+
+The enrichment layer needs aliases because feeds may use different names.
+
+Examples:
+
+{
+  "TOR Tempo": [
+    "Toronto Tempo",
+    "Tempo",
+    "TOR"
+  ],
+  "POR Fire": [
+    "Portland Fire",
+    "Fire",
+    "POR"
+  ],
+  "MIN Lynx": [
+    "Minnesota Lynx",
+    "Lynx",
+    "MIN"
+  ]
+}
+
+Match on:
+
+league + normalized team names + start date/time
+
+Do not rely only on the displayed abbreviation.
+
+5. Treat screenshot time correctly
+
+The phone clock is a valid capture-time clue, but the date must come from:
+
+1. image metadata, when available;
+2. event-date context;
+3. the current session date;
+4. user confirmation as a last resort.
+
+The engine needs both:
+
+board_capture_timestamp
+external_market_timestamp
+
+That allows the price-decay gate to compare the screenshot to the live market. Your runner requires a current timestamp and final-lock recheck before higher labels can clear. wow-llp-runner-SKILL.md
+
+6. Calculate no-vig from the sportsbook, not the screenshot
+
+For a two-sided sportsbook market:
+
+raw_a = 1 / decimal_odds_a
+raw_b = 1 / decimal_odds_b
+no_vig_a = raw_a / (raw_a + raw_b)
+no_vig_b = raw_b / (raw_a + raw_b)
+
+Then:
+
+edge = model_probability - consensus_no_vig_probability
+
+The screenshot multiplier should be used for:
+
+board_implied_probability = 1 / board_multiplier
+
+That is a separate field from sportsbook no-vig probability.
+
+7. Add a partial-contract status instead of falsely calling the board missing
+
+The engine should distinguish:
+
+BOARD_COMPLETE
+EXTERNAL_MARKET_PENDING
+STATUS_PENDING
+MODEL_PENDING
+FULL_CONTRACT_COMPLETE
+
+For these screenshots, the correct initial state is:
+
+BOARD_COMPLETE
+EXTERNAL_MARKET_PENDING
+
+Not:
+
+missing price
+missing line
+board unavailable
+
+8. Required Replit patch
+
+The orchestrator should accept something like:
+
+{
+  "board_type": "team_betting",
+  "input_mode": "screenshot_enriched",
+  "board_timestamp": "2026-07-13T13:51:00-04:00",
+  "candidates": [
+    {
+      "event": "Phoenix Mercury vs Minnesota Lynx",
+      "market": "moneyline",
+      "side": "Minnesota Lynx",
+      "platform": "PrizePicks Predict",
+      "platform_multiplier": 1.12,
+      "platform_implied_probability": 0.8929,
+      "platform_line": null
+    }
+  ],
+  "enrichment_required": true,
+  "run_full_data_ladder": true
+}
+
+The backend should then refuse to score until enrichment is complete, but it should preserve all screenshot-derived fields.
+
+Bottom line
+
+The needed fix is:
+
+Separate screenshot board extraction from external market enrichment, add explicit platform-multiplier fields to the engine schema, normalize event names, and only then run the LLP scoring gates.
+
+The screenshot is not the problem. The current payload contract and enrichment handoff are.
