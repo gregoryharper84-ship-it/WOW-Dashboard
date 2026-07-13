@@ -23,14 +23,8 @@ args = ["bash", "/home/runner/workspace/artifacts/flask-scoring-api/build.sh"]
 
 [services.production.run]
 args = [
-  "gunicorn",
-  "--chdir", "/home/runner/workspace/artifacts/flask-scoring-api",
-  "app:app",
-  "--bind", "0.0.0.0:25643",
-  "--workers", "2",
-  "--timeout", "300",
-  "--preload",
-  "--access-logfile", "-"
+  "bash", "-c",
+  "cd /home/runner/workspace/artifacts/flask-scoring-api && python pre_start.py && gunicorn app:app --bind 0.0.0.0:25643 --workers 2 --timeout 300 --access-logfile -"
 ]
 
 [services.production.run.env]

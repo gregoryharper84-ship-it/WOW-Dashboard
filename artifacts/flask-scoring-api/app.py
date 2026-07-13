@@ -804,11 +804,14 @@ def debug_source_status():
 @app.route("/health", methods=["GET"])
 @app.route("/healthz", methods=["GET"])
 def health():
+    _required_env_vars = ["DATABASE_URL", "SCORING_API_KEY", "ODDS_API_KEY"]
+    env_ready = all(os.environ.get(v) for v in _required_env_vars)
     return jsonify({
         "status": "ok",
         "service": "WOW Sports Prop Scoring API",
         "version": "1.0.0",
         "label": "Support Layer Only",
+        "env_ready": env_ready,
         "disclaimer": DISCLAIMER,
         "auth": "X-API-Key header required on protected endpoints",
         "endpoints": {
