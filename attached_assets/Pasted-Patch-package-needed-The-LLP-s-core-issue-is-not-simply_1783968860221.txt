@@ -1,0 +1,405 @@
+Patch package needed
+
+The LLP’s core issue is not simply “bad picks.” It is allowing weakly priced favorites, duplicate exposure, and misleading platform settlements to contaminate approval and calibration.
+
+I would ship one coordinated patch:
+
+WOW-PATCH-2026-07-13-LLP-ML-PRICE-SETTLEMENT-AND-EXPOSURE-GOVERNANCE
+
+Status: Proposed
+Applies to: LLP Game Winner / ML lane
+Extends: WOW v16 Clean Core, LLP v16.1, Winner Lane Hedge patch, Cross-Platform Combo and Settlement Governance patch
+Does not replace: existing starter, lineup, no-vig, market freshness, exposure, or Reliability Freeze rules
+
+⸻
+
+P0 — Must patch immediately
+
+1. Official result must override the platform badge
+
+The Mariners card proves that PrizePicks can display a green “Win” or issue a special payment even when the selected team officially lost.
+
+Add separate fields:
+
+official_event_result
+selected_side_result
+platform_settlement_status
+platform_display_result
+promo_protection_status
+gross_return
+net_return
+model_result
+calibration_eligible
+
+Required logic:
+
+if official_event_result != selected_side_result:
+    model_result = "LOSS"
+if platform_display_result == "WIN" and selected_side_result == "LOSS":
+    platform_settlement_status = "PROMO_OR_SPECIAL_SETTLEMENT"
+    model_result = "LOSS"
+
+Hard rule:
+
+Platform payment, refund, protected play, promo credit, insurance payment, or green “Win” badge must never convert an official model loss into a model win.
+
+Required regression test
+
+Event: Mariners vs Marlins, 2026-07-09
+Selected side: Mariners
+Official result: Mariners lost 8-4
+Platform display: Win
+Platform payment: $5.04
+Expected:
+selected_side_result = LOSS
+model_result = LOSS
+platform_settlement_status = PROMO_OR_SPECIAL_SETTLEMENT
+calibration_outcome = LOSS
+
+⸻
+
+2. Same-event duplicate entries count once for model performance
+
+The two Phillies entries were two financial tickets but only one prediction.
+
+Normalize every ML pick using:
+
+event_key = (
+    league,
+    event_date,
+    away_team,
+    home_team,
+    market_type,
+    selected_side
+)
+
+Required output:
+
+financial_entry_count
+model_observation_count
+calibration_observation_count
+gross_stake
+gross_return
+duplicate_exposure
+
+Hard rule:
+
+Repeated entries on the same side of the same game count as one model observation and one calibration observation, regardless of the number of financial entries.
+
+Required regression test
+
+Two Phillies ML entries
+Same date
+Same opponent
+Same selected side
+Same market
+Expected:
+financial_entry_count = 2
+model_observation_count = 1
+calibration_observation_count = 1
+duplicate_exposure = combined stake
+
+⸻
+
+3. Breakeven and verified edge must be calculated before approval
+
+The Dodgers entry required a 70% win rate merely to break even.
+
+Required formulas:
+
+multiplier = listed_return / stake
+breakeven_prob = stake / listed_return
+verified_edge = model_prob - breakeven_prob
+
+No ML pick may receive LLP_PLAYABLE or LLP_APPROVED unless all are present:
+
+stake
+listed_return
+multiplier
+breakeven_prob
+model_prob
+market_no_vig_prob
+verified_edge
+edge_floor
+
+Missing live price or market comparison:
+
+LLP_WATCH
+
+Not approved.
+
+⸻
+
+P1 — Approval quality patch
+
+4. Short-favorite compression gate
+
+Create a specific price bucket for favorites carrying poor payouts.
+
+Suggested requirements:
+
+Breakeven probability	Minimum verified edge	Minimum model probability
+52–56%	+1.5%	breakeven + floor
+56–60%	+2.0%	breakeven + floor
+60–65%	+2.5%	breakeven + floor
+65–70%	+3.0%	breakeven + floor
+70%+	+3.5%	at least 73.5% when BE is 70%
+
+Hard rule:
+
+Team quality, season record, brand strength, ace status, or public favoritism cannot substitute for verified edge.
+
+Suggested rejection label:
+
+LLP_REJECT_PRICE_COMPRESSION
+
+The Dodgers at 1.43x should fail unless the model probability is at least approximately 73.5% under this table.
+
+⸻
+
+5. Full-game ML must score bullpen separately from starter quality
+
+A starting-pitcher advantage is not sufficient for a full-game ML.
+
+Require component outputs:
+
+starter_edge
+offense_edge
+platoon_edge
+bullpen_quality_edge
+bullpen_freshness_edge
+high_leverage_availability
+defense_edge
+park_weather_edge
+travel_rest_edge
+series_state_edge
+
+For the bullpen check, require:
+
+bullpen_innings_last_3_days
+closer_availability
+top_setup_relief_availability
+back_to_back_usage
+three_in_four_usage
+recent_high_leverage_pitch_counts
+
+Hard rule:
+
+If bullpen freshness or high-leverage availability is unknown, full-game ML approval is capped at LLP_WATCH.
+
+This directly addresses the Blue Jays failure mode.
+
+⸻
+
+6. Series-state and current-execution penalty
+
+The Dodgers were being evaluated partly on team reputation while the current series showed clear deterioration.
+
+Require:
+
+series_score_before_game
+series_run_differential
+team_errors_last_5
+bullpen_usage_in_series
+lineup_absences
+recent_run_differential
+
+Do not blindly fade or follow streaks, but apply a documented adjustment when the same matchup has produced repeated evidence against the baseline projection.
+
+Suggested rule:
+
+if team_trails_series_by_2_or_more:
+    require_series_state_review = True
+if same_series_run_diff <= -8:
+    confidence_ceiling = min(confidence_ceiling, "LLP_PLAYABLE")
+
+The rule should not automatically reject the favorite. It should prevent season-long priors from overpowering current information without explanation.
+
+⸻
+
+7. Market disagreement gate
+
+Require comparison between:
+
+llp_model_prob
+consensus_no_vig_prob
+prizepicks_breakeven_prob
+
+Calculate:
+
+edge_vs_prizepicks = model_prob - breakeven_prob
+edge_vs_market = model_prob - no_vig_prob
+platform_price_delta = no_vig_prob - breakeven_prob
+
+Interpretation:
+
+* Model and market both exceed PrizePicks breakeven: strongest case.
+* Model exceeds breakeven but market does not: model-disagreement case; downgrade and investigate.
+* Market exceeds breakeven but model does not: no LLP approval.
+* Neither exceeds breakeven: reject.
+
+Suggested labels:
+
+MARKET_CORROBORATED_EDGE
+MODEL_ONLY_DISAGREEMENT
+MARKET_ONLY_EDGE
+NO_VERIFIED_EDGE
+
+MODEL_ONLY_DISAGREEMENT should cap at LLP_WATCH during the Reliability Freeze.
+
+⸻
+
+P2 — Calibration and reporting patch
+
+8. Report independent-event results, not ticket results
+
+The dashboard should show both:
+
+Financial tickets: 7
+Independent model observations: 6
+Official model record: 3-3
+Platform-displayed wins: 5
+Promo/special settlements: 1
+Duplicate entries: 1
+
+Never headline “5–2” when the official independent-event record is 3–3.
+
+Required summary metrics:
+
+ticket_hit_rate
+independent_event_hit_rate
+calibration_hit_rate
+gross_roi
+net_roi
+promo_adjusted_roi
+duplicate_adjusted_roi
+
+⸻
+
+9. Calibrate by implied-probability bucket
+
+Track separate outcomes for:
+
+52–55%
+55–60%
+60–65%
+65–70%
+70%+
+
+For each bucket report:
+
+bets
+independent_events
+wins
+losses
+expected_wins
+actual_win_rate
+average_model_prob
+average_breakeven_prob
+average_edge
+brier_score
+roi
+
+A 3–3 record by itself does not tell us whether the model is calibrated. A 70% favorite losing is different from a 57% favorite losing.
+
+⸻
+
+10. Store approval-time evidence
+
+Every ML approval must preserve:
+
+approval_timestamp
+approved_stake
+approved_return
+approved_multiplier
+approved_breakeven_prob
+approved_model_prob
+approved_no_vig_prob
+approved_edge
+starting_pitchers
+confirmed_lineups
+bullpen_state
+market_source
+market_timestamp
+final_label
+
+Do not overwrite these fields during settlement.
+
+Settlement data must be added separately:
+
+closing_multiplier
+closing_no_vig_prob
+closing_line_movement
+official_result
+platform_result
+settlement_timestamp
+
+That allows the retro to distinguish:
+
+* bad projection
+* bad price
+* stale approval
+* adverse lineup change
+* normal variance
+* platform settlement anomaly
+
+⸻
+
+Recommended final-label changes
+
+Add these explicit outcomes:
+
+LLP_REJECT_PRICE_COMPRESSION
+LLP_REJECT_NO_VERIFIED_EDGE
+LLP_WATCH_MARKET_DISAGREEMENT
+LLP_WATCH_BULLPEN_UNVERIFIED
+LLP_REJECT_DUPLICATE_EXPOSURE
+LLP_SETTLEMENT_RECONCILIATION_REQUIRED
+
+Preserve the existing six-label external structure where required, but store these as internal reason codes.
+
+Example:
+
+{
+  "final_label": "LLP_WATCH",
+  "reason_code": "LLP_WATCH_BULLPEN_UNVERIFIED"
+}
+
+⸻
+
+Recommended temporary operating limits
+
+Until at least 20 properly reconciled independent ML observations are logged:
+
+Maximum approved ML sides per slate: 2
+Maximum financial exposure per event: 1.0u
+Duplicate same-side entries: blocked
+70%+ breakeven favorites: WATCH unless edge ≥3.5%
+Model-only market disagreements: WATCH
+Unknown bullpen availability: WATCH
+Promotional settlements: excluded from model win count
+
+⸻
+
+Acceptance tests Replit should add
+
+At minimum:
+
+1. Mariners official loss with platform “Win” remains a model loss.
+2. Two Phillies tickets count as one model observation.
+3. Dodgers $24.50 for $35 calculates 70.0% breakeven.
+4. A 72% Dodgers projection fails a required 73.5% threshold.
+5. Missing no-vig market probability caps the pick at LLP_WATCH.
+6. Missing bullpen freshness caps full-game ML at LLP_WATCH.
+7. Platform promo payment remains in financial ROI but not model accuracy.
+8. Duplicate stake appears in exposure reporting.
+9. Settlement cannot overwrite approval-time model probability.
+10. Performance dashboard defaults to independent-event record.
+
+Priority order
+
+Ship first: settlement truth, deduplication, payout-first edge gate.
+Ship second: bullpen/full-game decomposition, favorite compression, market disagreement.
+Ship third: probability-bucket calibration and dashboard reporting.
+
+The three P0 fixes are necessary before trusting any LLP performance summary. The P1 fixes are what should materially improve future ML pick quality.

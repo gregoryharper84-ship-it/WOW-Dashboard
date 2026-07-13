@@ -20245,6 +20245,268 @@ def wow_llp_kalshi_ml_evaluate():
     })
 
 
+# ── WOW-PATCH-2026-07-13: ML Price/Settlement/Exposure Governance ──────────
+
+
+@app.route("/wow/llp/ml/reconcile-settlement", methods=["POST", "OPTIONS"])
+@require_api_key
+def wow_llp_ml_reconcile_settlement():
+    """
+    P0-1 — Official result must override platform badge.
+
+    POST body (single entry or list):
+      {
+        official_event_result   : "HOME_WIN" | "AWAY_WIN" | "TIE" | "UNKNOWN"
+        selected_side_is_home   : bool
+        platform_display_result : "WIN" | "LOSS" | "PUSH" | "REFUND"
+        platform_payment        : float
+        stake                   : float
+        listed_return           : float
+        promo_protection_active : bool (optional)
+      }
+
+    Returns:
+      Single entry → reconciled dict.
+      List → classify_settlement_batch summary with all entries.
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        from gate_engine.ml_settlement_truth import (
+            reconcile_settlement, classify_settlement_batch,
+        )
+        body = request.get_json(force=True) or {}
+        if isinstance(body, list):
+            result = classify_settlement_batch(body)
+        elif "entries" in body:
+            result = classify_settlement_batch(body["entries"])
+        else:
+            result = reconcile_settlement(body)
+        return jsonify(result), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc), "ok": False}), 400
+
+
+@app.route("/wow/llp/ml/deduplicate", methods=["POST", "OPTIONS"])
+@require_api_key
+def wow_llp_ml_deduplicate():
+    """
+    P0-2 — Same-event duplicate entries count once for model performance.
+
+    POST body:
+      { "entries": [ ... ML pick dicts ... ] }
+
+    Each entry must contain: league, event_date, away_team, home_team,
+    market_type, selected_side.  stake is optional (used for exposure calc).
+
+    Returns:
+      {
+        canonical_events : { event_key: { financial_entry_count, model_observation_count, ... } }
+        summary          : { total_tickets, unique_events, duplicate_tickets, ... }
+      }
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        from gate_engine.ml_deduplication import (
+            deduplicate_entries, annotate_entries_with_dedup,
+        )
+        body    = request.get_json(force=True) or {}
+        entries = body.get("entries", body) if isinstance(body, dict) else body
+        if not isinstance(entries, list):
+            return jsonify({"error": "'entries' must be a list"}), 400
+        annotated = annotate_entries_with_dedup(entries)
+        dedup     = deduplicate_entries(entries)
+        return jsonify({
+            **dedup,
+            "annotated_entries": annotated,
+        }), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc), "ok": False}), 400
+
+
+@app.route("/wow/llp/ml/edge-gate", methods=["POST", "OPTIONS"])
+@require_api_key
+def wow_llp_ml_edge_gate():
+    """
+    P0-3 + P1-4 — Breakeven / verified edge gate + short-favorite compression.
+
+    POST body:
+      {
+        stake              : float   (ticket cost)
+        listed_return      : float   (max payout)
+        model_prob         : float   (0–1 model probability)
+        market_no_vig_prob : float   (consensus no-vig fair probability)
+        -- optional P1-7 market disagreement --
+        reliability_freeze : bool    (default false)
+        -- optional P1-6 series state --
+        series_score_before_game  : str  e.g. "1-2"
+        series_run_differential   : int
+        -- optional P1-5 bullpen (set is_full_game=true) --
+        is_full_game       : bool    (default true)
+        starter_edge, offense_edge, bullpen_quality_edge,
+        bullpen_freshness_edge, high_leverage_availability, defense_edge
+      }
+
+    Returns combined gate result with all P0-3/P1-4/P1-5/P1-6/P1-7 sub-results.
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        from gate_engine.ml_edge_gate import run_ml_edge_gate
+        from gate_engine.ml_bullpen_gate import validate_bullpen_gate
+        from gate_engine.ml_series_market_gate import (
+            validate_series_state, validate_market_disagreement,
+        )
+        body = request.get_json(force=True) or {}
+
+        # P0-3 + P1-4
+        edge_result = run_ml_edge_gate(body)
+        computed    = edge_result.get("computed", {})
+
+        # P1-5 bullpen
+        is_full_game = bool(body.get("is_full_game", True))
+        bullpen_result = validate_bullpen_gate(body, is_full_game=is_full_game)
+
+        # P1-6 series state
+        series_result = validate_series_state(body)
+
+        # P1-7 market disagreement
+        mkt_result = validate_market_disagreement(
+            model_prob      = _safe_float(body.get("model_prob")),
+            no_vig_prob     = _safe_float(body.get("market_no_vig_prob")),
+            breakeven_prob  = computed.get("breakeven_prob"),
+            reliability_freeze = bool(body.get("reliability_freeze", False)),
+        )
+
+        # Aggregate ceiling — take most restrictive across all gates
+        from gate_engine.llp_governance import cap_label, LLPLabel
+        ceiling = LLPLabel.APPROVED.value
+        for sub in (edge_result, bullpen_result, series_result, mkt_result):
+            sub_ceil = sub.get("ceiling") or sub.get("final_label")
+            if sub_ceil:
+                ceiling = cap_label(ceiling, sub_ceil)
+
+        all_passed = all(
+            sub.get("passed", True)
+            for sub in (edge_result, bullpen_result, series_result, mkt_result)
+        )
+
+        return jsonify({
+            "passed":              all_passed,
+            "aggregated_ceiling":  ceiling,
+            "edge_gate":           edge_result,
+            "bullpen_gate":        bullpen_result,
+            "series_state_gate":   series_result,
+            "market_disagreement": mkt_result,
+            "computed":            computed,
+            "dry_run_only":        True,
+            "can_execute":         False,
+            "execution_rule":      "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        }), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc), "ok": False}), 400
+
+
+@app.route("/wow/llp/ml/performance-summary", methods=["POST", "OPTIONS"])
+@require_api_key
+def wow_llp_ml_performance_summary():
+    """
+    P2-8 + P2-9 — Independent-event performance summary + probability-bucket calibration.
+
+    POST body:
+      { "entries": [ ... reconciled ML pick dicts ... ] }
+
+    Each entry should have been through /wow/llp/ml/reconcile-settlement so
+    that model_result, calibration_eligible, gross_return are populated.
+
+    Returns:
+      {
+        financial_tickets               : int
+        independent_model_observations  : int
+        official_model_record           : str  "W-L"
+        platform_displayed_wins         : int
+        promo_special_settlements       : int
+        duplicate_entries               : int
+        ticket_hit_rate                 : float | null
+        independent_event_hit_rate      : float | null   ← PRIMARY metric
+        calibration_hit_rate            : float | null
+        gross_roi / net_roi / promo_adjusted_roi / duplicate_adjusted_roi
+        by_probability_bucket           : { "52-55%": {...}, ... }
+        display_warning                 : str | null
+      }
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        from gate_engine.ml_reporting import build_ml_performance_summary
+        body    = request.get_json(force=True) or {}
+        entries = body.get("entries", body) if isinstance(body, dict) else body
+        if not isinstance(entries, list):
+            return jsonify({"error": "'entries' must be a list"}), 400
+        return jsonify(build_ml_performance_summary(entries)), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc), "ok": False}), 400
+
+
+@app.route("/wow/llp/ml/approval-snapshot", methods=["POST", "OPTIONS"])
+@require_api_key
+def wow_llp_ml_approval_snapshot():
+    """
+    P2-10 — Build and optionally persist an immutable approval-time snapshot.
+
+    POST body:
+      {
+        ... ML candidate fields (stake, listed_return, model_prob, etc.) ...
+        persist : bool  (default false — set true to write to DB)
+      }
+
+    If "settlement" key is present alongside candidate fields, settlement
+    data is merged in via add_settlement_to_snapshot().
+
+    Returns immutable snapshot dict.
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        from gate_engine.ml_approval_snapshot import (
+            build_approval_snapshot, add_settlement_to_snapshot,
+            validate_snapshot_integrity, persist_snapshot,
+        )
+        body = request.get_json(force=True) or {}
+        should_persist = bool(body.pop("persist", False))
+        settlement     = body.pop("settlement", None)
+
+        snapshot  = build_approval_snapshot(body)
+        integrity = validate_snapshot_integrity(snapshot)
+
+        if settlement:
+            snapshot = add_settlement_to_snapshot(snapshot, settlement)
+
+        db_result = None
+        if should_persist:
+            db_result = persist_snapshot(snapshot)
+
+        return jsonify({
+            "snapshot":       snapshot,
+            "integrity":      integrity,
+            "db_result":      db_result,
+            "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        }), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc), "ok": False}), 400
+
+
+def _safe_float(v) -> float | None:
+    """Safely convert a value to float, returning None on failure."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 @app.route("/wow/kalshi/sports/live-board", methods=["GET"])
 def wow_kalshi_sports_live_board():
     """
