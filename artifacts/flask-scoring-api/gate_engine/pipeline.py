@@ -20,6 +20,8 @@ from . import js_style_conversion
 from . import pp_thresholds, mutex_groups
 from . import injury_decision_tree
 from . import event_normalization, settlement_conflict
+from . import acquisition as _acq_mod
+from .acquisition import AcquisitionTracker, SourceStatus, build_run_acquisition_report
 from .labels import PropLabel
 from .exposure_gate import ExposureLedger
 
@@ -132,12 +134,30 @@ def run_pipeline(
         enr = _get_enrichment(enrichment, row)
 
         # -------------------------------------------------------------------
-        # Module B: Data Contract Enforcement
+        # WOW-PATCH-MANDATORY-RECONSTRUCTION-v1.0
+        # Per-row acquisition tracker — documents every field-level source
+        # attempt for run-level Acquisition Execution Report (Section 29.2).
+        # -------------------------------------------------------------------
+        _tracker = AcquisitionTracker(rid)
+
+        # -------------------------------------------------------------------
+        # Module B: Data Contract Enforcement — Phase 1 (Intake)
+        # Row-level fields (player, sport, prop_type, line, direction) still
+        # fail immediately. Enrichment-level missing fields are noted for
+        # the acquisition ladder and do NOT terminate the row here.
         # -------------------------------------------------------------------
         if not skip_data_contract:
-            data_contract.run(row, enrichment=enr)
-            if row.get("terminal_label") == PropLabel.DATA_CONTRACT_FAIL.value:
+            _intake = data_contract.run_intake(row, enrichment=enr)
+            if _intake.get("row_level_fail"):
                 continue
+            if _intake.get("enrichment_missing"):
+                _tracker.mark_missing_at_intake(_intake["enrichment_missing"])
+                for _f in _intake["enrichment_missing"]:
+                    _tracker.record_attempt(
+                        _f, "data_contract_intake",
+                        SourceStatus.NOT_CALLED,
+                        detail="field absent at intake; acquisition ladder will attempt",
+                    )
 
         # -------------------------------------------------------------------
         # Module H: Source Timestamp Grading
@@ -184,6 +204,14 @@ def run_pipeline(
         # ClientResponseError or fetch failure on one row doesn't crash
         # the entire run. Failures are logged in failed_modules; the row
         # is capped at REJECT_DATA_QUALITY so it never reaches approvals.
+        #
+        # WOW-PATCH-MANDATORY-RECONSTRUCTION-v1.0:
+        # Module exceptions are recorded in the acquisition tracker as FAILED
+        # (Section 9 — Internal Tool Failure Rule). The row is still capped
+        # at REJECT_DATA_QUALITY so the existing approval ceiling is preserved;
+        # however the tracker distinguishes "module crashed" from "data does
+        # not exist" so the run-level report can surface which rows had
+        # INPUT_FAILURE — ACQUISITION_NOT_COMPLETED vs DATA_UNOBTAINABLE.
         # -------------------------------------------------------------------
         try:
             l5_l10_ledger.run(
@@ -191,10 +219,31 @@ def run_pipeline(
                 game_log=enr.get("game_log"),
                 season_log=enr.get("season_log"),
             )
+            # Record the source attempt from the ledger result
+            _l5_result = (row.get("gates") or {}).get("l5_l10_ledger") or {}
+            for _sa in _l5_result.get("source_attempts", []):
+                _tracker.record_attempt(
+                    "game_log", _sa["source"], _sa["status"],
+                    detail=_sa.get("detail", ""),
+                )
+            for _sa in _l5_result.get("source_attempts", []):
+                _tracker.record_attempt(
+                    "l5_values", _sa["source"], _sa["status"],
+                    detail=_sa.get("detail", ""),
+                )
+                _tracker.record_attempt(
+                    "l10_values", _sa["source"], _sa["status"],
+                    detail=_sa.get("detail", ""),
+                )
         except Exception as _exc:
             _tag = f"l5_l10_ledger:{type(_exc).__name__}:{str(_exc)[:100]}"
             failed_modules.append(_tag)
             row.setdefault("blockers", []).append(f"MODULE_FAILURE:l5_l10_ledger")
+            _tracker.record_attempt(
+                "game_log", "l5_l10_ledger_module",
+                SourceStatus.FAILED,
+                detail=f"{type(_exc).__name__}: {str(_exc)[:80]}",
+            )
             if row.get("terminal_label") is None:
                 row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
 
@@ -209,10 +258,27 @@ def run_pipeline(
                 clv_entry_price = enr.get("clv_entry_price"),
                 closing_price   = enr.get("closing_price"),
             )
+            # Track market acquisition result
+            _mkt_result = (row.get("gates") or {}).get("market_gate") or {}
+            _mkt_status = (
+                SourceStatus.RETRIEVED
+                if _mkt_result.get("exact_market_found") or _mkt_result.get("adjacent_market_used")
+                else SourceStatus.NOT_CALLED
+            )
+            _tracker.record_attempt(
+                "market_no_vig_probability", "sportsbook_odds_api",
+                _mkt_status,
+                detail=_mkt_result.get("market_status", ""),
+            )
         except Exception as _exc:
             _tag = f"market_gate:{type(_exc).__name__}:{str(_exc)[:100]}"
             failed_modules.append(_tag)
             row.setdefault("blockers", []).append("MODULE_FAILURE:market_gate")
+            _tracker.record_attempt(
+                "market_no_vig_probability", "market_gate_module",
+                SourceStatus.FAILED,
+                detail=f"{type(_exc).__name__}: {str(_exc)[:80]}",
+            )
             if row.get("terminal_label") is None:
                 row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
 
@@ -254,6 +320,21 @@ def run_pipeline(
             failure_path.run(row, enrichment=enr)
             if row.get("terminal_label") == PropLabel.DATA_CONTRACT_FAIL.value:
                 continue
+
+        # -------------------------------------------------------------------
+        # WOW-PATCH-MANDATORY-RECONSTRUCTION-v1.0 — Module B Phase 2
+        # Deferred enrichment contract check: runs after all data-intake gates
+        # so acquisition and reconstruction have had a chance to fill fields.
+        # Still missing enrichment fields → DATA_CONTRACT_FAIL at this point.
+        # -------------------------------------------------------------------
+        if not skip_data_contract and _tracker._missing_at_intake:
+            data_contract.run_deferred(row, enrichment=enr, tracker=_tracker)
+            if row.get("terminal_label") == PropLabel.DATA_CONTRACT_FAIL.value:
+                row["gates"]["acquisition"] = _tracker.build_row_report()
+                continue
+
+        # Stamp the per-row acquisition gate result
+        row["gates"]["acquisition"] = _tracker.build_row_report()
 
         # -------------------------------------------------------------------
         # Module C: Payout Context / Slip EV
@@ -703,6 +784,20 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
             "terminal_label":       row.get("terminal_label"),
         })
 
+    # -------------------------------------------------------------------
+    # WOW-PATCH-MANDATORY-RECONSTRUCTION-v1.0
+    # Section 29.2 — Acquisition Execution Report (run-level)
+    # Aggregates per-row acquisition gate results.
+    # -------------------------------------------------------------------
+    _row_acq_reports = [
+        row.get("gates", {}).get("acquisition") or {}
+        for row in rows
+    ]
+    _acq_run_report = build_run_acquisition_report(
+        _row_acq_reports,
+        failed_source_calls=failed_modules or [],
+    )
+
     return {
         "prop_ledger":        rows,
         "data_status_ledger": data_status_ledger,
@@ -724,6 +819,8 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "injury_decision_ledger": injury_decision_ledger,
         # WOW-PATCH-2026-07-10 addition
         "settlement_conflict_map": settlement_conflict_map or {},
+        # WOW-PATCH-MANDATORY-RECONSTRUCTION-v1.0 — Section 29.2
+        "acquisition_execution_report": _acq_run_report,
         "summary": {
             "total_rows":               len(rows),
             "by_label":                 label_counts,
