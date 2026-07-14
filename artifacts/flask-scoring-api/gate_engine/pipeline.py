@@ -19,6 +19,7 @@ from . import sharp_anchor, house_rules, settlement_loopback
 from . import js_style_conversion
 from . import pp_thresholds, mutex_groups
 from . import injury_decision_tree
+from . import event_normalization, settlement_conflict
 from .labels import PropLabel
 from .exposure_gate import ExposureLedger
 
@@ -288,6 +289,67 @@ def run_pipeline(
     # -------------------------------------------------------------------
     mutex_report = mutex_groups.run(rows)
 
+    # -------------------------------------------------------------------
+    # WOW-PATCH-2026-07-10 — Cross-Platform Event Grouping
+    # Group rows by canonical event_id (league + date + normalized teams).
+    # financial_entry_count counts all entries for the event.
+    # model_observation_count is always 1 per event (deduplication rule):
+    # duplicates cannot raise model win count, accuracy %, or calibration.
+    # -------------------------------------------------------------------
+    # Event-level groups: used for financial aggregation (all entries same game).
+    event_groups = event_normalization.group_entries_by_event(rows)
+    for event_id, event_rows in event_groups.items():
+        n = len(event_rows)
+        stake_sum = sum(
+            float(r.get("stake") or 0) for r in event_rows
+        )
+        # gross_return: sum of payout_return field if available
+        return_sum = sum(
+            float(r.get("payout_return") or 0) for r in event_rows
+        )
+        # net_event_result: sum of net_result field if available
+        net_sum = sum(
+            float(r.get("net_result") or 0) for r in event_rows
+        )
+        for row in event_rows:
+            row["financial_entry_count"]    = n
+            row["duplicate_exposure_count"] = n - 1
+            row["gross_stake"]              = round(stake_sum, 4)
+            row["gross_return"]             = round(return_sum, 4)
+            row["net_event_result"]         = round(net_sum, 4)
+
+    # Event+side groups: model deduplication.
+    # Multiple entries on the SAME side of the same game collapse to
+    # model_observation_count=1 so they cannot inflate model win rate or
+    # calibration. Entries on OPPOSITE sides (OVER vs UNDER) are
+    # separate model observations and each get their own count of 1.
+    event_side_groups = event_normalization.group_entries_by_event_and_side(rows)
+    for side_key, side_rows in event_side_groups.items():
+        for row in side_rows:
+            row["model_observation_count"] = 1  # 1 per (event, side) group
+
+    # -------------------------------------------------------------------
+    # WOW-PATCH-2026-07-10 — Settlement Conflict Gate
+    # Scan event groups for cross-platform result disagreements.
+    # Conflicts → SETTLEMENT_SOURCE_CONFLICT, PENDING_RECONCILIATION,
+    # model_result=null, calibration_eligible=False.
+    # -------------------------------------------------------------------
+    settlement_conflict_map = settlement_conflict.apply_conflict_to_rows(event_groups)
+
+    for row in rows:
+        if row.get("settlement_conflict") is True:
+            # Apply SETTLEMENT_SOURCE_CONFLICT as the terminal label so it
+            # overrides any classifier-derived label.
+            row["terminal_label"]  = PropLabel.SETTLEMENT_SOURCE_CONFLICT.value
+            row["model_result"]    = None
+            row["calibration_eligible"] = False
+            row.setdefault("gates", {})["settlement_conflict"] = {
+                "conflict_detected": True,
+                "conflict_label":    row.get("conflict_label"),
+                "bankroll_status":   row.get("bankroll_status"),
+                "calibration_eligible": False,
+            }
+
     for row in rows:
         if row.get("terminal_label") in (
             PropLabel.SLATE_PURGE.value,
@@ -298,6 +360,11 @@ def run_pipeline(
         ledger.check_and_register(row)
 
     for row in rows:
+        # WOW-PATCH-2026-07-10: SETTLEMENT_SOURCE_CONFLICT is terminal — the
+        # classifier must not overwrite it with REJECT_DATA_QUALITY or any
+        # other label, since the reconciliation path owns the final outcome.
+        if row.get("terminal_label") == PropLabel.SETTLEMENT_SOURCE_CONFLICT.value:
+            continue
         classifier.classify(row)
 
     # -------------------------------------------------------------------
@@ -316,13 +383,14 @@ def run_pipeline(
 
     return _build_output(
         rows, ledger,
-        health_report      = health_report,
-        settlement_status  = settlement_status,
-        enrichment         = enrichment,
-        failed_modules     = failed_modules,
-        run_status         = run_status,
-        pp_threshold_ledger = pp_threshold_ledger,
-        mutex_report       = mutex_report,
+        health_report           = health_report,
+        settlement_status       = settlement_status,
+        enrichment              = enrichment,
+        failed_modules          = failed_modules,
+        run_status              = run_status,
+        pp_threshold_ledger     = pp_threshold_ledger,
+        mutex_report            = mutex_report,
+        settlement_conflict_map = settlement_conflict_map,
     )
 
 
@@ -505,7 +573,8 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
                   failed_modules: list[str] | None = None,
                   run_status: str = "COMPLETE",
                   pp_threshold_ledger: list[dict] | None = None,
-                  mutex_report: list[dict] | None = None) -> dict[str, Any]:
+                  mutex_report: list[dict] | None = None,
+                  settlement_conflict_map: dict | None = None) -> dict[str, Any]:
     # -------------------------------------------------------------------
     # DEGRADED_ENGINE_RUN ceiling: applied here (not only in run_pipeline)
     # so that _build_output works correctly when called directly in tests.
@@ -653,6 +722,8 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "market_validation_ledger": market_validation_ledger,
         # Phase 3 addition
         "injury_decision_ledger": injury_decision_ledger,
+        # WOW-PATCH-2026-07-10 addition
+        "settlement_conflict_map": settlement_conflict_map or {},
         "summary": {
             "total_rows":               len(rows),
             "by_label":                 label_counts,

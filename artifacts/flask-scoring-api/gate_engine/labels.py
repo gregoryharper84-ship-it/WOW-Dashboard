@@ -41,6 +41,10 @@ class PropLabel(str, Enum):
     REJECT_POWER_CORRELATED             = "REJECT_POWER_CORRELATED"
     # Phase 1 2026-07-07 — Degraded Engine Run
     DEGRADED_ENGINE_RUN                 = "DEGRADED_ENGINE_RUN"
+    # WOW-PATCH-2026-07-10 — Combo & Settlement Governance
+    HARD_REJECT_COMBO_MULTIPLICATION    = "HARD_REJECT_COMBO_MULTIPLICATION"
+    SETTLEMENT_SOURCE_CONFLICT          = "SETTLEMENT_SOURCE_CONFLICT"
+    SERIES_STATE_CAUTION                = "SERIES_STATE_CAUTION"
 
 
 class DataStatus(str, Enum):

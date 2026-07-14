@@ -20,6 +20,8 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Any
 
+from .series_state import run_series_state_audit, validate_win_streak_is_metadata
+
 
 # ---------------------------------------------------------------------------
 # 1. Labels
@@ -609,6 +611,71 @@ def validate_calibration_ledger(candidate: dict[str, Any]) -> dict[str, Any]:
     return _ok("CALIBRATION_LEDGER_COMPLETE")
 
 
+# ---------------------------------------------------------------------------
+# Validator 11: MLB series-state audit (Rule F) + win-streak isolation (Rule G)
+# WOW-PATCH-2026-07-10
+# ---------------------------------------------------------------------------
+def validate_series_state(candidate: dict[str, Any]) -> dict[str, Any]:
+    """
+    Rule F: MLB winner-market series-state audit.
+    Only runs for MLB sport + winner/moneyline market type.
+    Two or more triggers (opponent series wins, opponent streak, selected team runs)
+    cap the row at LLP_WATCH unless edge clears floor after uncertainty tax.
+
+    Rule G: assert recent_win_streak never reaches actionable paths.
+    """
+    sport  = (candidate.get("sport") or "").upper()
+    market = (candidate.get("market") or "").lower()
+    is_mlb_winner = (
+        sport == "MLB" and
+        any(kw in market for kw in ("winner", "moneyline", "ml", "game winner"))
+    )
+
+    # Rule G — always enforced regardless of sport/market
+    rg = validate_win_streak_is_metadata(candidate)
+    if not rg["passed"]:
+        return _fail(rg["code"], rg["detail"], ceiling=LLPLabel.REJECT.value)
+
+    # Rule F — MLB winner markets only
+    if not is_mlb_winner:
+        return _ok("SERIES_STATE_NOT_APPLICABLE",
+                   f"sport={sport} market={market} — series-state audit skipped")
+
+    enrichment = {
+        k: candidate.get(k)
+        for k in (
+            "series_score",
+            "opponent_win_streak_in_series",
+            "opponent_win_streak",
+            "previous_game_runs_selected_team",
+            "home_recent_record",
+            "selected_team_recent_record",
+            "bullpen_workload",
+            "returning_starter_flag",
+            "no_vig_consensus_edge",
+            "model_edge",
+        )
+        if candidate.get(k) is not None
+    }
+
+    edge_floor = EDGE_THRESHOLD.get(_detect_market_type(market), 0.015)
+
+    audit = run_series_state_audit(enrichment, edge_floor=edge_floor)
+
+    if not audit["passed"] and audit.get("ceiling") == "LLP_WATCH":
+        return _fail(
+            audit["code"],
+            audit["detail"],
+            ceiling=LLPLabel.WATCH.value,
+        )
+
+    return _ok(
+        audit["code"],
+        audit["detail"],
+        ceiling=None,
+    )
+
+
 def log_calibration_entry(entry: dict[str, Any]) -> None:
     """Append one calibration ledger entry to the JSONL log."""
     record = {f: entry.get(f) for f in CALIBRATION_LEDGER_FIELDS}
@@ -705,6 +772,8 @@ ALL_GOVERNANCE_VALIDATORS = [
     ("session_exposure",     lambda c, s: validate_session_exposure(c, s)),
     ("reapproval",           lambda c, s: validate_reapproval(c)),
     ("calibration_ledger",   lambda c, s: validate_calibration_ledger(c)),
+    # WOW-PATCH-2026-07-10 — Rule F (MLB series-state) + Rule G (win-streak isolation)
+    ("series_state",         lambda c, s: validate_series_state(c)),
 ]
 
 

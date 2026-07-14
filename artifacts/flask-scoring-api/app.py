@@ -17782,6 +17782,70 @@ def kalshi_scan_event():
     }), 200
 
 
+@app.route("/kalshi/evaluate-combo", methods=["POST"])
+@require_api_key
+def kalshi_evaluate_combo():
+    """
+    WOW-PATCH-2026-07-10 — Kalshi sports-combo size gate + joint EV evaluation.
+
+    Runs BEFORE any combo is assembled. Rejects 3+ market combos during
+    Reliability Freeze. can_execute and dry_run_only are always False/True.
+
+    POST body (JSON):
+      {
+        legs: [
+          {
+            "market":        str   — Kalshi market ticker or description
+            "adjusted_prob": float — per-leg adjusted model probability (0–1)
+          }, ...
+        ]
+        combo_cost:       float | null   — total cost to enter the combo
+        combo_max_return: float | null   — maximum payout if all legs win
+      }
+
+    Returns: combo gate result including allowed, reject_code, joint EV fields.
+    """
+    from gate_engine.combo_gate import evaluate_kalshi_combo
+
+    body = request.get_json(silent=True) or {}
+    legs              = body.get("legs") or []
+    combo_cost        = body.get("combo_cost")
+    combo_max_return  = body.get("combo_max_return")
+    correlation_check = body.get("correlation_check")
+
+    if not isinstance(legs, list):
+        return jsonify({
+            "ok": False,
+            "error": "legs must be a list of {market, adjusted_prob} dicts",
+            "can_execute": False,
+            "dry_run_only": True,
+        }), 400
+
+    result = evaluate_kalshi_combo(
+        legs              = legs,
+        combo_cost        = combo_cost,
+        combo_max_return  = combo_max_return,
+        correlation_check = correlation_check,
+    )
+
+    return jsonify({
+        "ok":                         result["passed"],
+        "passed":                     result["passed"],
+        "stage":                      result.get("stage"),
+        "reject_code":                result.get("reject_code"),
+        "reject_reason":              result.get("reject_reason"),
+        "market_count":               result.get("market_count"),
+        "can_execute":                False,
+        "dry_run_only":               True,
+        "joint_model_probability":    result.get("joint_model_probability"),
+        "combo_breakeven_prob":       result.get("combo_breakeven_prob"),
+        "joint_adjusted_edge":        result.get("joint_adjusted_edge"),
+        "correlation_review_flag":    result.get("correlation_review_flag"),
+        "correlation_check":          result.get("correlation_check"),
+        "can_approve_bets":           False,
+    }), 200
+
+
 @app.route("/kalshi/paper-trade", methods=["POST"])
 @require_api_key
 def kalshi_paper_trade():

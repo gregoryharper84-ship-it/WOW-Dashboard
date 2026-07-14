@@ -99,6 +99,11 @@ def normalize_row(raw: dict[str, Any], row_index: int = 0) -> dict[str, Any]:
         "gates":          {},
         "blockers":       [],
         "terminal_label": None,
+        # WOW-PATCH-2026-07-10 — settlement conflict passthrough fields.
+        # These may be pre-set by upstream enrichment before pipeline entry.
+        "settlement_conflict": raw.get("settlement_conflict") or False,
+        "conflict_label":      raw.get("conflict_label"),
+        "bankroll_status":     raw.get("bankroll_status"),
     }
 
 
