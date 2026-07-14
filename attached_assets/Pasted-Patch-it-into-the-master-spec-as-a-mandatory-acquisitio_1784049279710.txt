@@ -1,0 +1,370 @@
+Patch it into the master spec as a **mandatory acquisition-and-reconstruction rule**, not just an analyst preference.
+
+The cleanest implementation is to add one new section under **Section 4 — Source Access Status Requirement**, then make small edits to Sections 8.2, 9A, and 29.2. This preserves your current data-integrity rules while preventing the engine from lazily stopping at “missing.”
+
+## WOW PATCH — MANDATORY DATA ACQUISITION AND RECONSTRUCTION
+
+**Patch ID:** WOW-PATCH-MANDATORY-RECONSTRUCTION-v1.0
+**Status:** Active
+**Priority:** Applies after Data Contract intake and before terminal missing-data classification
+**Purpose:** Prevent premature DATA_UNOBTAINABLE or REJECT_DATA_QUALITY classifications when required fields can be retrieved, reconstructed, or independently derived.
+
+### 1. Core Rule
+
+Missing data triggers acquisition.
+
+The engine may not assign `DATA_UNOBTAINABLE`, `REJECT_DATA_QUALITY`, `INPUT_FAILURE`, or a missing-data terminal bucket merely because the first or preferred source did not return the required information.
+
+Before declaring a required field unavailable, the engine must execute the full acquisition ladder and document every attempted pathway.
+
+`NOT_CALLED` is never a final source status.
+
+A failed preferred source does not end the run.
+
+### 2. Mandatory Acquisition Ladder
+
+For every missing critical field, attempt sources in this order where applicable:
+
+1. Internal WOW engine or connected model
+2. Direct league, tournament, team, or official source
+3. Official box score, play-by-play, match log, or gamelog
+4. Trusted statistical database
+5. Sportsbook or odds API
+6. Projection provider
+7. Public search and verified reporting
+8. Direct reconstruction from official or trusted source rows
+9. Transparent proxy model
+10. `DATA_UNOBTAINABLE` only after all applicable pathways fail
+
+Each pathway must receive one source status:
+
+* `RETRIEVED`
+* `RECONSTRUCTED`
+* `PROXY_ONLY`
+* `DATA_UNOBTAINABLE`
+* `INPUT_FAILURE`
+* `SOURCE_CONFLICT`
+* `NOT_CALLED`
+* `FAILED`
+
+### 3. Field-Level Acquisition Requirement
+
+The acquisition ladder applies independently to each required field, including:
+
+* exact L5 raw values
+* exact L10 raw values
+* L5 and L10 hit rates versus the current line
+* L10 median
+* L10 mean
+* season baseline
+* status
+* role
+* teammate-dependent role context
+* market line
+* market price
+* opposite-side price
+* no-vig probability
+* projection
+* payout or slip format
+* game or match status
+* lineup, starter, or XI confirmation
+
+A failure to retrieve one field does not excuse failure to attempt acquisition for the remaining fields.
+
+### 4. L5/L10 Reconstruction Rule
+
+When a direct L5 or L10 feed is unavailable, the engine must attempt reconstruction from official box scores, official match logs, or trusted gamelog rows.
+
+A valid reconstruction must include:
+
+* source name
+* source grade
+* source timestamp or event dates
+* exact raw values in chronological order
+* current line used
+* `l5_line_used`
+* L5 hit count
+* L10 hit count
+* L10 median
+* L10 mean
+* push treatment
+* void or DNP treatment
+* role-change notes
+* discrepancy check against any secondary source
+
+Required output:
+
+```text
+l5_source_status:
+l10_source_status:
+reconstruction_method:
+source_rows_used:
+l5_values:
+l10_values:
+l5_hit_rate:
+l10_hit_rate:
+l10_median:
+l10_mean:
+l5_line_used:
+reconstruction_confidence:
+```
+
+Valid reconstruction statuses:
+
+* `RECONSTRUCTED_A`
+* `RECONSTRUCTED_B_CORROBORATED`
+* `RECONSTRUCTED_B_UNCORROBORATED`
+* `RECONSTRUCTION_FAILED`
+
+Mapping:
+
+* `RECONSTRUCTED_A` → no automatic source cap
+* `RECONSTRUCTED_B_CORROBORATED` → no automatic source cap
+* `RECONSTRUCTED_B_UNCORROBORATED` → maximum `MODEL_QUALIFIED_HOLD`
+* `RECONSTRUCTION_FAILED` → proceed to proxy or `DATA_UNOBTAINABLE`
+
+### 5. Projection Reconstruction Rule
+
+If no external projection is available, the engine must attempt an auditable internal projection.
+
+The internal projection must be built from documented components and may not be a narrative estimate.
+
+Minimum required components:
+
+* season or role-split baseline
+* L10 distribution
+* L10 median
+* minutes, usage, role, or deployment adjustment
+* matchup adjustment
+* pace, possession, surface, or game-environment adjustment
+* failure-path haircut
+* uncertainty haircut
+
+Required output:
+
+```text
+projection_source_status:
+projection_method:
+baseline_value:
+role_adjustment:
+matchup_adjustment:
+environment_adjustment:
+failure_path_adjustment:
+projected_median:
+projected_mean:
+projection_interval:
+projection_confidence:
+```
+
+An internally reconstructed projection receives:
+
+* `RECONSTRUCTED` when supported by official or trusted statistical inputs
+* `PROXY_ONLY` when built from incomplete or indirect inputs
+
+`PROXY_ONLY` cannot support `MONEY_QUALIFIED` or `FINAL_APPROVED`.
+
+### 6. Market Acquisition Rule
+
+If the first market source fails, the engine must attempt:
+
+1. direct sportsbook API
+2. secondary sportsbook or odds API
+3. sportsbook event page
+4. trusted odds comparison source
+5. projection-market proxy
+6. mark `NO_MARKET_AVAILABLE`
+
+The engine must attempt to retrieve:
+
+* exact line
+* side price
+* opposite-side price
+* market timestamp
+* book name
+* consensus or best available comparison
+
+A match-winner market may not validate a total-games prop.
+
+A game spread or team total may not validate an unrelated player prop.
+
+A one-sided probability display without an identifiable opposite side may be used only as partial support and cannot create no-vig probability by itself.
+
+### 7. Reconstruction Does Not Equal Approval
+
+Successful reconstruction allows scoring to continue.
+
+It does not automatically grant:
+
+* `MARKET_VERIFIED_HOLD`
+* `MONEY_QUALIFIED`
+* `FINAL_APPROVED`
+* slip eligibility
+* stake authorization
+
+All normal market, calibration, role, probability, EV, failure-path, and live-recheck gates still apply.
+
+### 8. Terminal Missing-Data Rule
+
+`DATA_UNOBTAINABLE` may be assigned only when:
+
+* every applicable acquisition path was attempted;
+* each attempt has a documented status;
+* reconstruction was attempted where mathematically possible;
+* proxy modeling was considered;
+* the unresolved field is required for the next approval tier.
+
+Required blocker format:
+
+```text
+missing_field:
+attempted_sources:
+attempt_results:
+reconstruction_attempted:
+reconstruction_result:
+proxy_attempted:
+final_source_status:
+approval_impact:
+```
+
+A row that contains a required field marked `NOT_CALLED` cannot receive a final terminal bucket.
+
+Such a row must be labeled:
+
+`RUN_INVALID — ACQUISITION_INCOMPLETE`
+
+### 9. Internal Tool Failure Rule
+
+If an internal engine, Replit route, API, or connected tool fails:
+
+* record `FAILED`;
+* continue through the remaining acquisition ladder;
+* do not equate internal-tool failure with source unavailability;
+* do not stop the full-board run unless all applicable fallback pathways also fail.
+
+A tool exception without fallback attempts produces:
+
+`RUN_INVALID — FALLBACK_NOT_EXECUTED`
+
+### 10. Full-Board Reporting Requirement
+
+Every row must display:
+
+* fields initially missing
+* sources attempted
+* fields retrieved
+* fields reconstructed
+* fields remaining unavailable
+* source grade
+* reconstruction confidence
+* approval cap caused by reconstruction
+* terminal bucket
+* blocker
+
+Run-level output must include:
+
+```text
+fields_missing_at_intake:
+fields_retrieved:
+fields_reconstructed:
+fields_proxy_only:
+fields_unobtainable:
+failed_source_calls:
+fallbacks_executed:
+acquisition_complete:
+```
+
+### 11. Enforcement Rule
+
+The engine must not say:
+
+* “exact L10 was unavailable”
+* “projection was unavailable”
+* “market was unavailable”
+* “status was unavailable”
+
+unless it also shows the completed acquisition ladder for that field.
+
+Premature stopping is an engine failure, not a data-quality failure.
+
+Use:
+
+`INPUT_FAILURE — ACQUISITION_NOT_COMPLETED`
+
+when the engine had viable fallback paths but did not execute them.
+
+### 12. Final Operating Command
+
+For every missing field:
+
+**retrieve → corroborate → reconstruct → proxy → classify**
+
+Never jump directly from:
+
+**preferred source failed → data unavailable**
+
+Then make these four integration edits.
+
+### Section 4.2 replacement
+
+Replace the current “Not Called is not the same as Not Available” paragraph with:
+
+### 4.2 Non-Negotiable Acquisition Rule
+
+`NOT_CALLED` is not the same as `DATA_UNOBTAINABLE`.
+
+Every missing critical field must run through the Mandatory Data Acquisition and Reconstruction Patch before receiving a final source status or terminal bucket.
+
+A preferred-source failure triggers fallback acquisition. It does not terminate the field.
+
+A row with any required critical path marked `NOT_CALLED` is not a completed row and makes the run:
+
+`RUN_INVALID — ACQUISITION_INCOMPLETE`
+
+### Add to Section 8.2 — Layer 1 Data Intake
+
+Insert this after the list of required inputs:
+
+**Acquisition enforcement:**
+Any missing Layer 1 field triggers the full acquisition ladder. Exact L5/L10 values must be reconstructed from official or trusted gamelog rows when a direct feed is unavailable. Approval analysis may not stop before reconstruction is attempted.
+
+### Modify Section 9A contract logic
+
+Your current contract says missing required fields immediately cause `DATA_CONTRACT_FAIL`. That is too early. Replace the contract enforcement logic with:
+
+```text
+1. Intake field missing → mark FIELD_MISSING_AT_INTAKE.
+2. Run mandatory acquisition and reconstruction for every missing field.
+3. Field retrieved or reconstructed → populate field and continue.
+4. Field remains unavailable after all pathways fail → DATA_CONTRACT_FAIL or REJECT_DATA_QUALITY, depending on whether the failure occurred before or after scoring.
+5. Raw data retrieved but not processed → INPUT_FAILURE.
+6. Required pathway left NOT_CALLED → RUN_INVALID — ACQUISITION_INCOMPLETE.
+7. Analysis complete → assign terminal bucket.
+```
+
+### Add to Section 29.2 run-level output
+
+Add these required sections:
+
+```text
+Acquisition Execution Report
+Reconstruction Ledger
+Failed Source Calls
+Fallback Sources Executed
+Fields Recovered After Intake
+Fields Remaining Unobtainable
+Acquisition Completeness Verdict
+```
+
+## Important taxonomy change
+
+The key correction is this:
+
+* **Data does not exist or cannot be reached after full acquisition** → `DATA_UNOBTAINABLE`
+* **Engine did not try available fallback routes** → `INPUT_FAILURE — ACQUISITION_NOT_COMPLETED`
+* **A required route remains NOT_CALLED** → `RUN_INVALID — ACQUISITION_INCOMPLETE`
+* **Data was rebuilt from valid source rows** → `RECONSTRUCTED`
+* **Only indirect estimation was possible** → `PROXY_ONLY`
+
+That distinction prevents the engine from blaming the data when the real problem is incomplete execution.
+
+This patch fits your current acquisition hierarchy and preserves the master rule against fabricated validation. 
