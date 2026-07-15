@@ -1,0 +1,332 @@
+Fix it by separating three decisions the engine currently mixes together:
+
+1. **Prop hit-confidence**
+2. **Market/line verification**
+3. **Slip EV and money qualification**
+
+Add the following patch to Replit.
+
+## Paste this into Replit
+
+```text
+Implement:
+
+WOW-PATCH-2026-07-15-PROP-CONFIDENCE-AND-MARKET-LABEL-SEPARATION
+
+PURPOSE
+Prevent individual prop-confidence analysis from being blocked by PrizePicks payout, slip-EV requirements, unavailable remote governance attestation, or the absence of an exact same-line sportsbook market. Preserve strict requirements for MONEY_QUALIFIED and FINAL_APPROVED execution decisions.
+
+PRECEDENCE
+This patch extends WOW v16 Clean Core and all active patches. It does not weaken slate, identity, injury, role, freshness, projection, contradiction, correlation, or submission-lock gates.
+
+1. ADD ANALYSIS MODE
+
+Every prop run must declare:
+
+analysis_mode:
+- HIT_CONFIDENCE
+- MARKET_EDGE
+- SLIP_EV
+- FULL_APPROVAL
+
+Default prop-pool generation to HIT_CONFIDENCE unless the user requests EV, stake, payout, or a submitted slip.
+
+HIT_CONFIDENCE answers:
+“How likely is this exact prop direction to hit?”
+
+MARKET_EDGE answers:
+“Does market evidence support a mispriced PrizePicks line?”
+
+SLIP_EV answers:
+“Does the proposed slip clear its payout breakeven?”
+
+FULL_APPROVAL requires all applicable gates.
+
+2. PRIZEPICKS PAYOUT SCOPE
+
+PrizePicks payout is required only for:
+- SLIP_EV
+- MONEY_QUALIFIED
+- FINAL_APPROVED slip
+- stake sizing
+- expected-value calculations
+
+PrizePicks payout must NOT block:
+- individual hit-probability estimates
+- prop-pool ranking
+- FINAL_CONFIDENCE_HIGH/MEDIUM
+- MODEL_QUALIFIED_HOLD
+- MARKET_CORROBORATED_HOLD
+
+When payout is absent during HIT_CONFIDENCE, emit:
+
+payout_status: NOT_REQUIRED_FOR_HIT_CONFIDENCE
+payout_blocking: false
+ev_status: NOT_EVALUATED
+money_qualified: false
+
+Never describe missing payout as a hit-confidence blocker.
+
+3. GOVERNANCE DEGRADATION
+
+Separate local governance validity from remote attestation.
+
+Required fields:
+- local_master_loaded
+- local_patch_registry_loaded
+- local_schema_valid
+- remote_governance_status
+- governance_degradation_reason
+
+If local master, patch registry, and schema are valid but the Replit governance-status endpoint is unavailable:
+
+remote_governance_status: UNAVAILABLE
+governance_status: GOVERNANCE_ATTESTATION_DEGRADED
+research_allowed: true
+confidence_grading_allowed: true
+money_qualified: false
+final_approved: false
+
+Remote endpoint failure must not erase research findings or cap individual hit confidence unless an identified active patch explicitly requires remote attestation.
+
+Any rule used to lower a ceiling must include:
+- patch_id
+- patch_version
+- exact rule key
+- governance source
+
+If the engine cannot identify those fields, emit:
+UNVERIFIED_GOVERNANCE_RULE_IGNORED
+
+Do not enforce an alleged rule such as “HIGH lower bound ≥65%” without its verified patch ID and rule key.
+
+4. MARKET EVIDENCE LABELS
+
+Add:
+
+MARKET_UNVERIFIED_HOLD
+No usable sportsbook evidence.
+
+ONE_SIDED_MARKET_SUPPORT
+Exact sportsbook line found but only one side’s price is available. Raw implied probability may be shown, but no-vig probability is forbidden.
+
+MARKET_CORROBORATED_HOLD
+A nearby sportsbook line or line ladder supports the PrizePicks direction, but the exact same line with both sides is unavailable.
+
+MARKET_VERIFIED_HOLD
+The exact market and line have fresh two-way sportsbook prices from at least one usable book, or valid consensus reconstruction under the active acquisition rules.
+
+Do not label adjacent-line evidence MARKET_VERIFIED.
+
+Examples:
+- PP Jones O1.5 AST; book O/U 2.5 AST found:
+  MARKET_CORROBORATED_HOLD
+- PP Citron O2.5 AST; only O2.5 -170 found:
+  ONE_SIDED_MARKET_SUPPORT
+- PP Leite O5.5 -125 and U5.5 -106 found:
+  MARKET_VERIFIED_HOLD
+
+5. NO-VIG RULE
+
+No-vig probability requires both sides.
+
+For American odds:
+
+raw_prob_negative = abs(odds) / (abs(odds) + 100)
+raw_prob_positive = 100 / (odds + 100)
+
+no_vig_over =
+raw_over / (raw_over + raw_under)
+
+If either side is missing:
+
+no_vig_available: false
+no_vig_probability: null
+market_support_direction: OVER | UNDER | NONE
+
+Never call a one-sided implied probability “no-vig.”
+
+Regression example:
+O -125 / U -106 produces approximately:
+raw_over = 0.5556
+raw_under = 0.5146
+no_vig_over = 0.5191
+
+6. ADJACENT-LINE HANDLING
+
+A sportsbook line different from the PrizePicks line may corroborate direction but cannot directly supply the exact-line probability.
+
+Required fields:
+- pp_line
+- sportsbook_line
+- line_delta
+- sportsbook_over_price
+- sportsbook_under_price
+- evidence_type: EXACT_LINE | ADJACENT_LINE
+- interpolation_method
+- interpolation_uncertainty
+
+If evidence_type=ADJACENT_LINE:
+- maximum market label is MARKET_CORROBORATED_HOLD
+- do not reuse the sportsbook probability as the PP exact-line probability
+- estimate the PP probability only through an auditable distribution/interpolation model
+- apply uncertainty haircut
+
+7. CONFIDENCE LABELS
+
+Add confidence outputs separate from approval:
+
+FINAL_CONFIDENCE_HIGH
+FINAL_CONFIDENCE_MEDIUM
+FINAL_CONFIDENCE_LOW
+CONFIDENCE_UNOBTAINABLE
+
+These describe hit probability only and never authorize a wager.
+
+Default thresholds unless a verified active patch overrides them:
+
+HIGH:
+- conservative probability lower bound >= 60%
+- exact board line verified
+- role/status verified
+- projection reproducible
+- no material unresolved conflict
+
+MEDIUM:
+- conservative lower bound >= 55%
+- evidence sufficient but at least one non-critical uncertainty remains
+
+LOW:
+- lower bound <55% or edge is near friction
+
+CONFIDENCE_UNOBTAINABLE:
+- missing exact line, unresolved role/injury, incomplete raw ledger, or invalid projection
+
+FINAL_APPROVED remains stricter and requires all applicable market, EV, structure, freshness, and governance gates.
+
+8. PROBABILITY AUDIT
+
+Every probability range must include:
+
+- season mean
+- L10 raw values
+- L10 mean and median
+- L10 exact-line hit rate
+- L5 raw values
+- L5 exact-line hit rate
+- L9 outlier-adjusted mean when triggered
+- role-split sample when applicable
+- projected minutes
+- projected stat mean
+- opponent/context adjustment
+- scenario weights
+- distribution method
+- base probability
+- uncertainty haircut
+- final probability
+- conservative lower bound
+
+If these cannot be reproduced, label the number:
+PROVISIONAL_PROBABILITY_RANGE
+
+Do not describe it as calibrated.
+
+9. PRIZEPICKS BOARD FRESHNESS
+
+An uploaded screenshot may establish the operator-supplied exact line for research.
+
+Set:
+board_source: OPERATOR_SUPPLIED_SCREENSHOT
+board_line_verified_for_research: true
+board_live_verified: false
+
+Require live board recheck only for:
+- submission lock
+- FINAL_APPROVED
+- slip EV
+- current availability confirmation
+
+During HIT_CONFIDENCE, a recent screenshot may support analysis but must carry a recheck requirement and timestamp.
+
+10. SAME-GAME CORRELATION
+
+Do not reject or downgrade two same-game props using narrative correlation alone.
+
+For any proposed pairing, require:
+- normalized event ID
+- estimated pairwise correlation
+- correlation method/source
+- independent joint probability
+- correlation-adjusted joint probability
+- slip breakeven when SLIP_EV is requested
+
+If correlation cannot be estimated:
+CORRELATION_UNOBTAINABLE
+The pairing remains unapproved, but individual prop confidence remains intact.
+
+11. TERMINAL OUTPUT
+
+Return separate decisions:
+
+confidence_decision
+market_decision
+money_decision
+slip_decision
+
+Example:
+
+confidence_decision: FINAL_CONFIDENCE_HIGH
+market_decision: MARKET_CORROBORATED_HOLD
+money_decision: NOT_EVALUATED
+slip_decision: NOT_REQUESTED
+can_execute: false
+
+Never collapse these into one label.
+
+12. REQUIRED TESTS
+
+T01 HIT_CONFIDENCE without PP payout can emit FINAL_CONFIDENCE_HIGH.
+T02 Missing payout blocks MONEY_QUALIFIED.
+T03 Missing payout blocks FINAL_APPROVED slip.
+T04 Remote governance endpoint failure with valid local governance permits confidence grading.
+T05 Invalid local master blocks confidence grading.
+T06 Unverified patch rule is not enforced.
+T07 Adjacent 2.5 book line versus PP 1.5 emits MARKET_CORROBORATED_HOLD.
+T08 One-sided exact price emits ONE_SIDED_MARKET_SUPPORT.
+T09 One-sided price never produces no-vig probability.
+T10 Two-sided -125/-106 produces no-vig Over probability near 0.5191.
+T11 MARKET_VERIFIED_HOLD requires exact-line qualifying evidence.
+T12 Provisional probability cannot be called calibrated.
+T13 Same-game correlation failure blocks slip approval but not individual confidence.
+T14 Screenshot line is usable for research but not submission lock.
+T15 Row totals equal terminal-bucket totals.
+T16 Every ceiling-lowering governance rule includes patch_id and rule_key.
+T17 HIT_CONFIDENCE defaults money_qualified=false and can_execute=false.
+T18 FINAL_CONFIDENCE_HIGH never aliases FINAL_APPROVED.
+
+Run the new tests and full regression suite. Report changed files, test totals, failures, governance hash, and example outputs for Jones O1.5 AST, Citron O2.5 AST, and Leite O5.5 AST.
+```
+
+## Expected output after the patch
+
+For the current examples, the engine should produce:
+
+| Prop                  | Confidence                            | Market status                               | Money status  |
+| --------------------- | ------------------------------------- | ------------------------------------------- | ------------- |
+| Jones MORE 1.5 AST    | Medium-High pending probability audit | `MARKET_CORROBORATED_HOLD`                  | Not evaluated |
+| Bueckers MORE 5.5 AST | Medium-High pending probability audit | `MARKET_CORROBORATED_HOLD`                  | Not evaluated |
+| Citron MORE 2.5 AST   | Medium-High provisional               | `ONE_SIDED_MARKET_SUPPORT`                  | Not evaluated |
+| Leite MORE 5.5 AST    | Low/Reject                            | `MARKET_VERIFIED_HOLD` but `REJECT_NO_EDGE` | Not qualified |
+| Fudd MORE 1.5 AST     | Medium-Low                            | `MARKET_UNVERIFIED_HOLD`                    | Not evaluated |
+
+The key architectural correction is that a prop can simultaneously be:
+
+```text
+FINAL_CONFIDENCE_HIGH
+MARKET_CORROBORATED_HOLD
+NOT_MONEY_QUALIFIED
+NOT_SLIP_APPROVED
+can_execute=false
+```
+
+That prevents missing payout or remote attestation from destroying a valid hit-confidence grade while keeping the money and submission lanes fail-closed.

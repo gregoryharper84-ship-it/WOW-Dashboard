@@ -17,7 +17,7 @@ from typing import Any
 # Engine identity
 # ---------------------------------------------------------------------------
 MASTER_SPEC_VERSION  = "WOW-v16"
-ENGINE_CODE_VERSION  = "v16.3"
+ENGINE_CODE_VERSION  = "v16.4"
 
 # ---------------------------------------------------------------------------
 # Canonical patch registry
@@ -108,6 +108,31 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "source ceilings by data quality; anti-circular model probability; "
             "contract-stage reporting. "
             "Extends WOW-PATCH-2026-07-15-PROP-CALIBRATION-EXPOSURE-AND-SLIP-GOVERNANCE."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-07-15-PROP-CONFIDENCE-AND-MARKET-LABEL-SEPARATION",
+        "version":     "1.0",
+        "effective_at": "2026-07-15",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  70,
+        "can_execute": False,
+        "description": (
+            "Prop confidence/market/money/slip decision separation: "
+            "analysis_mode (HIT_CONFIDENCE/MARKET_EDGE/SLIP_EV/FULL_APPROVAL); "
+            "payout scope — missing payout blocks MONEY_QUALIFIED only, never HIT_CONFIDENCE; "
+            "governance degradation — local valid + remote unavailable → DEGRADED "
+            "  (research/confidence allowed, money/final_approved blocked); "
+            "market evidence labels (MARKET_UNVERIFIED_HOLD/ONE_SIDED_MARKET_SUPPORT/"
+            "MARKET_CORROBORATED_HOLD/MARKET_VERIFIED_HOLD); "
+            "strict two-sided no-vig; adjacent-line interpolation uncertainty; "
+            "confidence labels (FINAL_CONFIDENCE_HIGH/MEDIUM/LOW/UNOBTAINABLE); "
+            "probability audit (PROVISIONAL when incomplete); "
+            "board-source classification (screenshot → research only); "
+            "same-game correlation — narrative alone never blocks individual confidence; "
+            "four-decision terminal output: confidence/market/money/slip; "
+            "FINAL_CONFIDENCE_HIGH never aliases FINAL_APPROVED."
         ),
     },
 ]
