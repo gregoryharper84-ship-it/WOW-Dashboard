@@ -26929,16 +26929,78 @@ def skills_run():
     """
     try:
         from skills.orchestrator import SkillOrchestrator
-        import json as _json
         context = request.get_json(force=True) or {}
         orch = SkillOrchestrator()
         result = orch.run(context)
-        # Ensure can_execute is always False at the HTTP boundary
         result['can_execute'] = False
         result['execution_rule'] = 'DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS'
         return jsonify(result)
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc)[:400]}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WOW v16 Skills Pack — canonical slate endpoint
+# POST /wow/v16/run  — full 21-skill sequence with lowest-ceiling propagation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/wow/v16/run', methods=['POST'])
+def wow_v16_run():
+    """
+    POST /wow/v16/run
+
+    Execute the WOW v16 Clean Core Skills Pack for the provided slate payload.
+    Runs the deterministic 21-skill orchestration sequence with lowest-ceiling
+    propagation, routing rules, and all governance invariants.
+
+    Body (JSON):
+      market_type:              player_prop | team_winner | team_total | team_spread
+                                | kalshi_sports | kalshi_weather | lottery
+      event_id:                 optional str
+      market_id:                optional str
+      reliability_freeze:       bool (default false)
+      kalshi_inventory_health:  INVENTORY_EMPTY | INVENTORY_READY
+      kalshi_combo_markets:     list[str]
+      inputs:                   dict of domain-specific skill inputs (see SHARED_CONTRACT.md)
+
+    Returns (JSON):
+      ok:             bool
+      run_id:         uuid str — unique execution ID for this run
+      final_label:    str — lowest ceiling across all skill results
+      skill_results:  list — ordered skill result chain with full evidence
+      blockers:       list — fatal blockers from any skill
+      can_execute:    false — ALWAYS; no live trading or market orders
+      stopped_early:  bool — true if pipeline stopped before completing all skills
+      stop_reason:    str | null — code describing early-stop cause
+      skill_count:    int — number of skills that ran
+      execution_rule: "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+
+    Governance invariants enforced unconditionally:
+      - can_execute is always false
+      - Kalshi sports stops on INVENTORY_EMPTY
+      - Bare LLP_PLAYABLE_LIMIT_ONLY normalized to LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN
+      - Lowest-ceiling propagation: downstream skill cannot upgrade upstream label
+      - Stale Kalshi price (>10 min) → DATA_UNOBTAINABLE
+      - Empty orderbook → DATA_UNOBTAINABLE
+      - Operator-supplied / screenshot prices cap at WATCH
+      - NHIGH station codes: CHI=KMDW, MIA=KMIA, LA=KLAX
+    """
+    try:
+        from skills.orchestrator import SkillOrchestrator
+        from skills.registry import SkillRegistry
+        context = request.get_json(force=True) or {}
+        orch = SkillOrchestrator()
+        result = orch.run(context)
+        result['can_execute'] = False
+        result['execution_rule'] = 'DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS'
+        reg = SkillRegistry.get()
+        result['registry_errors'] = reg.validate_registry()
+        result['ok'] = True
+        return jsonify(result)
+    except Exception as exc:
+        app.logger.exception("/wow/v16/run failed")
+        return jsonify({'ok': False, 'error': str(exc)[:400],
+                        'can_execute': False}), 500
 
 
 @app.route("/wow/llp/team/analyze-board", methods=["POST"])

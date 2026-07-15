@@ -52,3 +52,28 @@ class SkillRegistry:
 
     def ordered_skills(self) -> list[dict]:
         return sorted(self._skills, key=lambda s: s.get("priority", 999))
+
+    def validate_registry(self) -> list[str]:
+        """
+        Validate registry integrity. Returns list of error strings (empty = valid).
+        Checks: all skills have id, name, priority; no duplicate IDs; 21 skills total.
+        """
+        errors: list[str] = []
+        seen_ids: set[str] = set()
+        for s in self._skills:
+            sid = s.get("id")
+            if not sid:
+                errors.append(f"Skill missing 'id': {s}")
+                continue
+            if not s.get("name"):
+                errors.append(f"Skill {sid!r} missing 'name'")
+            if s.get("priority") is None:
+                errors.append(f"Skill {sid!r} missing 'priority'")
+            if sid in seen_ids:
+                errors.append(f"Duplicate skill id: {sid!r}")
+            seen_ids.add(sid)
+        if len(self._skills) != 21:
+            errors.append(
+                f"Registry must contain 21 skills; found {len(self._skills)}"
+            )
+        return errors
