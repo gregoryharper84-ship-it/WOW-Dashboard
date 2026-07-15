@@ -289,9 +289,16 @@ def test_row_key_end_to_end_attachment_through_pipeline(monkeypatch):
     # test_pipeline.py — data-contract completeness is out of scope here,
     # skip_data_contract=True below isolates this test to enrichment
     # attachment only.)
+    # Use today's UTC date so slate_validation (which runs unconditionally,
+    # outside the skip_data_contract guard) does not purge the row before
+    # market_gate executes.  This test isolates enrichment attachment, not
+    # slate date validation.
+    from datetime import date as _date_cls
+    _today = _date_cls.today().isoformat()
+
     raw_rows = [{
         "player": "LeBron James", "sport": "NBA", "prop_type": "Points",
-        "line": 27.5, "direction": "MORE", "slate_date": "2026-07-04",
+        "line": 27.5, "direction": "MORE", "slate_date": _today,
         "board_source": "PrizePicks",
     }]
 
@@ -320,8 +327,11 @@ def test_row_key_end_to_end_attachment_through_pipeline(monkeypatch):
 
     # Step 3: call run_pipeline exactly as the route does — with the
     # now-row_id-carrying raw_rows and the auto-built enrichment.
+    # Pass target_date so slate_validation accepts the row's slate_date.
+    from datetime import date as _d
     result = run_pipeline(
         raw_rows,
+        target_date=_d.today(),
         enrichment=enrichment,
         skip_data_contract=True,
     )

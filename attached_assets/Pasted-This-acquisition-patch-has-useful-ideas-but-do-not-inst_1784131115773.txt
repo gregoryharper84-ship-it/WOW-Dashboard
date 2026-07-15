@@ -1,0 +1,144 @@
+This acquisition patch has useful ideas, but do not install it as written. It predates the active July 15 LLP governance patch and contains several risks.
+
+### What is good
+
+Keep these features:
+
+* Provider-specific market aliases (`moneyline → h2h`)
+* PrizePicks decimal-multiplier adapter
+* UTC event normalization
+* Structured provider diagnostics
+* Full acquisition escalation before `DATA_UNOBTAINABLE`
+* Multi-book no-vig reconstruction
+* Explicit contract-stage reporting
+* Six-label enforcement
+* Replay tests for the failed July 14 boards
+
+### What must be corrected
+
+1. **Do not use broad aliases like `"Washington"` or `"Indiana"`.**
+   They are ambiguous across leagues. Identity must be league-scoped using canonical team IDs.
+
+2. **Do not silently reverse home and away.**
+   Reversed order can help locate an event, but the engine must preserve venue and selected-side identity. Otherwise it could price the wrong team.
+
+3. **A fixed ±90-minute tolerance is unsafe.**
+   Use league/date/team identity first, then a configurable tolerance. Doubleheaders require provider event IDs or game numbers.
+
+4. **Official league sources provide identity/status, not sportsbook prices.**
+   They cannot satisfy the market/no-vig gate.
+
+5. **Proxy, manual, screenshot, or generic web prices require source ceilings.**
+   They cannot promote an entry as though they were direct sportsbook quotes.
+
+6. **The proposed projection has market leakage.**
+   This is the biggest problem:
+
+```python
+build_projection(market_baseline=consensus_no_vig_probability)
+```
+
+If the model starts from consensus and later claims an edge against that same consensus, the edge is partially circular. Build the independent projection first. Use market consensus only for comparison, reconciliation, and optional shrinkage that is explicitly disclosed.
+
+7. **Reconstructed consensus needs coherent books.**
+   Require two-sided quotes from at least two independent books, aligned market identity, acceptable freshness, and outlier filtering.
+
+8. **It must inherit the July 15 handshake, PostgreSQL ledger, actual-price EV gate, market firewall, calibration ceiling, and structure rules.**
+
+9. **Do not activate a July 14 patch beside the newer July 15 patch without precedence.**
+   Rename it as an extension of the active patch.
+
+### Correct patch identity
+
+```text
+WOW-PATCH-2026-07-15-LLP-DATA-ACQUISITION-RESILIENCE
+```
+
+It should extend:
+
+```text
+WOW-PATCH-2026-07-15-LLP-PRICE-CALIBRATION-EXPOSURE-AND-EXECUTION-GOVERNANCE
+```
+
+### One-pass Replit instruction
+
+```text
+Merge the useful acquisition-resilience features from the proposed
+LLP-PATCH-2026-07-14-DATA-ACQUISITION-RESILIENCE-v16.1.1 into the active
+July 15 LLP governance as:
+
+WOW-PATCH-2026-07-15-LLP-DATA-ACQUISITION-RESILIENCE
+
+Do not replace or weaken any current governance, thresholds, handshake,
+PostgreSQL ledger, actual-entry EV, source ceilings, calibration, market
+firewall, fail-closed behavior, or Reliability Freeze rules.
+
+Implement:
+
+1. League-scoped canonical team/event IDs. Do not use ambiguous aliases such
+   as Washington, Indiana, New York, or Los Angeles without league identity.
+
+2. Provider-specific market mappings, including moneyline/game_winner → h2h.
+   Unsupported mappings must fail with structured diagnostics.
+
+3. UTC normalization and league-aware time tolerance. Reversed home/away may
+   locate a candidate only; preserve true venue, selected side, opponent and
+   settlement identity. Handle doubleheaders with game number/provider ID.
+
+4. PrizePicks Game Winner adapter that distinguishes decimal multipliers from
+   American odds and rejects ambiguous formats.
+
+5. Full acquisition ladder with structured results. Official league sources
+   may verify identity/status only, never sportsbook odds.
+
+6. Reconstructed no-vig consensus only from at least two fresh, coherent,
+   independent, two-sided sportsbook markets. Use median after outlier review.
+   Record included/excluded books, timestamps, method and exclusion reasons.
+
+7. Apply source ceilings:
+   direct fresh sportsbook consensus = normal path
+   aggregator-only/reconstructed = coded ceiling
+   screenshot/operator/manual/proxy = max applicable WATCH/SCOUT ceiling
+   no valid no-vig baseline = max LLP_SCOUT
+
+8. Prevent circular modeling. Build independent model probability from team,
+   starter, lineup, injury, bullpen/rotation, rest, matchup and weather inputs.
+   Do not use consensus probability as the unexplained model baseline.
+   If market-informed shrinkage is used, output pre-shrink probability,
+   shrinkage weight, post-shrink probability and edge calculation; never
+   compare a market-derived probability against its own source as independent
+   edge.
+
+9. Add contract stages and provider diagnostics without creating new terminal
+   labels. final_label remains one of the six LLP labels.
+
+10. Preserve mandatory governance hash checks, actual-entry-price EV,
+    PostgreSQL exposure ledger, DB fail-closed behavior, market separation,
+    calibration ceilings and combo restrictions.
+
+Tests:
+- league-scoped ambiguous aliases
+- correct and reversed orientation without side inversion
+- doubleheader collision
+- timezone boundary
+- market alias mapping
+- PrizePicks 1.85/1.88 decimal parsing
+- ambiguous odds rejection
+- primary-provider failure with valid sportsbook fallback
+- coherent two-book reconstruction
+- stale/missing opposite-side rejection
+- outlier exclusion
+- official source cannot supply odds
+- proxy/source ceiling
+- independent-model/no circular edge
+- governance mismatch
+- PostgreSQL failure
+- replay board_20260714_002 and board_20260714_003
+- full existing regression suite
+
+Implement, test, commit, deploy and restart in one task. Return only:
+STATUS, COMMIT, DEPLOYED_COMMIT, GOVERNANCE_HASH, TESTS, REPLAYS,
+LIVE_SMOKE, CAN_EXECUTE=false, FAILURES.
+```
+
+Bottom line: the pasted patch correctly addresses why the engine sometimes stops too early, but its market-derived projection would risk creating artificial “edge.” Merge only the acquisition improvements under the newer governance rather than installing the old patch wholesale.

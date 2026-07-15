@@ -17,7 +17,7 @@ from typing import Any
 # Engine identity
 # ---------------------------------------------------------------------------
 MASTER_SPEC_VERSION  = "WOW-v16"
-ENGINE_CODE_VERSION  = "v16.2"
+ENGINE_CODE_VERSION  = "v16.3"
 
 # ---------------------------------------------------------------------------
 # Canonical patch registry
@@ -90,6 +90,25 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
         ),
         "freeze_start": "2026-07-15",
         "freeze_end":   "2026-07-22",
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-07-15-LLP-DATA-ACQUISITION-RESILIENCE",
+        "version":     "1.0",
+        "effective_at": "2026-07-15",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  60,
+        "can_execute": False,
+        "description": (
+            "LLP data acquisition resilience: league-scoped event identity; "
+            "provider market aliases (moneyline→h2h); UTC normalization; "
+            "league-aware time tolerance; doubleheader detection; "
+            "PrizePicks decimal/American disambiguation; "
+            "two-book no-vig consensus reconstruction with outlier filtering; "
+            "source ceilings by data quality; anti-circular model probability; "
+            "contract-stage reporting. "
+            "Extends WOW-PATCH-2026-07-15-PROP-CALIBRATION-EXPOSURE-AND-SLIP-GOVERNANCE."
+        ),
     },
 ]
 
