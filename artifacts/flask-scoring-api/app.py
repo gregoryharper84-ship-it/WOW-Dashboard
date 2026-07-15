@@ -16621,6 +16621,25 @@ from gate_engine import auto_enrichment as _ge_auto_enrichment
 from gate_engine import board_intake as _ge_board_intake
 from gate_engine.governance import get_governance_status as _ge_get_governance_status
 from gate_engine.governance import validate_handshake as _ge_validate_handshake
+from gate_engine.exposure_gate import ExposureLedger as _ExposureLedger
+
+# Session exposure ledger cache — keyed by session_id.
+# Allows cross-request duplicate-exposure enforcement within a scoring session.
+# TTL: entries are pruned when more than 200 sessions accumulate (LRU-light).
+_SESSION_LEDGERS: dict = {}
+_SESSION_LEDGER_MAX = 200
+
+
+def _get_session_ledger(session_id: str | None) -> "_ExposureLedger | None":
+    if not session_id:
+        return None
+    if session_id not in _SESSION_LEDGERS:
+        if len(_SESSION_LEDGERS) >= _SESSION_LEDGER_MAX:
+            # Evict oldest key (insertion-order dict)
+            oldest = next(iter(_SESSION_LEDGERS))
+            del _SESSION_LEDGERS[oldest]
+        _SESSION_LEDGERS[session_id] = _ExposureLedger()
+    return _SESSION_LEDGERS[session_id]
 
 
 @app.route("/wow/governance/status", methods=["GET"])
@@ -16722,12 +16741,10 @@ def gate_engine_run():
     body = request.get_json(silent=True) or {}
 
     # -------------------------------------------------------------------
-    # WOW-PATCH-2026-07-15 — Governance Handshake (Section 1)
-    # If the caller supplies expected_governance_hash, validate it against
-    # the server's live hash. Mismatch returns HTTP 409 — no scoring may
-    # continue. Callers that omit all governance fields bypass the check
-    # (backward compat). Callers that supply ANY governance field must
-    # supply all of them to avoid false-match silences.
+    # WOW-PATCH-2026-07-15 — Governance Handshake (Section 1) — MANDATORY
+    # Every caller must supply expected_governance_hash.  Absence OR
+    # mismatch returns HTTP 409 — no partial scoring output is returned.
+    # Call GET /wow/governance/status to obtain the current hash.
     # -------------------------------------------------------------------
     _expected_hash    = body.get("expected_governance_hash")
     _expected_patches = body.get("expected_patch_ids")
@@ -16735,24 +16752,39 @@ def gate_engine_run():
     _research_run_id  = body.get("research_run_id")
     _session_id       = body.get("session_id")
 
-    _governance_supplied = any([_expected_hash, _expected_patches, _expected_spec])
-    if _governance_supplied:
-        _hs = _ge_validate_handshake(
-            expected_hash=_expected_hash,
-            expected_patch_ids=_expected_patches,
-            expected_master_spec_version=_expected_spec,
-        )
-        if not _hs["valid"]:
-            return jsonify({
-                "code":            _hs["code"],
-                "can_execute":     False,
-                "detail":          _hs["detail"],
-                "server_hash":     _hs["server_hash"],
-                "expected_hash":   _hs["expected_hash"],
-                "mismatches":      _hs["mismatches"],
-                "research_run_id": _research_run_id,
-                "session_id":      _session_id,
-            }), 409
+    if not _expected_hash:
+        # Fail closed — no hash means no scoring
+        _srv_hash = _ge_validate_handshake(None)["server_hash"]
+        return jsonify({
+            "code":            "RUN_INVALID_GOVERNANCE_MISMATCH",
+            "can_execute":     False,
+            "detail":          (
+                "expected_governance_hash is required. "
+                "Call GET /wow/governance/status to obtain the current hash."
+            ),
+            "server_hash":     _srv_hash,
+            "expected_hash":   None,
+            "mismatches":      ["expected_governance_hash missing from request"],
+            "research_run_id": _research_run_id,
+            "session_id":      _session_id,
+        }), 409
+
+    _hs = _ge_validate_handshake(
+        expected_hash=_expected_hash,
+        expected_patch_ids=_expected_patches,
+        expected_master_spec_version=_expected_spec,
+    )
+    if not _hs["valid"]:
+        return jsonify({
+            "code":            _hs["code"],
+            "can_execute":     False,
+            "detail":          _hs["detail"],
+            "server_hash":     _hs["server_hash"],
+            "expected_hash":   _hs["expected_hash"],
+            "mismatches":      _hs["mismatches"],
+            "research_run_id": _research_run_id,
+            "session_id":      _session_id,
+        }), 409
 
     raw_rows = body.get("rows")
     if not raw_rows or not isinstance(raw_rows, list):
@@ -16791,21 +16823,33 @@ def gate_engine_run():
             req.log.error("gate_engine_run auto_enrich error: %s", exc)
             auto_enrichment_status = {"error": str(exc)}
 
+    # Wire session exposure ledger for cross-request persistence
+    _session_exposure_ledger = _get_session_ledger(_session_id)
+
     try:
         result = _ge_run_pipeline(
             raw_rows=raw_rows,
             target_date=target_date,
             enrichment=enrichment,
             record_entries=record_entries,
+            existing_ledger=_session_exposure_ledger,
         )
     except Exception as exc:
         req.log.error("gate_engine_run error: %s", exc)
         return jsonify({"error": "Gate engine pipeline error", "detail": str(exc)}), 500
 
-    result["can_approve_bets"] = False
-    result["disclaimer"]       = DISCLAIMER
+    # Echo governance fields in every successful scoring response
+    # so the caller can verify the same hash byte-for-byte.
+    result["can_approve_bets"]      = False
+    result["disclaimer"]            = DISCLAIMER
+    result["governance_hash"]       = _hs["server_hash"]
+    result["patch_ids_applied"]     = list(_ge_get_governance_status()["active_patch_ids"])
+    result["can_execute"]           = False
+    result["governance_handshake"]  = "GOVERNANCE_MATCH"
     if auto_enrichment_status is not None:
         result["auto_enrichment_status"] = auto_enrichment_status
+    if _session_id:
+        result["session_id"] = _session_id
     return jsonify(result), 200
 
 

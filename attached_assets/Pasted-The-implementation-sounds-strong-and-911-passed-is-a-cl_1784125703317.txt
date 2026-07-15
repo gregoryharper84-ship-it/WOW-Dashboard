@@ -1,0 +1,99 @@
+The implementation sounds strong, and `911 passed` is a clean baseline. But don’t mark the patch active yet. The report exposes one important test-quality issue and several deployment proofs still missing.
+
+Most important correction: changing a test to “today’s date” makes it nondeterministic. Inject/freeze the application clock and use a fixed fixture date. Otherwise that test can begin failing—or testing the wrong behavior—tomorrow.
+
+Send Replit this finalization prompt:
+
+```text
+Finalize WOW-PATCH-2026-07-15-PROP-CALIBRATION-EXPOSURE-AND-SLIP-GOVERNANCE.
+
+Before activating:
+
+1. Replace every test dependency on the real current date/time with an injected clock or frozen fixed timestamp. Production may use real UTC; tests must be deterministic.
+
+2. Confirm market_adverse references only qualified sportsbook_line or consensus_line evidence—not best_available, projections, prediction markets, screenshots, or operator-entered lines.
+
+3. Add black-box API tests proving:
+   - GET /api/wow/governance/status returns:
+     master_spec_version
+     active_patch_ids
+     governance_hash
+     engine_code_version
+     effective_at
+     expires_at
+     can_execute=false
+   - Correct handshake permits scoring.
+   - Missing expected_governance_hash returns HTTP 409.
+   - Incorrect hash returns HTTP 409.
+   - Incorrect patch list returns HTTP 409.
+   - No partial scoring output is returned on mismatch.
+   - Every successful scoring response echoes the same governance hash and applied patch IDs.
+
+4. Add golden regression fixtures for the July 14 failures:
+   - Mabrey MORE 3.5 assists vs sportsbook 3:
+     REJECT_MARKET_ADVERSE_PUSH_LOSS
+   - Kiki LESS 10.5 rebounds vs sportsbook 11:
+     REJECT_MARKET_ADVERSE_PUSH_LOSS
+   - Austin LESS 8.5 rebounds vs consensus 10:
+     REJECT_MARKET_ADVERSE_THRESHOLD
+   - Citron MORE 11.5 and MORE 13.5 in separate slips:
+     duplicate normalized exposure
+   - Kiki P+R MORE plus rebounds LESS:
+     component/composite conflict
+   - Austin FGA MORE plus rebounds LESS without joint opportunity model:
+     contradictory opportunity state
+   - Prediction-market-only 72% evidence:
+     confidence ceiling no higher than Medium
+   - Five-pick same-game Power:
+     REJECT_BAD_STRUCTURE
+   - Bonus-entry duplicate:
+     counted as model and exposure duplication even when cash stake is zero
+
+5. Verify lowest-ceiling propagation:
+   final_label must equal the strictest applicable blocker and no downstream calculation may restore an earlier higher label.
+
+6. Verify session exposure persistence works across separate API requests using the same session_id, not merely within one pipeline invocation.
+
+7. Verify governance hash is generated from deterministic canonical serialization:
+   - stable key ordering
+   - normalized arrays
+   - no runtime timestamps
+   - no environment-specific paths
+   - same registry produces the same hash across restarts
+
+8. Run:
+   - full unit/integration suite
+   - black-box API suite
+   - golden July 14 fixture suite
+   - restart-persistence/hash test
+
+9. Produce a deployment manifest containing:
+   git_commit
+   engine_code_version
+   master_spec_version
+   active_patch_ids
+   governance_hash
+   test counts
+   deployment timestamp
+   can_execute=false
+
+10. Do not treat memory, chat context, or documentation as the source of truth. The versioned governance registry and its deterministic hash are authoritative.
+
+Return the deployment manifest and exact black-box test results. Do not activate if any check fails.
+```
+
+One additional concern: the handshake must be mandatory, not optional. If an old GPT client calls the scoring route without a hash, Replit should fail closed with `409 RUN_INVALID_GOVERNANCE_MISMATCH`, not silently fall back.
+
+Once Replit returns the deployment manifest, put these exact values into the engine/GPT configuration:
+
+* `master_spec_version`
+* `active_patch_ids`
+* `governance_hash`
+* `engine_code_version`
+
+Then restart both sides and perform one harmless dry-run request. The returned hash must match byte-for-byte. Until that succeeds, status should remain:
+
+```text
+PATCH_IMPLEMENTED_NOT_ACTIVATED
+can_execute=false
+```

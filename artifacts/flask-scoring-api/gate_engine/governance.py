@@ -118,7 +118,15 @@ def compute_governance_hash(patches: list[dict[str, Any]] | None = None) -> str:
 
 _GOVERNANCE_HASH: str = compute_governance_hash()
 _ACTIVE_PATCH_IDS: list[str] = [p["patch_id"] for p in _active_patches()]
+# _LOADED_AT is a runtime observability field only — NOT part of the hash.
 _LOADED_AT: str = datetime.now(timezone.utc).isoformat()
+
+# Derive effective_at / expires_at from the latest active patch (by precedence).
+def _latest_active_patch() -> dict[str, Any]:
+    active = _active_patches()
+    return max(active, key=lambda p: p.get("precedence", 0)) if active else {}
+
+_LATEST_PATCH = _latest_active_patch()
 
 
 # ---------------------------------------------------------------------------
@@ -126,13 +134,21 @@ _LOADED_AT: str = datetime.now(timezone.utc).isoformat()
 # ---------------------------------------------------------------------------
 
 def get_governance_status() -> dict[str, Any]:
-    """Return the full governance status object for the GET endpoint."""
+    """
+    Return the full governance status object for the GET endpoint.
+
+    Required fields (per spec):
+      master_spec_version, active_patch_ids, governance_hash,
+      engine_code_version, effective_at, expires_at, can_execute
+    """
     return {
         "master_spec_version":  MASTER_SPEC_VERSION,
         "engine_code_version":  ENGINE_CODE_VERSION,
         "active_patch_ids":     list(_ACTIVE_PATCH_IDS),
         "governance_hash":      _GOVERNANCE_HASH,
         "loaded_at":            _LOADED_AT,
+        "effective_at":         _LATEST_PATCH.get("effective_at"),
+        "expires_at":           _LATEST_PATCH.get("expires_at"),
         "patch_count":          len(_active_patches()),
         "patches":              _active_patches(),
         "status":               "ACTIVE",

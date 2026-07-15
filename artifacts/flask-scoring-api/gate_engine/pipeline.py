@@ -37,6 +37,7 @@ def run_pipeline(
     skip_health_gate: bool = False,
     skip_data_contract: bool = False,
     skip_settlement_check: bool = False,
+    existing_ledger: "ExposureLedger | None" = None,
 ) -> dict[str, Any]:
     """
     Run the full gate engine pipeline.
@@ -126,7 +127,9 @@ def run_pipeline(
                 "code":    health_result["code"],
             }
 
-    ledger = ExposureLedger()
+    # Use caller-supplied ledger when available (cross-request session persistence).
+    # Fall back to a fresh ledger for standalone calls.
+    ledger = existing_ledger if existing_ledger is not None else ExposureLedger()
     session_exposure = directional_exposure.SessionExposureLedger()
 
     for row in rows:
