@@ -24,6 +24,9 @@ from . import acquisition as _acq_mod
 from .acquisition import AcquisitionTracker, SourceStatus, build_run_acquisition_report
 from .labels import PropLabel
 from .exposure_gate import ExposureLedger
+# WOW-PATCH-2026-07-15 — new gates
+from . import market_adverse, component_composite, opportunity_state
+from .governance import get_governance_status
 
 
 def run_pipeline(
@@ -283,6 +286,63 @@ def run_pipeline(
                 row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
 
         # -------------------------------------------------------------------
+        # WOW-PATCH-2026-07-15 — Settlement-Aware Market Adverse Gate
+        # Runs immediately after market_gate so sportsbook_line/consensus_line
+        # are in the same enrichment dict. If the PP line is adverse vs the
+        # sportsbook reference (push-loss or threshold), the row is terminated.
+        # -------------------------------------------------------------------
+        try:
+            market_adverse.run(
+                row,
+                sportsbook_line = enr.get("sportsbook_line"),
+                consensus_line  = enr.get("consensus_line"),
+                # best_available is intentionally excluded: it reflects the best
+                # obtainable price across all books, not the reference consensus.
+                # Adversity is measured against the main sportsbook line or
+                # consensus, not the most-favorable book in any market.
+            )
+        except Exception as _exc:
+            _tag = f"market_adverse:{type(_exc).__name__}:{str(_exc)[:100]}"
+            failed_modules.append(_tag)
+
+        # Source ceiling — prediction-market-only support cannot exceed
+        # MARKET_VERIFIED_HOLD / MEDIUM (WOW-PATCH-2026-07-15 Section 3)
+        _mkt_source_type = enr.get("market_source_type", "")
+        if (
+            _mkt_source_type in ("prediction_market", "polymarket", "kalshi_market")
+            and not enr.get("sportsbook_line")
+            and not enr.get("consensus_line")
+        ):
+            # Always stamp the gate so callers can audit — then cap if label is
+            # above the ceiling (FINAL_APPROVED or MONEY_QUALIFIED).
+            _cur_lbl = row.get("terminal_label") or ""
+            _above_ceiling = _cur_lbl in (
+                PropLabel.FINAL_APPROVED.value,
+                PropLabel.MONEY_QUALIFIED.value,
+            )
+            if _above_ceiling:
+                row["terminal_label"] = PropLabel.MARKET_VERIFIED_HOLD.value
+                row.setdefault("blockers", []).append(
+                    "SOURCE_CEILING:PREDICTION_MARKET_ONLY:capped_at_MARKET_VERIFIED_HOLD"
+                )
+            row.setdefault("gates", {})["source_ceiling"] = {
+                "ceiling_applied":    _above_ceiling,
+                "ceiling_enforced":   _above_ceiling,
+                "reason":             "prediction_market_only",
+                "max_confidence":     "MEDIUM",
+                "max_label":          PropLabel.MARKET_VERIFIED_HOLD.value,
+                "market_source_type": _mkt_source_type,
+                "prior_label":        _cur_lbl,
+            }
+
+        # Terminate if market_adverse blocked the row
+        if row.get("terminal_label") in (
+            PropLabel.REJECT_MARKET_ADVERSE_THRESHOLD.value,
+            PropLabel.REJECT_MARKET_ADVERSE_PUSH_LOSS.value,
+        ):
+            continue
+
+        # -------------------------------------------------------------------
         # Patch 2026-06-27 — Sharp Market Anchor (Directional)
         # Only fires when enrichment provides sharp_no_vig_prob or sharp_fair_line.
         # PrizePicks/DFS lines are target markets — sharp books are the reference.
@@ -359,6 +419,19 @@ def run_pipeline(
 
     # WOW-PATCH-2026-07-07 — JS Style slip-level gate (same-game PRA cluster, etc.)
     js_style_conversion.run_slip(rows)
+
+    # -------------------------------------------------------------------
+    # WOW-PATCH-2026-07-15 — Component/Composite Mutex (Section 4)
+    # Detect conflicting composite + component directions per player.
+    # Runs after all per-row gates so final terminal labels are set.
+    # -------------------------------------------------------------------
+    component_composite_report = component_composite.run(rows)
+
+    # -------------------------------------------------------------------
+    # WOW-PATCH-2026-07-15 — Opportunity-State Consistency (Section 5)
+    # Validate that multiple LESS entries reconcile with team totals.
+    # -------------------------------------------------------------------
+    opportunity_state_report = opportunity_state.run(rows)
 
     # -------------------------------------------------------------------
     # Phase 1: Mutex Grouping + Best-Candidate Selection
@@ -464,14 +537,16 @@ def run_pipeline(
 
     return _build_output(
         rows, ledger,
-        health_report           = health_report,
-        settlement_status       = settlement_status,
-        enrichment              = enrichment,
-        failed_modules          = failed_modules,
-        run_status              = run_status,
-        pp_threshold_ledger     = pp_threshold_ledger,
-        mutex_report            = mutex_report,
-        settlement_conflict_map = settlement_conflict_map,
+        health_report                = health_report,
+        settlement_status            = settlement_status,
+        enrichment                   = enrichment,
+        failed_modules               = failed_modules,
+        run_status                   = run_status,
+        pp_threshold_ledger          = pp_threshold_ledger,
+        mutex_report                 = mutex_report,
+        settlement_conflict_map      = settlement_conflict_map,
+        component_composite_report   = component_composite_report,
+        opportunity_state_report     = opportunity_state_report,
     )
 
 
@@ -655,7 +730,9 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
                   run_status: str = "COMPLETE",
                   pp_threshold_ledger: list[dict] | None = None,
                   mutex_report: list[dict] | None = None,
-                  settlement_conflict_map: dict | None = None) -> dict[str, Any]:
+                  settlement_conflict_map: dict | None = None,
+                  component_composite_report: dict | None = None,
+                  opportunity_state_report: dict | None = None) -> dict[str, Any]:
     # -------------------------------------------------------------------
     # DEGRADED_ENGINE_RUN ceiling: applied here (not only in run_pipeline)
     # so that _build_output works correctly when called directly in tests.
@@ -798,6 +875,9 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         failed_source_calls=failed_modules or [],
     )
 
+    # WOW-PATCH-2026-07-15 — governance fingerprint in every output
+    _gov_status = get_governance_status()
+
     return {
         "prop_ledger":        rows,
         "data_status_ledger": data_status_ledger,
@@ -821,6 +901,14 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "settlement_conflict_map": settlement_conflict_map or {},
         # WOW-PATCH-MANDATORY-RECONSTRUCTION-v1.0 — Section 29.2
         "acquisition_execution_report": _acq_run_report,
+        # WOW-PATCH-2026-07-15 — slip-level gate reports
+        "component_composite_report": component_composite_report,
+        "opportunity_state_report":   opportunity_state_report,
+        # WOW-PATCH-2026-07-15 — governance fingerprint
+        "governance_hash":      _gov_status["governance_hash"],
+        "patch_ids_applied":    _gov_status["active_patch_ids"],
+        "engine_code_version":  _gov_status["engine_code_version"],
+        "can_execute":          False,
         "summary": {
             "total_rows":               len(rows),
             "by_label":                 label_counts,

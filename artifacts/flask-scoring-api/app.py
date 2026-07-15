@@ -16619,6 +16619,36 @@ from gate_engine.pipeline import run_pipeline as _ge_run_pipeline
 from gate_engine import tracker as _ge_tracker
 from gate_engine import auto_enrichment as _ge_auto_enrichment
 from gate_engine import board_intake as _ge_board_intake
+from gate_engine.governance import get_governance_status as _ge_get_governance_status
+from gate_engine.governance import validate_handshake as _ge_validate_handshake
+
+
+@app.route("/wow/governance/status", methods=["GET"])
+def wow_governance_status():
+    """
+    GET /wow/governance/status
+
+    Returns the canonical WOW governance state: active patch IDs, governance
+    hash, engine code version, and loaded_at timestamp.
+
+    GPT and Replit both call this endpoint before every scoring session to
+    obtain the governance_hash for handshake verification.
+
+    No API key required — read-only, no PII, no scoring logic.
+
+    Response:
+      {
+        "master_spec_version": "WOW-v16",
+        "active_patch_ids":    [...],
+        "governance_hash":     "<sha256 hex>",
+        "engine_code_version": "v16.2",
+        "loaded_at":           "<ISO-8601 UTC>",
+        "patch_count":         6,
+        "status":              "ACTIVE",
+        "can_execute":         false
+      }
+    """
+    return jsonify(_ge_get_governance_status()), 200
 
 
 @app.route("/gate-engine/run", methods=["POST"])
@@ -16690,6 +16720,39 @@ def gate_engine_run():
     Final approval remains with WOW/LLP. can_approve_bets = false.
     """
     body = request.get_json(silent=True) or {}
+
+    # -------------------------------------------------------------------
+    # WOW-PATCH-2026-07-15 — Governance Handshake (Section 1)
+    # If the caller supplies expected_governance_hash, validate it against
+    # the server's live hash. Mismatch returns HTTP 409 — no scoring may
+    # continue. Callers that omit all governance fields bypass the check
+    # (backward compat). Callers that supply ANY governance field must
+    # supply all of them to avoid false-match silences.
+    # -------------------------------------------------------------------
+    _expected_hash    = body.get("expected_governance_hash")
+    _expected_patches = body.get("expected_patch_ids")
+    _expected_spec    = body.get("expected_master_spec_version")
+    _research_run_id  = body.get("research_run_id")
+    _session_id       = body.get("session_id")
+
+    _governance_supplied = any([_expected_hash, _expected_patches, _expected_spec])
+    if _governance_supplied:
+        _hs = _ge_validate_handshake(
+            expected_hash=_expected_hash,
+            expected_patch_ids=_expected_patches,
+            expected_master_spec_version=_expected_spec,
+        )
+        if not _hs["valid"]:
+            return jsonify({
+                "code":            _hs["code"],
+                "can_execute":     False,
+                "detail":          _hs["detail"],
+                "server_hash":     _hs["server_hash"],
+                "expected_hash":   _hs["expected_hash"],
+                "mismatches":      _hs["mismatches"],
+                "research_run_id": _research_run_id,
+                "session_id":      _session_id,
+            }), 409
 
     raw_rows = body.get("rows")
     if not raw_rows or not isinstance(raw_rows, list):
