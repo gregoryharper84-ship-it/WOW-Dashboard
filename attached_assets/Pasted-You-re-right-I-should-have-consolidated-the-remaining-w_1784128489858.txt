@@ -1,0 +1,117 @@
+You’re right. I should have consolidated the remaining work earlier. Send Replit this once:
+
+```text
+FINAL ONE-PASS WOW PATCH — implement, test, deploy, and return only a compact summary.
+
+Do not pause for questions. Fix all discovered issues in one pass.
+
+1. PostgreSQL session ledger
+- Replace all process-local exposure storage.
+- Add TTL cleanup.
+- Use transactions and atomic locking.
+- Add a unique constraint on normalized session/exposure identity.
+- Handle first-write races with UPSERT, advisory lock, or equivalent.
+- Two simultaneous identical submissions: exactly one accepted and one duplicate.
+- Database unavailable/error: fail closed with
+  RUN_INVALID_SESSION_LEDGER_UNAVAILABLE.
+- Never fall back to local memory.
+
+2. Mandatory governance handshake
+Require on every scoring request:
+- master_spec_version
+- active_patch_ids
+- governance_hash
+- engine_code_version
+- session_id
+- research_run_id
+- as_of
+
+Missing/mismatched governance returns HTTP 409:
+RUN_INVALID_GOVERNANCE_MISMATCH
+
+No partial scoring on failure.
+
+Successful responses echo:
+- master_spec_version
+- active_patch_ids
+- governance_hash
+- engine_code_version
+- session_id
+- research_run_id
+- exposure_key
+- can_execute=false
+
+3. Deterministic governance
+- Stable canonical serialization.
+- Stable key/array ordering.
+- Exclude runtime timestamps and environment paths from hash input.
+- Hash must remain identical across restarts and workers.
+- GET /api/wow/governance/status returns the complete active state.
+
+4. Prop safeguards
+- Settlement-aware sportsbook/consensus comparison.
+- Reject adverse push-to-loss and adverse thresholds.
+- Do not use best_available, projections, screenshots, operator values, or prediction markets as sportsbook reference lines.
+- Apply source ceilings.
+- Prediction-market-only evidence cannot exceed Medium.
+- Enforce component/composite mutex.
+- Enforce coherent player opportunity state.
+- Enforce team opportunity reconciliation.
+- Normalize duplicates across alternate lines, promos, bonus entries, slips, and separate requests.
+- Promo/demon lines never auto-upgrade confidence.
+- Lowest applicable ceiling always wins.
+- High confidence requires calibrated lower bound >=65%.
+- can_execute=false everywhere.
+
+5. Reliability Freeze
+- Core: 1–2 legs.
+- Flex: maximum 3.
+- Maximum 2 legs from one event/script.
+- Reject 4–6 leg Power structures.
+- One active cash exposure per normalized distribution.
+- Bonus entries still count toward duplication and calibration.
+
+6. Deterministic tests
+- Inject/freeze time; never depend on the real current date.
+- Test correct, missing, and incorrect governance hashes.
+- Test duplicate persistence across requests, workers, and restart.
+- Test simultaneous first-write race with separate DB connections.
+- Test database failure fails closed.
+- Include July 14 golden fixtures:
+  Mabrey MORE 3.5 assists vs book 3 → adverse push-loss
+  Kiki LESS 10.5 rebounds vs book 11 → adverse push-loss
+  Austin LESS 8.5 rebounds vs consensus 10 → adverse threshold
+  Citron alternate MORE lines → duplicate exposure
+  Kiki P+R MORE plus rebounds LESS → component conflict
+  Austin FGA MORE plus rebounds LESS without joint model → role conflict
+  prediction-market-only 72% → Medium ceiling
+  five-pick same-game Power → bad structure
+  bonus repeat → duplicate
+
+7. Release
+- Run the entire suite.
+- Commit the tested code.
+- Deploy that exact commit.
+- Restart all workers.
+- Run live tests A–F plus concurrency/database-failure tests.
+- Verify deployed commit and governance hash match the tested manifest.
+- If anything fails, fix it and rerun within this same task.
+- Do not update memory until all checks pass.
+- Do not activate live execution; can_execute=false.
+
+RETURN ONLY:
+STATUS: PASS or FAIL
+COMMIT: <hash>
+DEPLOYED_COMMIT: <hash>
+GOVERNANCE_HASH: <hash>
+TESTS: <passed>/<total>
+LIVE_SMOKE: <passed>/<total>
+CONCURRENCY: PASS/FAIL
+DB_FAIL_CLOSED: PASS/FAIL
+LEDGER: PostgreSQL, TTL=<value>
+PATCH_STATE: ACTIVE_RELIABILITY_FREEZE or NOT_ACTIVE
+CAN_EXECUTE: false
+FAILURES: <one compact line or NONE>
+```
+
+That is the final consolidated request. If it returns `PASS` with matching commit hashes, no further Replit iteration is necessary.

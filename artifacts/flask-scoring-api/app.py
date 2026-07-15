@@ -16757,6 +16757,7 @@ def gate_engine_run():
     _expected_spec    = body.get("expected_master_spec_version")
     _research_run_id  = body.get("research_run_id")
     _session_id       = body.get("session_id")
+    _as_of            = body.get("as_of")
 
     if not _expected_hash:
         # Fail closed — no hash means no scoring
@@ -16791,6 +16792,22 @@ def gate_engine_run():
             "research_run_id": _research_run_id,
             "session_id":      _session_id,
         }), 409
+
+    # Mandatory session/audit fields — every scoring request must carry all three.
+    # Hash passed → now enforce the remaining required fields.
+    for _mf_name, _mf_val in [
+        ("session_id",      _session_id),
+        ("research_run_id", _research_run_id),
+        ("as_of",           _as_of),
+    ]:
+        if not _mf_val:
+            return jsonify({
+                "code":        "RUN_INVALID_GOVERNANCE_MISMATCH",
+                "can_execute": False,
+                "detail":      f"{_mf_name} is required on every scoring request.",
+                "mismatches":  [f"{_mf_name} missing from request"],
+                "server_hash": _hs["server_hash"],
+            }), 409
 
     raw_rows = body.get("rows")
     if not raw_rows or not isinstance(raw_rows, list):
@@ -16844,6 +16861,28 @@ def gate_engine_run():
         req.log.error("gate_engine_run error: %s", exc)
         return jsonify({"error": "Gate engine pipeline error", "detail": str(exc)}), 500
 
+    # Detect session-ledger DB failure → fail closed at HTTP level.
+    # Any row blocked by SESSION_LEDGER_UNAVAILABLE means we cannot confirm
+    # duplicate exposure — the entire request must be rejected.
+    _ledger_errors = [
+        r for r in result.get("prop_ledger", [])
+        if any("SESSION_LEDGER_UNAVAILABLE" in b for b in r.get("blockers", []))
+    ]
+    if _ledger_errors:
+        return jsonify({
+            "code":        "RUN_INVALID_SESSION_LEDGER_UNAVAILABLE",
+            "can_execute": False,
+            "detail":      (
+                "Session exposure ledger is unavailable. "
+                "Retry when DB connectivity is restored."
+            ),
+            "session_id":  _session_id,
+            "db_errors":   [
+                r.get("gates", {}).get("exposure_gate", {}).get("db_error", "unknown")
+                for r in _ledger_errors
+            ],
+        }), 409
+
     # Echo governance fields in every successful scoring response
     # so the caller can verify the same hash byte-for-byte.
     result["can_approve_bets"]      = False
@@ -16854,8 +16893,10 @@ def gate_engine_run():
     result["governance_handshake"]  = "GOVERNANCE_MATCH"
     if auto_enrichment_status is not None:
         result["auto_enrichment_status"] = auto_enrichment_status
-    if _session_id:
-        result["session_id"] = _session_id
+    result["session_id"]     = _session_id
+    result["research_run_id"] = _research_run_id
+    result["as_of"]           = _as_of
+    result["exposure_key"]    = _session_id
     return jsonify(result), 200
 
 

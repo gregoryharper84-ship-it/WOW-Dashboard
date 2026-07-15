@@ -64,12 +64,14 @@ def _gov_status():
 @_test_app.route("/gate-engine/run", methods=["POST"])
 @_require_key
 def _gate_engine_run():
-    from gate_engine.exposure_gate import ExposureLedger
+    from gate_engine.pg_session_ledger import PgSessionLedger
     body = flask.request.get_json(silent=True) or {}
-    expected_hash = body.get("expected_governance_hash")
+    expected_hash    = body.get("expected_governance_hash")
     expected_patches = body.get("expected_patch_ids")
-    expected_spec = body.get("expected_master_spec_version")
-    session_id = body.get("session_id")
+    expected_spec    = body.get("expected_master_spec_version")
+    session_id       = body.get("session_id")
+    research_run_id  = body.get("research_run_id")
+    as_of            = body.get("as_of")
 
     # MANDATORY handshake — fail closed on missing hash
     if not expected_hash:
@@ -98,23 +100,57 @@ def _gate_engine_run():
             "mismatches":    hs["mismatches"],
         }), 409
 
+    # Mandatory session/audit fields (mirrors app.py enforcement)
+    for _mf_name, _mf_val in [
+        ("session_id",      session_id),
+        ("research_run_id", research_run_id),
+        ("as_of",           as_of),
+    ]:
+        if not _mf_val:
+            return flask.jsonify({
+                "code":        "RUN_INVALID_GOVERNANCE_MISMATCH",
+                "can_execute": False,
+                "detail":      f"{_mf_name} is required on every scoring request.",
+                "mismatches":  [f"{_mf_name} missing from request"],
+                "server_hash": hs["server_hash"],
+            }), 409
+
     raw_rows = body.get("rows")
     if not raw_rows or not isinstance(raw_rows, list):
         return flask.jsonify({"error": "rows must be a non-empty list"}), 400
+
+    # Wire PgSessionLedger for cross-request duplicate detection
+    _ledger = PgSessionLedger(session_id=session_id) if session_id else None
 
     result = run_pipeline(
         raw_rows=raw_rows,
         skip_health_gate=True,
         skip_settlement_check=True,
+        existing_ledger=_ledger,
     )
+
+    # Detect session-ledger DB failure → HTTP 409 (fail closed)
+    _ledger_errors = [
+        r for r in result.get("prop_ledger", [])
+        if any("SESSION_LEDGER_UNAVAILABLE" in b for b in r.get("blockers", []))
+    ]
+    if _ledger_errors:
+        return flask.jsonify({
+            "code":        "RUN_INVALID_SESSION_LEDGER_UNAVAILABLE",
+            "can_execute": False,
+            "detail":      "Session exposure ledger is unavailable.",
+        }), 409
+
     gov = get_governance_status()
     result["governance_hash"]      = gov["governance_hash"]
     result["patch_ids_applied"]    = list(gov["active_patch_ids"])
     result["can_execute"]          = False
     result["governance_handshake"] = "GOVERNANCE_MATCH"
     result["can_approve_bets"]     = False
-    if session_id:
-        result["session_id"] = session_id
+    result["session_id"]           = session_id
+    result["research_run_id"]      = research_run_id
+    result["as_of"]                = as_of
+    result["exposure_key"]         = session_id
     return flask.jsonify(result), 200
 
 
@@ -145,6 +181,19 @@ def _good_rows():
 
 def _correct_hash():
     return get_governance_status()["governance_hash"]
+
+
+def _good_body(session_id: str = "test-session-001",
+               research_run_id: str = "rr-test-001",
+               as_of: str = "2026-07-15") -> dict:
+    """Return a fully-valid scoring request body with all mandatory fields."""
+    return {
+        "expected_governance_hash": _correct_hash(),
+        "session_id":               session_id,
+        "research_run_id":          research_run_id,
+        "as_of":                    as_of,
+        "rows":                     _good_rows(),
+    }
 
 
 # ===========================================================================
@@ -204,21 +253,13 @@ class TestGovernanceStatusEndpoint:
 
 class TestCorrectHandshakePermitsScoring:
     def test_correct_hash_returns_200(self, client):
-        body = {
-            "expected_governance_hash": _correct_hash(),
-            "rows": _good_rows(),
-        }
         r = client.post("/gate-engine/run", headers=_auth_headers(),
-                        data=json.dumps(body))
+                        data=json.dumps(_good_body()))
         assert r.status_code == 200
 
     def test_scoring_response_contains_prop_ledger(self, client):
-        body = {
-            "expected_governance_hash": _correct_hash(),
-            "rows": _good_rows(),
-        }
         data = client.post("/gate-engine/run", headers=_auth_headers(),
-                           data=json.dumps(body)).get_json()
+                           data=json.dumps(_good_body())).get_json()
         assert "prop_ledger" in data
         assert len(data["prop_ledger"]) == 1
 
@@ -343,13 +384,8 @@ class TestWrongPatchListReturns409:
 
 class TestScoringResponseEchoesGovernance:
     def _score(self, client):
-        status = get_governance_status()
-        body = {
-            "expected_governance_hash": status["governance_hash"],
-            "rows": _good_rows(),
-        }
         return client.post("/gate-engine/run", headers=_auth_headers(),
-                           data=json.dumps(body)).get_json()
+                           data=json.dumps(_good_body())).get_json()
 
     def test_response_contains_governance_hash(self, client):
         data = self._score(client)
@@ -613,3 +649,134 @@ class TestSessionExposurePersistence:
         assert gate2.get("passed") is not False or gate2.get("registered") is True, (
             "Independent calls should not share exposure state"
         )
+
+
+# ===========================================================================
+# 10. Mandatory session/audit fields — session_id, research_run_id, as_of
+# ===========================================================================
+
+class TestMandatorySessionFields:
+    """Hash passes, but missing session/audit field → 409 GOVERNANCE_MISMATCH."""
+
+    def test_missing_session_id_returns_409(self, client):
+        body = {k: v for k, v in _good_body().items() if k != "session_id"}
+        r = client.post("/gate-engine/run", headers=_auth_headers(),
+                        data=json.dumps(body))
+        assert r.status_code == 409
+        data = r.get_json()
+        assert data["code"] == "RUN_INVALID_GOVERNANCE_MISMATCH"
+        assert data["can_execute"] is False
+        assert any("session_id" in m for m in data.get("mismatches", []))
+
+    def test_missing_research_run_id_returns_409(self, client):
+        body = {k: v for k, v in _good_body().items() if k != "research_run_id"}
+        r = client.post("/gate-engine/run", headers=_auth_headers(),
+                        data=json.dumps(body))
+        assert r.status_code == 409
+        data = r.get_json()
+        assert data["code"] == "RUN_INVALID_GOVERNANCE_MISMATCH"
+        assert data["can_execute"] is False
+        assert any("research_run_id" in m for m in data.get("mismatches", []))
+
+    def test_missing_as_of_returns_409(self, client):
+        body = {k: v for k, v in _good_body().items() if k != "as_of"}
+        r = client.post("/gate-engine/run", headers=_auth_headers(),
+                        data=json.dumps(body))
+        assert r.status_code == 409
+        data = r.get_json()
+        assert data["code"] == "RUN_INVALID_GOVERNANCE_MISMATCH"
+        assert data["can_execute"] is False
+        assert any("as_of" in m for m in data.get("mismatches", []))
+
+    def test_null_session_id_returns_409(self, client):
+        body = {**_good_body(), "session_id": None}
+        r = client.post("/gate-engine/run", headers=_auth_headers(),
+                        data=json.dumps(body))
+        assert r.status_code == 409
+
+    def test_empty_string_research_run_id_returns_409(self, client):
+        body = {**_good_body(), "research_run_id": ""}
+        r = client.post("/gate-engine/run", headers=_auth_headers(),
+                        data=json.dumps(body))
+        assert r.status_code == 409
+
+    def test_all_three_present_returns_200(self, client):
+        """All mandatory fields present with correct hash → 200."""
+        r = client.post("/gate-engine/run", headers=_auth_headers(),
+                        data=json.dumps(_good_body()))
+        assert r.status_code == 200
+
+
+# ===========================================================================
+# 11. DB fail-closed at HTTP level — SESSION_LEDGER_UNAVAILABLE → 409
+# ===========================================================================
+
+class TestDbFailClosedHttp:
+    """When psycopg2.connect fails, every row gets SESSION_LEDGER_UNAVAILABLE
+    and the harness must return HTTP 409 RUN_INVALID_SESSION_LEDGER_UNAVAILABLE."""
+
+    def test_db_failure_returns_409(self, client, monkeypatch):
+        import psycopg2 as _pg
+
+        def _fail_connect(*a, **kw):
+            raise _pg.OperationalError("connection refused (injected by test)")
+
+        monkeypatch.setattr(_pg, "connect", _fail_connect)
+
+        body = _good_body(session_id="fail-sid-001")
+        r = client.post("/gate-engine/run", headers=_auth_headers(),
+                        data=json.dumps(body))
+        assert r.status_code == 409
+        data = r.get_json()
+        assert data["code"] == "RUN_INVALID_SESSION_LEDGER_UNAVAILABLE"
+        assert data["can_execute"] is False
+
+    def test_db_failure_no_partial_scoring_output(self, client, monkeypatch):
+        """No prop_ledger exposed on ledger-unavailable 409."""
+        import psycopg2 as _pg
+
+        monkeypatch.setattr(_pg, "connect",
+                            lambda *a, **kw: (_ for _ in ()).throw(
+                                _pg.OperationalError("db down")))
+
+        body = _good_body(session_id="fail-sid-002")
+        r = client.post("/gate-engine/run", headers=_auth_headers(),
+                        data=json.dumps(body))
+        data = r.get_json()
+        assert "prop_ledger" not in data
+
+
+# ===========================================================================
+# 12. Successful response echoes session/audit fields
+# ===========================================================================
+
+class TestEchoedSessionFields:
+    def test_response_echoes_session_id(self, client):
+        body = _good_body(session_id="echo-test-001")
+        data = client.post("/gate-engine/run", headers=_auth_headers(),
+                           data=json.dumps(body)).get_json()
+        assert data.get("session_id") == "echo-test-001"
+
+    def test_response_echoes_research_run_id(self, client):
+        body = _good_body(research_run_id="rr-echo-abc")
+        data = client.post("/gate-engine/run", headers=_auth_headers(),
+                           data=json.dumps(body)).get_json()
+        assert data.get("research_run_id") == "rr-echo-abc"
+
+    def test_response_echoes_as_of(self, client):
+        body = _good_body(as_of="2026-07-14")
+        data = client.post("/gate-engine/run", headers=_auth_headers(),
+                           data=json.dumps(body)).get_json()
+        assert data.get("as_of") == "2026-07-14"
+
+    def test_response_contains_exposure_key(self, client):
+        body = _good_body(session_id="expose-key-001")
+        data = client.post("/gate-engine/run", headers=_auth_headers(),
+                           data=json.dumps(body)).get_json()
+        assert "exposure_key" in data
+        assert data["exposure_key"] == "expose-key-001"
+
+    def test_can_execute_still_false(self, client):
+        data = client.post("/gate-engine/run", headers=_auth_headers(),
+                           data=json.dumps(_good_body())).get_json()
+        assert data.get("can_execute") is False
