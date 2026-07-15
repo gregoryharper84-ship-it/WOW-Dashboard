@@ -16621,25 +16621,31 @@ from gate_engine import auto_enrichment as _ge_auto_enrichment
 from gate_engine import board_intake as _ge_board_intake
 from gate_engine.governance import get_governance_status as _ge_get_governance_status
 from gate_engine.governance import validate_handshake as _ge_validate_handshake
-from gate_engine.exposure_gate import ExposureLedger as _ExposureLedger
+from gate_engine.pg_session_ledger import PgSessionLedger as _PgSessionLedger
+from gate_engine.pg_session_ledger import ensure_table_exists as _ensure_wse_table
 
-# Session exposure ledger cache — keyed by session_id.
-# Allows cross-request duplicate-exposure enforcement within a scoring session.
-# TTL: entries are pruned when more than 200 sessions accumulate (LRU-light).
-_SESSION_LEDGERS: dict = {}
-_SESSION_LEDGER_MAX = 200
+# Create the wow_session_exposure table on startup (idempotent DDL).
+try:
+    _ensure_wse_table()
+except Exception as _wse_exc:
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "wow_session_exposure table init failed: %s", _wse_exc
+    )
 
 
-def _get_session_ledger(session_id: str | None) -> "_ExposureLedger | None":
+def _get_session_ledger(session_id: str | None) -> "_PgSessionLedger | None":
+    """
+    Return a PgSessionLedger for the given session_id.
+
+    Backed by PostgreSQL wow_session_exposure — safe across gunicorn workers
+    and restarts. Each call constructs a lightweight handle; no process-local
+    state is kept. Returns None when session_id is absent (no cross-request
+    tracking for that request).
+    """
     if not session_id:
         return None
-    if session_id not in _SESSION_LEDGERS:
-        if len(_SESSION_LEDGERS) >= _SESSION_LEDGER_MAX:
-            # Evict oldest key (insertion-order dict)
-            oldest = next(iter(_SESSION_LEDGERS))
-            del _SESSION_LEDGERS[oldest]
-        _SESSION_LEDGERS[session_id] = _ExposureLedger()
-    return _SESSION_LEDGERS[session_id]
+    return _PgSessionLedger(session_id=session_id)
 
 
 @app.route("/wow/governance/status", methods=["GET"])

@@ -1,0 +1,70 @@
+Good progress: `1078 passed, 316 subtests` supports code-level readiness. However, this is still not deployment-ready evidence.
+
+Two remaining issues:
+
+1. An in-memory session-ledger cache is unsafe if Flask runs multiple workers or restarts. Duplicate exposure could disappear or differ by worker. Store the ledger in a shared persistent backend—Redis or the project database—with a TTL keyed by `session_id`.
+2. Restarting the worker and “updating memory” does not prove the deployed service matches the tested code. We still need the deployment manifest and live black-box smoke test.
+
+Send Replit this:
+
+```text
+Complete activation verification.
+
+1. Confirm whether the session ledger is process-local memory.
+   If yes, do not activate. Move it to Redis or the project database with:
+   - key: wow:exposure:{session_id}
+   - atomic read/update
+   - TTL
+   - normalized exposure keys
+   - duplicate enforcement across requests and workers
+   - fail-closed behavior if persistence is unavailable
+
+2. Commit the tested code, then deploy that exact commit.
+
+3. After deployment and worker restart, return the complete manifest:
+   git_commit
+   engine_code_version
+   master_spec_version
+   active_patch_ids
+   governance_hash
+   effective_at
+   expires_at
+   deployed_at
+   unit_test_count
+   integration_test_count
+   black_box_test_count
+   golden_fixture_count
+   can_execute=false
+
+4. Run live black-box requests against the deployed URL:
+   A. GET /api/wow/governance/status
+   B. scoring request with missing hash → HTTP 409
+   C. scoring request with wrong hash → HTTP 409
+   D. scoring request with correct hash → success
+   E. second request using the same session_id and duplicate exposure
+      → duplicate rejection
+   F. repeat E after restart—or against another worker
+      → duplicate rejection remains
+
+5. Show sanitized request/response bodies and HTTP status codes.
+
+6. Confirm the successful scoring response echoes:
+   governance_hash
+   active_patch_ids
+   engine_code_version
+   session_id
+   exposure_key
+   can_execute=false
+
+Do not mark ACTIVE unless the deployed governance hash matches the manifest
+and session exposure survives restarts/multiple workers.
+```
+
+Current status should be:
+
+```text
+CODE_VERIFIED_PENDING_DEPLOYMENT_PROOF
+can_execute=false
+```
+
+The test increase from 911 to 1078 is encouraging. The persistent session ledger and deployed hash proof are the last meaningful gates.
