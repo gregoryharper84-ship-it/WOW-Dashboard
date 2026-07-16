@@ -1,0 +1,136 @@
+This is not a Custom GPT schema failure anymore. The live Replit endpoint is unhealthy.
+
+I tested the two routes directly:
+
+* `/wow/engine/health` timed out after 15 seconds with **zero bytes received**.
+* `/wow/governance/status` returned HTTP 200 headers but **no usable JSON body**.
+
+Therefore, ChatGPT’s `ClientResponseError` is expected. The Action cannot parse a response that never arrives or contains no JSON.
+
+## What this proves
+
+The current problem is one of these:
+
+1. The Flask worker is down or stalled.
+2. `/wow/engine/health` is blocking on an internal dependency.
+3. The newly added route is registered in a process that is not serving the deployed URL.
+4. Replit’s deployment proxy reaches the app, but the app never finishes the response.
+5. `/wow/governance/status` is returning an empty response instead of the structured snapshot.
+6. The worker was restarted in the development workspace but the public deployment was not redeployed/restarted.
+
+This is not caused by the governance hash or the `X-API-Key`. An authentication failure should return a prompt `401` or `403`, not hang for 15 seconds.
+
+## Send this to Replit
+
+```text
+LIVE ENDPOINT FAILURE — INVESTIGATE DEPLOYED PROCESS
+
+The Custom GPT schema now validates, but the live Replit endpoints are
+not returning valid responses.
+
+Independent direct results:
+
+GET /wow/engine/health
+Result: timed out after 15 seconds with zero response bytes.
+
+GET /wow/governance/status
+Result: HTTP 200 headers were received, but no usable JSON response body
+was returned.
+
+This is now a deployed-backend failure, not a Custom GPT schema error.
+
+Perform the following:
+
+1. Confirm the exact public deployment handling:
+   https://create-app-gregoryharper84.replit.app
+
+2. Confirm which process and deployment serves that domain. Do not test
+   only localhost or the Replit development preview.
+
+3. Check the live Flask worker, deployment logs, exceptions, route table,
+   process PID, uptime, port binding, and deployment revision.
+
+4. Test from outside the Replit process with:
+
+   curl -i --max-time 10 \
+   https://create-app-gregoryharper84.replit.app/wow/engine/health
+
+   curl -i --max-time 10 \
+   https://create-app-gregoryharper84.replit.app/wow/governance/status
+
+5. Both endpoints must return complete JSON within two seconds.
+
+6. /wow/engine/health must be ultra-lightweight. It must not:
+   - call external sports APIs
+   - call Kalshi
+   - call The Odds API
+   - wait for a scoring worker
+   - run database migrations
+   - perform a board scan
+   - acquire a remote lock
+   - rebuild governance
+   - make any external HTTP request
+
+7. /wow/engine/health should return a response shaped like:
+
+   {
+     "ok": true,
+     "status": "READY",
+     "process_ready": true,
+     "governance_loaded": true,
+     "scan_worker_ready": true,
+     "engine_code_version": "v16.5",
+     "governance_hash": "2a74d11e...",
+     "patch_count": 9,
+     "can_execute": false,
+     "timestamp": "..."
+   }
+
+8. /wow/governance/status must always return a complete JSON object.
+   It must never return HTTP 200 with an empty body.
+
+9. If live governance is unavailable but a valid snapshot exists, return:
+
+   {
+     "ok": true,
+     "governance_source": "LAST_KNOWN_GOOD",
+     "degraded": true,
+     "label_ceiling": "MODEL_QUALIFIED_HOLD",
+     "live_recheck_required": true,
+     "can_execute": false
+   }
+
+10. Confirm whether these two GET endpoints are public or require
+    X-API-Key. Use one consistent policy and report it.
+
+11. Test each endpoint both:
+    - without X-API-Key
+    - with the correct X-API-Key
+    - with an incorrect X-API-Key
+
+12. Expected authentication failures must promptly return structured
+    JSON with HTTP 401 or 403. They must never hang.
+
+13. Restart/redeploy the actual public deployment after fixing it.
+    Restarting only the development worker is insufficient.
+
+14. Return:
+    - root cause
+    - public deployment revision
+    - complete curl output for both routes
+    - response time for both routes
+    - authentication requirement
+    - complete JSON response bodies
+    - confirmation the public deployment was restarted
+```
+
+## Do not change the schema again yet
+
+The schema successfully parsed and attempted `getWowEngineHealth`. That means:
+
+* The server URL was accepted.
+* The operation was detected.
+* ChatGPT tried the correct route.
+* Schema validation is no longer the immediate blocker.
+
+The backend now needs to return valid JSON reliably. Once Replit confirms both public endpoints respond within two seconds, test `getWowEngineHealth` again in the Custom GPT.
