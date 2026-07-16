@@ -1,0 +1,341 @@
+Test it in four layers: automated tests, live healthy-state checks, controlled outage/fallback tests, and one real external ChatGPT run. The controlled outage test is the most important because that recreates the failure that started this.
+
+Send the following directly to Replit.
+
+⸻
+
+Copy/paste this into Replit
+
+Run a complete acceptance test for WOW-PATCH-2026-07-16-GOVERNANCE-RESILIENCE-AND-DEGRADED-RUN-RECOVERY / patch precedence 80.
+
+This is a controlled dry-run validation. Do not change production governance, delete snapshots, place wagers, or perform any live execution. can_execute=false must remain enforced.
+
+Phase 1 — Record the deployed identity
+
+Before stopping anything, capture:
+
+* master_spec_version
+* engine_code_version
+* governance_hash
+* full active_patch_ids
+* patch_count
+* governance schema version
+* current UTC timestamp
+* current America/Chicago timestamp
+* worker/process status
+* snapshot timestamp and age
+* canonical patch-80 ID and precedence
+
+Call and save the complete JSON responses from:
+
+GET /wow/engine/health
+GET /wow/governance/status
+
+Confirm:
+
+* both return structured JSON
+* engine health performs no external sports-data probes
+* governance_source=LIVE
+* degraded=false
+* governance hash matches the active registry
+* can_execute=false
+
+Phase 2 — Healthy-run baseline
+
+Submit one valid synthetic /gate-engine/run request using today’s slate date. Use non-actionable test data and a unique test run_id.
+
+Confirm the response contains:
+
+* run_id
+* governance hash pinned to the run
+* engine version
+* active patch IDs
+* governance_source=LIVE
+* governance_verified_at
+* label ceiling
+* structured stage results
+* can_execute=false
+
+Retrieve or inspect the persisted run record and prove the pinned governance identity matches /wow/governance/status.
+
+Expected result:
+
+LIVE_GOVERNANCE_VERIFIED
+
+The exact final analysis label may depend on the synthetic evidence, but there must be no governance blocker.
+
+Phase 3 — Scan-worker-only outage
+
+Preserve the main application process and governance registry, but intentionally stop or mock only the scan/scoring worker.
+
+Then call:
+
+GET /wow/engine/health
+GET /wow/governance/status
+POST /gate-engine/run
+
+Expected:
+
+* /wow/engine/health remains reachable
+* process health is true
+* governance health is true
+* scan-worker health is false
+* /wow/governance/status still returns live governance
+* /gate-engine/run returns a structured scan-worker error
+* error code is SCAN_WORKER_UNAVAILABLE or the canonical equivalent
+* it must not return GOVERNANCE_MISMATCH
+* it must not return a generic unclassified ClientResponseError
+* response contains stage, retryability, timestamp, request ID, and retry guidance
+* can_execute=false
+
+Restart the scan worker and confirm health returns to ready.
+
+Phase 4 — Live-governance outage with valid snapshot
+
+Create or verify a fresh, valid last-known-good governance snapshot. Record its hash and creation time.
+
+Temporarily mock or disable live governance retrieval without deleting or corrupting the valid snapshot. Keep the application process available.
+
+Call:
+
+GET /wow/engine/health
+GET /wow/governance/status
+POST /gate-engine/run
+
+Expected:
+
+governance_source=LAST_KNOWN_GOOD
+degraded=true
+degraded_reason=LIVE_GOVERNANCE_UNAVAILABLE
+run_status=GOVERNANCE_CACHED_DEGRADED_RUN
+live_recheck_required=true
+can_execute=false
+
+Confirm the run may still perform safe research functions:
+
+* slate validation
+* board normalization
+* statistical acquisition
+* projections
+* research ranking
+
+Confirm it cannot emit:
+
+* MONEY_QUALIFIED
+* FINAL_APPROVED
+* LLP_APPROVED
+* playable/executable labels
+* bankroll sizing
+* any can_execute=true
+
+The maximum permitted label must equal the configured degraded ceiling. Report the exact ceiling returned by code.
+
+Phase 5 — Recovery and graduation
+
+Restore live governance.
+
+Recheck the degraded run using its original run_id.
+
+Confirm:
+
+* live governance is reverified
+* returned governance identity matches the pinned identity, or a controlled version-transition procedure runs
+* degradation blocker is cleared only after successful verification
+* the audit record preserves the earlier outage
+* the run does not silently replace or erase its original governance history
+* final-label eligibility is reconsidered only if every non-governance gate passes
+* can_execute=false remains unchanged
+
+Do not force a final approval merely to pass the test. The test passes if the governance ceiling is removed correctly; the evidence gates may still hold or reject the synthetic candidate.
+
+Phase 6 — Expired snapshot hard stop
+
+Using an isolated test snapshot or mocked clock, make the snapshot older than the allowed TTL. Do not modify the real production snapshot.
+
+Disable live governance retrieval again.
+
+Expected:
+
+* cached snapshot is not accepted
+* error is GOVERNANCE_SNAPSHOT_EXPIRED or canonical equivalent
+* governance_source must not claim LIVE
+* run cannot advance through governed approval stages
+* response is structured
+* no generic ClientResponseError
+* can_execute=false
+
+Restore normal state after the test.
+
+Phase 7 — Corrupted snapshot hard stop
+
+In an isolated test fixture, alter one field without recomputing the stored hash/signature.
+
+Expected:
+
+* snapshot integrity check fails
+* error is GOVERNANCE_SNAPSHOT_INVALID, GOVERNANCE_INTEGRITY_FAILURE, or canonical equivalent
+* corrupted governance is never loaded
+* no research result is represented as governed
+* can_execute=false
+
+Do not corrupt the production snapshot.
+
+Phase 8 — Confirmed governance mismatch
+
+Keep the endpoint reachable but send a deliberately incorrect expected hash from a synthetic external-client request.
+
+Expected:
+
+* error is RUN_INVALID_GOVERNANCE_MISMATCH
+* response includes expected and received hashes or safely truncated versions
+* mismatch is distinguished from unavailable governance
+* no automatic cached fallback hides a confirmed mismatch
+* no final or money label
+* can_execute=false
+
+Phase 9 — Mid-run outage
+
+Start a run with successfully verified live governance. Pin the governance identity. Then simulate governance becoming unavailable after research begins but before final review.
+
+Expected:
+
+* previously verified governance is not erased
+* run retains its pinned governance record
+* engine records the later recheck failure
+* final approval is held pending live recheck if freshness rules require it
+* run is not inaccurately relabeled as if governance was never verified
+* audit trail shows both the initial success and later outage
+
+Phase 10 — Error-contract matrix
+
+Automate tests for these responses:
+
+* timeout
+* connection refusal
+* HTTP 429
+* HTTP 500
+* HTTP 502
+* HTTP 503
+* HTTP 504
+* HTML instead of JSON
+* malformed JSON
+* missing required governance field
+* schema-version mismatch
+* governance-hash mismatch
+
+For each, report:
+
+* normalized error_code
+* failure stage
+* retryable
+* attempt count
+* backoff behavior
+* final HTTP status
+* label ceiling
+* whether cached fallback was used
+* can_execute
+
+Retry only transient conditions. Do not retry deterministic contract, authorization, route, or mismatch errors without correcting the request.
+
+Phase 11 — Date and timezone regression
+
+Use an injected clock rather than changing the server clock.
+
+Test:
+
+* July 16 at noon America/Chicago
+* 11:59 p.m. America/Chicago
+* 12:01 a.m. America/Chicago
+* corresponding UTC rollover
+* historical fixed-date regression
+* current-slate dynamic-date request
+
+Confirm:
+
+* no false SLATE_PURGE
+* current-slate tests use the injected current date
+* historical tests remain fixed and deterministic
+* target_date, slate_date, and as_of are consistent
+* session-ledger tests actually reach the ledger gate
+
+Phase 12 — Full regression and restoration
+
+After restoring all services:
+
+1. Run the new governance-resilience suite.
+2. Run the complete regression suite.
+3. Smoke-test both live endpoints again.
+4. Submit one final synthetic healthy run.
+5. Confirm no test mocks or outage flags remain enabled.
+6. Confirm the worker is running.
+7. Confirm the production snapshot is valid.
+8. Confirm can_execute=false.
+
+Return a single acceptance report containing:
+
+* test totals and failures
+* live endpoint response bodies
+* healthy-run run_id
+* cached-degraded run_id
+* new governance hash and version
+* canonical patch-80 ID
+* snapshot TTL
+* actual degraded label ceiling
+* outage-test results
+* mismatch-test result
+* recovery-test result
+* date/timezone results
+* confirmation that all services were restored
+* unresolved findings
+
+Do not mark the patch resolved unless every critical case passes.
+
+Final status must be one of:
+
+RESOLVED — GOVERNANCE RESILIENCE VERIFIED
+CONDITIONALLY_ACCEPTED — NONCRITICAL FINDINGS REMAIN
+FAILED_ACCEPTANCE — GOVERNANCE RESILIENCE NOT VERIFIED
+
+⸻
+
+What you should expect to see
+
+The essential acceptance matrix is:
+
+Scenario	Governance source	Expected result	Final labels
+Everything healthy	LIVE	Normal governed run	Eligible if other gates pass
+Scan worker down	LIVE	SCAN_WORKER_UNAVAILABLE	Blocked
+Live governance down, fresh snapshot	LAST_KNOWN_GOOD	GOVERNANCE_CACHED_DEGRADED_RUN	Blocked
+Live governance restored	LIVE	Revalidation/recovery	Reconsidered
+Snapshot expired	None valid	Hard governance stop	Blocked
+Snapshot corrupted	None valid	Integrity failure	Blocked
+Confirmed hash mismatch	LIVE but mismatched	RUN_INVALID_GOVERNANCE_MISMATCH	Blocked
+Mid-run outage	Pinned initial identity	Preserve run; require recheck	Held if required
+
+The most important pass/fail rule
+
+The repair passes only if these two failures produce different results:
+
+Worker unavailable
+≠
+Governance mismatch
+
+Specifically:
+
+* A worker outage should produce SCAN_WORKER_UNAVAILABLE or GOVERNANCE_UNAVAILABLE.
+* A mismatch should only appear when the endpoint responded and the compared governance identities were actually different.
+
+If another generic ClientResponseError appears without status, stage, and normalized error code, the repair is not complete.
+
+Final external test
+
+After Replit completes its internal acceptance report, run one real WOW request from ChatGPT while everything is healthy. The response should record:
+
+* live governance verification
+* current hash and engine version
+* run ID
+* applicable patch IDs
+* evidence-specific holds rather than infrastructure-wide holds
+* can_execute=false
+
+Then have Replit briefly simulate the approved degraded state and run the same request again. ChatGPT should report GOVERNANCE_CACHED_DEGRADED_RUN, continue research, and block final labels. That confirms the repair works across the actual ChatGPT-to-Replit boundary—not only inside Replit’s test client.
