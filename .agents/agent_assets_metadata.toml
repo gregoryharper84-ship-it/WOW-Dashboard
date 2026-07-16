@@ -42,3 +42,15 @@ id = "tSmoBzOVsRxiaJHR4yg6z"
 uri = "file://artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
 type = "text"
 title = "LLP Engine — Ground Truth Sync Block"
+
+[[outputs]]
+id = "hD_IxBYazVq3CsEAEufXD"
+uri = "file://artifacts/flask-scoring-api/gpt-action-schema.yaml"
+type = "unspecified"
+title = "WOW Scoring API — Main GPT Action Schema"
+
+[[outputs]]
+id = "hPdrlvtZf8srgNGOlLFl_"
+uri = "file://artifacts/flask-scoring-api/gpt-action-schema-kalshi.yaml"
+type = "unspecified"
+title = "WOW Kalshi Proxy — GPT Action Schema"
