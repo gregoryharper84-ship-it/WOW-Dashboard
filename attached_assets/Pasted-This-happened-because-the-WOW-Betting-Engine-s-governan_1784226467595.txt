@@ -1,0 +1,407 @@
+This happened because the WOW Betting Engine’s governance control plane became a single point of failure for the entire analysis workflow.
+
+The immediate error was a Replit/API communication failure. The deeper problem is architectural: WOW currently treats “I could not confirm governance” almost the same as “the analysis itself is invalid.” That is why one `ClientResponseError` forced the entire run down to research/hold status even though the uploaded PrizePicks board could still be extracted and researched.
+
+## Executive diagnosis
+
+There were likely three separate events:
+
+1. ChatGPT attempted to call the Replit governance or scan endpoint.
+2. The client received an unusable HTTP response—or no valid response at all—and surfaced the generic `ClientResponseError`.
+3. WOW’s fail-closed rule correctly blocked `FINAL_APPROVED` and money labels because it could not verify the current master specification, active patches, governance hash, and engine version.
+
+The final downgrade was consistent with the current governance rules. But the fact that this keeps happening shows an infrastructure and orchestration defect, not a betting-analysis defect.
+
+The run should be classified more precisely as:
+
+`GOVERNANCE_UNAVAILABLE_DEGRADED_RESEARCH_RUN`
+
+It should not be described simply as a generic `RUN_INVALID` without preserving what still worked.
+
+---
+
+## What `ClientResponseError` actually tells us
+
+`ClientResponseError` is a client-side wrapper around an unsuccessful HTTP exchange. It does not identify the root cause by itself.
+
+It can be produced when Replit returns:
+
+* `404` — wrong or obsolete route
+* `405` — wrong HTTP method
+* `401/403` — authentication or secret mismatch
+* `409` — governance version conflict
+* `422` — request body/schema failure
+* `429` — rate limiting
+* `500` — unhandled server exception
+* `502/503/504` — sleeping, restarting, overloaded, or unavailable Replit worker
+* HTML instead of JSON
+* A truncated or malformed JSON response
+* A redirect the client did not handle correctly
+* A response that exceeded the client timeout
+
+Because the output only said `ClientResponseError`, the error handler discarded the most valuable diagnostic information:
+
+* HTTP status
+* response body
+* requested URL
+* HTTP method
+* timeout duration
+* attempt number
+* Replit request ID
+* whether the governance call or the board scan failed
+* whether the failure occurred before or after governance verification
+
+That is the first major engineering flaw: the engine knows a request failed but does not preserve enough information to say why.
+
+## Most likely failure chain
+
+Based on the earlier July 15 incident, this is the most plausible sequence:
+
+```mermaid
+flowchart TD
+    A["ChatGPT starts WOW run"] --> B["Call Replit governance/scan"]
+    B --> C{"Valid response?"}
+    C -- "No" --> D["ClientResponseError"]
+    D --> E["Governance hash not verified"]
+    E --> F["Lowest ceiling applied"]
+    F --> G["No money or final labels"]
+    G --> H["Manual board review continues as holds"]
+```
+
+The July 15 incident already exposed two independent failure modes:
+
+* The Flask scoring worker was not running.
+* After the worker returned, external agents still held the older governance hash and engine version.
+
+That distinction matters. A worker outage and a governance mismatch are not the same condition:
+
+| Condition                             | Meaning                                           | Correct label                   |
+| ------------------------------------- | ------------------------------------------------- | ------------------------------- |
+| Endpoint unreachable                  | Current governance could not be retrieved         | `GOVERNANCE_UNAVAILABLE`        |
+| Endpoint responds with different hash | Client is using stale governance                  | `GOVERNANCE_MISMATCH`           |
+| Governance matches, scan fails        | Governance is valid but automated analysis failed | `SCAN_UNAVAILABLE_DEGRADED_RUN` |
+| Endpoint returns invalid schema       | Contract or deployment incompatibility            | `GOVERNANCE_CONTRACT_INVALID`   |
+| Research data missing                 | Evidence deficiency for particular props          | Prop-level hold/reject          |
+| Board analysis fails                  | Analysis execution problem                        | Run/prop-level failure          |
+
+WOW is currently collapsing too many of these into one broad `RUN_INVALID` outcome.
+
+---
+
+## Why the governance failure blocked final labels
+
+WOW v16 uses lowest-ceiling propagation.
+
+A downstream analysis cannot grant a stronger label than the weakest mandatory upstream gate. Governance verification is an upstream gate because it determines which rules must govern the run.
+
+Before emitting `FINAL_APPROVED`, the engine is expected to confirm at least:
+
+* `master_spec_version`
+* `active_patch_ids`
+* `governance_hash`
+* `engine_code_version`
+* applicable reliability/exposure state
+* required result contract
+* `can_execute=false`
+
+If the endpoint is unavailable, ChatGPT cannot prove that it is applying the same rules as Replit. A prop might appear statistically strong but violate a newly activated patch—for example:
+
+* opportunity-distribution requirements
+* component/composite mutex
+* current-role split requirements
+* duplicate exposure restrictions
+* exact-line market verification
+* payout compatibility
+* confidence calibration floors
+* sportsbook/projection-market precedence
+
+Therefore, blocking final approval was appropriate. The failure is not that WOW refused approval. The failure is that the system made live access to one endpoint the only acceptable way to establish governance.
+
+## How WOW became this fragile
+
+This did not originate in the uploaded June 6 patch.
+
+The June 6 document is analytical. Its seven changes concern:
+
+* source freshness
+* outlier isolation
+* role-split ledgers
+* bidirectional assessment
+* assist volatility
+* slate-date validation
+* teammate availability
+
+It explicitly describes those changes as analytical rules with no dashboard code requirement. It does not create or configure a governance endpoint, retry policy, cache, deployment health check, or fallback mechanism.
+
+The fragility developed later as WOW accumulated increasingly strict governance requirements.
+
+### 1. Governance verification became mandatory
+
+This was sensible. External agents needed to confirm they were using the same specification and patches as Replit.
+
+### 2. The live endpoint became the only source of truth
+
+Instead of keeping a signed or versioned last-known-good governance snapshot, every run depended on a successful live request.
+
+### 3. Replit worker availability became equivalent to model validity
+
+If the worker slept, restarted, crashed, or timed out, the client lost the ability to confirm governance—even though governance itself may not have changed.
+
+### 4. Hash changes created external-agent drift
+
+When a new patch changed the governance hash, Replit advanced to a new version while ChatGPT/custom GPT instructions could still contain the previous hash. The system then had two potential blockers:
+
+* endpoint unavailable
+* endpoint available but hash mismatched
+
+### 5. Error handling erased the distinction
+
+The client surfaced `ClientResponseError` instead of a structured failure contract. The orchestration layer therefore could not tell whether it should retry, refresh governance, use a cached snapshot, or stop entirely.
+
+### 6. Governance and scanning were coupled
+
+The wording “governance/scan endpoint failed” suggests either:
+
+* one endpoint performs both functions, or
+* the client reports both functions under one error category.
+
+Either design makes diagnosis and recovery harder. Governance status and board scanning have different reliability requirements and should have separate endpoints, logs, retry rules, and failure labels.
+
+---
+
+## What was correct in the response
+
+Several parts of the response followed WOW correctly:
+
+* It did not fabricate a successful governance check.
+* It blocked money and final labels.
+* It preserved `can_execute=false`.
+* It did not turn the requested prop count into forced approvals.
+* It continued extracting and researching the uploaded board.
+* It capped conclusions at hold/research status.
+
+Those controls protected the model from issuing false approvals under unknown governance.
+
+## What was wrong or incomplete
+
+The message was operationally safe but diagnostically weak.
+
+### It overused `RUN_INVALID`
+
+“Run invalid” implies the entire output is unusable. But the board extraction and research may still be useful. The better formulation is:
+
+> Governance verification failed, so the run is invalid only for governed money/final labels. Board extraction and research remain provisional.
+
+### It did not identify the failing stage
+
+The report should say whether failure occurred during:
+
+* governance status
+* governance hash comparison
+* scan submission
+* scan polling
+* enrichment
+* result retrieval
+
+### It did not show retry evidence
+
+A governed failure report should include:
+
+* number of attempts
+* delay/backoff
+* status per attempt
+* whether the worker health endpoint was checked
+* whether the last-known-good snapshot was available
+
+### It did not separate transport failure from mismatch
+
+`GOVERNANCE_UNAVAILABLE` and `RUN_INVALID_GOVERNANCE_MISMATCH` should never be interchangeable.
+
+* Unavailable means no comparison could be made.
+* Mismatch means a comparison was made and failed.
+
+### It did not provide a recovery path
+
+The user was left with holds but no indication whether the run should be retried in 30 seconds, whether Replit needed restarting, or whether the GPT configuration needed updating.
+
+---
+
+## The architectural corrections needed
+
+### 1. Split the endpoints
+
+Use separate endpoints such as:
+
+* `GET /wow/health`
+* `GET /wow/governance/status`
+* `POST /wow/scan`
+* `GET /wow/scan/{run_id}`
+
+The health endpoint should not require the full scoring stack. It should report the status of the web process, worker, governance registry, acquisition services, and scan queue separately.
+
+### 2. Return a structured error contract
+
+Every failed call should return JSON like:
+
+```json
+{
+  "ok": false,
+  "error_code": "SCAN_WORKER_UNAVAILABLE",
+  "stage": "scan_submit",
+  "http_status": 503,
+  "retryable": true,
+  "retry_after_seconds": 10,
+  "request_id": "req_...",
+  "governance_verified": true,
+  "governance_hash": "55191beb...",
+  "engine_code_version": "v16.4",
+  "can_execute": false
+}
+```
+
+The client should never reduce that to only `ClientResponseError`.
+
+### 3. Add bounded retries
+
+For `429`, `502`, `503`, `504`, connection resets, and timeouts:
+
+* Attempt 1 immediately
+* Attempt 2 after approximately 2 seconds
+* Attempt 3 after approximately 5 seconds, with jitter
+* Check `/wow/health` between attempts
+
+Do not retry deterministic failures such as `400`, `401`, `403`, `404`, `405`, `409`, or `422` without correcting the request.
+
+### 4. Maintain a signed last-known-good governance snapshot
+
+The engine should cache:
+
+* full governance document
+* hash
+* patch IDs
+* engine version
+* retrieval timestamp
+* signature or HMAC
+* maximum permitted age
+
+If live governance is unavailable but the snapshot is valid and sufficiently fresh, research can continue under:
+
+`GOVERNANCE_CACHED_DEGRADED_RUN`
+
+Final approval should still depend on the policy you choose. A conservative approach would allow modeling and ranking but require a successful live recheck before `FINAL_APPROVED`.
+
+### 5. Pin governance to the run
+
+Once a run successfully starts, save its governance identity with the `run_id`. A temporary outage halfway through the run should not erase an already verified governance state.
+
+Required fields:
+
+```text
+run_id
+started_at
+governance_verified_at
+master_spec_version
+active_patch_ids
+governance_hash
+engine_code_version
+scan_version
+```
+
+A run should only fail later if it attempts to cross into final approval after the allowed freshness window.
+
+### 6. Separate label ceilings
+
+Use stage-specific degradation:
+
+| Failure                                            | Maximum allowed output                                |
+| -------------------------------------------------- | ----------------------------------------------------- |
+| Governance never verified                          | `RESEARCH_INTEREST` or provisional model hold         |
+| Cached governance valid                            | `MODEL_QUALIFIED_HOLD`                                |
+| Governance valid, live market unavailable          | `MARKET_VERIFIED_HOLD` unavailable; remain model hold |
+| Scan unavailable but independent evidence complete | Manually calculated hold, clearly tagged              |
+| Final status or price stale                        | No `FINAL_APPROVED`                                   |
+| Governance mismatch                                | Hard stop until versions reconcile                    |
+
+### 7. Add deployment readiness checks
+
+Replit should not report itself ready merely because the web server responds. Readiness should require:
+
+* governance registry loaded
+* worker alive
+* queue accessible
+* database/state store available
+* active hash generated
+* scan handler registered
+* schema version compatible
+
+### 8. Add monitoring and alerting
+
+Track:
+
+* uptime by endpoint
+* response latency
+* 5xx rate
+* worker restarts
+* governance mismatches
+* stale cached governance
+* schema-validation failures
+* client timeouts
+* scan completion rate
+
+Repeated `ClientResponseError` should trigger an infrastructure incident, not another model patch.
+
+---
+
+## Recommended new patch
+
+I would add an operational patch rather than altering the sports-analysis logic:
+
+`WOW-PATCH-2026-07-16-GOVERNANCE-AVAILABILITY-AND-DEGRADED-RUN-RECOVERY`
+
+Core rules:
+
+1. `GOVERNANCE_UNAVAILABLE` must not be mislabeled `GOVERNANCE_MISMATCH`.
+2. Preserve HTTP status, body, stage, attempt count, request ID, and retryability.
+3. Retry only transient failures using bounded exponential backoff.
+4. Governance status, worker health, and scan execution must be independently tested.
+5. A verified governance snapshot is pinned to every `run_id`.
+6. A signed last-known-good snapshot may support degraded research, subject to an explicit freshness limit.
+7. No cached or degraded run may emit `FINAL_APPROVED`, `MONEY_QUALIFIED`, or executable labels without a successful live final recheck.
+8. Scan failure after successful governance verification must not retroactively invalidate governance.
+9. Every degraded run must state exactly which stages succeeded and failed.
+10. `can_execute=false` remains mandatory.
+
+## Required regression tests
+
+At minimum, Replit should add tests for:
+
+* Governance returns 200 and scan succeeds.
+* Governance times out twice and succeeds on the third attempt.
+* Governance returns 503 with valid structured JSON.
+* Governance route returns HTML instead of JSON.
+* Governance returns malformed JSON.
+* Governance returns a different hash.
+* Cached governance is fresh.
+* Cached governance is expired.
+* Governance succeeds but scan worker fails.
+* Scan succeeds but result polling times out.
+* A run pinned to valid governance survives a temporary later outage.
+* No degraded run emits final or money labels.
+* Error reports preserve status, stage, request ID, and response excerpt.
+* `can_execute` remains false in every branch.
+
+## Bottom line
+
+This happened because WOW’s safety architecture was stronger than its availability architecture.
+
+The model correctly refused to issue final labels without verified governance. But the platform was designed so that a temporary Replit transport failure could remove the entire approval ceiling, and its error handling did not preserve enough information to diagnose the actual failure.
+
+So the correct conclusion is:
+
+* This was not caused by the June 6 analytical patch.
+* It was not evidence that the sports model itself stopped working.
+* It was probably a Replit worker, routing, timeout, schema, or deployment response failure.
+* The generic `ClientResponseError` is insufficient to identify which one.
+* The fail-closed downgrade was correct.
+* The recurring single-point-of-failure and vague error reporting are not acceptable.
+* Replit needs an operational resilience patch, structured errors, endpoint separation, run-pinned governance, and a controlled degraded-research mode.

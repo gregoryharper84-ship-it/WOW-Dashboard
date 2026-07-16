@@ -17,7 +17,7 @@ from typing import Any
 # Engine identity
 # ---------------------------------------------------------------------------
 MASTER_SPEC_VERSION  = "WOW-v16"
-ENGINE_CODE_VERSION  = "v16.4"
+ENGINE_CODE_VERSION  = "v16.5"
 
 # ---------------------------------------------------------------------------
 # Canonical patch registry
@@ -133,6 +133,37 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "same-game correlation — narrative alone never blocks individual confidence; "
             "four-decision terminal output: confidence/market/money/slip; "
             "FINAL_CONFIDENCE_HIGH never aliases FINAL_APPROVED."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-07-15-GOVERNANCE-RESILIENCE-AND-ERROR-CONTRACT",
+        "version":     "1.0",
+        "effective_at": "2026-07-15",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  80,
+        "can_execute": False,
+        "description": (
+            "Governance resilience and structured error contract: "
+            "distinct error codes (GOVERNANCE_UNAVAILABLE / "
+            "GOVERNANCE_CACHED_DEGRADED_RUN / GOVERNANCE_MISMATCH / "
+            "GOVERNANCE_CONTRACT_INVALID / SCAN_UNAVAILABLE_DEGRADED_RUN); "
+            "GOVERNANCE_UNAVAILABLE and GOVERNANCE_MISMATCH are never "
+            "interchangeable — unavailable=no comparison made, mismatch="
+            "comparison failed; "
+            "in-process GovernanceSnapshot cache (default 5-min TTL) allows "
+            "degraded research run at MODEL_QUALIFIED_HOLD when live endpoint "
+            "is transiently unreachable; "
+            "RunGovernancePin pins verified governance identity to run_id at "
+            "handshake success — mid-run outages cannot erase already-verified "
+            "governance; "
+            "GET /wow/engine/health (no external I/O, sub-ms) reports process "
+            "health, governance load, snapshot metadata, and DB env state; "
+            "make_error_contract() returns retryable/retry_after/stage/label_ceiling "
+            "on every failure so callers can distinguish transient from deterministic; "
+            "degraded ceiling table: UNAVAILABLE→RESEARCH_INTEREST, "
+            "CACHED_DEGRADED→MODEL_QUALIFIED_HOLD, MISMATCH→run_invalid. "
+            "Extends all active v16 patches."
         ),
     },
 ]

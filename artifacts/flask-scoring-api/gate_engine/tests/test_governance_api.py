@@ -172,7 +172,7 @@ def _good_rows():
             "prop_type":    "Points",
             "line":         25.5,
             "direction":    "MORE",
-            "slate_date":   "2026-07-15",
+            "slate_date":   __import__("datetime").date.today().isoformat(),
             "board_source": "PrizePicks",
             "game":         "LAL vs GSW",
         }
@@ -185,13 +185,14 @@ def _correct_hash():
 
 def _good_body(session_id: str = "test-session-001",
                research_run_id: str = "rr-test-001",
-               as_of: str = "2026-07-15") -> dict:
+               as_of: str | None = None) -> dict:
     """Return a fully-valid scoring request body with all mandatory fields."""
+    import datetime as _dt
     return {
         "expected_governance_hash": _correct_hash(),
         "session_id":               session_id,
         "research_run_id":          research_run_id,
-        "as_of":                    as_of,
+        "as_of":                    as_of or _dt.date.today().isoformat(),
         "rows":                     _good_rows(),
     }
 
@@ -512,7 +513,7 @@ class TestLowestCeilingPropagation:
                 "prop_type":    "Rebounds",
                 "line":         10.5,
                 "direction":    "LESS",
-                "slate_date":   "2026-07-15",
+                "slate_date":   __import__("datetime").date.today().isoformat(),
                 "board_source": "PrizePicks",
                 "game":         "A vs B",
             }
@@ -527,7 +528,7 @@ class TestLowestCeilingPropagation:
         }
         result = run_pipeline(
             raw_rows=rows,
-            target_date=date(2026, 7, 15),
+            target_date=date.today(),
             enrichment=enrichment,
             skip_health_gate=True,
             skip_settlement_check=True,
@@ -564,7 +565,7 @@ class TestSessionExposurePersistence:
             "prop_type":    "Points",
             "line":         20.5,
             "direction":    "MORE",
-            "slate_date":   "2026-07-15",
+            "slate_date":   __import__("datetime").date.today().isoformat(),
             "board_source": "PrizePicks",
             "game":         "A vs B",
         }
@@ -580,7 +581,7 @@ class TestSessionExposurePersistence:
         # Request 1: Player A passes (registers in shared ledger)
         r1 = run_pipeline(
             raw_rows=[{**row_base, "player": "PlayerA"}],
-            target_date=date(2026, 7, 15),
+            target_date=date.today(),
             enrichment=good_enrichment("PlayerA"),
             skip_health_gate=True,
             skip_settlement_check=True,
@@ -595,7 +596,7 @@ class TestSessionExposurePersistence:
         # Request 2: Player A again — same ledger detects duplicate
         r2 = run_pipeline(
             raw_rows=[{**row_base, "player": "PlayerA"}],
-            target_date=date(2026, 7, 15),
+            target_date=date.today(),
             enrichment=good_enrichment("PlayerA"),
             skip_health_gate=True,
             skip_settlement_check=True,
@@ -622,7 +623,7 @@ class TestSessionExposurePersistence:
             "prop_type":    "Points",
             "line":         20.5,
             "direction":    "MORE",
-            "slate_date":   "2026-07-15",
+            "slate_date":   __import__("datetime").date.today().isoformat(),
             "board_source": "PrizePicks",
             "game":         "A vs B",
         }
@@ -635,7 +636,7 @@ class TestSessionExposurePersistence:
             }
         }
         kwargs = dict(
-            target_date=date(2026, 7, 15),
+            target_date=date.today(),
             enrichment=enr,
             skip_health_gate=True,
             skip_settlement_check=True,

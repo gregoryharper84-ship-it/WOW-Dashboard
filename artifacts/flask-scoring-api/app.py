@@ -16621,6 +16621,23 @@ from gate_engine import auto_enrichment as _ge_auto_enrichment
 from gate_engine import board_intake as _ge_board_intake
 from gate_engine.governance import get_governance_status as _ge_get_governance_status
 from gate_engine.governance import validate_handshake as _ge_validate_handshake
+from gate_engine.governance_resilience import (
+    GovernanceSnapshot        as _GeGovSnapshot,
+    GovernanceErrorCode       as _GeGovErrCode,
+    DegradedRunCeiling        as _GeDegradedCeiling,
+    get_snapshot_singleton    as _ge_get_snapshot,
+    get_run_pin_singleton     as _ge_get_run_pin,
+    make_error_contract       as _ge_make_error,
+    make_missing_hash_error   as _ge_missing_hash_error,
+    make_mismatch_error       as _ge_mismatch_error,
+    build_engine_health       as _ge_build_engine_health,
+)
+# Eagerly warm the governance snapshot so the first request is always served
+# from cache. No-op if import fails (worker still starts).
+try:
+    _ge_get_snapshot().refresh()
+except Exception:
+    pass
 from gate_engine.pg_session_ledger import PgSessionLedger as _PgSessionLedger
 from gate_engine.pg_session_ledger import ensure_table_exists as _ensure_wse_table
 
@@ -16666,14 +16683,64 @@ def wow_governance_status():
         "master_spec_version": "WOW-v16",
         "active_patch_ids":    [...],
         "governance_hash":     "<sha256 hex>",
-        "engine_code_version": "v16.2",
+        "engine_code_version": "v16.5",
         "loaded_at":           "<ISO-8601 UTC>",
-        "patch_count":         6,
+        "patch_count":         9,
         "status":              "ACTIVE",
-        "can_execute":         false
+        "can_execute":         false,
+        "source":              "live",
+        "snapshot_metadata":   { ... }
       }
     """
-    return jsonify(_ge_get_governance_status()), 200
+    _snap = _ge_get_snapshot()
+    gov   = _ge_get_governance_status()
+    # Refresh the snapshot on every successful governance status call
+    try:
+        _snap.refresh()
+    except Exception:
+        pass
+    gov["source"]            = "live"
+    gov["snapshot_metadata"] = _snap.snapshot_metadata()
+    return jsonify(gov), 200
+
+
+@app.route("/wow/engine/health", methods=["GET"])
+def wow_engine_health():
+    """
+    GET /wow/engine/health
+
+    Ultra-lightweight process and governance health check.
+    Makes NO external HTTP calls — reports only in-process state.
+
+    Returns within milliseconds. Safe to call as a pre-flight check
+    before every run. No authentication required.
+
+    Response:
+      {
+        "ok":                 true,
+        "service":            "WOW Gate Engine",
+        "uptime_seconds":     42.1,
+        "worker_pid":         12345,
+        "governance": {
+          "loaded":           true,
+          "master_spec":      "WOW-v16",
+          "engine_version":   "v16.5",
+          "hash_prefix":      "55191beb...",
+          "active_patches":   9
+        },
+        "snapshot": {
+          "snapshot_available":    true,
+          "snapshot_age_seconds":  12.3,
+          "snapshot_is_fresh":     true,
+          "snapshot_max_age":      300
+        },
+        "db_env_configured":  true,
+        "can_execute":        false
+      }
+    """
+    return jsonify(
+        _ge_build_engine_health(uptime_seconds=time.time() - _APP_START_TIME)
+    ), 200
 
 
 @app.route("/gate-engine/run", methods=["POST"])
@@ -16759,39 +16826,58 @@ def gate_engine_run():
     _session_id       = body.get("session_id")
     _as_of            = body.get("as_of")
 
-    if not _expected_hash:
-        # Fail closed — no hash means no scoring
-        _srv_hash = _ge_validate_handshake(None)["server_hash"]
-        return jsonify({
-            "code":            "RUN_INVALID_GOVERNANCE_MISMATCH",
-            "can_execute":     False,
-            "detail":          (
-                "expected_governance_hash is required. "
-                "Call GET /wow/governance/status to obtain the current hash."
-            ),
-            "server_hash":     _srv_hash,
-            "expected_hash":   None,
-            "mismatches":      ["expected_governance_hash missing from request"],
-            "research_run_id": _research_run_id,
-            "session_id":      _session_id,
-        }), 409
+    _snap     = _ge_get_snapshot()
+    _run_pin  = _ge_get_run_pin()
+    _srv_hash = _ge_validate_handshake(None)["server_hash"]
 
-    _hs = _ge_validate_handshake(
-        expected_hash=_expected_hash,
-        expected_patch_ids=_expected_patches,
-        expected_master_spec_version=_expected_spec,
-    )
-    if not _hs["valid"]:
-        return jsonify({
-            "code":            _hs["code"],
-            "can_execute":     False,
-            "detail":          _hs["detail"],
-            "server_hash":     _hs["server_hash"],
-            "expected_hash":   _hs["expected_hash"],
-            "mismatches":      _hs["mismatches"],
-            "research_run_id": _research_run_id,
-            "session_id":      _session_id,
-        }), 409
+    if not _expected_hash:
+        # No hash supplied — caller could not reach /wow/governance/status.
+        # If a fresh snapshot is available, allow a degraded research run
+        # capped at MODEL_QUALIFIED_HOLD (GOVERNANCE_CACHED_DEGRADED_RUN).
+        # If no snapshot exists, the run is invalid (GOVERNANCE_UNAVAILABLE).
+        _err, _http_code = _ge_missing_hash_error(
+            server_hash=_srv_hash,
+            snapshot=_snap,
+            run_id=_research_run_id,
+            session_id=_session_id,
+        )
+        if _http_code != 200:
+            return jsonify(_err), _http_code
+        # Degraded run allowed — fall through with snapshot governance.
+        # Inject the degraded run metadata into the request context.
+        body["_governance_degraded"]       = True
+        body["_governance_error_code"]     = _err["error_code"]
+        body["_governance_label_ceiling"]  = _err.get("label_ceiling")
+        body["_governance_snapshot_age"]   = _err.get("cached_snapshot_age_seconds")
+        # Use server hash for downstream audit; no handshake check applied.
+        _hs = {"valid": True, "server_hash": _srv_hash}
+    else:
+        _hs = _ge_validate_handshake(
+            expected_hash=_expected_hash,
+            expected_patch_ids=_expected_patches,
+            expected_master_spec_version=_expected_spec,
+        )
+        if not _hs["valid"]:
+            # Hash mismatch — endpoint was reachable, caller has stale governance.
+            # This is GOVERNANCE_MISMATCH, not GOVERNANCE_UNAVAILABLE.
+            _err, _http_code = _ge_mismatch_error(
+                handshake_result=_hs,
+                snapshot=_snap,
+                run_id=_research_run_id,
+                session_id=_session_id,
+            )
+            return jsonify(_err), _http_code
+
+    # Successful handshake — pin governance identity to this run.
+    if _research_run_id:
+        try:
+            _pin_payload = _run_pin.build_pin_payload(
+                run_id=_research_run_id,
+                handshake_result=_hs,
+            )
+            _run_pin.pin(_research_run_id, _pin_payload)
+        except Exception:
+            pass  # pinning failure is non-fatal
 
     # Mandatory session/audit fields — every scoring request must carry all three.
     # Hash passed → now enforce the remaining required fields.
