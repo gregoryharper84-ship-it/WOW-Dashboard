@@ -12,6 +12,7 @@ version = "1.0.0"
 name = "web"
 paths = ["/"]
 localPort = 25643
+deploymentTarget = "vm"
 
 [services.development]
 run = "cd /home/runner/workspace/artifacts/flask-scoring-api && PORT=25643 python app.py"
