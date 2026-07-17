@@ -1,0 +1,114 @@
+Yes—send Replit this final instruction so the last production risks are handled before launch:
+
+Please finish the lottery engine integration with these final production requirements:
+
+1. Preserve the current implementation and all 383 passing tests. Do not remove or weaken existing validation.
+
+2. Confirm DEFEATER_TEST_ONLY is simulation-only:
+
+   * External test-cohort tickets must not be included in the recommended purchase.
+   * Test-cohort cost must not reduce or exceed the user’s real ticket budget.
+   * Add `isSimulationOnly: true` to `externalTestCohort`.
+   * Add a response notice stating: “External test cohort is experimental and is not included in the recommended ticket purchase.”
+
+3. Verify the budget invariant:
+
+   * `amountUsed` must equal the total cost of primary recommended tickets.
+   * `amountUsed` must never exceed `request.budget`.
+   * Test-only cohort spending must remain separate from primary purchase totals.
+
+4. Verify request flags are functional:
+
+   * `antiCrowd: false` must disable anti-crowd ranking.
+   * `maximizeUniqueCoverage: false` must disable coverage-based ranking.
+   * Add tests proving both flags materially change or bypass their scoring behavior.
+   * Do not merely accept these fields without using them.
+
+5. Preserve strict game controls:
+
+   * `selectedGameIds` is a hard allowlist.
+   * No unselected game may appear in tickets, comparisons, or test cohorts.
+   * Game jurisdiction must match `request.state`.
+
+6. Preserve fail-closed official-data behavior:
+
+   * Missing, stale, invalid, expired, or non-official game data must return `BLOCKED`.
+   * A blocked response must contain zero tickets and zero amount used.
+
+7. Resolve connector-session status consistently:
+
+   * When system health and connector status disagree, Defeater-dependent modes must block.
+   * `INTERNAL_ONLY` may continue with a warning when official data is valid.
+   * Do not trust an expiration timestamp alone as proof of session validity.
+
+8. Verify fresh-sync behavior:
+
+   * When `freshDefeaterSync: true`, require a confirmed `COMPLETED` result.
+   * Re-read system health and connector status after synchronization.
+   * Never assume a sync completed.
+
+9. Validate every external signal:
+
+   * Signal must be prospective and associated with a future drawing.
+   * Reject expired, post-draw, malformed, duplicate, unauthorized-game, or low-confidence lines.
+   * External lines must pass the same ticket validator as internal lines.
+   * The engine may include zero external lines.
+
+10. Confirm exact adapter mappings against the real Replit action responses:
+
+* Do not rely on guessed property names.
+* Add fixture tests using captured, sanitized response shapes.
+* Never log credentials, cookies, sessions, encryption keys, or secret values.
+
+11. Add production observability:
+
+* Log audit ID, engine version, mode, objective, selected games, amount used, warning codes, blocker codes, and external line counts.
+* Do not log ticket-session secrets or credentials.
+* Keep audit records immutable.
+
+12. Add the following release tests:
+
+* Primary spend never exceeds budget.
+* Test cohort remains simulation-only.
+* Reported ticket count equals returned ticket lines.
+* Reported amount used equals summed primary ticket costs.
+* Duplicate ticket count is zero.
+* Unselected games never appear.
+* Failed sync returns zero tickets.
+* Stale official data returns zero tickets.
+* Assisted mode blocks during session-status conflict.
+* Internal mode continues during Defeater failure when official data is valid.
+* Anti-crowd and coverage flags are honored.
+
+13. Run and report:
+
+* Typecheck for the lottery-engine library.
+* Typecheck for the API server.
+* Full automated test suite.
+* Production build.
+* API startup health check.
+* One INTERNAL_ONLY smoke test.
+* One DEFEATER_COMPARISON smoke test.
+* One DEFEATER_TEST_ONLY smoke test.
+* Do not run a live purchase or claim that any numbers are more likely to win.
+
+14. Do not deploy unless:
+
+* All tests pass.
+* Production build succeeds.
+* Official data is current.
+* The health endpoint is clean.
+* The API response includes the responsible-play notice.
+* No secrets appear in logs or responses.
+
+After completing this, provide:
+
+* Files changed
+* Tests added
+* Total test count
+* Build result
+* Smoke-test results
+* Any remaining warnings or blockers
+* The exact deployment command used
+
+The most important remaining items are **test-cohort budget separation**, **proof that the two optimization flags work**, and **verification that adapter fields match the real Replit action responses**.
