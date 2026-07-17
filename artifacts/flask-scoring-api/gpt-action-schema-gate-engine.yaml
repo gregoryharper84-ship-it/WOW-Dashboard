@@ -1,4 +1,4 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: WOW Gate Engine v2
   description: >
@@ -28,15 +28,10 @@ paths:
       x-openai-isConsequential: false
       summary: Ultra-lightweight liveness probe — returns 200 as soon as Flask is alive
       description: >
-        Call FIRST before every session. Pure liveness probe — no governance,
-        DB, or snapshot checks. Returns within milliseconds of cold-start
-        completion. Public — no X-API-Key required.
-
-        If ok=true, proceed to getWowGovernanceStatus.
-        For deeper readiness detail (governance loaded, snapshot fresh) call
-        GET /wow/engine/ready instead.
-        To trigger lazy cache loading after cold start call
-        GET /wow/engine/warmup.
+        Call FIRST before every session. Pure liveness probe — no DB, governance,
+        or snapshot checks. Returns in milliseconds. Public, no key required.
+        If ok=true, call getWowGovernanceStatus. For readiness detail use
+        /wow/engine/ready; for cache warmup use /wow/engine/warmup.
       responses:
         "200":
           description: Worker is alive
@@ -118,15 +113,11 @@ paths:
       x-openai-isConsequential: false
       summary: Trigger lazy cache/governance warmup after cold start
       description: >
-        Explicitly runs governance snapshot refresh and DB table DDL, then
-        reports the result. Both operations are idempotent — safe to call
-        repeatedly. Public — no X-API-Key required.
-
-        Recommended call sequence after a cold start:
-          1. getWowEngineHealth   → ok: true (worker alive)
-          2. triggerWowEngineWarmup → snapshot: "refreshed", db_table: "ready"
-          3. getWowGovernanceStatus → capture governance_hash
-          4. runWowGateEngineV2    → score rows
+        Runs governance snapshot refresh and DB table DDL idempotently.
+        Public, no key required. Cold-start sequence: (1) getWowEngineHealth
+        → ok:true, (2) triggerWowEngineWarmup → snapshot:"refreshed",
+        (3) getWowGovernanceStatus → capture governance_hash,
+        (4) runWowGateEngineV2 → score rows.
       responses:
         "200":
           description: Warmup result
@@ -153,15 +144,10 @@ paths:
       x-openai-isConsequential: false
       summary: Returns the canonical governance hash and active patch list
       description: >
-        Call SECOND, after getWowEngineHealth confirms ok=true. The
-        governance_hash field in this response MUST be passed as
-        expected_governance_hash in runWowGateEngineV2.
-
-        Public — no X-API-Key required. Also refreshes the in-process
-        governance snapshot as a side effect.
-
-        If governance_hash changes between sessions the prior hash is invalid.
-        Always resync at the start of every new research session.
+        Call SECOND, after getWowEngineHealth ok=true. Provides governance_hash
+        — pass it verbatim as expected_governance_hash in runWowGateEngineV2.
+        Public, no key required. Refreshes snapshot as a side effect. Always
+        resync at start of each session; prior hash is invalid if changed.
       responses:
         "200":
           description: Current governance identity
@@ -216,25 +202,11 @@ paths:
       x-openai-isConsequential: false
       summary: Run the WOW v16 gate engine pipeline on a board of prop rows
       description: >
-        Call THIRD, after obtaining governance_hash from getWowGovernanceStatus.
-
-        MANDATORY fields in every request:
-          - expected_governance_hash  (from getWowGovernanceStatus)
-          - session_id                (stable per research session, e.g. "session-2026-07-17-A")
-          - research_run_id           (unique per run, e.g. "rr-2026-07-17-001")
-          - as_of                     (today's date, YYYY-MM-DD)
-          - rows                      (non-empty array of prop rows)
-
-        Missing or mismatched expected_governance_hash → HTTP 409
-        (error_code: GOVERNANCE_MISMATCH or GOVERNANCE_UNAVAILABLE).
-        Call getWowGovernanceStatus to resync, then retry.
-
-        Missing session_id / research_run_id / as_of → HTTP 409
-        (error_code: RUN_INVALID_GOVERNANCE_MISMATCH).
-
-        This endpoint is a data/classification layer only.
-        can_approve_bets = false. can_execute = false always.
-        Final approval remains with WOW/LLP orchestrator.
+        Call THIRD after getWowGovernanceStatus. Mandatory fields:
+        expected_governance_hash, session_id, research_run_id, as_of, rows.
+        Wrong/missing hash → 409 GOVERNANCE_MISMATCH; resync and retry.
+        Missing session/run/as_of → 409 RUN_INVALID. Data layer only —
+        can_approve_bets=false, can_execute=false.
       requestBody:
         required: true
         content:
@@ -546,6 +518,7 @@ paths:
         - ApiKeyAuth: []
 
 components:
+  schemas: {}
   securitySchemes:
     ApiKeyAuth:
       type: apiKey
