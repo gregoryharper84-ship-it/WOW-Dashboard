@@ -1,3 +1,20 @@
+import time as _boot_t  # first import so BOOT_TIMING works during rest of init
+_BOOT_T0 = _boot_t.time()
+_boot_prev = _BOOT_T0
+
+def _bt(label: str) -> None:
+    """Emit a BOOT_TIMING log line at each init milestone (delta + total ms)."""
+    global _boot_prev
+    _now = _boot_t.time()
+    print(
+        f"BOOT_TIMING {label:<52s}  delta={(_now - _boot_prev)*1000:6.0f}ms"
+        f"  total={(_now - _BOOT_T0)*1000:6.0f}ms",
+        flush=True,
+    )
+    _boot_prev = _now
+
+_bt("start app import")
+
 import os
 import re
 import json
@@ -10,14 +27,33 @@ import traceback
 from collections import deque
 from datetime import datetime, timezone, timedelta
 from functools import wraps
+_bt("imported stdlib")
+
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+_bt("imported flask + cors")
 
-try:
-    import anthropic as _anthropic
-    _ANTHROPIC_AVAILABLE = True
-except ImportError:
-    _ANTHROPIC_AVAILABLE = False
+# ---------------------------------------------------------------------------
+# Lazy imports — deferred to first use so cold-start only pays for Flask/psycopg2.
+# Each _ensure_X() is idempotent and thread-safe under Python's GIL.
+# ---------------------------------------------------------------------------
+
+# anthropic (~3-7 s cold load) — only needed by board-scan / CM / LLP audit routes.
+_anthropic: object = None
+_ANTHROPIC_AVAILABLE: bool = False
+
+def _ensure_anthropic() -> bool:
+    """Import anthropic on first call; subsequent calls are a single bool read."""
+    global _anthropic, _ANTHROPIC_AVAILABLE
+    if _ANTHROPIC_AVAILABLE:
+        return True
+    try:
+        import anthropic as _ant
+        _anthropic = _ant
+        _ANTHROPIC_AVAILABLE = True
+        return True
+    except ImportError:
+        return False
 
 try:
     import psycopg2
@@ -25,10 +61,12 @@ try:
     _PSYCOPG2_AVAILABLE = True
 except ImportError:
     _PSYCOPG2_AVAILABLE = False
+_bt("imported psycopg2")
 
 app = Flask(__name__)
 _APP_START_TIME = time.time()
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
+_bt("flask app created — registering routes")
 
 
 @app.errorhandler(Exception)
@@ -2418,7 +2456,7 @@ def analyze_board():
       model         — claude model used
       usage         — input/output token counts
     """
-    if not _ANTHROPIC_AVAILABLE:
+    if not _ensure_anthropic():
         return jsonify({"ok": False, "error": "anthropic package not installed"}), 503
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -6205,7 +6243,7 @@ def gpt_score_enriched():
     # 3) Call Claude (unless skipped or unavailable)
     if skip_claude:
         enrichment["narrative"] = "(skipped — skip_claude=true)"
-    elif not _ANTHROPIC_AVAILABLE:
+    elif not _ensure_anthropic():
         enrichment["claude_error"] = "anthropic package not installed"
     else:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -6252,12 +6290,28 @@ def gpt_score_enriched():
 # NBA via nba_api (free); MLB/WNBA/NFL via Sports Reference scrape.
 # ═══════════════════════════════════════════════════════════════
 
-try:
-    from bs4 import BeautifulSoup, Comment
-    import pandas as pd
-    _BS4_AVAILABLE = True
-except ImportError:
-    _BS4_AVAILABLE = False
+# bs4+pandas (~4.5-9s cold load) — only needed by BBRef/HLTV/Tennis scraping routes.
+BeautifulSoup: type | None = None
+Comment: type | None = None
+pd: object | None = None
+_BS4_AVAILABLE: bool = False
+
+def _ensure_bs4() -> bool:
+    """Import bs4+pandas on first call; populates module globals BeautifulSoup/Comment/pd."""
+    global BeautifulSoup, Comment, pd, _BS4_AVAILABLE, _BS4_OK
+    if _BS4_AVAILABLE:
+        return True
+    try:
+        from bs4 import BeautifulSoup as _bs, Comment as _bc
+        import pandas as _pd
+        BeautifulSoup = _bs
+        Comment = _bc
+        pd = _pd
+        _BS4_AVAILABLE = True
+        _BS4_OK = True  # keep alias in sync
+        return True
+    except ImportError:
+        return False
 
 try:
     from nba_api.stats.static import players as _nba_players_static
@@ -6265,6 +6319,7 @@ try:
     _NBA_API_AVAILABLE = True
 except ImportError:
     _NBA_API_AVAILABLE = False
+_bt("imported nba_api  (bs4/pandas deferred to first use)")
 
 
 # ── TTL cache (1 hour) ────────────────────────────────────────
@@ -6462,7 +6517,7 @@ def _bbref_fetch(url: str):
 
 def _bbref_parse_table(html: str, table_id: str):
     """Parse BBRef table; handles hidden-in-comment case."""
-    if not _BS4_AVAILABLE:
+    if not _ensure_bs4():
         return None
     soup  = BeautifulSoup(html, "lxml")
     table = soup.find("table", {"id": table_id})
@@ -6504,7 +6559,7 @@ def _l10_bbref(first: str, last: str, sport: str, prop: str,
     result = {"source": "baseball-reference.com", "games": [],
               "complete": False, "rows": 0, "gap": ""}
 
-    if not _BS4_AVAILABLE:
+    if not _ensure_bs4():
         result["gap"] = "beautifulsoup4/pandas not installed in Replit env"
         return result
 
@@ -6827,7 +6882,7 @@ def _bbref_get(url: str):
         return None
 
 def _bbref_table(html: str, tid: str):
-    if not _BS4_OK: return None
+    if not _ensure_bs4(): return None
     from io import StringIO
     soup  = BeautifulSoup(html, "lxml")
     table = soup.find("table", {"id": tid})
@@ -6871,7 +6926,7 @@ _BBREF_CFG = {
 
 def _bbref(first, last, sport, prop, direction, line, year):
     r = {"source": "", "games": [], "complete": False, "rows": 0, "gap": ""}
-    if not _BS4_OK:
+    if not _ensure_bs4():
         r["gap"] = "beautifulsoup4/lxml not installed"; return r
     cfg = _BBREF_CFG.get(sport)
     if not cfg:
@@ -6925,7 +6980,7 @@ def _pitcher_fantasy_score(first, last, direction, line, year):
     r = {"source": "baseball-reference.com (PP formula reconstruct)",
          "formula": "+1/out  +3/K  -3/ER  +4/QS  +6/W",
          "games": [], "complete": False, "rows": 0, "gap": ""}
-    if not _BS4_OK:
+    if not _ensure_bs4():
         r["gap"] = "beautifulsoup4/lxml not installed"; return r
     url  = (f"https://www.baseball-reference.com"
             f"/players/{_pid(first,last,'mlb_pitcher')}"
@@ -7055,11 +7110,24 @@ def _first_inn_pitches(first, last, direction, line, season):
 # ══════════════════════════════════════════════════════════════════════
 
 # Availability flag — checked before every pybaseball call.
-try:
-    import pybaseball as _pb
-    _PYBASEBALL_OK = True
-except ImportError:
-    _PYBASEBALL_OK = False
+# pybaseball (~3-6s cold load) — only needed by MLB pitcher stat routes.
+_pb: object | None = None
+_PYBASEBALL_OK: bool = False
+
+def _ensure_pybaseball() -> bool:
+    """Import pybaseball on first call; also sets pd (pandas) since pybaseball depends on it."""
+    global _pb, _PYBASEBALL_OK, pd
+    if _PYBASEBALL_OK:
+        return True
+    try:
+        import pybaseball as _pb_mod
+        import pandas as _pd_mod  # pybaseball depends on pandas; grab the alias too
+        _pb = _pb_mod
+        pd = _pd_mod
+        _PYBASEBALL_OK = True
+        return True
+    except ImportError:
+        return False
 
 # Prop-to-event mapping for Statcast aggregation.
 # "key" is the pybaseball `events` column value we count per game.
@@ -7090,7 +7158,7 @@ _PB_MLB_WORKFLOW_FIELDS = [
 def _pb_lookup_mlbam_id(first: str, last: str) -> int | None:
     """Map a name to an MLBAM ID via pybaseball's lookup table.
     Returns None on failure (lookup table empty or name not found)."""
-    if not _PYBASEBALL_OK:
+    if not _ensure_pybaseball():
         return None
     try:
         df = _pb.playerid_lookup(last, first)
@@ -7181,7 +7249,7 @@ def _pb_statcast_window(player_id: int, year: str, lookback_days: int = 30):
     Returns dict with `has_data` (True only if rows returned), `game_count`,
     `avg_event_rate`, `last_date`, `source`, `fetched_at`, `error`.
     """
-    if not _PYBASEBALL_OK:
+    if not _ensure_pybaseball():
         return {"has_data": False, "error": "pybaseball not installed"}
     try:
         from datetime import datetime, timedelta
@@ -7209,7 +7277,7 @@ def _pb_fangraphs_baseline(player_id: int, year: str):
     pybaseball's batting_stats / pitching_stats return season aggregates.
     Returns dict with `has_data`, `source`, `fetched_at`, and `stats` or `error`.
     """
-    if not _PYBASEBALL_OK:
+    if not _ensure_pybaseball():
         return {"has_data": False, "error": "pybaseball not installed"}
     try:
         # Try pitching first (higher chance of success for pitchers)
@@ -7234,7 +7302,7 @@ def _pb_pitcher_vs_opponent_k(pitcher_id: int, opponent: str, year: str):
     Returns dict with `checked`, `head_to_head_games`, `avg_k`, `max_k`,
     `source`, `fetched_at`, `error` or None on success.
     """
-    if not _PYBASEBALL_OK:
+    if not _ensure_pybaseball():
         return {"checked": False, "error": "pybaseball not installed"}
     try:
         raw = _pb.statcast_pitcher(
@@ -7396,7 +7464,7 @@ def _get_pitcher_savant(first: str, last: str, days_back: int = 30) -> dict:
     """Pull recent Statcast pitcher indicators via pybaseball.
     Note: strikeout_events_per_pitch ≠ true K% (denominator is pitches, not BF).
     """
-    if not _PYBASEBALL_OK:
+    if not _ensure_pybaseball():
         return {"error": "pybaseball not installed"}
     from datetime import datetime, timedelta
     try:
@@ -7605,7 +7673,7 @@ def _leash_score_from_statcast(first: str, last: str, days_back: int = 90) -> di
     Groups Statcast pitch-by-pitch data by game_date to reconstruct a per-start
     log, using max inning reached as an IP proxy, then feeds _leash_score().
     """
-    if not _PYBASEBALL_OK:
+    if not _ensure_pybaseball():
         return {"leash_score": None, "leash_grade": "UNKNOWN",
                 "avg_ip_l5": None, "trend": "UNKNOWN", "flag": "LEASH_DATA_MISSING"}
     from datetime import datetime, timedelta
@@ -8311,7 +8379,7 @@ def _cs2(player_name, hltv_id, prop, direction, line):
         r["gap"] = (f"HLTV HTTP {resp.status_code} — "
                     "cloudscraper challenge may be stale, try Playwright fallback")
         return r
-    if not _BS4_OK:
+    if not _ensure_bs4():
         r["gap"] = "beautifulsoup4 not installed"; return r
     soup  = BeautifulSoup(resp.text, "html.parser")
     table = soup.find("table", {"class": "stats-table"})
@@ -8356,7 +8424,7 @@ def _tennis(first, last, prop, direction, line):
     from io import StringIO
     r = {"source": "tennisabstract.com", "games": [],
          "complete": False, "rows": 0, "gap": ""}
-    if not _BS4_OK:
+    if not _ensure_bs4():
         r["gap"] = "pandas not installed"; return r
     name = f"{first}{last}".replace(" ","")
     url  = f"http://tennisabstract.com/cgi-bin/player.cgi?p={name}"
@@ -10690,7 +10758,7 @@ def wow_analyze():
       { ok: true, player, sport, prop, direction, line, league?,
         confidence: "high"|"medium"|"low", raw_response: str }
     """
-    if not _ANTHROPIC_AVAILABLE:
+    if not _ensure_anthropic():
         return jsonify({"ok": False,
                         "error": "anthropic package not installed on server"}), 503
 
@@ -10934,10 +11002,8 @@ def _cm_ensure_schema():
             app.logger.error(f"CM schema bootstrap failed: {e}")
             raise
 
-try:
-    _cm_ensure_schema()
-except Exception:
-    app.logger.warning("CM schema not ready at boot; will retry on first request")
+# _cm_ensure_schema() deferred: called from _run_startup_warmup daemon thread instead
+# of at module import time, so it never blocks the cold-start port bind.
 
 
 def _cm_db():
@@ -11027,7 +11093,7 @@ def _cm_load_final(conn, board_id):
 def _cm_claude_call(system_prompt, user_content, max_tokens=4096):
     """Single Anthropic Messages call. Returns (text, model_version, latency_ms).
     Raises on error."""
-    if not _ANTHROPIC_AVAILABLE:
+    if not _ensure_anthropic():
         raise RuntimeError("anthropic SDK not installed")
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
@@ -12964,6 +13030,7 @@ def _llp_failure_paths(sport, market, side, ctx):
     return fp
 
 
+_bt("importing gate_engine.llp_odds_resolver")
 from gate_engine.llp_odds_resolver import (
     resolve_odds_source as _resolve_odds_source,
     SOURCE_QUALITY_UNAVAILABLE as _SQ_UNAVAILABLE,
@@ -12971,6 +13038,7 @@ from gate_engine.llp_odds_resolver import (
     PROXY_BIG_STAKE_STATUS as _PROXY_BIG_STAKE_STATUS,
     PROXY_CONFIDENCE_CEILING as _PROXY_CONFIDENCE_CEILING,
 )
+_bt("llp_odds_resolver loaded")
 
 
 def _llp_analyze_one(game, default_sport, board_date):
@@ -14117,7 +14185,9 @@ def _llp_build_buckets(analyses, source_status):
 # (price/edge fields, edge threshold, probability cap, timing freshness,
 # steam protocol, contradiction hard-kills, session exposure, reapproval,
 # calibration ledger) that "FULL LLP RUN with full compliance" requires.
+_bt("importing gate_engine.llp_governance")
 from gate_engine.llp_governance import LLPLabel, run_llp_governance
+_bt("llp_governance loaded")
 
 _LLP_BOARD_SCAN_INCOMPLETE_MESSAGE = "Highest market-implied side only — full LLP verification incomplete."
 _LLP_BOARD_SCAN_FALLBACK_TAGS = ["full-run-not-completed", "model-probability-missing", "final-lock-skipped"]
@@ -16615,6 +16685,7 @@ _llp_start_snapshot_cron()
 # ---------------------------------------------------------------------------
 # Gate Engine — WOW v16 PrizePicks deterministic classification pipeline
 # ---------------------------------------------------------------------------
+_bt("importing gate_engine modules")
 from gate_engine.pipeline import run_pipeline as _ge_run_pipeline
 from gate_engine import tracker as _ge_tracker
 from gate_engine import auto_enrichment as _ge_auto_enrichment
@@ -16634,6 +16705,7 @@ from gate_engine.governance_resilience import (
 )
 from gate_engine.pg_session_ledger import PgSessionLedger as _PgSessionLedger
 from gate_engine.pg_session_ledger import ensure_table_exists as _ensure_wse_table
+_bt("gate_engine modules loaded")
 
 # ---------------------------------------------------------------------------
 # Lazy startup warmup — runs in a background daemon thread so it never blocks
@@ -16644,6 +16716,10 @@ import threading as _threading
 
 def _run_startup_warmup():
     try:
+        _cm_ensure_schema()  # deferred from module level — idempotent, non-fatal
+    except Exception:
+        pass
+    try:
         _ge_get_snapshot().refresh()
     except Exception:
         pass
@@ -16653,6 +16729,7 @@ def _run_startup_warmup():
         pass
 
 _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
+_bt("startup daemon spawned — app fully ready")
 
 
 def _get_session_ledger(session_id: str | None) -> "_PgSessionLedger | None":
@@ -27267,7 +27344,7 @@ def wow_llp_team_analyze_board():
       model         — Claude model used
       enrichment_hint — next-step payload template
     """
-    if not _ANTHROPIC_AVAILABLE:
+    if not _ensure_anthropic():
         return jsonify({"ok": False, "error": "anthropic package not installed"}), 503
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
