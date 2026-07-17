@@ -12,7 +12,7 @@ version = "1.0.0"
 name = "web"
 paths = ["/"]
 localPort = 25643
-deploymentTarget = "vm"
+deploymentTarget = "autoscale"
 
 [services.development]
 run = "cd /home/runner/workspace/artifacts/flask-scoring-api && PORT=25643 python app.py"
@@ -25,14 +25,14 @@ args = ["bash", "/home/runner/workspace/artifacts/flask-scoring-api/build.sh"]
 [services.production.run]
 args = [
   "bash", "-c",
-  "cd /home/runner/workspace/artifacts/flask-scoring-api && python pre_start.py && python -m gunicorn app:app --bind 0.0.0.0:25643 --workers 2 --timeout 300 --access-logfile -"
+  "cd /home/runner/workspace/artifacts/flask-scoring-api && python pre_start.py && python -m gunicorn app:app --bind 0.0.0.0:25643 --workers 2 --timeout 120 --preload --access-logfile - --error-logfile -"
 ]
 
 [services.production.run.env]
 PORT = "25643"
 
 [services.production.health.startup]
-path = "/health"
+path = "/wow/engine/health"
 
 [services.env]
 PORT = "25643"

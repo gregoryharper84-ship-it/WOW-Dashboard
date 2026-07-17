@@ -26,17 +26,20 @@ paths:
     get:
       operationId: getWowEngineHealth
       x-openai-isConsequential: false
-      summary: Ultra-lightweight process and governance health check
+      summary: Ultra-lightweight liveness probe — returns 200 as soon as Flask is alive
       description: >
-        Call FIRST before every session. Makes NO external HTTP calls — only
-        reads in-process state (uptime, worker PID, governance loaded, snapshot
-        freshness). Returns within milliseconds. Public — no X-API-Key required.
+        Call FIRST before every session. Pure liveness probe — no governance,
+        DB, or snapshot checks. Returns within milliseconds of cold-start
+        completion. Public — no X-API-Key required.
 
-        If ok=false or governance.loaded=false, do not proceed to
-        getWowGovernanceStatus or runWowGateEngineV2. The worker is not ready.
+        If ok=true, proceed to getWowGovernanceStatus.
+        For deeper readiness detail (governance loaded, snapshot fresh) call
+        GET /wow/engine/ready instead.
+        To trigger lazy cache loading after cold start call
+        GET /wow/engine/warmup.
       responses:
         "200":
-          description: Worker health state
+          description: Worker is alive
           content:
             application/json:
               schema:
@@ -44,10 +47,36 @@ paths:
                 properties:
                   ok:
                     type: boolean
-                    description: true if the worker is alive and governance is loaded
+                    description: Always true when the worker is serving requests
                   service:
                     type: string
-                    description: Always "WOW Gate Engine"
+                    description: Always "wow-engine"
+                  status:
+                    type: string
+                    description: Always "alive"
+
+  /wow/engine/ready:
+    get:
+      operationId: getWowEngineReady
+      x-openai-isConsequential: false
+      summary: Deep readiness check — governance loaded, snapshot fresh, DB configured
+      description: >
+        Optional deeper readiness probe. Returns the same rich payload that
+        /wow/engine/health used to return before the liveness/readiness split.
+        Makes NO external HTTP calls — reads only in-process state.
+        Public — no X-API-Key required.
+      responses:
+        "200":
+          description: Detailed readiness state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  service:
+                    type: string
                   uptime_seconds:
                     type: number
                   worker_pid:
@@ -59,13 +88,11 @@ paths:
                         type: boolean
                       master_spec:
                         type: string
-                        description: e.g. "WOW-v16"
                       engine_version:
                         type: string
-                        description: e.g. "v16.5"
                       hash_prefix:
                         type: string
-                        description: First 16 hex chars of the current governance hash + "…"
+                        description: First 16 hex chars of governance hash + "…"
                       active_patches:
                         type: integer
                   snapshot:
@@ -84,6 +111,41 @@ paths:
                   can_execute:
                     type: boolean
                     description: Always false — data/classification layer only
+
+  /wow/engine/warmup:
+    get:
+      operationId: triggerWowEngineWarmup
+      x-openai-isConsequential: false
+      summary: Trigger lazy cache/governance warmup after cold start
+      description: >
+        Explicitly runs governance snapshot refresh and DB table DDL, then
+        reports the result. Both operations are idempotent — safe to call
+        repeatedly. Public — no X-API-Key required.
+
+        Recommended call sequence after a cold start:
+          1. getWowEngineHealth   → ok: true (worker alive)
+          2. triggerWowEngineWarmup → snapshot: "refreshed", db_table: "ready"
+          3. getWowGovernanceStatus → capture governance_hash
+          4. runWowGateEngineV2    → score rows
+      responses:
+        "200":
+          description: Warmup result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  warmup:
+                    type: object
+                    properties:
+                      snapshot:
+                        type: string
+                        description: '"refreshed" or "error: <msg>"'
+                      db_table:
+                        type: string
+                        description: '"ready" or "error: <msg>"'
 
   /wow/governance/status:
     get:

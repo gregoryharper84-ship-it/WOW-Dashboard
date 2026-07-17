@@ -16632,23 +16632,27 @@ from gate_engine.governance_resilience import (
     make_mismatch_error       as _ge_mismatch_error,
     build_engine_health       as _ge_build_engine_health,
 )
-# Eagerly warm the governance snapshot so the first request is always served
-# from cache. No-op if import fails (worker still starts).
-try:
-    _ge_get_snapshot().refresh()
-except Exception:
-    pass
 from gate_engine.pg_session_ledger import PgSessionLedger as _PgSessionLedger
 from gate_engine.pg_session_ledger import ensure_table_exists as _ensure_wse_table
 
-# Create the wow_session_exposure table on startup (idempotent DDL).
-try:
-    _ensure_wse_table()
-except Exception as _wse_exc:
-    import logging as _logging
-    _logging.getLogger(__name__).warning(
-        "wow_session_exposure table init failed: %s", _wse_exc
-    )
+# ---------------------------------------------------------------------------
+# Lazy startup warmup — runs in a background daemon thread so it never blocks
+# the health endpoint or the first real request. Governance snapshot refresh
+# and DB table DDL are both idempotent and non-fatal if they fail here.
+# ---------------------------------------------------------------------------
+import threading as _threading
+
+def _run_startup_warmup():
+    try:
+        _ge_get_snapshot().refresh()
+    except Exception:
+        pass
+    try:
+        _ensure_wse_table()
+    except Exception:
+        pass
+
+_threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
 
 
 def _get_session_ledger(session_id: str | None) -> "_PgSessionLedger | None":
@@ -16709,11 +16713,32 @@ def wow_engine_health():
     """
     GET /wow/engine/health
 
-    Ultra-lightweight process and governance health check.
-    Makes NO external HTTP calls — reports only in-process state.
+    Ultra-lightweight liveness probe. Returns 200 as soon as the Flask
+    worker is alive — no governance, DB, or snapshot checks performed.
+    Safe to use as the Autoscale startup health check path.
 
-    Returns within milliseconds. Safe to call as a pre-flight check
-    before every run. No authentication required.
+    For deeper readiness (governance loaded, DB reachable, snapshot fresh)
+    use GET /wow/engine/ready.
+    To trigger lazy cache/model loading use GET /wow/engine/warmup.
+    """
+    return jsonify({
+        "ok":      True,
+        "service": "wow-engine",
+        "status":  "alive",
+    }), 200
+
+
+@app.route("/wow/engine/ready", methods=["GET"])
+def wow_engine_ready():
+    """
+    GET /wow/engine/ready
+
+    Deeper readiness check: confirms governance is loaded, snapshot state,
+    and DB env is configured. Makes NO external HTTP calls — reads only
+    in-process state. Returns within milliseconds.
+
+    Response mirrors the old /wow/engine/health shape so existing callers
+    that want the richer detail can switch to this endpoint.
 
     Response:
       {
@@ -16725,7 +16750,7 @@ def wow_engine_health():
           "loaded":           true,
           "master_spec":      "WOW-v16",
           "engine_version":   "v16.5",
-          "hash_prefix":      "55191beb...",
+          "hash_prefix":      "2a74d11e...",
           "active_patches":   9
         },
         "snapshot": {
@@ -16741,6 +16766,44 @@ def wow_engine_health():
     return jsonify(
         _ge_build_engine_health(uptime_seconds=time.time() - _APP_START_TIME)
     ), 200
+
+
+@app.route("/wow/engine/warmup", methods=["GET"])
+def wow_engine_warmup():
+    """
+    GET /wow/engine/warmup
+
+    Explicitly triggers the lazy startup warmup (governance snapshot refresh
+    + DB table DDL) and reports the result. Safe to call repeatedly —
+    both operations are idempotent.
+
+    Intended for post-cold-start orchestration: call this once after
+    /wow/engine/health returns 200, before beginning a scoring session.
+    The background daemon thread started at import time runs the same
+    warmup automatically, but this endpoint lets callers confirm it
+    completed and surface any errors.
+
+    Response:
+      {
+        "ok": true,
+        "warmup": {
+          "snapshot":  "refreshed",   or "error: <msg>"
+          "db_table":  "ready"        or "error: <msg>"
+        }
+      }
+    """
+    results = {}
+    try:
+        _ge_get_snapshot().refresh()
+        results["snapshot"] = "refreshed"
+    except Exception as _wu_exc:
+        results["snapshot"] = f"error: {_wu_exc}"
+    try:
+        _ensure_wse_table()
+        results["db_table"] = "ready"
+    except Exception as _wu_exc:
+        results["db_table"] = f"error: {_wu_exc}"
+    return jsonify({"ok": True, "warmup": results}), 200
 
 
 @app.route("/gate-engine/run", methods=["POST"])
