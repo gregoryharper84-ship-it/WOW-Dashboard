@@ -1,0 +1,80 @@
+This is close, but there is **one major architectural issue left**:
+
+The production endpoint still generates portfolios with the **old `generatePortfolio` engine**. The new `buildPortfolio` engine is only being used for readiness and validation. That means the hardened logic is not yet the actual source of the returned tickets.
+
+Send Replit this final instruction:
+
+The hardening work looks good, but one release-blocking issue remains.
+
+The production route `/api/gpt/portfolio/generate` still uses the old `generatePortfolio` implementation to create the returned ticket lines, while the new `buildPortfolio` engine is only used for readiness or validation.
+
+Please complete the integration so the hardened engine is the authoritative generation path:
+
+1. Make `buildPortfolio()` generate the final primary portfolio returned by the production endpoint.
+
+2. Remove or bypass the old `generatePortfolio()` path for this endpoint unless it is wrapped as an internal candidate generator behind `buildPortfolio()`.
+
+3. Ensure the production response is constructed from `PortfolioResponse` returned by `buildPortfolio()`, including:
+
+   * tickets
+   * amountUsed
+   * amountUnused
+   * ticketCount
+   * coverageSummary
+   * antiCrowdSummary
+   * externalSourceContribution
+   * externalComparison
+   * externalTestCohort
+   * warnings and blockers
+   * officialDataTimestamp
+   * audit information
+   * responsible-play notice
+
+4. Do not run the old engine first and validate afterward. Stale data, invalid jurisdiction, session conflicts, sync failure, and unauthorized games must block before ticket generation.
+
+5. Preserve backward compatibility at the API boundary if existing clients expect fields such as:
+
+   * `generationId`
+   * `ticketLines`
+   * `totalCost`
+
+   Add a response mapper from the new `PortfolioResponse`; do not keep two independent generation engines.
+
+6. Add an integration test proving the production route calls `buildPortfolio()` as its generation source. Mock the old generator to throw, and verify the route still succeeds through the new engine—or remove the old generator dependency entirely.
+
+7. Add production-route tests for:
+
+   * stale official data returns zero tickets
+   * failed sync returns zero tickets
+   * unselected games never appear
+   * amount used equals the sum of returned primary tickets
+   * test-only cohort is not included in the purchase recommendation
+   * flags are honored through the actual HTTP endpoint
+   * responsible-play notice is present
+
+8. Replace the skipped Monte Carlo test with a deterministic test when practical:
+
+   * seeded simulation, bounded prize tiers, or analytical expectation
+   * keep the skip temporarily documented, but do not treat a permanently skipped risk test as full coverage
+
+9. Run:
+
+   * library typecheck
+   * API-server typecheck
+   * full test suite
+   * production build
+   * HTTP smoke tests against the real production route
+
+10. Report:
+
+* whether the old generator remains anywhere in the production request path
+* the exact generation call graph
+* files changed
+* total passing and skipped tests
+* production build result
+* smoke-test results
+* remaining blockers
+
+Do not mark the engine production-ready until the new `buildPortfolio()` implementation is the single source of truth for generated ticket recommendations.
+
+Also note that the successful `DEFEATER_TEST_ONLY` unit test proves the mode logic, but the live smoke test only proves that invalid sessions block correctly. A successful live or staging test-only request will still be needed after the connector session is valid.
