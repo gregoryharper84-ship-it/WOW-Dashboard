@@ -531,6 +531,15 @@ def run_pipeline(
     if settlement_stale:
         settlement_loopback.apply_stale_ceiling_to_output(rows, stale=True)
 
+    # -------------------------------------------------------------------
+    # Four-Lane Stamping — must run after all label mutations are final.
+    # Stamps confidence_lane, market_lane, money_lane, slip_lane on every
+    # row so downstream consumers read lane state without re-interpreting
+    # gate outputs.
+    # -------------------------------------------------------------------
+    for row in rows:
+        _derive_four_lanes(row)
+
     if record_entries:
         for row in rows:
             if row.get("terminal_label") == PropLabel.FINAL_APPROVED.value:
@@ -723,6 +732,143 @@ def _build_market_join_audit(row: dict, enrichment: dict) -> dict[str, Any]:
         "prop_join_key":           prop_join_key,
         "market_rejection_reason": market_rejection_reason,
     }
+
+
+def _derive_four_lanes(row: dict[str, Any]) -> None:
+    """
+    Stamp confidence_lane, market_lane, money_lane, slip_lane onto a row.
+
+    All four fields are derived directly from existing gate outputs — no new
+    scoring logic is introduced here.  Every lane has a small, stable set of
+    string values so downstream consumers can branch on them without parsing
+    prose statuses or diving into nested gate dicts.
+
+    Call order: must run AFTER classifier.classify() and any stale-ceiling
+    enforcement so that terminal_label is fully settled.
+    """
+    gates    = row.get("gates", {})
+    terminal = row.get("terminal_label") or ""
+
+    # ------------------------------------------------------------------
+    # Confidence Lane — hit confidence independent of market verification
+    # Source: gates["l5_l10_ledger"]
+    # Values: HIGH | MEDIUM | LOW | RECONSTRUCTED | DATA_UNAVAILABLE
+    # ------------------------------------------------------------------
+    l5l10 = gates.get("l5_l10_ledger", {})
+    if not l5l10.get("passed"):
+        confidence_lane: str = "DATA_UNAVAILABLE"
+    else:
+        conf_tier = l5l10.get("confidence_tier")
+        if conf_tier:
+            # confidence_tier already carries the engine's own tier label
+            confidence_lane = str(conf_tier).upper()
+        else:
+            l10_hit = l5l10.get("l10_hit_rate")
+            if l10_hit is None:
+                confidence_lane = "RECONSTRUCTED"
+            elif l10_hit >= 0.60:
+                confidence_lane = "HIGH"
+            elif l10_hit >= 0.55:
+                confidence_lane = "MEDIUM"
+            else:
+                confidence_lane = "LOW"
+
+    # ------------------------------------------------------------------
+    # Market Lane — market-edge status
+    # Source: gates["market_gate"]
+    # Values: EXACT_VERIFIED | ADJACENT_RECONSTRUCTED |
+    #         MODEL_ONLY_RECONSTRUCTED | UNAVAILABLE | CONTRADICTION |
+    #         SEVERE_DRIFT | CLV_PENDING | CLV_UNAVAILABLE | NO_MARKET_DATA
+    # ------------------------------------------------------------------
+    mkt           = gates.get("market_gate", {})
+    mkt_status    = mkt.get("market_status", "")
+    exact_found   = mkt.get("exact_market_found")
+    adjacent_used = mkt.get("adjacent_market_used")
+
+    if not mkt:
+        market_lane: str = "NO_MARKET_DATA"
+    elif mkt_status == "MARKET_CONTRADICTION":
+        market_lane = "CONTRADICTION"
+    elif mkt_status == "SEVERE_BOARD_VS_BOOK_DRIFT":
+        market_lane = "SEVERE_DRIFT"
+    elif mkt_status == "CLV_PENDING":
+        market_lane = "CLV_PENDING"
+    elif mkt_status in ("OPENER_UNAVAILABLE", "NO_CLOSE_AVAILABLE"):
+        market_lane = "CLV_UNAVAILABLE"
+    elif mkt_status == "NO_MARKET_AVAILABLE":
+        market_lane = "UNAVAILABLE"
+    elif exact_found:
+        # MARKET_VERIFIED or MARKET_EDGE_DETECTED with a confirmed exact line
+        market_lane = "EXACT_VERIFIED"
+    elif adjacent_used:
+        # Sportsbook line found but is adjacent (half-point shift), not exact
+        market_lane = "ADJACENT_RECONSTRUCTED"
+    elif exact_found is False:
+        # No exact line and no adjacent substitution — model-only estimate
+        market_lane = "MODEL_ONLY_RECONSTRUCTED"
+    else:
+        market_lane = "NO_MARKET_DATA"
+
+    # ------------------------------------------------------------------
+    # Money Lane — payout / economics readiness
+    # Source: gates["ev_gate"] + gates["payout_context"]
+    # Values: QUALIFIED | PAYOUT_UNRESOLVED | NO_MARKET | NOT_QUALIFIED |
+    #         DATA_UNAVAILABLE
+    # ------------------------------------------------------------------
+    ev  = gates.get("ev_gate", {})
+    pay = gates.get("payout_context", {})
+
+    if not ev:
+        money_lane: str = "DATA_UNAVAILABLE"
+    elif any("NO_MARKET" in b for b in (ev.get("ev_blockers") or [])):
+        money_lane = "NO_MARKET"
+    elif ev.get("money_qualified"):
+        money_lane = "QUALIFIED" if pay.get("passed") else "PAYOUT_UNRESOLVED"
+    else:
+        money_lane = "NOT_QUALIFIED"
+
+    # ------------------------------------------------------------------
+    # Slip Lane — slip eligibility (structure + correlation + ladder)
+    # Source: gates["slip_structure"], ["component_composite"],
+    #         ["opportunity_state"], ["exposure_gate"]
+    # Values: ELIGIBLE | BLOCKED_COMPOSITE_CONFLICT |
+    #         BLOCKED_OPPORTUNITY_CONFLICT | BLOCKED_DUPLICATE_EXPOSURE |
+    #         BLOCKED_STRUCTURE | NOT_ELIGIBLE
+    # ------------------------------------------------------------------
+    _hard_reject_labels = {
+        PropLabel.REJECT_DATA_QUALITY.value,
+        PropLabel.REJECT_NO_EDGE.value,
+        PropLabel.REJECT_BAD_STRUCTURE.value,
+        PropLabel.SLATE_PURGE.value,
+        PropLabel.SOURCE_CONFLICT.value,
+        PropLabel.DUPLICATE_EXPOSURE_BLOCK.value,
+        PropLabel.SETTLEMENT_SOURCE_CONFLICT.value,
+        PropLabel.COMPONENT_COMPOSITE_CONFLICT.value,
+        PropLabel.REJECT_CONTRADICTORY_ROLE_STATE.value,
+    }
+
+    cc   = gates.get("component_composite", {})
+    opp  = gates.get("opportunity_state", {})
+    exp  = gates.get("exposure_gate", {})
+    slip = gates.get("slip_structure", {})
+
+    if terminal in _hard_reject_labels:
+        slip_lane: str = "NOT_ELIGIBLE"
+    elif cc.get("passed") is False:
+        slip_lane = "BLOCKED_COMPOSITE_CONFLICT"
+    elif opp.get("passed") is False or opp.get("conflict_detected"):
+        slip_lane = "BLOCKED_OPPORTUNITY_CONFLICT"
+    elif exp.get("passed") is False:
+        slip_lane = "BLOCKED_DUPLICATE_EXPOSURE"
+    elif slip.get("passed") is False:
+        slip_lane = "BLOCKED_STRUCTURE"
+    else:
+        slip_lane = "ELIGIBLE"
+
+    row["confidence_lane"] = confidence_lane
+    row["market_lane"]     = market_lane
+    row["money_lane"]      = money_lane
+    row["slip_lane"]       = slip_lane
 
 
 def _build_output(rows: list[dict], ledger: ExposureLedger,
