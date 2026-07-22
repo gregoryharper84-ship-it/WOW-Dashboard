@@ -31,3 +31,4 @@
 - [Custom GPT four-schema architecture](gpt-four-schemas.md) — four separate action schemas: main WOW scoring, Kalshi proxy, gate-engine/governance (getWowEngineHealth+getWowGovernanceStatus+runWowGateEngineV2), plus slim /gpt-score JSON; gate-engine schema is gpt-action-schema-gate-engine.yaml.
 - [Kalshi category-scan architecture](kalshi-category-scan-arch.md) — GET /wow/kalshi/category-scan: category_router→weather_gate(12)/sports_gate(9)→portfolio_governor(max 2/1-event); gate 12 pre-set True, governor is binding; can_execute=False always.
 - [nba_api cold-start fix](nba-cold-start.md) — module-level nba_api import took 10.7s → healthcheck 500s during every restart; fix: _nba_ensure() lazy-init, all guards changed to if not _nba_ensure().
+- [run-connected-model timeout fixes](run-connected-model-timeouts.md) — three-layer fix: Anthropic 90s timeout, psycopg2 connect_timeout=10, gunicorn --timeout 240.

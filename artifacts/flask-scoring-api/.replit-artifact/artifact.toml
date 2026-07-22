@@ -25,7 +25,7 @@ args = ["bash", "/home/runner/workspace/artifacts/flask-scoring-api/build.sh"]
 [services.production.run]
 args = [
   "bash", "-c",
-  "cd /home/runner/workspace/artifacts/flask-scoring-api && python pre_start.py && python -m gunicorn app:app --bind 0.0.0.0:25643 --workers 2 --timeout 120 --preload --access-logfile - --error-logfile -"
+  "cd /home/runner/workspace/artifacts/flask-scoring-api && python pre_start.py && python -m gunicorn app:app --bind 0.0.0.0:25643 --workers 2 --timeout 240 --preload --access-logfile - --error-logfile -"
 ]
 
 [services.production.run.env]

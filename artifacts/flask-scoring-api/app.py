@@ -149,7 +149,7 @@ def get_db_conn():
     database_url = os.environ.get("DATABASE_URL", "")
     if not database_url:
         raise RuntimeError("DATABASE_URL environment variable is not set")
-    return psycopg2.connect(database_url)
+    return psycopg2.connect(database_url, connect_timeout=10)
 
 
 def require_api_key(f):
@@ -11113,16 +11113,21 @@ def _cm_load_final(conn, board_id):
 
 
 # ── Claude call helper ────────────────────────────────────────────────
+_CM_CLAUDE_CALL_TIMEOUT = 90.0   # seconds; raises anthropic.APITimeoutError on breach
+
 def _cm_claude_call(system_prompt, user_content, max_tokens=4096):
     """Single Anthropic Messages call. Returns (text, model_version, latency_ms).
-    Raises on error."""
+    Raises on error. Hard timeout of _CM_CLAUDE_CALL_TIMEOUT seconds prevents
+    the gunicorn worker from being killed by the master's --timeout watchdog.
+    """
     if not _ensure_anthropic():
         raise RuntimeError("anthropic SDK not installed")
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
     model = os.environ.get("CM_CLAUDE_MODEL", "claude-sonnet-4-5")
-    client = _anthropic.Anthropic(api_key=api_key)
+    timeout_s = float(os.environ.get("CM_CLAUDE_TIMEOUT_S", _CM_CLAUDE_CALL_TIMEOUT))
+    client = _anthropic.Anthropic(api_key=api_key, timeout=timeout_s)
     t0 = time.time()
     resp = client.messages.create(
         model=model, max_tokens=max_tokens, temperature=0.0,
