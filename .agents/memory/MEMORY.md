@@ -32,3 +32,4 @@
 - [Kalshi category-scan architecture](kalshi-category-scan-arch.md) — GET /wow/kalshi/category-scan: category_router→weather_gate(12)/sports_gate(9)→portfolio_governor(max 2/1-event); gate 12 pre-set True, governor is binding; can_execute=False always.
 - [nba_api cold-start fix](nba-cold-start.md) — module-level nba_api import took 10.7s → healthcheck 500s during every restart; fix: _nba_ensure() lazy-init, all guards changed to if not _nba_ensure().
 - [run-connected-model timeout fixes](run-connected-model-timeouts.md) — three-layer fix: Anthropic 90s timeout, psycopg2 connect_timeout=10, gunicorn --timeout 240.
+- [gunicorn --preload threading.Lock deadlock](gunicorn-preload-lock-deadlock.md) — post_fork hook must re-create all threading.Lock instances; inherited locked mutex = permanent WORKER TIMEOUT.
