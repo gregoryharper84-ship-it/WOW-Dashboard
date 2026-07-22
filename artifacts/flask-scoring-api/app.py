@@ -6313,13 +6313,35 @@ def _ensure_bs4() -> bool:
     except ImportError:
         return False
 
-try:
-    from nba_api.stats.static import players as _nba_players_static
-    from nba_api.stats.endpoints import playergamelog as _nba_gamelog_ep
-    _NBA_API_AVAILABLE = True
-except ImportError:
-    _NBA_API_AVAILABLE = False
-_bt("imported nba_api  (bs4/pandas deferred to first use)")
+# nba_api is imported lazily on first use to avoid a 10+ second cold-start
+# delay that would cause healthcheck 500s during worker restarts.
+_NBA_API_AVAILABLE: bool | None = None   # None = not yet attempted
+_nba_players_static = None
+_nba_gamelog_ep     = None
+
+def _nba_ensure() -> bool:
+    """Lazy-import nba_api on first call. Returns True if available.
+    Also updates _NBA_OK so all legacy callers stay consistent.
+    """
+    global _NBA_API_AVAILABLE, _NBA_OK, _nba_players_static, _nba_gamelog_ep
+    if _NBA_API_AVAILABLE is not None:
+        return _NBA_API_AVAILABLE
+    try:
+        from nba_api.stats.static import players as _pl
+        from nba_api.stats.endpoints import playergamelog as _gl
+        _nba_players_static = _pl
+        _nba_gamelog_ep     = _gl
+        _NBA_API_AVAILABLE  = True
+    except ImportError:
+        _NBA_API_AVAILABLE = False
+    # Keep the legacy alias in sync so code that still tests _NBA_OK works
+    try:
+        _NBA_OK = _NBA_API_AVAILABLE
+    except Exception:
+        pass
+    return _NBA_API_AVAILABLE
+
+_bt("nba_api import deferred to first use (cold-start optimized)")
 
 
 # ── TTL cache (1 hour) ────────────────────────────────────────
@@ -6422,7 +6444,7 @@ def _l10_nba(first: str, last: str, prop: str,
     result = {"source": "stats.nba.com (nba_api)", "games": [],
               "complete": False, "rows": 0, "gap": ""}
 
-    if not _NBA_API_AVAILABLE:
+    if not _nba_ensure():
         result["gap"] = "nba_api not installed"
         return result
 
@@ -6755,7 +6777,8 @@ except ImportError:
 
 # Re-use module-level _BS4_AVAILABLE / _NBA_API_AVAILABLE from v1.
 _BS4_OK = _BS4_AVAILABLE
-_NBA_OK = _NBA_API_AVAILABLE
+# _NBA_OK is initialised to None; _nba_ensure() sets it on first NBA call.
+_NBA_OK: bool | None = None
 
 # ── v2 caches ────────────────────────────────────────────────
 _L10V2_CACHE: dict = {}
@@ -6819,7 +6842,7 @@ _NBA_COLS = {
 def _nba(first, last, prop, direction, line, season):
     r = {"source": "stats.nba.com (nba_api)", "games": [],
          "complete": False, "rows": 0, "gap": ""}
-    if not _NBA_OK:
+    if not _nba_ensure():
         r["gap"] = "nba_api not installed"; return r
     col = _NBA_COLS.get(prop)
     if not col:
@@ -8049,7 +8072,7 @@ def _get_wnba_def_rating(opponent_abbr: str) -> dict:
 
 def _get_nba_def_rating(opponent_abbr: str) -> dict:
     """Fetch NBA opponent defensive rating via nba_api LeagueDashTeamStats."""
-    if not _NBA_OK:
+    if not _nba_ensure():
         return {"error": "NBA_API_NOT_AVAILABLE", "team": opponent_abbr}
     try:
         from nba_api.stats.endpoints import leaguedashteamstats
@@ -9887,7 +9910,7 @@ def wow_health():
 
     # NBA — nba_api (stats.nba.com)
     try:
-        results["nba"] = "Available" if _NBA_OK else "Degraded — nba_api not installed"
+        results["nba"] = "Available" if _nba_ensure() else "Degraded — nba_api not installed"
     except Exception as e:
         results["nba"] = f"Degraded — {str(e)[:60]}"
 
@@ -10150,7 +10173,7 @@ def wow_nba_stats_health():
     checked_at = datetime.now(timezone.utc).isoformat()
     endpoint = "stats.nba.com LeagueDashTeamStats"
 
-    if not _NBA_OK:
+    if not _nba_ensure():
         return jsonify({
             "source":        "stats.nba.com (nba_api)",
             "endpoint":      endpoint,
@@ -10443,7 +10466,7 @@ def wow_wnba_nba_stats_health():
     wnba_fallback = _check_balldontlie("https://api.balldontlie.io/wnba/v1/teams")
 
     # ── NBA: primary = stats.nba.com via nba_api ─────────────────────
-    if not _NBA_OK:
+    if not _nba_ensure():
         nba_primary = {
             "source":        "stats.nba.com (nba_api)",
             "endpoint":      "LeagueDashTeamStats",
