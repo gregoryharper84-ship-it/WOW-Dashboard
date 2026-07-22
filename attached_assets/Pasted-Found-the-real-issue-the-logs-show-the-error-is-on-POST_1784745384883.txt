@@ -1,0 +1,50 @@
+Found the real issue — the logs show the error is on POST /run-connected-model, not /gate-engine/run. Let me get the full traceback and read that handler simultaneously:
+
+
+2 actions
+The root cause is clear: gunicorn WORKER TIMEOUT on POST /run-connected-model. The worker hit the 120-second limit inside _cm_db() at line 16073. Let me read that handler:
+
+
+6 actions
+The worker timeout after 120 seconds means the slow operation is _llp_team_analysis or _llp_run_claude_audit_team (the Anthropic API call). Let me read the full extent of the handler to find every slow path, and simultaneously check get_db_conn and the Claude audit:
+
+
+4 actions
+Now I have the complete picture. Three fixes needed:
+
+psycopg2.connect() has no connect_timeout — a flaky DB connection blocks the worker indefinitely
+_llp_run_claude_audit_team calls Anthropic with no timeout — can hang for minutes
+_llp_team_analysis makes external API calls (Odds API, ESPN) with potentially no timeout
+Let me read all three simultaneously:
+
+
+5 actions
+Reading the Claude audit function and making the DB fix simultaneously:
+
+
+3 actions
+The Claude audit calls _cm_claude_call. That's where the Anthropic call happens — I need to add a timeout there, and also raise gunicorn timeout. Reading both simultaneously:
+
+
+4 actions
+Found it — _anthropic.Anthropic(api_key=api_key) is created with no timeout, so messages.create() can hang indefinitely. Making all three fixes in parallel now:
+
+
+3 actions
+Now updating the gunicorn timeout in artifact.toml (120s → 240s) so there's sufficient headroom around the 90s Claude timeout:
+
+
+3 actions
+Right — need to go through the proper artifact.toml update flow. Writing the temp file and calling the replace function:
+
+
+3 actions
+Good. Now restart the dev workflow to pick up the connect_timeout and Claude timeout=90s fixes, and verify clean boot:
+
+
+4 actions
+Clean boot at 2,155ms. Let me verify the three fixes with a quick sanity check on the dev server while simultaneously confirming the artifact.toml change landed:
+
+
+3 actions
+All three fixes confirmed working. Let me write the commit message and update memory:
