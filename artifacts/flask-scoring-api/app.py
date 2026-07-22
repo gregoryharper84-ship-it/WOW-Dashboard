@@ -11398,18 +11398,35 @@ def cm_wow_score():
             return jsonify({"ok": False, "error": f"board {board_id} not found"}), 404
         props = board["props"] if isinstance(board["props"], list) else json.loads(board["props"])
 
-        per_prop_results = []
+        from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _FutTimeout
+        _CM_PROP_SCORE_TIMEOUT_S = 12   # per-prop cap; prevents bbref/nba_api hangs
+
+        # Submit all props in parallel so slow sources don't serialise.
+        _pool = _TPE(max_workers=min(8, len(props) or 1))
+        _futures = []
         for p in props:
+            _cs = _cm_normalize_sport(p.get("sport",""))
+            _vs = _cm_v2_sport_key(_cs, p.get("prop",""))
+            _fut = _pool.submit(
+                _score_one_prop_v2,
+                player=p.get("player",""), sport=_vs,
+                prop=p.get("prop",""), direction=(p.get("side","MORE") or "MORE").upper(),
+                line=float(p.get("line", 0) or 0),
+                season=p.get("season","2025-26"), mlb_ssn=p.get("mlb_season","2026"),
+                year=p.get("year","2026"), hltv_id=p.get("hltv_id"),
+            )
+            _futures.append((p, _vs, _fut))
+        _pool.shutdown(wait=False)   # don't block on stragglers
+
+        per_prop_results = []
+        for p, _v2_sport, _fut in _futures:
             try:
-                _canonical_sport = _cm_normalize_sport(p.get("sport",""))
-                _v2_sport        = _cm_v2_sport_key(_canonical_sport, p.get("prop",""))
-                data, err = _score_one_prop_v2(
-                    player=p.get("player",""), sport=_v2_sport,
-                    prop=p.get("prop",""), direction=(p.get("side","MORE") or "MORE").upper(),
-                    line=float(p.get("line", 0)),
-                    season=p.get("season","2025-26"), mlb_ssn=p.get("mlb_season","2026"),
-                    year=p.get("year","2026"), hltv_id=p.get("hltv_id"),
-                )
+                data, err = _fut.result(timeout=_CM_PROP_SCORE_TIMEOUT_S)
+            except _FutTimeout:
+                data, err = None, f"prop scoring timed out after {_CM_PROP_SCORE_TIMEOUT_S}s"
+            except Exception as _e:
+                data, err = None, f"prop scoring exception: {type(_e).__name__}: {str(_e)[:200]}"
+            try:
                 if err:
                     pr = {**p, "rows": 0, "complete": False, "gap": err,
                           "confidence_tier": "REJECT — INSUFFICIENT DATA",
@@ -11508,18 +11525,10 @@ def cm_claude_audit():
 
         try:
             audit = _cm_extract_json(text)
-        except Exception:
-            try:
-                text2, _, _ = _cm_claude_call(
-                    _CM_CLAUDE_AUDIT_SYSTEM,
-                    user_content + "\n\nREMINDER: Return ONLY valid JSON with the exact keys specified.",
-                    max_tokens=6000)
-                audit = _cm_extract_json(text2)
-                text = text2
-            except Exception as e2:
-                return jsonify({"ok": False,
-                                "error": f"claude returned unparseable JSON: {e2}",
-                                "raw": text[:2000]}), 502
+        except Exception as e:
+            return jsonify({"ok": False,
+                            "error": f"claude returned non-JSON: {e}",
+                            "raw": text[:2000]}), 502
 
         for k in ("props_to_keep","props_to_downgrade","props_to_reject",
                   "missing_data_flags","overconfidence_flags",
@@ -11581,16 +11590,10 @@ def cm_final_arbiter():
 
         try:
             decision = _cm_extract_json(text)
-        except Exception:
-            try:
-                text2, _, _ = _cm_claude_call(
-                    _CM_CLAUDE_ARBITER_SYSTEM,
-                    user_content + "\n\nREMINDER: Return ONLY valid JSON.", max_tokens=8000)
-                decision = _cm_extract_json(text2); text = text2
-            except Exception as e2:
-                return jsonify({"ok": False,
-                                "error": f"arbiter returned unparseable JSON: {e2}",
-                                "raw": text[:2000]}), 502
+        except Exception as e:
+            return jsonify({"ok": False,
+                            "error": f"arbiter returned non-JSON: {e}",
+                            "raw": text[:2000]}), 502
 
         for k in ("final_approved_pool","final_conditional_pool",
                   "final_watch_pool","final_reject_pool",
