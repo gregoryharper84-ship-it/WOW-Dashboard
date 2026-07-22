@@ -23572,6 +23572,644 @@ def _wnba_is_stale(source_ts) -> bool:
         return True
 
 
+@app.route("/wow/kalshi/category-scan", methods=["GET"])
+@require_api_key
+def wow_kalshi_category_scan():
+    """
+    GET /wow/kalshi/category-scan
+    WOW v16.5 — Category-Router / Singles-Governor layer.
+
+    Discovers all open Kalshi markets, routes each through the category
+    classifier (weather lane / sports-winner lane / economics / disabled /
+    combo), applies the 12-gate weather filter or 9-gate sports filter, runs
+    all survivors through the Recovery-Mode portfolio governor, ranks them,
+    and returns the final pool (max 2, max 1/event, can_execute=False always).
+
+    Query params:
+      cities   comma-sep city codes, default all 5: NYC,LA,MIA,CHI,AUS
+      leagues  comma-sep leagues, default MLB,WNBA
+      limit    max sports candidates per league (default 15, cap 50)
+      sigma_f  Gaussian sigma in °F for weather forecast spread (default 3.5)
+      date     YYYY-MM-DD scan date (default today UTC)
+
+    Execution guarantee: DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS always.
+    """
+    import re as _re, uuid as _uuid, time as _time
+    from kalshi_engine import edge_engine as _edge_engine
+    from kalshi_engine.category_router import classify_market
+    from kalshi_engine import weather_gate as _weather_gate
+    from kalshi_engine import sports_gate as _sports_gate
+    from kalshi_engine import portfolio_governor as _portfolio_governor
+    from kalshi_engine import category_scan_ledger as _cat_ledger
+    from kalshi_engine import settlement_risk as _settlement_risk
+    from kalshi_engine.llp_bridge.inventory_adapter import KalshiInventoryAdapter
+    from kalshi_engine.llp_bridge.price_normalizer import KalshiPriceNormalizer
+    from kalshi_engine.llp_bridge.consensus_odds import get_consensus_no_vig_probability
+    from kalshi_engine.llp_bridge.title_parser import parse_opponent_team
+    from kalshi_engine.fee_model import calculate as _fee_calc
+
+    DRY_RUN_ONLY        = True   # noqa: F841
+    ALLOW_LIVE_TRADING  = False  # noqa: F841
+    ALLOW_MARKET_ORDERS = False  # noqa: F841
+
+    _t0        = _time.time()
+    run_id     = str(_uuid.uuid4())[:16]
+    checked_at = datetime.now(timezone.utc).isoformat()
+
+    # ── Query params ──────────────────────────────────────────────────────────
+    cities_param  = request.args.get("cities", "NYC,LA,MIA,CHI,AUS")
+    leagues_param = request.args.get("leagues", "MLB,WNBA")
+    try:
+        limit = max(1, min(int(request.args.get("limit", 15)), 50))
+    except (ValueError, TypeError):
+        limit = 15
+    try:
+        sigma_f = float(request.args.get("sigma_f", 3.5))
+        if sigma_f <= 0 or sigma_f > 20:
+            sigma_f = 3.5
+    except (ValueError, TypeError):
+        sigma_f = 3.5
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_str  = (request.args.get("date") or "").strip()
+    if not _re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        date_str = today_str
+
+    requested_cities  = [c.strip().upper() for c in cities_param.split(",") if c.strip()]
+    requested_cities  = [c for c in requested_cities if c in _KALSHI_WEATHER_STATIONS]
+    requested_leagues = [l.strip().upper() for l in leagues_param.split(",") if l.strip()]
+
+    # ── Counters ──────────────────────────────────────────────────────────────
+    markets_discovered    = 0
+    markets_classified    = 0
+    weather_market_count  = 0
+    sports_winner_count   = 0
+    economics_count       = 0
+    disabled_count        = 0
+    combo_count           = 0
+    identity_failures     = 0
+    settlement_failures   = 0
+    stale_price_failures  = 0
+    model_failures        = 0
+    edge_failures         = 0
+    portfolio_failures_ct = 0
+
+    all_candidates        = []   # every market processed — passed and failed
+    weather_gate_survivors = []
+    sports_gate_survivors  = []
+    inventory_signal       = "NOT_CHECKED"
+
+    # ── DB for ledger (failure here is non-fatal) ─────────────────────────────
+    _db_conn = None
+    try:
+        import psycopg2 as _psycopg2
+        _db_conn = _psycopg2.connect(os.environ.get("DATABASE_URL", ""))
+        from kalshi_engine.llp_bridge.kalshi_watch_ledger import (
+            ensure_schema as _base_schema,
+        )
+        _base_schema(_db_conn)
+        _cat_ledger.ensure_schema(_db_conn)
+    except Exception:
+        _db_conn = None
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # SECTION A: WEATHER LANE
+    # ──────────────────────────────────────────────────────────────────────────
+    for city in requested_cities:
+        station = _KALSHI_WEATHER_STATIONS[city]
+        try:
+            cli_result  = _fetch_nws_cli(city)
+            fc_result   = _fetch_nws_forecast_high(city, date_str)
+            horizon_h   = _compute_forecast_horizon_hours(date_str, station["tz"])
+
+            observed_high  = cli_result.get("observed_high")
+            forecast_high  = fc_result.get("forecast_high")
+            cli_issuance   = cli_result.get("issuance_time") or ""
+
+            # CLI date-guard (kalshi-weather-nws-date memory entry)
+            if observed_high is not None and cli_issuance:
+                try:
+                    if cli_issuance[:10] != date_str:
+                        observed_high = None
+                except Exception:
+                    pass
+
+            # Confidence tier
+            if observed_high is not None:
+                confidence_tier = "WEATHER_MODEL_READY"
+                model_high = observed_high
+            elif forecast_high is not None:
+                model_high = forecast_high
+                if horizon_h <= 24 and sigma_f < 4.5:
+                    confidence_tier = "WEATHER_MODEL_READY"
+                elif horizon_h <= 48:
+                    confidence_tier = "WEATHER_WATCH"
+                else:
+                    confidence_tier = "WEATHER_SCOUT"
+            else:
+                confidence_tier = "WEATHER_SCOUT"
+                model_high = None
+
+            # Discover live NHIGH markets for this city
+            mkt_result    = _fetch_kalshi_nhigh_markets(station["series"], date_str)
+            date_markets  = mkt_result.get("markets") or []
+            market_status = mkt_result.get("market_status")
+            market_open   = market_status == "open"
+
+            if not date_markets:
+                continue
+
+            markets_discovered += len(date_markets)
+
+            # Auto-derive brackets from market subtitles/tickers
+            auto_brackets: list[dict] = []
+            for m in date_markets:
+                subtitle = m.get("subtitle") or m.get("title") or ""
+                bounds   = _parse_bracket_bounds(subtitle)
+                if bounds:
+                    lo, hi = bounds
+                    if lo == float("-inf"):
+                        label = f"<{int(hi)}"
+                    elif hi == float("inf"):
+                        label = f">={int(lo)}"
+                    else:
+                        label = f"{int(lo)}-{int(hi)}"
+                    auto_brackets.append({"label": label, "ticker": m.get("ticker"),
+                                          "_market": m})
+
+            if not auto_brackets:
+                continue
+
+            # Fetch live Kalshi prices
+            price_result      = _fetch_kalshi_nhigh_prices(
+                station["series"], date_str, auto_brackets
+            )
+            prices_by_bracket = price_result.get("prices_by_bracket") or {}
+            price_source      = price_result.get("price_source", "not_found")
+            price_timestamp   = price_result.get("price_timestamp")
+
+            price_age_minutes  = None
+            orderbook_nonempty = False
+            if price_timestamp:
+                try:
+                    from datetime import datetime as _DT
+                    pt = _DT.fromisoformat(str(price_timestamp).replace("Z", "+00:00"))
+                    if pt.tzinfo is None:
+                        from datetime import timezone as _TZ
+                        pt = pt.replace(tzinfo=_TZ.utc)
+                    price_age_minutes = round(
+                        (_DT.now(timezone.utc) - pt).total_seconds() / 60.0, 2
+                    )
+                except Exception:
+                    price_age_minutes = None
+
+            for pb in prices_by_bracket.values():
+                if pb.get("yes_bid") is not None or pb.get("yes_ask") is not None:
+                    orderbook_nonempty = True
+                    break
+
+            # Score brackets (Gaussian)
+            brackets_scored: list[dict] = []
+            if model_high is not None:
+                raw_brackets = [{"label": b["label"]} for b in auto_brackets]
+                brackets_scored = _score_weather_brackets_gaussian(
+                    model_high, sigma_f, raw_brackets
+                )
+
+            # Best edge bracket
+            best_edge:         float | None = None
+            best_bracket_label: str | None  = None
+            yes_sum = 0.0
+
+            for bs in brackets_scored:
+                lbl     = bs.get("label", "")
+                pb      = prices_by_bracket.get(lbl) or {}
+                model_p = bs.get("probability")
+                yes_ask = pb.get("yes_ask") or pb.get("yes_price")
+
+                if yes_ask is not None:
+                    yes_sum += float(yes_ask)
+
+                if model_p is not None and yes_ask is not None:
+                    yes_bid  = pb.get("yes_bid")
+                    no_bid   = pb.get("no_bid")
+                    mini_book = {
+                        "best_yes_ask":   float(yes_ask),
+                        "best_yes_bid":   float(yes_bid) if yes_bid is not None else None,
+                        "best_no_bid":    float(no_bid)  if no_bid  is not None else None,
+                        "yes_spread":     (float(yes_ask) - float(yes_bid))
+                                          if yes_bid is not None else None,
+                        "liquidity_grade": pb.get("liquidity_grade", "C"),
+                    }
+                    edge_r   = _edge_engine.evaluate(
+                        model_probability = float(model_p),
+                        normalized_book   = mini_book,
+                        category          = "weather",
+                        side              = "YES",
+                    )
+                    adj_edge = edge_r.get("adjusted_edge")
+                    if adj_edge is not None and (best_edge is None or adj_edge > best_edge):
+                        best_edge          = adj_edge
+                        best_bracket_label = lbl
+
+            bracket_coverage_complete = len(auto_brackets) >= 2
+            mutual_ok   = abs(yes_sum - 1.0) <= 0.05 if yes_sum > 0 else False
+
+            bracket_span_f: float | None = None
+            if best_bracket_label:
+                bds = _parse_bracket_bounds(best_bracket_label)
+                if bds:
+                    lo, hi = bds
+                    if lo != float("-inf") and hi != float("inf"):
+                        bracket_span_f = hi - lo
+
+            nws_gridpoint_available = bool(fc_result.get("ok") or forecast_high is not None)
+
+            cand: dict = {
+                "category":                    "weather",
+                "lane":                        "WEATHER_LANE",
+                "city":                        city,
+                "scan_date":                   date_str,
+                "ticker":                      (auto_brackets[0].get("ticker")
+                                                if auto_brackets else None),
+                "event_id":                    f"{city}-NHIGH-{date_str}",
+                "confidence_tier":             confidence_tier,
+                "forecast_horizon_hours":      round(horizon_h, 2),
+                "sigma_f":                     sigma_f,
+                "settlement_station_verified": station.get("station") is not None,
+                "nws_gridpoint_available":     nws_gridpoint_available,
+                "bracket_coverage_complete":   bracket_coverage_complete,
+                "probability_normalization_pass": mutual_ok,
+                "brackets":                    auto_brackets,
+                "market_open":                 market_open,
+                "orderbook_nonempty":          orderbook_nonempty,
+                "price_age_minutes":           price_age_minutes,
+                "edge_lower_bound":            best_edge,
+                "best_bracket_label":          best_bracket_label,
+                "bracket_span_f":              bracket_span_f,
+                "is_multi_leg":                False,
+                "research_eligible":           True,
+                "portfolio_check_passed":      True,   # gate 12 pre-set; governor binds after
+                "portfolio_rejection_reason":  None,
+                # ranking
+                "net_edge_lower_bound":        best_edge,
+                "calibration_strength":        0.80 if confidence_tier == "WEATHER_MODEL_READY" else 0.50,
+                "model_uncertainty":           round(sigma_f / 10.0, 3),
+                "calibrated_prob_lower_bound": 0.70 if confidence_tier == "WEATHER_MODEL_READY" else 0.50,
+                "settlement_clarity_grade":    "A",
+                "spread_cents":                None,
+                "exposure_overlap":            False,
+                "position":                    best_bracket_label or "unknown",
+                # observability
+                "city_or_sport":               city,
+                "model_version":               "v16.5_weather_gaussian",
+                "market_price":                None,
+                "fee_adjusted_break_even":     None,
+                "price_source":                price_source,
+                "market_count":                len(date_markets),
+                "can_execute":                 False,
+                "dry_run_only":                True,
+            }
+
+            weather_market_count += 1
+            markets_classified   += 1
+
+            gate_result = _weather_gate.check(cand)
+            cand["_weather_gate"] = gate_result
+
+            if gate_result["passed"]:
+                cand["process_pass_fail"] = "PASS"
+                cand["failure_category"]  = None
+                weather_gate_survivors.append(cand)
+            else:
+                fc = gate_result["failure_category"]
+                cand["process_pass_fail"] = "FAIL"
+                cand["failure_category"]  = fc
+                if fc == "KALSHI_DATA_UNOBTAINABLE":
+                    stale_price_failures += 1
+                elif fc in ("SETTLEMENT_STATION_UNVERIFIED", "NWS_GRIDPOINT_UNAVAILABLE"):
+                    settlement_failures += 1
+                elif fc == "EDGE_BELOW_FLOOR":
+                    edge_failures += 1
+
+            all_candidates.append(cand)
+
+        except Exception as _exc:
+            all_candidates.append({
+                "category":         "weather",
+                "city":             city,
+                "scan_date":        date_str,
+                "failure_category": "INTERNAL_ERROR",
+                "process_pass_fail": "FAIL",
+                "_error":           str(_exc),
+                "can_execute":      False,
+            })
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # SECTION B: SPORTS WINNER LANE
+    # ──────────────────────────────────────────────────────────────────────────
+    try:
+        inventory        = KalshiInventoryAdapter().check_sports_inventory(limit=100)
+        inventory_signal = inventory.get("signal", "INVENTORY_EMPTY")
+        candidates_raw   = inventory.get("candidates") or []
+
+        if "ALL" not in requested_leagues:
+            candidates_raw = [c for c in candidates_raw
+                              if c.get("league") in requested_leagues]
+        candidates_raw = candidates_raw[:limit]
+        markets_discovered += len(candidates_raw)
+
+        for m in candidates_raw:
+            ticker       = m.get("ticker") or ""
+            event_ticker = m.get("event_ticker") or ""
+            market_title = m.get("title") or m.get("subtitle") or ""
+            league       = m.get("league") or ""
+
+            # Classify
+            cl_result = classify_market({
+                "ticker": ticker, "event_ticker": event_ticker,
+                "category": "sports", "market_type": "full_game_outright_winner",
+            })
+            markets_classified += 1
+
+            if not cl_result["eligible"]:
+                disabled_count += 1
+                all_candidates.append({
+                    **m,
+                    "_classify":       cl_result,
+                    "process_pass_fail": "FAIL",
+                    "failure_category":  cl_result["rejection_code"],
+                    "can_execute":       False,
+                })
+                continue
+
+            sports_winner_count += 1
+
+            # Live orderbook
+            normalizer    = KalshiPriceNormalizer()
+            normalized_price: dict | None = None
+            ob_source     = "no_ticker"
+            price_age_min: float | None = None
+            trading_act   = m.get("trading_active")
+
+            if ticker:
+                try:
+                    normalized_price = normalizer.normalize(ticker)
+                    ob_source = "direct_api"
+                    ob_ts = (normalized_price.get("fetched_at")
+                             or normalized_price.get("timestamp"))
+                    if ob_ts:
+                        from datetime import datetime as _DT
+                        pt = _DT.fromisoformat(str(ob_ts).replace("Z", "+00:00"))
+                        if pt.tzinfo is None:
+                            from datetime import timezone as _TZ
+                            pt = pt.replace(tzinfo=_TZ.utc)
+                        price_age_min = round(
+                            (_DT.now(timezone.utc) - pt).total_seconds() / 60.0, 2
+                        )
+                except Exception:
+                    ob_source = "fetch_failed"
+
+            # Settlement risk
+            settlement_cond = (
+                m.get("settlement_condition")
+                or m.get("settlement_source")
+                or f"The team with more runs/points wins the {league} game."
+            )
+            try:
+                sgr = _settlement_risk.grade_contract(
+                    title=market_title,
+                    settlement_condition=settlement_cond,
+                    resolution_source="Kalshi settlement rules",
+                    category="sports_game_result",
+                    contract_ticker=ticker,
+                )
+            except Exception:
+                sgr = {"settlement_risk": "MEDIUM", "resolution_clarity_grade": "C"}
+
+            # Consensus odds
+            yes_team = parse_opponent_team(ticker, market_title) if ticker else None
+            try:
+                consensus = get_consensus_no_vig_probability(
+                    league    = league,
+                    home_team = m.get("home_team") or yes_team or "",
+                    away_team = m.get("away_team") or "",
+                    date_str  = date_str,
+                )
+            except Exception:
+                consensus = {"status": "FAILED", "single_book_fallback": True,
+                             "consensus_fair_probability": None}
+
+            # Net edge
+            cons_prob        = (consensus or {}).get("consensus_fair_probability")
+            executable_price = (normalized_price or {}).get("executable_price")
+            net_edge_lb: float | None = None
+            if cons_prob is not None and executable_price is not None:
+                liq_grade = (normalized_price or {}).get("liquidity_grade", "C")
+                try:
+                    fee_r = _fee_calc(
+                        entry_price   = executable_price,
+                        yes_spread    = None,
+                        liquidity_grade = liq_grade,
+                    )
+                    net_edge_lb = round(
+                        cons_prob - executable_price - fee_r.get("total_drag", 0), 4
+                    )
+                except Exception:
+                    pass
+
+            cand = {
+                "category":                    "sports_winner",
+                "lane":                        "SPORTS_WINNER_LANE",
+                "ticker":                      ticker,
+                "event_ticker":                event_ticker,
+                "market_title":                market_title,
+                "settlement_condition":        settlement_cond,
+                "market_type":                 "full_game_outright_winner",
+                "trading_active":              trading_act,
+                "kalshi_orderbook_source":     ob_source,
+                "price_age_minutes":           price_age_min,
+                "calibrated_prob_lower_bound": cons_prob,
+                "lineup_status":               m.get("lineup_status",
+                                                     "CONFIRMED_OR_STRONGLY_PROBABLE"),
+                "consensus_odds":              consensus,
+                "market_prior_weight":         0.40,
+                "net_edge_lower_bound":        net_edge_lb,
+                "settlement_grade_result":     sgr,
+                "portfolio_check_passed":      True,   # pre-set; governor binds after
+                "portfolio_rejection_reason":  None,
+                "is_multi_leg":                False,
+                "event_id":                    event_ticker or ticker,
+                "city":                        None,
+                "scan_date":                   date_str,
+                "research_eligible":           True,
+                # ranking
+                "calibration_strength":        0.75 if (consensus or {}).get("status") == "AVAILABLE" else 0.40,
+                "model_uncertainty":           0.12,
+                "settlement_clarity_grade":    sgr.get("resolution_clarity_grade", "C"),
+                "spread_cents":                None,
+                "exposure_overlap":            False,
+                "position":                    ticker,
+                # observability
+                "city_or_sport":               league,
+                "contract_id":                 ticker,
+                "model_version":               "v16.5_sports_consensus",
+                "market_price":                executable_price,
+                "can_execute":                 False,
+                "dry_run_only":                True,
+            }
+
+            gate_result = _sports_gate.check(cand, inventory_signal)
+            cand["_sports_gate"] = gate_result
+
+            if gate_result["passed"]:
+                cand["process_pass_fail"] = "PASS"
+                cand["failure_category"]  = None
+                sports_gate_survivors.append(cand)
+            else:
+                fc = gate_result["failure_category"]
+                cand["process_pass_fail"] = "FAIL"
+                cand["failure_category"]  = fc
+                if fc == "INVENTORY_NOT_READY":
+                    model_failures += 1
+                elif fc in ("STALE_PRICE", "KALSHI_ORDERBOOK_SOURCE_NOT_DIRECT_API"):
+                    stale_price_failures += 1
+                elif fc in ("SETTLEMENT_INCOMPLETE", "SETTLEMENT_AMBIGUOUS"):
+                    settlement_failures += 1
+                elif fc == "EDGE_BELOW_FLOOR":
+                    edge_failures += 1
+                elif fc in ("UPSET_REJECTED", "NOT_FULL_GAME_OUTRIGHT_WINNER"):
+                    model_failures += 1
+
+            all_candidates.append(cand)
+
+    except Exception as _exc:
+        all_candidates.append({
+            "category":         "sports_winner",
+            "failure_category": "INTERNAL_ERROR",
+            "process_pass_fail": "FAIL",
+            "_error":           str(_exc),
+            "can_execute":      False,
+        })
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # SECTION C: PORTFOLIO GOVERNOR — Final ranked pool (max 2, max 1/event)
+    # ──────────────────────────────────────────────────────────────────────────
+    all_gate_survivors = weather_gate_survivors + sports_gate_survivors
+    gov_result         = _portfolio_governor.run(all_gate_survivors)
+
+    portfolio_failures_ct = len(gov_result["rejected"])
+    final_pool            = gov_result["final_pool"]
+
+    for s in gov_result["survivors"]:
+        s.setdefault("process_pass_fail", "PASS")
+        s.setdefault("failure_category", None)
+    for r in gov_result["rejected"]:
+        r["process_pass_fail"] = "FAIL"
+        r.setdefault("failure_category", r.get("portfolio_rejection_reason"))
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # SECTION D: LEDGER LOGGING (non-fatal — never raises)
+    # ──────────────────────────────────────────────────────────────────────────
+    if _db_conn:
+        for cand in all_candidates:
+            try:
+                _cat_ledger.log_scan_candidate(
+                    _db_conn,
+                    sport                   = cand.get("city_or_sport"),
+                    ticker                  = cand.get("ticker"),
+                    event_ticker            = cand.get("event_ticker"),
+                    market_title            = cand.get("market_title"),
+                    market_type             = cand.get("market_type", "unknown"),
+                    trading_active          = cand.get("trading_active"),
+                    kalshi_orderbook_source = cand.get("kalshi_orderbook_source", "no_ticker"),
+                    label                   = (cand.get("failure_category")
+                                               or cand.get("process_pass_fail")
+                                               or "UNKNOWN"),
+                    blocker_tags            = ([cand["failure_category"]]
+                                               if cand.get("failure_category") else []),
+                    final_lock_fresh        = False,
+                    category                = cand.get("category"),
+                    lane                    = cand.get("lane"),
+                    contract_id             = cand.get("contract_id") or cand.get("ticker"),
+                    city_or_sport           = cand.get("city_or_sport"),
+                    event_id                = cand.get("event_id"),
+                    model_version           = cand.get("model_version"),
+                    net_edge_lower_bound    = cand.get("net_edge_lower_bound"),
+                    price_age_minutes       = cand.get("price_age_minutes"),
+                    process_pass_fail       = cand.get("process_pass_fail"),
+                    failure_category        = cand.get("failure_category"),
+                    scan_run_id             = run_id,
+                )
+            except Exception:
+                pass
+
+        try:
+            _cat_ledger.log_scan_run(
+                _db_conn,
+                run_id                = run_id,
+                scan_date             = date_str,
+                markets_discovered    = markets_discovered,
+                markets_classified    = markets_classified,
+                weather_markets       = weather_market_count,
+                sports_winner_markets = sports_winner_count,
+                economics_markets     = economics_count,
+                disabled_markets      = disabled_count,
+                combo_rejections      = combo_count,
+                identity_failures     = identity_failures,
+                settlement_failures   = settlement_failures,
+                stale_price_failures  = stale_price_failures,
+                model_failures        = model_failures,
+                edge_failures         = edge_failures,
+                portfolio_failures    = portfolio_failures_ct,
+                final_pool_size       = len(final_pool),
+                request_params        = {
+                    "cities": cities_param, "leagues": leagues_param,
+                    "limit": limit, "sigma_f": sigma_f, "date": date_str,
+                },
+                duration_ms = int((_time.time() - _t0) * 1000),
+            )
+        except Exception:
+            pass
+
+    # ── Build clean output (strip internal/private keys) ─────────────────────
+    _STRIP_KEYS = frozenset({"_weather_gate", "_sports_gate", "_classify",
+                              "_market", "_error"})
+
+    def _clean(c: dict) -> dict:
+        return {k: v for k, v in c.items() if k not in _STRIP_KEYS}
+
+    return jsonify({
+        "endpoint":                  "/wow/kalshi/category-scan",
+        "run_id":                    run_id,
+        "timestamp":                 checked_at,
+        "scan_date":                 date_str,
+        "duration_ms":               int((_time.time() - _t0) * 1000),
+        "markets_discovered":        markets_discovered,
+        "markets_classified":        markets_classified,
+        "weather_markets":           weather_market_count,
+        "sports_winner_markets":     sports_winner_count,
+        "economics_markets":         economics_count,
+        "disabled_category_markets": disabled_count,
+        "combo_rejections":          combo_count,
+        "identity_failures":         identity_failures,
+        "settlement_failures":       settlement_failures,
+        "stale_price_failures":      stale_price_failures,
+        "model_failures":            model_failures,
+        "edge_failures":             edge_failures,
+        "portfolio_failures":        portfolio_failures_ct,
+        "final_ranked_singles":      [_clean(c) for c in final_pool],
+        "ranking_detail":            gov_result["ranking_detail"],
+        "all_candidates":            [_clean(c) for c in all_candidates],
+        "requested_cities":          requested_cities,
+        "requested_leagues":         requested_leagues,
+        "inventory_signal":          inventory_signal,
+        "can_execute":               False,
+        "dry_run_only":              True,
+        "execution_rule":            "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    })
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.route("/wow/wnba/ingestion/health", methods=["GET"])
