@@ -24,6 +24,7 @@ import threading
 import time
 import statistics
 import traceback
+import signal
 from collections import deque
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -11208,6 +11209,57 @@ def _cm_load_final(conn, board_id):
 
 # ── Claude call helper ────────────────────────────────────────────────
 _CM_CLAUDE_CALL_TIMEOUT = 90.0   # seconds; raises anthropic.APITimeoutError on breach
+_CM_WALL_BUDGET_S       = 200    # seconds; SIGALRM fires 40s before gunicorn's 240s watchdog
+
+
+class _CMRunWallTimeout(Exception):
+    """Raised by SIGALRM when /run-connected-model exceeds its wall-clock budget."""
+
+
+def _cm_run_wall_timeout_handler(signum, frame):
+    raise _CMRunWallTimeout(
+        f"run-connected-model wall-clock budget exceeded "
+        f"({os.environ.get('CM_RUN_BUDGET_S', _CM_WALL_BUDGET_S)}s)"
+    )
+
+
+def _cm_wall_budget_decorator(view_fn):
+    """Wrap a Flask view in a SIGALRM wall-clock budget.
+
+    Sets signal.alarm(budget_s) before the view executes and cancels it in
+    the finally block so the alarm never leaks to the next request.  If the
+    budget fires before the view returns, _CMRunWallTimeout is raised and
+    caught here, returning a structured 504 instead of letting gunicorn's
+    master watchdog kill the worker with a silent CRITICAL WORKER TIMEOUT.
+
+    Why SIGALRM?  gunicorn sync workers handle each request on the main
+    thread of the worker process, which is the only thread that can receive
+    SIGALRM — making it the correct primitive for hard wall-clock enforcement
+    against blocking I/O (Anthropic SDK retries, slow external APIs, etc.).
+    """
+    @wraps(view_fn)
+    def _wall_budget_wrapper(*args, **kwargs):
+        budget_s = int(os.environ.get("CM_RUN_BUDGET_S", _CM_WALL_BUDGET_S))
+        _prev_handler = signal.signal(signal.SIGALRM, _cm_run_wall_timeout_handler)
+        signal.alarm(budget_s)
+        try:
+            return view_fn(*args, **kwargs)
+        except _CMRunWallTimeout as _wte:
+            app.logger.error("run-connected-model: %s", _wte)
+            return jsonify({
+                "ok":      False,
+                "error":   "request_timeout",
+                "message": (
+                    f"Request exceeded the {budget_s}s wall-clock budget. "
+                    "Retry with fewer games or pass skip_arbiter=true to skip "
+                    "the Claude audit."
+                ),
+            }), 504
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, _prev_handler)
+    return _wall_budget_wrapper
+
 
 def _cm_claude_call(system_prompt, user_content, max_tokens=4096):
     """Single Anthropic Messages call. Returns (text, model_version, latency_ms).
@@ -11221,7 +11273,7 @@ def _cm_claude_call(system_prompt, user_content, max_tokens=4096):
         raise RuntimeError("ANTHROPIC_API_KEY not set")
     model = os.environ.get("CM_CLAUDE_MODEL", "claude-sonnet-4-5")
     timeout_s = float(os.environ.get("CM_CLAUDE_TIMEOUT_S", _CM_CLAUDE_CALL_TIMEOUT))
-    client = _anthropic.Anthropic(api_key=api_key, timeout=timeout_s)
+    client = _anthropic.Anthropic(api_key=api_key, timeout=timeout_s, max_retries=0)
     t0 = time.time()
     resp = client.messages.create(
         model=model, max_tokens=max_tokens, temperature=0.0,
@@ -17395,6 +17447,7 @@ def llp_postmortem_query():
 # ── Endpoint: POST /run-connected-model (full orchestrator) ──────────
 @app.route("/run-connected-model", methods=["POST"])
 @require_api_key
+@_cm_wall_budget_decorator
 def cm_run_connected_model():
     body = request.get_json(silent=True) or {}
     slips_requested = bool(body.get("slips_requested", False))
