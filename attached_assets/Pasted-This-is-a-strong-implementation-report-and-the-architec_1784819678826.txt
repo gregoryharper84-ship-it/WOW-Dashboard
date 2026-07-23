@@ -1,0 +1,147 @@
+This is a **strong implementation report**, and the architecture matches the patch intent. Based on what Replit reported, the important enforcement points are now in place:
+
+* PATCH-014 through PATCH-020 are implemented.
+* Card size is capped at three.
+* Four- and five-leg Power cards are blocked.
+* MLB 1IP is quarantined from final cards.
+* Discrete low-count, upper-tail, duplicate-exposure, joint-probability, and weakest-leg gates are active.
+* Database migration DDL was added to `_cm_ensure_schema`.
+* New audit and settlement endpoints were added.
+* The application compiled.
+* The regression suite returned **10/10 passing**.
+* All eight finalizer assertions returned true.
+
+## Current verdict
+
+```text
+IMPLEMENTATION_STATUS=CODE_COMPLETE_REPORTED
+REGRESSION_STATUS=PASS_10_OF_10
+PATCH_STATUS=PATCH_014_TO_020_ACTIVE
+PRODUCTION_CONFIDENCE=CONDITIONAL
+```
+
+The remaining concern is not the design. It is proving that the **live request path actually uses the patched finalizer**, rather than only proving the helper functions and dedicated test endpoint work.
+
+## What Replit should verify next
+
+Ask Replit to run these end-to-end tests through the same endpoint your normal WOW model calls:
+
+### 1. Four-pick Power rejection
+
+Submit four otherwise qualified legs.
+
+Expected:
+
+```text
+decision=NO
+label=NO_BAD_STRUCTURE
+requested_card_size=4
+maximum_card_size=3
+final_card=null
+```
+
+### 2. Five-pick Flex shrink
+
+Submit five qualified Flex candidates.
+
+Expected:
+
+```text
+requested_card_size=5
+final_card_size<=3
+removed_legs listed
+weakest_leg_cycle=PASS
+```
+
+It must not merely return the same five legs with a warning.
+
+### 3. TEST_ONLY 1IP quarantine
+
+Include a high-confidence 1IP selection.
+
+Expected:
+
+```text
+lane_status=TEST_ONLY
+final_card_eligible=false
+label=NO_TEST_ONLY_LANE
+```
+
+The leg may remain in a research pool, but not in the final card.
+
+### 4. Duplicate exposure rejection
+
+Submit the same player, event, stat, line, and side through two separate slip requests.
+
+Expected on the second request:
+
+```text
+duplicate_exposure_status=FAIL
+label=NO_DUPLICATE_THESIS
+```
+
+This test must use persisted database state, not an in-memory list.
+
+### 5. Binding weakest-leg removal
+
+Create a three-leg pool where one leg falls below the active lower-bound floor and has no replacement.
+
+Expected:
+
+```text
+final_card_size=2
+weakest_leg removed
+replacement_search_complete=true
+```
+
+The removed leg must not reappear in any downstream formatter or response serializer.
+
+### 6. Fragile card block
+
+Create a card where one leg contributes more than 35% of modeled slip failure.
+
+Expected:
+
+```text
+fragility_label=FRAGILE
+publish_allowed=false
+```
+
+The engine should rebuild or shrink it.
+
+### 7. Economic settlement test
+
+Settle a $5 Flex card that returns $2.50.
+
+Expected:
+
+```text
+entry_amount=5.00
+gross_return=2.50
+net_profit=-2.50
+platform_result_label=WIN
+positive_net_return=false
+```
+
+That confirms the ledger no longer treats every green PrizePicks badge as profitable.
+
+## One thing to clarify
+
+The report cuts off after:
+
+```text
+cm_daily_exposure
+cm_settled...
+```
+
+Have Replit provide the complete migration list, including every new table and column. That matters because a passing endpoint can still hide missing persistence fields.
+
+Send Replit this final instruction:
+
+> Run end-to-end tests through the actual production model/slip endpoint, not only `/wow/slip/regression-tests`. Provide the raw JSON for: four-pick Power rejection, five-pick Flex shrink, 1IP quarantine, duplicate exposure across two requests, weakest-leg removal, fragile-card rejection, and a settled $5 Flex returning $2.50. Also provide the full schema migration list and prove that a removed leg cannot reappear in the final serializer.
+
+Once those outputs match, I would classify the patch as:
+
+```text
+PATCH_014_TO_020=VERIFIED_END_TO_END
+```
