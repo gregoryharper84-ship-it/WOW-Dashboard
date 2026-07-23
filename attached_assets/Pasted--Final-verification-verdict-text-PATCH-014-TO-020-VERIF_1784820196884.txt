@@ -1,0 +1,120 @@
+## Final verification verdict
+
+```text
+PATCH_014_TO_020=VERIFIED_END_TO_END
+REGRESSION_STATUS=PASS_10_OF_10
+LIVE_ENDPOINT_TESTS=PASS_7_OF_7
+FINALIZER_ENFORCEMENT=PASS
+PERSISTED_DUPLICATE_GATE=PASS
+TEST_ONLY_QUARANTINE=PASS
+ECONOMIC_LEDGER=PASS
+SERIALIZER_LEAK=NOT_OBSERVED
+can_execute=false
+```
+
+The implementation is functioning through the live request path, not merely through isolated helper tests. The most important controls are proven:
+
+* Four- and five-leg cards cannot survive the optimizer ceiling.
+* Weak and fragile cards fail closed.
+* Removed legs do not reappear downstream.
+* 1IP remains research-only.
+* Duplicate exposure is detected from PostgreSQL state.
+* Negative-return Flex “wins” are recorded as economic losses.
+* Database migrations are active in the running environment.
+
+## Three small hardening corrections
+
+These do not invalidate the verification, but they should be cleaned up.
+
+### 1. Schema count mismatch
+
+The report says **23 new columns**, but the supplied list contains **24**:
+
+1. joint_probability
+2. joint_probability_lower_bound
+3. joint_failure_probability
+4. weakest_leg_id
+5. critical_leg_index
+6. slip_fragility_score
+7. fragility_label
+8. positive_net_return
+9. process_label
+10. entry_amount
+11. gross_return
+12. net_profit
+13. platform_result_label
+14. full_card_hit
+15. predicted_joint_probability
+16. duplicate_exposure_status
+17. weakest_leg_cycle
+18. replacement_search_complete
+19. joint_probability_status
+20. test_only_lane_status
+21. correlation_method
+22. test_only_legs_removed
+23. duplicate_legs_removed
+24. legs_enriched
+
+Update the implementation report to:
+
+```text
+DB_SCHEMA_MIGRATIONS=24_COLUMNS_CONFIRMED_IN_PLACE
+```
+
+### 2. Excluded candidates should receive explicit terminal audit actions
+
+In Tests 1 and 2, Embiid and Booker were silently excluded because only card sizes `[3, 2]` were built. That is structurally correct, but row reconciliation should explicitly show:
+
+```text
+action=EXCLUDED_CARD_SIZE_CEILING
+detail=Candidate qualified individually but was not included because MAX_CARD_SIZE=3
+```
+
+Similarly, the weak 0.50 CLB leg should ideally change from the initial generic `INCLUDE` to:
+
+```text
+action=REMOVED_BY_WEAKEST_LEG_FINALIZER
+```
+
+This improves explainability without changing card behavior.
+
+### 3. Do not automatically label every negative-return settlement as variance
+
+Test 7 returned:
+
+```text
+process_label=PROCESS_PASS_VARIANCE_LOSS
+```
+
+That label is valid only when the stored entry-time record proves that every required process gate passed. A settlement request containing only entry and return values cannot by itself establish variance.
+
+Safer logic:
+
+```text
+if documented_entry_time_process_pass:
+    PROCESS_PASS_VARIANCE_LOSS
+else:
+    UNRESOLVED
+```
+
+or:
+
+```text
+PROCESS_FAIL_STRUCTURE
+```
+
+when the original card violated a now-active structure rule.
+
+This follows the patch requirement that a loss cannot be called variance until all entry-time gates are documented.
+
+## Recommended final Replit follow-up
+
+> The end-to-end implementation is accepted. Make three telemetry hardening updates:
+>
+> 1. Correct the migration report from 23 to 24 `cm_slips` columns.
+> 2. Add explicit `EXCLUDED_CARD_SIZE_CEILING` and `REMOVED_BY_WEAKEST_LEG_FINALIZER` audit actions so every submitted row receives a terminal disposition.
+> 3. Change settlement process labeling so `PROCESS_PASS_VARIANCE_LOSS` is emitted only when entry-time gate evidence is persisted and verified; otherwise use `UNRESOLVED` or the documented process-failure category.
+>
+> Re-run the regression suite and confirm row reconciliation equals submitted legs across Tests 1, 2, and 5.
+
+Subject to those telemetry refinements, **the functional patch is complete and accepted**.

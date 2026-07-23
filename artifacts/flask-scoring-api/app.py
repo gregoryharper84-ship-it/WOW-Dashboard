@@ -11065,7 +11065,7 @@ CREATE INDEX IF NOT EXISTS cm_settled_slips_slip_idx ON cm_settled_slips(slip_id
 CREATE INDEX IF NOT EXISTS cm_settled_slips_date_idx ON cm_settled_slips(settled_at DESC);
 """
 
-# PATCH-014–020: Migration DDL — adds new columns to cm_slips for existing tables.
+# PATCH-014–020: Migration DDL — adds 24 new columns to cm_slips for existing tables.
 # Uses ADD COLUMN IF NOT EXISTS (PostgreSQL 9.6+) so it's safe to run repeatedly.
 _CM_SLIP_MIGRATE_DDL = """
 ALTER TABLE cm_slips
@@ -12629,6 +12629,7 @@ def cm_slip_optimizer():
 
     # ── Step 7: Build best 2-leg and 3-leg slips, apply PATCH-020 ─────
     built_slips = []
+    finalizer_removed_all = set()   # leg IDs removed by weakest-leg finalizer across all sizes
     for target_size in [CM_SLIP_MAX_CARD_SIZE, CM_SLIP_CORE_CARD_SIZE]:
         if len(post_dup) < target_size:
             continue
@@ -12636,6 +12637,13 @@ def cm_slip_optimizer():
 
         # Weakest-leg finalizer (PATCH-020)
         final_legs, finalizer_report = _cm_weakest_leg_finalizer(candidates)
+
+        # Track which legs were removed by the finalizer for terminal audit (Step 8)
+        for _act in finalizer_report.get("actions", []):
+            _lid = _act.get("leg")
+            if _lid:
+                finalizer_removed_all.add(_lid.lower())
+
         if len(final_legs) < 2:
             continue
 
@@ -12692,6 +12700,28 @@ def cm_slip_optimizer():
             ],
             "can_execute": False,
         })
+
+    # ── Step 8: Terminal audit — every submitted row gets an explicit disposition ─
+    # Legs that passed all gates but weren't included in any final_card receive
+    # either EXCLUDED_CARD_SIZE_CEILING or REMOVED_BY_WEAKEST_LEG_FINALIZER.
+    included_ids = {
+        (sl.get("player") or sl.get("prop") or "").lower()
+        for slip in built_slips
+        for sl in slip["final_card"]
+    }
+    for row in leg_audit_rows:
+        if row.get("action") != "INCLUDE":
+            continue   # already has a terminal action (NO_TEST_ONLY_LANE, NO_DATA_QUALITY, etc.)
+        leg_id = (row.get("leg") or "").lower()
+        if leg_id in included_ids:
+            continue   # confirmed included in a publishable card
+        if leg_id in finalizer_removed_all:
+            row["action"] = "REMOVED_BY_WEAKEST_LEG_FINALIZER"
+            row["detail"] = "Removed by binding weakest-leg finalizer (PATCH-020)"
+        else:
+            row["action"] = "EXCLUDED_CARD_SIZE_CEILING"
+            row["detail"] = (f"Candidate qualified individually but excluded by "
+                             f"MAX_CARD_SIZE={CM_SLIP_MAX_CARD_SIZE}")
 
     decision = ("YES_MODEL_QUALIFIED" if built_slips else "NO_BAD_STRUCTURE")
 
@@ -12786,20 +12816,41 @@ def cm_settle_slip():
         return jsonify({"ok": False, "error": f"numeric parse error: {e}"}), 400
 
     # PATCH-017: process_label classification
+    # PROCESS_PASS_VARIANCE_LOSS is only valid when entry-time gate evidence is
+    # persisted in cm_daily_exposure or cm_slips. Without that documentation the
+    # loss cannot be asserted as variance — use UNRESOLVED instead.
     legs_data     = body.get("legs") or []
     full_card_hit_bool = bool(body.get("full_card_hit", full_card_hit))
     process_label = body.get("process_label")
     if not process_label:
-        if full_card_hit_bool and positive_net:
+        entry_documented = False
+        try:
+            with _cm_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM cm_daily_exposure WHERE slip_id=%s LIMIT 1",
+                        (slip_id,)
+                    )
+                    if cur.fetchone():
+                        entry_documented = True
+                    else:
+                        cur.execute(
+                            "SELECT 1 FROM cm_slips WHERE slip_id=%s LIMIT 1",
+                            (slip_id,)
+                        )
+                        if cur.fetchone():
+                            entry_documented = True
+        except Exception:
+            entry_documented = False
+
+        if full_card_hit_bool and positive_net and entry_documented:
             process_label = "PROCESS_PASS_WIN"
-        elif full_card_hit_bool and not positive_net:
-            # Green badge but negative net — counts as variance loss, not win
-            process_label = "PROCESS_PASS_VARIANCE_LOSS"
-        elif not full_card_hit_bool and platform_result_label.lower() in ("win", "green"):
-            # Platform shows win but not full-card hit (Flex partial)
+        elif entry_documented:
+            # Entry-time gates are documented — economic loss is attributable to variance
             process_label = "PROCESS_PASS_VARIANCE_LOSS"
         else:
-            process_label = "PROCESS_PASS_VARIANCE_LOSS"
+            # No persisted entry-time gate record; cannot assert variance
+            process_label = "UNRESOLVED"
 
     settled_id = f"settled_{slip_id}_{_hl.md5(slip_id.encode()).hexdigest()[:6]}"
 
