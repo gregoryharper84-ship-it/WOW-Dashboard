@@ -33,3 +33,4 @@
 - [nba_api cold-start fix](nba-cold-start.md) — module-level nba_api import took 10.7s → healthcheck 500s during every restart; fix: _nba_ensure() lazy-init, all guards changed to if not _nba_ensure().
 - [run-connected-model timeout fixes](run-connected-model-timeouts.md) — three-layer fix: Anthropic 90s timeout, psycopg2 connect_timeout=10, gunicorn --timeout 240.
 - [gunicorn --preload threading.Lock deadlock](gunicorn-preload-lock-deadlock.md) — post_fork hook must re-create all threading.Lock instances; inherited locked mutex = permanent WORKER TIMEOUT.
+- [WOW v16.1 Slip Consistency patch architecture](wow-slip-consistency-patch.md) — PATCH-014–020 slip enforcement; 11 engine flags; 4 new endpoints; all 10 regression tests pass; can_execute=False is unconditional; positive_net_return is primary economic metric.
