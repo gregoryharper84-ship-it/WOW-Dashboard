@@ -676,19 +676,121 @@ def validate_series_state(candidate: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def log_calibration_entry(entry: dict[str, Any]) -> None:
-    """Append one calibration ledger entry to the JSONL log."""
-    record = {f: entry.get(f) for f in CALIBRATION_LEDGER_FIELDS}
-    record["logged_at"] = datetime.now(timezone.utc).isoformat()
+def validate_material_staleness(candidate: dict[str, Any]) -> dict[str, Any]:
+    """
+    Stage 2 — Item 4: Automatic model freshness check.
+
+    Compares model_timestamp against latest_material_update_at.
+    If model_timestamp < latest_material_update_at the model was built before
+    a material data update (injury report, lineup change, odds shift) and
+    cannot produce a PLAYABLE or APPROVED final label.
+
+    This replaces the manual material_change_flagged boolean.  The legacy
+    boolean is still checked for backward-compatibility when no timestamps
+    are present, but the timestamp comparison is authoritative.
+
+    Ceiling on staleness detected: LLP_REJECT
+    Ceiling on missing model_timestamp: LLP_WATCH (cannot confirm currency)
+    """
+    model_ts_raw  = candidate.get("model_timestamp")
+    update_ts_raw = candidate.get("latest_material_update_at")
+    legacy_flag   = bool(candidate.get("material_change_flagged"))
+
+    # ── No model_timestamp — required by Stage 2 schema ──────────────────────
+    if not model_ts_raw:
+        return _fail(
+            "NO_MODEL_TIMESTAMP",
+            "model_timestamp is required for material-staleness check; "
+            "model currency cannot be confirmed",
+            ceiling=LLPLabel.WATCH.value,
+        )
+
+    # ── No update timestamp — fall back to legacy boolean ────────────────────
+    if not update_ts_raw:
+        if legacy_flag:
+            return _fail(
+                "MATERIAL_CHANGE_FLAG_SET",
+                "material_change_flagged=True but latest_material_update_at "
+                "not provided; legacy flag blocks final label",
+                ceiling=LLPLabel.REJECT.value,
+            )
+        return _ok(
+            "MATERIAL_STALENESS_UNVERIFIABLE",
+            "latest_material_update_at not provided; no explicit flag set — "
+            "staleness cannot be confirmed but not blocked",
+        )
+
+    # ── Automatic timestamp comparison ────────────────────────────────────────
     try:
-        with open(CALLEDGER_PATH, "a") as f:
-            f.write(json.dumps(record) + "\n")
-    except OSError:
-        pass
+        model_ts  = _parse_ts(str(model_ts_raw))
+        update_ts = _parse_ts(str(update_ts_raw))
+    except ValueError as exc:
+        return _fail(
+            "MATERIAL_STALENESS_PARSE_ERROR",
+            f"Cannot parse timestamps: {exc}",
+            ceiling=LLPLabel.WATCH.value,
+        )
+
+    if model_ts < update_ts:
+        lag = update_ts - model_ts
+        return _fail(
+            "STALE_MODEL_OUTPUT",
+            f"model_timestamp={model_ts.isoformat()} is before "
+            f"latest_material_update_at={update_ts.isoformat()} "
+            f"(lag={_fmt_delta(lag)}) — model was built before a material "
+            f"update and cannot produce a final label",
+            ceiling=LLPLabel.REJECT.value,
+        )
+
+    return _ok(
+        "MODEL_CURRENT",
+        f"model_timestamp >= latest_material_update_at "
+        f"(lag=0, model is fresh)",
+    )
+
+
+def log_calibration_entry(entry: dict[str, Any]) -> None:
+    """
+    Append one calibration ledger entry.
+
+    Primary path: Postgres llp_calibration_ledger (Stage 2 — Item 5).
+    Fallback path: JSONL at CALLEDGER_PATH (retained for resilience).
+    """
+    # ── Primary: Postgres ─────────────────────────────────────────────────────
+    try:
+        from .llp_stage2_tables import log_calibration_entry_pg
+        success = log_calibration_entry_pg(entry)
+    except Exception:
+        success = False
+
+    # ── Fallback: JSONL (written only when Postgres fails) ────────────────────
+    if not success:
+        record = {f: entry.get(f) for f in CALIBRATION_LEDGER_FIELDS}
+        record["logged_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            with open(CALLEDGER_PATH, "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except OSError:
+            pass
 
 
 def get_calibration_ledger(limit: int = 200) -> list[dict]:
-    """Read the calibration ledger (most recent `limit` entries)."""
+    """
+    Read the calibration ledger.
+
+    Primary path: Postgres llp_calibration_ledger.
+    Fallback path: JSONL at CALLEDGER_PATH.
+    """
+    # ── Primary: Postgres ─────────────────────────────────────────────────────
+    try:
+        from .llp_stage2_tables import get_calibration_ledger_pg
+        rows = get_calibration_ledger_pg(limit=limit)
+        if rows:
+            return rows
+    except Exception:
+        pass
+
+    # ── Fallback: JSONL ───────────────────────────────────────────────────────
     try:
         with open(CALLEDGER_PATH) as f:
             lines = f.readlines()
@@ -771,6 +873,8 @@ ALL_GOVERNANCE_VALIDATORS = [
     ("contradiction_kills",  lambda c, s: validate_contradiction_kills(c)),
     ("session_exposure",     lambda c, s: validate_session_exposure(c, s)),
     ("reapproval",           lambda c, s: validate_reapproval(c)),
+    # Stage 2 — Item 4: automatic model-timestamp vs latest_material_update_at
+    ("material_staleness",   lambda c, s: validate_material_staleness(c)),
     ("calibration_ledger",   lambda c, s: validate_calibration_ledger(c)),
     # WOW-PATCH-2026-07-10 — Rule F (MLB series-state) + Rule G (win-streak isolation)
     ("series_state",         lambda c, s: validate_series_state(c)),

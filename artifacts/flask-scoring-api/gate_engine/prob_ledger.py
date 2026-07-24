@@ -1,6 +1,6 @@
 """
 prob_ledger.py  —  Module D: Probability Component Ledger + Shrinkage
-WOW v16 / Section 8.4
+WOW v16 / Section 8.4 — Stage 2 Item 3 extended
 
 model_prob is not a single analyst estimate. It must be constructed from
 documented components with influence caps enforced.
@@ -22,6 +22,16 @@ CALIBRATION STATUS:
   UNCALIBRATED — missing components or shrinkage skipped; add 3% buffer,
                  quarter-Kelly max, block Power
   PROXY_ONLY   — market or L10 data is a proxy, not direct
+
+STAGE 2 PROBABILITY SCHEMA (Item 3):
+  Seven fields required before rank_eligible=True:
+    raw_probability       — model output before calibration transform
+    calibrated_probability — post-calibration estimate
+    lower_bound           — numeric lower confidence bound (not a display string)
+    upper_bound           — numeric upper confidence bound
+    model_timestamp       — ISO timestamp when the model was built
+    source_snapshot_id    — ID linking to llp_source_snapshots table
+    calibration_method    — how calibration was applied (e.g. "platt", "isotonic")
 """
 from __future__ import annotations
 
@@ -67,6 +77,28 @@ SHRINKAGE_THRESHOLD = 0.60   # model_prob ≥ 60% requires documented shrinkage
 UNCALIBRATED_EXTRA_HAIRCUT = 0.03   # +3% uncertainty buffer
 UNCALIBRATED_KELLY_CAP = 0.25       # quarter-Kelly max
 
+# ---------------------------------------------------------------------------
+# Stage 2 probability schema — required fields (Item 3)
+# ---------------------------------------------------------------------------
+
+STAGE2_REQUIRED_FIELDS = (
+    "raw_probability",
+    "calibrated_probability",
+    "lower_bound",
+    "upper_bound",
+    "model_timestamp",
+    "source_snapshot_id",
+    "calibration_method",
+)
+
+# Numeric fields that must be parseable as float
+STAGE2_NUMERIC_FIELDS = ("raw_probability", "calibrated_probability",
+                          "lower_bound", "upper_bound")
+
+# Probability range guard: bounds must be in (0, 1)
+_PROB_RANGE_MIN = 0.0
+_PROB_RANGE_MAX = 1.0
+
 
 def _check_narrative_blocked(ledger: list[dict]) -> list[str]:
     """Return names of any blocked (narrative) components found in the ledger."""
@@ -94,6 +126,87 @@ def _check_influence_bounds(ledger: list[dict]) -> list[str]:
     return violations
 
 
+def _validate_stage2_schema(
+    ledger_payload: dict[str, Any],
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Validate the Stage 2 probability schema.
+
+    Fields are sourced from ledger_payload first, then row (fallback).
+    Returns:
+      {
+        complete           bool   — all 7 required fields present and valid
+        rank_eligible      bool   — same as complete (future: may add extra gates)
+        missing_fields     list[str]
+        type_violations    list[str]
+        bound_violations   list[str]
+        violations         list[str]   — combined
+      }
+    """
+    missing_fields:  list[str] = []
+    type_violations: list[str] = []
+    bound_violations: list[str] = []
+
+    def _get(field: str):
+        v = ledger_payload.get(field)
+        if v is None:
+            v = row.get(field)
+        return v
+
+    for field in STAGE2_REQUIRED_FIELDS:
+        val = _get(field)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            missing_fields.append(field)
+            continue
+
+        # Numeric type check
+        if field in STAGE2_NUMERIC_FIELDS:
+            try:
+                fval = float(val)
+            except (TypeError, ValueError):
+                type_violations.append(
+                    f"{field}: expected numeric, got {type(val).__name__}={val!r}"
+                )
+                continue
+            # Range check for probability fields
+            if field in ("raw_probability", "calibrated_probability",
+                          "lower_bound", "upper_bound"):
+                if not (_PROB_RANGE_MIN < fval < _PROB_RANGE_MAX):
+                    bound_violations.append(
+                        f"{field}={fval:.4f} outside valid range "
+                        f"({_PROB_RANGE_MIN}, {_PROB_RANGE_MAX})"
+                    )
+
+    # lower_bound must be ≤ upper_bound
+    lb_raw = _get("lower_bound")
+    ub_raw = _get("upper_bound")
+    if lb_raw is not None and ub_raw is not None:
+        try:
+            if float(lb_raw) > float(ub_raw):
+                bound_violations.append(
+                    f"lower_bound={lb_raw} > upper_bound={ub_raw}"
+                )
+        except (TypeError, ValueError):
+            pass
+
+    violations = (
+        [f"missing:{f}" for f in missing_fields]
+        + type_violations
+        + bound_violations
+    )
+    complete = len(violations) == 0
+
+    return {
+        "complete":        complete,
+        "rank_eligible":   complete,
+        "missing_fields":  missing_fields,
+        "type_violations": type_violations,
+        "bound_violations": bound_violations,
+        "violations":      violations,
+    }
+
+
 def run(
     row: dict[str, Any],
     enrichment: dict[str, Any] | None = None,
@@ -107,31 +220,41 @@ def run(
             {name: str, weight: float, value: float, source: str},
             ...
           ],
-          final_model_prob:     float   (0–1)
-          confidence_interval:  str     e.g. "0.53–0.61"
-          uncertainty_haircut:  float   e.g. 0.04
-          usable_probability:   float   (final_model_prob minus haircut)
-          calibration_status:   "CALIBRATED"|"UNCALIBRATED"|"PROXY_ONLY"
-          shrinkage_applied:    bool
-          shrinkage_baseline:   str | None
+          final_model_prob:       float   (0–1)
+          confidence_interval:    str     e.g. "0.53–0.61"  (display only)
+          uncertainty_haircut:    float   e.g. 0.04
+          usable_probability:     float   (final_model_prob minus haircut)
+          calibration_status:     "CALIBRATED"|"UNCALIBRATED"|"PROXY_ONLY"
+          shrinkage_applied:      bool
+          shrinkage_baseline:     str | None
+          -- Stage 2 fields (Item 3) --
+          raw_probability:        float
+          calibrated_probability: float
+          lower_bound:            float   (numeric, not a display string)
+          upper_bound:            float
+          model_timestamp:        str     (ISO-8601)
+          source_snapshot_id:     str
+          calibration_method:     str
         }
 
     Returns:
         {
-          passed:                bool
-          calibration_status:    str
-          final_model_prob:      float | None
-          usable_probability:    float | None
-          uncertainty_haircut:   float | None
-          confidence_interval:   str | None
-          shrinkage_applied:     bool | None
-          missing_required:      list[str]
-          blocked_found:         list[str]
-          influence_violations:  list[str]
-          shrinkage_required:    bool
-          uncalibrated_penalty:  float    (extra haircut when UNCALIBRATED)
-          code:                  str
-          detail:                str
+          passed:                   bool
+          rank_eligible:            bool   (Stage 2: True only when all 7 schema fields valid)
+          probability_schema:       dict   (Stage 2 validation result)
+          calibration_status:       str
+          final_model_prob:         float | None
+          usable_probability:       float | None
+          uncertainty_haircut:      float | None
+          confidence_interval:      str | None
+          shrinkage_applied:        bool | None
+          missing_required:         list[str]
+          blocked_found:            list[str]
+          influence_violations:     list[str]
+          shrinkage_required:       bool
+          uncalibrated_penalty:     float
+          code:                     str
+          detail:                   str
         }
     """
     enr   = enrichment or {}
@@ -169,7 +292,7 @@ def run(
         and not shrinkage_applied
     )
 
-    # 5. Confidence interval required for FINAL_APPROVED
+    # 5. Confidence interval required for FINAL_APPROVED (display string)
     has_ci = bool(confidence_interval)
 
     # 6. Calibration override
@@ -199,38 +322,53 @@ def run(
             f">= {SHRINKAGE_THRESHOLD:.0%} but shrinkage_applied=False"
         )
     if not has_ci and final_model_prob is not None:
-        violations.append("confidence_interval_missing: point estimate alone cannot produce FINAL_APPROVED")
+        violations.append(
+            "confidence_interval_missing: point estimate alone cannot produce FINAL_APPROVED"
+        )
 
-    passed = len(violations) == 0
+    # ── Stage 2 Item 3: Probability schema validation ─────────────────────────
+    schema_result = _validate_stage2_schema(ledger_payload, row)
+    if schema_result["violations"]:
+        for sv in schema_result["violations"]:
+            violations.append(f"stage2_schema:{sv}")
+
+    passed        = len(violations) == 0
+    rank_eligible = schema_result["rank_eligible"] and passed
 
     code = "PROB_LEDGER_OK" if passed else "PROB_LEDGER_FAIL"
     if blocked_found:
         code = "NARRATIVE_COMPONENT_BLOCKED"
+    if not schema_result["complete"]:
+        code = "PROB_SCHEMA_INCOMPLETE"
 
     result: dict[str, Any] = {
-        "passed":                passed,
-        "calibration_status":    effective_status,
-        "final_model_prob":      final_model_prob,
-        "usable_probability":    usable_probability,
-        "uncertainty_haircut":   uncertainty_haircut,
-        "confidence_interval":   confidence_interval,
-        "shrinkage_applied":     shrinkage_applied,
-        "shrinkage_baseline":    shrinkage_baseline,
-        "missing_required":      missing_required,
-        "blocked_found":         blocked_found,
-        "influence_violations":  influence_violations,
-        "shrinkage_required":    shrinkage_required,
+        "passed":                  passed,
+        "rank_eligible":           rank_eligible,
+        "probability_schema":      schema_result,
+        "calibration_status":      effective_status,
+        "final_model_prob":        final_model_prob,
+        "usable_probability":      usable_probability,
+        "uncertainty_haircut":     uncertainty_haircut,
+        "confidence_interval":     confidence_interval,
+        "shrinkage_applied":       shrinkage_applied,
+        "shrinkage_baseline":      shrinkage_baseline,
+        "missing_required":        missing_required,
+        "blocked_found":           blocked_found,
+        "influence_violations":    influence_violations,
+        "shrinkage_required":      shrinkage_required,
         "has_confidence_interval": has_ci,
-        "uncalibrated_penalty":  uncalibrated_penalty,
-        "uncalibrated_kelly_cap": UNCALIBRATED_KELLY_CAP if effective_status == "UNCALIBRATED" else None,
-        "code":                  code,
+        "uncalibrated_penalty":    uncalibrated_penalty,
+        "uncalibrated_kelly_cap":  UNCALIBRATED_KELLY_CAP if effective_status == "UNCALIBRATED" else None,
+        "code":                    code,
         "detail": (
-            "Probability component ledger valid." if passed
+            "Probability component ledger valid and Stage 2 schema complete." if passed
             else f"Ledger violations: {'; '.join(violations)}"
         ),
     }
 
     row.setdefault("gates", {})["prob_ledger"] = result
+    # rank_eligible is surfaced directly on the row for downstream gates
+    row["rank_eligible"] = rank_eligible
     for v in violations:
         row["blockers"].append(f"PROB_LEDGER:{v}")
 

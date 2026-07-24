@@ -87,6 +87,12 @@ ALTER TABLE kalshi_forecast_ledger
     ADD COLUMN IF NOT EXISTS blocking_reasons TEXT[];
 ALTER TABLE kalshi_forecast_ledger
     ADD COLUMN IF NOT EXISTS warnings TEXT[];
+ALTER TABLE kalshi_forecast_ledger
+    ADD COLUMN IF NOT EXISTS log_loss NUMERIC;
+ALTER TABLE kalshi_forecast_ledger
+    ADD COLUMN IF NOT EXISTS calibration_bucket TEXT;
+ALTER TABLE kalshi_forecast_ledger
+    ADD COLUMN IF NOT EXISTS is_primary_observation BOOLEAN DEFAULT TRUE;
 """
 
 
@@ -99,7 +105,85 @@ def _get_conn():
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
         raise RuntimeError("DATABASE_URL not set")
-    return psycopg2.connect(db_url)
+    return psycopg2.connect(db_url, connect_timeout=10)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — Item 5 helpers
+# ---------------------------------------------------------------------------
+
+# Probability bucket ranges — consistent with ml_reporting.py and llp_stage2_tables.py
+_CALIBRATION_BUCKETS = [
+    (0.52, 0.55, "52-55%"),
+    (0.55, 0.60, "55-60%"),
+    (0.60, 0.65, "60-65%"),
+    (0.65, 0.70, "65-70%"),
+    (0.70, 1.01, "70%+"),
+]
+
+
+def _probability_to_calibration_bucket(prob: float | None) -> str | None:
+    """Map a probability to the canonical calibration bucket label."""
+    if prob is None:
+        return None
+    for lo, hi, label in _CALIBRATION_BUCKETS:
+        if lo <= prob < hi:
+            return label
+    return None
+
+
+def _compute_log_loss(model_prob: float | None, outcome: int | None) -> float | None:
+    """
+    Binary log loss for one observation.
+      outcome = 1 (YES/WIN) or 0 (NO/LOSS).
+      log_loss = -(outcome * log(p) + (1-outcome) * log(1-p))
+    p is clipped to [1e-7, 1-1e-7] to avoid log(0).
+    Returns None when inputs are missing or invalid.
+    """
+    import math
+    if model_prob is None or outcome is None:
+        return None
+    try:
+        p = max(1e-7, min(1 - 1e-7, float(model_prob)))
+        o = int(outcome)
+        if o not in (0, 1):
+            return None
+        return round(-(o * math.log(p) + (1 - o) * math.log(1 - p)), 8)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_opposing_side_duplicate(
+    conn,
+    event_ticker: str | None,
+    side_yes_no: str,
+) -> bool:
+    """
+    Unique-event accounting (Stage 2 — Item 5):
+    Return True if a record for the SAME event_ticker but OPPOSITE side
+    already exists in the ledger (OPEN or SETTLED).
+
+    When True the new record is marked is_primary_observation=False so that
+    both sides of the same game are never double-counted in calibration.
+    """
+    if not event_ticker:
+        return False
+    opposite = "NO" if side_yes_no.upper() == "YES" else "YES"
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1 FROM kalshi_forecast_ledger
+            WHERE event_ticker = %s AND side_yes_no = %s
+            LIMIT 1
+            """,
+            (event_ticker, opposite),
+        )
+        found = cur.fetchone() is not None
+        cur.close()
+        return found
+    except Exception:
+        return False
 
 
 def ensure_table() -> None:
@@ -137,7 +221,18 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
     try:
         conn = _get_conn()
         cur  = conn.cursor()
-        import psycopg2.extras as _extras  # type: ignore
+
+        # Stage 2 — Item 5: calibration_bucket (consistent across all ledgers)
+        model_prob   = entry["model_probability"]
+        cal_bucket   = entry.get("calibration_bucket") or _probability_to_calibration_bucket(float(model_prob))
+        market_bucket = entry.get("market_bucket") or cal_bucket  # backward compat alias
+
+        # Stage 2 — Item 5: unique-event accounting
+        # Mark as non-primary if the opposing side of the same event is already logged.
+        event_ticker = entry.get("event_ticker")
+        side_yes_no  = entry["side_yes_no"]
+        is_primary   = not _is_opposing_side_duplicate(conn, event_ticker, side_yes_no)
+
         cur.execute(
             """
             INSERT INTO kalshi_forecast_ledger (
@@ -145,27 +240,27 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
                 side_yes_no, model_probability, confidence_low, confidence_high,
                 kalshi_price, entry_price, best_bid, best_ask,
                 spread, depth_score, fee_estimate, adjusted_edge,
-                max_playable_price, label, market_bucket,
+                max_playable_price, label, market_bucket, calibration_bucket,
                 settlement_source, settlement_grade, mode, notes,
-                blocking_reasons, warnings
+                blocking_reasons, warnings, is_primary_observation
             ) VALUES (
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
-                %s,%s,%s,
                 %s,%s,%s,%s,
-                %s,%s
+                %s,%s,%s,%s,
+                %s,%s,%s
             )
             RETURNING id, created_at
             """,
             (
                 entry["market_ticker"],
-                entry.get("event_ticker"),
+                event_ticker,
                 entry.get("contract_title"),
                 entry.get("category"),
-                entry["side_yes_no"],
-                entry["model_probability"],
+                side_yes_no,
+                model_prob,
                 entry.get("confidence_low"),
                 entry.get("confidence_high"),
                 entry.get("kalshi_price"),
@@ -178,13 +273,15 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
                 entry.get("adjusted_edge"),
                 entry.get("max_playable_price"),
                 entry["label"],
-                entry.get("market_bucket"),
+                market_bucket,
+                cal_bucket,
                 entry.get("settlement_source"),
                 entry.get("settlement_grade"),
                 entry.get("mode", "paper"),
                 entry.get("notes"),
                 entry.get("blocking_reasons") or [],
                 entry.get("warnings") or [],
+                is_primary,
             ),
         )
         row = cur.fetchone()
@@ -192,10 +289,12 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
         cur.close()
         conn.close()
         return {
-            "ok":         True,
-            "id":         row[0],
-            "created_at": row[1].isoformat() if row[1] else None,
-            "detail":     f"Paper trade logged (id={row[0]}).",
+            "ok":                    True,
+            "id":                    row[0],
+            "created_at":            row[1].isoformat() if row[1] else None,
+            "calibration_bucket":    cal_bucket,
+            "is_primary_observation": is_primary,
+            "detail":                f"Paper trade logged (id={row[0]}).",
         }
     except Exception as exc:
         return {"ok": False, "detail": f"DB error: {exc}"}
@@ -216,35 +315,40 @@ def settle_result(
         conn = _get_conn()
         cur  = conn.cursor()
 
-        # Compute Brier score if we have closing price
-        brier: float | None = None
+        # Fetch model_probability for calibration metric computation
         cur.execute(
-            "SELECT model_probability FROM kalshi_forecast_ledger WHERE id=%s", (record_id,)
+            "SELECT model_probability FROM kalshi_forecast_ledger WHERE id=%s",
+            (record_id,),
         )
         row = cur.fetchone()
-        if row and closing_price is not None:
-            mp    = float(row[0])
-            # Brier = (model_prob - outcome)^2; outcome = 1 if YES won, 0 if NO won
-            outcome = 1.0 if result == "YES" else (0.0 if result == "NO" else None)
-            if outcome is not None:
-                brier = round((mp - outcome) ** 2, 6)
+
+        # Stage 2 — Item 5: compute both Brier score and log_loss
+        brier:    float | None = None
+        log_loss: float | None = None
+        outcome_int: int | None = None
+        if row and result in ("YES", "NO"):
+            mp          = float(row[0])
+            outcome_int = 1 if result == "YES" else 0
+            brier       = round((mp - outcome_int) ** 2, 6)
+            log_loss    = _compute_log_loss(mp, outcome_int)
 
         cur.execute(
             """
             UPDATE kalshi_forecast_ledger
-            SET updated_at = NOW(),
-                settlement_status = 'SETTLED',
-                result            = %s,
-                closing_price     = %s,
-                brier_score       = %s,
-                clv               = %s,
-                net_pnl           = %s,
+            SET updated_at           = NOW(),
+                settlement_status    = 'SETTLED',
+                result               = %s,
+                closing_price        = %s,
+                brier_score          = %s,
+                log_loss             = %s,
+                clv                  = %s,
+                net_pnl              = %s,
                 dominant_failure_tag = %s,
-                notes             = COALESCE(%s, notes)
+                notes                = COALESCE(%s, notes)
             WHERE id = %s
             RETURNING id, updated_at
             """,
-            (result, closing_price, brier, clv, net_pnl,
+            (result, closing_price, brier, log_loss, clv, net_pnl,
              dominant_failure_tag, notes, record_id),
         )
         updated = cur.fetchone()
@@ -258,6 +362,7 @@ def settle_result(
             "id":         updated[0],
             "updated_at": updated[1].isoformat() if updated[1] else None,
             "brier_score": brier,
+            "log_loss":    log_loss,
             "detail":     f"Settlement recorded (id={updated[0]}, result={result}).",
         }
     except Exception as exc:
@@ -330,11 +435,21 @@ def get_brier_score() -> dict[str, Any]:
         import psycopg2.extras  # type: ignore
         conn = _get_conn()
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # Stage 2 — Item 5: include mean_log_loss and primary-observation-only stats
         cur.execute(
             """
             SELECT
                 COUNT(*)                              AS total_settled,
+                COUNT(*) FILTER (WHERE is_primary_observation IS NOT FALSE)
+                                                      AS primary_observations,
                 ROUND(AVG(brier_score)::numeric, 5)   AS mean_brier_score,
+                ROUND(AVG(brier_score)
+                    FILTER (WHERE is_primary_observation IS NOT FALSE)::numeric, 5)
+                                                      AS mean_brier_primary,
+                ROUND(AVG(log_loss)::numeric, 5)       AS mean_log_loss,
+                ROUND(AVG(log_loss)
+                    FILTER (WHERE is_primary_observation IS NOT FALSE)::numeric, 5)
+                                                      AS mean_log_loss_primary,
                 ROUND(AVG(clv)::numeric, 5)            AS mean_clv,
                 ROUND(SUM(net_pnl)::numeric, 4)        AS total_pnl,
                 COUNT(*) FILTER (WHERE result = 'YES') AS yes_wins,
@@ -350,6 +465,8 @@ def get_brier_score() -> dict[str, Any]:
         return {
             **{k: (float(v) if v is not None else None) for k, v in row.items()},
             "can_approve_bets": False,
+            "can_execute":      False,
+            "execution_rule":   "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
         }
     except Exception as exc:
         return {"error": str(exc), "can_approve_bets": False}
@@ -368,17 +485,27 @@ def get_brier_score_by_bucket() -> list[dict[str, Any]]:
         import psycopg2.extras  # type: ignore
         conn = _get_conn()
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # Stage 2 — Item 5: use calibration_bucket (canonical), log_loss, primary-only
         cur.execute(
             """
             SELECT
-                COALESCE(market_bucket, 'UNKNOWN')     AS bucket,
+                COALESCE(calibration_bucket, market_bucket, 'UNKNOWN') AS bucket,
                 COUNT(*)                               AS count,
+                COUNT(*) FILTER (WHERE is_primary_observation IS NOT FALSE)
+                                                       AS primary_count,
                 ROUND(AVG(brier_score)::numeric, 5)    AS mean_brier_score,
-                ROUND(AVG(clv)::numeric, 5)            AS mean_clv,
-                COUNT(*) FILTER (WHERE result = 'YES') AS yes_wins
+                ROUND(AVG(brier_score)
+                    FILTER (WHERE is_primary_observation IS NOT FALSE)::numeric, 5)
+                                                       AS mean_brier_primary,
+                ROUND(AVG(log_loss)::numeric, 5)        AS mean_log_loss,
+                ROUND(AVG(log_loss)
+                    FILTER (WHERE is_primary_observation IS NOT FALSE)::numeric, 5)
+                                                       AS mean_log_loss_primary,
+                ROUND(AVG(clv)::numeric, 5)             AS mean_clv,
+                COUNT(*) FILTER (WHERE result = 'YES')  AS yes_wins
             FROM kalshi_forecast_ledger
             WHERE settlement_status = 'SETTLED'
-            GROUP BY COALESCE(market_bucket, 'UNKNOWN')
+            GROUP BY COALESCE(calibration_bucket, market_bucket, 'UNKNOWN')
             ORDER BY count DESC
             """
         )
@@ -388,15 +515,19 @@ def get_brier_score_by_bucket() -> list[dict[str, Any]]:
 
         result = []
         for r in rows:
-            d = dict(r)
+            d   = dict(r)
             cnt = int(d["count"])
             result.append({
-                "bucket":            d["bucket"],
-                "count":             cnt,
-                "mean_brier_score":  float(d["mean_brier_score"]) if d["mean_brier_score"] is not None else None,
-                "mean_clv":          float(d["mean_clv"]) if d["mean_clv"] is not None else None,
-                "yes_wins":          int(d["yes_wins"]),
-                "insufficient_data": cnt < 5,
+                "bucket":               d["bucket"],
+                "count":                cnt,
+                "primary_count":        int(d["primary_count"]) if d["primary_count"] else 0,
+                "mean_brier_score":     float(d["mean_brier_score"]) if d["mean_brier_score"] is not None else None,
+                "mean_brier_primary":   float(d["mean_brier_primary"]) if d["mean_brier_primary"] is not None else None,
+                "mean_log_loss":        float(d["mean_log_loss"]) if d["mean_log_loss"] is not None else None,
+                "mean_log_loss_primary": float(d["mean_log_loss_primary"]) if d["mean_log_loss_primary"] is not None else None,
+                "mean_clv":             float(d["mean_clv"]) if d["mean_clv"] is not None else None,
+                "yes_wins":             int(d["yes_wins"]),
+                "insufficient_data":    cnt < 5,
             })
         return result
     except Exception as exc:

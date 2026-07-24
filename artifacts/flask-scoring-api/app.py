@@ -18232,6 +18232,12 @@ def _run_startup_warmup():
         _ensure_wse_table()
     except Exception:
         pass
+    # Stage 2 — Item 7: create all 7 required DB tables (idempotent)
+    try:
+        from gate_engine.llp_stage2_tables import ensure_all_tables as _s2_ensure_tables
+        _s2_ensure_tables()
+    except Exception:
+        pass
 
 _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
 _bt("startup daemon spawned — app fully ready")
@@ -25057,6 +25063,16 @@ def _wnba_start_cron() -> None:
 
 if _WNBA_CRON_ENABLED:
     _wnba_start_cron()
+
+# Stage 2 — Item 6: background settlement automation worker
+# Polls llp_event_settlements and kalshi_forecast_ledger for OPEN records and
+# grades only the selected side. Respects SETTLEMENT_WORKER_DISABLED env var.
+# can_execute is unconditionally False — no live orders will ever be placed.
+try:
+    from gate_engine.settlement_worker import start_settlement_worker as _start_settlement_worker
+    _start_settlement_worker()
+except Exception:
+    pass
 
 
 # ── Staleness helper ──────────────────────────────────────────────────────────
