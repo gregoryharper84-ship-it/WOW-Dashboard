@@ -18445,6 +18445,98 @@ def wow_engine_warmup():
     return jsonify({"ok": True, "warmup": results}), 200
 
 
+# ---------------------------------------------------------------------------
+# Slim-response helpers for response_mode=slim
+# ---------------------------------------------------------------------------
+
+# Fields to extract from each gate's result dict when building gate_summary.
+# Keys absent from the gate result are simply omitted (not defaulted to None).
+_GATE_SLIM_KEYS: tuple[str, ...] = (
+    "status", "result", "passed", "failed", "label", "decision",
+    "ceiling", "ceiling_reason", "ceiling_applied",
+    "blocker", "blockers", "warning", "warnings",
+    "market_status", "cash_threshold_status", "exact_market_found",
+    "adjacent_market_used", "confidence_cap",
+    "edge_score", "ev_qualified", "ev_status",
+    "anchor_status", "anchor_qualified",
+    "data_status", "confidence_tier", "ledger_count",
+    "injury_tree_status", "dependency_player", "role_state",
+    "conflict_found", "session_exposure_ok",
+    "source", "source_ceiling", "source_ceiling_reason",
+)
+
+# Top-level row fields that are large arrays and safe to strip in slim mode.
+_ROW_STRIP_FIELDS: tuple[str, ...] = (
+    "game_log", "season_log",
+    "_enrichment_merged", "enrichment_echo",
+    "_raw_enrichment",
+)
+
+
+def _slim_row(row: dict) -> dict:
+    """
+    Compress one prop_ledger row for response_mode=slim.
+
+    Keeps every top-level LLP decision field and replaces the verbose `gates`
+    dict with a compact `gate_summary` (one status object per gate).
+    Does not mutate the original — returns a shallow-copied dict.
+    """
+    slim = {k: v for k, v in row.items() if k not in _ROW_STRIP_FIELDS and k != "gates"}
+
+    gates = row.get("gates") or {}
+    gate_summary: dict[str, dict] = {}
+    for gate_name, gate_val in gates.items():
+        if not isinstance(gate_val, dict):
+            # scalar or list — keep as-is
+            gate_summary[gate_name] = gate_val
+            continue
+        compact: dict = {}
+        for key in _GATE_SLIM_KEYS:
+            if key in gate_val:
+                compact[key] = gate_val[key]
+        gate_summary[gate_name] = compact
+
+    slim["gate_summary"] = gate_summary
+    return slim
+
+
+def _slim_run_result(result: dict) -> dict:
+    """
+    Return a slim copy of the full pipeline result dict.
+
+    Strips:
+      - `prop_ledger`: replaced with slim rows (gate_summary instead of gates)
+      - `component_composite_report`: verbose slip-level internals
+      - `opportunity_state_report`: verbose opportunity internals
+      - `acquisition_execution_report`: detailed module-by-module trace
+
+    Keeps:
+      - summary, terminal_labels, final_card, data_status_ledger,
+        market_validation_ledger, injury_decision_ledger,
+        clv_table, exposure_report, market_enrichment_report,
+        run_status, failed_modules, mutex_report,
+        pp_threshold_ledger, settlement_conflict_map,
+        health_report, settlement_status,
+        governance_hash, patch_ids_applied, engine_code_version,
+        can_execute, can_approve_bets, disclaimer,
+        auto_enrichment_status, session_id, research_run_id, as_of,
+        exposure_key, governance_handshake
+
+    All LLP-required decision fields are preserved on every slim row.
+    """
+    _VERBOSE_TOP_LEVEL = {
+        "component_composite_report",
+        "opportunity_state_report",
+        "acquisition_execution_report",
+    }
+    slim = {k: v for k, v in result.items()
+            if k not in _VERBOSE_TOP_LEVEL and k != "prop_ledger"}
+
+    slim["prop_ledger"] = [_slim_row(r) for r in result.get("prop_ledger") or []]
+    slim["response_mode"] = "slim"
+    return slim
+
+
 @app.route("/gate-engine/run", methods=["POST"])
 @require_api_key
 def gate_engine_run():
@@ -18612,6 +18704,9 @@ def gate_engine_run():
     enrichment     = body.get("enrichment") or {}
     record_entries = bool(body.get("record_entries", False))
     auto_enrich    = bool(body.get("auto_enrich", False))
+    response_mode  = (body.get("response_mode") or "full").lower()
+    if response_mode not in ("full", "slim"):
+        response_mode = "full"
 
     auto_enrichment_status = None
     if auto_enrich:
@@ -18681,10 +18776,14 @@ def gate_engine_run():
     result["governance_handshake"]  = "GOVERNANCE_MATCH"
     if auto_enrichment_status is not None:
         result["auto_enrichment_status"] = auto_enrichment_status
-    result["session_id"]     = _session_id
+    result["session_id"]      = _session_id
     result["research_run_id"] = _research_run_id
     result["as_of"]           = _as_of
     result["exposure_key"]    = _session_id
+
+    if response_mode == "slim":
+        result = _slim_run_result(result)
+
     return jsonify(result), 200
 
 

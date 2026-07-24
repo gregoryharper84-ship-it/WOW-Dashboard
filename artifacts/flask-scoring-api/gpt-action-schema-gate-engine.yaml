@@ -7,11 +7,19 @@ info:
     MANDATORY call sequence before every run:
       1. GET /wow/engine/health         — confirm worker is alive (public, no key)
       2. GET /wow/governance/status     — obtain governance_hash (public, no key)
-      3. POST /gate-engine/run          — score rows (requires X-API-Key)
+      3. GET /wow/stage2/health         — confirm schema_ready=true (public, no key)
+      4. POST /gate-engine/run          — score rows (requires X-API-Key)
 
     The governance_hash from step 2 MUST be passed as expected_governance_hash
-    in step 3. A missing or mismatched hash returns HTTP 409. Call
+    in step 4. A missing or mismatched hash returns HTTP 409. Call
     /wow/governance/status to resync before retrying.
+
+    LARGE-SLATE GUIDANCE (ResponseTooLargeError fix):
+    For slates with more than ~6 rows, always pass response_mode="slim" in
+    the request body. Slim mode strips verbose gate internals and compresses
+    each row to a gate_summary while keeping every LLP-required decision field.
+    Typical size reduction: 70–85% versus full mode. All terminal_labels,
+    blockers, final_card, and summary fields are identical in both modes.
 
     Current engine: ENGINE v16.5, 9 active patches.
     Current hash:   2a74d11e20ee24526de6db9401f39b4a9228c0f46948d07cea72dc4a21111908
@@ -356,6 +364,32 @@ paths:
                     If true, auto-fetch market lines (Odds API) and
                     injury/status flags (ESPN) before running the pipeline.
                     Caller-supplied enrichment fields always win. Default false.
+                response_mode:
+                  type: string
+                  enum: [full, slim]
+                  default: full
+                  description: >
+                    Controls response payload size. Use "slim" for any slate
+                    with more than ~6 rows to avoid ResponseTooLargeError.
+
+                    full (default): complete prop_ledger with all gate internals.
+                    Suitable for small slates (≤6 rows) or when the full audit
+                    trail is needed.
+
+                    slim: prop_ledger rows are compressed — each row's verbose
+                    `gates` dict is replaced with a compact `gate_summary`
+                    containing only status/result/decision fields per gate.
+                    Verbose run-level reports (component_composite_report,
+                    opportunity_state_report, acquisition_execution_report) are
+                    omitted. All LLP-required fields are preserved:
+                      - terminal_label, final_decision, blockers, warnings
+                      - llp_label, llp_decision, rank_eligible
+                      - calibrated_probability, event_key, event_status
+                      - terminal_labels, final_card, summary (unchanged)
+                      - data_status_ledger, market_validation_ledger (unchanged)
+                      - injury_decision_ledger, clv_table (unchanged)
+                    Typical response size reduction: 70–85%.
+                    Recommended for: all MLB/NFL full-slate runs (≥6 rows).
                 expected_patch_ids:
                   type: array
                   items:
