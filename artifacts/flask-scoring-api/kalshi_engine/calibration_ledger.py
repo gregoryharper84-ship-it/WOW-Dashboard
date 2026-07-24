@@ -93,6 +93,15 @@ ALTER TABLE kalshi_forecast_ledger
     ADD COLUMN IF NOT EXISTS calibration_bucket TEXT;
 ALTER TABLE kalshi_forecast_ledger
     ADD COLUMN IF NOT EXISTS is_primary_observation BOOLEAN DEFAULT TRUE;
+ALTER TABLE kalshi_forecast_ledger
+    ADD COLUMN IF NOT EXISTS event_key TEXT;
+"""
+
+# Partial index to speed canonical-key opposing-side lookups
+_INDEX_MIGRATE_DDL = """
+CREATE INDEX IF NOT EXISTS kalshi_ledger_event_key_side_idx
+    ON kalshi_forecast_ledger (event_key, side_yes_no)
+    WHERE event_key IS NOT NULL;
 """
 
 
@@ -153,37 +162,54 @@ def _compute_log_loss(model_prob: float | None, outcome: int | None) -> float | 
         return None
 
 
-def _is_opposing_side_duplicate(
-    conn,
+def _check_and_lock_for_primary(
+    cur,
+    event_key:    str | None,
     event_ticker: str | None,
-    side_yes_no: str,
+    side_yes_no:  str,
 ) -> bool:
     """
-    Unique-event accounting (Stage 2 — Item 5):
-    Return True if a record for the SAME event_ticker but OPPOSITE side
-    already exists in the ledger (OPEN or SETTLED).
+    Transaction-safe opposing-side primary-designation check (Items 4 & 5).
 
-    When True the new record is marked is_primary_observation=False so that
-    both sides of the same game are never double-counted in calibration.
+    Within the CALLER'S open transaction, issues SELECT … FOR UPDATE on any
+    existing rows for the same event and opposite side. The row-level lock is
+    held until the caller commits, serialising concurrent inserts from
+    different Gunicorn workers for the same event.
+
+    Returns True when the new record should be marked is_primary_observation=True
+    (i.e. no opposing side exists yet), False otherwise.
+
+    Key selection (Item 4 — hardening):
+      Canonical event_key is preferred over the external event_ticker because
+      event_tickers can be reused or represent derivative markets.
+      Falls back to event_ticker only when event_key is absent.
     """
-    if not event_ticker:
-        return False
     opposite = "NO" if side_yes_no.upper() == "YES" else "YES"
     try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT 1 FROM kalshi_forecast_ledger
-            WHERE event_ticker = %s AND side_yes_no = %s
-            LIMIT 1
-            """,
-            (event_ticker, opposite),
-        )
+        if event_key:
+            # Preferred: canonical SHA-256 key
+            cur.execute(
+                "SELECT id FROM kalshi_forecast_ledger "
+                "WHERE event_key = %s AND side_yes_no = %s "
+                "LIMIT 1 FOR UPDATE",
+                (event_key, opposite),
+            )
+        elif event_ticker:
+            # Fallback: external ticker (less reliable but better than nothing)
+            cur.execute(
+                "SELECT id FROM kalshi_forecast_ledger "
+                "WHERE event_ticker = %s AND side_yes_no = %s "
+                "LIMIT 1 FOR UPDATE",
+                (event_ticker, opposite),
+            )
+        else:
+            # No key available — assume primary (cannot determine)
+            return True
+
         found = cur.fetchone() is not None
-        cur.close()
-        return found
+        return not found  # is_primary = True when no opposing side exists yet
     except Exception:
-        return False
+        return True  # default to primary on error; better than false-positive suppression
 
 
 def ensure_table() -> None:
@@ -194,6 +220,7 @@ def ensure_table() -> None:
         cur.execute(DDL)
         cur.execute(_INDEX_DDL)
         cur.execute(_MIGRATE_DDL)
+        cur.execute(_INDEX_MIGRATE_DDL)
         conn.commit()
         cur.close()
         conn.close()
@@ -223,20 +250,22 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
         cur  = conn.cursor()
 
         # Stage 2 — Item 5: calibration_bucket (consistent across all ledgers)
-        model_prob   = entry["model_probability"]
-        cal_bucket   = entry.get("calibration_bucket") or _probability_to_calibration_bucket(float(model_prob))
+        model_prob    = entry["model_probability"]
+        cal_bucket    = entry.get("calibration_bucket") or _probability_to_calibration_bucket(float(model_prob))
         market_bucket = entry.get("market_bucket") or cal_bucket  # backward compat alias
 
-        # Stage 2 — Item 5: unique-event accounting
-        # Mark as non-primary if the opposing side of the same event is already logged.
+        # Stage 2 — Items 4 & 5: transaction-safe primary-designation check.
+        # _check_and_lock_for_primary issues SELECT … FOR UPDATE on any opposing-side
+        # rows within this connection's transaction, serialising concurrent inserts.
         event_ticker = entry.get("event_ticker")
+        event_key_in = entry.get("event_key")  # canonical key preferred (Item 4)
         side_yes_no  = entry["side_yes_no"]
-        is_primary   = not _is_opposing_side_duplicate(conn, event_ticker, side_yes_no)
+        is_primary   = _check_and_lock_for_primary(cur, event_key_in, event_ticker, side_yes_no)
 
         cur.execute(
             """
             INSERT INTO kalshi_forecast_ledger (
-                market_ticker, event_ticker, contract_title, category,
+                market_ticker, event_ticker, event_key, contract_title, category,
                 side_yes_no, model_probability, confidence_low, confidence_high,
                 kalshi_price, entry_price, best_bid, best_ask,
                 spread, depth_score, fee_estimate, adjusted_edge,
@@ -244,7 +273,7 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
                 settlement_source, settlement_grade, mode, notes,
                 blocking_reasons, warnings, is_primary_observation
             ) VALUES (
-                %s,%s,%s,%s,
+                %s,%s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
                 %s,%s,%s,%s,
@@ -257,6 +286,7 @@ def log_paper_trade(entry: dict[str, Any]) -> dict[str, Any]:
             (
                 entry["market_ticker"],
                 event_ticker,
+                event_key_in,
                 entry.get("contract_title"),
                 entry.get("category"),
                 side_yes_no,

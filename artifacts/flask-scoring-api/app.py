@@ -18316,6 +18316,57 @@ def wow_engine_health():
     }), 200
 
 
+@app.route("/wow/stage2/health", methods=["GET"])
+def wow_stage2_health():
+    """
+    GET /wow/stage2/health
+
+    Reports Stage 2 pipeline readiness without any external I/O:
+      - schema_ready: whether all 7 Stage 2 DB tables are confirmed created
+      - settlement_worker: status of the background grading daemon
+      - can_execute: always False (DRY_RUN_ONLY)
+
+    Response:
+      {
+        "ok":             true,
+        "schema_ready":   bool,
+        "settlement_worker": {
+          "started":          bool,
+          "enabled":          bool,
+          "ticks":            int,
+          "props_graded":     int,
+          "kalshi_graded":    int,
+          "errors":           int,
+          "last_tick":        str | null,
+          "last_success_tick": str | null,
+          "last_error":       str | null,
+          "interval_sec":     int
+        },
+        "can_execute":    false,
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+      }
+    """
+    try:
+        from gate_engine.llp_stage2_tables import get_stage2_schema_health as _s2_health
+        schema_health = _s2_health()
+    except Exception:
+        schema_health = {"schema_ready": False}
+
+    try:
+        from gate_engine.settlement_worker import get_worker_status as _sw_status
+        worker_status = _sw_status()
+    except Exception:
+        worker_status = {"started": False, "error": "module_unavailable"}
+
+    return jsonify({
+        "ok":                True,
+        "schema_ready":      schema_health.get("schema_ready", False),
+        "settlement_worker": worker_status,
+        "can_execute":       False,
+        "execution_rule":    "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    }), 200
+
+
 @app.route("/wow/engine/ready", methods=["GET"])
 def wow_engine_ready():
     """

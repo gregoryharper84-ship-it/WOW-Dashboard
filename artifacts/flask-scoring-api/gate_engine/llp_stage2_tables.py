@@ -188,6 +188,9 @@ CREATE TABLE IF NOT EXISTS llp_event_settlements (
     decision_id             BIGINT REFERENCES llp_event_decisions(id) ON DELETE SET NULL,
     -- What was graded (ONLY the selected side — never both sides)
     selected_side           TEXT NOT NULL,
+    -- Idempotency: one settlement row per (run_id, event_key, selected_side)
+    CONSTRAINT llp_event_settlements_unique_per_run_side
+        UNIQUE (run_id, event_key, selected_side),
     official_event_result   TEXT,
     selected_side_result    TEXT,   -- WIN / LOSS / PUSH / UNKNOWN
     -- Settlement quality
@@ -593,6 +596,18 @@ def log_calibration_entry_pg(entry: dict[str, Any]) -> bool:
         return True
     except Exception:
         return False
+
+
+def get_stage2_schema_health() -> dict[str, Any]:
+    """
+    Return a health snapshot for Stage 2 schema readiness.
+    Exposed on /wow/stage2/health — never triggers external I/O.
+    """
+    return {
+        "schema_ready":  _TABLES_READY,
+        "can_execute":   False,
+        "execution_rule": EXECUTION_RULE,
+    }
 
 
 def get_calibration_ledger_pg(limit: int = 200) -> list[dict[str, Any]]:

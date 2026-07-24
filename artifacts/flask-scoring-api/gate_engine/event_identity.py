@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
@@ -40,7 +41,25 @@ _CANCELLED_WORDS    = frozenset({"cancelled", "canceled"})
 
 
 def _norm(v: Any) -> str:
-    return (str(v) if v is not None else "").lower().strip()
+    """
+    Normalise a participant or field value for canonical event_key hashing.
+
+    Steps (Item 3 — hardening):
+      1. Coerce to string, lowercase, strip outer whitespace.
+      2. Remove periods/dots (St. Louis → st louis).
+      3. Strip all remaining punctuation and non-alphanumeric characters
+         except spaces (handles hyphens, apostrophes, commas, etc.).
+      4. Collapse consecutive whitespace to a single space.
+
+    This ensures "St. Louis Blues", "St Louis Blues", and "st louis blues"
+    all hash identically, preventing spurious key mismatches from minor
+    formatting differences in team/player names.
+    """
+    s = (str(v) if v is not None else "").lower().strip()
+    s = s.replace(".", " ")                     # St. → St
+    s = re.sub(r"[^a-z0-9 ]", "", s)           # drop all punctuation
+    s = re.sub(r"\s+", " ", s).strip()         # collapse whitespace
+    return s
 
 
 # ─────────────────────────────────────────────────────────────────────────────

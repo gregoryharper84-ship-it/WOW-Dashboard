@@ -55,9 +55,46 @@ def _side_key(row: dict[str, Any]) -> str:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def is_run_blocked(rows: list[dict[str, Any]]) -> bool:
+    """
+    Return True if any row has _run_invalid=True.
+
+    When a run is blocked, NO downstream submission, card creation, or ranking
+    should proceed for ANY row in the run — not just the conflicting rows.
+    Callers must check this before any final-label processing.
+    """
+    return any(bool(row.get("_run_invalid")) for row in rows)
+
+
+def filter_valid_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Return only rows that are not run-invalid.
+
+    WARNING: when is_run_blocked(rows) is True, the ENTIRE RUN is invalid
+    and this function should NOT be used to salvage unaffected rows.
+    Downstream submission paths must check is_run_blocked() first and abort
+    the whole run — not just drop the conflicting rows.
+
+    This helper is intended for dry-run reporting only (e.g. logging which
+    rows would have been eligible absent the conflict).
+    """
+    return [r for r in rows if not r.get("_run_invalid")]
+
+
 def validate_event_mutex(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Scan all rows for opposing-side conflicts on the same event_key.
+
+    IMPORTANT — timing requirement:
+      This must be called AFTER all rows have reached terminal label
+      disposition (i.e. after the full gate pipeline has run for every row).
+      Calling it mid-pipeline may miss rows whose labels have not yet resolved.
+
+    IMPORTANT — run-level invalidation scope:
+      When run_valid=False, the ENTIRE RUN is blocked, not only the
+      conflicting rows. Callers must call is_run_blocked(rows) and abort
+      all downstream submission/card-creation/ranking for the full run.
+      Do not attempt to salvage unaffected rows from a run-invalid state.
 
     A conflict occurs when:
       1. Two or more rows share the same event_key.

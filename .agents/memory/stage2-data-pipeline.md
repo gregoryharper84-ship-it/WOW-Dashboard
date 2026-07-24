@@ -69,5 +69,16 @@ description: Seven-item Stage 2 build — event identity, mutex, prob schema, st
 - Manual material_change_flagged boolean required human intervention; automated timestamp comparison is fail-safe
 - No event_key meant opposing sides could both reach FINAL_APPROVED in one run without detection
 
+## Hardening pass (8 items from external reviewer)
+
+1. **`lower_bound <= calibrated_probability <= upper_bound`** — added cross-field check in `_validate_stage2_schema`; a calibrated estimate outside its own interval fails validation.
+2. **Bool rejection** — `isinstance(val, bool)` checked before `float()` for all 4 numeric probability fields; `True`/`False` are now type violations, not silently accepted as 1.0/0.0.
+3. **Participant normalization** — `_norm()` in `event_identity.py` now removes periods, strips all non-alphanumeric chars (except spaces), and collapses whitespace; `"St. Louis Blues"` and `"st louis blues"` produce the same key.
+4. **Canonical `event_key` preferred for dedup** — `_check_and_lock_for_primary` prefers `event_key` (SHA-256) over `event_ticker` (external Kalshi ID that can be reused/derivative).
+5. **Transaction-safe primary assignment** — `_check_and_lock_for_primary` uses `SELECT … FOR UPDATE` within the caller's transaction; concurrent inserts from different gunicorn workers for the same event are serialised.
+6. **Idempotent settlement inserts** — `llp_event_settlements` has `UNIQUE (run_id, event_key, selected_side)` constraint; both UPDATE paths in `settlement_worker.py` add `AND settlement_status = 'OPEN'` + check `cur.rowcount > 0` to prevent re-grading.
+7. **Health endpoint exposed** — `GET /wow/stage2/health` returns `schema_ready` (from `_TABLES_READY`), full worker stats including `last_success_tick` and `last_error`; `can_execute=false` always.
+8. **`_run_invalid` downstream block** — `is_run_blocked(rows)` and `filter_valid_rows(rows)` added to `event_mutex.py`; docstring explicitly warns callers must abort the full run, not salvage unaffected rows.
+
 ## Hard requirement preserved
 `can_execute = False` and `EXECUTION_RULE = "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"` are present as module-level constants in all 4 new modules and enforced unconditionally in `settle_result`, `reconcile()`, and all settlement worker paths.

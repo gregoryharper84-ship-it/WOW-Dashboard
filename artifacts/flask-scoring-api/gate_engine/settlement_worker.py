@@ -55,6 +55,7 @@ _WORKER_STATS: dict[str, Any] = {
     "kalshi_graded":      0,
     "errors":             0,
     "last_tick":          None,
+    "last_success_tick":  None,   # updated only when at least one row was graded
     "last_error":         None,
     "enabled":            SETTLEMENT_WORKER_ENABLED,
     "interval_sec":       SETTLEMENT_WORKER_INTERVAL_SEC,
@@ -157,19 +158,22 @@ def _grade_open_prop_settlements(cur, conn) -> int:
         failure_category  = None if process_pass_fail == "PASS" else "UNRESOLVABLE_RESULT"
 
         try:
+            # Idempotency guard (Item 6): AND settlement_status = 'OPEN' ensures
+            # that a row already graded by a prior tick is a no-op, not an error.
             cur.execute(
                 """
                 UPDATE llp_event_settlements
-                SET settlement_status  = 'SETTLED',
-                    settled_at         = NOW(),
+                SET settlement_status    = 'SETTLED',
+                    settled_at           = NOW(),
                     selected_side_result = %s,
-                    brier_score        = %s,
-                    log_loss           = %s,
-                    calibration_bucket = %s,
-                    clv                = %s,
-                    process_pass_fail  = %s,
-                    failure_category   = %s
+                    brier_score          = %s,
+                    log_loss             = %s,
+                    calibration_bucket   = %s,
+                    clv                  = %s,
+                    process_pass_fail    = %s,
+                    failure_category     = %s
                 WHERE id = %s
+                  AND settlement_status = 'OPEN'
                 """,
                 (
                     model_result, brier, log_loss, bucket,
@@ -177,7 +181,8 @@ def _grade_open_prop_settlements(cur, conn) -> int:
                     rec_id,
                 ),
             )
-            graded += 1
+            if cur.rowcount > 0:
+                graded += 1
         except Exception:
             pass
 
@@ -266,6 +271,8 @@ def _grade_open_kalshi_settlements(cur, conn) -> int:
         )
 
         try:
+            # Idempotency guard (Item 6): AND settlement_status = 'OPEN' makes
+            # a previously-graded row a no-op across consecutive ticks.
             cur.execute(
                 """
                 UPDATE kalshi_forecast_ledger
@@ -277,6 +284,7 @@ def _grade_open_kalshi_settlements(cur, conn) -> int:
                     clv               = %s,
                     net_pnl           = %s
                 WHERE id = %s
+                  AND settlement_status = 'OPEN'
                 """,
                 (
                     result_value,
@@ -287,7 +295,8 @@ def _grade_open_kalshi_settlements(cur, conn) -> int:
                     rec_id,
                 ),
             )
-            graded += 1
+            if cur.rowcount > 0:
+                graded += 1
         except Exception:
             pass
 
@@ -410,9 +419,12 @@ def _settlement_worker_tick() -> None:
     _WORKER_STATS["ticks"]         += 1
     _WORKER_STATS["props_graded"]  += props_graded
     _WORKER_STATS["kalshi_graded"] += kalshi_graded
-    _WORKER_STATS["last_tick"]      = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    _WORKER_STATS["last_tick"] = now_iso
+    # Item 7: last_success_tick is only updated when at least one row was graded
     if props_graded + kalshi_graded > 0:
-        _WORKER_STATS["last_error"] = None
+        _WORKER_STATS["last_success_tick"] = now_iso
+        _WORKER_STATS["last_error"]        = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -162,14 +162,22 @@ def _validate_stage2_schema(
 
         # Numeric type check
         if field in STAGE2_NUMERIC_FIELDS:
+            # Item 2 (hardening): reject Python booleans — bool is a subclass of int
+            # and float(True)==1.0, float(False)==0.0 which would pass range checks.
+            if isinstance(val, bool):
+                type_violations.append(
+                    f"{field}: bool values are not accepted as probability numbers "
+                    f"(got {val!r}); supply a float between 0 and 1"
+                )
+                continue
             try:
                 fval = float(val)
             except (TypeError, ValueError):
                 type_violations.append(
-                    f"{field}: expected numeric, got {type(val).__name__}={val!r}"
+                    f"{field}: expected numeric float, got {type(val).__name__}={val!r}"
                 )
                 continue
-            # Range check for probability fields
+            # Range check for probability fields — strict open interval (0, 1)
             if field in ("raw_probability", "calibrated_probability",
                           "lower_bound", "upper_bound"):
                 if not (_PROB_RANGE_MIN < fval < _PROB_RANGE_MAX):
@@ -181,11 +189,31 @@ def _validate_stage2_schema(
     # lower_bound must be ≤ upper_bound
     lb_raw = _get("lower_bound")
     ub_raw = _get("upper_bound")
-    if lb_raw is not None and ub_raw is not None:
+    if lb_raw is not None and ub_raw is not None and not isinstance(lb_raw, bool) and not isinstance(ub_raw, bool):
         try:
             if float(lb_raw) > float(ub_raw):
                 bound_violations.append(
                     f"lower_bound={lb_raw} > upper_bound={ub_raw}"
+                )
+        except (TypeError, ValueError):
+            pass
+
+    # Item 1 (hardening): lower_bound <= calibrated_probability <= upper_bound
+    # A calibrated estimate outside its own interval is self-contradictory.
+    cp_raw = _get("calibrated_probability")
+    if (
+        cp_raw is not None and not isinstance(cp_raw, bool)
+        and lb_raw is not None and not isinstance(lb_raw, bool)
+        and ub_raw is not None and not isinstance(ub_raw, bool)
+    ):
+        try:
+            cp = float(cp_raw)
+            lb = float(lb_raw)
+            ub = float(ub_raw)
+            if not (lb <= cp <= ub):
+                bound_violations.append(
+                    f"calibrated_probability={cp:.4f} is outside its own "
+                    f"confidence interval [{lb:.4f}, {ub:.4f}]"
                 )
         except (TypeError, ValueError):
             pass

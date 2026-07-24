@@ -1,0 +1,202 @@
+This is a strong Stage 2 implementation. Based on the changes you listed, the core LLP event-integrity, calibration, and settlement workflow is now structurally in place.
+
+Implementation assessment
+
+Event identity and duplicate control
+
+event_identity.py fixes the biggest identity risk correctly:
+
+* Stable SHA-256 event keys
+* Participant-order independence
+* UTC-native slate validation
+* Explicit event-state classification
+* Duplicate-event detection
+
+Using the official event ID, scheduled UTC start, normalized participants, league, and settlement market is the right canonical basis. Sorting participants prevents home/away ordering from generating different identities for the same event.
+
+One edge case to test: normalize participant strings before sorting so differences such as capitalization, abbreviations, punctuation, or trailing spaces do not create separate keys.
+
+Opposing-side mutex
+
+validate_event_mutex(rows) now provides the hard terminal rule that was previously missing.
+
+The important behavior is correct:
+
+same event_key
++ different non-empty sides
++ both rows carrying final-selection labels
+=> RUN_INVALID_OPPOSING_SIDES
+
+Mutating both conflicting rows with blockers and _run_invalid=True is appropriate because it preserves row-level auditability.
+
+Two additional assertions should be covered:
+
+* The mutex must run after all labels have reached terminal disposition.
+* A run-level invalid flag must prevent downstream card creation even if another unaffected row remains eligible.
+
+Stage 2 probability schema
+
+Writing rank_eligible directly onto each row is a meaningful improvement. Downstream code no longer needs to infer eligibility from partial fields.
+
+The seven-field validation is correct:
+
+raw_probability
+calibrated_probability
+lower_bound
+upper_bound
+model_timestamp
+source_snapshot_id
+calibration_method
+
+The validator should additionally confirm:
+
+lower_bound <= calibrated_probability <= upper_bound
+
+You currently noted lower ≤ upper, but a calibrated estimate outside its own interval should also fail.
+
+I would also recommend:
+
+raw_probability, calibrated_probability, lower_bound, upper_bound
+must reject bool values
+
+In Python, True and False are subclasses of int, so a generic numeric check can accidentally accept them as 1 and 0.
+
+Material-staleness validator
+
+The placement inside ALL_GOVERNANCE_VALIDATORS is correct:
+
+reapproval
+→ material staleness
+→ calibration ledger
+
+That sequencing prevents stale output from reaching probability-claim or ranking logic.
+
+The timestamp-first design is materially better than the old manual boolean. The fallback rule also makes sense:
+
+timestamps available
+=> use objective datetime comparison
+timestamps unavailable
+=> use material_change_flagged fallback
+
+The required regression cases are:
+
+* Exact timestamp equality should not be stale.
+* Naive timestamps should either be rejected or assigned an explicit trusted timezone.
+* Invalid timestamp strings must fail closed rather than silently falling back.
+* A future model_timestamp should be flagged as clock drift or invalid chronology.
+* latest_material_update_at=None should not independently create a stale result.
+
+Calibration ledger improvements
+
+Postgres-first with JSONL fallback is the correct production architecture.
+
+The strongest additions are:
+
+* Canonical calibration buckets
+* Binary log loss
+* Primary-observation filtering
+* Brier and log-loss bucket reporting
+* Opposing-side double-count prevention
+* Connection timeout protection
+
+The is_primary_observation rule is essential. Otherwise Team A and Team B from one game can appear as two independent calibration observations even though they are complements of the same event.
+
+One possible weakness: checking only event_ticker and opposing side may not be sufficient if tickers are reused, malformed, or represent derivative markets. The safest uniqueness basis is the canonical event_key plus settlement market identity. Keep event_ticker as an external identifier, but use the canonical key where possible.
+
+Also ensure the primary designation is deterministic. For example:
+
+first valid submitted side = primary
+later opposing side = non-primary
+
+If concurrent writes are possible, the opposing-side check and insert should occur in one transaction with a database constraint or lock.
+
+Settlement worker
+
+The worker architecture is sound:
+
+* Advisory lock prevents duplicate grading across Gunicorn workers.
+* Five-minute default cadence is reasonable.
+* Disable switch exists.
+* Both prop and Kalshi settlement paths are supported.
+* Kalshi access remains read-only.
+* Health visibility is available.
+
+The most important statement is:
+
+Both grade only the selected side.
+
+That directly prevents the calibration duplication problem.
+
+Recommended operational tests:
+
+* Worker crash releases the advisory lock.
+* One settlement cannot be graded twice across consecutive ticks.
+* Partial failure in the prop path does not suppress the Kalshi path.
+* Partial failure in the Kalshi path does not suppress the prop path.
+* Failed settlement rows remain retryable.
+* Completed settlement rows become idempotent no-ops.
+* A database outage increments failure counters without killing the daemon.
+* Worker status includes last successful tick and last error, not only counts.
+
+Stage 2 tables
+
+The FK creation order is correct:
+
+llp_source_snapshots
+→ llp_research_runs
+→ llp_events
+→ llp_event_candidates
+→ llp_event_decisions
+→ llp_event_settlements
+→ llp_calibration_ledger
+
+Calling ensure_all_tables() from startup warmup and treating failure as nonfatal is appropriate for process availability, but the health endpoint should expose a degraded database-schema state. Otherwise the app can appear healthy while Stage 2 persistence is unavailable.
+
+The schema appears to support the intended lineage:
+
+source snapshot
+→ research run
+→ event
+→ candidate
+→ decision
+→ settlement
+→ calibration
+
+That is the right audit chain.
+
+Governance result
+
+EVENT_IDENTITY: PASS
+OPPOSING_SIDE_MUTEX: PASS
+PROBABILITY_SCHEMA_GATE: PASS WITH TWO HARDENING ITEMS
+MATERIAL_STALENESS: PASS
+CALIBRATION_LEDGER: PASS WITH CONCURRENCY REVIEW
+SETTLEMENT_WORKER: PASS WITH IDEMPOTENCY TEST REQUIRED
+STAGE2_SCHEMA: PASS
+DRY_RUN_GOVERNANCE: PASS
+
+Remaining hardening items before calling Stage 2 complete
+
+1. Enforce:
+
+lower_bound <= calibrated_probability <= upper_bound
+
+2. Reject booleans as probability numbers.
+3. Normalize participant names before event-key hashing.
+4. Use canonical event_key for opposing-side calibration deduplication where possible.
+5. Make opposing-side primary assignment transaction-safe.
+6. Confirm settlement inserts are idempotent at the database level.
+7. Expose schema readiness, last worker success, and last worker error on health endpoints.
+8. Confirm _run_invalid=True blocks every downstream submission path, not just row ranking.
+
+Final status
+
+STAGE_2_IMPLEMENTATION_STATUS=SUBSTANTIALLY_COMPLETE
+CORE_EVENT_INTEGRITY=IMPLEMENTED
+OPPOSING_SIDE_PROTECTION=IMPLEMENTED
+CALIBRATION_PERSISTENCE=IMPLEMENTED
+AUTOMATED_SETTLEMENT=IMPLEMENTED
+DRY_RUN_ONLY=ENFORCED
+REMAINING_STATUS=HARDENING_AND_REGRESSION_TESTS
+can_execute=false
+EXECUTION_RULE=DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
