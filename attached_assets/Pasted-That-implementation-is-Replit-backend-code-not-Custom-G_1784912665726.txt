@@ -1,0 +1,82 @@
+That implementation is Replit/backend code, not Custom GPT configuration.
+
+The giveaway is the file and runtime structure:
+
+* gate_engine/event_identity.py
+* gate_engine/event_mutex.py
+* gate_engine/prob_ledger.py
+* gate_engine/llp_governance.py
+* gate_engine/settlement_worker.py
+* gate_engine/llp_stage2_tables.py
+* kalshi_engine/calibration_ledger.py
+* app.py
+* Postgres tables, advisory locks, daemon threads, environment variables, and health endpoints
+
+Those are all application-layer features that must live in your Replit project or whichever server hosts the WOW engine.
+
+What belongs in Replit
+
+Replit should enforce the rules mechanically:
+
+canonical event_key generation
+duplicate-event detection
+opposing-side mutex
+Stage 2 probability schema validation
+rank_eligible assignment
+material-staleness rejection
+Postgres calibration ledger
+Brier and log-loss calculations
+primary-observation deduplication
+settlement-worker polling
+database table creation
+health/status reporting
+can_execute=false enforcement
+
+This is the source of truth. Even if ChatGPT gives a bad response, Replit should still reject an invalid run.
+
+What belongs in the Custom GPT
+
+The Custom GPT should know how to call and interpret the backend, and it should mirror the governance in its Instructions.
+
+Add a compact rule block such as:
+
+LLP Stage 2 event-integrity rules are binding.
+Do not approve or rank a candidate unless:
+- event_key is present and canonical;
+- event status is valid;
+- slate date is valid in UTC;
+- rank_eligible=true;
+- all Stage 2 probability fields are valid;
+- model_timestamp is not older than latest_material_update_at;
+- no opposing side of the same event is selected;
+- the calibration and settlement ledgers are available.
+RUN_INVALID_OPPOSING_SIDES invalidates the entire run.
+STALE_MODEL_OUTPUT caps the row at LLP_REJECT.
+Backend results and lower ceilings are controlling.
+can_execute=false.
+DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS.
+
+The Custom GPT should not try to recreate advisory locks, database writes, settlement daemons, or schema validation in prose.
+
+Correct architecture
+
+Custom GPT
+    ↓ sends request / explains result
+Replit API
+    ↓ executes mandatory gates
+Postgres
+    ↓ stores snapshots, decisions, settlements, calibration
+Settlement worker
+    ↓ grades completed events
+Replit response
+    ↓ returns authoritative labels and blockers
+Custom GPT
+    ↓ presents the result without overriding it
+
+So the answer is:
+
+Implementation location: REPLIT
+Instruction/routing mirror: CUSTOM GPT
+Authoritative enforcement: REPLIT
+
+The seven items you listed should be deployed and tested in Replit. Only a concise activation and interpretation block needs to be added to the relevant LLP Custom GPT.

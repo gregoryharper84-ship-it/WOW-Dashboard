@@ -517,6 +517,74 @@ paths:
       security:
         - ApiKeyAuth: []
 
+  /wow/stage2/health:
+    get:
+      operationId: getWowStage2Health
+      x-openai-isConsequential: false
+      summary: Stage 2 pipeline readiness — schema status and settlement worker stats
+      description: >
+        Returns Stage 2 data-pipeline health without any external I/O. Use to
+        verify that all seven Stage 2 DB tables are initialised (schema_ready)
+        and to inspect settlement-worker activity (last_success_tick, errors).
+
+        Public endpoint — no API key required. Safe to call at any time.
+
+        Key fields:
+          schema_ready          — true once all 7 Stage 2 tables are created
+          settlement_worker     — background grading daemon status
+            .started            — thread has been launched
+            .enabled            — SETTLEMENT_WORKER_DISABLED not set
+            .ticks              — total polling cycles completed
+            .props_graded       — cumulative prop-settlement rows graded
+            .kalshi_graded      — cumulative Kalshi rows graded
+            .last_tick          — ISO-8601 UTC timestamp of most recent tick
+            .last_success_tick  — ISO-8601 UTC timestamp of last tick that graded ≥1 row
+            .last_error         — last error string, or null
+          can_execute           — always false (DRY_RUN_ONLY)
+      responses:
+        "200":
+          description: Stage 2 health snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  schema_ready:
+                    type: boolean
+                  settlement_worker:
+                    type: object
+                    properties:
+                      started:
+                        type: boolean
+                      enabled:
+                        type: boolean
+                      ticks:
+                        type: integer
+                      props_graded:
+                        type: integer
+                      kalshi_graded:
+                        type: integer
+                      errors:
+                        type: integer
+                      last_tick:
+                        type: string
+                        nullable: true
+                      last_success_tick:
+                        type: string
+                        nullable: true
+                      last_error:
+                        type: string
+                        nullable: true
+                      interval_sec:
+                        type: integer
+                  can_execute:
+                    type: boolean
+                    description: Always false — DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+                  execution_rule:
+                    type: string
+
 components:
   schemas: {}
   securitySchemes:
@@ -526,5 +594,5 @@ components:
       name: X-API-Key
       description: >
         Pass your SCORING_API_KEY value in the X-API-Key header.
-        /wow/engine/health and /wow/governance/status are public and
-        do not require this key. /gate-engine/run requires it.
+        /wow/engine/health, /wow/governance/status, and /wow/stage2/health
+        are public and do not require this key. /gate-engine/run requires it.
