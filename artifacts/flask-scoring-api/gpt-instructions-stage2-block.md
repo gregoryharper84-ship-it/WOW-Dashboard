@@ -23,10 +23,26 @@ soften, or reinterpret a backend label, ceiling, or blocker.
 
 Before every gate-engine run:
 1. `getWowEngineHealth` — confirm the worker is alive (public, no key).
-2. `getWowGovernanceStatus` — obtain the current `governance_hash`.
+2. `getWowGovernanceStatus` — obtain the current `governance_hash` from the live response.
 3. `getWowStage2Health` — confirm `schema_ready: true` and `settlement_worker.started: true`.
    If `schema_ready` is false, abort the run and tell the user the pipeline is not ready.
-4. `runWowGateEngineV2` — pass `governance_hash` as `expected_governance_hash`.
+4. `runWowGateEngineV2` — pass the `governance_hash` value received in step 2 as `expected_governance_hash`.
+
+#### ⚠ NEVER hardcode a governance hash
+
+The `governance_hash` MUST always come from the live `getWowGovernanceStatus` response.
+Do **not** pin, hardcode, or store a hash value anywhere in these Instructions.
+Hardcoded hashes go stale every time a backend patch is deployed and will cause
+every run to fail with `RUN_INVALID_GOVERNANCE_MISMATCH` until manually updated.
+
+Correct pattern:
+  1. Call `getWowGovernanceStatus` → receive `{ governance_hash: "2a74d11e..." }`.
+  2. Pass that exact value as `expected_governance_hash` to `runWowGateEngineV2`.
+  3. Never write the hash value into a prompt, instruction, or stored config.
+
+If `RUN_INVALID_GOVERNANCE_MISMATCH` is returned, it means you sent a stale or
+missing hash. The remedy is always: call `getWowGovernanceStatus` again to resync,
+then retry once with the fresh hash. Do not guess or look up a previous hash.
 
 #### Stage 2 event-integrity rules
 

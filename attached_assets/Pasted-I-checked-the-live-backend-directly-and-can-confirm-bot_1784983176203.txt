@@ -1,0 +1,13 @@
+I checked the live backend directly and can confirm both failures in that "Model Vetting Failure" run are real, and they're two separate, unrelated issues:
+
+**1. Governance hash mismatch — caused by a stale hardcoded value in LLP's Instructions (pre-existing, not something from our migration)**
+Buried in LLP Team Betting Engine's original Instructions (the older "GOVERNED INSTRUCTIONS / WORKFLOW" section, separate from the Stage 2 block we touched) there's a hardcoded line: `Expected hash: 045f3f97602ccb997b0e876c24ef2f1671d685402a5f5b43cdba72c49eefe51f`. I queried the live `/wow/governance/status` endpoint directly and the actual current hash is `2a74d11e20ee24526de6db9401f39b4a9228c0f46948d07cea72dc4a21111908` — completely different. Worse, the live endpoint's `active_patch_ids` list doesn't even include the patch that Instructions references ("Active: WOW-PATCH-2026-07-15-LLP-PRICE-CALIBRATION-EXPOSURE-AND-EXECUTION-GOVERNANCE") — the backend has moved through nine newer patches since that hash was pinned. This hardcoded pin is simply out of date and will fail every single run until it's fixed, regardless of gate-engine wiring.
+
+**2. Stage 2 "schema_ready: false" — a genuine backend state issue, not a GPT config problem**
+I queried `/wow/stage2/health` live: `schema_ready: false`, and the settlement worker shows `started: true` but `ticks: 0`, `last_success_tick: null`. So the worker process is running but has never completed a successful cycle — this is happening on the Replit backend itself, unrelated to anything in the Custom GPT configuration. `/wow/engine/health` itself reports fine (`alive`), so it's isolated to the Stage 2/settlement subsystem specifically.
+
+Two different fixes are needed, and I'd like your direction on each before touching anything:
+
+For issue 1, the cleanest fix is to remove that stale hardcoded hash check from LLP's Instructions and rely on the dynamic `getWowGovernanceStatus` → `expected_governance_hash` flow (which the Stage 2 block already does correctly) instead of a pinned value that will go stale again. Alternatively I could just update the hardcoded value to match today's live hash, but that just delays the same failure until the next backend patch. Want me to remove the stale pin and consolidate on the dynamic check?
+
+For issue 2, this looks like a backend/application bug that needs a code fix on the Replit side (something preventing schema_ready from flipping true / the settlement worker from completing its first tick) — this is outside what I can fix by editing GPT config. I can look through the Replit codebase with you to help pinpoint the cause if you'd like, but want to confirm that's the direction you want to go before I start reading through backend source files.

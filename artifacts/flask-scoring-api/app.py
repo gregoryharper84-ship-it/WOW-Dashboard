@@ -16468,6 +16468,19 @@ def _ensure_llp_postmortem_schema(conn):
                 ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS closing_implied_probability DOUBLE PRECISION;
                 ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS bet_implied_probability     DOUBLE PRECISION;
                 ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS actual_clv_beat             BOOLEAN;
+                -- WOW Stage 2 — live micro-market postmortem fields (reviewer-mandated)
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS market_phase                TEXT;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS pregame_or_live             TEXT;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS predicted_probability       DOUBLE PRECISION;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS calibrated_lower_bound      DOUBLE PRECISION;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS live_state_timestamp        TIMESTAMPTZ;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS same_event_count            INTEGER;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS directional_concentration   TEXT;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS weakest_leg_rank            INTEGER;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS miss_margin                 DOUBLE PRECISION;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS failure_category            TEXT;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS process_pass                BOOLEAN;
+                ALTER TABLE llp_postmortem ADD COLUMN IF NOT EXISTS patch_would_reject          BOOLEAN;
                 CREATE INDEX IF NOT EXISTS llp_postmortem_slate_idx
                     ON llp_postmortem (slate_date);
                 CREATE INDEX IF NOT EXISTS llp_postmortem_sport_idx
@@ -18314,6 +18327,109 @@ def wow_engine_health():
         "service": "wow-engine",
         "status":  "alive",
     }), 200
+
+
+@app.route("/api/wow/mlb/live-micro/analyze", methods=["POST"])
+@require_api_key
+def mlb_live_micro_analyze():
+    """
+    POST /api/wow/mlb/live-micro/analyze
+
+    WOW Stage 2 — MLB live micro-market analysis (1–3 inning props).
+    Computes opportunity distribution, scoring event distribution, calibrated
+    probability bounds, primary failure path, and terminal label for a live
+    game-state snapshot.
+
+    can_execute is ALWAYS False. This is a DRY_RUN analysis only.
+    No market orders, no live trading, no execution.
+
+    Required body fields (all 14 must be present):
+        game_id, player_id, market_type, line, direction,
+        inning, outs, base_state, score, current_pitcher, pitch_count,
+        batters_faced, current_batter, batting_order,
+        remaining_innings_scope, capture_timestamp
+
+    Optional enrichment:
+        k_rate (float)      — pitcher K rate per batter faced
+        player_rates (dict) — per-PA rates for hitter event modeling
+    """
+    from gate_engine.mlb_live_micro_market import analyze as _mlb_live_analyze
+    from gate_engine.hitter_fantasy_score import validate_market_support as _validate_fs_market
+
+    data = request.get_json(force=True, silent=True) or {}
+
+    required = [
+        "game_id", "player_id", "market_type", "line", "direction",
+        "inning", "outs", "base_state", "score", "current_pitcher",
+        "pitch_count", "batters_faced", "current_batter", "batting_order",
+        "remaining_innings_scope", "capture_timestamp",
+    ]
+    missing = [f for f in required if data.get(f) is None]
+    if missing:
+        return jsonify({
+            "ok":       False,
+            "error":    "MISSING_REQUIRED_FIELDS",
+            "missing":  missing,
+            "message":  (
+                f"All 14 live game-state fields are required. "
+                f"Missing: {', '.join(missing)}"
+            ),
+        }), 422
+
+    market_type = str(data.get("market_type") or "")
+
+    # Hitter fantasy score markets: validate support before running
+    _fs_aliases = {"hitter_fantasy_score", "fantasy_score", "hitter_fs",
+                   "batting_fantasy", "baseball_hitter_fs", "hitter fantasy score"}
+    if market_type.lower() in _fs_aliases:
+        fs_check = _validate_fs_market(market_type)
+        if not fs_check["supported"]:
+            return jsonify({
+                "ok":            False,
+                "error":         "REJECT_DATA_QUALITY",
+                "terminal_label": "REJECT_DATA_QUALITY",
+                "message":       fs_check["reason"],
+                "can_execute":   False,
+            }), 422
+
+    try:
+        result = _mlb_live_analyze(
+            game_id=str(data["game_id"]),
+            player_id=str(data["player_id"]),
+            market_type=market_type,
+            line=float(data["line"]),
+            direction=str(data["direction"]),
+            inning=int(data["inning"]),
+            outs=int(data["outs"]),
+            base_state=str(data["base_state"]),
+            score=data["score"],
+            current_pitcher=str(data["current_pitcher"]),
+            pitch_count=int(data["pitch_count"]),
+            batters_faced=int(data["batters_faced"]),
+            current_batter=str(data["current_batter"]),
+            batting_order=int(data["batting_order"]),
+            remaining_innings_scope=int(data["remaining_innings_scope"]),
+            capture_timestamp=str(data["capture_timestamp"]),
+            # Optional enrichment
+            k_rate=float(data["k_rate"]) if data.get("k_rate") is not None else None,
+            player_rates=data.get("player_rates") if isinstance(data.get("player_rates"), dict) else None,
+        )
+    except (TypeError, ValueError, KeyError) as e:
+        return jsonify({
+            "ok":    False,
+            "error": "INVALID_FIELD_TYPE",
+            "detail": str(e),
+        }), 422
+    except Exception as e:  # noqa: BLE001
+        app.logger.exception("mlb_live_micro_analyze error")
+        return jsonify({
+            "ok":    False,
+            "error": "INTERNAL_ERROR",
+            "detail": str(e),
+        }), 500
+
+    status_code = 200 if result.get("ok") else 422
+    return jsonify(result), status_code
 
 
 @app.route("/wow/stage2/health", methods=["GET"])

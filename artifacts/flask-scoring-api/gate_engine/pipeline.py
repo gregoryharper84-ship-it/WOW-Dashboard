@@ -27,6 +27,8 @@ from .exposure_gate import ExposureLedger
 # WOW-PATCH-2026-07-15 — new gates
 from . import market_adverse, component_composite, opportunity_state
 from .governance import get_governance_status
+# WOW Stage 2 — hard structural gates + weakest-leg finalizer (reviewer-mandated)
+from . import card_finalizer, hitter_fantasy_score as _hfs_mod
 
 
 def run_pipeline(
@@ -424,6 +426,17 @@ def run_pipeline(
     js_style_conversion.run_slip(rows)
 
     # -------------------------------------------------------------------
+    # WOW Stage 2 — Hard Structural Gates (reviewer-mandated, code-enforced)
+    # These gates run unconditionally after slip-level classification.
+    # They cannot be bypassed by prompt instructions or governance degradation.
+    #   1. MAX_SAME_EVENT_LEGS = 2 (permanent — not freeze-only)
+    #   2. MAX_LIVE_MICRO_LEGS_PER_EVENT = 1
+    #   3. REJECT_ALL_SAME_DIRECTION_CONCENTRATION (N >= 3, all same direction)
+    #   4. REQUIRE_LIVE_STATE_FOR_LIVE_MARKETS
+    # -------------------------------------------------------------------
+    card_hard_gate_report = card_finalizer.run_hard_gates(rows)
+
+    # -------------------------------------------------------------------
     # WOW-PATCH-2026-07-15 — Component/Composite Mutex (Section 4)
     # Detect conflicting composite + component directions per player.
     # Runs after all per-row gates so final terminal labels are set.
@@ -540,6 +553,15 @@ def run_pipeline(
     for row in rows:
         _derive_four_lanes(row)
 
+    # -------------------------------------------------------------------
+    # WOW Stage 2 — Weakest-Leg Finalizer (reviewer-mandated, code-enforced)
+    # Runs after all label mutations are finalized and lanes are stamped.
+    # Identifies and removes the weakest leg when the gap is material (>0.05)
+    # rather than retaining it as a filler to pad card size.
+    # SHRINK_CARD_WHEN_NO_REPLACEMENT = True is unconditional.
+    # -------------------------------------------------------------------
+    card_finalizer_report = card_finalizer.finalize_card(rows)
+
     if record_entries:
         for row in rows:
             if row.get("terminal_label") == PropLabel.FINAL_APPROVED.value:
@@ -547,7 +569,7 @@ def run_pipeline(
 
     run_status = "DEGRADED_ENGINE_RUN" if failed_modules else "COMPLETE"
 
-    return _build_output(
+    _result = _build_output(
         rows, ledger,
         health_report                = health_report,
         settlement_status            = settlement_status,
@@ -560,6 +582,10 @@ def run_pipeline(
         component_composite_report   = component_composite_report,
         opportunity_state_report     = opportunity_state_report,
     )
+    # Attach Stage 2 gate reports so callers can inspect hard gate outcomes
+    _result["card_hard_gate_report"]  = card_hard_gate_report
+    _result["card_finalizer_report"]  = card_finalizer_report
+    return _result
 
 
 MARKET_NO_DATA_BLOCKER = "MARKET:NO_MARKET_AVAILABLE:MAX_LABEL=MODEL_QUALIFIED_HOLD"

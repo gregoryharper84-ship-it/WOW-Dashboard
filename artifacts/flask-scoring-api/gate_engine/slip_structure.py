@@ -87,6 +87,17 @@ def run_slip(rows: list[dict[str, Any]],
     # --- Prop Reliability Freeze: slip-level structural checks ---
     slip_level_errors: list[str] = []
 
+    # --- Permanent hard gate: MAX_SAME_EVENT_LEGS = 2 (not freeze-only) ---
+    # Moved out of the freeze block per WOW Stage 2 reviewer requirement.
+    # card_finalizer.run_hard_gates() enforces this at the pipeline level;
+    # this check provides an additional slip-level signal from the same source.
+    for game, count in game_counts.items():
+        if game and count > FREEZE_MAX_LEGS_PER_EVENT:
+            slip_level_errors.append(
+                f"REJECT_BAD_STRUCTURE:SAME_EVENT_{count}x:{game}"
+                f"_(permanent_max_{FREEZE_MAX_LEGS_PER_EVENT})"
+            )
+
     if freeze:
         if slip_type_norm == "power" and total_legs > FREEZE_MAX_POWER_LEGS:
             slip_level_errors.append(
@@ -98,12 +109,6 @@ def run_slip(rows: list[dict[str, Any]],
                 f"REJECT_BAD_STRUCTURE:FLEX_{total_legs}_LEGS_DURING_FREEZE"
                 f"(max {FREEZE_MAX_FLEX_LEGS})"
             )
-        # Max 2 legs from same event/script
-        for game, count in game_counts.items():
-            if game and count > FREEZE_MAX_LEGS_PER_EVENT:
-                slip_level_errors.append(
-                    f"REJECT_BAD_STRUCTURE:SAME_EVENT_{count}x:{game}"
-                )
 
     for row in rows:
         player    = (row.get("player") or "").lower()

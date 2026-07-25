@@ -415,11 +415,18 @@ import threading as _threading
 _TABLES_LOCK = _threading.Lock()
 
 
+_TABLES_LAST_ERROR: str | None = None   # surfaced by get_stage2_schema_health()
+
+
 def ensure_all_tables() -> None:
     """
     Create all 7 Stage 2 tables idempotently.
     Safe to call from multiple gunicorn workers — guarded by a process-local lock
     and a Postgres-level CREATE IF NOT EXISTS / DO-block for cross-worker safety.
+
+    Called from the gunicorn post_fork hook (once per worker) so each worker
+    independently verifies/creates the schema. Also called lazily by
+    get_stage2_schema_health() so any health-endpoint hit retries if needed.
 
     Creation order:
       1. llp_source_snapshots  (referenced by candidates FK)
@@ -431,7 +438,7 @@ def ensure_all_tables() -> None:
       7. llp_calibration_ledger
       8. candidate → snapshot FK (after both parent tables exist)
     """
-    global _TABLES_READY
+    global _TABLES_READY, _TABLES_LAST_ERROR
     if _TABLES_READY:
         return
     with _TABLES_LOCK:
@@ -454,9 +461,11 @@ def ensure_all_tables() -> None:
             conn.commit()
             cur.close()
             conn.close()
-            _TABLES_READY = True
-        except Exception:
-            pass  # graceful — tables may already exist; individual operations will surface errors
+            _TABLES_READY      = True
+            _TABLES_LAST_ERROR = None
+        except Exception as exc:
+            # Surface the error for diagnostics — future calls will retry
+            _TABLES_LAST_ERROR = str(exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -601,11 +610,18 @@ def log_calibration_entry_pg(entry: dict[str, Any]) -> bool:
 def get_stage2_schema_health() -> dict[str, Any]:
     """
     Return a health snapshot for Stage 2 schema readiness.
-    Exposed on /wow/stage2/health — never triggers external I/O.
+    Exposed on /wow/stage2/health — no network I/O, DB-only (idempotent DDL).
+
+    Lazily calls ensure_all_tables() when _TABLES_READY is False so that a
+    health-endpoint poll from any gunicorn worker can self-heal without waiting
+    for the post_fork hook thread to complete.
     """
+    if not _TABLES_READY:
+        ensure_all_tables()    # no-op when tables already exist; sets _TABLES_READY
     return {
-        "schema_ready":  _TABLES_READY,
-        "can_execute":   False,
+        "schema_ready":   _TABLES_READY,
+        "last_error":     _TABLES_LAST_ERROR,
+        "can_execute":    False,
         "execution_rule": EXECUTION_RULE,
     }
 

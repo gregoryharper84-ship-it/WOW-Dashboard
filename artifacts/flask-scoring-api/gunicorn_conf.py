@@ -15,10 +15,24 @@ def post_fork(server, worker):
     child process via os.register_at_fork or a gunicorn post_fork hook.
     We also reset every _READY flag so each worker performs its own idempotent
     schema bootstrap (CREATE TABLE IF NOT EXISTS is safe to run concurrently).
+
+    Stage 2 bootstrap note
+    ─────────────────────
+    ensure_all_tables() and start_settlement_worker() run in the master process
+    (via the startup warmup thread and module-level code respectively). The
+    daemon threads started there do NOT survive fork. Without explicit re-wiring
+    here, every worker inherits:
+      - llp_stage2_tables._TABLES_READY = False (if warmup thread hadn't finished)
+        OR stale True with a permanently-locked _TABLES_LOCK
+      - settlement_worker._WORKER_STARTED = True (inherited flag, no real thread)
+
+    This hook corrects both by resetting the flags/locks and restarting each
+    subsystem in the worker process itself.
     """
     try:
         import app as flask_app
 
+        # ── app.py-level locks ───────────────────────────────────────────────
         flask_app._log_lock                  = threading.Lock()
         flask_app._ESPN_PLAYER_SEARCH_LOCK   = threading.Lock()
         flask_app._FIXTURES_SCHEMA_LOCK      = threading.Lock()
@@ -45,3 +59,48 @@ def post_fork(server, worker):
         server.log.info(f"[post_fork] worker {worker.pid}: all locks re-initialized")
     except Exception as exc:
         server.log.warning(f"[post_fork] lock re-init failed (non-fatal): {exc}")
+
+    # ── Stage 2: re-initialize tables module state and run ensure_all_tables ─
+    # Root cause: the master's warmup-thread sets _TABLES_READY=True and then
+    # workers are forked. Either the flag is False (thread didn't finish in time)
+    # or the _TABLES_LOCK is inherited in a potentially-held state. In both cases
+    # each worker must bootstrap Stage 2 for itself.
+    try:
+        import gate_engine.llp_stage2_tables as _s2
+        _s2._TABLES_READY = False
+        _s2._TABLES_LOCK  = threading.Lock()
+        # Run the DDL in a background thread so the fork hook returns quickly.
+        # ensure_all_tables() is idempotent and uses CREATE TABLE IF NOT EXISTS.
+        threading.Thread(
+            target=_s2.ensure_all_tables,
+            daemon=True,
+            name=f"s2-ensure-tables-w{worker.pid}",
+        ).start()
+        server.log.info(f"[post_fork] worker {worker.pid}: Stage 2 table bootstrap scheduled")
+    except Exception as exc:
+        server.log.warning(f"[post_fork] Stage 2 table bootstrap failed (non-fatal): {exc}")
+
+    # ── Stage 2: reset settlement worker and start a real thread in this worker ─
+    # Root cause: start_settlement_worker() ran in the master → set
+    # _WORKER_STARTED=True → workers inherit the flag with NO real thread running.
+    # The health endpoint reported "started: true" while ticks stayed 0 forever.
+    try:
+        import gate_engine.settlement_worker as _sw
+        # Re-create the lock first (may be inherited locked from parent)
+        _sw._WORKER_LOCK    = threading.Lock()
+        # Reset the flag so start_settlement_worker() will actually start a thread
+        _sw._WORKER_STARTED = False
+        # Reset tick counters so health stats reflect THIS worker's actual state
+        _sw._WORKER_STATS.update({
+            "ticks":             0,
+            "props_graded":      0,
+            "kalshi_graded":     0,
+            "errors":            0,
+            "last_tick":         None,
+            "last_success_tick": None,
+            "last_error":        None,
+        })
+        _sw.start_settlement_worker()
+        server.log.info(f"[post_fork] worker {worker.pid}: settlement worker started")
+    except Exception as exc:
+        server.log.warning(f"[post_fork] settlement worker start failed (non-fatal): {exc}")
