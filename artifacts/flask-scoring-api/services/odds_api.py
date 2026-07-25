@@ -1,11 +1,18 @@
 """
 The Odds API service — pulls events, markets, and player props.
 Docs: https://the-odds-api.com/lts-odds-api/
+
+Failover: get_h2h_odds() transparently falls back to TheRundown on quota
+exhaustion (429) or invalid-key (401), normalizing TheRundown's moneyline
+shape into the Odds API bookmakers/markets/outcomes shape so no downstream
+consumer needs changing.
 """
 import os
 import requests
 from datetime import datetime, timezone
 
+# Key read at call time (not module-load time) so rotation takes effect
+# without a restart.  The module-level constant is kept for back-compat only.
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "")
 BASE_URL = "https://api.the-odds-api.com/v4"
 
@@ -20,6 +27,18 @@ SPORT_KEYS = {
     "Soccer": "soccer_epl",
     "Tennis": "tennis_atp_french_open",
 }
+
+# Reverse map: "basketball_nba" → "NBA" — used when routing to TheRundown
+_SPORT_KEY_TO_NAME = {v: k for k, v in SPORT_KEYS.items()}
+
+# Status strings that warrant a TheRundown failover attempt.  Transient
+# network errors (timeout, 5xx) are NOT in this set — they signal infra
+# problems that TheRundown will likely share, so we pass the original
+# failure straight through instead of burning a second quota hit.
+_RUNDOWN_FAILOVER_STATUSES = frozenset({
+    "FAILED: quota exhausted",
+    "FAILED: invalid ODDS_API_KEY",
+})
 
 PLAYER_PROP_MARKETS = {
     "NBA":  [
@@ -55,10 +74,12 @@ PLAYER_PROP_MARKETS = {
 
 
 def _get(path, params=None):
-    if not ODDS_API_KEY:
+    # Read key dynamically so a rotation takes effect without a process restart.
+    key = os.environ.get("ODDS_API_KEY", "")
+    if not key:
         return None, "NOT_CALLED: ODDS_API_KEY not set"
-    params = params or {}
-    params["apiKey"] = ODDS_API_KEY
+    params = dict(params or {})   # copy — never mutate the caller's dict
+    params["apiKey"] = key
     try:
         r = requests.get(f"{BASE_URL}{path}", params=params, timeout=15)
         remaining = r.headers.get("x-requests-remaining", "?")
@@ -76,6 +97,89 @@ def _get(path, params=None):
         return None, "FAILED: timeout"
     except Exception as e:
         return None, f"FAILED: {e}"
+
+
+def _normalize_rundown_to_h2h_events(rundown_events):
+    """
+    Normalize TheRundown moneyline events into The Odds API bookmakers/markets/
+    outcomes shape so _books_from_odds_api_event (consensus_odds.py) needs no
+    changes.
+
+    TheRundown source shape per event
+    ----------------------------------
+    event.teams_normalized[0].name       → home_team
+    event.teams_normalized[-1].name      → away_team
+    event.event_date                     → commence_time
+    event.lines[affiliate_id].moneyline:
+      moneyline_home                     → home team American price
+      moneyline_away                     → away team American price
+      date_updated                       → market last_update
+
+    Odds API target shape per event
+    --------------------------------
+    {
+      "home_team":     str,
+      "away_team":     str,
+      "commence_time": str,          # ISO-8601
+      "bookmakers": [{
+        "key":         "rundown:<affiliate_id>",
+        "last_update": str | None,
+        "markets": [{
+          "key":         "h2h",
+          "last_update": str | None,
+          "outcomes": [
+            {"name": home_team, "price": moneyline_home},
+            {"name": away_team, "price": moneyline_away},
+          ]
+        }]
+      }]
+    }
+
+    Only affiliates that supply *both* home and away prices are included.
+    Partially-filled affiliates are dropped rather than fabricating a price.
+    Events with fewer than 2 teams_normalized entries are skipped entirely.
+    """
+    normalized = []
+    for ev in (rundown_events or []):
+        teams = ev.get("teams_normalized") or []
+        if len(teams) < 2:
+            continue
+        home_team = (teams[0].get("name") or "").strip()
+        away_team = (teams[-1].get("name") or "").strip()
+        if not home_team or not away_team:
+            continue
+
+        bookmakers = []
+        for aff_id, line in (ev.get("lines") or {}).items():
+            ml = (line or {}).get("moneyline") or {}
+            home_price = ml.get("moneyline_home")
+            away_price = ml.get("moneyline_away")
+            if home_price is None or away_price is None:
+                continue
+            last_update = ml.get("date_updated")
+            bookmakers.append({
+                "key":         f"rundown:{aff_id}",
+                "last_update": last_update,
+                "markets": [{
+                    "key":         "h2h",
+                    "last_update": last_update,
+                    "outcomes": [
+                        {"name": home_team, "price": home_price},
+                        {"name": away_team, "price": away_price},
+                    ],
+                }],
+            })
+
+        if not bookmakers:
+            continue
+
+        normalized.append({
+            "home_team":     home_team,
+            "away_team":     away_team,
+            "commence_time": ev.get("event_date", ""),
+            "bookmakers":    bookmakers,
+        })
+    return normalized
 
 
 def get_sports():
@@ -99,6 +203,24 @@ def get_h2h_odds(sport_key):
     in one call — used by kalshi_engine.llp_bridge.consensus_odds for the
     no-vig sportsbook consensus gate. Read-only; no order placement.
     Returns (events_list, status_string).
+
+    Failover chain (h2h only)
+    --------------------------
+    1. The Odds API (primary) — native bookmakers/markets/outcomes shape.
+    2. TheRundown (on 429 or 401 only) — response normalized via
+       _normalize_rundown_to_h2h_events() into the same shape, so every
+       downstream consumer works without modification.
+
+    Transient errors (timeout, 5xx, network failures) are NOT retried via
+    TheRundown — those conditions typically affect both providers and burning
+    an extra network call only adds latency with no benefit.
+
+    Status strings returned:
+      "AVAILABLE (remaining=N)"       — Odds API primary succeeded
+      "FALLBACK_RUNDOWN:AVAILABLE (N events)"   — TheRundown served data
+      "FALLBACK_RUNDOWN:NOT_CALLED: ..." / "FALLBACK_RUNDOWN:FAILED: ..."
+                                      — both providers failed; caller sees detail
+      "FAILED: ..."                   — primary failed; no failover attempted
     """
     data, status = _get(f"/sports/{sport_key}/odds", {
         "regions":    "us",
@@ -106,7 +228,28 @@ def get_h2h_odds(sport_key):
         "oddsFormat": "american",
         "dateFormat": "iso",
     })
-    return data or [], status
+    if data is not None:
+        return data, status
+
+    # Failover: quota exhausted or invalid key — try TheRundown.
+    if status in _RUNDOWN_FAILOVER_STATUSES:
+        sport_name = _SPORT_KEY_TO_NAME.get(sport_key)
+        if sport_name:
+            # Deferred import: avoids any circular-import risk at module load
+            # time and keeps the hot path (primary success) allocation-free.
+            from services import rundown as _rundown  # noqa: PLC0415
+            rd_events, rd_status = _rundown.get_events_for_sport(sport_name)
+            normalized = _normalize_rundown_to_h2h_events(rd_events)
+            n = len(normalized)
+            if n > 0:
+                return normalized, f"FALLBACK_RUNDOWN:{rd_status} ({n} events)"
+            # TheRundown responded but yielded no normalizable events.
+            return [], f"FALLBACK_RUNDOWN:{rd_status} (0 events; primary={status})"
+        # sport_key not in our reverse map — nothing to fall back to.
+        return [], status
+
+    # Non-failover failure (timeout, 5xx, etc.) — propagate as-is.
+    return [], status
 
 
 def get_player_props(sport_key, event_id, markets):

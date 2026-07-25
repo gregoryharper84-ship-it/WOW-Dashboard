@@ -10007,6 +10007,42 @@ def wow_odds_health():
     }), (200 if is_available else 502)
 
 
+@app.route("/wow/espn/mlb/scoreboard", methods=["GET"])
+def wow_espn_mlb_scoreboard():
+    """
+    GET /wow/espn/mlb/scoreboard?dates=YYYYMMDD
+
+    Thin proxy for ESPN's MLB scoreboard endpoint. Trims the raw ESPN
+    response (~300–400 KB for a full slate) down to the ~2–4 KB subset
+    the engine and GPT Action actually need:
+
+      event_id, start_time, home_team, away_team, status,
+      status_detail, status_short, home_probable_pitcher, away_probable_pitcher
+
+    This endpoint exists specifically to solve the Custom GPT Action
+    ResponseTooLargeError that results from calling ESPN directly — the raw
+    payload is well above the GPT response ceiling regardless of ?dates scope.
+
+    Requires API key.  Read-only — issues a single GET to ESPN, no writes.
+    """
+    api_key = request.headers.get("X-API-Key") or request.args.get("api_key")
+    if api_key != os.environ.get("API_KEY"):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    dates_param = request.args.get("dates")  # YYYYMMDD
+    from services.status import get_mlb_scoreboard_trimmed
+    games, status = get_mlb_scoreboard_trimmed(dates_param)
+
+    return jsonify({
+        "ok":          True,
+        "source":      "espn_mlb_scoreboard_proxy",
+        "espn_status": status,
+        "dates":       dates_param or "today",
+        "game_count":  len(games),
+        "games":       games,
+    })
+
+
 @app.route("/wow/mlb-stats/health", methods=["GET"])
 def wow_mlb_stats_health():
     """

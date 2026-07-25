@@ -403,6 +403,82 @@ paths:
       security:
         - ApiKeyAuth: []
 
+  /wow/espn/mlb/scoreboard:
+    get:
+      operationId: getEspnScoreboard
+      x-openai-isConsequential: false
+      summary: Get today's MLB schedule with probable pitchers (trimmed ESPN proxy)
+      description: >
+        Returns a GPT-safe (~2–4 KB) summary of today's MLB slate scraped from ESPN's
+        public scoreboard API. Includes event_id, start_time, home/away team abbreviations,
+        game status, and probable pitchers. Use this instead of calling ESPN directly —
+        the raw ESPN payload is 300–400 KB and will cause a ResponseTooLargeError in any
+        GPT Action. Pass dates=YYYYMMDD to target a specific date; omit for today.
+      parameters:
+        - name: dates
+          in: query
+          required: false
+          schema:
+            type: string
+            example: "20260725"
+          description: "Date in YYYYMMDD format. Defaults to today."
+      responses:
+        "200":
+          description: Trimmed MLB scoreboard
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  source:
+                    type: string
+                    example: "espn_mlb_scoreboard_proxy"
+                  espn_status:
+                    type: string
+                    example: "AVAILABLE"
+                  dates:
+                    type: string
+                    example: "20260725"
+                  game_count:
+                    type: integer
+                  games:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        event_id:
+                          type: string
+                        start_time:
+                          type: string
+                          description: "ISO-8601 UTC start time"
+                        home_team:
+                          type: string
+                          example: "LAD"
+                        away_team:
+                          type: string
+                          example: "NYM"
+                        status:
+                          type: string
+                          example: "STATUS_SCHEDULED"
+                        status_detail:
+                          type: string
+                          example: "Scheduled"
+                        status_short:
+                          type: string
+                          example: "7/25 - 1:10 PM EDT"
+                        home_probable_pitcher:
+                          type: string
+                          nullable: true
+                        away_probable_pitcher:
+                          type: string
+                          nullable: true
+        "401":
+          description: Unauthorized — missing or invalid API key
+      security:
+        - ApiKeyAuth: []
+
   /wow-daily-scan:
     post:
       operationId: runDailyScan

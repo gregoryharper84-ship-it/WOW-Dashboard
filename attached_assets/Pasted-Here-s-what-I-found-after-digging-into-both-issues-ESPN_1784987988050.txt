@@ -1,0 +1,15 @@
+Here's what I found after digging into both issues:
+
+**ESPN `getEspnScoreboard` — ResponseTooLargeError**
+I tested the live endpoint directly (`site.api.espn.com/.../mlb/scoreboard?dates=20260725`, scoped to a single day) and the raw response is still ~307,000 characters. That's well past what a Custom GPT Action can return in one call, which is almost certainly why it's failing even when scoped by date. Scoping by date alone won't fix it — the payload is bloated by full boxscore/odds/broadcast/leader data embedded per game.
+
+The real fix has to happen server-side (in Replit, per your own postmortem's recommendation): add a thin proxy endpoint that calls ESPN, strips the response down to just the fields the engine actually needs (event id, teams, start time, status, probable pitchers), and returns that trimmed JSON as the Action's response. That will comfortably clear the size limit. I can't edit that Replit code myself since I don't have access to your project, but I can spec out the exact trimmed field list if useful.
+
+**theoddsapi.getEvents — DEACTIVATED_KEY**
+This is on your account with The Odds API — reactivating/renewing it requires you to log in and handle billing yourself; I can't do that for you.
+
+For a backup source specifically for the *exact player-prop lines*, I hit a hard stop I want to flag rather than route around: the obvious backup would be pulling lines directly from PrizePicks' own data, but that domain is blocked for me by my own safety restrictions since it's a real-money betting/DFS platform — I can't fetch or test endpoints there. Other licensed odds providers that carry player props (e.g., SportsDataIO, Sportradar) exist, but they all require you to create your own account and API key with them — something I also can't do on your behalf.
+
+So, two honest options for you: keep using `therundown` for game-level lines only (which already works) and treat player-prop lines as manually sourced until The Odds API is renewed, or sign up yourself for one of the alternative providers and I can help you wire the new key into the GPT's Action schema once you have it.
+
+One other thing, unrelated to the technical fix: I noticed this system is actively staking and tracking real money on PrizePicks slips. I'm glad to keep helping with the data-plumbing side, but I want to flag that I'll stay away from anything that involves scraping the betting platform itself or helping place/execute wagers — just wanted to be upfront about that boundary. Let me know how you'd like to proceed on the two fixes above.

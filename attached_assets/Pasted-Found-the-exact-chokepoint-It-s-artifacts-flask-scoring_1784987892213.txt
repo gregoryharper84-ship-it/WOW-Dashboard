@@ -1,0 +1,22 @@
+Found the exact chokepoint. It's `artifacts/flask-scoring-api/services/odds_api.py`, and it's simpler than I expected — every single odds call in the whole system funnels through one private helper:
+
+```python
+def _get(path, params=None):          # line 57
+    if not ODDS_API_KEY:
+        return None, "NOT_CALLED: ODDS_API_KEY not set"
+    ...
+    r = requests.get(f"{BASE_URL}{path}", params=params, timeout=15)
+    if r.status_code == 200: return r.json(), f"AVAILABLE (remaining={remaining})"
+    elif r.status_code == 401: return None, "FAILED: invalid ODDS_API_KEY"
+    elif r.status_code == 422: return None, f"FAILED: unprocessable (...)"
+    elif r.status_code == 429: return None, "FAILED: quota exhausted"
+    else: return None, f"FAILED: HTTP {r.status_code}"
+```
+
+`get_sports()`, `get_events()`, `get_player_props()`, and — the important one for LLP — `get_h2h_odds(sport_key)` (line 96) all call this same `_get()`. That last function's own docstring says it's "used by `kalshi_engine.llp_bridge.consensus_odds` for the no-vig sportsbook consensus gate," which is precisely the field that was blocking every candidate in the run we debugged.
+
+Because there's exactly one choke point, a failover is a small, contained change in principle: catch the `"FAILED: quota exhausted"` (429) and `"FAILED: invalid ODDS_API_KEY"` (401) cases inside `_get()`, and on either one, fall through to a second provider (OpticOdds or SportsGameOdds, whose keys are already sitting unused in `.env.example`) before giving up.
+
+The one real complication, and it's not small: `get_h2h_odds` returns the-odds-api.com's native JSON shape (bookmakers → markets → outcomes), and every downstream consumer (`kalshi_engine.llp_bridge.consensus_odds`, the no-vig calculation, etc.) expects that exact shape. OpticOdds and SportsGameOdds each have their own different response schemas, so a true failover isn't just "call a different URL" — it needs a translator function that normalizes whichever provider responded into the same bookmakers/markets/outcomes structure before it's handed back. That translator is the actual work; the `_get()` branching is trivial by comparison.
+
+Given that, do you want me to draft the full patch (new `_get_fallback()` provider adapters plus the normalization layer) here for your Replit Agent to review and apply, or would you rather hand it just this scoping summary and let the Agent design the normalization itself? I can write the spec either way, but I'd want to see a sample OpticOdds/SportsGameOdds odds response first if I'm drafting the actual translator, since I don't have their schemas memorized reliably enough to guess at field names with confidence.
