@@ -1,0 +1,181 @@
+To ensure it is always checked, add it as a mandatory LLP/Kalshi preflight gate in both places:
+
+1. ChatGPT Custom GPT / skill instructions — so the analysis never skips it.
+2. Replit engine logic — so the system mechanically blocks upgrades when it is missing.
+
+Your current LLP skill already requires MLB starter confirmation before qualification and separates probability ranking from price/edge. wow-llp-moneyline-probability-expert-SKILL.md Your exact-line/no-vig auditor already owns price, payout, push, no-vig, and edge sanitation. WOW-Exact-Line-Payout-Push-No-Vig-Edge-Auditor.md Your Kalshi recovery patch already requires live price, market-open, orderbook, fee, and lower-bound edge checks before anything can upgrade. WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE.md
+
+Add this hard gate
+
+LLP MLB WINNER PREFLIGHT GATE
+Before any MLB winner candidate can receive:
+- QUALIFIED_WINNER
+- STRONG_WINNER
+- ELITE_WINNER
+- MARKET_VERIFIED_HOLD
+- MONEY_QUALIFIED
+- FINAL_APPROVED
+the engine must complete all three checks:
+1. STARTER / LINEUP CHECK
+2. WEATHER / EVENT-STATUS CHECK
+3. BREAKEVEN / NO-VIG / MODEL CHECK
+If any check is FAIL or DATA_UNOBTAINABLE, the candidate cannot upgrade.
+
+Gate 1 — Starter / lineup check
+
+Use this rule:
+
+starter_status must be:
+CONFIRMED
+or
+PROBABLE_STRONG with source timestamp
+lineup_status must be:
+CONFIRMED
+or
+PROJECTED_ACCEPTABLE only if confirmed lineup is not yet available and no key absence conflict exists
+
+Output labels:
+
+PASS → continue
+PROBABLE_ONLY → cap at WINNER_WATCH / LLP_WATCH
+FAIL → NO_STARTER_CONFIRMATION or NO_LINEUP_CONFIRMATION
+DATA_UNOBTAINABLE → NO_DATA_QUALITY
+
+For MLB, I would make confirmed starter mandatory and confirmed lineup preferred. If full lineups are not posted yet, the model can still research, but it cannot become a final market-qualified candidate.
+
+Gate 2 — Weather / event-status check
+
+Use this rule:
+
+event_status must be SCHEDULED or ACTIVE_PREGAME_VALID
+weather_risk must not show material postponement, delay, wind, rain, or venue issue
+
+Output labels:
+
+PASS → continue
+WATCH → cap at WINNER_WATCH / LLP_WATCH
+FAIL → EVENT_STATUS_FAILURE / WEATHER_RISK_CUT
+POSTPONED → EVENT_RESET_REQUIRED_POSTPONEMENT
+DATA_UNOBTAINABLE → NO_EVENT_VERIFICATION
+
+Important: if a game is postponed or moved into a doubleheader, the old pick dies. It must be treated as a new event with fresh starter, lineup, bullpen, weather, market, and settlement checks.
+
+Gate 3 — No-vig / model above breakeven
+
+For every Kalshi winner contract, calculate:
+
+kalshi_breakeven_probability = 1 / displayed_multiplier
+
+Examples:
+
+Kalshi multiplier	Breakeven probability
+1.50x	66.7%
+1.55x	64.5%
+1.62x	61.7%
+1.67x	59.9%
+1.73x	57.8%
+
+Then require both:
+
+sportsbook_no_vig_probability >= kalshi_breakeven_probability
+AND
+model_calibrated_lower_bound >= kalshi_breakeven_probability + safety_buffer
+
+Recommended MLB safety buffer:
+
+standard favorite: +1.5%
+short favorite under 1.60x: +2.0% to +3.0%
+uncertain lineup/weather: no upgrade
+
+Output labels:
+
+PASS → eligible for exact price / edge auditor
+FAIL_MODEL → LLP_PRICE_FIREWALL_FAIL
+FAIL_MARKET → NO_VIG_BELOW_BREAKEVEN
+FAIL_BOTH → KALSHI_REJECT_NO_EDGE
+DATA_UNOBTAINABLE → KALSHI_DATA_UNOBTAINABLE
+
+Replit enforcement logic
+
+Add this as a required pre-upgrade function:
+
+def llp_mlb_winner_preflight(row):
+    blockers = []
+    # Gate 1: starter / lineup
+    if row["starter_status"] not in ["CONFIRMED", "PROBABLE_STRONG"]:
+        blockers.append("NO_STARTER_CONFIRMATION")
+    if row["lineup_status"] not in ["CONFIRMED", "PROJECTED_ACCEPTABLE"]:
+        blockers.append("NO_LINEUP_CONFIRMATION")
+    # Gate 2: weather / event status
+    if row["event_status"] in ["POSTPONED", "CANCELLED", "SUSPENDED"]:
+        blockers.append("EVENT_RESET_REQUIRED_POSTPONEMENT")
+    if row["weather_status"] in ["MATERIAL_RISK", "DELAY_RISK", "RAINOUT_RISK"]:
+        blockers.append("WEATHER_RISK_CUT")
+    # Gate 3: no-vig/model breakeven
+    breakeven = 1 / row["kalshi_multiplier"]
+    model_lb = row["calibrated_probability_lower_bound"]
+    no_vig = row["sportsbook_no_vig_probability"]
+    buffer = 0.02 if row["kalshi_multiplier"] < 1.60 else 0.015
+    if no_vig < breakeven:
+        blockers.append("NO_VIG_BELOW_BREAKEVEN")
+    if model_lb < breakeven + buffer:
+        blockers.append("MODEL_LOWER_BOUND_BELOW_BREAKEVEN")
+    if blockers:
+        row["preflight_status"] = "FAIL"
+        row["can_upgrade"] = False
+        row["blockers"] = blockers
+        row["final_ceiling"] = "WINNER_WATCH_OR_REJECT"
+    else:
+        row["preflight_status"] = "PASS"
+        row["can_upgrade"] = True
+    return row
+
+Add these required output fields
+
+Every MLB/Kalshi winner row should show:
+
+starter_status:
+starter_source:
+lineup_status:
+lineup_source:
+event_status:
+weather_status:
+weather_source:
+kalshi_multiplier:
+kalshi_breakeven_probability:
+sportsbook_no_vig_probability:
+model_probability:
+calibrated_probability_lower_bound:
+breakeven_gap:
+preflight_status:
+upgrade_allowed:
+blockers:
+
+Regression tests to add
+
+TEST 1
+Candidate has 68% model probability but starter unconfirmed.
+Expected: cap at WINNER_WATCH / NO_STARTER_CONFIRMATION.
+TEST 2
+Candidate has confirmed starter and lineup but game has postponement risk.
+Expected: WEATHER_RISK_CUT or EVENT_RESET_REQUIRED_POSTPONEMENT.
+TEST 3
+Candidate is 1.55x, breakeven 64.5%, model lower bound 63.8%.
+Expected: LLP_PRICE_FIREWALL_FAIL.
+TEST 4
+Candidate is 1.73x, breakeven 57.8%, model lower bound 59.4%, but no-vig is 56.9%.
+Expected: NO_VIG_BELOW_BREAKEVEN.
+TEST 5
+Candidate passes starter, lineup, weather, no-vig, and model lower bound.
+Expected: eligible for exact price/no-vig/fee auditor, not automatically playable.
+TEST 6
+Game postponed and moved to doubleheader.
+Expected: original row killed; fresh full rerun required.
+
+Best activation prompt wording
+
+Use this in the Custom GPT:
+
+Before ranking or upgrading any MLB Kalshi winner candidate, run the LLP MLB Winner Preflight Gate. Confirm starter, lineup or acceptable projected lineup status, event status, weather/postponement risk, sportsbook no-vig probability, Kalshi breakeven probability, and calibrated model lower bound. If starter, lineup, weather, no-vig, or model-breakeven evidence is missing or fails, cap the candidate at WATCH or reject it. Do not allow a high-probability winner label to become market-qualified without exact price, fee, orderbook freshness, settlement, and no-vig edge audit. can_execute=false.
+
+My recommendation: make this PATCH-LEVEL REQUIRED and Replit-enforced. Prompt rules help, but the Replit gate is what prevents the model from accidentally skipping it when the slate gets busy.

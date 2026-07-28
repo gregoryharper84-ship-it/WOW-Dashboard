@@ -29,6 +29,8 @@ from . import market_adverse, component_composite, opportunity_state
 from .governance import get_governance_status
 # WOW Stage 2 — hard structural gates + weakest-leg finalizer (reviewer-mandated)
 from . import card_finalizer, hitter_fantasy_score as _hfs_mod
+# LLP MLB Winner Preflight Gate (reviewer-mandated, patch-level required)
+from . import llp_mlb_winner_preflight
 
 
 def run_pipeline(
@@ -535,6 +537,13 @@ def run_pipeline(
         # other label, since the reconciliation path owns the final outcome.
         if row.get("terminal_label") == PropLabel.SETTLEMENT_SOURCE_CONFLICT.value:
             continue
+        # LLP MLB Winner Preflight Gate — reviewer-mandated, code-enforced.
+        # Runs for MLB winner/moneyline rows before the classifier can assign
+        # FINAL_APPROVED or MONEY_QUALIFIED.  Missing starter, lineup, weather,
+        # no-vig, or model-breakeven evidence caps the row at MARKET_VERIFIED_HOLD
+        # or MLB_WINNER_PREFLIGHT_BLOCK before the classifier ever sees it.
+        # POSTPONED/CANCELLED/SUSPENDED → SLATE_PURGE (pick dies; rerun required).
+        llp_mlb_winner_preflight.run(row)
         classifier.classify(row)
 
     # -------------------------------------------------------------------
