@@ -59,6 +59,8 @@ class PropLabel(str, Enum):
     PREDICTION_MARKET_SOURCE_CEILING        = "PREDICTION_MARKET_SOURCE_CEILING"
     # LLP MLB Winner Preflight Gate (reviewer-mandated, PATCH-LEVEL REQUIRED)
     MLB_WINNER_PREFLIGHT_BLOCK              = "MLB_WINNER_PREFLIGHT_BLOCK"
+    # WOW-PATCH-2026-07-29 — Kalshi NO-Side Tail Risk & Calibration
+    HISTORICAL_NON_OCCURRENCE_MISUSED       = "HISTORICAL_NON_OCCURRENCE_MISUSED"
 
 
 class DataStatus(str, Enum):

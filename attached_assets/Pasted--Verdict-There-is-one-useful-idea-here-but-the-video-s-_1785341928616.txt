@@ -1,0 +1,324 @@
+## Verdict
+
+**There is one useful idea here, but the video’s strategy is mathematically dangerous as presented.**
+
+The useful idea is:
+
+> Every Kalshi market should be evaluated bidirectionally. Do not only ask whether YES is attractive; independently model NO.
+
+The dangerous leap is:
+
+> “An outcome is unlikely, therefore buying NO is free money.”
+
+That is false. The transcript repeatedly equates **high hit probability** with **positive expected value**, treats historical non-occurrence as a 100% forecast, ignores tail-loss severity, and confuses cumulative market volume with executable liquidity. 
+
+My recommendation is to **patch WOW v16**, but **not create a new top-level skill yet**. Most of the required architecture already exists in your Exact-Line Auditor, Slip Probability Optimizer, and Kalshi Portfolio Governor.
+
+---
+
+# Claim-by-claim audit
+
+| Video claim                                                            | Verdict                               | WOW interpretation                                                                        |
+| ---------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Predicting something not to happen is easier                           | **True only as a hit-rate statement** | NO may win frequently, but its price normally reflects that probability                   |
+| High-probability NO contracts are free money                           | **False**                             | High price creates small upside and large tail loss                                       |
+| A player never winning an event means 100% NO probability              | **Severely false**                    | Historical zero occurrences do not imply zero future probability                          |
+| A 94% implied probability versus 100% “true probability” gives 6% edge | **Invalid model**                     | The 100% estimate is unsupported                                                          |
+| Sportsbooks avoid NO because it is free money                          | **Unsupported**                       | Markets price both sides; availability is a product-design issue, not proof of free money |
+| Kalshi volume means you can put down any amount                        | **False**                             | Executable size depends on current order-book depth and slippage, not cumulative volume   |
+| Peer-to-peer means no meaningful limits or disadvantages               | **Misleading**                        | Fees, spreads, depth, adverse selection, rules, and position constraints still matter     |
+| Compare implied probability with true probability                      | **Correct principle**                 | But “true probability” must be independently modeled and calibrated                       |
+| Public longshot preference may make some NO contracts attractive       | **Plausible, not universal**          | Must be measured by category, price bucket, timing, and order type                        |
+
+Kalshi’s own explanation shows the complementary structure: a 70¢ YES and 30¢ NO collectively represent the $1 payout. Buying the more likely side does not create value automatically; it simply costs more. ([Kalshi Help Center][1])
+
+---
+
+# The central mathematical problem
+
+Suppose a NO contract costs **95¢**.
+
+* Win: receive $1, earning approximately **5¢ before fees**
+* Lose: lose approximately **95¢**
+* One loss erases **19 successful wins**
+
+A $20,000 position purchased at 95¢ could earn only about **$1,052.63 before fees**, while risking the entire $20,000 if the supposedly impossible event occurs.
+
+At sportsbook odds of **-1800**, the break-even probability is approximately **94.74%** before considering vig or other friction. One loss wipes out 18 one-unit wins.
+
+That is not free money. It is a **high-win-rate, negatively skewed exposure**: many small wins and occasional very large losses.
+
+Kalshi also charges transaction fees, and its July 2026 fee schedule shows that fees vary with contract price and market type. Therefore, the actual break-even probability is higher than the displayed contract price alone suggests. ([Kalshi Help Center][2])
+
+---
+
+# The worst error: “Never won before = 100% NO”
+
+The golf example is analytically invalid.
+
+A player who has never won a particular tournament does not have a 0% chance of winning the next edition. The model must consider:
+
+* Current field strength
+* Current ability and form
+* Course fit
+* Weather-wave advantage
+* Injuries
+* Starting position if underway
+* Withdrawal and dead-heat rules
+* Full-field probability normalization
+
+Historical non-occurrence is evidence, but not a probability model.
+
+For example, zero wins in ten previous appearances does not prove 0%. Even a simplified identical-trials treatment would preserve substantial uncertainty. In reality, tournament appearances are not identical trials because field strength, player skill, and conditions change.
+
+Your LLP Moneyline Probability Expert already requires golf outright probabilities to be calibrated to the full field and approximately sum to 100%. 
+
+---
+
+# What is genuinely worth adding
+
+## 1. Add a formal `COMPLEMENT_SIDE_SCAN`
+
+Every Kalshi contract should receive:
+
+```text
+P(YES)
+P(NO)
+P(VOID_OR_CANCEL_IF_APPLICABLE)
+YES executable break-even
+NO executable break-even
+YES lower-bound edge
+NO lower-bound edge
+best qualified side
+```
+
+Important rule:
+
+```text
+P(NO) = 1 - P(YES)
+```
+
+is allowed only when the settlement structure is genuinely exhaustive and binary. If cancellation, void, push, dead heat, shortened event, or another settlement state exists, preserve that third state.
+
+Your Slip Probability Optimizer already requires bidirectional scoring and correctly states that a failed original side does not automatically qualify the opposite side. 
+
+This should be extended across **every Kalshi scan**, not built as a separate standalone strategy.
+
+---
+
+## 2. Add a `HIGH_PRICE_TAIL_RISK_GATE`
+
+Every contract priced above a configurable threshold—such as 85¢ or 90¢—should publish:
+
+```text
+entry_cost
+net_profit_if_win
+maximum_loss
+loss_to_win_ratio
+wins_required_to_recover_one_loss
+fee_adjusted_break_even
+model_probability_lower_bound
+tail_probability_upper_bound
+```
+
+Suggested rules:
+
+```text
+historical_zero_occurrences cannot produce probability=0
+
+high_price_contract
++ unvalidated tail calibration
+=> KALSHI_WATCH ceiling
+
+model_probability_lower_bound
+<= fee_adjusted_break_even + required_buffer
+=> KALSHI_REJECT_NO_EDGE
+```
+
+During your current Kalshi Recovery Mode, a 90¢–99¢ NO contract should not be treated as “safe.” It should be treated as a **large-loss-tail contract with small expected return per dollar deployed**.
+
+---
+
+## 3. Add a `HISTORICAL_ZERO_FALLACY` blocker
+
+Recommended hard rule:
+
+```text
+zero historical occurrences != zero future probability
+never_won_before != cannot_win
+never_happened_before != 100_percent_NO
+```
+
+Required replacement evidence:
+
+```text
+current independent event model
+comparable-condition sample
+Bayesian smoothing or calibrated prior
+market-family base rate
+full-field normalization when mutually exclusive
+uncertainty interval
+```
+
+Suggested failure label:
+
+```text
+HISTORICAL_NON_OCCURRENCE_MISUSED
+```
+
+Any model returning exactly 0% or 100% must explain whether the outcome is **logically impossible**, already eliminated, or merely located in a tiny modeled tail.
+
+---
+
+## 4. Add a `VOLUME_IS_NOT_DEPTH` gate
+
+The transcript points to approximately $53 million in volume and concludes that a user can wager almost any amount. That is incorrect.
+
+Kalshi’s official order-book documentation says the current executable quantity is represented by resting orders at each price level. Cumulative trading volume does not tell you how much can presently be filled at the displayed price. ([Kalshi Help Center][3])
+
+Required fields:
+
+```text
+displayed_market_volume
+best_bid
+best_ask
+quantity_at_best_price
+depth_within_1_cent
+depth_within_3_cents
+estimated_vwap_for_target_quantity
+estimated_slippage
+price_after_target_fill
+```
+
+Hard rule:
+
+```text
+market_volume cannot satisfy liquidity_gate
+```
+
+Your current Exact-Line Auditor already requires a live orderbook, executable price, spread, fees, and freshness. This patch should explicitly add depth and estimated VWAP. 
+
+---
+
+## 5. Add a NO-side calibration ledger
+
+This is the most important long-term addition.
+
+The claim that traders overpay for exciting longshots has some empirical support in certain betting markets, but it is not universal. Research finds that favorite-longshot behavior varies by sport and market structure. More recent Kalshi research also indicates that calibration can vary by domain, time to expiration, trade size, and product type. ([ScienceDirect][4])
+
+Therefore, track NO performance by:
+
+```text
+market_family
+sport
+contract_type
+YES price bucket
+NO price bucket
+time_to_expiry
+maker_or_taker
+entry_price
+fees
+spread
+depth
+model P(YES)
+model P(NO)
+lower_bound P(NO)
+settled result
+Brier score
+log loss
+net ROI
+maximum drawdown
+```
+
+Suggested price buckets:
+
+```text
+50–69¢
+70–84¢
+85–89¢
+90–94¢
+95–99¢
+```
+
+The 95–99¢ bucket must be reviewed separately because a very high hit rate can still produce losses if the rare misses are underestimated.
+
+---
+
+# What is already covered
+
+You do **not** need an entirely new expert skill because your current architecture already contains most of the necessary controls:
+
+* The Slip Probability Optimizer scores both sides, requires exact-board verification, and prohibits automatic flips. 
+* The Exact-Line Auditor calculates executable prices, fees, settlement treatment, two-way no-vig probability, and lower-bound edge. 
+* The Portfolio Risk & Combo Governor separates individual contract quality from portfolio qualification and preserves Recovery Mode. 
+* The emergency Kalshi Recovery patch prohibits combos, blocks capital allocation, requires fresh prices, and requires positive fee-and-slippage-adjusted lower-bound edge. 
+
+The missing pieces are specifically:
+
+1. Historical-zero fallacy protection
+2. High-price tail-loss presentation
+3. Wins-required-to-recover calculation
+4. Volume-versus-depth distinction
+5. NO-side price-bucket calibration
+6. Multi-outcome field normalization
+
+---
+
+# Recommended patch
+
+## `WOW-PATCH-2026-07-29-KALSHI-NO-SIDE-TAIL-RISK-AND-CALIBRATION`
+
+Recommended initial status:
+
+```text
+status=CANDIDATE_FORWARD_TEST_ONLY
+framework=WOW_v16_CLEAN_CORE
+can_execute=false
+capital_allocation=false
+```
+
+Core rules:
+
+```text
+FREE_MONEY_LANGUAGE_PROHIBITED=true
+NO_SIDE_AUTO_EDGE=false
+HISTORICAL_ZERO_IS_NOT_ZERO_PROBABILITY=true
+VOLUME_IS_NOT_EXECUTABLE_DEPTH=true
+HIGH_WIN_RATE_IS_NOT_POSITIVE_EV=true
+TAIL_LOSS_RATIO_REQUIRED=true
+PRICE_BUCKET_CALIBRATION_REQUIRED=true
+FIELD_NORMALIZATION_REQUIRED_FOR_OUTRIGHTS=true
+```
+
+Lane ceiling:
+
+```text
+Uncalibrated NO scan
+=> KALSHI_WATCH
+
+Calibrated model but no fresh depth/fee evidence
+=> KALSHI_DATA_UNOBTAINABLE
+
+Fresh price and positive point edge but non-positive lower-bound edge
+=> KALSHI_REJECT_NO_EDGE
+
+All individual gates pass
+=> KALSHI_SINGLE_RESEARCH_ELIGIBLE
+```
+
+Because your Recovery Mode remains active, this patch should **not** authorize capital deployment or combinations. Its first use should be a forward-test ledger of single NO contracts.
+
+## Final recommendation
+
+**Patch the system, but reject the video’s “free money” thesis.**
+
+The correct WOW version of the idea is:
+
+> Scan both YES and NO. Some longshot YES contracts may be overpriced, creating possible value on NO. Qualify NO only when an independently calibrated probability lower bound clears the fresh, fee-adjusted executable price by the required buffer, while explicitly measuring the rare-loss severity.
+
+That would make the engine sharper. Simply prioritizing high-priced NO contracts would recreate the same loss pattern in a different form: frequent small wins followed by a disproportionately damaging miss.
+
+[1]: https://help.kalshi.com/en/articles/13823836-how-are-prices-determined?utm_source=chatgpt.com "How are prices determined?"
+[2]: https://help.kalshi.com/en/articles/13823805-fees?utm_source=chatgpt.com "Fees | Kalshi Help Center"
+[3]: https://help.kalshi.com/en/articles/13823828-the-orderbook?utm_source=chatgpt.com "The Orderbook | Kalshi Help Center"
+[4]: https://www.sciencedirect.com/science/article/abs/pii/S1062976916000041?utm_source=chatgpt.com "A favorite-longshot bias in fixed-odds betting markets"
