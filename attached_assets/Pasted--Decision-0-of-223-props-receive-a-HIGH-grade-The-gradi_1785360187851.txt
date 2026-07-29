@@ -1,0 +1,34 @@
+## Decision: **0 of 223 props receive a HIGH grade**
+
+The grading run is **`RUN_INVALID_GOVERNANCE_MISMATCH`**. The required WOW governance service failed repeatedly, so assigning A/B/C probability grades or numeric hit probabilities would be fabricated. Screenshot lines define the candidate menu but cannot establish role, distribution, calibrated probability, or market confirmation by themselves. 
+
+| Uploaded market             |    Rows | Current grade                          |
+| --------------------------- | ------: | -------------------------------------- |
+| MLB Popular                 |      16 | **UNGRADED — INPUT_FAILURE**           |
+| Pitcher Strikeouts          |      18 | **UNGRADED — INPUT_FAILURE**           |
+| Pitcher Fantasy Score       |      15 | **UNGRADED — INPUT_FAILURE**           |
+| Pitching Outs               |      16 | **UNGRADED — INPUT_FAILURE**           |
+| Plate Appearances           |      61 | **UNGRADED — INPUT_FAILURE**           |
+| Pitches Thrown              |      13 | **UNGRADED — INPUT_FAILURE**           |
+| WNBA PRA                    |      31 | **UNGRADED — INPUT_FAILURE**           |
+| WNBA Points                 |      37 | **UNGRADED — INPUT_FAILURE**           |
+| MLB Live 1st-Inning Pitches |      16 | **NO HIGH GRADE — LIVE STATE MISSING** |
+| **Total**                   | **223** | **0 graded HIGH**                      |
+
+These totals cover all nine uploaded boards.         
+
+The 16 MLB Live first-inning rows have an additional independent blocker: the live event check showed their games had not started, so there was no pitch-by-pitch live-state snapshot. The controlling rules reject a 1–3 inning live prop when that state is missing; pregame averages cannot substitute for it. The separate 1IP lane is also TEST_ONLY and cannot exceed `MODEL_QUALIFIED_HOLD`. 
+
+### Mandatory check log
+
+| Operation                        | Operation ID         | Status                                    |
+| -------------------------------- | -------------------- | ----------------------------------------- |
+| `getWowEngineHealth`             | Not returned by tool | **FAILED — ClientResponseError**          |
+| `getRundownSportEvents`, MLB     | Not returned by tool | **RETRIEVED — slate/event matches found** |
+| `getRundownSportEvents`, WNBA    | Not returned by tool | **RETRIEVED — both games scheduled**      |
+| Exact two-way player-prop market | Unavailable          | **DATA_UNOBTAINABLE**                     |
+| Exact PrizePicks payout context  | Not supplied         | **DATA_UNOBTAINABLE**                     |
+
+**Acquisition report:** board lines retrieved; slate identity retrieved; governance failed; player logs, calibrated distributions, role timestamps, exact no-vig ledgers and payout context did not clear the acquisition gate. Therefore, high-probability grades issued: **0**; stake: **$0**.
+
+**SKILL COMPLIANCE:** lowest ceiling preserved; no screenshot-only probabilities invented; 223 rows reconciled; unresolved blocker `RUN_INVALID_GOVERNANCE_MISMATCH`; `can_execute=false`.
