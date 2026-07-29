@@ -10012,19 +10012,14 @@ def wow_odds_health():
 def wow_prizepicks_set_cookie():
     """
     POST /wow/prizepicks/cookie
-    Store the DataDome session cookie so the engine can fetch live PrizePicks lines.
+    Store the DataDome session cookie for reference / future use.
 
     Body (JSON):
       { "cookie": "datadome=abc123...; _prizepicks_session=xyz..." }
 
-    How to get the cookie:
-      1. Open app.prizepicks.com in Chrome and log in.
-      2. Open DevTools → Network tab → refresh the page.
-      3. Click any /projections request → Headers → Request Headers → copy "Cookie".
-      4. POST that full string here.
-
-    The cookie is stored in the wow_config table and shared across all workers.
-    It persists until overwritten or the DB is reset.
+    NOTE: DataDome ties cookies to the originating IP. Server-side fetches
+    using this cookie will be rejected. Use the Mac pusher script to fetch
+    projections locally and POST them via /wow/prizepicks/projections/ingest.
     """
     from services.prizepicks import set_cookie as _set_cookie
     body = request.get_json(silent=True) or {}
@@ -10035,80 +10030,92 @@ def wow_prizepicks_set_cookie():
     return jsonify(result), 200 if result.get("ok") else 500
 
 
+@app.route("/wow/prizepicks/projections/ingest", methods=["POST", "OPTIONS"])
+@require_api_key
+def wow_prizepicks_ingest():
+    """
+    POST /wow/prizepicks/projections/ingest
+
+    Accept a batch of normalized PrizePicks projection rows from the Mac
+    pusher script and upsert them into the prizepicks_projections table.
+
+    Body (JSON):
+      { "projections": [ { projection_id, player_name, team, league,
+                            stat_type, line_score, ... }, ... ] }
+
+    The Mac script fetches locally (bypassing DataDome's IP check) and
+    pushes the results here. This endpoint stores them for server-side use.
+    """
+    from services.prizepicks import ingest_projections
+    body = request.get_json(silent=True) or {}
+    rows = body.get("projections", [])
+    if not isinstance(rows, list):
+        return jsonify({"ok": False, "error": "'projections' must be a list"}), 400
+    result = ingest_projections(rows)
+    return jsonify(result), 200 if result.get("ok") else 500
+
+
 @app.route("/wow/prizepicks/projections", methods=["GET", "OPTIONS"])
 @require_api_key
 def wow_prizepicks_projections():
     """
     GET /wow/prizepicks/projections
 
-    Fetch live PrizePicks lines using the stored DataDome cookie.
+    Return stored PrizePicks projections from the DB (populated by the Mac
+    pusher script via POST /wow/prizepicks/projections/ingest).
 
     Query params:
-      league    — league name or ID, e.g. "NBA" or "7"  (optional)
-      stat_type — filter by stat, e.g. "Points"         (optional)
-      per_page  — max results, default 250              (optional)
-
-    Returns a flat list of normalized projection rows. Each row contains:
-      projection_id, player_name, team, position, league, sport,
-      stat_type, line_score, status, start_time, game_description,
-      is_promo, odds_type, player_id, image_url, pulled_at
-
-    Requires a stored cookie (POST /wow/prizepicks/cookie first).
+      league       — filter by league name, e.g. "NBA"     (optional)
+      stat_type    — filter by stat, e.g. "Points"         (optional)
+      player       — partial player name search             (optional)
+      status       — filter by status, e.g. "pre_game"     (optional)
+      since_hours  — only rows ingested within N hours      (default 6)
+      limit        — max results                            (default 500)
     """
-    from services.prizepicks import fetch_projections, KNOWN_LEAGUES
+    from services.prizepicks import query_projections, get_ingest_summary
 
-    league_raw = request.args.get("league", "").strip()
-    stat_type  = request.args.get("stat_type", "").strip() or None
-    per_page   = int(request.args.get("per_page", 250))
+    league      = request.args.get("league", "").strip() or None
+    stat_type   = request.args.get("stat_type", "").strip() or None
+    player      = request.args.get("player", "").strip() or None
+    status_f    = request.args.get("status", "").strip() or None
+    since_hours = float(request.args.get("since_hours", 6))
+    limit       = int(request.args.get("limit", 500))
 
-    # Resolve league name → ID
-    league_id: int | str | None = None
-    if league_raw:
-        if league_raw.isdigit():
-            league_id = int(league_raw)
-        else:
-            league_id = KNOWN_LEAGUES.get(league_raw.upper())
-            if league_id is None:
-                return jsonify({
-                    "ok":    False,
-                    "error": f"Unknown league '{league_raw}'. Use a numeric ID or one of: {list(KNOWN_LEAGUES.keys())}",
-                }), 400
-
-    projections, status = fetch_projections(
-        league_id  = league_id,
-        stat_type  = stat_type,
-        per_page   = per_page,
+    projections, freshness = query_projections(
+        league         = league,
+        stat_type      = stat_type,
+        player         = player,
+        status         = status_f,
+        limit          = limit,
+        since_minutes  = int(since_hours * 60),
     )
 
-    ok = status == "AVAILABLE"
+    no_data = len(projections) == 0
     return jsonify({
-        "ok":              ok,
-        "source":          "prizepicks",
-        "fetch_status":    status,
-        "league_filter":   league_raw or None,
-        "stat_filter":     stat_type,
+        "ok":               True,
+        "source":           "prizepicks_db",
+        "last_ingested":    freshness,
+        "league_filter":    league,
+        "stat_filter":      stat_type,
         "projection_count": len(projections),
-        "projections":     projections,
-        "hint":            None if ok else "Cookie may be expired — POST /wow/prizepicks/cookie with a fresh cookie.",
-    }), 200 if ok else 502
+        "projections":      projections,
+        "hint": (
+            "No projections in DB — run the Mac pusher script: "
+            "python3 scripts/prizepicks_mac_pusher.py --mode fetch"
+        ) if no_data else None,
+    })
 
 
-@app.route("/wow/prizepicks/leagues", methods=["GET", "OPTIONS"])
+@app.route("/wow/prizepicks/board", methods=["GET", "OPTIONS"])
 @require_api_key
-def wow_prizepicks_leagues():
+def wow_prizepicks_board():
     """
-    GET /wow/prizepicks/leagues
-    Return available PrizePicks leagues using the stored DataDome cookie.
+    GET /wow/prizepicks/board
+    Summary of stored projections: league breakdown, total count, last ingest time.
     """
-    from services.prizepicks import fetch_leagues
-    leagues, status = fetch_leagues()
-    ok = status == "AVAILABLE"
-    return jsonify({
-        "ok":           ok,
-        "fetch_status": status,
-        "league_count": len(leagues),
-        "leagues":      leagues,
-    }), 200 if ok else 502
+    from services.prizepicks import get_ingest_summary
+    summary = get_ingest_summary()
+    return jsonify({"ok": True, "board": summary})
 
 
 @app.route("/wow/espn/mlb/scoreboard", methods=["GET"])
