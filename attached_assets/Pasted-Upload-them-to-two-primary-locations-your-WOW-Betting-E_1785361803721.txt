@@ -1,0 +1,95 @@
+Upload them to **two primary locations**: your **WOW Betting Engine Custom GPT** and your **Replit WOW Betting Engine project**.
+
+## 1. WOW Betting Engine Custom GPT
+
+Open:
+
+**ChatGPT → Explore GPTs → My GPTs → WOW Betting Engine → Edit GPT → Configure**
+
+Custom GPT Knowledge is designed for reference files the GPT should use when answering. ([OpenAI Help Center][1])
+
+### Put this in the GPT Instructions field
+
+Copy and paste the contents of:
+
+[CHATGPT_INSTALL_PROMPT.md](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29/CHATGPT_INSTALL_PROMPT.md)
+
+Add it **below your existing WOW v16 instructions**. Do not replace your entire current instruction set.
+
+### Upload these three files to GPT Knowledge
+
+1. [Control Plane Orchestrator](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29/skills/wow-control-plane-orchestrator-SKILL.md)
+2. [Calibration Ledger](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29/skills/wow-calibration-ledger-SKILL.md)
+3. [Control Plane and Calibration Patch](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29/patches/WOW-PATCH-2026-07-29-CONTROL-PLANE-AND-CALIBRATION.md)
+
+These should become active alongside your existing WOW v16 skills.
+
+### Do not upload these to GPT Knowledge
+
+Do not upload the full ZIP, Python code, SQL migration, test files, JSON schemas, or OpenAPI file to the Custom GPT. Those are implementation assets for Replit, not reasoning instructions.
+
+## 2. Replit WOW Betting Engine project
+
+Download:
+
+[Complete implementation ZIP](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29.zip)
+
+Upload that ZIP into the **root of your existing WOW Betting Engine Replit project**. Then extract it while preserving the folder structure.
+
+Your Replit project should receive:
+
+```text
+wow_core/
+config/
+schemas/
+sql/
+openapi/
+tests/
+requirements-dev.txt
+```
+
+The `source_skills/` directory can remain as implementation reference documentation.
+
+After uploading, paste this into the Replit Agent:
+
+[REPLIT_IMPLEMENTATION_PROMPT.md](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29/REPLIT_IMPLEMENTATION_PROMPT.md)
+
+Tell Replit Agent to integrate the package into the **existing application**, not create a separate application.
+
+You can delete or ignore these generated cache folders:
+
+```text
+.pytest_cache/
+wow_core/__pycache__/
+tests/__pycache__/
+```
+
+They are not needed for deployment.
+
+## 3. WOW v16 Clean Core ChatGPT Project
+
+Inside this current **WOW v16 Clean Core Project**, optionally upload:
+
+* [README.md](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29/README.md)
+* [IMPLEMENTATION_CHECKLIST.md](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29/IMPLEMENTATION_CHECKLIST.md)
+
+These are useful for maintaining installation status across project conversations. Projects can use uploaded reference files as shared context, although your active Custom GPT Knowledge should remain the authoritative home for the two skills and patch. ([OpenAI Help Center][2])
+
+## Recommended final placement
+
+| Artifact                     | Destination                        |
+| ---------------------------- | ---------------------------------- |
+| `CHATGPT_INSTALL_PROMPT.md`  | Paste into Custom GPT Instructions |
+| Control Plane skill          | Custom GPT Knowledge               |
+| Calibration Ledger skill     | Custom GPT Knowledge               |
+| Control Plane patch          | Custom GPT Knowledge               |
+| Complete ZIP                 | Replit project root                |
+| Replit implementation prompt | Paste into Replit Agent            |
+| README                       | ChatGPT Project and Replit         |
+| Implementation checklist     | ChatGPT Project and Replit         |
+| Python, SQL, schemas, tests  | Replit only                        |
+
+Start with the **three Custom GPT uploads**, save/update the GPT, and then install the full ZIP in Replit.
+
+[1]: https://help.openai.com/en/articles/8554397-creating-a-gpt%3F.xls?utm_source=chatgpt.com "Creating and editing GPTs | OpenAI Help Center"
+[2]: https://help.openai.com/en/articles/10169521-projects-in-chatgpt?_bhlid=2ccb406afcc658dd9746ce6a0d4da08e997e9f91&utm_source=chatgpt.com "Projects in ChatGPT | OpenAI Help Center"
