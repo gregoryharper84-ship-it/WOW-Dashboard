@@ -10007,6 +10007,110 @@ def wow_odds_health():
     }), (200 if is_available else 502)
 
 
+@app.route("/wow/prizepicks/cookie", methods=["POST", "OPTIONS"])
+@require_api_key
+def wow_prizepicks_set_cookie():
+    """
+    POST /wow/prizepicks/cookie
+    Store the DataDome session cookie so the engine can fetch live PrizePicks lines.
+
+    Body (JSON):
+      { "cookie": "datadome=abc123...; _prizepicks_session=xyz..." }
+
+    How to get the cookie:
+      1. Open app.prizepicks.com in Chrome and log in.
+      2. Open DevTools → Network tab → refresh the page.
+      3. Click any /projections request → Headers → Request Headers → copy "Cookie".
+      4. POST that full string here.
+
+    The cookie is stored in the wow_config table and shared across all workers.
+    It persists until overwritten or the DB is reset.
+    """
+    from services.prizepicks import set_cookie as _set_cookie
+    body = request.get_json(silent=True) or {}
+    cookie_str = body.get("cookie", "").strip()
+    if not cookie_str:
+        return jsonify({"ok": False, "error": "Missing 'cookie' field in request body"}), 400
+    result = _set_cookie(cookie_str)
+    return jsonify(result), 200 if result.get("ok") else 500
+
+
+@app.route("/wow/prizepicks/projections", methods=["GET", "OPTIONS"])
+@require_api_key
+def wow_prizepicks_projections():
+    """
+    GET /wow/prizepicks/projections
+
+    Fetch live PrizePicks lines using the stored DataDome cookie.
+
+    Query params:
+      league    — league name or ID, e.g. "NBA" or "7"  (optional)
+      stat_type — filter by stat, e.g. "Points"         (optional)
+      per_page  — max results, default 250              (optional)
+
+    Returns a flat list of normalized projection rows. Each row contains:
+      projection_id, player_name, team, position, league, sport,
+      stat_type, line_score, status, start_time, game_description,
+      is_promo, odds_type, player_id, image_url, pulled_at
+
+    Requires a stored cookie (POST /wow/prizepicks/cookie first).
+    """
+    from services.prizepicks import fetch_projections, KNOWN_LEAGUES
+
+    league_raw = request.args.get("league", "").strip()
+    stat_type  = request.args.get("stat_type", "").strip() or None
+    per_page   = int(request.args.get("per_page", 250))
+
+    # Resolve league name → ID
+    league_id: int | str | None = None
+    if league_raw:
+        if league_raw.isdigit():
+            league_id = int(league_raw)
+        else:
+            league_id = KNOWN_LEAGUES.get(league_raw.upper())
+            if league_id is None:
+                return jsonify({
+                    "ok":    False,
+                    "error": f"Unknown league '{league_raw}'. Use a numeric ID or one of: {list(KNOWN_LEAGUES.keys())}",
+                }), 400
+
+    projections, status = fetch_projections(
+        league_id  = league_id,
+        stat_type  = stat_type,
+        per_page   = per_page,
+    )
+
+    ok = status == "AVAILABLE"
+    return jsonify({
+        "ok":              ok,
+        "source":          "prizepicks",
+        "fetch_status":    status,
+        "league_filter":   league_raw or None,
+        "stat_filter":     stat_type,
+        "projection_count": len(projections),
+        "projections":     projections,
+        "hint":            None if ok else "Cookie may be expired — POST /wow/prizepicks/cookie with a fresh cookie.",
+    }), 200 if ok else 502
+
+
+@app.route("/wow/prizepicks/leagues", methods=["GET", "OPTIONS"])
+@require_api_key
+def wow_prizepicks_leagues():
+    """
+    GET /wow/prizepicks/leagues
+    Return available PrizePicks leagues using the stored DataDome cookie.
+    """
+    from services.prizepicks import fetch_leagues
+    leagues, status = fetch_leagues()
+    ok = status == "AVAILABLE"
+    return jsonify({
+        "ok":           ok,
+        "fetch_status": status,
+        "league_count": len(leagues),
+        "leagues":      leagues,
+    }), 200 if ok else 502
+
+
 @app.route("/wow/espn/mlb/scoreboard", methods=["GET"])
 def wow_espn_mlb_scoreboard():
     """
