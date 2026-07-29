@@ -10106,6 +10106,16 @@ def wow_prizepicks_projections():
     })
 
 
+@app.route("/wow/prizepicks/pusher-script", methods=["GET"])
+def wow_prizepicks_pusher_script():
+    """GET /wow/prizepicks/pusher-script — download the Mac pusher script (no auth)."""
+    import os as _os
+    script_path = _os.path.join(_os.path.dirname(__file__), "scripts", "prizepicks_mac_pusher.py")
+    from flask import send_file as _send_file
+    return _send_file(script_path, mimetype="text/plain", as_attachment=True,
+                      download_name="prizepicks_mac_pusher.py")
+
+
 @app.route("/wow/prizepicks/board", methods=["GET", "OPTIONS"])
 @require_api_key
 def wow_prizepicks_board():
