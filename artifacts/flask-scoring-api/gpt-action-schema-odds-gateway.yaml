@@ -1,0 +1,210 @@
+openapi: 3.1.0
+info:
+  title: WOW Odds Gateway
+  version: 1.0.0
+  description: >
+    Secure odds and player-prop acquisition through the WOW backend.
+    All requests must include the X-WOW-Action-Key header (configured
+    under Authentication in the GPT Action editor).
+
+servers:
+  - url: https://create-app-gregoryharper84.replit.app
+
+paths:
+  /wow/odds/events:
+    get:
+      operationId: getOddsApiEvents
+      summary: Get upcoming or live events for a sport
+      description: >
+        Low-cost event discovery call. Uses the free key by default.
+        Returns a list of events with IDs needed for subsequent market
+        and odds calls.
+      parameters:
+        - name: sport
+          in: query
+          required: true
+          description: >
+            Odds API sport key, e.g. baseball_mlb, basketball_nba,
+            americanfootball_nfl, basketball_wnba
+          schema:
+            type: string
+        - name: commence_time_from
+          in: query
+          required: false
+          description: ISO 8601 datetime — only return events starting at or after this time
+          schema:
+            type: string
+        - name: commence_time_to
+          in: query
+          required: false
+          description: ISO 8601 datetime — only return events starting at or before this time
+          schema:
+            type: string
+        - name: include_rotation_numbers
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Event list and quota metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_key_tier:
+                    type: string
+                    enum: [free, paid]
+                  requests_remaining:
+                    type: string
+                  requests_used:
+                    type: string
+                  request_cost:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        "400":
+          description: Missing required parameter
+        "401":
+          description: Invalid or missing X-WOW-Action-Key
+        "502":
+          description: Both Odds API key paths failed
+
+  /wow/odds/event-markets:
+    get:
+      operationId: getOddsApiEventMarkets
+      summary: Get available sportsbook market keys for one event
+      description: >
+        Returns the list of market keys available for a specific event
+        (e.g. h2h, spreads, totals, player_pass_tds). Use the market
+        keys returned here as input to getOddsApiEventOdds.
+        Uses the paid key by default.
+      parameters:
+        - name: sport
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: event_id
+          in: query
+          required: true
+          description: Event ID from getOddsApiEvents
+          schema:
+            type: string
+        - name: regions
+          in: query
+          required: false
+          schema:
+            type: string
+            default: us
+        - name: bookmakers
+          in: query
+          required: false
+          description: Comma-separated bookmaker keys to filter results
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Available markets and quota metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_key_tier:
+                    type: string
+                    enum: [free, paid]
+                  requests_remaining:
+                    type: string
+                  requests_used:
+                    type: string
+                  request_cost:
+                    type: string
+                  data:
+                    type: object
+                    additionalProperties: true
+        "400":
+          description: Missing required parameter
+        "401":
+          description: Invalid or missing X-WOW-Action-Key
+        "502":
+          description: Both Odds API key paths failed
+
+  /wow/odds/event-odds:
+    get:
+      operationId: getOddsApiEventOdds
+      summary: Get exact odds for selected markets on one event
+      description: >
+        Returns two-way pricing from one or more sportsbooks for the
+        specified markets. Use for exact no-vig consensus pricing needed
+        by WOW acquisition gates. Uses the paid key by default.
+      parameters:
+        - name: sport
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: event_id
+          in: query
+          required: true
+          description: Event ID from getOddsApiEvents
+          schema:
+            type: string
+        - name: markets
+          in: query
+          required: true
+          description: Comma-separated market keys, e.g. h2h,spreads,player_pass_tds
+          schema:
+            type: string
+        - name: regions
+          in: query
+          required: false
+          schema:
+            type: string
+            default: us
+        - name: bookmakers
+          in: query
+          required: false
+          description: Comma-separated bookmaker keys (e.g. draftkings,fanduel,betmgm)
+          schema:
+            type: string
+        - name: odds_format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - american
+              - decimal
+            default: american
+      responses:
+        "200":
+          description: Exact event odds and quota metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_key_tier:
+                    type: string
+                    enum: [free, paid]
+                  requests_remaining:
+                    type: string
+                  requests_used:
+                    type: string
+                  request_cost:
+                    type: string
+                  data:
+                    type: object
+                    additionalProperties: true
+        "400":
+          description: Missing required parameter
+        "401":
+          description: Invalid or missing X-WOW-Action-Key
+        "502":
+          description: Both Odds API key paths failed

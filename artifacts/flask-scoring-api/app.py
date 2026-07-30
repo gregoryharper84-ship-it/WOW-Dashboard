@@ -30449,6 +30449,188 @@ Example:
         return jsonify({"ok": False, "error": str(e)[:300]}), 500
 
 
+# ── Odds API Gateway ─────────────────────────────────────────────────────────
+# Three authenticated endpoints that proxy The Odds API so keys never leave
+# Replit Secrets.  The GPT Action sends X-WOW-Action-Key; the backend injects
+# the correct api key before forwarding.
+# Routing policy (from attached architecture doc):
+#   Free key  → event discovery, sports list, low-cost calls
+#   Paid key  → event markets, player props, exact two-way pricing
+#   Fallback  → retry alternate key only on 401 / 403 / 429
+
+_ODDS_API_BASE = "https://api.the-odds-api.com/v4"
+
+
+def _verify_wow_action_key():
+    """Return (ok, error_response).  ok=True means the caller is authorised."""
+    expected = os.environ.get("GPT_ACTION_SECRET", "")
+    if not expected:
+        return False, (jsonify({"error": "GPT_ACTION_SECRET not configured on server"}), 500)
+    provided = request.headers.get("X-WOW-Action-Key", "")
+    if not provided or provided != expected:
+        return False, (jsonify({"error": "Unauthorized"}), 401)
+    return True, None
+
+
+def _odds_api_request(path, params, prefer_paid=True):
+    """
+    Call The Odds API with a paid / free key ladder.
+    Retries the alternate key only on 401, 403, or 429.
+    Returns (result_dict, None) on success or (None, flask_response) on failure.
+    """
+    import requests as _req
+
+    paid_key = os.environ.get("ODDS_API_PAID_KEY", "")
+    free_key  = os.environ.get("ODDS_API_FREE_KEY",  "")
+
+    key_ladder = (
+        [("paid", paid_key), ("free", free_key)]
+        if prefer_paid
+        else [("free", free_key), ("paid", paid_key)]
+    )
+
+    errors = []
+    for key_tier, key in key_ladder:
+        if not key:
+            errors.append({"key_tier": key_tier, "error": "key not configured"})
+            continue
+
+        try:
+            resp = _req.get(
+                f"{_ODDS_API_BASE}/{path.lstrip('/')}",
+                params={**params, "apiKey": key},
+                timeout=30,
+            )
+        except Exception as exc:
+            errors.append({"key_tier": key_tier, "error": str(exc)})
+            break
+
+        if resp.status_code == 200:
+            return {
+                "source_key_tier":    key_tier,
+                "requests_remaining": resp.headers.get("x-requests-remaining"),
+                "requests_used":      resp.headers.get("x-requests-used"),
+                "request_cost":       resp.headers.get("x-requests-last"),
+                "data":               resp.json(),
+            }, None
+
+        errors.append({
+            "key_tier":    key_tier,
+            "status_code": resp.status_code,
+            "response":    resp.text[:500],
+        })
+        # Only fall back to the alternate key for auth / quota / rate-limit failures
+        if resp.status_code not in {401, 403, 429}:
+            break
+
+    return None, (jsonify({"error": "Both Odds API paths failed", "details": errors}), 502)
+
+
+@app.route("/wow/odds/events", methods=["GET"])
+def wow_odds_events():
+    """
+    GET /wow/odds/events
+    Query params: sport (required), commence_time_from, commence_time_to,
+                  include_rotation_numbers (bool, default false)
+    Low-cost event discovery — uses the free key by default.
+    Requires X-WOW-Action-Key header.
+    """
+    ok, err = _verify_wow_action_key()
+    if not ok:
+        return err
+
+    sport = request.args.get("sport", "").strip()
+    if not sport:
+        return jsonify({"error": "sport is required"}), 400
+
+    params = {}
+    if request.args.get("commence_time_from"):
+        params["commenceTimeFrom"] = request.args["commence_time_from"]
+    if request.args.get("commence_time_to"):
+        params["commenceTimeTo"] = request.args["commence_time_to"]
+    if request.args.get("include_rotation_numbers", "false").lower() == "true":
+        params["includeRotationNumbers"] = "true"
+
+    result, err_resp = _odds_api_request(
+        path=f"sports/{sport}/events",
+        params=params,
+        prefer_paid=False,
+    )
+    if err_resp:
+        return err_resp
+    return jsonify(result), 200
+
+
+@app.route("/wow/odds/event-markets", methods=["GET"])
+def wow_odds_event_markets():
+    """
+    GET /wow/odds/event-markets
+    Query params: sport (required), event_id (required),
+                  regions (default us), bookmakers (csv, optional)
+    Returns available sportsbook market keys for one event — paid key by default.
+    Requires X-WOW-Action-Key header.
+    """
+    ok, err = _verify_wow_action_key()
+    if not ok:
+        return err
+
+    sport    = request.args.get("sport",    "").strip()
+    event_id = request.args.get("event_id", "").strip()
+    if not sport or not event_id:
+        return jsonify({"error": "sport and event_id are required"}), 400
+
+    params = {"regions": request.args.get("regions", "us")}
+    if request.args.get("bookmakers"):
+        params["bookmakers"] = request.args["bookmakers"]
+
+    result, err_resp = _odds_api_request(
+        path=f"sports/{sport}/events/{event_id}/odds",
+        params=params,
+        prefer_paid=True,
+    )
+    if err_resp:
+        return err_resp
+    return jsonify(result), 200
+
+
+@app.route("/wow/odds/event-odds", methods=["GET"])
+def wow_odds_event_odds():
+    """
+    GET /wow/odds/event-odds
+    Query params: sport (required), event_id (required), markets (csv, required),
+                  regions (default us), bookmakers (csv, optional),
+                  odds_format (american|decimal, default american)
+    Exact two-way pricing for selected markets — paid key by default.
+    Requires X-WOW-Action-Key header.
+    """
+    ok, err = _verify_wow_action_key()
+    if not ok:
+        return err
+
+    sport    = request.args.get("sport",    "").strip()
+    event_id = request.args.get("event_id", "").strip()
+    markets  = request.args.get("markets",  "").strip()
+    if not sport or not event_id or not markets:
+        return jsonify({"error": "sport, event_id, and markets are required"}), 400
+
+    params = {
+        "regions":    request.args.get("regions",     "us"),
+        "markets":    markets,
+        "oddsFormat": request.args.get("odds_format", "american"),
+    }
+    if request.args.get("bookmakers"):
+        params["bookmakers"] = request.args["bookmakers"]
+
+    result, err_resp = _odds_api_request(
+        path=f"sports/{sport}/events/{event_id}/odds",
+        params=params,
+        prefer_paid=True,
+    )
+    if err_resp:
+        return err_resp
+    return jsonify(result), 200
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)
