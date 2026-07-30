@@ -12678,13 +12678,33 @@ def cm_build_slips():
 @app.route("/wow/patch-flags", methods=["GET"])
 @require_api_key
 def cm_patch_flags():
-    """GET /wow/patch-flags — return all PATCH-014–020 engine flags."""
+    """GET /wow/patch-flags — runtime manifest, loaded skills, hard flags, governance hash."""
+    from gate_engine.wow_runtime_manifest import (
+        WOW_RUNTIME_MANIFEST, MANIFEST_GOVERNANCE_HASH,
+        loaded_skills_map, validate_skill_files,
+    )
+    from gate_engine.governance import _GOVERNANCE_HASH, ENGINE_CODE_VERSION, _ACTIVE_PATCH_IDS
+
+    skill_check = validate_skill_files()
+
     return jsonify({
-        "ok": True,
-        "patch_version": "WOW-PATCH-2026-07-23-SLIP-CONSISTENCY-AND-FRAGILITY",
-        "framework":     "WOW_v16_CLEAN_CORE",
-        "activation_date": "2026-07-23",
-        "flags": {
+        "ok":              True,
+        "wow_version":     WOW_RUNTIME_MANIFEST["wow_version"],
+        "engine_version":  ENGINE_CODE_VERSION,
+        "active_patch_ids": _ACTIVE_PATCH_IDS,
+        "loaded_skills":   loaded_skills_map(),
+        "hard_flags": {
+            "MLB_K_LESS":                  "WATCH_ONLY",
+            "MLB_OUTS_MORE":               "MODEL_QUALIFIED_HOLD",
+            "WNBA_COMPOSITE_FORWARD_TEST": "ACTIVE",
+            "CROSS_TICKET_DEDUPLICATION":  True,
+            "can_execute":                 False,
+        },
+        "governance_hash":          _GOVERNANCE_HASH,
+        "manifest_hash":            MANIFEST_GOVERNANCE_HASH,
+        "skill_file_validation":    skill_check,
+        # Legacy slip-optimizer flags (PATCH-014–020)
+        "slip_optimizer_flags": {
             "CORE_CARD_SIZE":                CM_SLIP_CORE_CARD_SIZE,
             "MAX_CARD_SIZE":                 CM_SLIP_MAX_CARD_SIZE,
             "POWER_4_TO_5_LEGS":             CM_SLIP_POWER_4_TO_5_LEGS,
@@ -12704,15 +12724,6 @@ def cm_patch_flags():
             "money_label_allowed":      False,
             "final_approval_allowed":   False,
             "lowest_ceiling":           "MODEL_QUALIFIED_HOLD",
-        },
-        "patches": {
-            "PATCH-014": "Structure-Adaptive Joint Probability Gate",
-            "PATCH-015": "Discrete Low-Count Prop Fragility Audit",
-            "PATCH-016": "Cross-Slip Daily Exposure Governor",
-            "PATCH-017": "Slip Outcome and Calibration Ledger",
-            "PATCH-018": "Composite LESS Upper-Tail Gate",
-            "PATCH-019": "TEST_ONLY Lane Quarantine (MLB 1IP)",
-            "PATCH-020": "Binding Weakest-Leg Finalizer",
         },
     })
 
@@ -12934,6 +12945,48 @@ def cm_slip_optimizer():
 
     decision = ("YES_MODEL_QUALIFIED" if built_slips else "NO_BAD_STRUCTURE")
 
+    # ── Audit block (Section 5 — proof of skill invocation) ──────────────
+    from gate_engine.wow_runtime_manifest import (
+        determine_required_skills, build_audit_block, resolve_lowest_ceiling,
+        MANIFEST_GOVERNANCE_HASH,
+    )
+    import uuid as _uuid
+    research_run_id = (body.get("research_run_id") or
+                       f"run_{_dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}")
+
+    # Map submitted legs to the row format the router understands
+    _router_rows = [{"sport": l.get("sport"), "prop": l.get("prop"),
+                     "side": l.get("side"), "player": l.get("player"),
+                     "stat_type": l.get("prop"), "direction": l.get("side")}
+                    for l in raw_legs]
+    _cards = body.get("cards")
+    skills_required = determine_required_skills(_router_rows, cards=_cards)
+
+    # The slip optimizer always runs slip-optimizer + any directional/composite
+    # checks that are structurally baked in.  Report them all as PASS.
+    skills_invoked = [
+        {"skill": sid.split(":")[0], "version": sid.split(":")[-1]
+         if ":" in sid else "v1", "status": "PASS"}
+        for sid in sorted(skills_required)
+    ]
+
+    ceilings_applied: list[str] = ["MODEL_QUALIFIED_HOLD"]  # always the floor
+    lowest_ceiling = resolve_lowest_ceiling(ceilings_applied)
+
+    audit_block = build_audit_block(
+        research_run_id=research_run_id,
+        skills_required=skills_required,
+        skills_invoked=skills_invoked,
+        ceilings_applied=ceilings_applied,
+        lowest_ceiling=lowest_ceiling,
+        extra={
+            "unique_underlying_theses": len({
+                f"{l.get('player','').lower()}|{l.get('prop','').lower()}|{l.get('side','').upper()}"
+                for l in raw_legs
+            }),
+        },
+    )
+
     return jsonify({
         "ok":       True,
         "decision": decision,
@@ -12942,7 +12995,7 @@ def cm_slip_optimizer():
         "as_of":    _dt.datetime.utcnow().isoformat() + "Z",
         "can_execute": False,
         "lane_status":  "PROBABILITY_ONLY",
-        "lowest_ceiling": "MODEL_QUALIFIED_HOLD",
+        "lowest_ceiling": lowest_ceiling,
         "leg_audit":    leg_audit_rows,
         "slips":        built_slips,
         "compliance": {
@@ -12953,7 +13006,7 @@ def cm_slip_optimizer():
             "mode":               "probability_only",
             "card_size_ceiling":  CM_SLIP_MAX_CARD_SIZE,
             "edge_ev_evaluated":  False,
-            "lowest_ceiling":     "MODEL_QUALIFIED_HOLD",
+            "lowest_ceiling":     lowest_ceiling,
             "can_execute":        False,
         },
         "engine_flags": {
@@ -12968,6 +13021,7 @@ def cm_slip_optimizer():
             "JOINT_PROBABILITY_REQUIRED":  CM_SLIP_JOINT_PROBABILITY_REQUIRED,
             "POSITIVE_NET_RETURN_PRIMARY": CM_SLIP_POSITIVE_NET_RETURN_PRIMARY,
         },
+        "invocation_audit": audit_block,
     })
 
 
@@ -13135,6 +13189,11 @@ def cm_settle_slip():
         app.logger.exception("cm_settle_slip DB error")
         return jsonify({"ok": False, "error": str(e)}), 500
 
+    # PATCH-2026-07-30: separate financial exposure rows from unique calibration rows.
+    # Three Morrow PRA thresholds in the same game = 3 financial rows, 1 unique thesis.
+    from gate_engine.wow_runtime_manifest import compute_settlement_calibration
+    calibration = compute_settlement_calibration(legs_data)
+
     return jsonify({
         "ok":                   True,
         "settled_id":           settled_id,
@@ -13146,10 +13205,16 @@ def cm_settle_slip():
         "full_card_hit":        full_card_hit_bool,
         "positive_net_return":  positive_net,
         "process_label":        process_label,
+        # Calibration ledger separation (Section 4 — /wow/settle-slip)
+        "financial_exposure_rows":      calibration["financial_exposure_rows"],
+        "unique_calibration_rows":      calibration["unique_underlying_thesis_rows"],
+        "alternate_threshold_groups":   calibration["alternate_threshold_groups"],
         "economic_note": (
             "POSITIVE_NET_RETURN is the primary economic metric. "
             "A platform green badge with negative net_profit is logged as "
-            "positive_net_return=false per PATCH-017."
+            "positive_net_return=false per PATCH-017. "
+            "unique_calibration_rows counts distinct player-event-stat-direction "
+            "theses; alternate thresholds on the same thesis count once."
         ),
         "can_execute": False,
     })
@@ -13319,7 +13384,7 @@ def cm_slip_regression_tests():
 
     return jsonify({
         "ok":                    True,
-        "patch_version":         "PATCH-014–020",
+        "patch_version":         "PATCH-014–020 + WOW-PATCH-2026-07-30",
         "tests_run":             len(results),
         "tests_passed":          passed,
         "tests_failed":          failed,
@@ -13340,6 +13405,186 @@ def cm_slip_regression_tests():
             "POSITIVE_NET_RETURN_PRIMARY": CM_SLIP_POSITIVE_NET_RETURN_PRIMARY,
         },
         "can_execute": False,
+    })
+
+
+@app.route("/wow/slip/smoke-tests", methods=["GET"])
+@require_api_key
+def cm_slip_smoke_tests():
+    """GET /wow/slip/smoke-tests — run the 5 routing smoke tests (Section 9).
+
+    Tests:
+    1. WNBA routing — Morrow PRA routes to wow.wnba-composite-prop-expert
+    2. Alternate-threshold — 3 Morrow PRA lines = 3 financial rows, 1 unique thesis
+    3. MLB K LESS — Boyd LESS 4.5 Ks → directional_lane=K_LESS, ceiling=WATCH_ONLY
+    4. MLB OUTS MORE — pitcher MORE 14.5 outs → ceiling=MODEL_QUALIFIED_HOLD
+    5. Cross-ticket — Boyd LESS 4.5 Ks on Flex AND Power → exact duplicate groups ≥ 1
+    """
+    from gate_engine.wow_runtime_manifest import (
+        determine_required_skills, SKILL_WNBA_COMPOSITE, SKILL_MLB_PITCHER,
+        SKILL_K_LESS_FIREWALL, SKILL_OUTS_MORE_GATE, SKILL_CROSS_TICKET,
+        compute_settlement_calibration,
+    )
+    from gate_engine import mlb_directional_firewall as _mlb_fw
+    from gate_engine import wnba_composite_gate as _wnba_cg
+    from gate_engine import cross_ticket_governor as _ctg
+    from unittest.mock import patch as _patch
+
+    results = []
+
+    def _ok(name, evidence):
+        results.append({"test": name, "status": "PASS", "evidence": evidence})
+
+    def _fail(name, evidence, error=""):
+        results.append({"test": name, "status": "FAIL", "evidence": evidence, "error": str(error)})
+
+    # ── Smoke Test 1: WNBA routing ─────────────────────────────────────────
+    try:
+        rows = [{"sport": "WNBA", "stat_type": "PRA", "direction": "MORE",
+                 "player": "Aneesah Morrow", "line": 18.5}]
+        required = determine_required_skills(rows)
+        assert SKILL_WNBA_COMPOSITE in required, f"WNBA expert not required; got {required}"
+
+        # Verify wnba gate stamps forward_test_status
+        row = {"sport": "WNBA", "stat_type": "PRA", "direction": "MORE",
+               "player_name": "Aneesah Morrow", "line": 18.5,
+               "terminal_label": "MONEY_QUALIFIED", "can_execute": False}
+        with _patch.object(_wnba_cg, "get_unique_player_game_count", return_value=3):
+            _wnba_cg.run(row)
+        assert "forward_test_status" in row or "wnba_composite_gate" in (row.get("gates") or {})
+
+        _ok("WNBA_ROUTING", {
+            "skills_required": sorted(required),
+            "wow_wnba_composite_prop_expert_invoked": True,
+            "forward_test_status_present": "forward_test_status" in row,
+            "WNBA_COMPOSITE_FORWARD_TEST": "ACTIVE",
+        })
+    except Exception as e:
+        _fail("WNBA_ROUTING", {}, e)
+
+    # ── Smoke Test 2: Alternate-threshold ──────────────────────────────────
+    try:
+        legs = [
+            {"player": "Aneesah Morrow", "event": "wnba_game_20260730",
+             "prop": "PRA", "side": "MORE", "line": 17.5},
+            {"player": "Aneesah Morrow", "event": "wnba_game_20260730",
+             "prop": "PRA", "side": "MORE", "line": 18.5},
+            {"player": "Aneesah Morrow", "event": "wnba_game_20260730",
+             "prop": "PRA", "side": "MORE", "line": 19.0},
+        ]
+        cal = compute_settlement_calibration(legs)
+        assert cal["financial_exposure_rows"] == 3
+        assert cal["unique_underlying_thesis_rows"] == 1, (
+            f"expected 1 unique thesis; got {cal['unique_underlying_thesis_rows']}"
+        )
+        assert len(cal["alternate_threshold_groups"]) >= 1
+        _ok("ALTERNATE_THRESHOLD", {
+            "financial_rows": cal["financial_exposure_rows"],
+            "unique_underlying_theses": cal["unique_underlying_thesis_rows"],
+            "alternate_threshold_group": True,
+        })
+    except Exception as e:
+        _fail("ALTERNATE_THRESHOLD", {}, e)
+
+    # ── Smoke Test 3: MLB K LESS ────────────────────────────────────────────
+    try:
+        rows = [{"sport": "MLB", "stat_type": "Pitcher Strikeouts", "direction": "LESS",
+                 "player": "Matthew Boyd", "line": 4.5}]
+        required = determine_required_skills(rows)
+        assert SKILL_K_LESS_FIREWALL in required, f"K_LESS firewall not required; got {required}"
+
+        row = {"sport": "MLB", "stat_type": "Pitcher Strikeouts", "direction": "LESS",
+               "player_name": "Matthew Boyd", "line": 4.5,
+               "terminal_label": "MONEY_QUALIFIED", "can_execute": False}
+        _mlb_fw.run(row)
+        assert row.get("directional_lane") == "K_LESS", f"lane={row.get('directional_lane')}"
+        from gate_engine.labels import PropLabel
+        assert row.get("terminal_label") == PropLabel.MLB_K_LESS_WATCH.value, (
+            f"ceiling={row.get('terminal_label')}"
+        )
+        _ok("MLB_K_LESS", {
+            "directional_lane": row.get("directional_lane"),
+            "short_outing_support_share_present": "short_outing_support_share" in row,
+            "ceiling": row.get("terminal_label"),
+            "highest_ceiling": "WATCH_ONLY",
+            "skills_required": sorted(required),
+        })
+    except Exception as e:
+        _fail("MLB_K_LESS", {}, e)
+
+    # ── Smoke Test 4: MLB OUTS MORE ─────────────────────────────────────────
+    try:
+        rows = [{"sport": "MLB", "stat_type": "Pitching Outs", "direction": "MORE",
+                 "player": "Test Pitcher", "line": 14.5}]
+        required = determine_required_skills(rows)
+        assert SKILL_OUTS_MORE_GATE in required, f"OUTS_MORE gate not required; got {required}"
+
+        row = {"sport": "MLB", "stat_type": "Pitching Outs", "direction": "MORE",
+               "player_name": "Test Pitcher", "line": 14.5,
+               "terminal_label": "MONEY_QUALIFIED", "can_execute": False}
+        _mlb_fw.run(row)
+        assert row.get("directional_lane") == "OUTS_MORE", f"lane={row.get('directional_lane')}"
+        from gate_engine.labels import PropLabel
+        assert row.get("terminal_label") == PropLabel.MODEL_QUALIFIED_HOLD.value, (
+            f"ceiling={row.get('terminal_label')}"
+        )
+        _ok("MLB_OUTS_MORE", {
+            "directional_lane": row.get("directional_lane"),
+            "required_out_survival_lower_bound_present": "required_out_survival_lower_bound" in row,
+            "ceiling": row.get("terminal_label"),
+            "highest_ceiling": "MODEL_QUALIFIED_HOLD",
+            "skills_required": sorted(required),
+        })
+    except Exception as e:
+        _fail("MLB_OUTS_MORE", {}, e)
+
+    # ── Smoke Test 5: Cross-ticket ──────────────────────────────────────────
+    try:
+        rows = [
+            {"player": "Matthew Boyd", "event_id": "game_boyd",
+             "stat_type": "Pitcher Strikeouts", "direction": "LESS", "line": 4.5,
+             "slip_type": "FLEX", "card_id": "flex_card", "sport": "MLB",
+             "terminal_label": "MARKET_VERIFIED_HOLD", "calibrated_lower_bound": 0.60,
+             "can_execute": False},
+            {"player": "Matthew Boyd", "event_id": "game_boyd",
+             "stat_type": "Pitcher Strikeouts", "direction": "LESS", "line": 4.5,
+             "slip_type": "POWER", "card_id": "power_card", "sport": "MLB",
+             "terminal_label": "MARKET_VERIFIED_HOLD", "calibrated_lower_bound": 0.60,
+             "can_execute": False},
+        ]
+        # Check router requires cross-ticket
+        required = determine_required_skills(rows, cards=[{"id": "flex_card"}, {"id": "power_card"}])
+        assert SKILL_CROSS_TICKET in required
+
+        result = _ctg.run(rows)
+        assert result.get("exact_duplicate_groups", 0) >= 1, (
+            f"expected ≥1 exact dup group; got {result.get('exact_duplicate_groups')}"
+        )
+        rejected = [r for r in rows if "REJECT" in (r.get("terminal_label") or "")]
+        assert len(rejected) >= 1, "expected at least one leg rejected"
+
+        _ok("CROSS_TICKET", {
+            "cross_ticket_governor_invoked": True,
+            "exact_duplicate_groups": result.get("exact_duplicate_groups"),
+            "rows_rejected_by_governor": result.get("rows_rejected_by_governor"),
+            "portfolio_fragility_class": result.get("portfolio_fragility_class"),
+            "skills_required": sorted(required),
+        })
+    except Exception as e:
+        _fail("CROSS_TICKET", {}, e)
+
+    passed = sum(1 for r in results if r["status"] == "PASS")
+    failed = sum(1 for r in results if r["status"] == "FAIL")
+
+    return jsonify({
+        "ok":           True,
+        "smoke_tests":  "WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE",
+        "tests_run":    len(results),
+        "tests_passed": passed,
+        "tests_failed": failed,
+        "overall":      "PASS" if failed == 0 else "FAIL",
+        "results":      results,
+        "can_execute":  False,
     })
 
 

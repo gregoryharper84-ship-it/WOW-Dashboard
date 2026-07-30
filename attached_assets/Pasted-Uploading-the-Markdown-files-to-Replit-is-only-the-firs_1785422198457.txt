@@ -1,0 +1,536 @@
+Uploading the Markdown files to Replit is only the first step. **The engine will not automatically use them unless your runtime router explicitly loads, calls, and enforces them.**
+
+The safest design is:
+
+```text
+ChatGPT request
+→ Replit orchestration router
+→ determine required skills
+→ run every mandatory skill
+→ apply lowest ceiling
+→ cross-ticket governor
+→ return invocation evidence
+```
+
+Your controlling call order is already defined in the new [patch document](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack/WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE.md), and the [Slip Optimizer v3](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack/wow-slip-probability-optimizer-SKILL-v3.md) contains the routing hooks. Replit now needs to enforce those instructions in code.
+
+# 1. Create one active runtime manifest
+
+Do not let individual endpoints decide which version to use. Add a central manifest similar to:
+
+```json
+{
+  "wow_version": "WOW_v16_CLEAN_CORE",
+  "active_patch_ids": [
+    "WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE"
+  ],
+  "skills": {
+    "slip_optimizer": {
+      "name": "wow.slip-probability-optimizer",
+      "version": "v3",
+      "required": true
+    },
+    "wnba_composite": {
+      "name": "wow.wnba-composite-prop-expert",
+      "version": "v1",
+      "required_when": "sport=WNBA and stat_family in P_R_A_COMPONENT_OR_COMPOSITE"
+    },
+    "mlb_pitcher_failure_path": {
+      "name": "wow.mlb-pitcher-failure-path-expert",
+      "version": "v2",
+      "required_when": "sport=MLB and participant_type=PITCHER"
+    },
+    "cross_ticket_governor": {
+      "name": "wow.cross-ticket-exposure-governor",
+      "version": "v1",
+      "required_when": "card_count>1 or duplicate_thesis_detected=true"
+    }
+  },
+  "hard_flags": {
+    "can_execute": false,
+    "dry_run_only": true,
+    "mlb_k_less_ceiling": "WATCH_ONLY",
+    "mlb_outs_more_ceiling": "MODEL_QUALIFIED_HOLD",
+    "wnba_composite_forward_test": true,
+    "cross_ticket_deduplication": true
+  }
+}
+```
+
+The engine should load this manifest at startup and include its hash in every response.
+
+# 2. Make the router determine required skills
+
+The GPT should not be trusted to remember every skill call. Replit should decide based on the normalized rows.
+
+A simplified routing function:
+
+```python
+def determine_required_skills(request: dict) -> set[str]:
+    required = {"wow.slip-probability-optimizer:v3"}
+
+    rows = request.get("rows", [])
+    cards = request.get("cards", [])
+
+    for row in rows:
+        sport = row.get("sport")
+        stat = row.get("stat_family")
+        participant_type = row.get("participant_type")
+        direction = row.get("direction")
+
+        if sport == "WNBA" and stat in {
+            "POINTS",
+            "REBOUNDS",
+            "ASSISTS",
+            "POINTS_REBOUNDS",
+            "POINTS_ASSISTS",
+            "REBOUNDS_ASSISTS",
+            "PRA",
+        }:
+            required.add("wow.wnba-composite-prop-expert:v1")
+
+        if sport == "MLB" and participant_type == "PITCHER":
+            required.add("wow.mlb-pitcher-failure-path-expert:v2")
+
+        if sport == "MLB" and stat == "STRIKEOUTS" and direction == "LESS":
+            required.add("MLB_K_LESS_DIRECTIONAL_FIREWALL")
+
+        if sport == "MLB" and stat == "PITCHING_OUTS" and direction == "MORE":
+            required.add("MLB_OUTS_MORE_SURVIVAL_GATE")
+
+    if len(cards) > 1 or detect_duplicate_theses(cards):
+        required.add("wow.cross-ticket-exposure-governor:v1")
+
+    return required
+```
+
+## Required routing behavior
+
+| Request content                             | Mandatory call                           |
+| ------------------------------------------- | ---------------------------------------- |
+| Any PrizePicks slip                         | Slip Optimizer v3                        |
+| WNBA points, rebounds, assists or composite | WNBA Composite Expert                    |
+| Any MLB starting-pitcher prop               | MLB Failure-Path Expert v2               |
+| MLB strikeouts LESS                         | Directional firewall                     |
+| MLB pitching-outs MORE                      | Required-out survival gate               |
+| More than one card                          | Cross-Ticket Exposure Governor           |
+| Same player/pitcher repeated                | Cross-Ticket Exposure Governor           |
+| Settled result                              | Corresponding forward-test ledger writer |
+
+# 3. Fail closed when a required skill does not run
+
+This is the most important enforcement.
+
+After routing, Replit should verify that every required skill actually completed:
+
+```python
+required = determine_required_skills(request)
+completed = set(result.skill_calls_completed)
+
+missing = required - completed
+
+if missing:
+    return {
+        "status": "REJECTED",
+        "label": "REQUIRED_SKILL_NOT_EXECUTED",
+        "missing_skills": sorted(missing),
+        "lowest_ceiling": "NO_DATA_QUALITY",
+        "can_execute": False,
+    }, 422
+```
+
+The engine must never quietly continue using the old generic model because one specialist failed.
+
+Use separate failure statuses:
+
+```text
+SKILL_NOT_LOADED
+SKILL_CALL_FAILED
+SKILL_OUTPUT_SCHEMA_INVALID
+REQUIRED_FIELD_MISSING
+PATCH_NOT_ACTIVE
+GOVERNANCE_HASH_MISMATCH
+```
+
+# 4. Update your existing Replit endpoints
+
+Based on your existing engine structure, update these routes.
+
+## `/wow/patch-flags`
+
+It should return:
+
+```json
+{
+  "wow_version": "WOW_v16_CLEAN_CORE",
+  "active_patch_ids": [
+    "WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE"
+  ],
+  "loaded_skills": {
+    "wow.slip-probability-optimizer": "v3",
+    "wow.wnba-composite-prop-expert": "v1",
+    "wow.mlb-pitcher-failure-path-expert": "v2",
+    "wow.cross-ticket-exposure-governor": "v1"
+  },
+  "hard_flags": {
+    "MLB_K_LESS": "WATCH_ONLY",
+    "MLB_OUTS_MORE": "MODEL_QUALIFIED_HOLD",
+    "WNBA_COMPOSITE_FORWARD_TEST": "ACTIVE",
+    "CROSS_TICKET_DEDUPLICATION": true,
+    "can_execute": false
+  },
+  "governance_hash": "sha256..."
+}
+```
+
+## `/wow/slip-optimizer`
+
+This route should call the **orchestrator**, not the old optimizer directly.
+
+Correct:
+
+```text
+/wow/slip-optimizer
+→ normalize request
+→ route required skills
+→ invoke specialists
+→ weakest-leg optimizer
+→ card fragility
+→ cross-ticket governor
+→ lowest-ceiling resolver
+```
+
+Incorrect:
+
+```text
+/wow/slip-optimizer
+→ old generic probability function
+→ return picks
+```
+
+## `/wow/settle-slip`
+
+This should write two separate counts:
+
+```text
+financial_exposure_rows
+unique_underlying_thesis_rows
+```
+
+For example, three Morrow PRA thresholds in the same game should produce:
+
+```json
+{
+  "financial_exposure_rows": 3,
+  "unique_calibration_rows": 1,
+  "duplicate_group_id": "WNBA_MORROW_20260728_PRA_MORE"
+}
+```
+
+A DNP should produce:
+
+```json
+{
+  "settlement_result": "DNP_OR_VOID",
+  "model_hit": false,
+  "graded_for_calibration": false
+}
+```
+
+## `/wow/slip/regression-tests`
+
+Add the 24 tests from the new [regression suite](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack/WOW-REGRESSION-TESTS-2026-07-30.md).
+
+The endpoint should not merely say tests passed. It should return test names and results.
+
+# 5. Require proof of skill invocation in every response
+
+Every analysis response from Replit should include an audit block like:
+
+```json
+{
+  "research_run_id": "run_20260730_092900_ab12",
+  "wow_version": "WOW_v16_CLEAN_CORE",
+  "governance_hash": "sha256...",
+  "patches_applied": [
+    "WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE"
+  ],
+  "skills_required": [
+    "wow.slip-probability-optimizer:v3",
+    "wow.wnba-composite-prop-expert:v1",
+    "wow.cross-ticket-exposure-governor:v1"
+  ],
+  "skills_invoked": [
+    {
+      "skill": "wow.slip-probability-optimizer",
+      "version": "v3",
+      "status": "PASS"
+    },
+    {
+      "skill": "wow.wnba-composite-prop-expert",
+      "version": "v1",
+      "status": "PASS"
+    },
+    {
+      "skill": "wow.cross-ticket-exposure-governor",
+      "version": "v1",
+      "status": "PASS"
+    }
+  ],
+  "ceilings_applied": [
+    "WNBA_COMPOSITE_FORWARD_TEST",
+    "MODEL_QUALIFIED_HOLD"
+  ],
+  "lowest_ceiling": "MODEL_QUALIFIED_HOLD",
+  "can_execute": false
+}
+```
+
+When that block is absent, ChatGPT should treat the Replit analysis as incomplete.
+
+# 6. Use a lowest-ceiling resolver
+
+A downstream skill must never upgrade an earlier blocker.
+
+```python
+CEILING_RANK = {
+    "REJECTED": 0,
+    "SCOUT": 1,
+    "WATCH": 2,
+    "MODEL_QUALIFIED_HOLD": 3,
+    "MARKET_VERIFIED_HOLD": 4,
+}
+
+def resolve_lowest_ceiling(skill_outputs: list[dict]) -> str:
+    ceilings = [row["ceiling"] for row in skill_outputs]
+    return min(ceilings, key=lambda x: CEILING_RANK[x])
+```
+
+Examples:
+
+```text
+WNBA Composite Expert = MODEL_QUALIFIED_HOLD
+Generic optimizer = YES_MODEL_QUALIFIED
+Final = MODEL_QUALIFIED_HOLD
+```
+
+```text
+MLB Failure Path = WATCH
+Slip optimizer = YES
+Final = WATCH
+```
+
+```text
+Cross-ticket governor = PORTFOLIO_REJECTED
+All individual legs = YES
+Final portfolio = PORTFOLIO_REJECTED
+```
+
+# 7. Send this contract whenever ChatGPT calls Replit
+
+Your Custom GPT instructions should require the following request shape:
+
+```json
+{
+  "workflow": "WOW_AUTO_ROUTE_STRICT",
+  "wow_version": "WOW_v16_CLEAN_CORE",
+  "required_patch_ids": [
+    "WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE"
+  ],
+  "strict_skill_routing": true,
+  "fail_on_missing_skill": true,
+  "apply_lowest_ceiling": true,
+  "write_forward_test_ledger": true,
+  "can_execute": false,
+  "cards": [],
+  "rows": []
+}
+```
+
+The GPT should not need to manually list every specialist. It should request strict auto-routing and let Replit determine the calls.
+
+## Add this to your Custom GPT instructions
+
+```text
+REPLIT WOW ROUTING REQUIREMENT
+
+For every PrizePicks or sports-model request, call the Replit WOW
+orchestration endpoint using workflow=WOW_AUTO_ROUTE_STRICT.
+
+Require:
+- WOW_VERSION=WOW_v16_CLEAN_CORE
+- the 2026-07-30 WNBA composite/MLB directional/cross-ticket patch
+- strict_skill_routing=true
+- fail_on_missing_skill=true
+- apply_lowest_ceiling=true
+- write_forward_test_ledger=true
+- can_execute=false
+
+Do not treat a Replit result as complete unless the response includes:
+- governance_hash
+- patches_applied
+- skills_required
+- skills_invoked
+- skill status for every required skill
+- ceilings_applied
+- lowest_ceiling
+- unique_underlying_theses
+- duplicate groups when multiple cards are supplied
+- can_execute=false
+
+If any required skill is missing, failed, stale, or schema-invalid,
+return NO_DATA_QUALITY and do not substitute an unaudited ChatGPT estimate.
+```
+
+# 8. Add startup validation
+
+When Replit starts, verify that all files are present and match expected hashes.
+
+```python
+REQUIRED_SKILL_FILES = {
+    "wow-slip-probability-optimizer-SKILL-v3.md",
+    "wow-wnba-composite-prop-expert-SKILL.md",
+    "wow-mlb-pitcher-failure-path-expert-SKILL-v2.md",
+    "wow-cross-ticket-exposure-governor-SKILL.md",
+    "WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE.md",
+}
+```
+
+Startup should fail or mark the engine unhealthy when a required artifact is missing:
+
+```json
+{
+  "status": "DEGRADED",
+  "signal": "REQUIRED_SKILL_MISSING",
+  "missing": [
+    "wow-cross-ticket-exposure-governor-SKILL.md"
+  ]
+}
+```
+
+Do not allow the app to report `HEALTHY` merely because the web server is running.
+
+# 9. Run these five smoke tests now
+
+## WNBA routing test
+
+Input:
+
+```text
+Aneesah Morrow MORE 18.5 PRA
+```
+
+Required response evidence:
+
+```text
+wow.wnba-composite-prop-expert invoked
+best_stat_family present
+multi_path_class present
+role_status present
+WNBA_COMPOSITE_FORWARD_TEST active
+```
+
+## Alternate-threshold test
+
+Input:
+
+```text
+Morrow MORE 17.5 PRA
+Morrow MORE 18.5 PRA
+Morrow MORE 19 PRA
+same event
+```
+
+Expected:
+
+```text
+financial rows=3
+unique underlying theses=1
+alternate_threshold_group=true
+```
+
+## MLB K LESS test
+
+Input:
+
+```text
+Pitcher LESS 4.5 strikeouts
+```
+
+Expected:
+
+```text
+wow.mlb-pitcher-failure-path-expert:v2 invoked
+directional_lane=K_LESS
+short_outing_support_share present
+highest ceiling=WATCH_ONLY
+```
+
+## MLB outs test
+
+Input:
+
+```text
+Pitcher MORE 14.5 pitching outs
+```
+
+Expected:
+
+```text
+required_outs=15
+required_out_survival_lower_bound present
+normal-workload probability not used as final probability
+highest ceiling=MODEL_QUALIFIED_HOLD
+```
+
+## Cross-ticket test
+
+Input:
+
+```text
+Flex: Boyd LESS 4.5 Ks, Rodriguez LESS 4 Ks
+Power: Boyd LESS 4.5 Ks, Rodriguez LESS 4 Ks
+```
+
+Expected:
+
+```text
+cross-ticket governor invoked
+two exact duplicate groups
+unique pitcher theses=2
+Power card rejected or shrunk
+portfolio fragility=FRAGILE
+```
+
+# 10. The definitive verification prompt
+
+After deployment, send this through your Custom GPT:
+
+```text
+Run a WOW runtime integrity check against Replit.
+
+Verify that WOW v16 Clean Core and
+WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE
+are active.
+
+Return:
+1. governance hash;
+2. active patch IDs;
+3. every loaded skill and version;
+4. WNBA composite forward-test status;
+5. MLB K LESS ceiling;
+6. MLB outs MORE ceiling;
+7. cross-ticket governor status;
+8. ledger schema status;
+9. results of the five routing smoke tests;
+10. all failed or missing dependencies.
+
+Do not return HEALTHY unless every mandatory route is invoked and every
+expected ceiling is enforced. can_execute=false.
+```
+
+The key principle is:
+
+> **Markdown defines the behavior; Replit code must enforce the behavior.**
+
+Your best proof is not that the files exist. It is that each response reports which skills were required, which ran, which ceilings were applied, and that the engine refuses to continue when any mandatory specialist is missing.

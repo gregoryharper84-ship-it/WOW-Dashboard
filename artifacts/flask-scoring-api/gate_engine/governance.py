@@ -136,6 +136,32 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
         ),
     },
     {
+        "patch_id":    "WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE",
+        "version":     "1.0",
+        "effective_at": "2026-07-30",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  85,
+        "can_execute": False,
+        "description": (
+            "WNBA composite forward-test gate (PATCH-017): MODEL_QUALIFIED_HOLD ceiling "
+            "until 20 unique player-games settled in wnba_composite_forward_test_ledger; "
+            "promo upgrades blocked on unresolved role/status. "
+            "MLB directional firewall (PATCH-015/016): K LESS → WATCH_ONLY unconditional; "
+            "K LESS with short_outing_support_share > 0.50 → HIGH_CONFIDENCE_SUSPENDED; "
+            "OUTS MORE → MODEL_QUALIFIED_HOLD; conditional-used-as-unconditional blocked. "
+            "Cross-ticket exposure governor (PATCH-014): exact duplicate rejection, "
+            "alternate-threshold deduplication, Power/Flex copy detection, "
+            "portfolio fragility scoring (DIVERSIFIED/CONCENTRATED/FRAGILE). "
+            "Runtime manifest, skill router, audit block in every response; "
+            "fail-closed on missing required specialist. "
+            "Skill files: wow-slip-probability-optimizer-SKILL-v3.md, "
+            "wow-wnba-composite-prop-expert-SKILL.md, "
+            "wow-mlb-pitcher-failure-path-expert-SKILL-v2.md, "
+            "wow-cross-ticket-exposure-governor-SKILL.md."
+        ),
+    },
+    {
         "patch_id":    "WOW-PATCH-2026-07-15-GOVERNANCE-RESILIENCE-AND-ERROR-CONTRACT",
         "version":     "1.0",
         "effective_at": "2026-07-15",
