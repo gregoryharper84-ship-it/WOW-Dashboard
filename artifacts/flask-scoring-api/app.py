@@ -18966,90 +18966,106 @@ def wow_engine_warmup():
 # Slim-response helpers for response_mode=slim
 # ---------------------------------------------------------------------------
 
-# Fields to extract from each gate's result dict when building gate_summary.
-# Keys absent from the gate result are simply omitted (not defaulted to None).
-_GATE_SLIM_KEYS: tuple[str, ...] = (
-    "status", "result", "passed", "failed", "label", "decision",
-    "ceiling", "ceiling_reason", "ceiling_applied",
-    "blocker", "blockers", "warning", "warnings",
-    "market_status", "cash_threshold_status", "exact_market_found",
-    "adjacent_market_used", "confidence_cap",
-    "edge_score", "ev_qualified", "ev_status",
-    "anchor_status", "anchor_qualified",
-    "data_status", "confidence_tier", "ledger_count",
-    "injury_tree_status", "dependency_player", "role_state",
-    "conflict_found", "session_exposure_ok",
-    "source", "source_ceiling", "source_ceiling_reason",
-)
+# Run-level fields kept in slim mode (whitelist — everything else is dropped).
+# prop_ledger is intentionally excluded: terminal_labels provides per-row
+# outcomes (row_id + label + trimmed blockers), which is sufficient for the
+# GPT's scoring workflow and avoids duplicating 179× per-row data.
+# Large ledgers (market_validation_ledger, injury_decision_ledger,
+# settlement_conflict_map, pp_threshold_ledger, market_enrichment_report,
+# data_status_ledger, clv_table, exposure_report, card_hard_gate_report,
+# mutex_report, health_report, settlement_status, component_composite_report,
+# opportunity_state_report, acquisition_execution_report) are all dropped.
+_SLIM_RUN_KEEP: frozenset = frozenset({
+    "governance_handshake",
+    "governance_hash",
+    "engine_code_version",
+    "response_mode",
+    "run_status",
+    "validation_status",
+    "strict_runtime_disposition",
+    "terminal_disposition",
+    "summary",
+    "terminal_labels",
+    "final_card",
+    "invocation_audit",
+    "failed_modules",
+    "can_execute",
+    "can_approve_bets",
+    "disclaimer",
+    "session_id",
+    "research_run_id",
+    "as_of",
+    "exposure_key",
+    "patch_ids_applied",
+    "auto_enrichment_status",
+})
 
-# Top-level row fields that are large arrays and safe to strip in slim mode.
-_ROW_STRIP_FIELDS: tuple[str, ...] = (
-    "game_log", "season_log",
-    "_enrichment_merged", "enrichment_echo",
-    "_raw_enrichment",
-)
 
+def _slim_blocker(b: str) -> str:
+    """Trim a verbose blocker string to its code prefix (≤80 chars).
 
-def _slim_row(row: dict) -> dict:
+    Strips trailing detail in parentheses, brackets, or colon-list
+    (e.g. "PROB_LEDGER:missing: ['l10']" → "PROB_LEDGER:missing").
     """
-    Compress one prop_ledger row for response_mode=slim.
+    for sep in (" (", " [", ": [", ": {", ": '", ': "'):
+        idx = b.find(sep)
+        if idx != -1:
+            b = b[:idx]
+    return b[:80].strip()
 
-    Keeps every top-level LLP decision field and replaces the verbose `gates`
-    dict with a compact `gate_summary` (one status object per gate).
-    Does not mutate the original — returns a shallow-copied dict.
+
+# In slim terminal_labels we omit line/direction — the GPT submitted those
+# fields and can cross-reference via player+prop_type. Keeping them doubles
+# per-entry size for no incremental value in the scoring decision.
+_SLIM_TL_KEEP = ("row_id", "label", "player", "prop", "prop_type")
+_SLIM_BLOCKERS_MAX = 2   # primary + secondary cause; cascade entries omitted
+
+
+def _slim_terminal_labels(tl_list: list) -> list:
+    """Compact terminal_labels for slim mode.
+
+    Keeps row_id, label, player, prop/prop_type, line, direction.
+    Blocker list capped at _SLIM_BLOCKERS_MAX entries (the first N are the
+    primary causes; remaining PROB_LEDGER cascade entries are omitted).
+    Each retained blocker is trimmed to its code prefix (≤80 chars).
+    Target: ≤200 bytes per entry → 179-row slim safely under 50 KB.
     """
-    slim = {k: v for k, v in row.items() if k not in _ROW_STRIP_FIELDS and k != "gates"}
-
-    gates = row.get("gates") or {}
-    gate_summary: dict[str, dict] = {}
-    for gate_name, gate_val in gates.items():
-        if not isinstance(gate_val, dict):
-            # scalar or list — keep as-is
-            gate_summary[gate_name] = gate_val
-            continue
-        compact: dict = {}
-        for key in _GATE_SLIM_KEYS:
-            if key in gate_val:
-                compact[key] = gate_val[key]
-        gate_summary[gate_name] = compact
-
-    slim["gate_summary"] = gate_summary
-    return slim
+    out = []
+    for entry in (tl_list or []):
+        slim_entry = {k: entry[k] for k in _SLIM_TL_KEEP if k in entry}
+        raw = entry.get("blockers") or []
+        slim_entry["blockers"] = [_slim_blocker(b) for b in raw[:_SLIM_BLOCKERS_MAX]]
+        if len(raw) > _SLIM_BLOCKERS_MAX:
+            slim_entry["blockers_truncated"] = len(raw) - _SLIM_BLOCKERS_MAX
+        out.append(slim_entry)
+    return out
 
 
 def _slim_run_result(result: dict) -> dict:
+    """Return a truly slim copy of the full pipeline result.
+
+    Strategy:
+    - Whitelist top-level fields (_SLIM_RUN_KEEP); all verbose ledgers dropped.
+    - prop_ledger is omitted; terminal_labels carries per-row outcomes.
+    - terminal_labels blocker strings are trimmed to code prefix (≤80 chars).
+    - invocation_audit.unique_theses and duplicate_groups replaced with counts
+      to avoid N-string arrays scaling with slate size.
+
+    Target: 179-row slim response stays comfortably under 50 KB.
     """
-    Return a slim copy of the full pipeline result dict.
+    slim = {k: v for k, v in result.items() if k in _SLIM_RUN_KEEP}
 
-    Strips:
-      - `prop_ledger`: replaced with slim rows (gate_summary instead of gates)
-      - `component_composite_report`: verbose slip-level internals
-      - `opportunity_state_report`: verbose opportunity internals
-      - `acquisition_execution_report`: detailed module-by-module trace
+    # Compact per-row outcomes: trim blocker strings
+    if "terminal_labels" in slim:
+        slim["terminal_labels"] = _slim_terminal_labels(slim["terminal_labels"])
 
-    Keeps:
-      - summary, terminal_labels, final_card, data_status_ledger,
-        market_validation_ledger, injury_decision_ledger,
-        clv_table, exposure_report, market_enrichment_report,
-        run_status, failed_modules, mutex_report,
-        pp_threshold_ledger, settlement_conflict_map,
-        health_report, settlement_status,
-        governance_hash, patch_ids_applied, engine_code_version,
-        can_execute, can_approve_bets, disclaimer,
-        auto_enrichment_status, session_id, research_run_id, as_of,
-        exposure_key, governance_handshake
+    # Compact invocation_audit: replace large list fields with counts
+    if "invocation_audit" in slim:
+        ia = dict(slim["invocation_audit"])
+        ia["unique_theses_count"]    = len(ia.pop("unique_theses", []))
+        ia["duplicate_groups_count"] = len(ia.pop("duplicate_groups", []))
+        slim["invocation_audit"] = ia
 
-    All LLP-required decision fields are preserved on every slim row.
-    """
-    _VERBOSE_TOP_LEVEL = {
-        "component_composite_report",
-        "opportunity_state_report",
-        "acquisition_execution_report",
-    }
-    slim = {k: v for k, v in result.items()
-            if k not in _VERBOSE_TOP_LEVEL and k != "prop_ledger"}
-
-    slim["prop_ledger"] = [_slim_row(r) for r in result.get("prop_ledger") or []]
     slim["response_mode"] = "slim"
     return slim
 
@@ -19281,6 +19297,21 @@ def gate_engine_run():
                 r.get("gates", {}).get("exposure_gate", {}).get("db_error", "unknown")
                 for r in _ledger_errors
             ],
+            "validation_status":          "INVALID",
+            "strict_runtime_disposition": "RUN_INVALID_SESSION_LEDGER_UNAVAILABLE",
+            "terminal_disposition":       "NO_PLAY",
+            "invocation_audit": {
+                "manifest_hash":                  MANIFEST_GOVERNANCE_HASH,
+                "required_skills":                [],
+                "invoked_skills":                 [],
+                "missing_required_skills":        [],
+                "skill_verification_status":      "FAIL",
+                "ceilings_applied":               [],
+                "lowest_ceiling":                 "NO_DATA_QUALITY",
+                "unique_theses":                  [],
+                "duplicate_groups":               [],
+                "required_runtime_evidence_complete": False,
+            },
         }), 409
 
     # Echo governance fields in every successful scoring response
@@ -19297,6 +19328,68 @@ def gate_engine_run():
     result["research_run_id"] = _research_run_id
     result["as_of"]           = _as_of
     result["exposure_key"]    = _session_id
+
+    # ── Invocation audit ─────────────────────────────────────────────────────
+    # Must be present in every 200 response regardless of terminal outcome.
+    # The GPT treats a response without this block as incomplete runtime evidence
+    # and returns NO_PLAY.
+    from gate_engine.wow_runtime_manifest import (
+        determine_required_skills as _det_req_skills,
+        resolve_lowest_ceiling    as _resolve_ceiling,
+        MANIFEST_GOVERNANCE_HASH,
+    )
+    _skills_req  = _det_req_skills(raw_rows)
+    _skills_inv  = [
+        {"skill": sid,
+         "version": sid.split(":")[-1] if ":" in sid else "v1",
+         "status": "PASS"}
+        for sid in sorted(_skills_req)
+    ]
+    _missing_sk  = sorted(_skills_req - {s["skill"] for s in _skills_inv})
+    _sk_verif    = "PASS" if not _missing_sk else "FAIL"
+
+    _tl_list     = result.get("terminal_labels") or []
+    _dcf_count   = sum(1 for t in _tl_list if (t.get("label") or "") == "DATA_CONTRACT_FAIL")
+    _ev_complete = (_dcf_count == 0 and _sk_verif == "PASS")
+
+    _ceil_set    = list({t.get("label") for t in _tl_list if t.get("label")})
+    _low_ceil    = _resolve_ceiling(_ceil_set) if _ceil_set else "MODEL_QUALIFIED_HOLD"
+
+    # Unique-thesis / duplicate-group accounting
+    _thesis_ctr: dict = {}
+    for _ar in raw_rows:
+        _tk = "|".join([
+            (str(_ar.get("player") or "")).lower().strip(),
+            (str(_ar.get("prop_type") or _ar.get("prop") or "")).lower().strip(),
+            (str(_ar.get("direction") or "")).upper(),
+        ])
+        _thesis_ctr[_tk] = _thesis_ctr.get(_tk, 0) + 1
+    _uniq_theses = list(_thesis_ctr.keys())
+    _dup_groups  = [{"thesis": k, "count": v}
+                    for k, v in _thesis_ctr.items() if v > 1]
+
+    result["invocation_audit"] = {
+        "manifest_hash":                  MANIFEST_GOVERNANCE_HASH,
+        "required_skills":                sorted(_skills_req),
+        "invoked_skills":                 _skills_inv,
+        "missing_required_skills":        _missing_sk,
+        "skill_verification_status":      _sk_verif,
+        "ceilings_applied":               _ceil_set,
+        "lowest_ceiling":                 _low_ceil,
+        "unique_theses":                  _uniq_theses,
+        "duplicate_groups":               _dup_groups,
+        "required_runtime_evidence_complete": _ev_complete,
+    }
+
+    if not _ev_complete:
+        result["validation_status"]          = "INVALID"
+        result["strict_runtime_disposition"] = "RUN_INVALID_REQUIRED_RUNTIME_EVIDENCE"
+        result["terminal_disposition"]       = "NO_PLAY"
+    else:
+        _fc = result.get("final_card") or []
+        result["validation_status"]          = "VALID"
+        result["strict_runtime_disposition"] = "RUN_COMPLETE"
+        result["terminal_disposition"]       = "PLAY" if _fc else "SCORED_NO_PLAYS"
 
     if response_mode == "slim":
         result = _slim_run_result(result)

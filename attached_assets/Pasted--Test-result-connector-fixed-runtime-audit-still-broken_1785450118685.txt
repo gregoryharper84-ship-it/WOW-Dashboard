@@ -1,0 +1,207 @@
+## Test result: connector fixed, runtime audit still broken
+
+The action now works end to end:
+
+* Authentication passed.
+* Governance handshake returned `GOVERNANCE_MATCH`.
+* Engine version and 10 active patches are correct.
+* The July 30 patch is present.
+* The row was processed.
+* Fail-closed behavior correctly produced `DATA_CONTRACT_FAIL` and an empty final card.
+* `can_execute=false` remained enforced. 
+
+But the response confirms **two Replit runtime defects remain**.
+
+### 1. `invocation_audit` is still absent
+
+The response contains no:
+
+```text
+invocation_audit
+manifest_hash
+required_skills
+invoked_skills
+missing_required_skills
+skill_verification_status
+ceilings_applied
+lowest_ceiling
+unique_theses
+duplicate_groups
+required_runtime_evidence_complete
+```
+
+Changing the OpenAPI schema only tells ChatGPT how to interpret a field. It cannot cause Replit to generate a field that the endpoint does not return.
+
+Therefore, this is now conclusively a **Replit response-serializer issue**, not an OpenAI Action issue.
+
+### 2. `response_mode: slim` is not actually slim
+
+The response acknowledges:
+
+```json
+"response_mode": "slim"
+```
+
+but still returns very large structures including:
+
+```text
+prop_ledger
+market_validation_ledger
+injury_decision_ledger
+market_enrichment_report
+settlement_conflict_map
+card_hard_gate_report
+pp_threshold_ledger
+```
+
+For one row, that is manageable. For 179 rows, it will likely recreate the original response-size failure. 
+
+## Send this exact patch request to Replit
+
+```text
+PATCH REQUEST — /gate-engine/run RESPONSE CONTRACT
+
+The OpenAI Action connector, authentication, governance handshake, and Stage 2
+preflight are now confirmed working.
+
+Two runtime response defects remain.
+
+DEFECT 1 — invocation_audit is missing
+
+The /gate-engine/run endpoint must return invocation_audit in BOTH full and slim
+response modes and on EVERY terminal pathway, including:
+
+- successful scoring
+- DATA_CONTRACT_FAIL
+- INPUT_FAILURE
+- NO_PLAY
+- governance mismatch
+- missing runtime evidence
+- failed or degraded modules
+- early fail-closed returns
+
+Required invocation_audit fields:
+
+manifest_hash
+required_skills
+invoked_skills
+missing_required_skills
+skill_verification_status
+ceilings_applied
+lowest_ceiling
+unique_theses
+duplicate_groups
+required_runtime_evidence_complete
+
+Arrays may be empty, but fields must never be omitted.
+
+Also return these top-level fields:
+
+validation_status
+strict_runtime_disposition
+terminal_disposition
+
+Required fail-closed behavior:
+
+If any required invocation evidence is missing:
+
+validation_status = INVALID
+strict_runtime_disposition = RUN_INVALID_REQUIRED_RUNTIME_EVIDENCE
+terminal_disposition = NO_PLAY
+invocation_audit.required_runtime_evidence_complete = false
+can_execute = false
+
+run_status=COMPLETE may indicate processing completed, but must not imply the
+run is valid.
+
+DEFECT 2 — response_mode=slim currently returns full ledgers
+
+The diagnostic request used response_mode=slim but returned prop_ledger,
+market_validation_ledger, injury_decision_ledger, settlement_conflict_map,
+market_enrichment_report, threshold ledgers, and other large full-mode data.
+
+Implement a true slim serializer.
+
+Slim mode must retain:
+
+governance_handshake
+governance_hash
+engine_code_version
+response_mode
+run_status
+validation_status
+strict_runtime_disposition
+terminal_disposition
+summary
+terminal_labels
+compact row results
+final_card
+invocation_audit
+failed_modules
+can_execute
+
+Slim mode should omit or heavily compact:
+
+full prop_ledger
+full market_validation_ledger
+full injury_decision_ledger
+full settlement_conflict_map
+full pp_threshold_ledger
+full card gate row details
+repeated blocker copies
+other verbose per-row internal ledgers
+
+Blockers should be returned once per row in a compact terminal result.
+
+REGRESSION TESTS
+
+1. One-row slim DATA_CONTRACT_FAIL returns invocation_audit.
+2. One-row full DATA_CONTRACT_FAIL returns invocation_audit.
+3. Missing required skills returns missing_required_skills and
+   required_runtime_evidence_complete=false rather than omitting the audit.
+4. Complete invocation evidence returns required_runtime_evidence_complete=true.
+5. run_status=COMPLETE plus invalid evidence returns terminal_disposition=NO_PLAY.
+6. Slim output is materially smaller than full output.
+7. A 179-row slim response remains within the OpenAI Actions response limit.
+8. can_execute=false remains present in every response.
+```
+
+## Expected response after the patch
+
+For this diagnostic row, a valid fail-closed result should look approximately like:
+
+```json
+{
+  "run_status": "COMPLETE",
+  "validation_status": "INVALID",
+  "strict_runtime_disposition": "RUN_INVALID_REQUIRED_RUNTIME_EVIDENCE",
+  "terminal_disposition": "NO_PLAY",
+  "summary": {
+    "total_rows": 1,
+    "final_count": 0,
+    "no_play": true
+  },
+  "terminal_labels": [
+    {
+      "row_id": "diagnostic-row-001",
+      "label": "DATA_CONTRACT_FAIL"
+    }
+  ],
+  "invocation_audit": {
+    "manifest_hash": "<non-empty runtime manifest hash>",
+    "required_skills": [],
+    "invoked_skills": [],
+    "missing_required_skills": [],
+    "skill_verification_status": "FAIL",
+    "ceilings_applied": [],
+    "lowest_ceiling": "MODEL_QUALIFIED_HOLD",
+    "unique_theses": [],
+    "duplicate_groups": [],
+    "required_runtime_evidence_complete": false
+  },
+  "final_card": [],
+  "can_execute": false
+}
+```
+
+Do not modify the GPT Action schema or API-key settings again. Those layers are now working. The next change belongs exclusively in the Replit `/gate-engine/run` response assembly and slim serializer.
