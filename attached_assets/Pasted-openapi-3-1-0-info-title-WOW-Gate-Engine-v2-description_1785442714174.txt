@@ -1,0 +1,606 @@
+openapi: 3.1.0
+info:
+  title: WOW Gate Engine v2
+  description: >
+    Governance handshake + gate-engine run for the WOW v16 scoring pipeline.
+
+    MANDATORY call sequence before every run:
+      1. GET /wow/engine/health         — confirm worker is alive (public, no key)
+      2. GET /wow/governance/status     — obtain governance_hash (public, no key)
+      3. POST /gate-engine/run          — score rows (requires X-API-Key)
+
+    The governance_hash from step 2 MUST be passed as expected_governance_hash
+    in step 3. A missing or mismatched hash returns HTTP 409. Call
+    /wow/governance/status to resync before retrying.
+
+    Current engine: ENGINE v16.5, 9 active patches.
+    Current hash:   2a74d11e20ee24526de6db9401f39b4a9228c0f46948d07cea72dc4a21111908
+  version: "1.0.0"
+
+servers:
+  - url: https://create-app-gregoryharper84.replit.app
+
+paths:
+
+  /wow/engine/health:
+    get:
+      operationId: getWowEngineHealth
+      x-openai-isConsequential: false
+      summary: Ultra-lightweight liveness probe — returns 200 as soon as Flask is alive
+      description: >
+        Call FIRST before every session. Pure liveness probe — no DB, governance,
+        or snapshot checks. Returns in milliseconds. Public, no key required.
+        If ok=true, call getWowGovernanceStatus. For readiness detail use
+        /wow/engine/ready; for cache warmup use /wow/engine/warmup.
+      responses:
+        "200":
+          description: Worker is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    description: Always true when the worker is serving requests
+                  service:
+                    type: string
+                    description: Always "wow-engine"
+                  status:
+                    type: string
+                    description: Always "alive"
+
+  /wow/engine/ready:
+    get:
+      operationId: getWowEngineReady
+      x-openai-isConsequential: false
+      summary: Deep readiness check — governance loaded, snapshot fresh, DB configured
+      description: >
+        Optional deeper readiness probe. Returns the same rich payload that
+        /wow/engine/health used to return before the liveness/readiness split.
+        Makes NO external HTTP calls — reads only in-process state.
+        Public — no X-API-Key required.
+      responses:
+        "200":
+          description: Detailed readiness state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  service:
+                    type: string
+                  uptime_seconds:
+                    type: number
+                  worker_pid:
+                    type: integer
+                  governance:
+                    type: object
+                    properties:
+                      loaded:
+                        type: boolean
+                      master_spec:
+                        type: string
+                      engine_version:
+                        type: string
+                      hash_prefix:
+                        type: string
+                        description: First 16 hex chars of governance hash + "…"
+                      active_patches:
+                        type: integer
+                  snapshot:
+                    type: object
+                    properties:
+                      snapshot_available:
+                        type: boolean
+                      snapshot_age_seconds:
+                        type: number
+                      snapshot_is_fresh:
+                        type: boolean
+                      snapshot_max_age:
+                        type: integer
+                  db_env_configured:
+                    type: boolean
+                  can_execute:
+                    type: boolean
+                    description: Always false — data/classification layer only
+
+  /wow/engine/warmup:
+    get:
+      operationId: triggerWowEngineWarmup
+      x-openai-isConsequential: false
+      summary: Trigger lazy cache/governance warmup after cold start
+      description: >
+        Runs governance snapshot refresh and DB table DDL idempotently.
+        Public, no key required. Cold-start sequence: (1) getWowEngineHealth
+        → ok:true, (2) triggerWowEngineWarmup → snapshot:"refreshed",
+        (3) getWowGovernanceStatus → capture governance_hash,
+        (4) runWowGateEngineV2 → score rows.
+      responses:
+        "200":
+          description: Warmup result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  warmup:
+                    type: object
+                    properties:
+                      snapshot:
+                        type: string
+                        description: '"refreshed" or "error: <msg>"'
+                      db_table:
+                        type: string
+                        description: '"ready" or "error: <msg>"'
+
+  /wow/governance/status:
+    get:
+      operationId: getWowGovernanceStatus
+      x-openai-isConsequential: false
+      summary: Returns the canonical governance hash and active patch list
+      description: >
+        Call SECOND, after getWowEngineHealth ok=true. Provides governance_hash
+        — pass it verbatim as expected_governance_hash in runWowGateEngineV2.
+        Public, no key required. Refreshes snapshot as a side effect. Always
+        resync at start of each session; prior hash is invalid if changed.
+      responses:
+        "200":
+          description: Current governance identity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  master_spec_version:
+                    type: string
+                    description: e.g. "WOW-v16"
+                  engine_code_version:
+                    type: string
+                    description: e.g. "v16.5"
+                  governance_hash:
+                    type: string
+                    description: >
+                      SHA-256 hex string. Pass this verbatim as
+                      expected_governance_hash in runWowGateEngineV2.
+                  patch_count:
+                    type: integer
+                  active_patch_ids:
+                    type: array
+                    items:
+                      type: string
+                  loaded_at:
+                    type: string
+                    format: date-time
+                  effective_at:
+                    type: string
+                  status:
+                    type: string
+                    description: Always "ACTIVE"
+                  can_execute:
+                    type: boolean
+                    description: Always false
+                  source:
+                    type: string
+                    description: '"live" when snapshot refreshed successfully'
+                  snapshot_metadata:
+                    type: object
+                    additionalProperties: true
+                  patches:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+
+  /gate-engine/run:
+    post:
+      operationId: runWowGateEngineV2
+      x-openai-isConsequential: false
+      summary: Run the WOW v16 gate engine pipeline on a board of prop rows
+      description: >
+        Call THIRD after getWowGovernanceStatus. Mandatory fields:
+        expected_governance_hash, session_id, research_run_id, as_of, rows.
+        Wrong/missing hash → 409 GOVERNANCE_MISMATCH; resync and retry.
+        Missing session/run/as_of → 409 RUN_INVALID. Data layer only —
+        can_approve_bets=false, can_execute=false.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - expected_governance_hash
+                - session_id
+                - research_run_id
+                - as_of
+                - rows
+              properties:
+                expected_governance_hash:
+                  type: string
+                  description: >
+                    SHA-256 hex governance hash from getWowGovernanceStatus.
+                    Must match the server's current hash exactly.
+                session_id:
+                  type: string
+                  description: >
+                    Stable identifier for this research session
+                    (e.g. "session-2026-07-17-A"). Shared across multiple
+                    runWowGateEngineV2 calls in the same session for
+                    exposure ledger continuity.
+                research_run_id:
+                  type: string
+                  description: >
+                    Unique identifier for this specific run
+                    (e.g. "rr-2026-07-17-001"). Changes each call.
+                as_of:
+                  type: string
+                  format: date
+                  description: >
+                    Today's date in YYYY-MM-DD format. Must match the
+                    actual current date — do not use a future or past date.
+                rows:
+                  type: array
+                  description: Non-empty array of prop rows to score
+                  items:
+                    type: object
+                    required:
+                      - player
+                      - sport
+                      - prop_type
+                      - line
+                      - direction
+                      - slate_date
+                      - board_source
+                      - game
+                    properties:
+                      player:
+                        type: string
+                        description: Full player name, e.g. "LeBron James"
+                      sport:
+                        type: string
+                        description: >
+                          Sport identifier: NBA, MLB, WNBA, NHL, NFL,
+                          NCAAF, NCAAB, Soccer, Tennis, Golf, MMA
+                      prop_type:
+                        type: string
+                        description: >
+                          Prop category, e.g. "Points", "Rebounds",
+                          "Pitcher Strikeouts", "Passing Yards"
+                      line:
+                        type: number
+                        description: The prop line value, e.g. 27.5
+                      direction:
+                        type: string
+                        enum: [MORE, LESS]
+                        description: Pick direction — MORE (over) or LESS (under)
+                      slate_date:
+                        type: string
+                        format: date
+                        description: Game date YYYY-MM-DD
+                      board_source:
+                        type: string
+                        description: >
+                          Originating board, e.g. "PrizePicks", "Underdog",
+                          "DraftKings", "FanDuel"
+                      game:
+                        type: string
+                        description: Game matchup string, e.g. "LAL vs GSW"
+                      market_line:
+                        type: number
+                        description: Sportsbook line for market comparison (optional)
+                      row_id:
+                        type: string
+                        description: >
+                          Caller-supplied stable row ID (optional). If omitted,
+                          the engine generates one. Supply this when you need
+                          to match enrichment keys to rows across calls.
+                target_date:
+                  type: string
+                  format: date
+                  description: >
+                    Pipeline target date YYYY-MM-DD (optional, defaults to
+                    today UTC). Must match slate_date in rows.
+                enrichment:
+                  type: object
+                  description: >
+                    Per-row enrichment keyed by row_id or "player:prop_type".
+                    All fields are optional — supply what you have.
+                  additionalProperties:
+                    type: object
+                    properties:
+                      game_log:
+                        type: array
+                        items:
+                          type: number
+                        description: Last-N game log values for this stat
+                      season_log:
+                        type: array
+                        items:
+                          type: number
+                      sportsbook_line:
+                        type: number
+                      best_available:
+                        type: number
+                      consensus_line:
+                        type: number
+                      clv_entry_price:
+                        type: number
+                        description: Opening price (American odds)
+                      closing_price:
+                        type: number
+                      status_payload:
+                        type: object
+                        properties:
+                          status:
+                            type: string
+                            enum: [ACTIVE, QUESTIONABLE, OUT, PROBABLE]
+                          source:
+                            type: string
+                          dnp_risk:
+                            type: boolean
+                          minutes_restriction:
+                            type: boolean
+                record_entries:
+                  type: boolean
+                  description: >
+                    If true, persist scored rows to the database for CLV
+                    tracking. Default false.
+                auto_enrich:
+                  type: boolean
+                  description: >
+                    If true, auto-fetch market lines (Odds API) and
+                    injury/status flags (ESPN) before running the pipeline.
+                    Caller-supplied enrichment fields always win. Default false.
+                expected_patch_ids:
+                  type: array
+                  items:
+                    type: string
+                  description: >
+                    Optional list of expected active patch IDs for additional
+                    handshake verification. Omit unless you want strict patch
+                    list matching.
+                expected_master_spec_version:
+                  type: string
+                  description: >
+                    Optional expected master spec version, e.g. "WOW-v16".
+                    Omit unless you want strict version matching.
+            example:
+              expected_governance_hash: "2a74d11e20ee24526de6db9401f39b4a9228c0f46948d07cea72dc4a21111908"
+              session_id: "session-2026-07-17-A"
+              research_run_id: "rr-2026-07-17-001"
+              as_of: "2026-07-17"
+              rows:
+                - player: "LeBron James"
+                  sport: "NBA"
+                  prop_type: "Points"
+                  line: 27.5
+                  direction: "MORE"
+                  slate_date: "2026-07-17"
+                  board_source: "PrizePicks"
+                  game: "LAL vs GSW"
+      responses:
+        "200":
+          description: >
+            Scored pipeline result. Check terminal_labels per row for
+            FINAL_APPROVED vs blocked outcomes. governance_handshake will
+            be "GOVERNANCE_MATCH" on success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prop_ledger:
+                    type: array
+                    description: All rows with full gate audit trail
+                    items:
+                      type: object
+                      additionalProperties: true
+                  data_status_ledger:
+                    type: array
+                    description: Data availability status per row
+                    items:
+                      type: object
+                      additionalProperties: true
+                  terminal_labels:
+                    type: array
+                    description: Final label per row — check label and blockers
+                    items:
+                      type: object
+                      properties:
+                        row_id:
+                          type: string
+                        label:
+                          type: string
+                          description: >
+                            e.g. FINAL_APPROVED, MODEL_QUALIFIED_HOLD,
+                            CONDITIONAL_WATCH, WATCH, REJECT, RUN_INVALID
+                        blockers:
+                          type: array
+                          items:
+                            type: string
+                  final_card:
+                    type: array
+                    description: Rows that reached FINAL_APPROVED
+                    items:
+                      type: object
+                      additionalProperties: true
+                  exposure_report:
+                    type: object
+                    additionalProperties: true
+                  clv_table:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  summary:
+                    type: object
+                    description: Counts by terminal label
+                    additionalProperties: true
+                  governance_hash:
+                    type: string
+                    description: Server hash echoed back for verification
+                  governance_handshake:
+                    type: string
+                    description: Always "GOVERNANCE_MATCH" on success
+                  patch_ids_applied:
+                    type: array
+                    items:
+                      type: string
+                  can_approve_bets:
+                    type: boolean
+                    description: Always false
+                  can_execute:
+                    type: boolean
+                    description: Always false
+                  disclaimer:
+                    type: string
+                  session_id:
+                    type: string
+                  research_run_id:
+                    type: string
+                  as_of:
+                    type: string
+                  auto_enrichment_status:
+                    type: object
+                    nullable: true
+                    additionalProperties: true
+        "400":
+          description: Missing or invalid rows array
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        "401":
+          description: Missing or invalid X-API-Key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        "409":
+          description: >
+            Governance handshake failed. Check error_code field:
+              GOVERNANCE_MISMATCH      — wrong hash, call getWowGovernanceStatus to resync
+              GOVERNANCE_UNAVAILABLE   — no snapshot, retry after backend recovers
+              GOVERNANCE_CACHED_DEGRADED_RUN — snapshot used, ceiling capped at MODEL_QUALIFIED_HOLD
+              RUN_INVALID_GOVERNANCE_MISMATCH — missing session_id / research_run_id / as_of
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error_code:
+                    type: string
+                  detail:
+                    type: string
+                  ok:
+                    type: boolean
+                  retryable:
+                    type: boolean
+                  recovery_path:
+                    type: string
+                  governance_hash:
+                    type: string
+                    description: Current server hash (use this to resync)
+                  retry_after_seconds:
+                    type: integer
+      security:
+        - ApiKeyAuth: []
+
+
+  /wow/espn/mlb/scoreboard:
+    get:
+      operationId: getEspnScoreboard
+      x-openai-isConsequential: false
+      summary: Get today's MLB schedule with probable pitchers (trimmed ESPN proxy)
+      description: >
+        Trimmed ESPN MLB scoreboard proxy (~2-4 KB): event_id, start_time, teams,
+        status, and probable pitchers. Use instead of calling ESPN directly, which
+        returns 300-400 KB and causes ResponseTooLargeError. Pass dates=YYYYMMDD
+        for a specific date; omit for today.
+      parameters:
+        - name: dates
+          in: query
+          required: false
+          schema:
+            type: string
+            example: "20260725"
+          description: "Date in YYYYMMDD format. Defaults to today."
+      responses:
+        "200":
+          description: Trimmed MLB scoreboard
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  source:
+                    type: string
+                    example: "espn_mlb_scoreboard_proxy"
+                  espn_status:
+                    type: string
+                    example: "AVAILABLE"
+                  dates:
+                    type: string
+                    example: "20260725"
+                  game_count:
+                    type: integer
+                  games:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        event_id:
+                          type: string
+                        start_time:
+                          type: string
+                          description: "ISO-8601 UTC start time"
+                        home_team:
+                          type: string
+                          example: "LAD"
+                        away_team:
+                          type: string
+                          example: "NYM"
+                        status:
+                          type: string
+                          example: "STATUS_SCHEDULED"
+                        status_detail:
+                          type: string
+                          example: "Scheduled"
+                        status_short:
+                          type: string
+                          example: "7/25 - 1:10 PM EDT"
+                        home_probable_pitcher:
+                          type: string
+                          nullable: true
+                        away_probable_pitcher:
+                          type: string
+                          nullable: true
+        "401":
+          description: Unauthorized - missing or invalid API key
+      security:
+        - ApiKeyAuth: []
+
+components:
+  schemas: {}
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        Pass your SCORING_API_KEY value in the X-API-Key header.
+        /wow/engine/health and /wow/governance/status
+        are public and do not require this key. /gate-engine/run requires it.
