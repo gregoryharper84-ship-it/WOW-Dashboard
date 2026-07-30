@@ -16,13 +16,19 @@ description: How /gate-engine/run response_mode=slim works and why; size budget 
 - The slim helpers are `_slim_run_result()`, `_slim_terminal_labels()`, `_slim_blocker()` in app.py.
 - If adding fields to terminal_labels in full mode, evaluate whether slim mode needs them; default to excluding.
 
-## invocation_audit: required fields for GPT
-The GPT uses these fields to decide PLAY vs NO_PLAY:
-- `required_runtime_evidence_complete` (bool) — false → NO_PLAY
-- `required_skills` (list) — skills the engine expected
-- `missing_required_skills` (list) — what was missing
-- `skill_verification_status` (str) — PASS/PARTIAL/FAIL
-- `manifest_hash` (str) — governance check
+## invocation_audit: required contract (all 10 fields)
+```
+manifest_hash, required_skills, invoked_skills, missing_required_skills,
+skill_verification_status, ceilings_applied, lowest_ceiling,
+unique_theses, duplicate_groups, required_runtime_evidence_complete
+```
+- `ceilings_applied` must be `[{source, ceiling, reason}]` — NOT bare strings.
+- `unique_theses` and `duplicate_groups` must be ARRAYS — not replaced by counts; counts are supplemental.
+- `required_runtime_evidence_complete=True` when: manifest_hash non-empty + skill_verification_status=PASS + missing_required_skills=[]. DATA_CONTRACT_FAIL is ROW-LEVEL, not an audit failure — do NOT gate on dcf_count.
+
+## validation_status values
+- Evidence valid: `"VALID_RUNTIME_EVIDENCE"` + `strict_runtime_disposition="RUN_COMPLETE"` + `terminal_disposition="PLAY"|"NO_PLAY"` based on final_card.
+- Evidence invalid (skills missing): `"INVALID"` + `strict_runtime_disposition="RUN_INVALID_REQUIRED_RUNTIME_EVIDENCE"` + `terminal_disposition="NO_PLAY"`.
 
 ## MANIFEST_GOVERNANCE_HASH in gate_engine_run
 `MANIFEST_GOVERNANCE_HASH` is NOT imported at module level in app.py.

@@ -19059,11 +19059,13 @@ def _slim_run_result(result: dict) -> dict:
     if "terminal_labels" in slim:
         slim["terminal_labels"] = _slim_terminal_labels(slim["terminal_labels"])
 
-    # Compact invocation_audit: replace large list fields with counts
+    # Compact invocation_audit: add supplemental counts but KEEP the required
+    # arrays (unique_theses, duplicate_groups, ceilings_applied) — the GPT
+    # contract requires these fields to exist as arrays, not just as counts.
     if "invocation_audit" in slim:
         ia = dict(slim["invocation_audit"])
-        ia["unique_theses_count"]    = len(ia.pop("unique_theses", []))
-        ia["duplicate_groups_count"] = len(ia.pop("duplicate_groups", []))
+        ia["unique_theses_count"]    = len(ia.get("unique_theses", []))
+        ia["duplicate_groups_count"] = len(ia.get("duplicate_groups", []))
         slim["invocation_audit"] = ia
 
     slim["response_mode"] = "slim"
@@ -19349,11 +19351,41 @@ def gate_engine_run():
     _sk_verif    = "PASS" if not _missing_sk else "FAIL"
 
     _tl_list     = result.get("terminal_labels") or []
-    _dcf_count   = sum(1 for t in _tl_list if (t.get("label") or "") == "DATA_CONTRACT_FAIL")
-    _ev_complete = (_dcf_count == 0 and _sk_verif == "PASS")
 
-    _ceil_set    = list({t.get("label") for t in _tl_list if t.get("label")})
-    _low_ceil    = _resolve_ceiling(_ceil_set) if _ceil_set else "MODEL_QUALIFIED_HOLD"
+    # Evidence is complete when the ENGINE ran correctly: manifest hash present,
+    # required skills all invoked, no missing skills.  DATA_CONTRACT_FAIL is a
+    # row-level gate outcome, NOT an audit-level failure — a row lacking a game
+    # log fails its own data contract but the invocation audit is still valid.
+    _ev_complete = (
+        bool(MANIFEST_GOVERNANCE_HASH) and
+        _sk_verif == "PASS" and
+        len(_missing_sk) == 0
+    )
+
+    # Build structured ceiling objects {source, ceiling, reason} from the set
+    # of distinct terminal labels seen across all rows.
+    _CEILING_META: dict = {
+        "DATA_CONTRACT_FAIL":       ("data_contract_gate",   "Required data fields missing or failed validation"),
+        "MODEL_QUALIFIED_HOLD":     ("market_gate",          "Model-qualified only; insufficient market data for full LLP"),
+        "LLP_REJECT":               ("llp_governance",       "LLP governance rejection"),
+        "LLP_SCOUT":                ("llp_governance",       "LLP scout ceiling — proxy path active"),
+        "LLP_WATCH":                ("llp_governance",       "LLP watch ceiling applied"),
+        "WATCH":                    ("llp_governance",       "Watch-level ceiling from LLP governance"),
+        "REJECT":                   ("llp_governance",       "Reject-level ceiling applied by governance"),
+        "NO_DATA_QUALITY":          ("data_quality_gate",    "Data quality insufficient for scoring"),
+        "SLATE_PURGE":              ("slate_validation",     "Slate date outside valid scoring window"),
+        "FINAL_APPROVED":           ("card_gate",            "Row approved for final card"),
+        "CONDITIONAL":              ("scoring_engine",       "Conditional approval pending additional validation"),
+        "RESEARCH_ONLY":            ("scoring_engine",       "Research-only designation; not eligible for execution"),
+        "SOURCE_CONFLICT":          ("market_gate",          "Conflicting source data prevented market validation"),
+        "NOT_VALIDATED":            ("market_gate",          "Market not validated; insufficient source agreement"),
+    }
+    _seen_ceil_labels: set = {t.get("label") for t in _tl_list if t.get("label")}
+    _ceilings_applied: list = []
+    for _cl in sorted(_seen_ceil_labels):
+        _meta = _CEILING_META.get(_cl, ("scoring_engine", "Applied ceiling from scoring pipeline"))
+        _ceilings_applied.append({"source": _meta[0], "ceiling": _cl, "reason": _meta[1]})
+    _low_ceil    = _resolve_ceiling(list(_seen_ceil_labels)) if _seen_ceil_labels else "MODEL_QUALIFIED_HOLD"
 
     # Unique-thesis / duplicate-group accounting
     _thesis_ctr: dict = {}
@@ -19374,10 +19406,10 @@ def gate_engine_run():
         "invoked_skills":                 _skills_inv,
         "missing_required_skills":        _missing_sk,
         "skill_verification_status":      _sk_verif,
-        "ceilings_applied":               _ceil_set,
+        "ceilings_applied":               _ceilings_applied,   # [{source, ceiling, reason}]
         "lowest_ceiling":                 _low_ceil,
-        "unique_theses":                  _uniq_theses,
-        "duplicate_groups":               _dup_groups,
+        "unique_theses":                  _uniq_theses,        # required array (kept in slim)
+        "duplicate_groups":               _dup_groups,         # required array (kept in slim)
         "required_runtime_evidence_complete": _ev_complete,
     }
 
@@ -19387,9 +19419,9 @@ def gate_engine_run():
         result["terminal_disposition"]       = "NO_PLAY"
     else:
         _fc = result.get("final_card") or []
-        result["validation_status"]          = "VALID"
+        result["validation_status"]          = "VALID_RUNTIME_EVIDENCE"
         result["strict_runtime_disposition"] = "RUN_COMPLETE"
-        result["terminal_disposition"]       = "PLAY" if _fc else "SCORED_NO_PLAYS"
+        result["terminal_disposition"]       = "PLAY" if _fc else "NO_PLAY"
 
     if response_mode == "slim":
         result = _slim_run_result(result)
