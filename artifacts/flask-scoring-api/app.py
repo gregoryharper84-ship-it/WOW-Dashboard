@@ -12676,7 +12676,6 @@ def cm_build_slips():
 # ── PATCH-014–020: New Slip Endpoints ─────────────────────────────────
 
 @app.route("/wow/patch-flags", methods=["GET"])
-@require_api_key
 def cm_patch_flags():
     """GET /wow/patch-flags — runtime manifest, loaded skills, hard flags, governance hash."""
     from gate_engine.wow_runtime_manifest import (
