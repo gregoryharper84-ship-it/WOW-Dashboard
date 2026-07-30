@@ -1,0 +1,92 @@
+## Build complete
+
+I created the full **WOW v16 WNBA Composite + MLB Regression Patch Pack**. It extends the existing role-split, teammate-status, outlier-isolation and slate-purge rules; preserves unconditional MLB failure-path modeling; and integrates the weakest-leg and fragility controls already established in the optimizer.    
+
+### Main package
+
+[Download the complete WOW patch pack](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack.zip)
+
+### Individual artifacts
+
+* [WNBA Composite Prop Expert](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack/wow-wnba-composite-prop-expert-SKILL.md)
+* [Cross-Ticket Exposure Governor](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack/wow-cross-ticket-exposure-governor-SKILL.md)
+* [MLB Pitcher Failure-Path Expert v2](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack/wow-mlb-pitcher-failure-path-expert-SKILL-v2.md)
+* [Slip Probability Optimizer v3](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack/wow-slip-probability-optimizer-SKILL-v3.md)
+* [Controlling Patch Document](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack/WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE.md)
+* [Regression Test Suite](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack/WOW-REGRESSION-TESTS-2026-07-30.md)
+* [Installation and Activation Guide](sandbox:/mnt/data/WOW-2026-07-30-WNBA-MLB-Patch-Pack/README-INSTALL.md)
+
+## What is now patched
+
+### WNBA composite lane
+
+The new expert:
+
+* Models points, rebounds and assists jointly rather than independently.
+* Compares points, rebounds, assists, P+R, P+A, R+A and PRA.
+* Does not default automatically to PRA.
+* Uses role-matched ledgers, minutes distributions, teammate status and outlier isolation.
+* Classifies composites as `THREE_PATH_STABLE`, `TWO_PATH_STABLE`, `ONE_PATH_DEPENDENT`, `ROLE_FRAGILE`, or `LINE_TOO_EFFICIENT`.
+* Separates promotional lines from standard lines.
+* Requires 20 unique graded player-games before the forward-test ceiling can be reviewed.
+* Counts multiple thresholds from one player-game as one calibration observation.
+* Does not count a DNP or void as a model hit.
+
+### MLB regression firewall
+
+The MLB v2 skill now enforces:
+
+```text
+MLB_K_LESS=WATCH_ONLY
+MLB_OUTS_MORE=MODEL_QUALIFIED_HOLD ceiling
+```
+
+Every strikeout LESS must show how much of its probability comes from:
+
+```text
+low strikeout rate
+opponent contact
+short outing
+workload restriction
+market support
+```
+
+When more than 50% of the LESS case depends on an early exit:
+
+```text
+HIGH confidence prohibited
+```
+
+Pitching-outs MORE must publish the unconditional probability of reaching the exact out threshold, including early hooks, pitch caps, bullpen pressure and manager behavior.
+
+### Cross-ticket governance
+
+The new governor treats all cards from one slate as a single exposure portfolio. It blocks:
+
+* Exact legs repeated across Flex and Power cards.
+* Alternate thresholds treated as independent picks.
+* Repeated pitcher-direction theses.
+* Related points/PRA, rebounds/PRA or assists/PRA exposure.
+* Power cards copied from an overlapping Flex card.
+* Forced replacement legs added merely to maintain card size.
+
+Repeated legs remain separate in the financial ledger but count once in model calibration.
+
+## Installation
+
+Upload the six primary Markdown artifacts to the **WOW Betting Engine Custom GPT knowledge files**.
+
+The Replit engine should implement the persistent and enforceable portions listed in the installation guide:
+
+```text
+WNBA_COMPOSITE_FORWARD_TEST
+MLB_K_LESS_WATCH_ONLY
+MLB_OUTS_MORE_HOLD_CEILING
+unique_underlying_thesis_key
+duplicate_group_id
+cross_ticket_fragility
+directional_pitcher_ledger
+WNBA_unique_player_game_ledger
+```
+
+I created the patch-ready artifacts but did not directly modify the Replit deployment because no Replit connector is available in this chat. All lanes remain research-only with `can_execute=false`.

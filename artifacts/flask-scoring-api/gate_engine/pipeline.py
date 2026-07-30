@@ -31,6 +31,7 @@ from .governance import get_governance_status
 from . import card_finalizer, hitter_fantasy_score as _hfs_mod
 # LLP MLB Winner Preflight Gate (reviewer-mandated, patch-level required)
 from . import llp_mlb_winner_preflight
+from . import mlb_directional_firewall, wnba_composite_gate, cross_ticket_governor
 
 
 def run_pipeline(
@@ -439,6 +440,22 @@ def run_pipeline(
     card_hard_gate_report = card_finalizer.run_hard_gates(rows)
 
     # -------------------------------------------------------------------
+    # PATCH-014 — Cross-Ticket Exposure Governor (slip-level)
+    # Builds exact_leg_key, player_event_key, distribution_key,
+    # pitcher_thesis_key, event_script_key.  Detects exact duplicates,
+    # alternate-threshold duplicates, shared latent exposure, and
+    # copied Power/Flex structures.  Assigns duplicate_group_id and
+    # cross_ticket_fragility to every row.  Hard-rejects duplicate legs.
+    # Runs after card_finalizer so terminal labels are set, and before
+    # classifier so rejected rows are stamped before final output.
+    # -------------------------------------------------------------------
+    cross_ticket_report = cross_ticket_governor.run(
+        rows,
+        session_id=None,
+        slate_date=target_date,
+    )
+
+    # -------------------------------------------------------------------
     # WOW-PATCH-2026-07-15 — Component/Composite Mutex (Section 4)
     # Detect conflicting composite + component directions per player.
     # Runs after all per-row gates so final terminal labels are set.
@@ -544,6 +561,17 @@ def run_pipeline(
         # or MLB_WINNER_PREFLIGHT_BLOCK before the classifier ever sees it.
         # POSTPONED/CANCELLED/SUSPENDED → SLATE_PURGE (pick dies; rerun required).
         llp_mlb_winner_preflight.run(row)
+
+        # PATCH-015 — MLB Directional Firewall
+        # K LESS=WATCH_ONLY, OUTS MORE=MODEL_QUALIFIED_HOLD ceiling.
+        # Stamps directional_lane, short_outing_support_share, etc.
+        mlb_directional_firewall.run(row)
+
+        # PATCH-017 — WNBA Composite Forward-Test Gate
+        # MODEL_QUALIFIED_HOLD ceiling until 20 unique player-games settled.
+        # Blocks promo upgrades on unresolved role/status.
+        wnba_composite_gate.run(row)
+
         classifier.classify(row)
 
     # -------------------------------------------------------------------
