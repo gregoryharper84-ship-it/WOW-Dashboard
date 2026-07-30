@@ -20164,6 +20164,7 @@ def kalshi_evaluate_contract():
     """
     from kalshi_engine import kalshi_client, orderbook_normalizer, edge_engine
     from kalshi_engine import settlement_risk, market_buckets
+    from kalshi_engine import no_side_tail_risk as _nstr_ec
 
     body   = request.get_json(silent=True) or {}
     ticker = (body.get("ticker") or "").strip()
@@ -20218,6 +20219,32 @@ def kalshi_evaluate_contract():
         adjusted_edge    = ev.get("adjusted_edge"),
     )
 
+    # ── NO-side tail-risk gate ─────────────────────────────────────────────────
+    _no_tr_ec = _nstr_ec.run(
+        model_probability = model_prob,
+        normalized_book   = norm_book,
+        side              = side,
+        category          = category,
+        market_ticker     = ticker,
+    )
+    _no_tr_label_ec    = _no_tr_ec.get("patch_label", "")
+    _no_tr_blockers_ec = _no_tr_ec.get("patch_blocking_reasons", [])
+    _tail_extra_blockers = (
+        [f"NO_SIDE_TAIL_RISK: {r}" for r in _no_tr_blockers_ec]
+        if _no_tr_label_ec == "KALSHI_REJECT_NO_EDGE" else []
+    )
+
+    # Log NO-side calibration entry when side == "NO" (non-fatal)
+    _no_cal_log_result: dict | None = None
+    if side == "NO" and model_prob is not None:
+        try:
+            from kalshi_engine import no_side_calibration_ledger as _no_cal_ec
+            _cal_entry = _no_tr_ec.get("no_side_calibration_entry") or {}
+            if _cal_entry:
+                _no_cal_log_result = _no_cal_ec.log_entry(_cal_entry)
+        except Exception:
+            pass
+
     # ── Fetch market metadata ─────────────────────────────────────────────────
     market_meta = {}
     if use_live:
@@ -20245,12 +20272,14 @@ def kalshi_evaluate_contract():
         "market_bucket":       bucket["market_bucket"],
         "label":               ev["label"],
         "execution":           ev.get("execution"),
-        "blocking_reasons":    ev.get("blocking_reasons", []) + bucket.get("rationale", []),
+        "blocking_reasons":    ev.get("blocking_reasons", []) + bucket.get("rationale", []) + _tail_extra_blockers,
         "warnings":            ev.get("warnings", []),
         "fee_detail":          ev.get("fee_detail", {}),
         "orderbook":           norm_book,
         "settlement_detail":   sr,
         "market_meta":         market_meta,
+        "no_side_tail_risk_analysis": _no_tr_ec,
+        "no_side_calibration_log": _no_cal_log_result,
         "can_approve_bets":    False,
     }), 200
 
@@ -20553,6 +20582,24 @@ def kalshi_settle_result():
         notes                = body.get("notes"),
     )
 
+    # ── NO-side calibration ledger settlement (non-fatal) ─────────────────────
+    # When the caller passes no_side_calibration_id (returned by evaluate-contract
+    # with side=NO), settle the corresponding no_side_calibration_ledger record.
+    _no_cal_settle_result: dict | None = None
+    _no_cal_id = body.get("no_side_calibration_id")
+    if _no_cal_id:
+        try:
+            from kalshi_engine import no_side_calibration_ledger as _no_cal_sr
+            _no_cal_settle_result = _no_cal_sr.settle_entry(
+                record_id         = int(_no_cal_id),
+                result            = body.get("result", "VOID"),
+                closing_price     = body.get("closing_price"),
+                net_roi           = body.get("net_pnl"),
+                notes             = body.get("notes"),
+            )
+        except Exception as _exc:
+            _no_cal_settle_result = {"ok": False, "detail": str(_exc)}
+
     # Optional Claude post-trade review
     review = None
     if body.get("run_post_review") and result.get("ok"):
@@ -20573,6 +20620,7 @@ def kalshi_settle_result():
 
     return jsonify({
         **result,
+        "no_side_calibration_settlement": _no_cal_settle_result,
         "post_trade_review": review,
         "can_approve_bets":  False,
     }), (201 if result.get("ok") else 400)
@@ -24633,6 +24681,25 @@ def wow_kalshi_scan():
                 adjusted_edge    = ev.get("adjusted_edge"),
             )
 
+            # ── NO-side tail-risk gate ─────────────────────────────────────────
+            # Run against the NO side of every calibrated contract.  A
+            # KALSHI_REJECT_NO_EDGE from the tail-risk module fires the
+            # TAIL_RISK_BLOCK firewall: override the label so the contract
+            # lands in the rejected bucket and is excluded from scan output.
+            from kalshi_engine import no_side_tail_risk as _nstr_scan
+            _no_tr_scan = _nstr_scan.run(
+                model_probability = model_prob,
+                normalized_book   = norm_book,
+                side              = "NO",
+                category          = category,
+                market_ticker     = ticker,
+                market_volume     = float(m.get("volume") or 0) or None,
+            )
+            _no_tr_scan_label    = _no_tr_scan.get("patch_label", "")
+            _no_tr_scan_blockers = _no_tr_scan.get("patch_blocking_reasons", [])
+            if _no_tr_scan_label == "KALSHI_REJECT_NO_EDGE":
+                label = "KALSHI_REJECT_NO_EDGE"
+
             counts[LABEL_MAP.get(label, "rejected_uncalibrated")] += 1
 
             fd = ev.get("fee_detail") or {}
@@ -24643,6 +24710,11 @@ def wow_kalshi_scan():
                 "uncertainty_tax": fd.get("uncertainty_tax"),
                 "total_drag":      fd.get("total_drag"),
             }
+
+            _tail_scan_warnings = (
+                [f"NO_SIDE_TAIL_RISK: {r}" for r in _no_tr_scan_blockers]
+                if _no_tr_scan_label == "KALSHI_REJECT_NO_EDGE" else []
+            )
 
             row = {
                 "ticker":             ticker,
@@ -24673,7 +24745,8 @@ def wow_kalshi_scan():
                 "settlement_risk":    sr["settlement_risk"],
                 "market_bucket":      bucket.get("market_bucket"),
                 "blocking_reasons":   (ev.get("blocking_reasons") or []) + (bucket.get("rationale") or []),
-                "warnings":           (ev.get("warnings") or []) + extra_warnings,
+                "warnings":           (ev.get("warnings") or []) + extra_warnings + _tail_scan_warnings,
+                "no_side_tail_risk_analysis": _no_tr_scan,
                 "can_approve_bets":   False,
             }
 
@@ -26251,6 +26324,37 @@ def wow_kalshi_category_scan():
             gate_result = _sports_gate.check(cand, inventory_signal)
             cand["_sports_gate"] = gate_result
 
+            # ── NO-side tail-risk gate ─────────────────────────────────────────
+            # Build a minimal normalized-book dict for the tail-risk module.
+            # executable_price is the YES-side ask; NO ask ≈ 1 − yes_bid.
+            _ep_cat = (normalized_price or {}).get("executable_price")
+            _yb_cat = (normalized_price or {}).get("yes_bid")
+            _no_ask_cat = (
+                round(1.0 - float(_yb_cat), 4) if _yb_cat is not None
+                else (round(1.0 - float(_ep_cat), 4) if _ep_cat is not None else None)
+            )
+            _mini_book_cat = {
+                "best_no_ask":  _no_ask_cat,
+                "best_yes_ask": _ep_cat,
+                "best_yes_bid": _yb_cat,
+            }
+            from kalshi_engine import no_side_tail_risk as _nstr_cat
+            _no_tr_cat = _nstr_cat.run(
+                model_probability = cons_prob if cons_prob is not None else 0.5,
+                normalized_book   = _mini_book_cat,
+                side              = "NO",
+                category          = "sports_winner",
+                market_ticker     = ticker,
+            )
+            cand["no_side_tail_risk_analysis"] = _no_tr_cat
+            _tail_blocked_cat = _no_tr_cat.get("patch_label") == "KALSHI_REJECT_NO_EDGE"
+
+            # If gate passed but tail risk fires, override to TAIL_RISK_BLOCK
+            if gate_result["passed"] and _tail_blocked_cat:
+                gate_result = dict(gate_result, passed=False,
+                                   failure_category="TAIL_RISK_BLOCK")
+                cand["_sports_gate"] = gate_result
+
             if gate_result["passed"]:
                 cand["process_pass_fail"] = "PASS"
                 cand["failure_category"]  = None
@@ -26268,6 +26372,8 @@ def wow_kalshi_category_scan():
                 elif fc == "EDGE_BELOW_FLOOR":
                     edge_failures += 1
                 elif fc in ("UPSET_REJECTED", "NOT_FULL_GAME_OUTRIGHT_WINNER"):
+                    model_failures += 1
+                elif fc == "TAIL_RISK_BLOCK":
                     model_failures += 1
 
             all_candidates.append(cand)
