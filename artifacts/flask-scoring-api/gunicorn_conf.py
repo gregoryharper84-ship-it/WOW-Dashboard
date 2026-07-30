@@ -1,4 +1,33 @@
+import os
 import threading
+import time
+
+
+# ── Autoscale keep-alive ──────────────────────────────────────────────────────
+# Autoscale kills the process after ~15 min of no incoming traffic.  A cold
+# restart takes ~14 s, which is wide enough for all GPT retries to land inside
+# the dead window.  Worker 1 runs a daemon thread that pings /wow/engine/health
+# every 10 minutes so the idle timer never reaches 15 minutes.
+#
+# Only active when REPLIT_DEPLOYMENT=1 (production). Dev workers are unaffected.
+
+_KEEPALIVE_INTERVAL_S = 600   # 10 minutes  (< 15-min autoscale threshold)
+_KEEPALIVE_INITIAL_DELAY_S = 90  # let gunicorn fully stabilise before first ping
+
+
+def _keepalive_loop(prod_url: str, worker_pid: int, log) -> None:
+    time.sleep(_KEEPALIVE_INITIAL_DELAY_S)
+    while True:
+        try:
+            import urllib.request
+            with urllib.request.urlopen(
+                f"{prod_url}/wow/engine/health", timeout=10
+            ) as resp:
+                status = resp.status
+        except Exception as exc:
+            status = f"ERR({exc})"
+        log.info(f"[keepalive] worker {worker_pid}: pinged health → {status}")
+        time.sleep(_KEEPALIVE_INTERVAL_S)
 
 
 def post_fork(server, worker):
@@ -104,3 +133,28 @@ def post_fork(server, worker):
         server.log.info(f"[post_fork] worker {worker.pid}: settlement worker started")
     except Exception as exc:
         server.log.warning(f"[post_fork] settlement worker start failed (non-fatal): {exc}")
+
+    # ── Autoscale keep-alive (worker 1 / production only) ────────────────────
+    # Pings /wow/engine/health every 10 min so the 15-min idle SIGTERM never
+    # fires while a GPT session might need the server.  Only one worker runs
+    # the ping; worker.age==1 is the first worker forked by the master.
+    try:
+        prod_url = os.environ.get("REPLIT_APP_URL", "").rstrip("/")
+        if prod_url and worker.age == 1:
+            threading.Thread(
+                target=_keepalive_loop,
+                args=(prod_url, worker.pid, server.log),
+                daemon=True,
+                name="autoscale-keepalive",
+            ).start()
+            server.log.info(
+                f"[post_fork] worker {worker.pid}: autoscale keep-alive started "
+                f"(interval={_KEEPALIVE_INTERVAL_S}s, url={prod_url})"
+            )
+        elif not prod_url:
+            server.log.info(
+                f"[post_fork] worker {worker.pid}: keep-alive skipped "
+                f"(REPLIT_APP_URL not set — dev environment)"
+            )
+    except Exception as exc:
+        server.log.warning(f"[post_fork] keep-alive start failed (non-fatal): {exc}")
