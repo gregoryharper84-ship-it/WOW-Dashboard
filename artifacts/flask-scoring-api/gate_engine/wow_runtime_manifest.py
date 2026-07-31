@@ -38,6 +38,9 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "WOW-PATCH-2026-07-15-PROP-CONFIDENCE-AND-MARKET-LABEL-SEPARATION",
         "WOW-PATCH-2026-07-15-GOVERNANCE-RESILIENCE-AND-ERROR-CONTRACT",
         "WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE",
+        # Stage 1: WNBA opportunity gate + cross-slip portfolio governor
+        "WOW-PATCH-WNBA-001-OPPORTUNITY-STABILITY-GATE",
+        "WOW-PATCH-PORTFOLIO-001-CROSS-SLIP-EXPOSURE-GOVERNOR",
     ],
     "skills": {
         "slip_optimizer": {
@@ -53,6 +56,13 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
             "required": False,
             "required_when": "sport=WNBA and stat_family in P_R_A_COMPONENT_OR_COMPOSITE",
             "skill_file": "skills/wow-wnba-composite-prop-expert-SKILL.md",
+        },
+        "wnba_opportunity_governor": {
+            "name": "wow.wnba-opportunity-scenario-and-exposure-governor",
+            "version": "v1",
+            "required": False,
+            "required_when": "sport=WNBA",
+            "skill_file": "skills/wow-wnba-opportunity-scenario-and-exposure-governor-SKILL.md",
         },
         "mlb_pitcher_failure_path": {
             "name": "wow.mlb-pitcher-failure-path-expert",
@@ -76,6 +86,8 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "mlb_outs_more_ceiling": "MODEL_QUALIFIED_HOLD",
         "wnba_composite_forward_test": True,
         "cross_ticket_deduplication": True,
+        "wnba_opportunity_gate": True,         # PATCH-WNBA-001
+        "cross_slip_portfolio_governor": True, # PATCH-PORTFOLIO-001
     },
 }
 

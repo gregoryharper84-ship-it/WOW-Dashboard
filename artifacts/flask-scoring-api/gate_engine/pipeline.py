@@ -32,6 +32,8 @@ from . import card_finalizer, hitter_fantasy_score as _hfs_mod
 # LLP MLB Winner Preflight Gate (reviewer-mandated, patch-level required)
 from . import llp_mlb_winner_preflight
 from . import mlb_directional_firewall, wnba_composite_gate, cross_ticket_governor
+from .wnba import opportunity_engine as _wnba_opp_gate
+from .portfolio.cross_slip_exposure import PortfolioExposureGovernor as _PortfolioGov
 
 
 def run_pipeline(
@@ -43,6 +45,7 @@ def run_pipeline(
     skip_data_contract: bool = False,
     skip_settlement_check: bool = False,
     existing_ledger: "ExposureLedger | None" = None,
+    portfolio_governor: "_PortfolioGov | None" = None,
 ) -> dict[str, Any]:
     """
     Run the full gate engine pipeline.
@@ -187,6 +190,20 @@ def run_pipeline(
         role_ts_mod.run(row, enrichment=enr)
 
         status_role.run(row, status_payload=enr.get("status_payload"))
+
+        # -------------------------------------------------------------------
+        # PATCH-WNBA-001: WNBA Opportunity and Role Gate
+        # Runs after status_role so role_status signal is available.
+        # Hard rejects (unstable opportunity, rotation volatility) exit the
+        # loop early.  Soft holds (role uncertainty) apply MODEL_QUALIFIED_HOLD
+        # ceiling and let the row continue.
+        # -------------------------------------------------------------------
+        _wnba_opp_gate.run(row, enrichment=enr)
+        if row.get("terminal_label") in (
+            _wnba_opp_gate.LABEL_REJECT_UNSTABLE,
+            _wnba_opp_gate.LABEL_REJECT_ROTATION,
+        ):
+            continue
 
         # -------------------------------------------------------------------
         # Phase 3: Injury Decision Tree
@@ -547,6 +564,16 @@ def run_pipeline(
         ):
             continue
         ledger.check_and_register(row)
+
+        # -------------------------------------------------------------------
+        # PATCH-PORTFOLIO-001: Cross-Slip Exposure Governor
+        # Runs after PgSessionLedger (player/game/archetype dedup) to enforce
+        # market-family dedup (same player+stat_family, any line/direction) and
+        # thesis dedup (same player+stat+direction).
+        # If no portfolio_governor was injected, create a per-call in-memory one.
+        # -------------------------------------------------------------------
+        if portfolio_governor is not None:
+            portfolio_governor.check_and_register(row)
 
     for row in rows:
         # WOW-PATCH-2026-07-10: SETTLEMENT_SOURCE_CONFLICT is terminal — the

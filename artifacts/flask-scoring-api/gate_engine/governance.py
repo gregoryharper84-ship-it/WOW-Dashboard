@@ -192,6 +192,52 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "Extends all active v16 patches."
         ),
     },
+    {
+        "patch_id":    "WOW-PATCH-WNBA-001-OPPORTUNITY-STABILITY-GATE",
+        "version":     "1.0",
+        "effective_at": "2026-07-31",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  90,
+        "can_execute": False,
+        "description": (
+            "WNBA Opportunity and Role Engine (Stage 1): "
+            "gates WNBA rows on opportunity stability before the probability pipeline. "
+            "Computes minutes_stability_score, usage_stability_score, "
+            "shot_attempt_stability_score, rotation_volatility_score, "
+            "opportunity_stability_score (0-100 composite), role_state, role_confidence, archetype. "
+            "Hard reject: OSS < 65 (70 for PRA) → WNBA_REJECT_UNSTABLE_OPPORTUNITY; "
+            "rotation_volatility > 80 → WNBA_REJECT_ROTATION_VOLATILITY; "
+            "Soft hold: role_confidence < 0.80 → WNBA_HOLD_ROLE_UNCERTAIN (MODEL_QUALIFIED_HOLD ceiling). "
+            "Missing game log (< 3 non-DNP games) → soft hold. "
+            "Non-WNBA rows untouched. can_execute=False unconditional. "
+            "Module: gate_engine/wnba/opportunity_engine.py. "
+            "New endpoint: POST /wow/wnba/opportunity-audit. "
+            "New skill: wow.wnba-opportunity-scenario-and-exposure-governor:v1."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-PORTFOLIO-001-CROSS-SLIP-EXPOSURE-GOVERNOR",
+        "version":     "1.0",
+        "effective_at": "2026-07-31",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  91,
+        "can_execute": False,
+        "description": (
+            "Cross-Slip Portfolio Exposure Governor (Stage 1): "
+            "session-level thesis and market-family deduplication, "
+            "complementary to PgSessionLedger (player/game/archetype). "
+            "Market-family dedup: same player + stat_family (any line/direction) → max 1 per session; "
+            "catches alternate-line exposure (PRA 19.5 and PRA 22.5 on same player = same distribution). "
+            "Thesis dedup: same player + stat + direction → max 1 per session. "
+            "Block labels: REJECT_CROSS_SLIP_CONCENTRATION, REJECT_DUPLICATE_THESIS. "
+            "Stage 1: in-memory tracking per pipeline call. "
+            "Module: gate_engine/portfolio/cross_slip_exposure.py. "
+            "New endpoint: POST /wow/session/exposure-audit. "
+            "can_execute=False unconditional."
+        ),
+    },
 ]
 
 # ---------------------------------------------------------------------------

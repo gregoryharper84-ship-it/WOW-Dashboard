@@ -12724,6 +12724,229 @@ def cm_patch_flags():
             "final_approval_allowed":   False,
             "lowest_ceiling":           "MODEL_QUALIFIED_HOLD",
         },
+        # Stage 1 gate status (PATCH-WNBA-001, PATCH-PORTFOLIO-001)
+        "wnba_opportunity_gate": _wnba_opp_get_gate_status(),
+        "cross_slip_governor": {
+            "patch":          "PATCH-PORTFOLIO-001",
+            "max_mktfamily":  1,
+            "max_thesis":     1,
+            "backend":        "memory",
+            "can_execute":    False,
+        },
+    })
+
+
+# ---------------------------------------------------------------------------
+# POST /wow/wnba/opportunity-audit   (PATCH-WNBA-001)
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/wnba/opportunity-audit", methods=["POST"])
+def wow_wnba_opportunity_audit():
+    """
+    POST /wow/wnba/opportunity-audit
+
+    Runs the PATCH-WNBA-001 opportunity stability gate against one or more
+    WNBA candidate rows WITHOUT running the full gate-engine pipeline.
+
+    Use this for fast pre-screening of WNBA rows before submitting to
+    /gate-engine/run.  Results are informational — /gate-engine/run is the
+    enforcing call.
+
+    Request body:
+    {
+      "candidates": [
+        {
+          "player":     "Kayla McBride",
+          "sport":      "WNBA",
+          "prop_type":  "PRA",
+          "line":       22.5,
+          "direction":  "MORE",
+          "slate_date": "2026-07-31",
+          "board_source": "PrizePicks",
+          "game":       "MIN vs SAS",
+          "role_status": "STARTER_CONFIRMED",
+          "game_log":   [{"MIN":32,"PTS":18,"REB":4,"AST":3,"FGA":12}]
+        }
+      ],
+      "session_id":        "optional-session-id",
+      "research_run_id":   "optional-research-run-id"
+    }
+
+    Response: { "opportunity_audits": [...], "can_execute": false }
+    """
+    try:
+        body = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    candidates = body.get("candidates") or []
+    if not isinstance(candidates, list) or not candidates:
+        return jsonify({"error": "candidates must be a non-empty array"}), 400
+    if len(candidates) > 100:
+        return jsonify({"error": "candidates array limited to 100 rows per call"}), 400
+
+    session_id       = str(body.get("session_id") or "")
+    research_run_id  = str(body.get("research_run_id") or "")
+
+    audit_results = []
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            continue
+
+        # Build a minimal row dict
+        row = {
+            "sport":          cand.get("sport", "WNBA"),
+            "prop_type":      cand.get("prop_type") or cand.get("stat_type") or "",
+            "stat_type":      cand.get("prop_type") or cand.get("stat_type") or "",
+            "line":           cand.get("line"),
+            "direction":      cand.get("direction") or "",
+            "player":         cand.get("player") or cand.get("player_name") or "",
+            "player_name":    cand.get("player") or cand.get("player_name") or "",
+            "game":           cand.get("game") or "",
+            "board_source":   cand.get("board_source") or "",
+            "role_status":    cand.get("role_status") or "",
+            "primary_teammate_dependency": cand.get("primary_teammate_dependency") or [],
+            "terminal_label": "MODEL_QUALIFIED_HOLD",
+            "blockers":       [],
+            "gates":          {},
+            "can_execute":    False,
+        }
+
+        # Build enrichment from inline game_log
+        enrichment = {
+            "game_log":                  cand.get("game_log") or [],
+            "status_payload":            cand.get("status_payload"),
+            "dependency_status_payload": cand.get("dependency_status_payload"),
+            "primary_teammate_dependency": cand.get("primary_teammate_dependency") or [],
+        }
+
+        _wnba_opp_run(row, enrichment=enrichment)
+
+        gate = row.get("gates", {}).get("wnba_opportunity_gate") or {}
+        audit_results.append({
+            "player":           row["player"],
+            "prop_type":        row["prop_type"],
+            "line":             row["line"],
+            "direction":        row["direction"],
+            "game":             row.get("game"),
+            "opportunity_audit": gate,
+            "terminal_label":   row.get("terminal_label"),
+            "blockers":         row.get("blockers") or [],
+            "can_execute":      False,
+        })
+
+        # Log to DB (silent on failure)
+        _wnba_opp_log(row, session_id=session_id, research_run_id=research_run_id)
+
+    return jsonify({
+        "ok":                True,
+        "opportunity_audits": audit_results,
+        "session_id":         session_id,
+        "research_run_id":    research_run_id,
+        "can_execute":        False,
+    })
+
+
+# ---------------------------------------------------------------------------
+# POST /wow/session/exposure-audit   (PATCH-PORTFOLIO-001)
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/session/exposure-audit", methods=["POST"])
+def wow_session_exposure_audit():
+    """
+    POST /wow/session/exposure-audit
+
+    Checks a list of candidate props against cross-slip portfolio exposure
+    rules (PATCH-PORTFOLIO-001) WITHOUT running the full gate-engine pipeline.
+
+    Use this to pre-check whether a proposed slip has duplicate exposure
+    (alternate lines on the same player+stat, or identical thesis) before
+    submitting to /gate-engine/run.
+
+    Request body:
+    {
+      "candidates": [
+        {
+          "player": "Kayla McBride",
+          "prop_type": "PRA",
+          "line": 19.5,
+          "direction": "MORE"
+        },
+        {
+          "player": "Kayla McBride",
+          "prop_type": "PRA",
+          "line": 22.5,
+          "direction": "MORE"
+        }
+      ],
+      "session_id": "optional-session-id"
+    }
+
+    Response: { "exposure_results": [...], "blocked_count": int, "can_execute": false }
+    """
+    try:
+        body = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    candidates = body.get("candidates") or []
+    if not isinstance(candidates, list) or not candidates:
+        return jsonify({"error": "candidates must be a non-empty array"}), 400
+    if len(candidates) > 50:
+        return jsonify({"error": "candidates array limited to 50 props per call"}), 400
+
+    session_id = str(body.get("session_id") or "")
+
+    gov = _make_portfolio_governor(session_id=session_id)
+    results = []
+    blocked_count = 0
+
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            continue
+
+        row = {
+            "player":         cand.get("player") or cand.get("player_name") or "",
+            "player_name":    cand.get("player") or cand.get("player_name") or "",
+            "prop_type":      cand.get("prop_type") or cand.get("stat_type") or "",
+            "stat_type":      cand.get("prop_type") or cand.get("stat_type") or "",
+            "line":           cand.get("line"),
+            "direction":      cand.get("direction") or "",
+            "terminal_label": "MODEL_QUALIFIED_HOLD",
+            "blockers":       [],
+            "gates":          {},
+            "can_execute":    False,
+        }
+
+        gov.check_and_register(row)
+
+        gate = row["gates"].get("portfolio_exposure") or {}
+        passed = gate.get("passed", True)
+
+        if not passed:
+            blocked_count += 1
+
+        results.append({
+            "player":       row["player"],
+            "prop_type":    row["prop_type"],
+            "line":         row["line"],
+            "direction":    row["direction"],
+            "passed":       passed,
+            "mktfamily_key": gate.get("mktfamily_key"),
+            "thesis_key":   gate.get("thesis_key"),
+            "blocks":       gate.get("blocks") or [],
+            "can_execute":  False,
+        })
+
+    return jsonify({
+        "ok":              True,
+        "session_id":      session_id,
+        "exposure_results": results,
+        "total":           len(results),
+        "blocked_count":   blocked_count,
+        "passed_count":    len(results) - blocked_count,
+        "snapshot":        gov.snapshot(),
+        "can_execute":     False,
     })
 
 
@@ -18624,6 +18847,15 @@ from gate_engine.governance_resilience import (
 )
 from gate_engine.pg_session_ledger import PgSessionLedger as _PgSessionLedger
 from gate_engine.pg_session_ledger import ensure_table_exists as _ensure_wse_table
+from gate_engine.portfolio.cross_slip_exposure import (
+    PortfolioExposureGovernor as _PortfolioExposureGovernor,
+    make_portfolio_governor as _make_portfolio_governor,
+)
+from gate_engine.wnba.opportunity_engine import (
+    run as _wnba_opp_run,
+    get_gate_status as _wnba_opp_get_gate_status,
+    log_opportunity_audit as _wnba_opp_log,
+)
 _bt("gate_engine modules loaded")
 
 # ---------------------------------------------------------------------------
@@ -19267,6 +19499,12 @@ def gate_engine_run():
     # Wire session exposure ledger for cross-request persistence
     _session_exposure_ledger = _get_session_ledger(_session_id)
 
+    # PATCH-PORTFOLIO-001: Cross-Slip Exposure Governor (session-scoped, in-memory)
+    _portfolio_gov = _make_portfolio_governor(
+        session_id=_session_id or "",
+        conn_string=os.environ.get("DATABASE_URL"),
+    )
+
     try:
         result = _ge_run_pipeline(
             raw_rows=raw_rows,
@@ -19274,6 +19512,7 @@ def gate_engine_run():
             enrichment=enrichment,
             record_entries=record_entries,
             existing_ledger=_session_exposure_ledger,
+            portfolio_governor=_portfolio_gov,
         )
     except Exception as exc:
         req.log.error("gate_engine_run error: %s", exc)

@@ -1,0 +1,535 @@
+Set this up as a layered engine, not as seven independent skills firing randomly.
+
+The cleanest architecture is:
+
+INPUT
+→ GOVERNANCE SYNC
+→ PROP ACQUISITION
+→ OPPORTUNITY / ROLE GATES
+→ SPORT-SPECIFIC MODEL
+→ FAILURE-PATH + SCENARIO MODEL
+→ CALIBRATION
+→ SLIP OPTIMIZATION
+→ CROSS-SLIP EXPOSURE GOVERNOR
+→ FINAL LOWEST-CEILING DECISION
+
+Your existing WOW v16 skills already provide much of the middle and final structure. The new work should fill the WNBA-specific opportunity and portfolio gaps rather than replacing the existing optimizer. Your slip optimizer already requires verification, role-aware ledgers, bidirectional scoring, weakest-leg elimination, fragility review, and shrinking the card when no replacement qualifies. wow_slip_probability_optimizer_skill_v2.md
+
+Recommended engine structure
+
+1. Replit owns enforcement
+
+Put all hard gates, calculations, persistence, and invalidation logic in Replit.
+
+Replit should own:
+
+* governance version and patch validation;
+* player/event identity;
+* board-line storage;
+* data acquisition status;
+* opportunity stability scores;
+* scenario simulations;
+* probability calculations;
+* cross-slip exposure;
+* weakest-leg elimination;
+* ledger writes;
+* terminal labels;
+* regression tests.
+
+The Custom GPT should orchestrate, explain, perform web-assisted research, and call the engine. It should not be the sole enforcement point.
+
+That gives you:
+
+Custom GPT = researcher + orchestrator + report writer
+Replit = deterministic gate engine + ledger + source of truth
+
+2. Add four engine modules, not seven separate services
+
+Several of the proposed skills overlap. Consolidate them into four engine modules.
+
+Module A — WNBA Opportunity and Role Engine
+
+File structure:
+
+wow_engine/
+  wnba/
+    opportunity_engine.py
+    role_redistribution.py
+    player_archetypes.py
+    schemas.py
+
+This combines:
+
+* Opportunity Stability Expert
+* Usage Redistribution Expert
+* Player Archetype Expert
+
+Required output per prop:
+
+{
+  "player": "Marina Mabrey",
+  "market": "PRA",
+  "line": 24.5,
+  "expected_minutes": 31.2,
+  "minutes_floor": 26.0,
+  "minutes_ceiling": 35.0,
+  "minutes_stability_score": 61,
+  "usage_stability_score": 54,
+  "shot_attempt_stability_score": 52,
+  "assist_opportunity_stability_score": 47,
+  "rebound_opportunity_stability_score": 58,
+  "rotation_volatility_score": 68,
+  "opportunity_stability_score": 53,
+  "role_state": "SECONDARY_CREATOR",
+  "role_confidence": 0.72,
+  "primary_teammate_dependency": ["starting_point_guard_status"],
+  "archetype": "CEILING_DEPENDENT_SECONDARY_SCORER",
+  "blockers": [
+    "ASSIST_OPPORTUNITY_VOLATILE",
+    "COMPOSITE_STAT_DEPENDENCY"
+  ]
+}
+
+Initial gate
+
+Use a conservative first version:
+
+opportunity_stability_score >= 65
+role_confidence >= 0.80
+minutes_stability_score >= 60
+
+For high-variance markets such as PRA:
+
+opportunity_stability_score >= 70
+
+Do not hardcode these forever. Store them in configuration so the forward-test ledger can calibrate them.
+
+Module B — Shot and Stat Distribution Engine
+
+Files:
+
+wow_engine/
+  wnba/
+    shot_volume_model.py
+    component_distribution.py
+    composite_distribution.py
+
+This combines:
+
+* Shot Volume Expert
+* Ceiling/Floor Classification
+* component-aware PRA modeling
+
+For made-shot props, model:
+
+attempt distribution
+×
+make-rate distribution
+
+Do not project makes directly from the recent average.
+
+For PRA, separately model:
+
+points_distribution
+rebounds_distribution
+assists_distribution
+component_covariance
+combined_PRA_distribution
+
+Required outputs:
+
+{
+  "expected_attempts": 10.8,
+  "attempts_std": 2.9,
+  "expected_makes": 4.6,
+  "make_probability": 0.426,
+  "points_mean": 13.1,
+  "rebounds_mean": 4.0,
+  "assists_mean": 3.7,
+  "pra_mean": 20.8,
+  "pra_std": 6.1,
+  "floor_percentile_25": 16.2,
+  "median": 20.3,
+  "ceiling_percentile_75": 24.9,
+  "prop_classification": "CEILING_DEPENDENT",
+  "raw_probability_more": 0.43,
+  "raw_probability_less": 0.57
+}
+
+Floor/ceiling classification
+
+A practical initial classifier:
+
+FLOOR_DRIVEN
+25th percentile clears the line
+BALANCED
+median clears the line but 25th percentile does not
+CEILING_DEPENDENT
+only the 65th percentile or higher clears the line
+VOLATILE
+distribution width or role uncertainty exceeds threshold
+
+For a MORE selection:
+
+if p25 > line:
+    FLOOR_DRIVEN
+elif median > line:
+    BALANCED
+elif p65 > line:
+    CEILING_DEPENDENT
+else:
+    LOW_PROBABILITY
+
+The reverse applies to LESS.
+
+Module C — Scenario Survival Engine
+
+Files:
+
+wow_engine/
+  scenarios/
+    wnba_scenarios.py
+    scenario_runner.py
+    correlation_graph.py
+
+This replaces a single deterministic projection with scenario-weighted probability.
+
+Required scenarios:
+
+NORMAL_CLOSE_GAME
+SLOW_PACE
+FAST_PACE
+BLOWOUT_WIN
+BLOWOUT_LOSS
+REDUCED_MINUTES
+FOUL_TROUBLE
+LOW_SHOOTING_EFFICIENCY
+HIGH_SHOOTING_EFFICIENCY
+ROLE_EXPANSION
+ROLE_COMPRESSION
+
+Do not weight all scenarios equally. Assign probabilities using game-specific evidence.
+
+Example:
+
+{
+  "NORMAL_CLOSE_GAME": 0.42,
+  "SLOW_PACE": 0.13,
+  "FAST_PACE": 0.11,
+  "BLOWOUT_WIN": 0.10,
+  "BLOWOUT_LOSS": 0.07,
+  "REDUCED_MINUTES": 0.05,
+  "FOUL_TROUBLE": 0.04,
+  "ROLE_EXPANSION": 0.04,
+  "ROLE_COMPRESSION": 0.04
+}
+
+Each scenario produces its own prop probability. The final probability is:
+
+P(prop) = Σ P(scenario) × P(prop | scenario)
+
+Required outputs:
+
+{
+  "scenario_survival_rate": 0.61,
+  "weighted_hit_probability": 0.57,
+  "worst_material_scenario": "SLOW_PACE",
+  "largest_failure_path": "REDUCED_SHOT_VOLUME",
+  "scenario_probability_floor": 0.49
+}
+
+Do not use a simplistic rule that the prop must win in 75% of named scenarios regardless of their likelihood. Use the weighted survival probability and separately report how many material scenarios it survives.
+
+Suggested initial gate:
+
+weighted scenario probability lower bound >= 65%
+no scenario with weight >= 15% may have hit probability below 40%
+
+3. Add the Cross-Slip Exposure Governor
+
+Files:
+
+wow_engine/
+  portfolio/
+    cross_slip_exposure.py
+    thesis_registry.py
+    session_ledger.py
+
+This is different from the existing weakest-leg optimizer.
+
+The weakest-leg optimizer evaluates one slip. The cross-slip governor evaluates the entire session.
+
+Your existing optimizer already requires removing or replacing the weakest leg and shrinking the slip when no better replacement exists. WOW-v16-MLB-Pitcher-Failure-Path-Patch-Pack.md The new governor must prevent the same player or thesis from appearing repeatedly across several cards.
+
+Required session-level keys:
+
+player
+event
+market family
+stat component
+game-script thesis
+team dependency
+role dependency
+
+Example:
+
+{
+  "player": "Kayla McBride",
+  "event_id": "MIN-TOR-2026-07-30",
+  "thesis_id": "MCBRIDE_OFFENSIVE_VOLUME_OVER",
+  "slips_used": 3,
+  "total_entry_exposure": 125,
+  "duplicate_markets": [
+    "PRA_MORE_19.5",
+    "PRA_MORE_22.5"
+  ]
+}
+
+Hard rules
+
+Start with:
+
+maximum_player_appearances_per_session = 1
+maximum_event_appearances_per_session = 2
+maximum_identical_thesis_appearances = 1
+maximum_alternate_lines_same_distribution = 1
+
+Do not allow a 19.5 PRA and 22.5 PRA on the same player to count as diversification. They are the same underlying distribution.
+
+A possible exception:
+
+maximum_player_appearances = 2
+only when:
+  calibrated_lower_bound >= 75%
+  opportunities are not component/composite duplicates
+  cross-slip exposure governor explicitly passes
+
+I would keep that exception disabled during initial forward testing.
+
+4. Insert the new modules into your current workflow
+
+Use this exact call order:
+
+1. governance_sync
+2. normalize_prop
+3. slate_purge
+4. exact_board_verification
+5. player_status_and_role_lock
+6. wnba_opportunity_engine
+7. role_redistribution_engine
+8. shot_or_component_distribution_model
+9. scenario_survival_engine
+10. market_sanity_and_no_vig
+11. raw_probability
+12. calibration_and_lower_bound
+13. failure_path_and_contradiction_audit
+14. per-leg terminal ceiling
+15. weakest_leg_optimizer
+16. slip_fragility_audit
+17. cross_slip_exposure_governor
+18. final_lowest_ceiling
+19. forward_test_ledger_write
+
+A downstream probability pass must never erase an opportunity, role, scenario, or exposure blocker.
+
+5. Create one orchestration skill for ChatGPT
+
+Do not create seven top-level Custom GPT skills.
+
+Create one:
+
+wow.wnba-opportunity-scenario-and-exposure-governor
+
+Its purpose is to require and interpret the Replit modules.
+
+The skill should require these evidence blocks:
+
+opportunity_audit
+role_redistribution_audit
+component_distribution_audit
+scenario_survival_audit
+ceiling_floor_classification
+cross_slip_exposure_audit
+
+It must not calculate or fabricate them when Replit fails to return them.
+
+Maximum standalone ceiling:
+
+MODEL_QUALIFIED_HOLD
+
+6. Build the patches as engine contracts
+
+I recommend four formal patches.
+
+PATCH-WNBA-001 — Opportunity Stability Gate
+
+No WNBA prop may receive YES_MODEL_QUALIFIED unless:
+opportunity_stability_status=PASS
+role_confidence meets market-specific threshold
+minutes distribution is present
+primary teammate dependencies are resolved
+
+Failure labels:
+
+WNBA_REJECT_UNSTABLE_OPPORTUNITY
+WNBA_HOLD_ROLE_UNCERTAIN
+WNBA_REJECT_ROTATION_VOLATILITY
+
+PATCH-WNBA-002 — Component and Ceiling Risk
+
+PRA and combined props require component distributions and covariance.
+Made-shot props require attempt and efficiency distributions.
+Ceiling-dependent MORE props cannot receive HIGH confidence.
+
+Failure labels:
+
+WNBA_REJECT_COMPONENT_MODEL_MISSING
+WNBA_HOLD_CEILING_DEPENDENT
+WNBA_REJECT_ATTEMPT_VOLUME_UNSUPPORTED
+
+PATCH-WNBA-003 — Scenario Survival Gate
+
+Every WNBA prop requires scenario-weighted probability.
+A material adverse scenario cannot be omitted.
+Final probability must be scenario-weighted, not baseline-only.
+
+Failure labels:
+
+WNBA_REJECT_SCENARIO_MODEL_MISSING
+WNBA_HOLD_SCENARIO_FRAGILE
+WNBA_REJECT_GAME_SCRIPT_DEPENDENT
+
+PATCH-PORTFOLIO-001 — Cross-Slip Exposure Governor
+
+One player/thesis per session by default.
+Alternate lines on the same distribution are duplicate exposure.
+No final slip may be presented until session exposure passes.
+
+Failure labels:
+
+REJECT_DUPLICATE_PLAYER_EXPOSURE
+REJECT_DUPLICATE_THESIS
+REJECT_CROSS_SLIP_CONCENTRATION
+
+7. Add database tables
+
+At minimum:
+
+research_runs
+prop_candidates
+opportunity_audits
+role_state_snapshots
+component_distributions
+scenario_runs
+leg_probabilities
+slip_candidates
+slip_legs
+session_exposures
+settled_prop_ledger
+patch_invocation_audit
+
+Important fields in settled_prop_ledger:
+
+predicted_probability
+calibrated_lower_bound
+opportunity_stability_score
+role_confidence
+prop_classification
+scenario_survival_rate
+largest_failure_path
+actual_result
+actual_minutes
+actual_attempts
+actual_usage
+failure_category
+process_pass_or_fail
+
+This is how you learn whether 65, 70, or another threshold is appropriate.
+
+8. API endpoints to add
+
+Recommended Replit endpoints:
+
+POST /wow/wnba/opportunity-audit
+POST /wow/wnba/distribution-model
+POST /wow/wnba/scenario-simulate
+POST /wow/session/exposure-audit
+POST /wow/slip/full-audit
+POST /wow/settle/prop
+GET  /wow/patch-flags
+GET  /wow/research-run/{research_run_id}
+
+The best main endpoint is:
+
+POST /wow/slip/full-audit
+
+It should call all internal modules and return one immutable audit object.
+
+Example request:
+
+{
+  "session_id": "2026-07-31-am",
+  "research_run_id": "run_001",
+  "as_of": "2026-07-31T08:49:00-05:00",
+  "workflow": "WOW_AUTO_ROUTE_STRICT",
+  "strict_skill_routing": true,
+  "apply_lowest_ceiling": true,
+  "write_forward_test_ledger": true,
+  "candidates": []
+}
+
+Example response skeleton:
+
+{
+  "governance_status": "PASS",
+  "rows_in": 12,
+  "rows_reconciled": 12,
+  "leg_results": [],
+  "slip_results": [],
+  "session_exposure": {},
+  "lowest_ceiling": "MODEL_QUALIFIED_HOLD",
+  "can_execute": false,
+  "invocation_audit": {
+    "skills_required": [],
+    "skills_invoked": [],
+    "patches_applied": [],
+    "blockers_preserved": true
+  }
+}
+
+9. Regression tests
+
+Before activating, require these tests:
+
+1. A high projected PRA with low opportunity stability is rejected.
+2. A made-2s prop with insufficient attempt volume cannot pass from recent makes alone.
+3. A ceiling-dependent over cannot receive HIGH confidence.
+4. A prop that passes the normal scenario but fails weighted adverse scenarios is held or rejected.
+5. The same player on two slips triggers cross-slip rejection.
+6. Two alternate PRA lines for the same player are treated as duplicate exposure.
+7. A role change forces a new role-split ledger.
+8. Missing teammate status blocks role-dependent scoring.
+9. A failed original MORE does not automatically approve LESS.
+10. No verified replacement causes the slip to shrink.
+11. Every settled prop writes opportunity and scenario predictions to the ledger.
+12. can_execute=false is always preserved.
+
+Best implementation order
+
+Build it in this order:
+
+Stage 1
+Cross-slip exposure governor
+Opportunity stability engine
+Stage 2
+Shot-volume and component distributions
+Floor/ceiling classifier
+Stage 3
+Scenario survival engine
+Role redistribution model
+Stage 4
+Calibration ledger
+Threshold tuning
+Custom GPT orchestration skill
+
+The first two additions would immediately address the most visible failures: unstable WNBA opportunity and repeated exposure to the same player or thesis. The scenario and covariance models should follow once the underlying role and volume data are reliably captured.

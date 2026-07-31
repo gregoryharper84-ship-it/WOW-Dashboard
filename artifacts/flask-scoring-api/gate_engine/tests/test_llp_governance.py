@@ -38,6 +38,8 @@ def _approved_candidate(**kwargs):
         "side":               "OVER",
         "market":             "total",
         "timestamp":          _now(),
+        # model_timestamp is required by validate_material_staleness
+        "model_timestamp":    _now(),
         "model_probability":  0.59,
         "no_vig_probability": 0.52,
         "edge":               0.07,

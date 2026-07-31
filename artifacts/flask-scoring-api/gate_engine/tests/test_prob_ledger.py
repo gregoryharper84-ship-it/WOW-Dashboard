@@ -20,6 +20,14 @@ def _ledger(components=None, final_model_prob=0.57, ci="0.53-0.61",
             "calibration_status":   calibration,
             "shrinkage_applied":    shrinkage_applied,
             "shrinkage_baseline":   shrinkage_baseline,
+            # Stage 2 probability schema fields (required by _validate_stage2_schema)
+            "raw_probability":        0.57,
+            "calibrated_probability": usable or 0.53,
+            "lower_bound":            0.49,
+            "upper_bound":            0.61,
+            "model_timestamp":        "2026-07-31T00:00:00+00:00",
+            "source_snapshot_id":     "test-snapshot-001",
+            "calibration_method":     "beta_calibration",
         }
     }
 
