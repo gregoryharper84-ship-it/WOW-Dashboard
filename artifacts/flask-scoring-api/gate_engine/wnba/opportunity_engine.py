@@ -373,21 +373,43 @@ def run(row: dict[str, Any], enrichment: dict[str, Any] | None = None) -> None:
     n_games = len(minutes_series)
 
     # -------------------------------------------------------------------
-    # Insufficient data → soft hold
+    # Insufficient data → soft hold  (with specific caller guidance)
     # -------------------------------------------------------------------
     if n_games < MIN_GAMES_REQUIRED:
-        hold_blocker = (
-            f"WNBA_HOLD_ROLE_UNCERTAIN:insufficient_game_data"
-            f":games={n_games}<{MIN_GAMES_REQUIRED}"
-        )
-        row["blockers"].append(hold_blocker)
+        game_log_supplied = bool(enr.get("game_log"))
+        if not game_log_supplied:
+            # Caller did not supply game_log at all — give a clear action.
+            hold_reason = (
+                f"game_log not supplied in enrichment — "
+                f"add enrichment.game_log (list of ≥{MIN_GAMES_REQUIRED} per-game "
+                f"dicts with MIN, PTS/REB/AST, FGA, USG%) for a defensible score"
+            )
+            hold_tag = "WNBA_HOLD_ROLE_UNCERTAIN:game_log_missing"
+        else:
+            # game_log was present but too sparse (all DNPs, or only 1-2 games).
+            hold_reason = (
+                f"Need ≥{MIN_GAMES_REQUIRED} non-DNP games (MIN≥3); "
+                f"got {n_games} qualifying games from the supplied game_log"
+            )
+            hold_tag = (
+                f"WNBA_HOLD_ROLE_UNCERTAIN:insufficient_game_data"
+                f":games={n_games}<{MIN_GAMES_REQUIRED}"
+            )
+
+        row["blockers"].append(hold_tag)
         row["gates"]["wnba_opportunity_gate"] = {
             "gate_passed":                False,
             "gate_label":                 LABEL_HOLD_ROLE_UNCERTAIN,
-            "reason":                     f"Need ≥{MIN_GAMES_REQUIRED} non-DNP games; got {n_games}",
+            "reason":                     hold_reason,
+            "game_log_supplied":          game_log_supplied,
             "games_analyzed":             n_games,
+            "games_required":             MIN_GAMES_REQUIRED,
             "opportunity_stability_score": None,
             "role_confidence":            None,
+            "caller_action":              (
+                None if game_log_supplied else
+                "Supply enrichment.game_log with ≥5 non-DNP games to get a defensible score"
+            ),
             "can_execute":                False,
         }
         _apply_ceiling(row, "MODEL_QUALIFIED_HOLD")

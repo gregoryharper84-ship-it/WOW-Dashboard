@@ -54,7 +54,19 @@ def _norm(s: str) -> str:
 
 
 def _make_keys(row: dict[str, Any]) -> tuple[str, str]:
-    """Return (mktfamily_key, thesis_key) for a row."""
+    """
+    Return (mktfamily_key, thesis_key) for a row.
+
+    mktfamily_key = player|stat|direction
+        Catches alternate-line exposure within the same directional bet
+        (e.g. PRA 19.5 MORE + PRA 22.5 MORE on the same player).
+        Direction IS included so that opposing bets (MORE vs LESS) are
+        treated as distinct market families and are NOT blocked by each other.
+
+    thesis_key = player|stat|direction
+        Same as mktfamily_key — ensures an exact thesis (player+stat+direction)
+        can only be registered once per session, regardless of line.
+    """
     player    = _norm(row.get("player") or row.get("player_name") or "UNKNOWN")
     stat      = _norm(
         row.get("prop_type") or row.get("prop") or
@@ -62,7 +74,10 @@ def _make_keys(row: dict[str, Any]) -> tuple[str, str]:
     )
     direction = (row.get("direction") or row.get("side") or "").upper().strip()
 
-    mktfamily_key = f"{player}|{stat}"
+    # Direction-inclusive: MORE and LESS on the same player+stat are DIFFERENT
+    # market families. Only alternate lines (same direction, different line)
+    # are treated as the same distribution.
+    mktfamily_key = f"{player}|{stat}|{direction}"
     thesis_key    = f"{player}|{stat}|{direction}"
     return mktfamily_key, thesis_key
 
@@ -123,7 +138,7 @@ class PortfolioExposureGovernor:
         if mktf_count >= self.max_mktfamily:
             blocks.append(
                 f"{LABEL_CROSS_SLIP_CONC}"
-                f":alternate_line_or_same_distribution:{mktfamily_key}"
+                f":alternate_line_same_direction:{mktfamily_key}"
                 f":{mktf_count + 1}x"
             )
         elif thesis_count >= self.max_thesis:

@@ -86,6 +86,21 @@ Spec says cross-slip applies to all sports (max_alternate_lines_same_distributio
 
 **Key: dedup sentinel key format is `mktf:{mktfamily_key}` and `thesis:{thesis_key}` — both stored in the same wow_portfolio_dedup table.**
 
+## Direction-inclusive mktfamily_key (patch applied July 31)
+`mktfamily_key = player|stat|direction` — direction IS included.
+- MORE + LESS on the same player+stat → **different keys → both allowed** (opposing directions are independent research queries)
+- MORE 19.5 + MORE 22.5 on same player+stat → **same key → REJECT_CROSS_SLIP_CONCENTRATION** (alternate lines, same distribution)
+- REJECT_CROSS_SLIP_CONCENTRATION blocker tag now reads `alternate_line_same_direction` (was `alternate_line_or_same_distribution`)
+
+## ODDS API key resolution (fixed July 31)
+`services/odds_api.py` `_get()` now resolves: `ODDS_API_PAID_KEY` → `ODDS_API_FREE_KEY` → `ODDS_API_KEY` (legacy). Was reading only `ODDS_API_KEY` which is absent in Replit secrets → always "invalid ODDS_API_KEY". Module-level `ODDS_API_KEY` constant kept for back-compat only.
+
+## WNBA game_log diagnostic (improved July 31)
+Opportunity engine now distinguishes:
+- `game_log_missing` (caller supplied no game_log at all) → blocker `WNBA_HOLD_ROLE_UNCERTAIN:game_log_missing` + `caller_action` field with exact instruction
+- `insufficient_game_data:games=N<M` (game_log present but too sparse/all DNPs)
+`game_log` is NOT auto-fetched by auto_enrichment — caller must supply it for WNBA scoring.
+
 ## Stage 2B remaining work (not implemented)
 - Component/shot distribution engine (`gate_engine/wnba/shot_volume_model.py`)
 - Scenario survival engine (`gate_engine/scenarios/wnba_scenarios.py`)

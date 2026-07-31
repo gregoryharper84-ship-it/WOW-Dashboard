@@ -125,15 +125,22 @@ def _norm(s: str) -> str:
 
 
 def _make_keys(row: dict[str, Any]) -> tuple[str, str]:
-    """Return (mktfamily_key, thesis_key) for a row."""
-    player = _norm(row.get("player") or row.get("player_name") or "UNKNOWN")
-    stat   = _norm(
+    """
+    Return (mktfamily_key, thesis_key) for a row.
+
+    Both keys include direction so that opposing bets (MORE vs LESS) on the
+    same player+stat are treated as distinct exposures and are NOT blocked by
+    each other.  Only same-direction alternate lines (e.g. PRA 19.5 MORE and
+    PRA 22.5 MORE on the same player) share a key and are blocked.
+    """
+    player    = _norm(row.get("player") or row.get("player_name") or "UNKNOWN")
+    stat      = _norm(
         row.get("prop_type") or row.get("prop") or
         row.get("stat_type") or row.get("stat_family") or ""
     )
     direction = (row.get("direction") or row.get("side") or "").upper().strip()
 
-    mktfamily_key = f"{player}|{stat}"
+    mktfamily_key = f"{player}|{stat}|{direction}"
     thesis_key    = f"{player}|{stat}|{direction}"
     return mktfamily_key, thesis_key
 
@@ -405,7 +412,7 @@ class PgPortfolioGovernor:
                 if mktf_count >= self.max_mktfamily:
                     blocks.append(
                         f"{LABEL_CROSS_SLIP_CONC}"
-                        f":alternate_line_or_same_distribution:{mktfamily_key}"
+                        f":alternate_line_same_direction:{mktfamily_key}"
                         f":{mktf_count + 1}x"
                     )
                 elif thesis_count >= self.max_thesis:

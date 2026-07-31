@@ -222,8 +222,9 @@ class TestT5_SamePlayerRejected:
         gov.check_and_register(row)
 
         snap = gov.snapshot()
-        assert "alyssa thomas|pra" in snap["mktfamily_seen"]
-        assert snap["mktfamily_seen"]["alyssa thomas|pra"] == 1
+        # mktfamily_key now includes direction: player|stat|direction
+        assert "alyssa thomas|pra|MORE" in snap["mktfamily_seen"]
+        assert snap["mktfamily_seen"]["alyssa thomas|pra|MORE"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -249,18 +250,23 @@ class TestT6_AlternateLinesBlocked:
         assert any(LABEL_CROSS_SLIP_CONC in b for b in row2["blockers"]), \
             f"Expected REJECT_CROSS_SLIP_CONCENTRATION in blockers: {row2['blockers']}"
 
-    def test_pra_more_and_less_same_player_both_blocked_second(self):
-        """PRA MORE 19.5 then PRA LESS 22.5 — still same distribution → second blocked."""
+    def test_pra_more_and_less_same_player_both_pass(self):
+        """
+        PRA MORE 19.5 then PRA LESS 22.5 for the same player — opposing
+        directions are different market families (different mktfamily_key)
+        and must BOTH be allowed.  Only same-direction alternate lines are
+        blocked as duplicate distribution.
+        """
         gov = PortfolioExposureGovernor(session_id="t6b-session")
 
         row1 = _wnba_row(player="Alyssa Thomas", stat_type="PRA", direction="MORE", line=19.5)
-        row2 = _wnba_row(player="Alyssa Thomas", stat_type="PRA", direction="LESS",  line=22.5)
+        row2 = _wnba_row(player="Alyssa Thomas", stat_type="PRA", direction="LESS", line=22.5)
 
         gov.check_and_register(row1)
         gov.check_and_register(row2)
 
         assert row1["gates"]["portfolio_exposure"]["passed"] is True
-        assert row2["gates"]["portfolio_exposure"]["passed"] is False
+        assert row2["gates"]["portfolio_exposure"]["passed"] is True
 
     def test_different_stat_families_both_allowed(self):
         """Points and PRA are different stat families — both allowed for same player."""

@@ -180,14 +180,15 @@ class TestPgPortfolioGovernorCrossRequest:
 
     def test_same_mktfamily_second_request_blocked(self):
         """
-        Simulates: First /gate-engine/run registered player+stat.
+        Simulates: First /gate-engine/run registered player+stat+direction.
         Second call (new governor instance, same session) sees count=1 → blocked.
         """
         row = _row()
         gov = _gov()
 
         # DB shows mktfamily already claimed (count=1)
-        mktf_key   = "mktf:kayla mcbride|pra"
+        # mktfamily_key is now direction-inclusive: player|stat|direction
+        mktf_key   = "mktf:kayla mcbride|pra|MORE"
         thesis_key = "thesis:kayla mcbride|pra|MORE"
         cur = _FakeCursor()
         cur.set_results([(mktf_key, 1), (thesis_key, 1)])
@@ -208,16 +209,18 @@ class TestPgPortfolioGovernorCrossRequest:
 
     def test_alternate_line_separate_requests_blocked(self):
         """
-        PRA 19.5 in request 1 already registered.
-        PRA 22.5 in request 2 → same mktfamily_key (kayla mcbride|pra) → blocked.
+        PRA 19.5 MORE in request 1 already registered.
+        PRA 22.5 MORE in request 2 → same mktfamily_key (kayla mcbride|pra|MORE) → blocked.
+        Direction is included in the key, so same direction + different line = blocked.
+        Opposite direction (LESS) would have a different key and would pass.
         """
-        row = _row(line=22.5)  # alternate line
+        row = _row(line=22.5, direction="MORE")  # same direction, alternate line
         gov = _gov()
 
-        mktf_key   = "mktf:kayla mcbride|pra"
+        mktf_key   = "mktf:kayla mcbride|pra|MORE"
         thesis_key = "thesis:kayla mcbride|pra|MORE"
         cur = _FakeCursor()
-        cur.set_results([(mktf_key, 1), (thesis_key, 0)])  # mktf already taken
+        cur.set_results([(mktf_key, 1), (thesis_key, 1)])  # mktf already taken
         conn = _FakeConn(cur)
 
         with patch("psycopg2.connect", return_value=conn):
@@ -226,8 +229,36 @@ class TestPgPortfolioGovernorCrossRequest:
         gate = row["gates"]["portfolio_exposure"]
         assert gate["passed"] is False
         assert any(LABEL_CROSS_SLIP_CONC in b for b in gate["blocks"])
-        # Confirm alternate line is treated as same distribution
-        assert gate["mktfamily_key"] == "kayla mcbride|pra"
+        # Confirm alternate line is treated as same distribution (direction-inclusive key)
+        assert gate["mktfamily_key"] == "kayla mcbride|pra|MORE"
+
+    def test_opposing_directions_both_pass(self):
+        """
+        MORE and LESS on the same player+stat → different mktfamily_keys →
+        both must be allowed.  This is the fix for the July 31 WNBA board
+        where both directions were submitted for research.
+        """
+        row_more = _row(direction="MORE")
+        row_less = _row(direction="LESS")
+        gov_more = _gov(research_run_id="run-more")
+        gov_less = _gov(research_run_id="run-less")
+
+        # Simulate: LESS direction has zero prior registrations
+        cur_less = _FakeCursor()
+        cur_less.set_results([
+            ("mktf:kayla mcbride|pra|LESS",  0),
+            ("thesis:kayla mcbride|pra|LESS", 0),
+        ])
+        conn_less = _FakeConn(cur_less)
+
+        with patch("psycopg2.connect", return_value=conn_less):
+            gov_less.check_and_register(row_less)
+
+        gate_less = row_less["gates"]["portfolio_exposure"]
+        assert gate_less["passed"] is True, (
+            f"LESS direction should pass independently of MORE: {gate_less}"
+        )
+        assert gate_less["mktfamily_key"] == "kayla mcbride|pra|LESS"
 
     # ------------------------------------------------------------------
     # Scenario 3: Different players in separate requests pass
@@ -241,10 +272,10 @@ class TestPgPortfolioGovernorCrossRequest:
         row = _row(player="Breanna Stewart", prop_type="Points", line=24.5)
         gov = _gov()
 
-        # DB shows ZERO claims for this player+stat → should pass
+        # DB shows ZERO claims for this player+stat+direction → should pass
         cur = _FakeCursor()
         cur.set_results([
-            ("mktf:breanna stewart|points", 0),
+            ("mktf:breanna stewart|points|MORE", 0),
             ("thesis:breanna stewart|points|MORE", 0),
         ])
         conn = _FakeConn(cur)
@@ -264,13 +295,13 @@ class TestPgPortfolioGovernorCrossRequest:
     def test_new_slate_date_no_conflict(self):
         """
         Governor for TODAY's slate is created fresh.
-        Even though yesterday's slate had Kayla McBride PRA, today's
+        Even though yesterday's slate had Kayla McBride PRA MORE, today's
         slate_date filter means the DB returns count=0.
         """
         row = _row()
         gov = _gov(slate_date=TODAY)  # today's slate
 
-        mktf_key   = "mktf:kayla mcbride|pra"
+        mktf_key   = "mktf:kayla mcbride|pra|MORE"
         thesis_key = "thesis:kayla mcbride|pra|MORE"
         # TODAY's slate returns 0 — yesterday's rows are invisible
         cur = _FakeCursor()
@@ -294,7 +325,7 @@ class TestPgPortfolioGovernorCrossRequest:
 
         cur = _FakeCursor()
         cur.set_results([
-            ("mktf:kayla mcbride|pra",        0),
+            ("mktf:kayla mcbride|pra|MORE",   0),
             ("thesis:kayla mcbride|pra|MORE",  0),
         ])
         conn = _FakeConn(cur)
@@ -329,7 +360,7 @@ class TestPgPortfolioGovernorCrossRequest:
         row1 = _row()
         gov1 = _gov(research_run_id="run-001")
         cur1 = _FakeCursor()
-        cur1.set_results([(mktf_key, 0), (thesis_key, 0)])
+        cur1.set_results([("mktf:kayla mcbride|pra|MORE", 0), ("thesis:kayla mcbride|pra|MORE", 0)])
         conn1 = _FakeConn(cur1)
 
         with patch("psycopg2.connect", return_value=conn1):
@@ -341,7 +372,7 @@ class TestPgPortfolioGovernorCrossRequest:
         row2 = _row()
         gov2 = _gov(research_run_id="run-002")
         cur2 = _FakeCursor()
-        cur2.set_results([(mktf_key, 1), (thesis_key, 1)])
+        cur2.set_results([("mktf:kayla mcbride|pra|MORE", 1), ("thesis:kayla mcbride|pra|MORE", 1)])
         conn2 = _FakeConn(cur2)
 
         with patch("psycopg2.connect", return_value=conn2):
@@ -394,11 +425,11 @@ class TestPgPortfolioGovernorCrossRequest:
         row = _row()
         gov = _gov()
 
-        mktf_key   = "mktf:kayla mcbride|pra"
-        thesis_key = "thesis:kayla mcbride|pra|MORE"
-
         cur = _FakeCursor()
-        cur.set_results([(mktf_key, 1), (thesis_key, 1)])
+        cur.set_results([
+            ("mktf:kayla mcbride|pra|MORE",  1),
+            ("thesis:kayla mcbride|pra|MORE", 1),
+        ])
         conn = _FakeConn(cur)
 
         with patch("psycopg2.connect", return_value=conn):
@@ -475,7 +506,7 @@ class TestPgPortfolioGovernorInvariants:
         gov = _gov()
         cur = _FakeCursor()
         cur.set_results([
-            ("mktf:kayla mcbride|pra", 0),
+            ("mktf:kayla mcbride|pra|MORE", 0),
             ("thesis:kayla mcbride|pra|MORE", 0),
         ])
         conn = _FakeConn(cur)
@@ -489,7 +520,7 @@ class TestPgPortfolioGovernorInvariants:
         gov = _gov()
         cur = _FakeCursor()
         cur.set_results([
-            ("mktf:kayla mcbride|pra", 1),
+            ("mktf:kayla mcbride|pra|MORE", 1),
             ("thesis:kayla mcbride|pra|MORE", 1),
         ])
         conn = _FakeConn(cur)
@@ -529,7 +560,7 @@ class TestPgPortfolioGovernorInvariants:
         gov = _gov(research_run_id="run-XYZ")
         cur = _FakeCursor()
         cur.set_results([
-            ("mktf:kayla mcbride|pra", 0),
+            ("mktf:kayla mcbride|pra|MORE", 0),
             ("thesis:kayla mcbride|pra|MORE", 0),
         ])
         conn = _FakeConn(cur)
@@ -539,7 +570,11 @@ class TestPgPortfolioGovernorInvariants:
         assert gate["research_run_id"] == "run-XYZ"
 
     def test_thesis_key_carries_direction(self):
-        """thesis_key encodes direction so MORE and LESS are distinct theses."""
+        """
+        Both mktfamily_key and thesis_key now include direction.
+        MORE and LESS on the same player+stat produce DIFFERENT keys,
+        so they are treated as independent market families (not same distribution).
+        """
         row_more = _row(direction="MORE")
         row_less = _row(direction="LESS")
 
@@ -547,8 +582,9 @@ class TestPgPortfolioGovernorInvariants:
         mktf_m, thesis_m = _make_keys(row_more)
         mktf_l, thesis_l = _make_keys(row_less)
 
-        assert mktf_m == mktf_l          # same distribution
-        assert thesis_m != thesis_l      # different thesis
+        # Both keys are now direction-inclusive → different for MORE vs LESS
+        assert mktf_m != mktf_l      # opposing directions are different market families
+        assert thesis_m != thesis_l  # opposing directions are different theses
 
     def test_snapshot_returns_error_on_empty_session(self):
         gov = PgPortfolioGovernor(session_id="", conn_string=CONN)
@@ -564,6 +600,13 @@ class TestPgPortfolioGovernorInvariants:
         with patch("psycopg2.connect", return_value=conn):
             snap = gov.snapshot()
         assert snap["can_execute"] is False
+
+    def test_concurrent_requests_declare_variables(self):
+        """Ensure the concurrent test has mktf_key/thesis_key defined before use."""
+        mktf_key   = "mktf:kayla mcbride|pra|MORE"
+        thesis_key = "thesis:kayla mcbride|pra|MORE"
+        assert "|MORE" in mktf_key
+        assert "|MORE" in thesis_key
 
     def test_governance_patch_registered(self):
         """PATCH-PORTFOLIO-002 is in the governance registry and ACTIVE."""

@@ -73,9 +73,27 @@ PLAYER_PROP_MARKETS = {
 }
 
 
+def _resolve_key() -> str:
+    """
+    Resolve the active Odds API key.
+
+    Priority:
+      1. ODDS_API_PAID_KEY  (higher quota)
+      2. ODDS_API_FREE_KEY  (fallback)
+      3. ODDS_API_KEY       (legacy / back-compat)
+
+    Returns empty string when none are configured.
+    """
+    return (
+        os.environ.get("ODDS_API_PAID_KEY", "")
+        or os.environ.get("ODDS_API_FREE_KEY", "")
+        or os.environ.get("ODDS_API_KEY", "")
+    )
+
+
 def _get(path, params=None):
     # Read key dynamically so a rotation takes effect without a process restart.
-    key = os.environ.get("ODDS_API_KEY", "")
+    key = _resolve_key()
     if not key:
         return None, "NOT_CALLED: ODDS_API_KEY not set"
     params = dict(params or {})   # copy — never mutate the caller's dict
