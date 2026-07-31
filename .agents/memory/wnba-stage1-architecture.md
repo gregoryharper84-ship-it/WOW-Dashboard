@@ -13,7 +13,12 @@ Both registered in `gate_engine/governance.py` `_PATCH_REGISTRY` (now 12 active 
 - `_GOVERNANCE_HASH` (governance.py): `9d3139add1e10603c4ca0fe889f3cae80dd3f3dc394d801d0e668652818ae431`
 - `MANIFEST_GOVERNANCE_HASH` (wow_runtime_manifest.py): `af2259ac441286c92be0d22846e5386ef2d8d25f2d79a531f3dbdda0a49c94eb`
 
-**GPT must be updated to use the new manifest hash.**
+## Governance hashes after Stage 2A (current)
+- `_GOVERNANCE_HASH` (governance.py): `f08bc5eb5e14b3019833fb16999c1cfa0e110a5e20fd03a34eef53850b3218b9`
+- `MANIFEST_GOVERNANCE_HASH` (wow_runtime_manifest.py): `f0906aa5ba8a9cb84830c66fb10116fd3fccfbcb0a1a6bbfa659cee131c36285`
+- Active patches: 13
+
+**GPT must be updated to use the Stage 2A manifest hash.**
 
 ## New modules
 - `gate_engine/wnba/opportunity_engine.py` — PATCH-WNBA-001
@@ -67,7 +72,21 @@ Both registered in `gate_engine/governance.py` `_PATCH_REGISTRY` (now 12 active 
 ## Why portfolio governor is NOT WNBA-only
 Spec says cross-slip applies to all sports (max_alternate_lines_same_distribution=1 is sport-agnostic). Only the opportunity gate is WNBA-specific.
 
-## Stage 2 remaining work (not implemented)
+## Stage 2A — DB-backed portfolio persistence (implemented)
+- `gate_engine/portfolio/pg_portfolio_governor.py` — `PgPortfolioGovernor` class
+- Two new tables: `wow_portfolio_dedup` (dedup sentinel + SELECT FOR UPDATE lock target), `wow_portfolio_exposure_log` (audit log)
+- `make_portfolio_governor()` returns `PgPortfolioGovernor` when DATABASE_URL present, `PortfolioExposureGovernor` (in-memory) as fallback
+- `gate_engine_run()` now passes `research_run_id` + `slate_date=target_date` into governor
+- Rollover: slate_date filtering — prior-date rows invisible to dedup check, no purge step needed
+- Fail-closed: DB error → `SESSION_LEDGER_UNAVAILABLE` blocks run
+- New label: `RUN_INVALID_SESSION_ID_MISSING` (fires if session_id empty, pre-DB)
+- New endpoint: `GET /wow/session/exposure-inspect?session_id=X&slate_date=Y` — read-only snapshot
+- Startup warmup calls `_ensure_portfolio_tables()` to auto-create both tables
+- 25 new tests (test_patch_portfolio_stage2a.py), all mocked — no live DB required
+
+**Key: dedup sentinel key format is `mktf:{mktfamily_key}` and `thesis:{thesis_key}` — both stored in the same wow_portfolio_dedup table.**
+
+## Stage 2B remaining work (not implemented)
 - Component/shot distribution engine (`gate_engine/wnba/shot_volume_model.py`)
 - Scenario survival engine (`gate_engine/scenarios/wnba_scenarios.py`)
 - DB-backed cross-request portfolio persistence (`session_thesis_exposure` table)

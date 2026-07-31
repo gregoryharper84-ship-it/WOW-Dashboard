@@ -225,16 +225,43 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
         "precedence":  91,
         "can_execute": False,
         "description": (
-            "Cross-Slip Portfolio Exposure Governor (Stage 1): "
+            "Cross-Slip Portfolio Exposure Governor (Stage 1 foundation): "
             "session-level thesis and market-family deduplication, "
             "complementary to PgSessionLedger (player/game/archetype). "
             "Market-family dedup: same player + stat_family (any line/direction) → max 1 per session; "
             "catches alternate-line exposure (PRA 19.5 and PRA 22.5 on same player = same distribution). "
             "Thesis dedup: same player + stat + direction → max 1 per session. "
             "Block labels: REJECT_CROSS_SLIP_CONCENTRATION, REJECT_DUPLICATE_THESIS. "
-            "Stage 1: in-memory tracking per pipeline call. "
+            "In-memory fallback path preserved for offline/test environments. "
             "Module: gate_engine/portfolio/cross_slip_exposure.py. "
             "New endpoint: POST /wow/session/exposure-audit. "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-PORTFOLIO-002-CROSS-SLIP-PERSISTENT-GOVERNANCE",
+        "version":     "1.0",
+        "effective_at": "2026-07-31",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  92,
+        "can_execute": False,
+        "description": (
+            "Cross-Slip Persistent Governance (Stage 2A): "
+            "Promotes the in-memory PortfolioExposureGovernor to a DB-backed "
+            "PgPortfolioGovernor that catches duplicate exposure across separate "
+            "/gate-engine/run calls, not only within a single request. "
+            "Uses SELECT FOR UPDATE to prevent race conditions. "
+            "Fail-closed: any DB error → SESSION_LEDGER_UNAVAILABLE blocks the run. "
+            "Slate-date expiry: prior-date rows are invisible to dedup check "
+            "(a new slate begins clean without a purge). "
+            "Tables: wow_portfolio_dedup (dedup sentinel + lock target), "
+            "wow_portfolio_exposure_log (full audit log with player, event, "
+            "stat_family, direction, market_line, distribution_key, thesis_key, "
+            "source_ts, decision_label, blockers). "
+            "New labels: REJECT_DUPLICATE_PLAYER_EXPOSURE, RUN_INVALID_SESSION_ID_MISSING. "
+            "New endpoint: GET /wow/session/exposure-inspect. "
+            "Module: gate_engine/portfolio/pg_portfolio_governor.py. "
             "can_execute=False unconditional."
         ),
     },

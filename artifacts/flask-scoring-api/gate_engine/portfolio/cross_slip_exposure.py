@@ -1,5 +1,5 @@
 """
-gate_engine/portfolio/cross_slip_exposure.py  —  PATCH-PORTFOLIO-001
+gate_engine/portfolio/cross_slip_exposure.py  —  PATCH-PORTFOLIO-001/002
 Cross-Slip Exposure Governor
 
 Enforces session-level thesis and market-family deduplication.
@@ -13,7 +13,9 @@ This governor enforces two additional hard rules:
      → Catches exact-duplicate directional bets.
 
 Stage 1: in-memory tracking within a single run_pipeline() call.
-Stage 2: promote to DB-backed cross-request persistence (same pattern as pg_session_ledger).
+Stage 2A: DB-backed cross-request persistence via PgPortfolioGovernor.
+          Returns PgPortfolioGovernor when DATABASE_URL is available.
+          Falls back to PortfolioExposureGovernor (in-memory) when DB is absent.
 
 Hard rules (configurable):
   MAX_MKTFAMILY = 1  — one prop per (player, stat_family) per session
@@ -175,11 +177,34 @@ class PortfolioExposureGovernor:
 # ---------------------------------------------------------------------------
 
 def make_portfolio_governor(
-    session_id: str = "",
-    conn_string: str | None = None,
-) -> PortfolioExposureGovernor:
-    """Create a PortfolioExposureGovernor for the given session."""
+    session_id:      str = "",
+    conn_string:     str | None = None,
+    research_run_id: str = "",
+    slate_date:      "Any | None" = None,
+) -> "PortfolioExposureGovernor":
+    """
+    Create a portfolio exposure governor for the given session.
+
+    Stage 2A: Returns a PgPortfolioGovernor (DB-backed, cross-request
+    persistence) when a DATABASE_URL is available.  Falls back to the
+    in-memory PortfolioExposureGovernor when no DB string is present —
+    used by unit tests that run without a live database.
+    """
+    import os
+
+    db_url = conn_string or os.environ.get("DATABASE_URL", "")
+
+    if db_url:
+        from .pg_portfolio_governor import PgPortfolioGovernor
+        return PgPortfolioGovernor(          # type: ignore[return-value]
+            session_id=session_id,
+            research_run_id=research_run_id,
+            slate_date=slate_date,
+            conn_string=db_url,
+        )
+
+    # No DB — fall back to in-memory governor (tests / offline environments)
     return PortfolioExposureGovernor(
         session_id=session_id,
-        conn_string=conn_string,
+        conn_string=None,
     )

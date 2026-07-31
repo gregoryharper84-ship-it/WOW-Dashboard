@@ -38,9 +38,11 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "WOW-PATCH-2026-07-15-PROP-CONFIDENCE-AND-MARKET-LABEL-SEPARATION",
         "WOW-PATCH-2026-07-15-GOVERNANCE-RESILIENCE-AND-ERROR-CONTRACT",
         "WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE",
-        # Stage 1: WNBA opportunity gate + cross-slip portfolio governor
+        # Stage 1: WNBA opportunity gate + cross-slip portfolio governor (in-memory)
         "WOW-PATCH-WNBA-001-OPPORTUNITY-STABILITY-GATE",
         "WOW-PATCH-PORTFOLIO-001-CROSS-SLIP-EXPOSURE-GOVERNOR",
+        # Stage 2A: DB-backed cross-request portfolio persistence
+        "WOW-PATCH-PORTFOLIO-002-CROSS-SLIP-PERSISTENT-GOVERNANCE",
     ],
     "skills": {
         "slip_optimizer": {
@@ -86,8 +88,9 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "mlb_outs_more_ceiling": "MODEL_QUALIFIED_HOLD",
         "wnba_composite_forward_test": True,
         "cross_ticket_deduplication": True,
-        "wnba_opportunity_gate": True,         # PATCH-WNBA-001
-        "cross_slip_portfolio_governor": True, # PATCH-PORTFOLIO-001
+        "wnba_opportunity_gate": True,                    # PATCH-WNBA-001
+        "cross_slip_portfolio_governor": True,            # PATCH-PORTFOLIO-001
+        "cross_slip_persistent_governance_db": True,      # PATCH-PORTFOLIO-002
     },
 }
 

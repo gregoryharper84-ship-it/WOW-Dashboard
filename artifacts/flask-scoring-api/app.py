@@ -12726,12 +12726,16 @@ def cm_patch_flags():
         },
         # Stage 1 gate status (PATCH-WNBA-001, PATCH-PORTFOLIO-001)
         "wnba_opportunity_gate": _wnba_opp_get_gate_status(),
+        # Stage 2A gate status (PATCH-PORTFOLIO-002)
         "cross_slip_governor": {
-            "patch":          "PATCH-PORTFOLIO-001",
+            "patch":          "PATCH-PORTFOLIO-002",
             "max_mktfamily":  1,
             "max_thesis":     1,
-            "backend":        "memory",
-            "can_execute":    False,
+            "backend":        "postgres" if os.environ.get("DATABASE_URL") else "memory",
+            "cross_request_persistence": True,
+            "slate_date_expiry":         True,
+            "atomic_race_protection":    True,
+            "can_execute":               False,
         },
     })
 
@@ -12948,6 +12952,83 @@ def wow_session_exposure_audit():
         "snapshot":        gov.snapshot(),
         "can_execute":     False,
     })
+
+
+# ---------------------------------------------------------------------------
+# GET /wow/session/exposure-inspect  (PATCH-PORTFOLIO-002)
+# Read-only view of current session exposure — no mutation.
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/session/exposure-inspect", methods=["GET"])
+def wow_session_exposure_inspect():
+    """
+    GET /wow/session/exposure-inspect
+
+    Returns the current portfolio exposure state for a session from the DB
+    without mutating any records.
+
+    Query parameters:
+      session_id      — required
+      research_run_id — optional, echoed in response
+      slate_date      — optional (YYYY-MM-DD); defaults to today
+
+    Response:
+    {
+      "session_id":      "...",
+      "research_run_id": "...",
+      "slate_date":      "2026-07-31",
+      "backend":         "postgres" | "memory",
+      "mktfamily_seen":  { "player|stat": count, ... },
+      "thesis_seen":     { "player|stat|direction": count, ... },
+      "log":             [ { ...audit row... }, ... ],
+      "can_execute":     false
+    }
+    """
+    from datetime import date as _dt_date
+
+    session_id      = request.args.get("session_id", "").strip()
+    research_run_id = request.args.get("research_run_id", "").strip()
+    slate_date_str  = request.args.get("slate_date", "").strip()
+
+    if not session_id:
+        return jsonify({
+            "error":      "session_id is required",
+            "code":       "RUN_INVALID_SESSION_ID_MISSING",
+            "can_execute": False,
+        }), 400
+
+    slate_date = None
+    if slate_date_str:
+        try:
+            slate_date = _dt_date.fromisoformat(slate_date_str)
+        except ValueError:
+            return jsonify({"error": f"Invalid slate_date: {slate_date_str}"}), 400
+
+    db_url = os.environ.get("DATABASE_URL")
+
+    if db_url:
+        gov = _PgPortfolioGovernor(
+            session_id=session_id,
+            research_run_id=research_run_id,
+            slate_date=slate_date,
+            conn_string=db_url,
+        )
+        snap = gov.snapshot()
+    else:
+        # No DB — return empty snapshot with memory backend note
+        snap = {
+            "session_id":      session_id,
+            "research_run_id": research_run_id,
+            "slate_date":      str(slate_date or _dt_date.today()),
+            "backend":         "memory",
+            "mktfamily_seen":  {},
+            "thesis_seen":     {},
+            "log":             [],
+            "note":            "DATABASE_URL not configured — cross-request persistence unavailable.",
+            "can_execute":     False,
+        }
+
+    return jsonify(snap)
 
 
 @app.route("/wow/slip-optimizer", methods=["POST"])
@@ -18851,6 +18932,10 @@ from gate_engine.portfolio.cross_slip_exposure import (
     PortfolioExposureGovernor as _PortfolioExposureGovernor,
     make_portfolio_governor as _make_portfolio_governor,
 )
+from gate_engine.portfolio.pg_portfolio_governor import (
+    ensure_portfolio_tables_exist as _ensure_portfolio_tables,
+    PgPortfolioGovernor as _PgPortfolioGovernor,
+)
 from gate_engine.wnba.opportunity_engine import (
     run as _wnba_opp_run,
     get_gate_status as _wnba_opp_get_gate_status,
@@ -18882,6 +18967,11 @@ def _run_startup_warmup():
     try:
         from gate_engine.llp_stage2_tables import ensure_all_tables as _s2_ensure_tables
         _s2_ensure_tables()
+    except Exception:
+        pass
+    # PATCH-PORTFOLIO-002: create wow_portfolio_dedup + wow_portfolio_exposure_log
+    try:
+        _ensure_portfolio_tables()
     except Exception:
         pass
 
@@ -19499,10 +19589,14 @@ def gate_engine_run():
     # Wire session exposure ledger for cross-request persistence
     _session_exposure_ledger = _get_session_ledger(_session_id)
 
-    # PATCH-PORTFOLIO-001: Cross-Slip Exposure Governor (session-scoped, in-memory)
+    # PATCH-PORTFOLIO-001/002: Cross-Slip Exposure Governor
+    # Stage 2A: DB-backed when DATABASE_URL is present (cross-request persistence).
+    # Falls back to in-memory PortfolioExposureGovernor when no DB is available.
     _portfolio_gov = _make_portfolio_governor(
         session_id=_session_id or "",
         conn_string=os.environ.get("DATABASE_URL"),
+        research_run_id=_research_run_id or "",
+        slate_date=target_date,   # None → PgPortfolioGovernor uses date.today()
     )
 
     try:

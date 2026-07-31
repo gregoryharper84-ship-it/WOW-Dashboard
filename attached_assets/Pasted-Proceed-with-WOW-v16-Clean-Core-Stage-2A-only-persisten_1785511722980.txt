@@ -1,0 +1,44 @@
+Proceed with WOW v16 Clean Core Stage 2A only: persistent cross-request
+session exposure governance.
+
+Do not begin component distributions or scenario simulation yet.
+
+Requirements:
+
+1. Persist exposure by session_id and research_run_id in the existing
+Postgres/session-ledger architecture.
+2. Preserve player, event, stat_family, direction, market line,
+distribution_key, thesis_key, source timestamp, decision label, and blockers.
+3. Treat alternate lines for the same player/stat family as one distribution.
+4. Detect duplicate exposure across separate /gate-engine/run calls, not only
+within one request.
+5. Require the caller to provide session_id and research_run_id.
+6. Fail closed when the session ledger cannot be read or written.
+7. Prevent race conditions with an atomic transaction or equivalent locking.
+8. Add an endpoint to inspect current session exposure without mutating it.
+9. Add expiry/closure behavior so prior dates do not contaminate a new slate.
+10. Preserve lowest-ceiling propagation and can_execute=false.
+
+Required labels:
+
+REJECT_DUPLICATE_PLAYER_EXPOSURE
+REJECT_DUPLICATE_THESIS
+REJECT_CROSS_SLIP_CONCENTRATION
+RUN_INVALID_SESSION_LEDGER_UNAVAILABLE
+RUN_INVALID_SESSION_ID_MISSING
+
+Required tests:
+
+- Same player/stat-family in two separate requests is rejected.
+- Alternate lines in separate requests are rejected as one distribution.
+- Different players in separate requests pass.
+- Same player on a new slate date does not conflict after valid rollover.
+- Concurrent requests cannot both reserve the same exposure.
+- Ledger read/write failure invalidates the run.
+- Rejected rows remain visible for audit but do not silently count as approved
+exposure unless governance explicitly defines that behavior.
+- Existing Stage 1 tests remain green.
+
+Update /wow/patch-flags, governance registry, manifest, invocation audit,
+and regression suite. Return changed files, migration details, endpoint schemas,
+test results, governance hash, and one complete cross-request proof trace.
