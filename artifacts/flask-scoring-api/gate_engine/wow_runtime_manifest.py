@@ -43,6 +43,10 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "WOW-PATCH-PORTFOLIO-001-CROSS-SLIP-EXPOSURE-GOVERNOR",
         # Stage 2A: DB-backed cross-request portfolio persistence
         "WOW-PATCH-PORTFOLIO-002-CROSS-SLIP-PERSISTENT-GOVERNANCE",
+        # 2026-08-01 postmortem patches
+        "WOW-PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD",
+        "WOW-PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE",
+        "WOW-PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY",
     ],
     "skills": {
         "slip_optimizer": {
@@ -73,6 +77,13 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
             "required_when": "sport=MLB and participant_type=PITCHER",
             "skill_file": "skills/wow-mlb-pitcher-failure-path-expert-SKILL-v2.md",
         },
+        "mlb_1ip_pitch_count": {
+            "name": "wow.mlb-first-inning-pitch-count-expert",
+            "version": "v3",
+            "required": False,
+            "required_when": "sport=MLB and market_type=1IP_PITCHES_THROWN",
+            "skill_file": "skills/wow-mlb-first-inning-pitch-count-expert-SKILL-v3.md",
+        },
         "cross_ticket_governor": {
             "name": "wow.cross-ticket-exposure-governor",
             "version": "v1",
@@ -91,6 +102,10 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "wnba_opportunity_gate": True,                    # PATCH-WNBA-001
         "cross_slip_portfolio_governor": True,            # PATCH-PORTFOLIO-001
         "cross_slip_persistent_governance_db": True,      # PATCH-PORTFOLIO-002
+        # 2026-08-01 postmortem
+        "cross_slip_duplicate_guard": True,               # PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD
+        "mlb_1ip_efficiency_gap_enforce": True,           # PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE
+        "pitch_count_directional_asymmetry": True,        # PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY
     },
 }
 

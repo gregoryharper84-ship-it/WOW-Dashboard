@@ -265,6 +265,83 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "can_execute=False unconditional."
         ),
     },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD",
+        "version":     "1.0",
+        "effective_at": "2026-08-01",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  93,
+        "can_execute": False,
+        "description": (
+            "Cross-Slip Duplicate Guard (2026-08-01 postmortem): "
+            "Session-level thesis exposure ledger in wow_session_thesis_exposure. "
+            "Tracks exact duplicate legs (same player/stat/line/side) and "
+            "shared-distribution groups (same player/stat/side, alternate lines). "
+            "Exposure tiers: TIER_0=PASS, TIER_1=PASS_WITH_DISCLOSURE (0-20%), "
+            "TIER_2=HOLD_CONFIRMATION_REQUIRED (dist-family>20% or unknown denom), "
+            "TIER_3=HARD_STOP_CROSS_SLIP_OVEREXPOSURE (exact dup>20%). "
+            "TIER_3 cannot be overridden. "
+            "Exposure source precedence: session ledger > open unsettled rows > "
+            "same-slate proposed rows > workbook fallback. "
+            "Gate runs AFTER weakest-leg elimination and card fragility, "
+            "BEFORE final card output. "
+            "Module: gate_engine/portfolio/slip_exposure_ledger.py. "
+            "Table: wow_session_thesis_exposure. "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE",
+        "version":     "1.0",
+        "effective_at": "2026-08-01",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  94,
+        "can_execute": False,
+        "description": (
+            "1IP Efficiency Gap Enforcement (2026-08-01 postmortem): "
+            "Mandatory pre-event-tree efficiency audit for all 1IP pitch-count "
+            "LESS candidates. Seven Tier-1 metrics (P/BF, pitches/start, walk rate, "
+            "first-pitch strike, zone rate, BB rate, CSW rate) weighted 0.20/0.20/"
+            "0.15/0.15/0.10/0.10/0.10. Each scored 0.0/0.5/1.0. "
+            "Three Tier-2 modifiers (WHIP, hard-hit, chase rate) add up to 0.10. "
+            "Fewer than 4 of 7 Tier-1 metrics → EFFICIENCY_SCORE_INCOMPLETE → "
+            "cap LESS at MODEL_QUALIFIED_HOLD. "
+            "Bands: STABLE(<0.30), MILD_DETERIORATION(0.30-0.50, haircut -0.02), "
+            "MATERIAL_DETERIORATION(0.50-0.70, cap=HOLD), "
+            "SEVERE_DETERIORATION(>=0.70, cap=WATCH). "
+            "ERA and xERA are contextual only, receive no weight. "
+            "Postgame data must not be used in pregame regrade. "
+            "Module: gate_engine/mlb/first_inning_efficiency.py. "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY",
+        "version":     "1.0",
+        "effective_at": "2026-08-01",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  95,
+        "can_execute": False,
+        "description": (
+            "Pitch-Count Directional Asymmetry (2026-08-01 postmortem): "
+            "Mandatory post-event-tree Directional Fragility Score (DFS) for all "
+            "1IP pitch-count LESS candidates. "
+            "DFS = 0.35*three_batter_less_dependence + 0.30*extended_inning_loss_rate "
+            "+ 0.20*right_tail_mass + 0.15*min(1, uncertainty_gap/0.10). "
+            "Bands: LOW(<0.55), MODERATE(0.55-0.70, -0.02 lower bound), "
+            "HIGH(0.70-0.80, cap=HOLD), SEVERE(>=0.80, cap=WATCH). "
+            "Hard override: three_batter_less_dependence>=0.80 AND "
+            "P(MORE|BF>=4)>=0.70 → SEVERE unconditionally. "
+            "Lowest-ceiling propagation: event-tree → efficiency → directional → "
+            "market/payout → slip → cross-slip exposure → final. "
+            "No downstream pass may erase an upstream ceiling. "
+            "Module: gate_engine/mlb/first_inning_efficiency.py. "
+            "can_execute=False unconditional."
+        ),
+    },
 ]
 
 # ---------------------------------------------------------------------------
