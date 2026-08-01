@@ -1,0 +1,498 @@
+openapi: 3.1.0
+info:
+  title: WOW Custom Backend Services (not yet deployed)
+  version: "0.1.0-stub"
+  description: >
+    STUB SCHEMA — these endpoints describe custom backend services that do not
+    yet exist anywhere (not on the Replit app, not on any vendor's platform).
+
+    Four planned services:
+      1. identity-resolution  — cross-book player name / ID normalization
+      2. probability-model    — standalone calibrated probability model API
+      3. calibration-DB       — queryable calibration and settlement ledger
+      4. news-feed            — injury, lineup, and breaking news aggregator
+
+    All four are labeled NOT_YET_DEPLOYED.
+
+    Decision to make later: whether each service is built on the existing
+    Replit app (adding paths to app.py) or as a separate deployment.
+    That decision changes the server URL and auth type in this schema — but
+    NOT the operation shapes below, which are defined by the WOW data model.
+
+    Until that decision is made:
+      - server.url is set to a placeholder (https://NOT_YET_DEPLOYED.example)
+      - auth type is placeholder apiKey (may change to Bearer / OAuth)
+      - Every operation returns deployment_status: NOT_YET_DEPLOYED
+
+# ── Server ────────────────────────────────────────────────────────────────────
+# Replace this URL when the service is deployed.
+# If built on the existing Replit app, use the WOW backend URL and remove
+# the ApiKeyAuth securityScheme in favor of the existing X-API-Key pattern.
+servers:
+  - url: https://NOT_YET_DEPLOYED.example
+    description: >
+      Placeholder — replace with actual service URL when deployed.
+      Options: (a) https://create-app-gregoryharper84.replit.app/wow/custom
+               (b) separate Replit deployment
+               (c) other managed hosting
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+paths:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1. IDENTITY RESOLUTION SERVICE
+  # Cross-book player name / team ID normalization.
+  # Purpose: resolve "Kayla McBride" (PrizePicks) ↔ player_id (Sportradar)
+  #          ↔ athlete_id (ESPN) ↔ mlb_id (MLB Stats API) without manual mapping.
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /identity/resolve/player:
+    get:
+      operationId: resolvePlayerIdentity
+      x-openai-isConsequential: false
+      summary: "[NOT_YET_DEPLOYED] Resolve a player name to cross-book IDs"
+      description: >
+        NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
+
+        Planned behavior when deployed:
+          Given a player name and optional sport/team hint, returns the
+          canonical player record with IDs across all active data sources
+          (Sportradar UUID, SportsDataIO ID, ESPN athlete_id, MLB Stats API
+          person_id, PrizePicks player_id).  Normalizes name variants and
+          handles traded players with a canonical_team field.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Player name (any variant, case-insensitive).
+        - name: sport
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [nba, nfl, mlb, nhl, wnba]
+          description: Sport hint — narrows lookup, required if name is ambiguous.
+        - name: team
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Team abbreviation or full name hint.
+      responses:
+        "200":
+          description: Resolved player identity or NOT_YET_DEPLOYED stub
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotYetDeployedEnvelope"
+        "401":
+          description: Missing or invalid API key
+
+  /identity/resolve/team:
+    get:
+      operationId: resolveTeamIdentity
+      x-openai-isConsequential: false
+      summary: "[NOT_YET_DEPLOYED] Resolve a team name to cross-book IDs"
+      description: >
+        NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
+
+        Planned behavior when deployed:
+          Maps a team name or abbreviation to canonical IDs across all active
+          data sources (Sportradar team_id, SportsDataIO TeamID, ESPN team_id,
+          Kalshi ticker prefix).
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Team name or abbreviation.
+        - name: sport
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [nba, nfl, mlb, nhl, wnba]
+      responses:
+        "200":
+          description: Resolved team identity or NOT_YET_DEPLOYED stub
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotYetDeployedEnvelope"
+        "401":
+          description: Missing or invalid API key
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2. PROBABILITY MODEL SERVICE
+  # Standalone calibrated probability API — independent of gate-engine.
+  # Purpose: query a pre-trained model for P(outcome) given contextual inputs.
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /prob/predict:
+    post:
+      operationId: probabilityModelPredict
+      x-openai-isConsequential: false
+      summary: "[NOT_YET_DEPLOYED] Calibrated probability for a prop outcome"
+      description: >
+        NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
+
+        Planned behavior when deployed:
+          Accepts a structured prop context (player, stat_type, line, direction,
+          opponent, venue, days_rest, recent_game_log) and returns:
+            - model_probability: P(outcome) from the calibrated model
+            - confidence_interval: [lower, upper] at 80%
+            - calibration_tier: CALIBRATED | PROVISIONAL | INSUFFICIENT_DATA
+            - model_version: version tag of the trained model used
+            - last_trained: ISO date of the model's training cutoff
+
+        This service is separate from the gate-engine probability gate so it
+        can be swapped or updated without redeploying gate-engine.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [player, stat_type, line, direction, sport]
+              properties:
+                player:
+                  type: string
+                sport:
+                  type: string
+                  enum: [nba, nfl, mlb, nhl, wnba]
+                stat_type:
+                  type: string
+                  description: e.g. Points, PRA, Rebounds, Assists, PassingYards
+                line:
+                  type: number
+                direction:
+                  type: string
+                  enum: [MORE, LESS]
+                opponent_team:
+                  type: string
+                  nullable: true
+                venue:
+                  type: string
+                  enum: [home, away, neutral]
+                  nullable: true
+                days_rest:
+                  type: integer
+                  nullable: true
+                game_log:
+                  type: array
+                  nullable: true
+                  description: >
+                    Recent per-game stat dicts (same format as WOW gate-engine
+                    enrichment.game_log).
+                  items:
+                    type: object
+                    additionalProperties: true
+      responses:
+        "200":
+          description: Probability prediction or NOT_YET_DEPLOYED stub
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotYetDeployedEnvelope"
+        "401":
+          description: Missing or invalid API key
+
+  /prob/model-info:
+    get:
+      operationId: probabilityModelInfo
+      x-openai-isConsequential: false
+      summary: "[NOT_YET_DEPLOYED] Probability model version and calibration metadata"
+      description: >
+        NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
+
+        Planned behavior: Returns active model version, last training date,
+        sport/stat coverage, and calibration Brier scores by sport.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Model info or NOT_YET_DEPLOYED stub
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotYetDeployedEnvelope"
+        "401":
+          description: Missing or invalid API key
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 3. CALIBRATION DB SERVICE
+  # Queryable calibration and settlement ledger.
+  # Purpose: surface scored prop records, outcomes, and Brier scores
+  #          across sessions for long-run calibration analysis.
+  # NOTE: The Postgres calibration tables exist on the WOW Replit app already
+  # (wow_weather_scout_log, wow_calibration_ledger, wow_portfolio_*).
+  # This service is a query API on top of those tables — it may be built
+  # directly on the existing Replit app rather than a separate service.
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /calibration/records:
+    get:
+      operationId: calibrationRecords
+      x-openai-isConsequential: false
+      summary: "[NOT_YET_DEPLOYED] Query settled calibration records"
+      description: >
+        NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
+
+        Planned behavior when deployed:
+          Returns settled prop records with predicted probability, actual
+          outcome (HIT/MISS), and per-record Brier contribution.  Filterable
+          by sport, date range, stat_type, and calibration_tier.
+          Designed for long-run calibration reporting and model feedback.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: sport
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [nba, nfl, mlb, nhl, wnba, kalshi_weather]
+        - name: date_from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: date_to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: stat_type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: calibration_tier
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [CALIBRATED, PROVISIONAL, INSUFFICIENT_DATA]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        "200":
+          description: Calibration records or NOT_YET_DEPLOYED stub
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotYetDeployedEnvelope"
+        "401":
+          description: Missing or invalid API key
+
+  /calibration/summary:
+    get:
+      operationId: calibrationSummary
+      x-openai-isConsequential: false
+      summary: "[NOT_YET_DEPLOYED] Calibration summary — Brier by sport/tier"
+      description: >
+        NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
+
+        Planned behavior: Returns aggregate Brier score, record count, and
+        hit rate grouped by sport and calibration_tier over a date window.
+        This is the primary model quality dashboard endpoint.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: date_from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: date_to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Calibration summary or NOT_YET_DEPLOYED stub
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotYetDeployedEnvelope"
+        "401":
+          description: Missing or invalid API key
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 4. NEWS FEED SERVICE
+  # Injury, lineup change, and breaking news aggregator.
+  # Purpose: structured real-time news context for scoring enrichment.
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /news/player/{player_name}:
+    get:
+      operationId: newsFeedPlayer
+      x-openai-isConsequential: false
+      summary: "[NOT_YET_DEPLOYED] Breaking news for a player"
+      description: >
+        NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
+
+        Planned behavior when deployed:
+          Returns structured news items for a player: injury reports, lineup
+          status changes, coach quotes on role/minutes, and trade news.
+          Each item carries a published_at timestamp and an impact_label
+          (INJURY_OUT | INJURY_QUESTIONABLE | ROLE_CHANGE | LINEUP_SCRATCH |
+          POSITIVE_NOTE | NEUTRAL) so the gate-engine can consume the signal
+          without parsing free text.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: player_name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Player name (fuzzy matched).
+        - name: sport
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [nba, nfl, mlb, nhl, wnba]
+        - name: hours_back
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 48
+            minimum: 1
+            maximum: 168
+          description: How many hours of history to return (max 7 days).
+        - name: impact_filter
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Comma-separated impact labels to include, e.g.
+            INJURY_OUT,INJURY_QUESTIONABLE,LINEUP_SCRATCH
+      responses:
+        "200":
+          description: Player news or NOT_YET_DEPLOYED stub
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotYetDeployedEnvelope"
+        "401":
+          description: Missing or invalid API key
+
+  /news/slate/{sport}/{date}:
+    get:
+      operationId: newsFeedSlate
+      x-openai-isConsequential: false
+      summary: "[NOT_YET_DEPLOYED] All impact news for a sport slate"
+      description: >
+        NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
+
+        Planned behavior when deployed:
+          Returns all high-impact news items for a full sport slate on a given
+          date — injuries, lineup scratches, role changes — aggregated across
+          all players on that day's schedule.  Use before a scoring session to
+          identify which props are most affected by day-of information.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: sport
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [nba, nfl, mlb, nhl, wnba]
+        - name: date
+          in: path
+          required: true
+          schema:
+            type: string
+            format: date
+          description: Slate date YYYY-MM-DD.
+        - name: min_impact
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              [INJURY_OUT, INJURY_QUESTIONABLE, ROLE_CHANGE, LINEUP_SCRATCH]
+          description: Minimum impact threshold — excludes POSITIVE_NOTE and NEUTRAL.
+      responses:
+        "200":
+          description: Slate news or NOT_YET_DEPLOYED stub
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotYetDeployedEnvelope"
+        "401":
+          description: Missing or invalid API key
+
+# ── Components ────────────────────────────────────────────────────────────────
+components:
+  schemas:
+    NotYetDeployedEnvelope:
+      type: object
+      description: >
+        Standard response envelope for NOT_YET_DEPLOYED custom services.
+        All fields below deployment_status will be null until the service
+        is built and the server URL is updated.
+      properties:
+        ok:
+          type: boolean
+          description: Always false until deployed.
+        deployment_status:
+          type: string
+          enum: [NOT_YET_DEPLOYED]
+          description: >
+            Sentinel flag.  When this service is deployed, this field will be
+            removed from the schema and ok will be true on success.
+        service:
+          type: string
+          description: >
+            Service name: identity-resolution | probability-model |
+            calibration-db | news-feed
+        operation:
+          type: string
+          description: The operationId that was called.
+        build_note:
+          type: string
+          description: >
+            Human-readable description of what needs to be built and what
+            decision is pending (Replit app vs. separate deployment).
+        data:
+          type: object
+          nullable: true
+          description: Always null until deployed.
+          additionalProperties: true
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        Placeholder API key scheme.  The exact auth mechanism (apiKey vs.
+        Bearer / OAuth) may change depending on whether this service is
+        built on the existing Replit app (X-API-Key matching SCORING_API_KEY)
+        or as a separate deployment.
+        Update auth type here when the deployment decision is made.

@@ -1,0 +1,454 @@
+openapi: 3.1.0
+info:
+  title: WOW Vendor Data Gateway (stub)
+  version: "0.1.0-stub"
+  description: >
+    STUB SCHEMA — endpoint shapes are correct; credentials are placeholders.
+
+    Covers four paid vendor data sources used by the WOW scoring pipeline:
+      - Sportradar (live + historical sports data)
+      - SportsDataIO  (alternate sports data feed)
+      - PrizePicks board (public player-prop board, no key required)
+      - Additional odds feed (supplemental line source)
+
+    All calls are PROXIED through the WOW Replit backend so API keys never
+    leave the server.  The GPT sends X-API-Key (WOW action key) to the Replit
+    proxy; the proxy forwards requests to the vendor with the vendor's key.
+
+    To activate any vendor:
+      1. Obtain the vendor API key.
+      2. Set the key as a Replit secret (e.g. SPORTRADAR_API_KEY).
+      3. No schema changes required — only credential entry.
+
+    Status flags in every response:
+      vendor_status: ACTIVE | STUB_NO_CREDENTIAL | STUB_NOT_YET_WIRED
+      can_execute:   always false
+      dry_run_only:  always true
+
+# ── Server ────────────────────────────────────────────────────────────────────
+servers:
+  - url: https://create-app-gregoryharper84.replit.app
+    description: WOW Replit backend proxy (all vendor calls route through here)
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+paths:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # SPORTRADAR
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /wow/vendors/sportradar/game-summary/{sport}/{game_id}:
+    get:
+      operationId: sportradarGameSummary
+      x-openai-isConsequential: false
+      summary: "[STUB] Sportradar game summary"
+      description: >
+        Proxied Sportradar game summary.  Returns box-score, scoring plays,
+        and player stat lines for a completed or in-progress game.
+
+        STUB: Returns vendor_status=STUB_NO_CREDENTIAL until SPORTRADAR_API_KEY
+        is set on the Replit server.  Schema shape is final.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: sport
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [nba, nfl, mlb, nhl, wnba]
+          description: Sport identifier (lowercase).
+        - name: game_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Sportradar game UUID.
+        - name: locale
+          in: query
+          required: false
+          schema:
+            type: string
+            default: en
+      responses:
+        "200":
+          description: Game summary or stub envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VendorEnvelope"
+        "401":
+          description: Missing or invalid WOW action key
+        "502":
+          description: Vendor unreachable or credential missing
+
+  /wow/vendors/sportradar/player-profile/{sport}/{player_id}:
+    get:
+      operationId: sportradarPlayerProfile
+      x-openai-isConsequential: false
+      summary: "[STUB] Sportradar player profile"
+      description: >
+        Proxied Sportradar player profile including biographical data,
+        current team, draft info, and season-to-date statistics.
+
+        STUB: Returns vendor_status=STUB_NO_CREDENTIAL until SPORTRADAR_API_KEY
+        is set.  Schema shape is final.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: sport
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [nba, nfl, mlb, nhl, wnba]
+        - name: player_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Sportradar player UUID.
+      responses:
+        "200":
+          description: Player profile or stub envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VendorEnvelope"
+        "401":
+          description: Missing or invalid WOW action key
+        "502":
+          description: Vendor unreachable or credential missing
+
+  /wow/vendors/sportradar/schedule/{sport}/{season_year}:
+    get:
+      operationId: sportradarSchedule
+      x-openai-isConsequential: false
+      summary: "[STUB] Sportradar full season schedule"
+      description: >
+        Proxied Sportradar season schedule listing all games with dates,
+        venues, and team identifiers.  Use for slate-building and date lookups.
+
+        STUB: vendor_status=STUB_NO_CREDENTIAL until credential is set.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: sport
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [nba, nfl, mlb, nhl, wnba]
+        - name: season_year
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Four-digit season year (e.g. 2026).
+        - name: season_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [REG, PST, PRE]
+            default: REG
+      responses:
+        "200":
+          description: Schedule or stub envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VendorEnvelope"
+        "401":
+          description: Missing or invalid WOW action key
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # SPORTSDATAIO
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /wow/vendors/sdio/player-props/{sport}/{game_id}:
+    get:
+      operationId: sdioPlayerProps
+      x-openai-isConsequential: false
+      summary: "[STUB] SportsDataIO player props for a game"
+      description: >
+        Proxied SportsDataIO player prop lines for a specific game — points,
+        rebounds, assists, passing yards, etc. with consensus lines from
+        participating sportsbooks.
+
+        STUB: Returns vendor_status=STUB_NO_CREDENTIAL until SDIO_API_KEY
+        is set on the Replit server.  Schema shape is final.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: sport
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [nba, nfl, mlb, nhl, wnba]
+        - name: game_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: SportsDataIO game ID.
+        - name: market
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Optional prop market filter, e.g. PlayerPoints, PlayerRebounds,
+            PlayerAssists, PlayerPassingYards.
+      responses:
+        "200":
+          description: Player props or stub envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VendorEnvelope"
+        "401":
+          description: Missing or invalid WOW action key
+        "502":
+          description: Vendor unreachable or credential missing
+
+  /wow/vendors/sdio/scores/{sport}/{date}:
+    get:
+      operationId: sdioScoresByDate
+      x-openai-isConsequential: false
+      summary: "[STUB] SportsDataIO game scores for a date"
+      description: >
+        Proxied SportsDataIO final and in-progress scores for all games on
+        a given date.  Use for settlement verification and live score checks.
+
+        STUB: vendor_status=STUB_NO_CREDENTIAL until SDIO_API_KEY is set.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: sport
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [nba, nfl, mlb, nhl, wnba]
+        - name: date
+          in: path
+          required: true
+          schema:
+            type: string
+            format: date
+          description: Date in YYYY-MM-DD format.
+      responses:
+        "200":
+          description: Scores or stub envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VendorEnvelope"
+        "401":
+          description: Missing or invalid WOW action key
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # PRIZEPICKS BOARD
+  # Public board — no vendor API key required.
+  # The proxy normalizes the response shape and stamps WOW metadata.
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /wow/vendors/prizepicks/board:
+    get:
+      operationId: prizePicksBoard
+      x-openai-isConsequential: false
+      summary: Normalized PrizePicks player-prop board
+      description: >
+        Proxied and normalized PrizePicks public board.  No PrizePicks API
+        key required — the board is publicly accessible.  The proxy normalizes
+        the response to WOW's internal prop format (player, stat_type, line,
+        direction, sport) and stamps source + fetched_at.
+
+        Use for prop-line discovery and cross-book line comparison.
+        Combine with getOddsApiEventOdds for no-vig consensus pricing.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: sport
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Filter by sport (PrizePicks internal name), e.g. NBA, NFL, MLB,
+            WNBA.  Omit to return all sports.
+        - name: league_id
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: >
+            PrizePicks league ID (e.g. 2=NBA, 7=NFL).  Takes precedence over
+            sport if both are supplied.
+        - name: game_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter to projections for a specific PrizePicks game ID.
+      responses:
+        "200":
+          description: Normalized prop board
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  vendor:
+                    type: string
+                    description: Always "prizepicks"
+                  vendor_status:
+                    type: string
+                    enum: [ACTIVE]
+                    description: Board is public — always ACTIVE
+                  source:
+                    type: string
+                  fetched_at:
+                    type: string
+                    format: date-time
+                  dry_run_only:
+                    type: boolean
+                  can_execute:
+                    type: boolean
+                  prop_count:
+                    type: integer
+                  props:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        player:
+                          type: string
+                        stat_type:
+                          type: string
+                        line:
+                          type: number
+                        sport:
+                          type: string
+                        team:
+                          type: string
+                        game_id:
+                          type: string
+                        projection_id:
+                          type: string
+                        board_time:
+                          type: string
+                          format: date-time
+        "401":
+          description: Missing or invalid WOW action key
+        "502":
+          description: PrizePicks board unreachable
+
+  /wow/vendors/prizepicks/player/{player_name}:
+    get:
+      operationId: prizePicksPlayerLookup
+      x-openai-isConsequential: false
+      summary: PrizePicks props for a specific player
+      description: >
+        Returns all open PrizePicks projections for a player by name
+        (case-insensitive fuzzy match).  Useful for quickly pulling the exact
+        PrizePicks line before running a WOW gate-engine scoring session.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: player_name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Player name (fuzzy matched), e.g. "Kayla McBride".
+      responses:
+        "200":
+          description: Matching props for this player
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  player_query:
+                    type: string
+                  matches_found:
+                    type: integer
+                  vendor_status:
+                    type: string
+                    enum: [ACTIVE]
+                  fetched_at:
+                    type: string
+                    format: date-time
+                  dry_run_only:
+                    type: boolean
+                  can_execute:
+                    type: boolean
+                  props:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        "401":
+          description: Missing or invalid WOW action key
+
+# ── Components ────────────────────────────────────────────────────────────────
+components:
+  schemas:
+    VendorEnvelope:
+      type: object
+      description: >
+        Standard WOW vendor proxy response envelope.
+        When vendor_status is STUB_NO_CREDENTIAL or STUB_NOT_YET_WIRED,
+        the data field will be null and stub_note will explain what is needed.
+      properties:
+        ok:
+          type: boolean
+        vendor:
+          type: string
+          description: Vendor name (sportradar | sdio | prizepicks)
+        vendor_status:
+          type: string
+          enum: [ACTIVE, STUB_NO_CREDENTIAL, STUB_NOT_YET_WIRED]
+          description: >
+            ACTIVE: vendor credential present, live data returned.
+            STUB_NO_CREDENTIAL: backend wired but no API key set yet.
+            STUB_NOT_YET_WIRED: backend route not yet implemented.
+        source:
+          type: string
+        fetched_at:
+          type: string
+          format: date-time
+        dry_run_only:
+          type: boolean
+          description: Always true
+        can_execute:
+          type: boolean
+          description: Always false
+        stub_note:
+          type: string
+          nullable: true
+          description: >
+            Human-readable explanation of what is needed to activate this
+            endpoint.  Null when vendor_status=ACTIVE.
+        data:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Vendor response payload. Null when stub.
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        WOW action key (SCORING_API_KEY).  This authenticates the GPT to the
+        Replit proxy — the proxy handles all vendor credentials internally.
+        Set X-API-Key in the GPT Action authentication settings.
