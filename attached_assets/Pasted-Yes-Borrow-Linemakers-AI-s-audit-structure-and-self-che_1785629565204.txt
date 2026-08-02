@@ -1,0 +1,305 @@
+Yes. **Borrow Linemakers AI’s audit structure and self-checking workflow—not its exchange-data handling or probability shortcuts.**
+
+The uploaded review reaches the same core conclusion: Linemakers presents analysis clearly, but appears to reconstruct tickers, prices, freshness, and market status without proving direct retrieval from Kalshi. 
+
+## Best additions to the WOW engine
+
+### 1. Standardized candidate audit table
+
+Adopt one row per contract:
+
+```text
+Contract / ticker
+Category and lane
+Side
+Settlement source
+Event state
+YES bid / ask / depth
+NO bid / ask / depth
+Orderbook timestamp
+Price age
+Fee-adjusted break-even
+Model probability
+Calibrated lower bound
+Point edge
+Lower-bound edge
+Primary win path
+Primary failure path
+Gate result
+Final label
+```
+
+This would make WOW’s output easier to inspect while preserving the current fail-closed process.
+
+The weather skill already requires most of these inputs, including live bids, asks, timestamps, station identity, forecast horizon, and uncertainty. 
+
+### 2. Direct-evidence manifest
+
+For every candidate, store a machine-verifiable evidence block:
+
+```text
+evidence.market_id
+evidence.series_ticker
+evidence.exact_ticker
+evidence.market_endpoint_timestamp
+evidence.orderbook_endpoint_timestamp
+evidence.settlement_source
+evidence.model_input_timestamps
+evidence.event_status_source
+```
+
+Then enforce:
+
+```text
+ticker_analyzed == ticker_from_inventory == ticker_from_orderbook
+```
+
+Any mismatch becomes:
+
+```text
+CONTRACT_IDENTITY_UNVERIFIED
+```
+
+This is stronger than simply reporting a plausible-looking ticker.
+
+### 3. Automatic second-pass self-audit
+
+Linemakers’ most useful procedural feature is its apparent ability to rerun an internal consistency review. WOW should make this mandatory before producing the final pool.
+
+The second pass should test:
+
+```text
+Did every inventory row receive a terminal disposition?
+Did every qualified row pass all upstream gates?
+Did any pregame probability survive after event start?
+Did any midpoint get mislabeled as no-vig?
+Did any stale price enter edge calculations?
+Did the lower-bound edge clear the category floor?
+Did the portfolio governor run?
+```
+
+A reconciliation equation should also be required:
+
+```text
+rows_scanned =
+identity_failed
++ settlement_failed
++ event_state_failed
++ model_failed
++ price_failed
++ edge_failed
++ portfolio_failed
++ qualified
+```
+
+A mismatch invalidates the run.
+
+### 4. Stronger point-edge versus lower-bound-edge presentation
+
+Keep these explicitly separate:
+
+```text
+point_edge =
+model_point_probability
+- fee_adjusted_break_even
+
+lower_bound_edge =
+calibrated_probability_lower_bound
+- fee_adjusted_break_even
+```
+
+Only the **lower-bound edge** should determine research eligibility.
+
+The existing postmortem and pricing skills already distinguish probability, price, expected value, spread, fees, and uncertainty; this would make that separation more visible in the final output.  
+
+### 5. Explicit failure-path ledger
+
+Linemakers does a good job presenting understandable failure scenarios. WOW should formalize them rather than treating them as narrative commentary.
+
+Weather example:
+
+```text
+failure_path:
+forecast high biased upward
++ afternoon convection
++ station remains below bracket
+```
+
+MLB example:
+
+```text
+failure_path:
+starter underperforms
++ bullpen unavailable
++ opponent platoon advantage
+```
+
+Each failure path should map to an actual model input, uncertainty adjustment, or rejection gate. Unsupported storytelling should not affect the probability.
+
+### 6. Event-state mutex
+
+Add an absolute separation between pregame and live analysis:
+
+```text
+if event_started == true:
+    pregame_probability_valid = false
+    require_live_model = true
+```
+
+For the current engine, live sports markets are disabled, so the proper terminal result would simply be:
+
+```text
+CATEGORY_DISABLED_OR_UNSUPPORTED
+reason=LIVE_MARKET_DISABLED
+```
+
+This prevents an “open” Kalshi market from being mistaken for an eligible pregame market.
+
+### 7. Orderbook terminology sanitation
+
+Never call the bid/ask midpoint “no-vig.”
+
+Report these separately:
+
+```text
+yes_executable_ask
+no_executable_ask
+yes_midpoint
+no_midpoint
+spread
+cross_side_consistency
+fee_adjusted_break_even
+```
+
+For Kalshi, executable price—not midpoint—is the relevant entry comparison. The Exact-Line Auditor already provides a suitable framework for distinguishing executable prices, opposing-side evidence, market hold, and no-vig calculations. 
+
+### 8. Dynamic calibration instead of a universal haircut
+
+Do not borrow Linemakers’ apparent:
+
+```text
+lower_bound = point_probability × 0.95
+```
+
+Build category-specific uncertainty from:
+
+**Weather**
+
+```text
+forecast horizon
+station-specific forecast error
+sigma
+intraday observations
+remaining heating window
+forecast-source disagreement
+weather regime
+```
+
+**Sports**
+
+```text
+starter or lineup confidence
+model disagreement
+sample quality
+market-prior dependence
+injury uncertainty
+event timing
+```
+
+This aligns with the current weather model’s sigma and normalization requirements and the sports lane’s calibrated-probability floor.  
+
+### 9. Candidate funnel summary
+
+Add a compact end-of-run report:
+
+```text
+Inventory discovered: 24
+Eligible category: 11
+Identity verified: 9
+Settlement verified: 9
+Model ready: 5
+Fresh orderbook: 3
+Positive lower-bound edge: 1
+Portfolio qualified: 1
+Final research pool: 1
+```
+
+This makes a zero- or one-contract result look deliberate rather than incomplete.
+
+### 10. Forward-test calibration ledger
+
+The current forward-test ledger should be expanded to record:
+
+```text
+model_version
+calibration_version
+probability_at_first_observation
+probability_at_final_eligible_snapshot
+market price
+lower-bound edge
+rejection reason
+settled result
+Brier contribution
+log-loss contribution
+price movement after snapshot
+```
+
+Rejected candidates should remain in the ledger. Otherwise, the engine cannot detect whether a gate is improving decisions or merely suppressing visible losses.
+
+## What should not be borrowed
+
+Do not adopt:
+
+```text
+Generated or reconstructed tickers
+Web-search-derived “live” prices
+Unsupported price-age claims
+Midpoint labeled as no-vig
+Universal 5% probability haircut
+Pregame models after event start
+Positive-edge labels below active edge floors
+Order-size or capital-allocation suggestions
+Forced completion of two candidate slots
+```
+
+These conflict directly with Recovery Mode and the Portfolio Risk Governor, which require singles only, no capital allocation, no combo construction, and a mandatory portfolio-level gate.  
+
+## Recommended patch
+
+```text
+WOW LINEMAKERS PRESENTATION & SELF-AUDIT PATCH
+
+Borrowed capabilities:
+- standardized candidate audit table
+- explicit point-edge and lower-bound-edge columns
+- primary win and failure paths
+- candidate-funnel reconciliation
+- automatic second-pass consistency audit
+
+Not borrowed:
+- generated contract identities
+- reconstructed exchange prices
+- unsupported freshness claims
+- midpoint-as-no-vig calculations
+- universal probability haircuts
+- execution or capital-allocation outputs
+
+Every Kalshi row must prove:
+- inventory-returned ticker
+- exact settlement identity
+- applicable event state
+- direct orderbook timestamp
+- executable side and depth
+- fee-adjusted break-even
+- dynamically calibrated probability lower bound
+- positive lower-bound edge
+- portfolio-governor approval
+
+Any reconciliation mismatch invalidates the complete run.
+
+dry_run_only=true
+can_execute=false
+capital_allocation=false
+```
+
+**Bottom line:** Linemakers can improve WOW’s **presentation, reconciliation, and automatic self-auditing**. WOW should retain its own contract verification, calibration, price freshness, category restrictions, and Recovery Mode governance. Those are substantially stronger than the Linemakers process described in the uploaded review. 
