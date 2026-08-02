@@ -343,6 +343,58 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
         ),
     },
     {
+        "patch_id":    "WOW-PATCH-2026-08-01-LINEMAKERS-PRESENTATION-AND-SELF-AUDIT",
+        "version":     "1.0",
+        "effective_at": "2026-08-01",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  97,
+        "can_execute": False,
+        "description": (
+            "Linemakers Presentation & Self-Audit Patch (2026-08-01): "
+            "Borrows Linemakers AI's audit structure and self-checking workflow; "
+            "does NOT borrow generated tickers, reconstructed prices, midpoint-as-no-vig, "
+            "universal haircuts, or execution outputs. "
+            "Five additions: "
+            "(1) Standardized 20-field candidate audit table per contract "
+            "(contract/ticker, category/lane, side, settlement source, event state, "
+            "YES/NO executable ask, YES/NO midpoint, orderbook timestamp, price age, "
+            "fee-adjusted break-even, model probability, calibrated lower bound, "
+            "point edge, lower-bound edge, primary win/failure paths, gate result, "
+            "final label, contract_identity_warning). "
+            "(2) Per-candidate direct-evidence manifest with ticker identity check "
+            "(ticker_analyzed==ticker_from_inventory==ticker_from_orderbook); "
+            "mismatch → CONTRACT_IDENTITY_UNVERIFIED warning (not a block). "
+            "(3) Mandatory second-pass self-audit (7 checks): "
+            "terminal disposition, upstream gate compliance, event-state mutex, "
+            "midpoint-as-no-vig, stale price in edge, LB-edge floor, portfolio governor. "
+            "Reconciliation equation: rows_scanned = identity_failed + settlement_failed "
+            "+ event_state_failed + model_failed + price_failed + edge_failed "
+            "+ portfolio_failed + qualified; mismatch = RECONCILIATION_MISMATCH. "
+            "(4) Explicit point-edge vs lower-bound-edge separation: "
+            "point_edge = model_point_probability − fee_adjusted_break_even; "
+            "lower_bound_edge = calibrated_probability_lower_bound − fee_adjusted_break_even; "
+            "only lower-bound edge determines research eligibility. "
+            "(5) Unified cross-lane calibration ledger (wow_unified_calibration_ledger): "
+            "lanes KALSHI_WEATHER/KALSHI_SPORTS/SPORTS_LLP/PROP; "
+            "entry types QUALIFIED/REJECTED/WATCH; "
+            "9 new fields vs kalshi_forecast_ledger: "
+            "probability_at_first_observation, probability_at_final_eligible_snapshot, "
+            "lower_bound_edge, rejection_reason, contract_identity_warning, "
+            "model_version, calibration_version, price_movement_after_snapshot, run_id; "
+            "rejected candidates stored so gate bias can be detected. "
+            "Gate 0 (event-state mutex) added to sports_gate: "
+            "event_status in live states → CATEGORY_DISABLED_OR_UNSUPPORTED/LIVE_MARKET_DISABLED. "
+            "Orderbook terminology: yes_executable_ask/no_executable_ask/yes_midpoint/"
+            "no_midpoint/cross_side_consistency/fee_adjusted_break_even; "
+            "midpoint never labeled no-vig. "
+            "Candidate funnel summary added to category-scan response. "
+            "Modules: kalshi_engine/unified_calibration_ledger.py, "
+            "kalshi_engine/scan_audit.py. "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
         "patch_id":    "WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH",
         "version":     "1.0",
         "effective_at": "2026-08-01",

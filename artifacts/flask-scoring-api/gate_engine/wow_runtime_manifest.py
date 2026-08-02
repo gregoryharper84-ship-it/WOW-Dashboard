@@ -47,6 +47,8 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "WOW-PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD",
         "WOW-PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE",
         "WOW-PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY",
+        # Linemakers Presentation & Self-Audit Patch
+        "WOW-PATCH-2026-08-01-LINEMAKERS-PRESENTATION-AND-SELF-AUDIT",
         # LLP v16 upgrade
         "WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH",
     ],
@@ -151,6 +153,16 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "cross_slip_duplicate_guard": True,               # PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD
         "mlb_1ip_efficiency_gap_enforce": True,           # PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE
         "pitch_count_directional_asymmetry": True,        # PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY
+        # Linemakers Presentation & Self-Audit
+        "linemakers_candidate_audit_table": True,         # PATCH-2026-08-01-LINEMAKERS-*
+        "linemakers_evidence_manifest": True,             # ticker identity warning (not block)
+        "linemakers_second_pass_audit": True,             # 7-check consistency audit
+        "linemakers_reconciliation_equation": True,       # rows_scanned = Σ(buckets) + qualified
+        "linemakers_unified_calibration_ledger": True,    # wow_unified_calibration_ledger
+        "sports_gate_event_state_mutex": True,            # Gate 0: LIVE_MARKET_DISABLED
+        "orderbook_terminology_sanitation": True,         # no midpoint labeled no-vig
+        "lb_edge_vs_point_edge_separation": True,         # explicit separation in output
+        "candidate_funnel_summary": True,                 # compact end-of-run funnel report
         # LLP v16 upgrade
         "llp_slate_integrity_lock": True,                 # PATCH-2026-08-01-LLP-SLATE-INTEGRITY-*
         "llp_market_normalization": True,                 # two-way and three-way exact no-vig

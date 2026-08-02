@@ -458,7 +458,7 @@ def test_sports_gate_full_pass():
     result = sports_check(cand, inventory_signal="INVENTORY_READY")
     assert result["passed"] is True
     assert result["failure_gate"] is None
-    assert len(result["gate_verdicts"]) == 9
+    assert len(result["gate_verdicts"]) == 10  # Gate 0 (event-state mutex) added
     assert all(v["passed"] for v in result["gate_verdicts"])
 
 

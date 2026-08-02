@@ -18982,6 +18982,12 @@ def _run_startup_warmup():
         _ensure_thesis_table()
     except Exception:
         pass
+    # PATCH-2026-08-01-LINEMAKERS-PRESENTATION-AND-SELF-AUDIT: unified calibration ledger
+    try:
+        from kalshi_engine.unified_calibration_ledger import ensure_table as _ensure_ucl
+        _ensure_ucl()
+    except Exception:
+        pass
 
 _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
 _bt("startup daemon spawned — app fully ready")
@@ -26299,6 +26305,88 @@ def _wnba_is_stale(source_ts) -> bool:
         return True
 
 
+# ---------------------------------------------------------------------------
+# PATCH-2026-08-01-LINEMAKERS-PRESENTATION-AND-SELF-AUDIT
+# Helper: build audit block from category-scan outputs
+# ---------------------------------------------------------------------------
+
+def _build_scan_audit_block(
+    all_candidates:      list,
+    final_pool:          list,
+    counters:            dict,
+    markets_discovered:  int,
+    weather_market_count: int,
+    sports_winner_count: int,
+) -> dict:
+    """
+    Build the standardized audit, evidence manifest, reconciliation, and
+    funnel summary for category-scan. Returns a dict that is **-unpacked
+    into the response JSON.
+    """
+    try:
+        from kalshi_engine.scan_audit import (
+            build_candidate_audit_table,
+            run_second_pass_audit,
+            build_reconciliation_equation,
+            build_candidate_funnel_summary,
+        )
+    except Exception:
+        return {"scan_audit_error": "scan_audit module not available"}
+
+    # Candidate audit table (item #1)
+    audit_table = build_candidate_audit_table(all_candidates)
+
+    # Second-pass self-audit (item #3)
+    second_pass = run_second_pass_audit(
+        candidates = all_candidates,
+        counters   = counters,
+        final_pool = final_pool,
+    )
+
+    # Reconciliation equation (item #3)
+    recon = build_reconciliation_equation(
+        counters  = counters,
+        qualified = len(final_pool),
+    )
+
+    # Candidate funnel summary (item #9) — derived from counters
+    identity_failed   = counters.get("identity_failures", 0)
+    settlement_failed = counters.get("settlement_failures", 0)
+    event_state_failed = counters.get("event_state_failures", 0)
+    model_failed      = counters.get("model_failures", 0)
+    price_failed      = counters.get("stale_price_failures", 0)
+    edge_failed       = counters.get("edge_failures", 0)
+    portfolio_failed  = counters.get("portfolio_failures_ct", 0)
+
+    eligible_cat   = weather_market_count + sports_winner_count
+    id_verified    = max(0, eligible_cat - identity_failed)
+    settle_ver     = max(0, id_verified - settlement_failed - event_state_failed)
+    model_ready    = max(0, settle_ver - model_failed)
+    fresh_ob       = max(0, model_ready - price_failed)
+    positive_edge  = max(0, fresh_ob - edge_failed)
+    port_qualified = max(0, positive_edge - portfolio_failed)
+
+    funnel = build_candidate_funnel_summary(
+        counters            = counters,
+        discovered          = markets_discovered,
+        eligible_category   = eligible_cat,
+        identity_verified   = id_verified,
+        settlement_verified = settle_ver,
+        model_ready         = model_ready,
+        fresh_orderbook     = fresh_ob,
+        positive_lb_edge    = positive_edge,
+        portfolio_qualified = port_qualified,
+        final_research_pool = len(final_pool),
+    )
+
+    return {
+        "candidate_audit_table":  audit_table,
+        "second_pass_audit":      second_pass,
+        "row_reconciliation":     recon,
+        "candidate_funnel":       funnel,
+    }
+
+
 @app.route("/wow/kalshi/category-scan", methods=["GET"])
 @require_api_key
 def wow_kalshi_category_scan():
@@ -26376,6 +26464,7 @@ def wow_kalshi_category_scan():
     combo_count           = 0
     identity_failures     = 0
     settlement_failures   = 0
+    event_state_failures  = 0   # PATCH-2026-08-01-LINEMAKERS: Gate 0 event-state mutex
     stale_price_failures  = 0
     model_failures        = 0
     edge_failures         = 0
@@ -26782,6 +26871,8 @@ def wow_kalshi_category_scan():
                 "contract_id":                 ticker,
                 "model_version":               "v16.5_sports_consensus",
                 "market_price":                executable_price,
+                # PATCH-2026-08-01-LINEMAKERS Gate 0: event-state mutex
+                "event_status":                m.get("status") or m.get("event_status") or "UNKNOWN",
                 "can_execute":                 False,
                 "dry_run_only":                True,
             }
@@ -26840,6 +26931,8 @@ def wow_kalshi_category_scan():
                     model_failures += 1
                 elif fc == "TAIL_RISK_BLOCK":
                     model_failures += 1
+                elif fc == "CATEGORY_DISABLED_OR_UNSUPPORTED":
+                    event_state_failures += 1   # Gate 0: live event blocked as pregame
 
             all_candidates.append(cand)
 
@@ -26958,12 +27051,30 @@ def wow_kalshi_category_scan():
         "model_failures":            model_failures,
         "edge_failures":             edge_failures,
         "portfolio_failures":        portfolio_failures_ct,
+        "event_state_failures":      event_state_failures,
         "final_ranked_singles":      [_clean(c) for c in final_pool],
         "ranking_detail":            gov_result["ranking_detail"],
         "all_candidates":            [_clean(c) for c in all_candidates],
         "requested_cities":          requested_cities,
         "requested_leagues":         requested_leagues,
         "inventory_signal":          inventory_signal,
+        # PATCH-2026-08-01-LINEMAKERS: audit, reconciliation, and funnel
+        **_build_scan_audit_block(
+            all_candidates    = all_candidates,
+            final_pool        = final_pool,
+            counters          = {
+                "identity_failures":     identity_failures,
+                "settlement_failures":   settlement_failures,
+                "event_state_failures":  event_state_failures,
+                "stale_price_failures":  stale_price_failures,
+                "model_failures":        model_failures,
+                "edge_failures":         edge_failures,
+                "portfolio_failures_ct": portfolio_failures_ct,
+            },
+            markets_discovered          = markets_discovered,
+            weather_market_count        = weather_market_count,
+            sports_winner_count         = sports_winner_count,
+        ),
         "can_execute":               False,
         "dry_run_only":              True,
         "execution_rule":            "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",

@@ -36,6 +36,13 @@ _WINNER_MARKET_TYPES: frozenset[str] = frozenset({
     "winner",
 })
 
+# Gate 0: event-state mutex — statuses that indicate the game has started.
+# Pregame probability is invalid after event start; live markets are disabled.
+_LIVE_EVENT_STATUSES: frozenset[str] = frozenset({
+    "in_progress", "live", "started", "halftime",
+    "suspended", "active", "inprogress",
+})
+
 
 def check(candidate: dict[str, Any], inventory_signal: str) -> dict[str, Any]:
     """
@@ -89,6 +96,20 @@ def check(candidate: dict[str, Any], inventory_signal: str) -> dict[str, Any]:
 
     def _pass_gate(gate: int, detail: str) -> None:
         verdicts.append({"gate": gate, "passed": True, "detail": detail})
+
+    # ── Gate 0: event-state mutex ─────────────────────────────────────────────
+    # Pregame probability is invalid once an event has started.
+    # Live sports markets are disabled — the only valid terminal is
+    # CATEGORY_DISABLED_OR_UNSUPPORTED with reason=LIVE_MARKET_DISABLED.
+    event_status_raw = (candidate.get("event_status") or "UNKNOWN").lower().strip()
+    if event_status_raw in _LIVE_EVENT_STATUSES:
+        return _fail(
+            0, "CATEGORY_DISABLED_OR_UNSUPPORTED",
+            f"event_status='{event_status_raw}' — pregame probability is invalid after "
+            f"event start; live sports markets are disabled; reason=LIVE_MARKET_DISABLED. "
+            f"Row removed from final pool unconditionally.",
+        )
+    _pass_gate(0, f"event_status='{event_status_raw}' — pregame eligible")
 
     # ── Gate 1: inventory_signal == INVENTORY_READY ───────────────────────────
     if inventory_signal != "INVENTORY_READY":
