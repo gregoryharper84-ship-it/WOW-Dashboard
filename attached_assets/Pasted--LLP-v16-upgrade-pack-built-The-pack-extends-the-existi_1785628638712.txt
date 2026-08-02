@@ -1,0 +1,67 @@
+## LLP v16 upgrade pack built
+
+The pack extends the existing LLP Moneyline Probability Expert’s separate favorite/upset framework  and integrates exact market/no-vig controls consistent with the existing market auditor. 
+
+### Complete installation bundle
+
+[Download the LLP v16 Upgrade Pack](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01.zip)
+
+### Included deliverables
+
+1. **Critical governing patch**
+
+   * Slate integrity
+   * Exact market normalization
+   * Dynamic calibration
+   * Quantified failure paths
+   * Mandatory final refresh
+
+2. **Updated LLP Moneyline Probability Expert**
+
+   * Existing skill retained
+   * New mandatory workflow appended
+   * Separate probability and edge leaderboards
+   * Official event IDs and normalized markets required
+
+3. **Five new expert skills**
+
+   * `wow.llp-slate-integrity-expert`
+   * `wow.llp-market-normalization-expert`
+   * `wow.llp-dynamic-calibration-expert`
+   * `wow.llp-failure-path-expert`
+   * `wow.llp-final-refresh-governor`
+
+4. **Revised activation prompt**
+
+5. **24 regression tests**
+
+   * Wrong-day and wrong-year events
+   * Started and completed games
+   * Impossible duplicate-team scheduling
+   * Missing soccer draw odds
+   * Incorrect no-vig normalization
+   * Favorite probability compared with underdog model
+   * Point edge mislabeled as lower-bound edge
+   * Universal 5% haircut
+   * Starter and goalie changes
+   * Moneyline/spread failure-path mismatch
+   * Stale prices
+   * Kalshi inventory and Recovery Mode controls
+   * No forced output when nothing survives
+
+6. **Manifest with recommended Replit pipeline hooks**
+
+### Individual files
+
+* [Critical patch](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH.md)
+* [Updated LLP Moneyline Expert](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/wow-llp-moneyline-probability-expert-SKILL.md)
+* [Slate Integrity Expert](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/wow-llp-slate-integrity-expert-SKILL.md)
+* [Market Normalization Expert](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/wow-llp-market-normalization-expert-SKILL.md)
+* [Dynamic Calibration Expert](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/wow-llp-dynamic-calibration-expert-SKILL.md)
+* [Failure-Path Expert](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/wow-llp-failure-path-expert-SKILL.md)
+* [Final Refresh Governor](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/wow-llp-final-refresh-governor-SKILL.md)
+* [Activation prompt](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/LLP-ACTIVATION-PROMPT-2026-08-01.md)
+* [Regression tests](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/LLP-REGRESSION-TESTS-2026-08-01.md)
+* [Manifest](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/MANIFEST.md)
+
+This is built and ready for upload/integration, but it has **not yet been deployed into your Replit runtime**. `can_execute=false` and `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` remain enforced.

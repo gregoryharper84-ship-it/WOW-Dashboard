@@ -40,3 +40,4 @@
 - [gate-engine slim response architecture](gate-engine-slim-response.md) — slim mode whitelist; prop_ledger excluded; TL capped at 2 trimmed blockers; audit theses→count; 179-row est ~65KB; MANIFEST_GOVERNANCE_HASH must be in the lazy import block.
 - [WNBA Stage 1 architecture](wnba-stage1-architecture.md) — PATCH-WNBA-001 opportunity gate + PATCH-PORTFOLIO-001 cross-slip governor; 16 total active patches after Aug 1 postmortem.
 - [Aug 1 postmortem patches](aug1-postmortem-patches.md) — 3 new patches: CROSS-SLIP-DUPLICATE-GUARD (tier ledger), 1IP-EFFICIENCY-GAP-ENFORCE (7-metric score), PITCH-COUNT-DIRECTIONAL-ASYMMETRY (DFS); modules in gate_engine/mlb/ and gate_engine/portfolio/slip_exposure_ledger.py.
+- [LLP v16 upgrade pack](llp-v16-upgrade.md) — patch #17 (precedence 96); 6 new LLP skill files in skills/; 12-step mandatory call order; startup warmup wired; governance hash changed.

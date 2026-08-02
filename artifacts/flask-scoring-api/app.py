@@ -18974,6 +18974,14 @@ def _run_startup_warmup():
         _ensure_portfolio_tables()
     except Exception:
         pass
+    # PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD: create wow_session_thesis_exposure
+    try:
+        from gate_engine.portfolio.slip_exposure_ledger import (
+            ensure_session_thesis_table_exists as _ensure_thesis_table,
+        )
+        _ensure_thesis_table()
+    except Exception:
+        pass
 
 _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
 _bt("startup daemon spawned — app fully ready")

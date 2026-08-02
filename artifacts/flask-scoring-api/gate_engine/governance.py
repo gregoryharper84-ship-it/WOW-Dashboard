@@ -342,6 +342,49 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "can_execute=False unconditional."
         ),
     },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH",
+        "version":     "1.0",
+        "effective_at": "2026-08-01",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  96,
+        "can_execute": False,
+        "description": (
+            "LLP v16 Upgrade — Slate Integrity, Dynamic Calibration, and Final Refresh (2026-08-01): "
+            "Converts LLP from a candidate-ranking assistant into a slate-locked, "
+            "market-normalized, dynamically calibrated, failure-aware, automatically refreshed "
+            "outright-winner and upset auditing engine under WOW v16 Clean Core. "
+            "Mandatory 12-step call order: governance_sync → full_slate_discovery → "
+            "slate_integrity_lock → exact_market_and_settlement_lock → "
+            "critical_participant_lock → independent_sport_model → market_normalization → "
+            "dynamic_calibration → failure_path_model → probability_and_edge_lane_separation → "
+            "final_refresh_governor → lowest_ceiling_output. "
+            "No step may be skipped; a downstream pass cannot erase an upstream blocker. "
+            "Slate integrity hard blocks: WRONG_DATE, WRONG_YEAR, EVENT_NOT_FOUND, "
+            "EVENT_ALREADY_STARTED, EVENT_FINISHED, EVENT_POSTPONED, EVENT_CANCELED, "
+            "DUPLICATE_TEAM_EVENT, PARTICIPANT_IDENTITY_CONFLICT. "
+            "Market normalization: exact two-way and three-way no-vig (sum=1.0000±0.0005); "
+            "soccer full-time requires Home/Draw/Away prices; "
+            "raw_implied_probability, market_hold, no_vig_probability may never be merged. "
+            "Dynamic calibration: fixed universal haircut prohibited as sole method; "
+            "candidate-specific uncertainty required (base_calibration_error + sport_volatility + "
+            "sample_size + lineup + injury + source_conflict + market_disagreement + freshness); "
+            "no calibration evidence → UNCALIBRATED_MODEL → ceiling=WATCH. "
+            "Failure-path model: P(win)=Σ P(regime_i)×P(win|regime_i); moneyline paths must "
+            "produce outright loss; backdoor-cover is not a moneyline failure path. "
+            "Lane separation: probability rank by calibrated_probability_lower_bound (price excluded); "
+            "edge rank by lower_bound_edge = calibrated_lower_bound − no_vig − friction_buffer; "
+            "point edge may never be labeled lower-bound edge. "
+            "Final refresh governor: mandatory recheck ≤5 min before output; price ≤10 min; "
+            "status ≤15 min; weather ≤30 min; any failure removes row. "
+            "New skills: wow.llp-slate-integrity-expert, wow.llp-market-normalization-expert, "
+            "wow.llp-dynamic-calibration-expert, wow.llp-failure-path-expert, "
+            "wow.llp-final-refresh-governor. "
+            "Updated skill: wow.llp-moneyline-probability-expert. "
+            "can_execute=False unconditional."
+        ),
+    },
 ]
 
 # ---------------------------------------------------------------------------

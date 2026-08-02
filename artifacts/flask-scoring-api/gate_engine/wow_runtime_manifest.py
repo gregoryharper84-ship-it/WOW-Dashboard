@@ -47,6 +47,8 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "WOW-PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD",
         "WOW-PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE",
         "WOW-PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY",
+        # LLP v16 upgrade
+        "WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH",
     ],
     "skills": {
         "slip_optimizer": {
@@ -91,6 +93,49 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
             "required_when": "card_count>1 or duplicate_thesis_detected=true",
             "skill_file": "skills/wow-cross-ticket-exposure-governor-SKILL.md",
         },
+        # LLP v16 upgrade skills
+        "llp_moneyline_probability": {
+            "name": "wow.llp-moneyline-probability-expert",
+            "version": "v16-2026-08-01",
+            "required": False,
+            "required_when": "lane=LLP and market_type=MONEYLINE_WINNER",
+            "skill_file": "skills/wow-llp-moneyline-probability-expert-SKILL.md",
+        },
+        "llp_slate_integrity": {
+            "name": "wow.llp-slate-integrity-expert",
+            "version": "v1",
+            "required": False,
+            "required_when": "lane=LLP",
+            "skill_file": "skills/wow-llp-slate-integrity-expert-SKILL.md",
+        },
+        "llp_market_normalization": {
+            "name": "wow.llp-market-normalization-expert",
+            "version": "v1",
+            "required": False,
+            "required_when": "lane=LLP",
+            "skill_file": "skills/wow-llp-market-normalization-expert-SKILL.md",
+        },
+        "llp_dynamic_calibration": {
+            "name": "wow.llp-dynamic-calibration-expert",
+            "version": "v1",
+            "required": False,
+            "required_when": "lane=LLP",
+            "skill_file": "skills/wow-llp-dynamic-calibration-expert-SKILL.md",
+        },
+        "llp_failure_path": {
+            "name": "wow.llp-failure-path-expert",
+            "version": "v1",
+            "required": False,
+            "required_when": "lane=LLP",
+            "skill_file": "skills/wow-llp-failure-path-expert-SKILL.md",
+        },
+        "llp_final_refresh_governor": {
+            "name": "wow.llp-final-refresh-governor",
+            "version": "v1",
+            "required": False,
+            "required_when": "lane=LLP",
+            "skill_file": "skills/wow-llp-final-refresh-governor-SKILL.md",
+        },
     },
     "hard_flags": {
         "can_execute": False,
@@ -106,6 +151,13 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "cross_slip_duplicate_guard": True,               # PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD
         "mlb_1ip_efficiency_gap_enforce": True,           # PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE
         "pitch_count_directional_asymmetry": True,        # PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY
+        # LLP v16 upgrade
+        "llp_slate_integrity_lock": True,                 # PATCH-2026-08-01-LLP-SLATE-INTEGRITY-*
+        "llp_market_normalization": True,                 # two-way and three-way exact no-vig
+        "llp_dynamic_calibration": True,                  # candidate-specific uncertainty; fixed haircut prohibited
+        "llp_failure_path_model": True,                   # exact-market regime decomposition
+        "llp_final_refresh_governor": True,               # mandatory ≤5-min pre-output recheck
+        "llp_probability_edge_lane_separation": True,     # separate probability and edge leaderboards
     },
 }
 
