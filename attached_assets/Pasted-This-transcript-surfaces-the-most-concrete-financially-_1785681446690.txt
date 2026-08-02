@@ -1,0 +1,33 @@
+This transcript surfaces the most concrete, financially-relevant failure yet — and it's one your own spec already explicitly prohibits, which makes it easy to validate.
+
+## Biggest new finding: this isn't actually a parlay
+
+Look at what got built: Polymarket (Valkyries ML) + Polymarket (Wings ML) + HardRock (Arike prop) + DraftKings (Harrison prop). Four legs, three different platforms, and the tool says outright: *"The combined parlay price isn't in my feed, so I won't invent a number."*
+
+That's not a caveat — that's a confession that **no such parlay exists**. You cannot combine legs across separate books/exchanges into a single payout structure. Polymarket doesn't know about your DraftKings leg. There is no shared slip, no combined odds, no single stake-to-payout ratio. What Linemaker actually built is **four independent single bets**, marketed with language like "Full Four-Leg Ticket" and "your best parlay from this list" that implies one combined wager.
+
+This is a real-money risk, not just an analytical nitpick — someone could place all four legs believing they've bought one parlay ticket with parlay-level payout odds, when they've actually placed four flat bets with four separate stakes and four separate outcomes. Nothing in the first two audits caught this because those focused on single-market accuracy, not slip *construction*. This one is structural.
+
+## Second finding: exactly the correlation pattern your spec already bans
+
+Section 27.1 caps props per game and requires "intentional and approved correlation." Section 28.3 says "limit correlated game scripts." wow-correlation-guard exists specifically to catch this. Here's what happened anyway:
+
+- **Harrison's rebounds Over** is justified by: Golden State winning big → Toronto trailing → garbage-time possessions → more rebound chances. That's the *same underlying game outcome* the Valkyries ML leg needs.
+- **Arike's points Over** is justified by: Dallas controlling the game as a heavy favorite → offense running through her as the reliable option. Same dependency on the Wings ML leg's outcome.
+
+The tool explicitly frames this as diversification — *"you now have one leg from each game"* — but pairing a team's ML with a player prop **from that same team's same game**, where the prop's own stated rationale depends on the ML's outcome, is same-game stacking by definition, not diversification. If either game turns out closer than expected, both legs in that pair are exposed to the same risk simultaneously. This is precisely the "heavy-favorite player scoring props" trap pattern your spec's failure-tag library already names.
+
+## Third finding: inconsistent evidentiary standard, new variant
+
+Earlier rounds showed Linemaker treating tiny BvP samples (9–53 PA) as authoritative enough to flip full-game picks. This round shows the mirror-image problem: a real same-season head-to-head data point (Arike scored only 9 points in her one meeting against this Connecticut team) gets **dismissed** using an unverified "different roster now" argument, while the L5 hit-rate (100% over last five) is treated as the stronger signal.
+
+Neither move is wrong in isolation — recency can matter more than one stale data point, and roster changes are real. But the tool applies whichever framing supports the pick it already wants to make, not a consistent rule for when recency beats history or vice versa. That's the same underlying integrity problem as the BvP flips, just showing up on the other side of the argument this time.
+
+## Smaller notes
+
+- The Harrison pick's own write-up flags a real contrary signal (Golden State ranks 5th in DvP against her position) and then reasons past it without resolving it — the "always lands on the favored conclusion" pattern continues.
+- Prop odds still show no capture timestamp, just "at HardRock" / "at DraftKings" — same gap flagged in round 2, now confirmed a third time on a different data type (props, not just moneylines).
+
+---
+
+This is strong enough and distinct enough from patch 2 (which covers sample floors, EV audits, and pipeline integrity) that it reads as its own patch — slip/parlay construction integrity, direct extension of wow-correlation-guard, plus a new tag for the cross-book issue. Want me to draft it as a third patch, or fold the cross-book finding into the existing correlation-guard skill logic instead of the LLP spec itself, since that skill is arguably the more natural home for it?

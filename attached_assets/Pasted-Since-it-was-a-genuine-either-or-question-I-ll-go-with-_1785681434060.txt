@@ -1,0 +1,164 @@
+Since it was a genuine either/or question, I'll go with keeping this as a **separate patch** — that keeps each artifact atomic and testable, consistent with what I flagged earlier about the original nine-stage document needing to be broken apart rather than merged into one sprawling patch. If you'd rather I fold everything into one, just say so and I'll consolidate.
+
+Here's the new patch, built from this round's three findings plus the dependency-integrity issue from the screenshot:
+
+```
+═══════════════════════════════════════════════════
+WOW PATCH — SMALL-SAMPLE MATCHUP FLOOR + EV AUDIT + PIPELINE INTEGRITY
+═══════════════════════════════════════════════════
+
+PATCH ID:          WOW-PATCH-2026-08-02-LLP-MATCHUP-EV-INTEGRITY
+BASE SPEC:         WOW v16 Clean Core / Framework v2.2.0
+
+PATCH TYPE:        [x] Analytical rule
+                    [x] Spec amendment (LLP workflow + Section 32 failure tags)
+                    [ ] Dashboard code
+                    [ ] Memory update
+                    [ ] Skill update
+
+ORIGIN:            [x] External research / competitive analysis
+                    (Linemaker.ai round 2–3 audits, 2026-08-02 — BvP small-
+                    sample flips, unaudited EV claims, prop-as-safety
+                    substitution, and a task-list screenshot showing two
+                    analysis steps unchecked/incomplete at 104.1s while a
+                    dependent "Finding +EV MLB player props" step reported
+                    complete and returned fully-priced output)
+
+─────────────────────────────────────────────────
+PROBLEM STATEMENT
+─────────────────────────────────────────────────
+Across two independent Linemaker reranking sessions, the tool repeatedly
+(1) flipped or downgraded full-game moneyline favorites based on
+batter-vs-pitcher samples as small as 9–53 career plate appearances,
+treating "zero career matchups" as a negative signal rather than an
+absence of evidence; (2) displayed specific EV percentages (e.g. "+1.96%
+EV," "6.02% EV") with no shown model probability, fair-odds derivation,
+comparison book, or timestamp; (3) substituted longshot props (+326 to
++360 odds) for a moneyline pick and characterized the swap as adding
+"safety," when the substitution actually increased variance and lowered
+raw hit probability; and (4) per the attached task-execution screenshot,
+displayed a completed downstream step ("Finding +EV MLB player props,"
+checked, 9.5s) whose input step ("Analyzing MLB props") was itself
+unchecked and still running at 104.1s — meaning the EV output could not
+have been derived from completed analysis. None of these failure modes
+are currently blocked by explicit LLP rules.
+
+FAILURE TAG(S):    l5-l10-overtrusted, model-score-overtrusted,
+                    reasoned-not-modeled, missing-projection-support
+
+─────────────────────────────────────────────────
+RULE CHANGE
+─────────────────────────────────────────────────
+AFFECTED SECTION:  LLP 14-step workflow (contradiction scan + no-vig step)
+                    + Section 32 Failure Tag Library (new tags)
+
+CURRENT RULE:
+No explicit floor exists on matchup-history sample size before it can
+move a candidate's classification. No explicit requirement exists that
+an EV claim show its underlying probability, fair-odds source, and
+timestamp before being used in ranking. No rule distinguishes "lower
+variance" from "positive EV" when a substitution is proposed. No rule
+requires a candidate to be dropped if an upstream data-gathering step it
+depends on did not complete.
+
+NEW RULE:
+1. SMALL-SAMPLE MATCHUP FLOOR: Batter-vs-pitcher, team-vs-team, or any
+   other head-to-head history sample under 25 plate appearances (or the
+   sport-equivalent minimum) may be shown as supporting context but may
+   NEVER be the stated or primary reason to move a candidate's tier,
+   flip a favorite/underdog lean, or reverse a moneyline recommendation.
+   Below the floor, the sample is a footnote, not a driver.
+2. ABSENCE-OF-DATA NEUTRALITY: "Zero career matchups" or "no BvP
+   history" must be logged as DATA_UNAVAILABLE, never as a negative or
+   cautionary signal. Absence of evidence is not evidence of risk.
+3. EV-CLAIM AUDIT GATE: No expected-value percentage may be displayed
+   or used in ranking unless it is accompanied by: model probability
+   used, fair/no-vig odds derivation, comparison sportsbook(s), and a
+   timestamp. An EV number without all four fields is REJECTED from
+   the output, not merely flagged.
+4. VARIANCE-VS-SAFETY SEPARATION: A candidate substitution may not be
+   described as "safer" or "added safety" unless its raw hit-probability
+   lower bound is equal to or higher than the candidate it replaced. A
+   swap that lowers hit probability while raising nominal payout must be
+   labeled VARIANCE_INCREASE, never a safety upgrade.
+5. UPSTREAM DEPENDENCY LOCK: Any output step that depends on a prior
+   analysis step must be blocked from displaying "complete" or
+   returning results if that prior step is unchecked, timed out, or
+   still running. A dependent step returning results under this
+   condition must be logged as PIPELINE_INTEGRITY_FAILURE and the
+   affected candidates dropped from final output, not merely flagged.
+
+─────────────────────────────────────────────────
+IMPLEMENTATION
+─────────────────────────────────────────────────
+ANALYTICAL IMPACT:
+Any LLP candidate whose tier or side was moved primarily by a sub-25 PA
+matchup sample is capped at Watch and flagged l5-l10-overtrusted. Any EV
+figure missing one of the four required fields is stripped from the
+candidate row entirely rather than displayed unsourced. Any prop/line
+substitution pitched as "safer" without a hit-probability comparison is
+relabeled VARIANCE_INCREASE. Any candidate whose supporting analysis step
+did not complete is removed from final output regardless of what a
+downstream step reports.
+
+DASHBOARD IMPACT:  [ ] Yes — code change required
+                    [x] No — analytical rule only for now
+                    [ ] Pending — dashboard later
+
+─────────────────────────────────────────────────
+TEST CASE
+─────────────────────────────────────────────────
+INPUT:
+{ pick: "Boston Red Sox ML", rationale: "Sheehan is 3-for-13 vs Boston
+  (14 PA); Bennett has 0 career PA vs Dodgers", ev_claim: null,
+  upstream_step: "Analyzing MLB props", upstream_status: "incomplete" }
+
+EXPECTED OUTPUT:
+LLP_WATCH (capped) — l5-l10-overtrusted (14 PA sample below 25 PA floor
+used as primary driver), reasoned-not-modeled (zero-PA cited as negative
+signal), PIPELINE_INTEGRITY_FAILURE (dependent on incomplete upstream
+step) — candidate dropped from final output.
+
+NEGATIVE TEST (should NOT trigger):
+{ pick: "Cincinnati Reds ML", rationale: "Burns has .212 avg / 38.2% K
+  rate vs current Pirates roster in 55 PA (context only, not primary
+  driver); primary driver is season ERA + team record",
+  ev_claim: { model_prob: 0.64, fair_odds: -178, book: "DraftKings",
+  timestamp: "2026-08-02T13:40Z" }, upstream_step: "Analyzing MLB props",
+  upstream_status: "complete" }
+→ Passes. Sample is above floor and used as supporting context, not
+primary driver; EV claim carries all four required fields; upstream
+step completed.
+
+─────────────────────────────────────────────────
+CONFLICTS / DEPENDENCIES
+─────────────────────────────────────────────────
+CONFLICTS WITH:    None identified. Extends existing "season averages
+                    from narrative blurbs are prohibited as primary
+                    sources" principle to matchup-history samples.
+DEPENDS ON:        None — can deploy independently of the Discovery
+                    Sweep / Slate Identity patch proposed 2026-08-01.
+SUPERSEDES:        None
+
+─────────────────────────────────────────────────
+DEPLOYMENT ORDER
+─────────────────────────────────────────────────
+[ ] Step 1 — ChatGPT reviews for strategy conflicts
+[ ] Step 2 — Claude merges into LLP workflow spec + Section 32 tags (if approved)
+[ ] Step 3 — Dashboard code (deferred — analytical only for now)
+[ ] Step 4 — PR review via wow-pr-checker
+[ ] Step 5 — Deploy to Replit
+[ ] Step 6 — Smoke test
+[ ] Step 7 — Log to WOW-SHARED-NOTES.md patch queue
+
+STATUS:            [x] Proposed — v16 test candidate, pending ChatGPT approval
+═══════════════════════════════════════════════════
+```
+
+Two things worth flagging before this goes anywhere:
+
+**New failure tags needed** — this patch references `PIPELINE_INTEGRITY_FAILURE` and `VARIANCE_INCREASE`, neither of which currently exists in Section 32's library. If ChatGPT approves this patch, those need to be formally added to the tag library, not just used ad hoc.
+
+**Same v16 spec gap as before** — I still don't have the actual v16 LLP workflow text, only v15.3.0. Everything above is drafted against the v15.3.0 language plus your project instructions' summary of v16. If the real v16 spec already has language covering any of this (especially the pipeline-dependency issue), this patch needs to be checked against it before merge, not layered on blind.
+
+This is now two proposed patches sitting in the queue — the Discovery/Slate-Identity one from the last turn, and this one. Both need ChatGPT review before I can touch the spec.

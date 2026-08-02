@@ -392,6 +392,72 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
         ),
     },
     {
+        "patch_id":    "WOW-PATCH-2026-08-02-LLP-MATCHUP-EV-INTEGRITY",
+        "version":     "1.0",
+        "effective_at": "2026-08-02",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  99,
+        "can_execute": False,
+        "description": (
+            "LLP Matchup/EV/Pipeline Integrity (2026-08-02): "
+            "Five new analytical rules from Linemaker round-2/3 audit findings. "
+            "(1) SMALL-SAMPLE MATCHUP FLOOR: BvP / head-to-head sample <25 PA may be "
+            "shown as context but is NEVER the primary driver of a tier change or direction flip; "
+            "sub-floor primary driver → capped WATCH + l5-l10-overtrusted. "
+            "(2) ABSENCE-OF-DATA NEUTRALITY: 'zero career matchups' or 'no BvP history' must be "
+            "logged DATA_UNAVAILABLE, never cited as negative/cautionary signal; "
+            "violation → reasoned-not-modeled blocker. "
+            "(3) EV-CLAIM AUDIT GATE: EV % requires all four fields — model_prob, fair_odds, "
+            "book, timestamp — before it may appear in output or ranking; missing any field → "
+            "REJECTED from output (not merely flagged) + missing-projection-support blocker. "
+            "(4) VARIANCE-VS-SAFETY SEPARATION: a substitution may only be described as 'safer' "
+            "when replacement hit-probability lower bound ≥ original's; lower-prob swap pitched "
+            "as safety → VARIANCE_INCREASE label. "
+            "(5) UPSTREAM DEPENDENCY LOCK: dependent step cannot report 'complete' or return "
+            "results if its upstream analysis step is incomplete/running/timed-out; violation → "
+            "PIPELINE_INTEGRITY_FAILURE + candidate DROPPED from final output. "
+            "New failure tags: PIPELINE_INTEGRITY_FAILURE, VARIANCE_INCREASE. "
+            "Module: gate_engine/llp_matchup_ev_integrity.py. "
+            "Dashboard code: deferred (analytical rules only). "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-02-LLP-SLIP-CONSTRUCTION-INTEGRITY",
+        "version":     "1.0",
+        "effective_at": "2026-08-02",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  100,
+        "can_execute": False,
+        "description": (
+            "LLP Slip Construction Integrity (2026-08-02): "
+            "Three structural rules from Linemaker round-3 audit — direct extension of "
+            "wow-correlation-guard addressing the cross-book parlay illusion and "
+            "same-game stacking findings. "
+            "(1) CROSS-BOOK PARLAY DETECTION: legs spanning multiple sportsbooks or "
+            "prediction exchanges cannot be presented as a single combined parlay; no "
+            "shared odds or combined payout structure exists across books; presenting "
+            "multi-book legs under parlay language → CROSS_BOOK_PARLAY_ILLUSION label + "
+            "these are structurally independent single bets with separate stakes/outcomes. "
+            "(2) SAME-GAME CORRELATED STACK: ML + player prop from the same team/game "
+            "where the prop's stated rationale explicitly depends on the ML outcome "
+            "(e.g. 'team winning big → trailing → garbage-time possessions → rebounds') "
+            "is same-game stacking, not diversification → SAME_GAME_CORRELATED_STACK label; "
+            "complements Section 27.1 per-game prop cap and Section 28.3 correlated "
+            "game-script limit. "
+            "(3) SELECTIVE RECENCY CONSISTENCY: recency (L5/L10) may override a contrary "
+            "historical data point only when an explicit WOW rule is cited and a stale-data "
+            "reason documented; opportunistic recency (applied only when it favors the pick) "
+            "→ SELECTIVE_RECENCY_APPLIED label. "
+            "New failure tags: CROSS_BOOK_PARLAY_ILLUSION, SAME_GAME_CORRELATED_STACK, "
+            "SELECTIVE_RECENCY_APPLIED. "
+            "Module: gate_engine/llp_slip_construction.py. "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
         "patch_id":    "WOW-PATCH-2026-08-01-LINEMAKERS-PRESENTATION-AND-SELF-AUDIT",
         "version":     "1.0",
         "effective_at": "2026-08-01",

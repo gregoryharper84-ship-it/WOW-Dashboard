@@ -51,6 +51,9 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "WOW-PATCH-2026-08-01-MULTI-WINDOW-PROP-PERSISTENCE-AND-DISTRIBUTION-AUDIT",
         # Linemakers Presentation & Self-Audit Patch
         "WOW-PATCH-2026-08-01-LINEMAKERS-PRESENTATION-AND-SELF-AUDIT",
+        # 2026-08-02 analytical integrity patches
+        "WOW-PATCH-2026-08-02-LLP-MATCHUP-EV-INTEGRITY",
+        "WOW-PATCH-2026-08-02-LLP-SLIP-CONSTRUCTION-INTEGRITY",
         # LLP v16 upgrade
         "WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH",
     ],
@@ -188,6 +191,16 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "llp_failure_path_model": True,                   # exact-market regime decomposition
         "llp_final_refresh_governor": True,               # mandatory ≤5-min pre-output recheck
         "llp_probability_edge_lane_separation": True,     # separate probability and edge leaderboards
+        # 2026-08-02 — LLP Matchup/EV/Pipeline Integrity
+        "matchup_pa_floor_25_enforced": True,             # PATCH-2026-08-02-LLP-MATCHUP-EV-INTEGRITY
+        "absence_of_data_neutrality": True,               # zero matchup = DATA_UNAVAILABLE, not negative signal
+        "ev_claim_four_field_audit_gate": True,           # model_prob+fair_odds+book+timestamp required
+        "variance_vs_safety_separation": True,            # VARIANCE_INCREASE label on downgrade pitched as safer
+        "upstream_dependency_lock": True,                 # PIPELINE_INTEGRITY_FAILURE → drop candidate
+        # 2026-08-02 — LLP Slip Construction Integrity
+        "cross_book_parlay_detection": True,              # PATCH-2026-08-02-LLP-SLIP-CONSTRUCTION-INTEGRITY
+        "same_game_correlated_stack_detection": True,     # ML + prop same game dependency detection
+        "selective_recency_consistency_check": True,      # recency override requires rule citation
     },
 }
 
