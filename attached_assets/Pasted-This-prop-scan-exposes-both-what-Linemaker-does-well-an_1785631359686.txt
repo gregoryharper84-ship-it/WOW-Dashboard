@@ -1,0 +1,554 @@
+This prop scan exposes both **what Linemaker does well** and **where WOW can outperform it decisively**.
+
+## What Linemaker’s prop logic appears to be
+
+Its ranking formula is roughly:
+
+```text
+recent hit rates
++ season hit rate
++ average versus line
++ simple matchup/park/defense rank
++ injury/usage narrative
+= “highest hit probability”
+```
+
+The strongest signals in its output are:
+
+* L5/L10/L15/L20 agreement
+* Season hit rate
+* Mean above the line
+* Low thresholds such as 0.5 hits
+* Basic defense-versus-position rank
+* Recent role or usage
+* Price shown for context
+
+That is a useful **first-pass discovery engine**, but it is not a complete probability model.
+
+## What it does well
+
+### 1. Broad cross-sport scanning
+
+It pulls candidates from:
+
+* MLB batter props
+* WNBA points, assists and threes
+* Multiple sportsbooks
+* Fantasy platforms
+* Matchup and injury searches
+
+This is exactly the kind of broad discovery your universal parallel router should perform. Discovery should raise research priority only, not approve the prop. 
+
+### 2. Multiple historical windows
+
+Using L10, L20 and season together is better than relying on one streak.
+
+This helps separate:
+
+* short-term form;
+* medium-term persistence;
+* full-season baseline.
+
+WOW should add **L15 and L20 as optional stability windows**, while keeping role-matched L5/L10 as the main recent ledger.
+
+### 3. Low-threshold candidate discovery
+
+Linemaker correctly recognizes that:
+
+* 0.5 hits;
+* modest points thresholds;
+* modest assist thresholds;
+* low three-pointer thresholds
+
+can produce high raw hit rates.
+
+That is valuable for candidate generation.
+
+### 4. Easy-to-read explanations
+
+The write-ups make each play understandable:
+
+* average versus line;
+* hit-rate windows;
+* road/home splits;
+* matchup;
+* main risk.
+
+The presentation is worth borrowing.
+
+---
+
+# Major logic flaws
+
+## 1. It mixed “remaining today” with tomorrow’s slate
+
+The request was for props remaining **today**, but it included:
+
+* Indiana at Minnesota on Sunday;
+* Los Angeles at Portland on Sunday.
+
+Those are next-day events, not remaining-today events.
+
+That is a direct slate-integrity failure. The universal Slate Integrity Expert explicitly requires tomorrow’s events to be excluded from today’s slate. 
+
+This should have returned:
+
+```text
+WRONG_DATE
+REMOVE_FROM_TODAY_POOL
+```
+
+## 2. It ranks historical hit rate as probability
+
+The model notes explicitly say:
+
+> historical hit rates are how the model ranks probability
+
+That is the core weakness.
+
+Historical hit rate is not the same as predictive probability because it ignores:
+
+* opponent quality;
+* lineup position;
+* projected minutes;
+* starter matchup;
+* usage changes;
+* injuries;
+* sample size;
+* distribution variance;
+* regression;
+* exact price and settlement.
+
+WOW already prohibits approval from L5/L10 alone and requires calibrated lower bounds. 
+
+## 3. It does not show a real probability
+
+The output gives hit rates, but it does not publish:
+
+```text
+raw model probability
+calibrated point probability
+calibrated lower bound
+confidence interval
+model method
+```
+
+Therefore, “highest hit probability” is really:
+
+> highest observed historical hit-rate profile.
+
+That is not the same thing.
+
+## 4. It ignores uncertainty and variance
+
+Example:
+
+### Kelsey Mitchell over 2.5 threes
+
+It cites:
+
+* 10/10 recent;
+* 14/15;
+* season average 2.83.
+
+But a mean of 2.83 on a line of 2.5 is not a large distributional margin. The prop requires at least three makes, and three-point makes are high variance.
+
+A proper model needs:
+
+```text
+attempt distribution
+minutes distribution
+three-point percentage distribution
+opponent shot-profile allowance
+teammate availability
+game script
+P(3+ makes)
+```
+
+A recent streak does not guarantee a strong lower bound.
+
+## 5. It uses “law of averages” incorrectly
+
+The Mitchell analysis says:
+
+> if she gets her usual volume, the law of averages is heavily on the Over.
+
+That is misleading. The law of averages does not imply that a recent streak makes the next Over more likely. It could just as easily invite regression.
+
+WOW should explicitly ban:
+
+```text
+LAW_OF_AVERAGES_SUPPORT
+HOT_STREAK_AS_PROBABILITY
+```
+
+## 6. It treats average margin as safety
+
+Kelsey Plum points:
+
+* average near 24;
+* line 14.5.
+
+That looks strong, but the output does not verify:
+
+* expected minutes;
+* current role;
+* opponent;
+* blowout risk;
+* injury status;
+* whether the event is actually today;
+* whether the line is stale or promotional.
+
+A large mean-to-line gap is useful, but not sufficient.
+
+## 7. It recommends same-player companion legs
+
+It says Plum assists is a “natural companion leg” to Plum points.
+
+That is poor slip governance.
+
+Same-player props share:
+
+* minutes;
+* injury risk;
+* foul trouble;
+* blowout risk;
+* possession volume;
+* role changes.
+
+The current optimizer requires duplicate exposure and correlation controls, weakest-leg removal, and smaller-card preference. 
+
+These two props should be treated as a **shared-thesis cluster**, not a natural pairing.
+
+## 8. It encourages a same-game Dodgers stack
+
+It offers:
+
+> stack the Dodgers trio into a same-game parlay
+
+Freeman, Pages and opposing-side Rafaela hit props share:
+
+* game environment;
+* pitcher performance;
+* weather;
+* umpire;
+* game length;
+* bullpen quality;
+* lineup volume.
+
+Even if each leg is individually plausible, the combined structure requires dependence modeling. Your current slip optimizer prohibits relying on independent multiplication for correlated legs. 
+
+## 9. It overuses batter hit streaks
+
+For Freeman, Rafaela and Pages, the primary evidence is:
+
+* recent hit streak;
+* season hit rate;
+* park factor.
+
+Missing:
+
+* confirmed batting order;
+* opposing starter handedness;
+* projected plate appearances;
+* platoon split;
+* contact quality;
+* strikeout rate;
+* bullpen matchup;
+* pinch-hit risk;
+* injury;
+* exact settlement rules.
+
+For 0.5 hits, the key model should estimate:
+
+```text
+P(at least one hit)
+=
+1 - P(no hit across projected plate appearances)
+```
+
+That requires a plate-appearance distribution and per-PA hit probability, not merely game hit rate.
+
+## 10. BvP and opponent claims are weakly handled
+
+It says:
+
+> faced the Dodgers once and went Over easily
+
+A one-game sample is not meaningful predictive evidence.
+
+Likewise, “one meeting, 16 points” for Plum should carry almost no weight.
+
+## 11. It does not score both sides
+
+The universal and slip skills require bidirectional evaluation. 
+
+Linemaker only presents Overs.
+
+That introduces direction bias:
+
+```text
+search high recent overs
+→ rank high recent overs
+→ never test whether under or alternate line is stronger
+```
+
+## 12. It does not verify exact board identity
+
+The output shows sportsbook lines, but not:
+
+* retrieval timestamp;
+* direct or aggregated source;
+* exact event ID;
+* exact settlement;
+* whether the line remains available;
+* whether the listed odds refer to the same market period.
+
+Your exact-line auditor requires all of those fields before market comparison. 
+
+---
+
+# What WOW should borrow
+
+## Add a Prop Persistence Score
+
+Use Linemaker’s multi-window idea as a discovery feature:
+
+```text
+persistence_score =
+weighted agreement across
+L5
+L10
+L15
+L20
+season
+role-matched sample
+```
+
+But it must affect **research priority**, not final probability.
+
+Suggested weights:
+
+```text
+role-matched current sample: 35%
+season: 25%
+L10: 15%
+L20: 15%
+L5: 10%
+```
+
+L5 should remain the smallest weight.
+
+## Add a Threshold Cushion metric
+
+For each prop:
+
+```text
+threshold_cushion =
+median_projection - line
+```
+
+Also publish:
+
+```text
+mean cushion
+median cushion
+standard-deviation cushion
+25th-percentile cushion
+```
+
+The 25th percentile is more useful for high-hit-probability screening than the mean.
+
+## Add a Window Agreement flag
+
+```text
+FULL_ALIGNMENT
+PARTIAL_ALIGNMENT
+RECENT_ONLY
+SEASON_ONLY
+CONFLICTING_WINDOWS
+```
+
+A prop with 90% L10 but 56% season should not be treated like a prop with 75% across every window.
+
+Kayla McBride is a perfect example:
+
+```text
+L10: 90%
+season: 56.7%
+```
+
+That should trigger:
+
+```text
+RECENT_FORM_DIVERGENCE
+OUTLIER_OR_ROLE_AUDIT_REQUIRED
+```
+
+## Add a Hit-Rate Inflation Audit
+
+Require checks for:
+
+* role change;
+* schedule strength;
+* opponent changes;
+* outlier games;
+* teammate absences;
+* unsustainable shooting;
+* small samples;
+* stale season totals.
+
+The June calibration audit already established the need for role-split ledgers and outlier isolation. 
+
+## Add distribution-specific models
+
+### MLB 0.5 hits
+
+Model:
+
+```text
+projected plate appearances
+hit probability per PA
+starter split
+bullpen split
+batting-order position
+pinch-hit/substitution risk
+```
+
+Then:
+
+```text
+P(1+ hits)
+```
+
+### WNBA points
+
+Model:
+
+```text
+minutes
+usage
+shot attempts
+free throws
+three-point attempts
+efficiency distribution
+blowout/foul risk
+```
+
+### WNBA assists
+
+Model:
+
+```text
+minutes
+potential assists
+teammate conversion
+on-ball role
+primary teammate availability
+pace
+turnover risk
+```
+
+### WNBA threes
+
+Model:
+
+```text
+minutes
+three-point attempts
+shot quality
+opponent allowance
+conversion uncertainty
+```
+
+## Add Same-Player Opportunity Mutex
+
+For Plum points and assists:
+
+```text
+same_player_same_event=true
+shared_minutes_risk=true
+shared_role_risk=true
+```
+
+Only one should normally survive unless joint dependence is explicitly modeled.
+
+## Add “today only” hard filter
+
+Before scanning:
+
+```text
+session_date
+user_timezone
+event_date
+event_start
+```
+
+Any tomorrow row must go into a separate section:
+
+```text
+NEXT_DAY_PREVIEW
+```
+
+Never mix it into “remaining today.”
+
+---
+
+# Best new patch
+
+```text
+WOW-PATCH — MULTI-WINDOW PROP PERSISTENCE AND DISTRIBUTION AUDIT
+
+1. Multi-window hit rates are discovery features only.
+2. Require L5/L10/L15/L20/season and role-matched samples where available.
+3. Classify window agreement.
+4. Any L10-season gap >=20 percentage points triggers outlier/role audit.
+5. Historical hit rate cannot be published as model probability.
+6. Require a stat-specific distribution model.
+7. Publish raw probability, calibrated probability, lower bound and interval.
+8. Score both directions.
+9. Tomorrow events cannot enter today's remaining slate.
+10. Same-player and same-game candidates require duplicate-thesis and correlation review.
+11. “Law of averages,” hot streaks and one-game matchup samples cannot support qualification.
+12. Final ranking uses calibrated lower bound, not historical hit rate.
+```
+
+## How these seven Linemaker picks should be treated
+
+| Prop                     | Discovery value | Main audit required                     |
+| ------------------------ | --------------- | --------------------------------------- |
+| Mitchell over 2.5 threes | High            | Attempts and shooting distribution      |
+| Freeman over 0.5 hits    | High            | PA-based hit model and starter split    |
+| Rafaela over 0.5 hits    | High            | Batting order, contact and PA model     |
+| Plum over 14.5 points    | High            | Correct slate date, minutes and role    |
+| Plum over 4.5 assists    | High            | Same-player mutex and potential assists |
+| Pages over 0.5 hits      | Medium-high     | Lineup slot and opposing starter        |
+| McBride over 16.5 points | Medium          | L10 versus season divergence            |
+
+## Final conclusion
+
+Linemaker is strongest at:
+
+```text
+wide discovery
+multi-window hit-rate summaries
+low-threshold identification
+readable prop explanations
+```
+
+WOW should remain stronger at:
+
+```text
+correct slate
+exact live line
+role-matched samples
+outlier detection
+stat-specific distributions
+dynamic calibration
+bidirectional scoring
+failure paths
+same-player correlation
+final refresh
+```
+
+The most valuable feature to borrow is **multi-window persistence scoring**. The most important thing not to borrow is its habit of treating historical hit rate as predictive probability.

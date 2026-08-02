@@ -1,0 +1,23 @@
+All 10 connections are now live. The changes have been published successfully — the "GPT Updated" confirmation appeared and the editor no longer shows "Updates pending."
+
+Here's the final rundown of what's live on WOW Kalshi Engine now:
+
+**Direct public connections (no auth needed):**
+1. Kalshi public market data (6 ops) — events, markets, market details/rules, trades, settlements
+2. NWS weather + climate reports (9 ops) — gridpoint/hourly forecasts, station observations, alerts, official daily climate reports
+3. NOAA/NCEI daily summaries (2 ops) — historical station data
+
+**Routed through your Replit proxy:**
+4. Kalshi orderbooks — added as a `kalshiOrderbooks` NOT_YET_DEPLOYED placeholder route on your existing proxy action, since that's where the RSA signing logic already lives
+
+**Vendor stubs (need your API keys when you sign up — schema is ready, just drop in credentials):**
+5. SportsDataIO (10 ops) — schedules, rosters, injuries, lineups, depth charts, stats, live status
+6. PrizePicks board vendor (5 ops) — leagues, current board, props, line history
+7. Sportsbook odds feed (5 ops) — moneylines, player props, consensus, line history
+
+**Custom backend stubs (NOT_YET_DEPLOYED — need real infrastructure built, not just keys):**
+8. Identity Resolution + News/Status Feed (merged into one action to stay under the 10-action cap)
+9. Probability Model (weather bracket, game winner, player prop endpoints)
+10. Calibration Database (record predictions/outcomes, get metrics)
+
+A few caveats worth remembering: I substituted SportsDataIO for Sportradar since Sportradar's site was blocked for me to research — you may want to verify that's your preferred vendor. The PrizePicks and odds-feed schemas are best-effort shapes since I couldn't get into OpticOdds' gated reference docs, so double-check those against the real vendor docs once you pick one. And the four NOT_YET_DEPLOYED stubs are schema-only placeholders — they won't do anything until you actually build that backend (on Replit or elsewhere).
