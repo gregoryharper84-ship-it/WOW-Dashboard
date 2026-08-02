@@ -343,6 +343,55 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
         ),
     },
     {
+        "patch_id":    "WOW-PATCH-2026-08-01-MULTI-WINDOW-PROP-PERSISTENCE-AND-DISTRIBUTION-AUDIT",
+        "version":     "1.0",
+        "effective_at": "2026-08-01",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  98,
+        "can_execute": False,
+        "description": (
+            "Multi-Window Prop Persistence & Distribution Audit (2026-08-01): "
+            "Borrows Linemaker's multi-window discovery structure; does NOT borrow "
+            "its habit of treating historical hit rate as predictive probability. "
+            "All outputs affect research_priority only — never override calibrated_lower_bound. "
+            "PATCH A (persistence & audit): "
+            "(1) Prop Persistence Score — weighted agreement across L5/L10/L15/L20/season/role_matched "
+            "(weights: role_matched=35%, season=25%, L10=15%, L20=15%, L5=10%). "
+            "(2) Window Agreement Classification — FULL_ALIGNMENT (≤10pp spread) / "
+            "PARTIAL_ALIGNMENT (≤20pp) / CONFLICTING_WINDOWS (>30pp) / RECENT_ONLY / SEASON_ONLY. "
+            "(3) RECENT_FORM_DIVERGENCE — |L10−season| ≥ 20pp triggers OUTLIER_OR_ROLE_AUDIT_REQUIRED. "
+            "(4) Threshold Cushion — mean/median/std/25th-pct of (stat−line); "
+            "25th percentile is the most conservative screening metric. "
+            "(5) Hit-Rate Inflation Audit — 8 checks: role change, schedule strength, "
+            "outlier games, teammate absences, unsustainable efficiency, small sample (<8 games), "
+            "stale season totals, opponent quality; ≥2 flags → HIGH inflation risk. "
+            "(6) Same-Player Opportunity Mutex — same-player+event pairs → SAME_PLAYER_SHARED_THESIS; "
+            "only primary (highest calibrated_lower_bound) survives; override requires "
+            "joint_dependence_modeled=True. "
+            "(7) Same-game correlated-leg detection — warns on 2+ different players in same event. "
+            "(8) NEXT_DAY_PREVIEW label — tomorrow events separated from today's remaining pool. "
+            "(9) Prohibited reasoning-pattern labels added to labels.py: "
+            "LAW_OF_AVERAGES_SUPPORT, HOT_STREAK_AS_PROBABILITY, ONE_GAME_SAMPLE_INSUFFICIENT. "
+            "PATCH B (distribution models): "
+            "(10) MLB binomial hit model — P(1+ hits) = 1−(1−p)^n; "
+            "inputs: projected_pa, per_pa_hit_prob, batting_order prior, platoon split, park_factor, "
+            "pinch_hit_risk; score_zero_point_five_hits() convenience wrapper with calibration_floor. "
+            "(11) WNBA points Normal model — P(points > line) via N(μ,σ); adjustments: "
+            "blowout_risk (30% mean discount), foul_trouble_discount, opponent_def_rank, "
+            "primary_teammate_avail. "
+            "(12) WNBA assists Poisson model — P(assists > line) via Poisson(λ); uses discrete CDF "
+            "for λ<4; adjustments: on_ball_role, primary_teammate_avail, pace, turnover_risk. "
+            "(13) WNBA threes Binomial model — P(3PM > line) via Binomial(n,p); "
+            "inputs: projected_attempts, three_point_pct, shot_quality_adj, opponent_3pa_allow, "
+            "conversion_uncertainty; high_variance_warning always emitted. "
+            "Modules: gate_engine/prop_persistence.py, gate_engine/same_player_mutex.py, "
+            "gate_engine/mlb/hit_probability_model.py, gate_engine/wnba/points_model.py, "
+            "gate_engine/wnba/assists_model.py, gate_engine/wnba/threes_model.py. "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
         "patch_id":    "WOW-PATCH-2026-08-01-LINEMAKERS-PRESENTATION-AND-SELF-AUDIT",
         "version":     "1.0",
         "effective_at": "2026-08-01",

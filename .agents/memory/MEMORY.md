@@ -42,3 +42,4 @@
 - [Aug 1 postmortem patches](aug1-postmortem-patches.md) — 3 new patches: CROSS-SLIP-DUPLICATE-GUARD (tier ledger), 1IP-EFFICIENCY-GAP-ENFORCE (7-metric score), PITCH-COUNT-DIRECTIONAL-ASYMMETRY (DFS); modules in gate_engine/mlb/ and gate_engine/portfolio/slip_exposure_ledger.py.
 - [LLP v16 upgrade pack](llp-v16-upgrade.md) — patch #17 (precedence 96); 6 new LLP skill files in skills/; 12-step mandatory call order; startup warmup wired; governance hash changed.
 - [Linemakers self-audit patch](linemakers-self-audit-patch.md) — patch #18 (precedence 97); scan_audit.py + unified_calibration_ledger.py; Gate 0 in sports_gate adds 1 verdict → gate count test was 9, now 10.
+- [Multi-window prop persistence patch](multi-window-prop-persistence.md) — patch #19 (precedence 98); prop_persistence.py + same_player_mutex.py + 4 distribution models; compute_threshold_cushion hit-rate uses ternary (not double-if) in generator.

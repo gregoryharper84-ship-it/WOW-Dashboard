@@ -47,6 +47,8 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "WOW-PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD",
         "WOW-PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE",
         "WOW-PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY",
+        # Multi-Window Prop Persistence & Distribution Audit
+        "WOW-PATCH-2026-08-01-MULTI-WINDOW-PROP-PERSISTENCE-AND-DISTRIBUTION-AUDIT",
         # Linemakers Presentation & Self-Audit Patch
         "WOW-PATCH-2026-08-01-LINEMAKERS-PRESENTATION-AND-SELF-AUDIT",
         # LLP v16 upgrade
@@ -153,6 +155,22 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "cross_slip_duplicate_guard": True,               # PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD
         "mlb_1ip_efficiency_gap_enforce": True,           # PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE
         "pitch_count_directional_asymmetry": True,        # PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY
+        # Multi-Window Prop Persistence & Distribution Audit
+        "prop_persistence_score_enabled":     True,       # PATCH-2026-08-01-MULTI-WINDOW-*
+        "window_agreement_classification":    True,
+        "threshold_cushion_metrics":          True,
+        "recent_form_divergence_detection":   True,
+        "hit_rate_inflation_audit":           True,
+        "same_player_opportunity_mutex":      True,
+        "same_game_correlated_leg_detection": True,
+        "next_day_preview_separation":        True,
+        "law_of_averages_support_blocked":    True,
+        "hot_streak_as_probability_blocked":  True,
+        "one_game_sample_blocked":            True,
+        "mlb_binomial_hit_model_v1":          True,
+        "wnba_points_normal_model_v1":        True,
+        "wnba_assists_poisson_model_v1":      True,
+        "wnba_threes_binomial_model_v1":      True,
         # Linemakers Presentation & Self-Audit
         "linemakers_candidate_audit_table": True,         # PATCH-2026-08-01-LINEMAKERS-*
         "linemakers_evidence_manifest": True,             # ticker identity warning (not block)
