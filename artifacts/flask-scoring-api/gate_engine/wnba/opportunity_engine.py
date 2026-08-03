@@ -316,7 +316,7 @@ def run(row: dict[str, Any], enrichment: dict[str, Any] | None = None) -> None:
     Per-row entry point.  Only acts on WNBA rows.
 
     Reads:
-      enrichment["game_log"]      — list of per-game stat dicts
+      enrichment["box_score_log"]      — list of per-game stat dicts
       row["role_status"]          — set by status_role gate (called before this)
       row["terminal_label"]       — existing label (not overwritten unless blocking)
 
@@ -334,7 +334,7 @@ def run(row: dict[str, Any], enrichment: dict[str, Any] | None = None) -> None:
     row.setdefault("blockers", [])
 
     enr      = enrichment or {}
-    game_log = enr.get("game_log") or []
+    game_log = enr.get("box_score_log") or []
 
     # -------------------------------------------------------------------
     # Extract per-game time-series (exclude DNPs: minutes < 3)
@@ -376,12 +376,12 @@ def run(row: dict[str, Any], enrichment: dict[str, Any] | None = None) -> None:
     # Insufficient data → soft hold  (with specific caller guidance)
     # -------------------------------------------------------------------
     if n_games < MIN_GAMES_REQUIRED:
-        game_log_supplied = bool(enr.get("game_log"))
+        game_log_supplied = bool(enr.get("box_score_log"))
         if not game_log_supplied:
             # Caller did not supply game_log at all — give a clear action.
             hold_reason = (
-                f"game_log not supplied in enrichment — "
-                f"add enrichment.game_log (list of ≥{MIN_GAMES_REQUIRED} per-game "
+                f"box_score_log not supplied in enrichment — "
+                f"add enrichment.box_score_log (list of ≥{MIN_GAMES_REQUIRED} per-game "
                 f"dicts with MIN, PTS/REB/AST, FGA, USG%) for a defensible score"
             )
             hold_tag = "WNBA_HOLD_ROLE_UNCERTAIN:game_log_missing"
@@ -389,7 +389,7 @@ def run(row: dict[str, Any], enrichment: dict[str, Any] | None = None) -> None:
             # game_log was present but too sparse (all DNPs, or only 1-2 games).
             hold_reason = (
                 f"Need ≥{MIN_GAMES_REQUIRED} non-DNP games (MIN≥3); "
-                f"got {n_games} qualifying games from the supplied game_log"
+                f"got {n_games} qualifying games from the supplied box_score_log"
             )
             hold_tag = (
                 f"WNBA_HOLD_ROLE_UNCERTAIN:insufficient_game_data"
@@ -408,7 +408,7 @@ def run(row: dict[str, Any], enrichment: dict[str, Any] | None = None) -> None:
             "role_confidence":            None,
             "caller_action":              (
                 None if game_log_supplied else
-                "Supply enrichment.game_log with ≥5 non-DNP games to get a defensible score"
+                "Supply enrichment.box_score_log with ≥5 non-DNP games to get a defensible score"
             ),
             "can_execute":                False,
         }

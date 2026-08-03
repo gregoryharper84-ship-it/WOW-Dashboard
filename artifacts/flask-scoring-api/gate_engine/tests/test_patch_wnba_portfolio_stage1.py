@@ -102,7 +102,7 @@ class TestT1_UnstableOpportunityRejected:
 
     def test_low_oss_rejects_wnba_pra(self):
         row = _wnba_row(stat_type="PRA", direction="MORE")
-        enr = {"game_log": _low_stability_log(10)}
+        enr = {"box_score_log": _low_stability_log(10)}
         _opp_run(row, enrichment=enr)
 
         gate = row["gates"]["wnba_opportunity_gate"]
@@ -118,7 +118,7 @@ class TestT1_UnstableOpportunityRejected:
 
     def test_volatile_rotation_rejects(self):
         row = _wnba_row(stat_type="PRA", direction="MORE")
-        enr = {"game_log": _volatile_game_log(10)}
+        enr = {"box_score_log": _volatile_game_log(10)}
         _opp_run(row, enrichment=enr)
 
         gate = row["gates"]["wnba_opportunity_gate"]
@@ -133,7 +133,7 @@ class TestT1_UnstableOpportunityRejected:
     def test_stable_pra_passes_threshold(self):
         """A genuinely stable player should pass the opportunity gate."""
         row = _wnba_row(stat_type="PRA", direction="MORE")
-        enr = {"game_log": _stable_game_log(10, minutes=31.5, pts=18, reb=5, ast=4,
+        enr = {"box_score_log": _stable_game_log(10, minutes=31.5, pts=18, reb=5, ast=4,
                                             fga=13, usg=24)}
         _opp_run(row, enrichment=enr)
 
@@ -150,7 +150,7 @@ class TestT1_UnstableOpportunityRejected:
             "player": "LeBron James", "line": 30.0,
             "terminal_label": "FINAL_APPROVED", "blockers": [], "gates": {},
         }
-        _opp_run(row, enrichment={"game_log": _stable_game_log()})
+        _opp_run(row, enrichment={"box_score_log": _stable_game_log()})
         # Non-WNBA row → gate should NOT have been stamped
         assert "wnba_opportunity_gate" not in row["gates"]
         assert row["terminal_label"] == "FINAL_APPROVED"  # unchanged
@@ -293,7 +293,7 @@ class TestT7_RoleChange:
 
     def test_starter_role_detected(self):
         row = _wnba_row(stat_type="Points", direction="MORE", role_status="STARTER_CONFIRMED")
-        enr = {"game_log": _stable_game_log(8, minutes=31.0)}
+        enr = {"box_score_log": _stable_game_log(8, minutes=31.0)}
         _opp_run(row, enrichment=enr)
 
         gate = row["gates"]["wnba_opportunity_gate"]
@@ -304,7 +304,7 @@ class TestT7_RoleChange:
 
     def test_unresolved_role_soft_holds(self):
         row = _wnba_row(stat_type="Points", direction="MORE", role_status="UNRESOLVED")
-        enr = {"game_log": _stable_game_log(8, minutes=31.0)}
+        enr = {"box_score_log": _stable_game_log(8, minutes=31.0)}
         _opp_run(row, enrichment=enr)
 
         gate = row["gates"]["wnba_opportunity_gate"]
@@ -317,7 +317,7 @@ class TestT7_RoleChange:
 
     def test_bench_role_lower_confidence(self):
         row = _wnba_row(stat_type="Points", direction="MORE", role_status="BENCH_CONFIRMED")
-        enr = {"game_log": _stable_game_log(8, minutes=18.0, pts=8, fga=6, usg=16)}
+        enr = {"box_score_log": _stable_game_log(8, minutes=18.0, pts=8, fga=6, usg=16)}
         _opp_run(row, enrichment=enr)
 
         gate = row["gates"]["wnba_opportunity_gate"]
@@ -326,7 +326,7 @@ class TestT7_RoleChange:
     def test_gate_result_always_stamped(self):
         """Gate report must always be present for WNBA rows with sufficient data."""
         row = _wnba_row(stat_type="PRA", direction="MORE")
-        enr = {"game_log": _stable_game_log(5)}
+        enr = {"box_score_log": _stable_game_log(5)}
         _opp_run(row, enrichment=enr)
         assert "wnba_opportunity_gate" in row["gates"]
         assert "opportunity_stability_score" in row["gates"]["wnba_opportunity_gate"]
@@ -348,7 +348,7 @@ class TestT8_MissingTeammateStatus:
             role_status="UNRESOLVED",  # role unknown because teammate out
         )
         enr = {
-            "game_log": _stable_game_log(8, minutes=28.0),
+            "box_score_log": _stable_game_log(8, minutes=28.0),
             "primary_teammate_dependency": ["starting_point_guard_status"],
             "dependency_status_payload": {
                 "starting_point_guard": None  # status not resolved
@@ -370,7 +370,7 @@ class TestT8_MissingTeammateStatus:
             role_status="STARTER_CONFIRMED",
         )
         enr = {
-            "game_log": _stable_game_log(10, minutes=33.0, ast=4.5),
+            "box_score_log": _stable_game_log(10, minutes=33.0, ast=4.5),
             "primary_teammate_dependency": [],
         }
         _opp_run(row, enrichment=enr)
@@ -437,7 +437,7 @@ class TestT12_CanExecuteFalse:
         for stat in ["PRA", "Points", "Rebounds"]:
             for role in ["STARTER_CONFIRMED", "BENCH_CONFIRMED", "UNRESOLVED"]:
                 row = _wnba_row(stat_type=stat, role_status=role)
-                _opp_run(row, enrichment={"game_log": _stable_game_log(8)})
+                _opp_run(row, enrichment={"box_score_log": _stable_game_log(8)})
                 assert row.get("can_execute") is False, \
                     f"can_execute must be False for stat={stat} role={role}"
                 gate = row["gates"]["wnba_opportunity_gate"]
@@ -445,7 +445,7 @@ class TestT12_CanExecuteFalse:
 
     def test_opportunity_gate_volatile_row_can_execute_false(self):
         row = _wnba_row(stat_type="PRA")
-        _opp_run(row, enrichment={"game_log": _volatile_game_log(10)})
+        _opp_run(row, enrichment={"box_score_log": _volatile_game_log(10)})
         assert row.get("can_execute") is False
 
     def test_portfolio_governor_never_sets_can_execute_true(self):

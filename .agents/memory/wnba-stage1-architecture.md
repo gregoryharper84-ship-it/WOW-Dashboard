@@ -95,11 +95,15 @@ Spec says cross-slip applies to all sports (max_alternate_lines_same_distributio
 ## ODDS API key resolution (fixed July 31)
 `services/odds_api.py` `_get()` now resolves: `ODDS_API_PAID_KEY` → `ODDS_API_FREE_KEY` → `ODDS_API_KEY` (legacy). Was reading only `ODDS_API_KEY` which is absent in Replit secrets → always "invalid ODDS_API_KEY". Module-level `ODDS_API_KEY` constant kept for back-compat only.
 
-## WNBA game_log diagnostic (improved July 31)
-Opportunity engine now distinguishes:
-- `game_log_missing` (caller supplied no game_log at all) → blocker `WNBA_HOLD_ROLE_UNCERTAIN:game_log_missing` + `caller_action` field with exact instruction
-- `insufficient_game_data:games=N<M` (game_log present but too sparse/all DNPs)
-`game_log` is NOT auto-fetched by auto_enrichment — caller must supply it for WNBA scoring.
+## WNBA enrichment key split (applied Aug 3 — permanent)
+`opportunity_engine.py` and `l5_l10_ledger.py` both previously read `enrichment["game_log"]` but needed incompatible formats:
+- `l5_l10_ledger.py` expects `game_log` = plain list of numbers (unchanged)
+- `opportunity_engine.py` expects per-game dicts with MIN, stat, FGA, USG
+
+Fix: `opportunity_engine.py` now reads `enrichment["box_score_log"]` (list of per-game dicts).
+`l5_l10_ledger.py` / `pipeline.py` still use `game_log` as plain numbers — untouched.
+`test_patch_wnba_portfolio_stage1.py` updated: all enrichment dicts use `"box_score_log"` key.
+**Valid USG keys accepted by opportunity_engine:** `USG`, `USG%`, `usg_pct`, `usage_rate`, `Usage%` (case-sensitive).
 
 ## Stage 2B remaining work (not implemented)
 - Component/shot distribution engine (`gate_engine/wnba/shot_volume_model.py`)
