@@ -148,7 +148,7 @@ export default function PromptPage() {
         shrinkage_probability: shrink,
         edge_per_leg:         shrink - fmt.breakeven,
         gate_pass:            shrink >= fmt.breakeven,
-        decision:             shrink >= fmt.breakeven ? "FINAL_APPROVED" : "MODEL_QUALIFIED_HOLD",
+        decision:             shrink >= fmt.breakeven ? "ESTIMATE_CLEARS_BREAKEVEN" : "ESTIMATE_HOLD_BELOW_BREAKEVEN",
       }
     : null;
 

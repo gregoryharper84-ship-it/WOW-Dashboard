@@ -63,7 +63,7 @@ interface GateResult {
   estimated_slip_ev: number;
   edge_per_leg: number;
   gate_pass: boolean;
-  decision: "FINAL_APPROVED" | "MODEL_QUALIFIED_HOLD";
+  decision: "ESTIMATE_CLEARS_BREAKEVEN" | "ESTIMATE_HOLD_BELOW_BREAKEVEN";
 }
 
 interface LockRecord {
@@ -135,7 +135,7 @@ function computeGate(form: FormData): GateResult | null {
     estimated_slip_ev: ev,
     edge_per_leg: edgePerLeg,
     gate_pass: gatePass,
-    decision: gatePass ? "FINAL_APPROVED" : "MODEL_QUALIFIED_HOLD",
+    decision: gatePass ? "ESTIMATE_CLEARS_BREAKEVEN" : "ESTIMATE_HOLD_BELOW_BREAKEVEN",
   };
 }
 
@@ -255,7 +255,7 @@ function HistoryTable({ locks }: { locks: LockRecord[] }) {
         </thead>
         <tbody>
           {locks.map((r) => {
-            const approved = r.final_lock_decision === "FINAL_APPROVED";
+            const approved = r.final_lock_decision === "ESTIMATE_CLEARS_BREAKEVEN";
             return (
               <tr key={r.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
                 <td className="py-2 px-2 text-muted-foreground">{r.id}</td>
@@ -937,7 +937,6 @@ export default function FinalLockDashboard() {
                         : "Below per-leg breakeven — hold for further review."}
                     </p>
                   </div>
-
                   {form.correlation_flag && (
                     <div className="flex items-start gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
                       <AlertTriangle size={14} className="text-yellow-400 mt-0.5 shrink-0" />

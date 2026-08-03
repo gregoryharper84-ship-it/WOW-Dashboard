@@ -20276,7 +20276,7 @@ def lock_api_submit():
             ev             = slip_prob * payout_m - 1.0
             edge_per_leg   = shrink_p - per_leg_be
             gate_pass      = shrink_p >= per_leg_be
-            decision       = "FINAL_APPROVED" if gate_pass else "MODEL_QUALIFIED_HOLD"
+            decision       = "ESTIMATE_CLEARS_BREAKEVEN" if gate_pass else "ESTIMATE_HOLD_BELOW_BREAKEVEN"
 
             gate_result = {
                 "per_leg_breakeven":     per_leg_be,
