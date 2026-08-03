@@ -635,4 +635,4 @@ class TestPgPortfolioGovernorInvariants:
         """Total active patches is now 13 (was 12 before Stage 2A)."""
         from gate_engine.governance import _PATCH_REGISTRY
         active = [p for p in _PATCH_REGISTRY if p["status"] == "ACTIVE"]
-        assert len(active) == 21, f"Expected 21 active patches, got {len(active)}"
+        assert len(active) == 22, f"Expected 22 active patches, got {len(active)}"

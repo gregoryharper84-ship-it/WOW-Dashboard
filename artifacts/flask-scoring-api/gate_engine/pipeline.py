@@ -29,6 +29,7 @@ from . import market_adverse, component_composite, opportunity_state
 from .governance import get_governance_status
 # WOW Stage 2 — hard structural gates + weakest-leg finalizer (reviewer-mandated)
 from . import card_finalizer, hitter_fantasy_score as _hfs_mod
+from . import route_registry
 # LLP MLB Winner Preflight Gate (reviewer-mandated, patch-level required)
 from . import llp_mlb_winner_preflight
 from . import mlb_directional_firewall, wnba_composite_gate, cross_ticket_governor
@@ -601,6 +602,12 @@ def run_pipeline(
 
         classifier.classify(row)
 
+        # WOW-PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION
+        # Enforce that all required gates ran before a qualifying label stands.
+        # Must run immediately after classify() so the correct label flows
+        # through settlement_loopback and four-lane stamping below.
+        route_registry.enforce_route_completion(row)
+
     # -------------------------------------------------------------------
     # Patch 2026-06-27 — Settlement Loopback ceiling enforcement
     # After classifier: if ledger is stale, downgrade FINAL_APPROVED → MODEL_QUALIFIED_HOLD
@@ -1117,6 +1124,13 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
     # WOW-PATCH-2026-07-15 — governance fingerprint in every output
     _gov_status = get_governance_status()
 
+    # WOW-PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION
+    # Gate execution trace — built after all enforcement so terminal_label is final.
+    gate_execution_summary = [
+        route_registry.build_row_execution_trace(row) for row in rows
+    ]
+    _route_failures = sum(1 for t in gate_execution_summary if t["route_downgraded"])
+
     return {
         "prop_ledger":        rows,
         "data_status_ledger": data_status_ledger,
@@ -1148,6 +1162,8 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "patch_ids_applied":    _gov_status["active_patch_ids"],
         "engine_code_version":  _gov_status["engine_code_version"],
         "can_execute":          False,
+        # WOW-PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION
+        "gate_execution_summary": gate_execution_summary,
         "summary": {
             "total_rows":               len(rows),
             "by_label":                 label_counts,
@@ -1159,6 +1175,7 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
             "mutex_group_count":        len(mutex_report or []),
             "injury_dependency_count":  _dep_count,
             "unresolved_dependency_count": _unresolved_count,
+            "route_completion_failures": _route_failures,
         },
     }
 

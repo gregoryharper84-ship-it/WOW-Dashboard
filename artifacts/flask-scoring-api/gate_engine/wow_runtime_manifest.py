@@ -54,6 +54,8 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         # 2026-08-02 analytical integrity patches
         "WOW-PATCH-2026-08-02-LLP-MATCHUP-EV-INTEGRITY",
         "WOW-PATCH-2026-08-02-LLP-SLIP-CONSTRUCTION-INTEGRITY",
+        # 2026-08-02 mandatory route completion
+        "WOW-PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION",
         # LLP v16 upgrade
         "WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH",
     ],
@@ -201,6 +203,10 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "cross_book_parlay_detection": True,              # PATCH-2026-08-02-LLP-SLIP-CONSTRUCTION-INTEGRITY
         "same_game_correlated_stack_detection": True,     # ML + prop same game dependency detection
         "selective_recency_consistency_check": True,      # recency override requires rule citation
+        # 2026-08-02 — Mandatory Route Completion
+        "mandatory_route_completion_enforcement": True,   # PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION
+        "gate_execution_summary_in_run_output": True,     # per-row trace: gates_ran/passed/failed/missing
+        "route_completion_failures_in_summary": True,     # summary.route_completion_failures counter
     },
 }
 

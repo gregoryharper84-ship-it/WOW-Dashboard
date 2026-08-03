@@ -458,6 +458,35 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
         ),
     },
     {
+        "patch_id":    "WOW-PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION",
+        "version":     "1.0",
+        "effective_at": "2026-08-02",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  101,
+        "can_execute": False,
+        "description": (
+            "Mandatory Route Completion Enforcement (2026-08-02): "
+            "Implements the architecture requirement that no row may hold a qualifying "
+            "label (FINAL_APPROVED, MONEY_QUALIFIED, MARKET_VERIFIED_HOLD) unless all "
+            "required gates for its sport and prop_type are present in row['gates']. "
+            "If a required gate is absent the row is downgraded to MODEL_QUALIFIED_HOLD "
+            "with a REQUIRED_GATE_NOT_EXECUTED:<gate_id> blocker — one-way ceiling only. "
+            "Universal required gates (all rows): slate_validation, status_role, "
+            "l5_l10_ledger, market_gate, ev_gate, slip_structure, exposure_gate. "
+            "Sport extra: MLB/NBA/WNBA/NFL/NHL require acquisition gate. "
+            "Prop-type extra: 1IP_PITCHES_THROWN and variants require calibration_health. "
+            "Additionally adds gate_execution_summary to every run output — a per-row "
+            "trace of gates_ran, gates_passed, gates_failed, required_missing, "
+            "route_complete, and original_label_before_route_enforcement — so GPT "
+            "sessions can inspect exactly which gates fired without reading per-row internals. "
+            "summary.route_completion_failures counts rows that were downgraded. "
+            "Module: gate_engine/route_registry.py. "
+            "Wired in pipeline.py immediately after classifier.classify(). "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
         "patch_id":    "WOW-PATCH-2026-08-01-LINEMAKERS-PRESENTATION-AND-SELF-AUDIT",
         "version":     "1.0",
         "effective_at": "2026-08-01",

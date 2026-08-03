@@ -44,3 +44,4 @@
 - [Linemakers self-audit patch](linemakers-self-audit-patch.md) — patch #18 (precedence 97); scan_audit.py + unified_calibration_ledger.py; Gate 0 in sports_gate adds 1 verdict → gate count test was 9, now 10.
 - [Multi-window prop persistence patch](multi-window-prop-persistence.md) — patch #19 (precedence 98); prop_persistence.py + same_player_mutex.py + 4 distribution models; compute_threshold_cushion hit-rate uses ternary (not double-if) in generator.
 - [Linemaker integrity patches #20 #21](linemaker-integrity-patches-20-21.md) — patch #20 (matchup/EV/pipeline integrity, precedence 99) + patch #21 (slip construction integrity, precedence 100); 5 new failure tags; patch count now 21; governance hash changed.
+- [Mandatory route completion patch #22](mandatory-route-completion.md) — patch #22 (precedence 101); route_registry.py enforces qualifying labels post-classifier; gate_execution_summary in every run output; patch count now 22.
