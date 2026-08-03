@@ -1189,6 +1189,116 @@ columns). `llp_postmortem` table unchanged.
 
 ---
 
+## §35 — Stage 2 `model_probability_ledger` Schema Contract (prob_ledger gate)
+
+**Purpose:** The `prob_ledger` gate inside `gate_engine/prob_ledger.py` validates every
+enrichment entry's `model_probability_ledger`. If the ledger is present but incomplete,
+the row lands in `PROB_SCHEMA_INCOMPLETE` / `DATA_CONTRACT_FAIL` and the terminal
+disposition is `NO_PLAY` — the HTTP response is still 200 with
+`validation_status=VALID_RUNTIME_EVIDENCE`. To avoid this silent failure, either omit
+`model_probability_ledger` entirely (the gate is skipped) or supply the complete
+Stage 2 structure documented here.
+
+Since 2026-08-03: `/gate-engine/run` returns **HTTP 422 PROB_LEDGER_INCOMPLETE** when
+any enrichment entry contains a `model_probability_ledger` that fails Stage 2 validation.
+This surfaces the error before scoring so the caller can fix the payload without
+burning a full scoring run.
+
+### Stage 2 required fields (all seven must be present)
+
+| Field | Type | Constraint |
+|-------|------|------------|
+| `raw_probability` | float | (0, 1) exclusive — model output before calibration |
+| `calibrated_probability` | float | (0, 1) exclusive — post-calibration estimate |
+| `lower_bound` | float | (0, 1) exclusive — numeric lower confidence bound |
+| `upper_bound` | float | (0, 1) exclusive — numeric upper confidence bound |
+| `model_timestamp` | str | ISO-8601 UTC, e.g. `"2026-08-03T10:00:00Z"` |
+| `source_snapshot_id` | str | Links to `llp_source_snapshots` table |
+| `calibration_method` | str | e.g. `"platt"`, `"isotonic"`, `"beta"` |
+
+Additional constraints:
+- `lower_bound ≤ calibrated_probability ≤ upper_bound` (self-consistency check)
+- `bool` values are rejected for all numeric fields (even though `float(True)==1.0`)
+
+### Required components (all three must appear in `components` array)
+
+| Name | Weight bounds | Description |
+|------|---------------|-------------|
+| `market_no_vig` | **0.40 – 0.50** | No-vig sportsbook implied probability |
+| `l10_distribution` | **0.25 – 0.35** | L10 distribution / median / hit rate |
+| `role_usage` | **0.10 – 0.20** | Role / minutes / usage context |
+
+### Optional components (only if you have quantified data)
+
+| Name | Weight bounds | Description |
+|------|---------------|-------------|
+| `l5_trend` | **−0.05 to +0.05** | L5 trend modifier (±5% hard cap) |
+| `matchup_context` | **−0.05 to +0.05** | Matchup / context (±3–5% if quantified) |
+
+### Blocked components (weight must be 0 or component omitted)
+
+`narrative`, `story`, `feeling`, `hunch` — always blocked, no-zero weight → `NARRATIVE_COMPONENT_BLOCKED`
+
+### Shrinkage rule
+
+When `final_model_prob ≥ 0.60`, `shrinkage_applied` must be `true`.
+Omitting shrinkage on a high-confidence row forces `calibration_status` to `UNCALIBRATED`
+which adds a +3% uncertainty buffer and a quarter-Kelly stake cap, and blocks Power tier.
+
+### Other ledger fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `final_model_prob` | float | Weighted sum of components (0–1) |
+| `confidence_interval` | str | Display only, e.g. `"0.53–0.61"`. Required for `FINAL_APPROVED` |
+| `uncertainty_haircut` | float | Buffer subtracted from `final_model_prob`, e.g. `0.04` |
+| `usable_probability` | float | `final_model_prob` − `uncertainty_haircut` |
+| `calibration_status` | str | `"CALIBRATED"` \| `"UNCALIBRATED"` \| `"PROXY_ONLY"` |
+| `shrinkage_applied` | bool | Must be `true` when `final_model_prob ≥ 0.60` |
+| `shrinkage_baseline` | str\|null | e.g. `"season"`, `"role_split"`, `"market"` |
+
+### Minimum valid example
+
+```json
+{
+  "components": [
+    {"name": "market_no_vig",    "weight": 0.45, "value": 0.54, "source": "draftkings_novig"},
+    {"name": "l10_distribution", "weight": 0.30, "value": 0.60, "source": "l10_hit_rate"},
+    {"name": "role_usage",       "weight": 0.15, "value": 0.55, "source": "minutes_share"}
+  ],
+  "final_model_prob":    0.568,
+  "confidence_interval": "0.52–0.61",
+  "uncertainty_haircut": 0.02,
+  "usable_probability":  0.548,
+  "calibration_status":  "CALIBRATED",
+  "shrinkage_applied":   false,
+  "shrinkage_baseline":  null,
+  "raw_probability":        0.572,
+  "calibrated_probability": 0.568,
+  "lower_bound":            0.52,
+  "upper_bound":            0.61,
+  "model_timestamp":        "2026-08-03T10:00:00Z",
+  "source_snapshot_id":     "snap-2026-08-03-nba-001",
+  "calibration_method":     "platt"
+}
+```
+
+### Error response when incomplete (HTTP 422)
+
+```json
+{
+  "error_code": "PROB_LEDGER_INCOMPLETE",
+  "detail": "model_probability_ledger present but fails Stage 2 validation on 1 enrichment entry(s)",
+  "violations": ["missing:source_snapshot_id", "weight:market_no_vig outside bounds"],
+  "affected_row_ids": ["row-abc-123"],
+  "ok": false
+}
+```
+
+Fix the ledger (or omit the field entirely) and retry. The pipeline is not run when this fires.
+
+---
+
 ## What to send back when you (ChatGPT / Claude) want a change
 
 1. The **delta** vs. this snapshot — what decision/threshold/contract you want

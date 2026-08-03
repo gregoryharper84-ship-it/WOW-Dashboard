@@ -353,6 +353,135 @@ paths:
                             type: boolean
                           minutes_restriction:
                             type: boolean
+                      model_probability_ledger:
+                        type: object
+                        description: >
+                          Stage 2 probability component ledger. Required for rank_eligible=true.
+                          If present but incomplete the endpoint returns HTTP 422
+                          PROB_LEDGER_INCOMPLETE — build the full structure or omit the field.
+
+                          REQUIRED Stage 2 fields (all seven must be present and valid):
+                            raw_probability        — float (0, 1) exclusive, model output before calibration
+                            calibrated_probability — float (0, 1), post-calibration estimate
+                            lower_bound            — float (0, 1), numeric lower confidence bound
+                            upper_bound            — float (0, 1), numeric upper confidence bound
+                                                     lower_bound ≤ calibrated_probability ≤ upper_bound
+                            model_timestamp        — ISO-8601 string, when the model was built
+                            source_snapshot_id     — string, links to llp_source_snapshots table
+                            calibration_method     — string, e.g. "platt" or "isotonic"
+
+                          REQUIRED components (all three must appear in the components array):
+                            market_no_vig    weight 0.40–0.50  (no-vig sportsbook implied probability)
+                            l10_distribution weight 0.25–0.35  (L10 distribution / median / hit rate)
+                            role_usage       weight 0.10–0.20  (role / minutes / usage context)
+
+                          OPTIONAL components (include only if you have quantified data):
+                            l5_trend         weight −0.05 to +0.05  (±5% hard cap)
+                            matchup_context  weight −0.05 to +0.05  (±3–5% if quantified)
+
+                          BLOCKED components (weight must be 0 or omit entirely):
+                            narrative / story / feeling / hunch — always blocked
+
+                          Other fields in this object:
+                            final_model_prob    — float, weighted sum of components (0–1)
+                            confidence_interval — string display, e.g. "0.53–0.61"
+                            uncertainty_haircut — float, e.g. 0.04
+                            usable_probability  — float, final_model_prob minus haircut
+                            calibration_status  — "CALIBRATED" | "UNCALIBRATED" | "PROXY_ONLY"
+                            shrinkage_applied   — bool (required true when final_model_prob ≥ 0.60)
+                            shrinkage_baseline  — string | null, e.g. "season" | "role_split"
+
+                          SHRINKAGE RULE:
+                            final_model_prob ≥ 0.60 requires shrinkage_applied=true on at least
+                            one baseline (season, role_split, or market). Omitting shrinkage on a
+                            high-confidence row forces calibration_status to UNCALIBRATED and adds
+                            a 3% uncertainty buffer plus quarter-Kelly cap.
+
+                          MINIMUM VALID EXAMPLE:
+                            {
+                              "components": [
+                                {"name": "market_no_vig",    "weight": 0.45, "value": 0.54, "source": "draftkings_novig"},
+                                {"name": "l10_distribution", "weight": 0.30, "value": 0.60, "source": "l10_hit_rate"},
+                                {"name": "role_usage",       "weight": 0.15, "value": 0.55, "source": "minutes_share"}
+                              ],
+                              "final_model_prob":    0.568,
+                              "confidence_interval": "0.52–0.61",
+                              "uncertainty_haircut": 0.02,
+                              "usable_probability":  0.548,
+                              "calibration_status":  "CALIBRATED",
+                              "shrinkage_applied":   false,
+                              "shrinkage_baseline":  null,
+                              "raw_probability":        0.572,
+                              "calibrated_probability": 0.568,
+                              "lower_bound":            0.52,
+                              "upper_bound":            0.61,
+                              "model_timestamp":        "2026-08-03T10:00:00Z",
+                              "source_snapshot_id":     "snap-2026-08-03-nba-001",
+                              "calibration_method":     "platt"
+                            }
+                        properties:
+                          raw_probability:
+                            type: number
+                            description: Model output before calibration transform. Float in (0, 1) exclusive.
+                          calibrated_probability:
+                            type: number
+                            description: Post-calibration estimate. Must satisfy lower_bound ≤ calibrated_probability ≤ upper_bound.
+                          lower_bound:
+                            type: number
+                            description: Numeric lower confidence bound. Float in (0, 1) exclusive. Not a display string.
+                          upper_bound:
+                            type: number
+                            description: Numeric upper confidence bound. Float in (0, 1) exclusive. lower_bound ≤ upper_bound.
+                          model_timestamp:
+                            type: string
+                            description: ISO-8601 UTC timestamp when the model was built, e.g. "2026-08-03T10:00:00Z".
+                          source_snapshot_id:
+                            type: string
+                            description: ID linking this estimate to the llp_source_snapshots table.
+                          calibration_method:
+                            type: string
+                            description: How calibration was applied, e.g. "platt", "isotonic", "beta".
+                          components:
+                            type: array
+                            description: Probability component entries. All three required components must be present.
+                            items:
+                              type: object
+                              properties:
+                                name:
+                                  type: string
+                                  description: Component name — one of market_no_vig, l10_distribution, role_usage, l5_trend, matchup_context.
+                                weight:
+                                  type: number
+                                  description: Influence weight. market_no_vig 0.40–0.50, l10_distribution 0.25–0.35, role_usage 0.10–0.20, l5_trend ±0.05, matchup_context ±0.05.
+                                value:
+                                  type: number
+                                  description: Component probability estimate (0–1).
+                                source:
+                                  type: string
+                                  description: Data source label for this component.
+                          final_model_prob:
+                            type: number
+                            description: Weighted sum of all components (0–1).
+                          confidence_interval:
+                            type: string
+                            description: Display string, e.g. "0.53–0.61". Required for FINAL_APPROVED.
+                          uncertainty_haircut:
+                            type: number
+                            description: Uncertainty buffer subtracted from final_model_prob, e.g. 0.04.
+                          usable_probability:
+                            type: number
+                            description: final_model_prob minus uncertainty_haircut.
+                          calibration_status:
+                            type: string
+                            enum: [CALIBRATED, UNCALIBRATED, PROXY_ONLY]
+                            description: CALIBRATED requires all required components + shrinkage where needed. UNCALIBRATED adds 3% buffer, quarter-Kelly cap, blocks Power.
+                          shrinkage_applied:
+                            type: boolean
+                            description: Must be true when final_model_prob ≥ 0.60.
+                          shrinkage_baseline:
+                            type: string
+                            nullable: true
+                            description: Baseline used for shrinkage, e.g. "season", "role_split", "market".
                 record_entries:
                   type: boolean
                   description: >
@@ -512,6 +641,41 @@ paths:
                 properties:
                   error:
                     type: string
+        "422":
+          description: >
+            model_probability_ledger present but incomplete (Stage 2 schema
+            violation). The ledger was supplied but is missing required fields
+            or has out-of-bounds values. Fix the ledger and retry — or omit
+            model_probability_ledger entirely to skip the prob_ledger gate.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error_code:
+                    type: string
+                    description: Always "PROB_LEDGER_INCOMPLETE"
+                  detail:
+                    type: string
+                    description: Human-readable summary of violations
+                  violations:
+                    type: array
+                    items:
+                      type: string
+                    description: >
+                      Per-violation strings. Prefix meanings:
+                        missing:<field>       — required Stage 2 field absent
+                        missing_component:<n> — required component not found
+                        bound:<field>         — numeric value outside valid range
+                        weight:<component>    — component weight outside bounds
+                  affected_row_ids:
+                    type: array
+                    items:
+                      type: string
+                    description: row_id values for enrichment entries that failed
+                  ok:
+                    type: boolean
+                    description: Always false
         "401":
           description: Missing or invalid X-API-Key
           content:

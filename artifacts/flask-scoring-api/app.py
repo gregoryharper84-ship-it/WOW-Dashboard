@@ -19579,6 +19579,82 @@ def gate_engine_run():
     if response_mode not in ("full", "slim"):
         response_mode = "full"
 
+    # -----------------------------------------------------------------------
+    # Stage 2 early-validation gate (HTTP 422)
+    # If any enrichment entry supplies model_probability_ledger but it fails
+    # Stage 2 schema checks, return 422 PROB_LEDGER_INCOMPLETE before the
+    # pipeline runs.  This prevents the silent DATA_CONTRACT_FAIL / NO_PLAY
+    # outcome that occurs when the ledger is present but incomplete.
+    #
+    # Uses the canonical validator from gate_engine/prob_ledger.py so the
+    # preflight and the pipeline gate are always in sync — including all
+    # interval self-consistency checks (lower_bound ≤ calibrated_probability
+    # ≤ upper_bound, lower_bound ≤ upper_bound, bool-rejection, etc.).
+    # -----------------------------------------------------------------------
+    from gate_engine.prob_ledger import (  # lazy import — module already cached
+        _validate_stage2_schema as _pl_validate_stage2,
+        REQUIRED_COMPONENTS     as _pl_required_components,
+        _check_influence_bounds as _pl_check_influence_bounds,
+        _check_narrative_blocked as _pl_check_narrative_blocked,
+    )
+
+    _prob_422_violations: list = []
+    _prob_422_row_ids:    list = []
+    for _enr_key, _enr_val in enrichment.items():
+        if not isinstance(_enr_val, dict):
+            continue
+        _mpl = _enr_val.get("model_probability_ledger")
+        if _mpl is None:
+            continue   # not supplied — skip; gate will be a no-op at scoring time
+        if not isinstance(_mpl, dict):
+            _prob_422_violations.append(
+                f"{_enr_key}: model_probability_ledger must be an object, "
+                f"got {type(_mpl).__name__}"
+            )
+            _prob_422_row_ids.append(_enr_key)
+            continue
+
+        _s2_row_violations: list = []
+
+        # 1. Stage 2 required-field + type + range + interval self-consistency
+        #    (canonical validator — identical to what the pipeline gate runs)
+        _schema_result = _pl_validate_stage2(_mpl, {})
+        _s2_row_violations.extend(_schema_result["violations"])
+
+        # 2. Required component presence
+        _components = _mpl.get("components") or []
+        _comp_names = {str(c.get("name", "")).lower() for c in _components if isinstance(c, dict)}
+        for _rc in _pl_required_components:
+            if _rc not in _comp_names:
+                _s2_row_violations.append(f"missing_component:{_rc}")
+
+        # 3. Component influence-bounds (canonical checker)
+        for _inf_v in _pl_check_influence_bounds(_components):
+            _s2_row_violations.append(f"influence_bounds:{_inf_v}")
+
+        # 4. Narrative/blocked component guard (canonical checker)
+        for _blocked in _pl_check_narrative_blocked(_components):
+            _s2_row_violations.append(f"narrative_blocked:{_blocked}")
+
+        if _s2_row_violations:
+            for _sv in _s2_row_violations:
+                _prob_422_violations.append(f"{_enr_key}: {_sv}")
+            _prob_422_row_ids.append(_enr_key)
+
+    if _prob_422_violations:
+        return jsonify({
+            "error_code":       "PROB_LEDGER_INCOMPLETE",
+            "detail": (
+                f"model_probability_ledger present but fails Stage 2 validation "
+                f"on {len(_prob_422_row_ids)} enrichment entry(s). "
+                f"Fix the ledger or omit model_probability_ledger to skip this gate."
+            ),
+            "violations":       _prob_422_violations,
+            "affected_row_ids": list(dict.fromkeys(_prob_422_row_ids)),
+            "ok":               False,
+            "can_execute":      False,
+        }), 422
+
     auto_enrichment_status = None
     if auto_enrich:
         try:
