@@ -63,6 +63,15 @@ paths:
                     type: string
                   request_cost:
                     type: string
+                  quota_warning:
+                    type: boolean
+                    description: >
+                      True when requests_remaining for this key tier has dropped
+                      below the server-side threshold (default 50). Stop non-essential
+                      calls immediately and notify the session operator.
+                  quota_threshold:
+                    type: integer
+                    description: The remaining-count floor that triggers quota_warning
                   data:
                     type: array
                     items:
@@ -125,6 +134,15 @@ paths:
                     type: string
                   request_cost:
                     type: string
+                  quota_warning:
+                    type: boolean
+                    description: >
+                      True when requests_remaining for this key tier has dropped
+                      below the server-side threshold (default 50). Stop non-essential
+                      calls immediately and notify the session operator.
+                  quota_threshold:
+                    type: integer
+                    description: The remaining-count floor that triggers quota_warning
                   data:
                     type: object
                     additionalProperties: true
@@ -199,6 +217,15 @@ paths:
                     type: string
                   request_cost:
                     type: string
+                  quota_warning:
+                    type: boolean
+                    description: >
+                      True when requests_remaining for this key tier has dropped
+                      below the server-side threshold (default 50). Stop non-essential
+                      calls immediately and notify the session operator.
+                  quota_threshold:
+                    type: integer
+                    description: The remaining-count floor that triggers quota_warning
                   data:
                     type: object
                     additionalProperties: true
@@ -208,3 +235,49 @@ paths:
           description: Invalid or missing X-WOW-Action-Key
         "502":
           description: Both Odds API key paths failed
+
+  /wow/odds/quota-status:
+    get:
+      operationId: getOddsApiQuotaStatus
+      summary: Check current Odds API quota without making a chargeable call
+      description: >
+        Returns the last-known requests_remaining and requests_used for each
+        key tier (paid / free). Values are updated in-process after every
+        successful /wow/odds/* call — no chargeable Odds API request is made.
+        Call this at the start of a scoring session to confirm quota headroom
+        before issuing market or odds requests.
+      responses:
+        "200":
+          description: Current quota snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  quota_threshold:
+                    type: integer
+                    description: remaining-count floor below which quota_warning fires
+                  quota_warning:
+                    type: boolean
+                    description: True when any key tier is below quota_threshold
+                  tiers:
+                    type: object
+                    description: >
+                      One key per tier ("paid", "free"). Each value contains
+                      requests_remaining (int), requests_used (int),
+                      updated_at (ISO-8601 UTC), quota_warning (bool).
+                    additionalProperties:
+                      type: object
+                      properties:
+                        requests_remaining:
+                          type: integer
+                        requests_used:
+                          type: integer
+                        updated_at:
+                          type: string
+                        quota_warning:
+                          type: boolean
+                  note:
+                    type: string
+        "401":
+          description: Invalid or missing X-WOW-Action-Key

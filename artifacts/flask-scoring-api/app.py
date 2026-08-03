@@ -31036,6 +31036,56 @@ Example:
 
 _ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
+# ---------------------------------------------------------------------------
+# Quota tracking — updated after every successful Odds API call.
+# Two gunicorn workers each hold their own copy; values converge toward the
+# truth as calls are made.  Per-worker tracking is sufficient for warnings —
+# the authoritative remaining count always comes from the API response header.
+# ---------------------------------------------------------------------------
+_ODDS_QUOTA_LOCK  = __import__("threading").Lock()
+_ODDS_QUOTA_THRESHOLD = 50       # emit quota_warning below this remaining count
+
+_ODDS_QUOTA_STORE: dict = {
+    # "paid": {"requests_remaining": None, "requests_used": None,
+    #          "updated_at": None, "quota_warning": False}
+    # "free": { ... }
+}
+
+
+def _odds_quota_update(key_tier: str, remaining_str, used_str) -> bool:
+    """
+    Parse and store quota headers for key_tier ('paid' or 'free').
+    Returns True when remaining drops below _ODDS_QUOTA_THRESHOLD.
+    Thread-safe.
+    """
+    import datetime as _dt
+    try:
+        remaining = int(remaining_str) if remaining_str is not None else None
+    except (TypeError, ValueError):
+        remaining = None
+
+    try:
+        used = int(used_str) if used_str is not None else None
+    except (TypeError, ValueError):
+        used = None
+
+    warning = (remaining is not None) and (remaining < _ODDS_QUOTA_THRESHOLD)
+
+    with _ODDS_QUOTA_LOCK:
+        _ODDS_QUOTA_STORE[key_tier] = {
+            "requests_remaining": remaining,
+            "requests_used":      used,
+            "updated_at":         _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "quota_warning":      warning,
+        }
+    return warning
+
+
+def _odds_quota_snapshot() -> dict:
+    """Return a thread-safe copy of the current quota store."""
+    with _ODDS_QUOTA_LOCK:
+        return {k: dict(v) for k, v in _ODDS_QUOTA_STORE.items()}
+
 
 def _verify_wow_action_key():
     """Return (ok, error_response).  ok=True means the caller is authorised."""
@@ -31053,6 +31103,10 @@ def _odds_api_request(path, params, prefer_paid=True):
     Call The Odds API with a paid / free key ladder.
     Retries the alternate key only on 401, 403, or 429.
     Returns (result_dict, None) on success or (None, flask_response) on failure.
+
+    On success the returned dict includes:
+      quota_warning (bool)  — True when requests_remaining < _ODDS_QUOTA_THRESHOLD
+      quota_threshold (int) — the threshold value for the caller's awareness
     """
     import requests as _req
 
@@ -31082,11 +31136,16 @@ def _odds_api_request(path, params, prefer_paid=True):
             break
 
         if resp.status_code == 200:
+            remaining_str = resp.headers.get("x-requests-remaining")
+            used_str      = resp.headers.get("x-requests-used")
+            warning = _odds_quota_update(key_tier, remaining_str, used_str)
             return {
                 "source_key_tier":    key_tier,
-                "requests_remaining": resp.headers.get("x-requests-remaining"),
-                "requests_used":      resp.headers.get("x-requests-used"),
+                "requests_remaining": remaining_str,
+                "requests_used":      used_str,
                 "request_cost":       resp.headers.get("x-requests-last"),
+                "quota_warning":      warning,
+                "quota_threshold":    _ODDS_QUOTA_THRESHOLD,
                 "data":               resp.json(),
             }, None
 
@@ -31205,6 +31264,34 @@ def wow_odds_event_odds():
     if err_resp:
         return err_resp
     return jsonify(result), 200
+
+
+@app.route("/wow/odds/quota-status", methods=["GET"])
+def wow_odds_quota_status():
+    """
+    GET /wow/odds/quota-status
+    Returns the last-known requests_remaining / requests_used for each key
+    tier without making a chargeable Odds API call.  Values are updated after
+    every successful /wow/odds/* call in this worker process.
+    Requires X-WOW-Action-Key header.
+    """
+    ok, err = _verify_wow_action_key()
+    if not ok:
+        return err
+
+    snapshot = _odds_quota_snapshot()
+    any_warning = any(v.get("quota_warning") for v in snapshot.values())
+
+    return jsonify({
+        "quota_threshold":     _ODDS_QUOTA_THRESHOLD,
+        "quota_warning":       any_warning,
+        "tiers":               snapshot,
+        "note": (
+            "Values reflect the last successful call in this worker process. "
+            "Two gunicorn workers run independently — if no calls have been made "
+            "from this worker since startup, tiers will be empty."
+        ),
+    }), 200
 
 
 if __name__ == "__main__":
