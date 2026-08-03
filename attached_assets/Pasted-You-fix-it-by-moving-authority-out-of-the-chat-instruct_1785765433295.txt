@@ -1,0 +1,748 @@
+You fix it by moving authority **out of the chat instructions and into one deterministic backend gate engine**.
+
+The practical goal is simple:
+
+> No model, UI, prompt, or downstream optimizer should be able to emit an approved slip unless the backend independently proves every mandatory gate passed.
+
+## 1. Make the backend the only source of truth
+
+Today, the likely architecture is:
+
+```text
+Skill docs → chat session interprets rules → session returns label
+```
+
+It needs to become:
+
+```text
+Skill docs → machine-readable rules
+          → backend gate engine
+          → immutable decision object
+          → UI/chat only explains that decision
+```
+
+The model may research, summarize, enrich, and explain. It must not be allowed to assign the final approval label.
+
+The backend alone should issue:
+
+```text
+LEG_APPROVED_CORE
+LEG_APPROVED_SUPPORT
+MODEL_QUALIFIED_HOLD
+REJECT_DATA_QUALITY
+DUPLICATE_EXPOSURE_BLOCK
+SLIP_APPROVED
+NO_PLAY
+```
+
+This matches the control-plane intent in the existing specifications, but it must be implemented as code rather than treated as session guidance. 
+
+---
+
+## 2. Build one canonical decision schema
+
+Every candidate should be converted into one typed object before scoring.
+
+For example:
+
+```ts
+type PropCandidate = {
+  rowId: string;
+  sessionId: string;
+  researchRunId: string;
+
+  identity: {
+    player: string;
+    sport: string;
+    team: string;
+    opponent: string;
+    eventDate: string;
+    eventId: string;
+    propType: string;
+    period: string;
+    line: number;
+    direction: "MORE" | "LESS";
+    offerType: string;
+    settlementKey: string;
+  };
+
+  governance: {
+    governanceHash: string;
+    engineVersion: string;
+    activePatchIds: string[];
+    laneStatus: string;
+  };
+
+  statusRole: {
+    officialStatus: string | null;
+    starterConfirmed: boolean | null;
+    roleConfirmed: boolean | null;
+    minutesProjection?: number;
+    workloadProjection?: number;
+    retrievedAt: string | null;
+  };
+
+  distribution: {
+    l5: number[];
+    l10: number[];
+    exactLineHitRateL5: number | null;
+    exactLineHitRateL10: number | null;
+    median: number | null;
+    standardDeviation: number | null;
+  };
+
+  model: {
+    rawProbability: number | null;
+    calibratedProbability: number | null;
+    lowerBound: number | null;
+    upperBound: number | null;
+    calibrationStatus: string;
+    failurePathScore: number | null;
+  };
+
+  market: {
+    comparisonAttempted: boolean;
+    exactMarketFound: boolean;
+    materialConflict: boolean | null;
+    referenceTimestamp: string | null;
+  };
+
+  payout: {
+    verified: boolean;
+    slipType: string | null;
+    multiplier: number | null;
+    payoutTable: Record<string, number> | null;
+    voidRuleVerified: boolean;
+  };
+
+  blockers: string[];
+};
+```
+
+The important change is that required fields become explicit and machine-testable.
+
+No hidden context. No “the session probably considered it.”
+
+---
+
+## 3. Convert every rule into an executable invariant
+
+Each specification rule must become one of:
+
+* a schema validation;
+* a gate function;
+* a final-label ceiling;
+* a slip constraint;
+* a runtime assertion.
+
+For example:
+
+```ts
+function enforceLaneCeiling(candidate: PropCandidate): GateResult {
+  if (
+    candidate.identity.propType === "1st Inning Pitches Thrown" &&
+    candidate.governance.laneStatus === "TEST_ONLY"
+  ) {
+    return {
+      passed: false,
+      blocker: "MLB_1IP_TEST_ONLY",
+      maximumLabel: "MODEL_QUALIFIED_HOLD",
+    };
+  }
+
+  return { passed: true };
+}
+```
+
+The 1IP specification explicitly says that `TEST_ONLY` cannot receive money-grade or Power approval. That must be an unconditional code path, not a reminder in a Markdown file. 
+
+Likewise:
+
+```ts
+if (failurePathRequired && failurePathScore === null) {
+  reject("FAILURE_PATH_MODEL_MISSING");
+}
+
+if (marketConflict === true) {
+  hold("LEG_HOLD_MARKET_CONFLICT");
+}
+
+if (!payout.verified) {
+  rejectSlip("COMBO_EV_UNOBTAINABLE");
+}
+
+if (duplicateThesisDetected) {
+  reject("DUPLICATE_EXPOSURE_BLOCK");
+}
+```
+
+---
+
+## 4. Use fail-closed defaults
+
+The worst implementation pattern is:
+
+```ts
+if (dataAvailable) {
+  runGate();
+}
+continueApproval();
+```
+
+That silently turns unavailable evidence into a pass.
+
+Use:
+
+```ts
+const status =
+  dataAvailable
+    ? runGate()
+    : fail("REQUIRED_DATA_UNAVAILABLE");
+```
+
+Required evidence should resolve only to:
+
+```text
+PASS
+FAIL
+NOT_APPLICABLE
+```
+
+Not:
+
+```text
+undefined
+unknown
+not_called
+probably okay
+```
+
+For required gates:
+
+```text
+UNKNOWN = FAIL
+MISSING = FAIL
+ERROR = FAIL
+TIMEOUT = FAIL
+SOURCE_CONFLICT = FAIL
+```
+
+The specifications already prohibit unresolved required paths from disappearing from the final result. 
+
+---
+
+## 5. Implement monotonic ceilings
+
+This is one of the highest-priority fixes.
+
+Every gate should be able to lower the candidate ceiling, but no downstream stage may raise it.
+
+Represent labels as an ordered severity or maximum-permitted rank:
+
+```ts
+const labelRank = {
+  REJECT_DATA_QUALITY: 0,
+  RESEARCH_INTEREST: 1,
+  MODEL_QUALIFIED_HOLD: 2,
+  MARKET_VERIFIED_HOLD: 3,
+  MONEY_QUALIFIED: 4,
+  FINAL_APPROVED: 5,
+};
+```
+
+Then:
+
+```ts
+finalCeiling = Math.min(
+  governanceCeiling,
+  identityCeiling,
+  roleCeiling,
+  modelCeiling,
+  calibrationCeiling,
+  marketCeiling,
+  payoutCeiling,
+  exposureCeiling
+);
+```
+
+A downstream component should receive the ceiling as read-only input.
+
+It must never do this:
+
+```ts
+candidate.label = "FINAL_APPROVED";
+```
+
+Instead:
+
+```ts
+candidate.requestedLabel = "FINAL_APPROVED";
+candidate.finalLabel = clampToCeiling(
+  candidate.requestedLabel,
+  candidate.maximumAllowedLabel
+);
+```
+
+This makes “lowest-ceiling propagation” mathematically enforced rather than aspirational.
+
+---
+
+## 6. Separate modeling from eligibility
+
+A model should return probabilities only:
+
+```json
+{
+  "raw_probability": 0.68,
+  "calibrated_probability": 0.64,
+  "lower_bound": 0.58,
+  "failure_path_score": 0.14
+}
+```
+
+It should not return:
+
+```json
+{
+  "approved": true
+}
+```
+
+Eligibility belongs to a separate policy engine.
+
+That prevents a strong model score from overriding:
+
+* unresolved role;
+* stale status;
+* missing payout;
+* market conflict;
+* TEST_ONLY restrictions;
+* duplicate exposure.
+
+The existing lane-separation document already distinguishes confidence, market edge, money EV, and slip eligibility. Implement those as separate backend objects. 
+
+---
+
+## 7. Create a mandatory route registry
+
+Do not let callers choose which checks to run.
+
+The backend should determine the route from the market identity:
+
+```ts
+function getRequiredRoute(candidate: PropCandidate): string[] {
+  if (
+    candidate.identity.sport === "MLB" &&
+    candidate.identity.propType === "1st Inning Pitches Thrown"
+  ) {
+    return [
+      "governance",
+      "identity",
+      "settlement",
+      "starter_status",
+      "first_inning_distribution",
+      "top_four_lineup",
+      "health_regime",
+      "first_inning_event_tree",
+      "probability_calibration",
+      "market_audit",
+      "payout_audit",
+      "exposure_audit",
+      "terminal_resolver",
+    ];
+  }
+
+  // Other routes...
+}
+```
+
+Then verify completion:
+
+```ts
+for (const requiredGate of route) {
+  if (!executedGates.includes(requiredGate)) {
+    throw new RunInvalidError(
+      `REQUIRED_GATE_NOT_EXECUTED:${requiredGate}`
+    );
+  }
+}
+```
+
+This prevents sessions from skipping a specialist or auditor because the prop “looks obvious.”
+
+---
+
+## 8. Add session-wide exposure storage
+
+Cross-slip deduplication cannot live only inside one prompt.
+
+Create an exposure ledger keyed by session:
+
+```text
+session_id
+player
+event
+distribution_key
+injury_thesis_key
+role_change_key
+game_script_key
+direction
+line_family
+ticket_id
+created_at
+```
+
+A canonical thesis key could look like:
+
+```text
+WNBA:PLAYER_123:POINTS_DISTRIBUTION:STARTER_ABSENCE_456
+```
+
+Before a new leg is admitted:
+
+```ts
+const conflicts = exposureLedger.findConflicts(candidate);
+
+if (conflicts.length > 0) {
+  return reject("DUPLICATE_EXPOSURE_BLOCK", conflicts);
+}
+```
+
+This check must run:
+
+* across Power and Flex;
+* across multiple slips;
+* across repeated players;
+* across alternate lines;
+* across component and composite props;
+* across shared injury or game-script assumptions.
+
+---
+
+## 9. Move slip approval into a second-stage engine
+
+Individual leg qualification and slip qualification must be different endpoints.
+
+Recommended shape:
+
+```text
+POST /analyze-leg
+POST /construct-slip
+POST /finalize-slip
+```
+
+`/construct-slip` accepts only immutable leg IDs already scored by `/analyze-leg`.
+
+It must not rescore or reinterpret them.
+
+```ts
+type SharedLegOutput = {
+  legId: string;
+  calibratedProbability: number;
+  lowerBound: number;
+  uncertaintyInterval: [number, number];
+  failurePathScore: number;
+  roleRisk: string;
+  correlationTags: string[];
+  sharedThesisKeys: string[];
+  powerEligibility: boolean;
+  flexEligibility: boolean;
+  maximumLabel: string;
+};
+```
+
+The slip engine then checks:
+
+* multiplier;
+* paytable;
+* joint lower bound;
+* dependence;
+* duplicate theses;
+* clustered miss risk;
+* weakest leg;
+* breakeven and effective floor.
+
+Missing payout or joint probability must terminate the slip as not approvable.
+
+---
+
+## 10. Require a final live-recheck transaction
+
+Approval should be a transaction, not just another function call.
+
+Example:
+
+```text
+BEGIN FINALIZATION
+  lock candidate versions
+  refresh current board line
+  refresh official status
+  refresh starter/lineup
+  refresh payout table
+  refresh market conflict
+  refresh exposure ledger
+  compare against analyzed snapshot
+  rerun affected gates
+  write immutable decision
+COMMIT
+```
+
+If any material field changed:
+
+```text
+line movement ≥ threshold
+starter changed
+role changed
+payout changed
+market conflict appeared
+approval age exceeded
+```
+
+then the transaction should abort:
+
+```text
+FINALIZATION_ABORTED_MATERIAL_CHANGE
+```
+
+A disclaimer is not sufficient.
+
+---
+
+## 11. Store complete gate traces
+
+Every run should persist a structured trace:
+
+```json
+{
+  "run_id": "rr-2026-08-03-001",
+  "candidate_id": "cand-14",
+  "required_gates": [
+    "governance",
+    "identity",
+    "role",
+    "distribution",
+    "failure_path",
+    "market",
+    "payout",
+    "exposure"
+  ],
+  "executed_gates": [
+    {
+      "gate": "governance",
+      "status": "PASS",
+      "version": "16.5",
+      "timestamp": "2026-08-03T13:40:01Z"
+    },
+    {
+      "gate": "failure_path",
+      "status": "FAIL",
+      "blocker": "FAILURE_PATH_MODEL_MISSING"
+    }
+  ],
+  "maximum_ceiling": "MODEL_QUALIFIED_HOLD",
+  "requested_label": "FINAL_APPROVED",
+  "final_label": "MODEL_QUALIFIED_HOLD"
+}
+```
+
+The UI should show the trace, not recreate the reasoning itself.
+
+This also supports the immutable calibration ledger described in the specifications. 
+
+---
+
+## 12. Write negative tests before adding new models
+
+Do not start by improving probabilities.
+
+First prove that invalid cases cannot pass.
+
+Minimum regression suite:
+
+```text
+TEST_ONLY 1IP + strong probability
+→ never above MODEL_QUALIFIED_HOLD
+
+Missing pitcher failure-path model
+→ cannot qualify
+
+Missing official role confirmation
+→ cannot qualify
+
+Upstream HOLD + downstream market agreement
+→ remains HOLD
+
+Unresolved market contradiction
+→ cannot qualify
+
+Missing payout table
+→ slip EV unavailable and no approval
+
+Duplicate thesis across two tickets
+→ second leg blocked
+
+Same player alternate lines
+→ duplicate exposure block
+
+Required gate throws exception
+→ run fails closed
+
+Required gate never called
+→ RUN_INVALID
+
+Old model snapshot after lineup change
+→ invalidated and rerun required
+
+Five-leg slip with weak fourth/fifth leg
+→ shrink or reject, never preserve filler
+```
+
+These should run automatically on every deployment.
+
+---
+
+## 13. Remove approval authority from the frontend and LLM
+
+Search the codebase for any path where the frontend or model supplies:
+
+```text
+approved=true
+final_label
+money_qualified
+slip_approved
+power_eligible
+```
+
+Those values should be ignored unless signed or generated by the backend decision engine.
+
+The frontend request may say:
+
+```json
+{
+  "requested_output": "Power slip"
+}
+```
+
+It must not say:
+
+```json
+{
+  "final_label": "SLIP_APPROVED"
+}
+```
+
+Similarly, an LLM response should be treated as untrusted enrichment:
+
+```ts
+type ModelResearchOutput = {
+  extractedFacts: Fact[];
+  proposedProjection?: number;
+  narrative: string;
+};
+```
+
+Never:
+
+```ts
+type ModelResearchOutput = {
+  approval: boolean;
+};
+```
+
+---
+
+## 14. Generate the human-readable docs from code
+
+To stop documentation drift, invert the relationship.
+
+Instead of manually writing rules in Markdown and hoping code matches them:
+
+```text
+Machine-readable policy definitions
+        ↓
+Backend enforcement
+        ↓
+Generated documentation
+```
+
+For example:
+
+```yaml
+gate_id: MLB_1IP_TEST_ONLY
+applies_when:
+  sport: MLB
+  prop_type: FIRST_INNING_PITCHES
+  lane_status: TEST_ONLY
+effect:
+  maximum_label: MODEL_QUALIFIED_HOLD
+  power_eligibility: false
+  money_eligibility: false
+failure_mode: FAIL_CLOSED
+```
+
+That same YAML can drive:
+
+* runtime enforcement;
+* regression tests;
+* route validation;
+* documentation generation;
+* admin UI displays.
+
+Then the rule cannot exist only as prose.
+
+---
+
+## 15. Remediation order
+
+Do this in this sequence:
+
+### Phase 1 — Stop unsafe approvals
+
+Implement immediately:
+
+* backend-only terminal resolver;
+* monotonic ceiling propagation;
+* fail-closed missing gates;
+* 1IP TEST_ONLY hard ceiling;
+* mandatory payout gate;
+* session-wide duplicate exposure check;
+* disable any approval path that bypasses the resolver.
+
+### Phase 2 — Prove coverage
+
+Create:
+
+* layer-to-code audit;
+* route registry;
+* gate execution trace;
+* negative regression tests;
+* runtime alerts for required gates not called.
+
+### Phase 3 — Harden modeling
+
+Then implement or verify:
+
+* pitcher mixture/failure-path models;
+* correlated slip probability;
+* Flex hit-count distribution;
+* calibration cohorts;
+* live recheck transaction.
+
+### Phase 4 — Eliminate specification drift
+
+Finally:
+
+* move rules into machine-readable policy files;
+* generate docs from policies;
+* version and hash policies;
+* reject runs using mismatched versions.
+
+---
+
+## Definition of done
+
+The system is fixed only when this statement is true:
+
+> Given the same normalized inputs, governance version and evidence snapshot, the backend always returns the same terminal result, and no prompt, user, frontend, model response or later processing stage can upgrade it beyond the strictest failed gate.
+
+Until that is true, the skill files remain valuable design documents—but not reliable operational controls.

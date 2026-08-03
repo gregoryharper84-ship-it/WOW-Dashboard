@@ -1,0 +1,127 @@
+Mostly yes—but not every component belongs in the same place.
+
+The **custom engine should own every rule that can approve, reject, cap, or invalidate a prop or slip**. The Custom GPT should become the research and explanation layer, not the final enforcement layer.
+
+## Must live in the custom engine
+
+These need deterministic backend enforcement:
+
+* governance hash, engine version, and active-patch validation;
+* required-route selection by sport and prop type;
+* exact identity, line, event, and settlement validation;
+* mandatory-gate completion checks;
+* fail-closed handling for missing data, timeouts, and source conflicts;
+* monotonic lowest-ceiling propagation;
+* `TEST_ONLY` and lane-specific approval ceilings;
+* role/status freshness requirements;
+* failure-path requirements and thresholds;
+* calibrated-probability floor checks;
+* market-conflict blocking;
+* payout, multiplier, push, and void validation;
+* Power/Flex eligibility;
+* correlation and duplicate-thesis checks;
+* cross-ticket exposure governance;
+* weakest-leg removal;
+* final live recheck;
+* terminal-label assignment;
+* immutable run and calibration records.
+
+Those are operational controls. Leaving any of them solely in Custom GPT instructions recreates the same architecture gap.
+
+## Can remain in the Custom GPT
+
+The GPT is still useful for:
+
+* interpreting uploaded boards and screenshots;
+* identifying candidate props;
+* researching public evidence;
+* extracting facts into the engine’s schema;
+* explaining why a gate passed or failed;
+* summarizing game logs, news, roles, and market context;
+* presenting the engine’s trace in readable form;
+* proposing new rules or model improvements for review.
+
+But its outputs should be treated as **untrusted inputs** until the custom engine validates them.
+
+For example, the GPT may submit:
+
+```json
+{
+  "player": "Example Player",
+  "prop_type": "Points",
+  "line": 18.5,
+  "direction": "MORE",
+  "role_evidence": [...],
+  "historical_results": [...],
+  "market_evidence": [...]
+}
+```
+
+It should not have authority to submit:
+
+```json
+{
+  "final_label": "SLIP_APPROVED"
+}
+```
+
+## Can live outside the scoring engine
+
+Some supporting systems can be separate services, provided the custom engine requires their validated outputs:
+
+* data collectors and scheduled refresh jobs;
+* sportsbook or stats-provider adapters;
+* weather and injury feeds;
+* simulation workers;
+* calibration analytics;
+* database and immutable ledger storage;
+* monitoring, logging, and alerting;
+* policy-document generation.
+
+The key distinction is ownership:
+
+```text
+Collectors gather evidence
+Models estimate distributions
+GPT researches and explains
+Custom engine enforces policy and decides eligibility
+```
+
+## Recommended boundary
+
+A clean architecture would look like this:
+
+```text
+Custom GPT / UI
+  ↓ normalized candidate request
+Evidence and enrichment services
+  ↓ timestamped source packet
+Sport-specific modeling services
+  ↓ probabilities, bounds, failure paths
+Custom WOW gate engine
+  ↓ enforced decision object
+Immutable database
+  ↓
+Custom GPT / UI explains the result
+```
+
+The gate engine does not necessarily need to contain every model internally. It can call separate model services. But it must independently verify that required outputs exist, are fresh, use the correct versions, and meet the active policy before assigning any label.
+
+## Practical answer for your current setup
+
+Your Replit custom engine should become the authoritative home for:
+
+1. **Policy enforcement**
+2. **Workflow orchestration**
+3. **Terminal resolution**
+4. **Slip and exposure governance**
+5. **Audit logging**
+
+The Custom GPT should retain:
+
+1. **Research**
+2. **Extraction**
+3. **User interaction**
+4. **Explanation**
+
+So yes, most of the remediation work belongs in the custom engine—but you do not need to rewrite every research or modeling capability directly inside one backend file. The non-negotiable requirement is that nothing outside the engine can bypass or upgrade its final decision.
