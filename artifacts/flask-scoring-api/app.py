@@ -12818,7 +12818,7 @@ def wow_wnba_opportunity_audit():
 
         # Build enrichment from inline game_log
         enrichment = {
-            "game_log":                  cand.get("game_log") or [],
+            "box_score_log": cand.get("box_score_log") or cand.get("game_log") or [],
             "status_payload":            cand.get("status_payload"),
             "dependency_status_payload": cand.get("dependency_status_payload"),
             "primary_teammate_dependency": cand.get("primary_teammate_dependency") or [],
@@ -15041,6 +15041,164 @@ def _llp_consensus_market(event, market_key, side):
     }
 
 
+# Display names for Odds API sportsbook keys (used in book_comparison panel)
+_LLP_BOOK_TITLES: dict[str, str] = {
+    "draftkings":        "DraftKings",
+    "fanduel":           "FanDuel",
+    "betmgm":            "BetMGM",
+    "caesars":           "Caesars",
+    "pointsbet":         "PointsBet",
+    "betrivers":         "BetRivers",
+    "hardrock":          "Hard Rock Bet",
+    "hardrock_bet":      "Hard Rock Bet",
+    "betonlineag":       "BetOnline",
+    "mybookieag":        "MyBookie",
+    "bovada":            "Bovada",
+    "wynnbet":           "WynnBet",
+    "barstool":          "Barstool",
+    "espnbet":           "ESPN Bet",
+    "betparx":           "betPARX",
+    "fliff":             "Fliff",
+    "superbook":         "SuperBook",
+    "ballybet":          "Bally Bet",
+    "unibet_us":         "Unibet",
+    "williamhill_us":    "Caesars",
+    "bet365":            "Bet365",
+    "pinnacle":          "Pinnacle",
+    "lowvig":            "LowVig.ag",
+    "betus":             "BetUS",
+}
+
+
+def _llp_book_comparison(event, market_key, side):
+    """
+    Return a per-book odds breakdown for `side` in `market_key`.
+
+    Powers the "Odds Comparison" panel — one entry per sportsbook showing
+    the implied probability and American odds for the selected side.
+    Sorted by implied_prob ascending (best value = lowest juice first).
+    Returns [] if no bookmakers matched.
+
+    Each entry:
+      {
+        "book":          str   — Odds API key (e.g. "draftkings")
+        "title":         str   — Display name (e.g. "DraftKings")
+        "american_odds": int
+        "implied_prob":  float — raw implied prob from American odds
+        "no_vig_prob":   float — devigged using the same-book partner side
+      }
+    """
+    if not event:
+        return []
+    side_norm = _llp_norm_team(side or "")
+    base      = _llp_market_base(market_key)
+    bms       = event.get("bookmakers") or []
+
+    books = []
+    for bm in bms:
+        for mk in (bm.get("markets") or []):
+            if mk.get("key") != market_key:
+                continue
+            outs = mk.get("outcomes") or []
+            if len(outs) < 2:
+                continue
+            chosen_price = opp_price = None
+            for o in outs:
+                name   = (o.get("name") or "").lower()
+                n_norm = _llp_norm_team(name)
+                if base == "totals":
+                    is_match = name == (side or "").lower()
+                else:
+                    is_match = bool(
+                        n_norm and side_norm and
+                        (n_norm == side_norm or
+                         n_norm in side_norm or
+                         side_norm in n_norm)
+                    )
+                if is_match:
+                    chosen_price = o.get("price")
+                else:
+                    opp_price = o.get("price")
+            if chosen_price is None:
+                continue
+            try:
+                ip     = _llp_american_to_prob(chosen_price)
+                opp_ip = _llp_american_to_prob(opp_price)
+                novig, _ = _llp_no_vig_two_way(ip, opp_ip) if opp_ip is not None else (ip, None)
+                bk_key = bm.get("key", "")
+                books.append({
+                    "book":          bk_key,
+                    "title":         _LLP_BOOK_TITLES.get(bk_key, bm.get("title", bk_key)),
+                    "american_odds": int(round(float(chosen_price))),
+                    "implied_prob":  round(ip,    4) if ip    is not None else None,
+                    "no_vig_prob":   round(novig, 4) if novig is not None else None,
+                })
+            except (TypeError, ValueError):
+                continue
+
+    books.sort(key=lambda x: x["implied_prob"] if x["implied_prob"] is not None else 999)
+    return books
+
+
+def _llp_line_movement_from_snapshots(sport, away, home, market, side, board_date,
+                                       limit=100):
+    """
+    Query odds_snapshots for the historical price series for this game/market/side,
+    going back up to 7 days from board_date.
+
+    Powers the "Line Movement" chart — each row is one captured price snapshot.
+    The series accumulates naturally as scoring runs fire throughout the week.
+
+    Returns: [{
+      "captured_at":  ISO datetime string,
+      "american_odds": int,
+      "implied_prob":  float,
+    }, ...] sorted by time ascending. Returns [] on any DB error or no rows.
+    """
+    try:
+        import psycopg2.extras as _pgx
+        conn = get_db_conn()
+        try:
+            game_key  = f"{_llp_norm_team(away)}@{_llp_norm_team(home)}"
+            side_norm = _llp_norm_team(side or "")
+            with conn.cursor(cursor_factory=_pgx.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT fetched_at, american_odds, side
+                    FROM odds_snapshots
+                    WHERE sport     = %s
+                      AND game_key  = %s
+                      AND market    = %s
+                      AND fetched_at >= %s::date - INTERVAL '7 days'
+                    ORDER BY fetched_at ASC
+                    LIMIT %s
+                """, (sport, game_key, market, str(board_date), limit))
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+    points = []
+    for row in rows:
+        # Match side using same normalization as the persister (stores team
+        # display name, e.g. "New York Yankees", not the short alias).
+        persisted = _llp_norm_team(row.get("side") or "")
+        if side_norm and persisted:
+            if persisted != side_norm and side_norm not in persisted and persisted not in side_norm:
+                continue
+        american = row.get("american_odds")
+        ip       = _llp_american_to_prob(american)
+        if ip is None:
+            continue
+        points.append({
+            "captured_at":   row["fetched_at"].isoformat() if row.get("fetched_at") else None,
+            "american_odds": int(round(float(american))),
+            "implied_prob":  round(ip, 4),
+        })
+
+    return points
+
+
 def _llp_opening_line_for_game(away, home, market, side, board_date, current_point):
     """
     Reuse the opening_lines table for team markets by encoding the team market
@@ -15448,6 +15606,13 @@ def _llp_analyze_one(game, default_sport, board_date):
             record["best_book_odds"]               = _cns.get("best_book_odds")
             record["consensus_odds"]               = _cns.get("consensus_odds")
             record["consensus_no_vig_probability"] = _cns.get("consensus_no_vig_probability")
+        # Per-book odds comparison panel (Odds Comparison widget)
+        record["book_comparison"] = _llp_book_comparison(_resolution.event, market, side)
+    # Line movement history from odds_snapshots (Line Movement chart)
+    # Best-effort — returns [] gracefully when no snapshots exist yet.
+    record["line_movement_history"] = _llp_line_movement_from_snapshots(
+        sport, away, home, market, side, board_date
+    )
     record["contract_status"] = (
         "EXTERNAL_MARKET_PENDING" if _resolution.event is None else "STATUS_PENDING"
     )
@@ -16088,6 +16253,10 @@ def _llp_clean_item(rec):
         "edge_vs_consensus":            rec.get("edge_vs_consensus"),
         "board_vs_consensus_delta":     rec.get("board_vs_consensus_delta"),
         "contract_status":              rec.get("contract_status"),
+        # Per-book odds comparison (Odds Comparison panel)
+        "book_comparison":              rec.get("book_comparison") or [],
+        # Historical price series (Line Movement chart)
+        "line_movement_history":        rec.get("line_movement_history") or [],
     }
 
 
