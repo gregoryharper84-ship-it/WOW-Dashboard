@@ -45,12 +45,13 @@ class HitProbResult(NamedTuple):
     sample_size:       int               # games used
     market_calibration: Optional[float] # no-vig prob for reference, if supplied
 
-MODEL_MLB_FORMULA = "mlb_formula_v2"
-MODEL_BERNOULLI  = "bernoulli_hit_rate"   # legacy; kept for test compatibility
-MODEL_POISSON    = "poisson_l10"
-MODEL_CLAUDE     = "claude_estimate"
-MODEL_NO_DATA    = "no_data"
-MODEL_ERROR      = "error"
+MODEL_MLB_FORMULA        = "mlb_formula_v2"
+MODEL_BERNOULLI          = "bernoulli_hit_rate"   # legacy; kept for test compatibility
+MODEL_POISSON            = "poisson_l10"
+MODEL_CLAUDE             = "claude_estimate"
+MODEL_NO_DATA            = "no_data"
+MODEL_ERROR              = "error"
+MODEL_NO_REGISTERED_MODEL = "no_registered_model"  # unsupported sport/prop — fail closed
 
 _POISSON_IDEAL_SAMPLE = 10    # < this → calibration warning
 
@@ -394,8 +395,21 @@ def compute(
         result = _poisson_model(game_log, line, side)
         return result._replace(market_calibration=no_vig_prob)
 
-    # Tier 3: Claude fallback
-    return _claude_fallback(player, sport, stat_key, line, side, game_log, no_vig_prob)
+    # Tier 3: No registered model — fail closed.
+    # Rule: never substitute a generic AI estimate for an unsupported sport/prop.
+    # The endpoint surfaces NO_REGISTERED_MODEL; the GPT uses the terminal_label
+    # from the gate engine instead of a fabricated probability.
+    return HitProbResult(
+        hit_probability  = None,
+        model_used       = MODEL_NO_REGISTERED_MODEL,
+        calibration_note = (
+            f"No registered probability model for {sport}/{stat_key}. "
+            "Use terminal_label from gate engine — do not substitute a generic formula."
+        ),
+        lambda_used      = None,
+        sample_size      = len(game_log),
+        market_calibration = no_vig_prob,
+    )
 
 
 def compute_batch(

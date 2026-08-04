@@ -2849,6 +2849,15 @@ def analyze_and_score():
             "extraction_notes": p.get("extraction_notes") or "",
         })
 
+    # OCR confidence gate: track legs below threshold before normalization
+    # Threshold 0.70 — below this, player/prop identity is unreliable
+    _OCR_CONF_THRESHOLD = 0.70
+    _low_ocr_leg_ids = {
+        leg["leg_id"]
+        for leg in ocr_legs
+        if (leg.get("ocr_confidence") or 1.0) < _OCR_CONF_THRESHOLD
+    }
+
     # ── Step B: Normalization ────────────────────────────────────────────
     norm_rows = _normalize_legs(ocr_legs, target_date=target_date,
                                 platform_hint=platform_hint)
@@ -3024,29 +3033,117 @@ def analyze_and_score():
             _hp_note  = hp.get("calibration_note")
             if _hp_prob is None and not hp:
                 _hp_note = "insufficient data"
+
+        # Add OCR confidence flag if applicable
+        if leg_id in _low_ocr_leg_ids and "LOW_OCR_CONFIDENCE" not in flags:
+            flags.append("LOW_OCR_CONFIDENCE")
+
+        # ── Structured sub-objects (ChatGPT architecture spec) ───────────
+        try:
+            from gate_engine.model_registry import lookup as _reg_lookup, probability_bounds as _prob_bounds
+            _sport_u   = (row.get("sport") or "").upper()
+            _stat_u    = row.get("stat_key") or row.get("prop_type") or ""
+            _line_val  = row.get("line_value")
+            _reg_entry = _reg_lookup(_sport_u, _stat_u, _line_val)
+        except Exception:
+            _reg_entry = {"model_id": None, "model_version": None,
+                          "calibration_version": None, "status": "UNKNOWN"}
+            _prob_bounds = lambda p, n, s: (None, None)  # noqa: E731
+
+        _sample_size = hp.get("sample_size") or 0
+        _lo, _hi     = _prob_bounds(_hp_prob, _sample_size, _reg_entry.get("status", ""))
+
+        _enr_entry = enrichment.get(leg_id) or {}
+        _game_log_status  = "RETRIEVED" if _enr_entry.get("game_log") else "MISSING"
+        _market_status    = "RETRIEVED" if _enr_entry.get("sportsbook_line") is not None else "MISSING"
+        _web_fallback     = row.get("matched_via") == "claude_search" or bool(row.get("claude_sources"))
+
+        _blockers: list[str] = []
+        if pipe.get("blockers"):
+            for _b in (pipe.get("blockers") or []):
+                if isinstance(_b, str):
+                    _blockers.append(_b)
+                elif isinstance(_b, dict):
+                    _blockers.append(_b.get("label") or str(_b))
+
+        _flex_labels = {"FINAL_APPROVED", "MONEY_QUALIFIED_HOLD",
+                        "LLP_SCOUT", "MODEL_QUALIFIED_HOLD"}
+        _flex_elig   = terminal_label in _flex_labels and not is_unresolvable
+
         legs_out.append({
-            "leg_id":          leg_id,
-            "player_name":     row.get("player_name_resolved") or row.get("player_name_raw") or "",
-            "prop":            f"{row.get('stat_key') or row.get('prop_type') or ''} "
-                               f"{row.get('side', '').title()} "
-                               f"{row.get('line_value', '')}",
-            "platform":        row.get("platform") or platform_display,
-            "hit_probability": _hp_prob,
-            "model_used":      _hp_model,
+            # ── Flat fields (backward-compatible) ──────────────────────
+            "leg_id":           leg_id,
+            "player_name":      row.get("player_name_resolved") or row.get("player_name_raw") or "",
+            "prop":             f"{row.get('stat_key') or row.get('prop_type') or ''} "
+                                f"{row.get('side', '').title()} "
+                                f"{row.get('line_value', '')}",
+            "platform":         row.get("platform") or platform_display,
+            "hit_probability":  _hp_prob,
+            "model_used":       _hp_model,
             "calibration_note": _hp_note,
-            "terminal_label":  terminal_label,
-            "confidence_tier": confidence_tier,
-            "edge_score":      edge_score,
-            "explanation":     explanation,
-            "data_sources":    data_src,
-            "flags":           flags,
+            "terminal_label":   terminal_label,
+            "confidence_tier":  confidence_tier,
+            "edge_score":       edge_score,
+            "explanation":      explanation,
+            "data_sources":     data_src,
+            "flags":            flags,
             "resolution": {
-                "status":     row.get("resolution_status"),
-                "confidence": row.get("resolution_confidence"),
+                "status":      row.get("resolution_status"),
+                "confidence":  row.get("resolution_confidence"),
                 "matched_via": row.get("matched_via"),
-                "notes":      row.get("resolution_notes"),
+                "notes":       row.get("resolution_notes"),
             },
             "gate_trace": gate_trace[:10],
+            # ── Structured sub-objects ──────────────────────────────────
+            "canonical_identity": {
+                "player_id":        row.get("player_id"),
+                "player_name":      row.get("player_name_resolved") or row.get("player_name_raw") or "",
+                "team":             row.get("team"),
+                "opponent":         row.get("opponent"),
+                "event_id":         row.get("game_id"),
+                "event_start_time": row.get("game_time"),
+            },
+            "board": {
+                "platform":           row.get("platform") or platform_display,
+                "prop_type":          row.get("stat_key") or row.get("prop_type") or "",
+                "line":               row.get("line_value"),
+                "direction":          (row.get("side") or "MORE").upper(),
+                "offer_type":         row.get("line_modifier") or "standard",
+                "settlement_verified": False,  # screenshot source — never confirmed active
+            },
+            "probability": {
+                "raw_probability":         _hp_prob,
+                "calibrated_probability":  _hp_prob,   # no calibration layer yet
+                "calibrated_lower_bound":  _lo,
+                "upper_bound":             _hi,
+                "push_probability":        0.0,
+                "model_status":            _reg_entry.get("status"),
+            },
+            "model": {
+                "model_id":            _reg_entry.get("model_id"),
+                "model_version":       _reg_entry.get("model_version"),
+                "calibration_version": _reg_entry.get("calibration_version"),
+                "status":              _reg_entry.get("status"),
+            },
+            "evidence": {
+                "game_log_status":  _game_log_status,
+                "market_status":    _market_status,
+                "role_timestamp":   None,
+                "web_fallback_used": _web_fallback,
+                "sources":          data_src,
+            },
+            "risk": {
+                "role_risk":              "UNKNOWN",
+                "failure_path_score":     None,
+                "market_conflict_status": "NONE",
+                "correlation_tags":       [],
+            },
+            "backend": {
+                "terminal_label":    terminal_label,
+                "blockers":          _blockers,
+                "power_eligibility": False,
+                "flex_eligibility":  _flex_elig,
+            },
         })
 
     # Slip-level summary
@@ -3087,6 +3184,42 @@ def analyze_and_score():
     else:
         rec = f"{hold_count} legs on hold, {reject_count} rejected — no approved legs"
 
+    # ── Step H: Autonomous Expert Review ────────────────────────────────
+    expert_audit: dict = {}
+    try:
+        from gate_engine.expert_review import run_expert_review as _run_expert_review
+        expert_audit = _run_expert_review(
+            slip_id=slip_id,
+            legs=legs_out,
+            correlation_risk=corr_risk,
+        )
+        # Apply any downgrades back onto legs_out
+        _audit_by_leg = {a.get("leg_id"): a for a in (expert_audit.get("legs") or [])}
+        for leg in legs_out:
+            _ae = _audit_by_leg.get(leg["leg_id"])
+            if not _ae:
+                continue
+            if _ae.get("audit_result") == "DOWNGRADED" and _ae.get("audit_label"):
+                leg["terminal_label"] = _ae["audit_label"]
+                leg.setdefault("flags", []).append("EXPERT_REVIEW_DOWNGRADE")
+            for flag in (_ae.get("explanation_flags") or []):
+                if flag not in leg.get("flags", []):
+                    leg.setdefault("flags", []).append(flag)
+        # Persist to audit log (best-effort, non-blocking)
+        _write_expert_review_log(slip_id, expert_audit)
+    except Exception as _review_exc:
+        app.logger.warning("analyze_and_score: expert_review failed: %s", _review_exc)
+
+    # Governance metadata for GPT validation
+    try:
+        import datetime as _govdt
+        from gate_engine.governance import _GOVERNANCE_HASH as _gov_hash, \
+            ENGINE_CODE_VERSION as _eng_ver, _ACTIVE_PATCH_IDS as _patch_ids
+    except Exception:
+        _gov_hash  = None
+        _eng_ver   = None
+        _patch_ids = []
+
     return jsonify({
         "ok":      True,
         "slip_id": slip_id,
@@ -3098,6 +3231,22 @@ def analyze_and_score():
             "label_counts":           label_counts,
         },
         "source_status": source_status,
+        "expert_audit": {
+            "audit_verdict":     expert_audit.get("audit_verdict"),
+            "correlation_audit": expert_audit.get("correlation_audit"),
+            "error":             expert_audit.get("error"),
+        } if expert_audit else None,
+        # Governance metadata — GPT must validate these before presenting results
+        "governance": {
+            "governance_hash":          _gov_hash,
+            "engine_version":           _eng_ver,
+            "active_patch_ids":         list(_patch_ids) if _patch_ids else [],
+            "as_of":                    _dt.datetime.utcnow().isoformat() + "Z",
+            "research_run_id":          None,   # not a governance session — screenshot path
+            "session_id":               None,
+            "source_snapshot_timestamp": None,
+            "can_execute":              False,  # invariant: screenshot slips are research only
+        },
     })
 
 
@@ -3122,6 +3271,91 @@ def _norm_to_pipeline_row(norm_row: dict) -> dict:
         "stat_formula": norm_row.get("stat_formula") or "",
         "line_modifier": norm_row.get("line_modifier") or "standard",
     }
+
+
+@app.route("/wow/slip-review-log", methods=["GET"])
+@require_api_key
+def get_slip_review_log():
+    """
+    GET /wow/slip-review-log
+
+    Retrieve expert-review audit log entries for periodic batch postmortem.
+
+    Query params:
+      slip_id   — filter to a single slip (optional)
+      limit     — max rows returned, default 50, max 200
+      offset    — pagination offset, default 0
+      verdict   — filter by audit_verdict: CONFIRMED | DOWNGRADED
+
+    Returns:
+      { ok, rows: [...], total_count, limit, offset }
+
+    Each row:
+      { id, slip_id, reviewed_at, audit_verdict, downgrade_count,
+        leg_count, legs, correlation_audit, error }
+    """
+    import json as _json
+
+    slip_id_filter = request.args.get("slip_id")
+    verdict_filter = (request.args.get("verdict") or "").upper() or None
+    try:
+        limit  = min(int(request.args.get("limit",  50)),  200)
+        offset = max(int(request.args.get("offset", 0)),    0)
+    except (ValueError, TypeError):
+        limit, offset = 50, 0
+
+    # Build WHERE clause
+    clauses: list[str] = []
+    params:  list      = []
+    if slip_id_filter:
+        clauses.append("slip_id = %s")
+        params.append(slip_id_filter)
+    if verdict_filter in ("CONFIRMED", "DOWNGRADED"):
+        clauses.append("audit_verdict = %s")
+        params.append(verdict_filter)
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    try:
+        _cm_ensure_schema()
+        import psycopg2.extras as _pgextras
+        with get_db_conn() as conn:
+            with conn.cursor(cursor_factory=_pgextras.RealDictCursor) as cur:
+                # Total count
+                cur.execute(f"SELECT COUNT(*) AS n FROM slip_expert_review_log {where}", params)
+                total_count = (cur.fetchone() or {}).get("n", 0)
+
+                # Paginated rows
+                cur.execute(
+                    f"""
+                    SELECT id, slip_id, reviewed_at, audit_verdict,
+                           downgrade_count, leg_count, legs_json,
+                           correlation_audit, error
+                    FROM slip_expert_review_log
+                    {where}
+                    ORDER BY reviewed_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    params + [limit, offset],
+                )
+                rows = []
+                for r in cur.fetchall():
+                    rows.append({
+                        "id":               r["id"],
+                        "slip_id":          r["slip_id"],
+                        "reviewed_at":      r["reviewed_at"].isoformat() if r["reviewed_at"] else None,
+                        "audit_verdict":    r["audit_verdict"],
+                        "downgrade_count":  r["downgrade_count"],
+                        "leg_count":        r["leg_count"],
+                        "legs":             r["legs_json"],
+                        "correlation_audit": r["correlation_audit"],
+                        "error":            r["error"],
+                    })
+        return jsonify({"ok": True, "rows": rows,
+                        "total_count": total_count, "limit": limit, "offset": offset})
+    except Exception as exc:
+        app.logger.exception("get_slip_review_log: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/claude-proxy", methods=["POST"])
@@ -11667,6 +11901,22 @@ CREATE INDEX IF NOT EXISTS cm_daily_exp_date_idx ON cm_daily_exposure(board_date
 CREATE INDEX IF NOT EXISTS cm_daily_exp_key_idx  ON cm_daily_exposure(exposure_key, board_date);
 CREATE INDEX IF NOT EXISTS cm_daily_exp_thesis_idx ON cm_daily_exposure(thesis_key, board_date);
 
+-- Step H: Autonomous Expert Review audit log
+CREATE TABLE IF NOT EXISTS slip_expert_review_log (
+    id               SERIAL PRIMARY KEY,
+    slip_id          TEXT NOT NULL,
+    reviewed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    audit_verdict    TEXT NOT NULL,
+    legs_json        JSONB NOT NULL,
+    correlation_audit JSONB,
+    downgrade_count  INTEGER NOT NULL DEFAULT 0,
+    leg_count        INTEGER NOT NULL DEFAULT 0,
+    error            TEXT,
+    raw_response     TEXT
+);
+CREATE INDEX IF NOT EXISTS slip_expert_review_slip_idx ON slip_expert_review_log(slip_id);
+CREATE INDEX IF NOT EXISTS slip_expert_review_ts_idx   ON slip_expert_review_log(reviewed_at DESC);
+
 -- PATCH-017: Settled Slip Ledger (separate table for economic tracking)
 CREATE TABLE IF NOT EXISTS cm_settled_slips (
     settled_id              TEXT PRIMARY KEY,
@@ -11759,6 +12009,43 @@ def _cm_db():
     """Get DB conn, lazily bootstrapping schema if needed."""
     _cm_ensure_schema()
     return get_db_conn()
+
+
+def _write_expert_review_log(slip_id: str, audit: dict) -> None:
+    """
+    Persist one expert-review audit result to slip_expert_review_log.
+    Best-effort — never raises; failure is logged and swallowed so the
+    main /analyze-and-score response is never blocked.
+    """
+    import json as _json
+    try:
+        _cm_ensure_schema()
+        downgrade_count = sum(
+            1 for leg in (audit.get("legs") or [])
+            if leg.get("audit_result") == "DOWNGRADED"
+        )
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO slip_expert_review_log
+                        (slip_id, audit_verdict, legs_json, correlation_audit,
+                         downgrade_count, leg_count, error)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        slip_id,
+                        audit.get("audit_verdict", "CONFIRMED"),
+                        _json.dumps(audit.get("legs") or []),
+                        _json.dumps(audit.get("correlation_audit") or {}),
+                        downgrade_count,
+                        len(audit.get("legs") or []),
+                        audit.get("error"),
+                    ),
+                )
+            conn.commit()
+    except Exception as _log_exc:
+        app.logger.warning("_write_expert_review_log: slip_id=%s error=%s", slip_id, _log_exc)
 
 
 def _cm_insert_board(conn, source, board_type, board_date_str, props, meta,

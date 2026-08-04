@@ -20,6 +20,7 @@ from gate_engine.hit_probability import (
     MODEL_BERNOULLI,
     MODEL_POISSON,
     MODEL_CLAUDE,
+    MODEL_NO_REGISTERED_MODEL,
     MODEL_NO_DATA,
     _POISSON_IDEAL_SAMPLE,
     HitProbResult,
@@ -214,22 +215,13 @@ class TestCompute:
         result = compute(leg, [18.0, 22.0, 19.0, 24.0, 21.0])
         assert MODEL_POISSON[:7] in result.model_used
 
-    def test_nfl_dispatches_claude(self):
-        import gate_engine.claude_gap_fill as cgf
-        client_mock = MagicMock()
-        client_mock.messages.create.return_value = MagicMock(
-            content=[MagicMock(text='{"hit_probability": 0.58, '
-                                    '"model_used": "logistic_no_vig", '
-                                    '"calibration_note": "test", "work": "..."}')]
-        )
+    def test_nfl_fails_closed_no_registered_model(self):
+        """NFL has no registered model — compute() returns NO_REGISTERED_MODEL, not Claude."""
         leg = {"sport": "NFL", "stat_key": "passing_yards", "line_value": 245.5,
                "side": "MORE", "player_name": "P. Mahomes"}
-
-        with patch.object(cgf, "_anthropic_client", client_mock):
-            result = compute(leg, [250.0, 230.0, 270.0, 240.0, 260.0])
-
-        assert result.model_used == MODEL_CLAUDE
-        assert result.hit_probability == pytest.approx(0.58, abs=0.001)
+        result = compute(leg, [250.0, 230.0, 270.0, 240.0, 260.0])
+        assert result.model_used == MODEL_NO_REGISTERED_MODEL
+        assert result.hit_probability is None
 
     def test_no_game_log_returns_no_data(self):
         leg = {"sport": "NBA", "stat_key": "PTS", "line_value": 27.5, "side": "MORE"}
@@ -439,12 +431,12 @@ class TestMlbNonHitBinaryDispatch:
         result = compute(leg, [0.0, 1.0, 0.0, 0.0, 1.0])
         assert result.model_used != MODEL_MLB_FORMULA
 
-    def test_tb_above_1_5_routes_to_counting_or_claude(self):
+    def test_tb_above_1_5_routes_to_counting_or_no_model(self):
         # TB 2.5 is above binary range — no longer _is_mlb_binary
         leg = {"sport": "MLB", "stat_key": "TB", "line_value": 2.5, "side": "MORE"}
         result = compute(leg, [2.0, 3.0, 1.0, 4.0, 2.0])
-        # TB is in _MLB_COUNTING_STATS, so should hit Poisson
-        assert MODEL_POISSON in result.model_used or result.model_used == MODEL_CLAUDE
+        # TB is in _MLB_COUNTING_STATS, so should hit Poisson; never Claude
+        assert MODEL_POISSON in result.model_used or result.model_used == MODEL_NO_REGISTERED_MODEL
 
     def test_1b_at_0_5_uses_bernoulli_not_formula(self):
         """1B props are NOT eligible for mlb_formula_v2 — must route to Bernoulli."""
@@ -512,33 +504,30 @@ class TestPoissonExtended:
 # Claude fallback — missing game_log, UNRESOLVABLE
 # ---------------------------------------------------------------------------
 
-class TestClaudeFallback:
-    def test_no_game_log_returns_no_data_not_claude(self):
-        """compute() returns MODEL_NO_DATA when game_log is empty (before reaching Claude)."""
+class TestNoRegisteredModel:
+    def test_no_game_log_returns_no_data_not_no_registered_model(self):
+        """compute() returns MODEL_NO_DATA when game_log is empty (short-circuits before dispatch)."""
         leg = {"sport": "NFL", "stat_key": "passing_yards", "line_value": 245.5,
                "side": "MORE", "player_name": "P. Mahomes"}
         result = compute(leg, [])
         assert result.hit_probability is None
         assert result.model_used == MODEL_NO_DATA
 
-    def test_claude_called_for_unknown_sport_with_log(self):
-        """NFL with game_log → Claude fallback is reached."""
-        import gate_engine.claude_gap_fill as cgf
-        client_mock = MagicMock()
-        client_mock.messages.create.return_value = MagicMock(
-            content=[MagicMock(text='{"hit_probability": 0.63, '
-                                    '"model_used": "claude_poisson_estimate", '
-                                    '"calibration_note": "Poisson λ=245, n=5", '
-                                    '"work": "..."}')]
-        )
+    def test_nhl_fails_closed_no_registered_model(self):
+        """NHL/NHL with game_log → NO_REGISTERED_MODEL, never Claude fallback."""
         leg = {"sport": "NHL", "stat_key": "goals", "line_value": 0.5,
                "side": "MORE", "player_name": "A. Matthews"}
+        result = compute(leg, [1.0, 0.0, 0.0, 1.0, 1.0])
+        assert result.model_used == MODEL_NO_REGISTERED_MODEL
+        assert result.hit_probability is None
 
-        with patch.object(cgf, "_anthropic_client", client_mock):
-            result = compute(leg, [1.0, 0.0, 0.0, 1.0, 1.0])
-
-        assert result.model_used == MODEL_CLAUDE
-        assert result.hit_probability == pytest.approx(0.63, abs=0.001)
+    def test_no_registered_model_carries_market_calibration(self):
+        """market_calibration still populated when no model is registered."""
+        leg = {"sport": "NFL", "stat_key": "passing_yards", "line_value": 245.5,
+               "side": "MORE", "player_name": "P. Mahomes"}
+        result = compute(leg, [250.0, 230.0], no_vig_prob=0.55)
+        assert result.model_used == MODEL_NO_REGISTERED_MODEL
+        assert result.market_calibration == pytest.approx(0.55)
 
     def test_null_on_unresolvable_leg_no_log(self):
         """UNRESOLVABLE leg with no game_log → null probability."""

@@ -940,9 +940,18 @@ paths:
           Step D  Claude gap-fill     — unresolved players or missing data resolved via LLM search
           Step E  Gate pipeline       — full 22-gate WOW engine run per leg
           Step F  Hit probability     — MLB binomial formula / NBA–WNBA Poisson / Claude for others
+          Step G  Explanation         — plain-English rationale per leg
+          Step H  Expert review       — autonomous downgrade-only audit pass; any downgraded leg
+                                        gets EXPERT_REVIEW_DOWNGRADE added to its flags and its
+                                        terminal_label replaced; result in response.expert_audit
 
         Hard rule: hit_probability is null when no game log is available — the model never
         fabricates a value.
+
+        Hard rule: expert review (Step H) is downgrade-only — it can make a verdict more
+        conservative but never reinstate a killed leg or raise a confidence tier. Every slip's
+        audit result is written to the slip_expert_review_log table; use GET /wow/slip-review-log
+        to pull entries for batch postmortem.
 
         Requires X-API-Key.
       requestBody:
@@ -1082,6 +1091,129 @@ paths:
       security:
         - ApiKeyAuth: []
 
+  /wow/slip-review-log:
+    get:
+      operationId: getSlipReviewLog
+      x-openai-isConsequential: false
+      summary: Retrieve expert-review audit log for batch postmortem
+      description: >
+        Returns audit log entries written by the autonomous expert-review pass
+        (Step H) that runs after every /analyze-and-score call.
+
+        Use this for periodic batch postmortem — compare pipeline verdicts against
+        audit verdicts, review DOWNGRADED legs, and check EXPLANATION_OVERCONFIDENT /
+        EXPLANATION_INCOMPLETE flags across a session.
+
+        Requires X-API-Key.
+      parameters:
+        - name: slip_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter to a single slip UUID
+        - name: verdict
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [CONFIRMED, DOWNGRADED]
+          description: Filter by audit verdict
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+          description: Max rows returned
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+          description: Pagination offset
+      responses:
+        "200":
+          description: Audit log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  total_count:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        slip_id:
+                          type: string
+                        reviewed_at:
+                          type: string
+                          description: ISO 8601 timestamp
+                        audit_verdict:
+                          type: string
+                          description: "CONFIRMED | DOWNGRADED"
+                        downgrade_count:
+                          type: integer
+                          description: Number of legs downgraded in this slip
+                        leg_count:
+                          type: integer
+                        legs:
+                          type: array
+                          description: Per-leg audit results
+                          items:
+                            type: object
+                            properties:
+                              leg_id:
+                                type: string
+                              audit_result:
+                                type: string
+                                description: "CONFIRMED | DOWNGRADED"
+                              original_label:
+                                type: string
+                              audit_label:
+                                type: string
+                                nullable: true
+                                description: New label if downgraded
+                              audit_reason:
+                                type: string
+                              explanation_flags:
+                                type: array
+                                items:
+                                  type: string
+                                description: "EXPLANATION_OVERCONFIDENT | EXPLANATION_INCOMPLETE"
+                        correlation_audit:
+                          type: object
+                          properties:
+                            pipeline_flag:
+                              type: string
+                            audit_flag:
+                              type: string
+                            escalated:
+                              type: boolean
+                        error:
+                          type: string
+                          nullable: true
+                          description: Set if Claude was unavailable during review
+        "401":
+          description: Missing or invalid X-API-Key
+        "500":
+          description: Database error
+      security:
+        - ApiKeyAuth: []
+
 components:
   schemas: {}
   securitySchemes:
@@ -1093,4 +1225,4 @@ components:
         Pass your SCORING_API_KEY value in the X-API-Key header.
         /wow/engine/health, /wow/governance/status, and /wow/stage2/health
         are public and do not require this key. /gate-engine/run, /normalize-legs,
-        and /analyze-and-score require it.
+        /analyze-and-score, and /wow/slip-review-log require it.

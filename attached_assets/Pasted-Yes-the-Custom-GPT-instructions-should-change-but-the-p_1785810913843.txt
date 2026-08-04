@@ -1,0 +1,324 @@
+Yes, the **Custom GPT instructions should change**, but the proposed update needs a few corrections before implementation.
+
+The attached architecture is directionally right: one composite endpoint should turn a screenshot into normalized legs, enrich them, score them, and return per-leg hit probabilities. The main issue is that it gives Claude too much responsibility for probability generation and suggests removing the manual orchestration path entirely.
+
+## What should change in the Custom GPT
+
+The GPT should use this order:
+
+```text
+1. Call /analyze-and-score for screenshots and slips.
+2. Validate the returned governance hash, engine version, source timestamps,
+   model version, and backend terminal labels.
+3. Present the backend probabilities and labels verbatim.
+4. If the composite endpoint fails or reports gaps:
+   run the existing manual WOW research route as a fallback.
+5. Use web search to acquire missing factual inputs.
+6. Resubmit the enriched rows to the backend.
+7. Never calculate or upgrade the final grade inside the GPT.
+```
+
+So the GPT should **not stop manually orchestrating permanently**. Manual orchestration remains the failover route when:
+
+* vision extraction is ambiguous;
+* player or event normalization fails;
+* an API is unavailable;
+* a game log is missing;
+* the backend returns a data-contract error;
+* web evidence conflicts with API evidence;
+* the composite endpoint itself is unreachable.
+
+The backend-first path becomes the default; the current workflow becomes the backup.
+
+## What the system currently does
+
+Based on the architecture you provided, it currently has most of the components, but it does **not yet operate as one end-to-end product**:
+
+```text
+Screenshot extraction              EXISTS
+Canonical normalization            INCOMPLETE / MISSING
+Automatic sport game-log retrieval INCOMPLETE
+Odds and status enrichment         EXISTS
+WOW gates and governance           EXISTS
+Per-prop calibrated probabilities  PARTIAL
+Web-search fallback                NOT FULLY IMPLEMENTED
+Composite screenshot-to-score API  MISSING
+```
+
+Therefore, it does not fully achieve your intended behavior yet.
+
+## Important correction: Claude should not invent hit probabilities
+
+I would not implement this part as written:
+
+> “Claude computes Poisson until codified.”
+
+Claude can assist with:
+
+* screenshot extraction;
+* entity resolution;
+* locating sources;
+* explaining missing fields;
+* structuring unstructured reporting;
+* reconciling conflicting source text;
+* choosing the appropriate registered model.
+
+Claude should **not be the authoritative numerical probability engine**.
+
+For every supported prop, probability should come from a deterministic, versioned model module. Otherwise, the same input may produce different probabilities on separate runs, calibration cannot be measured reliably, and the immutable prediction ledger loses value.
+
+A safer temporary rule is:
+
+```text
+No codified sport/prop model
+→ RESEARCH_INTEREST or NO_SOURCE_COVERAGE
+→ no published high-probability grade
+```
+
+Claude may calculate a transparent mathematical formula only when the exact formula, parameters, input sources and rounding rules are fixed by the backend contract. In that case, the computation should still run server-side.
+
+## “Best hit probability formulas” should mean a model registry
+
+There is no single best universal formula. The correct method depends on the prop distribution.
+
+Examples:
+
+| Prop family                        | Better model structure                                                       |
+| ---------------------------------- | ---------------------------------------------------------------------------- |
+| NBA/WNBA points, rebounds, assists | Minutes–rate mixture, often negative binomial or empirical simulation        |
+| PRA/composites                     | Joint component simulation with covariance                                   |
+| MLB strikeouts                     | Batters-faced distribution × K-per-batter distribution                       |
+| MLB pitching outs                  | Innings/leash survival model with failure-path branches                      |
+| MLB batter hits                    | Plate-appearance distribution × hit probability, with dependence adjustments |
+| 1IP pitches                        | Batter-by-batter event tree and Monte Carlo simulation                       |
+| Whole-number lines                 | Win/push/loss distribution, not binary-only probability                      |
+| Thin promotional lines             | Model probability plus exact payout and uncertainty handling                 |
+
+A simple Poisson model centered on a season average is often inadequate because it assumes variance equals the mean and ignores minutes, role changes, opponent context, injuries and game script.
+
+Your backend needs a registry such as:
+
+```json
+{
+  "sport": "WNBA",
+  "prop_type": "rebounds",
+  "model_id": "wnba_rebounds_minutes_rate_v2",
+  "model_version": "2.1.0",
+  "calibration_version": "wnba-reb-2026-07",
+  "status": "ACTIVE",
+  "minimum_inputs": [
+    "minutes_distribution",
+    "rebounds_per_minute_distribution",
+    "role_status",
+    "opponent_context",
+    "box_score_log"
+  ]
+}
+```
+
+Unsupported combinations must fail closed.
+
+## Web search fallback must be an acquisition layer
+
+The web-search requirement is correct, but it should not be a generic instruction to “search until something is found.”
+
+Use this hierarchy:
+
+```text
+official league/team/player source
+→ official injury or lineup source
+→ trusted structured statistics provider
+→ sportsbook or market source
+→ reputable reporting
+→ documented reconstruction
+→ DATA_UNOBTAINABLE
+```
+
+For every recovered field, store:
+
+```text
+field_name
+value
+source_url
+publisher
+retrieved_at
+event_time
+source_grade
+direct_or_inferred
+conflict_status
+```
+
+Web search may fill factual inputs such as:
+
+* starter confirmation;
+* lineup;
+* injury status;
+* role comments;
+* recent box scores;
+* weather;
+* probable pitcher;
+* platform rules.
+
+It should not silently create:
+
+* missing game-log values;
+* usage rates;
+* payout multipliers;
+* exact market prices;
+* settlement rules;
+* probability parameters.
+
+## Required additions to `/analyze-and-score`
+
+The proposed endpoint should return more than `hit_probability` and `model_used`.
+
+A safe per-leg response needs:
+
+```json
+{
+  "leg_id": "uuid",
+  "canonical_identity": {
+    "player_id": "string",
+    "player_name": "string",
+    "team": "string",
+    "opponent": "string",
+    "event_id": "string",
+    "event_start_time": "ISO-8601"
+  },
+  "board": {
+    "platform": "PrizePicks",
+    "prop_type": "rebounds",
+    "line": 2.5,
+    "direction": "MORE",
+    "offer_type": "Goblin",
+    "settlement_verified": true
+  },
+  "probability": {
+    "raw_probability": 0.76,
+    "calibrated_probability": 0.73,
+    "calibrated_lower_bound": 0.67,
+    "upper_bound": 0.78,
+    "push_probability": 0.0
+  },
+  "model": {
+    "model_id": "wnba_rebounds_minutes_rate_v2",
+    "model_version": "2.1.0",
+    "calibration_version": "wnba-reb-2026-07"
+  },
+  "evidence": {
+    "game_log_status": "RETRIEVED",
+    "box_score_log_status": "RETRIEVED",
+    "role_timestamp": "2026-08-03T20:10:00Z",
+    "market_status": "RETRIEVED",
+    "web_fallback_used": true,
+    "sources": []
+  },
+  "risk": {
+    "role_risk": "LOW",
+    "failure_path_score": 0.11,
+    "market_conflict_status": "NONE",
+    "correlation_tags": []
+  },
+  "backend": {
+    "terminal_label": "MODEL_QUALIFIED_HOLD",
+    "blockers": [],
+    "power_eligibility": false,
+    "flex_eligibility": true
+  }
+}
+```
+
+The response also needs:
+
+* `research_run_id`;
+* `session_id`;
+* `governance_hash`;
+* `engine_version`;
+* `active_patch_ids`;
+* `as_of`;
+* `source_snapshot_timestamp`;
+* row reconciliation counts;
+* slip-level correlation and duplicate-exposure results;
+* `can_execute=false`.
+
+## Screenshot controls that should be added
+
+Vision extraction must not quietly convert uncertain OCR into a scored leg.
+
+Add these gates:
+
+```text
+ocr_confidence below threshold
+→ REJECT_DATA_QUALITY or manual identity review
+
+player/event ambiguity
+→ no scoring until normalized
+
+line or direction ambiguity
+→ no scoring
+
+offer type unreadable
+→ probability may be researched
+→ payout/slip eligibility blocked
+
+screenshot timestamp missing
+→ board freshness unresolved
+```
+
+The extracted text and screenshot region should be stored so the normalization decision is auditable.
+
+## Recommended build sequence
+
+1. **Normalization adapter**
+   Resolve players, teams, events, prop names, periods, offer types and exact lines.
+
+2. **Automatic enrichment service**
+   Fetch the correct `game_log`, `box_score_log`, role timestamp, injury status, starter/lineup and market comparison.
+
+3. **Model registry and sport modules**
+   Codify probability models for each supported sport/prop family. Do not use free-form AI probabilities.
+
+4. **Composite `/analyze-and-score` endpoint**
+   Chain extraction, normalization, enrichment, scoring and reconciliation.
+
+5. **Web acquisition fallback**
+   Add source-graded field recovery with conflict handling and provenance.
+
+6. **Slip optimizer**
+   Apply duplicate-thesis, correlation, payout, Power/Flex and weakest-leg gates after each leg is modeled once.
+
+7. **Custom GPT instruction update**
+   Make the composite endpoint primary and preserve the existing manual workflow as fallback.
+
+## Instruction delta I would install
+
+```text
+For every screenshot, board, or slip review, call the backend composite
+/analyze-and-score route first.
+
+Require a fresh governance handshake and return only backend-supplied
+probabilities, bounds, terminal labels, eligibility fields and blockers.
+
+When the backend reports a missing factual input, automatically research the
+field using official and trusted web sources, preserve source URLs and
+timestamps, and resubmit the enriched row.
+
+Do not use web search or AI to invent numeric game logs, usage, prices,
+payouts, settlement rules or model parameters.
+
+Claude/OpenAI vision may extract and normalize board content and may assist
+with source discovery and conflict review. It may not independently assign,
+upgrade or override a probability or terminal label.
+
+If the composite route fails, use the existing manual WOW route:
+identity → slate → sources → specialist model → failure paths →
+calibration → market/payout → exposure → backend scoring.
+
+Unsupported sport/prop models fail closed. Never substitute a generic
+Poisson formula merely because a dedicated model is unavailable.
+
+All user-facing labels must equal backend terminal_label verbatim.
+can_execute=false remains invariant.
+```
+
+The target architecture is achievable, but the most important design principle is: **AI acquires and interprets evidence; deterministic registered models produce the probabilities; the backend produces the grades.**
