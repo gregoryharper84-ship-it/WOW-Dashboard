@@ -53,9 +53,53 @@ MODEL_GAUSSIAN           = "gaussian_match_log"   # Tennis / continuous distribu
 MODEL_CLAUDE             = "claude_estimate"
 MODEL_NO_DATA            = "no_data"
 MODEL_ERROR              = "error"
-MODEL_NO_REGISTERED_MODEL = "no_registered_model"  # unsupported sport/prop — fail closed
+MODEL_NO_REGISTERED_MODEL    = "no_registered_model"     # unsupported sport/prop — fail closed
+MODEL_FS_UNVERIFIED          = "fs_formula_unverified"   # formula not yet verified in registry
+MODEL_FS_GAUSSIAN_PROVISIONAL = "gaussian_fs_provisional" # verified formula, Gaussian + PROVISIONAL flags
 
 _POISSON_IDEAL_SAMPLE = 10    # < this → calibration warning
+
+# ---------------------------------------------------------------------------
+# Fantasy Score formula registry — lazy-loaded singleton
+# ---------------------------------------------------------------------------
+
+_FS_REGISTRY       = None
+_FS_REGISTRY_ERROR: str | None = None
+
+
+def _get_fs_registry():
+    """
+    Lazy-load the Fantasy Score formula registry from config/fantasy_score_formulas.json.
+    Returns the registry or raises if the JSON is missing / unparseable.
+    The module-level singleton is set once and reused; gunicorn workers each hold
+    their own copy (no inter-process sharing needed).
+    """
+    global _FS_REGISTRY, _FS_REGISTRY_ERROR
+    if _FS_REGISTRY is not None:
+        return _FS_REGISTRY
+    if _FS_REGISTRY_ERROR is not None:
+        raise RuntimeError(f"FS registry unavailable: {_FS_REGISTRY_ERROR}")
+    try:
+        import os
+        from .wow_fantasy_score.formula import FormulaRegistry
+        _path = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "config", "fantasy_score_formulas.json")
+        )
+        _FS_REGISTRY = FormulaRegistry.from_json(_path)
+        return _FS_REGISTRY
+    except Exception as exc:
+        _FS_REGISTRY_ERROR = str(exc)
+        logger.error("FS formula registry load failed: %s", exc)
+        raise
+
+
+def _fs_sport_key(sport: str, stat_key: str) -> str:
+    """Map (sport, stat_key) to the formula registry key."""
+    s = sport.upper()
+    k = stat_key.upper().replace(" ", "_")
+    if s == "MLB":
+        return "MLB_PITCHER" if "PIT" in k else "MLB_HITTER"
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -521,16 +565,58 @@ def compute(
         result = _bernoulli_hit_rate(game_log, line, side)
         return result._replace(market_calibration=no_vig_prob)
 
-    # Tier 1d: Fantasy Score composites — always Gaussian, checked BEFORE Tier 2.
-    # Fantasy Score is a weighted sum of differently-shaped component distributions
-    # (PTS ~Poisson, STL/BLK ~low-rate Poisson, TOV with a negative weight).
-    # Summing weighted Poissons does not stay Poisson — Gaussian approximation used
-    # as a pragmatic stand-in; results carry UNVALIDATED flags.
-    # Must come before _is_counting_stat to avoid FANTASY_SCORE matching counting
-    # keyword heuristics and being misrouted to Poisson.
+    # Tier 1d: Fantasy Score composites — formula registry gate + Gaussian with PROVISIONAL flags.
+    # Must come before _is_counting_stat to avoid FANTASY_SCORE matching counting keyword
+    # heuristics (e.g. "fantasy" in _COUNTING_STAT_KEYWORDS) and being misrouted to Poisson.
+    #
+    # Gate: scoring is blocked (fail-closed) until each sport's formula is populated in
+    # config/fantasy_score_formulas.json and marked verified=true.  This enforces the
+    # wow-fantasy-score-support package contract — no guessed coefficients ship silently.
+    #
+    # When verified: raw Gaussian probability is preserved in hit_probability (so
+    # MORE+LESS probabilities still sum to ~1.0 for pipeline compatibility); the
+    # calibration buffers (−0.03/−0.02) and PROVISIONAL flags are surfaced in
+    # calibration_note for downstream gate engine decisions.
     if _is_fantasy_score_composite(sport, stat_key):
+        fs_key = _fs_sport_key(sport, stat_key)
+        try:
+            registry = _get_fs_registry()
+            formula  = registry.get(fs_key)
+            formula.validate()
+        except Exception as exc:
+            return HitProbResult(
+                hit_probability   = None,
+                model_used        = MODEL_FS_UNVERIFIED,
+                calibration_note  = (
+                    f"FORMULA_UNVERIFIED:{fs_key} — {exc}. "
+                    f"Populate config/fantasy_score_formulas.json and set "
+                    f"verified=true + source + retrieved_at before scoring."
+                ),
+                lambda_used       = None,
+                sample_size       = 0,
+                market_calibration = no_vig_prob,
+            )
+
+        # Formula is verified — run Gaussian; raw probability preserved for pipeline compat.
         result = _gaussian_model(game_log, line, side)
-        return result._replace(market_calibration=no_vig_prob)
+        if result.hit_probability is None:
+            return result._replace(market_calibration=no_vig_prob)
+
+        n = result.sample_size or len(game_log)
+        cal_buf = 0.03 + (0.02 if n < 10 else 0.0)
+        calibrated = max(0.0, result.hit_probability - cal_buf)
+        lower      = max(0.0, calibrated - 0.05)
+        note = (
+            f"UNCALIBRATED_FANTASY_SCORE_COHORT | POWER_INELIGIBLE | can_execute=false | "
+            f"formula={formula.sport}_v{formula.version} source={formula.source} | "
+            f"{result.calibration_note} | "
+            f"calibrated_p={calibrated:.4f} lower_bound={lower:.4f} (buf={cal_buf:.2f})"
+        )
+        return result._replace(
+            model_used        = MODEL_FS_GAUSSIAN_PROVISIONAL,
+            calibration_note  = note,
+            market_calibration = no_vig_prob,
+        )
 
     # Tier 2: Counting stats (NBA, WNBA, MLB SO/TB, NFL yardage/receptions,
     #          Tennis aces/double-faults)

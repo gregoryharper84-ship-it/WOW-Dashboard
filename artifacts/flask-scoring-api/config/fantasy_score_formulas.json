@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.0",
+  "notes": "Coefficients sourced from PrizePicks Fantasy Score playbook pages. verified=true entries have been read directly from the playbook and cross-referenced. verified=false entries must be populated and verified before scoring is enabled. NFL remains blocked until the reception coefficient is confirmed (full-PPR vs half-PPR). MLB_PITCHER remains unverified because Quality Start is a derived flag (IP>=6, ER<=3) that may not match PrizePicks' exact formula — confirm before shipping pitcher FS props.",
+  "sports": {
+    "NBA": {
+      "version": "prizepicks-nba-2026",
+      "verified": true,
+      "source": "PrizePicks NBA Fantasy Score Playbook",
+      "retrieved_at": "2026-08-04T00:00:00Z",
+      "coefficients": {
+        "PTS":  1.0,
+        "REB":  1.2,
+        "AST":  1.5,
+        "STL":  3.0,
+        "BLK":  3.0,
+        "TO":  -1.0
+      }
+    },
+    "WNBA": {
+      "version": "prizepicks-wnba-2026-assumed-nba",
+      "verified": false,
+      "source": null,
+      "retrieved_at": null,
+      "notes": "WNBA_WEIGHTS_ASSUMED_SAME_AS_NBA — confirm from PrizePicks WNBA playbook before marking verified",
+      "coefficients": {
+        "PTS":  1.0,
+        "REB":  1.2,
+        "AST":  1.5,
+        "STL":  3.0,
+        "BLK":  3.0,
+        "TO":  -1.0
+      }
+    },
+    "MLB_HITTER": {
+      "version": "prizepicks-mlb-hitter-2026",
+      "verified": true,
+      "source": "PrizePicks MLB Fantasy Score Playbook",
+      "retrieved_at": "2026-08-04T00:00:00Z",
+      "coefficients": {
+        "1B":   3.0,
+        "2B":   5.0,
+        "3B":   8.0,
+        "HR":  10.0,
+        "R":    2.0,
+        "RBI":  2.0,
+        "BB":   2.0,
+        "HBP":  2.0,
+        "SB":   5.0
+      }
+    },
+    "MLB_PITCHER": {
+      "version": "blocked-until-qs-formula-confirmed",
+      "verified": false,
+      "source": null,
+      "retrieved_at": null,
+      "notes": "Quality Start is a derived flag (IP>=6, ER<=3) and OUTS uses fractional MLB IP format. Confirm PrizePicks pitcher FS formula uses QS bonus and that OUTS vs raw IP matches before marking verified.",
+      "coefficients": {
+        "W":    6.0,
+        "QS":   4.0,
+        "K":    3.0,
+        "OUTS": 1.0,
+        "ER":  -3.0
+      }
+    },
+    "TENNIS": {
+      "version": "prizepicks-tennis-2026",
+      "verified": true,
+      "source": "PrizePicks Tennis Fantasy Score definition (Jeff Sackmann ATP/WTA data)",
+      "retrieved_at": "2026-08-04T00:00:00Z",
+      "notes": "FANTASY_SCORE = GAMES_WON×1.0 + ACES×0.5 + DOUBLE_FAULTS×(−0.5). Gaussian approximation. Minimum 3 ATP_MAIN_DRAW or WTA_MAIN_DRAW matches required.",
+      "coefficients": {
+        "GAMES_WON":      1.0,
+        "ACES":           0.5,
+        "DOUBLE_FAULTS": -0.5
+      }
+    },
+    "NFL": {
+      "version": "blocked-until-reception-weight-verified",
+      "verified": false,
+      "source": null,
+      "retrieved_at": null,
+      "notes": "NFL_RECEPTION_WEIGHT_UNCONFIRMED — sources disagree full-PPR (1.0) vs half-PPR (0.5). Confirm from PrizePicks NFL playbook before marking verified.",
+      "coefficients": {
+        "PASS_YDS":  0.04,
+        "PASS_TD":   4.0,
+        "INT":      -2.0,
+        "RUSH_YDS":  0.1,
+        "RUSH_TD":   6.0,
+        "REC_YDS":   0.1,
+        "REC_TD":    6.0,
+        "REC":       0.5,
+        "FUM_LOST": -2.0
+      }
+    }
+  }
+}

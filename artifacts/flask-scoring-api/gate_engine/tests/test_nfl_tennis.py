@@ -215,14 +215,15 @@ class TestHitProbabilityTennis:
                 "side": side, "player_name": "C.Alcaraz"}
 
     def test_fantasy_score_uses_gaussian(self):
-        from gate_engine.hit_probability import compute, MODEL_GAUSSIAN
-        # Simulated match fantasy scores
+        from gate_engine.hit_probability import compute, MODEL_FS_GAUSSIAN_PROVISIONAL
+        # Simulated match fantasy scores — Tennis formula is verified in registry
         game_log = [22.5, 18.0, 25.5, 20.0, 23.0,
                     19.5, 24.0, 21.5, 17.5, 26.0]
         result = compute(self._leg("FANTASY_SCORE", 21.5), game_log)
-        assert result.model_used == MODEL_GAUSSIAN
+        assert result.model_used == MODEL_FS_GAUSSIAN_PROVISIONAL
         assert result.hit_probability is not None
         assert 0.0 <= result.hit_probability <= 1.0
+        assert "UNCALIBRATED_FANTASY_SCORE_COHORT" in result.calibration_note
 
     def test_games_won_uses_gaussian(self):
         from gate_engine.hit_probability import compute, MODEL_GAUSSIAN
@@ -245,7 +246,7 @@ class TestHitProbabilityTennis:
         assert result.model_used == MODEL_POISSON
 
     def test_fantasy_gaussian_less_side(self):
-        from gate_engine.hit_probability import compute, MODEL_GAUSSIAN
+        from gate_engine.hit_probability import compute
         game_log = [22.5, 18.0, 25.5, 20.0, 23.0,
                     19.5, 24.0, 21.5, 17.5, 26.0]
         more = compute(self._leg("FANTASY_SCORE", 21.5, "MORE"), game_log)
@@ -332,7 +333,7 @@ class TestAutoGameLogNFLTennis:
         match — tour_level=ATP_MAIN_DRAW is surfaced and hit_probability is not None.
         """
         from gate_engine import auto_game_log
-        from gate_engine.hit_probability import compute, MODEL_GAUSSIAN
+        from gate_engine.hit_probability import compute, MODEL_FS_GAUSSIAN_PROVISIONAL
 
         # Clear the cache so a prior test's entry for this player doesn't
         # interfere with the assertion on result["values"].
@@ -369,7 +370,7 @@ class TestAutoGameLogNFLTennis:
         assert prob_result.hit_probability is not None, (
             "ATP tour-level match must return a real probability, not null"
         )
-        assert prob_result.model_used == MODEL_GAUSSIAN
+        assert prob_result.model_used == MODEL_FS_GAUSSIAN_PROVISIONAL
         assert 0.0 <= prob_result.hit_probability <= 1.0
 
     def test_itf_challenger_fails_closed_with_tour_tier_reason(self):

@@ -438,35 +438,48 @@ class TestHitProbabilityFantasyScore:
                 "line_value": line, "side": side, "player_name": "Test Player"}
 
     def test_nba_fantasy_score_gaussian(self):
-        from gate_engine.hit_probability import compute, MODEL_GAUSSIAN
+        from gate_engine.hit_probability import compute, MODEL_FS_GAUSSIAN_PROVISIONAL
         game_log = [38.5, 42.1, 35.8, 44.0, 39.2, 41.5, 37.6, 43.8, 36.9, 40.1]
         result = compute(self._leg("NBA", 39.5), game_log)
-        assert result.model_used == MODEL_GAUSSIAN
+        # NBA formula is verified → Gaussian runs → PROVISIONAL label
+        assert result.model_used == MODEL_FS_GAUSSIAN_PROVISIONAL
         assert result.hit_probability is not None
+        assert "UNCALIBRATED_FANTASY_SCORE_COHORT" in result.calibration_note
+        assert "can_execute=false" in result.calibration_note
 
-    def test_wnba_fantasy_score_gaussian(self):
-        from gate_engine.hit_probability import compute, MODEL_GAUSSIAN
+    def test_wnba_fantasy_score_unverified(self):
+        from gate_engine.hit_probability import compute, MODEL_FS_UNVERIFIED
         game_log = [28.5, 32.1, 25.8, 30.0, 29.2, 27.5, 31.6, 28.8, 26.9, 30.1]
         result = compute(self._leg("WNBA", 29.5), game_log)
-        assert result.model_used == MODEL_GAUSSIAN
+        # WNBA formula not yet verified (assumed same as NBA — unconfirmed)
+        assert result.model_used == MODEL_FS_UNVERIFIED
+        assert result.hit_probability is None
+        assert "FORMULA_UNVERIFIED" in result.calibration_note
 
-    def test_nfl_fantasy_score_gaussian(self):
-        from gate_engine.hit_probability import compute, MODEL_GAUSSIAN
+    def test_nfl_fantasy_score_unverified(self):
+        from gate_engine.hit_probability import compute, MODEL_FS_UNVERIFIED
         game_log = [22.5, 18.0, 25.5, 20.0, 23.0, 19.5, 24.0, 21.5, 17.5, 26.0]
         result = compute(self._leg("NFL", 21.5), game_log)
-        assert result.model_used == MODEL_GAUSSIAN
+        # NFL formula blocked until reception weight is confirmed
+        assert result.model_used == MODEL_FS_UNVERIFIED
+        assert result.hit_probability is None
 
     def test_mlb_hitter_fantasy_score_gaussian(self):
-        from gate_engine.hit_probability import compute, MODEL_GAUSSIAN
+        from gate_engine.hit_probability import compute, MODEL_FS_GAUSSIAN_PROVISIONAL
         game_log = [8.0, 12.5, 6.0, 15.0, 9.5, 11.0, 7.5, 13.0, 10.0, 14.5]
         result = compute(self._leg("MLB", 10.5), game_log)
-        assert result.model_used == MODEL_GAUSSIAN
+        # MLB hitter formula is verified → Gaussian runs → PROVISIONAL label
+        assert result.model_used == MODEL_FS_GAUSSIAN_PROVISIONAL
+        assert result.hit_probability is not None
 
     def test_fantasy_score_less_side(self):
-        from gate_engine.hit_probability import compute, MODEL_GAUSSIAN
+        from gate_engine.hit_probability import compute, MODEL_FS_GAUSSIAN_PROVISIONAL
         game_log = [38.5, 42.1, 35.8, 44.0, 39.2, 41.5, 37.6, 43.8, 36.9, 40.1]
         more = compute(self._leg("NBA", 39.5, "MORE"), game_log)
         less = compute(self._leg("NBA", 39.5, "LESS"), game_log)
+        # Raw Gaussian probabilities are preserved in hit_probability (buffers go in
+        # calibration_note only) so MORE + LESS still sums to ~1.0
+        assert more.model_used == MODEL_FS_GAUSSIAN_PROVISIONAL
         assert abs(more.hit_probability + less.hit_probability - 1.0) < 0.02
 
     def test_fantasy_score_needs_3_samples(self):
