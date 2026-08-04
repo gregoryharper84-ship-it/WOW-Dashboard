@@ -118,6 +118,30 @@ Top 3 by ledger strength: [Player A] (NBA, 8/10), [Player B] (MLB, 7/10), [Playe
 
 ---
 
+## No Web Search for Data Gaps
+
+**Web search is not used to fill missing ledger rows.** This is a hard rule, not a default that degrades gracefully.
+
+If a row is missing from the canonical data source:
+- Mark it as a gap in the ledger (`—` in Result, `GAP` in Hit?)
+- State the reason (player DNP, game postponed, data source lag, player not in dataset)
+- Count it against the sample size (L8, not L10, if 2 rows are missing)
+
+Web search may only be called when **explicitly requested by the user** in the same message ("also check ESPN for that game" / "use web search to fill the gap"). Absent that explicit instruction, gaps stay gaps.
+
+**Why:** a ledger built from a mix of structured API data and web-searched text results is not a reproducible ledger — two runs of the same query can produce different rows. The value of the ledger is that it can be audited against a known source. A web-filled row cannot be audited the same way, and a confidently wrong row is worse than a visible gap.
+
+This applies to all gap types:
+| Gap type | Correct handling |
+|---|---|
+| Missing game (DNP, postponed) | Mark gap, note reason |
+| Player not found in data source | LEDGER_UNAVAILABLE for that prop |
+| Data source lag (game played but not yet in API) | Mark as pending, note lag |
+| Stat not available for that game in the source | Mark gap, do not web-search the box score |
+| Historical game outside source's coverage window | Mark gap, note coverage limit |
+
+---
+
 ## Failure Modes
 
 | Situation | Correct handling |
