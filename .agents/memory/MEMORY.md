@@ -46,3 +46,4 @@
 - [Linemaker integrity patches #20 #21](linemaker-integrity-patches-20-21.md) — patch #20 (matchup/EV/pipeline integrity, precedence 99) + patch #21 (slip construction integrity, precedence 100); 5 new failure tags; patch count now 21; governance hash changed.
 - [Mandatory route completion patch #22](mandatory-route-completion.md) — patch #22 (precedence 101); route_registry.py enforces qualifying labels post-classifier; gate_execution_summary in every run output; patch count now 22.
 - [Source reconciliation doctrine](source-reconciliation-doctrine.md) — 5 hard rules in source_grade.py: StatMuse reconciliation, ESPN blurb staleness, odds aggregator audit, consumer weather Kalshi block, screenshot line-active; 7 new source types; 5 new labels.
+- [Slip pipeline modules](slip-pipeline-modules.md) — 4 modules for screenshot→score: normalizer.py, auto_game_log.py, claude_gap_fill.py, hit_probability.py; /analyze-and-score composite endpoint in app.py wires them all.

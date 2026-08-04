@@ -2650,6 +2650,466 @@ Example:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/normalize-legs", methods=["POST"])
+@require_api_key
+def normalize_legs_endpoint():
+    """
+    POST /normalize-legs
+
+    Converts raw OCR leg data (from /analyze-board) into canonical NormalizedRow
+    dicts the gate pipeline can score.  Runs the 9-step resolution pipeline:
+    text normalisation → roster lookup → exact/fuzzy match → team disambiguation
+    → game/schedule lookup → stat key mapping → confidence stamping.
+
+    Body (JSON):
+      legs          — array of ExtractedLeg objects (required)
+      target_date   — "YYYY-MM-DD" for schedule lookup (default: today)
+      platform_hint — "prizepicks" | "underdog" | "draftkings" | null
+
+    Each ExtractedLeg:
+      player_name, sport, prop_type, side, line_value, platform,
+      leg_id (optional), team (optional), ocr_confidence (optional),
+      extraction_notes (optional)
+
+    Returns:
+      ok            — true/false
+      rows          — array of NormalizedRow objects
+      count         — number of legs processed
+      resolved      — count where resolution_status == "resolved"
+      flagged       — count where resolution_status != "resolved"
+    """
+    from gate_engine.normalizer import normalize_legs as _normalize_legs
+
+    body         = request.get_json(silent=True) or {}
+    legs         = body.get("legs") or body.get("props") or []
+    target_date  = body.get("target_date")
+    platform_hint = body.get("platform_hint") or body.get("platform")
+
+    if not legs:
+        return jsonify({"ok": False, "error": "legs array is required and must not be empty"}), 422
+    if not isinstance(legs, list):
+        return jsonify({"ok": False, "error": "legs must be an array"}), 422
+
+    try:
+        rows = _normalize_legs(legs, target_date=target_date, platform_hint=platform_hint)
+    except Exception as exc:
+        app.logger.exception("normalize_legs_endpoint error")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    resolved = sum(1 for r in rows if r.get("resolution_status") == "resolved")
+    flagged  = len(rows) - resolved
+
+    return jsonify({
+        "ok":       True,
+        "rows":     rows,
+        "count":    len(rows),
+        "resolved": resolved,
+        "flagged":  flagged,
+    })
+
+
+@app.route("/analyze-and-score", methods=["POST"])
+@require_api_key
+def analyze_and_score():
+    """
+    POST /analyze-and-score
+
+    Full slip pipeline: Vision extraction → normalization → enrichment →
+    Claude gap-fill → gate engine → per-leg score.
+
+    Body (JSON):
+      image          — base64 string, data URL, or "http..." URL (required)
+      platform_hint  — "prizepicks" | "underdog" | "draftkings" | null
+      user_id        — optional, for ledger tracking
+      target_date    — "YYYY-MM-DD", default today
+
+    Returns:
+      slip_id, legs[], slip_summary
+      Each leg: leg_id, player_name, prop, platform, terminal_label,
+                confidence_tier, edge_score, explanation, data_sources, flags
+                hit_probability is added by Task #78 — currently null.
+    """
+    import uuid as _uuid
+    import datetime as _dt
+    import base64 as _base64
+    from gate_engine.normalizer import normalize_legs as _normalize_legs
+    from gate_engine.auto_enrichment import build_auto_enrichment as _build_enrichment
+    from gate_engine.claude_gap_fill import resolve_gaps, generate_explanation
+    from gate_engine.pipeline import run_pipeline as _run_pipeline
+
+    body          = request.get_json(silent=True) or {}
+    platform_hint = (body.get("platform_hint") or body.get("platform") or "").lower()
+    user_id       = body.get("user_id") or ""
+    target_date   = body.get("target_date") or _dt.date.today().isoformat()
+    slip_id       = str(_uuid.uuid4())
+
+    # ── Step A: Vision extraction ────────────────────────────────────────
+    if not _ensure_anthropic():
+        return jsonify({"ok": False, "error": "anthropic package not installed"}), 503
+
+    api_key = (
+        os.environ.get("AI_INTEGRATIONS_ANTHROPIC_API_KEY") or
+        os.environ.get("ANTHROPIC_API_KEY", "")
+    )
+    if not api_key:
+        return jsonify({"ok": False,
+                        "error": "ANTHROPIC_API_KEY secret is not set"}), 503
+
+    # Accept same image formats as /analyze-board
+    image_b64  = None
+    image_url  = None
+    media_type = "image/jpeg"
+
+    raw_img = body.get("image") or body.get("image_base64") or body.get("screenshot")
+    if raw_img and isinstance(raw_img, str):
+        if raw_img.startswith("http"):
+            image_url = raw_img
+        else:
+            if "," in raw_img:
+                raw_img = raw_img.split(",", 1)[1]
+            image_b64 = raw_img
+            # Auto-detect media type
+            try:
+                hdr = _base64.b64decode(image_b64[:16])
+                if hdr[:8] == b'\x89PNG\r\n\x1a\n':
+                    media_type = "image/png"
+                elif hdr[:2] == b'\xff\xd8':
+                    media_type = "image/jpeg"
+                elif hdr[:4] == b'RIFF':
+                    media_type = "image/webp"
+            except Exception:
+                pass
+
+    if not image_b64 and not image_url:
+        return jsonify({"ok": False,
+                        "error": "image field is required (base64 or URL)"}), 422
+
+    # Build Claude image block
+    if image_b64:
+        image_block = {"type": "image",
+                       "source": {"type": "base64",
+                                  "media_type": media_type,
+                                  "data": image_b64}}
+    else:
+        image_block = {"type": "image",
+                       "source": {"type": "url", "url": image_url}}
+
+    platform_display = platform_hint.title() or "PrizePicks"
+    extract_prompt = (
+        f"You are a sports prop extraction assistant. Analyze this {platform_display} "
+        f"board screenshot and extract every visible player prop.\n\n"
+        f"For each prop return a JSON array. Each element must have:\n"
+        f'- "player": full player name\n'
+        f'- "sport": NBA|MLB|NFL|NHL|WNBA\n'
+        f'- "prop": stat category (points, rebounds, hits, strikeouts, etc.)\n'
+        f'- "side": "MORE" or "LESS"\n'
+        f'- "line": numeric line value\n'
+        f'- "platform": "{platform_display}"\n'
+        f'- "ocr_confidence": 0.0-1.0 estimate of your OCR confidence\n\n'
+        f"Return ONLY valid JSON — a single array, no markdown. If no props found, return []."
+    )
+
+    try:
+        client = _anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=2048,
+            messages=[{"role": "user",
+                        "content": [image_block, {"type": "text", "text": extract_prompt}]}],
+        )
+        raw_text = msg.content[0].text.strip() if msg.content else "[]"
+        try:
+            import json as _json
+            extracted = _json.loads(raw_text)
+        except Exception:
+            import re as _re
+            m = _re.search(r"\[.*\]", raw_text, _re.DOTALL)
+            extracted = _json.loads(m.group()) if m else []
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Vision extraction failed: {exc}"}), 500
+
+    if not extracted:
+        return jsonify({"ok": True, "slip_id": slip_id, "legs": [],
+                        "slip_summary": {"correlation_risk": "none",
+                                         "overall_recommendation": "No props extracted from image"},
+                        "count": 0})
+
+    # Normalize extracted leg format to ExtractedLeg schema
+    ocr_legs = []
+    for i, p in enumerate(extracted):
+        ocr_legs.append({
+            "leg_id":          str(_uuid.uuid4()),
+            "player_name":     p.get("player") or "",
+            "sport":           (p.get("sport") or "").upper(),
+            "prop_type":       p.get("prop") or p.get("prop_type") or "",
+            "side":            (p.get("side") or "MORE").upper(),
+            "line_value":      p.get("line") or p.get("line_value"),
+            "platform":        p.get("platform") or platform_display,
+            "ocr_confidence":  p.get("ocr_confidence"),
+            "extraction_notes": p.get("extraction_notes") or "",
+        })
+
+    # ── Step B: Normalization ────────────────────────────────────────────
+    norm_rows = _normalize_legs(ocr_legs, target_date=target_date,
+                                platform_hint=platform_hint)
+
+    # ── Step D (pre-pipeline): Claude gap-fill for unresolved rows ────────
+    gap_reqs = []
+    for row in norm_rows:
+        status = row.get("resolution_status")
+        gaps: list[str] = list(row.get("data_gaps") or [])
+        if status != "resolved":
+            gaps.insert(0, "player_id_resolution")
+        if gaps:
+            gap_reqs.append({
+                "leg_id":      row["leg_id"],
+                "player_name": row.get("player_name_raw") or row.get("player_name_resolved") or "",
+                "sport":       row.get("sport") or "",
+                "gaps":        gaps[:5],  # cap per request
+            })
+
+    gap_results: dict[str, dict] = {}
+    if gap_reqs:
+        try:
+            fills = resolve_gaps(gap_reqs)
+            for f in fills:
+                gap_results[f["leg_id"]] = f
+        except Exception as exc:
+            app.logger.warning("analyze_and_score: gap-fill failed: %s", exc)
+
+    # Apply gap-fill resolution back to norm_rows
+    for row in norm_rows:
+        fill = gap_results.get(row["leg_id"])
+        if not fill or fill.get("error"):
+            continue
+        resolved_data = fill.get("resolved") or {}
+        if row.get("resolution_status") != "resolved":
+            if resolved_data.get("player_name_canonical"):
+                row["player_name_resolved"] = resolved_data["player_name_canonical"]
+                row["resolution_status"]    = "resolved"
+                row["matched_via"]          = "claude_search"
+                row["resolution_confidence"] = 0.70
+            if resolved_data.get("team"):
+                row["team"] = resolved_data["team"]
+        # Merge injury status into row metadata
+        if resolved_data.get("injury_status"):
+            row["claude_injury_status"] = resolved_data["injury_status"]
+            row["claude_sources"]       = fill.get("sources", [])
+
+    # ── Step C: Enrichment ───────────────────────────────────────────────
+    # Build pipeline rows for enrichment (resolved rows only)
+    scored_rows = []
+    unresolvable = []
+    for row in norm_rows:
+        if row.get("resolution_status") != "resolved":
+            unresolvable.append(row)
+        else:
+            scored_rows.append(row)
+
+    enrichment = {}
+    source_status = {}
+    if scored_rows:
+        # Build pipeline-format rows for auto_enrichment
+        ae_rows = [_norm_to_pipeline_row(r) for r in scored_rows]
+        enrichment, source_status = _build_enrichment(ae_rows)
+
+    # ── Step E: Gate pipeline ────────────────────────────────────────────
+    pipe_results: dict[str, dict] = {}  # leg_id → pipeline output for that row
+    if scored_rows:
+        pipeline_rows = [_norm_to_pipeline_row(r) for r in scored_rows]
+        try:
+            import datetime as _ddt
+            pipe_out = _run_pipeline(
+                raw_rows=pipeline_rows,
+                target_date=_ddt.date.fromisoformat(target_date),
+                enrichment=enrichment,
+                skip_settlement_check=True,
+            )
+            # Index by row_id (= leg_id)
+            for row_result in pipe_out.get("prop_ledger", []):
+                lid = row_result.get("row_id") or row_result.get("leg_id")
+                if lid:
+                    pipe_results[lid] = row_result
+        except Exception as exc:
+            app.logger.exception("analyze_and_score: pipeline error: %s", exc)
+
+    # ── Step F: Hit probability per leg ─────────────────────────────────
+    try:
+        from gate_engine.hit_probability import compute_batch as _compute_hit_prob
+        # Build leg dicts with all context for compute_batch
+        all_norm_rows_for_prob = [
+            {
+                **r,
+                "player_name": r.get("player_name_resolved") or r.get("player_name_raw") or "",
+            }
+            for r in norm_rows
+        ]
+        hit_probs_list = _compute_hit_prob(all_norm_rows_for_prob, enrichment)
+        hit_probs: dict[str, dict] = {h["leg_id"]: h for h in hit_probs_list}
+    except Exception as _hp_exc:
+        app.logger.warning("analyze_and_score: hit_probability batch failed: %s", _hp_exc)
+        hit_probs = {}
+
+    # ── Build final response ─────────────────────────────────────────────
+    legs_out = []
+
+    for row in norm_rows:
+        leg_id = row["leg_id"]
+        pipe   = pipe_results.get(leg_id, {})
+        is_unresolvable = row.get("resolution_status") != "resolved"
+
+        terminal_label   = "UNRESOLVABLE" if is_unresolvable else \
+                           pipe.get("terminal_label", "PIPELINE_ERROR")
+        confidence_tier  = pipe.get("confidence_tier") or ("NONE" if is_unresolvable else "UNKNOWN")
+        edge_score       = pipe.get("edge_score")
+        flags            = list(row.get("flags") or [])
+        if is_unresolvable:
+            flags.append("RESOLUTION_FAILED")
+
+        # Gate trace
+        gates = pipe.get("gates") or {}
+        gate_trace = [{"gate": g, "result": v.get("result") or "PASS",
+                       "reason": v.get("reason") or ""}
+                      for g, v in gates.items()]
+
+        # L10 hit rate for explanation
+        l10_hr = pipe.get("l10_hit_rate") or pipe.get("l10_hit_rate_raw")
+
+        # Data sources
+        data_src = list(row.get("data_sources") or [])
+        enr_entry = enrichment.get(leg_id) or enrichment.get(
+            f"{(row.get('player_name_resolved') or '').lower()}:"
+            f"{(row.get('prop_type') or row.get('stat_key') or '').lower()}"
+        ) or {}
+        for src in (enr_entry.get("data_sources") or []):
+            if src not in data_src:
+                data_src.append(src)
+        if enr_entry.get("sportsbook_line") is not None and "odds_api" not in data_src:
+            data_src.append("odds_api")
+        if enr_entry.get("status_payload") is not None and "espn" not in data_src:
+            data_src.append("espn")
+
+        # Claude explanation (best-effort; skip on error)
+        explanation = ""
+        if not is_unresolvable:
+            try:
+                explanation = generate_explanation(
+                    player_name    = row.get("player_name_resolved") or row.get("player_name_raw") or "",
+                    prop_type      = row.get("stat_key") or row.get("prop_type") or "",
+                    side           = row.get("side") or "",
+                    line           = row.get("line_value") or 0,
+                    platform       = row.get("platform") or platform_display,
+                    terminal_label = terminal_label,
+                    confidence_tier = confidence_tier,
+                    edge_score     = edge_score,
+                    l10_hit_rate   = str(l10_hr) if l10_hr else None,
+                    gate_summary   = gate_trace[:6],
+                    flags          = flags,
+                )
+            except Exception:
+                pass
+
+        hp = hit_probs.get(leg_id, {})
+        legs_out.append({
+            "leg_id":          leg_id,
+            "player_name":     row.get("player_name_resolved") or row.get("player_name_raw") or "",
+            "prop":            f"{row.get('stat_key') or row.get('prop_type') or ''} "
+                               f"{row.get('side', '').title()} "
+                               f"{row.get('line_value', '')}",
+            "platform":        row.get("platform") or platform_display,
+            "hit_probability": hp.get("hit_probability"),
+            "hit_probability_model": hp.get("model_used"),
+            "hit_probability_note":  hp.get("calibration_note"),
+            "terminal_label":  terminal_label,
+            "confidence_tier": confidence_tier,
+            "edge_score":      edge_score,
+            "explanation":     explanation,
+            "data_sources":    data_src,
+            "flags":           flags,
+            "resolution": {
+                "status":     row.get("resolution_status"),
+                "confidence": row.get("resolution_confidence"),
+                "matched_via": row.get("matched_via"),
+                "notes":      row.get("resolution_notes"),
+            },
+            "gate_trace": gate_trace[:10],
+        })
+
+    # Slip-level summary
+    label_counts: dict[str, int] = {}
+    for leg in legs_out:
+        label_counts[leg["terminal_label"]] = label_counts.get(leg["terminal_label"], 0) + 1
+
+    approved_count = label_counts.get("FINAL_APPROVED", 0)
+    hold_count     = sum(v for k, v in label_counts.items() if "HOLD" in k or "QUALIFIED" in k)
+    reject_count   = sum(v for k, v in label_counts.items() if "REJECT" in k or "UNRESOLVABLE" in k)
+
+    # Simple correlation risk: >1 leg from same player or same game
+    player_counts: dict[str, int] = {}
+    game_counts: dict[str, int] = {}
+    for row in norm_rows:
+        pn = row.get("player_name_resolved") or ""
+        gd = row.get("game_id") or ""
+        if pn:
+            player_counts[pn] = player_counts.get(pn, 0) + 1
+        if gd:
+            game_counts[gd] = game_counts.get(gd, 0) + 1
+    has_same_player = any(v > 1 for v in player_counts.values())
+    has_same_game   = any(v > 1 for v in game_counts.values())
+    if has_same_player:
+        corr_risk = "HIGH — multiple props on the same player (correlated outcomes)"
+    elif has_same_game:
+        corr_risk = "MEDIUM — multiple props from the same game"
+    else:
+        corr_risk = "LOW"
+
+    total = len(legs_out)
+    if approved_count == total:
+        rec = "All legs approved — slip is viable per WOW model"
+    elif reject_count == total:
+        rec = "All legs rejected or unresolvable — slip not recommended"
+    elif approved_count > 0:
+        rec = f"{approved_count}/{total} legs approved, {hold_count} on hold, {reject_count} rejected"
+    else:
+        rec = f"{hold_count} legs on hold, {reject_count} rejected — no approved legs"
+
+    return jsonify({
+        "ok":      True,
+        "slip_id": slip_id,
+        "legs":    legs_out,
+        "count":   total,
+        "slip_summary": {
+            "correlation_risk":       corr_risk,
+            "overall_recommendation": rec,
+            "label_counts":           label_counts,
+        },
+        "source_status": source_status,
+    })
+
+
+def _norm_to_pipeline_row(norm_row: dict) -> dict:
+    """Convert a NormalizedRow to the format run_pipeline / board_intake expects."""
+    side = (norm_row.get("side") or "MORE").upper()
+    direction = "LESS" if side in ("LESS", "UNDER") else "MORE"
+    prop_type = norm_row.get("stat_key") or norm_row.get("stat_formula") or norm_row.get("prop_type") or ""
+    return {
+        "row_id":       norm_row.get("leg_id") or "",
+        "player":       norm_row.get("player_name_resolved") or norm_row.get("player_name_raw") or "",
+        "player_id":    norm_row.get("player_id"),
+        "sport":        norm_row.get("sport") or "",
+        "prop_type":    prop_type,
+        "line":         norm_row.get("line_value"),
+        "direction":    direction,
+        "board_source": norm_row.get("platform") or "UNKNOWN",
+        "start_time":   norm_row.get("game_time") or "",
+        "slate_date":   norm_row.get("game_time", "")[:10] or "",
+        "game":         f"{norm_row.get('team', '')} vs {norm_row.get('opponent', '')}",
+        "stat_key":     norm_row.get("stat_key") or "",
+        "stat_formula": norm_row.get("stat_formula") or "",
+        "line_modifier": norm_row.get("line_modifier") or "standard",
+    }
+
+
 @app.route("/claude-proxy", methods=["POST"])
 @require_api_key
 def claude_proxy():

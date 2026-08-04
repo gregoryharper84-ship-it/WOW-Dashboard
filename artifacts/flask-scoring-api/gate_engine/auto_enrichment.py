@@ -32,6 +32,7 @@ from __future__ import annotations
 from typing import Any
 
 from services import odds_api, status as status_service
+from gate_engine.auto_game_log import fetch_game_log, GameLogUnavailable
 
 
 # Conservative, explicit prop_type -> odds_api market-suffix mapping.
@@ -225,6 +226,37 @@ def build_auto_enrichment(
                         "dnp_risk": flag == 2,
                         "minutes_restriction": False,
                     }
+
+        # --- Game log auto-fetch ---
+        # Only fetch when: game_log not already supplied, player_id and stat_key
+        # are present on the row (set by the normalization adapter), and sport
+        # is one the module supports.
+        if entry.get("game_log") is None:
+            player_id = row.get("player_id")
+            stat_key  = row.get("stat_key")
+            target_dt = row.get("game_time", "")[:10] or None  # ISO date from schedule
+            if player_id and stat_key:
+                try:
+                    gl_result = fetch_game_log(
+                        player_id=player_id,
+                        sport=sport,
+                        stat_key=stat_key,
+                        target_date=target_dt,
+                    )
+                    if gl_result["values"]:
+                        entry["game_log"] = gl_result["values"]
+                        # Track data source provenance
+                        existing_sources = entry.get("data_sources") or []
+                        if gl_result["source"] not in existing_sources:
+                            entry["data_sources"] = existing_sources + [gl_result["source"]]
+                except GameLogUnavailable as _gl_err:
+                    gaps = list(entry.get("data_gaps") or [])
+                    gaps.append(f"game_log_fetch_failed:{_gl_err!s}"[:120])
+                    entry["data_gaps"] = gaps
+                except Exception as _gl_err:
+                    gaps = list(entry.get("data_gaps") or [])
+                    gaps.append("game_log_fetch_error")
+                    entry["data_gaps"] = gaps
 
         if entry:
             enrichment[write_key] = entry
