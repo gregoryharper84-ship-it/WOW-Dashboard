@@ -1,0 +1,251 @@
+Your critique is correct under the tightened LLP framework.
+
+The Linemaker piece may be useful as **research discovery**, but it does not support “Strong Play,” “Analytical Lean,” or “High Confidence” labels because it fails the freshness, independent-model, contradiction, and multi-candidate concentration gates.
+
+## Correct terminal treatment
+
+| Candidate            | Maximum defensible label | Primary blockers                                                                                     |
+| -------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------- |
+| Guardians ML         | `LLP_WATCH`              | No timestamped consensus market, no confirmed lineup/status pull, no independent win model           |
+| Under 7.5            | `LLP_SCOUT`              | No weather/park model, no total-distribution model, unresolved bullpen uncertainty                   |
+| Cantillo Over 5.5 Ks | `LLP_SCOUT`              | No exact-line L5/L10 ledger, pitch-count/leash distribution, confirmed lineup or two-way prop market |
+
+None should be called an approved play from the supplied evidence.
+
+## Why the bundle fails as a three-play card
+
+All three recommendations share overlapping causal assumptions:
+
+```text
+Mets lineup is weakened
+Cantillo works efficiently and deeply
+Cleveland controls the game
+Run environment stays suppressed
+Mets bullpen/bench changes do not create unexpected scoring
+```
+
+That creates a common-thesis concentration rather than three independent opportunities.
+
+The relationships are not perfectly identical:
+
+* Guardians ML can win in a high-scoring game.
+* Under 7.5 can cash with either team winning.
+* Cantillo strikeouts can cash even if Cleveland loses.
+
+But their probabilities are materially linked through Cantillo’s performance, Mets offensive weakness and the expected scoring environment. They must therefore receive shared-event and shared-thesis tags before shortlist construction.
+
+Suggested tags:
+
+```text
+EVENT_CLE_NYM_2026_08_04
+METS_OFFENSE_DOWNGRADE
+CANTILLO_STARTER_SUCCESS
+LOW_RUN_ENVIRONMENT
+CLEVELAND_CONTROL_SCRIPT
+```
+
+The WOW framework specifically prohibits treating selections sharing one injury, lineup, usage or game-script thesis as diversified opportunities. 
+
+## The probability problem
+
+The move from a market-implied 41.7% Mets probability to a claimed 38–40% “true probability” is not auditable.
+
+The piece provides reasons for a downgrade, but it does not show:
+
+```text
+market prior
+independent model probability
+component adjustments
+calibration method
+uncertainty interval
+lower bound
+model version
+source timestamps
+```
+
+Without those fields, “38–40%” is a narrative estimate.
+
+The correct representation would be:
+
+```text
+Market-implied probability at stated +140: 41.7%
+Independent model probability: NOT RETRIEVED
+Calibrated probability: NOT AVAILABLE
+Fair-price threshold: NOT VERIFIED
+```
+
+Therefore, the suggested “need +155 or better” threshold is also unverified. It follows mathematically from the asserted probability, but the probability feeding the calculation has not passed the model gate.
+
+The control-plane rules require a probability claim audit and complete evidence packet before publication. 
+
+## Specific required repairs
+
+### Guardians moneyline
+
+To move beyond `LLP_WATCH`, retrieve:
+
+```text
+exact sportsbook prices by book
+price pull timestamp
+opposing Mets price
+two-way no-vig probability
+confirmed lineups
+confirmed starter status
+active-roster deadline snapshot
+available bullpen strength
+independent MLB win probability
+calibrated lower bound
+market contradiction review
+```
+
+A price range such as “-142 to -150” is not enough unless each price is attached to a named source and timestamp.
+
+### Under 7.5
+
+The analysis must include:
+
+```text
+exact Over price
+exact Under price
+market timestamp
+park factor
+temperature
+wind direction and speed
+humidity
+rain/delay risk
+confirmed lineups
+starter run distributions
+bullpen availability
+extra-inning treatment
+full-game total-run distribution
+P(Under 7.5)
+```
+
+“Two lefties,” recent Under results and missing hitters are contextual evidence—not a total model.
+
+The claim that 70% of the Mets’ last ten games went Under should remain a descriptive trend only. It cannot establish the probability for today’s exact 7.5 line.
+
+### Cantillo Over 5.5 strikeouts
+
+This row needs the most reconstruction.
+
+Required fields:
+
+```text
+raw strikeouts in each L10 start
+raw strikeouts in each L5 start
+exact-line hit rate at 5.5
+L10 mean and median
+L5 mean and median
+outlier-adjusted sample
+projected Mets lineup
+lineup K% versus LHP
+Cantillo pitch-count distribution
+innings and batters-faced distribution
+manager leash
+recent velocity
+recent pitch-mix change
+CSW and swinging-strike rates
+weather and umpire
+bullpen pressure
+exact Over and Under prices
+```
+
+It must then estimate:
+
+```text
+P(Cantillo reaches required batters faced)
+P(Over 5.5 | normal workload)
+P(Over 5.5 | reduced workload)
+P(Over 5.5 unconditional)
+failure_path_score
+calibrated lower bound
+```
+
+WOW’s pitcher failure-path rules explicitly prohibit substituting a normal-outing projection for the unconditional probability. 
+
+## Contradictions that require resolution
+
+You correctly identified several unresolved conflicts:
+
+**Mets bullpen turnover versus Under:**
+Five newly promoted relievers increase uncertainty. That does not inherently support either Over or Under. The distribution should widen until their roles and quality are established.
+
+**Manaea recent form versus Guardians ML:**
+His recent 12-inning stretch is evidence against a one-sided Cleveland thesis. It must be incorporated, then regressed appropriately—not omitted.
+
+**Cantillo strikeout upside versus low total:**
+These can coexist, but only if the model expects Cantillo to dominate while Manaea also limits Cleveland. That is a narrower game script than the recommendations imply.
+
+**Soto/Vientos availability:**
+Their status cannot be treated as settled without an official lineup or timestamped availability source.
+
+**Market movement:**
+If the Mets moved from approximately +120 earlier to +140, the model must investigate whether the change reflects lineup news, roster information, sharp action or normal market discovery. It cannot simply apply the same negative news again without checking for double counting.
+
+## Revised shortlist-gate output
+
+```text
+Candidate 1: Cleveland Guardians ML
+LLP label: LLP_WATCH
+Fresh price: NOT VERIFIED
+Status: NOT VERIFIED
+Independent model: NOT RETRIEVED
+Contradiction review: NOT RUN
+Shortlist eligible: NO
+
+Candidate 2: Under 7.5
+LLP label: LLP_SCOUT
+Fresh two-way market: NOT VERIFIED
+Weather/park model: NOT RETRIEVED
+Run distribution: NOT RETRIEVED
+Contradiction review: NOT RUN
+Shortlist eligible: NO
+
+Candidate 3: Joey Cantillo Over 5.5 Ks
+LLP label: LLP_SCOUT
+Exact-line ledger: NOT RETRIEVED
+Workload distribution: NOT RETRIEVED
+Lineup confirmation: NOT RETRIEVED
+Two-way market: NOT VERIFIED
+Shortlist eligible: NO
+```
+
+## Required model enhancement
+
+The tightened model should add a formal **multi-recommendation evidence and concentration gate**:
+
+```text
+For every article or analysis containing multiple recommendations:
+
+1. Extract every candidate separately.
+2. Require individual timestamped market evidence.
+3. Require individual status and lineup checks.
+4. Require an independent probability model per market.
+5. Run contradictions per candidate.
+6. Generate shared-event and shared-thesis tags.
+7. Estimate correlated failure exposure.
+8. Prohibit “play” language when any required gate is NOT RETRIEVED.
+9. Apply the lowest shared ceiling to the bundled recommendation.
+```
+
+Suggested hard rule:
+
+```text
+three_or_more_candidates_from_same_event
+AND shared_thesis_count >= 2
+AND correlation_not_quantified
+=> MULTI_CANDIDATE_SHORTLIST_BLOCK
+=> maximum LLP_WATCH
+```
+
+And for unsupported confidence language:
+
+```text
+confidence_label_present
+AND calibrated_probability_missing
+=> UNSUPPORTED_CONFIDENCE_CLAIM
+=> downgrade to LLP_SCOUT
+```
+
+The core conclusion is sound: Linemaker produced a coherent news narrative, but not a timestamped, priced and calibrated three-play betting case. Under the tightened LLP process, all three stay outside the approved shortlist.

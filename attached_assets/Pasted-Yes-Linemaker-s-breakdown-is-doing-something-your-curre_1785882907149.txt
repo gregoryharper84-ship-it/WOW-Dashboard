@@ -1,0 +1,649 @@
+Yes. Linemaker’s breakdown is doing something your current run did not do well enough: it turns **news, roster changes, matchup-specific stats, recent form, pitch characteristics and price thresholds into one coherent game thesis**.
+
+The WOW framework already names several of these requirements—opponent context, game scripts, market comparison, failure paths and lineup/status checks—but the live backend currently lacks enough structured inputs to execute them consistently.  The control-plane specification also requires a standardized evidence packet before probability publication, rather than loosely attaching news after the estimate. 
+
+## What should be added
+
+### 1. Post-deadline roster-strength engine
+
+This is the biggest missing component.
+
+The model should stop using season record and full-season team statistics as though the current roster were unchanged. Add a **roster delta snapshot** that compares the team before and after the trade deadline.
+
+Required fields:
+
+```text
+roster_snapshot_timestamp
+players_added
+players_removed
+injured_players_unavailable
+projected_lineup_war_added
+projected_lineup_war_lost
+starter_quality_delta
+bullpen_quality_delta
+bench_depth_delta
+defensive_quality_delta
+baserunning_delta
+roster_continuity_penalty
+minor_league_replacement_count
+```
+
+Then create:
+
+```text
+current_roster_strength
+=
+season_baseline_strength
++ acquisition_adjustment
+- departure_adjustment
+- injury_adjustment
+- replacement_uncertainty
+```
+
+For the Mets example, the model should explicitly ask:
+
+* Which pitchers were actually traded?
+* Which relievers are available tonight?
+* Which hitters are missing?
+* Who replaced the departed players?
+* How large is the uncertainty from recent call-ups?
+* Are full-season Mets statistics still representative?
+
+This should be a required gate for games played immediately after the trade deadline.
+
+```text
+POST_DEADLINE_ROSTER_STATE_UNRESOLVED
+=> no calibrated game probability
+=> maximum MODEL_QUALIFIED_HOLD
+```
+
+### 2. Confirmed-lineup impact module
+
+Linemaker’s analysis makes the lineup itself central. Your model needs a structured comparison between the projected lineup and the team’s normal lineup.
+
+Add:
+
+```text
+confirmed_lineup
+missing_regulars
+replacement_hitters
+lineup_woba_vs_pitcher_hand
+lineup_k_rate_vs_pitcher_hand
+lineup_bb_rate_vs_pitcher_hand
+lineup_iso_vs_pitcher_hand
+lineup_contact_rate
+lineup_chase_rate
+lineup_speed_score
+lineup_defensive_value
+lineup_strength_vs_season_average
+```
+
+The important improvement is to calculate statistics for **tonight’s nine hitters**, not just “Mets offense” or “Guardians offense.”
+
+For example:
+
+```text
+projected_lineup_quality_vs_LHP
+projected_lineup_quality_vs_RHP
+```
+
+That would let the model properly evaluate a game with two left-handed starters.
+
+### 3. Pitch-quality and pitch-mix trend engine
+
+The Linemaker breakdown discusses velocity, whiff rate, curveball usage and pitch-specific performance. WOW needs these as structured model inputs rather than prose.
+
+For each starter:
+
+```text
+fastball_velocity
+velocity_change_last_3_starts
+pitch_mix_season
+pitch_mix_last_3_starts
+pitch_usage_change
+whiff_rate_by_pitch
+csw_rate_by_pitch
+opponent_run_value_vs_pitch
+opponent_whiff_rate_vs_pitch
+hard_hit_rate
+barrel_rate
+first_pitch_strike_rate
+zone_rate
+walk_rate
+pitches_per_plate_appearance
+times_through_order_penalty
+```
+
+Then add a pitch-mix matchup score:
+
+```text
+pitch_mix_matchup_score
+=
+Σ (
+pitch_usage
+× pitcher_pitch_quality
+× opponent_vulnerability_to_pitch
+)
+```
+
+A claim such as “Cantillo increased curveball usage to 50%” should only affect the probability when:
+
+1. It is verified from pitch-tracking data.
+2. The sample dates are recorded.
+3. The opposing lineup’s performance against that pitch is measured.
+4. The change is large enough to survive regression toward the season baseline.
+
+WOW’s baseball rules already require pitch mix, opponent profile, workload, weather and bullpen analysis; this needs to become an actual input contract rather than a checklist. 
+
+### 4. Starting-pitcher pathway model
+
+Do not compare starters using ERA alone.
+
+The game model should estimate:
+
+```text
+starter_expected_innings
+starter_run_distribution
+starter_strikeout_distribution
+starter_walk_distribution
+starter_baserunner_distribution
+starter_home_run_distribution
+probability_exit_before_4_IP
+probability_exit_before_5_IP
+probability_quality_start
+probability_allow_0_to_2_runs
+probability_allow_3_plus_runs
+```
+
+It should also separate:
+
+```text
+P(team wins | normal starter outing)
+P(team wins | early starter failure)
+P(team wins | starter dominates)
+```
+
+That is the moneyline version of the WOW pitcher failure-path model, which already emphasizes that normal-outing performance cannot be treated as unconditional. 
+
+### 5. Bullpen availability—not just bullpen ERA
+
+“Guardians have the better bullpen” is incomplete. A bullpen can be strong on the season but depleted tonight.
+
+Add a daily bullpen ledger:
+
+```text
+reliever
+role
+pitches_yesterday
+pitches_last_2_days
+appearances_last_3_days
+days_rest
+availability_status
+velocity_change
+recent_command
+leverage_role
+projected_availability_probability
+```
+
+Then calculate:
+
+```text
+available_bullpen_quality
+high_leverage_bullpen_quality
+middle_relief_quality
+bullpen_fatigue_penalty
+bullpen_depth_after_early_hook
+```
+
+This is particularly important for a recently dismantled or reconstructed bullpen. The model should distinguish:
+
+* season bullpen ERA;
+* current active bullpen talent;
+* relievers actually available tonight;
+* performance after a starter exits early.
+
+### 6. Current offensive-state engine
+
+Linemaker cites recent runs and second-half OPS. Those can be useful, but they need safeguards against small-sample overreaction.
+
+Add rolling windows:
+
+```text
+offense_last_7_days
+offense_last_14_days
+offense_last_30_days
+offense_since_roster_change
+offense_vs_pitcher_hand
+offense_home_or_road_split
+```
+
+Metrics:
+
+```text
+wOBA
+xwOBA
+OPS
+K%
+BB%
+ISO
+hard_hit_rate
+barrel_rate
+runs_per_game
+baserunners_per_game
+clutch_sequencing_residual
+```
+
+Then separate sustainable and noisy components:
+
+```text
+offensive_form_adjustment
+batted_ball_quality_adjustment
+sequencing_regression_adjustment
+```
+
+Scoring 11 runs in six games should not automatically trigger a large downgrade if expected metrics were much better. Conversely, weak expected contact would support a real downgrade.
+
+### 7. Opponent-strength normalization
+
+Raw records such as 47–66 and 57–56 are not enough.
+
+Add:
+
+```text
+strength_of_schedule
+opponent_adjusted_run_differential
+opponent_adjusted_offense
+opponent_adjusted_pitching
+park_adjusted_performance
+record_vs_top_half_teams
+record_vs_bottom_half_teams
+expected_record
+base_runs_record
+pythagorean_record
+```
+
+Then create:
+
+```text
+current_team_strength_rating
+```
+
+This should combine:
+
+* present roster;
+* opponent-adjusted run production;
+* opponent-adjusted run prevention;
+* starter;
+* available bullpen;
+* defense;
+* park and weather.
+
+The universal adapter already calls for opponent context, specialist routing and failure-path analysis; opponent quality should become a quantified, timestamped feature. 
+
+### 8. Handedness and platoon matchup layer
+
+For this game, both starters are left-handed, so this should be a major module.
+
+Add:
+
+```text
+team_woba_vs_LHP
+team_xwoba_vs_LHP
+team_k_rate_vs_LHP
+team_bb_rate_vs_LHP
+team_iso_vs_LHP
+projected_lineup_woba_vs_LHP
+projected_lineup_sample_size
+platoon_adjustment_reliability
+```
+
+The current lineup should outweigh generic team splits when the lineup has materially changed.
+
+### 9. Baserunning and catcher-control module
+
+Linemaker mentions Cleveland’s stolen-base capability against Manaea. That logic should be formalized.
+
+Add:
+
+```text
+team_stolen_base_attempt_rate
+team_stolen_base_success_rate
+pitcher_stolen_base_allowed
+pitcher_pickoff_quality
+catcher_pop_time
+catcher_caught_stealing_rate
+runner_advancement_value
+```
+
+Then estimate:
+
+```text
+expected_baserunning_runs
+```
+
+This is usually a small adjustment, but it can matter in a low-total game.
+
+### 10. Park and weather run-environment model
+
+Weather should modify the scoring distribution—not merely appear in a note.
+
+Required inputs:
+
+```text
+temperature
+humidity
+wind_speed
+wind_direction
+precipitation_probability
+delay_probability
+roof_status
+park_factor
+air_density
+```
+
+Required outputs:
+
+```text
+run_environment_adjustment
+home_run_environment_adjustment
+starter_delay_exit_probability
+bullpen_usage_weather_adjustment
+```
+
+For Progressive Field, the model should determine whether weather meaningfully changes:
+
+* run scoring;
+* home-run carry;
+* pitcher grip;
+* rain-delay risk;
+* likelihood of an early starter removal.
+
+### 11. Explicit game-script simulation
+
+This is the largest reasoning improvement.
+
+Simulate at least these branches:
+
+```text
+Mets early lead
+Guardians early lead
+one-run game through six innings
+starter exits early
+both starters pitch well
+high-scoring game
+low-scoring game
+extra innings
+bullpen fatigue event
+key reliever unavailable
+```
+
+Output:
+
+```text
+P(Mets win | Manaea quality start)
+P(Mets win | Manaea exits before fifth)
+P(Mets win | game tied after six)
+P(Mets win | leading after six)
+P(Mets win | trailing after six)
+P(Mets win | total runs <= 7)
+P(Mets win | total runs >= 8)
+```
+
+This exposes whether the upset depends on one narrow scenario.
+
+For example:
+
+```text
+If Mets win probability is competitive only when
+Manaea delivers 6+ innings and New York homers twice,
+then GAME_SCRIPT_FRAGILITY is high.
+```
+
+### 12. News-to-model translation layer
+
+The Linemaker response is effective because it translates news into a direction. Your engine needs a disciplined version of that.
+
+Every news item should contain:
+
+```text
+news_event
+source
+published_at
+retrieved_at
+affected_player_or_unit
+affected_model_field
+direction
+estimated_magnitude
+confidence
+already_reflected_in_market
+```
+
+Example:
+
+```text
+news_event: key hitter ruled out
+affected_model_field: projected_lineup_wOBA
+direction: negative
+estimated_magnitude: -0.012
+market_reflection_status: partially_reflected
+```
+
+News should never directly add or subtract arbitrary win-probability points.
+
+### 13. Market decomposition and fair-price output
+
+Linemaker gives a useful decision threshold: “The Mets require +155 or better.”
+
+WOW should always return:
+
+```text
+market_price
+raw_implied_probability
+opposing_price
+market_hold
+no_vig_probability
+model_probability
+calibrated_lower_bound
+fair_moneyline_midpoint
+fair_moneyline_lower_bound
+minimum_acceptable_price
+```
+
+Example:
+
+```text
+model probability = 39%
+fair price = +156
+lower bound = 36%
+conservative fair price = +178
+```
+
+But those outputs should only appear after calibration and evidence gates pass. The exact-line auditor specifically requires verified opposing prices, no-vig normalization, settlement alignment and friction before claiming an edge. 
+
+### 14. Probability bridge
+
+The model needs to show **how it moved from the market prior to the final estimate**.
+
+Recommended format:
+
+```text
+No-vig market prior                     41.7%
+Starting-pitcher adjustment             -0.8%
+Confirmed-lineup adjustment             -1.1%
+Post-deadline roster adjustment         -1.4%
+Bullpen availability adjustment         -0.7%
+Platoon adjustment                      +0.3%
+Park/weather adjustment                  0.0%
+Opponent-strength adjustment            -0.5%
+Model shrinkage toward market           +0.5%
+------------------------------------------------
+Raw model probability                   38.0%
+Calibration / uncertainty haircut       -1.0%
+Calibrated lower bound                  37.0%
+```
+
+The actual numbers must come from the model—not be manually assigned—but this presentation would make the reasoning auditable.
+
+## What should **not** be copied from Linemaker
+
+The writing style is useful, but several practices require stronger controls.
+
+### Do not trust unsourced factual claims
+
+The supplied breakdown contains specific claims about:
+
+* trades;
+* injuries;
+* pitch usage;
+* whiff rates;
+* bullpen ranking;
+* recent offense;
+* lineup absences;
+* opponent records against left-handed starters.
+
+Those need independent verification before entering the model. The text itself explicitly says it lacks live odds and real-time projections, so its probability and price conclusions should be treated as research hypotheses, not model outputs.
+
+### Do not combine team ERA and bullpen ERA
+
+A figure such as 3.76 must be identified precisely:
+
+```text
+team ERA
+starter ERA
+bullpen ERA
+available bullpen projected ERA
+```
+
+Those are not interchangeable.
+
+### Do not double-count market information
+
+If roster sales, injuries and lineup weakness already caused the Mets price to move from +120 to +140, the model must not apply the full news penalty again without checking what the market has absorbed.
+
+Add:
+
+```text
+market_news_absorption_score
+```
+
+### Do not infer a player-prop edge from the game thesis
+
+“Cantillo is favored” does not prove Over 5.5 strikeouts. That prop requires:
+
+* expected batters faced;
+* expected innings;
+* Mets lineup strikeout rate;
+* umpire;
+* pitch count and leash;
+* exact Over and Under prices;
+* push treatment at whole-number lines;
+* failure paths.
+
+## Recommended new backend modules
+
+I would add these named components to Replit:
+
+```text
+wow.roster-delta-engine
+wow.confirmed-lineup-strength-engine
+wow.pitch-mix-matchup-engine
+wow.mlb-moneyline-starter-distribution
+wow.daily-bullpen-availability-engine
+wow.current-offensive-state-engine
+wow.opponent-strength-normalizer
+wow.platoon-matchup-engine
+wow.baserunning-catcher-engine
+wow.weather-park-run-environment
+wow.moneyline-game-script-simulator
+wow.news-to-model-translation
+wow.market-news-absorption-auditor
+wow.moneyline-probability-bridge
+```
+
+## Minimum Replit enrichment contract
+
+A moneyline row should accept something like:
+
+```json
+{
+  "roster_state": {
+    "players_added": [],
+    "players_removed": [],
+    "injured_unavailable": [],
+    "roster_snapshot_timestamp": ""
+  },
+  "lineups": {
+    "away_confirmed": [],
+    "home_confirmed": [],
+    "confirmation_timestamp": ""
+  },
+  "starters": {
+    "away": {},
+    "home": {}
+  },
+  "bullpen": {
+    "away_availability": [],
+    "home_availability": [],
+    "timestamp": ""
+  },
+  "team_context": {
+    "strength_of_schedule": {},
+    "opponent_adjusted_ratings": {},
+    "current_roster_ratings": {}
+  },
+  "splits": {
+    "projected_lineup_vs_LHP": {},
+    "projected_lineup_vs_RHP": {}
+  },
+  "environment": {
+    "park": "",
+    "weather": {},
+    "delay_risk": 0
+  },
+  "market": {
+    "away_moneyline": 0,
+    "home_moneyline": 0,
+    "timestamp": ""
+  }
+}
+```
+
+## Best output format
+
+The user-facing output should preserve Linemaker’s readability but add auditability:
+
+```text
+1. Market and fair-price summary
+2. Current-roster comparison
+3. Confirmed lineup and platoon matchup
+4. Starter distribution and pitch-mix matchup
+5. Bullpen availability
+6. Opponent-adjusted team strength
+7. Weather and park
+8. Game-script tree
+9. Probability bridge
+10. Failure paths
+11. Fair price and minimum acceptable price
+12. Terminal label and blockers
+```
+
+## Bottom line
+
+What your model is missing is not simply “more statistics.” It needs a **current-state MLB moneyline model** that converts:
+
+```text
+trade-deadline changes
++ confirmed lineup
++ starter pitch quality
++ platoon matchup
++ available bullpen
++ current offense
++ opponent-adjusted strength
++ weather
++ game scripts
++ current market information
+```
+
+into one calibrated distribution.
+
+Linemaker’s biggest strength is **narrative synthesis**. WOW should add that synthesis layer, but probabilities and labels must still come only from verified structured inputs and the backend. The narrative should explain the model—not become the model.

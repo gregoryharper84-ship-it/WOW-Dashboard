@@ -1723,3 +1723,243 @@ in_slate_precedent_rule_applied=
 correlation_guard_status=
 calibration_ledger_rows_produced=
 ```
+
+---
+
+# 2026-08-04 Enforcement Patch B — Multi-Recommendation Concentration Gate
+
+## Active patch
+
+```text
+WOW-PATCH-2026-08-04-LLP-MULTI-RECOMMENDATION-CONCENTRATION-GATE
+```
+
+## Problem this patch fixes
+
+A research article or analysis piece containing multiple recommendations can
+produce a bundled shortlist where all candidates share:
+
+- the same game;
+- the same injured player or roster change;
+- the same starter's performance assumption;
+- the same scoring-environment thesis.
+
+These are not three independent opportunities. They are one thesis expressed
+three ways. The prior workflow had no gate that detected this and applied a
+shared ceiling before shortlist construction.
+
+Example: a three-play card of (team ML + game total Under + starter strikeout Over)
+built on the same game shares the causal assumptions:
+- opposing lineup is weakened
+- starter works efficiently and deeply
+- run environment stays suppressed
+- opponent bullpen does not create unexpected scoring
+
+Each of those three props can win or lose somewhat independently, but their
+probabilities are materially linked through the starter's performance and the
+run environment. They must receive shared-event and shared-thesis tags and a
+concentration ceiling before appearing in any shortlist together.
+
+---
+
+## Multi-Recommendation Evidence and Concentration Gate
+
+For every input that contains multiple recommendations — whether from an article,
+analysis piece, research note, screenshot, or user-supplied text — run this
+nine-step gate before any shortlist is constructed.
+
+### Step 1: Extract candidates separately
+
+Every recommendation is a separate row. Do not aggregate them into a single
+probability estimate. Do not carry a confidence label from the source through
+to the model output.
+
+### Step 2: Individual timestamped market evidence
+
+Each candidate requires its own:
+
+```text
+named_sportsbook_price
+price_timestamp
+opposing_price
+two_way_no_vig_probability
+```
+
+A price range without book-specific timestamps (e.g., "-142 to -150") is
+`NOT_VERIFIED` for that candidate.
+
+### Step 3: Individual status and lineup checks
+
+Each candidate requires its own:
+
+```text
+event_status
+participant_status
+lineup_or_starter_status
+injury_check_status
+```
+
+A status check performed for one candidate does not transfer to another, even
+in the same game.
+
+### Step 4: Independent probability model per market type
+
+A moneyline model is not a total model. A total model is not a strikeout-prop
+model. Each market type requires its own model:
+
+```text
+ML      → wow.mlb-moneyline-enrichment-contract or equivalent
+Total   → full-game run distribution, park/weather, both bullpens
+Prop    → exact-line ledger, workload distribution, failure paths
+```
+
+Deriving a player-prop edge from the game thesis is prohibited. "The starter
+is favored in this game" does not establish a strikeout-prop probability.
+
+### Step 5: Contradiction check per candidate
+
+Run the contradiction audit for each candidate independently:
+
+```text
+market_contradiction_status
+late_news_contradiction_status
+starter_status_contradiction
+```
+
+A contradiction resolved for one candidate is not automatically resolved for
+another sharing the same game.
+
+### Step 6: Shared-event and shared-thesis tagging
+
+Assign event tags and thesis tags to every candidate.
+
+Event tags (examples):
+
+```text
+EVENT_CLE_NYM_2026_08_04
+```
+
+Thesis tags (examples):
+
+```text
+METS_OFFENSE_DOWNGRADE
+CANTILLO_STARTER_SUCCESS
+LOW_RUN_ENVIRONMENT
+CLEVELAND_CONTROL_SCRIPT
+```
+
+Record:
+
+```text
+shared_event_count     — number of candidates sharing this event tag
+shared_thesis_count    — number of candidates sharing >= 2 thesis tags
+```
+
+### Step 7: Correlated failure exposure
+
+When two or more candidates share an event or thesis tag, estimate the
+probability that they fail together:
+
+```text
+joint_failure_probability
+correlated_failure_path
+```
+
+This is not optional. "They can each win independently" is an incomplete
+analysis when their probabilities are materially linked.
+
+### Step 8: Prohibit confidence language when gates are NOT RETRIEVED
+
+Any candidate where any required gate item is `NOT_RETRIEVED` must not carry:
+
+```text
+"Strong Play"
+"Analytical Lean"
+"High Confidence"
+"Best Bet"
+"Lock"
+"Approved Play"
+```
+
+When a confidence label is present in the source material but the calibrated
+probability is missing, apply:
+
+```text
+UNSUPPORTED_CONFIDENCE_CLAIM
+=> downgrade to LLP_SCOUT
+```
+
+### Step 9: Apply lowest shared ceiling to the bundled recommendation
+
+```text
+three_or_more_candidates_from_same_event
+AND shared_thesis_count >= 2
+AND correlation_not_quantified
+=> MULTI_CANDIDATE_SHORTLIST_BLOCK
+=> maximum ceiling = LLP_WATCH for all candidates in the bundle
+```
+
+The ceiling applies to the entire bundle, not just the weakest candidate. A
+strong individual candidate inside a correlated bundle cannot receive a higher
+label than the bundle ceiling.
+
+---
+
+## Required shortlist-gate output format
+
+When a multi-recommendation input is processed, the output must show a
+per-candidate gate result before any shortlist:
+
+```text
+Candidate N: [participant / market]
+LLP label:              [label]
+Fresh timestamped price: VERIFIED | NOT VERIFIED
+Lineup/status check:     RETRIEVED | NOT RETRIEVED
+Independent model:       RETRIEVED | NOT RETRIEVED
+Contradiction review:    PASSED | NOT RUN
+Shared event tags:       [list]
+Shared thesis tags:      [list]
+Correlated failure:      quantified | NOT QUANTIFIED
+Shortlist eligible:      YES | NO
+Blocker:                 [reason if NO]
+```
+
+A candidate with `Shortlist eligible: NO` appears in the Rejected table, not
+the shortlist.
+
+---
+
+## Hard labels added by this patch
+
+```text
+MULTI_CANDIDATE_SHORTLIST_BLOCK
+  — 3+ candidates from same event, shared thesis >= 2, correlation unquantified
+  — ceiling: LLP_WATCH for all candidates in bundle
+
+UNSUPPORTED_CONFIDENCE_CLAIM
+  — confidence label present, calibrated probability missing
+  — downgrade: LLP_SCOUT
+
+COMMON_THESIS_CONCENTRATION
+  — shared thesis count >= 2 across any two candidates
+  — requires joint failure probability before shortlist entry
+
+MARKET_PRICE_NOT_VERIFIED
+  — price range without named source and timestamp
+  — candidate capped at LLP_SCOUT
+```
+
+---
+
+## Additional audit footer fields
+
+```text
+multi_recommendation_inputs=
+candidates_extracted=
+candidates_shortlist_eligible=
+candidates_blocked_concentration=
+shared_event_pairs=
+shared_thesis_pairs=
+unsupported_confidence_claims_downgraded=
+multi_candidate_shortlist_blocks=
+```
