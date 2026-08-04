@@ -69,12 +69,22 @@ def _anthropic_client_kwargs(**extra) -> tuple:
 
     Pass any extra constructor kwargs (e.g. timeout=90, max_retries=0) via **extra.
 
-    Logs exactly one line per call showing the selected mode and base-URL host
-    (never the key value itself) so production 401s are diagnosable from logs.
+    Empty/whitespace safety: all three env vars are .strip()-ped before any
+    boolean check.  A value of "  " is treated identically to "" or unset.
+    The log line always shows the *stripped* key length so whitespace-padding
+    is immediately visible (key_len=0 means empty-or-whitespace-only).
+
+    Logs exactly one line per call: mode + base-URL host + key/base lengths.
+    Never logs the key value itself.
     """
-    ai_key  = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "").strip()
-    ai_base = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_BASE_URL", "").strip()
-    direct  = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    # Read raw values separately so we can report raw_len for diagnostics.
+    _ai_key_raw  = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_API_KEY") or ""
+    _ai_base_raw = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_BASE_URL") or ""
+    _direct_raw  = os.environ.get("ANTHROPIC_API_KEY") or ""
+
+    ai_key  = _ai_key_raw.strip()
+    ai_base = _ai_base_raw.strip()
+    direct  = _direct_raw.strip()
 
     if ai_key and ai_base:
         try:
@@ -82,26 +92,39 @@ def _anthropic_client_kwargs(**extra) -> tuple:
             _host = _urlparse(ai_base).netloc or ai_base
         except Exception:
             _host = "(unparseable)"
-        print(f"ANTHROPIC_CLIENT_MODE replit_proxy  base_host={_host}  "
-              f"has_key={'yes' if ai_key else 'no'}  "
-              f"has_base={'yes' if ai_base else 'no'}",
-              flush=True)
+        print(
+            f"ANTHROPIC_CLIENT_MODE replit_proxy"
+            f"  base_host={_host}"
+            f"  key_len={len(ai_key)}"
+            f"  base_len={len(ai_base)}",
+            flush=True,
+        )
         kwargs = {"api_key": ai_key, "base_url": ai_base}
+
     elif direct:
-        print("ANTHROPIC_CLIENT_MODE direct  base_host=api.anthropic.com  "
-              f"has_key={'yes' if direct else 'no'}",
-              flush=True)
+        print(
+            f"ANTHROPIC_CLIENT_MODE direct"
+            f"  base_host=api.anthropic.com"
+            f"  key_len={len(direct)}",
+            flush=True,
+        )
         kwargs = {"api_key": direct}
+
     else:
-        print("ANTHROPIC_CLIENT_MODE unavailable  "
-              f"ai_key_set={'yes' if ai_key else 'no'}  "
-              f"ai_base_set={'yes' if ai_base else 'no'}  "
-              f"direct_set={'yes' if direct else 'no'}",
-              flush=True)
+        # Log both stripped AND raw lengths so a whitespace-only value is
+        # immediately distinguishable from a genuinely unset variable.
+        print(
+            f"ANTHROPIC_CLIENT_MODE unavailable"
+            f"  ai_key_len={len(ai_key)}(raw={len(_ai_key_raw)})"
+            f"  ai_base_len={len(ai_base)}(raw={len(_ai_base_raw)})"
+            f"  direct_len={len(direct)}(raw={len(_direct_raw)})",
+            flush=True,
+        )
         return None, (
             "No Anthropic credentials — set ANTHROPIC_API_KEY in Replit Secrets "
             "or enable the Replit Anthropic AI Integration"
         )
+
     kwargs.update(extra)
     return kwargs, None
 
