@@ -55,6 +55,13 @@ def _prov(model_id: str, minimum_inputs: list, notes: str = "") -> dict:
         "status":              "PROVISIONAL",
         "minimum_inputs":      list(minimum_inputs),
         "notes":               notes or "Poisson λ=game-log mean; ignores minutes/role/opponent context",
+        # Ceiling enforced in every response that surfaces this registry entry.
+        # A high numeric result from a PROVISIONAL model must not override these.
+        "provisional_ceiling": {
+            "maximum_label":       "MODEL_QUALIFIED_HOLD",
+            "power_eligibility":   False,
+            "money_grade_allowed": False,
+        },
     }
 
 

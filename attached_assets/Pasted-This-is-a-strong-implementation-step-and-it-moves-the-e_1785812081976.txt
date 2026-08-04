@@ -1,0 +1,209 @@
+This is a strong implementation step, and it moves the engine much closer to the architecture you described.
+
+## What is now working correctly
+
+The most important improvements are in place:
+
+* `/analyze-and-score` is now the primary end-to-end route.
+* Low-confidence OCR is flagged before scoring.
+* Unsupported sports and prop types fail closed.
+* Claude no longer generates authoritative probabilities.
+* Every leg now exposes probability, model, evidence, backend status, and canonical identity separately.
+* Governance metadata is included in the response.
+* Existing consumers remain compatible because the original flat fields were preserved.
+* The test suite is clean: **2,259 tests passing**.
+
+The model registry is especially important because it gives the engine a controlled answer to:
+
+> “Which model is allowed to score this prop?”
+
+That prevents a generic formula from quietly being applied to an unsuitable market.
+
+## The main remaining limitation
+
+The `PROVISIONAL` NBA/WNBA Poisson models are useful as an interim research layer, but they should not yet be treated as the final “best hit probability formulas.”
+
+A game-log mean Poisson model assumes:
+
+* the player’s opportunity is stable;
+* variance is approximately equal to the mean;
+* minutes are stable;
+* role is unchanged;
+* opponent context is negligible;
+* teammate availability does not materially redistribute usage;
+* game script has limited effect.
+
+Those assumptions are often weak for basketball props.
+
+The registry status correctly identifies this limitation, but the downstream label rules must enforce it. A `PROVISIONAL` model should have a ceiling such as:
+
+```text
+maximum_ceiling = MODEL_QUALIFIED_HOLD
+power_eligibility = false
+money_grade_allowed = false
+calibration_status = PROVISIONAL
+```
+
+A high numeric result from the Poisson model must not override that ceiling.
+
+## One important response-contract addition
+
+The new probability object should explicitly distinguish the probability stages:
+
+```json
+{
+  "probability": {
+    "raw_probability": 0.74,
+    "calibrated_probability": null,
+    "calibrated_lower_bound": 0.63,
+    "upper_bound": 0.81,
+    "push_probability": 0.0,
+    "calibration_status": "PROVISIONAL",
+    "probability_publishable": true,
+    "high_probability_qualified": false
+  }
+}
+```
+
+Calling a provisional adjusted value “calibrated” without a real calibration ledger could be misleading. When genuine cohort calibration is unavailable, the response should say so directly.
+
+## Web fallback still needs a real execution contract
+
+The response includes:
+
+```text
+web_fallback_used
+sources
+```
+
+That is good, but the backend still needs a deterministic retry loop rather than merely reporting the gap.
+
+The desired flow is:
+
+```text
+/analyze-and-score
+→ identify missing required fields
+→ return structured acquisition requests
+→ GPT researches only those fields
+→ GPT submits sourced enrichment
+→ backend revalidates and rescoring occurs
+```
+
+A useful gap response would look like:
+
+```json
+{
+  "data_gaps": [
+    {
+      "field": "box_score_log",
+      "required_for": "WNBA opportunity gate",
+      "preferred_sources": [
+        "official league box scores",
+        "official team game logs",
+        "trusted structured provider"
+      ],
+      "minimum_records": 5,
+      "accepted_format": "list[dict]",
+      "resubmission_key": "enrichment.box_score_log"
+    }
+  ]
+}
+```
+
+That gives the GPT precise instructions and prevents broad, uncontrolled research.
+
+## The WNBA enrichment contract must be implemented server-side
+
+The document created earlier should now become a validator in the backend, not just documentation.
+
+The backend should reject or soft-hold based on type:
+
+```text
+game_log must be list[number]
+box_score_log must be list[dict]
+```
+
+It should also return an explicit contract error when the keys are mixed:
+
+```text
+WNBA_ENRICHMENT_TYPE_MISMATCH
+```
+
+That is preferable to allowing either module to silently filter or reject the data.
+
+The opportunity engine should consume:
+
+```json
+{
+  "box_score_log": [
+    {
+      "MIN": 31,
+      "PTS": 17,
+      "REB": 5,
+      "AST": 3,
+      "FGA": 12,
+      "USG%": 28.4
+    }
+  ]
+}
+```
+
+The L5/L10 module should consume only:
+
+```json
+{
+  "game_log": [5, 4, 7, 3, 6]
+}
+```
+
+## Custom GPT changes
+
+The supplied instruction delta should be added. I would add two more clauses:
+
+```text
+Treat ACTIVE models as the only fully publishable deterministic probability
+models. Treat PROVISIONAL models as research-grade and preserve their backend
+ceiling. Never describe a PROVISIONAL probability as fully calibrated unless
+the backend explicitly reports a valid calibration cohort.
+
+When data_gaps are returned, research only the requested fields, preserve the
+source and retrieval timestamp for each value, and resubmit the enrichment to
+the backend. Do not replace the backend result with a manually calculated
+grade.
+```
+
+## Required deployment actions
+
+The remaining operational steps are:
+
+1. Deploy the updated backend.
+2. Refresh the Custom GPT action schema.
+3. Confirm the schema exposes all six leg sub-objects and the governance block.
+4. Add the new instruction delta.
+5. Test one clean screenshot, one low-OCR screenshot, one WNBA prop with missing `box_score_log`, one unsupported NFL prop, and one mixed-format enrichment payload.
+6. Verify the GPT displays the backend `terminal_label` exactly and does not upgrade provisional results.
+
+## Overall assessment
+
+The engine now has the correct architectural separation:
+
+```text
+AI/Vision
+→ extraction and source discovery
+
+Backend adapters
+→ normalization and enrichment
+
+Registered deterministic models
+→ probability calculation
+
+WOW gates
+→ ceilings, blockers and terminal labels
+
+GPT
+→ orchestration and presentation
+```
+
+That is the right foundation.
+
+The next highest-value build is replacing the provisional basketball Poisson modules with **minutes-and-rate distribution models**, then calibrating them by sport, stat, side, line type, and role-confirmation status.

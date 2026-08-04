@@ -2708,6 +2708,87 @@ def normalize_legs_endpoint():
     })
 
 
+# ---------------------------------------------------------------------------
+# /analyze-and-score — data-gap acquisition contract
+# ---------------------------------------------------------------------------
+
+# Maps gap field names → structured acquisition instructions returned to the GPT.
+# The GPT should research ONLY the fields listed in data_gaps, preserve
+# source URLs + retrieval timestamps, and resubmit via the resubmission_key.
+_GAP_CONTRACT: dict[str, dict] = {
+    "box_score_log": {
+        "required_for":      "WNBA opportunity gate (role / minutes / usage analysis)",
+        "preferred_sources": [
+            "official league box scores",
+            "official team game logs",
+            "trusted structured provider",
+        ],
+        "minimum_records":   5,
+        "accepted_format":   "list[dict] — each dict has MIN, PTS, REB, AST, FGA, USG%",
+        "resubmission_key":  "enrichment.box_score_log",
+    },
+    "game_log": {
+        "required_for":      "L5/L10 hit rate ledger",
+        "preferred_sources": ["official league stats", "trusted box score provider"],
+        "minimum_records":   5,
+        "accepted_format":   "list[number] — one value per game, most recent first",
+        "resubmission_key":  "enrichment.game_log",
+    },
+    "player_id_resolution": {
+        "required_for":      "player identity resolution",
+        "preferred_sources": ["official team roster", "league player database"],
+        "minimum_records":   None,
+        "accepted_format":   "string — canonical player ID",
+        "resubmission_key":  "legs[].player_id",
+    },
+    "injury_status": {
+        "required_for":      "injury / status gate",
+        "preferred_sources": [
+            "official injury report",
+            "beat reporter",
+            "ESPN health report",
+        ],
+        "minimum_records":   None,
+        "accepted_format":   "string — active | questionable | out | day-to-day",
+        "resubmission_key":  "enrichment.injury_status",
+    },
+    "sportsbook_line": {
+        "required_for":      "market gate — line validation",
+        "preferred_sources": ["DraftKings", "FanDuel", "BetMGM", "Odds API"],
+        "minimum_records":   None,
+        "accepted_format":   "number — posted sportsbook line for this prop",
+        "resubmission_key":  "enrichment.sportsbook_line",
+    },
+    "batting_average": {
+        "required_for":      "MLB binomial PA model (mlb_hits_binomial_pa_v2)",
+        "preferred_sources": ["MLB Stats API", "Baseball Reference", "FanGraphs"],
+        "minimum_records":   None,
+        "accepted_format":   "number — season batting average (0.000–1.000)",
+        "resubmission_key":  "enrichment.batting_average",
+    },
+    "minutes": {
+        "required_for":      "WNBA / NBA opportunity stability",
+        "preferred_sources": ["official league box scores", "trusted structured provider"],
+        "minimum_records":   5,
+        "accepted_format":   "number — average minutes per game over last 5 games",
+        "resubmission_key":  "enrichment.minutes",
+    },
+}
+
+
+def _build_gap_entry(field: str) -> dict:
+    """Return a structured acquisition request dict for a single gap field."""
+    contract = _GAP_CONTRACT.get(field, {})
+    return {
+        "field":             field,
+        "required_for":      contract.get("required_for", "unknown — supply this field to improve scoring"),
+        "preferred_sources": contract.get("preferred_sources", []),
+        "minimum_records":   contract.get("minimum_records"),
+        "accepted_format":   contract.get("accepted_format", "unknown"),
+        "resubmission_key":  contract.get("resubmission_key", f"enrichment.{field}"),
+    }
+
+
 @app.route("/analyze-and-score", methods=["POST"])
 @require_api_key
 def analyze_and_score():
@@ -2742,6 +2823,25 @@ def analyze_and_score():
     user_id       = body.get("user_id") or ""
     target_date   = body.get("target_date") or _dt.date.today().isoformat()
     slip_id       = str(_uuid.uuid4())
+
+    # ── Enrichment type validation (WNBA enrichment contract) ────────────
+    # When the GPT resubmits a leg with pre-filled enrichment (after gap-fill),
+    # validate field types before running the pipeline.  Mixing game_log (flat
+    # numbers) with box_score_log (per-game dicts) routes the wrong data to the
+    # wrong module and produces silent failures.
+    submitted_enrichment = body.get("enrichment") or {}
+    if submitted_enrichment and isinstance(submitted_enrichment, dict):
+        from gate_engine.wnba_enrichment_contract import validate as _validate_enr, mismatch_response as _enr_mismatch
+        # Validate either a flat enrichment dict or per-leg keyed dict
+        _enr_ok, _enr_code, _enr_detail = (True, None, None)
+        for _enr_v in (submitted_enrichment.values()
+                       if any(isinstance(v, dict) for v in submitted_enrichment.values())
+                       else [submitted_enrichment]):
+            _enr_ok, _enr_code, _enr_detail = _validate_enr(_enr_v)
+            if not _enr_ok:
+                break
+        if not _enr_ok:
+            return jsonify(_enr_mismatch(_enr_detail)), 422
 
     # ── Step A: Vision extraction ────────────────────────────────────────
     if not _ensure_anthropic():
@@ -3050,8 +3150,24 @@ def analyze_and_score():
                           "calibration_version": None, "status": "UNKNOWN"}
             _prob_bounds = lambda p, n, s: (None, None)  # noqa: E731
 
-        _sample_size = hp.get("sample_size") or 0
-        _lo, _hi     = _prob_bounds(_hp_prob, _sample_size, _reg_entry.get("status", ""))
+        _sample_size  = hp.get("sample_size") or 0
+        _model_status = _reg_entry.get("status", "NO_REGISTERED_MODEL")
+        _lo, _hi      = _prob_bounds(_hp_prob, _sample_size, _model_status)
+
+        # calibration_status: CALIBRATED only for ACTIVE models with a real
+        # cohort calibration; PROVISIONAL for provisional models (no cohort
+        # calibration yet); UNAVAILABLE when probability is null.
+        _cal_status = (
+            "UNAVAILABLE"  if _hp_prob is None else
+            "CALIBRATED"   if _model_status == "ACTIVE" else
+            "PROVISIONAL"  if _model_status == "PROVISIONAL" else
+            "UNAVAILABLE"
+        )
+        # probability_publishable: true only for ACTIVE models with a result.
+        # PROVISIONAL results are research-grade; never describe them as calibrated.
+        _prob_publishable    = (_model_status == "ACTIVE" and _hp_prob is not None)
+        _high_prob_qualified = (_prob_publishable and _hp_prob is not None and _hp_prob >= 0.65)
+        _is_provisional      = _model_status == "PROVISIONAL"
 
         _enr_entry = enrichment.get(leg_id) or {}
         _game_log_status  = "RETRIEVED" if _enr_entry.get("game_log") else "MISSING"
@@ -3112,12 +3228,17 @@ def analyze_and_score():
                 "settlement_verified": False,  # screenshot source — never confirmed active
             },
             "probability": {
-                "raw_probability":         _hp_prob,
-                "calibrated_probability":  _hp_prob,   # no calibration layer yet
-                "calibrated_lower_bound":  _lo,
-                "upper_bound":             _hi,
-                "push_probability":        0.0,
-                "model_status":            _reg_entry.get("status"),
+                "raw_probability":           _hp_prob,
+                # calibrated_probability is non-null only for ACTIVE models.
+                # PROVISIONAL results lack a real cohort calibration ledger.
+                # Never describe a PROVISIONAL output as "calibrated".
+                "calibrated_probability":    _hp_prob if _model_status == "ACTIVE" else None,
+                "calibrated_lower_bound":    _lo,
+                "upper_bound":               _hi,
+                "push_probability":          0.0,
+                "calibration_status":        _cal_status,
+                "probability_publishable":   _prob_publishable,
+                "high_probability_qualified": _high_prob_qualified,
             },
             "model": {
                 "model_id":            _reg_entry.get("model_id"),
@@ -3141,9 +3262,25 @@ def analyze_and_score():
             "backend": {
                 "terminal_label":    terminal_label,
                 "blockers":          _blockers,
-                "power_eligibility": False,
+                "power_eligibility": False,  # unconditional for screenshot slips
                 "flex_eligibility":  _flex_elig,
+                # PROVISIONAL models carry a hard ceiling regardless of numeric result.
+                # A high Poisson output must not override this.
+                "money_grade_allowed": not _is_provisional,
+                "model_ceiling": "MODEL_QUALIFIED_HOLD" if _is_provisional else None,
             },
+            # Structured acquisition requests for any field the pipeline could not
+            # obtain.  The GPT should research ONLY the listed fields, preserve source
+            # URLs + retrieval timestamps, and resubmit via each resubmission_key.
+            "data_gaps": [
+                _build_gap_entry(g)
+                for g in dict.fromkeys(           # preserve order, deduplicate
+                    [f for f in list(row.get("data_gaps") or []) if f] +
+                    (["game_log"] if _game_log_status == "MISSING" and not is_unresolvable else []) +
+                    (["sportsbook_line"] if _market_status == "MISSING" and not is_unresolvable else []) +
+                    (["player_id_resolution"] if is_unresolvable else [])
+                )
+            ],
         })
 
     # Slip-level summary
