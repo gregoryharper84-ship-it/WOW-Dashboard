@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import math
+import statistics
 from typing import Any, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ class HitProbResult(NamedTuple):
 MODEL_MLB_FORMULA        = "mlb_formula_v2"
 MODEL_BERNOULLI          = "bernoulli_hit_rate"   # legacy; kept for test compatibility
 MODEL_POISSON            = "poisson_l10"
+MODEL_GAUSSIAN           = "gaussian_match_log"   # Tennis / continuous distributions
 MODEL_CLAUDE             = "claude_estimate"
 MODEL_NO_DATA            = "no_data"
 MODEL_ERROR              = "error"
@@ -85,6 +87,64 @@ _MLB_COUNTING_STATS = {
     "so", "k", "strikeouts", "tb", "total_bases",
     "outs", "ip", "innings",
 }
+
+# NFL counting stats eligible for Poisson model (yards, receptions, etc.)
+# Also includes TD columns — when line > 1.5 the Bernoulli branch doesn't
+# fire and we fall through to Poisson ("how many TDs will he score?")
+_NFL_COUNTING_STATS = {
+    "pass_yds", "passing_yards", "rush_yds", "rushing_yards",
+    "rec_yds", "receiving_yards", "rec", "receptions",
+    "targets", "pass_att", "pass_cmp", "completions",
+    "sack", "sacks", "int", "interceptions",
+    "fpts", "fpts_ppr", "tackle", "kick_pts",
+    # TD stats included here so line > 1.5 routes to Poisson
+    "td", "pass_td", "rush_td", "rec_td", "anytime_td",
+    "passing_tds", "rushing_tds", "receiving_tds",
+}
+
+# NFL TD props that are near-binary (line ≤ 1.5) — checked BEFORE counting
+_NFL_TD_STATS = {"td", "pass_td", "rush_td", "rec_td", "anytime_td",
+                 "passing_tds", "rushing_tds", "receiving_tds"}
+
+# Tennis stats that use Gaussian (match-level continuous distributions)
+_TENNIS_GAUSSIAN_STATS = {"fantasy_score", "fpts", "fantasy", "games_won", "games"}
+# Tennis stats where Poisson still fits (discrete counts: aces, DFs)
+_TENNIS_POISSON_STATS  = {"aces", "ace", "double_faults", "df", "double_fault"}
+
+
+def _is_nfl_counting(sport: str, stat_key: str) -> bool:
+    """True when NFL Poisson model is appropriate."""
+    return sport.upper() == "NFL" and stat_key.lower().replace(" ", "_") in _NFL_COUNTING_STATS
+
+
+def _is_nfl_binary(sport: str, stat_key: str, line: float) -> bool:
+    """True for near-binary NFL TD props (line ≤ 1.5)."""
+    return (sport.upper() == "NFL"
+            and stat_key.lower().replace(" ", "_") in _NFL_TD_STATS
+            and line <= 1.5)
+
+
+# Fantasy Score composite stat keys that always route to Gaussian (all sports)
+_FANTASY_SCORE_COMPOSITE_KEYS = {
+    "fantasy_score", "fantasy_score_hit", "fantasy_score_pit",
+}
+
+
+def _is_fantasy_score_composite(sport: str, stat_key: str) -> bool:
+    """
+    True for any Fantasy Score composite prop on any sport.
+    Fantasy Score is a weighted sum of multiple component stats — it is
+    NOT a single Poisson draw.  Always routes to the Gaussian model.
+    """
+    return stat_key.lower().replace(" ", "_") in _FANTASY_SCORE_COMPOSITE_KEYS
+
+
+def _is_tennis_gaussian(sport: str, stat_key: str) -> bool:
+    return sport.upper() == "TENNIS" and stat_key.lower().replace(" ", "_") in _TENNIS_GAUSSIAN_STATS
+
+
+def _is_tennis_poisson(sport: str, stat_key: str) -> bool:
+    return sport.upper() == "TENNIS" and stat_key.lower().replace(" ", "_") in _TENNIS_POISSON_STATS
 
 
 def _is_mlb_binary(sport: str, stat_key: str, line: float) -> bool:
@@ -308,7 +368,73 @@ def _poisson_model(
 
 
 # ---------------------------------------------------------------------------
-# Model 3: Claude fallback
+# Model 3: Gaussian CDF (Tennis match-level continuous distributions)
+# ---------------------------------------------------------------------------
+
+def _gaussian_model(
+    game_log: list[float],
+    line:     float,
+    side:     str,
+) -> HitProbResult:
+    """
+    Gaussian P(X ≥ line) using game_log mean as μ and sample std as σ.
+
+    Used for Tennis Fantasy Score / Games Won, where the match-level
+    distribution is approximately normal over L10 matches.
+
+    Minimum 3 samples required for a meaningful standard deviation.
+    """
+    n = len(game_log)
+    if n == 0:
+        return HitProbResult(None, MODEL_NO_DATA, "No game log", None, 0, None)
+    if n < 3:
+        return HitProbResult(
+            None, MODEL_NO_DATA,
+            f"Gaussian model requires ≥3 samples (have {n})",
+            None, n, None,
+        )
+
+    mu  = sum(game_log) / n
+    std = statistics.stdev(game_log)
+
+    if std < 0.01:
+        # All values identical — degenerate distribution; fall back to Bernoulli
+        return _bernoulli_hit_rate(game_log, line, side)
+
+    try:
+        from scipy.stats import norm as _norm
+        if side.upper() in ("LESS", "UNDER"):
+            prob = float(_norm.cdf(line, mu, std))
+            note = f"Gaussian LESS: μ={mu:.2f} σ={std:.2f} P(X<{line})={prob:.4f} n={n}"
+        else:
+            prob = 1.0 - float(_norm.cdf(line, mu, std))
+            note = f"Gaussian MORE: μ={mu:.2f} σ={std:.2f} P(X≥{line})={prob:.4f} n={n}"
+    except ImportError:
+        # scipy unavailable — use math.erf approximation
+        import math as _math
+        z = (line - mu) / (std * _math.sqrt(2))
+        cdf = 0.5 * (1.0 + _math.erf(z))
+        if side.upper() in ("LESS", "UNDER"):
+            prob = cdf
+        else:
+            prob = 1.0 - cdf
+        note = f"Gaussian(erf fallback) μ={mu:.2f} σ={std:.2f} n={n}"
+
+    if n < _POISSON_IDEAL_SAMPLE:
+        note += f"; only {n} match{'es' if n != 1 else ''}, below {_POISSON_IDEAL_SAMPLE}-match ideal"
+
+    return HitProbResult(
+        hit_probability  = round(max(0.0, min(1.0, prob)), 4),
+        model_used       = MODEL_GAUSSIAN,
+        calibration_note = note,
+        lambda_used      = round(mu, 3),
+        sample_size      = n,
+        market_calibration = None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Model 4: Claude fallback
 # ---------------------------------------------------------------------------
 
 def _claude_fallback(
@@ -390,9 +516,32 @@ def compute(
         result = _bernoulli_hit_rate(game_log, line, side)
         return result._replace(market_calibration=no_vig_prob)
 
-    # Tier 2: Counting stats (NBA, WNBA, MLB SO/TB)
-    if _is_counting_stat(sport, stat_key):
+    # Tier 1c: Near-binary NFL TD props (PASS_TD, RUSH_TD, REC_TD, TD at ≤1.5)
+    if _is_nfl_binary(sport, stat_key, line):
+        result = _bernoulli_hit_rate(game_log, line, side)
+        return result._replace(market_calibration=no_vig_prob)
+
+    # Tier 1d: Fantasy Score composites — always Gaussian, checked BEFORE Tier 2.
+    # Fantasy Score is a weighted sum of differently-shaped component distributions
+    # (PTS ~Poisson, STL/BLK ~low-rate Poisson, TOV with a negative weight).
+    # Summing weighted Poissons does not stay Poisson — Gaussian approximation used
+    # as a pragmatic stand-in; results carry UNVALIDATED flags.
+    # Must come before _is_counting_stat to avoid FANTASY_SCORE matching counting
+    # keyword heuristics and being misrouted to Poisson.
+    if _is_fantasy_score_composite(sport, stat_key):
+        result = _gaussian_model(game_log, line, side)
+        return result._replace(market_calibration=no_vig_prob)
+
+    # Tier 2: Counting stats (NBA, WNBA, MLB SO/TB, NFL yardage/receptions,
+    #          Tennis aces/double-faults)
+    if _is_counting_stat(sport, stat_key) or _is_nfl_counting(sport, stat_key) \
+            or _is_tennis_poisson(sport, stat_key):
         result = _poisson_model(game_log, line, side)
+        return result._replace(market_calibration=no_vig_prob)
+
+    # Tier 2b: Gaussian — Tennis match-level continuous stats (Fantasy Score, Games Won)
+    if _is_tennis_gaussian(sport, stat_key):
+        result = _gaussian_model(game_log, line, side)
         return result._replace(market_calibration=no_vig_prob)
 
     # Tier 3: No registered model — fail closed.

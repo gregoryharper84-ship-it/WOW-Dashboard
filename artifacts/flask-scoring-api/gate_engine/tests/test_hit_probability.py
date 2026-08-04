@@ -215,11 +215,12 @@ class TestCompute:
         result = compute(leg, [18.0, 22.0, 19.0, 24.0, 21.0])
         assert MODEL_POISSON[:7] in result.model_used
 
-    def test_nfl_fails_closed_no_registered_model(self):
-        """NFL has no registered model — compute() returns NO_REGISTERED_MODEL, not Claude."""
-        leg = {"sport": "NFL", "stat_key": "passing_yards", "line_value": 245.5,
-               "side": "MORE", "player_name": "P. Mahomes"}
-        result = compute(leg, [250.0, 230.0, 270.0, 240.0, 260.0])
+    def test_unsupported_sport_fails_closed_no_registered_model(self):
+        """Unsupported sport (NHL) returns NO_REGISTERED_MODEL, not Claude.
+        (NFL now has PROVISIONAL models; NHL is still unregistered.)"""
+        leg = {"sport": "NHL", "stat_key": "G", "line_value": 0.5,
+               "side": "MORE", "player_name": "C. McDavid"}
+        result = compute(leg, [1.0, 0.0, 1.0, 1.0, 0.0])
         assert result.model_used == MODEL_NO_REGISTERED_MODEL
         assert result.hit_probability is None
 
@@ -522,10 +523,11 @@ class TestNoRegisteredModel:
         assert result.hit_probability is None
 
     def test_no_registered_model_carries_market_calibration(self):
-        """market_calibration still populated when no model is registered."""
-        leg = {"sport": "NFL", "stat_key": "passing_yards", "line_value": 245.5,
-               "side": "MORE", "player_name": "P. Mahomes"}
-        result = compute(leg, [250.0, 230.0], no_vig_prob=0.55)
+        """market_calibration still populated when no model is registered.
+        Uses NHL (unregistered) — NFL now has PROVISIONAL models."""
+        leg = {"sport": "NHL", "stat_key": "G", "line_value": 0.5,
+               "side": "MORE", "player_name": "C. McDavid"}
+        result = compute(leg, [1.0, 0.0], no_vig_prob=0.55)
         assert result.model_used == MODEL_NO_REGISTERED_MODEL
         assert result.market_calibration == pytest.approx(0.55)
 

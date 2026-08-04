@@ -177,7 +177,105 @@ _REGISTRY: dict = {
     ("WNBA", "REB+AST"):     _prov("wnba_counting_poisson_v1", ["game_log"], "Combo stat"),
     ("WNBA", "FPTS"):        _prov("wnba_counting_poisson_v1", ["game_log"]),
 
-    # NFL and NHL: no registered model — lookup() returns NO_REGISTERED_MODEL
+    # ── NFL: counting stats (Poisson λ = weekly mean) ────────────────────
+    # PROVISIONAL: ignores game script, snap count, opponent, weather context
+    ("NFL", "PASS_YDS"):        _prov("nfl_counting_poisson_v1", ["game_log"], "Poisson λ=weekly mean passing yards"),
+    ("NFL", "PASSING_YARDS"):   _prov("nfl_counting_poisson_v1", ["game_log"]),
+    ("NFL", "RUSH_YDS"):        _prov("nfl_counting_poisson_v1", ["game_log"], "Poisson λ=weekly mean rushing yards"),
+    ("NFL", "RUSHING_YARDS"):   _prov("nfl_counting_poisson_v1", ["game_log"]),
+    ("NFL", "REC_YDS"):         _prov("nfl_counting_poisson_v1", ["game_log"], "Poisson λ=weekly mean receiving yards"),
+    ("NFL", "RECEIVING_YARDS"): _prov("nfl_counting_poisson_v1", ["game_log"]),
+    ("NFL", "REC"):             _prov("nfl_counting_poisson_v1", ["game_log"], "Poisson λ=weekly mean receptions"),
+    ("NFL", "RECEPTIONS"):      _prov("nfl_counting_poisson_v1", ["game_log"]),
+    ("NFL", "TARGETS"):         _prov("nfl_counting_poisson_v1", ["game_log"]),
+    ("NFL", "PASS_ATT"):        _prov("nfl_counting_poisson_v1", ["game_log"], "Poisson λ=weekly mean pass attempts"),
+    ("NFL", "PASS_CMP"):        _prov("nfl_counting_poisson_v1", ["game_log"], "Poisson λ=weekly mean completions"),
+    ("NFL", "COMPLETIONS"):     _prov("nfl_counting_poisson_v1", ["game_log"]),
+    ("NFL", "SACK"):            _prov("nfl_counting_poisson_v1", ["game_log"]),
+    ("NFL", "SACKS"):           _prov("nfl_counting_poisson_v1", ["game_log"]),
+    ("NFL", "INT"):             _prov("nfl_counting_poisson_v1", ["game_log"], "Bernoulli/Poisson — low-count event"),
+    ("NFL", "INTERCEPTIONS"):   _prov("nfl_counting_poisson_v1", ["game_log"]),
+    ("NFL", "FPTS"):            _prov("nfl_counting_poisson_v1", ["game_log"]),
+    ("NFL", "FPTS_PPR"):        _prov("nfl_counting_poisson_v1", ["game_log"]),
+    # Combo
+    ("NFL", "PASS_YDS+RUSH_YDS"):   _prov("nfl_counting_poisson_v1", ["game_log"], "Combo stat"),
+    ("NFL", "REC_YDS+RUSH_YDS"):    _prov("nfl_counting_poisson_v1", ["game_log"], "Combo stat"),
+
+    # NFL near-binary TD props (Bernoulli at line ≤ 1.5)
+    ("NFL", "TD"):      _prov("nfl_binary_bernoulli_v1", ["game_log"], "Any touchdown scored; Bernoulli hit rate"),
+    ("NFL", "PASS_TD"): _prov("nfl_binary_bernoulli_v1", ["game_log"], "Passing TDs; Bernoulli"),
+    ("NFL", "RUSH_TD"): _prov("nfl_binary_bernoulli_v1", ["game_log"], "Rushing TDs; Bernoulli"),
+    ("NFL", "REC_TD"):  _prov("nfl_binary_bernoulli_v1", ["game_log"], "Receiving TDs; Bernoulli"),
+    ("NFL", "ANYTIME_TD"): _prov("nfl_binary_bernoulli_v1", ["game_log"], "Anytime TD scorer; Bernoulli"),
+    ("NFL", "TACKLE"):  _prov("nfl_counting_poisson_v1", ["game_log"], "Tackles+assists; Poisson"),
+    ("NFL", "KICK_PTS"): _prov("nfl_counting_poisson_v1", ["game_log"], "Kicker fantasy points; Poisson"),
+
+    # ── Fantasy Score composite props ─────────────────────────────────────────
+    # All entries are PROVISIONAL + UNVALIDATED until back-tested against settled
+    # results.  Formula source: PrizePicks playbook pages (cross-referenced).
+    # ⚠ Do NOT use for MONEY_GRADE decisions before validation.
+    #
+    # NBA / WNBA: PTS×1.0 + REB×1.2 + AST×1.5 + STL×3.0 + BLK×3.0 + TOV×−1.0
+    # WNBA: assumed same weights as NBA — confirm from WNBA playbook.
+    # NFL: (PassYds/25)+(PassTD×4)+(INT×−2)+(RushYds/10)+(RushTD×6)
+    #      +(RecYds/10)+(RecTD×6)+(Rec×0.5 UNCONFIRMED)+(FumLost×−2)
+    # MLB-HIT: 1B×3+2B×5+3B×8+HR×10+R×2+RBI×2+BB×2+HBP×2+SB×5
+    # MLB-PIT: W×6+QS×4+K×3+Outs×1+ER×−3 (QS=IP≥6, ER≤3)
+    ("NBA",  "FANTASY_SCORE"): _prov(
+        "nba_fantasy_gaussian_v1", ["game_log"],
+        "UNVALIDATED: Gaussian fit over L10 FS series; "
+        "formula=PTS×1.0+REB×1.2+AST×1.5+STL×3.0+BLK×3.0+TOV×−1.0; "
+        "verify against settled results before money-grade use"
+    ),
+    ("WNBA", "FANTASY_SCORE"): _prov(
+        "wnba_fantasy_gaussian_v1", ["game_log"],
+        "UNVALIDATED: same weights as NBA — WNBA_WEIGHTS_ASSUMED_SAME_AS_NBA; "
+        "Gaussian fit; verify against PrizePicks WNBA playbook + settled results"
+    ),
+    ("NFL",  "FANTASY_SCORE"): _prov(
+        "nfl_fantasy_gaussian_v1", ["game_log"],
+        "UNVALIDATED: NFL_RECEPTION_WEIGHT_UNCONFIRMED (using 0.5 half-PPR); "
+        "Gaussian fit over L10 FS series; verify reception weight + settled results"
+    ),
+    ("MLB",  "FANTASY_SCORE"): _prov(
+        "mlb_hitter_fantasy_gaussian_v1", ["game_log"],
+        "UNVALIDATED: MLB hitter FS (auto-detect); "
+        "formula=1B×3+2B×5+3B×8+HR×10+R×2+RBI×2+BB×2+HBP×2+SB×5; "
+        "verify against settled results"
+    ),
+    ("MLB",  "FANTASY_SCORE_HIT"): _prov(
+        "mlb_hitter_fantasy_gaussian_v1", ["game_log"],
+        "UNVALIDATED: MLB hitter FS; "
+        "formula=1B×3+2B×5+3B×8+HR×10+R×2+RBI×2+BB×2+HBP×2+SB×5"
+    ),
+    ("MLB",  "FANTASY_SCORE_PIT"): _prov(
+        "mlb_pitcher_fantasy_gaussian_v1", ["game_log"],
+        "UNVALIDATED: MLB pitcher FS; QS=IP≥6+ER≤3 (derived flag); "
+        "formula=W×6+QS×4+K×3+Outs×1+ER×−3; verify against settled results"
+    ),
+
+    # ── Tennis: match stats (Gaussian fit over historical match distribution) ─
+    # PROVISIONAL: Gaussian λ=match-log mean, σ=match-log std.
+    # Coverage limited to ATP/WTA main-draw; ITF/Challenger → NO_REGISTERED_MODEL.
+    #
+    # ⚠ UNVALIDATED — Fantasy Score formula (games_won + 0.5*aces − 0.5*df) is
+    # a best-effort approximation of PrizePicks' proprietary composite.  Exact
+    # weights are not published.  Do NOT use for MONEY_GRADE decisions until
+    # validated against settled results via the postmortem ledger.  Tag all
+    # TENNIS FANTASY_SCORE outputs with flag FANTASY_SCORE_FORMULA_UNVALIDATED.
+    ("TENNIS", "FANTASY_SCORE"): _prov(
+        "tennis_fantasy_gaussian_v1", ["game_log"],
+        "Gaussian fit: games_won + 0.5*aces − 0.5*df (UNVALIDATED APPROXIMATION); ATP/WTA main-draw only"
+    ),
+    ("TENNIS", "FANTASY"):       _prov("tennis_fantasy_gaussian_v1", ["game_log"]),
+    ("TENNIS", "FPTS"):          _prov("tennis_fantasy_gaussian_v1", ["game_log"]),
+    ("TENNIS", "GAMES_WON"):     _prov("tennis_gaussian_v1", ["game_log"], "Gaussian; games won per match"),
+    ("TENNIS", "GAMES"):         _prov("tennis_gaussian_v1", ["game_log"]),
+    ("TENNIS", "ACES"):          _prov("tennis_counting_poisson_v1", ["game_log"], "Poisson; aces per match"),
+    ("TENNIS", "DOUBLE_FAULTS"): _prov("tennis_counting_poisson_v1", ["game_log"], "Poisson; double faults per match"),
+    ("TENNIS", "DF"):            _prov("tennis_counting_poisson_v1", ["game_log"]),
+
+    # NHL: no registered model — lookup() returns NO_REGISTERED_MODEL
 }
 
 
@@ -209,8 +307,8 @@ def lookup(sport: str, stat_key: str, line: float = None) -> dict:
                 return dict(_NO_REGISTERED_MODEL)
         return dict(entry)
 
-    # Combo-stat fallback: "+" in stat_key for NBA/WNBA → provisional Poisson
-    if "+" in stat_u and sport_u in ("NBA", "WNBA"):
+    # Combo-stat fallback: "+" in stat_key for NBA/WNBA/NFL → provisional Poisson
+    if "+" in stat_u and sport_u in ("NBA", "WNBA", "NFL"):
         model_id = f"{sport_u.lower()}_counting_poisson_v1"
         return _prov(model_id, ["game_log"], "Combo stat — independent Poisson approximation")
 

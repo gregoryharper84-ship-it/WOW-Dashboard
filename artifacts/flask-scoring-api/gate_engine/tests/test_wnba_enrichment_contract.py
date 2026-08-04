@@ -174,8 +174,10 @@ class TestModelRegistryProvisionalCeiling:
         assert "provisional_ceiling" not in entry
 
     def test_no_registered_model_has_no_ceiling(self):
+        """The NO_REGISTERED_MODEL sentinel carries no provisional_ceiling.
+        Uses NHL (unregistered) — NFL now has PROVISIONAL models."""
         from gate_engine.model_registry import lookup
-        entry = lookup("NFL", "PASSING_YARDS")
+        entry = lookup("NHL", "G")
         assert entry["status"] == "NO_REGISTERED_MODEL"
         assert "provisional_ceiling" not in entry
 

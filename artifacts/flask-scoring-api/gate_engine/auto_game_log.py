@@ -8,10 +8,12 @@ without the caller supplying game_log manually.
 Returns a plain list of numbers — the format l5_l10_ledger expects.
 
 Supported sports / sources:
-  NBA   → nba_api (stats.nba.com, free, no auth)
-  WNBA  → BallDontLie WNBA endpoint (requires balldontlie secret)
-  MLB   → MLB Stats API (statsapi.mlb.com, free, no auth)
-  NFL, NHL → GameLogUnavailable (no reliable free source; caller uses Claude gap-fill)
+  NBA    → nba_api (stats.nba.com, free, no auth)
+  WNBA   → BallDontLie WNBA endpoint (requires balldontlie secret)
+  MLB    → MLB Stats API (statsapi.mlb.com, free, no auth)
+  NFL    → nfl_data_py (nflfastR / GitHub, free, no auth)
+  TENNIS → Jeff Sackmann ATP/WTA CSVs (GitHub, free, no auth); ATP/WTA main-draw only
+  NHL    → GameLogUnavailable (no reliable free source; caller uses Claude gap-fill)
 
 Cache: in-memory LRU keyed by (player_id, stat_key, date_str), TTL 15 min.
 One cache entry per sport/player/stat/date so a 4-leg slip hitting the same
@@ -32,7 +34,10 @@ logger = logging.getLogger(__name__)
 # Cache
 # ---------------------------------------------------------------------------
 
-_CACHE: dict[str, dict] = {}    # key → {"ts": float, "values": list, "source": str, "games_fetched": int}
+# Fantasy Score stat-key set — triggers multi-column derivation path
+_FS_STAT_KEYS = {"FANTASY_SCORE", "FANTASY_SCORE_HIT", "FANTASY_SCORE_PIT"}
+
+_CACHE: dict[str, dict] = {}    # key → {"ts", "values", "source", "games_fetched", "tour_level"}
 _CACHE_TTL = 900                 # 15 minutes
 
 
@@ -43,13 +48,16 @@ def _cache_get(key: str) -> Optional[dict]:
     return None
 
 
-def _cache_set(key: str, values: list, source: str, games_fetched: int) -> dict:
-    result = {
-        "ts":           time.time(),
-        "values":       values,
-        "source":       source,
+def _cache_set(key: str, values: list, source: str, games_fetched: int,
+               tour_level: Optional[str] = None) -> dict:
+    result: dict = {
+        "ts":            time.time(),
+        "values":        values,
+        "source":        source,
         "games_fetched": games_fetched,
     }
+    if tour_level is not None:
+        result["tour_level"] = tour_level
     _CACHE[key] = result
     return result
 
@@ -148,7 +156,7 @@ def fetch_game_log(
     cached = _cache_get(cache_key)
     if cached:
         logger.debug("auto_game_log: cache hit %s", cache_key)
-        return {
+        hit: dict = {
             "values":        cached["values"],
             "source":        cached["source"],
             "games_fetched": cached["games_fetched"],
@@ -157,22 +165,59 @@ def fetch_game_log(
             "player_id":     player_id,
             "cached":        True,
         }
+        if "tour_level" in cached:
+            hit["tour_level"] = cached["tour_level"]
+        return hit
 
     sport_upper = sport.upper()
-    if sport_upper == "NBA":
+    stat_key_upper = stat_key.upper()
+    tour_level: str | None = None  # populated for TENNIS only
+
+    # ── Fantasy Score composite props — multi-column derivation ──────────────
+    # FANTASY_SCORE / FANTASY_SCORE_HIT / FANTASY_SCORE_PIT require fetching
+    # all component columns and applying the per-sport formula.  Routed BEFORE
+    # the single-stat dispatch to avoid raising "stat_key not mapped" errors.
+    # TENNIS is excluded: it handles FANTASY_SCORE through its own _fetch_tennis
+    # path (Jeff Sackmann data + tennis-specific formula).
+    if stat_key_upper in _FS_STAT_KEYS and sport_upper in ("NBA", "WNBA", "NFL", "MLB"):
+        if sport_upper == "NBA":
+            values, source = _fetch_nba_fantasy(player_id, date_str, n_games)
+        elif sport_upper == "WNBA":
+            values, source = _fetch_wnba_fantasy(player_id, date_str, n_games)
+        elif sport_upper == "NFL":
+            values, source = _fetch_nfl_fantasy(player_id, date_str, n_games)
+        elif sport_upper == "MLB":
+            if stat_key_upper == "FANTASY_SCORE_PIT":
+                values, source = _fetch_mlb_pitcher_fantasy(player_id, date_str, n_games)
+            else:  # FANTASY_SCORE or FANTASY_SCORE_HIT
+                values, source = _fetch_mlb_hitter_fantasy(player_id, date_str, n_games)
+        else:
+            raise GameLogUnavailable(
+                f"FANTASY_SCORE not supported for sport={sport_upper}. "
+                f"Supported: NBA, WNBA, NFL, MLB."
+            )
+    elif sport_upper == "NBA":
         values, source = _fetch_nba(player_id, stat_key, date_str, n_games)
     elif sport_upper == "WNBA":
         values, source = _fetch_wnba(player_id, stat_key, date_str, n_games)
     elif sport_upper == "MLB":
         values, source = _fetch_mlb(player_id, stat_key, date_str, n_games)
+    elif sport_upper == "NFL":
+        values, source = _fetch_nfl(player_id, stat_key, date_str, n_games)
+    elif sport_upper == "TENNIS":
+        # 3-tuple: values, source, tour_level
+        # tour_level distinguishes ATP_MAIN_DRAW / WTA_MAIN_DRAW from UNKNOWN_TIER
+        # so downstream gates can emit "no data for this tour tier" rather than
+        # a generic NO_GAME_LOG_PROVIDED when ITF/Challenger players fail closed.
+        values, source, tour_level = _fetch_tennis(player_id, stat_key, date_str, n_games)
     else:
         raise GameLogUnavailable(
             f"Auto game log not supported for sport={sport_upper}. "
-            f"NFL/NHL require manual supply or Claude gap-fill."
+            f"NHL requires manual supply or Claude gap-fill."
         )
 
-    entry = _cache_set(cache_key, values, source, len(values))
-    return {
+    _cache_set(cache_key, values, source, len(values), tour_level=tour_level)
+    result = {
         "values":        values,
         "source":        source,
         "games_fetched": len(values),
@@ -181,6 +226,9 @@ def fetch_game_log(
         "player_id":     player_id,
         "cached":        False,
     }
+    if tour_level is not None:
+        result["tour_level"] = tour_level
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -407,3 +455,293 @@ def _fetch_mlb(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[li
         )
 
     return values, "statsapi.mlb.com (MLB Stats API)"
+
+
+# ---------------------------------------------------------------------------
+# Fantasy Score fetchers — multi-column, apply formula per game row
+# ---------------------------------------------------------------------------
+# Each function fetches ALL component columns in one API call and applies the
+# per-sport Fantasy Score formula from gate_engine.fantasy_score.
+# The formula is PROVISIONAL/UNVALIDATED — see fantasy_score.py for details.
+# ---------------------------------------------------------------------------
+
+def _fetch_nba_fantasy(player_id: str, date_str: str, n: int) -> tuple[list, str]:
+    """NBA Fantasy Score: PTS×1.0 + REB×1.2 + AST×1.5 + STL×3.0 + BLK×3.0 + TOV×−1.0"""
+    try:
+        from nba_api.stats.endpoints import playergamelog as _pgl
+    except ImportError:
+        raise GameLogUnavailable("nba_api package not installed")
+    from gate_engine.fantasy_score import derive_nba_wnba_row
+
+    date = datetime.date.fromisoformat(date_str)
+    season = (f"{date.year}-{str(date.year + 1)[-2:]}" if date.month >= 10
+              else f"{date.year - 1}-{str(date.year)[-2:]}")
+
+    try:
+        gl = _pgl.PlayerGameLog(
+            player_id=int(player_id),
+            season=season,
+            season_type_all_star="Regular Season",
+            timeout=15,
+        )
+        df = gl.get_data_frames()[0]
+    except Exception as exc:
+        raise GameLogUnavailable(f"nba_api (FS) fetch error: {exc}") from exc
+
+    if df.empty:
+        raise GameLogUnavailable(f"No NBA game log for player_id={player_id} season={season}")
+
+    values: list[float] = []
+    for _, row in df.iterrows():
+        min_val = str(row.get("MIN", "0")).split(":")[0]
+        try:
+            if float(min_val) < 1:
+                continue
+        except (ValueError, TypeError):
+            continue
+        try:
+            fs = derive_nba_wnba_row(row.to_dict())
+        except Exception:
+            continue
+        values.append(round(fs, 2))
+        if len(values) >= n:
+            break
+
+    if not values:
+        raise GameLogUnavailable(f"NBA FS: 0 qualifying rows for player_id={player_id}")
+    return values, "stats.nba.com/nba_api [FANTASY_SCORE]"
+
+
+def _fetch_wnba_fantasy(player_id: str, date_str: str, n: int) -> tuple[list, str]:
+    """WNBA Fantasy Score (same weights as NBA — WNBA_WEIGHTS_ASSUMED_SAME_AS_NBA)."""
+    import os
+    bdl_key = os.environ.get("balldontlie") or os.environ.get("BALLDONTLIE_API_KEY", "")
+    if not bdl_key:
+        raise GameLogUnavailable("balldontlie secret not set — WNBA FS unavailable")
+    from gate_engine.fantasy_score import derive_nba_wnba_row
+
+    date = datetime.date.fromisoformat(date_str)
+    season = date.year
+
+    try:
+        resp = requests.get(
+            "https://api.balldontlie.io/wnba/v1/stats",
+            headers={"Authorization": bdl_key},
+            params={"player_ids[]": player_id, "seasons[]": season, "per_page": 25},
+            timeout=12,
+        )
+    except Exception as exc:
+        raise GameLogUnavailable(f"BallDontLie (FS) request failed: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise GameLogUnavailable(f"BallDontLie (FS) HTTP {resp.status_code} for player_id={player_id}")
+
+    game_stats = resp.json().get("data", [])
+    game_stats.sort(key=lambda g: (g.get("game") or {}).get("date") or "", reverse=True)
+
+    values: list[float] = []
+    for gs in game_stats:
+        try:
+            mins = float(gs.get("min") or 0)
+            if mins < 1:
+                continue
+        except (ValueError, TypeError):
+            continue
+        try:
+            fs = derive_nba_wnba_row(gs)
+        except Exception:
+            continue
+        values.append(round(fs, 2))
+        if len(values) >= n:
+            break
+
+    if not values:
+        raise GameLogUnavailable(f"WNBA FS: 0 qualifying rows for player_id={player_id}")
+    return values, "api.balldontlie.io/WNBA [FANTASY_SCORE]"
+
+
+def _fetch_nfl_fantasy(player_id: str, date_str: str, n: int) -> tuple[list, str]:
+    """NFL Fantasy Score — all component stats in one season load."""
+    from gate_engine.fantasy_score import derive_nfl_row
+
+    try:
+        import nfl_data_py as nfl
+    except ImportError:
+        raise GameLogUnavailable("nfl_data_py package not installed")
+
+    from gate_engine.nfl_game_log import _nfl_season_from_date, _get_season_df
+
+    date = datetime.date.fromisoformat(date_str)
+    season = _nfl_season_from_date(date)
+    df = _get_season_df(season)
+
+    # Player lookup (ID or display name)
+    player_df = df[df["player_id"] == player_id]
+    if player_df.empty:
+        name_lower = player_id.lower()
+        mask = df["player_display_name"].str.lower().str.contains(name_lower, regex=False, na=False)
+        player_df = df[mask]
+    if player_df.empty:
+        fallback = season - 1
+        df2 = _get_season_df(fallback)
+        player_df = df2[df2["player_display_name"].str.lower().str.contains(
+            player_id.lower(), regex=False, na=False
+        )]
+    if player_df.empty:
+        raise GameLogUnavailable(f"NFL FS: player '{player_id}' not found in season {season}")
+
+    # Sort most-recent week first
+    if "week" in player_df.columns:
+        player_df = player_df.sort_values("week", ascending=False)
+
+    values: list[float] = []
+    for _, row in player_df.iterrows():
+        row_dict = {
+            "pass_yds":    row.get("passing_yards", 0),
+            "pass_td":     row.get("passing_tds", 0),
+            "int":         row.get("interceptions", 0),
+            "rush_yds":    row.get("rushing_yards", 0),
+            "rush_td":     row.get("rushing_tds", 0),
+            "rec_yds":     row.get("receiving_yards", 0),
+            "rec_td":      row.get("receiving_tds", 0),
+            "rec":         row.get("receptions", 0),
+            "fumbles_lost": row.get("fumbles_lost", 0),
+        }
+        try:
+            fs = derive_nfl_row(row_dict)
+        except Exception:
+            continue
+        values.append(round(fs, 2))
+        if len(values) >= n:
+            break
+
+    if not values:
+        raise GameLogUnavailable(f"NFL FS: 0 qualifying rows for player '{player_id}'")
+    return values, "nfl_data_py/nflfastR [FANTASY_SCORE]"
+
+
+def _fetch_mlb_hitter_fantasy(player_id: str, date_str: str, n: int) -> tuple[list, str]:
+    """MLB Hitter Fantasy Score: 1B×3 + 2B×5 + 3B×8 + HR×10 + R×2 + RBI×2 + BB×2 + HBP×2 + SB×5"""
+    from gate_engine.fantasy_score import derive_mlb_hitter_row
+
+    date = datetime.date.fromisoformat(date_str)
+    season = date.year
+
+    try:
+        resp = requests.get(
+            f"{_MLB_API}/people/{player_id}/stats",
+            params={"stats": "gameLog", "group": "hitting", "season": season},
+            timeout=12,
+            headers={"User-Agent": "WOW/1.0"},
+        )
+    except Exception as exc:
+        raise GameLogUnavailable(f"MLB Stats API (hitter FS) failed: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise GameLogUnavailable(f"MLB Stats API HTTP {resp.status_code} for player_id={player_id}")
+
+    splits = resp.json().get("stats", [{}])[0].get("splits", [])
+    if not splits:
+        raise GameLogUnavailable(f"No MLB hitter game log for player_id={player_id} season={season}")
+
+    splits = list(reversed(splits))  # most-recent first
+    values: list[float] = []
+    for split in splits:
+        try:
+            fs = derive_mlb_hitter_row(split.get("stat", {}))
+        except Exception:
+            continue
+        values.append(round(fs, 2))
+        if len(values) >= n:
+            break
+
+    if not values:
+        raise GameLogUnavailable(f"MLB hitter FS: 0 qualifying rows for player_id={player_id}")
+    return values, "statsapi.mlb.com [FANTASY_SCORE_HIT]"
+
+
+def _fetch_mlb_pitcher_fantasy(player_id: str, date_str: str, n: int) -> tuple[list, str]:
+    """MLB Pitcher Fantasy Score: W×6 + QS×4 + K×3 + Outs×1 + ER×−3 (QS derived)."""
+    from gate_engine.fantasy_score import derive_mlb_pitcher_row
+
+    date = datetime.date.fromisoformat(date_str)
+    season = date.year
+
+    try:
+        resp = requests.get(
+            f"{_MLB_API}/people/{player_id}/stats",
+            params={"stats": "gameLog", "group": "pitching", "season": season},
+            timeout=12,
+            headers={"User-Agent": "WOW/1.0"},
+        )
+    except Exception as exc:
+        raise GameLogUnavailable(f"MLB Stats API (pitcher FS) failed: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise GameLogUnavailable(f"MLB Stats API HTTP {resp.status_code} for player_id={player_id}")
+
+    splits = resp.json().get("stats", [{}])[0].get("splits", [])
+    if not splits:
+        raise GameLogUnavailable(f"No MLB pitcher game log for player_id={player_id} season={season}")
+
+    splits = list(reversed(splits))  # most-recent first
+    values: list[float] = []
+    for split in splits:
+        try:
+            fs = derive_mlb_pitcher_row(split.get("stat", {}))
+        except Exception:
+            continue
+        values.append(round(fs, 2))
+        if len(values) >= n:
+            break
+
+    if not values:
+        raise GameLogUnavailable(f"MLB pitcher FS: 0 qualifying rows for player_id={player_id}")
+    return values, "statsapi.mlb.com [FANTASY_SCORE_PIT]"
+
+
+# ---------------------------------------------------------------------------
+# NFL fetch (nfl_data_py)
+# ---------------------------------------------------------------------------
+
+def _fetch_nfl(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[list, str]:
+    try:
+        from gate_engine.nfl_game_log import fetch as _nfl_fetch
+    except ImportError as exc:
+        raise GameLogUnavailable(f"nfl_game_log module unavailable: {exc}") from exc
+
+    try:
+        return _nfl_fetch(player_id, stat_key, date_str, n)
+    except (RuntimeError, KeyError) as exc:
+        raise GameLogUnavailable(f"NFL game log: {exc}") from exc
+    except Exception as exc:
+        raise GameLogUnavailable(f"NFL game log unexpected error: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Tennis fetch (Jeff Sackmann ATP/WTA CSVs)
+# ---------------------------------------------------------------------------
+
+def _fetch_tennis(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[list, str, str]:
+    """
+    Returns (values, source_label, tour_level).
+
+    tour_level is one of the TOUR_LEVEL_* constants from tennis_game_log.
+    It is surfaced on the fetch_game_log result dict so gates can distinguish
+    "no data for this tour tier" from a generic unavailable error.
+
+    ITF/Challenger failures raise GameLogUnavailable with a message that
+    begins with the NO_DATA_FOR_TOUR_TIER prefix from tennis_game_log.
+    """
+    try:
+        from gate_engine.tennis_game_log import fetch as _tennis_fetch, TOUR_LEVEL_UNKNOWN
+    except ImportError as exc:
+        raise GameLogUnavailable(f"tennis_game_log module unavailable: {exc}") from exc
+
+    try:
+        values, source, tour_level = _tennis_fetch(player_id, stat_key, date_str, n)
+        return values, source, tour_level
+    except (RuntimeError, KeyError) as exc:
+        raise GameLogUnavailable(f"Tennis game log: {exc}") from exc
+    except Exception as exc:
+        raise GameLogUnavailable(f"Tennis game log unexpected error: {exc}") from exc
