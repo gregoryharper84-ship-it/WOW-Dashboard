@@ -1065,6 +1065,219 @@ paths:
                                 type: string
                               reason:
                                 type: string
+                        probability:
+                          type: object
+                          description: >
+                            Structured probability sub-object. calibrated_probability is
+                            non-null only for ACTIVE models; PROVISIONAL models have
+                            calibrated_probability=null and probability_publishable=false.
+                          properties:
+                            raw_probability:
+                              type: number
+                              nullable: true
+                              description: Raw model output P(hit) 0–1 before calibration. null when no game log.
+                            calibrated_probability:
+                              type: number
+                              nullable: true
+                              description: >
+                                Post-calibration P(hit). Non-null only for ACTIVE models.
+                                PROVISIONAL models: null — never describe as calibrated.
+                            calibrated_lower_bound:
+                              type: number
+                              nullable: true
+                              description: Lower confidence bound (0–1). null when PROVISIONAL or data missing.
+                            upper_bound:
+                              type: number
+                              nullable: true
+                              description: Upper confidence bound (0–1). null when PROVISIONAL or data missing.
+                            push_probability:
+                              type: number
+                              description: Probability of landing exactly on the line. 0.0 for most props.
+                            calibration_status:
+                              type: string
+                              enum: [CALIBRATED, PROVISIONAL, UNAVAILABLE]
+                              description: >
+                                CALIBRATED — ACTIVE model with a real cohort calibration.
+                                PROVISIONAL — model exists but lacks cohort calibration (NBA/WNBA).
+                                UNAVAILABLE — probability is null (no game log or no model).
+                            probability_publishable:
+                              type: boolean
+                              description: >
+                                true only when model_status=ACTIVE and probability is non-null.
+                                PROVISIONAL outputs are research-grade only — never describe as calibrated.
+                            high_probability_qualified:
+                              type: boolean
+                              description: >
+                                true when probability_publishable=true and raw_probability >= 0.65.
+                                Signals a high-confidence hit candidate; still subject to gate-engine approval.
+                        model:
+                          type: object
+                          description: Registry entry for the model used on this leg
+                          properties:
+                            model_id:
+                              type: string
+                              nullable: true
+                              description: "e.g. mlb_binomial_v2, nba_poisson_v1"
+                            model_version:
+                              type: string
+                              nullable: true
+                            calibration_version:
+                              type: string
+                              nullable: true
+                            status:
+                              type: string
+                              nullable: true
+                              description: "ACTIVE | PROVISIONAL | NO_REGISTERED_MODEL"
+                        backend:
+                          type: object
+                          description: >
+                            Gate-engine classification metadata. Governs whether money-grade
+                            actions are allowed and whether a provisional ceiling is in effect.
+                          properties:
+                            terminal_label:
+                              type: string
+                              description: Mirror of the top-level terminal_label for convenience
+                            blockers:
+                              type: array
+                              items:
+                                type: string
+                              description: Blocker codes that prevented FINAL_APPROVED
+                            power_eligibility:
+                              type: boolean
+                              description: Always false for screenshot-sourced slips
+                            flex_eligibility:
+                              type: boolean
+                              description: true when terminal_label is in the flex-eligible label set and leg is resolvable
+                            money_grade_allowed:
+                              type: boolean
+                              description: >
+                                false when model_status=PROVISIONAL. A high numeric probability
+                                on a PROVISIONAL model must NOT be treated as money-grade.
+                                Check this flag before any stake-sizing logic.
+                            model_ceiling:
+                              type: string
+                              nullable: true
+                              description: >
+                                "MODEL_QUALIFIED_HOLD" when model is PROVISIONAL (hard ceiling regardless
+                                of numeric probability). null for ACTIVE models with no ceiling.
+                        canonical_identity:
+                          type: object
+                          description: Resolved player and event identity
+                          properties:
+                            player_id:
+                              type: string
+                              nullable: true
+                            player_name:
+                              type: string
+                            team:
+                              type: string
+                              nullable: true
+                            opponent:
+                              type: string
+                              nullable: true
+                            event_id:
+                              type: string
+                              nullable: true
+                            event_start_time:
+                              type: string
+                              nullable: true
+                        board:
+                          type: object
+                          description: Canonical board/prop details
+                          properties:
+                            platform:
+                              type: string
+                            prop_type:
+                              type: string
+                            line:
+                              type: number
+                              nullable: true
+                            direction:
+                              type: string
+                              description: "MORE | LESS"
+                            offer_type:
+                              type: string
+                              description: "standard | boosted | etc."
+                            settlement_verified:
+                              type: boolean
+                              description: Always false for screenshot-sourced slips
+                        evidence:
+                          type: object
+                          description: Data-sourcing status for key evidence types
+                          properties:
+                            game_log_status:
+                              type: string
+                              description: "RETRIEVED | MISSING"
+                            market_status:
+                              type: string
+                              description: "RETRIEVED | MISSING"
+                            role_timestamp:
+                              type: string
+                              nullable: true
+                            web_fallback_used:
+                              type: boolean
+                              description: true when Claude search was used to resolve player or data
+                            sources:
+                              type: array
+                              items:
+                                type: string
+                        risk:
+                          type: object
+                          description: Risk classification summary
+                          properties:
+                            role_risk:
+                              type: string
+                              description: "HIGH | MEDIUM | LOW | UNKNOWN"
+                            failure_path_score:
+                              type: number
+                              nullable: true
+                            market_conflict_status:
+                              type: string
+                              description: "NONE | CONFLICT | UNKNOWN"
+                            correlation_tags:
+                              type: array
+                              items:
+                                type: string
+                        data_gaps:
+                          type: array
+                          description: >
+                            Structured acquisition requests for fields the pipeline could not obtain.
+                            The GPT MUST research ONLY the fields listed here — no other fields.
+                            After retrieval, resubmit by injecting each field under the resubmission_key
+                            path in the enrichment object and calling /analyze-and-score again.
+                            Preserve source URLs and retrieval timestamps.
+                            An empty array means the pipeline had everything it needed.
+                          items:
+                            type: object
+                            properties:
+                              field:
+                                type: string
+                                description: >
+                                  Name of the missing field, e.g. "game_log", "sportsbook_line",
+                                  "player_id_resolution". Research only this specific field.
+                              required_for:
+                                type: string
+                                description: Which scoring capability this field unlocks
+                              preferred_sources:
+                                type: array
+                                items:
+                                  type: string
+                                description: Ordered list of recommended data sources to try
+                              minimum_records:
+                                type: integer
+                                nullable: true
+                                description: Minimum number of records needed (e.g. 10 for game_log). null if not applicable.
+                              accepted_format:
+                                type: string
+                                description: >
+                                  How to format the value for resubmission, e.g.
+                                  "list of floats [v1, v2, ...]" or "decimal odds float".
+                              resubmission_key:
+                                type: string
+                                description: >
+                                  Dot-path key for where to inject the retrieved value in the
+                                  enrichment object, e.g. "enrichment.game_log" or
+                                  "enrichment.sportsbook_line".
                   count:
                     type: integer
                   slip_summary:
