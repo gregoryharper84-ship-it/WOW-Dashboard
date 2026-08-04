@@ -56,6 +56,35 @@ def _ensure_anthropic() -> bool:
     except ImportError:
         return False
 
+
+def _anthropic_client_kwargs(**extra) -> tuple:
+    """Return (kwargs_dict, error_msg) for constructing an Anthropic client.
+
+    Prefers Replit AI Integrations proxy (AI_INTEGRATIONS_ANTHROPIC_API_KEY +
+    AI_INTEGRATIONS_ANTHROPIC_BASE_URL) so the integration key is sent to
+    Replit's proxy rather than api.anthropic.com (which would 401 immediately
+    because the integration key is only valid against the proxy).
+
+    Falls back to a user-supplied ANTHROPIC_API_KEY for direct access.
+
+    Pass any extra constructor kwargs (e.g. timeout=90, max_retries=0) via **extra.
+    """
+    ai_key  = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "").strip()
+    ai_base = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_BASE_URL", "").strip()
+    direct  = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+    if ai_key and ai_base:
+        kwargs = {"api_key": ai_key, "base_url": ai_base}
+    elif direct:
+        kwargs = {"api_key": direct}
+    else:
+        return None, (
+            "No Anthropic credentials — set ANTHROPIC_API_KEY in Replit Secrets "
+            "or enable the Replit Anthropic AI Integration"
+        )
+    kwargs.update(extra)
+    return kwargs, None
+
 try:
     import psycopg2
     import psycopg2.extras
@@ -2723,12 +2752,9 @@ def analyze_board():
     if not _ensure_anthropic():
         return jsonify({"ok": False, "error": "anthropic package not installed"}), 503
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return jsonify({
-            "ok": False,
-            "error": "ANTHROPIC_API_KEY secret is not set — add it in Replit Secrets",
-        }), 503
+    _ant_kwargs, _ant_err = _anthropic_client_kwargs()
+    if _ant_err:
+        return jsonify({"ok": False, "error": _ant_err}), 503
 
     import base64 as _base64
 
@@ -2863,7 +2889,7 @@ Example:
 ]"""
 
     try:
-        client = _anthropic.Anthropic(api_key=api_key)
+        client = _anthropic.Anthropic(**_ant_kwargs)
         message = client.messages.create(
             model="claude-opus-4-7",
             max_tokens=2048,
@@ -3110,13 +3136,9 @@ def analyze_and_score():
     if not _ensure_anthropic():
         return jsonify({"ok": False, "error": "anthropic package not installed"}), 503
 
-    api_key = (
-        os.environ.get("AI_INTEGRATIONS_ANTHROPIC_API_KEY") or
-        os.environ.get("ANTHROPIC_API_KEY", "")
-    )
-    if not api_key:
-        return jsonify({"ok": False,
-                        "error": "ANTHROPIC_API_KEY secret is not set"}), 503
+    _ant_kwargs, _ant_err = _anthropic_client_kwargs()
+    if _ant_err:
+        return jsonify({"ok": False, "error": _ant_err}), 503
 
     # Accept same image formats as /analyze-board
     image_b64  = None
@@ -3173,7 +3195,7 @@ def analyze_and_score():
     )
 
     try:
-        client = _anthropic.Anthropic(api_key=api_key)
+        client = _anthropic.Anthropic(**_ant_kwargs)
         msg = client.messages.create(
             model="claude-opus-4-7",
             max_tokens=2048,
@@ -7355,9 +7377,9 @@ def gpt_score_enriched():
     elif not _ensure_anthropic():
         enrichment["claude_error"] = "anthropic package not installed"
     else:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            enrichment["claude_error"] = "ANTHROPIC_API_KEY not set"
+        _ant_kwargs, _ant_err = _anthropic_client_kwargs()
+        if _ant_err:
+            enrichment["claude_error"] = _ant_err
         else:
             model = str(data.get("model") or _ENRICH_DEFAULT_MODEL)
             try:
@@ -7367,7 +7389,7 @@ def gpt_score_enriched():
             max_tokens = max(64, min(max_tokens, 1024))
             prompt = _build_enrichment_prompt(player, sport, prop, side, line, score, signal, ctx)
             try:
-                client = _anthropic.Anthropic(api_key=api_key)
+                client = _anthropic.Anthropic(**_ant_kwargs)
                 resp = client.messages.create(
                     model=model,
                     max_tokens=max_tokens,
@@ -12586,12 +12608,14 @@ def _cm_claude_call(system_prompt, user_content, max_tokens=4096):
     """
     if not _ensure_anthropic():
         raise RuntimeError("anthropic SDK not installed")
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    _ant_kwargs, _ant_err = _anthropic_client_kwargs(
+        timeout=float(os.environ.get("CM_CLAUDE_TIMEOUT_S", _CM_CLAUDE_CALL_TIMEOUT)),
+        max_retries=0,
+    )
+    if _ant_err:
+        raise RuntimeError(_ant_err)
     model = os.environ.get("CM_CLAUDE_MODEL", "claude-sonnet-4-5")
-    timeout_s = float(os.environ.get("CM_CLAUDE_TIMEOUT_S", _CM_CLAUDE_CALL_TIMEOUT))
-    client = _anthropic.Anthropic(api_key=api_key, timeout=timeout_s, max_retries=0)
+    client = _anthropic.Anthropic(**_ant_kwargs)
     t0 = time.time()
     resp = client.messages.create(
         model=model, max_tokens=max_tokens, temperature=0.0,
@@ -32259,10 +32283,9 @@ def wow_llp_team_analyze_board():
     """
     if not _ensure_anthropic():
         return jsonify({"ok": False, "error": "anthropic package not installed"}), 503
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return jsonify({"ok": False,
-                        "error": "ANTHROPIC_API_KEY secret is not set"}), 503
+    _ant_kwargs, _ant_err = _anthropic_client_kwargs()
+    if _ant_err:
+        return jsonify({"ok": False, "error": _ant_err}), 503
 
     import base64 as _b64
     body         = request.get_json(silent=True) or {}
@@ -32372,7 +32395,7 @@ Example:
 ]"""
 
     try:
-        client  = _anthropic.Anthropic(api_key=api_key)
+        client  = _anthropic.Anthropic(**_ant_kwargs)
         message = client.messages.create(
             model="claude-opus-4-7",
             max_tokens=2048,
