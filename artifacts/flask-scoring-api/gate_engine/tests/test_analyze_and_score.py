@@ -414,6 +414,176 @@ class TestAnalyzeAndScoreResponseShape:
 
 
 # ---------------------------------------------------------------------------
+# Error handler: HTTP exceptions must not become 500
+# ---------------------------------------------------------------------------
+
+class TestErrorHandlerHttpExceptions:
+    """
+    The global @app.errorhandler(Exception) must re-raise werkzeug HTTPExceptions
+    so that 404, 405, 422, etc. reach the client with their real status codes
+    instead of being serialised as 500 with the scoring error envelope.
+    """
+
+    def test_options_returns_200_or_405_not_500(self, app_client):
+        """OPTIONS preflight on a POST-only endpoint must not return 500."""
+        import app as _mod
+        key = _mod.os.environ.get("SCORING_API_KEY", "test-scoring-key")
+        resp = app_client.options(
+            "/analyze-and-score",
+            headers={"X-API-Key": key},
+        )
+        # Flask-CORS returns 200 for OPTIONS; without CORS it returns 405.
+        # Either is acceptable — what is NOT acceptable is 500.
+        assert resp.status_code != 500, (
+            f"/analyze-and-score OPTIONS should not return 500 "
+            f"(got {resp.status_code})"
+        )
+
+    def test_put_on_post_only_endpoint_returns_405_not_500(self, app_client):
+        """PUT on a POST-only endpoint must return 405, not 500.
+        (GET is intercepted by the SPA catch-all; PUT is not.)"""
+        import app as _mod
+        key = _mod.os.environ.get("SCORING_API_KEY", "test-scoring-key")
+        resp = app_client.put(
+            "/analyze-and-score",
+            headers={"X-API-Key": key},
+            json={},
+        )
+        assert resp.status_code == 405, (
+            f"Expected 405 Method Not Allowed, got {resp.status_code}. "
+            "HTTPException must not be converted to 500 by the global error handler."
+        )
+
+    def test_put_on_normalize_legs_returns_405_not_500(self, app_client):
+        """Same check for /normalize-legs — wrong method must not become 500."""
+        import app as _mod
+        key = _mod.os.environ.get("SCORING_API_KEY", "test-scoring-key")
+        resp = app_client.put(
+            "/normalize-legs",
+            headers={"X-API-Key": key},
+            json={},
+        )
+        assert resp.status_code == 405
+
+
+# ---------------------------------------------------------------------------
+# Screenshot image fixture path
+# ---------------------------------------------------------------------------
+
+class TestScreenshotImageFixture:
+    """Verify the 1×1 PNG fixture is a valid base64-decodeable image."""
+
+    def test_fixture_is_valid_base64(self):
+        import base64
+        from gate_engine.tests.fixtures.sample_slip import SAMPLE_PNG_B64
+        raw = base64.b64decode(SAMPLE_PNG_B64)
+        # Valid PNG starts with the 8-byte signature
+        assert raw[:8] == b'\x89PNG\r\n\x1a\n', "Fixture is not a valid PNG"
+
+    def test_fixture_data_url_prefix(self):
+        from gate_engine.tests.fixtures.sample_slip import SAMPLE_PNG_DATA_URL
+        assert SAMPLE_PNG_DATA_URL.startswith("data:image/png;base64,")
+
+    def test_endpoint_accepts_sample_png(self, app_client):
+        """
+        Sending the sample PNG to /analyze-and-score should reach Step A
+        (vision extraction) and fail cleanly with a 503 (no API key) or 200,
+        not a 400/422 from malformed image parsing.
+        """
+        import app as _mod
+        from gate_engine.tests.fixtures.sample_slip import SAMPLE_PNG_B64
+
+        key = _mod.os.environ.get("SCORING_API_KEY", "test-scoring-key")
+
+        # Mock ensure_anthropic → False to get a clean 503 without calling Claude
+        with patch("app._ensure_anthropic", return_value=False):
+            resp = app_client.post(
+                "/analyze-and-score",
+                json={"image": SAMPLE_PNG_B64, "platform_hint": "prizepicks"},
+                headers={"X-API-Key": key},
+            )
+
+        # 503 = anthropic not installed (expected when mocked False)
+        # 200 = scored (shouldn't happen without real key, but not an error)
+        # 422 = missing image field (would mean image parsing failed — not OK)
+        # 500 = server error — not OK
+        assert resp.status_code in (200, 503), (
+            f"Expected 200 or 503, got {resp.status_code}: {resp.data[:200]}"
+        )
+
+    def test_endpoint_accepts_data_url(self, app_client):
+        """Data URL format (data:image/png;base64,...) must also be accepted."""
+        import app as _mod
+        from gate_engine.tests.fixtures.sample_slip import SAMPLE_PNG_DATA_URL
+
+        key = _mod.os.environ.get("SCORING_API_KEY", "test-scoring-key")
+
+        with patch("app._ensure_anthropic", return_value=False):
+            resp = app_client.post(
+                "/analyze-and-score",
+                json={"image": SAMPLE_PNG_DATA_URL, "platform_hint": "prizepicks"},
+                headers={"X-API-Key": key},
+            )
+
+        assert resp.status_code in (200, 503), (
+            f"Expected 200 or 503 for data URL, got {resp.status_code}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# /openapi.json includes new endpoints
+# ---------------------------------------------------------------------------
+
+class TestOpenapiSchemaCompleteness:
+    """The dynamic /openapi.json must include all active endpoint paths."""
+
+    def test_openapi_includes_analyze_and_score(self, app_client):
+        resp = app_client.get("/openapi.json")
+        assert resp.status_code == 200
+        schema = resp.get_json()
+        assert "/analyze-and-score" in schema["paths"], (
+            "/analyze-and-score missing from /openapi.json paths"
+        )
+
+    def test_openapi_includes_normalize_legs(self, app_client):
+        resp = app_client.get("/openapi.json")
+        schema = resp.get_json()
+        assert "/normalize-legs" in schema["paths"], (
+            "/normalize-legs missing from /openapi.json paths"
+        )
+
+    def test_openapi_includes_slip_review_log(self, app_client):
+        resp = app_client.get("/openapi.json")
+        schema = resp.get_json()
+        assert "/wow/slip-review-log" in schema["paths"], (
+            "/wow/slip-review-log missing from /openapi.json paths"
+        )
+
+    def test_analyze_and_score_schema_has_data_gaps(self, app_client):
+        resp = app_client.get("/openapi.json")
+        schema = resp.get_json()
+        leg_props = (
+            schema["paths"]["/analyze-and-score"]["post"]
+            ["responses"]["200"]["content"]["application/json"]
+            ["schema"]["properties"]["legs"]["items"]["properties"]
+        )
+        assert "data_gaps" in leg_props, "data_gaps missing from /openapi.json leg schema"
+
+    def test_analyze_and_score_schema_has_calibration_status(self, app_client):
+        resp = app_client.get("/openapi.json")
+        schema = resp.get_json()
+        prob_props = (
+            schema["paths"]["/analyze-and-score"]["post"]
+            ["responses"]["200"]["content"]["application/json"]
+            ["schema"]["properties"]["legs"]["items"]["properties"]
+            ["probability"]["properties"]
+        )
+        assert "calibration_status" in prob_props, (
+            "calibration_status missing from /openapi.json probability schema"
+        )
+
+
+# ---------------------------------------------------------------------------
 # pytest fixtures
 # ---------------------------------------------------------------------------
 

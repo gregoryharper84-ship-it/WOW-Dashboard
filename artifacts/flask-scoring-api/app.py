@@ -72,6 +72,13 @@ _bt("flask app created — registering routes")
 
 @app.errorhandler(Exception)
 def handle_unhandled_exception(e):
+    # Re-raise HTTP exceptions (404, 405, 422, …) so Flask returns the correct
+    # status code and body.  Without this guard, MethodNotAllowed, NotFound, etc.
+    # are all serialised as 500 with the scoring error envelope — confusing callers
+    # and causing GPT Builder test sessions to hang on unexpected response shapes.
+    from werkzeug.exceptions import HTTPException as _HTTPException
+    if isinstance(e, _HTTPException):
+        return e
     app.logger.exception("Unhandled server error")
     return jsonify({
         "ok": False,
@@ -2092,6 +2099,262 @@ def openapi_schema():
                         "401": {"description": "Missing or invalid X-API-Key"},
                         "422": {"description": "Invalid query parameter"},
                         "503": {"description": "Database unavailable"}
+                    }
+                }
+            },
+            "/normalize-legs": {
+                "post": {
+                    "operationId": "normalizeLegs",
+                    "summary": "Resolve player identity for slip legs",
+                    "description": (
+                        "Accepts a raw list of slip legs (player name, sport, prop, line, side) "
+                        "and runs the 9-step player-resolution pipeline. Returns canonical "
+                        "player IDs, team, opponent, game metadata, and resolution confidence. "
+                        "Requires X-API-Key."
+                    ),
+                    "security": [{"ApiKeyAuth": []}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["legs"],
+                                    "properties": {
+                                        "legs": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "player":   {"type": "string", "example": "LeBron James"},
+                                                    "sport":    {"type": "string", "example": "NBA"},
+                                                    "prop":     {"type": "string", "example": "points"},
+                                                    "side":     {"type": "string", "example": "MORE"},
+                                                    "line":     {"type": "number", "example": 27.5},
+                                                    "platform": {"type": "string", "example": "prizepicks"},
+                                                }
+                                            }
+                                        },
+                                        "platform_hint": {"type": "string", "example": "prizepicks"},
+                                        "target_date":   {"type": "string", "example": "2026-08-04"},
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {"description": "Rows with resolution status returned"},
+                        "401": {"description": "Missing or invalid X-API-Key"},
+                        "422": {"description": "Missing legs field"},
+                    }
+                }
+            },
+            "/analyze-and-score": {
+                "post": {
+                    "operationId": "analyzeAndScore",
+                    "summary": "Score a screenshot slip end-to-end",
+                    "description": (
+                        "Primary composite endpoint for the screenshot-to-score pipeline. "
+                        "Accepts a base64 image, data URL, or public image URL of a "
+                        "PrizePicks / Underdog slip. "
+                        "Runs Steps A–H: vision extraction → leg normalization → enrichment → "
+                        "Claude gap-fill → WOW gate engine → hit probability → explanation → "
+                        "autonomous expert review. "
+                        "Returns per-leg terminal_label, hit_probability with calibration_status, "
+                        "model registry metadata, structured data_gaps for missing fields, "
+                        "and a top-level governance block. "
+                        "can_execute is always false — screenshot slips are research/informational only. "
+                        "Requires X-API-Key."
+                    ),
+                    "security": [{"ApiKeyAuth": []}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["image"],
+                                    "properties": {
+                                        "image": {
+                                            "type": "string",
+                                            "description": (
+                                                "Base64-encoded image, data URL "
+                                                "(data:image/jpeg;base64,...), or public HTTP/HTTPS URL."
+                                            ),
+                                            "example": "https://example.com/slip.jpg",
+                                        },
+                                        "platform_hint": {
+                                            "type": "string",
+                                            "description": "Board platform hint: prizepicks | underdog | draftkings",
+                                            "example": "prizepicks",
+                                        },
+                                        "target_date": {
+                                            "type": "string",
+                                            "description": "ISO-8601 date for slate lookup (default: today).",
+                                            "example": "2026-08-04",
+                                        },
+                                        "user_id": {
+                                            "type": "string",
+                                            "description": "Optional user ID for audit ledger tracking.",
+                                        },
+                                        "enrichment": {
+                                            "type": "object",
+                                            "description": (
+                                                "Optional per-leg enrichment dict keyed by leg_id. "
+                                                "Used when resubmitting after gap-fill research. "
+                                                "game_log must be list[number]; box_score_log must be list[dict]. "
+                                                "Mixing types returns WNBA_ENRICHMENT_TYPE_MISMATCH (422)."
+                                            ),
+                                            "additionalProperties": True,
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Slip scored successfully",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "ok":      {"type": "boolean", "example": True},
+                                            "slip_id": {"type": "string"},
+                                            "legs": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "leg_id":         {"type": "string"},
+                                                        "player_name":    {"type": "string"},
+                                                        "terminal_label": {"type": "string"},
+                                                        "hit_probability": {"type": "number", "nullable": True},
+                                                        "probability": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "raw_probability":           {"type": "number", "nullable": True},
+                                                                "calibrated_probability":    {"type": "number", "nullable": True,
+                                                                    "description": "Non-null only for ACTIVE models with real cohort calibration."},
+                                                                "calibrated_lower_bound":    {"type": "number", "nullable": True},
+                                                                "upper_bound":               {"type": "number", "nullable": True},
+                                                                "push_probability":          {"type": "number"},
+                                                                "calibration_status":        {"type": "string",
+                                                                    "enum": ["CALIBRATED", "PROVISIONAL", "UNAVAILABLE"],
+                                                                    "description": "CALIBRATED=ACTIVE model with real cohort; PROVISIONAL=no cohort calibration; UNAVAILABLE=null probability."},
+                                                                "probability_publishable":   {"type": "boolean",
+                                                                    "description": "True only for ACTIVE models. PROVISIONAL results are research-grade."},
+                                                                "high_probability_qualified": {"type": "boolean"},
+                                                            }
+                                                        },
+                                                        "model": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "model_id":      {"type": "string", "nullable": True},
+                                                                "model_version": {"type": "string", "nullable": True},
+                                                                "status": {
+                                                                    "type": "string",
+                                                                    "enum": ["ACTIVE", "PROVISIONAL", "NO_REGISTERED_MODEL", "UNKNOWN"],
+                                                                },
+                                                            }
+                                                        },
+                                                        "backend": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "terminal_label":    {"type": "string"},
+                                                                "power_eligibility": {"type": "boolean", "example": False},
+                                                                "flex_eligibility":  {"type": "boolean"},
+                                                                "money_grade_allowed": {"type": "boolean",
+                                                                    "description": "False for PROVISIONAL models — a high numeric result does not override this."},
+                                                                "model_ceiling": {"type": "string", "nullable": True,
+                                                                    "example": "MODEL_QUALIFIED_HOLD"},
+                                                            }
+                                                        },
+                                                        "data_gaps": {
+                                                            "type": "array",
+                                                            "description": "Structured acquisition requests for missing fields. Research ONLY these fields, preserve source URL + timestamp, resubmit via resubmission_key.",
+                                                            "items": {
+                                                                "type": "object",
+                                                                "properties": {
+                                                                    "field":             {"type": "string"},
+                                                                    "required_for":      {"type": "string"},
+                                                                    "preferred_sources": {"type": "array", "items": {"type": "string"}},
+                                                                    "minimum_records":   {"type": "integer", "nullable": True},
+                                                                    "accepted_format":   {"type": "string"},
+                                                                    "resubmission_key":  {"type": "string"},
+                                                                }
+                                                            }
+                                                        },
+                                                        "flags": {"type": "array", "items": {"type": "string"}},
+                                                    }
+                                                }
+                                            },
+                                            "slip_summary": {"type": "object"},
+                                            "governance": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "governance_hash":  {"type": "string"},
+                                                    "engine_version":   {"type": "string"},
+                                                    "can_execute":      {"type": "boolean", "example": False},
+                                                }
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "401": {"description": "Missing or invalid X-API-Key"},
+                        "422": {"description": "Missing image field, or WNBA_ENRICHMENT_TYPE_MISMATCH"},
+                        "503": {"description": "Vision model (Anthropic) unavailable"},
+                    }
+                }
+            },
+            "/wow/slip-review-log": {
+                "get": {
+                    "operationId": "getSlipReviewLog",
+                    "summary": "Retrieve autonomous expert review audit log",
+                    "description": (
+                        "Returns the Step H expert review log for post-mortem analysis. "
+                        "Each record contains the slip_id, audit_verdict, downgrade_count, "
+                        "leg-level audit results, and any correlation flags raised. "
+                        "Filterable by slip_id or verdict. "
+                        "Requires X-API-Key."
+                    ),
+                    "security": [{"ApiKeyAuth": []}],
+                    "parameters": [
+                        {
+                            "name": "slip_id",
+                            "in": "query",
+                            "description": "Filter to a specific slip UUID",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "verdict",
+                            "in": "query",
+                            "description": "Filter by audit_verdict (e.g. CONFIRMED, DOWNGRADED)",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "description": "Max records (default 50)",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 50, "maximum": 200},
+                        },
+                        {
+                            "name": "offset",
+                            "in": "query",
+                            "description": "Pagination offset (default 0)",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 0},
+                        },
+                    ],
+                    "responses": {
+                        "200": {"description": "Audit log returned"},
+                        "401": {"description": "Missing or invalid X-API-Key"},
                     }
                 }
             },
