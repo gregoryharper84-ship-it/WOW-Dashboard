@@ -11,3 +11,4 @@ pandas>=2.0.0
 nba_api>=1.4.0
 cloudscraper>=1.2.71
 pybaseball>=2.2.0
+rapidfuzz>=3.0.0

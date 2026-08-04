@@ -24163,7 +24163,6 @@ def wow_kalshi_health_sports():
     }), status_code
 
 
-
 @app.route("/wow/llp/kalshi/ml-evaluate", methods=["POST", "OPTIONS"])
 @require_api_key
 def wow_llp_kalshi_ml_evaluate():
@@ -31415,7 +31414,6 @@ def wow_ledger_cache_lookup():
     })
 
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # WOW v16 Skills Pack — orchestration endpoint
 # GET  /wow/skills/registry  — list all 21 registered skills
@@ -31996,6 +31994,127 @@ def wow_odds_quota_status():
             "Two gunicorn workers run independently — if no calls have been made "
             "from this worker since startup, tiers will be empty."
         ),
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# /normalize-legs — Slip Normalization Adapter
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/normalize-legs", methods=["POST"])
+def wow_normalize_legs():
+    """
+    POST /wow/normalize-legs
+
+    Convert raw OCR leg text into canonical player IDs, game context, and
+    pipeline-ready NormalizedRow objects.
+
+    Request body:
+      {
+        "legs": [
+          {
+            "player":     str,        # OCR player name (required)
+            "sport":      str,        # NBA / WNBA / MLB / NFL / NHL (required)
+            "prop_type":  str,        # "points", "Pts+Rebs+Asts", etc. (required)
+            "line":       float|null, # numeric line value (optional)
+            "team_hint":  str|null,   # team abbreviation for collision resolution
+            "side":       str|null,   # MORE / LESS / OVER / UNDER
+          },
+          ...
+        ],
+        "target_date": "YYYY-MM-DD"  # optional; defaults to today
+      }
+
+    Response 200:
+      {
+        "ok": true,
+        "target_date": "YYYY-MM-DD",
+        "legs_received": N,
+        "rows": [ NormalizedRow.to_dict(), ... ],
+        "summary": {
+          "resolved":  N,
+          "ambiguous": N,
+          "not_found": N,
+        }
+      }
+
+    Resolution status values:
+      resolved   — unique confident match + has a game today
+      ambiguous  — 0.65–0.85 confidence or name collision without team hint
+      not_found  — <0.65 confidence, no roster match, or no game today
+    """
+    try:
+        from gate_engine.normalizer import normalize_leg as _normalize_leg
+        from datetime import date as _date
+    except ImportError as e:
+        return jsonify({"ok": False, "error": f"normalizer module not available: {e}"}), 500
+
+    data = request.get_json(silent=True) or {}
+    legs = data.get("legs")
+    if not isinstance(legs, list):
+        return jsonify({"ok": False, "error": "legs must be a JSON array"}), 400
+    if len(legs) == 0:
+        return jsonify({
+            "ok": True,
+            "target_date": _date.today().isoformat(),
+            "legs_received": 0,
+            "rows": [],
+            "summary": {"resolved": 0, "ambiguous": 0, "not_found": 0},
+        }), 200
+
+    # Parse optional target_date
+    target_date = None
+    if data.get("target_date"):
+        try:
+            target_date = _date.fromisoformat(str(data["target_date"])[:10])
+        except ValueError:
+            return jsonify({"ok": False, "error": "target_date must be YYYY-MM-DD"}), 400
+
+    # Normalize each leg
+    rows_out = []
+    summary = {"resolved": 0, "ambiguous": 0, "not_found": 0}
+
+    for leg in legs:
+        if not isinstance(leg, dict):
+            rows_out.append({
+                "resolution_status": "not_found",
+                "flags": ["INVALID_LEG_FORMAT"],
+                "raw_player": None,
+                "raw_prop_type": None,
+                "raw_line": None,
+                "sport": None,
+            })
+            summary["not_found"] += 1
+            continue
+
+        try:
+            row = _normalize_leg(leg, target_date=target_date)
+            d = row.to_dict()
+        except Exception as exc:
+            app.logger.exception("normalize_leg error for leg=%r", leg)
+            d = {
+                "resolution_status": "not_found",
+                "flags": [f"INTERNAL_ERROR:{type(exc).__name__}"],
+                "raw_player": leg.get("player"),
+                "raw_prop_type": leg.get("prop_type"),
+                "raw_line": leg.get("line"),
+                "sport": leg.get("sport"),
+            }
+
+        status = d.get("resolution_status", "not_found")
+        if status in summary:
+            summary[status] += 1
+        else:
+            summary["not_found"] += 1
+
+        rows_out.append(d)
+
+    return jsonify({
+        "ok": True,
+        "target_date": (target_date or _date.today()).isoformat(),
+        "legs_received": len(legs),
+        "rows": rows_out,
+        "summary": summary,
     }), 200
 
 
