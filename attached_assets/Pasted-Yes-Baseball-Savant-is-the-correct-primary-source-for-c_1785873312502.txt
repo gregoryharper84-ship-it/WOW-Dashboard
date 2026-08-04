@@ -1,0 +1,102 @@
+Yes—Baseball Savant is the correct primary source for completing these ledgers.
+
+Its Statcast CSV data includes pitch-level rows and an inning field, so first-inning pitches can be counted directly for each pitcher and game. Baseball Savant’s game feed also exposes pitch-level sequences. 
+
+Source hierarchy for the ledger build
+
+1. Baseball Savant — controlling ledger source
+
+For every pitcher:
+
+filter:
+pitcher = MLBAM pitcher ID
+inning = 1
+game_type = Regular Season
+date range = 2026 season through board date
+
+Group by:
+
+game_pk
+game_date
+pitcher
+inning
+
+Then count actual pitch rows. The resulting per-game count becomes:
+
+first_inning_pitches
+
+Plate appearances can be grouped using at_bat_number or the pitch-event sequence to derive:
+
+first_inning_batters_faced
+P(BF=3)
+P(BF=4)
+P(BF>=5)
+
+The CSV documentation confirms the dataset includes inning-level pitch records and the fields needed for pitch-location and event analysis. 
+
+2. FanGraphs — role and start validation
+
+FanGraphs game logs are useful for verifying:
+
+* start date
+* opponent
+* starter designation
+* innings pitched
+* total batters faced
+* strikeouts, walks and full-game workload
+
+However, the standard game-log table does not provide first-inning pitch totals directly. 
+
+3. Brooks Baseball — pitch-sequence cross-check
+
+Brooks Baseball provides start-by-start pitch analysis by date, game and pitcher, making it useful for confirming individual pitch sequences when Savant contains an ambiguous or missing record. 
+
+Revised acquisition plan
+
+For each of the 30 pitchers:
+
+1. Resolve MLBAM pitcher ID.
+2. Retrieve 2026 Baseball Savant pitch-level data.
+3. Keep only inning = 1.
+4. Group by game_pk.
+5. Count pitches.
+6. Count distinct plate appearances.
+7. Retrieve H, BB, HBP and error-extension paths.
+8. Verify starter status through FanGraphs/MLB.
+9. Cross-check questionable games through Brooks Baseball.
+10. Keep latest 10 eligible MLB starts.
+
+The completed row will contain:
+
+Field	Primary source
+Date and opponent	Savant/FanGraphs
+Starter confirmed	FanGraphs/MLB
+First-inning pitches	Baseball Savant
+Batters faced	Baseball Savant
+Hits, walks and HBP	Baseball Savant
+Error extension	Savant game event
+Three/four/five-plus batters	Savant plate appearances
+Exact-line result	Calculated from verified count
+Source game ID	Savant game_pk
+
+Important distinction
+
+Baseball Savant can produce the historical ledger, but it does not itself produce the WOW event-tree probability. Once these ledgers are assembled, they must still be submitted to the 1IP backend along with:
+
+* confirmed top-four lineup
+* catcher
+* current health regime
+* first-pitch strike and zone trends
+* opponent P/PA profiles
+* fourth-batter dependency inputs
+* payout context
+
+FanGraphs and Brooks Baseball therefore supplement the process; they do not replace Savant’s pitch-level ledger.
+
+Primary ledger source: Baseball Savant
+Role validation: FanGraphs
+Pitch-sequence QA: Brooks Baseball
+Exact 1IP extraction path: AVAILABLE
+Proxy substitution required: no
+Lane ceiling: MODEL_QUALIFIED_HOLD — MLB_1IP_TEST_ONLY
+can_execute: false

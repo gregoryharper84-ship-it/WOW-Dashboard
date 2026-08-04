@@ -1,0 +1,85 @@
+Test run: today’s slate
+
+I tested the proposed workflow on Tarik Skubal, who is listed for today’s Detroit–Chicago game against Javier Assad. 
+
+Source identity
+
+Pitcher: Tarik Skubal
+MLBAM ID: 669373
+Game date: 2026-08-04
+Opponent: Chicago Cubs
+Role: probable starter
+Target market: 1IP Pitches Thrown
+
+Baseball Savant’s player page confirms Skubal’s MLBAM identity and 2026 pitch-level coverage. 
+
+Savant query specification tested
+
+The correct pitch-level query is:
+
+player_type = pitcher
+pitchers_lookup[] = 669373
+game_date_gt = 2026-04-01
+game_date_lt = 2026-08-03
+game_type = Regular Season
+inning = 1
+type = details
+
+Baseball Savant’s Statcast Search supports per-pitch queries, while the CSV schema includes the fields needed for the ledger:
+
+game_date
+pitcher
+inning
+inning_topbot
+game_pk
+at_bat_number
+pitch_number
+events
+description
+home_team
+away_team
+fielder_2
+
+The open-source baseballr implementation confirms that pitcher queries use pitchers_lookup[], date boundaries, player_type=pitcher, and type=details. 
+
+Ledger calculation
+
+Once the CSV rows are returned, the ledger is deterministic:
+
+first_inning_pitches =
+count(rows grouped by game_pk where inning = 1)
+first_inning_batters_faced =
+count(distinct at_bat_number where inning = 1)
+hits =
+count(PA-ending events in single/double/triple/home_run)
+walks =
+count(events = walk or intentional_walk)
+HBP =
+count(events = hit_by_pitch)
+
+The latest ten qualifying starts would then produce:
+
+L10 first-inning pitch values
+L5 first-inning pitch values
+mean
+median
+standard deviation
+MORE hit rate
+LESS hit rate
+P(BF=3)
+P(BF=4)
+P(BF>=5)
+
+Test outcome
+
+The source architecture is valid, but this chat’s web fetcher would not open the newly constructed Savant CSV URL because it only permits URLs already returned as exact search results. That is a tooling restriction—not a Baseball Savant data limitation.
+
+Today’s starter identity: VERIFIED
+Pitcher MLBAM identity: VERIFIED
+Required Statcast fields: VERIFIED
+Ledger calculation method: VERIFIED
+Pitch-level CSV rows retrieved: NO
+Exact Skubal L5/L10 generated: NO
+Blocker: DIRECT_SAVANT_CSV_FETCH_NOT_AVAILABLE
+
+The most practical production implementation is to add the Savant CSV request to the Replit backend. Replit can then fetch the pitch rows, aggregate inning one by game_pk, and submit the completed ledger directly to WOW. The 1IP lane remains TEST_ONLY and can_execute=false.
