@@ -1444,3 +1444,282 @@ price_used_for_edge_rank=true
 can_execute=false
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
 ```
+
+---
+
+# 2026-08-04 Enforcement Patch — Per-Row Publication Gate
+
+## Active patch
+
+```text
+WOW-PATCH-2026-08-04-LLP-PER-ROW-PUBLICATION-GATE
+```
+
+## Problem this patch fixes
+
+The prior workflow described the correct checks but did not block publication when
+they were skipped. A report could publish with:
+
+- 16 of 17 rows missing injury/lineup status
+- prices quoted with no timestamps
+- no line-drift grade on any row
+- no retirement-settlement re-check for tennis when a retirement had already
+  occurred on the same slate
+- no correlation pass before the shortlist was written
+- no calibration ledger rows produced
+
+These are not "near misses" — they are silent omissions that make every probability
+estimate in the report untrustworthy.
+
+## Rule: every row must pass the per-row gate before entering any shortlist
+
+A row may not appear in the Highest-Probability Winners table, the
+Highest-Probability Upsets table, or any Near Misses table until all seven
+per-row gate items below are either **completed** or carry an explicit
+**`NOT_RETRIEVED`** declaration with a stated reason.
+
+Silence is not allowed. `NOT_CALLED` is prohibited. Omitting a field from the
+output is treated as a silent `NOT_RETRIEVED` and the row is removed.
+
+---
+
+## Per-Row Gate — seven mandatory items
+
+### 1. Line movement and drift grade (Step 3)
+
+For every row, record:
+
+```text
+opening_price         — first available market price for this event
+current_price         — price at time of this analysis
+price_direction       — MOVED_TOWARD_FAVORITE | MOVED_TOWARD_UNDERDOG | STABLE
+price_drift_magnitude — price change in American odds points
+drift_classification  — ALIGNED | MILD | STRONG | SEVERE
+drift_source          — source(s) consulted
+```
+
+If the spread across books is wider than 50 American-odds points, add:
+
+```text
+SOURCE_CONFLICT — wide book spread: <low> to <high>
+```
+
+A wide spread (e.g., -820 to -1020 across books) is not "market noise" — it
+is an unresolved data-quality signal that must be labeled and addressed before
+the row qualifies.
+
+If opening price is genuinely unobtainable:
+
+```text
+opening_price: NOT_RETRIEVED — <reason>
+drift_classification: NOT_RETRIEVED
+```
+
+This is acceptable. What is not acceptable: omitting these fields entirely.
+
+---
+
+### 2. Price timestamps and freshness score (Step 11)
+
+Every quoted price in this report must carry a capture timestamp.
+
+```text
+price_capture_timestamp  — ISO datetime of when this price was recorded
+minutes_to_event_start   — calculated at time of analysis
+freshness_status         — FRESH | STALE | UNKNOWN
+```
+
+Freshness thresholds:
+
+```text
+< 10 min old   → FRESH (any sport)
+10–30 min old  → FRESH for most sports; STALE for live-market-only plays
+> 30 min old   → STALE
+> 2 hours old  → STALE_HIGH_RISK — row capped at WATCH tier
+unknown age    → UNKNOWN — row capped at WATCH tier
+```
+
+A price range like "-820 to -1020" presented without book-specific timestamps
+is UNKNOWN and must be labeled as such. It may not be presented as if it is a
+single current market price.
+
+---
+
+### 3. Injury and lineup status — every row (Step 8)
+
+Injury/lineup checks are mandatory for every candidate without exception.
+
+```text
+injury_lineup_check_status  — RETRIEVED | NOT_RETRIEVED | NOT_APPLICABLE
+injury_lineup_source        — source name and timestamp
+key_absences                — list any confirmed absences; empty list if none found
+material_injury_flag        — true | false
+```
+
+Sport-specific requirements:
+
+```text
+MLB    → confirmed starting pitcher + lineup absences
+NBA    → injury report timestamp + key rotations
+WNBA   → injury report + minutes restrictions
+NFL    → QB status + O-line health
+NHL    → goalie confirmation
+Soccer → confirmed XI or expected XI with source
+Tennis → retirement/injury history for this event (see item 5 below)
+```
+
+A check that found no injuries is still a completed check — record
+`key_absences: []` and `material_injury_flag: false`.
+
+A check that was not performed is `NOT_RETRIEVED`. The row is capped at
+WATCH tier until status is confirmed. It may not appear in a top-3 shortlist.
+
+---
+
+### 4. MLB: bullpen quality and weather/park (Step 6 MLB module)
+
+For any MLB candidate, the sport-specific model is not complete if it covers
+only starter ERA/WHIP. The following are also mandatory per row:
+
+```text
+bullpen_quality           — recent bullpen ERA/xFIP or role-availability note
+bullpen_availability      — any key relievers unavailable
+park_factor               — run-environment adjustment
+weather_wind_status       — wind speed/direction if material to run scoring;
+                            or explicit NOT_MATERIAL with stated reason
+```
+
+If bullpen data is unobtainable:
+
+```text
+bullpen_quality: NOT_RETRIEVED — <reason>
+```
+
+The row may still qualify, but the `uncertainty_drivers` field must include
+`BULLPEN_DATA_MISSING` and the calibrated lower bound must be widened
+accordingly.
+
+---
+
+### 5. Tennis: retirement and withdrawal settlement (per-slate rule)
+
+Tennis matches settle differently under retirement or withdrawal depending on
+platform and exact contract terms. This check is not optional.
+
+For every tennis candidate:
+
+```text
+retirement_settlement_rule  — what the platform pays if the selected player
+                              retires or withdraws before the match completes
+withdrawal_settlement_rule  — same for pre-match withdrawal
+retirement_check_source     — platform T&C page, contract terms, or explicit
+                              platform communication
+retirement_check_status     — RETRIEVED | NOT_RETRIEVED
+```
+
+**In-slate precedent rule:** if any match in the current slate has already
+resolved via retirement, withdrawal, or walkover, then every remaining tennis
+match in the same slate must confirm its retirement/withdrawal settlement terms
+before it can appear in any shortlist — even if the original scan was completed
+before the retirement occurred.
+
+Retirement on the same slate is not incidental context. It is direct evidence
+that the settlement assumption you made earlier is actively relevant and must
+be re-verified.
+
+---
+
+### 6. Correlation guard (pre-shortlist)
+
+Before any multi-row shortlist is written, `wow.correlation-guard` must run.
+
+```text
+correlation_guard_status  — PASSED | FAILED | NOT_RUN
+correlated_pairs_found    — list of any pairs sharing game, pitcher, or script
+correlation_adjustments   — any rows removed or downgraded
+```
+
+`NOT_RUN` blocks publication of any multi-selection output.
+
+If two candidates share the same game (e.g., both sides of an MLB game, or a
+pitcher and a team in the same game), only one may appear in the final shortlist.
+
+If two candidates share a game script or common failure path (e.g., two NBA
+home favorites on the same night who both lose if their star is scratched), the
+combined exposure must be noted and the pair cannot both reach the top tier
+without explicit modeling of the joint failure path.
+
+---
+
+### 7. Calibration ledger row
+
+One calibration ledger row must be generated per candidate, regardless of
+whether the candidate qualifies or is rejected.
+
+```text
+calibration_ledger_row:
+  candidate_id
+  event_date
+  participant
+  sport
+  platform
+  market_type
+  model_probability_at_analysis
+  no_vig_market_probability_at_analysis
+  price_at_analysis
+  analysis_timestamp
+  final_label
+  outcome              — PENDING (filled in at settlement)
+```
+
+The row is written at analysis time. Settlement fills in `outcome` later.
+Without this row, CLV and Brier scoring cannot happen. Without CLV and Brier
+scoring, the model cannot be validated.
+
+`NOT_PRODUCED` is not a valid state for this field. If the candidate is in
+the report, the row exists.
+
+---
+
+## Publication gate enforcement
+
+Before writing the final shortlist, verify the per-row gate for every
+candidate. Use this checklist:
+
+```text
+[ ] line movement and drift grade completed or NOT_RETRIEVED stated
+[ ] price timestamps present on every quoted price
+[ ] freshness status computed for every row
+[ ] injury/lineup check completed or NOT_RETRIEVED stated for every row
+[ ] MLB rows: bullpen and weather/park explicitly addressed
+[ ] tennis rows: retirement/withdrawal settlement terms confirmed
+[ ] in-slate precedent rule applied if any retirement occurred in this slate
+[ ] correlation guard run (status = PASSED)
+[ ] calibration ledger row produced for every candidate
+```
+
+A row that fails any item is removed from the shortlist and placed in the
+Rejected table with the specific gate item that failed.
+
+A shortlist with more than two rows where any gate item is `NOT_RETRIEVED`
+must include a header warning:
+
+```text
+DATA QUALITY WARNING: [N] rows have NOT_RETRIEVED fields.
+These rows are capped at WATCH tier and excluded from top-3.
+```
+
+## Added audit footer fields
+
+```text
+rows_gate_passed=
+rows_gate_failed=
+rows_with_not_retrieved_drift=
+rows_with_not_retrieved_injury_status=
+rows_with_not_retrieved_timestamps=
+rows_missing_bullpen_weather=
+rows_missing_tennis_retirement_check=
+in_slate_precedent_rule_applied=
+correlation_guard_status=
+calibration_ledger_rows_produced=
+```

@@ -1,0 +1,21 @@
+Good instinct to double-check this. The report does real work — data-contract validation, event-status purge, no-vig market anchoring — but measured against your own `wow-llp-runner` 14-step spec (which governs exactly these team-moneyline picks), several mandatory steps are simply absent from the output. Here's what's missing, in rough order of importance.
+
+**No line movement or drift grade.** LLP Step 3 requires comparing the current board price to a consensus and grading the drift (aligned / mild / strong / severe). This report only shows a current price range — no opener, no direction of movement, no drift classification. A wide range like de Minaur's -820 to -1020 across books should also trigger a `SOURCE_CONFLICT` tag under Step 10's contradiction scan; instead it's presented as if it's just market noise.
+
+**No timestamps or freshness gate.** Every price pulled needs a timestamp and a freshness window scored against time-to-start (Step 11). Without timestamps you can't tell whether "-820 to -1020" reflects six different books at six different moments, some of them stale.
+
+**Injury/lineup status was checked for only 1 of 17 rows.** Step 8 makes this mandatory for every candidate. Golden State got a real check (Mabrey/Morrow). Milwaukee, Minnesota, Arizona, Toronto, Pittsburgh, and Washington got none — no starter confirmation, no injury report, nothing.
+
+**Tennis retirement/settlement risk wasn't checked despite already happening once in this exact slate.** Svajda won by retirement — that's the whole reason it had to be purged. The report never goes back and checks whether de Minaur's or Tiafoe's match contracts handle retirement/withdrawal the same way, even though the precedent is sitting right there in the same document.
+
+**No correlation pass across the 17-row slate.** `wow-correlation-guard` is supposed to run before any multi-selection output is finalized. Nobody checked whether any of these picks share a game, a pitcher, or a game script that would make them fail together.
+
+**No bullpen or weather/park treatment beyond one offhand Coors mention.** Only starter ERA/WHIP was pulled for MLB. Bullpen quality and rain/wind risk (which affects both win probability and whether a game completes) weren't modeled for any of the six MLB favorites or six underdogs.
+
+**No exposure/stake sizing.** Step 13 (unit caps, per-game cap, bankroll tier) isn't in the output at all — reasonable here since nothing was approved, but worth noting it never even reaches that stage.
+
+**No calibration ledger rows generated.** LLP requires one per candidate, win or lose, so CLV and Brier scoring can happen later. None were produced, so even the "market-consistent" picks won't get graded against the close.
+
+The bigger structural point, which the report itself half-admits: everything here is market-price-vs-your-estimate, not an independent model. "Market-consistent" isn't the same as "good bet" — if your estimate matches the no-vig price, that tells you your number isn't obviously wrong, not that there's edge. The `Edge/payout lane: not completed` line is the report quietly telling you this whole packet answers "is this plausible" rather than "is this worth betting," which is the right call given the `DATA_CONTRACT_FAIL`, but it's easy to skim past.
+
+If you want, I can add a check to whichever skill produces this report requiring it to explicitly run Steps 3, 8, 10, and 11 (or state `NOT RETRIEVED`) for every row before publishing a shortlist, so gaps like the six unchecked lineups don't slip through silently next time.
