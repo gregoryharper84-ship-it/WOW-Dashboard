@@ -477,10 +477,16 @@ class TestHitProbabilityFantasyScore:
         game_log = [38.5, 42.1, 35.8, 44.0, 39.2, 41.5, 37.6, 43.8, 36.9, 40.1]
         more = compute(self._leg("NBA", 39.5, "MORE"), game_log)
         less = compute(self._leg("NBA", 39.5, "LESS"), game_log)
-        # Raw Gaussian probabilities are preserved in hit_probability (buffers go in
-        # calibration_note only) so MORE + LESS still sums to ~1.0
+        # raw_model_probability (pre-calibration) sums to ~1.0 for MORE + LESS.
+        # hit_probability is calibrated and does NOT sum to 1 — that's intentional.
         assert more.model_used == MODEL_FS_GAUSSIAN_PROVISIONAL
-        assert abs(more.hit_probability + less.hit_probability - 1.0) < 0.02
+        assert more.raw_model_probability is not None
+        assert less.raw_model_probability is not None
+        assert abs(more.raw_model_probability + less.raw_model_probability - 1.0) < 0.02
+        # hit_probability is always ≤ raw (calibration buffers reduce it)
+        assert more.hit_probability <= more.raw_model_probability
+        assert more.calibrated_probability == more.hit_probability
+        assert more.calibrated_lower_bound is not None
 
     def test_fantasy_score_needs_3_samples(self):
         from gate_engine.hit_probability import compute, MODEL_NO_DATA

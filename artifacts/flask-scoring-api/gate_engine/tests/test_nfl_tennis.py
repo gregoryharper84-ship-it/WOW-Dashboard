@@ -251,7 +251,11 @@ class TestHitProbabilityTennis:
                     19.5, 24.0, 21.5, 17.5, 26.0]
         more = compute(self._leg("FANTASY_SCORE", 21.5, "MORE"), game_log)
         less = compute(self._leg("FANTASY_SCORE", 21.5, "LESS"), game_log)
-        assert abs(more.hit_probability + less.hit_probability - 1.0) < 0.02
+        # raw_model_probability (pre-calibration) sums to ~1.0 across MORE + LESS.
+        # hit_probability is the calibrated value and will NOT sum to 1.
+        assert more.raw_model_probability is not None
+        assert less.raw_model_probability is not None
+        assert abs(more.raw_model_probability + less.raw_model_probability - 1.0) < 0.02
 
     def test_gaussian_needs_3_samples(self):
         from gate_engine.hit_probability import compute, MODEL_NO_DATA

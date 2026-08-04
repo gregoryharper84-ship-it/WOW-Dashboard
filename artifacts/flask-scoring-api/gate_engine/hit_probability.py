@@ -39,12 +39,24 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class HitProbResult(NamedTuple):
-    hit_probability:   Optional[float]   # 0.0–1.0, or None if unavailable
-    model_used:        str               # see MODEL_* constants below
-    calibration_note:  str               # one-sentence human summary
-    lambda_used:       Optional[float]   # Poisson λ if applicable
-    sample_size:       int               # games used
-    market_calibration: Optional[float] # no-vig prob for reference, if supplied
+    # Core fields (original)
+    hit_probability:          Optional[float]   # always the CALIBRATED value (= calibrated_probability)
+    model_used:               str               # see MODEL_* constants below
+    calibration_note:         str               # one-sentence human summary
+    lambda_used:              Optional[float]   # Poisson λ if applicable
+    sample_size:              int               # games used
+    market_calibration:       Optional[float]   # no-vig prob for reference, if supplied
+    # Extended output schema (Step F contract)
+    # raw_model_probability and opposite_raw_probability sum to ~1.0 (complementary event).
+    # calibrated_lower_bound is a conservative floor and does NOT sum to anything with its opposite.
+    raw_model_probability:    Optional[float]   = None  # pre-calibration probability from the model
+    calibrated_probability:   Optional[float]   = None  # = hit_probability (always calibrated)
+    calibrated_lower_bound:   Optional[float]   = None  # conservative uncertainty-adjusted floor (FS only)
+    opposite_raw_probability: Optional[float]   = None  # 1 - raw_model_probability (complementary side)
+    # Formula provenance — populated for FS models so calibration back-tests know which
+    # formula version produced each historical prediction.
+    formula_registry_version: Optional[str]     = None
+    formula_registry_hash:    Optional[str]     = None
 
 MODEL_MLB_FORMULA        = "mlb_formula_v2"
 MODEL_BERNOULLI          = "bernoulli_hit_rate"   # legacy; kept for test compatibility
@@ -69,21 +81,48 @@ _FS_REGISTRY_ERROR: str | None = None
 
 def _get_fs_registry():
     """
-    Lazy-load the Fantasy Score formula registry from config/fantasy_score_formulas.json.
-    Returns the registry or raises if the JSON is missing / unparseable.
-    The module-level singleton is set once and reused; gunicorn workers each hold
-    their own copy (no inter-process sharing needed).
+    Load (or hot-reload) the Fantasy Score formula registry from
+    config/fantasy_score_formulas.json.
+
+    Hot-reload: checks the file's mtime on every call.  If the file has changed
+    since the last load, the registry is reloaded automatically — no worker restart
+    required.  This ensures that formula corrections take effect immediately and
+    that every prediction record carries the formula version that actually produced
+    it, which is required for calibration back-tests to work correctly.
+
+    Gunicorn workers each hold their own in-process copy.  No inter-process
+    sharing is needed since formula updates are rare and consistency within a
+    request is guaranteed.
     """
     global _FS_REGISTRY, _FS_REGISTRY_ERROR
+    import os as _os
+
+    # Hot-reload check: if the file's mtime has changed, force a reload so
+    # a formula edit on disk is picked up without restarting workers.
+    if _FS_REGISTRY is not None and _FS_REGISTRY.file_path:
+        try:
+            current_mtime = _os.path.getmtime(_FS_REGISTRY.file_path)
+            if current_mtime != _FS_REGISTRY.file_mtime:
+                logger.info(
+                    "FS formula registry file changed (mtime %.3f → %.3f); reloading.",
+                    _FS_REGISTRY.file_mtime,
+                    current_mtime,
+                )
+                _FS_REGISTRY = None
+                _FS_REGISTRY_ERROR = None  # also clear error so a fixed file can reload
+        except OSError:
+            # File temporarily missing — keep the existing registry until next check.
+            pass
+
     if _FS_REGISTRY is not None:
         return _FS_REGISTRY
     if _FS_REGISTRY_ERROR is not None:
         raise RuntimeError(f"FS registry unavailable: {_FS_REGISTRY_ERROR}")
+
     try:
-        import os
         from .wow_fantasy_score.formula import FormulaRegistry
-        _path = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "..", "config", "fantasy_score_formulas.json")
+        _path = _os.path.normpath(
+            _os.path.join(_os.path.dirname(__file__), "..", "config", "fantasy_score_formulas.json")
         )
         _FS_REGISTRY = FormulaRegistry.from_json(_path)
         return _FS_REGISTRY
@@ -505,17 +544,44 @@ def _claude_fallback(
             game_log     = game_log,
             no_vig_prob  = no_vig_prob,
         )
-        return HitProbResult(
+        return _finalize(HitProbResult(
             hit_probability  = result.get("hit_probability"),
             model_used       = MODEL_CLAUDE,
             calibration_note = result.get("calibration_note", ""),
             lambda_used      = None,
             sample_size      = len(game_log),
             market_calibration = no_vig_prob,
-        )
+        ))
     except Exception as exc:
         logger.warning("hit_probability._claude_fallback: %s", exc)
-        return HitProbResult(None, MODEL_ERROR, str(exc), None, 0, no_vig_prob)
+        return _finalize(HitProbResult(None, MODEL_ERROR, str(exc), None, 0, no_vig_prob))
+
+
+# ---------------------------------------------------------------------------
+# Output schema helper
+# ---------------------------------------------------------------------------
+
+def _finalize(result: "HitProbResult") -> "HitProbResult":
+    """
+    Populate the extended output-schema fields for models that don't apply
+    a separate calibration step (all non-FS tiers).
+
+    For these models hit_probability IS the raw model output, so:
+      raw_model_probability    = hit_probability
+      calibrated_probability   = hit_probability
+      calibrated_lower_bound   = None  (no conservative floor for non-FS models)
+      opposite_raw_probability = 1 − hit_probability  (complementary event)
+
+    The FS Tier 1d path builds these fields manually and does NOT call _finalize.
+    """
+    raw = result.hit_probability
+    opp = (round(1.0 - raw, 4) if raw is not None else None)
+    return result._replace(
+        raw_model_probability    = raw,
+        calibrated_probability   = raw,
+        calibrated_lower_bound   = None,
+        opposite_raw_probability = opp,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -545,77 +611,110 @@ def compute(
     player   = leg.get("player_name_resolved") or leg.get("player_name") or leg.get("player") or ""
 
     if not game_log:
-        return HitProbResult(None, MODEL_NO_DATA,
-                             "No game log available — cannot compute probability",
-                             None, 0, no_vig_prob)
+        return _finalize(HitProbResult(None, MODEL_NO_DATA,
+                                       "No game log available — cannot compute probability",
+                                       None, 0, no_vig_prob))
 
     # Tier 1a: MLB H/HITS — binomial PA formula from hit_probability_model.py
     if _is_mlb_hits_prop(sport, stat_key, line):
         result = _mlb_formula_v2(game_log, line, side, enrichment=enrichment)
-        return result._replace(market_calibration=no_vig_prob)
+        return _finalize(result._replace(market_calibration=no_vig_prob))
 
     # Tier 1b: Other near-binary MLB props (HR, RBI, SB, BB, R, TB at ≤1.5)
     # Use game-log Bernoulli so the actual line threshold is honored correctly.
     if _is_mlb_binary(sport, stat_key, line):
         result = _bernoulli_hit_rate(game_log, line, side)
-        return result._replace(market_calibration=no_vig_prob)
+        return _finalize(result._replace(market_calibration=no_vig_prob))
 
     # Tier 1c: Near-binary NFL TD props (PASS_TD, RUSH_TD, REC_TD, TD at ≤1.5)
     if _is_nfl_binary(sport, stat_key, line):
         result = _bernoulli_hit_rate(game_log, line, side)
-        return result._replace(market_calibration=no_vig_prob)
+        return _finalize(result._replace(market_calibration=no_vig_prob))
 
     # Tier 1d: Fantasy Score composites — formula registry gate + Gaussian with PROVISIONAL flags.
     # Must come before _is_counting_stat to avoid FANTASY_SCORE matching counting keyword
     # heuristics (e.g. "fantasy" in _COUNTING_STAT_KEYWORDS) and being misrouted to Poisson.
     #
-    # Gate: scoring is blocked (fail-closed) until each sport's formula is populated in
-    # config/fantasy_score_formulas.json and marked verified=true.  This enforces the
-    # wow-fantasy-score-support package contract — no guessed coefficients ship silently.
+    # Gate: scoring is blocked (fail-closed) until each sport's formula_definition has
+    # verified_formula=true in config/fantasy_score_formulas.json.
     #
-    # When verified: raw Gaussian probability is preserved in hit_probability (so
-    # MORE+LESS probabilities still sum to ~1.0 for pipeline compatibility); the
-    # calibration buffers (−0.03/−0.02) and PROVISIONAL flags are surfaced in
-    # calibration_note for downstream gate engine decisions.
+    # Output schema (Step F contract):
+    #   hit_probability          = calibrated value (consumers always read this)
+    #   raw_model_probability    = raw Gaussian output before calibration buffers
+    #   calibrated_probability   = same as hit_probability
+    #   calibrated_lower_bound   = conservative floor (calibrated − 0.05)
+    #   opposite_raw_probability = 1 − raw (complementary side; MORE+LESS raw sums to ~1.0)
+    #   formula_registry_version / formula_registry_hash = provenance for back-test traceability
     if _is_fantasy_score_composite(sport, stat_key):
         fs_key = _fs_sport_key(sport, stat_key)
         try:
             registry = _get_fs_registry()
             formula  = registry.get(fs_key)
-            formula.validate()
+            formula.validate()  # gates on verified_formula; raises FormulaError if False
         except Exception as exc:
             return HitProbResult(
-                hit_probability   = None,
-                model_used        = MODEL_FS_UNVERIFIED,
-                calibration_note  = (
+                hit_probability          = None,
+                model_used               = MODEL_FS_UNVERIFIED,
+                calibration_note         = (
                     f"FORMULA_UNVERIFIED:{fs_key} — {exc}. "
                     f"Populate config/fantasy_score_formulas.json and set "
-                    f"verified=true + source + retrieved_at before scoring."
+                    f"verified_formula=true + source + retrieved_at before scoring."
                 ),
-                lambda_used       = None,
-                sample_size       = 0,
-                market_calibration = no_vig_prob,
+                lambda_used              = None,
+                sample_size              = 0,
+                market_calibration       = no_vig_prob,
+                raw_model_probability    = None,
+                calibrated_probability   = None,
+                calibrated_lower_bound   = None,
+                opposite_raw_probability = None,
+                formula_registry_version = None,
+                formula_registry_hash    = None,
             )
 
-        # Formula is verified — run Gaussian; raw probability preserved for pipeline compat.
-        result = _gaussian_model(game_log, line, side)
-        if result.hit_probability is None:
-            return result._replace(market_calibration=no_vig_prob)
+        # formula_definition.validated — run Gaussian; build the full output schema.
+        raw_result = _gaussian_model(game_log, line, side)
+        if raw_result.hit_probability is None:
+            # Not enough samples or degenerate distribution — pass through with provenance.
+            return raw_result._replace(
+                market_calibration       = no_vig_prob,
+                formula_registry_version = registry.file_version,
+                formula_registry_hash    = registry.file_hash,
+            )
 
-        n = result.sample_size or len(game_log)
-        cal_buf = 0.03 + (0.02 if n < 10 else 0.0)
-        calibrated = max(0.0, result.hit_probability - cal_buf)
-        lower      = max(0.0, calibrated - 0.05)
-        note = (
-            f"UNCALIBRATED_FANTASY_SCORE_COHORT | POWER_INELIGIBLE | can_execute=false | "
-            f"formula={formula.sport}_v{formula.version} source={formula.source} | "
-            f"{result.calibration_note} | "
-            f"calibrated_p={calibrated:.4f} lower_bound={lower:.4f} (buf={cal_buf:.2f})"
+        raw   = raw_result.hit_probability          # raw Gaussian probability
+        n     = raw_result.sample_size or len(game_log)
+        cal_buf    = 0.03 + (0.02 if n < 10 else 0.0)
+        calibrated = round(max(0.0, raw - cal_buf), 4)
+        lower      = round(max(0.0, calibrated - 0.05), 4)
+        opp_raw    = round(1.0 - raw, 4)
+
+        # Surface verified_settlement=False in the note so consumers know edge-case
+        # handling (retirement, walkover, tiebreak) hasn't been settlement-validated.
+        settlement_note = (
+            " | SETTLEMENT_EDGE_CASES_UNVERIFIED" if not formula.verified_settlement else ""
         )
-        return result._replace(
-            model_used        = MODEL_FS_GAUSSIAN_PROVISIONAL,
-            calibration_note  = note,
-            market_calibration = no_vig_prob,
+
+        note = (
+            f"UNCALIBRATED_FANTASY_SCORE_COHORT | POWER_INELIGIBLE | can_execute=false"
+            f"{settlement_note} | "
+            f"formula={formula.sport}_v{formula.version} source={formula.source} | "
+            f"{raw_result.calibration_note} | "
+            f"raw_p={raw:.4f} calibrated_p={calibrated:.4f} "
+            f"lower_bound={lower:.4f} (buf={cal_buf:.2f})"
+        )
+        return HitProbResult(
+            hit_probability          = calibrated,   # always calibrated for consumers
+            model_used               = MODEL_FS_GAUSSIAN_PROVISIONAL,
+            calibration_note         = note,
+            lambda_used              = raw_result.lambda_used,
+            sample_size              = raw_result.sample_size,
+            market_calibration       = no_vig_prob,
+            raw_model_probability    = raw,
+            calibrated_probability   = calibrated,
+            calibrated_lower_bound   = lower,
+            opposite_raw_probability = opp_raw,
+            formula_registry_version = registry.file_version,
+            formula_registry_hash    = registry.file_hash,
         )
 
     # Tier 2: Counting stats (NBA, WNBA, MLB SO/TB, NFL yardage/receptions,
@@ -623,18 +722,18 @@ def compute(
     if _is_counting_stat(sport, stat_key) or _is_nfl_counting(sport, stat_key) \
             or _is_tennis_poisson(sport, stat_key):
         result = _poisson_model(game_log, line, side)
-        return result._replace(market_calibration=no_vig_prob)
+        return _finalize(result._replace(market_calibration=no_vig_prob))
 
     # Tier 2b: Gaussian — Tennis match-level continuous stats (Fantasy Score, Games Won)
     if _is_tennis_gaussian(sport, stat_key):
         result = _gaussian_model(game_log, line, side)
-        return result._replace(market_calibration=no_vig_prob)
+        return _finalize(result._replace(market_calibration=no_vig_prob))
 
     # Tier 3: No registered model — fail closed.
     # Rule: never substitute a generic AI estimate for an unsupported sport/prop.
     # The endpoint surfaces NO_REGISTERED_MODEL; the GPT uses the terminal_label
     # from the gate engine instead of a fabricated probability.
-    return HitProbResult(
+    return _finalize(HitProbResult(
         hit_probability  = None,
         model_used       = MODEL_NO_REGISTERED_MODEL,
         calibration_note = (
@@ -644,7 +743,7 @@ def compute(
         lambda_used      = None,
         sample_size      = len(game_log),
         market_calibration = no_vig_prob,
-    )
+    ))
 
 
 def compute_batch(
@@ -658,9 +757,15 @@ def compute_batch(
     enrichment: keyed by leg_id → {"game_log": [...], ...}
     no_vig_map: keyed by leg_id → float | None
 
-    Returns list of dicts:
-      { leg_id, hit_probability, model_used, calibration_note,
-        lambda_used, sample_size, market_calibration }
+    Returns list of dicts (Step F output schema):
+      { leg_id, hit_probability, raw_model_probability, calibrated_probability,
+        calibrated_lower_bound, opposite_raw_probability,
+        model_used, calibration_note, lambda_used, sample_size, market_calibration,
+        formula_registry_version, formula_registry_hash }
+
+    hit_probability is always the calibrated value.  raw_model_probability and
+    opposite_raw_probability sum to ~1.0.  calibrated_lower_bound is only
+    populated for FS PROVISIONAL models; None for all others.
     """
     no_vig_map = no_vig_map or {}
     results = []
@@ -674,13 +779,19 @@ def compute_batch(
 
         result = compute(leg, game_log, no_vig, enrichment=enr)
         results.append({
-            "leg_id":            leg_id,
-            "hit_probability":   result.hit_probability,
-            "model_used":        result.model_used,
-            "calibration_note":  result.calibration_note,
-            "lambda_used":       result.lambda_used,
-            "sample_size":       result.sample_size,
-            "market_calibration": result.market_calibration,
+            "leg_id":                  leg_id,
+            "hit_probability":         result.hit_probability,
+            "raw_model_probability":   result.raw_model_probability,
+            "calibrated_probability":  result.calibrated_probability,
+            "calibrated_lower_bound":  result.calibrated_lower_bound,
+            "opposite_raw_probability": result.opposite_raw_probability,
+            "model_used":              result.model_used,
+            "calibration_note":        result.calibration_note,
+            "lambda_used":             result.lambda_used,
+            "sample_size":             result.sample_size,
+            "market_calibration":      result.market_calibration,
+            "formula_registry_version": result.formula_registry_version,
+            "formula_registry_hash":   result.formula_registry_hash,
         })
     return results
 
