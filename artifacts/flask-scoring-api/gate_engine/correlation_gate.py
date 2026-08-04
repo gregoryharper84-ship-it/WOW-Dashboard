@@ -24,6 +24,15 @@ Hard rules:
   2. No Power Play approval when correlation is UNKNOWN for same-game props
   3. Flex slip EV must note that independent-leg math overstates true probability
      when TEAMMATE_USAGE_NEGATIVE or BLOWOUT_SHARED_RISK is detected
+  4. (reserved — see skill doc)
+  5. No same-player Fantasy Score + individual component stat in same slip
+     (DIRECT_OVERLAP → auto-reject). Fantasy Score is a weighted sum of individual
+     stat lines — a Points Over and a Fantasy Score Over on the same player are not
+     independent legs; Points is literally a term inside the Fantasy Score formula.
+     Applies to all sports: NBA/WNBA (PTS/REB/AST/STL/BLK/TOV), NFL (all yardage +
+     TD + INT + REC components), MLB hitter (H/R/RBI/HR/SB/BB), MLB pitcher (K/ER/W).
+     Two Fantasy Score legs on the same player (e.g., FANTASY_SCORE_HIT +
+     FANTASY_SCORE_PIT for an MLB two-way player) also trigger DIRECT_OVERLAP.
 
 Usage:
   classify_legs(legs)         — returns correlation classification for a list of legs
@@ -78,6 +87,54 @@ USAGE_COMPETING_STATS: set[str] = {
     "assists", "points", "field goals made", "field goals attempted",
     "three pointers made", "shots on target", "touches",
 }
+
+# ---------------------------------------------------------------------------
+# Rule 5: Fantasy Score ↔ component-stat correlation
+# ---------------------------------------------------------------------------
+# Fantasy Score is a weighted sum of individual stat lines.  Any same-player
+# slip pairing a FS leg with one of its component stats is DIRECT_OVERLAP —
+# the two legs share exposure that independent-leg math cannot price correctly.
+
+# Recognized normalized forms of "Fantasy Score" stat keys
+_FANTASY_SCORE_STAT_NAMES: frozenset[str] = frozenset({
+    "fantasy score",
+    "fantasy_score",
+    "fantasy score hit",
+    "fantasy_score_hit",
+    "fantasy score pit",
+    "fantasy_score_pit",
+    "fantasy pts",
+    "fantasy points",
+})
+
+# Stats that are explicit weighted terms in at least one sport's FS formula.
+# Pairing FS with any of these on the same player → DIRECT_OVERLAP.
+_FANTASY_SCORE_COMPONENT_STATS: frozenset[str] = frozenset({
+    # NBA / WNBA
+    "points", "pts", "rebounds", "reb", "assists", "ast",
+    "steals", "stl", "blocks", "blk", "turnovers", "tov",
+    # NBA/WNBA combo props (subsets of FS components)
+    "pts+reb+ast", "points+rebounds+assists",
+    "pts+reb", "points+rebounds",
+    "pts+ast", "points+assists",
+    "reb+ast", "rebounds+assists",
+    # NFL
+    "passing yards", "rushing yards", "receiving yards",
+    "receptions", "rec",
+    "passing touchdowns", "pass td", "pass tds",
+    "rushing touchdowns", "rush td", "rush tds",
+    "receiving touchdowns", "rec td", "rec tds",
+    "touchdowns", "tds",
+    "interceptions", "int",
+    "fumbles lost",
+    # MLB hitter
+    "hits", "runs", "rbi", "rbis", "home runs", "hr",
+    "stolen bases", "sb", "walks", "bb",
+    "doubles", "triples",
+    "hits+runs+rbi",
+    # MLB pitcher
+    "strikeouts", "k", "earned runs", "er", "wins",
+})
 
 
 def _normalize(s: str) -> str:
@@ -196,6 +253,23 @@ def _pair_classify(a: dict, b: dict) -> tuple[CorrelationClass, str]:
 
     if same_player:
         stat_pair = frozenset({a["stat"], b["stat"]})
+
+        # Rule 5: Fantasy Score + any component stat (or FS + FS) on same player.
+        # Fantasy Score is a weighted sum of individual stat lines; the legs share
+        # exposure that independent-leg math cannot price.  Check BEFORE the generic
+        # DIRECT_OVERLAP_PAIRS so the more-specific reason surfaces in the conflict.
+        is_a_fs = a["stat"] in _FANTASY_SCORE_STAT_NAMES
+        is_b_fs = b["stat"] in _FANTASY_SCORE_STAT_NAMES
+        if is_a_fs or is_b_fs:
+            other_stat = b["stat"] if is_a_fs else a["stat"]
+            fs_stat    = a["stat"] if is_a_fs else b["stat"]
+            if other_stat in _FANTASY_SCORE_COMPONENT_STATS or other_stat in _FANTASY_SCORE_STAT_NAMES:
+                return (
+                    CorrelationClass.DIRECT_OVERLAP,
+                    f"DIRECT_OVERLAP[Rule5]: {a['player']} has '{fs_stat}' and '{other_stat}' "
+                    f"— the individual stat is a weighted term inside the Fantasy Score formula; "
+                    f"these legs are not independent and overstate hit probability when combined.",
+                )
 
         # Direct overlap: e.g. "points" and "pts+reb+ast" on same player
         if stat_pair in DIRECT_OVERLAP_PAIRS:
