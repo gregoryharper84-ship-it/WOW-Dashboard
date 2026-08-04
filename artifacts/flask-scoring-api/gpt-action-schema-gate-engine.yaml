@@ -783,6 +783,305 @@ paths:
                   execution_rule:
                     type: string
 
+  /normalize-legs:
+    post:
+      operationId: normalizeLegs
+      x-openai-isConsequential: false
+      summary: Normalize raw OCR leg data into canonical rows the gate pipeline can score
+      description: >
+        Converts extracted leg data (from a slip screenshot or manual entry) into
+        canonical NormalizedRow dicts by running a 9-step resolution pipeline:
+        text normalisation → roster lookup → exact/fuzzy name match → team
+        disambiguation → schedule lookup → stat key mapping → confidence stamping.
+
+        Call this before /gate-engine/run when you have OCR-extracted or manually
+        typed leg data that hasn't been canonicalized yet.
+
+        Requires X-API-Key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - legs
+              properties:
+                legs:
+                  type: array
+                  description: >
+                    Array of extracted legs. Each leg must have at minimum
+                    player_name, sport, prop_type, side (MORE/LESS), and line_value.
+                  items:
+                    type: object
+                    required:
+                      - player_name
+                      - sport
+                      - prop_type
+                      - side
+                      - line_value
+                    additionalProperties: true
+                    properties:
+                      leg_id:
+                        type: string
+                        description: Optional stable identifier (UUID recommended); auto-generated if omitted
+                      player_name:
+                        type: string
+                        description: "Player name as OCR'd or typed, e.g. 'LeBron James'"
+                      sport:
+                        type: string
+                        description: "Sport code: NBA, MLB, NFL, NHL, WNBA"
+                      prop_type:
+                        type: string
+                        description: "Stat category as shown on the slip, e.g. 'points', 'hits', 'strikeouts'"
+                      side:
+                        type: string
+                        description: "Direction: MORE, LESS, OVER, or UNDER"
+                      line_value:
+                        type: number
+                        description: "The prop line, e.g. 27.5"
+                      platform:
+                        type: string
+                        description: "Board platform: prizepicks, underdog, draftkings"
+                      team:
+                        type: string
+                        description: Optional team hint to help disambiguation
+                      ocr_confidence:
+                        type: number
+                        description: 0.0–1.0 OCR confidence estimate
+                target_date:
+                  type: string
+                  description: "YYYY-MM-DD slate date for schedule lookup. Defaults to today."
+                platform_hint:
+                  type: string
+                  description: "prizepicks | underdog | draftkings — used as default platform for all legs"
+      responses:
+        "200":
+          description: Normalized rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  rows:
+                    type: array
+                    description: NormalizedRow objects, one per input leg
+                    items:
+                      type: object
+                      properties:
+                        leg_id:
+                          type: string
+                        player_id:
+                          type: string
+                          nullable: true
+                        player_name_resolved:
+                          type: string
+                          nullable: true
+                        sport:
+                          type: string
+                        stat_key:
+                          type: string
+                          nullable: true
+                        line_value:
+                          type: number
+                          nullable: true
+                        side:
+                          type: string
+                        team:
+                          type: string
+                          nullable: true
+                        opponent:
+                          type: string
+                          nullable: true
+                        game_time:
+                          type: string
+                          nullable: true
+                        resolution_status:
+                          type: string
+                          description: "resolved | not_found | ambiguous | partial"
+                        resolution_confidence:
+                          type: number
+                          nullable: true
+                        matched_via:
+                          type: string
+                          nullable: true
+                        flags:
+                          type: array
+                          items:
+                            type: string
+                  count:
+                    type: integer
+                  resolved:
+                    type: integer
+                    description: Number of legs with resolution_status == "resolved"
+                  flagged:
+                    type: integer
+                    description: Number of legs that could not be fully resolved
+        "422":
+          description: Missing or malformed legs array
+        "401":
+          description: Missing or invalid X-API-Key
+      security:
+        - ApiKeyAuth: []
+
+  /analyze-and-score:
+    post:
+      operationId: analyzeAndScore
+      x-openai-isConsequential: false
+      summary: Full slip pipeline — Vision extraction → normalize → enrich → gate engine → hit probability
+      description: >
+        One-call endpoint that runs the complete screenshot-to-scored-slip pipeline:
+
+          Step A  Vision extraction   — Claude reads the slip image and extracts all legs
+          Step B  Normalization       — player names, stat keys, teams resolved via roster lookup
+          Step C  Auto enrichment     — Odds API market lines, ESPN injury status, game logs fetched
+          Step D  Claude gap-fill     — unresolved players or missing data resolved via LLM search
+          Step E  Gate pipeline       — full 22-gate WOW engine run per leg
+          Step F  Hit probability     — MLB binomial formula / NBA–WNBA Poisson / Claude for others
+
+        Hard rule: hit_probability is null when no game log is available — the model never
+        fabricates a value.
+
+        Requires X-API-Key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - image
+              properties:
+                image:
+                  type: string
+                  description: >
+                    Slip image as a base64-encoded string (with or without data URL prefix),
+                    or a public HTTPS URL. JPEG, PNG, and WebP are all supported.
+                platform_hint:
+                  type: string
+                  description: "prizepicks | underdog | draftkings — used to tune extraction prompt"
+                  default: "prizepicks"
+                user_id:
+                  type: string
+                  description: Optional user identifier for ledger tracking
+                target_date:
+                  type: string
+                  description: "YYYY-MM-DD slate date. Defaults to today."
+      responses:
+        "200":
+          description: Scored slip
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  slip_id:
+                    type: string
+                    description: Stable UUID for this scoring run
+                  legs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        leg_id:
+                          type: string
+                        player_name:
+                          type: string
+                        prop:
+                          type: string
+                          description: "Formatted prop string, e.g. 'PTS More 27.5'"
+                        platform:
+                          type: string
+                        hit_probability:
+                          type: number
+                          nullable: true
+                          description: >
+                            P(hit) as 0.0–1.0. null when game log unavailable.
+                            Use hit_probability_model to understand which formula was used.
+                        hit_probability_model:
+                          type: string
+                          nullable: true
+                          description: "mlb_formula_v2 | poisson_l_N | claude_estimate | bernoulli_hit_rate | no_data"
+                        hit_probability_note:
+                          type: string
+                          nullable: true
+                          description: One-sentence calibration note (inputs used, sample size, caveats)
+                        terminal_label:
+                          type: string
+                          description: "WOW gate-engine terminal label, e.g. FINAL_APPROVED, MODEL_QUALIFIED_HOLD, LLP_REJECT"
+                        confidence_tier:
+                          type: string
+                          nullable: true
+                          description: "HIGH | MEDIUM | LOW | NONE"
+                        edge_score:
+                          type: number
+                          nullable: true
+                        explanation:
+                          type: string
+                          description: 2-3 sentence plain-English rationale for the evaluation
+                        data_sources:
+                          type: array
+                          items:
+                            type: string
+                          description: "Sources used: odds_api, espn, nba_api, mlb_statsapi, balldontlie, claude_search"
+                        flags:
+                          type: array
+                          items:
+                            type: string
+                          description: Any warning flags on this leg
+                        resolution:
+                          type: object
+                          properties:
+                            status:
+                              type: string
+                            confidence:
+                              type: number
+                              nullable: true
+                            matched_via:
+                              type: string
+                              nullable: true
+                        gate_trace:
+                          type: array
+                          description: First 10 gate results for this leg
+                          items:
+                            type: object
+                            properties:
+                              gate:
+                                type: string
+                              result:
+                                type: string
+                              reason:
+                                type: string
+                  count:
+                    type: integer
+                  slip_summary:
+                    type: object
+                    properties:
+                      correlation_risk:
+                        type: string
+                        description: "HIGH | MEDIUM | LOW — flags same-player or same-game stacking"
+                      overall_recommendation:
+                        type: string
+                        description: Plain-English summary of the slip's overall evaluation
+                      label_counts:
+                        type: object
+                        description: Count of legs per terminal label
+                  source_status:
+                    type: object
+                    description: Per-data-source fetch status from auto enrichment
+        "422":
+          description: Missing or malformed image field
+        "503":
+          description: Anthropic API not configured
+        "401":
+          description: Missing or invalid X-API-Key
+      security:
+        - ApiKeyAuth: []
+
 components:
   schemas: {}
   securitySchemes:
@@ -793,4 +1092,5 @@ components:
       description: >
         Pass your SCORING_API_KEY value in the X-API-Key header.
         /wow/engine/health, /wow/governance/status, and /wow/stage2/health
-        are public and do not require this key. /gate-engine/run requires it.
+        are public and do not require this key. /gate-engine/run, /normalize-legs,
+        and /analyze-and-score require it.
