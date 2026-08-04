@@ -2965,6 +2965,10 @@ def analyze_and_score():
         flags            = list(row.get("flags") or [])
         if is_unresolvable:
             flags.append("RESOLUTION_FAILED")
+        # Every leg in this endpoint is screenshot-derived — the line has not been
+        # confirmed active via a live board query (source_grade doctrine Rule 5).
+        if "LINE_ACTIVE_UNCONFIRMED" not in flags:
+            flags.append("LINE_ACTIVE_UNCONFIRMED")
 
         # Gate trace
         gates = pipe.get("gates") or {}

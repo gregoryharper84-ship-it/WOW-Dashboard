@@ -351,6 +351,67 @@ class TestAnalyzeAndScoreResponseShape:
         assert leg["terminal_label"] == "UNRESOLVABLE"
         assert "RESOLUTION_FAILED" in leg["flags"]
 
+    def test_ocr_low_confidence_flag_flows_through(self, app_client):
+        """OCR_LOW_CONFIDENCE stamped by normalizer must appear in leg flags."""
+        import gate_engine.normalizer as norm_mod
+        import gate_engine.auto_enrichment as ae_mod
+        import gate_engine.pipeline as pipe_mod
+        import gate_engine.claude_gap_fill as cgf_mod
+
+        vision_client = _make_vision_mock()
+        # Normalizer already stamps OCR_LOW_CONFIDENCE on the row
+        low_conf_row = {**_RESOLVED_ROW, "flags": ["OCR_LOW_CONFIDENCE"]}
+        mock_pipe_out = {"prop_ledger": [_PIPELINE_ROW_OUT], "summary": {}}
+
+        with patch("app._ensure_anthropic", return_value=True), \
+             patch("app._anthropic") as ant_mod, \
+             patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}), \
+             patch.object(norm_mod, "normalize_legs", return_value=[low_conf_row]), \
+             patch.object(ae_mod, "build_auto_enrichment", return_value=({}, {})), \
+             patch.object(pipe_mod, "run_pipeline", return_value=mock_pipe_out), \
+             patch.object(cgf_mod, "generate_explanation", return_value=""):
+            ant_mod.Anthropic.return_value = vision_client
+            resp = self._post(app_client, {
+                "image": "aGVsbG8=",
+                "platform_hint": "prizepicks",
+            })
+
+        data = resp.get_json()
+        assert data["ok"] is True
+        leg = data["legs"][0]
+        assert "OCR_LOW_CONFIDENCE" in leg["flags"]
+
+    def test_line_active_unconfirmed_always_present(self, app_client):
+        """All screenshot-derived legs must carry LINE_ACTIVE_UNCONFIRMED flag."""
+        import gate_engine.normalizer as norm_mod
+        import gate_engine.auto_enrichment as ae_mod
+        import gate_engine.pipeline as pipe_mod
+        import gate_engine.claude_gap_fill as cgf_mod
+
+        vision_client = _make_vision_mock()
+        mock_pipe_out = {"prop_ledger": [_PIPELINE_ROW_OUT], "summary": {}}
+
+        with patch("app._ensure_anthropic", return_value=True), \
+             patch("app._anthropic") as ant_mod, \
+             patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}), \
+             patch.object(norm_mod, "normalize_legs", return_value=[_RESOLVED_ROW]), \
+             patch.object(ae_mod, "build_auto_enrichment", return_value=({}, {})), \
+             patch.object(pipe_mod, "run_pipeline", return_value=mock_pipe_out), \
+             patch.object(cgf_mod, "generate_explanation", return_value=""):
+            ant_mod.Anthropic.return_value = vision_client
+            resp = self._post(app_client, {
+                "image": "aGVsbG8=",
+                "platform_hint": "prizepicks",
+            })
+
+        data = resp.get_json()
+        assert data["ok"] is True
+        leg = data["legs"][0]
+        assert "LINE_ACTIVE_UNCONFIRMED" in leg["flags"], (
+            "Every screenshot-derived leg must carry LINE_ACTIVE_UNCONFIRMED "
+            "(source_grade doctrine Rule 5)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # pytest fixtures
