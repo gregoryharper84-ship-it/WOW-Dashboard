@@ -255,7 +255,12 @@ function HistoryTable({ locks }: { locks: LockRecord[] }) {
         </thead>
         <tbody>
           {locks.map((r) => {
-            const approved = r.final_lock_decision === "ESTIMATE_CLEARS_BREAKEVEN";
+            // Accept both the current vocabulary (post-rename) and the legacy
+            // vocabulary (pre-rename) so old rows stored before the label change
+            // still display the correct approval status.
+            const approved =
+              r.final_lock_decision === "ESTIMATE_CLEARS_BREAKEVEN" ||
+              r.final_lock_decision === "FINAL_APPROVED";
             return (
               <tr key={r.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
                 <td className="py-2 px-2 text-muted-foreground">{r.id}</td>
