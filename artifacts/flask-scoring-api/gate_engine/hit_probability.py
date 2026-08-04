@@ -45,19 +45,30 @@ class HitProbResult(NamedTuple):
     sample_size:       int               # games used
     market_calibration: Optional[float] # no-vig prob for reference, if supplied
 
-MODEL_BERNOULLI  = "bernoulli_hit_rate"
-MODEL_POISSON    = "poisson_l_n"
+MODEL_MLB_FORMULA = "mlb_formula_v2"
+MODEL_BERNOULLI  = "bernoulli_hit_rate"   # legacy; kept for test compatibility
+MODEL_POISSON    = "poisson_l10"
 MODEL_CLAUDE     = "claude_estimate"
 MODEL_NO_DATA    = "no_data"
 MODEL_ERROR      = "error"
+
+_POISSON_IDEAL_SAMPLE = 10    # < this → calibration warning
 
 
 # ---------------------------------------------------------------------------
 # Sport / stat classification
 # ---------------------------------------------------------------------------
 
-# MLB stats that are essentially binary (did the player get ≥1?)
-_MLB_BINARY_STATS = {"H", "HR", "RBI", "SB", "BB", "R", "TB"}
+# MLB stats that are essentially binary (did the player get ≥1?) — Bernoulli from game log.
+# Includes extra-base-hit markets (1B, 2B, 3B) that need game-log Bernoulli so the
+# per-stat-type line threshold is honored correctly.
+_MLB_BINARY_STATS = {"H", "HITS", "HR", "RBI", "SB", "BB", "R", "TB", "1B", "2B", "3B"}
+
+# MLB hit stats specifically eligible for the mlb_formula_v2 binomial PA model.
+# Only H/HITS are modelled via batting-average × PA — extra-base-hit markets
+# (1B, 2B, 3B, HR, SB, RBI, BB, R, TB) have their own per-event rates that the
+# generic hit formula cannot represent; they use the Bernoulli game-log path instead.
+_MLB_HIT_STATS = {"H", "HITS"}
 
 # NBA / WNBA counting stats for which Poisson is appropriate
 _COUNTING_STAT_KEYWORDS = {
@@ -82,6 +93,17 @@ def _is_mlb_binary(sport: str, stat_key: str, line: float) -> bool:
     return sport_u == "MLB" and stat_u in _MLB_BINARY_STATS and line <= 1.5
 
 
+def _is_mlb_hits_prop(sport: str, stat_key: str, line: float) -> bool:
+    """True only for MLB 0.5-hit props (H/HITS at line < 1.0) — eligible for mlb_formula_v2.
+
+    At line >= 1.0 (e.g. H 1.5 = "at least 2 hits"), the formula always computes
+    P(>=1 hit) which is semantically wrong.  Those props route to Bernoulli instead.
+    """
+    sport_u = sport.upper()
+    stat_u  = stat_key.upper().replace(" ", "")
+    return sport_u == "MLB" and stat_u in _MLB_HIT_STATS and line < 1.0
+
+
 def _is_counting_stat(sport: str, stat_key: str) -> bool:
     """True when a Poisson model is appropriate for this sport+stat combo."""
     sport_u = sport.upper()
@@ -103,15 +125,99 @@ def _is_counting_stat(sport: str, stat_key: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Model 1: Bernoulli (MLB binary)
+# Model 1: MLB formula v2  (hit_probability_model.py binomial)
 # ---------------------------------------------------------------------------
+
+_LEAGUE_AVG_PA_PER_GAME = 3.65  # mirrored from hit_probability_model.py
+
+
+def _mlb_formula_v2(
+    game_log:   list[float],
+    line:       float,
+    side:       str,
+    enrichment: dict | None = None,
+) -> HitProbResult:
+    """
+    P(1+ hits) = 1 − (1 − p_per_PA)^n_PA using hit_probability_model.py.
+
+    batting_average is sourced from enrichment if available; otherwise derived
+    from game_log (mean hits/game ÷ league-avg PA ≈ per-PA hit prob).
+    """
+    from .mlb.hit_probability_model import compute_hit_probability as _mlb_compute
+
+    enr = enrichment or {}
+    n   = len(game_log)
+
+    # --- resolve inputs from enrichment or game_log ---
+    batting_average = enr.get("batting_average")
+    batting_order   = enr.get("batting_order")
+    batter_hand     = enr.get("batter_hand")
+    starter_hand    = enr.get("starter_hand")
+    park_factor     = enr.get("park_factor")
+    projected_pa    = enr.get("projected_pa")
+
+    warn_parts: list[str] = []
+
+    if batting_average is None:
+        if n == 0:
+            return HitProbResult(
+                None, MODEL_NO_DATA,
+                "No game log or batting average — cannot compute MLB formula",
+                None, 0, None,
+            )
+        # Derive per-PA hit prob: mean hits per game ÷ league-avg PA
+        mean_hits = sum(game_log) / n
+        batting_average = round(mean_hits / _LEAGUE_AVG_PA_PER_GAME, 4)
+        warn_parts.append(f"BA derived from game log ({n}g mean={mean_hits:.2f}), not season avg")
+
+    if n < _POISSON_IDEAL_SAMPLE:
+        warn_parts.append(f"L{n} only — L10 unavailable" if n > 0 else "L0")
+
+    result = _mlb_compute(
+        batting_average = batting_average,
+        batting_order   = batting_order,
+        batter_hand     = batter_hand,
+        starter_hand    = starter_hand,
+        park_factor     = park_factor,
+        projected_pa    = projected_pa,
+    )
+
+    if side.upper() in ("LESS", "UNDER"):
+        prob = result["p_zero_hits"]
+        direction_note = "LESS (P(0 hits))"
+    else:
+        prob = result["p_at_least_one_hit"]
+        direction_note = "MORE (P(≥1 hit))"
+
+    dq   = result.get("data_quality", "PARTIAL")
+    dqw  = result.get("data_quality_warning")
+    n_pa = result.get("n_projected_pa", _LEAGUE_AVG_PA_PER_GAME)
+
+    note_parts = [
+        f"MLB formula v2: {direction_note}={prob:.4f}, "
+        f"BA={batting_average:.3f}, n_PA={n_pa:.1f}, dq={dq}"
+    ]
+    if warn_parts:
+        note_parts.extend(warn_parts)
+    if dq == "MINIMAL" and dqw:
+        note_parts.append(dqw[:100])
+
+    return HitProbResult(
+        hit_probability  = round(max(0.0, min(1.0, prob)), 4),
+        model_used       = MODEL_MLB_FORMULA,
+        calibration_note = "; ".join(note_parts),
+        lambda_used      = None,
+        sample_size      = n,
+        market_calibration = None,
+    )
+
 
 def _bernoulli_hit_rate(
     game_log: list[float],
     line:     float,
     side:     str,
 ) -> HitProbResult:
-    """P(X ≥ line) = fraction of games where value ≥ line (MORE) or ≤ line (LESS)."""
+    """Legacy fallback: P(X ≥ line) = fraction of games where value ≥ line."""
     n = len(game_log)
     if n == 0:
         return HitProbResult(None, MODEL_NO_DATA, "No game log", None, 0, None)
@@ -186,9 +292,13 @@ def _poisson_model(
         prob = 1.0 - cdf_below
         note = f"Poisson MORE: λ={lam:.2f}, P(X≥{threshold})={prob:.4f}, n={n}"
 
+    # Append sample-size warning when below ideal threshold
+    if n < _POISSON_IDEAL_SAMPLE:
+        note += f"; Poisson λ from {n} game{'s' if n != 1 else ''}, below {_POISSON_IDEAL_SAMPLE}-game ideal"
+
     return HitProbResult(
         hit_probability  = round(max(0.0, min(1.0, prob)), 4),
-        model_used       = f"{MODEL_POISSON}_{n}",
+        model_used       = MODEL_POISSON,
         calibration_note = note,
         lambda_used      = round(lam, 3),
         sample_size      = n,
@@ -245,12 +355,15 @@ def compute(
     leg:         dict[str, Any],
     game_log:    list[float],
     no_vig_prob: Optional[float] = None,
+    enrichment:  Optional[dict[str, Any]] = None,
 ) -> HitProbResult:
     """
     Compute hit probability for one leg.
 
     leg keys used:
       player_name, sport, stat_key, line_value, side
+
+    enrichment: per-leg enrichment dict (batting_average, batting_order, etc.)
 
     Returns HitProbResult (NamedTuple).
     """
@@ -265,7 +378,13 @@ def compute(
                              "No game log available — cannot compute probability",
                              None, 0, no_vig_prob)
 
-    # Tier 1: MLB binary
+    # Tier 1a: MLB H/HITS — binomial PA formula from hit_probability_model.py
+    if _is_mlb_hits_prop(sport, stat_key, line):
+        result = _mlb_formula_v2(game_log, line, side, enrichment=enrichment)
+        return result._replace(market_calibration=no_vig_prob)
+
+    # Tier 1b: Other near-binary MLB props (HR, RBI, SB, BB, R, TB at ≤1.5)
+    # Use game-log Bernoulli so the actual line threshold is honored correctly.
     if _is_mlb_binary(sport, stat_key, line):
         result = _bernoulli_hit_rate(game_log, line, side)
         return result._replace(market_calibration=no_vig_prob)
@@ -304,7 +423,7 @@ def compute_batch(
         game_log = _coerce_game_log(raw_log, leg)
         no_vig   = no_vig_map.get(leg_id) or enr.get("sharp_no_vig_prob")
 
-        result = compute(leg, game_log, no_vig)
+        result = compute(leg, game_log, no_vig, enrichment=enr)
         results.append({
             "leg_id":            leg_id,
             "hit_probability":   result.hit_probability,

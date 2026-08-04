@@ -3014,6 +3014,16 @@ def analyze_and_score():
                 pass
 
         hp = hit_probs.get(leg_id, {})
+        if is_unresolvable:
+            _hp_prob  = None
+            _hp_model = "no_data"
+            _hp_note  = "insufficient data"
+        else:
+            _hp_prob  = hp.get("hit_probability")
+            _hp_model = hp.get("model_used")
+            _hp_note  = hp.get("calibration_note")
+            if _hp_prob is None and not hp:
+                _hp_note = "insufficient data"
         legs_out.append({
             "leg_id":          leg_id,
             "player_name":     row.get("player_name_resolved") or row.get("player_name_raw") or "",
@@ -3021,9 +3031,9 @@ def analyze_and_score():
                                f"{row.get('side', '').title()} "
                                f"{row.get('line_value', '')}",
             "platform":        row.get("platform") or platform_display,
-            "hit_probability": hp.get("hit_probability"),
-            "hit_probability_model": hp.get("model_used"),
-            "hit_probability_note":  hp.get("calibration_note"),
+            "hit_probability": _hp_prob,
+            "model_used":      _hp_model,
+            "calibration_note": _hp_note,
             "terminal_label":  terminal_label,
             "confidence_tier": confidence_tier,
             "edge_score":      edge_score,

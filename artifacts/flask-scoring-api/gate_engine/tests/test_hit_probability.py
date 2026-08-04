@@ -10,14 +10,18 @@ from gate_engine.hit_probability import (
     compute,
     compute_batch,
     _bernoulli_hit_rate,
+    _mlb_formula_v2,
     _poisson_model,
     _is_mlb_binary,
+    _is_mlb_hits_prop,
     _is_counting_stat,
     _coerce_game_log,
+    MODEL_MLB_FORMULA,
     MODEL_BERNOULLI,
     MODEL_POISSON,
     MODEL_CLAUDE,
     MODEL_NO_DATA,
+    _POISSON_IDEAL_SAMPLE,
     HitProbResult,
 )
 
@@ -41,6 +45,35 @@ class TestClassification:
 
     def test_mlb_binary_not_for_nba(self):
         assert _is_mlb_binary("NBA", "H", 0.5) is False
+
+    # _is_mlb_hits_prop — only H/HITS eligible for mlb_formula_v2
+    def test_mlb_hits_prop_h(self):
+        assert _is_mlb_hits_prop("MLB", "H", 0.5) is True
+
+    def test_mlb_hits_prop_hits(self):
+        assert _is_mlb_hits_prop("MLB", "HITS", 0.5) is True
+
+    def test_mlb_hits_prop_hr_false(self):
+        assert _is_mlb_hits_prop("MLB", "HR", 0.5) is False
+
+    def test_mlb_hits_prop_rbi_false(self):
+        assert _is_mlb_hits_prop("MLB", "RBI", 0.5) is False
+
+    def test_mlb_hits_prop_sb_false(self):
+        assert _is_mlb_hits_prop("MLB", "SB", 0.5) is False
+
+    def test_mlb_hits_prop_tb_false(self):
+        assert _is_mlb_hits_prop("MLB", "TB", 1.5) is False
+
+    def test_mlb_hits_prop_above_1_5_false(self):
+        assert _is_mlb_hits_prop("MLB", "H", 2.0) is False
+
+    def test_mlb_hits_prop_at_1_5_false(self):
+        # 1.5 line means "at least 2 hits" — formula cannot handle this; use Bernoulli
+        assert _is_mlb_hits_prop("MLB", "H", 1.5) is False
+
+    def test_mlb_hits_prop_at_0_5_true(self):
+        assert _is_mlb_hits_prop("MLB", "H", 0.5) is True
 
     def test_nba_pts_is_counting(self):
         assert _is_counting_stat("NBA", "PTS") is True
@@ -166,10 +199,10 @@ class TestPoissonModel:
 # ---------------------------------------------------------------------------
 
 class TestCompute:
-    def test_mlb_binary_dispatches_bernoulli(self):
+    def test_mlb_binary_dispatches_formula_v2(self):
         leg = {"sport": "MLB", "stat_key": "H", "line_value": 0.5, "side": "MORE"}
         result = compute(leg, [1.0, 0.0, 1.0, 1.0, 1.0])
-        assert result.model_used == MODEL_BERNOULLI
+        assert result.model_used == MODEL_MLB_FORMULA
 
     def test_nba_pts_dispatches_poisson(self):
         leg = {"sport": "NBA", "stat_key": "PTS", "line_value": 27.5, "side": "MORE"}
@@ -250,8 +283,8 @@ class TestComputeBatch:
         assert len(results) == 2
         mlb_r = next(r for r in results if r["leg_id"] == "l1")
         nba_r = next(r for r in results if r["leg_id"] == "l2")
-        assert mlb_r["model_used"] == MODEL_BERNOULLI
-        assert MODEL_POISSON[:7] in nba_r["model_used"]
+        assert mlb_r["model_used"] == MODEL_MLB_FORMULA
+        assert MODEL_POISSON in nba_r["model_used"]
 
     def test_no_vig_prob_from_enrichment(self):
         legs = [{"leg_id": "l1", "sport": "NBA", "stat_key": "PTS",
@@ -292,3 +325,231 @@ class TestCoerceGameLog:
     def test_none_values_skipped(self):
         result = _coerce_game_log([22.0, None, 20.0], {})
         assert result == [22.0, 20.0]
+
+
+# ---------------------------------------------------------------------------
+# MLB formula v2 (_mlb_formula_v2)
+# ---------------------------------------------------------------------------
+
+class TestMlbFormulaV2:
+    def test_model_name_is_mlb_formula_v2(self):
+        result = _mlb_formula_v2([1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0],
+                                  0.5, "MORE")
+        assert result.model_used == MODEL_MLB_FORMULA
+
+    def test_empty_log_returns_no_data(self):
+        result = _mlb_formula_v2([], 0.5, "MORE")
+        assert result.hit_probability is None
+        assert result.model_used == MODEL_NO_DATA
+
+    def test_probability_in_0_1(self):
+        result = _mlb_formula_v2([1.0, 1.0, 0.0, 1.0, 0.0], 0.5, "MORE")
+        assert result.hit_probability is not None
+        assert 0.0 <= result.hit_probability <= 1.0
+
+    def test_less_side_uses_p_zero_hits(self):
+        # With high BA, P(LESS=0 hits) should be low
+        result = _mlb_formula_v2([1.0] * 10, 0.5, "LESS")
+        assert result.hit_probability < 0.5
+
+    def test_enrichment_batting_average_used(self):
+        # With explicit high BA supplied, probability should be high
+        result = _mlb_formula_v2([1.0, 0.0], 0.5, "MORE",
+                                  enrichment={"batting_average": 0.350})
+        assert result.hit_probability > 0.70
+        assert "BA derived" not in result.calibration_note
+
+    def test_small_sample_warning_in_note(self):
+        result = _mlb_formula_v2([1.0, 0.0, 1.0], 0.5, "MORE")
+        assert "L3 only" in result.calibration_note or "L10 unavailable" in result.calibration_note
+
+    def test_calibration_note_contains_ba(self):
+        result = _mlb_formula_v2([1.0] * 10, 0.5, "MORE")
+        assert "BA=" in result.calibration_note
+
+    def test_dispatched_via_compute(self):
+        leg = {"sport": "MLB", "stat_key": "H", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0])
+        assert result.model_used == MODEL_MLB_FORMULA
+
+    def test_h_at_1_5_uses_bernoulli_not_formula(self):
+        """H 1.5 means ≥2 hits; formula always returns P(≥1 hit), so must use Bernoulli."""
+        leg = {"sport": "MLB", "stat_key": "H", "line_value": 1.5, "side": "MORE"}
+        result = compute(leg, [2.0, 1.0, 0.0, 3.0, 1.0])
+        assert result.model_used == MODEL_BERNOULLI
+        assert result.model_used != MODEL_MLB_FORMULA
+
+    def test_h_at_1_5_threshold_respected(self):
+        """H 1.5 MORE: only games with ≥2 hits count."""
+        log = [2.0, 1.0, 0.0, 3.0, 1.0]   # 2 games have H≥2: indices 0, 3
+        leg = {"sport": "MLB", "stat_key": "H", "line_value": 1.5, "side": "MORE"}
+        result = compute(leg, log)
+        assert result.hit_probability == pytest.approx(0.4)   # 2/5
+
+    def test_h_at_1_5_less_threshold_respected(self):
+        """H 1.5 LESS: games with H < 1.5, i.e. ≤1 hit."""
+        log = [2.0, 1.0, 0.0, 3.0, 1.0]   # 3 games with H<1.5: indices 1, 2, 4
+        leg = {"sport": "MLB", "stat_key": "H", "line_value": 1.5, "side": "LESS"}
+        result = compute(leg, log)
+        assert result.hit_probability == pytest.approx(0.6)   # 3/5
+
+
+# ---------------------------------------------------------------------------
+# MLB non-hit binary props — Bernoulli dispatch (HR, RBI, SB, TB, BB, R)
+# ---------------------------------------------------------------------------
+
+class TestMlbNonHitBinaryDispatch:
+    """HR/RBI/SB/TB at ≤1.5 line must use Bernoulli (game-log), not mlb_formula_v2."""
+
+    def test_hr_uses_bernoulli(self):
+        leg = {"sport": "MLB", "stat_key": "HR", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, [0.0, 1.0, 0.0, 0.0, 1.0])
+        assert result.model_used == MODEL_BERNOULLI
+
+    def test_rbi_uses_bernoulli(self):
+        leg = {"sport": "MLB", "stat_key": "RBI", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, [1.0, 0.0, 2.0, 0.0, 1.0])
+        assert result.model_used == MODEL_BERNOULLI
+
+    def test_sb_uses_bernoulli(self):
+        leg = {"sport": "MLB", "stat_key": "SB", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, [0.0, 0.0, 1.0, 0.0, 1.0])
+        assert result.model_used == MODEL_BERNOULLI
+
+    def test_tb_at_1_5_uses_bernoulli(self):
+        # TB 1.5 — line honors threshold (≥2 TB means at least a double/HR)
+        leg = {"sport": "MLB", "stat_key": "TB", "line_value": 1.5, "side": "MORE"}
+        result = compute(leg, [2.0, 1.0, 3.0, 0.0, 4.0])
+        assert result.model_used == MODEL_BERNOULLI
+
+    def test_tb_line_threshold_respected(self):
+        # 3 of 5 games have TB≥2 (above 1.5 line)
+        log = [2.0, 1.0, 3.0, 0.0, 4.0]
+        leg = {"sport": "MLB", "stat_key": "TB", "line_value": 1.5, "side": "MORE"}
+        result = compute(leg, log)
+        assert result.hit_probability == pytest.approx(0.6)   # 3/5
+
+    def test_bb_uses_bernoulli(self):
+        leg = {"sport": "MLB", "stat_key": "BB", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, [1.0, 0.0, 0.0, 1.0, 0.0])
+        assert result.model_used == MODEL_BERNOULLI
+
+    def test_hr_does_not_use_mlb_formula(self):
+        leg = {"sport": "MLB", "stat_key": "HR", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, [0.0, 1.0, 0.0, 0.0, 1.0])
+        assert result.model_used != MODEL_MLB_FORMULA
+
+    def test_tb_above_1_5_routes_to_counting_or_claude(self):
+        # TB 2.5 is above binary range — no longer _is_mlb_binary
+        leg = {"sport": "MLB", "stat_key": "TB", "line_value": 2.5, "side": "MORE"}
+        result = compute(leg, [2.0, 3.0, 1.0, 4.0, 2.0])
+        # TB is in _MLB_COUNTING_STATS, so should hit Poisson
+        assert MODEL_POISSON in result.model_used or result.model_used == MODEL_CLAUDE
+
+    def test_1b_at_0_5_uses_bernoulli_not_formula(self):
+        """1B props are NOT eligible for mlb_formula_v2 — must route to Bernoulli."""
+        leg = {"sport": "MLB", "stat_key": "1B", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, [0.0, 1.0, 1.0, 0.0, 1.0])
+        assert result.model_used == MODEL_BERNOULLI
+        assert result.model_used != MODEL_MLB_FORMULA
+
+    def test_2b_at_0_5_uses_bernoulli_not_formula(self):
+        """2B props are NOT eligible for mlb_formula_v2."""
+        leg = {"sport": "MLB", "stat_key": "2B", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, [0.0, 0.0, 1.0, 0.0, 0.0])
+        assert result.model_used == MODEL_BERNOULLI
+
+    def test_3b_at_0_5_uses_bernoulli_not_formula(self):
+        """3B props are NOT eligible for mlb_formula_v2."""
+        leg = {"sport": "MLB", "stat_key": "3B", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, [0.0, 0.0, 0.0, 1.0, 0.0])
+        assert result.model_used == MODEL_BERNOULLI
+
+    def test_2b_line_threshold_respected(self):
+        """Bernoulli counts games where value ≥ line — must honor the actual line."""
+        # 2 of 5 games have 2B≥0.5 (i.e. ≥1 double)
+        log = [0.0, 1.0, 0.0, 0.0, 2.0]
+        leg = {"sport": "MLB", "stat_key": "2B", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, log)
+        assert result.hit_probability == pytest.approx(0.4)   # 2/5
+
+
+# ---------------------------------------------------------------------------
+# Poisson model — over/under boundary, sample warnings
+# ---------------------------------------------------------------------------
+
+class TestPoissonExtended:
+    def test_model_name_is_poisson_l10(self):
+        log = [27.0] * 10
+        result = _poisson_model(log, 25.5, "MORE")
+        assert result.model_used == MODEL_POISSON
+
+    def test_small_sample_calibration_warning(self):
+        log = [25.0] * 6   # below _POISSON_IDEAL_SAMPLE=10
+        result = _poisson_model(log, 25.5, "MORE")
+        assert str(6) in result.calibration_note
+        assert "below" in result.calibration_note
+
+    def test_full_sample_no_warning(self):
+        log = [25.0] * 10   # exactly at ideal
+        result = _poisson_model(log, 25.5, "MORE")
+        assert "below" not in result.calibration_note
+
+    def test_over_threshold_boundary(self):
+        # Line=25.5, MORE → P(X≥26); λ=30 gives ~0.79
+        log = [30.0] * 10
+        result = _poisson_model(log, 25.5, "MORE")
+        assert result.hit_probability > 0.70
+
+    def test_under_threshold_boundary(self):
+        # Line=25.5, LESS → P(X≤25)
+        log = [15.0] * 10
+        result = _poisson_model(log, 25.5, "LESS")
+        assert result.hit_probability > 0.80
+
+
+# ---------------------------------------------------------------------------
+# Claude fallback — missing game_log, UNRESOLVABLE
+# ---------------------------------------------------------------------------
+
+class TestClaudeFallback:
+    def test_no_game_log_returns_no_data_not_claude(self):
+        """compute() returns MODEL_NO_DATA when game_log is empty (before reaching Claude)."""
+        leg = {"sport": "NFL", "stat_key": "passing_yards", "line_value": 245.5,
+               "side": "MORE", "player_name": "P. Mahomes"}
+        result = compute(leg, [])
+        assert result.hit_probability is None
+        assert result.model_used == MODEL_NO_DATA
+
+    def test_claude_called_for_unknown_sport_with_log(self):
+        """NFL with game_log → Claude fallback is reached."""
+        import gate_engine.claude_gap_fill as cgf
+        client_mock = MagicMock()
+        client_mock.messages.create.return_value = MagicMock(
+            content=[MagicMock(text='{"hit_probability": 0.63, '
+                                    '"model_used": "claude_poisson_estimate", '
+                                    '"calibration_note": "Poisson λ=245, n=5", '
+                                    '"work": "..."}')]
+        )
+        leg = {"sport": "NHL", "stat_key": "goals", "line_value": 0.5,
+               "side": "MORE", "player_name": "A. Matthews"}
+
+        with patch.object(cgf, "_anthropic_client", client_mock):
+            result = compute(leg, [1.0, 0.0, 0.0, 1.0, 1.0])
+
+        assert result.model_used == MODEL_CLAUDE
+        assert result.hit_probability == pytest.approx(0.63, abs=0.001)
+
+    def test_null_on_unresolvable_leg_no_log(self):
+        """UNRESOLVABLE leg with no game_log → null probability."""
+        leg = {"sport": "NBA", "stat_key": "PTS", "line_value": 25.5, "side": "MORE"}
+        result = compute(leg, [])
+        assert result.hit_probability is None
+        assert result.model_used == MODEL_NO_DATA
+
+    def test_null_on_mlb_no_log(self):
+        """MLB hit prop with no game_log → null via _mlb_formula_v2 no_data path."""
+        leg = {"sport": "MLB", "stat_key": "H", "line_value": 0.5, "side": "MORE"}
+        result = compute(leg, [])
+        assert result.hit_probability is None
+        assert result.model_used == MODEL_NO_DATA
