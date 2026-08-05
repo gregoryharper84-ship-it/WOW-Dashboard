@@ -845,3 +845,39 @@ Traps (FAKE_JS): `high_volatility_pra_more`, `scoring_efficiency_dependent`,
 - Supply `js_env_support` dict for Gate A WNBA PRA env check (pace/total/minutes/role/usage/game_environment)
 - Supply `pitcher_conflict_proof` for Gate B (5 required sub-proofs)
 - Supply `k_less_proof` for Gate C (4 required sub-proofs)
+
+---
+
+## Patch Queue Entry — 2026-08-05
+
+### WOW-PATCH-2026-08-05-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR
+
+**Status:** PROPOSED — awaiting ChatGPT Step 3 review
+
+**Type:** New skill (additive, no spec section change)
+
+**What it adds:** `wow-cross-sport-high-probability-selector` — daily cross-sport candidate ranking into four output lanes: Highest Hit Probability, Highest True Probability, Best Verified Edge, Best Multi-Leg Structure. Includes weakest-leg elimination and explicit cross-leg dependence audit (same-injury-thesis, same-player, component/composite overlap, shared game script, shared weather exposure).
+
+**Permanent invariants (non-negotiable):**
+- `auto_execute=false`
+- `requires_human_confirmation=true`
+- `stake_sizing=false`
+- `bankroll_allocation=false`
+- `NO_PLAY=valid`
+
+**Filed files:**
+- `skills/wow-cross-sport-high-probability-selector-SKILL.md`
+- `skills/WOW-PATCH-2026-08-05-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR.md`
+- `skills/WOW-REGRESSION-TESTS-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR.md`
+- `skills/schemas/prediction-outcome-schema-cross-sport-selector.json`
+
+**Backend dependency resolution (Replit, 2026-08-05):**
+- "Immutable prediction ledger" → **NOT_AVAILABLE** — no table, endpoint, or module found; Step 15 must degrade gracefully
+- "Cross-ticket exposure ledger" → **PARTIAL** — `slip_exposure_ledger.py` + `cross_slip_exposure.py` + `cross_ticket_governor` exist but are slip-scoped, not prediction-keyed
+- `wow-high-hit-engine` overlap → **NOT_A_CONFLICT** — skill does not exist in current stack; moot until introduced
+
+**Open items for ChatGPT Step 3:**
+1. Confirm whether NOT_AVAILABLE / PARTIAL health check status codes are surfaced in skill output or suppressed
+2. Confirm this skill runs *alongside* (not replacing) the probability-ranking portion of any future wow-high-hit-engine
+3. No code deploy required unless Step 3 triggers ledger build work
+
