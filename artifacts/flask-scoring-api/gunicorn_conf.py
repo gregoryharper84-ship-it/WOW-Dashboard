@@ -76,6 +76,7 @@ def post_fork(server, worker):
         flask_app._LLP_PRO_SCHEMA_LOCK       = threading.Lock()
         flask_app._LLP_CRON_LOCK             = threading.Lock()
         flask_app._WNBA_CRON_LOCK            = threading.Lock()
+        flask_app._ODDS_QUOTA_LOCK           = threading.Lock()
 
         flask_app._FIXTURES_SCHEMA_READY     = False
         flask_app._UMPIRE_SCHEMA_READY       = False
@@ -108,6 +109,22 @@ def post_fork(server, worker):
         server.log.info(f"[post_fork] worker {worker.pid}: Stage 2 table bootstrap scheduled")
     except Exception as exc:
         server.log.warning(f"[post_fork] Stage 2 table bootstrap failed (non-fatal): {exc}")
+
+    # ── Odds API quota: ensure cross-worker table exists ─────────────────────
+    # See gate_engine/pg_odds_quota.py. Fixes: quota state tracked as a
+    # module-level dict in app.py is per-process under gunicorn, so the
+    # /wow/odds/quota-status warning could be invisible to whichever worker
+    # didn't make the last Odds API call. Idempotent DDL, daemon thread.
+    try:
+        import gate_engine.pg_odds_quota as _oq
+        threading.Thread(
+            target=_oq.ensure_table_exists,
+            daemon=True,
+            name=f"odds-quota-ensure-table-w{worker.pid}",
+        ).start()
+        server.log.info(f"[post_fork] worker {worker.pid}: odds quota table bootstrap scheduled")
+    except Exception as exc:
+        server.log.warning(f"[post_fork] odds quota table bootstrap failed (non-fatal): {exc}")
 
     # ── Stage 2: reset settlement worker and start a real thread in this worker ─
     # Root cause: start_settlement_worker() ran in the master → set

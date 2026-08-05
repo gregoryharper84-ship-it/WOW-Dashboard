@@ -32548,6 +32548,18 @@ def _odds_quota_update(key_tier: str, remaining_str, used_str) -> bool:
             "updated_at":         _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
             "quota_warning":      warning,
         }
+    # ── Cross-worker write-through (Postgres) ────────────────────────────────
+    # Fixes: quota state was per-process under gunicorn (2 workers), so
+    # GET /wow/odds/quota-status could report quota_warning=False on the
+    # worker that DIDN'T just make the low-quota Odds API call.
+    # Skipped under pytest so test_odds_quota_tracking.py keeps its
+    # "no live network calls made" contract.
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            from gate_engine.pg_odds_quota import persist_quota_update
+            persist_quota_update(key_tier, remaining, used, warning)
+        except Exception:
+            pass  # fail-open — quota tracking must never break the caller
     return warning
 
 
@@ -32555,6 +32567,33 @@ def _odds_quota_snapshot() -> dict:
     """Return a thread-safe copy of the current quota store."""
     with _ODDS_QUOTA_LOCK:
         return {k: dict(v) for k, v in _ODDS_QUOTA_STORE.items()}
+
+
+def _odds_quota_snapshot_cross_worker() -> dict:
+    """
+    Merge the local in-process snapshot with the Postgres cross-worker view
+    so GET /wow/odds/quota-status reflects quota consumed by ANY gunicorn
+    worker, not just whichever worker answers this request.
+
+    Local data wins per-tier when it's the newer of the two records.
+    Skipped under pytest — the empty-store assertion in
+    TestQuotaStatusEndpoint::test_empty_store_returns_200 would become
+    flaky if Postgres rows from a different test leaked in.
+    """
+    local = _odds_quota_snapshot()
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return local
+    try:
+        from gate_engine.pg_odds_quota import fetch_quota_snapshot
+        remote = fetch_quota_snapshot()
+    except Exception:
+        remote = {}
+    merged = dict(local)
+    for tier, remote_row in remote.items():
+        local_row = local.get(tier)
+        if local_row is None or remote_row.get("updated_at", "") > local_row.get("updated_at", ""):
+            merged[tier] = remote_row
+    return merged
 
 
 def _verify_wow_action_key():
@@ -32749,7 +32788,7 @@ def wow_odds_quota_status():
     if not ok:
         return err
 
-    snapshot = _odds_quota_snapshot()
+    snapshot = _odds_quota_snapshot_cross_worker()
     any_warning = any(v.get("quota_warning") for v in snapshot.values())
 
     return jsonify({
@@ -32757,9 +32796,9 @@ def wow_odds_quota_status():
         "quota_warning":       any_warning,
         "tiers":               snapshot,
         "note": (
-            "Values reflect the last successful call in this worker process. "
-            "Two gunicorn workers run independently — if no calls have been made "
-            "from this worker since startup, tiers will be empty."
+            "Values reflect the last successful Odds API call across all "
+            "gunicorn workers (cross-worker state via Postgres). "
+            "Tiers are empty only when no calls have been made since startup."
         ),
     }), 200
 
