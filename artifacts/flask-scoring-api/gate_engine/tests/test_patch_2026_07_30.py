@@ -277,11 +277,14 @@ class TestMLBDirectionalFirewall:
         assert row["terminal_label"] == PropLabel.MLB_K_LESS_WATCH.value
 
     def test_outs_more_conditional_as_unconditional_blocked(self):
-        """Test 15: conditional_probability_used_as_unconditional → MODEL_INVALID blocker."""
+        """Test 15: conditional_probability_used_as_unconditional → MODEL_INVALID blocker.
+        required_out_survival_lower_bound must be present so Rule 0 (missing-data fail-closed,
+        WOW-PATCH-2026-08-04-OUTS-MORE-MISSING-SURVIVAL-DATA) does not intercept first."""
         row = _mlb_row(
             stat_type="Pitching Outs",
             direction="MORE",
             terminal_label=PropLabel.MONEY_QUALIFIED.value,
+            required_out_survival_lower_bound=0.80,
             conditional_probability_used_as_unconditional=True,
         )
         _mlb.run(row)
@@ -303,11 +306,15 @@ class TestMLBDirectionalFirewall:
         assert row["terminal_label"] == PropLabel.MODEL_QUALIFIED_HOLD.value
 
     def test_outs_more_hold_ceiling_unconditional(self):
-        """OUTS MORE always capped at MODEL_QUALIFIED_HOLD (PATCH-015 initial state)."""
+        """OUTS MORE always capped at MODEL_QUALIFIED_HOLD (PATCH-015 initial state).
+        required_out_survival_lower_bound must be present so Rule 0 (missing-data
+        fail-closed, WOW-PATCH-2026-08-04-OUTS-MORE-MISSING-SURVIVAL-DATA) does not
+        intercept first."""
         row = _mlb_row(
             stat_type="Pitching Outs",
             direction="MORE",
             terminal_label=PropLabel.FINAL_APPROVED.value,
+            required_out_survival_lower_bound=0.75,
         )
         _mlb.run(row)
         assert row["directional_lane"] == "OUTS_MORE"

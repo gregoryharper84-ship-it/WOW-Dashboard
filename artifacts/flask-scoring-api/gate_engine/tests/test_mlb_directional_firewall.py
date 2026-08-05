@@ -1,0 +1,151 @@
+"""
+Regression tests for gate_engine/mlb_directional_firewall.py.
+
+This module previously had NO test coverage at all. Added as part of the
+WOW-PATCH-2026-08-04-OUTS-MORE-MISSING-SURVIVAL-DATA fix (see postmortem on
+Jared Jones / Pitching Outs MORE 14.5, 2026-08-04): a missing
+required_out_survival_lower_bound silently fell through to the same
+MLB_OUTS_MORE_HOLD ceiling as a row that had actually cleared the floor,
+so a prop could be qualified without the workload-survival probability
+WOW-PATCH-2026-07-30 requires ever being computed.
+"""
+import pytest
+
+from gate_engine.mlb_directional_firewall import run, _detect_lane
+
+
+def _base_outs_more_row(**overrides) -> dict:
+    row = {
+        "sport": "MLB",
+        "stat_type": "pitching outs",
+        "direction": "MORE",
+        "player_name": "Test Pitcher",
+        "terminal_label": "MARKET_VERIFIED_HOLD",
+    }
+    row.update(overrides)
+    return row
+
+
+# ---------------------------------------------------------------------------
+# Lane detection
+# ---------------------------------------------------------------------------
+
+def test_detects_outs_more_lane():
+    row = _base_outs_more_row()
+    assert _detect_lane(row) == "OUTS_MORE"
+
+
+def test_detects_k_less_lane():
+    row = {"sport": "MLB", "stat_type": "pitcher strikeouts", "direction": "LESS"}
+    assert _detect_lane(row) == "K_LESS"
+
+
+def test_non_mlb_row_is_not_pitcher_prop():
+    row = {"sport": "NBA", "stat_type": "points", "direction": "MORE"}
+    assert _detect_lane(row) == "NOT_PITCHER_PROP"
+
+
+# ---------------------------------------------------------------------------
+# THE BUG: missing required_out_survival_lower_bound (Rule 0)
+# ---------------------------------------------------------------------------
+
+def test_missing_survival_data_fails_closed():
+    """
+    Core regression test. Before the fix: missing data silently produced
+    the same MODEL_QUALIFIED_HOLD ceiling as passing data. After the fix:
+    missing data must REJECT_DATA_QUALITY with an explicit blocker.
+    """
+    row = _base_outs_more_row()  # no required_out_survival_lower_bound at all
+    run(row)
+    assert row["terminal_label"] == "REJECT_DATA_QUALITY"
+    assert "MLB_OUTS_MORE_SURVIVAL_DATA_MISSING" in row["blockers"]
+    assert row["gates"]["mlb_outs_more_gate"]["p_survival_lower_bound"] is None
+
+
+def test_missing_survival_data_distinct_from_passing_case():
+    """The specific regression: missing-data and passing-data outcomes must differ."""
+    missing_row = _base_outs_more_row()
+    run(missing_row)
+
+    passing_row = _base_outs_more_row(required_out_survival_lower_bound=0.78)
+    run(passing_row)
+
+    assert missing_row["terminal_label"] != passing_row["terminal_label"]
+    assert missing_row["terminal_label"] == "REJECT_DATA_QUALITY"
+    assert passing_row["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+
+
+def test_non_numeric_survival_value_treated_as_missing():
+    row = _base_outs_more_row(required_out_survival_lower_bound="not-a-number")
+    run(row)
+    assert row["terminal_label"] == "REJECT_DATA_QUALITY"
+
+
+# ---------------------------------------------------------------------------
+# Rule 1: below-floor survival probability (unchanged by this patch)
+# ---------------------------------------------------------------------------
+
+def test_below_floor_survival_probability_blocks():
+    row = _base_outs_more_row(required_out_survival_lower_bound=0.40)
+    run(row)
+    assert "MLB_OUTS_MORE_LOW_PROBABILITY" in row["blockers"]
+    assert row["terminal_label"] == "MODEL_QUALIFIED_HOLD"  # capped, not rejected
+
+
+def test_at_floor_survival_probability_passes():
+    row = _base_outs_more_row(required_out_survival_lower_bound=0.65)
+    run(row)
+    assert row["blockers"] == []
+
+
+def test_custom_floor_respected():
+    row = _base_outs_more_row(required_out_survival_lower_bound=0.60,
+                               outs_more_survival_floor=0.55)
+    run(row)
+    assert row["blockers"] == []
+
+
+# ---------------------------------------------------------------------------
+# Rule 2: conditional reported as unconditional (unchanged by this patch)
+# ---------------------------------------------------------------------------
+
+def test_conditional_as_unconditional_blocks():
+    row = _base_outs_more_row(
+        required_out_survival_lower_bound=0.80,
+        conditional_probability_used_as_unconditional=True,
+    )
+    run(row)
+    assert "MLB_OUTS_MORE_CONDITIONAL_AS_UNCONDITIONAL" in row["blockers"]
+
+
+# ---------------------------------------------------------------------------
+# Rule 3: unresolved workload restriction (unchanged by this patch)
+# ---------------------------------------------------------------------------
+
+def test_workload_restriction_unresolved_caps_at_hold():
+    row = _base_outs_more_row(
+        required_out_survival_lower_bound=0.80,
+        workload_restriction_unresolved=True,
+    )
+    run(row)
+    assert row["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+
+
+# ---------------------------------------------------------------------------
+# Passing case / normal path (unchanged by this patch)
+# ---------------------------------------------------------------------------
+
+def test_clean_passing_row_capped_at_hold_not_rejected():
+    row = _base_outs_more_row(required_out_survival_lower_bound=0.85)
+    run(row)
+    assert row["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert row["blockers"] == []
+
+
+def test_can_execute_always_false():
+    row = _base_outs_more_row(required_out_survival_lower_bound=0.85)
+    run(row)
+    assert row["can_execute"] is False
+    missing_row = _base_outs_more_row()
+    run(missing_row)
+    assert missing_row["can_execute"] is False

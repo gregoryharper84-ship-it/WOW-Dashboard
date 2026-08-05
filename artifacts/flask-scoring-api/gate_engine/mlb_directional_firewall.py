@@ -216,6 +216,27 @@ def _apply_outs_more_gate(row: dict[str, Any]) -> None:
         "can_execute":                       False,
     }
 
+    # Rule 0 (WOW-PATCH-2026-08-04-OUTS-MORE-MISSING-SURVIVAL-DATA):
+    # A missing required_out_survival_lower_bound is NOT the same as a
+    # cleared check. Previously, when this field was None, none of Rules
+    # 1-3 fired and the row fell through to the same MLB_OUTS_MORE_HOLD
+    # ceiling as a row whose survival probability was actually computed
+    # and cleared the floor — missing data and passing data produced an
+    # identical outcome. WOW data-integrity rule: NOT_CALLED is never
+    # treated as NOT_AVAILABLE / passing. Fail closed instead.
+    if p_survival_lb is None:
+        report["blocker"] = (
+            "REJECT_DATA_QUALITY — required_out_survival_lower_bound was not "
+            "reported; an Outs-MORE prop cannot be qualified without the "
+            "unconditional workload-survival probability WOW-PATCH-2026-07-30 requires"
+        )
+        if "MLB_OUTS_MORE_SURVIVAL_DATA_MISSING" not in blockers:
+            blockers.append("MLB_OUTS_MORE_SURVIVAL_DATA_MISSING")
+        row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
+        row["directional_forward_test_status"] = "MLB_OUTS_MORE_SURVIVAL_DATA_MISSING"
+        gates["mlb_outs_more_gate"] = report
+        return
+
     # Rule 1: survival lower bound below floor → NO_LOW_PROBABILITY
     if p_survival_lb is not None and p_survival_lb < floor:
         report["blocker"] = f"NO_LOW_PROBABILITY — survival_lb={p_survival_lb:.3f} < floor={floor:.3f}"
