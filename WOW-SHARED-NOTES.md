@@ -881,3 +881,36 @@ Traps (FAKE_JS): `high_volatility_pra_more`, `scoring_efficiency_dependent`,
 2. Confirm this skill runs *alongside* (not replacing) the probability-ranking portion of any future wow-high-hit-engine
 3. No code deploy required unless Step 3 triggers ledger build work
 
+
+---
+
+## Patch Update — 2026-08-05 (Step 3 applied)
+
+### WOW-PATCH-2026-08-05-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR — Step 3 Revisions Applied
+
+**Status:** ANALYTICAL SHADOW MODE — ChatGPT-approved with required revisions
+
+**Step 3 decision:** APPROVED WITH REQUIRED REVISIONS — ANALYTICAL SHADOW MODE ONLY
+
+**Revisions applied (R-1 through R-12):**
+- R-1: Permanent governance block expanded to 7 unconditional invariants (added can_execute=false, dry_run_only=true)
+- R-2: wow-high-hit-engine conflict language corrected — skill absent from active stack; no decision required
+- R-3: Immutable prediction ledger — explicit graceful degradation (NOT_AVAILABLE, non-blocking, field always required)
+- R-4: Cross-ticket exposure ledger — PARTIAL status handling with detail string; slip-scoped modules queried as advisory
+- R-5: Kalshi Portfolio Governor routing — enforced (must route through /wow/kalshi/category-scan; no independent scanning)
+- R-6: Kalshi combo restrictions — enforced per combo_gate.py Reliability Freeze (3+=REJECT, 4+=HARD_REJECT)
+- R-7: Recovery Mode — selector presents only portfolio_governor survivors; non-survivors land in Lane D verbatim
+- R-8: Ownership separation — selector owns ranking only; terminal-label authority belongs to specialist gates and backend
+- R-9: Four output lanes clarified with scope, authority, and field specs; Lane C miss-market excluded without blocking A/B
+- R-10: Final refresh made unconditionally mandatory — failure → NO_PLAY (final_refresh_status=FAILED)
+- R-11: Mandatory ledger status block in every output (4 required fields)
+- R-12: Executable pytest regression suite written (gate_engine/tests/test_cross_sport_selector_regressions.py)
+
+**Files changed:**
+- skills/wow-cross-sport-high-probability-selector-SKILL.md (full revision)
+- skills/WOW-PATCH-2026-08-05-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR.md (Step 3 marked done, revisions documented)
+- skills/WOW-REGRESSION-TESTS-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR.md (expanded with fixtures, expected labels, reconciliation)
+- gate_engine/tests/test_cross_sport_selector_regressions.py (new — 30 executable pytest assertions)
+
+**skill-registry.json:** NOT updated — blocked until all tests pass
+

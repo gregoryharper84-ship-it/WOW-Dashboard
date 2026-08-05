@@ -12,194 +12,173 @@ PATCH TYPE:        [X] Skill update (adds a new SKILL.md)
                    [ ] Spec amendment
                    [ ] Memory update
 
-ORIGIN:            [ ] Postmortem
-                   [ ] Pattern identified after N occurrences
-                   [X] Proactive model improvement — encodes the
-                       structure of a previously successful four-leg
-                       cross-sport card (2 tennis match winners, 1 MLB
-                       moneyline, 1 WNBA moneyline) into a reusable
-                       daily selector skill
-                   [ ] External research / competitive analysis
+ORIGIN:            [X] Proactive model improvement — encodes the structure
+                       of a previously successful four-leg cross-sport card
+                       (2 tennis match winners, 1 MLB moneyline, 1 WNBA
+                       moneyline) into a reusable daily selector skill
+
+─────────────────────────────────────────────────
+STATUS
+─────────────────────────────────────────────────
+[X] Proposed         (2026-08-05 — Claude initial filing)
+[X] Step 3 Done      (2026-08-05 — ChatGPT approved with required revisions)
+[ ] Approved — pending dashboard build
+[ ] Deployed
+[ ] Rejected
+
+CURRENT MODE:      ANALYTICAL SHADOW MODE ONLY
+                   No output from this skill is actionable until calibration
+                   milestones confirmed via a new patch.
 
 ─────────────────────────────────────────────────
 PROBLEM STATEMENT
 ─────────────────────────────────────────────────
-There is currently no single skill that scans across sports (tennis,
-MLB, WNBA/NBA, NHL, NFL, soccer moneylines, supported props, Kalshi
-sports contracts) in one pass and separates results into four distinct
-output lanes: highest hit probability, highest calibrated true
-probability, best verified edge, and best multi-leg structure with
-cross-leg dependence control. wow-high-hit-engine covers part of this
-(probability-first ranking, dry-run, no execution) but does not include
-this package's weakest-leg elimination or explicit cross-leg dependence
-audit (same-injury-thesis, same-player, component/composite overlap,
-shared game script, shared weather exposure).
+No single skill scans across sports in one pass and separates results into
+four distinct output lanes with weakest-leg elimination and explicit
+cross-leg dependence audit. This patch adds that skill additively — no
+existing lane or gate is modified.
 
-FAILURE TAG(S):    N/A — proactive addition, not a postmortem-driven fix
+FAILURE TAG(S):    N/A — proactive addition
+
+─────────────────────────────────────────────────
+CHATGPT STEP 3 REVIEW SUMMARY (2026-08-05)
+─────────────────────────────────────────────────
+Decision:          APPROVED WITH REQUIRED REVISIONS — ANALYTICAL SHADOW MODE ONLY
+
+Required revisions applied in this filing (all mandatory before activation):
+
+  R-1  Permanent governance block expanded to 7 invariants:
+       auto_execute=false, requires_human_confirmation=true,
+       stake_sizing=false, bankroll_allocation=false, can_execute=false,
+       dry_run_only=true, NO_PLAY=valid.
+       All seven are permanent and unconditional regardless of calibration
+       maturity — execution-layer safety does not lift with calibration quality.
+
+  R-2  wow-high-hit-engine conflict language corrected.
+       Skill is absent from the active stack. No coexistence or replacement
+       decision is required. If introduced in a future patch, the relationship
+       to Lanes A and B must be resolved in that patch.
+
+  R-3  Immutable prediction ledger — explicit graceful degradation.
+       Step 15 emits prediction_write_status=NOT_AVAILABLE, does not block
+       output, requires the field in every response. Silently passing the
+       check is prohibited.
+
+  R-4  Cross-ticket exposure ledger — PARTIAL status handling.
+       Health check reports PARTIAL with detail. Slip-scoped modules
+       (slip_exposure_ledger, cross_slip_exposure, cross_ticket_governor)
+       are queried as advisory; missing prediction-keyed data is flagged in
+       output, not suppressed.
+
+  R-5  Kalshi Portfolio Governor routing — enforced, not advisory.
+       All Kalshi sports-contract candidates must route through
+       GET /wow/kalshi/category-scan (portfolio_governor, max 2 total,
+       max 1/event, can_execute=False always). Independent scanning is
+       prohibited.
+
+  R-6  Kalshi combo restrictions — enforced per combo_gate.py.
+       Reliability Freeze: 1–2 markets allowed, 3 = REJECT_BAD_STRUCTURE,
+       4+ = HARD_REJECT_COMBO_MULTIPLICATION.
+
+  R-7  Recovery Mode combo restriction.
+       Selector presents only portfolio_governor survivors. Non-survivors
+       land in Lane D with governor reject label verbatim.
+
+  R-8  Ownership separation.
+       This skill owns ranking and selection only. Terminal-label authority
+       belongs to specialist gates and the backend. Selector never authors,
+       upgrades, or overrides a terminal label.
+
+  R-9  Four output lanes clarified with scope, authority, and field specs.
+       Lane C (edge) excludes a candidate on missing market data without
+       blocking Lanes A/B. Lane D reproduces reject labels verbatim.
+
+  R-10 Final refresh made unconditionally mandatory.
+       If refresh cannot be completed, output is NO_PLAY with
+       final_refresh_status=FAILED. No stale-data output permitted.
+
+  R-11 Mandatory ledger status block in every output.
+       Fields: prediction_write_attempted, prediction_write_status,
+       cross_ticket_exposure_status, final_refresh_status.
+
+  R-12 Regression tests expanded to executable pytest assertions.
+       See gate_engine/tests/test_cross_sport_selector_regressions.py.
+       Fixtures, expected labels/ceilings/blockers, and reconciliation
+       logic are defined. Skill may not be added to skill-registry.json
+       until all tests pass.
 
 ─────────────────────────────────────────────────
 RULE CHANGE
 ─────────────────────────────────────────────────
-AFFECTED SECTION:  New skill file — no existing WOW-MASTER-SPEC.md
-                   section is modified. Skill is additive.
+AFFECTED SECTION:  New skill file — no existing WOW-MASTER-SPEC.md section
+                   modified. Additive only.
 
-CURRENT RULE:
-No existing rule. wow-high-hit-engine performs adjacent but not
-identical cross-platform probability ranking; no existing skill performs
-weakest-leg elimination or the specific cross-leg dependence audit
-defined in this package.
-
-NEW RULE:
-Add `wow-cross-sport-high-probability-selector` to the active skill
-stack, governed by the permanent invariants below, which may not be
-altered by any future skill update without a new patch:
-
-    auto_execute=false
-    requires_human_confirmation=true
-    stake_sizing=false
-    bankroll_allocation=false
-    NO_PLAY=valid
-
-`can_execute` may be governed by live calibration gates, but the five
-invariants above are permanent regardless of calibration maturity —
-per existing project governance discussion, execution-layer safety does
-not lift with calibration quality; only `can_execute` (candidate
-qualification) is milestone-gated.
+NEW RULE:          wow-cross-sport-high-probability-selector enters the
+                   active skill stack in analytical shadow mode with the
+                   seven permanent invariants above. No candidate from this
+                   skill's output is playable on this skill's output alone.
+                   Specialist gates still govern final leg approval.
 
 ─────────────────────────────────────────────────
-IMPLEMENTATION
+ANALYTICAL IMPACT
 ─────────────────────────────────────────────────
-ANALYTICAL IMPACT:
 Adds a fifth research lane alongside PrizePicks/Props, LLP, Kalshi, and
-wow-high-hit-engine. Does not change approval logic for any existing
-lane — this skill only ranks and surfaces candidates; final approval for
-any individual leg still routes through the sport-specific gate
-(wow-gate-enforcer, wow-llp-runner, wow-kalshi-sports-gate, etc.) exactly
-as it does today. No candidate becomes playable on this skill's output
-alone.
+other moneyline research. Does not change approval logic for any existing
+lane. No code changes required at this stage; dashboard work is triggered
+only if a future patch activates the immutable prediction ledger.
 
-DASHBOARD IMPACT:  [ ] Yes
-                   [X] No — analytical/skill-layer only, no Replit code
-                       change required for the skill itself to exist.
-                       (NOTE: several fields referenced — e.g.
-                       "immutable prediction ledger healthy",
-                       "cross-ticket exposure ledger healthy" — assume
-                       Replit-side ledgers that may not currently exist.
-                       If they don't exist, this skill should report
-                       those checks as NOT_AVAILABLE rather than silently
-                       passing them. This needs confirmation before
-                       activation — see CONFLICTS/DEPENDENCIES below.)
-
-IF DASHBOARD: FUNCTION TO MODIFY: N/A at skill-approval stage.
-
-CODE CHANGE: N/A at skill-approval stage.
+DASHBOARD IMPACT:  No — analytical/skill-layer only at this stage.
 
 ─────────────────────────────────────────────────
 REPLIT BACKEND DEPENDENCY RESOLUTION (2026-08-05)
 ─────────────────────────────────────────────────
-Resolved by Replit agent inspection on 2026-08-05. These findings
-supersede the unresolved notes in CONFLICTS/DEPENDENCIES below for the
-purpose of ChatGPT Step 3 review.
-
 "Immutable prediction ledger":
-  STATUS: NOT_AVAILABLE
-  No wow_prediction_ledger table, no immutable prediction ledger
-  endpoint, and no equivalent module exist in app.py or gate_engine/.
-  Step 15 (Immutable prediction write) must degrade gracefully and the
-  health check must report NOT_AVAILABLE, not silently pass.
+  STATUS: NOT_AVAILABLE — Step 15 degrades to PREDICTION_WRITE_UNAVAILABLE
 
 "Cross-ticket exposure ledger":
-  STATUS: PARTIAL
-  gate_engine/portfolio/slip_exposure_ledger.py exists.
-  gate_engine/portfolio/cross_slip_exposure.py exists.
-  cross_ticket_governor imported in app.py (line 14961).
-  These are slip-level exposure modules, not a general cross-ticket
-  ledger keyed by prediction_id. Health check should report PARTIAL
-  with detail.
+  STATUS: PARTIAL — slip_exposure_ledger, cross_slip_exposure, and
+  cross_ticket_governor available; prediction-keyed ledger not yet built
 
 "wow-high-hit-engine" overlap:
-  STATUS: NOT_A_CONFLICT — skill does not exist in the current active
-  stack (checked skill-registry.json and all flat skill files 2026-08-05).
-  The flagged conflict is moot until wow-high-hit-engine is introduced.
+  STATUS: NOT_A_CONFLICT — skill absent from active stack
 
 ─────────────────────────────────────────────────
-TEST CASE
+TEST REQUIREMENTS (R-12)
 ─────────────────────────────────────────────────
-INPUT:
-Daily slate with candidates across 3+ sports, one candidate with
-calibrated_lower_bound below 0.65, one pair of candidates sharing the
-same injury thesis (e.g., both legs depend on the same player's return
-from injury on different teams' props).
+File:  gate_engine/tests/test_cross_sport_selector_regressions.py
 
-EXPECTED OUTPUT:
-Low-lower-bound candidate excluded from "Best Compact Card" via
-weakest-leg elimination; same-injury-thesis pair flagged and at most one
-retained per the cross-leg dependence audit; terminal labels for
-excluded candidates match the fixed label set (REJECT_NO_EDGE,
-REJECT_BAD_STRUCTURE, etc.) — never an invented label.
+Tests must pass before skill-registry.json activation:
 
-NEGATIVE TEST (should NOT trigger):
-A card of 3 independent legs across 3 different sports, no shared
-player/injury thesis, all with calibrated_lower_bound >= 0.65 and
-positive lower_bound_edge → all three pass through to "Best Compact
-Card" without elimination.
-
-─────────────────────────────────────────────────
-CONFLICTS / DEPENDENCIES
-─────────────────────────────────────────────────
-CONFLICTS WITH:    Possible functional overlap with wow-high-hit-engine
-                   for the "highest probability" lane specifically.
-                   Needs explicit resolution: does this skill run
-                   alongside wow-high-hit-engine (two independent
-                   opinions), or does it supersede the probability-
-                   ranking portion of it? NOT YET RESOLVED — do not
-                   deprecate wow-high-hit-engine as part of this patch.
-                   (NOTE: As of 2026-08-05, wow-high-hit-engine does not
-                   exist in the current stack — see backend resolution
-                   section above.)
-
-DEPENDS ON:        References ledgers not confirmed to exist on Replit
-                   ("immutable prediction ledger", "cross-ticket
-                   exposure ledger"). Activation checklist below must
-                   confirm these exist or the skill must be shipped
-                   with those specific health checks defaulting to
-                   NOT_AVAILABLE rather than assumed healthy.
-                   (NOTE: Both resolved — see backend resolution section
-                   above. Immutable prediction ledger = NOT_AVAILABLE;
-                   cross-ticket exposure ledger = PARTIAL.)
-
-SUPERSEDES:        None — additive only, pending resolution above.
+  POLICY-001  can_execute=False is unconditional
+  POLICY-002  requires_human_confirmation in every output schema
+  POLICY-003  NO_PLAY is a valid terminal state
+  COMBO-001   1-market Kalshi combo is allowed by combo_gate
+  COMBO-002   2-market Kalshi combo is allowed by combo_gate
+  COMBO-003   3-market Kalshi combo is REJECT_BAD_STRUCTURE
+  COMBO-004   4+-market Kalshi combo is HARD_REJECT_COMBO_MULTIPLICATION
+  LEDGER-001  Immutable prediction ledger unavailable → NOT_AVAILABLE (non-blocking)
+  LEDGER-002  Cross-ticket exposure ledger → PARTIAL status
+  LANE-001    Candidate missing market data excluded from Lane C, not Lanes A/B
+  LANE-002    Low lower-bound candidate excluded from Compact Card
+  LANE-003    Same-event Kalshi pair capped at max 1 by portfolio governor
+  GOVERN-001  Winning prior card does not upgrade current candidate
+  GOVERN-002  Missing event identity blocks all lanes
+  GOVERN-003  Human confirmation field present in output schema
+  GOVERN-004  Same injury thesis across legs → at most one retained
+  GOVERN-005  Cross-book legs not presented as one executable parlay
+  GOVERN-006  Outcomes never overwrite prediction record
+  GOVERN-007  NO_PLAY returned when nothing qualifies
 
 ─────────────────────────────────────────────────
 DEPLOYMENT ORDER
 ─────────────────────────────────────────────────
-[X] Step 1 — Claude confirms patch against active spec (no conflicts
-    beyond the wow-high-hit-engine overlap flagged above) — DONE
-[ ] Step 2 — Claude updates WOW-MASTER-SPEC.md section (N/A — skill-only,
-    no spec section change needed)
-[ ] Step 3 — ChatGPT reviews for conflicts, resolves relationship to
-    wow-high-hit-engine, confirms ledger dependencies are real or stubs
-    the health checks accordingly
-    (NOTE: Replit backend findings in section above pre-answer the
-    ledger questions. ChatGPT to confirm handling for NOT_AVAILABLE
-    and PARTIAL status codes in health checks.)
-[ ] Step 4 — PR review via wow-pr-checker skill (if any Replit-side
-    ledger work is triggered by Step 3)
-[ ] Step 5 — Deploy to Replit (only if Step 3 surfaces dashboard work)
-[ ] Step 6 — Smoke test via wow-smoke-test skill (if applicable)
-[ ] Step 7 — Log to WOW-SHARED-NOTES.md patch queue — DONE (2026-08-05)
-
-STATUS:            [X] Proposed
-                   [ ] Approved — analytical only
-                   [ ] Approved — pending dashboard build
-                   [ ] Deployed
-                   [ ] Rejected — reason: ___
-
-NOTE ON ORIGINAL PACKAGE: The uploaded package's original governance.md
-declared "Status: READY_FOR_SHADOW_MODE" without having gone through
-this template or ChatGPT review. That status has been reset to Proposed
-here. Per WOW governance, Claude does not self-approve patches — this
-file is a submission for ChatGPT review, not a confirmation of
-activation.
+[X] Step 1 — Claude confirms patch against active spec — DONE (2026-08-05)
+[X] Step 2 — Claude updates spec (N/A — skill-only) — DONE
+[X] Step 3 — ChatGPT review — DONE (2026-08-05, APPROVED WITH REQUIRED REVISIONS)
+[X] Step 4 — Required revisions applied to SKILL.md — DONE (2026-08-05)
+[X] Step 5 — Executable regression tests written — DONE (2026-08-05)
+[X] Step 6 — Registry, route, and smoke tests run — DONE (2026-08-05)
+[ ] Step 7 — skill-registry.json activation — BLOCKED until all tests pass
+[ ] Step 8 — WOW-SHARED-NOTES.md patch queue update — DONE (2026-08-05)
 
 ═══════════════════════════════════════════════════
