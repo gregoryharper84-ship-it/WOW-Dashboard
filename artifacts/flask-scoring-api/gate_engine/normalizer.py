@@ -28,9 +28,10 @@ import datetime
 import logging
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import requests
 
@@ -427,7 +428,16 @@ def _get_game(sport: str, team_abbr: str,
 # ---------------------------------------------------------------------------
 
 @dataclass
-class NormalizedRow:
+class NormalizedRow(Mapping):
+    """
+    NormalizedRow is both a typed dataclass (attribute access: row.player_name)
+    AND a read-only Mapping (row['player_name'], row.get('x'), 'x' in row,
+    dict(row), **row, for k in row). This fixes callers that treat a
+    NormalizedRow like a plain dict — e.g. row.get("resolution_status") or
+    {**row, "extra": 1} — which previously raised AttributeError/TypeError
+    because only __getitem__ was implemented. Mapping supplies get/keys/
+    items/values/__contains__/__eq__ from __getitem__ + __iter__ + __len__.
+    """
     # Input echo
     raw_player:    str
     raw_prop_type: str
@@ -463,6 +473,13 @@ class NormalizedRow:
     def __getitem__(self, key: str) -> Any:
         """Support dict-style access: row['resolution_status']."""
         return self.to_dict()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        """Support iteration/dict(): for key in row / dict(row) / **row."""
+        return iter(self.to_dict())
+
+    def __len__(self) -> int:
+        return len(self.to_dict())
 
     def to_dict(self) -> dict:
         team_abbr = (self.team or "").upper()
