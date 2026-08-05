@@ -1,0 +1,38 @@
+{
+  "prediction_fields": [
+    "prediction_id",
+    "research_run_id",
+    "candidate_id",
+    "sport",
+    "event_key",
+    "market",
+    "side",
+    "price",
+    "market_probability",
+    "raw_probability",
+    "calibrated_probability",
+    "lower_bound",
+    "upper_bound",
+    "failure_path_score",
+    "terminal_label",
+    "sources",
+    "created_at"
+  ],
+  "outcome_fields": [
+    "prediction_id",
+    "official_result",
+    "settlement_source",
+    "settlement_timestamp",
+    "closing_market_probability",
+    "observed_path",
+    "process_classification"
+  ],
+  "metrics": [
+    "brier_score",
+    "log_loss",
+    "expected_calibration_error",
+    "calibration_bias",
+    "lower_bound_reliability",
+    "clv"
+  ]
+}
