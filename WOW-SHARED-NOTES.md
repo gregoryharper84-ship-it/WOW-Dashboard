@@ -4,6 +4,38 @@ Cross-cutting notes, routing caveats, and known limitations for the WOW v16 scor
 
 ---
 
+## 2026-08-05 — DEPLOYED: WOW-PATCH-2026-08-04-OUTS-MORE-MISSING-SURVIVAL-DATA
+
+**Patch:** `WOW-PATCH-2026-08-04-OUTS-MORE-MISSING-SURVIVAL-DATA`
+**Commit:** `a768274` (GitHub main, 2026-08-05)
+**Status:** `Deployed`
+
+**What shipped:**
+- `gate_engine/mlb_directional_firewall.py` — Rule 0 added to `_apply_outs_more_gate()`:
+  missing/non-numeric `required_out_survival_lower_bound` now routes to
+  `REJECT_DATA_QUALITY` + blocker `MLB_OUTS_MORE_SURVIVAL_DATA_MISSING` instead of
+  silently falling through to `MODEL_QUALIFIED_HOLD` (previously indistinguishable from
+  a row that actually cleared the 0.65 floor)
+- `gate_engine/tests/test_mlb_directional_firewall.py` — 13 new regression tests (module
+  had zero coverage before)
+- Two Outs-MORE fixtures in `test_patch_2026_07_30.py` updated to supply
+  `required_out_survival_lower_bound` so their intended Rule 2/ceiling branches are
+  reachable past Rule 0
+- `skills/WOW-PATCH-2026-08-04-OUTS-MORE-MISSING-SURVIVAL-DATA.md` — patch doc
+
+**Test result:** 2,528 passed, 0 failed.
+
+**Postmortem linkage:** Jared Jones 2026-08-04 (Outs MORE 14.5, pulled at 12). The
+ambiguity was whether his miss was legitimate variance or a gate that never ran. Audit
+found Rule 0 gap; this patch makes the two cases distinguishable in the ledger.
+See `WOW-RESULTS-LOG.md` for the formal postmortem row.
+
+**Governance flag (open):** ChatGPT sign-off was not obtained before deployment. The fix
+closes a fail-open bug (not a new analytical rule), but per the governance chain this
+should be confirmed with ChatGPT. Update `chatgpt_approval` in the patch doc when done.
+
+---
+
 ## 2026-07-04 — skip_data_contract Routing Note
 
 **Context:** During review of `WOW-PATCH-2026-07-04-MARKET-JOIN-AUDIT`, the market-join audit patch was approved and deployed as additive observability. It does not modify `market_gate.py`, `classifier.py`, terminal labels, approval thresholds, EV logic, or gate pass/fail behavior.

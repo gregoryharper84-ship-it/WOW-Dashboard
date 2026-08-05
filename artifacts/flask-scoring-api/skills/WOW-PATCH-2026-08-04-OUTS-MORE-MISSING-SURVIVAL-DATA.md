@@ -3,11 +3,20 @@
 ## Status
 
 ```text
-ACTIVE
+Deployed
 patch_priority=HIGH
 framework=WOW_v16_CLEAN_CORE
-label=v16 active
+activation_date=2026-08-05
+deployed_commit=a768274
+chatgpt_approval=PENDING_CONFIRMATION
 ```
+
+> **Governance note (2026-08-05):** This patch closes a silent fail-open bug (missing
+> `required_out_survival_lower_bound` fell through to `MODEL_QUALIFIED_HOLD` identically
+> to a row that computed and cleared the 0.65 floor). It does not introduce a new
+> analytical rule — it enforces fail-closed behavior that was always the stated intent.
+> ChatGPT approval was not obtained before deployment; confirm with ChatGPT and update
+> `chatgpt_approval` above.
 
 ## Purpose
 
