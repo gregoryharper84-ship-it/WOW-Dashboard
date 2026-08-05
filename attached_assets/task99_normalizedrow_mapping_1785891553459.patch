@@ -1,0 +1,139 @@
+diff --git a/artifacts/flask-scoring-api/gate_engine/normalizer.py b/artifacts/flask-scoring-api/gate_engine/normalizer.py
+index 0000000..0000000 100644
+--- a/artifacts/flask-scoring-api/gate_engine/normalizer.py
++++ b/artifacts/flask-scoring-api/gate_engine/normalizer.py
+@@ -28,9 +28,10 @@
+ import logging
+ import re
+ import uuid
++from collections.abc import Mapping
+ from dataclasses import dataclass, field
+ from datetime import date
+-from typing import Any, Optional
++from typing import Any, Iterator, Optional
+ 
+ import requests
+ 
+@@ -427,7 +428,16 @@
+ # ---------------------------------------------------------------------------
+ 
+ @dataclass
+-class NormalizedRow:
++class NormalizedRow(Mapping):
++    """
++    NormalizedRow is both a typed dataclass (attribute access: row.player_name)
++    AND a read-only Mapping (row['player_name'], row.get('x'), 'x' in row,
++    dict(row), **row, for k in row). This fixes callers that treat a
++    NormalizedRow like a plain dict — e.g. row.get("team_hint") or
++    {**row, "extra": 1} — which previously raised AttributeError/TypeError
++    because only __getitem__ was implemented. Mapping supplies get/keys/
++    items/values/__contains__/__eq__ from __getitem__ + __iter__ + __len__.
++    """
+     # Input echo
+     raw_player:    str
+     raw_prop_type: str
+@@ -464,6 +474,13 @@
+         """Support dict-style access: row['resolution_status']."""
+         return self.to_dict()[key]
+ 
++    def __iter__(self) -> Iterator[str]:
++        """Support iteration/dict(): for key in row / dict(row) / **row."""
++        return iter(self.to_dict())
++
++    def __len__(self) -> int:
++        return len(self.to_dict())
++
+     def to_dict(self) -> dict:
+         team_abbr = (self.team or "").upper()
+         return {
+diff --git a/artifacts/flask-scoring-api/gate_engine/tests/test_normalized_row_mapping.py b/artifacts/flask-scoring-api/gate_engine/tests/test_normalized_row_mapping.py
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/artifacts/flask-scoring-api/gate_engine/tests/test_normalized_row_mapping.py
+@@ -0,0 +1,85 @@
++"""
++Regression tests for task #99: /normalize-legs 500 crash — NormalizedRow
++treated as a dict by callers using .get() / **row / 'x' in row, none of
++which worked when NormalizedRow only implemented __getitem__.
++
++Reproduced pre-fix (see session notes): row.get(...) raised AttributeError,
++{**row, ...} raised TypeError: not a mapping, and 'x' in row raised KeyError
++via the legacy __getitem__-only iteration protocol instead of returning bool.
++"""
++from gate_engine.normalizer import NormalizedRow
++
++
++def _sample_row(**overrides) -> NormalizedRow:
++    row = NormalizedRow(
++        raw_player="LeBron James",
++        raw_prop_type="points",
++        raw_line=25.5,
++        sport="NBA",
++    )
++    for k, v in overrides.items():
++        setattr(row, k, v)
++    return row
++
++
++def test_getitem_unchanged():
++    row = _sample_row(resolution_status="resolved")
++    assert row["resolution_status"] == "resolved"
++
++
++def test_get_with_existing_key():
++    row = _sample_row(resolution_status="resolved")
++    assert row.get("resolution_status") == "resolved"
++
++
++def test_get_with_missing_key_returns_default():
++    row = _sample_row()
++    assert row.get("does_not_exist", "fallback") == "fallback"
++    assert row.get("does_not_exist") is None
++
++
++def test_contains_operator():
++    row = _sample_row()
++    assert "resolution_status" in row
++    assert "definitely_not_a_field" not in row
++
++
++def test_dict_conversion():
++    row = _sample_row(resolution_status="resolved")
++    d = dict(row)
++    assert d["resolution_status"] == "resolved"
++    assert d == row.to_dict()
++
++
++def test_double_star_unpacking():
++    row = _sample_row(resolution_status="resolved")
++    merged = {**row, "extra_field": "x"}
++    assert merged["resolution_status"] == "resolved"
++    assert merged["extra_field"] == "x"
++
++
++def test_iteration_yields_keys():
++    row = _sample_row()
++    keys = list(row)
++    assert "resolution_status" in keys
++    assert "raw_player" in keys
++
++
++def test_len_matches_to_dict():
++    row = _sample_row()
++    assert len(row) == len(row.to_dict())
++
++
++def test_keys_values_items():
++    row = _sample_row(resolution_status="resolved")
++    assert "resolution_status" in row.keys()
++    assert "resolved" in row.values()
++    assert ("resolution_status", "resolved") in row.items()
++
++
++def test_attribute_access_still_works():
++    """The Mapping base must not break normal dataclass attribute access."""
++    row = _sample_row(resolution_status="resolved")
++    row.flags.append("TEST_FLAG")
++    assert row.resolution_status == "resolved"
++    assert "TEST_FLAG" in row.flags

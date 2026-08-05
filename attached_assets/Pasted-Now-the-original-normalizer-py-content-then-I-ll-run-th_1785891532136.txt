@@ -1,0 +1,52 @@
+Now the original normalizer.py content, then I'll run the baseline suite before touching anything:
+
+Ran 3 commands, created a file
+Ran 3 commands, created a file
+
+Baseline confirmed: 120/120 pass unmodified. Now applying the Mapping fix and re-testing:
+
+Ran 4 commands
+Ran 4 commands
+
+Confirmed and reproduced exactly — .get() → AttributeError, **row → TypeError: not a mapping, and in row → KeyError (worse: it silently misbehaves via the old iteration fallback). This is the root cause. Now generating the verified diff:
+
+Ran a command
+Ran a command
+
+Clean, minimal diff. Now let me wrap it into a proper patch file and validate with git apply:
+
+Ran a command
+Ran a command
+
+Fully verified: applies cleanly and produces byte-identical output to the version that passed all 120 tests. Now adding regression tests to lock this in, then writing the notes file.
+
+Ran a command
+Ran a command
+
+All 130 pass (120 existing + 10 new). Now appending this test file to the patch and writing the final notes:
+
+Read a file, ran a command
+Read a file, ran a command
+
+Let me do a final full validation of the complete combined patch:
+
+Ran a command
+Ran a command
+
+Full patch applies cleanly from a clean checkout and 130/130 pass. Cleaning up scratch and writing the summary notes:
+
+Read 2 files, created a file, updated tasks
+Read 2 files, created a file, updated tasks
+
+Task #99 done. Root cause reproduced, not guessed:
+
+NormalizedRow only implemented __getitem__, so row['x'] worked but .get(), **row, and in row all crashed — I reproduced each exactly (.get() → AttributeError, **row → TypeError: not a mapping, in row → KeyError via the legacy iteration fallback). Any caller treating it like a plain dict hits one of these.
+
+Fix: make NormalizedRow inherit collections.abc.Mapping and add __iter__/__len__ (delegating to the existing to_dict()) — Mapping supplies .get(), .keys(), .items(), .values(), in, ** for free. Zero change to existing behavior.
+
+Verified in a sandbox built from your real roster_cache.py + normalizer.py + your own test_normalizer.py: 120/120 baseline pass, 120/120 still pass after the fix, plus 10 new regression tests — 130/130 total. Patch applies cleanly via git apply from a clean checkout.
+
+One caveat in TASK99_NOTES.md: I don't have your real app.py (same GitHub-staleness issue as before), so I can't rule out a different crash pattern at line 3031 — e.g. jsonify(row) called directly instead of jsonify(row.to_dict()), which Mapping wouldn't fix. If this patch doesn't fully resolve it, paste the traceback and I'll target that specifically.
+
+Task99 normalizedrow mapping
+PATCH 
