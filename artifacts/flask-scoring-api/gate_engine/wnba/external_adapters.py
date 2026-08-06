@@ -80,7 +80,10 @@ class AdapterResult:
 
 
 # ---------------------------------------------------------------------------
-# ESPN base URLs (public JSON endpoints — no auth required)
+# ESPN base URLs — undocumented web JSON endpoints used as best-effort secondary
+# structured sources.  They are NOT guaranteed public developer APIs and may change
+# or become unavailable without notice.  No official ESPN developer agreement covers
+# these paths; treat as read-only opportunistic fallback, not a stable data contract.
 # ---------------------------------------------------------------------------
 
 _ESPN_SEARCH_URL   = "https://site.web.api.espn.com/apis/common/v3/search"
@@ -202,8 +205,9 @@ def _espn_search_wnba_athlete(
     player_name: str,
     timeout: int = _DEFAULT_TIMEOUT,
 ) -> "tuple[str | None, str, str, str]":
-    """Search ESPN for a WNBA athlete by name.
+    """Search for a WNBA athlete via an undocumented ESPN web JSON endpoint.
 
+    NOT a guaranteed public developer API — used as best-effort fallback only.
     Returns (athlete_id, canonical_name, request_status, url_used).
     Callers must increment request_count by 1 for this call.
     """

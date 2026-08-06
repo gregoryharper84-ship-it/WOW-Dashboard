@@ -260,15 +260,39 @@ def _build_acquisition_audit(
       adapters_succeeded, adapters_failed, request_count,
       normalized_record_count, fields_filled_externally,
       fields_still_missing, source_conflicts, terminal_packet_status.
+
+    Audit-semantics correction fields (request_made invariant enforced):
+      routes_attempted          — normalized records where request_made=True only
+      fallback_routes_attempted — provider names where request_made=True only
+      routes_skipped_by_policy  — providers blocked by policy (e.g. BBRef)
+      routes_not_implemented    — providers configured but no handler implemented
+      routes_unavailable        — providers called; source was unreachable
+      routes_auth_required      — providers where AUTH_REQUIRED was returned
+
+    INVARIANTS enforced here:
+      - request_made=False records never appear in routes_attempted or
+        fallback_routes_attempted.
+      - request_count equals the sum of request_count across records where
+        request_made=True.
+      - adapters_called contains only providers where request_made=True
+        (i.e. adapter.request_count > 0).
     """
     fallback_required  = bool(initial_missing_fields)
     fallback_triggered = fallback_required
 
-    fallback_routes_attempted:   list[str] = []
-    fallback_sources_successful: list[str] = []
+    # Audit-semantics: HTTP-only routes (request_made=True)
+    fallback_routes_attempted:   list[str]  = []   # provider names, HTTP only
+    fallback_sources_successful: list[str]  = []
     fallback_failure_reason:     str | None = None
 
-    # External adapter tracking
+    # Normalized route records aggregated across all categories
+    all_route_records:            list[dict] = []
+    agg_routes_skipped_policy:    list[str]  = []
+    agg_routes_not_implemented:   list[str]  = []
+    agg_routes_unavailable:       list[str]  = []
+    agg_routes_auth_required:     list[str]  = []
+
+    # External adapter tracking (request_made=True only)
     adapters_called:          list[str] = []
     adapters_succeeded:       list[str] = []
     adapters_failed:          list[str] = []
@@ -277,8 +301,8 @@ def _build_acquisition_audit(
     fields_filled_externally: list[str] = []
 
     for category, result in fallback_results.items():
-        # Deduplicate routes (multiple fields may share the same route IDs)
-        for route_id in result.routes_attempted:
+        # INVARIANT: routes_attempted / fallback_routes_attempted = HTTP only
+        for route_id in result.routes_attempted:   # already HTTP-only per handler contract
             if route_id not in fallback_routes_attempted:
                 fallback_routes_attempted.append(route_id)
 
@@ -288,24 +312,45 @@ def _build_acquisition_audit(
             if result.status != AcquisitionFieldStatus.PROXY_ONLY:
                 fallback_sources_successful.append(f"{category}:{result.source_id}")
 
-        # External adapter tracking
+        # Collect normalized route records (deduplicated by provider)
+        seen_providers = {r["provider"] for r in all_route_records}
+        for rec in result.route_records:
+            if rec["provider"] not in seen_providers:
+                all_route_records.append(rec)
+                seen_providers.add(rec["provider"])
+
+        # Aggregate not-called route categories
+        for p in result.routes_skipped_by_policy:
+            if p not in agg_routes_skipped_policy:
+                agg_routes_skipped_policy.append(p)
+        for p in result.routes_not_implemented:
+            if p not in agg_routes_not_implemented:
+                agg_routes_not_implemented.append(p)
+
+        # External adapter tracking — ONLY when a real request was made
         if result.adapter_result is not None:
             ar = result.adapter_result
-            adapters_called.append(ar.provider)
-            total_request_count += ar.request_count
-            total_normalized_records += ar.raw_record_count
-            if ar.request_status == "REQUEST_SUCCEEDED":
-                adapters_succeeded.append(ar.provider)
-                # Which fields did this external call fill?
-                if result.status in _QUALIFYING_FIELD_STATUSES:
-                    for fp in initial_missing_fields:
-                        if _get_category_for_field(fp) == category:
-                            fields_filled_externally.append(fp)
-            else:
-                adapters_failed.append(f"{ar.provider}:{ar.request_status}")
-        elif result.request_count > 0:
-            # In-pipeline reconstruction also counted
-            total_request_count += result.request_count
+            # Availability / auth categorization (any outcome)
+            if ar.request_status == "SOURCE_UNAVAILABLE":
+                if ar.provider not in agg_routes_unavailable:
+                    agg_routes_unavailable.append(ar.provider)
+            if ar.request_status == "AUTH_REQUIRED":
+                if ar.provider not in agg_routes_auth_required:
+                    agg_routes_auth_required.append(ar.provider)
+            # INVARIANT: only count adapters that issued at least one HTTP request
+            if ar.request_count > 0:
+                if ar.provider not in adapters_called:
+                    adapters_called.append(ar.provider)
+                total_request_count      += ar.request_count
+                total_normalized_records += ar.raw_record_count
+                if ar.request_status == "REQUEST_SUCCEEDED":
+                    adapters_succeeded.append(ar.provider)
+                    if result.status in _QUALIFYING_FIELD_STATUSES:
+                        for fp in initial_missing_fields:
+                            if _get_category_for_field(fp) == category:
+                                fields_filled_externally.append(fp)
+                else:
+                    adapters_failed.append(f"{ar.provider}:{ar.request_status}")
 
     if fields_unresolved:
         fallback_failure_reason = (
@@ -318,44 +363,49 @@ def _build_acquisition_audit(
         )
 
     # Source conflicts summary
-    source_conflicts = [
-        c for c in (reconciliation.get("conflicts") or [])
-    ]
+    source_conflicts = list(reconciliation.get("conflicts") or [])
 
-    external_fetch_required  = len(adapters_called) > 0 or any(
-        r.request_count > 0 for r in fallback_results.values()
-        if r.adapter_result is not None
-    )
+    external_fetch_required = bool(adapters_called)
+
+    # routes_attempted (new normalized field) = only records where request_made=True
+    http_route_records = [r for r in all_route_records if r.get("request_made")]
 
     return {
         # Original fields
-        "run_ts":                     run_ts,
-        "primary_api_attempted":      True,
-        "primary_api_result":         primary_api_result,
-        "missing_after_primary":      list(initial_missing_fields),
-        "fallback_required":          fallback_required,
-        "fallback_triggered":         fallback_triggered,
-        "fallback_routes_attempted":  list(dict.fromkeys(fallback_routes_attempted)),
+        "run_ts":                      run_ts,
+        "primary_api_attempted":       True,
+        "primary_api_result":          primary_api_result,
+        "missing_after_primary":       list(initial_missing_fields),
+        "fallback_required":           fallback_required,
+        "fallback_triggered":          fallback_triggered,
+        # INVARIANT: HTTP-only provider name list (backward-compat string list)
+        "fallback_routes_attempted":   list(dict.fromkeys(fallback_routes_attempted)),
         "fallback_sources_successful": fallback_sources_successful,
-        "fields_reconstructed":       list(fields_reconstructed),
-        "fields_unresolved":          list(fields_unresolved),
-        "fallback_failure_reason":    fallback_failure_reason,
-        "packet_status":              packet_status,
-        "source_reconciliation":      reconciliation,
-        "coverage_audit":             coverage_audit,
-        # Extended fields (external adapter telemetry)
-        "external_fetch_required":    external_fetch_required,
-        "external_fetch_triggered":   bool(adapters_called),
-        "adapters_called":            adapters_called,
-        "adapters_succeeded":         adapters_succeeded,
-        "adapters_failed":            adapters_failed,
-        "request_count":              total_request_count,
-        "normalized_record_count":    total_normalized_records,
-        "fields_filled_externally":   fields_filled_externally,
-        "fields_still_missing":       list(fields_unresolved),
-        "source_conflicts":           source_conflicts,
-        "terminal_packet_status":     packet_status,
-        # Adapter result details for postmortem
+        "fields_reconstructed":        list(fields_reconstructed),
+        "fields_unresolved":           list(fields_unresolved),
+        "fallback_failure_reason":     fallback_failure_reason,
+        "packet_status":               packet_status,
+        "source_reconciliation":       reconciliation,
+        "coverage_audit":              coverage_audit,
+        # Extended fields (external adapter telemetry — request_made=True only)
+        "external_fetch_required":     external_fetch_required,
+        "external_fetch_triggered":    bool(adapters_called),
+        "adapters_called":             adapters_called,   # request_made=True providers only
+        "adapters_succeeded":          adapters_succeeded,
+        "adapters_failed":             adapters_failed,
+        "request_count":               total_request_count,  # sum of request_made=True counts
+        "normalized_record_count":     total_normalized_records,
+        "fields_filled_externally":    fields_filled_externally,
+        "fields_still_missing":        list(fields_unresolved),
+        "source_conflicts":            source_conflicts,
+        "terminal_packet_status":      packet_status,
+        # Audit-semantics correction fields (WOW-PATCH audit-semantics correction)
+        "routes_attempted":            http_route_records,    # normalized; request_made=True only
+        "routes_skipped_by_policy":    agg_routes_skipped_policy,
+        "routes_not_implemented":      agg_routes_not_implemented,
+        "routes_unavailable":          agg_routes_unavailable,
+        "routes_auth_required":        agg_routes_auth_required,
+        # Per-category adapter detail for postmortem
         "fallback_result_details": {
             cat: {
                 "source_id":        r.source_id,
@@ -363,7 +413,8 @@ def _build_acquisition_audit(
                 "method":           r.method,
                 "status":           r.status,
                 "note":             r.note,
-                "routes_attempted": r.routes_attempted,
+                # route_records replaces routes_attempted in per-category detail
+                "route_records":    r.route_records,
                 "request_count":    r.request_count,
                 **(
                     {
@@ -372,6 +423,7 @@ def _build_acquisition_audit(
                             "source_url_or_id": r.adapter_result.source_url_or_id,
                             "retrieved_at":     r.adapter_result.retrieved_at,
                             "request_status":   r.adapter_result.request_status,
+                            "request_made":     r.adapter_result.request_count > 0,
                             "raw_record_count": r.adapter_result.raw_record_count,
                             "failure_reason":   r.adapter_result.failure_reason,
                         }
