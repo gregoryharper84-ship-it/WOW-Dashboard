@@ -32924,6 +32924,201 @@ def wow_normalize_legs():
     }), 200
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# WOW Sports Intelligence Command Center — Phase 1
+# /wow/cc/*  routes
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cc_module():
+    """Lazy import of the command_center package (avoids module-level side effects)."""
+    from gate_engine import command_center as cc
+    return cc
+
+
+@app.route("/wow/cc/health", methods=["GET"])
+@require_api_key
+def wow_cc_health():
+    """
+    GET /wow/cc/health
+    Lightweight health check — verifies the CC module can be imported
+    and returns its governance constants.  No external I/O.
+    """
+    try:
+        cc = _cc_module()
+        return jsonify({
+            "ok": True,
+            "status": "COMMAND_CENTER_HEALTHY",
+            "can_execute":           cc.CAN_EXECUTE,
+            "dry_run_only":          cc.DRY_RUN_ONLY,
+            "kalshi_recovery_mode":  cc.KALSHI_RECOVERY_MODE,
+            "all_families":          sorted(cc.ALL_FAMILIES),
+            "ceiling_order_count":   len(cc.CEILING_ORDER),
+        }), 200
+    except Exception as exc:
+        app.logger.exception("CC health check failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/cc/intake", methods=["POST"])
+@require_api_key
+def wow_cc_intake():
+    """
+    POST /wow/cc/intake
+    Phase A — validate and route candidates.
+
+    Body (JSON):
+      {
+        "candidates":   [...],   // list of raw candidate dicts
+        "session_id":   "...",   // optional
+        "run_id":       "...",   // optional; generated if absent
+        "target_date":  "YYYY-MM-DD"
+      }
+
+    Returns: routing manifest — does NOT call any engine.
+    """
+    try:
+        body       = request.get_json(force=True) or {}
+        candidates = body.get("candidates") or []
+        session_id = body.get("session_id", "")
+        run_id     = body.get("run_id", "")
+        target_date = body.get("target_date", "")
+
+        if not isinstance(candidates, list):
+            return jsonify({
+                "ok": False,
+                "error": "CC_INTAKE_INVALID_REQUEST",
+                "detail": "'candidates' must be a list",
+            }), 400
+
+        cc = _cc_module()
+        manifest = cc.run_intake(
+            raw_candidates=candidates,
+            session_id=session_id,
+            run_id=run_id,
+            target_date=target_date,
+        )
+        return jsonify({"ok": True, **manifest}), 200
+
+    except Exception as exc:
+        app.logger.exception("CC intake error")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/cc/run", methods=["POST"])
+@require_api_key
+def wow_cc_run():
+    """
+    POST /wow/cc/run
+    Phase B — full orchestration.
+
+    Body (JSON):
+      {
+        "candidates":      [...],        // raw candidate dicts
+        "engine_results":  {             // optional; keyed by candidate_id
+          "<candidate_id>": { ... }
+        },
+        "session_id":      "...",
+        "run_id":          "...",
+        "target_date":     "YYYY-MM-DD",
+        "freshness_window_minutes": 30   // optional; default 30
+      }
+
+    Returns: full CC output envelope with per-candidate results + summary.
+    """
+    try:
+        body           = request.get_json(force=True) or {}
+        candidates     = body.get("candidates") or []
+        engine_results = body.get("engine_results") or None
+        session_id     = body.get("session_id", "")
+        run_id         = body.get("run_id", "")
+        target_date    = body.get("target_date", "")
+        freshness_window = int(body.get("freshness_window_minutes", 30))
+
+        if not isinstance(candidates, list):
+            return jsonify({
+                "ok": False,
+                "error": "CC_RUN_INVALID_REQUEST",
+                "detail": "'candidates' must be a list",
+            }), 400
+
+        cc = _cc_module()
+        result = cc.run_command_center(
+            raw_candidates=candidates,
+            engine_results=engine_results,
+            session_id=session_id,
+            run_id=run_id,
+            target_date=target_date,
+            freshness_window_minutes=freshness_window,
+        )
+        return jsonify({"ok": True, **result}), 200
+
+    except Exception as exc:
+        app.logger.exception("CC run error")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/cc/status/<run_id>", methods=["GET"])
+@require_api_key
+def wow_cc_status(run_id):
+    """
+    GET /wow/cc/status/<run_id>
+    Lightweight run-status endpoint.
+
+    Phase 1 is stateless — runs are not persisted.  Returns a diagnostic
+    payload confirming the run_id was received and the CC module is healthy.
+    Full run persistence (database-backed run log) is a Phase 2 concern.
+    """
+    try:
+        cc = _cc_module()
+        return jsonify({
+            "ok":       True,
+            "run_id":   run_id,
+            "status":   "STATELESS_PHASE1",
+            "note":     (
+                "Phase 1 CC runs are not persisted. "
+                "Re-submit the run via POST /wow/cc/run to retrieve results."
+            ),
+            "can_execute":          cc.CAN_EXECUTE,
+            "kalshi_recovery_mode": cc.KALSHI_RECOVERY_MODE,
+        }), 200
+    except Exception as exc:
+        app.logger.exception("CC status error")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/cc/reconcile", methods=["POST"])
+@require_api_key
+def wow_cc_reconcile():
+    """
+    POST /wow/cc/reconcile
+    Explicit row-level reconciliation call.
+
+    Body (JSON):
+      {
+        "rows": [...]    // list of already-processed CC candidate envelopes
+      }
+
+    Runs reconciliation rules R-01 through R-10 and returns pass/fail
+    per row + a batch summary.
+    """
+    try:
+        from gate_engine.command_center.reconciliation import reconcile_batch
+        body = request.get_json(force=True) or {}
+        rows = body.get("rows") or []
+        if not isinstance(rows, list):
+            return jsonify({
+                "ok": False,
+                "error": "CC_RECONCILE_INVALID_REQUEST",
+                "detail": "'rows' must be a list",
+            }), 400
+        report = reconcile_batch(rows)
+        return jsonify({"ok": True, "rows": rows, "reconciliation_report": report}), 200
+
+    except Exception as exc:
+        app.logger.exception("CC reconcile error")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)
