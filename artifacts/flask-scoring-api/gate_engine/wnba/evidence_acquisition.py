@@ -501,6 +501,13 @@ def run(
     enr    = enrichment or {}
     run_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
+    # Propagate slate_date to enrichment so fallback adapters (e.g. espn_wnba_scoreboard)
+    # can target the correct local date rather than UTC-now.  Avoids timezone boundary
+    # mismatches when a game is "tonight" locally but UTC has already rolled over.
+    if row.get("slate_date") and not enr.get("slate_date"):
+        enr = dict(enr)          # avoid mutating the caller's enrichment dict
+        enr["slate_date"] = row["slate_date"]
+
     # ------------------------------------------------------------------
     # Step 1: PRIMARY_ACQUISITION — assess what enrichment already has
     # ------------------------------------------------------------------
@@ -552,6 +559,21 @@ def run(
                 if result.value_retrieved and not enr.get("event_status"):
                     enr["event_status"] = result.value_retrieved
                     packet["event_status"] = result.value_retrieved
+                    # Post-merge provenance invariant: stamp source metadata so
+                    # event_status cannot be silently lost or overwritten by a
+                    # later None during downstream merges.
+                    if result.adapter_result:
+                        _anf = result.adapter_result.normalized_fields or {}
+                        packet["event_status_provenance"] = {
+                            "provider":         result.adapter_result.provider,
+                            "source_url":       result.adapter_result.source_url_or_id,
+                            "retrieved_at":     result.adapter_result.retrieved_at,
+                            "event_id":         _anf.get("event_id", ""),
+                            "match_method":     _anf.get("match_method", ""),
+                            "match_confidence": _anf.get("match_confidence"),
+                            "espn_status_raw":  _anf.get("espn_status_raw", ""),
+                            "competitors":      _anf.get("competitors", []),
+                        }
 
             elif cat == "market_comparison" and result.status in _QUALIFYING_FIELD_STATUSES:
                 if result.value_retrieved and not enr.get("market_comparison"):
@@ -570,6 +592,13 @@ def run(
                     rs["active_status"] = nf["active_status"]
                 if nf.get("role_timestamp") and not rs.get("role_timestamp"):
                     rs["role_timestamp"] = nf["role_timestamp"]
+                # BUG-EVENT-ROLE: projected_minutes was omitted from write-back
+                if nf.get("projected_minutes") is not None and rs.get("projected_minutes") is None:
+                    rs["projected_minutes"] = nf["projected_minutes"]
+                # Ensure updated dict is referenced by the packet when role_status
+                # was initially absent (packet["role_status"] == None path).
+                if rs and not packet.get("role_status"):
+                    packet["role_status"] = rs
 
     # Re-check what is still missing AFTER reconstruction + external fetch
     post_fallback_missing = detect_missing(packet)

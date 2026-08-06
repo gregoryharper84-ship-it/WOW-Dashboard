@@ -59,10 +59,40 @@ correctly resolves both A'ja Wilson (id=3149391) and Aliyah Boston (id=4066407).
 field is mandatory — prevents NBA/NCAAW name collisions.  HTTP 200 with 0 WNBA matches →
 REQUEST_EMPTY (ATHLETE_NOT_FOUND), never REQUEST_FAILED.
 
+## BUG-005 — ESPN scoreboard team-name tokenization (event_status resolver)
+**Rule:** `fetch_event_status()` must tokenize each team's `displayName` into individual
+words before set-intersecting against game_str tokens.  "indiana fever" as a whole-string
+token NEVER matches the word "indiana" — overlap is always 0 → REQUEST_EMPTY.  After fix:
+"Indiana Fever" → {"indiana", "fever"}.
+
+**Why:** The pre-fix code built `all_tokens = team_abbrs | team_names` where `team_names`
+contained full display strings.  Set intersection compared individual tokens against whole
+strings → zero overlap for every game → event_status stayed None → PACKET_INCOMPLETE_REJECTED.
+
+**How to apply:** Any future adapter that matches by team name must tokenize into individual
+words (split on spaces, len≥2).  Never intersect single words against multi-word strings.
+
+**Ambiguity guard:** If two events on the same date share the same max-overlap score,
+return REQUEST_FAILED with `event_status="EVENT_MATCH_AMBIGUOUS"` and `ambiguous_event_ids`.
+A broad first-event fallback is explicitly prohibited.
+
+**STATUS_PRE_GAME:** Added to the canonical status map → "PREGAME".
+
+**Slate-date wiring:** `_attempt_event_status()` (fallback_router) now extracts
+`enr["slate_date"]` from the enrichment dict and converts YYYY-MM-DD → YYYYMMDD before
+passing as `date_str` to `fetch_event_status()`.  `evidence_acquisition.run()` copies
+`row["slate_date"]` → `enr["slate_date"]` early so the field is available to the router.
+
+**Provenance stamp:** On success, `packet["event_status_provenance"]` is written with
+provider, event_id, match_method, match_confidence, espn_status_raw, and competitors.
+
+**Role-status write-back:** `projected_minutes` was previously omitted from the role-status
+write-back block in `evidence_acquisition.run()`.  Fixed alongside BUG-005.
+
 ## Test suite
-28 original tests (unchanged) + 14 new regression tests (29–42) = 42 total.
-All 42 pass.  Test 37 is a source-code inspection invariant (grep for direct ODDS_API_KEY read).
+28 original + 14 BUG-001/002/003 + 1 BUG-004 + 8 BUG-005 = **51 total, all pass**.
 
 ## Live proof (2026-08-06)
-- Before: box_score_log=0, l5=0, l10=0, ODDS_API_KEY=LEGACY(401), ESPN v3 → 0 athletes
-- After:  box_score_log=10, l5=5, l10=10, ODDS_API_PAID_KEY used, A'ja Wilson resolved (id=3149391)
+- BUG-001/002/003: box_score_log=0→10, l5=0→5, l10=0→10; PAID key; ESPN v2 athlete
+- BUG-004: parser top-level "names" key; rebounds/assists non-null; A'ja Boston id=4066407
+- BUG-005: event_status=None→SCHEDULED; fields_unresolved=[]; PACKET_INCOMPLETE_REJECTED → PACKET_RECONSTRUCTED_COMPLETE

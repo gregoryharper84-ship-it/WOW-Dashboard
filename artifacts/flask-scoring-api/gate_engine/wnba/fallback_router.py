@@ -313,12 +313,22 @@ def _attempt_event_status(packet: dict, enr: dict) -> RouteAttemptResult:
         )
 
     # Step 2 — ESPN WNBA scoreboard (real HTTP call)
+    # Extract slate_date from enrichment/packet so the scoreboard query targets
+    # the correct local date rather than defaulting to UTC-now (which can miss
+    # games scheduled for "tonight" when UTC has already rolled to the next day).
+    _raw_slate_date = enr.get("slate_date") or packet.get("slate_date")
+    date_str_for_scoreboard: "str | None" = None
+    if _raw_slate_date:
+        _cleaned = str(_raw_slate_date).replace("-", "")
+        if len(_cleaned) >= 8:
+            date_str_for_scoreboard = _cleaned[:8]
+
     game_str = (
         packet.get("game")
         or enr.get("game")
         or f"{packet.get('team', '')} vs {packet.get('opponent', '')}"
     )
-    adapter     = fetch_event_status(game_str)
+    adapter     = fetch_event_status(game_str, date_str=date_str_for_scoreboard)
     adapter_rec = _adapter_route_record(adapter)
     http_attempted = [adapter.provider] if adapter.request_count > 0 else []
     all_recs = [adapter_rec] + list(ni_recs)
@@ -332,7 +342,12 @@ def _attempt_event_status(packet: dict, enr: dict) -> RouteAttemptResult:
             method                 = AcquisitionMethod.WEB_FALLBACK,
             status                 = AcquisitionFieldStatus.FALLBACK_RETRIEVED,
             value_retrieved        = nf.get("event_status"),
-            note                   = f"ESPN scoreboard: {nf.get('event_status')} ({nf.get('status_detail','')})",
+            note                   = (
+                f"ESPN scoreboard: {nf.get('event_status')} "
+                f"({nf.get('status_detail', '')}) "
+                f"match_confidence={nf.get('match_confidence')} "
+                f"event_id={nf.get('event_id', '')}"
+            ),
             routes_attempted       = http_attempted,
             adapter_result         = adapter,
             request_count          = adapter.request_count,
@@ -350,7 +365,8 @@ def _attempt_event_status(packet: dict, enr: dict) -> RouteAttemptResult:
         note                   = (
             f"event_status unobtainable after 1 HTTP route. "
             f"ESPN scoreboard: {adapter.request_status}. "
-            f"failure_reason={adapter.failure_reason}"
+            f"failure_reason={adapter.failure_reason}. "
+            f"game_str='{game_str}' date_str={date_str_for_scoreboard}"
         ),
         routes_attempted       = http_attempted,
         adapter_result         = adapter,

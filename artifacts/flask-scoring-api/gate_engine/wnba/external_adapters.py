@@ -655,48 +655,130 @@ def fetch_event_status(
         return _failure_result(provider, url, retrieved_at, RequestStatus.PARSE_FAILED,
                                "JSON parse failed", request_count=1)
 
-    # Normalise game_str into candidate team tokens
+    # Normalise game_str into candidate team tokens (individual words).
     game_tokens = {t.strip().lower() for t in game_str.replace("@", " ").replace("vs", " ").split()
                    if len(t.strip()) >= 2}
 
-    best_event   = None
-    best_overlap = 0
+    # Score every event against the candidate tokens.
+    #
+    # BUG-004-EVENT-STATUS (WOW-PATCH-2026-08-06-WNBA-ESPN-GAMELOG-LABEL-PATH):
+    # The original code built `all_tokens = team_abbrs | team_names` where
+    # `team_names` contained FULL display strings like "indiana fever".  Set
+    # intersection then compared individual tokens ("indiana") against the full
+    # string ("indiana fever") — yielding zero overlap even when the team was
+    # present.  Fix: tokenize each team's displayName into individual words so
+    # "indiana" and "fever" each become independent candidate tokens.
+    scored_events: "list[tuple[Any, int]]" = []   # (event_dict, overlap_score)
     for event in (data.get("events") or []):
-        comp      = ((event.get("competitions") or [{}])[0])
-        comps     = comp.get("competitors", [])
-        team_abbrs = {
+        comp  = ((event.get("competitions") or [{}])[0])
+        comps = comp.get("competitors", [])
+
+        # Abbreviations (e.g. "IND", "LVA") — already single tokens
+        team_abbrs: "set[str]" = {
             (c.get("team") or {}).get("abbreviation", "").lower()
             for c in comps
+            if (c.get("team") or {}).get("abbreviation")
         }
-        team_names = {
-            (c.get("team") or {}).get("displayName", "").lower()
-            for c in comps
-        }
-        all_tokens = team_abbrs | team_names
-        overlap    = len(game_tokens & all_tokens)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_event   = event
+        # Display names tokenized into individual words:
+        #   "Indiana Fever" → {"indiana", "fever"}
+        name_word_tokens: "set[str]" = set()
+        for c in comps:
+            dn = (c.get("team") or {}).get("displayName", "").lower()
+            name_word_tokens.update(w for w in dn.split() if len(w) >= 2)
 
-    if best_event is None or best_overlap == 0:
+        all_tokens = team_abbrs | name_word_tokens
+        overlap    = len(game_tokens & all_tokens)
+        scored_events.append((event, overlap))
+
+    events_on_date = len(scored_events)
+
+    if not scored_events:
         return AdapterResult(
             provider=provider, source_url_or_id=url, retrieved_at=retrieved_at,
             source_grade="A", freshness_age=_freshness(retrieved_at),
             request_status=RequestStatus.REQUEST_EMPTY, parse_status="OK",
-            normalized_fields={"events_on_date": len(data.get("events") or [])},
+            normalized_fields={"events_on_date": 0},
             raw_record_count=0, conflict_status="NONE",
-            failure_reason=f"no matching WNBA event for game_str='{game_str}' on {date_str}",
+            failure_reason=(
+                f"EVENT_STATUS_UNRESOLVED: ESPN scoreboard returned 0 events "
+                f"for date={date_str}"
+            ),
             request_count=1,
         )
+
+    best_overlap = max(sc for _, sc in scored_events)
+
+    if best_overlap == 0:
+        # No event matched any candidate token — EVENT_NOT_FOUND.
+        # Expose diagnostic keys so the postmortem can identify the mismatch.
+        scoreboard_keys: "list[str]" = []
+        for ev, _ in scored_events:
+            cp = ((ev.get("competitions") or [{}])[0])
+            for c in cp.get("competitors", []):
+                abbr = (c.get("team") or {}).get("abbreviation", "")
+                dn   = (c.get("team") or {}).get("displayName", "")
+                if abbr or dn:
+                    scoreboard_keys.append(f"{abbr}|{dn}")
+
+        return AdapterResult(
+            provider=provider, source_url_or_id=url, retrieved_at=retrieved_at,
+            source_grade="A", freshness_age=_freshness(retrieved_at),
+            request_status=RequestStatus.REQUEST_EMPTY, parse_status="OK",
+            normalized_fields={
+                "event_status":     "EVENT_NOT_FOUND",
+                "events_on_date":   events_on_date,
+                "candidate_tokens": sorted(game_tokens),
+                "scoreboard_keys":  scoreboard_keys[:20],
+                "match_confidence": 0,
+            },
+            raw_record_count=0, conflict_status="NONE",
+            failure_reason=(
+                f"EVENT_NOT_FOUND: no WNBA event matched game_str='{game_str}' "
+                f"on {date_str}. "
+                f"candidate_tokens={sorted(game_tokens)}; "
+                f"scoreboard_team_keys={scoreboard_keys[:10]}"
+            ),
+            request_count=1,
+        )
+
+    # Ambiguity guard: multiple events share the same max overlap → fail closed.
+    # A broad first-event fallback is explicitly prohibited.
+    top_matches: "list[tuple[Any, int]]" = [
+        (ev, sc) for ev, sc in scored_events if sc == best_overlap
+    ]
+    if len(top_matches) > 1:
+        ambiguous_ids = [ev.get("id", "") for ev, _ in top_matches]
+        return AdapterResult(
+            provider=provider, source_url_or_id=url, retrieved_at=retrieved_at,
+            source_grade="A", freshness_age=_freshness(retrieved_at),
+            request_status=RequestStatus.REQUEST_FAILED, parse_status="OK",
+            normalized_fields={
+                "event_status":        "EVENT_MATCH_AMBIGUOUS",
+                "events_on_date":      events_on_date,
+                "ambiguous_event_ids": ambiguous_ids,
+                "match_score":         best_overlap,
+                "candidate_tokens":    sorted(game_tokens),
+            },
+            raw_record_count=0, conflict_status="NONE",
+            failure_reason=(
+                f"EVENT_MATCH_AMBIGUOUS: {len(top_matches)} events share "
+                f"overlap={best_overlap} for game_str='{game_str}' on {date_str} "
+                f"— fail closed. ambiguous_event_ids={ambiguous_ids}"
+            ),
+            request_count=1,
+        )
+
+    best_event = top_matches[0][0]
 
     comp        = ((best_event.get("competitions") or [{}])[0])
     status_obj  = comp.get("status", {}).get("type", {})
     status_name = status_obj.get("name", "")
     status_desc = status_obj.get("description", status_obj.get("detail", ""))
 
-    # Map ESPN status names to standard event_status vocabulary
+    # Map ESPN status names to canonical event_status vocabulary.
     _STATUS_MAP = {
         "STATUS_SCHEDULED":    "SCHEDULED",
+        "STATUS_PRE_GAME":     "PREGAME",
         "STATUS_IN_PROGRESS":  "IN_PROGRESS",
         "STATUS_HALFTIME":     "IN_PROGRESS",
         "STATUS_FINAL":        "FINAL",
@@ -707,6 +789,21 @@ def fetch_event_status(
     }
     normalized_status = _STATUS_MAP.get(status_name, status_name or "UNKNOWN")
 
+    # Provenance: winning competitor list and match tokens for audit trail.
+    winning_comp_tokens: "set[str]" = set()
+    competitors_info:    "list[dict]" = []
+    for c in comp.get("competitors", []):
+        t    = c.get("team") or {}
+        abbr = t.get("abbreviation", "").lower()
+        dn   = t.get("displayName", "").lower()
+        if abbr:
+            winning_comp_tokens.add(abbr)
+        winning_comp_tokens.update(w for w in dn.split() if len(w) >= 2)
+        competitors_info.append({
+            "abbreviation": t.get("abbreviation", ""),
+            "displayName":  t.get("displayName", ""),
+        })
+
     return AdapterResult(
         provider          = provider,
         source_url_or_id  = url,
@@ -716,11 +813,16 @@ def fetch_event_status(
         request_status    = RequestStatus.REQUEST_SUCCEEDED,
         parse_status      = "OK",
         normalized_fields = {
-            "event_status":    normalized_status,
-            "espn_status_raw": status_name,
-            "status_detail":   status_desc,
-            "event_id":        best_event.get("id", ""),
-            "date_str":        date_str,
+            "event_status":        normalized_status,
+            "espn_status_raw":     status_name,
+            "status_detail":       status_desc,
+            "event_id":            best_event.get("id", ""),
+            "date_str":            date_str,
+            "match_method":        "team_token_overlap",
+            "match_confidence":    best_overlap,
+            "match_tokens_used":   sorted(game_tokens & winning_comp_tokens),
+            "competitors":         competitors_info,
+            "events_on_date":      events_on_date,
         },
         raw_record_count  = 1,
         conflict_status   = "NONE",

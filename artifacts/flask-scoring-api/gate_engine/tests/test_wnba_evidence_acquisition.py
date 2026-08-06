@@ -1568,6 +1568,7 @@ def test_bug002_pra_market_assigns_pra_from_single_stat():
 
 # ---------------------------------------------------------------------------
 # BUG-004 regression test — WOW-PATCH-2026-08-06-WNBA-ESPN-GAMELOG-LABEL-PATH
+# (parser fix — top-level "names" key)
 # ---------------------------------------------------------------------------
 
 def test_bug004_top_level_names_produces_non_null_stat_fields():
@@ -1668,3 +1669,400 @@ def test_bug004_top_level_names_produces_non_null_stat_fields():
             f"Row {row.get('_event_id')} has all core stat fields None — "
             "BUG-004 labels fallback is not working"
         )
+
+
+# ---------------------------------------------------------------------------
+# BUG-004-EVENT-STATUS regression tests
+# WOW-PATCH-2026-08-06-WNBA-ESPN-GAMELOG-LABEL-PATH (event_status resolver)
+#
+# Tests 44-51: fetch_event_status tokenization fix, deterministic matching,
+# fail-closed ambiguity/no-match, canonical status mappings,
+# event_status merge invariant, and full-pipeline classification.
+# ---------------------------------------------------------------------------
+
+# Re-use the mock-response helper and external_adapters imports defined in
+# the tests-10-through-19 section above (already imported at module scope).
+
+def _make_scoreboard_response(events: "list[dict]") -> dict:
+    """Build a minimal ESPN scoreboard API response dict."""
+    return {"events": events}
+
+
+def _make_scoreboard_event(
+    event_id: str,
+    home_abbr: str, home_name: str,
+    away_abbr: str, away_name: str,
+    status_name: str = "STATUS_SCHEDULED",
+    status_desc: str = "Scheduled",
+) -> dict:
+    """Build a minimal ESPN scoreboard event dict."""
+    return {
+        "id": event_id,
+        "competitions": [
+            {
+                "competitors": [
+                    {"team": {"abbreviation": home_abbr, "displayName": home_name}},
+                    {"team": {"abbreviation": away_abbr, "displayName": away_name}},
+                ],
+                "status": {
+                    "type": {
+                        "name":        status_name,
+                        "description": status_desc,
+                        "detail":      status_desc,
+                    }
+                },
+            }
+        ],
+    }
+
+
+def test_bug004_event_full_team_name_token_matching():
+    """
+    Core tokenization fix: fetch_event_status must match a game when the
+    game_str contains the team's full display name (e.g. "Indiana Fever vs ")
+    even though ESPN stores the display name as a single "indiana fever" string.
+
+    Before the fix: set intersection of {"indiana","fever"} vs {"indiana fever"}
+    yielded overlap=0 → REQUEST_EMPTY.  After the fix: display names are
+    tokenized into individual words so "indiana" matches and overlap≥1.
+    """
+    from unittest.mock import patch, MagicMock
+    from gate_engine.wnba.external_adapters import fetch_event_status, RequestStatus
+
+    scoreboard = _make_scoreboard_response([
+        _make_scoreboard_event(
+            "401857200",
+            home_abbr="IND", home_name="Indiana Fever",
+            away_abbr="LVA", away_name="Las Vegas Aces",
+            status_name="STATUS_SCHEDULED",
+        )
+    ])
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = scoreboard
+
+    with patch("requests.get", return_value=mock_resp):
+        result = fetch_event_status("Indiana Fever vs ", date_str="20260806")
+
+    assert result.request_status == RequestStatus.REQUEST_SUCCEEDED, (
+        f"Expected REQUEST_SUCCEEDED; got {result.request_status}. "
+        f"failure_reason={result.failure_reason}. "
+        "BUG-004-EVENT: full team name tokenization fix may not be applied."
+    )
+    assert result.normalized_fields.get("event_status") == "SCHEDULED", (
+        f"Expected SCHEDULED; got {result.normalized_fields.get('event_status')}"
+    )
+    assert result.normalized_fields.get("match_confidence", 0) >= 1, (
+        "match_confidence must be ≥1 when a team token overlapped"
+    )
+    assert result.normalized_fields.get("match_method") == "team_token_overlap"
+    assert result.normalized_fields.get("event_id") == "401857200"
+
+
+def test_bug004_event_scheduled_game_resolves_pregame_status():
+    """
+    When ESPN reports STATUS_PRE_GAME, fetch_event_status must return "PREGAME"
+    (new canonical status).  STATUS_SCHEDULED must continue to return "SCHEDULED".
+    Both must yield REQUEST_SUCCEEDED — not REQUEST_EMPTY.
+    """
+    from unittest.mock import patch, MagicMock
+    from gate_engine.wnba.external_adapters import fetch_event_status, RequestStatus
+
+    for espn_name, expected_canonical in [
+        ("STATUS_SCHEDULED", "SCHEDULED"),
+        ("STATUS_PRE_GAME",  "PREGAME"),
+    ]:
+        scoreboard = _make_scoreboard_response([
+            _make_scoreboard_event(
+                "401857201",
+                home_abbr="SEA", home_name="Seattle Storm",
+                away_abbr="CHI", away_name="Chicago Sky",
+                status_name=espn_name,
+            )
+        ])
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = scoreboard
+
+        with patch("requests.get", return_value=mock_resp):
+            result = fetch_event_status("Seattle Storm vs Chicago Sky", date_str="20260806")
+
+        assert result.request_status == RequestStatus.REQUEST_SUCCEEDED, (
+            f"espn_name={espn_name}: expected REQUEST_SUCCEEDED"
+        )
+        assert result.normalized_fields.get("event_status") == expected_canonical, (
+            f"espn_name={espn_name}: expected {expected_canonical}, "
+            f"got {result.normalized_fields.get('event_status')}"
+        )
+        assert result.normalized_fields.get("espn_status_raw") == espn_name
+
+
+def test_bug004_event_timezone_date_slate_date_passed_to_adapter():
+    """
+    _attempt_event_status must extract slate_date from enrichment and pass it
+    as date_str to fetch_event_status.  This prevents UTC-midnight timezone
+    rollover from querying the wrong date when a game is "tonight" in local
+    time but UTC is already the next calendar day.
+
+    Verified by confirming fetch_event_status is called with the correct
+    YYYYMMDD date derived from enr["slate_date"], not the UTC-now default.
+    """
+    from unittest.mock import patch, MagicMock, call
+    from gate_engine.wnba import fallback_router as _fr
+
+    packet = {
+        "player": "Breanna Stewart", "team": "New York Liberty",
+        "opponent": "Seattle Storm", "role_status": {},
+        "box_score_log": [], "l5_ledger": [], "l10_ledger": [],
+    }
+    enr = {"slate_date": "2026-08-06"}
+
+    captured_date_str: "list[str | None]" = []
+    original_fetch = _fr.fetch_event_status
+
+    def _capturing_fetch(game_str, date_str=None):
+        captured_date_str.append(date_str)
+        # Return a synthetic success so the test doesn't hit real HTTP
+        from gate_engine.wnba.external_adapters import AdapterResult, RequestStatus
+        return AdapterResult(
+            provider="espn_wnba_scoreboard",
+            source_url_or_id="https://site.api.espn.com/...",
+            retrieved_at="2026-08-06T23:55:00Z",
+            source_grade="A",
+            freshness_age=0.0,
+            request_status=RequestStatus.REQUEST_SUCCEEDED,
+            parse_status="OK",
+            normalized_fields={
+                "event_status": "SCHEDULED",
+                "espn_status_raw": "STATUS_SCHEDULED",
+                "status_detail": "8:00 PM ET",
+                "event_id": "401857999",
+                "match_method": "team_token_overlap",
+                "match_confidence": 2,
+                "match_tokens_used": ["new", "york"],
+                "competitors": [],
+                "events_on_date": 1,
+            },
+            raw_record_count=1, conflict_status="NONE",
+            failure_reason=None, request_count=1,
+        )
+
+    _fr.fetch_event_status = _capturing_fetch
+    try:
+        from gate_engine.wnba.fallback_router import _attempt_event_status
+        _attempt_event_status(packet, enr)
+    finally:
+        _fr.fetch_event_status = original_fetch
+
+    assert len(captured_date_str) == 1, "fetch_event_status must be called exactly once"
+    assert captured_date_str[0] == "20260806", (
+        f"Expected date_str='20260806' (from slate_date='2026-08-06'); "
+        f"got {captured_date_str[0]!r}. "
+        "Timezone date-rollover fix in _attempt_event_status may be missing."
+    )
+
+
+def test_bug004_event_ambiguous_match_fails_closed():
+    """
+    If two events on the same date share the same max overlap score for the
+    candidate team tokens, fetch_event_status must fail closed with
+    REQUEST_FAILED and event_status='EVENT_MATCH_AMBIGUOUS'.
+    A broad first-event fallback is explicitly prohibited.
+    """
+    from unittest.mock import patch, MagicMock
+    from gate_engine.wnba.external_adapters import fetch_event_status, RequestStatus
+
+    # Two games both featuring "Storm" tokens — same overlap for "seattle storm"
+    scoreboard = _make_scoreboard_response([
+        _make_scoreboard_event(
+            "evt-001",
+            home_abbr="SEA", home_name="Seattle Storm",
+            away_abbr="IND", away_name="Indiana Fever",
+            status_name="STATUS_SCHEDULED",
+        ),
+        _make_scoreboard_event(
+            "evt-002",
+            home_abbr="LVA", home_name="Las Vegas Aces",
+            away_abbr="SEA", away_name="Seattle Storm",   # "storm" token appears again
+            status_name="STATUS_SCHEDULED",
+        ),
+    ])
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = scoreboard
+
+    with patch("requests.get", return_value=mock_resp):
+        result = fetch_event_status("Seattle Storm vs", date_str="20260806")
+
+    assert result.request_status == RequestStatus.REQUEST_FAILED, (
+        f"Expected REQUEST_FAILED for ambiguous match; got {result.request_status}"
+    )
+    nf = result.normalized_fields or {}
+    assert nf.get("event_status") == "EVENT_MATCH_AMBIGUOUS", (
+        f"Expected EVENT_MATCH_AMBIGUOUS; got {nf.get('event_status')}"
+    )
+    ambig_ids = nf.get("ambiguous_event_ids") or []
+    assert set(ambig_ids) == {"evt-001", "evt-002"}, (
+        f"Expected both event IDs in ambiguous_event_ids; got {ambig_ids}"
+    )
+    assert result.failure_reason and "EVENT_MATCH_AMBIGUOUS" in result.failure_reason
+
+
+def test_bug004_event_no_match_fails_closed():
+    """
+    If no event on the scoreboard shares any token with the candidate game_str,
+    fetch_event_status must return REQUEST_EMPTY with explicit EVENT_NOT_FOUND
+    status and diagnostic candidate_tokens / scoreboard_keys fields.
+    """
+    from unittest.mock import patch, MagicMock
+    from gate_engine.wnba.external_adapters import fetch_event_status, RequestStatus
+
+    scoreboard = _make_scoreboard_response([
+        _make_scoreboard_event(
+            "evt-100",
+            home_abbr="CHI", home_name="Chicago Sky",
+            away_abbr="ATL", away_name="Atlanta Dream",
+            status_name="STATUS_SCHEDULED",
+        ),
+    ])
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = scoreboard
+
+    # Candidate is "Las Vegas Aces vs Indiana Fever" — no token overlap with CHI/ATL game
+    with patch("requests.get", return_value=mock_resp):
+        result = fetch_event_status("Las Vegas Aces vs Indiana Fever", date_str="20260806")
+
+    assert result.request_status == RequestStatus.REQUEST_EMPTY, (
+        f"Expected REQUEST_EMPTY for no-match; got {result.request_status}"
+    )
+    nf = result.normalized_fields or {}
+    assert nf.get("event_status") == "EVENT_NOT_FOUND", (
+        f"Expected EVENT_NOT_FOUND; got {nf.get('event_status')}"
+    )
+    assert "candidate_tokens" in nf, "candidate_tokens must be in normalized_fields for diagnostics"
+    assert "scoreboard_keys" in nf, "scoreboard_keys must be in normalized_fields for diagnostics"
+    assert result.failure_reason and "EVENT_NOT_FOUND" in result.failure_reason
+
+
+def test_bug004_event_postponed_canceled_mappings():
+    """
+    ESPN STATUS_POSTPONED → canonical "POSTPONED"
+    ESPN STATUS_CANCELLED → canonical "CANCELLED"
+    Both must yield REQUEST_SUCCEEDED — not REQUEST_EMPTY.
+    """
+    from unittest.mock import patch, MagicMock
+    from gate_engine.wnba.external_adapters import fetch_event_status, RequestStatus
+
+    for espn_name, expected_canonical in [
+        ("STATUS_POSTPONED", "POSTPONED"),
+        ("STATUS_CANCELLED", "CANCELLED"),
+        ("STATUS_DELAYED",   "DELAYED"),
+    ]:
+        scoreboard = _make_scoreboard_response([
+            _make_scoreboard_event(
+                "evt-pp",
+                home_abbr="MIN", home_name="Minnesota Lynx",
+                away_abbr="CON", away_name="Connecticut Sun",
+                status_name=espn_name,
+            )
+        ])
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = scoreboard
+
+        with patch("requests.get", return_value=mock_resp):
+            result = fetch_event_status("Minnesota Lynx vs Connecticut Sun", date_str="20260806")
+
+        assert result.request_status == RequestStatus.REQUEST_SUCCEEDED, (
+            f"espn_name={espn_name}: expected REQUEST_SUCCEEDED"
+        )
+        assert result.normalized_fields.get("event_status") == expected_canonical, (
+            f"espn_name={espn_name}: expected {expected_canonical}, "
+            f"got {result.normalized_fields.get('event_status')}"
+        )
+
+
+def test_bug004_event_status_not_overwritten_by_none_in_merge():
+    """
+    Once event_status is written to the packet by the fallback router,
+    a subsequent call to build_packet (e.g. for box_score_log rebuild) must
+    not silently overwrite it with None.
+
+    The build_packet → enr["event_status"] precedence and post-merge provenance
+    stamp ensure a previously resolved event_status survives intact.
+    """
+    from gate_engine.wnba.acquisition_packet import build_packet
+
+    row = _make_wnba_row(team="Indiana Fever", slate_date="2026-08-06")
+    enr_with_event_status = {
+        "event_status":    "SCHEDULED",
+        "box_score_log": [
+            {"date": "2026-08-01", "rebounds": 8.0, "points": 15.0, "assists": 7.0},
+        ],
+    }
+
+    pkt = build_packet(row, enr_with_event_status)
+    assert pkt["event_status"] == "SCHEDULED", (
+        "build_packet must preserve event_status from enrichment"
+    )
+
+    # Simulate a second build_packet call (box_score_log rebuild path in run())
+    # with the same enrichment — event_status must survive
+    pkt2 = build_packet(row, enr_with_event_status)
+    assert pkt2["event_status"] == "SCHEDULED", (
+        "Second build_packet call must not reset event_status to None"
+    )
+
+    # Now verify that enrichment WITHOUT event_status does not clobber a packet
+    # that already has it (the run() write-back pattern)
+    enr_no_event_status = {
+        "box_score_log": [
+            {"date": "2026-08-01", "rebounds": 8.0, "points": 15.0, "assists": 7.0},
+        ],
+    }
+    pkt3 = build_packet(row, enr_no_event_status)
+    # This packet is None — the guard is that the run() code ONLY writes event_status
+    # from the adapter if the current enr value is falsy.  A None packet alone is
+    # not sufficient; the test here confirms the build call itself doesn't inject None.
+    assert pkt3["event_status"] is None or pkt3["event_status"] == "", (
+        "build_packet without event_status in enrichment must return None/empty, "
+        "not a stale cached value"
+    )
+
+
+def test_bug004_packet_reaches_non_rejected_status_when_event_status_only_blocker():
+    """
+    When event_status is the ONLY previously-missing CRITICAL_BLOCKING field,
+    pre-supplying it in enrichment must result in packet_status that is NOT
+    PACKET_INCOMPLETE_REJECTED (i.e. PACKET_COMPLETE or
+    PACKET_RECONSTRUCTED_COMPLETE).
+
+    This is the integration regression that would catch any regression where
+    fixing event_status resolution in the adapter does not flow through to the
+    final gate outcome.
+
+    Uses the same full-enrichment pattern as test_packet_partial_hold_does_not_block_row
+    but explicitly asserts the non-rejected status.
+    """
+    row = _make_wnba_row(team="Indiana Fever", slate_date="2026-08-06")
+    # Full enrichment — all CRITICAL fields present including event_status
+    enr = _make_full_enr()
+    enr["event_status"] = "SCHEDULED"   # explicitly set — was the only blocker
+
+    result = evidence_run(row, enr)
+
+    assert result["packet_status"] != PacketStatus.PACKET_INCOMPLETE_REJECTED, (
+        "PACKET_INCOMPLETE_REJECTED must not fire when all CRITICAL fields — "
+        "including event_status — are resolved. "
+        f"Got packet_status={result['packet_status']}. "
+        "This regression means the event_status fix is not flowing through "
+        "to the final packet gate outcome."
+    )
+    assert result["packet_status"] in (
+        PacketStatus.PACKET_COMPLETE,
+        PacketStatus.PACKET_RECONSTRUCTED_COMPLETE,
+        PacketStatus.PACKET_PARTIAL_HOLD,
+    ), (
+        f"Expected a non-rejected terminal status; got {result['packet_status']}"
+    )
