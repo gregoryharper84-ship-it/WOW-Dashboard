@@ -403,20 +403,41 @@ def _build_role_status_section(row: dict[str, Any], enr: dict[str, Any]) -> dict
 # Matchup section builder
 # ---------------------------------------------------------------------------
 
-def _build_matchup_section(enr: dict[str, Any]) -> dict[str, Any]:
+def _build_matchup_section(enr: dict[str, Any]) -> "dict[str, Any] | None":
     """
-    Build the matchup sub-section.  Values may be null/PROXY_ONLY — never
-    fabricated.  The calling module marks any null field as needing fallback.
+    Build the matchup sub-section.
+
+    Returns ``None`` when no substantive matchup data is present in the
+    enrichment dict.  Returning None (rather than a dict full of None values)
+    ensures ``detect_missing`` correctly flags the field as absent, which lets
+    the fallback router assign PROXY_ONLY status instead of the false-positive
+    PRIMARY_RETRIEVED label that a non-empty all-None dict would produce.
     """
-    matchup_raw = enr.get("matchup") or {}
+    matchup_raw         = enr.get("matchup") or {}
+    pace                = matchup_raw.get("pace")
+    opponent_defense    = (matchup_raw.get("opponent_defense")
+                           or matchup_raw.get("opp_defensive_rating"))
+    position_defense    = (matchup_raw.get("position_defense")
+                           or matchup_raw.get("positional_defense"))
+    rebound_environment = (matchup_raw.get("rebound_environment")
+                           or matchup_raw.get("rebound_rate_allowed"))
+    assist_environment  = (matchup_raw.get("assist_environment")
+                           or matchup_raw.get("assist_rate_allowed"))
+
+    # If every substantive field is None there is nothing actionable here.
+    # Return None so that detect_missing flags the field and the fallback router
+    # can emit the correct PROXY_ONLY status rather than PRIMARY_RETRIEVED.
+    if all(v is None for v in [pace, opponent_defense, position_defense,
+                                rebound_environment, assist_environment]):
+        return None
 
     return {
-        "pace":               matchup_raw.get("pace"),
-        "opponent_defense":   matchup_raw.get("opponent_defense") or matchup_raw.get("opp_defensive_rating"),
-        "position_defense":   matchup_raw.get("position_defense") or matchup_raw.get("positional_defense"),
-        "rebound_environment": matchup_raw.get("rebound_environment") or matchup_raw.get("rebound_rate_allowed"),
-        "assist_environment":  matchup_raw.get("assist_environment") or matchup_raw.get("assist_rate_allowed"),
-        "_proxy_fields":      matchup_raw.get("_proxy_fields") or [],
+        "pace":                pace,
+        "opponent_defense":    opponent_defense,
+        "position_defense":    position_defense,
+        "rebound_environment": rebound_environment,
+        "assist_environment":  assist_environment,
+        "_proxy_fields":       matchup_raw.get("_proxy_fields") or [],
     }
 
 

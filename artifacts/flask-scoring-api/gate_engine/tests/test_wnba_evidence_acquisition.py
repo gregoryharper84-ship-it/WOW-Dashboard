@@ -2066,3 +2066,382 @@ def test_bug004_packet_reaches_non_rejected_status_when_event_status_only_blocke
     ), (
         f"Expected a non-rejected terminal status; got {result['packet_status']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# BUG-PROXY-ONLY-VALIDATION regression tests
+# WOW-PATCH-2026-08-06-WNBA-ROLE-STATUS-VALIDATION
+#
+# Tests 52-59: PROXY_ONLY must not qualify CRITICAL_BLOCKING fields;
+# value validation for role_status subfields; matchup PRIMARY_RETRIEVED
+# false positive; inference provenance separation; cross-field integrity.
+# ---------------------------------------------------------------------------
+
+def _make_proxy_only_role_result(
+    active_status:     "str | None" = "ACTIVE_INFERRED",
+    projected_minutes: "float | None" = None,
+    role_timestamp:    "str | None" = "2026-08-06T22:00:00Z",
+    inference_basis:   "str | None" = "not_on_espn_injury_report",
+) -> "RouteAttemptResult":
+    """Build a PROXY_ONLY RouteAttemptResult for role_status as the ESPN
+    injuries adapter would produce when the player is absent from the report."""
+    from gate_engine.wnba.fallback_router import (
+        RouteAttemptResult, AcquisitionFieldStatus, AcquisitionMethod, SourceGrade,
+    )
+    return RouteAttemptResult(
+        field_category  = "role_status",
+        source_id       = "espn_wnba_injuries",
+        source_grade    = SourceGrade.A,
+        method          = AcquisitionMethod.WEB_FALLBACK,
+        status          = AcquisitionFieldStatus.PROXY_ONLY,
+        value_retrieved = {
+            "active_status":     active_status,
+            "projected_minutes": projected_minutes,
+            "role_timestamp":    role_timestamp,
+            "inference_basis":   inference_basis,
+            "injury_status":     None,
+        },
+        note            = "ACTIVE_INFERRED from absence on ESPN injury report (PROXY_ONLY)",
+        routes_attempted = [],
+        request_count   = 1,
+    )
+
+
+def test_proxy_only_null_projected_minutes_stays_unresolved():
+    """
+    PROXY_ONLY status with projected_minutes=None must leave
+    role_status.projected_minutes in fields_unresolved.
+
+    PROXY_ONLY is not in _CRITICAL_QUALIFYING_STATUSES so the field must
+    never appear in fields_reconstructed regardless of the value.
+    """
+    from gate_engine.wnba.evidence_acquisition import _validate_packet, _QUALIFYING_FIELD_STATUSES
+    from gate_engine.wnba.acquisition_packet import PacketStatus
+    from gate_engine.wnba.missing_field_detector import CRITICAL_BLOCKING_FIELDS
+
+    fallback = {"role_status": _make_proxy_only_role_result(projected_minutes=None)}
+    packet   = {"role_status": {"active_status": None, "projected_minutes": None,
+                                "role_timestamp": None}}
+    missing  = ["role_status.projected_minutes"]
+    recon = {"passed": True, "conflicts": []}
+
+    status, reconstructed, unresolved = _validate_packet(packet, missing, fallback, recon)
+
+    assert "role_status.projected_minutes" in unresolved, (
+        "projected_minutes=None with PROXY_ONLY must stay in fields_unresolved"
+    )
+    assert "role_status.projected_minutes" not in reconstructed, (
+        "PROXY_ONLY must not qualify projected_minutes as reconstructed"
+    )
+    assert status == PacketStatus.PACKET_INCOMPLETE_REJECTED, (
+        "CRITICAL field unresolved must produce PACKET_INCOMPLETE_REJECTED"
+    )
+
+
+def test_proxy_only_active_inferred_stays_unresolved():
+    """
+    ACTIVE_INFERRED is not a canonical observed status.
+    Even if written to the packet, _validate_critical_field_value must
+    reject it and keep role_status.active_status in fields_unresolved.
+    """
+    from gate_engine.wnba.evidence_acquisition import _validate_packet, _validate_critical_field_value
+    from gate_engine.wnba.acquisition_packet import PacketStatus
+
+    # Simulate the post-write-back state: ACTIVE_INFERRED was NOT written
+    # to canonical field (new write-back rule), so active_status is None.
+    packet = {"role_status": {"active_status": None, "projected_minutes": None,
+                              "role_timestamp": None}}
+
+    # Value check must reject None (and would reject ACTIVE_INFERRED too)
+    assert not _validate_critical_field_value("role_status.active_status", packet), (
+        "None active_status must fail value validation"
+    )
+
+    # Confirm ACTIVE_INFERRED itself is rejected
+    packet_inferred = {"role_status": {"active_status": "ACTIVE_INFERRED",
+                                       "projected_minutes": None, "role_timestamp": None}}
+    assert not _validate_critical_field_value("role_status.active_status", packet_inferred), (
+        "ACTIVE_INFERRED must fail _validate_critical_field_value — it is not canonical"
+    )
+
+    # Full pipeline: PROXY_ONLY + ACTIVE_INFERRED → unresolved
+    fallback = {"role_status": _make_proxy_only_role_result(active_status="ACTIVE_INFERRED")}
+    missing  = ["role_status.active_status"]
+    recon    = {"passed": True, "conflicts": []}
+
+    status, reconstructed, unresolved = _validate_packet(
+        packet_inferred, missing, fallback, recon
+    )
+    assert "role_status.active_status" in unresolved, (
+        "ACTIVE_INFERRED with PROXY_ONLY must remain unresolved"
+    )
+    assert status == PacketStatus.PACKET_INCOMPLETE_REJECTED
+
+
+def test_proxy_only_inference_timestamp_stays_unresolved():
+    """
+    An inference-generated role_timestamp (inference_basis is set) must NOT
+    be written to the canonical packet field and must stay in fields_unresolved.
+
+    The run() write-back rule: ts_is_observed = raw_ts AND inference_basis is None.
+    When inference_basis is set the timestamp goes to provenance only.
+    """
+    from gate_engine.wnba.evidence_acquisition import _validate_packet
+    from gate_engine.wnba.acquisition_packet import PacketStatus
+
+    # The write-back rule keeps role_timestamp None (inference_basis is set)
+    packet  = {"role_status": {"active_status": None, "projected_minutes": None,
+                               "role_timestamp": None}}
+    fallback = {"role_status": _make_proxy_only_role_result(
+        role_timestamp="2026-08-06T22:00:00Z",   # would be the inference timestamp
+        inference_basis="not_on_espn_injury_report",
+    )}
+    missing  = ["role_status.role_timestamp"]
+    recon    = {"passed": True, "conflicts": []}
+
+    status, reconstructed, unresolved = _validate_packet(packet, missing, fallback, recon)
+
+    assert "role_status.role_timestamp" in unresolved, (
+        "Inference-generated role_timestamp must stay unresolved (PROXY_ONLY path)"
+    )
+    assert status == PacketStatus.PACKET_INCOMPLETE_REJECTED
+
+
+def test_blank_role_timestamp_fails_value_validation():
+    """
+    A blank or whitespace-only role_timestamp must fail _validate_critical_field_value
+    even if the route status were FALLBACK_RETRIEVED.
+    """
+    from gate_engine.wnba.evidence_acquisition import _validate_critical_field_value
+
+    for blank in [None, "", "   ", "\t"]:
+        packet = {"role_status": {"active_status": "ACTIVE",
+                                  "projected_minutes": 30.0,
+                                  "role_timestamp": blank}}
+        result = _validate_critical_field_value("role_status.role_timestamp", packet)
+        assert not result, (
+            f"role_timestamp={blank!r} must fail value validation"
+        )
+
+    # Valid non-blank timestamp must pass
+    packet_ok = {"role_status": {"active_status": "ACTIVE",
+                                 "projected_minutes": 30.0,
+                                 "role_timestamp": "2026-08-06T19:00:00Z"}}
+    assert _validate_critical_field_value("role_status.role_timestamp", packet_ok), (
+        "Valid ISO timestamp must pass _validate_critical_field_value"
+    )
+
+
+def test_valid_reconstructed_role_status_passes():
+    """
+    A FALLBACK_RETRIEVED result with valid canonical active_status,
+    non-negative projected_minutes, and non-blank role_timestamp must
+    be classified as reconstructed (not unresolved).
+    """
+    from gate_engine.wnba.evidence_acquisition import _validate_packet, _validate_critical_field_value
+    from gate_engine.wnba.fallback_router import (
+        RouteAttemptResult, AcquisitionFieldStatus, AcquisitionMethod, SourceGrade,
+    )
+    from gate_engine.wnba.acquisition_packet import PacketStatus
+
+    valid_result = RouteAttemptResult(
+        field_category  = "role_status",
+        source_id       = "espn_wnba_injuries",
+        source_grade    = SourceGrade.A,
+        method          = AcquisitionMethod.WEB_FALLBACK,
+        status          = AcquisitionFieldStatus.FALLBACK_RETRIEVED,
+        value_retrieved = {
+            "active_status":     "ACTIVE",
+            "projected_minutes": 32.0,
+            "role_timestamp":    "2026-08-06T18:00:00Z",
+            "inference_basis":   None,   # directly observed
+        },
+        note            = "ESPN injury report: ACTIVE",
+        routes_attempted = ["espn_wnba_injuries"],
+        request_count   = 1,
+    )
+    packet = {
+        "role_status": {
+            "active_status":     "ACTIVE",
+            "projected_minutes": 32.0,
+            "role_timestamp":    "2026-08-06T18:00:00Z",
+        }
+    }
+    fallback = {"role_status": valid_result}
+    missing  = ["role_status.active_status", "role_status.projected_minutes",
+                "role_status.role_timestamp"]
+    recon    = {"passed": True, "conflicts": []}
+
+    # All three value checks must pass
+    for fp in missing:
+        assert _validate_critical_field_value(fp, packet), (
+            f"{fp} with valid value must pass _validate_critical_field_value"
+        )
+
+    status, reconstructed, unresolved = _validate_packet(packet, missing, fallback, recon)
+
+    assert unresolved == [], f"Expected no unresolved fields; got {unresolved}"
+    for fp in missing:
+        assert fp in reconstructed, f"{fp} must be in fields_reconstructed"
+    assert status == PacketStatus.PACKET_RECONSTRUCTED_COMPLETE
+
+
+def test_empty_matchup_primary_not_labeled_primary_retrieved():
+    """
+    When no matchup data is present in enrichment, _build_matchup_section
+    must return None (not an all-None dict).  detect_missing then flags
+    'matchup' as absent, the fallback router assigns PROXY_ONLY, and
+    _build_field_status_map labels it PROXY_ONLY — not PRIMARY_RETRIEVED.
+
+    PRIMARY_RETRIEVED on an empty matchup payload is a false positive that
+    hides the real acquisition state from the audit trail.
+    """
+    from gate_engine.wnba.acquisition_packet import build_packet, _build_matchup_section
+    from gate_engine.wnba.missing_field_detector import detect_missing
+
+    # _build_matchup_section with empty enrichment must return None
+    section = _build_matchup_section({})
+    assert section is None, (
+        "_build_matchup_section must return None when enrichment has no matchup data"
+    )
+
+    # Full packet built from bare row + empty enrichment must flag matchup missing
+    row = _make_wnba_row(team="Indiana Fever")
+    pkt = build_packet(row, {})
+    missing = detect_missing(pkt)
+    assert "matchup" in missing, (
+        "matchup must appear in detect_missing output when no data is in enrichment"
+    )
+
+    # Confirm that a packet WITH substantive matchup data is NOT flagged
+    enr_with_matchup = {"matchup": {"pace": 96.2, "opponent_defense": 108.5,
+                                    "position_defense": 112.0,
+                                    "rebound_environment": 0.52,
+                                    "assist_environment": 0.61}}
+    pkt2 = build_packet(row, enr_with_matchup)
+    missing2 = detect_missing(pkt2)
+    assert "matchup" not in missing2, (
+        "matchup must NOT be flagged as missing when substantive data is present"
+    )
+
+
+def test_proxy_only_role_status_produces_packet_incomplete_rejected():
+    """
+    Full pipeline integration: a row where ONLY role_status is missing
+    (event_status and box_score_log pre-supplied in enrichment) must reach
+    PACKET_INCOMPLETE_REJECTED when the role_status adapter returns PROXY_ONLY
+    with null/inferred values.
+
+    Verifies:
+    - fields_unresolved contains all three role_status subfields
+    - fields_reconstructed does NOT contain any role_status subfield
+    - event_status is NOT in fields_unresolved (BUG-005 fix intact)
+    - can_execute is False (unconditional)
+    """
+    row = _make_wnba_row(team="Indiana Fever", slate_date="2026-08-06")
+    enr = _make_full_enr()
+    # Remove role_status data so the fallback router must attempt it
+    enr.pop("role_status", None)
+    enr.pop("role_timestamp", None)
+    enr.pop("projected_minutes", None)
+
+    # Supply event_status and box_score_log so ONLY role_status is the missing
+    # critical field, isolating the test from external HTTP dependencies.
+    row.pop("role_status", None)
+
+    from unittest.mock import patch
+    import gate_engine.wnba.fallback_router as _fr
+
+    # Monkey-patch _attempt_role_status to return PROXY_ONLY with inferred values
+    _real_role = _fr._attempt_role_status
+
+    def _fake_role_status(packet, enr):
+        return _make_proxy_only_role_result(
+            active_status="ACTIVE_INFERRED",
+            projected_minutes=None,
+            role_timestamp="2026-08-06T22:00:00Z",
+            inference_basis="not_on_espn_injury_report",
+        )
+
+    _fr._attempt_role_status = _fake_role_status
+    try:
+        result = evidence_run(row, enr)
+    finally:
+        _fr._attempt_role_status = _real_role
+
+    fu = result.get("fields_unresolved") or []
+    fr = result.get("fields_reconstructed") or []
+
+    assert "role_status.active_status"     in fu, f"active_status must be unresolved; got fu={fu}"
+    assert "role_status.projected_minutes" in fu, f"projected_minutes must be unresolved; got fu={fu}"
+    assert "role_status.role_timestamp"    in fu, f"role_timestamp must be unresolved; got fu={fu}"
+
+    for fp in ["role_status.active_status", "role_status.projected_minutes",
+               "role_status.role_timestamp"]:
+        assert fp not in fr, (
+            f"{fp} must not be in fields_reconstructed when PROXY_ONLY with null/inferred values"
+        )
+
+    assert result.get("packet_status") == PacketStatus.PACKET_INCOMPLETE_REJECTED, (
+        f"Expected PACKET_INCOMPLETE_REJECTED; got {result.get('packet_status')}"
+    )
+    assert result.get("can_execute") is False, "can_execute must be False (unconditional)"
+
+
+def test_event_status_resolved_when_role_status_unresolved():
+    """
+    When role_status is the only blocker (PROXY_ONLY + null values) and
+    event_status was successfully resolved via the ESPN scoreboard, the
+    event_status field must NOT appear in fields_unresolved.
+
+    This confirms BUG-005 (event_status tokenization fix) is preserved when
+    the new role_status validation is applied simultaneously.
+
+    Uses a pre-supplied SCHEDULED event_status in enrichment so no HTTP
+    is needed for this path.
+    """
+    row = _make_wnba_row(team="Indiana Fever", slate_date="2026-08-06")
+    enr = _make_full_enr()
+    enr["event_status"] = "SCHEDULED"   # pre-supply — no ESPN call needed
+    enr.pop("role_status", None)
+    enr.pop("role_timestamp", None)
+    enr.pop("projected_minutes", None)
+    row.pop("role_status", None)
+
+    import gate_engine.wnba.fallback_router as _fr
+    _real_role = _fr._attempt_role_status
+
+    def _fake_proxy_role(packet, enr):
+        return _make_proxy_only_role_result(
+            active_status="ACTIVE_INFERRED",
+            projected_minutes=None,
+            role_timestamp="2026-08-06T22:00:00Z",
+            inference_basis="not_on_espn_injury_report",
+        )
+
+    _fr._attempt_role_status = _fake_proxy_role
+    try:
+        result = evidence_run(row, enr)
+    finally:
+        _fr._attempt_role_status = _real_role
+
+    fu = result.get("fields_unresolved") or []
+
+    # event_status must NOT be unresolved
+    assert "event_status" not in fu, (
+        f"event_status must not appear in fields_unresolved when it was pre-supplied. "
+        f"fields_unresolved={fu}"
+    )
+
+    # role_status subfields must all be unresolved (regression guard)
+    for fp in ["role_status.active_status", "role_status.projected_minutes",
+               "role_status.role_timestamp"]:
+        assert fp in fu, (
+            f"{fp} must be in fields_unresolved when PROXY_ONLY+null. "
+            f"fields_unresolved={fu}"
+        )
+
+    # Terminal status reflects the role_status blocker
+    assert result.get("packet_status") == PacketStatus.PACKET_INCOMPLETE_REJECTED, (
+        f"Expected PACKET_INCOMPLETE_REJECTED; got {result.get('packet_status')}"
+    )

@@ -89,8 +89,35 @@ provider, event_id, match_method, match_confidence, espn_status_raw, and competi
 **Role-status write-back:** `projected_minutes` was previously omitted from the role-status
 write-back block in `evidence_acquisition.run()`.  Fixed alongside BUG-005.
 
+## PROXY_ONLY validation semantics (post-BUG-005)
+**Rule:** `_CRITICAL_QUALIFYING_STATUSES` (no PROXY_ONLY) is used for CRITICAL_BLOCKING
+fields in `_validate_packet`; `_QUALIFYING_FIELD_STATUSES` (includes PROXY_ONLY) is used
+only for QUALIFICATION_BLOCKING fields (matchup, market, news).
+
+**Rule:** `_validate_critical_field_value()` validates actual packet values for role_status
+subfields even when route status is FALLBACK_RETRIEVED:
+- `active_status` must be in `_CANONICAL_ACTIVE_STATUSES` — "ACTIVE_INFERRED" is rejected.
+- `projected_minutes` must be non-negative float.
+- `role_timestamp` must be non-blank string.
+
+**Rule:** role_status write-back in `run()` separates inference provenance from canonical fields:
+- ACTIVE_INFERRED → `packet["role_status_inference_provenance"]` only, never canonical field.
+- Inference-generated timestamps (inference_basis is set) → provenance only.
+- Canonical write-back only for values that pass per-field validation.
+
+**Rule:** `_build_matchup_section` returns `None` (not all-None dict) when no substantive
+matchup data present → detect_missing correctly flags it → field_status_map shows PROXY_ONLY
+not the false-positive PRIMARY_RETRIEVED.
+
+**Rule:** box_score_log rebuild (`build_packet()` returns fresh packet) must execute in Pass 1
+before all other write-backs (Pass 2 loop). Original single-loop ordering silently discarded
+role_status write-backs that fired before the rebuild.
+
+**Why:** All four bugs caused PROXY_ONLY inferred values to masquerade as resolved critical
+fields, producing PACKET_RECONSTRUCTED_COMPLETE when the data was genuinely missing.
+
 ## Test suite
-28 original + 14 BUG-001/002/003 + 1 BUG-004 + 8 BUG-005 = **51 total, all pass**.
+28 original + 14 BUG-001/002/003 + 1 BUG-004 + 8 BUG-005 + 8 PROXY_ONLY = **59 total, all pass**.
 
 ## Live proof (2026-08-06)
 - BUG-001/002/003: box_score_log=0→10, l5=0→5, l10=0→10; PAID key; ESPN v2 athlete

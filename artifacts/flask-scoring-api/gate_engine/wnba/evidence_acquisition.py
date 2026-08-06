@@ -83,10 +83,72 @@ _QUALIFYING_FIELD_STATUSES: frozenset[str] = frozenset({
     AcquisitionFieldStatus.PRIMARY_RETRIEVED,
     AcquisitionFieldStatus.FALLBACK_RETRIEVED,
     AcquisitionFieldStatus.MULTI_SOURCE_RECONSTRUCTED,
-    # PROXY_ONLY counts as "resolved at proxy level" for packet_status purposes
-    # (matchup / market fields that are unavailable but not fabricated)
+    # PROXY_ONLY qualifies for QUALIFICATION_BLOCKING fields only
+    # (matchup / market fields unavailable but not fabricated).
     AcquisitionFieldStatus.PROXY_ONLY,
 })
+
+# Qualifying statuses for CRITICAL_BLOCKING fields.
+# PROXY_ONLY is intentionally excluded: inferred-without-direct-observation
+# values (e.g. ACTIVE_INFERRED from ESPN absence, inference-generated
+# timestamps) must not masquerade as resolved critical data.
+_CRITICAL_QUALIFYING_STATUSES: frozenset[str] = frozenset({
+    AcquisitionFieldStatus.PRIMARY_RETRIEVED,
+    AcquisitionFieldStatus.FALLBACK_RETRIEVED,
+    AcquisitionFieldStatus.MULTI_SOURCE_RECONSTRUCTED,
+})
+
+# Canonical observed active_status values that satisfy the critical role_status
+# gate.  ACTIVE_INFERRED is provenance-only and must never be written to the
+# canonical packet field or used as evidence of resolution.
+_CANONICAL_ACTIVE_STATUSES: frozenset[str] = frozenset({
+    "ACTIVE",
+    "INACTIVE",
+    "QUESTIONABLE",
+    "DOUBTFUL",
+    "OUT",
+    "DAY_TO_DAY",
+    "PROBABLE",
+    "SUSPENDED",
+    "RESTING",
+    "NOT_ON_INJURY_REPORT",
+})
+
+
+def _validate_critical_field_value(field_path: str, packet: dict[str, Any]) -> bool:
+    """
+    Validate the *actual packet value* of a CRITICAL_BLOCKING field after all
+    write-backs have been applied.
+
+    A FALLBACK_RETRIEVED or MULTI_SOURCE_RECONSTRUCTED route status alone is
+    not sufficient proof that the field contains a usable value — the adapter
+    may have returned a null, blank, out-of-vocabulary, or inferred-without-
+    direct-observation payload.  This guard prevents such cases from being
+    counted as reconstructed.
+
+    Returns True only when the value passes per-field type / content rules.
+
+    For non-role_status critical fields (event_status, box_score_log, l5/l10
+    ledger) the route status is authoritative; detect_missing already verified
+    structural presence for those paths.
+    """
+    if field_path == "role_status.active_status":
+        val = (packet.get("role_status") or {}).get("active_status")
+        return bool(val and str(val).strip() and val in _CANONICAL_ACTIVE_STATUSES)
+
+    if field_path == "role_status.projected_minutes":
+        val = (packet.get("role_status") or {}).get("projected_minutes")
+        try:
+            return val is not None and float(val) >= 0
+        except (TypeError, ValueError):
+            return False
+
+    if field_path == "role_status.role_timestamp":
+        val = (packet.get("role_status") or {}).get("role_timestamp")
+        return bool(val and str(val).strip())
+
+    # All other critical fields: route status is authoritative.
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -174,20 +236,42 @@ def _validate_packet(
       1. Source conflict → PACKET_INCOMPLETE_REJECTED
       2. Any CRITICAL_BLOCKING field unresolved → PACKET_INCOMPLETE_REJECTED
       3. Any QUALIFICATION_BLOCKING field unresolved (DATA_UNOBTAINABLE) →
-         PACKET_PARTIAL_HOLD (note: PROXY_ONLY does NOT trigger this)
+         PACKET_PARTIAL_HOLD (PROXY_ONLY does NOT trigger this)
       4. Any field was missing but successfully reconstructed →
          PACKET_RECONSTRUCTED_COMPLETE
       5. No missing fields → PACKET_COMPLETE
+
+    CRITICAL vs QUALIFICATION qualifying sets differ intentionally:
+      - PROXY_ONLY qualifies QUALIFICATION_BLOCKING (matchup, market, news).
+      - PROXY_ONLY does NOT qualify CRITICAL_BLOCKING fields — inferred-without-
+        direct-observation values (ACTIVE_INFERRED, inference timestamps, null
+        projected_minutes) must remain unresolved.
+      - For CRITICAL role_status subfields, the actual packet value is also
+        validated beyond the route status (see _validate_critical_field_value).
     """
     fields_reconstructed: list[str] = []
     fields_unresolved:    list[str] = []
 
-    # Classify each field that was initially missing
+    # Classify each field that was initially missing.
+    # Critical fields use _CRITICAL_QUALIFYING_STATUSES (PROXY_ONLY excluded)
+    # and an additional per-field value check to prevent inferred/null payloads
+    # from masquerading as resolved critical data.
     for field_path in missing_after_primary:
-        category = _get_category_for_field(field_path)
-        result   = fallback_results.get(category)
+        category    = _get_category_for_field(field_path)
+        result      = fallback_results.get(category)
+        is_critical = field_path in CRITICAL_BLOCKING_FIELDS
+        qualifying  = _CRITICAL_QUALIFYING_STATUSES if is_critical else _QUALIFYING_FIELD_STATUSES
 
-        if result and result.status in _QUALIFYING_FIELD_STATUSES:
+        status_ok = bool(result and result.status in qualifying)
+        # For critical role_status subfields also validate the actual value
+        # written to the packet — a qualifying route status is necessary but
+        # not sufficient when the value is null, out-of-vocabulary, or inferred.
+        value_ok  = (
+            _validate_critical_field_value(field_path, packet)
+            if is_critical else True
+        )
+
+        if status_ok and value_ok:
             fields_reconstructed.append(field_path)
         else:
             fields_unresolved.append(field_path)
@@ -545,23 +629,32 @@ def run(
         categories     = classify_missing_fields(initial_missing_fields)
         fallback_results = route_fallback_for_categories(categories, packet, enr)
 
-        # Apply any values written back into enr by external adapters
-        # (box_score_log adapter writes directly into enr; rebuild packet)
-        for cat, result in fallback_results.items():
-            if cat == "box_score_log" and result.status in (
+        # ── Pass 1: box_score_log rebuild ────────────────────────────────
+        # build_packet() returns a FRESH packet dict.  Any mutations already
+        # applied to the old packet (role_status, event_status write-backs that
+        # fire earlier in the same loop) would be silently discarded.  Executing
+        # the rebuild unconditionally BEFORE all other write-backs ensures the
+        # subsequent passes always land on the stable, rebuilt packet.
+        if "box_score_log" in fallback_results:
+            _bs = fallback_results["box_score_log"]
+            if _bs.status in (
                 AcquisitionFieldStatus.FALLBACK_RETRIEVED,
                 AcquisitionFieldStatus.MULTI_SOURCE_RECONSTRUCTED,
             ):
                 if not packet.get("box_score_log") and enr.get("box_score_log"):
                     packet = build_packet(row, enr, as_of=run_ts)
 
+        # ── Pass 2: all other field write-backs onto the stable packet ────
+        for cat, result in fallback_results.items():
+            if cat == "box_score_log":
+                continue   # handled in Pass 1
+
             elif cat == "event_status" and result.status in _QUALIFYING_FIELD_STATUSES:
                 if result.value_retrieved and not enr.get("event_status"):
                     enr["event_status"] = result.value_retrieved
                     packet["event_status"] = result.value_retrieved
-                    # Post-merge provenance invariant: stamp source metadata so
-                    # event_status cannot be silently lost or overwritten by a
-                    # later None during downstream merges.
+                    # Post-merge provenance: stamp source metadata so event_status
+                    # cannot be silently lost or overwritten by a later None.
                     if result.adapter_result:
                         _anf = result.adapter_result.normalized_fields or {}
                         packet["event_status_provenance"] = {
@@ -588,15 +681,70 @@ def run(
             elif cat == "role_status" and result.status in _QUALIFYING_FIELD_STATUSES:
                 nf = result.value_retrieved or {}
                 rs = packet.get("role_status") or {}
-                if nf.get("active_status") and not rs.get("active_status"):
-                    rs["active_status"] = nf["active_status"]
-                if nf.get("role_timestamp") and not rs.get("role_timestamp"):
-                    rs["role_timestamp"] = nf["role_timestamp"]
-                # BUG-EVENT-ROLE: projected_minutes was omitted from write-back
-                if nf.get("projected_minutes") is not None and rs.get("projected_minutes") is None:
-                    rs["projected_minutes"] = nf["projected_minutes"]
-                # Ensure updated dict is referenced by the packet when role_status
-                # was initially absent (packet["role_status"] == None path).
+
+                # ── Inference provenance ─────────────────────────────────────
+                # Record ACTIVE_INFERRED and inference-generated timestamps in a
+                # separate provenance dict so the audit trail is preserved without
+                # the canonical packet fields being polluted by inferred values.
+                # _validate_critical_field_value rejects ACTIVE_INFERRED and
+                # inference timestamps from the canonical gate even if they were
+                # accidentally written here.
+                has_inference = (
+                    nf.get("inference_basis") is not None
+                    or nf.get("active_status") == "ACTIVE_INFERRED"
+                )
+                if has_inference:
+                    packet["role_status_inference_provenance"] = {
+                        "inferred_active_status": nf.get("active_status"),
+                        "inference_basis":        nf.get("inference_basis"),
+                        "inference_source":       result.source_id,
+                        "adapter_status":         result.status,
+                        "injury_status":          nf.get("injury_status"),
+                        "retrieved_at": (
+                            result.adapter_result.retrieved_at
+                            if result.adapter_result else None
+                        ),
+                    }
+
+                # ── active_status ────────────────────────────────────────────
+                # Must be a direct-observation canonical value.  ACTIVE_INFERRED
+                # goes to provenance only (see above) and must never be written
+                # to the canonical field — it would fool detect_missing into
+                # thinking the field is present and then fail _validate_critical_
+                # field_value, leaving the field silently unresolved.
+                raw_as = nf.get("active_status")
+                if (raw_as
+                        and raw_as in _CANONICAL_ACTIVE_STATUSES
+                        and not rs.get("active_status")):
+                    rs["active_status"] = raw_as
+
+                # ── role_timestamp ───────────────────────────────────────────
+                # Non-blank AND not inference-generated.  An inference timestamp
+                # (produced at adapter runtime rather than from an observed role-
+                # change event) goes to provenance only.
+                raw_ts = nf.get("role_timestamp")
+                ts_is_observed = (
+                    bool(raw_ts and str(raw_ts).strip())
+                    and nf.get("inference_basis") is None
+                )
+                if ts_is_observed and not rs.get("role_timestamp"):
+                    rs["role_timestamp"] = raw_ts
+
+                # ── projected_minutes ────────────────────────────────────────
+                # Non-negative numeric value required.  None or non-numeric
+                # values (including None from PROXY_ONLY adapters) are silently
+                # dropped so detect_missing correctly keeps the field unresolved.
+                raw_pm = nf.get("projected_minutes")
+                if raw_pm is not None and rs.get("projected_minutes") is None:
+                    try:
+                        pm_val = float(raw_pm)
+                        if pm_val >= 0:
+                            rs["projected_minutes"] = pm_val
+                    except (TypeError, ValueError):
+                        pass
+
+                # Ensure the dict is referenced by the packet when role_status
+                # was initially absent.
                 if rs and not packet.get("role_status"):
                     packet["role_status"] = rs
 
