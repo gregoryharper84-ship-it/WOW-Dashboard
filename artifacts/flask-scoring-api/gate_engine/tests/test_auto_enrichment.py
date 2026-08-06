@@ -353,6 +353,67 @@ def test_row_key_end_to_end_attachment_through_pipeline(monkeypatch):
     assert market_result.get("sportsbook_line") == 26.5
 
 
+def test_pitching_outs_market_key_routing(monkeypatch):
+    """
+    'pitching outs' / 'outs' prop types must route to the 'pitcher_outs' Odds API
+    market key — not 'batter_outs'.
+
+    Regression for WOW-PATCH-2026-08-06: _PROP_TYPE_TO_MARKET_SUFFIX had no entry
+    for 'pitching outs'/'outs', so the market lookup silently returned None and the
+    enrichment carried no sportsbook_line even when the Odds API had data.
+    """
+    from gate_engine.auto_enrichment import _market_key_for
+
+    # Primary long form (from normalizer prop display)
+    assert _market_key_for("MLB", "pitching outs") == "pitcher_outs", (
+        "'pitching outs' must map to 'pitcher_outs', not 'batter_outs'"
+    )
+    # Short-form stat_key set by _norm_to_pipeline_row
+    assert _market_key_for("MLB", "outs") == "pitcher_outs", (
+        "'outs' stat_key must map to 'pitcher_outs'"
+    )
+
+
+def test_pitching_outs_is_in_pitcher_prop_types(monkeypatch):
+    """
+    'pitching outs' and 'outs' must be in _PITCHER_PROP_TYPES so the market
+    prefix is 'pitcher' not 'batter'.
+    """
+    from gate_engine.auto_enrichment import _PITCHER_PROP_TYPES
+
+    assert "pitching outs" in _PITCHER_PROP_TYPES, (
+        "'pitching outs' must be in _PITCHER_PROP_TYPES"
+    )
+    assert "outs" in _PITCHER_PROP_TYPES, (
+        "'outs' must be in _PITCHER_PROP_TYPES so stat_key short-form routes to pitcher prefix"
+    )
+
+
+def test_pitcher_outs_in_player_logs_prop_stat_map():
+    """'pitcher_outs' must be registered in services/player_logs.py PROP_STAT_MAP."""
+    from services.player_logs import PROP_STAT_MAP
+
+    assert "pitcher_outs" in PROP_STAT_MAP, (
+        "'pitcher_outs' must be in PROP_STAT_MAP — ESPN stat field is 'outs'"
+    )
+    stat_fields = PROP_STAT_MAP["pitcher_outs"]
+    assert "outs" in stat_fields, (
+        f"PROP_STAT_MAP['pitcher_outs'] = {stat_fields!r} — must include 'outs'"
+    )
+
+
+def test_pitcher_outs_in_odds_api_supported_markets():
+    """'pitcher_outs' must appear in the supported-markets list in services/odds_api.py."""
+    import inspect
+    import services.odds_api as odds_api_mod
+
+    source = inspect.getsource(odds_api_mod)
+    assert "pitcher_outs" in source, (
+        "'pitcher_outs' must be listed in odds_api.py supported markets "
+        "so the market isn't silently skipped during quota-aware fetches"
+    )
+
+
 def test_multi_sport_batch_fetches_each_sport_once(monkeypatch):
     calls = []
 

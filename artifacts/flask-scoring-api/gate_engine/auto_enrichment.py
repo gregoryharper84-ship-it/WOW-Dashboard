@@ -66,6 +66,10 @@ _PROP_TYPE_TO_MARKET_SUFFIX = {
     "strikeouts": "strikeouts",   # alternate long form sometimes emitted by gap-fill
     "k": "strikeouts",            # FIX-2: stat_key short form set by _norm_to_pipeline_row
     "so": "strikeouts",           # FIX-2: legacy short form
+    # Pitching outs: normalizer.py maps "pitching outs" → stat_key "OUTS".
+    # _market_key_for("MLB", "pitching outs") → prefix="pitcher" + "outs" = "pitcher_outs".
+    "pitching outs": "outs",
+    "outs": "outs",               # short-form stat_key emitted by _norm_to_pipeline_row
     "passing yards": "pass_yds",
     "passing tds": "pass_tds",
     "rushing yards": "rush_yds",
@@ -73,7 +77,7 @@ _PROP_TYPE_TO_MARKET_SUFFIX = {
     "receptions": "receptions",
 }
 
-_PITCHER_PROP_TYPES = {"pitcher strikeouts"}
+_PITCHER_PROP_TYPES = {"pitcher strikeouts", "pitching outs", "outs"}
 
 
 def _normalize_prop_type(prop_type: str | None) -> str:

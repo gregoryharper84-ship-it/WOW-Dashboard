@@ -108,6 +108,12 @@ _MLB_STAT_FIELDS: dict[str, str] = {
     "H_allowed":  "hits",        # pitcher hits allowed — use pitching split group
     "K":          "strikeOuts",  # normalizer.py primary key for pitcher strikeouts
     "SO":         "strikeOuts",  # legacy/alternate key; same MLB field
+    # Pitching outs (recorded outs) — normalizer.py maps "pitching outs" → "OUTS".
+    # MLB Stats API pitching split field: "outs" (integer; 4.1 IP → outs=13, 6.0 IP → outs=18).
+    # NOT "recordedOuts" — that field is absent from gameLog splits.
+    # "inningsPitched" is also available ("4.1") but "outs" is already the integer
+    # count we need, removing the fractional-IP parsing step.
+    "OUTS":       "outs",
     "TB":         "totalBases",
     "R":          "runs",
     "RBI":        "rbi",
@@ -426,7 +432,9 @@ def _fetch_mlb(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[li
     # split group.  Prior code only listed H_allowed/ER/BB as pitcher keys,
     # so "K" / "SO" incorrectly queried the hitting split (which has no
     # strikeOuts field), producing 0 qualifying rows.
-    pitcher_keys = {"H_allowed", "ER", "BB", "K", "SO"}
+    # "OUTS" added: normalizer.py maps "pitching outs" → stat_key "OUTS";
+    # recordedOuts lives in the pitching split group, not the hitting split.
+    pitcher_keys = {"H_allowed", "ER", "BB", "K", "SO", "OUTS"}
     group = "pitching" if stat_key in pitcher_keys else "hitting"
 
     field = _MLB_STAT_FIELDS.get(stat_key)

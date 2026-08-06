@@ -54,7 +54,7 @@ PLAYER_PROP_MARKETS = {
     "MLB":  [
         "batter_hits", "batter_home_runs", "batter_rbis",
         "batter_strikeouts", "batter_total_bases",
-        "pitcher_strikeouts", "pitcher_hits_allowed",
+        "pitcher_strikeouts", "pitcher_hits_allowed", "pitcher_outs",
         "pitcher_walks", "pitcher_earned_runs",
     ],
     "NFL":  [
