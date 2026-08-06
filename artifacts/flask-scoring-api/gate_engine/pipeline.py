@@ -34,6 +34,7 @@ from . import route_registry
 from . import llp_mlb_winner_preflight
 from . import mlb_directional_firewall, wnba_composite_gate, cross_ticket_governor
 from .wnba import opportunity_engine as _wnba_opp_gate
+from .wnba import evidence_acquisition as _wnba_evidence_acq
 from .portfolio.cross_slip_exposure import PortfolioExposureGovernor as _PortfolioGov
 
 
@@ -191,6 +192,33 @@ def run_pipeline(
         role_ts_mod.run(row, enrichment=enr)
 
         status_role.run(row, status_payload=enr.get("status_payload"))
+
+        # -------------------------------------------------------------------
+        # WOW-PATCH-2026-08-06-WNBA-EVIDENCE-ACQUISITION-STRUCTURAL
+        # WNBA Evidence Acquisition — structural pipeline (plumbing and
+        # observability only; no probability / calibration math).
+        #
+        # Gate insertion order per spec §8:
+        #   SLATE → IDENTITY → PRIMARY_ACQUISITION → COVERAGE_AUDIT →
+        #   FALLBACK_ROUTING → SOURCE_RECONCILIATION →
+        #   OPPORTUNITY_PACKET_VALIDATION →
+        #   [existing analytical pipeline unchanged] → FINAL_REFRESH
+        #
+        # Runs AFTER status_role so role_status signal is available.
+        # Runs BEFORE the existing opportunity engine so the packet feeds it.
+        # PACKET_INCOMPLETE_REJECTED → terminal label; skip analytical gates.
+        # PACKET_COMPLETE / PACKET_RECONSTRUCTED → continue normally.
+        # -------------------------------------------------------------------
+        if _wnba_evidence_acq.is_wnba_row(row):
+            _ea_result = _wnba_evidence_acq.run(row, enrichment=enr)
+            if _ea_result.get("packet_status") == "PACKET_INCOMPLETE_REJECTED":
+                row.setdefault("blockers", []).append(
+                    "WNBA_EVIDENCE_ACQUISITION:PACKET_INCOMPLETE_REJECTED:"
+                    "unresolved=" + ",".join(_ea_result.get("fields_unresolved") or [])
+                )
+                if row.get("terminal_label") is None:
+                    row["terminal_label"] = PropLabel.DATA_CONTRACT_FAIL.value
+                continue
 
         # -------------------------------------------------------------------
         # PATCH-WNBA-001: WNBA Opportunity and Role Gate
