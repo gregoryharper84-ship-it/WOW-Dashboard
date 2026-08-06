@@ -141,6 +141,8 @@ _APP_START_TIME = time.time()
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
 _bt("flask app created — registering routes")
 
+BUILD_ID = "wow-pipeline-fix-2026-08-06-e2e-1"
+
 
 # ---------------------------------------------------------------------------
 # Transport adapters and request-normalization helpers
@@ -20676,6 +20678,14 @@ def wow_engine_health():
         "ok":      True,
         "service": "wow-engine",
         "status":  "alive",
+        "build_id":        BUILD_ID,
+        "engine_version":  "v16.5",
+        "capability_flags": {
+            "multipart_image_support":      True,
+            "gate_request_normalization":   True,
+            "structured_pipeline_failures": True,
+        },
+        "can_execute":     False,
     }), 200
 
 
