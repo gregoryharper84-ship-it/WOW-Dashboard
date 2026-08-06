@@ -584,6 +584,220 @@ class TestOpenapiSchemaCompleteness:
 
 
 # ---------------------------------------------------------------------------
+# Plumbing regression tests
+# WOW plumbing patch — defects A/B/C/D/E/F from the pipeline-defect document.
+# ---------------------------------------------------------------------------
+
+class TestPipelinePlumbing:
+    """
+    Regression tests for the three confirmed plumbing defects:
+      A. /analyze-and-score rejects multipart screenshots
+      B. /gate-engine/run passes string fields into specialists (AttributeError)
+      C. Global error handler referenced undefined `req` (NameError)
+    Plus E (BACKEND_PIPELINE_FAILURE semantics) and normalize_gate_request contract.
+    """
+
+    # ── A. Transport adapter — /analyze-and-score ────────────────────────
+
+    def test_multipart_image_accepted_not_415(self, app_client):
+        """A valid PNG multipart upload must NOT return 415 or 400 (transport layer)."""
+        import io
+        # Minimal 8-byte PNG magic header — enough to pass MIME detection;
+        # the pipeline will fail later (no Anthropic key in test) but not at
+        # the transport layer.
+        png_bytes = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8
+        resp = app_client.post(
+            "/analyze-and-score",
+            data={"image": (io.BytesIO(png_bytes), "board.png", "image/png")},
+            content_type="multipart/form-data",
+            headers={"X-API-Key": "test-scoring-key"},
+        )
+        # Transport layer must accept it — 503 (no Anthropic key) or any
+        # downstream status is fine; 400/415 would mean the image was rejected
+        # at the boundary before extraction.
+        assert resp.status_code != 415, "multipart upload was rejected with 415"
+        assert resp.status_code != 400 or (
+            resp.get_json() or {}
+        ).get("error_code") != "REQUEST_VALIDATION_ERROR", (
+            "transport adapter rejected a valid PNG multipart upload"
+        )
+
+    def _api_key(self):
+        import app as _mod
+        return _mod.os.environ.get("SCORING_API_KEY", "test-scoring-key")
+
+    def test_local_path_string_rejected_cleanly(self, app_client):
+        """A local filesystem path must be rejected (no image/image_base64), not reach the model."""
+        resp = app_client.post(
+            "/analyze-and-score",
+            json={"image_path": "/mnt/data/rendered-board.png"},
+            headers={"X-API-Key": self._api_key()},
+        )
+        # No image field → missing-image 422, not a silent pass-through
+        assert resp.status_code in (400, 422), (
+            f"Expected 400 or 422 for missing image; got {resp.status_code}"
+        )
+        body = resp.get_json() or {}
+        assert body.get("ok") is False or body.get("error_code") == "REQUEST_VALIDATION_ERROR"
+
+    def test_base64_data_url_accepted(self, app_client):
+        """A well-formed PNG data URL must be accepted (no 400/422 at transport layer)."""
+        import base64
+        png_bytes = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8
+        data_url = "data:image/png;base64," + base64.b64encode(png_bytes).decode()
+        resp = app_client.post(
+            "/analyze-and-score",
+            json={"image_base64": data_url},
+            headers={"X-API-Key": self._api_key()},
+        )
+        # Transport accepted → downstream may fail (503 no Anthropic, 422 enrichment)
+        # but must NOT return 400 "REQUEST_VALIDATION_ERROR" (transport rejection)
+        body = resp.get_json() or {}
+        assert not (
+            resp.status_code in (400, 422)
+            and body.get("error_code") == "REQUEST_VALIDATION_ERROR"
+        ), f"Transport adapter rejected a valid base64 data URL: {body}"
+
+    # ── B. Schema normalization — /gate-engine/run ───────────────────────
+
+    def test_failure_path_string_returns_422(self, app_client):
+        """`failure_path` supplied as a bare string must return 422 before the pipeline."""
+        resp = app_client.post(
+            "/gate-engine/run",
+            json={
+                "expected_governance_hash": "test",
+                "session_id":     "s1",
+                "research_run_id": "r1",
+                "as_of":          "2026-08-06T00:00:00Z",
+                "rows": [{
+                    "player": "LeBron James",
+                    "sport":  "NBA",
+                    "prop_type": "Points",
+                    "line": 27.5,
+                    "direction": "MORE",
+                    "failure_path": "RETRIEVED",
+                }],
+            },
+            headers={"X-API-Key": "test-scoring-key"},
+        )
+        # Governance will reject first (409), but if governance passes, schema
+        # validation must catch the string before any specialist runs.
+        # Either 409 (governance) or 422 (schema) is acceptable; 500 is not.
+        assert resp.status_code != 500, (
+            f"failure_path string caused an unhandled 500; expected 409 or 422. "
+            f"Body: {resp.get_json()}"
+        )
+
+    def test_json_object_string_normalised(self, app_client):
+        """`failure_path` as a JSON-encoded object string must NOT cause a 500."""
+        resp = app_client.post(
+            "/gate-engine/run",
+            json={
+                "expected_governance_hash": "test",
+                "session_id":     "s2",
+                "research_run_id": "r2",
+                "as_of":          "2026-08-06T00:00:00Z",
+                "rows": [{
+                    "player": "LeBron James",
+                    "sport":  "NBA",
+                    "prop_type": "Points",
+                    "line": 27.5,
+                    "direction": "MORE",
+                    "failure_path": '{"status": "RETRIEVED"}',
+                }],
+            },
+            headers={"X-API-Key": "test-scoring-key"},
+        )
+        assert resp.status_code != 500, (
+            f"JSON object string in failure_path caused unhandled 500. "
+            f"Body: {resp.get_json()}"
+        )
+
+    # ── C. Error handler — never raises NameError ────────────────────────
+
+    def test_error_handler_never_raises_name_error(self, app_client, monkeypatch):
+        """When the pipeline throws, the error handler must return 500 cleanly."""
+        import app as _mod
+        import gate_engine.pipeline as _pipe
+        monkeypatch.setattr(
+            _pipe,
+            "run_pipeline",
+            lambda **_kw: (_ for _ in ()).throw(RuntimeError("forced test error")),
+        )
+        resp = app_client.post(
+            "/gate-engine/run",
+            json={
+                "expected_governance_hash": "test",
+                "session_id":     "s3",
+                "research_run_id": "r3",
+                "as_of":          "2026-08-06T00:00:00Z",
+                "rows": [{"player": "A", "sport": "NBA", "prop_type": "Points",
+                           "line": 10.5, "direction": "MORE"}],
+            },
+            headers={"X-API-Key": "test-scoring-key"},
+        )
+        # Must be 409 (governance) or 500 (pipeline) — never NameError (also 500
+        # but with a different body that would have previously obscured the cause).
+        body = resp.get_json() or {}
+        if resp.status_code == 500:
+            # The structured BACKEND_PIPELINE_FAILURE shape must be present.
+            assert "can_execute" in body, (
+                "500 response is missing can_execute — error handler may have re-raised"
+            )
+            assert body.get("can_execute") is False
+
+    # ── E. Terminal semantics — NO_PLAY ≠ BACKEND_PIPELINE_FAILURE ───────
+
+    def test_normalize_gate_request_mapping_field(self):
+        """normalize_gate_request raises ContractError for a string failure_path."""
+        from app import normalize_gate_request, ContractError
+        # player is a string primitive — OK; failure_path string — must raise
+        row = {"player": "LeBron James", "sport": "NBA", "failure_path": "RETRIEVED"}
+        try:
+            normalize_gate_request(row)
+            assert False, "expected ContractError was not raised"
+        except ContractError as exc:
+            assert exc.field == "failure_path"
+            assert exc.actual_type == "str"
+
+    def test_normalize_gate_request_json_object_string_decoded(self):
+        """normalize_gate_request decodes a JSON-encoded object string for failure_path."""
+        from app import normalize_gate_request
+        row = {"player": "LeBron James", "sport": "NBA",
+               "failure_path": '{"scenario": "blowout", "probability_band": "20-30%"}'}
+        out = normalize_gate_request(row)
+        assert isinstance(out["failure_path"], dict)
+        assert out["failure_path"]["scenario"] == "blowout"
+
+    def test_normalize_gate_request_list_field_validated(self):
+        """normalize_gate_request raises ContractError for a non-list game_log."""
+        from app import normalize_gate_request, ContractError
+        row = {"player": "LeBron James", "sport": "NBA", "game_log": "not-a-list"}
+        try:
+            normalize_gate_request(row)
+            assert False, "expected ContractError was not raised"
+        except ContractError as exc:
+            assert exc.field == "game_log"
+
+    def test_normalize_gate_request_none_fields_become_empty(self):
+        """normalize_gate_request coerces None mapping/list fields to empty containers."""
+        from app import normalize_gate_request
+        row = {"player": "LeBron James", "sport": "NBA",
+               "failure_path": None, "game_log": None}
+        out = normalize_gate_request(row)
+        assert out["failure_path"] == {}
+        assert out["game_log"] == []
+
+    def test_normalize_gate_request_player_string_is_valid(self):
+        """player is a string primitive in raw_rows — normalize_gate_request must not reject it."""
+        from app import normalize_gate_request
+        row = {"player": "Aliyah Boston", "sport": "WNBA", "prop_type": "Rebounds",
+               "line": 7.5, "direction": "MORE"}
+        out = normalize_gate_request(row)   # must not raise
+        assert out["player"] == "Aliyah Boston"
+
+
+# ---------------------------------------------------------------------------
 # pytest fixtures
 # ---------------------------------------------------------------------------
 

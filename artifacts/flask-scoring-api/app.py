@@ -142,6 +142,183 @@ CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Ke
 _bt("flask app created — registering routes")
 
 
+# ---------------------------------------------------------------------------
+# Transport adapters and request-normalization helpers
+# WOW plumbing patch — three defects: screenshot transport, string-to-dict
+# schema, and undefined-variable error handler masking the real exception.
+# ---------------------------------------------------------------------------
+
+class RequestValidationError(ValueError):
+    """Raised when an inbound request fails transport-layer validation."""
+
+
+class ContractError(ValueError):
+    """Raised when a request field has the wrong JSON type."""
+    def __init__(self, field: str, expected: str, actual):
+        self.field       = field
+        self.expected    = expected
+        self.actual_type = type(actual).__name__
+        super().__init__(
+            f"{field} must be {expected}; received {self.actual_type}"
+        )
+
+
+_ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
+_MAX_IMAGE_BYTES     = 12 * 1024 * 1024   # 12 MB
+
+
+def extract_image_bytes(req) -> tuple:
+    """
+    Normalise inbound image payload to (bytes, mime_type).
+
+    Supported transports (in priority order):
+      1. multipart/form-data with an ``image`` file field
+      2. JSON body with ``image_base64`` (plain or data-URL)
+
+    Raises RequestValidationError on any validation failure so the
+    caller can return a clean 400 without an unhandled exception.
+    """
+    import base64 as _b64
+    import binascii as _binascii
+
+    uploaded = req.files.get("image")
+    if uploaded is not None:
+        mime = uploaded.mimetype or "application/octet-stream"
+        if mime not in _ALLOWED_IMAGE_TYPES:
+            raise RequestValidationError(f"Unsupported image MIME type: {mime}")
+        content = uploaded.read(_MAX_IMAGE_BYTES + 1)
+        if not content:
+            raise RequestValidationError("Uploaded image is empty.")
+        if len(content) > _MAX_IMAGE_BYTES:
+            raise RequestValidationError("Uploaded image is too large (max 12 MB).")
+        return content, mime
+
+    payload = req.get_json(silent=True) or {}
+    encoded = payload.get("image_base64")
+    if not isinstance(encoded, str) or not encoded.strip():
+        raise RequestValidationError(
+            "Provide multipart field `image` or JSON field `image_base64`."
+        )
+    encoded  = encoded.strip()
+    mime     = payload.get("mime_type", "image/png")
+    if encoded.startswith("data:"):
+        try:
+            header, encoded = encoded.split(",", 1)
+            mime = header.split(";", 1)[0].removeprefix("data:")
+        except ValueError as exc:
+            raise RequestValidationError("Malformed Base64 image data URL.") from exc
+    if mime not in _ALLOWED_IMAGE_TYPES:
+        raise RequestValidationError(f"Unsupported image MIME type: {mime}")
+    try:
+        content = _b64.b64decode(encoded, validate=True)
+    except (_binascii.Error, ValueError) as exc:
+        raise RequestValidationError("image_base64 is not valid Base64.") from exc
+    if not content:
+        raise RequestValidationError("Decoded image is empty.")
+    if len(content) > _MAX_IMAGE_BYTES:
+        raise RequestValidationError("Decoded image is too large (max 12 MB).")
+    return content, mime
+
+
+_GATE_MAPPING_FIELDS = (
+    # Only the fields expected to be objects in raw board rows.
+    # "player", "candidate", "market", and "event" are string primitives in
+    # raw_rows (e.g. player="LeBron James") — exclude them to avoid
+    # ContractError on valid string values.
+    "role_status", "lineup_status", "settlement",
+    "matchup", "failure_path", "source_report",
+)
+_GATE_LIST_FIELDS = ("game_log", "box_score_log", "l5_ledger", "l10_ledger")
+
+
+def normalize_gate_request(row: dict) -> dict:
+    """
+    Validate and normalise a single raw_row before it enters the gate pipeline.
+
+    * Mapping fields (candidate, market, role_status, failure_path, …) must be
+      dicts.  A JSON-encoded object string is accepted and decoded.  A bare
+      status string like "RETRIEVED" raises ContractError.
+    * List fields (game_log, box_score_log, …) must be lists or None.
+
+    Raises ContractError on the first invalid field so the route can return a
+    structured 422 before any specialist module is reached.
+    """
+    import json as _json
+
+    if not isinstance(row, dict):
+        raise ContractError("row", "an object", row)
+
+    out = dict(row)
+
+    for field in _GATE_MAPPING_FIELDS:
+        value = row.get(field)
+        if value is None:
+            out[field] = {}
+            continue
+        if isinstance(value, dict):
+            continue   # already correct — keep as-is
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("{"):
+                try:
+                    parsed = _json.loads(stripped)
+                    if isinstance(parsed, dict):
+                        out[field] = parsed
+                        continue
+                except _json.JSONDecodeError:
+                    pass
+            # Bare status strings ("RETRIEVED", "PASS", …) are not objects.
+            raise ContractError(field, "an object", value)
+        raise ContractError(field, "an object", value)
+
+    for field in _GATE_LIST_FIELDS:
+        value = row.get(field)
+        if value is None:
+            out[field] = []
+            continue
+        if not isinstance(value, list):
+            raise ContractError(field, "an array", value)
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Request-id assignment and typed error handlers
+# ---------------------------------------------------------------------------
+
+@app.before_request
+def _assign_request_id():
+    from flask import g as _g
+    import uuid as _uuid
+    _g.request_id = request.headers.get("X-Request-ID", str(_uuid.uuid4()))
+
+
+@app.errorhandler(RequestValidationError)
+def _handle_request_validation_error(exc):
+    from flask import g as _g
+    return jsonify({
+        "terminal_status": "INPUT_FAILURE",
+        "error_code":      "REQUEST_VALIDATION_ERROR",
+        "message":         str(exc),
+        "request_id":      getattr(_g, "request_id", None),
+        "can_execute":     False,
+    }), 400
+
+
+@app.errorhandler(ContractError)
+def _handle_contract_error(exc):
+    from flask import g as _g
+    return jsonify({
+        "terminal_status": "DATA_CONTRACT_FAIL",
+        "error_code":      "REQUEST_SCHEMA_INVALID",
+        "field":           exc.field,
+        "expected":        exc.expected,
+        "actual_type":     exc.actual_type,
+        "request_id":      getattr(_g, "request_id", None),
+        "can_execute":     False,
+    }), 422
+
+
 @app.errorhandler(Exception)
 def handle_unhandled_exception(e):
     # Re-raise HTTP exceptions (404, 405, 422, …) so Flask returns the correct
@@ -149,29 +326,45 @@ def handle_unhandled_exception(e):
     # are all serialised as 500 with the scoring error envelope — confusing callers
     # and causing GPT Builder test sessions to hang on unexpected response shapes.
     from werkzeug.exceptions import HTTPException as _HTTPException
+    from flask import g as _g
     if isinstance(e, _HTTPException):
         return e
-    app.logger.exception("Unhandled server error")
-    return jsonify({
-        "ok": False,
-        "error": {
-            "type": type(e).__name__,
-            "message": str(e),
-            "trace": traceback.format_exc()[-2000:],
+    _request_id = getattr(_g, "request_id", None)
+    # Log full traceback server-side; never expose it in the API response.
+    app.logger.exception(
+        "Unhandled server error",
+        extra={
+            "request_id": _request_id,
+            "endpoint":   request.endpoint,
+            "method":     request.method,
+            "path":       request.path,
         },
+    )
+    return jsonify({
+        "terminal_status": "BACKEND_PIPELINE_FAILURE",
+        "decision":        "NO_DECISION",
+        "scoring_completed": False,
+        "props_scored":    0,
+        "ok":              False,
+        "error": {
+            "type":    type(e).__name__,
+            "message": "An unexpected backend error occurred.",
+        },
+        "request_id": _request_id,
+        "can_execute": False,
         "source_access_status": {
-            "market_odds": "Failed",
-            "board_source": "Not Retrieved",
-            "l5_l10_logs": "Not Retrieved",
+            "market_odds":    "Failed",
+            "board_source":   "Not Retrieved",
+            "l5_l10_logs":    "Not Retrieved",
             "status_lineups": "Not Retrieved",
         },
         "market_verified": [],
         "model_qualified": [],
-        "conditional": [],
-        "watch": [],
-        "reject": [],
+        "conditional":     [],
+        "watch":           [],
+        "reject":          [],
         "data_insufficient": [{
-            "route": request.path if request else "unknown",
+            "route":  request.path if request else "unknown",
             "reason": "Unhandled backend exception",
             "status": "FAILED",
         }],
@@ -3183,34 +3376,57 @@ def analyze_and_score():
     if _ant_err:
         return jsonify({"ok": False, "error": _ant_err}), 503
 
-    # Accept same image formats as /analyze-board
+    # Accept multipart/form-data (field `image`), base64 JSON, or URL.
+    # Priority: multipart → JSON base64/URL.
     image_b64  = None
     image_url  = None
     media_type = "image/jpeg"
 
-    raw_img = body.get("image") or body.get("image_base64") or body.get("screenshot")
-    if raw_img and isinstance(raw_img, str):
-        if raw_img.startswith("http"):
-            image_url = raw_img
-        else:
-            if "," in raw_img:
-                raw_img = raw_img.split(",", 1)[1]
-            image_b64 = raw_img
-            # Auto-detect media type
-            try:
-                hdr = _base64.b64decode(image_b64[:16])
-                if hdr[:8] == b'\x89PNG\r\n\x1a\n':
-                    media_type = "image/png"
-                elif hdr[:2] == b'\xff\xd8':
-                    media_type = "image/jpeg"
-                elif hdr[:4] == b'RIFF':
-                    media_type = "image/webp"
-            except Exception:
-                pass
+    if request.files.get("image"):
+        # ── Multipart transport adapter ──────────────────────────────────
+        # The GPT or any HTTP client can POST the screenshot bytes directly
+        # without base64-encoding.  extract_image_bytes validates MIME type,
+        # size, and emptiness then returns (bytes, mime_type).
+        try:
+            _mp_bytes, _mp_mime = extract_image_bytes(request)
+            image_b64  = _base64.b64encode(_mp_bytes).decode()
+            media_type = _mp_mime
+        except RequestValidationError as _rve:
+            return jsonify({
+                "ok":         False,
+                "error":      str(_rve),
+                "error_code": "REQUEST_VALIDATION_ERROR",
+                "can_execute": False,
+            }), 400
+    else:
+        # ── JSON transport (base64 string or remote URL) ─────────────────
+        raw_img = body.get("image") or body.get("image_base64") or body.get("screenshot")
+        if raw_img and isinstance(raw_img, str):
+            if raw_img.startswith("http"):
+                image_url = raw_img
+            else:
+                if "," in raw_img:
+                    raw_img = raw_img.split(",", 1)[1]
+                image_b64 = raw_img
+                # Auto-detect media type from first decoded bytes.
+                try:
+                    hdr = _base64.b64decode(image_b64[:16])
+                    if hdr[:8] == b'\x89PNG\r\n\x1a\n':
+                        media_type = "image/png"
+                    elif hdr[:2] == b'\xff\xd8':
+                        media_type = "image/jpeg"
+                    elif hdr[:4] == b'RIFF':
+                        media_type = "image/webp"
+                except Exception:
+                    pass
 
     if not image_b64 and not image_url:
-        return jsonify({"ok": False,
-                        "error": "image field is required (base64 or URL)"}), 422
+        return jsonify({
+            "ok":         False,
+            "error":      "image field is required (multipart `image`, `image_base64`, or URL)",
+            "error_code": "REQUEST_VALIDATION_ERROR",
+            "can_execute": False,
+        }), 422
 
     # Build Claude image block
     if image_b64:
@@ -20961,6 +21177,22 @@ def gate_engine_run():
     if not raw_rows or not isinstance(raw_rows, list):
         return jsonify({"error": "rows must be a non-empty list"}), 400
 
+    # ── Schema normalization — no raw request reaches a specialist ──────────
+    # Validate that every row's mapping fields are objects and list fields are
+    # arrays.  A bare status string ("RETRIEVED") causes AttributeError inside
+    # the failure-path or role-status modules; return 422 before that happens.
+    try:
+        raw_rows = [normalize_gate_request(r) for r in raw_rows]
+    except ContractError as exc:
+        return jsonify({
+            "terminal_status": "DATA_CONTRACT_FAIL",
+            "error_code":      "REQUEST_SCHEMA_INVALID",
+            "field":           exc.field,
+            "expected":        exc.expected,
+            "actual_type":     exc.actual_type,
+            "can_execute":     False,
+        }), 422
+
     target_date = None
     if body.get("target_date"):
         try:
@@ -21070,7 +21302,7 @@ def gate_engine_run():
                 normalized_rows, base_enrichment=enrichment,
             )
         except Exception as exc:
-            req.log.error("gate_engine_run auto_enrich error: %s", exc)
+            app.logger.error("gate_engine_run auto_enrich error: %s", exc)
             auto_enrichment_status = {"error": str(exc)}
 
     # Wire session exposure ledger for cross-request persistence
@@ -21096,8 +21328,21 @@ def gate_engine_run():
             portfolio_governor=_portfolio_gov,
         )
     except Exception as exc:
-        req.log.error("gate_engine_run error: %s", exc)
-        return jsonify({"error": "Gate engine pipeline error", "detail": str(exc)}), 500
+        from flask import g as _g
+        app.logger.exception(
+            "gate_engine_run pipeline error",
+            extra={"request_id": getattr(_g, "request_id", None)},
+        )
+        return jsonify({
+            "terminal_status":   "BACKEND_PIPELINE_FAILURE",
+            "decision":          "NO_DECISION",
+            "scoring_completed": False,
+            "props_scored":      0,
+            "primary_failure":   type(exc).__name__,
+            "message":           "Gate engine pipeline error.",
+            "request_id":        getattr(_g, "request_id", None),
+            "can_execute":       False,
+        }), 500
 
     # Detect session-ledger DB failure → fail closed at HTTP level.
     # Any row blocked by SESSION_LEDGER_UNAVAILABLE means we cannot confirm

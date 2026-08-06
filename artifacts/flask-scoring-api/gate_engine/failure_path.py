@@ -117,8 +117,11 @@ def run(
           detail:                   str
         }
     """
-    enr = enrichment or {}
-    matrix = enr.get("failure_path_matrix") or {}
+    # Defensive: enrichment must be a dict; a string (e.g. "RETRIEVED") from a
+    # malformed request would cause AttributeError on .get() below.
+    enr = enrichment if isinstance(enrichment, dict) else {}
+    matrix_raw = enr.get("failure_path_matrix") or {}
+    matrix = matrix_raw if isinstance(matrix_raw, dict) else {}
 
     paths_present:  list[str] = []
     paths_missing:  list[str] = []
