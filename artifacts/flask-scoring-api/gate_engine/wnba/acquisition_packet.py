@@ -2,6 +2,7 @@
 gate_engine/wnba/acquisition_packet.py
 WOW-PATCH-2026-08-06-WNBA-EVIDENCE-ACQUISITION-STRUCTURAL
 WOW-PATCH-2026-08-06-WNBA-EXTERNAL-EVIDENCE-ADAPTERS
+WOW-PATCH-2026-08-06-WNBA-ACQUISITION-CONTRACT-REPAIR
 
 WNBA Opportunity Packet schema, construction, source normalization,
 and raw ledger reconstruction.
@@ -122,7 +123,33 @@ def normalize_source_claim(claim: dict[str, Any]) -> tuple[bool, dict[str, Any]]
 # Data assembly ONLY — no hit-rate probability, no new qualification labels.
 # ---------------------------------------------------------------------------
 
-def _extract_float(game: dict[str, Any], keys: list[str]) -> float | None:
+# Canonical stat registry for single-stat row normalization (BUG-002 fix).
+# Maps Odds API market key (lowercase) → the primary ledger field.
+# Only ACTIVE WNBA prop markets are listed.  Markets absent from this map
+# must fail visibly with STAT_MAPPING_UNRESOLVED — never silently guess.
+# Do NOT infer the market from the numeric value of "stat".
+_MARKET_TO_STAT_KEY: dict[str, str] = {
+    "player_points":                  "points",
+    "player_rebounds":                "rebounds",
+    "player_assists":                 "assists",
+    # Composite — single "stat" value allowed only when source query IS for PRA
+    "player_points_rebounds_assists": "pra",
+    "player_pra":                     "pra",
+    "player_threes":                  "three_pointers_made",
+    "player_steals":                  "steals",
+    "player_blocks":                  "blocks",
+    # Short-form aliases used inside the engine
+    "points":    "points",
+    "rebounds":  "rebounds",
+    "assists":   "assists",
+    "pra":       "pra",
+    "threes":    "three_pointers_made",
+    "steals":    "steals",
+    "blocks":    "blocks",
+}
+
+
+def _extract_float(game: dict[str, Any], keys: list[str]) -> "float | None":
     for k in keys:
         v = game.get(k)
         if v is None:
@@ -135,20 +162,43 @@ def _extract_float(game: dict[str, Any], keys: list[str]) -> float | None:
     return None
 
 
-def reconstruct_raw_ledger_rows(box_score_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def reconstruct_raw_ledger_rows(
+    box_score_log: list[dict[str, Any]],
+    market_type: "str | None" = None,
+) -> list[dict[str, Any]]:
     """
     Convert raw per-game box-score dicts into structured ledger rows.
 
-    Each output row contains exactly the fields specified in
-    WOW-PATCH-2026-08-06-WNBA-EVIDENCE-ACQUISITION-STRUCTURAL §7:
+    Each output row contains the fields from
+    WOW-PATCH-2026-08-06-WNBA-EVIDENCE-ACQUISITION-STRUCTURAL §7 plus
+    extension fields added by WOW-PATCH-2026-08-06-WNBA-ACQUISITION-CONTRACT-REPAIR:
       date, opponent, starter, minutes, points, rebounds, assists,
-      pra (=points+rebounds+assists), field_goal_attempts,
-      three_point_attempts, free_throw_attempts, team_result, margin,
-      fouls (where available — null otherwise).
+      pra, field_goal_attempts, three_point_attempts, free_throw_attempts,
+      three_pointers_made, steals, blocks,
+      team_result, margin, fouls,
+      line, hit,                          ← preserved from player_logs.py rows
+      raw_stat_value, canonical_stat_type, source_market_type,
+                                          ← single-stat normalization audit
+      stat_mapping_unresolved             ← True when mapping fails visibly
 
-    This is raw data assembly.  No statistics, probability, or
-    calibration are computed here.
+    Single-stat row normalization (BUG-002 fix):
+      When a row contains only the "stat" key (services/player_logs.py
+      provider-neutral shape: {date, opponent, stat, line, hit}) and all
+      category-specific keys are absent, the stat value is mapped to the
+      correct ledger field via _MARKET_TO_STAT_KEY[market_type].
+
+      Rules:
+        1. Never infer the stat category from the numeric value itself.
+        2. For composite PRA: set pra=stat only when market_type IS a PRA
+           market.  Component reconstruction (pts+reb+ast) is used when all
+           three raw components are present for the same event.
+        3. Unsupported / ambiguous market types set stat_mapping_unresolved=True
+           and leave all stat fields null — never silently guess.
+
+    This is raw data assembly.  No statistics, probability, or calibration
+    are computed here.
     """
+    mt_lower = (market_type or "").lower().strip()
     ledger_rows: list[dict[str, Any]] = []
 
     for game in box_score_log:
@@ -165,15 +215,68 @@ def reconstruct_raw_ledger_rows(box_score_log: list[dict[str, Any]]) -> list[dic
         ])
         fta   = _extract_float(game, ["FTA", "fta", "free_throw_attempts", "FTAttempts", "FT_A"])
         fouls = _extract_float(game, ["PF", "pf", "fouls", "personal_fouls", "Fouls"])
+        tpm   = _extract_float(game, ["3PM", "3pm", "three_pointers_made", "ThreePtMade", "3P_M"])
+        stl   = _extract_float(game, ["STL", "stl", "steals", "Steals"])
+        blk   = _extract_float(game, ["BLK", "blk", "blocks", "Blocks"])
 
-        # PRA = points + rebounds + assists; null if any component is null
-        pra: float | None = None
+        # Single-stat normalization (BUG-002): map game["stat"] → correct field
+        # when all category-specific keys are absent (player_logs.py format).
+        raw_stat_val      = game.get("stat")
+        canonical_st_type: "str | None" = None
+        stat_unresolved   = False
+
+        all_cat_null = (
+            pts is None and reb is None and ast is None
+            and tpm is None and stl is None and blk is None
+        )
+        if all_cat_null and raw_stat_val is not None:
+            try:
+                raw_stat_float = float(raw_stat_val)
+            except (TypeError, ValueError):
+                raw_stat_float = None
+
+            if raw_stat_float is not None and mt_lower:
+                canonical = _MARKET_TO_STAT_KEY.get(mt_lower)
+                if canonical is None:
+                    # Unsupported market — fail visibly, never guess
+                    stat_unresolved   = True
+                    canonical_st_type = "UNRESOLVED"
+                else:
+                    canonical_st_type = canonical
+                    if canonical == "points":
+                        pts = raw_stat_float
+                    elif canonical == "rebounds":
+                        reb = raw_stat_float
+                    elif canonical == "assists":
+                        ast = raw_stat_float
+                    elif canonical == "pra":
+                        # Source query was for PRA — direct assignment allowed
+                        pass  # pra set below from components or direct
+                    elif canonical == "three_pointers_made":
+                        tpm = raw_stat_float
+                    elif canonical == "steals":
+                        stl = raw_stat_float
+                    elif canonical == "blocks":
+                        blk = raw_stat_float
+            elif raw_stat_val is not None and not mt_lower:
+                # stat key present but no market_type context → unresolved
+                stat_unresolved   = True
+                canonical_st_type = "UNRESOLVED"
+
+        # PRA: prefer component sum; fall back to direct pra-market single stat
+        pra: "float | None" = None
         if pts is not None and reb is not None and ast is not None:
             pra = pts + reb + ast
+        elif (mt_lower in ("pra", "player_pra", "player_points_rebounds_assists")
+              and raw_stat_val is not None and all_cat_null):
+            try:
+                pra = float(raw_stat_val)
+            except (TypeError, ValueError):
+                pass
 
-        # Starter flag — accept common truthy representations
+        # Starter flag
         starter_raw = game.get("starter") or game.get("GS") or game.get("started")
-        starter: bool | None = None
+        starter: "bool | None" = None
         if starter_raw is not None:
             if isinstance(starter_raw, bool):
                 starter = starter_raw
@@ -186,7 +289,6 @@ def reconstruct_raw_ledger_rows(box_score_log: list[dict[str, Any]]) -> list[dic
             str(game.get("result") or game.get("team_result") or game.get("W_L") or "").upper()
             or None
         )
-
         margin_raw = _extract_float(game, ["margin", "MARGIN", "point_diff", "score_diff"])
 
         row: dict[str, Any] = {
@@ -200,11 +302,29 @@ def reconstruct_raw_ledger_rows(box_score_log: list[dict[str, Any]]) -> list[dic
             "pra":                   pra,
             "field_goal_attempts":   fga,
             "three_point_attempts":  tpa,
+            "three_pointers_made":   tpm,
             "free_throw_attempts":   fta,
+            "steals":                stl,
+            "blocks":                blk,
             "team_result":           team_result,
             "margin":                margin_raw,
             "fouls":                 fouls,
+            # Preserved from player_logs.py provider-neutral rows
+            "line":                  game.get("line"),
+            "hit":                   game.get("hit"),
+            # Single-stat normalization audit fields
+            "raw_stat_value":        raw_stat_val if all_cat_null else None,
+            "canonical_stat_type":   canonical_st_type,
+            "source_market_type":    market_type if all_cat_null and raw_stat_val is not None else None,
         }
+        if stat_unresolved:
+            row["stat_mapping_unresolved"] = True
+            row["stat_mapping_error"] = (
+                f"STAT_MAPPING_UNRESOLVED: "
+                f"market_type={market_type!r} has no canonical mapping in _MARKET_TO_STAT_KEY"
+                if mt_lower else
+                "STAT_MAPPING_UNRESOLVED: 'stat' key present but no market_type context provided"
+            )
         ledger_rows.append(row)
 
     return ledger_rows
@@ -346,12 +466,41 @@ def build_packet(
     # Role status
     role_status = _build_role_status_section(row, enr)
 
-    # Box score log — raw per-game dicts from enrichment
-    box_score_log_raw: list[dict[str, Any]] = enr.get("box_score_log") or []
+    # Box score log — raw per-game dicts from enrichment.
+    # BUG-001 fix: accept both keys with strict precedence so that the scan
+    # flow's "game_log" alias is consumed here rather than silently dropped.
+    #   Precedence: (1) box_score_log if present and non-empty
+    #               (2) game_log if present and non-empty
+    #               (3) empty list
+    # The canonical field is always packet["box_score_log"] — one representation.
+    _bsl_primary = enr.get("box_score_log")
+    _bsl_alt     = enr.get("game_log")
+    if _bsl_primary and isinstance(_bsl_primary, list):
+        box_score_log_raw: list[dict[str, Any]] = list(_bsl_primary)
+        _bsl_source_key = "box_score_log"
+    elif _bsl_alt and isinstance(_bsl_alt, list):
+        box_score_log_raw = list(_bsl_alt)
+        _bsl_source_key   = "game_log"
+    else:
+        box_score_log_raw = []
+        _bsl_source_key   = "absent"
 
-    # Raw ledger reconstruction (data assembly only)
-    raw_ledger_rows = reconstruct_raw_ledger_rows(box_score_log_raw)
+    # Raw ledger reconstruction (data assembly only).
+    # BUG-002 fix: pass market_type so the reconstructor can map single-stat
+    # rows (player_logs.py shape: {stat, line, hit, ...}) to the correct field.
+    market_type_ctx = market or None
+    raw_ledger_rows = reconstruct_raw_ledger_rows(box_score_log_raw, market_type=market_type_ctx)
     l5_ledger, l10_ledger, season_ledger = _split_ledger(raw_ledger_rows)
+
+    # Audit fields for the key-alias resolution
+    _bsl_audit: dict[str, Any] = {
+        "source_input_key":              _bsl_source_key,
+        "source_row_count":              len(box_score_log_raw),
+        "normalized_box_score_row_count": len(box_score_log_raw),
+        "l5_row_count":                  len(l5_ledger),
+        "l10_row_count":                 len(l10_ledger),
+        "market_type_used_for_mapping":  market_type_ctx,
+    }
 
     # Matchup section
     matchup = _build_matchup_section(enr)
@@ -381,6 +530,7 @@ def build_packet(
         "l5_ledger":              l5_ledger,
         "l10_ledger":             l10_ledger,
         "season_ledger":          season_ledger,
+        "box_score_audit":        _bsl_audit,
         "matchup":                matchup,
         "market_comparison":      market_comparison,
         "news_contradiction_check": news_contradiction_check,

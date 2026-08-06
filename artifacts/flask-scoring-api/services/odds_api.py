@@ -91,6 +91,34 @@ def _resolve_key() -> str:
     )
 
 
+def resolve_odds_api_key_with_source() -> "tuple[str, str]":
+    """Public helper — returns (api_key, source_env_var_name).
+
+    Priority: ODDS_API_PAID_KEY → ODDS_API_FREE_KEY → ODDS_API_KEY (legacy).
+
+    source_env_var_name values:
+      "ODDS_API_PAID_KEY"   — paid quota key in use
+      "ODDS_API_FREE_KEY"   — free-tier key in use
+      "ODDS_API_KEY_LEGACY" — legacy/back-compat key in use
+      "NONE"                — no key configured; api_key is ""
+
+    Use this wherever the Odds API key is needed so all consumers share
+    the same priority ladder and a deactivated legacy key can never
+    override an available paid or free key.  Never log the returned
+    api_key value.
+    """
+    paid = os.environ.get("ODDS_API_PAID_KEY", "")
+    if paid:
+        return paid, "ODDS_API_PAID_KEY"
+    free = os.environ.get("ODDS_API_FREE_KEY", "")
+    if free:
+        return free, "ODDS_API_FREE_KEY"
+    legacy = os.environ.get("ODDS_API_KEY", "")
+    if legacy:
+        return legacy, "ODDS_API_KEY_LEGACY"
+    return "", "NONE"
+
+
 def _get(path, params=None):
     # Read key dynamically so a rotation takes effect without a process restart.
     key = _resolve_key()

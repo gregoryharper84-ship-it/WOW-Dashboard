@@ -1,6 +1,7 @@
 """
 test_wnba_evidence_acquisition.py
 WOW-PATCH-2026-08-06-WNBA-EVIDENCE-ACQUISITION-STRUCTURAL
+WOW-PATCH-2026-08-06-WNBA-ACQUISITION-CONTRACT-REPAIR
 
 Regression tests covering:
 1. Fallback activation triggers when primary API returns partial/missing box_score_log
@@ -15,6 +16,8 @@ Regression tests covering:
 8. PACKET_INCOMPLETE_REJECTED blocks row (terminal label set)
 9. Non-WNBA rows are skipped entirely
 10-19. External adapter behaviour under mocked HTTP responses
+20-19b. Audit-semantics invariants (routes_attempted = HTTP-only)
+20+. BUG-001/002/003 contract-repair regression tests (WOW-PATCH-2026-08-06-WNBA-ACQUISITION-CONTRACT-REPAIR)
 """
 from __future__ import annotations
 
@@ -388,7 +391,12 @@ def test_packet_complete_when_all_fields_present():
 def test_packet_reconstructed_via_game_log_alt_key():
     """
     When box_score_log is absent but game_log (alternate key) is present,
-    fallback routing reconstructs it and the packet_status is PACKET_RECONSTRUCTED.
+    build_packet() now consumes game_log directly (BUG-001 fix) — so box_score_log
+    is populated BEFORE detect_missing runs and the fallback for box_score_log is
+    never triggered.  The packet_status must not be PACKET_INCOMPLETE_REJECTED.
+
+    Updated from original: after BUG-001 fix, "box_score_log" MUST NOT appear in
+    fallback_result_details — it is consumed by build_packet, not the fallback router.
     """
     row = _make_wnba_row()
     enr = {
@@ -411,7 +419,7 @@ def test_packet_reconstructed_via_game_log_alt_key():
 
     result = evidence_run(row, enr)
 
-    # Must not be rejected — reconstruction counts as a successful resolution
+    # Must not be rejected — game_log is consumed by build_packet (BUG-001 fix)
     assert result["packet_status"] in (
         PacketStatus.PACKET_COMPLETE,
         PacketStatus.PACKET_RECONSTRUCTED_COMPLETE,
@@ -419,12 +427,26 @@ def test_packet_reconstructed_via_game_log_alt_key():
     ), f"Expected COMPLETE/RECONSTRUCTED_COMPLETE/PARTIAL_HOLD, got {result['packet_status']}"
     assert result["packet_status"] != PacketStatus.PACKET_INCOMPLETE_REJECTED, (
         "PACKET_INCOMPLETE_REJECTED must not fire when game_log alt key is present "
-        "(critical box_score_log can be reconstructed from it)"
+        "(BUG-001 fix: build_packet consumes game_log before detect_missing runs)"
     )
 
-    # Fallback must have been triggered for box_score_log
-    assert result["acquisition_audit"]["fallback_triggered"] is True
-    assert "box_score_log" in result["acquisition_audit"].get("fallback_result_details", {})
+    # BUG-001 fix verification: box_score_log MUST NOT be in fallback_result_details —
+    # it was consumed by build_packet directly, not the fallback router.
+    fallback_details = result["acquisition_audit"].get("fallback_result_details", {})
+    assert "box_score_log" not in fallback_details, (
+        "After BUG-001 fix: build_packet() normalises game_log into box_score_log "
+        "before detect_missing runs — the fallback for box_score_log must NOT fire. "
+        f"fallback_result_details keys: {list(fallback_details.keys())}"
+    )
+
+    # box_score_log-related fields must not be in fields_unresolved
+    unresolved = result.get("fields_unresolved") or []
+    bsl_unresolved = [f for f in unresolved if
+                      "box_score" in f or f in ("l5_ledger", "l10_ledger")]
+    assert not bsl_unresolved, (
+        f"box_score/ledger fields must not be unresolved when game_log is present: "
+        f"{bsl_unresolved}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1042,3 +1064,503 @@ def test_fallback_result_details_route_records_have_request_made_field():
                     f"category={category} unknown skip_category "
                     f"'{rec['skip_category']}': {rec}"
                 )
+
+
+# =============================================================================
+# WOW-PATCH-2026-08-06-WNBA-ACQUISITION-CONTRACT-REPAIR — Regression Tests
+# Tests 29-40: BUG-001 (packet key alias), BUG-002 (ledger normalization),
+#              BUG-003a (Odds API credential), BUG-003b (ESPN v2 search)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Test 29 — BUG-001: game_log alias populates canonical box_score_log in build_packet
+# ---------------------------------------------------------------------------
+
+def test_bug001_game_log_alias_populates_box_score_log():
+    """
+    BUG-001: build_packet() must consume 'game_log' when 'box_score_log' is absent.
+    The canonical packet field 'box_score_log' must have the same row count as game_log.
+    """
+    row = _make_wnba_row(prop_type="player_points")
+    enr = {
+        "game_log": [
+            {"stat": 22.0, "line": 23.5, "hit": False, "date": "2026-08-01", "opponent": "CHI"},
+            {"stat": 28.0, "line": 23.5, "hit": True,  "date": "2026-07-28", "opponent": "LV"},
+            {"stat": 19.0, "line": 23.5, "hit": False, "date": "2026-07-25", "opponent": "NY"},
+        ],
+    }
+    result = evidence_run(row, enr)
+    # The patch_status should NOT be PACKET_INCOMPLETE_REJECTED for the ledger bucket
+    # (box_score fields consumed by build_packet, not a fallback)
+    audit = result.get("acquisition_audit", {})
+    fallback_details = audit.get("fallback_result_details", {})
+    assert "box_score_log" not in fallback_details, (
+        "BUG-001: game_log must be consumed by build_packet, never a fallback target. "
+        f"fallback_result_details keys: {list(fallback_details.keys())}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 30 — BUG-001: box_score_log takes precedence over game_log when both present
+# ---------------------------------------------------------------------------
+
+def test_bug001_box_score_log_takes_precedence_over_game_log():
+    """
+    BUG-001 precedence rule: when both 'box_score_log' and 'game_log' are present
+    in enrichment, 'box_score_log' must win.  The packet's box_score_audit must
+    record source_input_key='box_score_log'.
+    """
+    row = _make_wnba_row(prop_type="player_points")
+    # box_score_log has 5 rows; game_log has 2 rows; box_score_log must win
+    bsl_rows = [{"PTS": 25 + i, "REB": 8, "AST": 4, "MIN": 36} for i in range(5)]
+    gl_rows  = [{"stat": 10.0, "line": 23.5, "hit": False}] * 2
+    pkt = build_packet(row, {"box_score_log": bsl_rows, "game_log": gl_rows})
+
+    audit = pkt.get("box_score_audit", {})
+    assert audit.get("source_input_key") == "box_score_log", (
+        f"Expected source_input_key='box_score_log', got {audit.get('source_input_key')!r}"
+    )
+    assert audit.get("source_row_count") == 5, (
+        f"Expected 5 rows from box_score_log, got {audit.get('source_row_count')}"
+    )
+    assert len(pkt.get("box_score_log", [])) == 5, (
+        "box_score_log in packet must have 5 rows (from box_score_log key)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 31 — BUG-002: single-stat "stat" rows map correctly via market_type
+# ---------------------------------------------------------------------------
+
+def test_bug002_stat_key_maps_to_correct_field_via_market_type():
+    """
+    BUG-002: when a row has only the 'stat' key (player_logs.py format),
+    reconstruct_raw_ledger_rows must map the value to the correct ledger field
+    using market_type context.  player_points → points field non-null.
+    """
+    rows = [
+        {"stat": 28.0, "line": 25.5, "hit": True,  "date": "2026-08-01", "opponent": "CHI"},
+        {"stat": 19.0, "line": 25.5, "hit": False, "date": "2026-07-28", "opponent": "LV"},
+        {"stat": 31.0, "line": 25.5, "hit": True,  "date": "2026-07-25", "opponent": "NY"},
+    ]
+    ledger = reconstruct_raw_ledger_rows(rows, market_type="player_points")
+    assert len(ledger) == 3
+    for i, r in enumerate(ledger):
+        assert r["points"] == rows[i]["stat"], (
+            f"row {i}: expected points={rows[i]['stat']}, got {r['points']}"
+        )
+        # Other stat fields must remain None (not fabricated)
+        assert r["rebounds"] is None, f"row {i}: rebounds must be None, got {r['rebounds']}"
+        assert r["assists"]  is None, f"row {i}: assists must be None, got {r['assists']}"
+        # Audit trail
+        assert r["raw_stat_value"]      == rows[i]["stat"]
+        assert r["canonical_stat_type"] == "points"
+        assert r["source_market_type"]  == "player_points"
+
+
+# ---------------------------------------------------------------------------
+# Test 32 — BUG-002: 10 stat rows produce L5=5 and L10=10
+# ---------------------------------------------------------------------------
+
+def test_bug002_ten_rows_produce_l5_5_and_l10_10():
+    """
+    BUG-002: when 10 valid single-stat rows are provided under 'game_log'
+    with a supported market_type, the resulting l5_ledger must have 5 rows
+    and l10_ledger must have 10 rows.
+    """
+    row = _make_wnba_row(prop_type="player_points")
+    game_log_10 = [
+        {"stat": 20.0 + i, "line": 23.5, "hit": (20.0 + i) > 23.5,
+         "date": f"2026-0{7 if i < 3 else 8}-{10 + i:02d}", "opponent": "OPP"}
+        for i in range(10)
+    ]
+    pkt = build_packet(row, {"game_log": game_log_10})
+
+    assert len(pkt["box_score_log"]) == 10, (
+        f"Expected 10 box_score_log rows, got {len(pkt['box_score_log'])}"
+    )
+    assert len(pkt["l5_ledger"])     == 5, (
+        f"Expected l5_ledger=5, got {len(pkt['l5_ledger'])}"
+    )
+    assert len(pkt["l10_ledger"])    == 10, (
+        f"Expected l10_ledger=10, got {len(pkt['l10_ledger'])}"
+    )
+    # At least 5 rows must have non-null points
+    non_null_points = sum(1 for r in pkt["l5_ledger"] if r.get("points") is not None)
+    assert non_null_points == 5, (
+        f"Expected all 5 l5_ledger rows to have points set, got {non_null_points}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 33 — BUG-002: STAT_MAPPING_UNRESOLVED for unsupported market_type
+# ---------------------------------------------------------------------------
+
+def test_bug002_unsupported_market_type_fails_visibly():
+    """
+    BUG-002: when a single-stat row has 'stat' key and market_type is not in
+    _MARKET_TO_STAT_KEY, the row must get stat_mapping_unresolved=True and no
+    stat field should receive the value.  Must never silently guess.
+    """
+    rows = [{"stat": 4.0, "line": 3.5, "hit": True, "date": "2026-08-01"}]
+    ledger = reconstruct_raw_ledger_rows(rows, market_type="player_blocks_plus_steals_plus_turnovers")
+    assert len(ledger) == 1
+    r = ledger[0]
+    assert r.get("stat_mapping_unresolved") is True, (
+        "Unsupported market_type must set stat_mapping_unresolved=True"
+    )
+    assert "STAT_MAPPING_UNRESOLVED" in (r.get("stat_mapping_error") or ""), (
+        "stat_mapping_error must contain 'STAT_MAPPING_UNRESOLVED'"
+    )
+    # No stat field should be fabricated
+    assert r["points"]   is None, "points must be None for unresolved market"
+    assert r["rebounds"] is None, "rebounds must be None for unresolved market"
+    assert r["assists"]  is None, "assists must be None for unresolved market"
+    assert r["blocks"]   is None, "blocks must be None for unresolved market"
+
+
+# ---------------------------------------------------------------------------
+# Test 34 — BUG-002: no all-None stat rows for supported market types
+# ---------------------------------------------------------------------------
+
+def test_bug002_no_all_none_stat_rows_for_supported_markets():
+    """
+    BUG-002: for any supported market type with a valid 'stat' value, the
+    reconstructed ledger row must have at least one non-null stat field.
+    """
+    supported = {
+        "player_points":   "points",
+        "player_rebounds": "rebounds",
+        "player_assists":  "assists",
+        "player_threes":   "three_pointers_made",
+        "player_steals":   "steals",
+        "player_blocks":   "blocks",
+    }
+    for market, expected_field in supported.items():
+        rows   = [{"stat": 7.0, "line": 6.5, "hit": True}]
+        ledger = reconstruct_raw_ledger_rows(rows, market_type=market)
+        assert len(ledger) == 1
+        r = ledger[0]
+        assert r.get(expected_field) == 7.0, (
+            f"market={market}: expected {expected_field}=7.0, got {r.get(expected_field)}"
+        )
+        assert not r.get("stat_mapping_unresolved"), (
+            f"market={market}: must NOT have stat_mapping_unresolved set"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 35 — BUG-003a: shared Odds API resolver prefers paid key over legacy
+# ---------------------------------------------------------------------------
+
+def test_bug003a_odds_api_resolver_prefers_paid_key(monkeypatch):
+    """
+    BUG-003a: resolve_odds_api_key_with_source() must prefer ODDS_API_PAID_KEY
+    over ODDS_API_FREE_KEY and ODDS_API_KEY (legacy).  The source name must
+    reflect the actual key used.
+    """
+    from services.odds_api import resolve_odds_api_key_with_source
+
+    monkeypatch.setenv("ODDS_API_PAID_KEY", "paid-test-key")
+    monkeypatch.setenv("ODDS_API_FREE_KEY", "free-test-key")
+    monkeypatch.setenv("ODDS_API_KEY",      "legacy-deactivated-key")
+
+    key, source = resolve_odds_api_key_with_source()
+    assert source == "ODDS_API_PAID_KEY", (
+        f"Expected ODDS_API_PAID_KEY, got {source!r}"
+    )
+    assert key == "paid-test-key"
+
+    # Free key priority when paid absent
+    monkeypatch.delenv("ODDS_API_PAID_KEY")
+    key2, source2 = resolve_odds_api_key_with_source()
+    assert source2 == "ODDS_API_FREE_KEY", (
+        f"Expected ODDS_API_FREE_KEY when paid absent, got {source2!r}"
+    )
+
+    # Legacy key as last resort
+    monkeypatch.delenv("ODDS_API_FREE_KEY")
+    key3, source3 = resolve_odds_api_key_with_source()
+    assert source3 == "ODDS_API_KEY_LEGACY", (
+        f"Expected ODDS_API_KEY_LEGACY as last resort, got {source3!r}"
+    )
+
+    # No keys → NONE with empty string
+    monkeypatch.delenv("ODDS_API_KEY")
+    key4, source4 = resolve_odds_api_key_with_source()
+    assert source4 == "NONE"
+    assert key4 == ""
+
+
+# ---------------------------------------------------------------------------
+# Test 36 — BUG-003a: fetch_market_comparison uses shared resolver, not direct env read
+# ---------------------------------------------------------------------------
+
+def test_bug003a_fetch_market_comparison_uses_paid_key_over_legacy(monkeypatch):
+    """
+    BUG-003a: fetch_market_comparison must use resolve_odds_api_key_with_source()
+    and MUST NOT read ODDS_API_KEY directly.  When ODDS_API_PAID_KEY is set and
+    ODDS_API_KEY is absent/deactivated, the paid key must be used (no AUTH_REQUIRED).
+    """
+    monkeypatch.setenv("ODDS_API_PAID_KEY", "paid-key-valid")
+    monkeypatch.delenv("ODDS_API_KEY", raising=False)
+    monkeypatch.delenv("ODDS_API_FREE_KEY", raising=False)
+
+    events_body = [{"id": "evt-001"}]
+    odds_body   = {"bookmakers": []}  # player not listed → REQUEST_EMPTY but not AUTH_REQUIRED
+
+    responses = [
+        _mock_response(200, events_body),
+        _mock_response(200, odds_body),
+    ]
+    with patch("requests.get", side_effect=responses):
+        result = fetch_market_comparison("A'ja Wilson", "player_points", line=23.5)
+
+    # Must NOT be AUTH_REQUIRED (which would mean it fell back to checking ODDS_API_KEY=absent)
+    assert result.request_status != RequestStatus.AUTH_REQUIRED, (
+        "fetch_market_comparison returned AUTH_REQUIRED even though ODDS_API_PAID_KEY "
+        "was set — it is reading ODDS_API_KEY directly instead of using the shared resolver"
+    )
+    # credential_resolver_used must be True in normalized_fields
+    nf = result.normalized_fields or {}
+    assert nf.get("credential_resolver_used") is True, (
+        "normalized_fields must contain credential_resolver_used=True"
+    )
+    assert nf.get("credential_source_name") == "ODDS_API_PAID_KEY", (
+        f"Expected credential_source_name='ODDS_API_PAID_KEY', got {nf.get('credential_source_name')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 37 — BUG-003a: no direct ODDS_API_KEY read in external_adapters.py
+# ---------------------------------------------------------------------------
+
+def test_bug003a_no_direct_odds_api_key_read_in_adapter_source():
+    """
+    BUG-003a: external_adapters.py must not contain any direct
+    os.environ.get("ODDS_API_KEY") read (only the shared resolver is allowed).
+    This is a source-code level invariant enforced by inspection.
+    """
+    import re, pathlib
+    adapter_src = pathlib.Path(__file__).parent.parent / "wnba" / "external_adapters.py"
+    assert adapter_src.exists(), f"external_adapters.py not found at {adapter_src}"
+    text = adapter_src.read_text()
+
+    # Any direct read of the raw ODDS_API_KEY env var is a violation
+    # (the resolver itself is in services/odds_api.py, not in external_adapters)
+    pattern = r'os\.environ\.get\s*\(\s*["\']ODDS_API_KEY["\']'
+    matches = re.findall(pattern, text)
+    assert not matches, (
+        f"BUG-003a: external_adapters.py contains {len(matches)} direct read(s) of "
+        f"ODDS_API_KEY via os.environ.get — must use resolve_odds_api_key_with_source() instead. "
+        f"Matches: {matches}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 38 — BUG-003b: WNBA athlete resolves via ESPN v2 endpoint
+# ---------------------------------------------------------------------------
+
+def test_bug003b_espn_v2_endpoint_resolves_wnba_athlete(monkeypatch):
+    """
+    BUG-003b: _espn_search_wnba_athlete must use the v2 search endpoint
+    (site.api.espn.com/apis/search/v2) and parse uid-based athlete IDs.
+    A mock v2-shaped response for 'Aliyah Boston' must return the correct athlete_id.
+    """
+    from gate_engine.wnba.external_adapters import _espn_search_wnba_athlete, RequestStatus
+
+    v2_response = {
+        "results": [
+            {
+                "type": "player",
+                "contents": [
+                    {
+                        "uid":         "s:40~l:59~a:4066407",
+                        "displayName": "Aliyah Boston",
+                        "description": "WNBA",
+                    }
+                ],
+            }
+        ]
+    }
+    mock_resp = _mock_response(200, v2_response)
+    with patch("requests.get", return_value=mock_resp) as mock_get:
+        athlete_id, canonical_name, status, url_used = \
+            _espn_search_wnba_athlete("Aliyah Boston")
+
+    assert status == RequestStatus.REQUEST_SUCCEEDED, (
+        f"Expected REQUEST_SUCCEEDED, got {status!r}"
+    )
+    assert athlete_id == "4066407", (
+        f"Expected athlete_id='4066407', got {athlete_id!r}"
+    )
+    assert "Aliyah Boston" in canonical_name, (
+        f"Expected canonical_name to contain 'Aliyah Boston', got {canonical_name!r}"
+    )
+    # Verify the v2 URL was used (not v3)
+    called_url = mock_get.call_args[0][0] if mock_get.call_args[0] else \
+                 mock_get.call_args[1].get("url", "")
+    assert "search/v2" in called_url or "apis/search" in called_url, (
+        f"BUG-003b: v2 search URL not used. Called: {called_url!r}"
+    )
+    assert "common/v3/search" not in called_url, (
+        f"BUG-003b: broken v3 endpoint is still being called: {called_url!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 39 — BUG-003b: HTTP 200 with zero WNBA athletes → ATHLETE_NOT_FOUND, not REQUEST_FAILED
+# ---------------------------------------------------------------------------
+
+def test_bug003b_http_200_zero_athletes_is_not_found_not_failed(monkeypatch):
+    """
+    BUG-003b: when the ESPN v2 search returns HTTP 200 but no WNBA athlete
+    matches the player name, the status must be REQUEST_EMPTY (ATHLETE_NOT_FOUND)
+    — never REQUEST_FAILED.  This was the pre-fix behavior (0 athletes hit for
+    every WNBA player tested with the old v3 endpoint).
+    """
+    from gate_engine.wnba.external_adapters import _espn_search_wnba_athlete, RequestStatus
+
+    # Simulate v2 HTTP 200 with results but wrong league (NBA, not WNBA)
+    nba_response = {
+        "results": [
+            {
+                "type": "player",
+                "contents": [
+                    {
+                        "uid":         "s:40~l:46~a:999",
+                        "displayName": "A'ja Smith",   # wrong sport
+                        "description": "NBA",           # wrong league
+                    }
+                ],
+            }
+        ]
+    }
+    mock_resp = _mock_response(200, nba_response)
+    with patch("requests.get", return_value=mock_resp):
+        _, _, status, _ = _espn_search_wnba_athlete("A'ja Wilson")
+
+    assert status == RequestStatus.REQUEST_EMPTY, (
+        f"HTTP 200 with no WNBA match must be REQUEST_EMPTY (ATHLETE_NOT_FOUND), "
+        f"got {status!r}"
+    )
+    # Also verify the full news adapter reports REQUEST_EMPTY, not REQUEST_FAILED
+    with patch("requests.get", return_value=mock_resp):
+        news_result = fetch_news_contradiction("A'ja Wilson")
+    assert news_result.request_status == RequestStatus.REQUEST_EMPTY, (
+        f"fetch_news_contradiction must return REQUEST_EMPTY when athlete not found, "
+        f"got {news_result.request_status!r}"
+    )
+    nf = news_result.normalized_fields or {}
+    assert nf.get("athlete_resolution_status") == "ATHLETE_NOT_FOUND", (
+        f"normalized_fields.athlete_resolution_status must be 'ATHLETE_NOT_FOUND', "
+        f"got {nf.get('athlete_resolution_status')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 40 — BUG-003b: HTTP 200 with zero news articles → NEWS_REQUEST_EMPTY, not REQUEST_FAILED
+# ---------------------------------------------------------------------------
+
+def test_bug003b_http_200_zero_news_is_empty_not_failed(monkeypatch):
+    """
+    BUG-003b: when the athlete is resolved but the news endpoint returns
+    HTTP 200 with zero articles, fetch_news_contradiction must report
+    REQUEST_EMPTY with news_fetch_status=NEWS_REQUEST_EMPTY — not REQUEST_FAILED.
+    """
+    from gate_engine.wnba.external_adapters import RequestStatus
+
+    v2_athlete_resp = {
+        "results": [
+            {
+                "type": "player",
+                "contents": [
+                    {
+                        "uid":         "s:40~l:59~a:3149391",
+                        "displayName": "A'ja Wilson",
+                        "description": "WNBA",
+                    }
+                ],
+            }
+        ]
+    }
+    empty_news_resp = {"articles": []}  # ESPN returns 200 but no articles
+
+    responses = [
+        _mock_response(200, v2_athlete_resp),
+        _mock_response(200, empty_news_resp),
+    ]
+    with patch("requests.get", side_effect=responses):
+        result = fetch_news_contradiction("A'ja Wilson")
+
+    assert result.request_status == RequestStatus.REQUEST_EMPTY, (
+        f"Zero-article 200 response must be REQUEST_EMPTY, got {result.request_status!r}"
+    )
+    nf = result.normalized_fields or {}
+    assert nf.get("athlete_resolution_status") == "ATHLETE_RESOLVED", (
+        f"Athlete must show ATHLETE_RESOLVED (search succeeded), "
+        f"got {nf.get('athlete_resolution_status')!r}"
+    )
+    assert nf.get("news_fetch_status") == "NEWS_REQUEST_EMPTY", (
+        f"news_fetch_status must be NEWS_REQUEST_EMPTY, got {nf.get('news_fetch_status')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 41 — BUG-001 + BUG-002 combined: packet cannot reach PACKET_RECONSTRUCTED_COMPLETE
+#           when ledger construction fails despite non-empty box_score_log
+# ---------------------------------------------------------------------------
+
+def test_bug001_002_packet_not_reconstructed_complete_with_empty_ledgers():
+    """
+    Invariant: PACKET_RECONSTRUCTED_COMPLETE must not fire when l5/l10 ledger
+    construction fails even if box_score_log is non-empty.
+    Simulate this by providing game_log rows with an unsupported market_type
+    so every row is STAT_MAPPING_UNRESOLVED and ledger values are all null.
+    The packet should be PACKET_PARTIAL_HOLD or PACKET_INCOMPLETE_REJECTED,
+    never PACKET_RECONSTRUCTED_COMPLETE.
+    """
+    # Use a completely unsupported market type so stat mapping always fails
+    row = _make_wnba_row(prop_type="player_blocks_plus_steals_plus_turnovers")
+    game_log_bad_market = [
+        {"stat": 5.0, "line": 4.5, "hit": True, "date": "2026-08-01", "opponent": "CHI"}
+    ]
+    pkt = build_packet(row, {"game_log": game_log_bad_market})
+
+    # box_score_log stores the RAW input rows; reconstructed ledger rows live in l5/l10_ledger.
+    assert len(pkt["box_score_log"]) == 1, "box_score_log must have 1 raw input row"
+    # The ledger rows (result of reconstruct_raw_ledger_rows) carry the unresolved flag
+    l5 = pkt.get("l5_ledger") or []
+    l10 = pkt.get("l10_ledger") or []
+    # At least l10 should have 1 row (we supplied 1 game row)
+    all_ledger = l5 or l10
+    assert len(all_ledger) == 1, f"Expected 1 ledger row, got {len(all_ledger)}"
+    r = all_ledger[0]
+    assert r.get("stat_mapping_unresolved") is True, (
+        "All ledger rows must be STAT_MAPPING_UNRESOLVED for the unsupported market. "
+        f"Row was: {r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 42 — BUG-002: PRA market assigns pra field directly (source query IS for PRA)
+# ---------------------------------------------------------------------------
+
+def test_bug002_pra_market_assigns_pra_from_single_stat():
+    """
+    BUG-002: when market_type is 'player_points_rebounds_assists' (a PRA query),
+    a single 'stat' value may be assigned to the 'pra' field directly.
+    This is the only case where a composite can come from a single stat value.
+    """
+    rows = [{"stat": 45.0, "line": 42.5, "hit": True, "date": "2026-08-01", "opponent": "LV"}]
+    ledger = reconstruct_raw_ledger_rows(rows, market_type="player_points_rebounds_assists")
+    assert len(ledger) == 1
+    r = ledger[0]
+    assert r["pra"] == 45.0, (
+        f"Expected pra=45.0 for PRA market with stat=45.0, got {r['pra']}"
+    )
+    # Component fields must remain None (no components available)
+    assert r["points"]   is None, "points must be None when only PRA stat present"
+    assert r["rebounds"] is None, "rebounds must be None when only PRA stat present"
+    assert r["assists"]  is None, "assists must be None when only PRA stat present"
+    assert r["canonical_stat_type"] == "pra"

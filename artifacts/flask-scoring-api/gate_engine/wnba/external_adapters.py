@@ -1,6 +1,7 @@
 """
 gate_engine/wnba/external_adapters.py
 WOW-PATCH-2026-08-06-WNBA-EXTERNAL-EVIDENCE-ADAPTERS
+WOW-PATCH-2026-08-06-WNBA-ACQUISITION-CONTRACT-REPAIR
 
 Real outbound HTTP request adapters for WNBA evidence acquisition.
 
@@ -86,7 +87,12 @@ class AdapterResult:
 # these paths; treat as read-only opportunistic fallback, not a stable data contract.
 # ---------------------------------------------------------------------------
 
-_ESPN_SEARCH_URL   = "https://site.web.api.espn.com/apis/common/v3/search"
+# BUG-003b fix: v2 search endpoint is the one that reliably resolves WNBA athletes.
+# The v3 endpoint (site.web.api.espn.com/apis/common/v3/search) was returning
+# 0 athlete results for all tested WNBA players — do not use it.
+# v2 response shape: {"results":[{"type":"player","contents":[{"uid":"s:40~l:59~a:<id>",
+#                      "displayName":"...","description":"WNBA"}]}]}
+_ESPN_SEARCH_URL   = "https://site.api.espn.com/apis/search/v2"
 _ESPN_SCOREBOARD   = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard"
 _ESPN_INJURIES     = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/injuries"
 _ESPN_NEWS         = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/news"
@@ -205,16 +211,37 @@ def _espn_search_wnba_athlete(
     player_name: str,
     timeout: int = _DEFAULT_TIMEOUT,
 ) -> "tuple[str | None, str, str, str]":
-    """Search for a WNBA athlete via an undocumented ESPN web JSON endpoint.
+    """Search for a WNBA athlete via the ESPN v2 search API.
 
-    NOT a guaranteed public developer API — used as best-effort fallback only.
+    BUG-003b fix: uses site.api.espn.com/apis/search/v2 (the same endpoint
+    used successfully by services/player_logs.py).  The previous v3 endpoint
+    (site.web.api.espn.com/apis/common/v3/search) returned 0 athlete results
+    for every tested WNBA player and has been removed.
+
+    Validation rules (all required for ATHLETE_RESOLVED):
+      1. uid contains "~a:" — confirms it is an athlete record, not a team.
+      2. description == "WNBA" (case-insensitive) — confirms correct league.
+      3. displayName loosely matches player_name — confirms identity, not a
+         different person sharing a partial name.
+
     Returns (athlete_id, canonical_name, request_status, url_used).
     Callers must increment request_count by 1 for this call.
+
+    request_status values:
+      REQUEST_SUCCEEDED — athlete resolved, identity confirmed (ATHLETE_RESOLVED)
+      REQUEST_EMPTY     — HTTP 200 but no matching WNBA athlete (ATHLETE_NOT_FOUND)
+      AUTH_REQUIRED     — HTTP 401/403
+      RATE_LIMITED      — HTTP 429
+      SOURCE_UNAVAILABLE — connection/DNS failure
+      REQUEST_FAILED    — other non-200 status or unexpected exception
+      PARSE_FAILED      — HTTP 200 but response body cannot be parsed
     """
     import requests as _req  # local import per Replit pattern
 
     url    = _ESPN_SEARCH_URL
-    params = {"query": player_name, "sport": "basketball", "league": "wnba", "limit": "5"}
+    # v2 search: type=player is the key filter; no sport/league query param needed —
+    # WNBA league identity is validated from the "description" field in the response.
+    params = {"query": player_name, "limit": 5, "type": "player"}
 
     try:
         r = _req.get(url, params=params, timeout=timeout)
@@ -234,27 +261,34 @@ def _espn_search_wnba_athlete(
 
     try:
         data = r.json()
-        # ESPN search returns {"results": [{"contents": [...items...]}, ...]}
+        # v2 response: {"results":[{"type":"player","contents":[
+        #   {"uid":"s:40~l:59~a:<id>","displayName":"...","description":"WNBA"}]}]}
         for section in (data.get("results") or []):
-            items = (
-                section.get("contents")
-                or section.get("items")
-                or []
-            )
-            for item in items:
-                uid = (
-                    item.get("id")
-                    or (item.get("athlete") or {}).get("id")
-                    or item.get("athleteId")
-                )
-                name = (
-                    item.get("displayName")
-                    or item.get("name")
-                    or (item.get("athlete") or {}).get("displayName")
-                    or ""
-                )
-                if uid and _player_name_match(player_name, name):
-                    return str(uid), name, RequestStatus.REQUEST_SUCCEEDED, url
+            if section.get("type") != "player":
+                continue
+            for item in (section.get("contents") or []):
+                uid         = item.get("uid", "")
+                display     = item.get("displayName", "")
+                description = item.get("description", "")
+
+                # Rule 1: must be an athlete record (uid contains "~a:")
+                if "~a:" not in uid:
+                    continue
+                athlete_id = uid.split("~a:")[-1]
+                if not athlete_id:
+                    continue
+
+                # Rule 2: must be WNBA (guards against NBA/NCAAW name collisions)
+                if description.strip().upper() != "WNBA":
+                    continue
+
+                # Rule 3: name must loosely match requested player
+                if not _player_name_match(player_name, display):
+                    continue
+
+                return str(athlete_id), display, RequestStatus.REQUEST_SUCCEEDED, url
+
+        # HTTP 200 but no WNBA athlete matched — ATHLETE_NOT_FOUND, not REQUEST_FAILED
         return None, "", RequestStatus.REQUEST_EMPTY, url
     except Exception:
         return None, "", RequestStatus.PARSE_FAILED, url
@@ -800,15 +834,24 @@ def fetch_market_comparison(
 ) -> AdapterResult:
     """Fetch WNBA player prop lines from The Odds API for market comparison.
 
-    Returns AUTH_REQUIRED immediately if ODDS_API_KEY is not configured.
-    Uses the existing services.odds_api module pattern if available;
-    otherwise uses the raw API directly.
+    BUG-003a fix: uses services.odds_api.resolve_odds_api_key_with_source()
+    instead of reading ODDS_API_KEY directly.  Priority:
+      ODDS_API_PAID_KEY → ODDS_API_FREE_KEY → ODDS_API_KEY (legacy fallback).
+    A deactivated legacy key in ODDS_API_KEY can no longer override an
+    available paid or free key.
+
+    Returns AUTH_REQUIRED immediately (request_count=0) when no key is available.
+    Audit fields added: credential_source_name, credential_resolver_used=True.
+    The actual credential value is NEVER logged or stored.
     """
+    from services.odds_api import resolve_odds_api_key_with_source  # lazy import (Replit pattern)
+
     provider     = "odds_api_player_props"
     retrieved_at = _now_utc()
     url          = f"https://api.the-odds-api.com/v4/sports/{sport_key}/events"
 
-    odds_key = os.environ.get("ODDS_API_KEY", "").strip()
+    odds_key, credential_source_name = resolve_odds_api_key_with_source()
+
     if not odds_key:
         # No HTTP call made — return AUTH_REQUIRED immediately
         return AdapterResult(
@@ -819,10 +862,13 @@ def fetch_market_comparison(
             freshness_age     = _freshness(retrieved_at),
             request_status    = RequestStatus.AUTH_REQUIRED,
             parse_status      = "NOT_ATTEMPTED",
-            normalized_fields = {},
+            normalized_fields = {
+                "credential_source_name": "NONE",
+                "credential_resolver_used": True,
+            },
             raw_record_count  = 0,
             conflict_status   = "NONE",
-            failure_reason    = "ODDS_API_KEY not configured",
+            failure_reason    = "No Odds API key configured (checked PAID_KEY→FREE_KEY→LEGACY_KEY)",
             request_count     = 0,  # no request made
         )
 
@@ -921,7 +967,11 @@ def fetch_market_comparison(
             provider=provider, source_url_or_id=url, retrieved_at=retrieved_at,
             source_grade="A", freshness_age=_freshness(retrieved_at),
             request_status=RequestStatus.REQUEST_EMPTY, parse_status="OK",
-            normalized_fields={}, raw_record_count=0, conflict_status="NONE",
+            normalized_fields={
+                "credential_source_name":  credential_source_name,
+                "credential_resolver_used": True,
+            },
+            raw_record_count=0, conflict_status="NONE",
             failure_reason=f"player '{player_name}' not found in any WNBA prop market",
             request_count=total_calls,
         )
@@ -937,12 +987,14 @@ def fetch_market_comparison(
         request_status    = RequestStatus.REQUEST_SUCCEEDED,
         parse_status      = "OK",
         normalized_fields = {
-            "consensus_line":    consensus,
-            "submitted_line":    line,
-            "books_sampled":     len(lines),
-            "book_keys":         list(set(books))[:6],
-            "line_range":        [min(lines), max(lines)],
-            "cross_book_spread": round(max(lines) - min(lines), 1),
+            "consensus_line":          consensus,
+            "submitted_line":          line,
+            "books_sampled":           len(lines),
+            "book_keys":               list(set(books))[:6],
+            "line_range":              [min(lines), max(lines)],
+            "cross_book_spread":       round(max(lines) - min(lines), 1),
+            "credential_source_name":  credential_source_name,
+            "credential_resolver_used": True,
         },
         raw_record_count  = len(lines),
         conflict_status   = "NONE",
@@ -958,19 +1010,51 @@ def fetch_market_comparison(
 def fetch_news_contradiction(player_name: str) -> AdapterResult:
     """Fetch recent ESPN WNBA news for a player and flag contradictions.
 
-    Two HTTP calls: (1) athlete search, (2) athlete news.
-    Contradiction is flagged when role-relevant keywords appear in headlines
-    (e.g. player listed as 'out' by official source but scored last game).
+    Two HTTP calls: (1) athlete search via v2 endpoint (BUG-003b fix), (2) athlete news.
+    Contradiction is flagged when role-relevant keywords appear in headlines.
     This is structural contradiction detection — no probability inference.
+
+    Sub-status fields in normalized_fields:
+      athlete_resolution_status: ATHLETE_RESOLVED | ATHLETE_NOT_FOUND | ATHLETE_IDENTITY_CONFLICT
+      news_fetch_status: NEWS_RETRIEVED | NEWS_REQUEST_EMPTY | NEWS_REQUEST_FAILED
+    HTTP 200 with zero matching athletes → athlete_resolution_status=ATHLETE_NOT_FOUND,
+      request_status=REQUEST_EMPTY (not REQUEST_FAILED).
+    HTTP 200 with zero news articles → news_fetch_status=NEWS_REQUEST_EMPTY,
+      request_status=REQUEST_EMPTY (not REQUEST_FAILED).
     """
     import requests as _req
 
     provider     = "espn_wnba_athlete_news"
     retrieved_at = _now_utc()
 
-    # Call 1: resolve athlete_id
+    # Call 1: resolve athlete_id via v2 search (BUG-003b fix)
     athlete_id, canonical_name, search_status, search_url = \
         _espn_search_wnba_athlete(player_name)
+
+    # HTTP 200 with no athlete match → ATHLETE_NOT_FOUND, REQUEST_EMPTY (not REQUEST_FAILED)
+    if search_status == RequestStatus.REQUEST_EMPTY:
+        return AdapterResult(
+            provider          = provider,
+            source_url_or_id  = search_url,
+            retrieved_at      = retrieved_at,
+            source_grade      = "B",
+            freshness_age     = _freshness(retrieved_at),
+            request_status    = RequestStatus.REQUEST_EMPTY,
+            parse_status      = "OK",
+            normalized_fields = {
+                "athlete_resolution_status": "ATHLETE_NOT_FOUND",
+                "news_fetch_status":         "NEWS_NOT_ATTEMPTED",
+                "article_count":             0,
+                "contradiction_found":       False,
+            },
+            raw_record_count  = 0,
+            conflict_status   = "NONE",
+            failure_reason    = (
+                f"athlete search '{player_name}': no WNBA athlete matched "
+                f"(HTTP 200, 0 results) — NEWS_REQUEST_EMPTY"
+            ),
+            request_count     = 1,
+        )
 
     if search_status != RequestStatus.REQUEST_SUCCEEDED:
         return _failure_result(
@@ -1018,14 +1102,21 @@ def fetch_news_contradiction(player_name: str) -> AdapterResult:
                                RequestStatus.PARSE_FAILED, "JSON parse failed", request_count=2)
 
     if not articles:
+        # HTTP 200, athlete resolved, but 0 news articles → NEWS_REQUEST_EMPTY (not REQUEST_FAILED)
         return AdapterResult(
             provider=provider, source_url_or_id=news_url, retrieved_at=retrieved_at,
             source_grade="B", freshness_age=_freshness(retrieved_at),
             request_status=RequestStatus.REQUEST_EMPTY, parse_status="OK",
-            normalized_fields={"athlete_id": athlete_id, "article_count": 0,
-                               "contradiction_found": False},
+            normalized_fields={
+                "athlete_id":                athlete_id,
+                "canonical_name":            canonical_name,
+                "athlete_resolution_status": "ATHLETE_RESOLVED",
+                "news_fetch_status":         "NEWS_REQUEST_EMPTY",
+                "article_count":             0,
+                "contradiction_found":       False,
+            },
             raw_record_count=0, conflict_status="NONE",
-            failure_reason="no recent news articles found for player",
+            failure_reason="athlete resolved but no recent news articles found (NEWS_REQUEST_EMPTY)",
             request_count=2,
         )
 
@@ -1060,13 +1151,16 @@ def fetch_news_contradiction(player_name: str) -> AdapterResult:
         request_status    = RequestStatus.REQUEST_SUCCEEDED,
         parse_status      = "OK",
         normalized_fields = {
-            "athlete_id":          athlete_id,
-            "article_count":       len(articles),
-            "contradiction_found": contradiction_found,
-            "out_signals":         out_signals,
-            "active_signals":      active_signals,
-            "recent_headlines":    headlines[:5],
-            "checked_at":          retrieved_at,
+            "athlete_id":                athlete_id,
+            "canonical_name":            canonical_name,
+            "athlete_resolution_status": "ATHLETE_RESOLVED",
+            "news_fetch_status":         "NEWS_RETRIEVED",
+            "article_count":             len(articles),
+            "contradiction_found":       contradiction_found,
+            "out_signals":               out_signals,
+            "active_signals":            active_signals,
+            "recent_headlines":          headlines[:5],
+            "checked_at":                retrieved_at,
         },
         raw_record_count  = len(articles),
         conflict_status   = conflict_status,

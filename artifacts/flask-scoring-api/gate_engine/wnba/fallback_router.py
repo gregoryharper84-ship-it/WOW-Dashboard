@@ -539,9 +539,12 @@ def _attempt_box_score_log(packet: dict, enr: dict) -> RouteAttemptResult:
         )
 
     # Step 2 — game_log alternate key (no HTTP)
+    # NOTE: with BUG-001 fixed in build_packet(), this step is rarely reached
+    # (build_packet now consumes "game_log" directly before detect_missing runs).
+    # Kept as a defensive fallback.  Pass market_type so single-stat rows map correctly.
     game_log_alt = enr.get("game_log") or []
     if game_log_alt and isinstance(game_log_alt, list):
-        raw_rows   = reconstruct_raw_ledger_rows(game_log_alt)
+        raw_rows   = reconstruct_raw_ledger_rows(game_log_alt, market_type=packet.get("market") or None)
         l5, l10, _ = _split_ledger(raw_rows)
         n = len(raw_rows)
         if n > 0:
@@ -573,7 +576,7 @@ def _attempt_box_score_log(packet: dict, enr: dict) -> RouteAttemptResult:
         n         = len(game_rows)
         # Write rows back into enrichment so the packet rebuilds correctly
         enr["box_score_log"] = game_rows
-        l5, l10, _ = _split_ledger(reconstruct_raw_ledger_rows(game_rows))
+        l5, l10, _ = _split_ledger(reconstruct_raw_ledger_rows(game_rows, market_type=packet.get("market") or None))
         return RouteAttemptResult(
             field_category           = "box_score_log",
             source_id                = "espn_wnba_athlete_gamelog",
