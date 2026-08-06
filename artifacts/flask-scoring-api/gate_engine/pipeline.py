@@ -264,6 +264,39 @@ def run_pipeline(
                     "l10_values", _sa["source"], _sa["status"],
                     detail=_sa.get("detail", ""),
                 )
+
+            # [FIX-4] Write l5/l10 computed values back into enr so that
+            # run_deferred() can see them as present.
+            #
+            # Safety-net path: when build_auto_enrichment couldn't pre-populate
+            # these fields (game-log fetch failed at enrichment time but
+            # season_log reconstruction succeeded here, or the caller supplied
+            # game_log without pre-computing the l5/l10 sub-fields), the deferred
+            # contract check would otherwise find them absent and emit
+            # DATA_CONTRACT_FAIL even though the data is available in the gate
+            # result.
+            #
+            # Ledger internal key → data_contract field name:
+            #   l5_games   → l5_values   (same list, different key names)
+            #   l10_games  → l10_values
+            #   l10_avg    → l10_mean    (ledger uses "avg"; contract uses "mean")
+            #   l10_median → l10_median  (identical)
+            #   l5_line_used → l5_line_used (identical)
+            #
+            # Caller-supplied values always win (only copy when enr[field] is None).
+            if _l5_result.get("passed") is True and enr is not None:
+                _l5_contract_map = {
+                    "l5_games":     "l5_values",
+                    "l10_games":    "l10_values",
+                    "l10_avg":      "l10_mean",
+                    "l10_median":   "l10_median",
+                    "l5_line_used": "l5_line_used",
+                }
+                for _lk, _ck in _l5_contract_map.items():
+                    _lv = _l5_result.get(_lk)
+                    if _lv is not None and enr.get(_ck) is None:
+                        enr[_ck] = _lv
+
         except Exception as _exc:
             _tag = f"l5_l10_ledger:{type(_exc).__name__}:{str(_exc)[:100]}"
             failed_modules.append(_tag)

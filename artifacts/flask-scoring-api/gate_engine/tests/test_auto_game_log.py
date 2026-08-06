@@ -135,7 +135,7 @@ class TestMLBFetch:
         }
 
         with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp):
-            values, source = _fetch_mlb("592450", "H", "2026-08-03", 10)
+            values, source, _meta = _fetch_mlb("592450", "H", "2026-08-03", 10)
 
         assert len(values) == 10
         assert all(v == 2.0 for v in values)
@@ -154,7 +154,7 @@ class TestMLBFetch:
         mock_resp.json.return_value = {"stats": [{"splits": splits}]}
 
         with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp):
-            values, _ = _fetch_mlb("592450", "H", "2026-08-03", 5)
+            values, _, _meta = _fetch_mlb("592450", "H", "2026-08-03", 5)
 
         # Most recent first → last element of splits becomes values[0]
         assert values[0] == 4.0
@@ -169,7 +169,7 @@ class TestMLBFetch:
         }
 
         with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp):
-            values, _ = _fetch_mlb("592450", "H+R+RBI", "2026-08-03", 5)
+            values, _, _meta = _fetch_mlb("592450", "H+R+RBI", "2026-08-03", 5)
 
         assert all(v == 3.0 for v in values)
 

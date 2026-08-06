@@ -49,7 +49,8 @@ def _cache_get(key: str) -> Optional[dict]:
 
 
 def _cache_set(key: str, values: list, source: str, games_fetched: int,
-               tour_level: Optional[str] = None) -> dict:
+               tour_level: Optional[str] = None,
+               meta: Optional[dict] = None) -> dict:
     result: dict = {
         "ts":            time.time(),
         "values":        values,
@@ -58,6 +59,8 @@ def _cache_set(key: str, values: list, source: str, games_fetched: int,
     }
     if tour_level is not None:
         result["tour_level"] = tour_level
+    if meta:
+        result["meta"] = meta   # game-level metadata (game_date, opponent) from MLB splits
     _CACHE[key] = result
     return result
 
@@ -94,17 +97,24 @@ _NBA_STAT_COLS: dict[str, str | list] = {
 }
 
 # MLB: stat_key → statsapi gameLog split stat field name
+#
+# FIX-1: Added "K" → "strikeOuts".
+# normalizer.py maps "pitcher strikeouts"/"strikeouts"/"k" → stat_key "K".
+# "SO" was already present as an alias; both now point to the same MLB field.
+# Prior to this fix, _MLB_STAT_FIELDS.get("K") returned None, which caused
+# _fetch_mlb to raise GameLogUnavailable before any HTTP request was made.
 _MLB_STAT_FIELDS: dict[str, str] = {
     "H":          "hits",
-    "H_allowed":  "hits",        # pitcher hits allowed — use pitching group
-    "SO":         "strikeOuts",
+    "H_allowed":  "hits",        # pitcher hits allowed — use pitching split group
+    "K":          "strikeOuts",  # normalizer.py primary key for pitcher strikeouts
+    "SO":         "strikeOuts",  # legacy/alternate key; same MLB field
     "TB":         "totalBases",
     "R":          "runs",
     "RBI":        "rbi",
     "BB":         "baseOnBalls",
     "ER":         "earnedRuns",
     # combo
-    "H+R+RBI":    None,          # handled specially
+    "H+R+RBI":    None,          # handled specially in _fetch_mlb
 }
 
 # WNBA / BallDontLie: stat_key → BDL stat field
@@ -167,6 +177,10 @@ def fetch_game_log(
         }
         if "tour_level" in cached:
             hit["tour_level"] = cached["tour_level"]
+        # Re-expose cached metadata (game_date, opponent) so build_auto_enrichment
+        # can use them even on repeated calls within the cache TTL.
+        if "meta" in cached:
+            hit.update(cached["meta"])
         return hit
 
     sport_upper = sport.upper()
@@ -201,7 +215,7 @@ def fetch_game_log(
     elif sport_upper == "WNBA":
         values, source = _fetch_wnba(player_id, stat_key, date_str, n_games)
     elif sport_upper == "MLB":
-        values, source = _fetch_mlb(player_id, stat_key, date_str, n_games)
+        values, source, _game_meta = _fetch_mlb(player_id, stat_key, date_str, n_games)
     elif sport_upper == "NFL":
         values, source = _fetch_nfl(player_id, stat_key, date_str, n_games)
     elif sport_upper == "TENNIS":
@@ -216,7 +230,11 @@ def fetch_game_log(
             f"NHL requires manual supply or Claude gap-fill."
         )
 
-    _cache_set(cache_key, values, source, len(values), tour_level=tour_level)
+    # Collect game-level metadata returned only by MLB path (other sports return empty dict)
+    _game_meta: dict = locals().get("_game_meta") or {}
+
+    _cache_set(cache_key, values, source, len(values),
+               tour_level=tour_level, meta=_game_meta or None)
     result = {
         "values":        values,
         "source":        source,
@@ -228,6 +246,11 @@ def fetch_game_log(
     }
     if tour_level is not None:
         result["tour_level"] = tour_level
+    # Merge MLB split metadata (game_date, opponent) into the result so
+    # build_auto_enrichment can populate those contract fields without a
+    # second API call.
+    if _game_meta:
+        result.update(_game_meta)
     return result
 
 
@@ -387,12 +410,23 @@ def _fetch_wnba(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[l
 # MLB fetch
 # ---------------------------------------------------------------------------
 
-def _fetch_mlb(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[list, str]:
+def _fetch_mlb(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[list, str, dict]:
+    """
+    Returns (values, source_label, game_metadata).
+
+    game_metadata contains at most:
+      {"game_date": "YYYY-MM-DD", "opponent": "Team Name"}
+    extracted from the most-recent split.  Missing fields are omitted
+    (not set to None) so callers can safely do `if meta.get("game_date")`.
+    """
     date = datetime.date.fromisoformat(date_str)
     season = date.year
 
-    # Determine stat group from stat_key
-    pitcher_keys = {"H_allowed", "ER", "BB"}
+    # FIX-1: "K" and "SO" are pitcher strikeout stat keys → use the pitching
+    # split group.  Prior code only listed H_allowed/ER/BB as pitcher keys,
+    # so "K" / "SO" incorrectly queried the hitting split (which has no
+    # strikeOuts field), producing 0 qualifying rows.
+    pitcher_keys = {"H_allowed", "ER", "BB", "K", "SO"}
     group = "pitching" if stat_key in pitcher_keys else "hitting"
 
     field = _MLB_STAT_FIELDS.get(stat_key)
@@ -454,7 +488,22 @@ def _fetch_mlb(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[li
             f"MLB game log returned 0 qualifying rows for player_id={player_id}"
         )
 
-    return values, "statsapi.mlb.com (MLB Stats API)"
+    # Extract game-level metadata from the most-recent split (index 0 after
+    # reversal).  These fields are used by build_auto_enrichment to populate
+    # the `opponent` and `game_date` enrichment contract fields without needing
+    # a second API call.  Keys are omitted (not set to None) when absent so
+    # callers can safely do `if meta.get("game_date")`.
+    _meta: dict = {}
+    if splits:
+        _recent_split = splits[0]
+        _split_date = (_recent_split.get("date") or "").strip()
+        if _split_date:
+            _meta["game_date"] = _split_date
+        _opp_name = (_recent_split.get("opponent") or {}).get("name", "").strip()
+        if _opp_name:
+            _meta["opponent"] = _opp_name
+
+    return values, "statsapi.mlb.com (MLB Stats API)", _meta
 
 
 # ---------------------------------------------------------------------------
