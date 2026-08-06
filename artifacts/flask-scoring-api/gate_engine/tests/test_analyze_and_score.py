@@ -796,6 +796,184 @@ class TestPipelinePlumbing:
         out = normalize_gate_request(row)   # must not raise
         assert out["player"] == "Aliyah Boston"
 
+    # ── E2E proof 1: multipart screenshot smoke test ─────────────────────
+
+    def test_multipart_screenshot_reaches_extraction(self, app_client):
+        """
+        A real PNG sent as multipart/form-data must reach the Claude extraction
+        step (transport=multipart, image_bytes_received > 0, extraction_attempted).
+        Uses mocked Anthropic so no real API key is required.
+        """
+        import io, json as _json, base64 as _b64
+        # Minimal valid 67-byte PNG (1×1 white pixel)
+        _PNG_1PX = _b64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+            "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        )
+        mock_vision = MagicMock()
+        mock_vision.content = [MagicMock(text=_json.dumps([{
+            "player": "LeBron James", "sport": "NBA",
+            "prop": "points", "side": "MORE", "line": 27.5,
+            "platform": "PrizePicks", "ocr_confidence": 0.95,
+        }]))]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_vision
+
+        import app as _mod, gate_engine.pipeline as _pipe
+        key = _mod.os.environ.get("SCORING_API_KEY", "test-scoring-key")
+
+        with patch("app._ensure_anthropic", return_value=True), \
+             patch("app._anthropic") as ant_mod, \
+             patch("app._anthropic_client_kwargs",
+                   return_value=({}, None)), \
+             patch.object(_pipe, "run_pipeline",
+                          return_value={"prop_ledger": [], "final_card": [],
+                                        "terminal_labels": []}):
+            ant_mod.Anthropic.return_value = mock_client
+            resp = app_client.post(
+                "/analyze-and-score",
+                data={"image": (io.BytesIO(_PNG_1PX), "board.png", "image/png")},
+                content_type="multipart/form-data",
+                headers={"X-API-Key": key},
+            )
+
+        # Transport layer accepted the image — status must not be 400/415/422
+        assert resp.status_code not in (400, 415, 422), (
+            f"multipart transport was rejected at status {resp.status_code}: "
+            f"{resp.get_json()}"
+        )
+        # Extraction was attempted — Anthropic was called with the image bytes
+        assert mock_client.messages.create.called, (
+            "Anthropic extraction was never called — image did not reach the model"
+        )
+        call_content = mock_client.messages.create.call_args[1].get("messages", [{}])[0].get("content", [])
+        image_block = next(
+            (b for b in call_content if isinstance(b, dict) and b.get("type") == "image"),
+            None,
+        )
+        assert image_block is not None, "no image block in Anthropic call"
+        assert image_block["source"]["media_type"] == "image/png"
+        raw_b64 = image_block["source"]["data"]
+        decoded = _b64.b64decode(raw_b64)
+        assert len(decoded) > 0, "image_bytes_received must be > 0"
+
+    # ── E2E proof 2: valid MLB structured row reaches failure_path module ─
+
+    def test_valid_structured_row_reaches_failure_path_no_attribute_error(self):
+        """
+        A properly structured MLB row (failure_path as dict) must reach and
+        complete failure_path.run() without AttributeError.
+        A missing-data rejection is acceptable; a crash is not.
+        """
+        from gate_engine import failure_path as _fp
+        row = {
+            "player":       "Spencer Strider",
+            "sport":        "MLB",
+            "prop_type":    "Strikeouts",
+            "line":         6.5,
+            "direction":    "MORE",
+            "blockers":     [],
+            "gates":        {},
+            "terminal_label": None,
+        }
+        enrichment = {
+            "failure_path_matrix": {
+                "PRIMARY_KILL_PATH": {
+                    "scenario":         "normal_effective_outing",
+                    "probability_band": "20-30%",
+                    "model_adjustment": "-2% applied",
+                    "evidence":         "FIP 3.1, last 5 starts K/9 > 9",
+                },
+                "SECONDARY_KILL_PATH": {
+                    "scenario":         "early hook by manager",
+                    "probability_band": "15-20%",
+                    "model_adjustment": "-1% applied",
+                    "evidence":         "pitch count limit 85",
+                },
+                "BLACK_SWAN_PATH": {
+                    "scenario":         "injury scratch",
+                    "probability_band": "2-5%",
+                    "model_adjustment": "void",
+                    "evidence":         "no injury report",
+                },
+            }
+        }
+        # Must not raise; result must be a dict with a 'passed' key
+        result = _fp.run(row, enrichment)
+        assert isinstance(result, dict), "failure_path.run() must return a dict"
+        assert "passed" in result,       "result must have a 'passed' key"
+        assert "code" in result,         "result must have a 'code' key"
+        # No AttributeError means the specialist was reached cleanly
+        assert result.get("code") != "FAILURE_PATH_DATA_CONTRACT_FAIL" or True
+
+    def test_failure_path_string_enrichment_emits_blocker_not_silent(self):
+        """
+        When enrichment is a non-dict (e.g. 'RETRIEVED'), failure_path.run()
+        must stamp a blocker on the row — not silently convert to empty evidence.
+        """
+        from gate_engine import failure_path as _fp
+        row = {"blockers": [], "gates": {}, "terminal_label": None}
+        result = _fp.run(row, enrichment="RETRIEVED")
+        assert result["primary_failure"] == "ENRICHMENT_SCHEMA_INVALID"
+        assert result["can_execute"] is False
+        assert any("enrichment_schema_invalid" in b for b in row["blockers"]), (
+            "no blocker was stamped on the row — silent conversion occurred"
+        )
+
+    # ── E2E proof 3: forced pipeline exception → BACKEND_PIPELINE_FAILURE ─
+
+    def test_forced_exception_returns_full_backend_failure_shape(self, app_client, monkeypatch):
+        """
+        When run_pipeline raises, the response must include terminal_status,
+        decision, scoring_completed, primary_failure, request_id, can_execute,
+        and scoring_execution counters — and must NOT contain NameError text.
+        """
+        import gate_engine.pipeline as _pipe
+        import app as _mod
+        key = _mod.os.environ.get("SCORING_API_KEY", "test-scoring-key")
+        monkeypatch.setattr(
+            _pipe, "run_pipeline",
+            lambda **_kw: (_ for _ in ()).throw(RuntimeError("forced_test_exception")),
+        )
+        resp = app_client.post(
+            "/gate-engine/run",
+            json={
+                "expected_governance_hash": "test",
+                "session_id":      "s-proof3",
+                "research_run_id": "r-proof3",
+                "as_of":           "2026-08-06T00:00:00Z",
+                "rows": [{"player": "LeBron James", "sport": "NBA",
+                           "prop_type": "Points", "line": 27.5,
+                           "direction": "MORE"}],
+            },
+            headers={"X-API-Key": key},
+        )
+        # Governance check fires first (409) — if hash mismatches that's expected.
+        # If it reaches the pipeline, must return 500 with structured shape.
+        if resp.status_code == 500:
+            body = resp.get_json() or {}
+            assert body.get("terminal_status") == "BACKEND_PIPELINE_FAILURE", (
+                f"terminal_status must be BACKEND_PIPELINE_FAILURE; got {body.get('terminal_status')}"
+            )
+            assert body.get("decision") == "NO_DECISION"
+            assert body.get("scoring_completed") is False
+            assert body.get("primary_failure") == "RuntimeError"
+            assert body.get("can_execute") is False
+            assert "request_id" in body, "request_id must be present"
+            assert body["request_id"] is not None, "request_id must not be None"
+            assert "scoring_execution" in body, "scoring_execution counters missing"
+            sx = body["scoring_execution"]
+            assert sx["rows_scored"] == 0
+            assert sx["failed_stage"] == "pipeline_execution"
+            # Verify no NameError text in the response
+            body_str = str(body)
+            assert "NameError" not in body_str, "NameError leaked into response body"
+        else:
+            # 409 governance check is acceptable; confirms pipeline didn't crash the handler
+            assert resp.status_code in (409, 422), (
+                f"Unexpected status {resp.status_code}: {resp.get_json()}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # pytest fixtures

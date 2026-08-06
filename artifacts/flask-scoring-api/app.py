@@ -21177,20 +21177,38 @@ def gate_engine_run():
     if not raw_rows or not isinstance(raw_rows, list):
         return jsonify({"error": "rows must be a non-empty list"}), 400
 
+    _rows_received = len(raw_rows)
+
     # ── Schema normalization — no raw request reaches a specialist ──────────
     # Validate that every row's mapping fields are objects and list fields are
     # arrays.  A bare status string ("RETRIEVED") causes AttributeError inside
     # the failure-path or role-status modules; return 422 before that happens.
+    _rows_normalized    = 0
+    _rows_rejected_schema = 0
     try:
         raw_rows = [normalize_gate_request(r) for r in raw_rows]
+        _rows_normalized      = len(raw_rows)
+        _rows_rejected_schema = _rows_received - _rows_normalized
     except ContractError as exc:
+        _rows_rejected_schema = _rows_received - _rows_normalized
         return jsonify({
-            "terminal_status": "DATA_CONTRACT_FAIL",
-            "error_code":      "REQUEST_SCHEMA_INVALID",
-            "field":           exc.field,
-            "expected":        exc.expected,
-            "actual_type":     exc.actual_type,
-            "can_execute":     False,
+            "terminal_status":    "DATA_CONTRACT_FAIL",
+            "error_code":         "REQUEST_SCHEMA_INVALID",
+            "field":              exc.field,
+            "expected":           exc.expected,
+            "actual_type":        exc.actual_type,
+            "failed_stage":       "request_normalization",
+            "scoring_execution": {
+                "props_received":       _rows_received,
+                "props_extracted":      _rows_received,
+                "rows_normalized":      _rows_normalized,
+                "rows_rejected_schema": _rows_rejected_schema,
+                "rows_entering_pipeline": 0,
+                "rows_scored":          0,
+                "rows_qualified":       0,
+                "failed_stage":         "request_normalization",
+            },
+            "can_execute":        False,
         }), 422
 
     target_date = None
@@ -21337,11 +21355,20 @@ def gate_engine_run():
             "terminal_status":   "BACKEND_PIPELINE_FAILURE",
             "decision":          "NO_DECISION",
             "scoring_completed": False,
-            "props_scored":      0,
             "primary_failure":   type(exc).__name__,
             "message":           "Gate engine pipeline error.",
             "request_id":        getattr(_g, "request_id", None),
             "can_execute":       False,
+            "scoring_execution": {
+                "props_received":         _rows_received,
+                "props_extracted":        _rows_received,
+                "rows_normalized":        _rows_normalized,
+                "rows_rejected_schema":   _rows_rejected_schema,
+                "rows_entering_pipeline": _rows_normalized,
+                "rows_scored":            0,
+                "rows_qualified":         0,
+                "failed_stage":           "pipeline_execution",
+            },
         }), 500
 
     # Detect session-ledger DB failure → fail closed at HTTP level.
@@ -21487,6 +21514,34 @@ def gate_engine_run():
         result["validation_status"]          = "VALID_RUNTIME_EVIDENCE"
         result["strict_runtime_disposition"] = "RUN_COMPLETE"
         result["terminal_disposition"]       = "PLAY" if _fc else "NO_PLAY"
+
+    # ── Scoring execution counters ────────────────────────────────────────
+    # Included in every 200 response so callers can tell where rows were
+    # lost without digging through logs.  rows_qualified = rows in final_card
+    # (the only rows that passed all gates and could be approved).
+    _pl          = result.get("prop_ledger") or []
+    _final_card  = result.get("final_card") or []
+    _QUALIFYING_LABELS = {
+        "FINAL_APPROVED", "MODEL_QUALIFIED_HOLD", "CONDITIONAL",
+        "MONEY_QUALIFIED", "LLP_WATCH", "WATCH",
+    }
+    _rows_scored    = len(_pl)
+    _rows_qualified = len(_final_card) or sum(
+        1 for _r in _pl
+        if _r.get("terminal_label") in _QUALIFYING_LABELS
+    )
+    result["scoring_completed"] = True
+    result["scoring_execution"] = {
+        "props_received":         _rows_received,
+        "props_extracted":        _rows_received,
+        "rows_normalized":        _rows_normalized,
+        "rows_rejected_schema":   _rows_rejected_schema,
+        "rows_entering_pipeline": _rows_normalized,
+        "rows_scored":            _rows_scored,
+        "rows_qualified":         _rows_qualified,
+        "rows_rejected":          max(0, _rows_scored - _rows_qualified),
+        "failed_stage":           None,
+    }
 
     if response_mode == "slim":
         result = _slim_run_result(result)

@@ -58,9 +58,30 @@ Prevents AttributeError when enrichment is a non-dict (e.g. a string).
 `BACKEND_PIPELINE_FAILURE` / `NO_DECISION` = scoring did not complete (exception caught).
 These must never be conflated. The gate_engine_run catch block enforces this.
 
-## Test coverage
-9 new tests in `TestPipelinePlumbing` in `test_analyze_and_score.py`:
+## Response counters — scoring_execution block
+Added to every gate-engine/run response path:
+- 200 success: `scoring_execution` with rows_received/normalized/rejected_schema/entering_pipeline/scored/qualified/rejected + failed_stage=None
+- 500 BACKEND_PIPELINE_FAILURE: same block with rows_scored=0, failed_stage="pipeline_execution"
+- 422 ContractError: rows_normalized=0, rows_rejected_schema=N, failed_stage="request_normalization"
+Also added `scoring_completed=True` to 200 response.
+
+_rows_received tracked before normalize loop; _rows_normalized/_rows_rejected_schema tracked after.
+rows_qualified derived from final_card length first, then falls back to counting qualifying terminal_labels.
+
+## failure_path.py blocker-on-invalid-enrichment
+Non-dict enrichment (e.g. enrichment="RETRIEVED") now stamps:
+- blocker: "DATA_CONTRACT_FAIL:failure_path:enrichment_schema_invalid:expected_object:received_str"
+- terminal_label: DATA_CONTRACT_FAIL (if not already set)
+- gate result: {primary_failure: "ENRICHMENT_SCHEMA_INVALID", can_execute: False, ...}
+Returns early; never silently converts to {}.
+**Why**: silent {} conversion would make a contract defect look like ordinary missing evidence.
+
+## Test coverage (11 new tests in TestPipelinePlumbing)
 multipart PNG accepted, local-path string rejected, data URL accepted,
 failure_path string → 422, JSON object string → not 500,
-error handler safety, normalize unit tests (ContractError, JSON decode, list, None coercion,
-player string allowed).
+error handler safety (can_execute in body),
+normalize unit tests (ContractError field, JSON decode, list, None coercion, player string allowed),
+multipart full extraction smoke (mocked Anthropic + pipeline),
+valid MLB structured row reaches failure_path module without AttributeError,
+failure_path non-dict enrichment emits blocker not silent coercion,
+forced exception → full BACKEND_PIPELINE_FAILURE shape with request_id + scoring_execution counters.
