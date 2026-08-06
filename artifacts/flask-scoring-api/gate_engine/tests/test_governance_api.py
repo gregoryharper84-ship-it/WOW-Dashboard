@@ -524,6 +524,28 @@ class TestLowestCeilingPropagation:
                 "sportsbook_line":  11.0,
                 "status_payload":   {"status": "ACTIVE", "source": "ESPN",
                                      "dnp_risk": False, "minutes_restriction": False},
+                # WNBA evidence-acquisition required fields
+                "event_status":    "SCHEDULED",
+                "role_timestamp":  __import__("datetime").date.today().isoformat() + "T10:00:00Z",
+                "role_confirmation_age_minutes": 5,   # forces FRESH regardless of wall clock
+                "projected_minutes": 32.0,
+                "role_status": {
+                    "active_status":     "ACTIVE",
+                    "role_timestamp":    __import__("datetime").date.today().isoformat() + "T10:00:00Z",
+                    "projected_minutes": 32.0,
+                },
+                "box_score_log": [
+                    {"date": "2026-07-30", "PTS": 12, "REB": 9,  "AST": 2, "MIN": 32, "FGA": 10},
+                    {"date": "2026-07-27", "PTS": 14, "REB": 10, "AST": 3, "MIN": 34, "FGA": 11},
+                    {"date": "2026-07-24", "PTS": 11, "REB": 8,  "AST": 2, "MIN": 30, "FGA": 9},
+                    {"date": "2026-07-21", "PTS": 15, "REB": 11, "AST": 3, "MIN": 35, "FGA": 12},
+                    {"date": "2026-07-18", "PTS": 10, "REB": 9,  "AST": 1, "MIN": 29, "FGA": 8},
+                ],
+                "matchup": {
+                    "pace": 94.0, "opponent_defense": 110.0,
+                    "position_defense": 109.0, "rebound_environment": 0.55,
+                    "assist_environment": 0.48,
+                },
             }
         }
         result = run_pipeline(

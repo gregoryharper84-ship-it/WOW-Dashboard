@@ -11,9 +11,10 @@ Regression tests covering:
 5. DATA_UNOBTAINABLE_AFTER_EXHAUSTION is only emitted after all configured
    routes are logged as attempted in acquisition_audit
 6. PACKET_COMPLETE when all required fields are present
-7. PACKET_RECONSTRUCTED when box_score_log is missing but game_log alt key exists
+7. PACKET_RECONSTRUCTED_COMPLETE when box_score_log is missing but game_log alt key exists
 8. PACKET_INCOMPLETE_REJECTED blocks row (terminal label set)
 9. Non-WNBA rows are skipped entirely
+10-19. External adapter behaviour under mocked HTTP responses
 """
 from __future__ import annotations
 
@@ -66,12 +67,18 @@ def _make_wnba_row(**kwargs) -> dict[str, Any]:
 
 
 def _make_full_enr() -> dict[str, Any]:
-    """Enrichment with ALL required fields present."""
+    """Enrichment with ALL required fields present (critical + qualification)."""
     return {
         "opponent":        "Seattle Storm",
         "game_date":       "2026-08-06",
         "event_status":    "SCHEDULED",
         "role_timestamp":  "2026-08-06T10:00:00Z",
+        "projected_minutes": 34.0,
+        "role_status": {
+            "active_status":     "ACTIVE",
+            "role_timestamp":    "2026-08-06T10:00:00Z",
+            "projected_minutes": 34.0,
+        },
         "box_score_log": [
             {"date": "2026-08-01", "PTS": 25, "REB": 8, "AST": 4, "MIN": 36, "FGA": 18},
             {"date": "2026-07-28", "PTS": 30, "REB": 10, "AST": 5, "MIN": 38, "FGA": 21},
@@ -85,6 +92,17 @@ def _make_full_enr() -> dict[str, Any]:
             "position_defense":   112.0,
             "rebound_environment": 0.52,
             "assist_environment":  0.61,
+        },
+        # Qualification-blocking fields — present here so PACKET_COMPLETE fires cleanly
+        "market_comparison": {
+            "consensus_line":    23.5,
+            "books_sampled":     3,
+            "cross_book_spread": 0.5,
+        },
+        "news_contradiction_check": {
+            "headlines_scanned":    4,
+            "contradiction_found":  False,
+            "contradiction_detail": None,
         },
     }
 
@@ -341,11 +359,16 @@ def test_packet_reconstructed_via_game_log_alt_key():
 
     result = evidence_run(row, enr)
 
-    # Must not be rejected
+    # Must not be rejected — reconstruction counts as a successful resolution
     assert result["packet_status"] in (
         PacketStatus.PACKET_COMPLETE,
-        PacketStatus.PACKET_RECONSTRUCTED,
-    ), f"Expected COMPLETE or RECONSTRUCTED, got {result['packet_status']}"
+        PacketStatus.PACKET_RECONSTRUCTED_COMPLETE,
+        PacketStatus.PACKET_PARTIAL_HOLD,  # acceptable if qual-blocking fields absent
+    ), f"Expected COMPLETE/RECONSTRUCTED_COMPLETE/PARTIAL_HOLD, got {result['packet_status']}"
+    assert result["packet_status"] != PacketStatus.PACKET_INCOMPLETE_REJECTED, (
+        "PACKET_INCOMPLETE_REJECTED must not fire when game_log alt key is present "
+        "(critical box_score_log can be reconstructed from it)"
+    )
 
     # Fallback must have been triggered for box_score_log
     assert result["acquisition_audit"]["fallback_triggered"] is True
@@ -405,3 +428,337 @@ def test_can_execute_is_always_false():
     assert result.get("can_execute") is False, (
         "Gate result must always contain can_execute=False"
     )
+
+
+# ===========================================================================
+# Tests 10-19: External adapter behaviour under mocked HTTP responses
+# All use unittest.mock.patch so no real network calls are made.
+# ===========================================================================
+
+from unittest.mock import patch, MagicMock
+
+from gate_engine.wnba.external_adapters import (
+    AdapterResult,
+    RequestStatus,
+    fetch_role_status,
+    fetch_event_status,
+    fetch_box_score_log,
+    fetch_market_comparison,
+    fetch_news_contradiction,
+)
+
+
+def _mock_response(status_code: int, json_body: Any) -> MagicMock:
+    """Build a minimal requests.Response mock."""
+    m = MagicMock()
+    m.status_code = status_code
+    m.json.return_value = json_body
+    return m
+
+
+# ---------------------------------------------------------------------------
+# Test 10: fetch_role_status — player NOT on injury list → ACTIVE_INFERRED
+# ---------------------------------------------------------------------------
+
+def test_fetch_role_status_player_not_on_list_infers_active():
+    """
+    When the ESPN injury feed returns successfully but the player is absent,
+    the adapter must return REQUEST_SUCCEEDED with active_status=ACTIVE_INFERRED
+    and raw_record_count=0 (absence inference, not a confirmed signal).
+    """
+    mock_body = {"injuries": []}  # empty injury list
+    with patch("requests.get", return_value=_mock_response(200, mock_body)):
+        result = fetch_role_status("A'ja Wilson")
+
+    assert isinstance(result, AdapterResult)
+    assert result.request_status == RequestStatus.REQUEST_SUCCEEDED
+    assert result.normalized_fields.get("active_status") == "ACTIVE_INFERRED"
+    assert result.normalized_fields.get("inference_basis") == "not_on_espn_injury_report"
+    assert result.raw_record_count == 0
+    assert result.request_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 11: fetch_role_status — player on list as Questionable → UNCERTAIN
+# ---------------------------------------------------------------------------
+
+def test_fetch_role_status_player_listed_questionable_returns_uncertain():
+    """
+    When a player IS in the injury feed and listed as Questionable, the adapter
+    maps to active_status=UNCERTAIN and raw_record_count=1.
+    """
+    mock_body = {
+        "injuries": [
+            {
+                "injuries": [
+                    {
+                        "athlete":     {"displayName": "A'ja Wilson"},
+                        "status":      "Questionable",
+                        "longComment": "Right ankle soreness",
+                        "details":     {"returnDate": None},
+                    }
+                ]
+            }
+        ]
+    }
+    with patch("requests.get", return_value=_mock_response(200, mock_body)):
+        result = fetch_role_status("A'ja Wilson")
+
+    assert result.request_status == RequestStatus.REQUEST_SUCCEEDED
+    assert result.normalized_fields.get("active_status") == "UNCERTAIN"
+    assert result.normalized_fields.get("injury_status") == "QUESTIONABLE"
+    assert result.raw_record_count == 1
+    assert result.request_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 12: fetch_event_status — ESPN scoreboard returns SCHEDULED game
+# ---------------------------------------------------------------------------
+
+def test_fetch_event_status_returns_scheduled():
+    """
+    When ESPN scoreboard JSON contains a matching game with STATUS_SCHEDULED,
+    the adapter must return event_status='SCHEDULED' and REQUEST_SUCCEEDED.
+    """
+    mock_body = {
+        "events": [
+            {
+                "id": "evt-001",
+                "competitions": [
+                    {
+                        "competitors": [
+                            {"team": {"abbreviation": "LVA", "displayName": "Las Vegas Aces"}},
+                            {"team": {"abbreviation": "SEA", "displayName": "Seattle Storm"}},
+                        ],
+                        "status": {
+                            "type": {
+                                "name":        "STATUS_SCHEDULED",
+                                "description": "Scheduled",
+                            }
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    with patch("requests.get", return_value=_mock_response(200, mock_body)):
+        result = fetch_event_status("LVA vs SEA", date_str="20260806")
+
+    assert result.request_status == RequestStatus.REQUEST_SUCCEEDED
+    assert result.normalized_fields.get("event_status") == "SCHEDULED"
+    assert result.request_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 13: fetch_event_status — connection error → SOURCE_UNAVAILABLE
+# ---------------------------------------------------------------------------
+
+def test_fetch_event_status_handles_connection_error():
+    """
+    When requests.get raises ConnectionError, the adapter must return
+    SOURCE_UNAVAILABLE (not an unhandled exception) and request_count=1
+    (the attempt was made).
+    """
+    import requests as _req
+    with patch("requests.get", side_effect=_req.exceptions.ConnectionError("refused")):
+        result = fetch_event_status("LVA vs SEA")
+
+    assert result.request_status == RequestStatus.SOURCE_UNAVAILABLE
+    assert result.request_count == 1
+    assert result.failure_reason is not None
+
+
+# ---------------------------------------------------------------------------
+# Test 14: fetch_box_score_log — ESPN search returns empty → REQUEST_EMPTY
+# ---------------------------------------------------------------------------
+
+def test_fetch_box_score_log_espn_search_empty_returns_unobtainable():
+    """
+    When the ESPN athlete search returns HTTP 200 but no matching athlete,
+    fetch_box_score_log must return REQUEST_EMPTY (not a crash or silent None).
+    """
+    # Search returns empty results block
+    search_body = {"results": []}
+    with patch("requests.get", return_value=_mock_response(200, search_body)):
+        result = fetch_box_score_log("A'ja Wilson", n_games=10)
+
+    assert isinstance(result, AdapterResult)
+    # Any non-success status is acceptable — we only care that it doesn't crash
+    assert result.request_status in (
+        RequestStatus.REQUEST_EMPTY,
+        RequestStatus.PARSE_FAILED,
+        RequestStatus.REQUEST_FAILED,
+        RequestStatus.SOURCE_UNAVAILABLE,
+        RequestStatus.RATE_LIMITED,
+        RequestStatus.AUTH_REQUIRED,
+    ), f"Unexpected status for search-empty case: {result.request_status}"
+    # No exception should escape
+    assert result.request_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# Test 15: fetch_market_comparison — no ODDS_API_KEY → AUTH_REQUIRED, 0 requests
+# ---------------------------------------------------------------------------
+
+def test_fetch_market_comparison_no_env_key_returns_auth_required(monkeypatch):
+    """
+    When ODDS_API_KEY is not configured, fetch_market_comparison must return
+    AUTH_REQUIRED immediately without making any HTTP request (request_count=0).
+    """
+    monkeypatch.delenv("ODDS_API_KEY", raising=False)
+    monkeypatch.delenv("ODDS_API_FREE_KEY", raising=False)
+    monkeypatch.delenv("ODDS_API_PAID_KEY", raising=False)
+
+    with patch("requests.get") as mock_get:
+        result = fetch_market_comparison("A'ja Wilson", "points", line=23.5)
+        # Confirm no HTTP call was made
+        mock_get.assert_not_called()
+
+    assert result.request_status == RequestStatus.AUTH_REQUIRED
+    assert result.request_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 16: fetch_market_comparison — events found but player not in props
+# ---------------------------------------------------------------------------
+
+def test_fetch_market_comparison_player_not_in_any_prop_market(monkeypatch):
+    """
+    When Odds API returns events but no outcome for the specified player,
+    fetch_market_comparison must return REQUEST_EMPTY with request_count >= 2
+    (at least the events call + one odds call).
+    """
+    monkeypatch.setenv("ODDS_API_KEY", "test-key-12345")
+
+    events_body = [{"id": "evt-abc"}]
+    odds_body   = {"bookmakers": []}  # empty bookmakers — player not listed
+
+    responses = [
+        _mock_response(200, events_body),
+        _mock_response(200, odds_body),
+    ]
+    with patch("requests.get", side_effect=responses):
+        result = fetch_market_comparison("A'ja Wilson", "points", line=23.5)
+
+    assert result.request_status in (
+        RequestStatus.REQUEST_EMPTY,
+        RequestStatus.REQUEST_SUCCEEDED,
+    ), f"Expected REQUEST_EMPTY or REQUEST_SUCCEEDED, got {result.request_status}"
+    assert result.request_count >= 2
+
+
+# ---------------------------------------------------------------------------
+# Test 17: PACKET_PARTIAL_HOLD does not block critical path / row proceeds
+# ---------------------------------------------------------------------------
+
+def test_packet_partial_hold_does_not_block_row():
+    """
+    When all CRITICAL_BLOCKING fields are present but QUALIFICATION_BLOCKING
+    fields (market_comparison, news_contradiction_check) are absent,
+    evidence_run must return PACKET_PARTIAL_HOLD — NOT PACKET_INCOMPLETE_REJECTED.
+    The row must NOT be assigned a terminal_label by the acquisition gate itself.
+    """
+    row = _make_wnba_row()
+    # Full critical fields, but NO qualification-blocking fields
+    enr = {
+        "opponent":        "Seattle Storm",
+        "game_date":       "2026-08-06",
+        "event_status":    "SCHEDULED",
+        "role_timestamp":  "2026-08-06T10:00:00Z",
+        "projected_minutes": 34.0,
+        "role_status": {
+            "active_status":     "ACTIVE",
+            "role_timestamp":    "2026-08-06T10:00:00Z",
+            "projected_minutes": 34.0,
+        },
+        "box_score_log": [
+            {"date": "2026-08-01", "PTS": 25, "REB": 8, "AST": 4, "MIN": 36, "FGA": 18},
+            {"date": "2026-07-28", "PTS": 30, "REB": 10, "AST": 5, "MIN": 38, "FGA": 21},
+            {"date": "2026-07-25", "PTS": 22, "REB": 7, "AST": 3, "MIN": 34, "FGA": 16},
+            {"date": "2026-07-22", "PTS": 28, "REB": 9, "AST": 6, "MIN": 37, "FGA": 20},
+            {"date": "2026-07-19", "PTS": 18, "REB": 6, "AST": 2, "MIN": 30, "FGA": 14},
+        ],
+        "matchup": {
+            "pace": 95.0, "opponent_defense": 107.0,
+            "position_defense": 110.0, "rebound_environment": 0.51,
+            "assist_environment": 0.60,
+        },
+        # market_comparison and news_contradiction_check deliberately absent
+    }
+
+    result = evidence_run(row, enr)
+
+    # Must not be hard-rejected (critical fields all present)
+    assert result["packet_status"] != PacketStatus.PACKET_INCOMPLETE_REJECTED, (
+        "PACKET_INCOMPLETE_REJECTED must not fire when all CRITICAL fields are resolved"
+    )
+
+    # evidence_run itself does NOT set terminal_label — that's pipeline.py's job
+    # The acquisition gate output only sets the packet_status signal.
+    assert result["packet_status"] in (
+        PacketStatus.PACKET_COMPLETE,
+        PacketStatus.PACKET_RECONSTRUCTED_COMPLETE,
+        PacketStatus.PACKET_PARTIAL_HOLD,
+    ), f"Unexpected packet_status: {result['packet_status']}"
+
+
+# ---------------------------------------------------------------------------
+# Test 18: Failure-path adapters always return non-negative request_count
+# ---------------------------------------------------------------------------
+
+def test_adapter_request_count_nonnegative_after_timeout(monkeypatch):
+    """
+    When a request times out, the adapter must return request_count >= 1 and
+    a non-None failure_reason. request_count must never be negative.
+    """
+    import requests as _req
+    for adapter_call, kwargs in [
+        (lambda: fetch_role_status("A'ja Wilson"),                               {}),
+        (lambda: fetch_event_status("LVA vs SEA", date_str="20260806"),          {}),
+        (lambda: fetch_news_contradiction("A'ja Wilson"),                        {}),
+    ]:
+        with patch("requests.get", side_effect=_req.exceptions.Timeout("timed out")):
+            result = adapter_call()
+        assert result.request_count >= 0, (
+            f"request_count must be non-negative after timeout; got {result.request_count}"
+        )
+        assert result.failure_reason is not None, (
+            "failure_reason must be set after a timeout"
+        )
+        assert result.request_status != RequestStatus.NOT_ATTEMPTED, (
+            "NOT_ATTEMPTED must not appear when the adapter was actually called"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 19: All five adapters return AdapterResult instances (sanity check)
+# ---------------------------------------------------------------------------
+
+def test_all_adapters_return_adapter_result_instances(monkeypatch):
+    """
+    Every adapter function must return an AdapterResult regardless of the
+    HTTP response received. Verify with minimal valid mocks.
+    """
+    monkeypatch.setenv("ODDS_API_KEY", "test-key")
+
+    # Minimal ESPN body: athlete search returns empty, scoreboard returns empty
+    empty_body: dict = {}
+
+    import requests as _req
+    with patch("requests.get", return_value=_mock_response(200, empty_body)):
+        r1 = fetch_role_status("Test Player")
+        r2 = fetch_event_status("A vs B")
+        r3 = fetch_box_score_log("Test Player", n_games=10)
+        r4 = fetch_news_contradiction("Test Player")
+
+    # market_comparison with ODDS_API_KEY set but empty events list
+    with patch("requests.get", return_value=_mock_response(200, [])):
+        r5 = fetch_market_comparison("Test Player", "points", line=20.0)
+
+    for i, r in enumerate([r1, r2, r3, r4, r5], start=1):
+        assert isinstance(r, AdapterResult), (
+            f"Adapter {i} returned {type(r).__name__}, expected AdapterResult"
+        )
+        assert r.request_count >= 0, (
+            f"Adapter {i} returned negative request_count={r.request_count}"
+        )

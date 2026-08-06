@@ -207,11 +207,21 @@ def run_pipeline(
         # Runs AFTER status_role so role_status signal is available.
         # Runs BEFORE the existing opportunity engine so the packet feeds it.
         # PACKET_INCOMPLETE_REJECTED → terminal label; skip analytical gates.
-        # PACKET_COMPLETE / PACKET_RECONSTRUCTED → continue normally.
+        # PACKET_PARTIAL_HOLD       → row proceeds; non-terminal note added.
+        # PACKET_COMPLETE / PACKET_RECONSTRUCTED_COMPLETE → continue normally.
         # -------------------------------------------------------------------
         if _wnba_evidence_acq.is_wnba_row(row):
             _ea_result = _wnba_evidence_acq.run(row, enrichment=enr)
-            if _ea_result.get("packet_status") == "PACKET_INCOMPLETE_REJECTED":
+            _ea_ps = _ea_result.get("packet_status", "")
+            if _ea_ps == "PACKET_PARTIAL_HOLD":
+                # Qualification-blocking field(s) unresolved — row proceeds
+                # but cannot reach a probability-qualified label downstream.
+                row.setdefault("blockers", []).append(
+                    "WNBA_EVIDENCE_ACQUISITION:PACKET_PARTIAL_HOLD:"
+                    "qualification_fields_unresolved="
+                    + ",".join(_ea_result.get("fields_unresolved") or [])
+                )
+            if _ea_ps == "PACKET_INCOMPLETE_REJECTED":
                 row.setdefault("blockers", []).append(
                     "WNBA_EVIDENCE_ACQUISITION:PACKET_INCOMPLETE_REJECTED:"
                     "unresolved=" + ",".join(_ea_result.get("fields_unresolved") or [])

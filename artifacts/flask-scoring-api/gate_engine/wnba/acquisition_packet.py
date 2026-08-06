@@ -1,6 +1,7 @@
 """
 gate_engine/wnba/acquisition_packet.py
 WOW-PATCH-2026-08-06-WNBA-EVIDENCE-ACQUISITION-STRUCTURAL
+WOW-PATCH-2026-08-06-WNBA-EXTERNAL-EVIDENCE-ADAPTERS
 
 WNBA Opportunity Packet schema, construction, source normalization,
 and raw ledger reconstruction.
@@ -20,13 +21,17 @@ from typing import Any
 can_execute = False
 
 # ---------------------------------------------------------------------------
-# Packet status vocabulary
+# Packet status vocabulary (4 values per WOW-PATCH-2026-08-06-WNBA-EXTERNAL-EVIDENCE-ADAPTERS)
 # ---------------------------------------------------------------------------
 
 class PacketStatus:
-    PACKET_COMPLETE            = "PACKET_COMPLETE"
-    PACKET_RECONSTRUCTED       = "PACKET_RECONSTRUCTED"
-    PACKET_INCOMPLETE_REJECTED = "PACKET_INCOMPLETE_REJECTED"
+    PACKET_COMPLETE              = "PACKET_COMPLETE"
+    # All critical + qualification fields satisfied (via primary or successful fallback)
+    PACKET_RECONSTRUCTED_COMPLETE = "PACKET_RECONSTRUCTED_COMPLETE"
+    # Critical fields satisfied; ≥1 qualification-blocking field unresolved
+    PACKET_PARTIAL_HOLD          = "PACKET_PARTIAL_HOLD"
+    # Any critical-blocking field unresolved after full exhaustion → row blocked
+    PACKET_INCOMPLETE_REJECTED   = "PACKET_INCOMPLETE_REJECTED"
 
 
 # ---------------------------------------------------------------------------
@@ -35,14 +40,14 @@ class PacketStatus:
 # ---------------------------------------------------------------------------
 
 class AcquisitionFieldStatus:
-    PRIMARY_RETRIEVED                = "PRIMARY_RETRIEVED"
-    FALLBACK_RETRIEVED               = "FALLBACK_RETRIEVED"
-    MULTI_SOURCE_RECONSTRUCTED       = "MULTI_SOURCE_RECONSTRUCTED"
-    PROXY_ONLY                       = "PROXY_ONLY"
-    SOURCE_CONFLICT                  = "SOURCE_CONFLICT"
+    PRIMARY_RETRIEVED                  = "PRIMARY_RETRIEVED"
+    FALLBACK_RETRIEVED                 = "FALLBACK_RETRIEVED"
+    MULTI_SOURCE_RECONSTRUCTED         = "MULTI_SOURCE_RECONSTRUCTED"
+    PROXY_ONLY                         = "PROXY_ONLY"
+    SOURCE_CONFLICT                    = "SOURCE_CONFLICT"
     DATA_UNOBTAINABLE_AFTER_EXHAUSTION = "DATA_UNOBTAINABLE_AFTER_EXHAUSTION"
     # Intermediate (never final) — kept for in-flight tracking only
-    _NOT_YET_ATTEMPTED               = "_NOT_YET_ATTEMPTED"
+    _NOT_YET_ATTEMPTED                 = "_NOT_YET_ATTEMPTED"
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +84,7 @@ def normalize_source_claim(claim: dict[str, Any]) -> tuple[bool, dict[str, Any]]
     The normalized claim adds ``freshness_age`` (seconds since retrieved_at)
     and ``conflict_status`` defaulting to "NONE".
     """
-    source      = (claim.get("source") or "").strip()
+    source       = (claim.get("source") or "").strip()
     retrieved_at = (claim.get("retrieved_at") or "").strip()
 
     if not source or not retrieved_at:
@@ -102,11 +107,11 @@ def normalize_source_claim(claim: dict[str, Any]) -> tuple[bool, dict[str, Any]]
 
     normalized = {
         **claim,
-        "source":          source,
-        "retrieved_at":    retrieved_at,
-        "source_grade":    claim.get("source_grade", SourceGrade.C),
-        "freshness_age":   freshness_age,
-        "conflict_status": claim.get("conflict_status", "NONE"),
+        "source":             source,
+        "retrieved_at":       retrieved_at,
+        "source_grade":       claim.get("source_grade", SourceGrade.C),
+        "freshness_age":      freshness_age,
+        "conflict_status":    claim.get("conflict_status", "NONE"),
         "acquisition_method": claim.get("acquisition_method", AcquisitionMethod.PRIMARY_API),
     }
     return True, normalized
@@ -150,15 +155,15 @@ def reconstruct_raw_ledger_rows(box_score_log: list[dict[str, Any]]) -> list[dic
         if not isinstance(game, dict):
             continue
 
-        pts = _extract_float(game, ["PTS", "pts", "points", "Points", "Pts"])
-        reb = _extract_float(game, ["REB", "reb", "rebounds", "TRB", "Reb", "TREB"])
-        ast = _extract_float(game, ["AST", "ast", "assists", "Ast", "Assists"])
+        pts  = _extract_float(game, ["PTS", "pts", "points", "Points", "Pts"])
+        reb  = _extract_float(game, ["REB", "reb", "rebounds", "TRB", "Reb", "TREB"])
+        ast  = _extract_float(game, ["AST", "ast", "assists", "Ast", "Assists"])
         mins = _extract_float(game, ["MIN", "min", "minutes", "MP", "min_played", "Minutes"])
-        fga = _extract_float(game, ["FGA", "fga", "field_goal_attempts", "FGAttempts", "FG_A"])
-        tpa = _extract_float(game, [
+        fga  = _extract_float(game, ["FGA", "fga", "field_goal_attempts", "FGAttempts", "FG_A"])
+        tpa  = _extract_float(game, [
             "3PA", "3pa", "three_point_attempts", "ThreePtAttempts", "3P_A", "3PT_A", "TP_A",
         ])
-        fta = _extract_float(game, ["FTA", "fta", "free_throw_attempts", "FTAttempts", "FT_A"])
+        fta   = _extract_float(game, ["FTA", "fta", "free_throw_attempts", "FTAttempts", "FT_A"])
         fouls = _extract_float(game, ["PF", "pf", "fouls", "personal_fouls", "Fouls"])
 
         # PRA = points + rebounds + assists; null if any component is null
@@ -351,31 +356,39 @@ def build_packet(
     # Matchup section
     matchup = _build_matchup_section(enr)
 
+    # Market comparison — from enrichment (filled by market_comparison adapter)
+    market_comparison = enr.get("market_comparison") or None
+
+    # News contradiction check — from enrichment (filled by news_contradiction adapter)
+    news_contradiction_check = enr.get("news_contradiction_check") or None
+
     # Source audit — collect any explicitly passed source metadata
     source_audit_raw = enr.get("source_audit") or {}
 
     packet: dict[str, Any] = {
-        "candidate_id":  candidate_id,
-        "player":        player,
-        "team":          team,
-        "opponent":      opponent,
-        "event_id":      event_id,
-        "market":        market,
-        "line":          line,
-        "side":          side,
-        "as_of":         as_of,
-        "event_status":  event_status,
-        "role_status":   role_status,
-        "box_score_log": box_score_log_raw,
-        "l5_ledger":     l5_ledger,
-        "l10_ledger":    l10_ledger,
-        "season_ledger": season_ledger,
-        "matchup":       matchup,
-        "source_audit":  source_audit_raw,
+        "candidate_id":           candidate_id,
+        "player":                 player,
+        "team":                   team,
+        "opponent":               opponent,
+        "event_id":               event_id,
+        "market":                 market,
+        "line":                   line,
+        "side":                   side,
+        "as_of":                  as_of,
+        "event_status":           event_status,
+        "role_status":            role_status,
+        "box_score_log":          box_score_log_raw,
+        "l5_ledger":              l5_ledger,
+        "l10_ledger":             l10_ledger,
+        "season_ledger":          season_ledger,
+        "matchup":                matchup,
+        "market_comparison":      market_comparison,
+        "news_contradiction_check": news_contradiction_check,
+        "source_audit":           source_audit_raw,
         # Set by orchestrator after fallback routing:
-        "packet_status":      None,
-        "field_status_map":   {},   # field → AcquisitionFieldStatus
-        "acquisition_audit":  None,
+        "packet_status":          None,
+        "field_status_map":       {},   # field → AcquisitionFieldStatus
+        "acquisition_audit":      None,
     }
 
     return packet

@@ -1,8 +1,9 @@
 """
 gate_engine/wnba/evidence_acquisition.py
 WOW-PATCH-2026-08-06-WNBA-EVIDENCE-ACQUISITION-STRUCTURAL
+WOW-PATCH-2026-08-06-WNBA-EXTERNAL-EVIDENCE-ADAPTERS
 
-Main orchestrator for the WNBA Evidence Acquisition structural pipeline.
+Main orchestrator for the WNBA Evidence Acquisition pipeline.
 
 Gate insertion order (spec §8):
   SLATE → IDENTITY → PRIMARY_ACQUISITION → COVERAGE_AUDIT →
@@ -12,19 +13,35 @@ Gate insertion order (spec §8):
 This module is called by pipeline.py AFTER status_role.run() and BEFORE
 the existing WNBA opportunity engine (_wnba_opp_gate.run()).
 
-It does NOT:
+Three-tier packet validation (WOW-PATCH-2026-08-06-WNBA-EXTERNAL-EVIDENCE-ADAPTERS):
+
+  PACKET_COMPLETE
+    All critical + qualification fields present from primary acquisition.
+    No fallback triggered.
+
+  PACKET_RECONSTRUCTED_COMPLETE
+    All critical + qualification fields satisfied (via primary or successful
+    fallback). At least one field required a fallback to satisfy.
+    Do NOT emit when box_score_log or l5_ledger/l10_ledger remain empty —
+    that must be PACKET_INCOMPLETE_REJECTED instead.
+
+  PACKET_PARTIAL_HOLD
+    All critical-blocking fields satisfied.
+    ≥1 qualification-blocking field (matchup / market_comparison /
+    news_contradiction_check) remains DATA_UNOBTAINABLE_AFTER_EXHAUSTION.
+    Row proceeds to analytical pipeline but cannot advance to a
+    probability-qualified label downstream (capped at MODEL_QUALIFIED_HOLD).
+
+  PACKET_INCOMPLETE_REJECTED
+    Any critical-blocking field remains DATA_UNOBTAINABLE_AFTER_EXHAUSTION
+    after full fallback exhaustion, OR a source conflict exists.
+    Row is blocked — does NOT enter the analytical pipeline.
+
+This module does NOT:
   - Compute any probability estimate or calibration score
   - Create any new qualification / confidence label
   - Touch any existing gate threshold or probability formula
-  - Make any external HTTP / API calls
-
-It DOES:
-  - Build the WNBAOpportunityPacket from current row + enrichment state
-  - Run the missing-field detector
-  - Run field-specific fallback routing (structural config + in-pipeline reconstruction)
-  - Build and store a complete acquisition_audit
-  - Emit packet_status (PACKET_COMPLETE / PACKET_RECONSTRUCTED / PACKET_INCOMPLETE_REJECTED)
-  - Block the row if PACKET_INCOMPLETE_REJECTED (no required field left NOT_CALLED)
+  - Change the order of any existing analytical gate
 
 can_execute=False is unconditional.
 """
@@ -40,9 +57,12 @@ from .acquisition_packet import (
     build_packet,
 )
 from .missing_field_detector import (
+    CRITICAL_BLOCKING_FIELDS,
+    QUALIFICATION_BLOCKING_FIELDS,
     detect_missing,
     classify_missing_fields,
     build_coverage_audit,
+    REQUIRED_PACKET_FIELDS,
 )
 from .fallback_router import (
     FALLBACK_SOURCE_PRIORITY,
@@ -54,27 +74,18 @@ from .opportunity_engine import is_wnba_row
 
 can_execute = False
 
+
 # ---------------------------------------------------------------------------
-# Non-blocking categories — DATA_UNOBTAINABLE for these does NOT trigger
-# PACKET_INCOMPLETE_REJECTED.
-#
-# Rationale:
-#   event_status  — new observability field; existing analytical gates don't
-#                   depend on it; unobtainable = informational gap, not fatal.
-#   matchup       — spec §1 explicitly permits null/proxy values; downstream
-#                   gates assess matchup independently.
-#   box_score_log — existing opportunity engine already handles absent
-#                   box_score_log with WNBA_HOLD_ROLE_UNCERTAIN (soft hold);
-#                   the new acquisition gate must not add a hard reject on top
-#                   of what the existing pipeline treats as a soft hold.
-#
-# Only role_status sub-fields trigger PACKET_INCOMPLETE_REJECTED when
-# unobtainable, because status_role and the opportunity engine depend on them.
+# Statuses that mean "field was successfully obtained at some quality level"
 # ---------------------------------------------------------------------------
-_NON_BLOCKING_PROXY_CATEGORIES: frozenset[str] = frozenset({
-    "matchup",
-    "event_status",
-    "box_score_log",
+
+_QUALIFYING_FIELD_STATUSES: frozenset[str] = frozenset({
+    AcquisitionFieldStatus.PRIMARY_RETRIEVED,
+    AcquisitionFieldStatus.FALLBACK_RETRIEVED,
+    AcquisitionFieldStatus.MULTI_SOURCE_RECONSTRUCTED,
+    # PROXY_ONLY counts as "resolved at proxy level" for packet_status purposes
+    # (matchup / market fields that are unavailable but not fabricated)
+    AcquisitionFieldStatus.PROXY_ONLY,
 })
 
 
@@ -90,34 +101,65 @@ def _run_source_reconciliation(
     Check for conflicts between sources across the packet.
 
     Rules:
-    - A role_status.active_status claim present in the packet that has
-      sources with conflict_status="CONFLICT" → SOURCE_CONFLICT blocker.
-    - A box_score_log from two different sources with contradictory row
-      counts is flagged (currently structural: count mismatch logged only).
+    - role_status.sources with conflict_status="CONFLICT" → SOURCE_CONFLICT blocker.
+    - news_contradiction adapter reported contradiction → SOURCE_CONFLICT blocker.
+    - box_score_log from two different sources with contradictory row counts
+      is flagged (structural: count mismatch logged, does not block alone).
     """
     conflicts: list[str] = []
     notes:     list[str] = []
 
-    role_sec  = packet.get("role_status") or {}
-    sources   = role_sec.get("sources") or []
-    for s in sources:
+    # Role source conflicts
+    role_sec = packet.get("role_status") or {}
+    for s in (role_sec.get("sources") or []):
         if isinstance(s, dict) and s.get("conflict_status") == "CONFLICT":
             conflicts.append(
                 f"role_status.sources: conflict reported by {s.get('source','unknown')}"
             )
 
+    # News contradiction adapter result
+    news_result = fallback_results.get("news_contradiction")
+    if news_result and news_result.adapter_result:
+        if news_result.adapter_result.conflict_status == "CONFLICT":
+            conflicts.append(
+                "news_contradiction: contradictory role signals found in recent news"
+            )
+            nf = news_result.adapter_result.normalized_fields or {}
+            notes.append(
+                f"out_signals={nf.get('out_signals',0)}, "
+                f"active_signals={nf.get('active_signals',0)}"
+            )
+
     return {
-        "gate":               "SOURCE_RECONCILIATION",
-        "conflict_count":     len(conflicts),
-        "conflicts":          conflicts,
-        "notes":              notes,
-        "passed":             len(conflicts) == 0,
+        "gate":           "SOURCE_RECONCILIATION",
+        "conflict_count": len(conflicts),
+        "conflicts":      conflicts,
+        "notes":          notes,
+        "passed":         len(conflicts) == 0,
     }
 
 
 # ---------------------------------------------------------------------------
 # Packet validation (spec gate: OPPORTUNITY_PACKET_VALIDATION)
+# Three-tier logic per WOW-PATCH-2026-08-06-WNBA-EXTERNAL-EVIDENCE-ADAPTERS
 # ---------------------------------------------------------------------------
+
+def _get_category_for_field(field_path: str) -> str:
+    """Map a field path to its fallback router category key."""
+    if "event_status" in field_path:
+        return "event_status"
+    if field_path.startswith("role_status"):
+        return "role_status"
+    if any(k in field_path for k in ("box_score_log", "l5_ledger", "l10_ledger")):
+        return "box_score_log"
+    if "matchup" in field_path:
+        return "matchup"
+    if "market_comparison" in field_path:
+        return "market_comparison"
+    if "news_contradiction" in field_path:
+        return "news_contradiction"
+    return "other"
+
 
 def _validate_packet(
     packet: dict[str, Any],
@@ -126,85 +168,144 @@ def _validate_packet(
     reconciliation: dict[str, Any],
 ) -> tuple[str, list[str], list[str]]:
     """
-    Determine the final packet_status and field_status_map.
+    Determine packet_status, fields_reconstructed, fields_unresolved.
 
-    Returns (packet_status, fields_reconstructed, fields_unresolved).
+    Decision ladder:
+      1. Source conflict → PACKET_INCOMPLETE_REJECTED
+      2. Any CRITICAL_BLOCKING field unresolved → PACKET_INCOMPLETE_REJECTED
+      3. Any QUALIFICATION_BLOCKING field unresolved (DATA_UNOBTAINABLE) →
+         PACKET_PARTIAL_HOLD (note: PROXY_ONLY does NOT trigger this)
+      4. Any field was missing but successfully reconstructed →
+         PACKET_RECONSTRUCTED_COMPLETE
+      5. No missing fields → PACKET_COMPLETE
     """
     fields_reconstructed: list[str] = []
     fields_unresolved:    list[str] = []
 
-    # Categorise fallback results
-    blocking_categories: list[str] = []
-    for category, result in fallback_results.items():
-        if category in _NON_BLOCKING_PROXY_CATEGORIES:
-            # Proxy-only matchup never blocks
-            continue
-        if result.status == AcquisitionFieldStatus.DATA_UNOBTAINABLE_AFTER_EXHAUSTION:
-            blocking_categories.append(category)
-            fields_unresolved.extend(
-                [f for f in missing_after_primary if f.split(".")[0] == category or category in f]
-            )
-        elif result.status in (
-            AcquisitionFieldStatus.FALLBACK_RETRIEVED,
-            AcquisitionFieldStatus.MULTI_SOURCE_RECONSTRUCTED,
-            AcquisitionFieldStatus.PRIMARY_RETRIEVED,
-        ):
-            fields_reconstructed.extend(
-                [f for f in missing_after_primary if f.split(".")[0] == category or category in f]
-            )
+    # Classify each field that was initially missing
+    for field_path in missing_after_primary:
+        category = _get_category_for_field(field_path)
+        result   = fallback_results.get(category)
 
-    # Source conflict → reject immediately
+        if result and result.status in _QUALIFYING_FIELD_STATUSES:
+            fields_reconstructed.append(field_path)
+        else:
+            fields_unresolved.append(field_path)
+
+    # 1. Source conflict → reject
     if not reconciliation["passed"]:
-        return PacketStatus.PACKET_INCOMPLETE_REJECTED, fields_reconstructed, fields_unresolved
+        return (
+            PacketStatus.PACKET_INCOMPLETE_REJECTED,
+            fields_reconstructed,
+            fields_unresolved,
+        )
 
-    if blocking_categories:
-        return PacketStatus.PACKET_INCOMPLETE_REJECTED, fields_reconstructed, fields_unresolved
+    # 2. Any CRITICAL unresolved → reject
+    critical_unresolved = [
+        f for f in fields_unresolved
+        if f in CRITICAL_BLOCKING_FIELDS
+    ]
+    if critical_unresolved:
+        return (
+            PacketStatus.PACKET_INCOMPLETE_REJECTED,
+            fields_reconstructed,
+            fields_unresolved,
+        )
 
-    if missing_after_primary:
-        # Some fields were missing but successfully reconstructed
-        return PacketStatus.PACKET_RECONSTRUCTED, fields_reconstructed, fields_unresolved
+    # 3. Any QUALIFICATION unresolved (DATA_UNOBTAINABLE, not PROXY_ONLY) → partial hold
+    # PROXY_ONLY is in _QUALIFYING_FIELD_STATUSES so it doesn't land in fields_unresolved
+    qualification_unresolved = [
+        f for f in fields_unresolved
+        if f in QUALIFICATION_BLOCKING_FIELDS
+    ]
+    if qualification_unresolved:
+        return (
+            PacketStatus.PACKET_PARTIAL_HOLD,
+            fields_reconstructed,
+            fields_unresolved,
+        )
 
-    return PacketStatus.PACKET_COMPLETE, fields_reconstructed, fields_unresolved
+    # 4. Some fields were missing but all are now resolved
+    if fields_reconstructed:
+        return (
+            PacketStatus.PACKET_RECONSTRUCTED_COMPLETE,
+            fields_reconstructed,
+            fields_unresolved,
+        )
+
+    # 5. Nothing was missing → complete
+    return PacketStatus.PACKET_COMPLETE, [], []
 
 
 # ---------------------------------------------------------------------------
-# Acquisition audit builder (spec §5)
+# Extended acquisition audit builder
 # ---------------------------------------------------------------------------
 
 def _build_acquisition_audit(
-    primary_api_result:      str,
-    missing_after_primary:   list[str],
-    coverage_audit:          dict[str, Any],
-    fallback_results:        dict[str, "RouteAttemptResult"],
-    reconciliation:          dict[str, Any],
-    packet_status:           str,
-    fields_reconstructed:    list[str],
-    fields_unresolved:       list[str],
-    run_ts:                  str,
+    primary_api_result:        str,
+    initial_missing_fields:    list[str],
+    coverage_audit:            dict[str, Any],
+    fallback_results:          dict[str, "RouteAttemptResult"],
+    reconciliation:            dict[str, Any],
+    packet_status:             str,
+    fields_reconstructed:      list[str],
+    fields_unresolved:         list[str],
+    run_ts:                    str,
 ) -> dict[str, Any]:
     """
-    Build the complete acquisition_audit object per spec §5.
+    Build the complete acquisition_audit object.
 
-    All required audit fields are present:
-      primary_api_attempted, primary_api_result, missing_after_primary,
-      fallback_required, fallback_triggered, fallback_routes_attempted,
-      fallback_sources_successful, fields_reconstructed, fields_unresolved,
-      fallback_failure_reason, packet_status.
+    Extended fields (WOW-PATCH-2026-08-06-WNBA-EXTERNAL-EVIDENCE-ADAPTERS):
+      external_fetch_required, external_fetch_triggered, adapters_called,
+      adapters_succeeded, adapters_failed, request_count,
+      normalized_record_count, fields_filled_externally,
+      fields_still_missing, source_conflicts, terminal_packet_status.
     """
-    fallback_required  = bool(missing_after_primary)
-    fallback_triggered = fallback_required  # always triggered when required (structural)
+    fallback_required  = bool(initial_missing_fields)
+    fallback_triggered = fallback_required
 
-    fallback_routes_attempted: list[str] = []
+    fallback_routes_attempted:   list[str] = []
     fallback_sources_successful: list[str] = []
-    fallback_failure_reason: str | None = None
+    fallback_failure_reason:     str | None = None
+
+    # External adapter tracking
+    adapters_called:          list[str] = []
+    adapters_succeeded:       list[str] = []
+    adapters_failed:          list[str] = []
+    total_request_count:      int = 0
+    total_normalized_records: int = 0
+    fields_filled_externally: list[str] = []
 
     for category, result in fallback_results.items():
-        fallback_routes_attempted.extend(result.routes_attempted)
-        if result.status not in (
-            AcquisitionFieldStatus.DATA_UNOBTAINABLE_AFTER_EXHAUSTION,
+        # Deduplicate routes (multiple fields may share the same route IDs)
+        for route_id in result.routes_attempted:
+            if route_id not in fallback_routes_attempted:
+                fallback_routes_attempted.append(route_id)
+
+        if result.status in _QUALIFYING_FIELD_STATUSES and result.status not in (
             AcquisitionFieldStatus._NOT_YET_ATTEMPTED,
         ):
-            fallback_sources_successful.append(f"{category}:{result.source_id}")
+            if result.status != AcquisitionFieldStatus.PROXY_ONLY:
+                fallback_sources_successful.append(f"{category}:{result.source_id}")
+
+        # External adapter tracking
+        if result.adapter_result is not None:
+            ar = result.adapter_result
+            adapters_called.append(ar.provider)
+            total_request_count += ar.request_count
+            total_normalized_records += ar.raw_record_count
+            if ar.request_status == "REQUEST_SUCCEEDED":
+                adapters_succeeded.append(ar.provider)
+                # Which fields did this external call fill?
+                if result.status in _QUALIFYING_FIELD_STATUSES:
+                    for fp in initial_missing_fields:
+                        if _get_category_for_field(fp) == category:
+                            fields_filled_externally.append(fp)
+            else:
+                adapters_failed.append(f"{ar.provider}:{ar.request_status}")
+        elif result.request_count > 0:
+            # In-pipeline reconstruction also counted
+            total_request_count += result.request_count
 
     if fields_unresolved:
         fallback_failure_reason = (
@@ -216,22 +317,46 @@ def _build_acquisition_audit(
             f"Source conflict detected: {reconciliation.get('conflicts')}"
         )
 
+    # Source conflicts summary
+    source_conflicts = [
+        c for c in (reconciliation.get("conflicts") or [])
+    ]
+
+    external_fetch_required  = len(adapters_called) > 0 or any(
+        r.request_count > 0 for r in fallback_results.values()
+        if r.adapter_result is not None
+    )
+
     return {
-        "run_ts":                    run_ts,
-        "primary_api_attempted":     True,
-        "primary_api_result":        primary_api_result,
-        "missing_after_primary":     list(missing_after_primary),
-        "fallback_required":         fallback_required,
-        "fallback_triggered":        fallback_triggered,
-        "fallback_routes_attempted": list(dict.fromkeys(fallback_routes_attempted)),  # dedupe, preserve order
+        # Original fields
+        "run_ts":                     run_ts,
+        "primary_api_attempted":      True,
+        "primary_api_result":         primary_api_result,
+        "missing_after_primary":      list(initial_missing_fields),
+        "fallback_required":          fallback_required,
+        "fallback_triggered":         fallback_triggered,
+        "fallback_routes_attempted":  list(dict.fromkeys(fallback_routes_attempted)),
         "fallback_sources_successful": fallback_sources_successful,
-        "fields_reconstructed":      list(fields_reconstructed),
-        "fields_unresolved":         list(fields_unresolved),
-        "fallback_failure_reason":   fallback_failure_reason,
-        "packet_status":             packet_status,
-        "source_reconciliation":     reconciliation,
-        "coverage_audit":            coverage_audit,
-        "fallback_result_details":   {
+        "fields_reconstructed":       list(fields_reconstructed),
+        "fields_unresolved":          list(fields_unresolved),
+        "fallback_failure_reason":    fallback_failure_reason,
+        "packet_status":              packet_status,
+        "source_reconciliation":      reconciliation,
+        "coverage_audit":             coverage_audit,
+        # Extended fields (external adapter telemetry)
+        "external_fetch_required":    external_fetch_required,
+        "external_fetch_triggered":   bool(adapters_called),
+        "adapters_called":            adapters_called,
+        "adapters_succeeded":         adapters_succeeded,
+        "adapters_failed":            adapters_failed,
+        "request_count":              total_request_count,
+        "normalized_record_count":    total_normalized_records,
+        "fields_filled_externally":   fields_filled_externally,
+        "fields_still_missing":       list(fields_unresolved),
+        "source_conflicts":           source_conflicts,
+        "terminal_packet_status":     packet_status,
+        # Adapter result details for postmortem
+        "fallback_result_details": {
             cat: {
                 "source_id":        r.source_id,
                 "source_grade":     r.source_grade,
@@ -239,6 +364,20 @@ def _build_acquisition_audit(
                 "status":           r.status,
                 "note":             r.note,
                 "routes_attempted": r.routes_attempted,
+                "request_count":    r.request_count,
+                **(
+                    {
+                        "adapter": {
+                            "provider":         r.adapter_result.provider,
+                            "source_url_or_id": r.adapter_result.source_url_or_id,
+                            "retrieved_at":     r.adapter_result.retrieved_at,
+                            "request_status":   r.adapter_result.request_status,
+                            "raw_record_count": r.adapter_result.raw_record_count,
+                            "failure_reason":   r.adapter_result.failure_reason,
+                        }
+                    }
+                    if r.adapter_result is not None else {}
+                ),
             }
             for cat, r in fallback_results.items()
         },
@@ -250,36 +389,31 @@ def _build_acquisition_audit(
 # ---------------------------------------------------------------------------
 
 def _build_field_status_map(
-    required_fields:         list[str],
-    missing_after_primary:   list[str],
-    fallback_results:        dict[str, "RouteAttemptResult"],
-    packet:                  dict[str, Any],
+    missing_after_primary:  list[str],
+    fallback_results:       dict[str, "RouteAttemptResult"],
+    post_fallback_missing:  list[str],
 ) -> dict[str, str]:
     """
     Build a per-field terminal status map using the strict enum.
-    NOT_CALLED is never a terminal status.
+    NOT_CALLED / _NOT_YET_ATTEMPTED is never a terminal status.
     """
-    from .missing_field_detector import REQUIRED_PACKET_FIELDS
-
     status_map: dict[str, str] = {}
 
     for field_path in REQUIRED_PACKET_FIELDS:
         if field_path not in missing_after_primary:
-            # Was present from primary acquisition
+            # Present from primary acquisition
             status_map[field_path] = AcquisitionFieldStatus.PRIMARY_RETRIEVED
             continue
 
-        # Determine category for this field
-        category = field_path.split(".")[0]
-        if "box_score_log" in field_path or "l5_ledger" in field_path or "l10_ledger" in field_path:
-            category = "box_score_log"
-        if category not in fallback_results:
-            status_map[field_path] = AcquisitionFieldStatus.DATA_UNOBTAINABLE_AFTER_EXHAUSTION
-            continue
+        category = _get_category_for_field(field_path)
+        result   = fallback_results.get(category)
 
-        result = fallback_results[category]
-        # Map RouteAttemptResult.status → AcquisitionFieldStatus
-        status_map[field_path] = result.status
+        if result is None:
+            status_map[field_path] = AcquisitionFieldStatus.DATA_UNOBTAINABLE_AFTER_EXHAUSTION
+        elif result.status == AcquisitionFieldStatus._NOT_YET_ATTEMPTED:
+            status_map[field_path] = AcquisitionFieldStatus.DATA_UNOBTAINABLE_AFTER_EXHAUSTION
+        else:
+            status_map[field_path] = result.status
 
     return status_map
 
@@ -298,15 +432,10 @@ def run(
     Called by pipeline.py after status_role.run() and before
     the existing WNBA opportunity engine.
 
-    Reads:
-      row["role_status"]          — set by status_role gate
-      enrichment["box_score_log"] — raw per-game dicts
-      enrichment["matchup"]       — opponent context (may be absent)
-      enrichment["status_payload"]— role/injury payload
-
-    Writes:
-      row["gates"]["wnba_evidence_acquisition"]  — full gate result
-      row["can_execute"]                         — always False
+    Gate outcomes:
+      PACKET_COMPLETE / PACKET_RECONSTRUCTED_COMPLETE → row proceeds normally
+      PACKET_PARTIAL_HOLD → row proceeds; pipeline adds note (no hard block)
+      PACKET_INCOMPLETE_REJECTED → pipeline sets DATA_CONTRACT_FAIL and skips row
 
     Returns the gate result dict (also stored on row).
     """
@@ -321,12 +450,14 @@ def run(
     run_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     # ------------------------------------------------------------------
-    # Step 1: PRIMARY_ACQUISITION result assessment
-    # (data already in enrichment from auto_enrichment / caller)
+    # Step 1: PRIMARY_ACQUISITION — assess what enrichment already has
     # ------------------------------------------------------------------
     has_box_score  = bool(enr.get("box_score_log") or enr.get("game_log"))
     has_event_stat = bool(enr.get("event_status") or enr.get("game_status"))
-    has_role_data  = bool(enr.get("role_timestamp") or (row.get("role_status") or {}).get("role_timestamp"))
+    has_role_data  = bool(
+        enr.get("role_timestamp")
+        or (row.get("role_status") or {}).get("role_timestamp")
+    )
 
     if has_box_score and has_event_stat and has_role_data:
         primary_api_result = "FULL"
@@ -343,40 +474,53 @@ def run(
     # ------------------------------------------------------------------
     # Step 3: COVERAGE_AUDIT — detect missing required fields
     # ------------------------------------------------------------------
-    initial_missing_fields = detect_missing(packet)  # before any fallback
+    initial_missing_fields = detect_missing(packet)
     coverage_audit         = build_coverage_audit(packet, initial_missing_fields)
 
-    # missing_after_primary tracks what is still unresolved after fallback.
-    # We keep initial_missing_fields for the audit (fallback_required/triggered).
-    missing_after_primary = list(initial_missing_fields)
-
     # ------------------------------------------------------------------
-    # Step 4: FALLBACK_ROUTING — attempt reconstruction / source lookup
+    # Step 4: FALLBACK_ROUTING — attempt reconstruction / real HTTP fetch
     # ------------------------------------------------------------------
     fallback_results: dict[str, RouteAttemptResult] = {}
 
     if initial_missing_fields:
-        categories = classify_missing_fields(initial_missing_fields)
+        categories     = classify_missing_fields(initial_missing_fields)
         fallback_results = route_fallback_for_categories(categories, packet, enr)
 
-        # Apply any in-pipeline reconstructed values back into enrichment
+        # Apply any values written back into enr by external adapters
+        # (box_score_log adapter writes directly into enr; rebuild packet)
         for cat, result in fallback_results.items():
             if cat == "box_score_log" and result.status in (
                 AcquisitionFieldStatus.FALLBACK_RETRIEVED,
                 AcquisitionFieldStatus.MULTI_SOURCE_RECONSTRUCTED,
             ):
-                # Reconstruction from game_log alt key: write back into enr
-                if not enr.get("box_score_log") and enr.get("game_log"):
-                    enr["box_score_log"] = enr["game_log"]
-                    # Rebuild packet with the now-populated box_score_log
+                if not packet.get("box_score_log") and enr.get("box_score_log"):
                     packet = build_packet(row, enr, as_of=run_ts)
 
-            if cat == "event_status" and result.status == AcquisitionFieldStatus.FALLBACK_RETRIEVED:
+            elif cat == "event_status" and result.status in _QUALIFYING_FIELD_STATUSES:
                 if result.value_retrieved and not enr.get("event_status"):
                     enr["event_status"] = result.value_retrieved
+                    packet["event_status"] = result.value_retrieved
 
-        # Re-check what is still missing AFTER reconstruction attempts
-        missing_after_primary = detect_missing(packet)
+            elif cat == "market_comparison" and result.status in _QUALIFYING_FIELD_STATUSES:
+                if result.value_retrieved and not enr.get("market_comparison"):
+                    enr["market_comparison"] = result.value_retrieved
+                    packet["market_comparison"] = result.value_retrieved
+
+            elif cat == "news_contradiction" and result.status in _QUALIFYING_FIELD_STATUSES:
+                if result.value_retrieved and not enr.get("news_contradiction_check"):
+                    enr["news_contradiction_check"] = result.value_retrieved
+                    packet["news_contradiction_check"] = result.value_retrieved
+
+            elif cat == "role_status" and result.status in _QUALIFYING_FIELD_STATUSES:
+                nf = result.value_retrieved or {}
+                rs = packet.get("role_status") or {}
+                if nf.get("active_status") and not rs.get("active_status"):
+                    rs["active_status"] = nf["active_status"]
+                if nf.get("role_timestamp") and not rs.get("role_timestamp"):
+                    rs["role_timestamp"] = nf["role_timestamp"]
+
+    # Re-check what is still missing AFTER reconstruction + external fetch
+    post_fallback_missing = detect_missing(packet)
 
     # ------------------------------------------------------------------
     # Step 5: SOURCE_RECONCILIATION
@@ -384,11 +528,11 @@ def run(
     reconciliation = _run_source_reconciliation(packet, fallback_results)
 
     # ------------------------------------------------------------------
-    # Step 6: OPPORTUNITY_PACKET_VALIDATION — determine packet_status
+    # Step 6: OPPORTUNITY_PACKET_VALIDATION — 3-tier packet_status
     # ------------------------------------------------------------------
     packet_status, fields_reconstructed, fields_unresolved = _validate_packet(
         packet,
-        missing_after_primary,
+        post_fallback_missing,
         fallback_results,
         reconciliation,
     )
@@ -398,28 +542,26 @@ def run(
     # ------------------------------------------------------------------
     # Step 7: Build field status map (strict enum — no NOT_CALLED terminal)
     # ------------------------------------------------------------------
-    from .missing_field_detector import REQUIRED_PACKET_FIELDS
     field_status_map = _build_field_status_map(
-        REQUIRED_PACKET_FIELDS,
-        missing_after_primary,
+        initial_missing_fields,
         fallback_results,
-        packet,
+        post_fallback_missing,
     )
     packet["field_status_map"] = field_status_map
 
     # ------------------------------------------------------------------
-    # Step 8: Build and attach acquisition_audit
+    # Step 8: Build and attach extended acquisition_audit
     # ------------------------------------------------------------------
     acquisition_audit = _build_acquisition_audit(
-        primary_api_result    = primary_api_result,
-        missing_after_primary = initial_missing_fields,   # pre-fallback list (for triggered flag)
-        coverage_audit        = coverage_audit,
-        fallback_results      = fallback_results,
-        reconciliation        = reconciliation,
-        packet_status         = packet_status,
-        fields_reconstructed  = fields_reconstructed,
-        fields_unresolved     = fields_unresolved,
-        run_ts                = run_ts,
+        primary_api_result     = primary_api_result,
+        initial_missing_fields = initial_missing_fields,
+        coverage_audit         = coverage_audit,
+        fallback_results       = fallback_results,
+        reconciliation         = reconciliation,
+        packet_status          = packet_status,
+        fields_reconstructed   = fields_reconstructed,
+        fields_unresolved      = fields_unresolved,
+        run_ts                 = run_ts,
     )
     packet["acquisition_audit"] = acquisition_audit
 
@@ -427,15 +569,15 @@ def run(
     # Step 9: Stamp gate result on row
     # ------------------------------------------------------------------
     gate_result: dict[str, Any] = {
-        "gate":                  "WNBA_EVIDENCE_ACQUISITION",
-        "patch":                 "WOW-PATCH-2026-08-06-WNBA-EVIDENCE-ACQUISITION-STRUCTURAL",
-        "packet_status":         packet_status,
-        "fields_unresolved":     fields_unresolved,
-        "fields_reconstructed":  fields_reconstructed,
-        "missing_after_primary": missing_after_primary,
-        "acquisition_audit":     acquisition_audit,
-        "field_status_map":      field_status_map,
-        "can_execute":           False,
+        "gate":                   "WNBA_EVIDENCE_ACQUISITION",
+        "patch":                  "WOW-PATCH-2026-08-06-WNBA-EXTERNAL-EVIDENCE-ADAPTERS",
+        "packet_status":          packet_status,
+        "fields_unresolved":      fields_unresolved,
+        "fields_reconstructed":   fields_reconstructed,
+        "missing_after_primary":  post_fallback_missing,
+        "acquisition_audit":      acquisition_audit,
+        "field_status_map":       field_status_map,
+        "can_execute":            False,
     }
 
     row["gates"]["wnba_evidence_acquisition"] = gate_result

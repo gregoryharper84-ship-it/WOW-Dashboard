@@ -169,14 +169,17 @@ def run(row: dict[str, Any], enrichment: dict[str, Any] | None = None,
     elif worst_role_status == "STALE":
         ceiling = ROLE_STALE_CAP
         code    = "ROLE_TIMESTAMP_STALE"
+        _ra_str = f"{role_age:.0f}" if role_age is not None else "unknown"
+        _sa_str = f"{status_age:.0f}" if status_age is not None else "unknown"
         blockers.append(
-            f"ROLE_TIMESTAMP:STALE:role_age={role_age:.0f}min "
-            f"status_age={status_age:.0f}min (>{RECHECK_THRESHOLD}min cap)"
+            f"ROLE_TIMESTAMP:STALE:role_age={_ra_str}min "
+            f"status_age={_sa_str}min (>{RECHECK_THRESHOLD}min cap)"
         )
     elif worst_role_status == "RECHECK":
         code = "ROLE_TIMESTAMP_RECHECK"
+        _ra_str = f"{role_age:.0f}" if role_age is not None else "unknown"
         blockers.append(
-            f"ROLE_TIMESTAMP:RECHECK:role_age={role_age:.0f}min "
+            f"ROLE_TIMESTAMP:RECHECK:role_age={_ra_str}min "
             f"(>{FRESH_THRESHOLD}min — recheck required before approval)"
         )
 

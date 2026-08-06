@@ -537,6 +537,28 @@ class TestSourceCeiling:
                                       "dnp_risk": False, "minutes_restriction": False},
                 "market_source_type": "prediction_market",
                 # No sportsbook_line, no consensus_line — prediction market only
+                # WNBA evidence-acquisition required fields
+                "event_status":    "SCHEDULED",
+                "role_timestamp":  "2026-07-15T10:00:00Z",
+                "role_confirmation_age_minutes": 5,   # forces FRESH regardless of wall clock
+                "projected_minutes": 34.0,
+                "role_status": {
+                    "active_status":     "ACTIVE",
+                    "role_timestamp":    "2026-07-15T10:00:00Z",
+                    "projected_minutes": 34.0,
+                },
+                "box_score_log": [
+                    {"date": "2026-07-10", "PTS": 22, "REB": 6, "AST": 4, "MIN": 34, "FGA": 15},
+                    {"date": "2026-07-07", "PTS": 18, "REB": 5, "AST": 3, "MIN": 30, "FGA": 13},
+                    {"date": "2026-07-04", "PTS": 25, "REB": 7, "AST": 5, "MIN": 36, "FGA": 17},
+                    {"date": "2026-07-01", "PTS": 21, "REB": 6, "AST": 4, "MIN": 33, "FGA": 14},
+                    {"date": "2026-06-28", "PTS": 19, "REB": 5, "AST": 3, "MIN": 31, "FGA": 12},
+                ],
+                "matchup": {
+                    "pace": 96.0, "opponent_defense": 108.0,
+                    "position_defense": 111.0, "rebound_environment": 0.50,
+                    "assist_environment": 0.60,
+                },
             }
         }
         target = _date.fromisoformat(today_str)
