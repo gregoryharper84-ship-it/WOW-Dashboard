@@ -30,6 +30,7 @@ can_execute=False is unconditional.
 """
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass, field as dc_field
 from typing import Any
 
@@ -52,6 +53,22 @@ from .external_adapters import (
 
 can_execute = False
 
+# ---------------------------------------------------------------------------
+# Enforced category dispatch order
+# ---------------------------------------------------------------------------
+# box_score_log MUST be dispatched before role_status so that
+# _attempt_box_score_log can write game rows to enr["box_score_log"] before
+# _attempt_role_status reads them for box-score reconstruction.
+# This order is mandatory — do not reorder without updating _attempt_role_status.
+CATEGORY_DISPATCH_ORDER: list[str] = [
+    "box_score_log",        # 1. must run first — writes enr["box_score_log"]
+    "event_status",         # 2. no dependency on other categories
+    "role_status",          # 3. uses enr["box_score_log"] from step 1
+    "matchup",              # 4.
+    "market_comparison",    # 5.
+    "news_contradiction",   # 6.
+]
+
 
 # ---------------------------------------------------------------------------
 # Source priority configuration (spec §3) — reference only (not loop-driven)
@@ -67,11 +84,12 @@ FALLBACK_SOURCE_PRIORITY: dict[str, list[dict[str, Any]]] = {
         {"source_id": "aggregator_corroboration_only", "source_grade": SourceGrade.C, "method": AcquisitionMethod.WEB_FALLBACK},
     ],
     "role_status": [
-        {"source_id": "status_role_gate_output",       "source_grade": SourceGrade.B, "method": AcquisitionMethod.PRIMARY_API},
-        {"source_id": "espn_wnba_injuries",            "source_grade": SourceGrade.A, "method": AcquisitionMethod.WEB_FALLBACK},
-        {"source_id": "official_wnba_injury_report",   "source_grade": SourceGrade.A, "method": AcquisitionMethod.WEB_FALLBACK},
-        {"source_id": "official_team_game_notes",      "source_grade": SourceGrade.A, "method": AcquisitionMethod.WEB_FALLBACK},
-        {"source_id": "reputable_beat_reporter",       "source_grade": SourceGrade.B, "method": AcquisitionMethod.WEB_FALLBACK},
+        {"source_id": "status_role_gate_output",            "source_grade": SourceGrade.B, "method": AcquisitionMethod.PRIMARY_API},
+        {"source_id": "espn_wnba_injuries",                 "source_grade": SourceGrade.A, "method": AcquisitionMethod.WEB_FALLBACK},
+        {"source_id": "reconstructed_from_box_scores",      "source_grade": SourceGrade.B, "method": AcquisitionMethod.RECONSTRUCTED},
+        {"source_id": "official_wnba_injury_report",        "source_grade": SourceGrade.A, "method": AcquisitionMethod.WEB_FALLBACK},
+        {"source_id": "official_team_game_notes",           "source_grade": SourceGrade.A, "method": AcquisitionMethod.WEB_FALLBACK},
+        {"source_id": "reputable_beat_reporter",            "source_grade": SourceGrade.B, "method": AcquisitionMethod.WEB_FALLBACK},
     ],
     "box_score_log": [
         {"source_id": "enrichment_box_score_log",           "source_grade": SourceGrade.B, "method": AcquisitionMethod.PRIMARY_API},
@@ -274,6 +292,111 @@ def _policy_skipped_records_for(category: str) -> "tuple[list[dict], list[str]]"
 
 
 # ---------------------------------------------------------------------------
+# Box-score role reconstruction helper
+# ---------------------------------------------------------------------------
+
+def _reconstruct_role_from_box_scores(
+    game_rows: list[dict],
+    as_of: "str | None" = None,
+) -> "dict | None":
+    """
+    Derive a canonical role_status estimate from recent completed game rows.
+
+    This function implements the box-score reconstruction tier of the role_status
+    fallback ladder (Step 3 in _attempt_role_status).  It is the evidence-based
+    alternative to ACTIVE_INFERRED: rather than guessing from an ESPN absence, it
+    uses the player's actual appearance in completed WNBA games as direct evidence
+    that they are active and participating.
+
+    Algorithm
+    ---------
+    1. Filter rows to those with minutes > 0 (player actually took the court).
+       ESPN gamelog rows have no game_status field; non-zero minutes is the proxy
+       for a completed participation record.
+    2. Require ≥ 3 qualifying rows.  Fewer rows is not sufficient evidence.
+    3. Weighted mean of L5 minutes (weights [5,4,3,2,1][:n]).
+    4. starter_rate from last 5 rows (ESPN sets starter=None; result is
+       "PROJECTED_RESERVE" unless a future adapter supplies starter flags).
+    5. role_timestamp = as_of (time of assessment, NOT game date — per document
+       guidance: "role_timestamp must represent when the role assessment was
+       created or refreshed").
+    6. inference_basis = None — CRITICAL: this is NOT an inferred-absence result;
+       it is backed by direct observation of completed game participation.  The
+       None value allows the write-back rules in evidence_acquisition.run() to
+       accept role_timestamp as a canonical observed timestamp.
+
+    Returns None when insufficient qualifying data is available so the caller
+    can fall through to DATA_UNOBTAINABLE_AFTER_EXHAUSTION.
+
+    Values returned
+    ---------------
+    active_status     "ACTIVE" — in _CANONICAL_ACTIVE_STATUSES; passes
+                      _validate_critical_field_value
+    projected_minutes weighted mean float ≥ 0; passes projected_minutes check
+    role_timestamp    as_of ISO string; passes role_timestamp non-blank check
+    starter_status    "PROJECTED_STARTER" or "PROJECTED_RESERVE"
+    source            "reconstructed_from_recent_box_scores"
+    confidence        "MEDIUM"
+    inference_basis   None (MUST remain None — canonical observation)
+    games_used        int
+    minutes_sample    list[float]
+    """
+    if not game_rows:
+        return None
+
+    # Filter: rows where the player actually played (minutes > 0)
+    played: list[dict] = []
+    for row in game_rows:
+        try:
+            mins = row.get("minutes")
+            if mins is not None and float(mins) > 0:
+                played.append(row)
+        except (TypeError, ValueError):
+            pass
+
+    if len(played) < 3:
+        # Fewer than 3 qualifying game appearances — not sufficient evidence
+        return None
+
+    # Weighted mean of L5 minutes (most-recent game gets weight 5)
+    recent5 = played[:5]
+    minutes_list = []
+    for row in recent5:
+        try:
+            m = row.get("minutes")
+            if m is not None:
+                minutes_list.append(float(m))
+        except (TypeError, ValueError):
+            pass
+
+    if not minutes_list:
+        return None
+
+    weights      = [5, 4, 3, 2, 1][: len(minutes_list)]
+    proj_minutes = sum(m * w for m, w in zip(minutes_list, weights)) / sum(weights)
+
+    # Starter rate (ESPN gamelog sets starter=None; treat None as False)
+    starter_rate   = sum(1 for r in recent5 if r.get("starter")) / len(recent5)
+    starter_status = (
+        "PROJECTED_STARTER" if starter_rate >= 0.6 else "PROJECTED_RESERVE"
+    )
+
+    role_ts = as_of or datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    return {
+        "active_status":     "ACTIVE",           # canonical; in _CANONICAL_ACTIVE_STATUSES
+        "projected_minutes": round(proj_minutes, 1),
+        "role_timestamp":    role_ts,             # time of assessment, not game date
+        "starter_status":    starter_status,
+        "source":            "reconstructed_from_recent_box_scores",
+        "confidence":        "MEDIUM",
+        "inference_basis":   None,               # MUST be None — direct evidence, not inference
+        "games_used":        len(recent5),
+        "minutes_sample":    minutes_list,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Field-category fallback handlers
 # ---------------------------------------------------------------------------
 
@@ -470,24 +593,101 @@ def _attempt_role_status(packet: dict, enr: dict) -> RouteAttemptResult:
     if adapter.request_status == RequestStatus.REQUEST_SUCCEEDED:
         nf = adapter.normalized_fields
         is_inferred = nf.get("inference_basis") == "not_on_espn_injury_report"
-        fs = (AcquisitionFieldStatus.PROXY_ONLY
-              if is_inferred else AcquisitionFieldStatus.FALLBACK_RETRIEVED)
+
+        if not is_inferred:
+            # ESPN returned a genuine injury status (ACTIVE, OUT, QUESTIONABLE, …)
+            return RouteAttemptResult(
+                field_category         = "role_status",
+                source_id              = "espn_wnba_injuries",
+                source_grade           = SourceGrade.A,
+                method                 = AcquisitionMethod.WEB_FALLBACK,
+                status                 = AcquisitionFieldStatus.FALLBACK_RETRIEVED,
+                value_retrieved        = nf,
+                note                   = f"ESPN injury status: {nf.get('active_status')}",
+                routes_attempted       = http_attempted,
+                adapter_result         = adapter,
+                request_count          = adapter.request_count,
+                route_records          = [adapter_rec] + list(ni_recs),
+                routes_not_implemented = ni_names,
+            )
+
+        # ── Step 3: box-score reconstruction ─────────────────────────────────
+        # ESPN returned PROXY_ONLY (player absent from injury report → ACTIVE_INFERRED).
+        # ACTIVE_INFERRED is not in _CANONICAL_ACTIVE_STATUSES and would remain
+        # unresolved in _validate_packet.  Before giving up, check whether the
+        # already-retrieved box_score_log provides direct observational evidence.
+        #
+        # _attempt_box_score_log is always dispatched BEFORE _attempt_role_status
+        # (enforced by CATEGORY_DISPATCH_ORDER) and writes its game rows into
+        # enr["box_score_log"].  The canonical packet may also already have them
+        # from primary acquisition.
+        game_rows = (
+            enr.get("box_score_log")            # written by _attempt_box_score_log
+            or packet.get("box_score_log")       # from primary acquisition
+            or []
+        )
+        as_of_ts  = enr.get("_acquisition_as_of") or datetime.datetime.now(
+            datetime.timezone.utc
+        ).isoformat()
+        reconstructed = _reconstruct_role_from_box_scores(game_rows, as_of=as_of_ts)
+
+        if reconstructed:
+            # Successful reconstruction — return MULTI_SOURCE_RECONSTRUCTED so
+            # _validate_critical_field_value will accept all three subfields.
+            # inference_basis is guaranteed None by _reconstruct_role_from_box_scores.
+            bsr_record = _make_route_record(
+                "reconstructed_from_box_scores",
+                request_made   = False,
+                method         = "RECONSTRUCTION",
+                request_status = "RECONSTRUCTION_SUCCEEDED",
+            )
+            return RouteAttemptResult(
+                field_category         = "role_status",
+                source_id              = "reconstructed_from_box_scores",
+                source_grade           = SourceGrade.B,
+                method                 = AcquisitionMethod.RECONSTRUCTED,
+                status                 = AcquisitionFieldStatus.MULTI_SOURCE_RECONSTRUCTED,
+                value_retrieved        = reconstructed,
+                note                   = (
+                    f"box-score reconstruction from {reconstructed['games_used']} "
+                    f"completed games (ESPN injuries PROXY_ONLY; reconstruction used "
+                    f"as canonical evidence). "
+                    f"projected_minutes={reconstructed['projected_minutes']}, "
+                    f"starter_status={reconstructed['starter_status']}, "
+                    f"confidence={reconstructed['confidence']}"
+                ),
+                # ESPN adapter DID make a real HTTP request — record it in routes_attempted
+                routes_attempted       = http_attempted,
+                adapter_result         = adapter,
+                request_count          = adapter.request_count,
+                route_records          = [adapter_rec, bsr_record] + list(ni_recs),
+                routes_not_implemented = ni_names,
+            )
+
+        # Reconstruction had insufficient game data — fall through to PROXY_ONLY
+        bsr_fail_record = _make_route_record(
+            "reconstructed_from_box_scores",
+            request_made   = False,
+            method         = "RECONSTRUCTION",
+            request_status = "RECONSTRUCTION_INSUFFICIENT_DATA",
+            failure_reason = f"fewer than 3 qualifying game rows (got {len(game_rows)})",
+        )
         return RouteAttemptResult(
             field_category         = "role_status",
             source_id              = "espn_wnba_injuries",
             source_grade           = SourceGrade.A,
             method                 = AcquisitionMethod.WEB_FALLBACK,
-            status                 = fs,
+            status                 = AcquisitionFieldStatus.PROXY_ONLY,
             value_retrieved        = nf,
             note                   = (
-                "ACTIVE_INFERRED from absence on ESPN injury report (PROXY_ONLY)"
-                if is_inferred
-                else f"ESPN injury status: {nf.get('active_status')}"
+                "ACTIVE_INFERRED from absence on ESPN injury report (PROXY_ONLY); "
+                f"box-score reconstruction failed: {len(game_rows)} rows, need ≥ 3 "
+                "with minutes > 0"
             ),
             routes_attempted       = http_attempted,
             adapter_result         = adapter,
             request_count          = adapter.request_count,
-            route_records          = [adapter_rec] + list(ni_recs),
+            route_records          = [adapter_rec, bsr_fail_record] + list(ni_recs),
             routes_not_implemented = ni_names,
         )
 
@@ -837,10 +1037,36 @@ def route_fallback_for_categories(
 
     Returns a mapping of category → RouteAttemptResult.
     Categories with no handler are assigned DATA_UNOBTAINABLE_AFTER_EXHAUSTION.
+
+    Dispatch order is enforced by CATEGORY_DISPATCH_ORDER — box_score_log always
+    runs before role_status so that _attempt_box_score_log can write game rows into
+    enr["box_score_log"] before _attempt_role_status reads them for reconstruction.
     """
     results: dict[str, RouteAttemptResult] = {}
 
+    # ── Pass 1: dispatch in fixed order ──────────────────────────────────────
+    for category in CATEGORY_DISPATCH_ORDER:
+        if category not in missing_categories:
+            continue
+        handler = _CATEGORY_HANDLERS.get(category)
+        if handler:
+            results[category] = handler(packet, enr)
+        else:
+            results[category] = RouteAttemptResult(
+                field_category   = category,
+                source_id        = "no_handler_configured",
+                source_grade     = SourceGrade.C,
+                method           = AcquisitionMethod.NOT_ATTEMPTED,
+                status           = AcquisitionFieldStatus.DATA_UNOBTAINABLE_AFTER_EXHAUSTION,
+                note             = f"No fallback handler configured for category '{category}'",
+                routes_attempted = [],
+                request_count    = 0,
+            )
+
+    # ── Pass 2: any categories not covered by the fixed order ────────────────
     for category in missing_categories:
+        if category in results:
+            continue
         handler = _CATEGORY_HANDLERS.get(category)
         if handler:
             results[category] = handler(packet, enr)

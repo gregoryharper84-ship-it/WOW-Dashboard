@@ -1,0 +1,416 @@
+The permanent fix is to stop treating WNBA role/status and game logs as optional “enrichment” and make them a **first-class evidence-acquisition stage** that writes directly into the scoring packet.
+
+Right now, the backend is finding props but failing to transform available player data into the exact contract fields the scorer requires. The WOW contract correctly prohibits qualification when current role, numerical logs, and calibration inputs are missing. 
+
+## Best permanent fix
+
+Add one centralized function:
+
+```python
+build_wnba_evidence_packet(player, event, as_of)
+```
+
+Every WNBA prop must call it before scoring. It should return a standardized packet like:
+
+```python
+{
+    "event_status": {
+        "status": "SCHEDULED",
+        "source": "ESPN",
+        "timestamp": "2026-08-06T17:40:00-05:00"
+    },
+    "role_status": {
+        "active_status": "ACTIVE",
+        "starter_status": "PROJECTED_STARTER",
+        "projected_minutes": 31.5,
+        "role_timestamp": "2026-08-06T17:39:00-05:00",
+        "source": "official_or_verified_source"
+    },
+    "game_log": [
+        {
+            "event_id": "...",
+            "date": "2026-08-03",
+            "minutes": 32.0,
+            "points": 14,
+            "rebounds": 5,
+            "assists": 4,
+            "fg_attempts": 11,
+            "three_pa": 4,
+            "ft_attempts": 2,
+            "turnovers": 1,
+            "usage": 0.21,
+            "starter": True
+        }
+    ],
+    "box_score_log": [
+        {
+            "event_id": "...",
+            "date": "2026-08-03",
+            "minutes": 32.0,
+            "starter": True,
+            "team": "...",
+            "opponent": "...",
+            "status": "FINAL"
+        }
+    ],
+    "matchup": {
+        "pace": 79.4,
+        "opponent_defense": 101.8,
+        "rebound_environment": 0.51,
+        "timestamp": "..."
+    },
+    "source_report": {
+        "role_status": "RETRIEVED",
+        "game_log": "RETRIEVED",
+        "box_score_log": "RECONSTRUCTED",
+        "matchup": "RETRIEVED"
+    }
+}
+```
+
+## The actual backend changes
+
+### 1. Create a player identity resolver
+
+Do not depend on name search alone.
+
+```python
+resolve_player_identity(
+    player_name,
+    team,
+    league="WNBA"
+)
+```
+
+Store:
+
+```text
+canonical_player_id
+espn_athlete_id
+team_id
+normalized_name
+aliases
+```
+
+Use a small persistent table:
+
+```sql
+CREATE TABLE player_identity_map (
+    league TEXT NOT NULL,
+    canonical_player_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_player_id TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    team_id TEXT,
+    aliases_json TEXT,
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (league, provider, provider_player_id)
+);
+```
+
+This eliminates repeated zero-match ESPN searches caused by punctuation, married names, initials, accents, roster changes, or provider naming differences.
+
+### 2. Build logs from completed box scores
+
+The system already demonstrated that live adapters can retrieve game rows. The fix is to convert those rows into the contract-required ledgers rather than leaving:
+
+```text
+packet.box_score_log = 0
+packet.l5_ledger = 0
+packet.l10_ledger = 0
+```
+
+Use one canonical transformation:
+
+```python
+def normalize_wnba_game_row(raw_row: dict) -> dict:
+    return {
+        "event_id": str(raw_row["event_id"]),
+        "date": raw_row["date"],
+        "minutes": parse_minutes(raw_row.get("minutes")),
+        "points": to_int(raw_row.get("points")),
+        "rebounds": to_int(raw_row.get("rebounds")),
+        "assists": to_int(raw_row.get("assists")),
+        "fg_attempts": to_int(raw_row.get("field_goals_attempted")),
+        "three_pa": to_int(raw_row.get("three_point_attempts")),
+        "ft_attempts": to_int(raw_row.get("free_throw_attempts")),
+        "turnovers": to_int(raw_row.get("turnovers")),
+        "starter": bool(raw_row.get("starter")),
+        "team": raw_row.get("team"),
+        "opponent": raw_row.get("opponent"),
+        "game_status": raw_row.get("game_status", "FINAL"),
+    }
+```
+
+Then:
+
+```python
+completed_games = [
+    row for row in normalized_rows
+    if row["game_status"] == "FINAL"
+    and row["minutes"] is not None
+]
+
+packet["game_log"] = completed_games[:10]
+packet["box_score_log"] = completed_games[:10]
+packet["l5_ledger"] = completed_games[:5]
+packet["l10_ledger"] = completed_games[:10]
+```
+
+Do not create separate fetch logic for each ledger. Create one normalized game-history source and derive all four structures from it.
+
+### 3. Create role status from multiple sources
+
+The zero-status problem should not depend on a single endpoint.
+
+Use this fallback ladder:
+
+```text
+1. Official WNBA/team injury report
+2. Official game roster or active roster
+3. ESPN event roster / game summary
+4. Recent completed box scores
+5. Current projected lineup source
+6. Reconstructed role status with explicit lower confidence
+```
+
+Role reconstruction can be deterministic:
+
+```python
+def reconstruct_role_status(game_log, roster_status, as_of):
+    recent = game_log[:5]
+
+    minutes = [
+        row["minutes"]
+        for row in recent
+        if row.get("minutes") is not None
+    ]
+
+    projected_minutes = (
+        weighted_mean(minutes, weights=[5, 4, 3, 2, 1][:len(minutes)])
+        if minutes else None
+    )
+
+    starter_rate = (
+        sum(bool(row.get("starter")) for row in recent) / len(recent)
+        if recent else None
+    )
+
+    return {
+        "active_status": roster_status or "UNVERIFIED",
+        "starter_status": (
+            "PROJECTED_STARTER"
+            if starter_rate is not None and starter_rate >= 0.6
+            else "PROJECTED_RESERVE"
+        ),
+        "projected_minutes": projected_minutes,
+        "role_timestamp": as_of,
+        "source": "RECONSTRUCTED_FROM_RECENT_BOX_SCORES",
+        "confidence": "MEDIUM"
+    }
+```
+
+The critical point is that `role_timestamp` must represent when the role assessment was created or refreshed—not the date of the last game.
+
+### 4. Stop discarding data during packet assembly
+
+Add assertions between enrichment and scoring:
+
+```python
+assert enrichment["game_log"], "ENRICHMENT_GAME_LOG_EMPTY"
+
+packet["game_log"] = enrichment["game_log"]
+packet["box_score_log"] = enrichment["box_score_log"]
+packet["role_status"] = enrichment["role_status"]
+
+assert len(packet["game_log"]) > 0, "PACKET_GAME_LOG_MAPPING_FAILED"
+assert len(packet["box_score_log"]) > 0, "PACKET_BOX_SCORE_MAPPING_FAILED"
+```
+
+This distinguishes:
+
+```text
+SOURCE_RETURNED_NO_DATA
+```
+
+from:
+
+```text
+SOURCE_RETURNED_DATA_BUT_PACKET_MAPPING_DROPPED_IT
+```
+
+That distinction is essential. Your recent results strongly suggest at least part of the failure is in transformation or final packet assembly, not merely acquisition.
+
+### 5. Make freshness rules explicit
+
+Use practical WNBA freshness windows:
+
+```python
+ROLE_STATUS_MAX_AGE_MINUTES = 30
+EVENT_STATUS_MAX_AGE_MINUTES = 10
+LINEUP_STATUS_MAX_AGE_MINUTES = 15
+GAME_LOG_MAX_AGE_HOURS = 24
+MATCHUP_MAX_AGE_HOURS = 24
+```
+
+Do not require the historical game rows themselves to have a current timestamp. Require:
+
+```text
+game date
+source retrieval timestamp
+role assessment timestamp
+```
+
+Those are three different concepts.
+
+### 6. Cache evidence instead of repeatedly refetching it
+
+Create a cache keyed by:
+
+```text
+league + player_id + event_id + evidence_type
+```
+
+Suggested TTLs:
+
+```text
+game logs: 12–24 hours
+matchup metrics: 6 hours
+injury/role: 15–30 minutes
+event status: 5–10 minutes
+lineup: 5–15 minutes
+```
+
+This makes the fix fast and reliable rather than creating dozens of duplicate HTTP calls per slate.
+
+## Important semantic correction
+
+Do not require a manually published “player-status record” when equivalent current evidence exists.
+
+The correct gate should be:
+
+```python
+role_verifiable = any([
+    official_status_record_is_fresh,
+    active_roster_record_is_fresh,
+    confirmed_lineup_record_is_fresh,
+    reconstructed_role_from_box_scores_is_valid
+])
+```
+
+Not:
+
+```python
+role_verifiable = official_status_endpoint_returned_one_row
+```
+
+The first approach is evidence-based. The second makes one fragile provider a single point of failure.
+
+However, reconstructed role evidence should still carry a lower ceiling when an injury or minutes restriction remains unresolved. The slip optimizer explicitly requires current role and exact-role historical evidence before a model-qualified result. 
+
+## Recommended failure hierarchy
+
+Replace the generic `DATA_CONTRACT_FAIL` with specific terminal causes:
+
+```text
+PLAYER_IDENTITY_UNRESOLVED
+EVENT_STATUS_UNRESOLVED
+ROLE_STATUS_UNRESOLVED
+GAME_LOG_UNAVAILABLE
+BOX_SCORE_TRANSFORM_FAILED
+PACKET_MAPPING_FAILED
+CALIBRATION_INPUT_INCOMPLETE
+SOURCE_CONFLICT
+```
+
+Then reserve `DATA_CONTRACT_FAIL` for a summary field:
+
+```json
+{
+  "terminal_status": "DATA_CONTRACT_FAIL",
+  "primary_failure": "PACKET_MAPPING_FAILED",
+  "failed_fields": ["box_score_log", "role_status"],
+  "source_rows_retrieved": 10,
+  "packet_rows_written": 0
+}
+```
+
+That will prevent future debugging sessions where every problem looks identical.
+
+## Give Replit this implementation request
+
+```text
+Permanently repair the WNBA evidence contract.
+
+Create a single build_wnba_evidence_packet(player, event, as_of) stage before
+probability scoring.
+
+Requirements:
+
+1. Resolve and persist canonical player/provider IDs. Do not rely on raw-name
+   search after the first successful resolution.
+
+2. Normalize completed WNBA player game rows into one canonical numerical
+   game_log schema containing event_id, date, minutes, points, rebounds,
+   assists, FGA, 3PA, FTA, turnovers, starter, team, opponent and game status.
+
+3. Derive packet.game_log, packet.box_score_log, l5_ledger and l10_ledger from
+   the same normalized completed-game collection. Do not use independent fetch
+   paths for each ledger.
+
+4. Build role_status using a fallback ladder:
+   official injury/status → active roster → event roster/lineup → reconstructed
+   recent role from box scores. Return active_status, starter_status,
+   projected_minutes, role_timestamp, source and confidence.
+
+5. Preserve the difference between:
+   a) no source data returned;
+   b) source data returned but normalization failed;
+   c) normalized data existed but final packet mapping dropped it.
+
+6. Add assertions after acquisition, normalization and packet assembly.
+   Never allow 10 enrichment rows to become zero packet rows silently.
+
+7. Add source timestamps and TTL caching:
+   event status 10 min, lineup 15 min, role 30 min, game logs 24 hr,
+   matchup 24 hr.
+
+8. Replace generic-only DATA_CONTRACT_FAIL reporting with primary_failure,
+   failed_fields, rows_retrieved and rows_written.
+
+9. Add integration tests using a real WNBA player fixture and mocked providers.
+   The scoring layer must not run until the evidence packet passes validation.
+
+10. Preserve WOW v16 fail-closed semantics and can_execute=false. Do not loosen
+    probability or calibration thresholds. Fix acquisition and transformation,
+    not the qualification rules.
+```
+
+## Definition of done
+
+The patch is complete only when one end-to-end WNBA run proves:
+
+```text
+market rows found > 0
+canonical player IDs resolved = 100%
+game_log rows >= 10 where player history permits
+box_score_log rows >= 5
+l5_ledger rows = 5
+l10_ledger rows = 10 where history permits
+role_status.active_status != null
+role_status.role_timestamp != null
+role_status.projected_minutes != null
+event_status.status != null
+matchup fields populated or explicitly reconstructed
+packet row counts equal normalized row counts
+zero silent field drops
+```
+
+Then run two negative tests:
+
+```text
+injured/questionable player → appropriate HOLD or rejection
+provider outage with cached evidence expired → DATA_CONTRACT_FAIL
+```
+
+Do **not** solve this by weakening the contract, inserting placeholder timestamps, filling logs with nulls, or defaulting every player to active. The quickest permanent solution is to repair the **identity → normalization → packet-mapping pipeline**, while retaining the current fail-closed scoring rules.

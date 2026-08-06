@@ -585,12 +585,22 @@ def run(
     enr    = enrichment or {}
     run_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    # Propagate slate_date to enrichment so fallback adapters (e.g. espn_wnba_scoreboard)
-    # can target the correct local date rather than UTC-now.  Avoids timezone boundary
-    # mismatches when a game is "tonight" locally but UTC has already rolled over.
-    if row.get("slate_date") and not enr.get("slate_date"):
+    # Propagate slate_date + acquisition timestamp to enrichment so fallback
+    # adapters can target the correct local date and box-score reconstruction
+    # uses the same role_timestamp as the rest of the pipeline.
+    need_enr_copy = (
+        (row.get("slate_date") and not enr.get("slate_date"))
+        or not enr.get("_acquisition_as_of")
+    )
+    if need_enr_copy:
         enr = dict(enr)          # avoid mutating the caller's enrichment dict
+    if row.get("slate_date") and not enr.get("slate_date"):
         enr["slate_date"] = row["slate_date"]
+    # _acquisition_as_of is read by _reconstruct_role_from_box_scores so the
+    # role_timestamp on reconstructed role_status reflects the run timestamp,
+    # not a clock call inside the fallback handler.
+    if not enr.get("_acquisition_as_of"):
+        enr["_acquisition_as_of"] = run_ts
 
     # ------------------------------------------------------------------
     # Step 1: PRIMARY_ACQUISITION — assess what enrichment already has
@@ -795,7 +805,59 @@ def run(
     packet["acquisition_audit"] = acquisition_audit
 
     # ------------------------------------------------------------------
-    # Step 9: Stamp gate result on row
+    # Step 9: Row-count integrity assertion
+    # Distinguish source-no-data from transform-drop from packet-drop.
+    # Matches the document's "Stop discarding data during packet assembly"
+    # requirement.  Never blocks — records counts for upstream diagnosis.
+    # ------------------------------------------------------------------
+    enrichment_bsl_count = len(enr.get("box_score_log") or [])
+    packet_bsl_count     = len(packet.get("box_score_log") or [])
+    packet_l5_count      = len(packet.get("l5_ledger")    or [])
+    packet_l10_count     = len(packet.get("l10_ledger")   or [])
+
+    row_count_integrity: dict[str, Any] = {
+        "enrichment_box_score_rows": enrichment_bsl_count,
+        "packet_box_score_rows":     packet_bsl_count,
+        "packet_l5_rows":            packet_l5_count,
+        "packet_l10_rows":           packet_l10_count,
+        "mapping_integrity":         "OK",
+    }
+    if enrichment_bsl_count > 0 and packet_bsl_count == 0:
+        row_count_integrity["mapping_integrity"] = (
+            "SOURCE_RETURNED_DATA_BUT_PACKET_MAPPING_DROPPED_IT"
+        )
+        row_count_integrity["mapping_note"] = (
+            f"enrichment had {enrichment_bsl_count} box_score rows but "
+            f"packet has {packet_bsl_count}; packet rebuild may not have fired."
+        )
+
+    # ------------------------------------------------------------------
+    # Step 10: Derive specific primary_failure code (from document §6)
+    # Replaces generic DATA_CONTRACT_FAIL with field-specific root cause.
+    # ------------------------------------------------------------------
+    def _primary_failure_code(unresolved: list[str]) -> "str | None":
+        if not unresolved:
+            return None
+        # Priority ordering: event_status first (game cannot proceed without it),
+        # then role_status (player availability), then box_score (data body).
+        if "event_status" in unresolved:
+            return "EVENT_STATUS_UNRESOLVED"
+        role_fields = [f for f in unresolved if f.startswith("role_status")]
+        if role_fields:
+            return "ROLE_STATUS_UNRESOLVED"
+        if "box_score_log" in unresolved:
+            return "GAME_LOG_UNAVAILABLE"
+        # Qualification-blocking unresolved (PARTIAL_HOLD path)
+        if any("matchup" in f for f in unresolved):
+            return "MATCHUP_DATA_UNAVAILABLE"
+        if any("market_comparison" in f for f in unresolved):
+            return "MARKET_COMPARISON_UNAVAILABLE"
+        return "CALIBRATION_INPUT_INCOMPLETE"
+
+    primary_failure = _primary_failure_code(fields_unresolved)
+
+    # ------------------------------------------------------------------
+    # Step 11: Stamp gate result on row
     # ------------------------------------------------------------------
     gate_result: dict[str, Any] = {
         "gate":                   "WNBA_EVIDENCE_ACQUISITION",
@@ -807,6 +869,12 @@ def run(
         "acquisition_audit":      acquisition_audit,
         "field_status_map":       field_status_map,
         "can_execute":            False,
+        # Specific failure hierarchy (document §7 / "Replace DATA_CONTRACT_FAIL")
+        "primary_failure":        primary_failure,
+        "failed_fields":          list(fields_unresolved),
+        "rows_retrieved":         enrichment_bsl_count,
+        "rows_written":           packet_bsl_count,
+        "row_count_integrity":    row_count_integrity,
     }
 
     row["gates"]["wnba_evidence_acquisition"] = gate_result

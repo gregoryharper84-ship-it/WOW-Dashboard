@@ -116,8 +116,41 @@ role_status write-backs that fired before the rebuild.
 **Why:** All four bugs caused PROXY_ONLY inferred values to masquerade as resolved critical
 fields, producing PACKET_RECONSTRUCTED_COMPLETE when the data was genuinely missing.
 
+## Box-score reconstruction (permanent fix — document §3)
+`_reconstruct_role_from_box_scores(game_rows, as_of)` in `fallback_router.py`:
+- Requires ≥ 3 rows with minutes > 0 (DNP rows excluded)
+- active_status = "ACTIVE" (canonical); projected_minutes = weighted mean L5 (weights 5,4,3,2,1)
+- role_timestamp = as_of (time of assessment, NOT game date) — per document guidance
+- inference_basis = None (CRITICAL: direct observation, not inference; write-back rules use this)
+- Returns None when insufficient data → caller falls through to PROXY_ONLY
+
+**Why:** ESPN injuries PROXY_ONLY (absent from report → ACTIVE_INFERRED) is not in
+`_CRITICAL_QUALIFYING_STATUSES` so it cannot resolve role_status. Game appearances are
+direct evidence of active play and produce canonical values that pass all value checks.
+
+**Dispatch order invariant:** `CATEGORY_DISPATCH_ORDER` in `fallback_router.py` puts
+`box_score_log` before `role_status` so `enr["box_score_log"]` is populated before
+reconstruction reads it. NEVER reorder these without updating `_attempt_role_status`.
+
+**Write-back gate:** `_acquisition_as_of` is stamped into `enr` in `evidence_acquisition.run()`
+before `route_fallback_for_categories` is called, so reconstruction uses the run timestamp.
+
+**When reconstruction succeeds:** role_status subfields exit `post_fallback_missing` (canonical
+values written to packet); `_validate_packet` iterates an empty list for those fields; they do
+NOT appear in `fields_reconstructed` or `fields_unresolved` (that is correct — they are RESOLVED).
+Check `packet_status` and `field_status_map`, not `fields_reconstructed`, in tests.
+
+## Specific failure codes (document §7)
+`gate_result` now includes:
+- `primary_failure`: "ROLE_STATUS_UNRESOLVED" | "EVENT_STATUS_UNRESOLVED" | "GAME_LOG_UNAVAILABLE" | None
+- `failed_fields`: list of unresolved field paths
+- `rows_retrieved`: len(enr["box_score_log"])
+- `rows_written`: len(packet["box_score_log"])
+- `row_count_integrity`: dict with `mapping_integrity="OK"` or
+  "SOURCE_RETURNED_DATA_BUT_PACKET_MAPPING_DROPPED_IT"
+
 ## Test suite
-28 original + 14 BUG-001/002/003 + 1 BUG-004 + 8 BUG-005 + 8 PROXY_ONLY = **59 total, all pass**.
+28 original + 14 BUG-001/002/003 + 1 BUG-004 + 8 BUG-005 + 8 PROXY_ONLY + 9 reconstruction = **68 total, all pass**.
 
 ## Live proof (2026-08-06)
 - BUG-001/002/003: box_score_log=0→10, l5=0→5, l10=0→10; PAID key; ESPN v2 athlete

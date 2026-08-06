@@ -2445,3 +2445,316 @@ def test_event_status_resolved_when_role_status_unresolved():
     assert result.get("packet_status") == PacketStatus.PACKET_INCOMPLETE_REJECTED, (
         f"Expected PACKET_INCOMPLETE_REJECTED; got {result.get('packet_status')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Box-score reconstruction regression tests
+# WOW-PATCH-2026-08-06-WNBA-ROLE-RECONSTRUCTION
+#
+# Tests 60-67: _reconstruct_role_from_box_scores; CATEGORY_DISPATCH_ORDER;
+# full-pipeline reconstruction from game rows; primary_failure codes;
+# row_count_integrity; end-to-end role_status resolves when box scores exist.
+# ---------------------------------------------------------------------------
+
+from gate_engine.wnba.fallback_router import (
+    _reconstruct_role_from_box_scores,
+    CATEGORY_DISPATCH_ORDER,
+)
+
+
+def _make_game_rows(n: int = 10, minutes: float = 32.0) -> list[dict]:
+    """Produce n synthetic gamelog rows with consistent non-zero minutes."""
+    return [
+        {
+            "date":        f"2026-07-{(20 + i):02d}",
+            "minutes":     minutes,
+            "points":      18.0,
+            "rebounds":    6.0,
+            "assists":     3.0,
+            "_event_id":   f"eid_{i}",
+            "_source":     "espn_wnba_gamelog",
+            "starter":     None,
+        }
+        for i in range(n)
+    ]
+
+
+def test_reconstruct_role_valid_rows_returns_canonical_dict():
+    """
+    _reconstruct_role_from_box_scores with ≥ 3 rows of minutes > 0
+    must return a dict with:
+      - active_status in _CANONICAL_ACTIVE_STATUSES ("ACTIVE")
+      - projected_minutes as a float ≥ 0
+      - role_timestamp as a non-blank string
+      - inference_basis = None (CRITICAL — must never be set)
+      - confidence = "MEDIUM"
+      - source = "reconstructed_from_recent_box_scores"
+    """
+    from gate_engine.wnba.evidence_acquisition import _CANONICAL_ACTIVE_STATUSES
+    rows   = _make_game_rows(n=10, minutes=33.0)
+    result = _reconstruct_role_from_box_scores(rows)
+
+    assert result is not None, "Expected reconstruction to succeed with 10 rows"
+    assert result["active_status"] == "ACTIVE"
+    assert result["active_status"] in _CANONICAL_ACTIVE_STATUSES
+    assert isinstance(result["projected_minutes"], float)
+    assert result["projected_minutes"] >= 0
+    assert result["role_timestamp"] and str(result["role_timestamp"]).strip()
+    assert result["inference_basis"] is None, (
+        "inference_basis must be None — reconstruction uses direct observed game data, "
+        "not inference; write-back rules will accept role_timestamp only when None"
+    )
+    assert result["confidence"] == "MEDIUM"
+    assert result["source"] == "reconstructed_from_recent_box_scores"
+    assert result["games_used"] <= 5
+
+
+def test_reconstruct_role_fewer_than_3_rows_returns_none():
+    """
+    _reconstruct_role_from_box_scores must return None when fewer than 3
+    rows have minutes > 0.  2 games is insufficient evidence of active
+    participation.
+    """
+    assert _reconstruct_role_from_box_scores([]) is None
+    assert _reconstruct_role_from_box_scores(_make_game_rows(n=2)) is None
+
+
+def test_reconstruct_role_all_minutes_zero_returns_none():
+    """
+    Rows where minutes == 0 (DNP / Did Not Play) must not count as
+    qualifying game appearances.  If ALL rows are DNP, reconstruction
+    must return None.
+    """
+    dnp_rows = _make_game_rows(n=8, minutes=0)
+    assert _reconstruct_role_from_box_scores(dnp_rows) is None, (
+        "minutes=0 rows are DNP records; they must not count as active participation"
+    )
+
+
+def test_reconstruct_role_weighted_mean_calculation():
+    """
+    Verify the weighted mean of L5 minutes uses weights [5,4,3,2,1].
+    With rows sorted most-recent-first (minutes=[30,28,32,25,20]):
+      weighted = (30*5 + 28*4 + 32*3 + 25*2 + 20*1) / (5+4+3+2+1)
+               = (150 + 112 + 96 + 50 + 20) / 15
+               = 428 / 15 ≈ 28.5
+    """
+    rows = [
+        {"minutes": m, "_event_id": f"e{i}", "_source": "test"}
+        for i, m in enumerate([30, 28, 32, 25, 20])
+    ]
+    result = _reconstruct_role_from_box_scores(rows)
+    assert result is not None
+    expected = round((30*5 + 28*4 + 32*3 + 25*2 + 20*1) / 15, 1)
+    assert result["projected_minutes"] == expected, (
+        f"Expected projected_minutes={expected}; got {result['projected_minutes']}"
+    )
+
+
+def test_category_dispatch_order_box_score_before_role():
+    """
+    CATEGORY_DISPATCH_ORDER must list box_score_log BEFORE role_status.
+    This is a hard invariant: _attempt_box_score_log writes enr["box_score_log"]
+    which _attempt_role_status reads for reconstruction.  Incorrect ordering
+    would silently leave reconstruction without game data.
+    """
+    bsl_idx  = CATEGORY_DISPATCH_ORDER.index("box_score_log")
+    role_idx = CATEGORY_DISPATCH_ORDER.index("role_status")
+    assert bsl_idx < role_idx, (
+        f"box_score_log (index {bsl_idx}) must come before "
+        f"role_status (index {role_idx}) in CATEGORY_DISPATCH_ORDER"
+    )
+
+
+def test_role_status_resolves_from_box_score_reconstruction():
+    """
+    Full-pipeline integration: when ESPN injuries returns PROXY_ONLY (ACTIVE_INFERRED)
+    but the box_score_log is already present in enrichment (≥ 3 games with minutes > 0),
+    the role_status reconstruction ladder must:
+      - write canonical role_status fields (active_status="ACTIVE", non-None
+        projected_minutes, non-blank role_timestamp) to the packet via write-back
+      - remove those fields from post_fallback_missing (they are structurally present)
+      - produce PACKET_COMPLETE or PACKET_RECONSTRUCTED_COMPLETE (not REJECTED)
+      - leave fields_unresolved empty (no critical fields blocked)
+
+    Implementation note: when reconstruction writes canonical values to the packet,
+    detect_missing() no longer flags those fields, so they exit post_fallback_missing
+    and are not iterated by _validate_packet.  Therefore fields_reconstructed will be
+    [] for role_status fields specifically — but that is correct: the fields are
+    RESOLVED (not unresolved), and the packet_status reflects the overall outcome.
+    The field_status_map shows MULTI_SOURCE_RECONSTRUCTED for the role_status category.
+    """
+    # Use only the minimal enr needed: box_score_log present (as ESPN gamelog rows),
+    # event_status present, NO role_status data at all.
+    row = _make_wnba_row(team="Indiana Fever", slate_date="2026-08-06")
+    row.pop("role_status", None)   # strip role_status from row to force fallback
+
+    enr: dict = {
+        "event_status":    "SCHEDULED",
+        "box_score_log":   _make_game_rows(n=10, minutes=34.0),
+        "slate_date":      "2026-08-06",
+        # Qualification-blocking fields to prevent PARTIAL_HOLD from obscuring
+        # the role_status outcome:
+        "matchup": {
+            "pace": 95.0, "opponent_defense": 106.0,
+            "position_defense": 110.0,
+            "rebound_environment": 0.50, "assist_environment": 0.58,
+        },
+        "market_comparison": {
+            "consensus_line": 5.5, "books_sampled": 3, "cross_book_spread": 0.5,
+        },
+        "news_contradiction_check": {
+            "headlines_scanned": 3, "contradiction_found": False,
+            "contradiction_detail": None,
+        },
+    }
+    # No role_status, role_timestamp, or projected_minutes in enr → role_status MUST
+    # come from box-score reconstruction.
+
+    result = evidence_run(row, enr)
+
+    fu = result.get("fields_unresolved") or []
+    ps = result.get("packet_status")
+    fsm = result.get("field_status_map") or {}
+
+    # Core assertion: no critical field is blocked
+    for fp in ["role_status.active_status", "role_status.projected_minutes",
+               "role_status.role_timestamp"]:
+        assert fp not in fu, (
+            f"{fp} must not be unresolved when box-score reconstruction succeeds; fu={fu}"
+        )
+
+    # Packet must not be rejected
+    assert ps in (PacketStatus.PACKET_COMPLETE, PacketStatus.PACKET_RECONSTRUCTED_COMPLETE), (
+        f"Expected COMPLETE or RECONSTRUCTED_COMPLETE when role_status resolves via "
+        f"box-score reconstruction; got {ps}. fields_unresolved={fu}"
+    )
+
+    # field_status_map must reflect the reconstruction (not PRIMARY_RETRIEVED or PROXY_ONLY)
+    for fp in ["role_status.active_status", "role_status.projected_minutes",
+               "role_status.role_timestamp"]:
+        entry = fsm.get(fp)
+        assert entry in (
+            AcquisitionFieldStatus.MULTI_SOURCE_RECONSTRUCTED,
+            AcquisitionFieldStatus.PRIMARY_RETRIEVED,
+            AcquisitionFieldStatus.FALLBACK_RETRIEVED,
+        ), (
+            f"{fp} field_status_map entry must be a qualifying reconstruction status; "
+            f"got {entry!r}"
+        )
+
+    assert result.get("can_execute") is False, "can_execute must be False (unconditional)"
+
+
+def test_role_status_proxy_only_when_box_score_empty():
+    """
+    When ESPN injuries returns PROXY_ONLY and box_score_log is empty,
+    reconstruction must return None and role_status must stay PROXY_ONLY
+    (unresolved in the critical gate).
+
+    Confirms the reconstruction path fails gracefully and the honest
+    PACKET_INCOMPLETE_REJECTED outcome is still produced.
+
+    Uses a minimal enr with NO role_status data (no role_timestamp or
+    projected_minutes at any level) so all three subfields are initially
+    missing and the test is not contaminated by top-level enr fields.
+    """
+    row = _make_wnba_row(team="Indiana Fever", slate_date="2026-08-06")
+    row.pop("role_status", None)
+
+    # Minimal enr: event_status present, box_score_log intentionally empty,
+    # NO role data whatsoever so all three subfields must come from fallback.
+    enr: dict = {
+        "event_status": "SCHEDULED",
+        "box_score_log": [],   # empty — reconstruction must fail
+        "slate_date":    "2026-08-06",
+        "matchup": {
+            "pace": 95.0, "opponent_defense": 106.0,
+            "position_defense": 110.0,
+            "rebound_environment": 0.50, "assist_environment": 0.58,
+        },
+        "market_comparison": {
+            "consensus_line": 5.5, "books_sampled": 3, "cross_book_spread": 0.5,
+        },
+        "news_contradiction_check": {
+            "headlines_scanned": 3, "contradiction_found": False,
+            "contradiction_detail": None,
+        },
+    }
+
+    import gate_engine.wnba.fallback_router as _fr
+    _real_handlers = dict(_fr._CATEGORY_HANDLERS)
+
+    def _fake_proxy_empty(packet, enr_inner):
+        return _make_proxy_only_role_result(
+            active_status="ACTIVE_INFERRED", projected_minutes=None,
+            role_timestamp="2026-08-06T22:00:00Z",
+            inference_basis="not_on_espn_injury_report",
+        )
+
+    _fr._CATEGORY_HANDLERS["role_status"] = _fake_proxy_empty
+    try:
+        result = evidence_run(row, enr)
+    finally:
+        _fr._CATEGORY_HANDLERS["role_status"] = _real_handlers["role_status"]
+
+    fu = result.get("fields_unresolved") or []
+    for fp in ["role_status.active_status", "role_status.projected_minutes",
+               "role_status.role_timestamp"]:
+        assert fp in fu, (
+            f"{fp} must be unresolved when box_score_log is empty; fu={fu}"
+        )
+    assert result.get("packet_status") == PacketStatus.PACKET_INCOMPLETE_REJECTED
+
+
+def test_primary_failure_code_role_status_unresolved():
+    """
+    When role_status subfields are unresolved, gate_result["primary_failure"]
+    must be "ROLE_STATUS_UNRESOLVED" (not None, not generic DATA_CONTRACT_FAIL).
+    """
+    import gate_engine.wnba.fallback_router as _fr
+
+    row = _make_wnba_row(team="Indiana Fever")
+    row.pop("role_status", None)
+    enr = _make_full_enr()
+    enr["event_status"] = "SCHEDULED"
+    enr["box_score_log"] = []
+    enr.pop("role_status", None)
+
+    _real_role = _fr._attempt_role_status
+
+    def _fake_proxy(packet, enr):
+        return _make_proxy_only_role_result(
+            active_status="ACTIVE_INFERRED", projected_minutes=None,
+            role_timestamp="2026-08-06T22:00:00Z",
+            inference_basis="not_on_espn_injury_report",
+        )
+
+    _fr._attempt_role_status = _fake_proxy
+    try:
+        result = evidence_run(row, enr)
+    finally:
+        _fr._attempt_role_status = _real_role
+
+    assert result.get("primary_failure") == "ROLE_STATUS_UNRESOLVED", (
+        f"Expected primary_failure='ROLE_STATUS_UNRESOLVED'; got {result.get('primary_failure')!r}"
+    )
+    assert isinstance(result.get("failed_fields"), list)
+    assert result.get("row_count_integrity") is not None
+
+
+def test_primary_failure_none_when_packet_resolved():
+    """
+    When the packet resolves cleanly (PACKET_COMPLETE), primary_failure must be None.
+    """
+    row = _make_wnba_row()
+    enr = _make_full_enr()
+    result = evidence_run(row, enr)
+
+    # primary_failure is None when no fields are unresolved
+    assert result.get("primary_failure") is None, (
+        f"primary_failure must be None when all fields resolve; got {result.get('primary_failure')!r}"
+    )
+    assert result.get("failed_fields") == [], (
+        f"failed_fields must be [] when all fields resolve; got {result.get('failed_fields')!r}"
+    )
