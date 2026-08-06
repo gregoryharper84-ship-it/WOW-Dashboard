@@ -33119,6 +33119,870 @@ def wow_cc_reconcile():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+# ===========================================================================
+# Settled Slip Image Ingestion — Parse → Confirm two-step workflow
+# ===========================================================================
+# Routes:
+#   POST /wow/settle-slip/parse-image  — Step 1: vision parse, NO ledger write
+#   POST /wow/settle-slip/confirm      — Step 2: human corrections + commit
+#   GET  /wow/settle-slip/drafts       — list pending drafts
+#
+# Design: PrizePicks slip screenshots are error-prone for vision models —
+# offer-type icons have historically been misclassified, and stake vs payout
+# ordering is ambiguous from position alone.  This path NEVER auto-writes to
+# cm_settled_slips from a single call.  A human must review the parsed draft
+# and explicitly POST /confirm before any financial record is committed.
+# ===========================================================================
+
+_CM_SETTLEMENT_DRAFT_DDL = """
+CREATE TABLE IF NOT EXISTS cm_settlement_drafts (
+    draft_id        TEXT PRIMARY KEY,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    parsed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    image_filename  TEXT,
+    media_type      TEXT,
+    raw_claude_json JSONB,
+    draft_payload   JSONB NOT NULL,
+    needs_review    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    committed_at    TIMESTAMPTZ,
+    settled_id      TEXT
+);
+CREATE INDEX IF NOT EXISTS cm_settlement_drafts_status_idx
+    ON cm_settlement_drafts(status, parsed_at DESC);
+"""
+
+_draft_table_ready: bool = False
+
+
+def _ensure_draft_table() -> None:
+    """Create cm_settlement_drafts if it doesn't exist (lazy, once per process)."""
+    global _draft_table_ready
+    if _draft_table_ready:
+        return
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_CM_SETTLEMENT_DRAFT_DDL)
+            conn.commit()
+        _draft_table_ready = True
+    except Exception as _e:
+        app.logger.warning(f"cm_settlement_drafts DDL skipped: {_e}")
+
+
+# ---------------------------------------------------------------------------
+# Shared settlement-commit core
+# Used by /confirm to avoid duplicating the math in cm_settle_slip().
+# The existing cm_settle_slip() handler is intentionally left unmodified.
+# ---------------------------------------------------------------------------
+
+def _settle_slip_core(body: dict) -> "tuple[dict, str | None]":
+    """Write one settled-slip record using the same logic as POST /wow/settle-slip.
+
+    Accepts the same field set as that route.
+    Returns (result_dict, error_msg); on success error_msg is None.
+    Kept intentionally in sync with cm_settle_slip() — if that handler changes,
+    update this function too.
+    """
+    import hashlib as _hl
+
+    slip_id               = (body.get("slip_id") or "").strip()
+    entry_amount          = body.get("entry_amount")
+    gross_return          = body.get("gross_return")
+    platform_result_label = (body.get("platform_result_label") or "").strip()
+
+    if not slip_id:
+        return {}, "slip_id required"
+    if entry_amount is None or gross_return is None:
+        return {}, "entry_amount and gross_return required"
+
+    try:
+        entry_f  = float(entry_amount)
+        gross_f  = float(gross_return)
+        net_f    = round(gross_f - entry_f, 4)
+        positive_net       = net_f > 0
+        full_card_hit_bool = bool(body.get("full_card_hit", False))
+    except (TypeError, ValueError) as exc:
+        return {}, f"numeric parse error: {exc}"
+
+    legs_data     = body.get("legs") or []
+    process_label = body.get("process_label")
+    if not process_label:
+        entry_documented = False
+        try:
+            with _cm_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM cm_daily_exposure WHERE slip_id=%s LIMIT 1",
+                        (slip_id,)
+                    )
+                    if cur.fetchone():
+                        entry_documented = True
+                    else:
+                        cur.execute(
+                            "SELECT 1 FROM cm_slips WHERE slip_id=%s LIMIT 1",
+                            (slip_id,)
+                        )
+                        if cur.fetchone():
+                            entry_documented = True
+        except Exception:
+            entry_documented = False
+
+        if full_card_hit_bool and positive_net and entry_documented:
+            process_label = "PROCESS_PASS_WIN"
+        elif entry_documented:
+            process_label = "PROCESS_PASS_VARIANCE_LOSS"
+        else:
+            process_label = "UNRESOLVED"
+
+    settled_id = f"settled_{slip_id}_{_hl.md5(slip_id.encode()).hexdigest()[:6]}"
+
+    enriched_legs = []
+    for leg in legs_data:
+        l = dict(leg)
+        l.setdefault("duplicate_adjusted_weight", 1.0)
+        l.setdefault("failure_category", leg.get("observed_failure_category"))
+        enriched_legs.append(l)
+
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO cm_settled_slips (
+                          settled_id, slip_id, board_id, platform, slip_type,
+                          leg_count, entry_amount, gross_return, net_profit,
+                          platform_result_label, full_card_hit, positive_net_return,
+                          displayed_multiplier, predicted_joint_probability,
+                          joint_probability_lower_bound, actual_result,
+                          weakest_leg_id, critical_leg_index, slip_fragility_score,
+                          fragility_label, process_label, leg_details
+                       ) VALUES (
+                          %s,%s,%s,%s,%s,
+                          %s,%s,%s,%s,
+                          %s,%s,%s,
+                          %s,%s,
+                          %s,%s,
+                          %s,%s,%s,
+                          %s,%s,%s::jsonb
+                       )
+                       ON CONFLICT (settled_id) DO UPDATE SET
+                          gross_return          = EXCLUDED.gross_return,
+                          net_profit            = EXCLUDED.net_profit,
+                          platform_result_label = EXCLUDED.platform_result_label,
+                          full_card_hit         = EXCLUDED.full_card_hit,
+                          positive_net_return   = EXCLUDED.positive_net_return,
+                          process_label         = EXCLUDED.process_label,
+                          leg_details           = EXCLUDED.leg_details
+                    """,
+                    (
+                        settled_id,
+                        slip_id,
+                        body.get("board_id"),
+                        body.get("platform", "PrizePicks"),
+                        body.get("slip_type"),
+                        body.get("leg_count"),
+                        entry_f, gross_f, net_f,
+                        platform_result_label,
+                        full_card_hit_bool,
+                        positive_net,
+                        body.get("displayed_multiplier"),
+                        body.get("predicted_joint_probability"),
+                        body.get("joint_probability_lower_bound"),
+                        body.get("actual_result"),
+                        body.get("weakest_leg_id"),
+                        body.get("critical_leg_index"),
+                        body.get("slip_fragility_score"),
+                        body.get("fragility_label"),
+                        process_label,
+                        json.dumps(enriched_legs),
+                    ),
+                )
+                cur.execute(
+                    "UPDATE cm_daily_exposure SET status='settled' "
+                    "WHERE slip_id=%s AND status='active'",
+                    (slip_id,),
+                )
+            conn.commit()
+    except Exception as exc:
+        return {}, str(exc)
+
+    from gate_engine.wow_runtime_manifest import compute_settlement_calibration
+    calibration = compute_settlement_calibration(legs_data)
+
+    return {
+        "ok":                    True,
+        "settled_id":            settled_id,
+        "slip_id":               slip_id,
+        "entry_amount":          entry_f,
+        "gross_return":          gross_f,
+        "net_profit":            net_f,
+        "platform_result_label": platform_result_label,
+        "full_card_hit":         full_card_hit_bool,
+        "positive_net_return":   positive_net,
+        "process_label":         process_label,
+        "financial_exposure_rows":      calibration["financial_exposure_rows"],
+        "unique_calibration_rows":      calibration["unique_underlying_thesis_rows"],
+        "alternate_threshold_groups":   calibration["alternate_threshold_groups"],
+        "economic_note": (
+            "POSITIVE_NET_RETURN is the primary economic metric. "
+            "A platform green badge with negative net_profit is logged as "
+            "positive_net_return=false per PATCH-017. "
+            "unique_calibration_rows counts distinct player-event-stat-direction "
+            "theses; alternate thresholds on the same thesis count once."
+        ),
+        "can_execute": False,
+    }, None
+
+
+# ---------------------------------------------------------------------------
+# Claude vision helper
+# ---------------------------------------------------------------------------
+
+# Named constant — change here to update the model for all three routes.
+# Must be a vision-capable Claude model.
+_SLIP_VISION_MODEL = "claude-opus-4-7"
+
+_SLIP_VISION_PROMPT = """\
+You are analyzing a PrizePicks settled slip screenshot. Extract every visible \
+field and return ONLY a valid JSON object — no markdown, no code fences, no \
+explanation. Start your response with { and end with }.
+
+Required JSON structure:
+{
+  "platform": "prizepicks",
+  "pick_count_label": "<e.g. 4-Pick>",
+  "play_type": "<Flex Play or Power Play>",
+  "amount_top": <number or null>,
+  "amount_bottom": <number or null>,
+  "result_badge": "<exact badge text, e.g. Win, Lost, Push>",
+  "settlement_datetime": "<ISO or verbatim text as shown on the card>",
+  "legs": [
+    {
+      "player_name": "<full name>",
+      "sport_league_tag": "<MLB|NBA|WNBA|NFL|etc>",
+      "team_game_info": "<team or matchup text shown near the player>",
+      "stat_category": "<e.g. Pitcher Strikeouts>",
+      "side": "<MORE or LESS>",
+      "line": <number or null>,
+      "actual_stat": <number shown below the progress bar, or null if not visible>,
+      "leg_hit": <true if bar is fully green/filled, false if gray/partial/red numbers, null if unclear>,
+      "offer_type": "<standard|goblin|demon|special_other>",
+      "offer_type_description": "<short description if special_other, else null>"
+    }
+  ],
+  "parse_confidence": "<high|medium|low>",
+  "confidence_notes": ["<one entry per uncertain or unclear field>"]
+}
+
+CRITICAL RULES — follow these exactly:
+
+RULE 1 — offer_type (this has been misclassified historically; be strict):
+  "standard"      = no icon at all next to the line number
+  "goblin"        = icon is CLEARLY and unmistakably GREEN
+  "demon"         = icon is CLEARLY and unmistakably RED
+  "special_other" = ANY other icon: orange, pumpkin, lightning bolt, fire, star,
+                    or any color that is not unmistakably green or red.
+                    When in any doubt between goblin and demon → always use special_other.
+                    Always include offer_type_description when offer_type = "special_other".
+
+RULE 2 — amounts:
+  Do NOT decide which dollar amount is the entry/stake vs the payout/return.
+  amount_top    = the first dollar figure shown on the card (higher on screen).
+  amount_bottom = the second dollar figure shown on the card.
+  A human reviewer will determine which is entry and which is gross return.
+
+RULE 3 — leg_hit:
+  Fully filled green progress bar → true.
+  Gray, partially filled, or red-colored number indicators → false.
+  Cannot clearly determine → null (add a note to confidence_notes).
+
+RULE 4 — actual_stat:
+  The number shown below or inside the progress bar. If not visible → null.
+
+RULE 5 — confidence_notes:
+  List every field where you guessed, could not read clearly, or made any assumption.\
+"""
+
+
+def _call_claude_slip_vision(
+    image_base64: str,
+    media_type: str,
+) -> "tuple[dict, str | None]":
+    """Send a slip screenshot to Claude and return (parsed_dict, error_msg).
+
+    On success: error_msg is None.
+    On failure: parsed_dict is {} and error_msg is a human-readable explanation.
+    """
+    if not _ensure_anthropic():
+        return {}, (
+            "The 'anthropic' Python package is not installed — "
+            "contact the operator to install it via package management."
+        )
+
+    ant_kwargs, ant_err = _anthropic_client_kwargs(timeout=90, max_retries=0)
+    if ant_err:
+        return {}, (
+            f"{ant_err}. "
+            "To fix: add ANTHROPIC_API_KEY in Replit → Settings → Secrets, "
+            "or enable the Replit Anthropic AI Integration in the Integrations tab."
+        )
+
+    try:
+        client = _anthropic.Anthropic(**ant_kwargs)
+        response = client.messages.create(
+            model=_SLIP_VISION_MODEL,
+            max_tokens=2048,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type":       "base64",
+                            "media_type": media_type,
+                            "data":       image_base64,
+                        },
+                    },
+                    {"type": "text", "text": _SLIP_VISION_PROMPT},
+                ],
+            }],
+        )
+    except _anthropic.AuthenticationError:
+        return {}, (
+            "ANTHROPIC_API_KEY is invalid or expired — verify it in "
+            "Replit → Settings → Secrets."
+        )
+    except _anthropic.RateLimitError:
+        return {}, "Anthropic rate limit reached — retry in a moment."
+    except Exception as exc:
+        return {}, f"Claude API call failed: {exc}"
+
+    raw_text = (response.content[0].text if response.content else "").strip()
+
+    # Strip accidental markdown fences (model sometimes adds them despite instructions)
+    if raw_text.startswith("```"):
+        raw_text = "\n".join(
+            line for line in raw_text.splitlines()
+            if not line.startswith("```")
+        ).strip()
+
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        return {}, (
+            f"Claude returned non-JSON output ({exc}). "
+            f"Raw (first 400 chars): {raw_text[:400]!r}"
+        )
+
+    return parsed, None
+
+
+# ---------------------------------------------------------------------------
+# Draft construction from Claude output
+# ---------------------------------------------------------------------------
+
+def _build_draft_from_claude(
+    claude_data: dict,
+) -> "tuple[str, dict, list[str]]":
+    """Convert Claude-parsed slip data into (draft_id, draft_payload, needs_review).
+
+    draft_payload is shaped identically to the /wow/settle-slip body so
+    /confirm can call _settle_slip_core() directly after merging corrections.
+
+    entry_amount and gross_return are always null in the draft — the human
+    must supply them in the /confirm corrections object.
+    """
+    import uuid as _uuid
+
+    draft_id:     str       = f"draft_{_uuid.uuid4().hex[:12]}"
+    needs_review: list[str] = []
+
+    play_type     = claude_data.get("play_type") or ""
+    pick_label    = claude_data.get("pick_count_label") or ""
+    result_badge  = claude_data.get("result_badge") or ""
+    amount_top    = claude_data.get("amount_top")
+    amount_bottom = claude_data.get("amount_bottom")
+    settle_dt     = claude_data.get("settlement_datetime") or ""
+    confidence    = claude_data.get("parse_confidence", "unknown")
+    conf_notes    = claude_data.get("confidence_notes") or []
+
+    # Parse leg_count from pick_count_label ("4-Pick" → 4)
+    leg_count: "int | None" = None
+    try:
+        leg_count = int(str(pick_label).split("-")[0])
+    except (ValueError, AttributeError, IndexError):
+        needs_review.append("leg_count_not_parseable_from_label")
+
+    # Slip type
+    _pt = play_type.lower()
+    if "power" in _pt:
+        slip_type: "str | None" = "Power"
+    elif "flex" in _pt:
+        slip_type = "Flex"
+    else:
+        slip_type = play_type or None
+        if not slip_type:
+            needs_review.append("play_type_unclear")
+
+    # full_card_hit derived from individual leg outcomes
+    all_legs_raw = claude_data.get("legs") or []
+    leg_hits     = [leg.get("leg_hit") for leg in all_legs_raw]
+    if not leg_hits:
+        full_card_hit: "bool | None" = None
+        needs_review.append("full_card_hit_indeterminate_no_legs_parsed")
+    elif any(h is None for h in leg_hits):
+        full_card_hit = None
+        needs_review.append(
+            "full_card_hit_indeterminate_one_or_more_leg_outcomes_unclear"
+        )
+    else:
+        full_card_hit = all(bool(h) for h in leg_hits)
+
+    # Amounts — always flagged for human confirmation
+    needs_review.append(
+        "confirm_entry_amount_vs_gross_return: "
+        f"amount_top={amount_top} amount_bottom={amount_bottom} — "
+        "supply entry_amount and gross_return in the /confirm corrections payload"
+    )
+
+    # Parse confidence
+    if confidence != "high":
+        needs_review.append(
+            f"parse_confidence={confidence} (not high — review all fields carefully)"
+        )
+
+    # Claude's own uncertainty notes
+    for note in conf_notes:
+        if note:
+            needs_review.append(f"claude_note: {note}")
+
+    # Legs
+    draft_legs: list[dict] = []
+    for idx, raw_leg in enumerate(all_legs_raw):
+        offer_type = raw_leg.get("offer_type") or "standard"
+        offer_desc = raw_leg.get("offer_type_description")
+
+        if offer_type == "special_other":
+            needs_review.append(
+                f"leg_{idx}_ambiguous_offer_type: "
+                f"{offer_desc or 'no description provided by model'}"
+            )
+        if raw_leg.get("leg_hit") is None:
+            needs_review.append(f"leg_{idx}_outcome_unclear")
+        if raw_leg.get("actual_stat") is None:
+            needs_review.append(f"leg_{idx}_actual_stat_not_visible")
+
+        draft_legs.append({
+            "player":                    raw_leg.get("player_name"),
+            "sport":                     raw_leg.get("sport_league_tag"),
+            "team_game_info":            raw_leg.get("team_game_info"),
+            "stat_category":             raw_leg.get("stat_category"),
+            "side":                      (raw_leg.get("side") or "").upper() or None,
+            "line":                      raw_leg.get("line"),
+            "actual_stat":               raw_leg.get("actual_stat"),
+            "hit":                       raw_leg.get("leg_hit"),
+            "offer_type":                offer_type,
+            "offer_type_description":    offer_desc,
+            "duplicate_adjusted_weight": 1.0,
+            "failure_category":          None,
+        })
+
+    draft_payload: dict = {
+        "slip_id":               draft_id,
+        "platform":              "prizepicks",
+        "slip_type":             slip_type,
+        "leg_count":             leg_count if leg_count is not None else len(draft_legs),
+        # Always null — human must supply these two in /confirm
+        "entry_amount":          None,
+        "gross_return":          None,
+        # Raw positional amounts for human disambiguation
+        "amount_top":            amount_top,
+        "amount_bottom":         amount_bottom,
+        "platform_result_label": result_badge,
+        "full_card_hit":         full_card_hit,
+        "actual_result":         result_badge,
+        "settlement_datetime":   settle_dt,
+        "legs":                  draft_legs,
+        # Financial fields not extractable from image — human may add in /confirm
+        "displayed_multiplier":              None,
+        "predicted_joint_probability":       None,
+        "joint_probability_lower_bound":     None,
+        "weakest_leg_id":                    None,
+        "critical_leg_index":                None,
+        "slip_fragility_score":              None,
+        "fragility_label":                   None,
+    }
+
+    return draft_id, draft_payload, needs_review
+
+
+# ---------------------------------------------------------------------------
+# Route 1 — POST /wow/settle-slip/parse-image
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/settle-slip/parse-image", methods=["POST"])
+@require_api_key
+def settle_slip_parse_image():
+    """POST /wow/settle-slip/parse-image — Step 1: vision-parse a slip screenshot.
+
+    Does NOT write to cm_settled_slips.  Stores a pending draft in
+    cm_settlement_drafts and returns it for human review.
+
+    Request (any format accepted):
+      • multipart/form-data with image file in field "image", "file", or "screenshot"
+      • JSON body with base64-encoded image in any of:
+          image_b64, image_base64, imageBase64, image_data, imageData, data, image, screenshot
+      • Raw binary body with Content-Type: image/jpeg or image/png
+
+    Optional fields (form or JSON):
+      image_filename: TEXT  (stored for audit; not required)
+
+    Response:
+      draft_id           — use in POST /wow/settle-slip/confirm
+      draft_payload      — parsed slip in /wow/settle-slip body shape;
+                           entry_amount and gross_return will always be null
+      needs_review       — array of strings describing every field that requires
+                           human verification before commit
+      needs_review_count — integer count of needs_review items
+      raw_claude         — full structured Claude output (for audit/debugging)
+      vision_model       — Claude model used (for traceability)
+      next_step          — human-readable confirm instructions
+    """
+    import base64 as _b64
+
+    _ensure_draft_table()
+
+    if not _ensure_anthropic():
+        return jsonify({
+            "ok":    False,
+            "error": (
+                "The 'anthropic' Python package is not installed. "
+                "Contact the operator to install it via package management."
+            ),
+        }), 503
+
+    # ── Image acquisition (same strategy order as /wow/analyze) ──────────────
+    image_base64:   "str | None" = None
+    media_type:     str          = "image/jpeg"
+    image_filename: "str | None" = None
+
+    # Strategy 1: multipart file upload
+    _file = (
+        request.files.get("image")
+        or request.files.get("file")
+        or request.files.get("screenshot")
+        or (list(request.files.values())[0] if request.files else None)
+    )
+    if _file:
+        _file_bytes    = _file.read()
+        image_base64   = _b64.b64encode(_file_bytes).decode("utf-8")
+        image_filename = _file.filename or None
+        _mime = (_file.content_type or "").lower().split(";")[0].strip()
+        if _mime and _mime not in ("application/octet-stream", ""):
+            media_type = _mime
+
+    # Strategy 2: base64 in JSON or form
+    if not image_base64:
+        _body = request.get_json(silent=True) or {}
+        for _fk in ("image_b64", "image_base64", "imageBase64", "image_data",
+                    "imageData", "data", "image", "screenshot"):
+            _fv = _body.get(_fk) or request.form.get(_fk)
+            if _fv and isinstance(_fv, str) and len(_fv) > 100:
+                image_base64   = _fv
+                image_filename = (
+                    _body.get("image_filename")
+                    or request.form.get("image_filename")
+                    or image_filename
+                )
+                break
+
+    # Strategy 3: raw binary body (Content-Type: image/*)
+    if not image_base64:
+        _ct = (request.content_type or "").lower()
+        if _ct.startswith("image/"):
+            _raw = request.get_data()
+            if _raw:
+                image_base64 = _b64.b64encode(_raw).decode("utf-8")
+                media_type   = _ct.split(";")[0].strip()
+
+    if not image_base64:
+        return jsonify({
+            "ok":    False,
+            "error": "No image found in request — see debug for what arrived",
+            "debug": {
+                "content_type": request.content_type,
+                "files_keys":   list(request.files.keys()),
+                "form_keys":    list(request.form.keys()),
+                "json_keys":    list((request.get_json(silent=True) or {}).keys()),
+                "data_bytes":   len(request.get_data()),
+            },
+        }), 400
+
+    # ── Claude vision parse ───────────────────────────────────────────────────
+    claude_data, claude_err = _call_claude_slip_vision(image_base64, media_type)
+    if claude_err:
+        return jsonify({"ok": False, "error": claude_err}), 503
+
+    # ── Build draft payload ───────────────────────────────────────────────────
+    draft_id, draft_payload, needs_review = _build_draft_from_claude(claude_data)
+
+    # ── Persist draft (no cm_settled_slips touch) ─────────────────────────────
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO cm_settlement_drafts
+                           (draft_id, status, image_filename, media_type,
+                            raw_claude_json, draft_payload, needs_review)
+                       VALUES (%s, 'pending', %s, %s, %s::jsonb, %s::jsonb, %s::jsonb)
+                    """,
+                    (
+                        draft_id,
+                        image_filename,
+                        media_type,
+                        json.dumps(claude_data),
+                        json.dumps(draft_payload),
+                        json.dumps(needs_review),
+                    ),
+                )
+            conn.commit()
+    except Exception as exc:
+        app.logger.exception("settle_slip_parse_image DB error")
+        return jsonify({"ok": False, "error": f"Draft storage failed: {exc}"}), 500
+
+    return jsonify({
+        "ok":                True,
+        "draft_id":          draft_id,
+        "status":            "pending",
+        "draft_payload":     draft_payload,
+        "needs_review":      needs_review,
+        "needs_review_count": len(needs_review),
+        "raw_claude":        claude_data,
+        "vision_model":      _SLIP_VISION_MODEL,
+        "next_step": (
+            "1. Review draft_payload — check every item in needs_review. "
+            "2. Identify entry_amount and gross_return from amount_top / amount_bottom. "
+            "3. Correct any ambiguous offer_type icons (special_other → goblin or demon). "
+            "4. POST to /wow/settle-slip/confirm with draft_id and a corrections object "
+            "containing at minimum entry_amount and gross_return."
+        ),
+        "can_execute": False,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Route 2 — POST /wow/settle-slip/confirm
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/settle-slip/confirm", methods=["POST"])
+@require_api_key
+def settle_slip_confirm():
+    """POST /wow/settle-slip/confirm — Step 2: apply corrections and commit to ledger.
+
+    Body (JSON):
+      draft_id:    TEXT    (required — from /parse-image response)
+      corrections: OBJECT  (optional — any field to override before commit)
+                   MUST include at minimum:
+                     entry_amount: number  (the stake you wagered)
+                     gross_return: number  (total received back; 0 if lost)
+                   May also supply: slip_id, slip_type, platform_result_label,
+                   full_card_hit, legs, displayed_multiplier, or any other
+                   /wow/settle-slip field.
+
+    corrections is shallow-merged into the stored draft_payload.  After merge,
+    entry_amount and gross_return must both be non-null.  The commit then calls
+    _settle_slip_core() — the same logic as POST /wow/settle-slip — to write to
+    cm_settled_slips and update cm_daily_exposure.
+
+    A committed draft returns 409 on retry (double-submit guard).
+    Returns the fully committed settle-slip result (same shape as /wow/settle-slip).
+    """
+    _ensure_draft_table()
+
+    body        = request.get_json(silent=True) or {}
+    draft_id    = (body.get("draft_id") or "").strip()
+    corrections = body.get("corrections") or {}
+
+    if not draft_id:
+        return jsonify({"ok": False, "error": "draft_id required"}), 400
+
+    # ── Load draft ────────────────────────────────────────────────────────────
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT status, draft_payload, needs_review, settled_id
+                         FROM cm_settlement_drafts
+                        WHERE draft_id = %s
+                    """,
+                    (draft_id,),
+                )
+                _row = cur.fetchone()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"DB read error: {exc}"}), 500
+
+    if not _row:
+        return jsonify({
+            "ok":    False,
+            "error": f"draft_id '{draft_id}' not found",
+        }), 404
+
+    _draft_status, _draft_payload, _needs_review, _existing_settled_id = _row
+
+    if _draft_status == "committed":
+        return jsonify({
+            "ok":         False,
+            "error":      "This draft has already been committed — double-submit prevented.",
+            "settled_id": _existing_settled_id,
+            "draft_id":   draft_id,
+        }), 409
+
+    # ── Merge corrections into draft ──────────────────────────────────────────
+    merged = dict(_draft_payload or {})
+    if isinstance(corrections, dict):
+        merged.update(corrections)
+
+    # ── Validate required fields ──────────────────────────────────────────────
+    _missing = []
+    if not (merged.get("slip_id") or "").strip():
+        _missing.append("slip_id")
+    if merged.get("entry_amount") is None:
+        _missing.append(
+            "entry_amount — vision cannot determine this; supply in corrections "
+            "(draft has amount_top and amount_bottom to help you decide)"
+        )
+    if merged.get("gross_return") is None:
+        _missing.append(
+            "gross_return — vision cannot determine this; supply in corrections "
+            "(draft has amount_top and amount_bottom to help you decide)"
+        )
+
+    if _missing:
+        return jsonify({
+            "ok":      False,
+            "error":   "Required fields missing after applying corrections",
+            "missing": _missing,
+            "hint": (
+                "Include entry_amount and gross_return in the corrections object. "
+                "amount_top and amount_bottom from the draft show the two dollar "
+                "figures on the slip — one is the stake, one is the return."
+            ),
+        }), 400
+
+    # ── Commit to ledger via shared core ─────────────────────────────────────
+    _result, _err = _settle_slip_core(merged)
+    if _err:
+        _sc = 400 if any(kw in _err for kw in ("required", "parse error")) else 500
+        return jsonify({"ok": False, "error": _err}), _sc
+
+    _settled_id = _result.get("settled_id")
+
+    # ── Mark draft committed (best-effort — slip is already written) ──────────
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE cm_settlement_drafts
+                          SET status       = 'committed',
+                              committed_at = NOW(),
+                              settled_id   = %s
+                        WHERE draft_id = %s
+                    """,
+                    (_settled_id, draft_id),
+                )
+            conn.commit()
+    except Exception as exc:
+        # Non-fatal: the slip is already in cm_settled_slips; only the
+        # draft status stamp failed — log and continue.
+        app.logger.warning(
+            f"settle_slip_confirm: draft mark-committed failed "
+            f"(slip already written, this is non-fatal): {exc}"
+        )
+
+    return jsonify({**_result, "draft_id": draft_id, "committed": True}), 200
+
+
+# ---------------------------------------------------------------------------
+# Route 3 — GET /wow/settle-slip/drafts
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/settle-slip/drafts", methods=["GET"])
+@require_api_key
+def settle_slip_drafts():
+    """GET /wow/settle-slip/drafts — list settlement drafts (default: pending only).
+
+    Query params:
+      status: pending | committed | all  (default: pending)
+      limit:  1–200  (default: 50)
+
+    Returns each draft's metadata and needs_review flags so nothing sits
+    forgotten.  The full draft_payload is omitted from the list view to keep
+    responses compact.  To review or re-confirm a specific draft, POST to
+    /wow/settle-slip/confirm with the draft_id.
+    """
+    _ensure_draft_table()
+
+    status_filter = request.args.get("status", "pending")
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 50))))
+    except (ValueError, TypeError):
+        limit = 50
+
+    if status_filter not in ("pending", "committed", "all"):
+        return jsonify({
+            "ok":    False,
+            "error": "status must be one of: pending, committed, all",
+        }), 400
+
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                if status_filter == "all":
+                    cur.execute(
+                        """SELECT draft_id, status, parsed_at, image_filename,
+                                  needs_review, committed_at, settled_id
+                             FROM cm_settlement_drafts
+                            ORDER BY parsed_at DESC
+                            LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                else:
+                    cur.execute(
+                        """SELECT draft_id, status, parsed_at, image_filename,
+                                  needs_review, committed_at, settled_id
+                             FROM cm_settlement_drafts
+                            WHERE status = %s
+                            ORDER BY parsed_at DESC
+                            LIMIT %s
+                        """,
+                        (status_filter, limit),
+                    )
+                _rows = cur.fetchall()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    drafts = []
+    for (_d_id, _d_status, _d_parsed_at, _d_filename,
+         _d_review, _d_committed_at, _d_settled_id) in _rows:
+        drafts.append({
+            "draft_id":           _d_id,
+            "status":             _d_status,
+            "parsed_at":          _d_parsed_at.isoformat() if _d_parsed_at else None,
+            "image_filename":     _d_filename,
+            "needs_review":       _d_review or [],
+            "needs_review_count": len(_d_review or []),
+            "committed_at":       _d_committed_at.isoformat() if _d_committed_at else None,
+            "settled_id":         _d_settled_id,
+        })
+
+    return jsonify({
+        "ok":            True,
+        "status_filter": status_filter,
+        "count":         len(drafts),
+        "drafts":        drafts,
+    }), 200
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)
