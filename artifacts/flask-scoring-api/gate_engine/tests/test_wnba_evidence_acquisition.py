@@ -1564,3 +1564,107 @@ def test_bug002_pra_market_assigns_pra_from_single_stat():
     assert r["rebounds"] is None, "rebounds must be None when only PRA stat present"
     assert r["assists"]  is None, "assists must be None when only PRA stat present"
     assert r["canonical_stat_type"] == "pra"
+
+
+# ---------------------------------------------------------------------------
+# BUG-004 regression test — WOW-PATCH-2026-08-06-WNBA-ESPN-GAMELOG-LABEL-PATH
+# ---------------------------------------------------------------------------
+
+def test_bug004_top_level_names_produces_non_null_stat_fields():
+    """
+    _parse_espn_wnba_gamelog must extract non-null rebounds/points/assists/minutes
+    when the ESPN response places stat column labels at the top-level "names" key
+    rather than inside each category as "labels" (Shape B — live ESPN API as of 2026-08).
+
+    Before the fix: category.get("labels") returned [], every _idx() call returned
+    None, all stat fields were written as None even though raw values were present.
+
+    After the fix: top_level_names = data.get("names") is used as fallback, so
+    _idx("totalreb","reb") → index 2, _idx("pts","points") → index 1, etc.
+
+    Regression: given a Shape-B response with stats=["33","15","8","7",...],
+    the first parsed row must have non-null rebounds (8), points (15), assists (7),
+    and minutes (~33).
+    """
+    from gate_engine.wnba.external_adapters import _parse_espn_wnba_gamelog
+
+    # Minimal Shape-B response matching live ESPN gamelog structure confirmed
+    # via real HTTP on 2026-08-06 for Aliyah Boston (athlete_id=4432831).
+    shape_b_response = {
+        # Top-level column names — the only place labels appear in Shape B.
+        "names": [
+            "minutes", "points", "totalRebounds", "assists", "steals",
+            "blocks", "turnovers",
+            "fieldGoalsMade-fieldGoalsAttempted", "fieldGoalPct",
+            "threePointFieldGoalsMade-threePointFieldGoalsAttempted",
+            "threePointPct", "freeThrowsMade-freeThrowsAttempted",
+            "freeThrowPct", "fouls",
+        ],
+        # Top-level events dict — metadata only, no stats (stats are per-category).
+        "events": {
+            "401857107": {"id": "401857107", "links": []},
+            "401857104": {"id": "401857104", "links": []},
+        },
+        "seasonTypes": [
+            {
+                # Shape B: no "type" key with "text" — has "displayName" only.
+                "displayName": "Regular Season",
+                "categories": [
+                    {
+                        # Shape B: no "labels" key inside category.
+                        "displayName": "august",
+                        "events": [
+                            # Game 1: 33 min, 15 pts, 8 reb, 7 ast
+                            {
+                                "eventId": "401857107",
+                                "stats": [
+                                    "33", "15", "8", "7", "0", "0", "3",
+                                    "7-14", "50.0", "1-4", "25.0",
+                                    "0-0", "0.0", "5",
+                                ],
+                            },
+                            # Game 2: 28 min, 12 pts, 5 reb, 4 ast
+                            {
+                                "eventId": "401857104",
+                                "stats": [
+                                    "28", "12", "5", "4", "1", "1", "2",
+                                    "5-11", "45.5", "0-2", "0.0",
+                                    "2-2", "100.0", "3",
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    rows = _parse_espn_wnba_gamelog(shape_b_response, n_games=10)
+
+    assert len(rows) == 2, (
+        f"Expected 2 parsed rows from 2 events; got {len(rows)}"
+    )
+
+    # Game 1 — Aliyah Boston vs Fever: 15 pts, 8 reb, 7 ast, 33 min
+    r0 = rows[0]
+    assert r0["rebounds"] == 8.0, (
+        f"rebounds must be 8.0 (index 2 in names array); got {r0['rebounds']}. "
+        "BUG-004: category had no 'labels' key so top_level_names fallback must apply."
+    )
+    assert r0["points"] == 15.0, (
+        f"points must be 15.0 (index 1); got {r0['points']}"
+    )
+    assert r0["assists"] == 7.0, (
+        f"assists must be 7.0 (index 3); got {r0['assists']}"
+    )
+    assert r0["minutes"] is not None, (
+        "minutes must be non-null when 'minutes' is the first entry in names"
+    )
+    # No row should have all stat fields None (the pre-fix failure mode)
+    core_fields = ["rebounds", "points", "assists"]
+    for row in rows:
+        all_none = all(row.get(f) is None for f in core_fields)
+        assert not all_none, (
+            f"Row {row.get('_event_id')} has all core stat fields None — "
+            "BUG-004 labels fallback is not working"
+        )

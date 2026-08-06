@@ -304,7 +304,9 @@ def _parse_espn_wnba_gamelog(
 ) -> list[dict]:
     """Parse ESPN WNBA athlete gamelog JSON into normalized per-game dicts.
 
-    ESPN gamelog response shape:
+    Two observed response shapes — parser handles both:
+
+    Shape A (original assumed shape — per-category labels):
     {
       "seasonTypes": [
         {
@@ -317,7 +319,6 @@ def _parse_espn_wnba_gamelog(
                 {
                   "id": "...",
                   "gameDate": "2026-08-01T00:00Z",
-                  "atVs": "@",
                   "opponent": {"displayName": "...", "abbreviation": "..."},
                   "stats": ["36:00", "8-18", "2-5", "7-9", "2", "8", "10",
                              "4", "1", "2", "2", "2", "+5", "25"]
@@ -328,9 +329,42 @@ def _parse_espn_wnba_gamelog(
         }
       ]
     }
+
+    Shape B (live ESPN response as of 2026-08 — labels at top level):
+    {
+      "names":  ["minutes", "points", "totalRebounds", "assists", "steals",
+                 "blocks", "turnovers",
+                 "fieldGoalsMade-fieldGoalsAttempted", "fieldGoalPct",
+                 "threePointFieldGoalsMade-threePointFieldGoalsAttempted",
+                 "threePointPct", "freeThrowsMade-freeThrowsAttempted",
+                 "freeThrowPct", "fouls"],
+      "events": {"<id>": {"id": "...", "links": [...]}},   ← metadata only
+      "seasonTypes": [
+        {
+          "displayName": "...",
+          "categories": [
+            {
+              "displayName": "august",
+              "events": [
+                {"eventId": "...", "stats": ["33", "15", "8", "7", ...]}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+
+    BUG-004 fix (WOW-PATCH-2026-08-06-WNBA-ESPN-GAMELOG-LABEL-PATH):
+    In Shape B, category.get("labels") returns [] because labels live at
+    top-level "names", not per-category.  Parser now reads top_level_names
+    first and uses it as the fallback when a category has no "labels" key.
     """
     rows:     list[dict] = []
     seen_ids: set        = set()
+
+    # BUG-004: Shape B places stat column names at the top-level "names" key.
+    # Per-category "labels" takes precedence when present (Shape A / forward compat).
+    top_level_names: list[str] = data.get("names") or []
 
     for season_type in (data.get("seasonTypes") or []):
         type_text = (season_type.get("type") or {}).get("text", "").lower()
@@ -339,7 +373,9 @@ def _parse_espn_wnba_gamelog(
             continue
 
         for category in (season_type.get("categories") or []):
-            raw_labels = category.get("labels") or []
+            # Shape A: labels nested per-category.
+            # Shape B: labels absent per-category → fall back to top_level_names.
+            raw_labels = category.get("labels") or top_level_names
             labels = [lb.lower().replace(" ", "").replace("-", "") for lb in raw_labels]
 
             def _idx(*keys: str) -> "int | None":
@@ -351,7 +387,7 @@ def _parse_espn_wnba_gamelog(
 
             pts_i  = _idx("pts", "points")
             reb_i  = _idx("totalreb", "reb")
-            ast_i  = _idx("ast")
+            ast_i  = _idx("ast", "assists")   # "ast" not a substring of "assists" in Shape B
             min_i  = _idx("min")
             fga_i  = _idx("fg")
             tpa_i  = _idx("3pt", "3p")
