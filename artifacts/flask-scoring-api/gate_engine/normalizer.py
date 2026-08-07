@@ -161,6 +161,7 @@ _STAT_KEY_MAP: dict[str, dict[str, Any]] = {
         "1st inn. pitches thrown":   "1IP_PITCHES_THROWN",
         "1st inning pitches thrown": "1IP_PITCHES_THROWN",
         "1st inning pitches":        "1IP_PITCHES_THROWN",
+        "1st inn pitches":           "1IP_PITCHES_THROWN",  # "1st Inn Pitches" (no period)
         "first inning pitches thrown": "1IP_PITCHES_THROWN",
         "first inning pitches":      "1IP_PITCHES_THROWN",
         "first inning pitch count":  "1IP_PITCHES_THROWN",

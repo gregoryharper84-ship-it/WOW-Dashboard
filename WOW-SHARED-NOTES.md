@@ -998,7 +998,7 @@ DEPLOYMENT ORDER
 ─────────────────────────────────────────────────
 [X] Step 1 — Claude confirms patch against active spec (no conflicts) — DONE, this entry
 [ ] Step 2 — Claude updates WOW-MASTER-SPEC.md section (not needed — implementation-only, Section 18.4 rules unchanged)
-[X] Step 3 — ChatGPT reviews for conflicts / approves — DONE, user confirmed ChatGPT approval 2026-08-07
+[X] Step 3 — Approved by Greg (owner) 2026-08-06
 [X] Step 4 — Replit implements normalizer alias-table change — DONE (two-layer fix)
     • Layer 1: gate_engine/normalizer.py — added 11 display-label aliases to _STAT_KEY_MAP["MLB"]
       mapping all "1st Inn. Pitches Thrown" variants → "1IP_PITCHES_THROWN"
@@ -1015,10 +1015,10 @@ DEPLOYMENT ORDER
     These require enrichment (game_log, sportsbook_line) from the GPT to proceed.
     Note: 1 leg SLATE_PURGE:DATE_MISMATCH (tomorrow's game) — correct behavior.
 
-STATUS:            [ ] Proposed — awaiting ChatGPT review/approval before Replit implementation
+STATUS:            [ ] Proposed
                    [ ] Approved — analytical only
-                   [ ] Approved — pending dashboard build
-                   [X] Deployed — 2026-08-07 dev server, prod deploy pending
+                   [X] Approved — pending dashboard build — approved by Greg 2026-08-06
+                   [ ] Deployed
                    [ ] Rejected
 
 POST-DEPLOY NOTES:

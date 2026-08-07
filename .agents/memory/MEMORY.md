@@ -62,3 +62,4 @@
 - [MLB pitching outs routing](mlb-pitching-outs-routing.md) — 4-file fix for "pitching outs"→"OUTS"→"pitcher_outs"; MLB Stats API field is "outs" (int), not "recordedOuts"; ESPN path returns 0 values for this stat.
 - [role_timestamp null-safe staleness format](role-timestamp-null-safe.md) — role_timestamp.py STALE/RECHECK f-strings crash when status_age is None; must guard with conditional str before formatting.
 - [analyze-and-score TypeErrors](analyze-and-score-typeerrors.md) — two crashes in /analyze-and-score: NormalizedRow is immutable (use dict(r) after _normalize_legs); .get(key,"")[:N] crashes on None values (use (row.get(key) or "")[:N]).
+- [OUTRIGHT_WINNER moneyline routing](outright-moneyline-routing.md) — OUTRIGHT_WINNER→OUTRIGHT_WIN_PROBABILITY_ONLY→wow.llp-moneyline-probability-expert; guard returns 409 RUN_INVALID_ROUTE_CONFIGURATION (not NO_PLAY) on mixed batch.
