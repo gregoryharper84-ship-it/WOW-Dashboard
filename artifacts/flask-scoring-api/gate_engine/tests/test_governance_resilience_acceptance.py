@@ -276,9 +276,9 @@ class TestPhase1DeployedIdentity:
     def test_patch_80_in_active_patch_ids(self):
         assert _PATCH_ID in _ACTIVE_PATCH_IDS
 
-    def test_patch_count_is_16(self):
+    def test_patch_count_is_16(self):  # name kept for history; count now 23
         # 10 legacy patches + PATCH-WNBA-001 + PATCH-PORTFOLIO-001 + PATCH-PORTFOLIO-002
-        assert len(list(_ACTIVE_PATCH_IDS)) == 22
+        assert len(list(_ACTIVE_PATCH_IDS)) == 23
 
     def test_governance_status_returns_all_required_fields(self, client):
         data = client.get("/wow/governance/status").get_json()

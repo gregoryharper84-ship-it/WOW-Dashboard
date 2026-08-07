@@ -141,7 +141,7 @@ _APP_START_TIME = time.time()
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
 _bt("flask app created — registering routes")
 
-BUILD_ID = "wow-patch-prop-type-mapping-2026-08-07"
+BUILD_ID = "wow-patch-outright-moneyline-routing-2026-08-07"
 
 
 # ---------------------------------------------------------------------------
@@ -21254,6 +21254,40 @@ def gate_engine_run():
             "can_execute":        False,
         }), 422
 
+    # ── WOW-PATCH-2026-08-07-OUTRIGHT-MONEYLINE-ROUTING ─────────────────────────
+    # Market-family classification runs BEFORE prop normalization.
+    # Every row is stamped with market_family, objective, controlling_skill_id,
+    # route_id, input_contract_version, and required_field_profile.
+    # OUTRIGHT_WINNER rows are intercepted here and scored by the LLP Moneyline
+    # Probability Expert; they never enter _ge_run_pipeline (the prop pipeline).
+    # A routing mismatch (OUTRIGHT_WINNER + PLAYER_PROP in same batch, or
+    # body contract=PLAYER_PROP with OUTRIGHT_WINNER rows) returns HTTP 409
+    # RUN_INVALID_ROUTE_CONFIGURATION — never NO_PLAY.
+    # ─────────────────────────────────────────────────────────────────────────
+    from gate_engine.market_family import (
+        classify_row       as _mf_classify_row,
+        guard_route_config as _mf_guard,
+        MarketFamily       as _MarketFamily,
+    )
+    for _raw_row in raw_rows:
+        _mf_classify_row(_raw_row)
+
+    _body_input_contract = body.get("input_contract_version")
+    _route_guard_err = _mf_guard(raw_rows, body_input_contract=_body_input_contract)
+    if _route_guard_err:
+        return jsonify(_route_guard_err), 409
+
+    # Separate OUTRIGHT_WINNER rows from player-prop rows before the pipeline
+    _outright_rows_for_moneyline = [
+        r for r in raw_rows if r.get("market_family") == _MarketFamily.OUTRIGHT_WINNER
+    ]
+    raw_rows = [
+        r for r in raw_rows if r.get("market_family") != _MarketFamily.OUTRIGHT_WINNER
+    ]
+    # Keep a combined reference for invocation audit (must cover all market families)
+    _all_raw_rows_for_audit = _outright_rows_for_moneyline + raw_rows
+    # ─────────────────────────────────────────────────────────────────────────
+
     target_date = None
     if body.get("target_date"):
         try:
@@ -21379,40 +21413,106 @@ def gate_engine_run():
         slate_date=target_date,   # None → PgPortfolioGovernor uses date.today()
     )
 
-    try:
-        result = _ge_run_pipeline(
-            raw_rows=raw_rows,
-            target_date=target_date,
-            enrichment=enrichment,
-            record_entries=record_entries,
-            existing_ledger=_session_exposure_ledger,
-            portfolio_governor=_portfolio_gov,
+    # ── Player-prop gate pipeline (OUTRIGHT_WINNER rows are already separated) ─
+    if raw_rows:
+        try:
+            result = _ge_run_pipeline(
+                raw_rows=raw_rows,
+                target_date=target_date,
+                enrichment=enrichment,
+                record_entries=record_entries,
+                existing_ledger=_session_exposure_ledger,
+                portfolio_governor=_portfolio_gov,
+            )
+        except Exception as exc:
+            from flask import g as _g
+            app.logger.exception(
+                "gate_engine_run pipeline error",
+                extra={"request_id": getattr(_g, "request_id", None)},
+            )
+            return jsonify({
+                "terminal_status":   "BACKEND_PIPELINE_FAILURE",
+                "decision":          "NO_DECISION",
+                "scoring_completed": False,
+                "primary_failure":   type(exc).__name__,
+                "message":           "Gate engine pipeline error.",
+                "request_id":        getattr(_g, "request_id", None),
+                "can_execute":       False,
+                "scoring_execution": {
+                    "props_received":         _rows_received,
+                    "props_extracted":        _rows_received,
+                    "rows_normalized":        _rows_normalized,
+                    "rows_rejected_schema":   _rows_rejected_schema,
+                    "rows_entering_pipeline": _rows_normalized,
+                    "rows_scored":            0,
+                    "rows_qualified":         0,
+                    "failed_stage":           "pipeline_execution",
+                },
+            }), 500
+    else:
+        # All rows were OUTRIGHT_WINNER — prop pipeline is skipped
+        result = {
+            "prop_ledger":        [],
+            "data_status_ledger": [],
+            "terminal_labels":    [],
+            "final_card":         [],
+            "exposure_report":    {},
+            "clv_table":          [],
+            "summary":            {},
+        }
+
+    # ── LLP Moneyline Probability Expert — score OUTRIGHT_WINNER rows ─────────
+    # Runs after the prop pipeline so both result sets can be merged into
+    # a single unified response.  Event deduplication collapses same-game
+    # rows from multiple sportsbooks into one canonical scored entry while
+    # preserving platform-specific settlement metadata.
+    _ow_dedup_map: dict = {}
+    if _outright_rows_for_moneyline:
+        from gate_engine.moneyline_probability import (
+            score_outright_winner_row as _score_moneyline,
+            deduplicate_events        as _dedup_events,
         )
-    except Exception as exc:
-        from flask import g as _g
-        app.logger.exception(
-            "gate_engine_run pipeline error",
-            extra={"request_id": getattr(_g, "request_id", None)},
-        )
-        return jsonify({
-            "terminal_status":   "BACKEND_PIPELINE_FAILURE",
-            "decision":          "NO_DECISION",
-            "scoring_completed": False,
-            "primary_failure":   type(exc).__name__,
-            "message":           "Gate engine pipeline error.",
-            "request_id":        getattr(_g, "request_id", None),
-            "can_execute":       False,
-            "scoring_execution": {
-                "props_received":         _rows_received,
-                "props_extracted":        _rows_received,
-                "rows_normalized":        _rows_normalized,
-                "rows_rejected_schema":   _rows_rejected_schema,
-                "rows_entering_pipeline": _rows_normalized,
-                "rows_scored":            0,
-                "rows_qualified":         0,
-                "failed_stage":           "pipeline_execution",
-            },
-        }), 500
+        _ow_deduped, _ow_dedup_map = _dedup_events(_outright_rows_for_moneyline)
+        _ow_results: list = []
+        for _ow_row in _ow_deduped:
+            _ow_enr    = enrichment.get(_ow_row.get("row_id") or "") or {}
+            _ow_scored = _score_moneyline(_ow_row, enrichment=_ow_enr)
+            _ow_entry  = {
+                "row_id":               _ow_row.get("row_id"),
+                "sport":                _ow_row.get("sport"),
+                "team":                 _ow_row.get("team") or _ow_row.get("player"),
+                "opponent":             _ow_row.get("opponent"),
+                "event_id":             _ow_row.get("event_id"),
+                "slate_date":           _ow_row.get("slate_date"),
+                "market_type":          _ow_row.get("market_type"),
+                "market_family":        "OUTRIGHT_WINNER",
+                "objective":            "OUTRIGHT_WIN_PROBABILITY_ONLY",
+                "controlling_skill":    "wow.llp-moneyline-probability-expert",
+                "input_contract_version": "MONEYLINE_V1",
+                "terminal_label":       _ow_scored["terminal_label"],
+                "blockers":             _ow_scored["blockers"],
+                "model_id":             _ow_scored.get("model_id"),
+                "model_status":         _ow_scored.get("model_status"),
+                "probability_snapshot": _ow_scored.get("probability_snapshot"),
+                "route_compatibility":  _ow_scored.get("route_compatibility"),
+                "platform_appearances": _ow_row.get("platform_appearances"),
+                "can_execute":          False,
+                "can_approve_bets":     False,
+            }
+            _ow_results.append(_ow_entry)
+
+        result["prop_ledger"]     = list(result.get("prop_ledger") or []) + _ow_results
+        result["terminal_labels"] = list(result.get("terminal_labels") or []) + [
+            {
+                "row_id":              r["row_id"],
+                "label":               r["terminal_label"],
+                "blockers":            r["blockers"],
+                "route_compatibility": r.get("route_compatibility"),
+            }
+            for r in _ow_results
+        ]
+        result["outright_winner_ledger"]    = _ow_results
+        result["outright_event_dedup_map"]  = _ow_dedup_map
 
     # Detect session-ledger DB failure → fail closed at HTTP level.
     # Any row blocked by SESSION_LEDGER_UNAVAILABLE means we cannot confirm
@@ -21466,6 +21566,23 @@ def gate_engine_run():
     result["as_of"]           = _as_of
     result["exposure_key"]    = _session_id
 
+    # ── Route compatibility summary in governance handshake ──────────────────
+    # Explicit compatibility proof for each market family present in the run.
+    # A run must not begin unless route_id / market_family / objective /
+    # controlling_skill_id / input_contract_version / required_field_profile
+    # all agree (enforced by guard_route_config above; echoed here for audit).
+    _mf_families_seen = list({
+        r.get("market_family", "PLAYER_PROP") for r in _all_raw_rows_for_audit
+    })
+    result["route_compatibility_summary"] = {
+        "market_families_in_run":   _mf_families_seen,
+        "outright_winner_count":    len(_outright_rows_for_moneyline),
+        "player_prop_count":        len(raw_rows),
+        "outright_event_dedup_map": _ow_dedup_map,
+        "compatibility":            "PASS",   # guard_route_config already returned 409 on FAIL
+        "can_execute":              False,
+    }
+
     # ── Invocation audit ─────────────────────────────────────────────────────
     # Must be present in every 200 response regardless of terminal outcome.
     # The GPT treats a response without this block as incomplete runtime evidence
@@ -21475,7 +21592,12 @@ def gate_engine_run():
         resolve_lowest_ceiling    as _resolve_ceiling,
         MANIFEST_GOVERNANCE_HASH,
     )
-    _skills_req  = _det_req_skills(raw_rows)
+    # Use the full row set (prop + outright) so the audit correctly reflects
+    # which skills were required by the entire request.
+    _skills_req  = _det_req_skills(_all_raw_rows_for_audit)
+    # OUTRIGHT_WINNER rows always require the moneyline expert
+    if _outright_rows_for_moneyline:
+        _skills_req = _skills_req | {"wow.llp-moneyline-probability-expert"}
     _skills_inv  = [
         {"skill": sid,
          "version": sid.split(":")[-1] if ":" in sid else "v1",

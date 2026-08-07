@@ -72,6 +72,35 @@ PROP_TYPE_REQUIRED_GATES: dict[str, frozenset[str]] = {
     "1IP_PITCHER_STRIKEOUTS":         frozenset({"calibration_health"}),
 }
 
+# ---------------------------------------------------------------------------
+# Market-family route overrides
+# WOW-PATCH-2026-08-07-OUTRIGHT-MONEYLINE-ROUTING
+#
+# OUTRIGHT_WINNER rows are intercepted BEFORE _ge_run_pipeline and scored by
+# the LLP Moneyline Probability Expert.  They never enter the player-prop gate
+# pipeline, so the standard UNIVERSAL_REQUIRED_GATES (l5_l10_ledger,
+# market_gate, status_role, ev_gate …) do NOT apply.
+#
+# The controlling gate for OUTRIGHT_WINNER is "moneyline_expert" — a virtual
+# gate that gate_engine/moneyline_probability.py marks as run.
+# ---------------------------------------------------------------------------
+MARKET_FAMILY_REQUIRED_GATES: dict[str, frozenset[str]] = {
+    "OUTRIGHT_WINNER": frozenset({"moneyline_expert"}),
+    "PLAYER_PROP":     UNIVERSAL_REQUIRED_GATES,
+    "COMBO_PROP":      UNIVERSAL_REQUIRED_GATES,
+}
+
+# Route fields that must be present in every scored row's output block
+ROUTE_COMPATIBILITY_FIELDS: tuple[str, ...] = (
+    "route_id",
+    "market_family",
+    "objective",
+    "controlling_skill_id",
+    "input_contract_version",
+    "required_field_profile",
+    "compatibility",
+)
+
 
 def _normalize_prop_type(prop_type: str | None) -> str:
     return (prop_type or "").upper().replace(" ", "_").replace("-", "_").strip()

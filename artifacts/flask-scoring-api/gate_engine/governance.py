@@ -539,6 +539,43 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
         ),
     },
     {
+        "patch_id":    "WOW-PATCH-2026-08-07-OUTRIGHT-MONEYLINE-ROUTING",
+        "version":     "1.0",
+        "effective_at": "2026-08-07",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  102,
+        "can_execute": False,
+        "description": (
+            "Outright Moneyline Routing (2026-08-07): "
+            "Adds first-class, immutable market-family classification (OUTRIGHT_WINNER / "
+            "PLAYER_PROP / COMBO_PROP) that runs BEFORE generic prop normalization. "
+            "OUTRIGHT_WINNER rows are intercepted before _ge_run_pipeline and scored by "
+            "the LLP Moneyline Probability Expert (wow.llp-moneyline-probability-expert). "
+            "Objective: OUTRIGHT_WIN_PROBABILITY_ONLY. "
+            "Input contract: MONEYLINE_V1 — requires: sport, team, opponent, market_type, "
+            "event_id, slate_date; prohibits: line, direction, prop_type, stat_key, game_log, "
+            "player_role. "
+            "Hard compatibility guard before pipeline: OUTRIGHT_WINNER + PLAYER_PROP batch "
+            "→ HTTP 409 RUN_INVALID_ROUTE_CONFIGURATION with primary_blocker= "
+            "MONEYLINE_ROUTED_TO_PROP_CONTRACT; candidate_evaluation_completed=false. "
+            "Routing bugs must never resolve to NO_PLAY. "
+            "Soccer 1X2 three-state (home/draw/away) preserved — binary conversion prohibited. "
+            "Event deduplication: same event from N sportsbook sources → one canonical model "
+            "with platform_appearances metadata. "
+            "Sportsbook odds used as prior/sanity only — cannot substitute for sport model. "
+            "STALE_MODEL_INVALIDATED: material starter/lineup change mandates rerun. "
+            "Route compatibility fields added to every scored row and the governance handshake: "
+            "route_id, market_family, objective, controlling_skill_id, "
+            "input_contract_version, required_field_profile, compatibility. "
+            "Sport models: MLB/NBA/WNBA/ATP/WTA/TENNIS/MMA/UFC=ACTIVE; "
+            "NFL/NHL/SOCCER/EPL/MLS=PROVISIONAL. "
+            "Modules: gate_engine/market_family.py, gate_engine/moneyline_probability.py. "
+            "Regression suite: gate_engine/tests/test_moneyline_routing.py (87 tests). "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
         "patch_id":    "WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH",
         "version":     "1.0",
         "effective_at": "2026-08-01",
