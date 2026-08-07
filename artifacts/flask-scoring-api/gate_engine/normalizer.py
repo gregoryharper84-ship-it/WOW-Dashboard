@@ -170,6 +170,19 @@ _STAT_KEY_MAP: dict[str, dict[str, Any]] = {
         "pitches thrown 1st":        "1IP_PITCHES_THROWN",
         "1ip pitches thrown":        "1IP_PITCHES_THROWN",
         "1ip pitches":               "1IP_PITCHES_THROWN",
+        # ── WOW-PATCH-2026-08-06-MLB-PLATE-APPEARANCES-COVERAGE ──────────
+        # Section 18.9 MLB Plate Appearances Props display-label aliases.
+        # All variants resolve to MLB_PLATE_APPEARANCES so the mlb_pa_gate
+        # and model registry both recognise the prop without DATA_CONTRACT_FAIL.
+        "plate appearances":             "MLB_PLATE_APPEARANCES",
+        "plate appearance":              "MLB_PLATE_APPEARANCES",
+        "plate_appearances":             "MLB_PLATE_APPEARANCES",
+        "pa":                            "MLB_PLATE_APPEARANCES",
+        "plate app":                     "MLB_PLATE_APPEARANCES",
+        "plate app.":                    "MLB_PLATE_APPEARANCES",
+        "total plate appearances":       "MLB_PLATE_APPEARANCES",
+        "total pa":                      "MLB_PLATE_APPEARANCES",
+        "mlb plate appearances":         "MLB_PLATE_APPEARANCES",
     },
     "NFL": {
         "passing yards":        "PASS_YDS",

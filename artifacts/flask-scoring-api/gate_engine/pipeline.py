@@ -33,6 +33,7 @@ from . import route_registry
 # LLP MLB Winner Preflight Gate (reviewer-mandated, patch-level required)
 from . import llp_mlb_winner_preflight
 from . import mlb_directional_firewall, wnba_composite_gate, cross_ticket_governor
+from .mlb import plate_appearances_gate as _mlb_pa_gate
 from .wnba import opportunity_engine as _wnba_opp_gate
 from .wnba import evidence_acquisition as _wnba_evidence_acq
 from .portfolio.cross_slip_exposure import PortfolioExposureGovernor as _PortfolioGov
@@ -665,6 +666,11 @@ def run_pipeline(
         # K LESS=WATCH_ONLY, OUTS MORE=MODEL_QUALIFIED_HOLD ceiling.
         # Stamps directional_lane, short_outing_support_share, etc.
         mlb_directional_firewall.run(row)
+
+        # WOW-PATCH-2026-08-06-MLB-PLATE-APPEARANCES-COVERAGE
+        # Section 18.9 gating and routing for MLB Plate Appearances props.
+        # No-ops for all other stat_keys.
+        _mlb_pa_gate.run(row)
 
         # PATCH-017 — WNBA Composite Forward-Test Gate
         # MODEL_QUALIFIED_HOLD ceiling until 20 unique player-games settled.

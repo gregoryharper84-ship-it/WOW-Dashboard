@@ -70,6 +70,11 @@ PROP_TYPE_REQUIRED_GATES: dict[str, frozenset[str]] = {
     "FIRST_INNING_PITCHES_THROWN":    frozenset({"calibration_health"}),
     "FIRST_INNING_PITCHES":           frozenset({"calibration_health"}),
     "1IP_PITCHER_STRIKEOUTS":         frozenset({"calibration_health"}),
+    # WOW-PATCH-2026-08-06-MLB-PLATE-APPEARANCES-COVERAGE
+    # Section 18.9 — mlb_pa_gate must run for all PA prop variants.
+    "MLB_PLATE_APPEARANCES":          frozenset({"mlb_pa_gate"}),
+    "PA":                             frozenset({"mlb_pa_gate"}),
+    "PLATE_APPEARANCES":              frozenset({"mlb_pa_gate"}),
 }
 
 # ---------------------------------------------------------------------------

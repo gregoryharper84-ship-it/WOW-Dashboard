@@ -70,6 +70,11 @@ _PROP_TYPE_TO_MARKET_SUFFIX = {
     # _market_key_for("MLB", "pitching outs") → prefix="pitcher" + "outs" = "pitcher_outs".
     "pitching outs": "outs",
     "outs": "outs",               # short-form stat_key emitted by _norm_to_pipeline_row
+    # WOW-PATCH-2026-08-06-MLB-PLATE-APPEARANCES-COVERAGE
+    "mlb_plate_appearances": "plate_appearances",
+    "plate appearances":     "plate_appearances",
+    "plate_appearances":     "plate_appearances",
+    "pa":                    "plate_appearances",
     "passing yards": "pass_yds",
     "passing tds": "pass_tds",
     "rushing yards": "rush_yds",

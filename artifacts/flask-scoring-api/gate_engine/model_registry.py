@@ -143,6 +143,25 @@ _REGISTRY: dict = {
         "PROVISIONAL — not yet back-tested against settled results",
     ),
 
+    # ── MLB: Plate Appearances (Section 18.9) ─────────────────────────────
+    # Discrete PA opportunity/volume distribution model.
+    # Gating and routing performed by gate_engine/mlb/plate_appearances_gate.py.
+    # The numeric distribution (P(PA=3/4/5/≥6)) is supplied as pre-computed
+    # enrichment; full distribution computation inside the gate engine is a
+    # planned future enhancement.  PROVISIONAL until back-tested against
+    # settled PA results.
+    ("MLB", "MLB_PLATE_APPEARANCES"): _prov(
+        "mlb_pa_opportunity_v1",
+        ["game_log"],
+        "Discrete PA opportunity/volume distribution; gating via "
+        "mlb/plate_appearances_gate.py (Section 18.9); numeric distribution "
+        "supplied as pre-computed enrichment; PROVISIONAL — not back-tested",
+    ),
+    ("MLB", "PA"):               _prov("mlb_pa_opportunity_v1", ["game_log"],
+                                       "Alias for MLB_PLATE_APPEARANCES"),
+    ("MLB", "PLATE_APPEARANCES"): _prov("mlb_pa_opportunity_v1", ["game_log"],
+                                        "Alias for MLB_PLATE_APPEARANCES"),
+
     # ── NBA: counting stats (Poisson λ = game-log mean) ──────────────────
     # PROVISIONAL: ignores minutes distribution, role changes, opponent context
     ("NBA", "PTS"):          _prov("nba_counting_poisson_v1", ["game_log"]),
