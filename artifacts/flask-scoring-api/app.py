@@ -20717,8 +20717,155 @@ def wow_engine_health():
             "multipart_image_support":      True,
             "gate_request_normalization":   True,
             "structured_pipeline_failures": True,
+            "noaa_ncei_weather_fallback":   True,
+            "backend_failover_classifier":  True,
         },
+        "source_status_endpoint": "/wow/engine/source-status",
         "can_execute":     False,
+    }), 200
+
+
+@app.route("/wow/engine/source-status", methods=["GET"])
+def wow_engine_source_status():
+    """
+    GET /wow/engine/source-status
+
+    Concurrent reachability probe for all genuine API-backed data sources.
+    Runs each probe in a thread with a 3-second timeout so the total response
+    time is bounded by the slowest single source, not their sum.
+
+    Sources checked:
+      mlb_stats_api    — statsapi.mlb.com (no auth)
+      nhl_stats_api    — api-web.nhle.com (no auth)
+      balldontlie      — api.balldontlie.io (requires BALLDONTLIE_KEY secret)
+      nws              — api.weather.gov (no auth)
+      open_meteo       — api.open-meteo.com (no auth)
+      noaa_ncei_cdo    — ncei.noaa.gov CDO API (requires NOAA_CDO_TOKEN secret)
+      therundown       — api.the-rundown.io (requires THERUNDOWN_API_KEY; omitted if not set)
+
+    Not checked (no public API — handled by Claude web-search gap-fill):
+      Hockey-Reference, ESPN, Basketball-Reference, FBref, Sofascore,
+      WhoScored, DailyFaceoff, Natural Stat Trick.
+
+    Returns per-source: status (UP|DOWN|TOKEN_MISSING|NOT_CONFIGURED),
+    latency_ms, and http_status.
+    """
+    import os as _os, time as _time
+    import requests as _requests
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    _PROBE_TIMEOUT = 3   # seconds per probe
+
+    def _probe(name: str, url: str, headers: dict | None = None) -> dict:
+        t0 = _time.monotonic()
+        try:
+            r = _requests.get(url, headers=headers or {}, timeout=_PROBE_TIMEOUT,
+                              allow_redirects=True)
+            latency = round((_time.monotonic() - t0) * 1000)
+            if r.status_code < 400:
+                return {"source": name, "status": "UP",
+                        "http_status": r.status_code, "latency_ms": latency}
+            return {"source": name, "status": "DOWN",
+                    "http_status": r.status_code, "latency_ms": latency}
+        except Exception as exc:
+            latency = round((_time.monotonic() - t0) * 1000)
+            return {"source": name, "status": "DOWN",
+                    "http_status": None, "latency_ms": latency,
+                    "error": str(exc)[:120]}
+
+    # Build probe list
+    probes: list[tuple[str, str, dict]] = []
+
+    # MLB Stats API
+    probes.append(("mlb_stats_api",
+                   "https://statsapi.mlb.com/api/v1/sports",
+                   {"User-Agent": "WOW-v16-SourceProbe/1.0"}))
+
+    # NHL Stats API
+    probes.append(("nhl_stats_api",
+                   "https://api-web.nhle.com/v1/standings/now",
+                   {"User-Agent": "WOW-v16-SourceProbe/1.0"}))
+
+    # NWS
+    probes.append(("nws",
+                   "https://api.weather.gov/",
+                   {"User-Agent": _nws_user_agent(),
+                    "Accept":     "application/geo+json"}))
+
+    # Open-Meteo (lightweight current-temp probe)
+    probes.append(("open_meteo",
+                   "https://api.open-meteo.com/v1/forecast"
+                   "?latitude=41.78&longitude=-87.75&current=temperature_2m",
+                   {}))
+
+    results: list[dict] = []
+
+    # BallDontLie — requires API key
+    bdl_key = _os.environ.get("BALLDONTLIE_KEY") or _os.environ.get("balldontlie", "")
+    if bdl_key:
+        probes.append(("balldontlie",
+                       "https://api.balldontlie.io/v1/teams?per_page=1",
+                       {"Authorization": bdl_key}))
+    else:
+        results.append({"source": "balldontlie", "status": "TOKEN_MISSING",
+                        "http_status": None, "latency_ms": None,
+                        "note": "BALLDONTLIE_KEY / balldontlie env var not set"})
+
+    # NOAA/NCEI CDO — requires token
+    ncei_token = _os.environ.get("NOAA_CDO_TOKEN", "")
+    if ncei_token:
+        probes.append(("noaa_ncei_cdo",
+                       "https://www.ncei.noaa.gov/cdo-web/api/v2/datasets?limit=1",
+                       {"token": ncei_token}))
+    else:
+        results.append({"source": "noaa_ncei_cdo", "status": "TOKEN_MISSING",
+                        "http_status": None, "latency_ms": None,
+                        "note": "NOAA_CDO_TOKEN env var not set"})
+
+    # TheRundown — optional; omit if not configured
+    rundown_key = _os.environ.get("THERUNDOWN_API_KEY", "")
+    if rundown_key:
+        probes.append(("therundown",
+                       "https://api.the-rundown.io/sports",
+                       {"apikey": rundown_key}))
+    else:
+        results.append({"source": "therundown", "status": "NOT_CONFIGURED",
+                        "http_status": None, "latency_ms": None,
+                        "note": "THERUNDOWN_API_KEY env var not set — connector not active"})
+
+    # Run probes concurrently
+    with ThreadPoolExecutor(max_workers=len(probes)) as pool:
+        futures = {pool.submit(_probe, name, url, hdrs): name
+                   for name, url, hdrs in probes}
+        for fut in as_completed(futures):
+            try:
+                results.append(fut.result())
+            except Exception as exc:
+                results.append({"source": futures[fut], "status": "DOWN",
+                                 "error": str(exc)[:120]})
+
+    # Sort results by source name for consistent output
+    results.sort(key=lambda r: r["source"])
+
+    up_count   = sum(1 for r in results if r["status"] == "UP")
+    down_count = sum(1 for r in results if r["status"] == "DOWN")
+
+    return jsonify({
+        "ok":           True,
+        "sources":      results,
+        "summary": {
+            "total":    len(results),
+            "up":       up_count,
+            "down":     down_count,
+            "degraded": len(results) - up_count - down_count,
+        },
+        "probe_timeout_seconds": _PROBE_TIMEOUT,
+        "not_checked_note": (
+            "Hockey-Reference, ESPN, Basketball-Reference, FBref, Sofascore, "
+            "WhoScored, DailyFaceoff, and Natural Stat Trick have no public API "
+            "and are handled by Claude web-search gap-fill, not backend connectors."
+        ),
+        "can_execute": False,
     }), 200
 
 
@@ -23409,9 +23556,11 @@ def kalshi_gpt_evaluate_weather(city):
         except Exception:
             date_str = _dt.date.today().isoformat()
 
-    # ── Step 1: NWS data ──────────────────────────────────────────────────────
+    # ── Step 1: Weather data (three-tier fallback) ───────────────────────────
+    # NWS CLI (observed settlement high) — NWS only; no substitute permitted.
+    # Forecast high (pre-settlement) — NWS → Open-Meteo → NOAA/NCEI.
     cli_result      = _fetch_nws_cli(city)
-    fc_result       = _fetch_nws_forecast_high(city, date_str)
+    fc_result       = _fetch_forecast_high_tiered(city, date_str)
 
     observed_high   = cli_result.get("observed_high")
     report_status   = cli_result.get("report_status", "ERROR")
@@ -23521,26 +23670,28 @@ def kalshi_gpt_evaluate_weather(city):
         "station_name":           station["name"],
         "date":                   date_str,
         "sigma_f":                sigma_f,
-        "forecast_high":          forecast_high,
-        "forecast_source":        forecast_source,
-        "observed_high":          observed_high,
-        "report_status":          report_status,
-        "revision_risk":          revision_risk,
-        "model_high":             model_high,
-        "scoring_mode":           scoring_mode,
-        "forecast_horizon_hours": round(horizon_hours, 1),
-        "weather_label":          weather_label,
-        "terminal_label":         terminal_label,
-        "brackets_scored":        brackets_scored,
-        "tickers_found":          mkt_result.get("tickers_found", []),
-        "price_source":           effective_price_src,
-        "price_age_minutes":      price_gate.get("price_age_minutes"),
-        "can_execute":            False,
-        "dry_run_only":           True,
-        "execution_rule":         "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
-        "note":                   "Brackets auto-built from live Kalshi market tickers. "
-                                  "For precise scoring, use POST /wow/kalshi/weather/evaluate "
-                                  "with explicit bracket labels.",
+        "forecast_high":              forecast_high,
+        "forecast_source":            forecast_source,
+        "weather_data_source_tier":   fc_result.get("weather_data_source_tier", "nws_primary"),
+        "forecast_tier_detail":       fc_result.get("tier_detail"),
+        "observed_high":              observed_high,
+        "report_status":              report_status,
+        "revision_risk":              revision_risk,
+        "model_high":                 model_high,
+        "scoring_mode":               scoring_mode,
+        "forecast_horizon_hours":     round(horizon_hours, 1),
+        "weather_label":              weather_label,
+        "terminal_label":             terminal_label,
+        "brackets_scored":            brackets_scored,
+        "tickers_found":              mkt_result.get("tickers_found", []),
+        "price_source":               effective_price_src,
+        "price_age_minutes":          price_gate.get("price_age_minutes"),
+        "can_execute":                False,
+        "dry_run_only":               True,
+        "execution_rule":             "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        "note":                       "Brackets auto-built from live Kalshi market tickers. "
+                                      "For precise scoring, use POST /wow/kalshi/weather/evaluate "
+                                      "with explicit bracket labels.",
     }), 200
 
 
@@ -23756,6 +23907,203 @@ def _fetch_nws_forecast_high(city: str, date_str: str) -> dict:
                 "error": "No daytime periods in NWS forecast"}
     except Exception as exc:
         return {"forecast_high": None, "forecast_source": "none", "error": str(exc)}
+
+
+# ── WOW-PATCH-2026-08-07-NOAA-NCEI-FALLBACK: Three-tier weather fetch ─────────
+#
+# Tier 1 (nws_primary):        NWS gridpoint forecast — authoritative for
+#                               pre-settlement probability; unchanged.
+# Tier 2 (open_meteo_fallback): Open-Meteo daily max — free, no auth, no key.
+# Tier 3 (noaa_ncei_fallback):  NOAA/NCEI GHCND TMAX — requires NOAA_CDO_TOKEN.
+#
+# NOTE: NWS CLI (observed_high) is NEVER substituted — it is the only valid
+# Kalshi contract settlement source.  The tiered fallback applies ONLY to the
+# pre-settlement forecast path.
+
+def _fetch_open_meteo_daily_high(city: str, date_str: str) -> dict:
+    """
+    Fetch the daily maximum temperature for a Kalshi city and date from Open-Meteo.
+    Uses the archive API for past dates, the standard forecast API for future dates.
+    Returns {"forecast_high": int|None, "forecast_source": str, ...}
+    """
+    import requests, datetime as _dt
+    station = _KALSHI_WEATHER_STATIONS.get(city)
+    if not station:
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": f"Unknown city: {city}"}
+
+    lat, lon = station["lat"], station["lon"]
+
+    try:
+        today  = _dt.date.today()
+        target = _dt.date.fromisoformat(date_str)
+
+        if target < today:
+            # Historical: use Open-Meteo archive API
+            url    = "https://archive-api.open-meteo.com/v1/archive"
+            params = {
+                "latitude":          lat,
+                "longitude":         lon,
+                "start_date":        date_str,
+                "end_date":          date_str,
+                "daily":             "temperature_2m_max",
+                "temperature_unit":  "fahrenheit",
+                "timezone":          "auto",
+            }
+        else:
+            # Forecast: standard Open-Meteo API
+            days_ahead = (target - today).days + 1
+            url    = "https://api.open-meteo.com/v1/forecast"
+            params = {
+                "latitude":          lat,
+                "longitude":         lon,
+                "daily":             "temperature_2m_max",
+                "temperature_unit":  "fahrenheit",
+                "timezone":          "auto",
+                "forecast_days":     min(max(days_ahead + 1, 2), 16),
+            }
+
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        data  = r.json()
+        daily = data.get("daily", {})
+        dates = daily.get("time", [])
+        highs = daily.get("temperature_2m_max", [])
+
+        for d, h in zip(dates, highs):
+            if d == date_str and h is not None:
+                return {
+                    "forecast_high":   round(h),
+                    "forecast_source": (
+                        "open_meteo_archive" if target < today else "open_meteo_forecast"
+                    ),
+                }
+
+        # Exact date not in response — return first available value
+        if highs and highs[0] is not None:
+            return {
+                "forecast_high":   round(highs[0]),
+                "forecast_source": "open_meteo_nearest",
+                "note":            f"nearest available date, not exact {date_str}",
+            }
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": "Open-Meteo returned no data for requested date"}
+    except Exception as exc:
+        return {"forecast_high": None, "forecast_source": "none", "error": str(exc)}
+
+
+def _fetch_noaa_ncei_daily_high(city: str, date_str: str) -> dict:
+    """
+    Fetch the daily maximum temperature for a Kalshi city and date from the
+    NOAA/NCEI CDO API (GHCND dataset, TMAX datatype).
+    Reuses _NCEI_CDO_STATION_IDS and _ncei_cdo_get helpers.
+    Returns {"forecast_high": int|None, "forecast_source": str, ...}
+    """
+    station_ghcnd = _NCEI_CDO_STATION_IDS.get(city)
+    if not station_ghcnd:
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": f"No NCEI GHCND station ID mapped for {city}"}
+
+    result = _ncei_cdo_get("data", {
+        "datasetid":  "GHCND",
+        "stationid":  station_ghcnd,
+        "datatypeid": "TMAX",
+        "startdate":  date_str,
+        "enddate":    date_str,
+        "units":      "standard",   # requests °F; may still return tenths-of-°C
+        "limit":      1,
+    })
+
+    if not result.get("ok"):
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": result.get("reason", "NCEI fetch failed"),
+                "source_status": result.get("source_status")}
+
+    records = (result.get("data") or {}).get("results") or []
+    if not records:
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": f"NCEI returned no TMAX records for {date_str}",
+                "source_status": "NO_DATA"}
+
+    tmax_raw = records[0].get("value")
+    if tmax_raw is None:
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": "NCEI TMAX value is null"}
+
+    # Magnitude detection (same pattern as calibration route):
+    # units=standard should return °F but sometimes delivers tenths-of-°C
+    v = float(tmax_raw)
+    tmax_f = round((v / 10.0 * 9.0 / 5.0) + 32.0) if v > 150 else round(v)
+
+    return {
+        "forecast_high":   tmax_f,
+        "forecast_source": "noaa_ncei_ghcnd",
+        "ncei_station":    station_ghcnd,
+        "ncei_raw_value":  tmax_raw,
+    }
+
+
+def _fetch_forecast_high_tiered(city: str, date_str: str) -> dict:
+    """
+    Fetch the pre-settlement daily high temperature using a three-tier fallback:
+
+      Tier 1  nws_primary         — NWS gridpoint forecast
+      Tier 2  open_meteo_fallback  — Open-Meteo forecast / archive
+      Tier 3  noaa_ncei_fallback   — NOAA/NCEI GHCND TMAX
+
+    Returns all fields of the winning source's result plus:
+      weather_data_source_tier  str   — which tier was used
+      tier_detail               dict  — per-tier attempt summary (for audit)
+
+    The weather-settlement-auditor skill reads weather_data_source_tier to
+    determine which source populated the scoring model.
+    """
+    tier_detail: dict = {}
+
+    # ── Tier 1: NWS ────────────────────────────────────────────────────────
+    nws = _fetch_nws_forecast_high(city, date_str)
+    tier_detail["nws"] = {
+        "attempted":  True,
+        "ok":         nws.get("forecast_high") is not None,
+        "error":      nws.get("error"),
+    }
+    if nws.get("forecast_high") is not None:
+        return {**nws,
+                "weather_data_source_tier": "nws_primary",
+                "tier_detail": tier_detail}
+
+    # ── Tier 2: Open-Meteo ─────────────────────────────────────────────────
+    om = _fetch_open_meteo_daily_high(city, date_str)
+    tier_detail["open_meteo"] = {
+        "attempted":  True,
+        "ok":         om.get("forecast_high") is not None,
+        "error":      om.get("error"),
+    }
+    if om.get("forecast_high") is not None:
+        return {**om,
+                "weather_data_source_tier": "open_meteo_fallback",
+                "tier_detail": tier_detail}
+
+    # ── Tier 3: NOAA/NCEI ──────────────────────────────────────────────────
+    ncei = _fetch_noaa_ncei_daily_high(city, date_str)
+    tier_detail["noaa_ncei"] = {
+        "attempted":      True,
+        "ok":             ncei.get("forecast_high") is not None,
+        "error":          ncei.get("error"),
+        "source_status":  ncei.get("source_status"),
+    }
+    if ncei.get("forecast_high") is not None:
+        return {**ncei,
+                "weather_data_source_tier": "noaa_ncei_fallback",
+                "tier_detail": tier_detail}
+
+    # ── All tiers exhausted ────────────────────────────────────────────────
+    return {
+        "forecast_high":            None,
+        "forecast_source":          "none",
+        "weather_data_source_tier": "all_sources_failed",
+        "tier_detail":              tier_detail,
+    }
 
 
 # ── WEATHER PATCH-002: Gaussian bracket probability ───────────────────────────
@@ -24943,9 +25291,11 @@ def wow_kalshi_weather_evaluate():
 
     station = _KALSHI_WEATHER_STATIONS[city]
 
-    # ── Step 1: NWS data ──────────────────────────────────────────────────────
+    # ── Step 1: Weather data (three-tier fallback) ───────────────────────────
+    # NWS CLI (observed settlement high) — NWS only; no substitute permitted.
+    # Forecast high (pre-settlement) — NWS → Open-Meteo → NOAA/NCEI.
     cli_result      = _fetch_nws_cli(city)
-    fc_result       = _fetch_nws_forecast_high(city, date_str)
+    fc_result       = _fetch_forecast_high_tiered(city, date_str)
 
     observed_high   = cli_result.get("observed_high")
     report_status   = cli_result.get("report_status", "ERROR")
@@ -25105,10 +25455,12 @@ def wow_kalshi_weather_evaluate():
         "observed_high":          observed_high,
         "report_status":          report_status,
         "revision_risk":          revision_risk,
-        "forecast_high":          forecast_high,
-        "forecast_source":        forecast_source,
-        "model_high":             model_high,
-        "data_sources":           data_sources,
+        "forecast_high":             forecast_high,
+        "forecast_source":           forecast_source,
+        "weather_data_source_tier":  fc_result.get("weather_data_source_tier", "nws_primary"),
+        "forecast_tier_detail":      fc_result.get("tier_detail"),
+        "model_high":                model_high,
+        "data_sources":              data_sources,
         # PATCH-002 model
         "scoring_mode":           scoring_mode,
         "sigma_f":                sigma_f,               # TF-WX-16

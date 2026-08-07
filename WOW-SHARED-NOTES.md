@@ -1029,3 +1029,40 @@ POST-DEPLOY NOTES:
 
 ═══════════════════════════════════════════════════
 
+
+## Patch Queue Entry — 2026-08-06
+
+### WOW-PATCH-2026-08-06-BACKUP-SOURCE-STACK
+
+═══════════════════════════════════════════════════
+WOW PATCH — BACKUP SOURCE STACK
+═══════════════════════════════════════════════════
+
+PATCH ID:          WOW-PATCH-2026-08-06-BACKUP-SOURCE-STACK
+BASE SPEC:         WOW v16 Clean Core / Framework v2.2.0
+PATCH TYPE:        [X] Skill update (wow-market-sources SKILL.md) + [X] Dashboard code (weather fallback + health aggregation)
+ORIGIN:            [X] Proactive model improvement — Greg's rule that no leg may be marked DATA UNOBTAINABLE without 1-3 backup sources being exhausted per category first
+
+─────────────────────────────────────────────────
+PROBLEM STATEMENT
+─────────────────────────────────────────────────
+Several sport/data categories (NHL gamelogs, NHL goalie/lineup, Soccer XI/stats, Kalshi weather settlement, NBA gamelogs) had only 1 named source with no documented backups, meaning a single source outage or miss could produce a false DATA UNOBTAINABLE / REJECT_DATA_QUALITY / MODEL_QUALIFIED_HOLD result. Session also surfaced 15 legs (9 WNBA rebounds/PRA, 4 MLB Pitching Outs, 2 MLB Plate Appearances) blocked by incomplete data, prompting this systemic fix.
+
+FAILURE TAG(S):    data-validation-gap, missing-l10-ledger
+
+─────────────────────────────────────────────────
+RULE CHANGE
+─────────────────────────────────────────────────
+AFFECTED SECTION:  wow-market-sources SKILL.md (new section: Sport-Specific Stat/Data Source Backups); backend weather fallback chain; /wow/engine/health aggregation
+
+NEW RULE:
+Every sport/data category must have a primary source plus 1-3 named backups before a leg may be marked DATA UNOBTAINABLE (PATCH-I ladder Step 8). Backend: NOAA/NCEI added as tertiary weather fallback (NWS primary -> Open-Meteo secondary -> NOAA/NCEI tertiary) for Kalshi weather lane, matching existing MLB weather stack pattern. /wow/engine/health extended to surface up/down status of all API-backed sources in one call. Scrape-only sources (Hockey-Reference, ESPN, Basketball Reference, FBref, Sofascore, WhoScored, DailyFaceoff, Natural Stat Trick) are explicitly NOT backend connectors -- they remain Claude's manual web-search gap-fill sources per wow-gap-fill-search skill, since they have no public API and scraping them is fragile/ToS-risky.
+
+─────────────────────────────────────────────────
+IMPLEMENTATION
+─────────────────────────────────────────────────
+ANALYTICAL IMPACT: No change to approval thresholds. Reduces false DATA UNOBTAINABLE / hold labels caused by single-source-miss rather than genuine data absence.
+DASHBOARD IMPACT:  [X] Yes -- weather fallback tier + health aggregation
+STATUS: [X] Deployed (skill file) / weather+health backend change in progress
+
+═══════════════════════════════════════════════════
