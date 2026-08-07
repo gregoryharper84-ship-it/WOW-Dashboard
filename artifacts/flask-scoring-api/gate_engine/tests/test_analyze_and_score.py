@@ -976,6 +976,212 @@ class TestPipelinePlumbing:
 
 
 # ---------------------------------------------------------------------------
+# 1IP_PITCHES_THROWN enrichment regression
+# ---------------------------------------------------------------------------
+
+# Resolved 1IP row — mirrors a Brayan Bello "1st Inn. Pitches Thrown" leg
+# after the normalizer maps it to stat_key="1IP_PITCHES_THROWN".
+_1IP_RESOLVED_ROW = {
+    "leg_id":               "leg-1ip",
+    "player_id":            "660271",
+    "player_name_raw":      "Brayan Bello",
+    "player_name_resolved": "Brayan Bello",
+    "team":                 "BOS",
+    "opponent":             "ATL",
+    "game_id":              "g-1ip",
+    "game_time":            "2026-08-07T17:35:00Z",
+    "stat_key":             "1IP_PITCHES_THROWN",
+    "stat_formula":         None,
+    "line_value":           15.5,
+    "line_modifier":        "standard",
+    "side":                 "MORE",
+    "sport":                "MLB",
+    "platform":             "prizepicks",
+    "resolution_status":    "resolved",
+    "resolution_confidence": 1.0,
+    "matched_via":          "roster_exact",
+    "candidates":           [],
+    "resolution_notes":     "matched 'Brayan Bello'",
+    "flags":                [],
+    "ocr_confidence":       0.95,
+    "extraction_notes":     "",
+    "prop_type":            "1IP_PITCHES_THROWN",
+}
+
+_1IP_GAME_LOG = [16.0, 18.0, 14.0, 17.0, 15.0, 19.0, 13.0, 16.0, 17.0, 14.0]
+
+_1IP_VISION_RESPONSE = json.dumps([
+    {"player": "Brayan Bello", "sport": "MLB",
+     "prop": "1st Inn. Pitches Thrown",
+     "side": "MORE", "line": 15.5, "platform": "PrizePicks",
+     "ocr_confidence": 0.95}
+])
+
+
+class Test1IPEnrichmentE2E:
+    """
+    Endpoint-level regressions for 1IP_PITCHES_THROWN scoring via /analyze-and-score.
+
+    Verifies that:
+    1. GPT-submitted enrichment (with numeric game_log) is passed to build_auto_enrichment
+       as base_enrichment and not discarded.
+    2. The leg_id-keyed remap makes game_log reachable by compute_batch.
+    3. The resulting hit_probability is a non-null Poisson result (not no_data or
+       no_registered_model).
+    """
+
+    # ── Unit: enrichment key remap ───────────────────────────────────────────
+
+    def test_prob_enrichment_remaps_player_prop_to_leg_id(self):
+        """
+        The leg_id-keyed remap in Step F must copy player:prop entries to leg_id
+        so compute_batch can find them.
+        """
+        from gate_engine.hit_probability import compute_batch as _compute_hit_prob
+        row = {**_1IP_RESOLVED_ROW}
+        leg_id = row["leg_id"]
+        player = row["player_name_resolved"].lower()
+        prop   = row["stat_key"].lower()
+        pkey   = f"{player}:{prop}"
+
+        # Simulate what build_auto_enrichment produces (player:prop keyed)
+        enrichment = {pkey: {"game_log": _1IP_GAME_LOG}}
+
+        # Apply the remap as the endpoint does
+        prob_enrichment = dict(enrichment)
+        lid = row.get("leg_id") or ""
+        if lid and lid not in prob_enrichment:
+            if pkey in prob_enrichment:
+                prob_enrichment[lid] = prob_enrichment[pkey]
+
+        # Now compute_batch should find the game_log
+        leg = {
+            **row,
+            "player_name": row["player_name_resolved"],
+        }
+        results = _compute_hit_prob([leg], prob_enrichment)
+        r = results[0]
+        assert r["hit_probability"] is not None, (
+            f"compute_batch must return a Poisson result after remap; "
+            f"got model_used={r['model_used']!r} note={r['calibration_note']!r}"
+        )
+        assert r["model_used"] == "poisson_l10", (
+            f"Expected poisson_l10, got {r['model_used']!r}"
+        )
+
+    def test_compute_batch_without_remap_returns_no_data(self):
+        """
+        Without the leg_id remap, compute_batch finds no enrichment → no_data.
+        This confirms the remap is necessary, not cosmetic.
+        """
+        from gate_engine.hit_probability import compute_batch as _compute_hit_prob
+        row = {**_1IP_RESOLVED_ROW}
+        player = row["player_name_resolved"].lower()
+        prop   = row["stat_key"].lower()
+        pkey   = f"{player}:{prop}"
+
+        # enrichment keyed by player:prop only — no leg_id alias
+        enrichment = {pkey: {"game_log": _1IP_GAME_LOG}}
+        leg = {**row, "player_name": row["player_name_resolved"]}
+        results = _compute_hit_prob([leg], enrichment)
+        r = results[0]
+        # Without the remap, leg_id lookup fails → empty game_log → no_data
+        assert r["model_used"] == "no_data", (
+            f"Without remap, expected no_data; got {r['model_used']!r}"
+        )
+
+    # ── Endpoint: submitted enrichment reaches compute_batch ─────────────────
+
+    def test_analyze_and_score_1ip_with_enrichment_returns_poisson_probability(
+        self, app_client, monkeypatch
+    ):
+        """
+        Full endpoint regression: POST /analyze-and-score with a 1IP leg and
+        numeric game_log in the enrichment body must return a non-null hit_probability
+        computed via the Poisson model.
+        """
+        import app as _mod
+        import gate_engine.normalizer as _norm_mod
+        import gate_engine.auto_enrichment as _ae_mod
+        import gate_engine.claude_gap_fill as _cgf
+        import gate_engine.pipeline as _pipe_mod
+
+        key = _mod.os.environ.get("SCORING_API_KEY", "test-scoring-key")
+
+        # Stub vision extraction to return a single 1IP leg
+        msg_mock = MagicMock()
+        msg_mock.content = [MagicMock(text=_1IP_VISION_RESPONSE)]
+        client_mock = MagicMock()
+        client_mock.messages.create.return_value = msg_mock
+        _mod._ANTHROPIC_AVAILABLE = True
+        _mod._anthropic = MagicMock()
+        _mod._anthropic.Anthropic.return_value = client_mock
+
+        # Stub normalizer to return a resolved 1IP row (avoids real DB lookups)
+        monkeypatch.setattr(
+            _norm_mod, "normalize_legs",
+            lambda legs, **kw: [_1IP_RESOLVED_ROW],
+        )
+
+        # Stub claude gap-fill (not needed for this test)
+        monkeypatch.setattr(_cgf, "resolve_gaps", lambda reqs: [])
+
+        # Stub build_auto_enrichment: accept base_enrichment and include game_log
+        # from it so we simulate the merge behaviour without real Odds API calls.
+        def _fake_build_enrichment(rows, base_enrichment=None):
+            merged = {}
+            be = base_enrichment or {}
+            for row in rows:
+                player = (row.get("player") or "").lower()
+                prop   = (row.get("prop_type") or "").lower()
+                pkey   = f"{player}:{prop}"
+                entry  = dict((be.get(pkey) or be.get(row.get("row_id", "")) or {}))
+                if entry:
+                    merged[pkey] = entry
+            return merged, {"sports": {}}
+        monkeypatch.setattr(_ae_mod, "build_auto_enrichment", _fake_build_enrichment)
+
+        # Stub pipeline (not the focus of this test)
+        monkeypatch.setattr(
+            _pipe_mod, "run_pipeline",
+            lambda **kw: {"prop_ledger": []},
+        )
+
+        # Enrichment submitted by the GPT — keyed by player:prop (lowercase)
+        submitted_enrichment = {
+            "brayan bello:1ip_pitches_thrown": {
+                "game_log": _1IP_GAME_LOG,
+            }
+        }
+
+        resp = app_client.post(
+            "/analyze-and-score",
+            json={
+                "image":    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "enrichment": submitted_enrichment,
+            },
+            headers={"X-API-Key": key},
+        )
+
+        assert resp.status_code == 200, (
+            f"Expected 200; got {resp.status_code}: {resp.get_data(as_text=True)[:500]}"
+        )
+        body = resp.get_json()
+        assert body.get("ok") is True or "legs" in body, f"Unexpected body: {body}"
+
+        legs = body.get("legs") or []
+        assert legs, "Expected at least one leg in the response"
+
+        leg = legs[0]
+        hp = leg.get("hit_probability")
+        assert hp is not None, (
+            f"hit_probability must not be None when game_log is supplied; "
+            f"model_used={leg.get('hit_probability_model_used')!r}"
+        )
+        assert 0.0 <= hp <= 1.0, f"hit_probability out of range: {hp}"
+
+
+# ---------------------------------------------------------------------------
 # pytest fixtures
 # ---------------------------------------------------------------------------
 

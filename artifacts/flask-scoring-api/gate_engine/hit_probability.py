@@ -169,6 +169,11 @@ _COUNTING_STAT_KEYWORDS = {
 _MLB_COUNTING_STATS = {
     "so", "k", "strikeouts", "tb", "total_bases",
     "outs", "ip", "innings",
+    # 1st-inning pitches thrown: Poisson λ = game-log mean pitch count.
+    # Efficiency-deterioration ceiling (Section 18.4) is applied as a
+    # post-probability overlay via first_inning_efficiency.py — base
+    # routing here just needs the Poisson path.
+    "1ip_pitches_thrown",
 }
 
 # NFL counting stats eligible for Poisson model (yards, receptions, etc.)
@@ -854,6 +859,11 @@ _STAT_COL_MAP = {
     "SB": "SB",
     "SO": "SO", "K": "SO", "STRIKEOUTS": "SO",
     "BB": "BB",
+    # 1st-inning pitches thrown: canonical DB / savant ledger field name is
+    # "first_inning_pitches" (see gate_engine/mlb/savant_1ip_ledger.py).
+    # Without this mapping _coerce_game_log would look for "1IP_PITCHES_THROWN"
+    # as the dict key and find nothing, returning an empty list → no_data.
+    "1IP_PITCHES_THROWN": "first_inning_pitches",
 }
 
 

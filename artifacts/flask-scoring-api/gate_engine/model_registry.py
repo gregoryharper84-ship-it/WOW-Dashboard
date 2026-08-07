@@ -129,6 +129,20 @@ _REGISTRY: dict = {
     ("MLB", "INNINGS"):     _prov("mlb_counting_poisson_v1", ["game_log"]),
     ("MLB", "OUTS"):        _prov("mlb_counting_poisson_v1", ["game_log"]),
 
+    # ── MLB: 1st-inning pitches thrown (Poisson) ─────────────────────────
+    # Poisson λ = game-log mean of 1st-inning pitch counts.
+    # Ceiling modifications from the first-inning efficiency deterioration
+    # score (gate_engine/mlb/first_inning_efficiency.py, Section 18.4) are
+    # applied as a post-probability ceiling overlay — they do not change the
+    # base model here.  PROVISIONAL until back-tested against settled results.
+    ("MLB", "1IP_PITCHES_THROWN"): _prov(
+        "mlb_1ip_pitches_poisson_v1",
+        ["game_log"],
+        "Poisson λ=game-log mean 1st-inning pitch count; "
+        "efficiency ceiling from first_inning_efficiency.py Section 18.4; "
+        "PROVISIONAL — not yet back-tested against settled results",
+    ),
+
     # ── NBA: counting stats (Poisson λ = game-log mean) ──────────────────
     # PROVISIONAL: ignores minutes distribution, role changes, opponent context
     ("NBA", "PTS"):          _prov("nba_counting_poisson_v1", ["game_log"]),

@@ -3572,9 +3572,17 @@ def analyze_and_score():
     enrichment = {}
     source_status = {}
     if scored_rows:
-        # Build pipeline-format rows for auto_enrichment
+        # Build pipeline-format rows for auto_enrichment.
+        # Pass caller-supplied enrichment as base_enrichment so GPT-provided
+        # game_log / odds data merges into the auto-enrichment output rather
+        # than being discarded.  build_auto_enrichment only overwrites a field
+        # when the base_enrichment entry does NOT already have it, so caller
+        # data always wins.
         ae_rows = [_norm_to_pipeline_row(r) for r in scored_rows]
-        enrichment, source_status = _build_enrichment(ae_rows)
+        enrichment, source_status = _build_enrichment(
+            ae_rows,
+            base_enrichment=submitted_enrichment if submitted_enrichment else None,
+        )
 
     # ── Step E: Gate pipeline ────────────────────────────────────────────
     pipe_results: dict[str, dict] = {}  # leg_id → pipeline output for that row
@@ -3597,6 +3605,23 @@ def analyze_and_score():
             app.logger.exception("analyze_and_score: pipeline error: %s", exc)
 
     # ── Step F: Hit probability per leg ─────────────────────────────────
+    # build_auto_enrichment writes entries keyed by "player:prop_type" (the
+    # canonical write-key used by pipeline._get_enrichment).  compute_batch
+    # looks up by leg_id.  Build a secondary leg_id-indexed view of the
+    # enrichment dict so compute_batch can find game_log and no-vig data
+    # for each leg.  The player:prop entries remain in the dict for the
+    # gate pipeline; we only ADD leg_id aliases — no data is removed.
+    _prob_enrichment: dict = dict(enrichment)
+    for _sr in scored_rows:
+        _lid = _sr.get("leg_id") or ""
+        if not _lid or _lid in _prob_enrichment:
+            continue
+        _player = (_sr.get("player_name_resolved") or _sr.get("player_name_raw") or "").lower()
+        _prop   = (_sr.get("stat_key") or _sr.get("prop_type") or "").lower()
+        _pkey   = f"{_player}:{_prop}"
+        if _pkey in _prob_enrichment:
+            _prob_enrichment[_lid] = _prob_enrichment[_pkey]
+
     try:
         from gate_engine.hit_probability import compute_batch as _compute_hit_prob
         # Build leg dicts with all context for compute_batch
@@ -3607,7 +3632,7 @@ def analyze_and_score():
             }
             for r in norm_rows
         ]
-        hit_probs_list = _compute_hit_prob(all_norm_rows_for_prob, enrichment)
+        hit_probs_list = _compute_hit_prob(all_norm_rows_for_prob, _prob_enrichment)
         hit_probs: dict[str, dict] = {h["leg_id"]: h for h in hit_probs_list}
     except Exception as _hp_exc:
         app.logger.warning("analyze_and_score: hit_probability batch failed: %s", _hp_exc)
