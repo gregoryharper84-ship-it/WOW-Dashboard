@@ -1247,3 +1247,11 @@ DEPLOYMENT ORDER
 STATUS:            [X] Proposed -- awaiting ChatGPT review/approval (spec amendment, requires strategy authority sign-off before any implementation)
 
 ═══════════════════════════════════════════════════
+
+## Patch Update — 2026-08-06 (ChatGPT Review: APPROVED WITH REQUIRED REVISIONS)
+
+ChatGPT reviewed the proposed Section 18.9 and approved the core classification (PA as discrete opportunity/volume distribution, half-point-threshold exemption applies to classification only) but required 8 specific revisions before merge: (1) explicit PA distribution requirement replacing "L10 hit rate = model probability", (2) home/away ninth-inning asymmetry, (3) lineup-slot-specific modeling (1-3/4-6/7-9, not homogeneous top-6), (4) removal/substitution failure paths, (5) replace ambiguous "opposing starter pace" with specific run-prevention/BB-rate/bullpen inputs, (6) team implied run total reclassified as prior/context input not the model, (7) promotional/board verification (Standard/Goblin/Demon) with probability-qualification != payout-qualification rule, (8) precise CORE/MICRO-WINDOW routing logic with a game-state regime failure-path layer (P(prop) = sum of P(regime) x P(prop|regime)).
+
+All 8 revisions incorporated into the merged WOW-MASTER-SPEC.md Section 18.9 text (see spec file). 
+
+STATUS: STEP_3_MASTER_SPEC_MERGE = COMPLETE. STEP_4_REPLIT_IMPLEMENTATION = still NOT AUTHORIZED until this merge is confirmed canonical and reviewed -- do not build the normalizer alias or model registry entry yet, that requires an explicit separate go-ahead.

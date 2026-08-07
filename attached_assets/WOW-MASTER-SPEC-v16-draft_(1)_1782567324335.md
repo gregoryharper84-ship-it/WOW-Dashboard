@@ -1065,6 +1065,68 @@ Never call correlation “safe” unless each leg is individually playable.
 
 ---
 
+### 18.9 MLB Plate Appearances Props
+
+Plate Appearances are modeled as a discrete opportunity/volume distribution, not treated as binary merely because many PrizePicks lines display at a half-point threshold (e.g. 4.5). The half-point-threshold exemption applies only to market classification -- it does NOT waive exact-line distribution modeling, settlement verification, calibration, role/lineup verification, promotional economics, or failure-path analysis. Standard 0.5 event prop hard-ban (Section 16) does not apply to PA -- PA is evaluated as a volume stat, same treatment as Section 18.3 Pitching Outs.
+
+Required PA opportunity distribution (the final probability must come from this distribution, not from L10 hit rate treated as model probability):
+- P(PA = 3), P(PA = 4), P(PA = 5), P(PA >= 6)
+- P(MORE exact line), P(LESS exact line)
+- expected_PA, median_PA, PA_distribution_interval
+
+Required lineup/role inputs:
+- Confirmed starting lineup status and batting order slot
+- Slot-specific modeling -- do not treat slots 1-6 as homogeneous; model slots 1-3, 4-6, and 7-9 separately
+- L5/L10 exact-line PA hit rate, L10 median, L10 average (evidence for the distribution, not the model itself)
+
+Required home/away and game-state inputs:
+- home_away
+- probability_bottom_9th_is_played (home team leading after top 9 does not bat in the bottom 9, reducing opportunity)
+- team_implied_run_total (market/environment prior only -- influences expected PA volume, does not replace independent modeling)
+
+Required opposing pitching inputs (replaces vague "pace"):
+- opposing_starter_run_prevention
+- opposing_starter_BB_rate
+- opposing_starter_WHIP_or_baserunner_environment
+- expected_starter_length
+- opposing_bullpen_quality
+- opposing_bullpen_availability
+
+Required substitution/removal failure paths:
+- pinch_hit_risk
+- defensive_replacement_risk
+- platoon_substitution_risk
+- injury_or_return_from_injury
+- recent_full_game_start_rate
+- manager_substitution_tendency_when_material
+
+Required game-state regime modeling (failure-path layer):
+P(prop) = sum over i of [ P(regime_i) x P(prop | regime_i) ], across regimes:
+NORMAL_9_INNING_GAME, LOW_OFFENSE_SHORT_OPPORTUNITY, HIGH_OFFENSE_EXTRA_TURNOVER, HOME_TEAM_NO_BOTTOM_9TH, EXTRA_INNINGS, PLAYER_EARLY_REMOVAL, PLATOON_OR_PINCH_HIT_REMOVAL, WEATHER_OR_GAME_INTERRUPTION
+
+Required promotional/board verification:
+- exact_line_verified = true
+- offer_type_verified = true (Standard / Goblin / Demon)
+- direction_available_verified = true
+- For Demon/Goblin/promotional PA lines: probability qualification does not equal payout qualification -- promo economics must still separately pass the applicable payout/slip layer (Section 26-27)
+
+Routing decision logic:
+- Starting lineup unconfirmed => REJECT_DATA_QUALITY / HOLD
+- Batting slot unresolved => HOLD
+- Exact PA line unavailable => REJECT_DATA_QUALITY
+- L5/L10 ledger unavailable => REJECT_DATA_QUALITY
+- No PA opportunity distribution built => REJECT_DATA_QUALITY
+- Platoon/substitution risk materially unresolved => MICRO_WINDOW / HOLD
+- Slots 7-9 with unstable start history => MICRO_WINDOW ceiling (not automatic reject -- may exceed ceiling if model demonstrates sufficient opportunity probability)
+- Confirmed stable slots 1-6 + complete distribution + calibration + failure paths resolved => CORE eligible
+
+Volatility flags:
+- Green: locked-in slots 1-6, 15+ consecutive full-game starts, stable order, no material substitution risk
+- Yellow: slots 7-9, recent order changes, platoon situation, moderate substitution risk
+- Red: recent callup/debut, inconsistent starts, active lineup battle, elevated substitution risk
+
+---
+
 ## 19. NFL Rules
 
 Required:
