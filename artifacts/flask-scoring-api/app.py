@@ -141,7 +141,7 @@ _APP_START_TIME = time.time()
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
 _bt("flask app created — registering routes")
 
-BUILD_ID = "wow-pipeline-fix-2026-08-06-e2e-1"
+BUILD_ID = "wow-patch-prop-type-mapping-2026-08-07"
 
 
 # ---------------------------------------------------------------------------
