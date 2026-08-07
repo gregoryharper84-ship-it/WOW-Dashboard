@@ -1066,3 +1066,94 @@ DASHBOARD IMPACT:  [X] Yes -- weather fallback tier + health aggregation
 STATUS: [X] Deployed (skill file) / weather+health backend change in progress
 
 ═══════════════════════════════════════════════════
+
+---
+
+## Session Note — 2026-08-07 — Live Slate Root-Cause Audit
+
+### Slate: 15 props, 0 publishable backend hit probabilities
+
+Source document: `attached_assets/Pasted-The-live-WOW-backend-is-not-currently-publishing-a-vali_1786126608117.txt`
+
+Reviewer confirmed: backend responding normally. Labels are correct WOW governance outputs, not false positives. `can_execute=false`, `terminal_disposition=NO_PLAY`.
+
+---
+
+### Failure Class 1 — MLB Pitching Outs → REJECT_DATA_QUALITY (4 rows)
+
+**Affected:** Jack Perkins 14.5, Keider Montero 14.5, Tyler Phillips 14.5, Daniel Lynch IV 8.5
+
+**Root cause (two-layer):**
+1. `game_log` missing or fewer than 4 valid values → L5/L10 ledger exhausts both `game_log` and `season_log` paths → `data_status=FAILED` → `classifier.py:51-54` assigns `REJECT_DATA_QUALITY`
+2. REJECT_DATA_QUALITY is a **terminal label** — `pipeline.py:145-148` skips any further processing. No enrichment-fallback path exists from this state.
+
+**Model status:** `mlb_counting_poisson_v1` — **PROVISIONAL** (`model_registry.py:123-130`). Even with a complete 10-game game_log supplied, the label ceiling caps at MODEL_QUALIFIED_HOLD and `calibrated_probability` remains non-publishable under PROVISIONAL rules.
+
+**Fix path:** Supply ≥10 valid numeric pitcher-outs values in `game_log` before pipeline entry. Escapes REJECT_DATA_QUALITY. Remains PROVISIONAL ceiling until model is back-tested to ACTIVE status.
+
+---
+
+### Failure Class 2 — MLB Plate Appearances → DATA_CONTRACT_FAIL (2 rows)
+
+**Affected:** Wade Meckler 3.5, Randal Grichuk 3.5
+
+**Root cause (structural — two gaps, both required):**
+1. `gate_engine/normalizer.py` MLB `_STAT_KEY_MAP` has **no alias** for `"plate_appearances"`, `"plate appearances"`, or `"pa"` → falls through to `UNKNOWN_PROP_TYPE`
+2. `gate_engine/model_registry.py` has **no entry** for `("MLB", "PA")` or `("MLB", "PLATE_APPEARANCES")` → `NO_REGISTERED_MODEL`
+
+**This is a code gap, not a data gap.** Supplying enrichment does not fix it. Requires:
+- (a) Add normalizer aliases in `_STAT_KEY_MAP["MLB"]`
+- (b) Add model registry entry `("MLB", "PA")` with PROVISIONAL status and `game_log` as minimum input
+
+**Priority:** Medium. Both gaps must be addressed together — alias alone reaches NO_REGISTERED_MODEL, registry alone is never reached because normalization fails first.
+
+---
+
+### Failure Class 3 — WNBA Rebounds / PRA → MODEL_QUALIFIED_HOLD (9 rows)
+
+**Affected:** Leila Lacan 1.5 REB, Kelsey Plum 1.5 REB, Kahleah Copper 2.5 REB, Diamond Miller 2.5 REB, Sonia Citron 2.5 REB, Allisha Gray 2.5 REB, Naz Hillmon 2.5 REB, Michaela Onyenwere 2.5 REB, Cecilia Zandalasini 10.5 PRA
+
+**Root cause (two-layer ceiling):**
+1. Model `wnba_counting_poisson_v1` is **PROVISIONAL** for all WNBA REB / PRA combos (`model_registry.py:175-191`). PROVISIONAL ceiling hard-caps label at MODEL_QUALIFIED_HOLD, money-grade=false, power-eligible=false.
+2. `wnba_composite_gate.py:353-370` applies unconditional MODEL_QUALIFIED_HOLD when the forward-test milestone is below 20 unique player-games — fires independently of evidence completeness.
+3. `calibrated_probability=null` is NOT caused by the PROVISIONAL ceiling alone — it indicates the `game_log` / `box_score_log` / `role_status` evidence packet is incomplete. `wnba/missing_field_detector.py:40-53` requires: `event_status`, `role_status.active_status`, `role_status.role_timestamp`, `role_status.projected_minutes`, `box_score_log`, `l5_ledger`, `l10_ledger` (critical fields) + `matchup`, `market_comparison`, `news_contradiction_check` (qualification fields).
+
+**Fix path:** Supply complete evidence packet → escapes `calibrated_probability=null`. Label still caps at MODEL_QUALIFIED_HOLD under current PROVISIONAL status. Full ACTIVE designation requires back-testing against settled WNBA results — that work is not yet done.
+
+---
+
+### Hit Probability Advisory (structural only — NOT publishable backend probabilities)
+
+The following estimates are structural/market-implied reasoning. They are explicitly NOT WOW calibrated probabilities. `can_execute=false` applies to all. Do not use these for any position or EV calculation.
+
+**MLB Pitching Outs:**
+
+| Prop | Line | Structural read |
+|---|---|---|
+| Jack Perkins MORE 14.5 Outs | 14.5 (≥15 outs = 5.0 IP) | Starter threshold. Pitchers who reach 5 IP do so ~55-65% of starts on typical rosters; context-dependent on workload cap and run support. No backend model to narrow this. |
+| Keider Montero MORE 14.5 Outs | 14.5 | Same structural range as Perkins. |
+| Tyler Phillips MORE 14.5 Outs | 14.5 | Same structural range. |
+| Daniel Lynch IV MORE 8.5 Outs | 8.5 (≥9 outs = 3.0 IP exactly) | Very low threshold for a starter role — structurally ~75-85% completion rate if Lynch is a true starter. Drops sharply if deployed as an opener/bulk reliever. Role confirmation is the key unknown. |
+
+**WNBA Rebounds:**
+
+| Prop | Line | Structural read |
+|---|---|---|
+| Leila Lacan / Kelsey Plum MORE 1.5 REB | 1.5 (≥2) | Extremely low line for any WNBA player with regular minutes. Structural hit rate for starters with 20+ min: ~85-92%. Principal risk is DNP / limited minutes. |
+| Kahleah Copper MORE 2.5 REB | 2.5 (≥3) | Copper averages 4-5 rebounds in typical starter role. Structural ~65-75% excluding DNP risk. |
+| Diamond Miller / Sonia Citron / Allisha Gray / Naz Hillmon / Michaela Onyenwere MORE 2.5 REB | 2.5 (≥3) | Forward/wing role dependent. Without role_status confirmation, structural range is wide: 55-75% for confirmed starters, 35-55% for bench/rotation risk. Cannot narrow without game_log. |
+
+**WNBA PRA:**
+
+| Prop | Line | Structural read |
+|---|---|---|
+| Cecilia Zandalasini MORE 10.5 PRA | 10.5 (≥11 combined) | PRA combos at 10.5 require meaningful minutes and multi-category production. Without game_log and role packet, structural range is too wide to advise directionally. |
+
+**MLB Plate Appearances:**
+
+| Prop | Line | Structural read |
+|---|---|---|
+| Wade Meckler / Randal Grichuk MORE 3.5 PA | 3.5 (≥4) | Confirmed starting lineup hitters typically reach 4 PA in ~65-75% of 9-inning games. Rate rises in extra-inning games. Key risk: lineup slot (leadoff vs. 7th/8th) and game pace. No backend model exists for this prop type — normalizer and registry gaps must be fixed first. |
+
+**WOW governance verdict: 0 of 15 publishable. All remain NO_PLAY.**
+
