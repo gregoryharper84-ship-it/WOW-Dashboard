@@ -21412,9 +21412,10 @@ def gate_engine_run():
     # RUN_INVALID_ROUTE_CONFIGURATION — never NO_PLAY.
     # ─────────────────────────────────────────────────────────────────────────
     from gate_engine.market_family import (
-        classify_row       as _mf_classify_row,
-        guard_route_config as _mf_guard,
-        MarketFamily       as _MarketFamily,
+        classify_row                         as _mf_classify_row,
+        guard_route_config                   as _mf_guard,
+        partition_and_validate_outright_rows as _mf_partition_outright,
+        MarketFamily                         as _MarketFamily,
     )
     for _raw_row in raw_rows:
         _mf_classify_row(_raw_row)
@@ -21424,15 +21425,24 @@ def gate_engine_run():
     if _route_guard_err:
         return jsonify(_route_guard_err), 409
 
-    # Separate OUTRIGHT_WINNER rows from player-prop rows before the pipeline
-    _outright_rows_for_moneyline = [
+    # WOW-PATCH-2026-08-07-BATCH-PARTITION-FIX — Fix #3: Batch Failure Isolation
+    # Partition OUTRIGHT_WINNER rows from player-prop rows before any pipeline
+    # runs.  Each lane is validated and scored independently.  A failure in the
+    # moneyline lane (contract violation, missing field) does NOT reject valid
+    # player-prop rows in the same request — it only fails that specific row.
+    _all_outright_rows = [
         r for r in raw_rows if r.get("market_family") == _MarketFamily.OUTRIGHT_WINNER
     ]
     raw_rows = [
         r for r in raw_rows if r.get("market_family") != _MarketFamily.OUTRIGHT_WINNER
     ]
+    # Per-row MONEYLINE_V1 contract validation — valid rows go to the moneyline
+    # scorer; invalid rows get a per-row DATA_CONTRACT_FAIL entry in the response.
+    _ow_partition                = _mf_partition_outright(_all_outright_rows)
+    _outright_rows_for_moneyline = _ow_partition["valid"]
+    _outright_rows_invalid       = _ow_partition["invalid"]   # [{"row":…,"violations":[…]}]
     # Keep a combined reference for invocation audit (must cover all market families)
-    _all_raw_rows_for_audit = _outright_rows_for_moneyline + raw_rows
+    _all_raw_rows_for_audit = _all_outright_rows + raw_rows
     # ─────────────────────────────────────────────────────────────────────────
 
     target_date = None
@@ -21609,18 +21619,57 @@ def gate_engine_run():
         }
 
     # ── LLP Moneyline Probability Expert — score OUTRIGHT_WINNER rows ─────────
-    # Runs after the prop pipeline so both result sets can be merged into
-    # a single unified response.  Event deduplication collapses same-game
-    # rows from multiple sportsbooks into one canonical scored entry while
-    # preserving platform-specific settlement metadata.
+    # WOW-PATCH-2026-08-07-BATCH-PARTITION-FIX Fix #3: per-row failure isolation.
+    #
+    # Step A: Build per-row DATA_CONTRACT_FAIL entries for OUTRIGHT_WINNER rows
+    # that failed MONEYLINE_V1 contract validation.  These are emitted with
+    # failure_isolation="MONEYLINE_LANE_ONLY" so the caller can distinguish
+    # moneyline contract failures from prop-pipeline failures.  Player-prop rows
+    # in the same request are completely unaffected by anything in this block.
+    _ow_failure_results: list = []
+    for _inv in _outright_rows_invalid:
+        _inv_row        = _inv["row"]
+        _inv_violations = _inv["violations"]
+        _ow_failure_results.append({
+            "row_id":                 _inv_row.get("row_id"),
+            "sport":                  _inv_row.get("sport"),
+            "team":                   _inv_row.get("team") or _inv_row.get("player"),
+            "opponent":               _inv_row.get("opponent"),
+            "event_id":               _inv_row.get("event_id"),
+            "slate_date":             _inv_row.get("slate_date"),
+            "market_type":            _inv_row.get("market_type"),
+            "market_family":          "OUTRIGHT_WINNER",
+            "objective":              "OUTRIGHT_WIN_PROBABILITY_ONLY",
+            "controlling_skill":      "wow.llp-moneyline-probability-expert",
+            "input_contract_version": "MONEYLINE_V1",
+            "terminal_label":         "DATA_CONTRACT_FAIL",
+            "blockers": [
+                f"MONEYLINE_V1_CONTRACT_VIOLATION:{v}" for v in _inv_violations
+            ],
+            "contract_violations":    _inv_violations,
+            "failure_isolation":      "MONEYLINE_LANE_ONLY",
+            "model_id":               None,
+            "model_status":           None,
+            "probability_snapshot":   None,
+            "route_compatibility":    None,
+            "platform_appearances":   _inv_row.get("platform_appearances"),
+            "can_execute":            False,
+            "can_approve_bets":       False,
+        })
+
+    # Step B: Score valid OUTRIGHT_WINNER rows through the moneyline specialist.
+    # Runs after the prop pipeline so both result sets can be merged into a
+    # single unified response.  Event deduplication collapses same-game rows
+    # from multiple sportsbooks into one canonical scored entry while preserving
+    # platform-specific settlement metadata.
     _ow_dedup_map: dict = {}
+    _ow_results:   list = []
     if _outright_rows_for_moneyline:
         from gate_engine.moneyline_probability import (
             score_outright_winner_row as _score_moneyline,
             deduplicate_events        as _dedup_events,
         )
         _ow_deduped, _ow_dedup_map = _dedup_events(_outright_rows_for_moneyline)
-        _ow_results: list = []
         for _ow_row in _ow_deduped:
             _ow_enr    = enrichment.get(_ow_row.get("row_id") or "") or {}
             _ow_scored = _score_moneyline(_ow_row, enrichment=_ow_enr)
@@ -21648,7 +21697,12 @@ def gate_engine_run():
             }
             _ow_results.append(_ow_entry)
 
-        result["prop_ledger"]     = list(result.get("prop_ledger") or []) + _ow_results
+    # Step C: Merge all outright results (scored valid rows + per-row contract
+    # failures) into the unified response.  Every input candidate is accounted
+    # for — none are silently dropped.
+    if _ow_results or _ow_failure_results:
+        _all_ow_entries = _ow_results + _ow_failure_results
+        result["prop_ledger"]     = list(result.get("prop_ledger") or []) + _all_ow_entries
         result["terminal_labels"] = list(result.get("terminal_labels") or []) + [
             {
                 "row_id":              r["row_id"],
@@ -21656,10 +21710,11 @@ def gate_engine_run():
                 "blockers":            r["blockers"],
                 "route_compatibility": r.get("route_compatibility"),
             }
-            for r in _ow_results
+            for r in _all_ow_entries
         ]
-        result["outright_winner_ledger"]    = _ow_results
-        result["outright_event_dedup_map"]  = _ow_dedup_map
+        result["outright_winner_ledger"]           = _ow_results
+        result["outright_winner_contract_failures"] = _ow_failure_results
+        result["outright_event_dedup_map"]          = _ow_dedup_map
 
     # Detect session-ledger DB failure → fail closed at HTTP level.
     # Any row blocked by SESSION_LEDGER_UNAVAILABLE means we cannot confirm

@@ -344,11 +344,28 @@ class TestSoccer1X2DrawPreservation:
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Accidental moneyline-to-prop route → RUN_INVALID_ROUTE_CONFIGURATION
+# Test 6: Route guard and mixed-batch partitioning
+# WOW-PATCH-2026-08-07-BATCH-PARTITION-FIX
+#
+# Old behaviour: guard_route_config() rejected OUTRIGHT + PROP mixed batches
+# wholesale (HTTP 409), collaterally blocking valid prop rows.
+#
+# New behaviour: guard_route_config() only rejects an explicit body-level
+# contract mismatch (caller declared PLAYER_PROP but rows are OUTRIGHT_WINNER).
+# Mixed batches are partitioned by partition_and_validate_outright_rows(),
+# which validates each lane independently and returns per-row failure records
+# for invalid moneyline rows — valid prop rows are completely unaffected.
 # ---------------------------------------------------------------------------
 
 class TestMixedRoutingGuard:
-    def test_mixed_outright_and_player_prop_returns_error(self):
+    # ── guard_route_config() behaviour ──────────────────────────────────────
+
+    def test_mixed_outright_and_player_prop_guard_returns_none(self):
+        """
+        Fix #3: guard_route_config() must NOT reject mixed batches wholesale.
+        A request containing both OUTRIGHT_WINNER and PLAYER_PROP rows should
+        return None (no error) — partitioning handles per-lane validation.
+        """
         from gate_engine.market_family import classify_row, guard_route_config, MarketFamily
         outright = _mlb_outright_row()
         player_prop = {
@@ -357,31 +374,17 @@ class TestMixedRoutingGuard:
         }
         classify_row(outright)
         classify_row(player_prop)
-        assert outright["market_family"] == MarketFamily.OUTRIGHT_WINNER
-        assert player_prop["market_family"] == MarketFamily.PLAYER_PROP
+        assert outright["market_family"]     == MarketFamily.OUTRIGHT_WINNER
+        assert player_prop["market_family"]  == MarketFamily.PLAYER_PROP
 
         err = guard_route_config([outright, player_prop])
-        assert err is not None
-        assert err["code"] == "RUN_INVALID_ROUTE_CONFIGURATION"
-        assert err["primary_blocker"] == "MONEYLINE_ROUTED_TO_PROP_CONTRACT"
+        assert err is None, (
+            f"guard_route_config must return None for mixed batches (partitioning "
+            f"handles per-lane isolation), got: {err}"
+        )
 
-    def test_routing_error_is_not_no_play(self):
-        """A routing configuration error must never resolve to NO_PLAY."""
-        from gate_engine.market_family import classify_row, guard_route_config
-        outright = _mlb_outright_row()
-        player_prop = {
-            "sport": "MLB", "player": "Mookie Betts",
-            "prop_type": "hits", "line": 1.5, "direction": "MORE",
-        }
-        classify_row(outright)
-        classify_row(player_prop)
-        err = guard_route_config([outright, player_prop])
-        assert err is not None
-        # Error envelope must not contain NO_PLAY as a terminal disposition
-        assert err.get("terminal_disposition") != "NO_PLAY"
-        assert err.get("terminal_label") != "NO_PLAY"
-
-    def test_candidate_evaluation_completed_is_false(self):
+    def test_guard_does_not_reject_mixed_batch_with_no_body_contract(self):
+        """No body contract declared → guard must pass the mixed batch through."""
         from gate_engine.market_family import classify_row, guard_route_config
         outright = _mlb_outright_row()
         prop = {"sport": "MLB", "player": "X", "prop_type": "hits",
@@ -389,26 +392,33 @@ class TestMixedRoutingGuard:
         classify_row(outright)
         classify_row(prop)
         err = guard_route_config([outright, prop])
-        assert err["candidate_evaluation_completed"] is False
-
-    def test_can_execute_false_in_error(self):
-        from gate_engine.market_family import classify_row, guard_route_config
-        outright = _mlb_outright_row()
-        prop = {"sport": "MLB", "player": "X", "prop_type": "hits",
-                "line": 1.5, "direction": "MORE"}
-        classify_row(outright)
-        classify_row(prop)
-        err = guard_route_config([outright, prop])
-        assert err["can_execute"] is False
+        assert err is None
 
     def test_body_contract_player_prop_with_outright_rows_returns_error(self):
+        """
+        Rule 2 (only remaining batch-wide guard): caller explicitly declares
+        PLAYER_PROP but rows classify as OUTRIGHT_WINNER → HTTP 409.
+        This is an unambiguous intent mismatch the caller must fix.
+        """
         from gate_engine.market_family import classify_row, guard_route_config, InputContract
         outright = _mlb_outright_row()
         classify_row(outright)
         err = guard_route_config([outright], body_input_contract=InputContract.PLAYER_PROP)
         assert err is not None
-        assert err["code"] == "RUN_INVALID_ROUTE_CONFIGURATION"
-        assert "MONEYLINE_ROUTED_TO_PROP_CONTRACT" in err["primary_blocker"]
+        assert err["code"]           == "RUN_INVALID_ROUTE_CONFIGURATION"
+        assert err["primary_blocker"] == "MONEYLINE_ROUTED_TO_PROP_CONTRACT"
+        assert err["can_execute"]     is False
+        assert err["candidate_evaluation_completed"] is False
+
+    def test_body_contract_error_is_not_no_play(self):
+        """A routing configuration error must never resolve to NO_PLAY."""
+        from gate_engine.market_family import classify_row, guard_route_config, InputContract
+        outright = _mlb_outright_row()
+        classify_row(outright)
+        err = guard_route_config([outright], body_input_contract=InputContract.PLAYER_PROP)
+        assert err is not None
+        assert err.get("terminal_disposition") != "NO_PLAY"
+        assert err.get("terminal_label")       != "NO_PLAY"
 
     def test_clean_outright_only_batch_passes_guard(self):
         from gate_engine.market_family import classify_row, guard_route_config
@@ -428,6 +438,275 @@ class TestMixedRoutingGuard:
             classify_row(r)
         err = guard_route_config(rows)
         assert err is None
+
+    def test_guard_passes_outright_with_contract_violation_in_mixed_batch(self):
+        """
+        A moneyline row that has a contract violation (e.g. prohibited 'line' field)
+        should NOT cause guard_route_config to reject the whole batch.
+        Partition handles the per-row failure.
+        """
+        from gate_engine.market_family import classify_row, guard_route_config
+        # outright row with a prohibited field
+        bad_outright = _mlb_outright_row(line=1.5)   # 'line' is prohibited in MONEYLINE_V1
+        prop         = {"sport": "MLB", "player": "Mookie Betts",
+                        "prop_type": "hits", "line": 1.5, "direction": "MORE"}
+        classify_row(bad_outright)
+        classify_row(prop)
+        err = guard_route_config([bad_outright, prop])
+        assert err is None   # guard passes; partition captures the per-row failure
+
+
+# ---------------------------------------------------------------------------
+# Test 6b: partition_and_validate_outright_rows — per-row isolation
+# ---------------------------------------------------------------------------
+
+class TestMixedBatchPartitioning:
+    """
+    Verifies Fix #3: partition_and_validate_outright_rows() isolates
+    moneyline lane failures to the specific row that failed.
+    """
+
+    def _valid_outright(self, **kw):
+        from gate_engine.market_family import classify_row
+        row = _mlb_outright_row(**kw)
+        classify_row(row)
+        return row
+
+    def _invalid_outright_missing_event_id(self, **kw):
+        """Valid structure except missing required event_id."""
+        from gate_engine.market_family import classify_row
+        row = _mlb_outright_row(**kw)
+        row.pop("event_id", None)
+        classify_row(row)
+        return row
+
+    def _invalid_outright_prohibited_field(self, **kw):
+        """Valid structure except has prohibited 'line' field."""
+        from gate_engine.market_family import classify_row
+        row = _mlb_outright_row(line=1.5, **kw)
+        classify_row(row)
+        return row
+
+    # ── partition() basics ───────────────────────────────────────────────
+
+    def test_partition_returns_valid_and_invalid_keys(self):
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        result = partition_and_validate_outright_rows([])
+        assert "valid"   in result
+        assert "invalid" in result
+
+    def test_all_valid_rows_in_valid_partition(self):
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        rows   = [self._valid_outright(), self._valid_outright(opponent="Houston Astros")]
+        result = partition_and_validate_outright_rows(rows)
+        assert len(result["valid"])   == 2
+        assert len(result["invalid"]) == 0
+
+    def test_invalid_row_goes_to_invalid_partition(self):
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        row    = self._invalid_outright_missing_event_id()
+        result = partition_and_validate_outright_rows([row])
+        assert len(result["valid"])   == 0
+        assert len(result["invalid"]) == 1
+
+    def test_invalid_entry_has_row_and_violations_keys(self):
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        row    = self._invalid_outright_missing_event_id()
+        result = partition_and_validate_outright_rows([row])
+        entry  = result["invalid"][0]
+        assert "row"        in entry
+        assert "violations" in entry
+
+    def test_violations_list_is_nonempty_for_invalid_row(self):
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        row    = self._invalid_outright_missing_event_id()
+        result = partition_and_validate_outright_rows([row])
+        assert len(result["invalid"][0]["violations"]) > 0
+
+    def test_missing_required_field_violation_is_specific(self):
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        row    = self._invalid_outright_missing_event_id()
+        result = partition_and_validate_outright_rows([row])
+        violations = result["invalid"][0]["violations"]
+        assert any("MISSING_REQUIRED_FIELD:event_id" in v for v in violations), (
+            f"Expected specific MISSING_REQUIRED_FIELD:event_id, got: {violations}"
+        )
+
+    def test_prohibited_field_violation_is_specific(self):
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        row    = self._invalid_outright_prohibited_field()
+        result = partition_and_validate_outright_rows([row])
+        violations = result["invalid"][0]["violations"]
+        assert any("PROHIBITED_FIELD_PRESENT:line" in v for v in violations), (
+            f"Expected specific PROHIBITED_FIELD_PRESENT:line, got: {violations}"
+        )
+
+    # ── The critical isolation invariant ────────────────────────────────
+
+    def test_one_invalid_moneyline_does_not_affect_other_valid_rows(self):
+        """
+        Core Fix #3 invariant: 1 invalid moneyline row + 2 valid moneyline rows
+        in the same partition call → only the invalid row ends up in invalid,
+        valid rows are completely unaffected.
+        """
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        valid1   = self._valid_outright()
+        valid2   = self._valid_outright(opponent="Houston Astros",
+                                         event_id="mlb-2026-08-07-BOS-HOU")
+        invalid  = self._invalid_outright_missing_event_id()
+        result   = partition_and_validate_outright_rows([valid1, invalid, valid2])
+        assert len(result["valid"])   == 2
+        assert len(result["invalid"]) == 1
+
+    def test_empty_input_returns_empty_partitions(self):
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        result = partition_and_validate_outright_rows([])
+        assert result["valid"]   == []
+        assert result["invalid"] == []
+
+    def test_partition_preserves_original_row_in_invalid_entry(self):
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        row        = self._invalid_outright_missing_event_id()
+        row_id_val = id(row)   # identity check
+        result     = partition_and_validate_outright_rows([row])
+        assert id(result["invalid"][0]["row"]) == row_id_val
+
+    def test_can_execute_semantics_preserved_in_isolation(self):
+        """
+        partition_and_validate_outright_rows never scores rows — it only
+        partitions.  can_execute is stamped on the failure entry by the
+        caller (app.py), not here.  Verify the module itself doesn't override.
+        """
+        from gate_engine.market_family import partition_and_validate_outright_rows
+        row    = self._invalid_outright_missing_event_id()
+        result = partition_and_validate_outright_rows([row])
+        entry  = result["invalid"][0]
+        # partition() must not stamp can_execute on the row itself
+        assert "can_execute" not in entry
+
+
+# ---------------------------------------------------------------------------
+# Test 6c: Canonical alias expansion (Fix #1) — display aliases classify correctly
+# ---------------------------------------------------------------------------
+
+class TestMarketTypeAliasExpansion:
+    """
+    Fix #1: Common display aliases ("outright", "win", "game", "winner", …)
+    must classify as OUTRIGHT_WINNER without requiring the GPT to know the
+    canonical internal key.
+    """
+
+    @pytest.mark.parametrize("market_type", [
+        "outright",
+        "outright win",
+        "outright_win",
+        "win",
+        "winner",
+        "game",
+        "game win",
+        "game_win",
+        "full game",
+        "full_game",
+        "match",
+    ])
+    def test_display_alias_classifies_as_outright_winner(self, market_type):
+        from gate_engine.market_family import classify_market_family, MarketFamily
+        row = {"sport": "MLB", "team": "Boston Red Sox",
+               "opponent": "New York Yankees", "market_type": market_type,
+               "event_id": "test-event", "slate_date": "2026-08-07"}
+        result = classify_market_family(row)
+        assert result == MarketFamily.OUTRIGHT_WINNER, (
+            f"market_type={market_type!r} expected OUTRIGHT_WINNER, got {result!r}"
+        )
+
+    def test_case_insensitive_alias_resolves(self):
+        from gate_engine.market_family import classify_market_family, MarketFamily
+        row = {"sport": "MLB", "team": "BOS", "opponent": "NYY",
+               "market_type": "OUTRIGHT", "event_id": "e", "slate_date": "2026-08-07"}
+        assert classify_market_family(row) == MarketFamily.OUTRIGHT_WINNER
+
+    def test_alias_row_has_no_prop_fields_after_classify_row(self):
+        from gate_engine.market_family import classify_row
+        row = {"sport": "MLB", "team": "BOS", "opponent": "NYY",
+               "market_type": "outright", "event_id": "e", "slate_date": "2026-08-07"}
+        classify_row(row)
+        assert row["market_family"] == "OUTRIGHT_WINNER"
+        assert "l5_values"   not in row
+        assert "stat_key"    not in row
+
+
+# ---------------------------------------------------------------------------
+# Test 6d: Declared-intent override (Fix #1) — explicit contract/objective wins
+# ---------------------------------------------------------------------------
+
+class TestDeclaredIntentOverride:
+    """
+    Fix #1: If a row explicitly carries input_contract_version=MONEYLINE_V1 or
+    objective=OUTRIGHT_WIN_PROBABILITY_ONLY, it must be classified as
+    OUTRIGHT_WINNER even when market_type is missing or ambiguous.
+    """
+
+    def test_input_contract_moneyline_v1_overrides_missing_market_type(self):
+        from gate_engine.market_family import classify_market_family, MarketFamily, InputContract
+        row = {"sport": "MLB", "team": "BOS", "opponent": "NYY",
+               "input_contract_version": InputContract.MONEYLINE_V1,
+               "event_id": "e", "slate_date": "2026-08-07"}
+        # No market_type set — must still classify as OUTRIGHT_WINNER
+        assert classify_market_family(row) == MarketFamily.OUTRIGHT_WINNER
+
+    def test_objective_outright_win_probability_only_overrides_missing_market_type(self):
+        from gate_engine.market_family import classify_market_family, MarketFamily, Objective
+        row = {"sport": "NBA", "team": "Lakers", "opponent": "Celtics",
+               "objective": Objective.OUTRIGHT_WIN_PROBABILITY_ONLY,
+               "event_id": "e", "slate_date": "2026-08-07"}
+        assert classify_market_family(row) == MarketFamily.OUTRIGHT_WINNER
+
+    def test_declared_intent_wins_over_player_prop_signals(self):
+        """
+        Even if the row has player/line/direction signals that would normally
+        trigger PLAYER_PROP (step 4), the declared-intent override (step 1.5)
+        must fire first and classify as OUTRIGHT_WINNER.
+        """
+        from gate_engine.market_family import classify_market_family, MarketFamily, InputContract
+        row = {
+            "sport":                  "MLB",
+            "team":                   "BOS",
+            "opponent":               "NYY",
+            "input_contract_version": InputContract.MONEYLINE_V1,
+            "event_id":               "e",
+            "slate_date":             "2026-08-07",
+            # Prop-like signals that would normally trigger PLAYER_PROP:
+            "player":     "Some Player",
+            "line":       1.5,
+            "direction":  "MORE",
+        }
+        assert classify_market_family(row) == MarketFamily.OUTRIGHT_WINNER
+
+    def test_declared_intent_does_not_bypass_moneyline_v1_contract_validation(self):
+        """
+        Declared intent classifies correctly — but the row still has to pass
+        MONEYLINE_V1 contract validation in partition_and_validate_outright_rows().
+        A row with prohibited fields is still invalid even with declared intent.
+        """
+        from gate_engine.market_family import (
+            classify_row, partition_and_validate_outright_rows, InputContract
+        )
+        row = {
+            "sport":                  "MLB",
+            "team":                   "BOS",
+            "opponent":               "NYY",
+            "input_contract_version": InputContract.MONEYLINE_V1,
+            "event_id":               "e",
+            "slate_date":             "2026-08-07",
+            "line":     1.5,      # PROHIBITED
+            "direction": "MORE",  # PROHIBITED
+        }
+        classify_row(row)
+        result = partition_and_validate_outright_rows([row])
+        assert len(result["invalid"]) == 1
+        violations = result["invalid"][0]["violations"]
+        assert any("PROHIBITED_FIELD_PRESENT:line"      in v for v in violations)
+        assert any("PROHIBITED_FIELD_PRESENT:direction" in v for v in violations)
 
 
 # ---------------------------------------------------------------------------

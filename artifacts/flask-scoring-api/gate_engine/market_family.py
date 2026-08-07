@@ -111,8 +111,13 @@ MONEYLINE_V1_PROHIBITED_FIELDS: tuple[str, ...] = (
     "player_role",     # no role-status contract
 )
 
-# Full-game / outright winner market keys — detection is case-insensitive
+# Full-game / outright winner market keys — detection is case-insensitive.
+# WOW-PATCH-2026-08-07-BATCH-PARTITION-FIX Fix #1: canonical alias expansion.
+# Common display aliases ("outright", "win", "game", "winner", …) are added so
+# GPT-supplied text that is semantically correct but not in the canonical set
+# no longer falls through to PLAYER_PROP classification.
 _OUTRIGHT_MARKET_KEYS: frozenset[str] = frozenset({
+    # Canonical keys
     "h2h",
     "moneyline",
     "ml",
@@ -129,6 +134,19 @@ _OUTRIGHT_MARKET_KEYS: frozenset[str] = frozenset({
     "fight winner",
     "full_game_outright_winner",
     "full game outright winner",
+    # Common display aliases (Fix #1)
+    "outright",
+    "outright win",
+    "outright_win",
+    "win",
+    "winner",
+    "game",
+    "game win",
+    "game_win",
+    "full game",
+    "full_game",
+    "match",
+    "match win",
 })
 
 # Sport-specific market keys that always signal OUTRIGHT_WINNER
@@ -161,16 +179,30 @@ def classify_market_family(row: dict[str, Any]) -> str:
     Return the MarketFamily constant for a row.
 
     Classification order (immutable, runs before prop normalization):
-    1. Explicit market_family field on the row (trusted if already stamped)
-    2. market_type / market key detection against _OUTRIGHT_MARKET_KEYS
-    3. sport + market_type intersection with _OUTRIGHT_SPORTS_MARKET_MAP
-    4. Prop-family signals (line, direction, prop_type present → PLAYER_PROP)
-    5. UNKNOWN as the safe default
+    1.  Explicit market_family field on the row (trusted if already stamped)
+    1.5 Declared-intent override: input_contract_version=MONEYLINE_V1 or
+        objective=OUTRIGHT_WIN_PROBABILITY_ONLY → OUTRIGHT_WINNER regardless
+        of market_type text.  Prevents fall-through to PLAYER_PROP when the
+        GPT supplies explicit intent but an ambiguous display market_type.
+    2.  market_type / market key detection against _OUTRIGHT_MARKET_KEYS
+        (including common display aliases added by Fix #1)
+    3.  sport + market_type intersection with _OUTRIGHT_SPORTS_MARKET_MAP
+    4.  Prop-family signals (line, direction, prop_type present → PLAYER_PROP)
+    5.  UNKNOWN as the safe default
     """
     # 1. Already classified
     existing = row.get("market_family")
     if existing in (MarketFamily.OUTRIGHT_WINNER, MarketFamily.PLAYER_PROP, MarketFamily.COMBO_PROP):
         return existing
+
+    # 1.5. WOW-PATCH-2026-08-07-BATCH-PARTITION-FIX Fix #1 — Declared-intent override.
+    # An explicit input_contract_version or objective on the row is a hard signal
+    # of moneyline intent, stronger than any market_type text heuristic.  Use it
+    # before market_type detection so missing/ambiguous market_type text cannot
+    # cause the row to fall through to PLAYER_PROP and demand L5/L10 fields.
+    if (row.get("input_contract_version") == InputContract.MONEYLINE_V1
+            or row.get("objective") == Objective.OUTRIGHT_WIN_PROBABILITY_ONLY):
+        return MarketFamily.OUTRIGHT_WINNER
 
     # 2. market_type / market key detection
     mtype = _norm(row.get("market_type") or row.get("market") or "")
@@ -350,55 +382,37 @@ def guard_route_config(
     body_input_contract: str | None = None,
 ) -> dict[str, Any] | None:
     """
-    Check ALL rows for routing mismatches BEFORE the pipeline runs.
+    Pre-pipeline batch-level route guard.
 
-    Returns None if everything is compatible.
-    Returns a structured error envelope (to be returned as HTTP 409) when:
-      - Any OUTRIGHT_WINNER row is paired with a PLAYER_PROP-style body contract
-      - Any OUTRIGHT_WINNER row fails MONEYLINE_V1 contract validation
-      - Any row has market_family=UNKNOWN and market_type is set
+    WOW-PATCH-2026-08-07-BATCH-PARTITION-FIX Fix #3:
+    Mixed OUTRIGHT_WINNER + PLAYER_PROP batches are now ALLOWED at this layer.
+    They are partitioned into independent lanes by
+    partition_and_validate_outright_rows(), which records per-row contract
+    failures in the moneyline lane without affecting the prop lane.
+
+    This function now enforces only one rule:
+      Rule 2: Body explicitly declares input_contract_version=PLAYER_PROP but
+              classified rows are OUTRIGHT_WINNER — an unambiguous intent
+              mismatch that the caller must fix by correcting the body contract.
+              Returns HTTP 409 RUN_INVALID_ROUTE_CONFIGURATION.
+
+    Per-row MONEYLINE_V1 contract violations are handled by
+    partition_and_validate_outright_rows() and returned as per-row
+    DATA_CONTRACT_FAIL entries, NOT as a batch-wide rejection.
 
     Routing bugs MUST NOT resolve to NO_PLAY.  They are pre-pipeline failures
     and must return RUN_INVALID_ROUTE_CONFIGURATION with
     candidate_evaluation_completed=false.
     """
-    outright_rows    : list[dict[str, Any]] = []
-    player_prop_rows : list[dict[str, Any]] = []
-    violations_map   : dict[str, list[str]] = {}
+    outright_rows: list[dict[str, Any]] = [
+        r for r in rows
+        if r.get("market_family", MarketFamily.UNKNOWN) == MarketFamily.OUTRIGHT_WINNER
+    ]
 
-    for row in rows:
-        family = row.get("market_family", MarketFamily.UNKNOWN)
-        row_id = row.get("row_id") or row.get("player") or "unknown"
-
-        if family == MarketFamily.OUTRIGHT_WINNER:
-            outright_rows.append(row)
-            v = validate_moneyline_v1_contract(row)
-            if v:
-                violations_map[str(row_id)] = v
-
-        elif family == MarketFamily.PLAYER_PROP:
-            player_prop_rows.append(row)
-
-    # Rule 1: Mixed OUTRIGHT_WINNER + PLAYER_PROP in same request
-    if outright_rows and player_prop_rows:
-        outright_ids  = [r.get("row_id") or r.get("player") or "?" for r in outright_rows]
-        prop_ids      = [r.get("row_id") or r.get("player") or "?" for r in player_prop_rows]
-        return {
-            "code":                          "RUN_INVALID_ROUTE_CONFIGURATION",
-            "primary_blocker":               "MONEYLINE_ROUTED_TO_PROP_CONTRACT",
-            "can_execute":                   False,
-            "candidate_evaluation_completed": False,
-            "detail": (
-                "OUTRIGHT_WINNER and PLAYER_PROP rows cannot share the same run. "
-                "Submit moneyline candidates in a separate request using the "
-                "MONEYLINE_V1 input contract."
-            ),
-            "outright_winner_rows": outright_ids,
-            "player_prop_rows":     prop_ids,
-            "resolution":           "Submit OUTRIGHT_WINNER rows in a dedicated request.",
-        }
-
-    # Rule 2: Body-level contract declares PLAYER_PROP but rows are OUTRIGHT_WINNER
+    # Rule 2 (body-level explicit mismatch — only remaining batch-wide guard):
+    # Body declares PLAYER_PROP but rows have been classified as OUTRIGHT_WINNER.
+    # This is an unambiguous intent mismatch — the caller explicitly declared the
+    # wrong contract version.  409 is correct; no scoring can proceed.
     if outright_rows and body_input_contract == InputContract.PLAYER_PROP:
         return {
             "code":                          "RUN_INVALID_ROUTE_CONFIGURATION",
@@ -413,25 +427,46 @@ def guard_route_config(
             "resolution": "Resubmit with input_contract_version=MONEYLINE_V1.",
         }
 
-    # Rule 3: OUTRIGHT_WINNER rows with MONEYLINE_V1 contract violations
-    if violations_map:
-        return {
-            "code":                          "RUN_INVALID_ROUTE_CONFIGURATION",
-            "primary_blocker":               "MONEYLINE_V1_CONTRACT_VIOLATION",
-            "can_execute":                   False,
-            "candidate_evaluation_completed": False,
-            "detail": (
-                f"OUTRIGHT_WINNER rows failed MONEYLINE_V1 contract validation "
-                f"({len(violations_map)} row(s))."
-            ),
-            "contract_violations": violations_map,
-            "resolution": (
-                "Supply: sport, team, opponent, market_type, event_id, slate_date. "
-                "Remove: line, direction, prop_type, stat_key, game_log, player_role."
-            ),
-        }
+    return None  # lanes are compatible; per-row validation handled per-lane
 
-    return None  # all clear
+
+def partition_and_validate_outright_rows(
+    rows: list[dict[str, Any]],
+) -> dict[str, list]:
+    """
+    WOW-PATCH-2026-08-07-BATCH-PARTITION-FIX Fix #3: Batch Failure Isolation.
+
+    Partition OUTRIGHT_WINNER rows into valid and invalid lanes using per-row
+    MONEYLINE_V1 contract validation.  A row that fails validation receives a
+    per-row failure record — it does NOT contaminate other rows in the batch.
+
+    Callers supply this function's result to the scoring layer, which builds
+    per-row DATA_CONTRACT_FAIL entries for the invalid partition and sends only
+    the valid partition to score_outright_winner_row().  The prop lane is
+    completely unaffected by any moneyline lane failure.
+
+    Returns
+    -------
+    {
+        "valid":   list[dict]   — rows that passed MONEYLINE_V1 contract checks
+        "invalid": list[dict]   — [{"row": <row>, "violations": [str, ...]}]
+    }
+
+    The "violations" list for each invalid entry uses the exact strings returned
+    by validate_moneyline_v1_contract() — e.g.
+    "MISSING_REQUIRED_FIELD:event_id" or "PROHIBITED_FIELD_PRESENT:direction".
+    """
+    valid:   list[dict[str, Any]] = []
+    invalid: list[dict[str, Any]] = []
+
+    for row in rows:
+        violations = validate_moneyline_v1_contract(row)
+        if violations:
+            invalid.append({"row": row, "violations": violations})
+        else:
+            valid.append(row)
+
+    return {"valid": valid, "invalid": invalid}
 
 
 # ---------------------------------------------------------------------------
