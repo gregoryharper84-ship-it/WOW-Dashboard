@@ -1157,3 +1157,93 @@ The following estimates are structural/market-implied reasoning. They are explic
 
 **WOW governance verdict: 0 of 15 publishable. All remain NO_PLAY.**
 
+
+## Patch Queue Entry — 2026-08-06
+
+### WOW-PATCH-2026-08-06-MLB-PLATE-APPEARANCES-COVERAGE
+
+═══════════════════════════════════════════════════
+WOW PATCH — MLB PLATE APPEARANCES PROP COVERAGE
+═══════════════════════════════════════════════════
+
+PATCH ID:          WOW-PATCH-2026-08-06-MLB-PLATE-APPEARANCES-COVERAGE
+BASE SPEC:         WOW v16 Clean Core / Framework v2.2.0
+PATCH TYPE:        [X] Spec amendment (adds new WOW-MASTER-SPEC.md Section 18.9) + [ ] Dashboard code (pending, after spec approval)
+ORIGIN:            [X] Pattern identified — 2 legs (Wade Meckler MORE 3.5 PA, Randal Grichuk MORE 3.5 PA) hit DATA_CONTRACT_FAIL on 2026-08-06 live E2E; Replit's own code audit (their internal Task #124) confirmed zero normalizer alias AND zero model registry entry exist for MLB Plate Appearances — this is a coverage gap, not a mapping bug or data-availability gap.
+
+─────────────────────────────────────────────────
+PROBLEM STATEMENT
+─────────────────────────────────────────────────
+WOW-MASTER-SPEC.md Section 18 (MLB Rules) defines validation requirements for Pitcher Props (18.1-18.2), Pitching Outs (18.3), 1st-Inning Pitches (18.4), and Hitter Props (18.6) — but has no defined family for raw Plate Appearances as a standalone prop. Because no canonical stat_key or validation checklist exists, any PA prop is structurally unscoreable regardless of data availability — the pipeline cannot approve, hold, or reject on real analysis; it can only DATA_CONTRACT_FAIL. This blocks a real, commonly-offered PrizePicks/sportsbook prop family from ever being played.
+
+FAILURE TAG(S):    data-validation-gap
+
+─────────────────────────────────────────────────
+RULE CHANGE
+─────────────────────────────────────────────────
+AFFECTED SECTION:  WOW-MASTER-SPEC.md — NEW Section 18.9 (MLB Plate Appearances Props)
+
+CURRENT RULE:
+No existing rule. Plate Appearances is not a defined prop family anywhere in Section 18.
+
+NEW RULE (proposed — pending ChatGPT review before adoption):
+
+18.9 MLB Plate Appearances Props
+
+Required:
+- Confirmed starting lineup spot (batting order position) — PA opportunity is driven primarily by lineup slot, not skill
+- L5/L10 exact-line PA hit rate
+- L10 median/average PA
+- Team implied run total / game environment (higher-scoring games = more PA opportunities for both teams)
+- Opposing starter quality/pace (affects innings played, indirectly affects PA volume for both lineups)
+- Blowout risk / lineup-change risk (early exits reduce PA for bench-prone hitters; alternatively a starter cruising can mean fewer total innings)
+- Bullpen game / opener risk (irregular pitching plans can compress or extend PA opportunity)
+- Batting order stability over L5 (recent lineup shuffling = volatility flag)
+
+Volatility flags:
+- Green: locked-in top-6 lineup spot, 15+ consecutive starts, stable order
+- Yellow: 7-9 spot, recent order changes, platoon situation
+- Red: recent callup/debut, inconsistent starts, active lineup battle
+
+Prop family routing: CORE (volume-based, stable-role) when lineup spot is 1-6 and locked; MICRO-WINDOW when spot is 7-9 or platoon-dependent.
+
+Binary/0.5 discipline: Standard 0.5 event prop hard-ban (Section 16) does NOT apply to PA — PA is a volume stat like Pitcher Outs, evaluated on full-number lines (e.g. 3.5, 4.5), same treatment as Section 18.3.
+
+─────────────────────────────────────────────────
+IMPLEMENTATION
+─────────────────────────────────────────────────
+ANALYTICAL IMPACT: Once approved, PA props route through this checklist for Model Qualified / Watch / Reject labels instead of automatic DATA_CONTRACT_FAIL. Does not create automatic approvals — still subject to full gate stack (Cross-Market First Gate, L5/L10, role/context) like every other prop family.
+DASHBOARD IMPACT:  [ ] Pending — analytical rule now, dashboard registry entry (stat_key + validation function) later, only after this spec section is approved
+IF DASHBOARD: FUNCTION TO MODIFY: normalizer.py alias table (add "Plate Appearances" / "PA" variants -> new canonical stat_key e.g. MLB_PLATE_APPEARANCES) + new model registry entry for the validation checklist above
+
+─────────────────────────────────────────────────
+TEST CASE
+─────────────────────────────────────────────────
+INPUT: { player: "Wade Meckler", prop_label: "Plate Appearances", side: "MORE", line: 3.5, lineup_spot: 2, l10_pa_avg: 4.1 }
+EXPECTED OUTPUT (once implemented): Leg proceeds past prop_type normalization into Section 18.9 checklist -- NOT DATA_CONTRACT_FAIL. Final label per checkpoints (Model Qualified / Watch / Reject), not a data-contract kill.
+
+NEGATIVE TEST: { player: "Bench Player X", prop_label: "Plate Appearances", side: "MORE", line: 3.5, lineup_spot: 9, recent_starts: 2 }
+Expected: Red volatility flag, likely Reject or Watch -- NOT auto-approved just because prop_type now resolves.
+
+─────────────────────────────────────────────────
+CONFLICTS / DEPENDENCIES
+─────────────────────────────────────────────────
+CONFLICTS WITH:    None identified
+DEPENDS ON:        None -- independent of WOW-PATCH-2026-08-06-PROP-TYPE-MAPPING-GAP and WOW-PATCH-2026-08-06-BACKUP-SOURCE-STACK, both already deployed
+SUPERSEDES:        None
+
+─────────────────────────────────────────────────
+DEPLOYMENT ORDER
+─────────────────────────────────────────────────
+[X] Step 1 -- Claude confirms patch against active spec (no conflicts) -- DONE, this entry
+[ ] Step 2 -- ChatGPT reviews the proposed Section 18.9 language for conflicts / approves
+[ ] Step 3 -- Claude merges approved language into WOW-MASTER-SPEC.md Section 18.9
+[ ] Step 4 -- Replit implements normalizer alias + model registry entry
+[ ] Step 5 -- PR review via wow-pr-checker skill
+[ ] Step 6 -- Deploy to Replit
+[ ] Step 7 -- Smoke test via wow-smoke-test skill
+[ ] Step 8 -- Re-run live E2E with a real PA board screenshot to confirm legs reach Section 18.9 scoring
+
+STATUS:            [X] Proposed -- awaiting ChatGPT review/approval (spec amendment, requires strategy authority sign-off before any implementation)
+
+═══════════════════════════════════════════════════
