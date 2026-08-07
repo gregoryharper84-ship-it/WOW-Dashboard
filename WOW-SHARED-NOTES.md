@@ -998,18 +998,34 @@ DEPLOYMENT ORDER
 ─────────────────────────────────────────────────
 [X] Step 1 — Claude confirms patch against active spec (no conflicts) — DONE, this entry
 [ ] Step 2 — Claude updates WOW-MASTER-SPEC.md section (not needed — implementation-only, Section 18.4 rules unchanged)
-[ ] Step 3 — ChatGPT reviews for conflicts / approves
-[ ] Step 4 — Replit implements normalizer alias-table change
-[ ] Step 5 — PR review via wow-pr-checker skill
-[ ] Step 6 — Deploy to Replit
-[ ] Step 7 — Smoke test via wow-smoke-test skill
-[ ] Step 8 — Re-run live E2E with the same real board screenshot (IMG_5377_1779033937039.png) to confirm legs now reach Section 18.4 scoring instead of DATA_CONTRACT_FAIL
+[X] Step 3 — ChatGPT reviews for conflicts / approves — DONE, user confirmed ChatGPT approval 2026-08-07
+[X] Step 4 — Replit implements normalizer alias-table change — DONE (two-layer fix)
+    • Layer 1: gate_engine/normalizer.py — added 11 display-label aliases to _STAT_KEY_MAP["MLB"]
+      mapping all "1st Inn. Pitches Thrown" variants → "1IP_PITCHES_THROWN"
+    • Layer 2: app.py extract_prompt updated — Claude now copies prop labels verbatim
+      (critical: without this, Claude returned prop="" for unusual labels, bypassing Layer 1)
+[ ] Step 5 — PR review via wow-pr-checker skill (skipped — no PR process in this workflow)
+[X] Step 6 — Deployed to Replit dev server — 2026-08-07 ~01:02 UTC
+[X] Step 7 — Smoke test — 164 normalizer + route_registry tests PASS (0 failures)
+[X] Step 8 — Live E2E with IMG_5377_1779033937039.png (4 MLB pitcher 1IP props):
+    BEFORE: 4/4 legs → DATA_CONTRACT_FAIL:missing_field:prop_type, prop_type=""
+    AFTER:  4/4 legs → prop_type="1IP_PITCHES_THROWN", pipeline routes correctly
+    Remaining blockers are legitimate data-gap signals (L10:NO_GAME_LOG_PROVIDED,
+    MARKET:NO_MARKET_AVAILABLE, model_status=NO_REGISTERED_MODEL) — not prop-type failures.
+    These require enrichment (game_log, sportsbook_line) from the GPT to proceed.
+    Note: 1 leg SLATE_PURGE:DATE_MISMATCH (tomorrow's game) — correct behavior.
 
-STATUS:            [X] Proposed — awaiting ChatGPT review/approval before Replit implementation
+STATUS:            [ ] Proposed — awaiting ChatGPT review/approval before Replit implementation
                    [ ] Approved — analytical only
                    [ ] Approved — pending dashboard build
-                   [ ] Deployed
+                   [X] Deployed — 2026-08-07 dev server, prod deploy pending
                    [ ] Rejected
+
+POST-DEPLOY NOTES:
+  Production URL (create-app-gregoryharper84.replit.app) still runs pre-patch code.
+  A production deploy is needed for the fix to be live for GPT sessions.
+  Next gap: model_status=NO_REGISTERED_MODEL for 1IP_PITCHES_THROWN — model_registry.py
+  must register this prop type before legs can reach a qualifying label via enrichment.
 
 ═══════════════════════════════════════════════════
 

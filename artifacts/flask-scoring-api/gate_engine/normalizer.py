@@ -151,6 +151,24 @@ _STAT_KEY_MAP: dict[str, dict[str, Any]] = {
         "innings pitched":      "IP",
         "ip":                   "IP",
         "pitching outs":        "OUTS",
+        # ── WOW-PATCH-2026-08-06-PROP-TYPE-MAPPING-GAP ──────────────────
+        # Section 18.4 MLB 1st-Inning Pitches Thrown display-label aliases.
+        # All variants resolve to 1IP_PITCHES_THROWN so the route_registry
+        # (PROP_TYPE_REQUIRED_GATES) and the 1IP specialist routing (_1ip_patterns
+        # in app.py) both recognise the prop without DATA_CONTRACT_FAIL.
+        # Any label not in this table continues to return UNKNOWN_PROP_TYPE —
+        # no guessing is introduced.
+        "1st inn. pitches thrown":   "1IP_PITCHES_THROWN",
+        "1st inning pitches thrown": "1IP_PITCHES_THROWN",
+        "1st inning pitches":        "1IP_PITCHES_THROWN",
+        "first inning pitches thrown": "1IP_PITCHES_THROWN",
+        "first inning pitches":      "1IP_PITCHES_THROWN",
+        "first inning pitch count":  "1IP_PITCHES_THROWN",
+        "1st inning pitch count":    "1IP_PITCHES_THROWN",
+        "pitches thrown 1st inning": "1IP_PITCHES_THROWN",
+        "pitches thrown 1st":        "1IP_PITCHES_THROWN",
+        "1ip pitches thrown":        "1IP_PITCHES_THROWN",
+        "1ip pitches":               "1IP_PITCHES_THROWN",
     },
     "NFL": {
         "passing yards":        "PASS_YDS",

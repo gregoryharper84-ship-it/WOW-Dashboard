@@ -3445,9 +3445,13 @@ def analyze_and_score():
         f"You are a sports prop extraction assistant. Analyze this {platform_display} "
         f"board screenshot and extract every visible player prop.\n\n"
         f"For each prop return a JSON array. Each element must have:\n"
-        f'- "player": full player name\n'
+        f'- "player": full player name as shown\n'
         f'- "sport": NBA|MLB|NFL|NHL|WNBA\n'
-        f'- "prop": stat category (points, rebounds, hits, strikeouts, etc.)\n'
+        f'- "prop": the EXACT prop type label shown on the card — copy it verbatim, '
+        f'do NOT simplify or omit. Common examples: "points", "rebounds", "hits", '
+        f'"strikeouts", "pitcher strikeouts", "1st Inn. Pitches Thrown", '
+        f'"Fantasy Score", "Total Bases", "Hitter Fantasy Score". '
+        f'For unusual or multi-word labels, copy every word exactly as printed.\n'
         f'- "side": "MORE" or "LESS"\n'
         f'- "line": numeric line value\n'
         f'- "platform": "{platform_display}"\n'
