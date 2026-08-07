@@ -618,6 +618,42 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "can_execute=False unconditional."
         ),
     },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-07-BACKEND-FAILOVER-RESEARCH",
+        "version":     "1.0",
+        "effective_at": "2026-08-07",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  103,
+        "can_execute": False,
+        "description": (
+            "Backend Failover Research (2026-08-07): "
+            "Adds a formal BACKEND_FAILOVER_RESEARCH classification tier to every "
+            "/gate-engine/run response. "
+            "7-type failure hierarchy (tier 1=most severe): "
+            "GOVERNANCE_FAIL (hard stop), MODEL_RUNTIME_FAIL (slim_mode_retry), "
+            "RESPONSE_SIZE_FAIL (slim_mode_retry), MODEL_ROUTE_FAIL (reroute_specialist), "
+            "DATA_CONTRACT_FAIL (web_reconstruction), SOURCE_ACQUISITION_FAIL (web_reconstruction), "
+            "INPUT_FAILURE (normalize_and_retry). "
+            "Every response includes a failure_classification block: "
+            "{failure_type, tier, retry_policy, is_hard_stop, "
+            "candidate_evaluation_completed, probability_publishable, "
+            "reconstruction_recommended, affected_rows, can_execute}. "
+            "Factual guard: when ALL rows fail without completing candidate evaluation, "
+            "terminal_disposition is upgraded from NO_PLAY to RUN_PARTIAL_BACKEND_FAILURE "
+            "so the caller cannot confuse a technical gap with a scored rejection. "
+            "candidate_evaluation_completed=False and probability_publishable=False "
+            "are enforced unconditionally when any all-failed condition is detected. "
+            "Enrichment contract extended: source_provenance (list of {field, source, "
+            "source_type} dicts) is now a validated optional field; role_timestamp is "
+            "documented as an accepted per-row enrichment scalar alongside role_status. "
+            "Governance failure overrides all other failure types and produces "
+            "RUN_INVALID_GOVERNANCE instead of RUN_PARTIAL_BACKEND_FAILURE. "
+            "Module: gate_engine/backend_failure_classifier.py. "
+            "Regression suite: gate_engine/tests/test_backend_failure_classifier.py. "
+            "can_execute=False unconditional."
+        ),
+    },
 ]
 
 # ---------------------------------------------------------------------------

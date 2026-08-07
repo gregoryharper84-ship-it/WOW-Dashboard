@@ -631,8 +631,8 @@ class TestPgPortfolioGovernorInvariants:
             "cross_slip_persistent_governance_db"
         ) is True
 
-    def test_patch_count_is_16(self):  # name kept for history; count now 23
+    def test_patch_count_is_16(self):  # name kept for history; count now 24
         """Total active patches is now 13 (was 12 before Stage 2A)."""
         from gate_engine.governance import _PATCH_REGISTRY
         active = [p for p in _PATCH_REGISTRY if p["status"] == "ACTIVE"]
-        assert len(active) == 23, f"Expected 23 active patches, got {len(active)}"
+        assert len(active) == 24, f"Expected 24 active patches, got {len(active)}"

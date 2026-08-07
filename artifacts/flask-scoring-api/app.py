@@ -21680,6 +21680,48 @@ def gate_engine_run():
         result["strict_runtime_disposition"] = "RUN_COMPLETE"
         result["terminal_disposition"]       = "PLAY" if _fc else "NO_PLAY"
 
+    # ── WOW-PATCH-2026-08-07-BACKEND-FAILOVER-RESEARCH ───────────────────────
+    # Attach a failure_classification block to every /gate-engine/run response.
+    # When ALL rows fail without completing candidate evaluation, upgrade the
+    # terminal_disposition from NO_PLAY → RUN_PARTIAL_BACKEND_FAILURE so the
+    # caller cannot confuse a technical data/acquisition gap with a scored
+    # rejection.  Governance failures remain a hard stop and do NOT produce
+    # RUN_PARTIAL_BACKEND_FAILURE — they keep the existing governance disposition.
+    from gate_engine.backend_failure_classifier import (
+        classify_run_failure           as _bfc_classify,
+        build_partial_failure_terminal as _bfc_partial_terminal,
+        validate_source_provenance     as _bfc_validate_provenance,
+    )
+    _bfc_result = _bfc_classify(
+        result,
+        governance_ok=_ev_complete,
+        strict_runtime_disposition=result.get("strict_runtime_disposition", ""),
+    )
+    result["failure_classification"] = _bfc_result
+
+    # Upgrade NO_PLAY → RUN_PARTIAL_BACKEND_FAILURE when all rows failed
+    # without completing evaluation and the run was not a governance hard stop.
+    _bfc_all_failed = (
+        not _bfc_result["candidate_evaluation_completed"]
+        and result.get("terminal_disposition") == "NO_PLAY"
+        and _bfc_result["failure_type"] not in ("GOVERNANCE_FAIL", "NONE")
+    )
+    if _bfc_all_failed:
+        result.update(_bfc_partial_terminal(_bfc_result))
+
+    # Validate caller-supplied source_provenance in enrichment entries.
+    # Violations are surfaced as warnings (non-blocking) so reconstruction
+    # metadata is never silently discarded.
+    _provenance_warnings: list[str] = []
+    for _ek, _ev in enrichment.items():
+        if isinstance(_ev, dict) and "source_provenance" in _ev:
+            _pv_violations = _bfc_validate_provenance(_ev["source_provenance"])
+            for _pv in _pv_violations:
+                _provenance_warnings.append(f"{_ek}: {_pv}")
+    if _provenance_warnings:
+        result["source_provenance_warnings"] = _provenance_warnings
+    # ─────────────────────────────────────────────────────────────────────────
+
     # ── Scoring execution counters ────────────────────────────────────────
     # Included in every 200 response so callers can tell where rows were
     # lost without digging through logs.  rows_qualified = rows in final_card
