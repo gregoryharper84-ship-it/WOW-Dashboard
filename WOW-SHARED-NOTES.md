@@ -914,3 +914,102 @@ Traps (FAKE_JS): `high_volatility_pra_more`, `scoring_efficiency_dependent`,
 
 **skill-registry.json:** NOT updated — blocked until all tests pass
 
+## Patch Queue Entry — 2026-08-06
+
+### WOW-PATCH-2026-08-06-PROP-TYPE-MAPPING-GAP
+
+═══════════════════════════════════════════════════
+WOW PATCH — PROP TYPE MAPPING GAP
+═══════════════════════════════════════════════════
+
+PATCH ID:          WOW-PATCH-2026-08-06-PROP-TYPE-MAPPING-GAP
+
+BASE SPEC:         WOW v16 Clean Core / Framework v2.2.0
+
+PATCH TYPE:        [X] Dashboard code (affects index.html / Replit backend)
+                   [ ] Analytical rule
+                   [ ] Spec amendment
+                   [ ] Memory update
+                   [ ] Skill update
+
+ORIGIN:            [X] Pattern identified during live E2E verification (production run, 2026-08-06)
+                   [ ] Postmortem — loss
+                   [ ] Proactive model improvement
+                   [ ] External research
+
+─────────────────────────────────────────────────
+PROBLEM STATEMENT
+─────────────────────────────────────────────────
+During the live E2E verification of the analyze-and-score plumbing fix (build_id wow-pipeline-fix-2026-08-06-e2e-1), a real PrizePicks screenshot (4-Pick Power Play, MLB pitcher props, file IMG_5377_1779033937039.png) was POSTed via multipart/form-data to the production endpoint. Transport, Anthropic vision extraction, and pipeline entry all succeeded (4/4 legs extracted, normalized, and passed the slate gate). However, all 4 legs terminated at DATA_CONTRACT_FAIL:missing_field:prop_type. The board's prop category was "1st Inn. Pitches Thrown" (Section 18.4 of WOW-MASTER-SPEC.md), and the normalizer has no canonical stat_key mapping for that display label. This is correct fail-honest behavior (no fabricated score), but it means no real MLB 1st-inning-pitches prop can currently reach Layer 3/4 scoring through the automated extraction path, even though Section 18.4 defines full analytical rules for this prop family. This is a distinct, newly discovered gap — not a recurrence of the three plumbing defects (invalid base64 / .get()-on-string / undefined req) that were the subject of the original patch being verified.
+
+FAILURE TAG(S):    data-validation-gap
+
+─────────────────────────────────────────────────
+RULE CHANGE
+─────────────────────────────────────────────────
+AFFECTED SECTION:  Backend normalizer (normalize_gate_request / prop_type resolution), supports WOW-MASTER-SPEC.md Section 18.4 (MLB 1st-Inning Pitches Thrown)
+
+CURRENT RULE:
+No existing canonical stat_key mapping exists for the extracted label "1st Inn. Pitches Thrown" (and likely other display-text variants of the same prop family, e.g. "1st Inning Pitches," "First Inning Pitch Count"). The normalizer returns DATA_CONTRACT_FAIL:missing_field:prop_type when it cannot resolve the label, correctly refusing to guess.
+
+NEW RULE:
+Extend the prop_type normalizer's label-to-stat_key mapping table to recognize known display-text variants of the MLB 1st-inning-pitches-thrown prop family (e.g. "1st Inn. Pitches Thrown," "1st Inning Pitches," "First Inning Pitch Count") and resolve them to the canonical stat_key used by the Section 18.4 MLB 1st-Inning Pitches Thrown validation module. Any board label that cannot be confidently mapped must continue to return DATA_CONTRACT_FAIL rather than a guessed stat_key.
+
+─────────────────────────────────────────────────
+IMPLEMENTATION
+─────────────────────────────────────────────────
+ANALYTICAL IMPACT:
+Once resolved, legs with this prop_type will proceed past the data-contract check into the existing Section 18.4 six-point Tier 1 validation (L5/L10 exact-line, median, BB/9, opponent P/PA, efficiency-gap check) instead of being blocked pre-scoring. This does not change approval thresholds — it only unblocks the prop family from artificial DATA_CONTRACT_FAIL kills.
+
+DASHBOARD IMPACT:  [X] Yes — code change required (backend normalizer)
+
+IF DASHBOARD: FUNCTION TO MODIFY:
+normalize_gate_request() / prop_type label-to-stat_key resolution table
+
+CODE CHANGE:
+Pseudocode: add entries to the prop_type alias map, e.g.
+PROP_TYPE_ALIASES["1st Inn. Pitches Thrown"] = "mlb_1st_inning_pitches_thrown"
+PROP_TYPE_ALIASES["1st Inning Pitches"] = "mlb_1st_inning_pitches_thrown"
+PROP_TYPE_ALIASES["First Inning Pitch Count"] = "mlb_1st_inning_pitches_thrown"
+(Exact canonical stat_key name to be confirmed against existing Section 18.4 validation module before implementation.)
+
+─────────────────────────────────────────────────
+TEST CASE
+─────────────────────────────────────────────────
+INPUT:
+{ player: "Brayan Bello", prop_label: "1st Inn. Pitches Thrown", side: "MORE", line: 15.5 }
+
+EXPECTED OUTPUT:
+Leg proceeds past prop_type normalization into Section 18.4 validation (no DATA_CONTRACT_FAIL). Final label per Section 18.4 Tier rules (Tier 1 / Watch / Reject) based on the six required data points, not a data-contract kill.
+
+NEGATIVE TEST (should NOT trigger / should still fail honest):
+{ player: "Unknown Player", prop_label: "Mystery Combo Stat XYZ", side: "MORE", line: 3.5 }
+Expected: DATA_CONTRACT_FAIL:missing_field:prop_type (unmapped label, correctly blocked, no guessing).
+
+─────────────────────────────────────────────────
+CONFLICTS / DEPENDENCIES
+─────────────────────────────────────────────────
+CONFLICTS WITH:    None identified
+DEPENDS ON:        None — independent of WOW-PATCH-2026-08-06 plumbing fix (build wow-pipeline-fix-2026-08-06-e2e-1), which is already deployed and verified separately
+SUPERSEDES:        None
+
+─────────────────────────────────────────────────
+DEPLOYMENT ORDER
+─────────────────────────────────────────────────
+[X] Step 1 — Claude confirms patch against active spec (no conflicts) — DONE, this entry
+[ ] Step 2 — Claude updates WOW-MASTER-SPEC.md section (not needed — implementation-only, Section 18.4 rules unchanged)
+[ ] Step 3 — ChatGPT reviews for conflicts / approves
+[ ] Step 4 — Replit implements normalizer alias-table change
+[ ] Step 5 — PR review via wow-pr-checker skill
+[ ] Step 6 — Deploy to Replit
+[ ] Step 7 — Smoke test via wow-smoke-test skill
+[ ] Step 8 — Re-run live E2E with the same real board screenshot (IMG_5377_1779033937039.png) to confirm legs now reach Section 18.4 scoring instead of DATA_CONTRACT_FAIL
+
+STATUS:            [X] Proposed — awaiting ChatGPT review/approval before Replit implementation
+                   [ ] Approved — analytical only
+                   [ ] Approved — pending dashboard build
+                   [ ] Deployed
+                   [ ] Rejected
+
+═══════════════════════════════════════════════════
+
