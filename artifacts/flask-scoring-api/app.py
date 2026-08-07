@@ -3505,8 +3505,12 @@ def analyze_and_score():
     }
 
     # ── Step B: Normalization ────────────────────────────────────────────
-    norm_rows = _normalize_legs(ocr_legs, target_date=target_date,
-                                platform_hint=platform_hint)
+    # _normalize_legs returns NormalizedRow Mapping objects (read-only).
+    # Convert to plain mutable dicts immediately so the gap-fill and
+    # enrichment steps below can assign fields without TypeError.
+    norm_rows = [dict(r) for r in _normalize_legs(
+        ocr_legs, target_date=target_date, platform_hint=platform_hint
+    )]
 
     # ── Step D (pre-pipeline): Claude gap-fill for unresolved rows ────────
     gap_reqs = []
@@ -3948,7 +3952,7 @@ def _norm_to_pipeline_row(norm_row: dict) -> dict:
         "direction":    direction,
         "board_source": norm_row.get("platform") or "UNKNOWN",
         "start_time":   norm_row.get("game_time") or "",
-        "slate_date":   norm_row.get("game_time", "")[:10] or "",
+        "slate_date":   (norm_row.get("game_time") or "")[:10] or "",
         "game":         f"{norm_row.get('team', '')} vs {norm_row.get('opponent', '')}",
         "stat_key":     norm_row.get("stat_key") or "",
         "stat_formula": norm_row.get("stat_formula") or "",

@@ -60,3 +60,4 @@
 - [Pipeline plumbing patch](pipeline-plumbing-patch.md) — 3 defects: multipart screenshot transport, string fields crashing specialists, `req` NameError in error handler; normalize_gate_request + extract_image_bytes added; 9 regression tests.
 - [MLB pitching outs routing](mlb-pitching-outs-routing.md) — 4-file fix for "pitching outs"→"OUTS"→"pitcher_outs"; MLB Stats API field is "outs" (int), not "recordedOuts"; ESPN path returns 0 values for this stat.
 - [role_timestamp null-safe staleness format](role-timestamp-null-safe.md) — role_timestamp.py STALE/RECHECK f-strings crash when status_age is None; must guard with conditional str before formatting.
+- [analyze-and-score TypeErrors](analyze-and-score-typeerrors.md) — two crashes in /analyze-and-score: NormalizedRow is immutable (use dict(r) after _normalize_legs); .get(key,"")[:N] crashes on None values (use (row.get(key) or "")[:N]).
