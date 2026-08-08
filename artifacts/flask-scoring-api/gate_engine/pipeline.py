@@ -35,6 +35,8 @@ from . import llp_mlb_winner_preflight
 from . import mlb_directional_firewall, wnba_composite_gate, cross_ticket_governor
 # WOW v16 Tennis Total Games lane — exact Markov chain, three-outcome model
 from . import tennis_total_games_gate
+# WOW v16 WNBA Generative Probability lane — role-regime / Poisson mixture model
+from . import wnba_generative_gate
 from .mlb import plate_appearances_gate as _mlb_pa_gate
 from .wnba import opportunity_engine as _wnba_opp_gate
 from .wnba import evidence_acquisition as _wnba_evidence_acq
@@ -515,6 +517,11 @@ def run_pipeline(
 
         slip_structure.run_single(row)
 
+        # Store per-row enrichment on the row so the second per-row loop's
+        # sport-specific gates (wnba_generative_gate, etc.) can access it
+        # without the batch-level enrichment dict being in scope.
+        row["_enr"] = enr
+
     slip_structure.run_slip(rows)
 
     # WOW-PATCH-2026-07-07 — JS Style slip-level gate (same-game PRA cluster, etc.)
@@ -673,6 +680,14 @@ def run_pipeline(
         # Section 18.9 gating and routing for MLB Plate Appearances props.
         # No-ops for all other stat_keys.
         _mlb_pa_gate.run(row)
+
+        # WOW v16 WNBA Generative Probability Engine
+        # Role-regime mixture + Poisson PMF; three-outcome for integer lines,
+        # binary for half-points. 65% LB floor for YES_MODEL_QUALIFIED.
+        # Runs before wnba_composite_gate so the composite gate can read
+        # calibrated_probability_lower_bound stamped here.
+        # can_execute=False unconditional. No-op for non-WNBA rows.
+        wnba_generative_gate.run(row, enr=row.get("_enr") or {})
 
         # PATCH-017 — WNBA Composite Forward-Test Gate
         # MODEL_QUALIFIED_HOLD ceiling until 20 unique player-games settled.
