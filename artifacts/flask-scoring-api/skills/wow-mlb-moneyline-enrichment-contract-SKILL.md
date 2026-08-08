@@ -605,6 +605,82 @@ omission and blocks the row.
 
 ---
 
+## Component 15 — TeamRankings Secondary Enrichment (Optional)
+
+TeamRankings data is a **secondary enrichment source** — its absence does not
+block or hold any MLB moneyline row. The base model runs with full force if
+`enrichment["teamrankings"]` is not supplied.
+
+### How to supply
+
+Read the relevant matchup page on TeamRankings.com and include the following
+block inside the row's enrichment object when submitting to the backend:
+
+```json
+{
+  "teamrankings": {
+    "source_status": "RETRIEVED",
+    "source_url": "https://www.teamrankings.com/mlb/ranking/predictive-by-other",
+    "retrieved_at": "2026-08-08T18:00:00Z",
+
+    "matchup_win_prob_home": 0.57,
+
+    "home": {
+      "team_name": "Cleveland Guardians",
+      "sport": "MLB",
+      "predictive_rating": 3.2,
+      "predictive_rank": 9,
+      "home_rating": 4.1,
+      "away_rating": 2.3,
+      "strength_of_schedule": 0.503,
+      "last_5_rating": 3.8,
+      "last_10_rating": 3.1,
+      "display_odds": -145,
+      "retrieved_at": "2026-08-08T18:00:00Z",
+      "freshness_age_hours": 0.5,
+      "source_status": "RETRIEVED"
+    },
+
+    "away": {
+      "team_name": "New York Mets",
+      "sport": "MLB",
+      "predictive_rating": 1.4,
+      "predictive_rank": 18,
+      "home_rating": 2.2,
+      "away_rating": 0.6,
+      "strength_of_schedule": 0.498,
+      "last_5_rating": 1.0,
+      "last_10_rating": 1.5,
+      "display_odds": 125,
+      "retrieved_at": "2026-08-08T18:00:00Z",
+      "freshness_age_hours": 0.5,
+      "source_status": "RETRIEVED"
+    }
+  }
+}
+```
+
+### Key rules for MLB operators
+
+| Rule | Detail |
+|---|---|
+| `matchup_win_prob_home` required | Raw predictive ratings alone cannot be converted to a win probability. Without this field, TR weight = 0. |
+| Weight range | 7.5% default of the sport model ensemble; 10% hard ceiling. |
+| Freshness | `freshness_age_hours > 4.0` → `STALE` → zero weight. Retrieve TR data within 4 hours of first pitch. |
+| `display_odds` exclusion | `display_odds` from TR is stored for context but **never** copied to `sportsbook_odds` and **never** fed to the no-vig model. Copying it corrupts the market prior. |
+| `PROXY_ONLY` → zero | If you reconstructed the data rather than reading it directly from TR, set `source_status="PROXY_ONLY"`. Weight will be zeroed per governance. |
+| Absence is safe | If TR data is unavailable, omit the block. The backend returns `DATA_UNOBTAINABLE` for the TR submodel and the base model is completely unaffected. |
+
+### Supported sports for this field
+
+```text
+MLB  NBA  WNBA  NFL  NCAAF  NCAAB
+```
+
+All other sports return `UNSUPPORTED_SPORT` with zero TR weight.
+
+---
+
 ## Hard Blocks
 
 ```text

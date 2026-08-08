@@ -268,6 +268,38 @@ def _is_stale(record: TeamRankingsTeamRecord) -> bool:
         return False
 
 
+def _is_stale_dict(data: dict[str, Any]) -> bool:
+    """
+    Staleness check for the top-level enrichment["teamrankings"] dict.
+
+    Evaluates top-level freshness_age_hours and retrieved_at using the same
+    logic as _is_stale().  Called in addition to per-team checks so that
+    minimal-submission payloads (team records without per-team timestamps) are
+    still correctly rejected when the top-level timestamp is stale.
+
+    Returns False (not stale) when no timestamp information is present at the
+    top level — the per-team checks are the primary gate in that case.
+    """
+    hours_raw = data.get("freshness_age_hours")
+    if hours_raw is not None:
+        try:
+            return float(hours_raw) > TR_STALE_THRESHOLD_HOURS
+        except (TypeError, ValueError):
+            pass  # fall through to retrieved_at
+
+    retrieved_at_raw = data.get("retrieved_at")
+    if retrieved_at_raw:
+        try:
+            ts = datetime.fromisoformat(
+                str(retrieved_at_raw).replace("Z", "+00:00"))
+            age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
+            return age_hours > TR_STALE_THRESHOLD_HOURS
+        except (ValueError, TypeError):
+            pass
+
+    return False  # no top-level timestamp — do not stale on absence alone
+
+
 def _extract_team_record(data: dict[str, Any], role: str) -> TeamRankingsTeamRecord:
     """
     Parse one team's TR data from a dict.
@@ -352,6 +384,13 @@ def _compute_weight(
     - No direct matchup_win_prob_home → 0.0 (raw ratings cannot be converted)
     - Otherwise → min(TR_WEIGHT_DEFAULT, TR_WEIGHT_MAX)
     """
+    # source_status=STALE may be set by the top-level timestamp check in
+    # extract_teamrankings_enrichment (for minimal payloads with no per-team
+    # timestamps).  Check it before the per-record _is_stale() guards so that
+    # top-level staleness is always honoured.
+    if source_status == TeamRankingsStatus.STALE:
+        return TR_WEIGHT_ZERO, "STALE:source_status_stale"
+
     if _is_stale(home_record) or _is_stale(away_record):
         return TR_WEIGHT_ZERO, "STALE:freshness_exceeds_threshold"
 
@@ -554,9 +593,15 @@ def extract_teamrankings_enrichment(
         else:
             source_status = TeamRankingsStatus.RETRIEVED
 
-    # Staleness override
+    # Staleness override — checks per-team records AND top-level timestamp.
+    # The top-level check catches minimal-submission payloads where home/away
+    # records carry no per-team timestamps (only team_name was supplied).
     if source_status == TeamRankingsStatus.RETRIEVED:
-        if _is_stale(home_record) or _is_stale(away_record):
+        if (
+            _is_stale(home_record)
+            or _is_stale(away_record)
+            or _is_stale_dict(tr_data)
+        ):
             source_status = TeamRankingsStatus.STALE
             notes.append("STALE_OVERRIDE:freshness_age_exceeds_4h_threshold")
 

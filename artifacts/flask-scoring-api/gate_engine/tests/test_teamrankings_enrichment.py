@@ -966,5 +966,158 @@ class TestFillContradictionUpdatesInPlace(unittest.TestCase):
         self.assertAlmostEqual(tr_enr.teamrankings_model_delta, 0.08, places=4)
 
 
+# ===========================================================================
+# 16. Top-level timestamp staleness (minimal-submission payloads)
+# ===========================================================================
+
+class TestTopLevelTimestampStaleness(unittest.TestCase):
+    """
+    Regression: when home/away records carry no per-team timestamps (only
+    team_name supplied — the minimal-submission schema), the top-level
+    retrieved_at / freshness_age_hours must govern staleness.
+
+    Before the fix, _is_stale() on both records returned False (no per-team
+    timestamps), so STALE_OVERRIDE never fired and the payload received
+    RETRIEVED + 7.5% weight even when the top-level data was hours old.
+    """
+
+    def _minimal_tr(
+        self,
+        top_retrieved_at: str | None = None,
+        top_freshness_age_hours: float | None = None,
+        matchup_win_prob_home: float = 0.61,
+    ) -> dict[str, Any]:
+        """Minimal enrichment["teamrankings"] — per-team records have no timestamps."""
+        payload: dict[str, Any] = {
+            "source_status": "RETRIEVED",
+            "matchup_win_prob_home": matchup_win_prob_home,
+            "home": {"team_name": "Cleveland Guardians"},
+            "away": {"team_name": "New York Mets"},
+        }
+        if top_retrieved_at is not None:
+            payload["retrieved_at"] = top_retrieved_at
+        if top_freshness_age_hours is not None:
+            payload["freshness_age_hours"] = top_freshness_age_hours
+        return payload
+
+    # --- stale via freshness_age_hours -----------------------------------------
+
+    def test_stale_via_toplevel_freshness_age_hours_zeroes_weight(self):
+        """Top-level freshness_age_hours > 4 → STALE → zero weight."""
+        enr = {"teamrankings": self._minimal_tr(top_freshness_age_hours=5.0)}
+        result = extract_teamrankings_enrichment(enr, "MLB")
+        self.assertEqual(result.source_status, TeamRankingsStatus.STALE,
+                         "Top-level freshness_age_hours=5 must produce STALE")
+        self.assertEqual(result.effective_weight, TR_WEIGHT_ZERO,
+                         "STALE payload must receive zero weight")
+
+    def test_stale_exactly_at_threshold_is_not_stale(self):
+        """Exactly 4.0 hours is NOT stale (strictly greater-than comparison)."""
+        enr = {"teamrankings": self._minimal_tr(top_freshness_age_hours=4.0)}
+        result = extract_teamrankings_enrichment(enr, "NBA")
+        # 4.0 is not > 4.0, so should be RETRIEVED with non-zero weight
+        self.assertEqual(result.source_status, TeamRankingsStatus.RETRIEVED)
+        self.assertGreater(result.effective_weight, 0.0)
+
+    def test_stale_just_over_threshold_zeroes_weight(self):
+        """4.01 hours → STALE."""
+        enr = {"teamrankings": self._minimal_tr(top_freshness_age_hours=4.01)}
+        result = extract_teamrankings_enrichment(enr, "NBA")
+        self.assertEqual(result.source_status, TeamRankingsStatus.STALE)
+        self.assertEqual(result.effective_weight, TR_WEIGHT_ZERO)
+
+    # --- fresh via freshness_age_hours -----------------------------------------
+
+    def test_fresh_via_toplevel_freshness_age_hours_gives_weight(self):
+        """Top-level freshness_age_hours = 1.5 → RETRIEVED → 7.5% weight."""
+        enr = {"teamrankings": self._minimal_tr(top_freshness_age_hours=1.5)}
+        result = extract_teamrankings_enrichment(enr, "NFL")
+        self.assertEqual(result.source_status, TeamRankingsStatus.RETRIEVED)
+        self.assertAlmostEqual(result.effective_weight, TR_WEIGHT_DEFAULT, places=4)
+
+    # --- stale via retrieved_at ISO timestamp ----------------------------------
+
+    def test_stale_via_toplevel_retrieved_at_old_timestamp(self):
+        """retrieved_at more than 4 hours ago → STALE."""
+        from datetime import datetime, timezone, timedelta
+        old_ts = (datetime.now(timezone.utc) - timedelta(hours=5)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        enr = {"teamrankings": self._minimal_tr(top_retrieved_at=old_ts)}
+        result = extract_teamrankings_enrichment(enr, "NBA")
+        self.assertEqual(result.source_status, TeamRankingsStatus.STALE,
+                         "retrieved_at 5 hours ago must produce STALE")
+        self.assertEqual(result.effective_weight, TR_WEIGHT_ZERO)
+
+    def test_fresh_via_toplevel_retrieved_at_recent_timestamp(self):
+        """retrieved_at 30 minutes ago → RETRIEVED → non-zero weight."""
+        from datetime import datetime, timezone, timedelta
+        recent_ts = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        enr = {"teamrankings": self._minimal_tr(top_retrieved_at=recent_ts)}
+        result = extract_teamrankings_enrichment(enr, "NBA")
+        self.assertEqual(result.source_status, TeamRankingsStatus.RETRIEVED)
+        self.assertGreater(result.effective_weight, 0.0)
+
+    # --- no top-level timestamp (neither freshness_age_hours nor retrieved_at) ---
+
+    def test_no_toplevel_timestamp_does_not_stale(self):
+        """
+        When no top-level timestamp is present and per-team records also have
+        none, the staleness check fails open (not closed) — absence of a
+        timestamp is not itself evidence of staleness. The row is treated as
+        RETRIEVED (per-team source_status drives the decision).
+        """
+        payload = {
+            "source_status": "RETRIEVED",
+            "matchup_win_prob_home": 0.58,
+            "home": {"team_name": "Home Team"},
+            "away": {"team_name": "Away Team"},
+        }
+        enr = {"teamrankings": payload}
+        result = extract_teamrankings_enrichment(enr, "NBA")
+        # No timestamps at all → not declared stale; source_status stays RETRIEVED
+        self.assertEqual(result.source_status, TeamRankingsStatus.RETRIEVED)
+
+    # --- freshness_age_hours takes precedence over retrieved_at ---------------
+
+    def test_freshness_age_hours_takes_precedence_over_retrieved_at(self):
+        """
+        When both freshness_age_hours and retrieved_at are supplied,
+        freshness_age_hours is evaluated first.
+        A fresh freshness_age_hours (1.0) with a stale-looking retrieved_at
+        should evaluate as fresh.
+        """
+        from datetime import datetime, timezone, timedelta
+        stale_ts = (datetime.now(timezone.utc) - timedelta(hours=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        payload = {
+            "source_status": "RETRIEVED",
+            "matchup_win_prob_home": 0.62,
+            "freshness_age_hours": 1.0,   # fresh
+            "retrieved_at": stale_ts,     # would be stale if checked
+            "home": {"team_name": "Home Team"},
+            "away": {"team_name": "Away Team"},
+        }
+        enr = {"teamrankings": payload}
+        result = extract_teamrankings_enrichment(enr, "NBA")
+        # freshness_age_hours=1.0 wins → RETRIEVED
+        self.assertEqual(result.source_status, TeamRankingsStatus.RETRIEVED)
+        self.assertGreater(result.effective_weight, 0.0)
+
+    # --- STALE note in acquisition_notes --------------------------------------
+
+    def test_stale_note_included_in_acquisition_notes(self):
+        """STALE_OVERRIDE note must appear in acquisition_notes when stale fires."""
+        enr = {"teamrankings": self._minimal_tr(top_freshness_age_hours=6.0)}
+        result = extract_teamrankings_enrichment(enr, "MLB")
+        stale_notes = [n for n in result.acquisition_notes
+                       if "STALE_OVERRIDE" in n or "STALE" in n.upper()]
+        self.assertTrue(len(stale_notes) > 0,
+                        "STALE_OVERRIDE must appear in acquisition_notes")
+
+
 if __name__ == "__main__":
     unittest.main()

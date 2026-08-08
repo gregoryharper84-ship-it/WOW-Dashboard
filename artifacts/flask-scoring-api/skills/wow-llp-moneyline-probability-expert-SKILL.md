@@ -1963,3 +1963,246 @@ shared_thesis_pairs=
 unsupported_confidence_claims_downgraded=
 multi_candidate_shortlist_blocks=
 ```
+
+---
+
+# 2026-08-08 TeamRankings Secondary Enrichment — Operator Schema
+
+## Active patch
+
+```text
+WOW-PATCH-2026-08-08-TEAMRANKINGS-SECONDARY-ENRICHMENT
+```
+
+## Overview
+
+TeamRankings.com has **no authorized public API** available to this application.
+All TR data must be read by the GPT operator from TeamRankings.com and supplied
+in `enrichment["teamrankings"]` when submitting a moneyline row to the backend.
+
+If `enrichment["teamrankings"]` is absent, the backend returns
+`source_status=DATA_UNOBTAINABLE` and the base model runs unchanged.
+
+Supported sports: **NBA, WNBA, MLB, NFL, NCAAF, NCAAB**
+Weight contribution: **7.5% default — hard ceiling 10%**
+
+---
+
+## Enrichment Schema
+
+Supply `enrichment["teamrankings"]` as the following JSON object. Every field
+is optional — supply what is available and omit the rest. The adapter never
+fabricates missing values.
+
+```json
+{
+  "teamrankings": {
+    "source_status": "RETRIEVED",
+    "source_url": "https://www.teamrankings.com/...",
+    "retrieved_at": "2026-08-08T14:30:00Z",
+
+    "matchup_win_prob_home": 0.62,
+
+    "home": {
+      "team_name": "Los Angeles Lakers",
+      "league": "NBA",
+      "sport": "NBA",
+      "predictive_rating": 4.8,
+      "predictive_rank": 7,
+      "home_rating": 6.1,
+      "home_rank": 5,
+      "away_rating": 3.5,
+      "away_rank": 11,
+      "neutral_rating": 4.9,
+      "strength_of_schedule": 0.502,
+      "future_strength_of_schedule": 0.498,
+      "last_5_rating": 5.3,
+      "last_10_rating": 4.9,
+      "consistency_rating": 0.71,
+      "vs_top_25_pct": 0.48,
+      "vs_bottom_25_pct": 0.74,
+      "projected_win_pct": 0.58,
+      "projected_playoff_prob": 0.82,
+      "display_odds": -155,
+      "source_url": "https://www.teamrankings.com/nba/ranking/predictive-by-other",
+      "retrieved_at": "2026-08-08T14:30:00Z",
+      "freshness_age_hours": 1.5,
+      "source_status": "RETRIEVED"
+    },
+
+    "away": {
+      "team_name": "Golden State Warriors",
+      "league": "NBA",
+      "sport": "NBA",
+      "predictive_rating": 2.1,
+      "predictive_rank": 14,
+      "home_rating": 3.0,
+      "home_rank": 13,
+      "away_rating": 1.2,
+      "away_rank": 18,
+      "neutral_rating": 2.0,
+      "strength_of_schedule": 0.495,
+      "future_strength_of_schedule": 0.501,
+      "last_5_rating": 1.8,
+      "last_10_rating": 2.3,
+      "consistency_rating": 0.58,
+      "vs_top_25_pct": 0.34,
+      "vs_bottom_25_pct": 0.60,
+      "projected_win_pct": 0.44,
+      "projected_playoff_prob": 0.55,
+      "display_odds": 135,
+      "source_url": "https://www.teamrankings.com/nba/ranking/predictive-by-other",
+      "retrieved_at": "2026-08-08T14:30:00Z",
+      "freshness_age_hours": 1.5,
+      "source_status": "RETRIEVED"
+    }
+  }
+}
+```
+
+---
+
+## Field Definitions
+
+### Top-level fields
+
+| Field | Type | Description |
+|---|---|---|
+| `source_status` | string | Acquisition status (see below). Overrides per-team statuses when present. |
+| `source_url` | string | TeamRankings page URL where data was read. |
+| `retrieved_at` | string | ISO 8601 UTC timestamp when the operator retrieved the data. |
+| `matchup_win_prob_home` | float (0.01–0.99) | TR's direct matchup win-probability projection for the home team. **This is the only TR field that contributes to the probability model.** Required for non-zero weight. |
+
+### Per-team fields (`home` and `away`)
+
+| Field | Type | Description |
+|---|---|---|
+| `team_name` | string | Full team name as shown on TeamRankings. |
+| `league` | string | League abbreviation, e.g. `"NBA"`. |
+| `sport` | string | Sport, e.g. `"NBA"`. |
+| `predictive_rating` | float | TR predictive power rating. |
+| `predictive_rank` | int | Rank by predictive rating (1 = best). |
+| `home_rating` | float | Performance rating at home. |
+| `home_rank` | int | Home-rating rank. |
+| `away_rating` | float | Performance rating on the road. |
+| `away_rank` | int | Away-rating rank. |
+| `neutral_rating` | float | Neutral-site rating. |
+| `strength_of_schedule` | float | Season SOS (also accepted as `sos`). |
+| `future_strength_of_schedule` | float | Remaining SOS (also accepted as `future_sos`). |
+| `last_5_rating` | float | Rating over last 5 games (also accepted as `l5_rating`). |
+| `last_10_rating` | float | Rating over last 10 games (also accepted as `l10_rating`). |
+| `consistency_rating` | float | TR consistency metric. |
+| `vs_top_25_pct` | float | Win % vs top-25% opponents. |
+| `vs_bottom_25_pct` | float | Win % vs bottom-25% opponents. |
+| `projected_win_pct` | float | Season win % projection. |
+| `projected_playoff_prob` | float | TR playoff probability. |
+| `display_odds` | int | American moneyline from TR — **market context ONLY; never fed to the sport model**. |
+| `source_url` | string | Team-specific TR page URL. |
+| `retrieved_at` | string | ISO 8601 UTC retrieval timestamp. |
+| `freshness_age_hours` | float | Age of data in hours at submission time. Computed automatically if `retrieved_at` is supplied. |
+| `source_status` | string | Per-team acquisition status. |
+
+---
+
+## Source Status Vocabulary
+
+| Status | Weight | Meaning |
+|---|---:|---|
+| `RETRIEVED` | 7.5% (up to 10%) | Operator directly read TR data; `matchup_win_prob_home` present and fresh. |
+| `PROXY_ONLY` | **0%** | Data was inferred or reconstructed, not directly retrieved. Zero weight per governance. |
+| `DATA_UNOBTAINABLE` | **0%** | TR data was not available or not found. Base model unchanged. |
+| `STALE` | **0%** | `freshness_age_hours > 4` or derived `retrieved_at` age > 4 h. Zero weight. |
+| `SOURCE_CONFLICT` | **0%** | Internal conflict between home/away records. Zero weight. |
+| `NOT_ATTEMPTED` | **0%** | Operator did not include TR data. Same as absent — base model unchanged. |
+| `UNSUPPORTED_SPORT` | **0%** | Sport is not in the supported set. |
+
+**Freshness rule:** TR data with `freshness_age_hours > 4.0` (or computed age from
+`retrieved_at > 4 h`) is treated as `STALE` and receives zero weight regardless of
+any other field. Refresh the TR data within 4 hours of game time.
+
+---
+
+## display_odds Hard Rule
+
+`display_odds` is the American moneyline shown on TeamRankings. It is stored in
+the team record for audit transparency but is **permanently excluded** from the
+sport model:
+
+```text
+display_odds → MARKET_CONTEXT_ONLY
+display_odds → NEVER passed to extract_no_vig_probability()
+display_odds → NEVER included in the market prior computation
+display_odds → NEVER copied into sportsbook_odds
+```
+
+Using `display_odds` as a model input or as a proxy for `sportsbook_odds`
+corrupts the market prior and is a governance violation. The backend always
+sets `display_odds_excluded_from_model=true` regardless of what the operator supplies.
+
+---
+
+## Weight Governance
+
+```text
+Default TR ensemble weight:  7.5%
+Hard ceiling:               10.0%
+Zero-weight triggers: STALE | DATA_UNOBTAINABLE | PROXY_ONLY | SOURCE_CONFLICT
+                      NOT_ATTEMPTED | UNSUPPORTED_SPORT | matchup_win_prob_home absent
+```
+
+**Raw predictive ratings cannot be converted to a win probability** — no
+calibrated logistic mapping exists in WOW governance. The only field that
+activates a non-zero TR weight is `matchup_win_prob_home` (a direct TR matchup
+projection, not a computed value).
+
+---
+
+## Contradiction Behavior
+
+When TR weight is non-zero and `matchup_win_prob_home` is present:
+
+| Condition | Agreement | contradiction_flag |
+|---|---|---|
+| TR and core model agree (delta < 8 pp, same winner) | `AGREE` | false |
+| Same winner but delta ≥ 8 pp | `DISCREPANCY` | true |
+| TR favors opposite winner (TR crosses 50% boundary) | `OPPOSITE_SIDE` | true |
+
+A contradiction **lowers confidence and may reduce the label tier** but
+**never flips the pick**. The contradiction is surfaced in `teamrankings_contradiction_reason`
+and routes through the disagreement audit before final qualification.
+
+---
+
+## Minimal Submission Example
+
+When you have only `matchup_win_prob_home` and no per-team detail:
+
+```json
+{
+  "teamrankings": {
+    "source_status": "RETRIEVED",
+    "retrieved_at": "2026-08-08T18:00:00Z",
+    "matchup_win_prob_home": 0.61,
+    "home": { "team_name": "Cleveland Guardians" },
+    "away": { "team_name": "New York Mets" }
+  }
+}
+```
+
+This is the minimum required to achieve non-zero TR weight.
+
+---
+
+## Supported Sports
+
+```text
+NBA     — full support
+WNBA    — full support
+MLB     — full support
+NFL     — full support
+NCAAF   — full support
+NCAAB   — full support
+```
+
+All other sports (NHL, Soccer, Tennis, Golf, MMA, Boxing) return
+`UNSUPPORTED_SPORT` and zero TR weight. The base model is unaffected.

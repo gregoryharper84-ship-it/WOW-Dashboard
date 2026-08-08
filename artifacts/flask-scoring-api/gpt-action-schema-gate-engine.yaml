@@ -482,6 +482,123 @@ paths:
                             type: string
                             nullable: true
                             description: Baseline used for shrinkage, e.g. "season", "role_split", "market".
+                      teamrankings:
+                        type: object
+                        description: >
+                          TeamRankings secondary enrichment for OUTRIGHT_WINNER / moneyline rows.
+                          WOW-PATCH-2026-08-08-TEAMRANKINGS-SECONDARY-ENRICHMENT.
+
+                          TeamRankings has no authorized public API. The GPT operator must read
+                          TeamRankings.com directly and supply this object. Absence is safe:
+                          source_status becomes DATA_UNOBTAINABLE and the base model runs unchanged.
+
+                          Supported sports: NBA, WNBA, MLB, NFL, NCAAF, NCAAB.
+                          Default weight: 7.5% of sport model ensemble. Hard ceiling: 10%.
+                          Zero weight when: STALE | DATA_UNOBTAINABLE | PROXY_ONLY | SOURCE_CONFLICT
+                          or when matchup_win_prob_home is absent.
+
+                          FRESHNESS: freshness_age_hours > 4.0 (or computed from retrieved_at) triggers
+                          STALE and zero weight regardless of other fields. Retrieve within 4 h of game time.
+
+                          display_odds is stored for audit transparency only. It is NEVER fed to the sport
+                          model, NEVER passed to extract_no_vig_probability(), and NEVER copied to
+                          sportsbook_odds. The backend always sets display_odds_excluded_from_model=true.
+                        properties:
+                          source_status:
+                            type: string
+                            enum: [RETRIEVED, PROXY_ONLY, DATA_UNOBTAINABLE, SOURCE_CONFLICT, STALE, NOT_ATTEMPTED, UNSUPPORTED_SPORT]
+                            description: >
+                              Top-level acquisition status. RETRIEVED = operator read TR directly, data
+                              is fresh. PROXY_ONLY = reconstructed/inferred, zero weight.
+                              DATA_UNOBTAINABLE = not available, base model unchanged. STALE = age > 4 h.
+                          source_url:
+                            type: string
+                            description: TeamRankings page URL where the operator read the data.
+                          retrieved_at:
+                            type: string
+                            format: date-time
+                            description: ISO 8601 UTC timestamp when the operator retrieved the data.
+                          matchup_win_prob_home:
+                            type: number
+                            description: >
+                              TR direct matchup win-probability for the home team (0.01–0.99).
+                              This is the ONLY TR field that contributes to the probability model.
+                              Raw predictive ratings cannot be converted — matchup_win_prob_home is
+                              required for non-zero TR weight.
+                          home:
+                            type: object
+                            description: TeamRankings record for the home team. All fields optional.
+                            properties:
+                              team_name: { type: string }
+                              league: { type: string }
+                              sport: { type: string }
+                              predictive_rating: { type: number }
+                              predictive_rank: { type: integer }
+                              home_rating: { type: number }
+                              home_rank: { type: integer }
+                              away_rating: { type: number }
+                              away_rank: { type: integer }
+                              neutral_rating: { type: number }
+                              strength_of_schedule:
+                                type: number
+                                description: Season SOS. Also accepted as sos.
+                              future_strength_of_schedule:
+                                type: number
+                                description: Remaining SOS. Also accepted as future_sos.
+                              last_5_rating:
+                                type: number
+                                description: Also accepted as l5_rating.
+                              last_10_rating:
+                                type: number
+                                description: Also accepted as l10_rating.
+                              consistency_rating: { type: number }
+                              vs_top_25_pct: { type: number }
+                              vs_bottom_25_pct: { type: number }
+                              projected_win_pct: { type: number }
+                              projected_playoff_prob: { type: number }
+                              display_odds:
+                                type: integer
+                                description: American moneyline from TR. MARKET CONTEXT ONLY — never fed to sport model, never copied to sportsbook_odds.
+                              source_url: { type: string }
+                              retrieved_at: { type: string }
+                              freshness_age_hours: { type: number }
+                              source_status: { type: string }
+                              acquisition_notes:
+                                type: array
+                                items: { type: string }
+                          away:
+                            type: object
+                            description: TeamRankings record for the away team. Same fields as home.
+                            properties:
+                              team_name: { type: string }
+                              league: { type: string }
+                              sport: { type: string }
+                              predictive_rating: { type: number }
+                              predictive_rank: { type: integer }
+                              home_rating: { type: number }
+                              home_rank: { type: integer }
+                              away_rating: { type: number }
+                              away_rank: { type: integer }
+                              neutral_rating: { type: number }
+                              strength_of_schedule: { type: number }
+                              future_strength_of_schedule: { type: number }
+                              last_5_rating: { type: number }
+                              last_10_rating: { type: number }
+                              consistency_rating: { type: number }
+                              vs_top_25_pct: { type: number }
+                              vs_bottom_25_pct: { type: number }
+                              projected_win_pct: { type: number }
+                              projected_playoff_prob: { type: number }
+                              display_odds:
+                                type: integer
+                                description: American moneyline from TR. MARKET CONTEXT ONLY — never fed to sport model, never copied to sportsbook_odds.
+                              source_url: { type: string }
+                              retrieved_at: { type: string }
+                              freshness_age_hours: { type: number }
+                              source_status: { type: string }
+                              acquisition_notes:
+                                type: array
+                                items: { type: string }
                 record_entries:
                   type: boolean
                   description: >
