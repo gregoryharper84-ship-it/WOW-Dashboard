@@ -228,47 +228,85 @@ def _record_platform_appearance(canonical: dict[str, Any], row: dict[str, Any]) 
 def extract_no_vig_probability(
     enrichment: dict[str, Any],
     side: str,
+    opponent: str | None = None,
 ) -> float | None:
     """
-    Extract the no-vig implied probability for `side` from sportsbook enrichment.
+    Extract the no-vig implied probability for the candidate `side` from
+    sportsbook enrichment.
 
-    This is used as a SANITY CHECK PRIOR only, never as the primary
-    probability estimate.  When no odds are available this returns None —
-    the sport model must run regardless.
+    Matching strategy (in order):
+      1. Book entries where book["team"] matches `side` → candidate probs
+      2. Book entries where book["team"] matches `opponent` → opponent probs
+         When both sides present, compute proper two-sided no-vig:
+         no_vig = p_candidate / (p_candidate + p_opponent)
+      3. If no team field present on any entry, fall back to all "odds" values.
 
-    Uses a two-book average when available; falls back to single book.
+    This is a SANITY CHECK PRIOR only — never the primary probability estimate.
+    When no odds are available or the candidate's team cannot be matched,
+    returns None so the sport model governs.
     """
     books = enrichment.get("sportsbook_odds") or []
     if not books:
         return None
 
-    # Gather decimal odds for the requested side across all books
-    probs: list[float] = []
+    def _american_to_implied(american: float) -> float:
+        if american > 0:
+            return 100.0 / (american + 100.0)
+        else:
+            return abs(american) / (abs(american) + 100.0)
+
+    candidate_probs: list[float] = []
+    opponent_probs:  list[float] = []
+    unmatched_probs: list[float] = []
+
+    side_lower     = (side     or "").lower().strip()
+    opponent_lower = (opponent or "").lower().strip()
+
     for book in books:
         if not isinstance(book, dict):
             continue
-        odds_val = book.get(side) or book.get("odds")
+
+        odds_val  = book.get("odds")
+        book_team = (book.get("team") or book.get("side") or "").lower().strip()
+
         if odds_val is None:
             continue
         try:
             american = float(odds_val)
         except (TypeError, ValueError):
             continue
-        # Convert American odds to implied probability
-        if american > 0:
-            implied = 100.0 / (american + 100.0)
+
+        implied = _american_to_implied(american)
+
+        if book_team:
+            if side_lower and book_team == side_lower:
+                candidate_probs.append(implied)
+            elif opponent_lower and book_team == opponent_lower:
+                opponent_probs.append(implied)
+            # else: a different team's entry — ignore for this candidate
         else:
-            implied = abs(american) / (abs(american) + 100.0)
-        probs.append(implied)
+            # No team identifier on this entry; pool for fallback
+            unmatched_probs.append(implied)
 
-    if not probs:
-        return None
+    # -- Primary path: team-matched candidate odds ---------------------------
+    if candidate_probs:
+        avg_candidate = sum(candidate_probs) / len(candidate_probs)
+        if opponent_probs:
+            # Proper two-sided no-vig: removes the book's overround on H2H
+            avg_opponent = sum(opponent_probs) / len(opponent_probs)
+            denom = avg_candidate + avg_opponent
+            if denom > 0:
+                no_vig = avg_candidate / denom
+                return max(0.01, min(0.99, no_vig))
+        # Single-side implied probability (approximate; no opponent for removal)
+        return max(0.01, min(0.99, avg_candidate))
 
-    # Simple average then re-normalise to remove the book's edge.
-    # This is an approximation — a proper two-book no-vig uses Pinnacle removal.
-    avg_prob = sum(probs) / len(probs)
-    # Clip to [0.01, 0.99]
-    return max(0.01, min(0.99, avg_prob))
+    # -- Fallback: no team tags on any entry --------------------------------
+    if unmatched_probs:
+        avg = sum(unmatched_probs) / len(unmatched_probs)
+        return max(0.01, min(0.99, avg))
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +562,41 @@ def build_prediction_snapshot(
 
 
 # ---------------------------------------------------------------------------
+# Pipeline audit helper
+# ---------------------------------------------------------------------------
+
+def _build_pipeline_audit(ml_result: Any) -> dict[str, Any]:
+    """
+    Build the probability_audit dict from a MoneylineResult.
+
+    Audit passes only when:
+      - independent_probability is not None (model actually ran), AND
+      - ml_result.blockers is empty (no downstream gate failures)
+
+    When independent_probability is None (MARKET_OBSERVATION_ONLY path),
+    audit.passed=False regardless of blocker state, because raw_probability
+    is unavailable — market data cannot substitute for the independent model.
+    """
+    notes: list[str] = list(ml_result.blockers or [])
+    independent_prob = ml_result.outputs.independent_probability
+    market_fallback  = (ml_result.sport_model or {}).get("market_derived_fallback", False)
+
+    if independent_prob is None:
+        if market_fallback:
+            notes.append(
+                "AUDIT_FAIL:independent_probability_unavailable_MARKET_OBSERVATION_ONLY "
+                "(market_no_vig used as bounded calibration input; cannot substitute for model)"
+            )
+        else:
+            notes.append("AUDIT_FAIL:independent_probability_unavailable")
+        return {"passed": False, "audit_notes": notes}
+
+    # Independent model ran — pass iff no blocking failures
+    passed = len(ml_result.blockers) == 0
+    return {"passed": passed, "audit_notes": notes}
+
+
+# ---------------------------------------------------------------------------
 # Main scoring entry point
 # ---------------------------------------------------------------------------
 
@@ -582,85 +655,73 @@ def score_outright_winner_row(
         )
         return _build_result(terminal, blockers, None, row, model_entry, enrichment)
 
-    # Extract consensus prior from enrichment (sanity check only)
-    team_side = row.get("team") or row.get("player") or "home"
-    consensus_prior = extract_no_vig_probability(enrichment, side=team_side)
-
     # ---------------------------------------------------------------------------
-    # Sport-model probability computation
-    # In the RESEARCH LAYER this is a stub that returns the consensus prior
-    # (or None) as the raw_probability.  A live calibrated model would replace
-    # this block.  The output contract is identical regardless.
+    # Delegate to the full WOW v16 Moneyline Architecture pipeline.
+    #
+    # The research-layer stub that derived raw_probability directly from the
+    # sportsbook no-vig consensus has been replaced by a layered pipeline that:
+    #   1. Computes an INDEPENDENT sport model probability (Elo, H2H, power)
+    #   2. Runs a Monte Carlo game-state simulation
+    #   3. Integrates the failure-path kill-path regime matrix
+    #   4. Audits cross-submodel disagreement (widens uncertainty 1×/1.15×/1.35×)
+    #   5. Applies bounded market shrinkage calibration (market data enters HERE only)
+    #   6. Computes the calibrated lower bound (used for candidate ranking)
+    #   7. Classifies favorite / underdog with upset-pathway taxonomy
+    #   8. Performs exact no-vig market comparison (downstream only)
+    #   9. Runs mandatory final refresh
+    #
+    # All upstream stages receive a clean enrichment with odds fields stripped.
+    # can_execute=False unconditional.
     # ---------------------------------------------------------------------------
-    raw_prob: float | None = None
-    calib_prob: float | None = None
-    lower_b: float | None  = None
-    upper_b: float | None  = None
+    from gate_engine.moneyline.pipeline import run_moneyline_pipeline
 
-    # Derive raw from consensus prior if available (research-layer approximation)
-    if consensus_prior is not None:
-        raw_prob   = round(consensus_prior, 4)
-        # PROVISIONAL: no calibration ledger, so calibrated = raw with wider bounds
-        if model_status == ModelStatus.PROVISIONAL:
-            calib_prob = raw_prob
-            lower_b    = max(0.01, round(raw_prob - 0.08, 4))
-            upper_b    = min(0.99, round(raw_prob + 0.08, 4))
-        elif model_status == ModelStatus.ACTIVE:
-            calib_prob = raw_prob
-            lower_b    = max(0.01, round(raw_prob - 0.05, 4))
-            upper_b    = min(0.99, round(raw_prob + 0.05, 4))
-
-    # 1X2 three-state computation
-    if is_1x2 and raw_prob is not None:
-        outcome = (row.get("outcome") or "home").lower()
-        # Distribute probability across three outcomes (research approximation)
-        # A live model would return exact multinomial probabilities.
-        if outcome == "draw":
-            p_draw = raw_prob
-            p_home = round((1.0 - p_draw) * 0.6, 4)
-            p_away = round(1.0 - p_draw - p_home, 4)
-        elif outcome == "away":
-            p_away = raw_prob
-            p_home = round((1.0 - p_away) * 0.55, 4)
-            p_draw = round(1.0 - p_away - p_home, 4)
-        else:  # home
-            p_home = raw_prob
-            p_draw = round((1.0 - p_home) * 0.27, 4)
-            p_away = round(1.0 - p_home - p_draw, 4)
-        try:
-            three_state_result = compute_1x2_three_state(p_home, p_draw, p_away)
-        except ValueError as exc:
-            blockers.append(f"SOCCER_1X2_PROBABILITY_ERROR:{exc}")
-
-    # Probability audit
-    audit = audit_probability(raw_prob, calib_prob, lower_b, upper_b, model_status)
-    if not audit["passed"]:
-        for note in audit["audit_notes"]:
-            if note.startswith("AUDIT_FAIL"):
-                blockers.append(note)
-
-    # Terminal label assignment
-    if not blockers:
-        if model_status == ModelStatus.ACTIVE:
-            terminal = "MONEY_QUALIFIED"
-        else:
-            terminal = "MODEL_QUALIFIED_HOLD"
-
-    snapshot = build_prediction_snapshot(
+    ml_result = run_moneyline_pipeline(
         row=row,
-        raw_probability=raw_prob,
-        calibrated_probability=calib_prob,
-        lower_bound=lower_b,
-        upper_bound=upper_b,
-        model_entry=model_entry,
-        audit_result=audit,
-        consensus_prior=consensus_prior,
-        three_state=three_state_result,
-        stale_check=stale if stale["disposition"] != "NO_PRIOR" else None,
+        enrichment=enrichment,
+        prior_snapshot=prior_snapshot,
+        n_sims=5000,
     )
 
+    # Build a backward-compatible probability_snapshot from the new result
+    # so the app.py call site (which reads "probability_snapshot") continues
+    # to receive a structured snapshot in the expected format.
+    _snap = build_prediction_snapshot(
+        row=row,
+        raw_probability=ml_result.outputs.independent_probability,
+        calibrated_probability=ml_result.outputs.calibrated_probability,
+        lower_bound=ml_result.outputs.calibrated_probability_lower_bound,
+        upper_bound=ml_result.outputs.calibrated_probability_upper_bound,
+        model_entry=model_entry,
+        audit_result=_build_pipeline_audit(ml_result),
+        consensus_prior=None,
+        three_state=ml_result.three_state_1x2,
+        stale_check=stale if stale["disposition"] != "NO_PRIOR" else None,
+    )
+    # Inject new four-output fields into snapshot for GPT observability
+    _snap["independent_probability"]            = ml_result.outputs.independent_probability
+    _snap["calibrated_probability"]             = ml_result.outputs.calibrated_probability
+    _snap["calibrated_probability_lower_bound"] = ml_result.outputs.calibrated_probability_lower_bound
+    _snap["calibrated_probability_upper_bound"] = ml_result.outputs.calibrated_probability_upper_bound
+    _snap["net_edge"]                           = ml_result.outputs.net_edge
+    _snap["moneyline_architecture_layers"]      = {
+        "sport_model":        ml_result.sport_model,
+        "simulation":         ml_result.simulation,
+        "failure_path":       ml_result.failure_path,
+        "disagreement_audit": ml_result.disagreement_audit,
+        "calibration":        ml_result.calibration,
+        "classification":     ml_result.classification,
+        "market_comparison":  ml_result.market_comparison,
+        "final_refresh":      ml_result.final_refresh,
+        "slate_integrity":    ml_result.slate_integrity,
+    }
+    # Only overwrite the compatibility snapshot hash when the pipeline produced
+    # a real one (early-return paths leave it None; build_prediction_snapshot
+    # already computed a valid hash from the output fields it received).
+    if ml_result.snapshot_hash is not None:
+        _snap["snapshot_hash"] = ml_result.snapshot_hash
+
     return _build_result(
-        terminal, blockers, snapshot, row, model_entry, enrichment,
+        ml_result.terminal_label, ml_result.blockers, _snap, row, model_entry, enrichment,
         stale_check=stale,
     )
 

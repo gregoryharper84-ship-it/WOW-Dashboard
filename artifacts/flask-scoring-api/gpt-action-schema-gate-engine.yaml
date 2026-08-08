@@ -632,6 +632,139 @@ paths:
                     type: object
                     nullable: true
                     additionalProperties: true
+                  outright_winner_ledger:
+                    type: array
+                    description: >
+                      Scored OUTRIGHT_WINNER / moneyline rows. Each entry exposes the full
+                      WOW v16 Moneyline Architecture four-output contract. Runs after the
+                      prop pipeline; can_execute=False unconditional on every entry.
+                    items:
+                      type: object
+                      properties:
+                        row_id:
+                          type: string
+                        sport:
+                          type: string
+                        team:
+                          type: string
+                        opponent:
+                          type: string
+                        terminal_label:
+                          type: string
+                          description: >
+                            MODEL_QUALIFIED_HOLD (PROVISIONAL model), MONEY_QUALIFIED (ACTIVE + CLB>=0.55),
+                            REJECT_TAIL_ONLY_UPSET, STALE_MODEL_INVALIDATED, DATA_CONTRACT_FAIL
+                        probability_snapshot:
+                          type: object
+                          description: Immutable probability snapshot with four clean outputs.
+                          properties:
+                            independent_probability:
+                              type: number
+                              nullable: true
+                              description: >
+                                Sport-model probability (Elo, H2H, power ratings ONLY).
+                                Zero sportsbook-price input. Cannot be substituted by odds.
+                            calibrated_probability:
+                              type: number
+                              nullable: true
+                              description: >
+                                Bounded-shrinkage blend of independent + market no-vig.
+                                Market enters HERE only (never upstream). Weight capped at 50%.
+                            calibrated_probability_lower_bound:
+                              type: number
+                              nullable: true
+                              description: >
+                                Conservative floor accounting for sport volatility, sample size,
+                                lineup certainty, model disagreement, source conflict, freshness.
+                                USE THIS for candidate ranking — not raw probability.
+                            calibrated_probability_upper_bound:
+                              type: number
+                              nullable: true
+                            net_edge:
+                              type: number
+                              nullable: true
+                              description: calibrated_probability minus market_no_vig. Downstream only.
+                            snapshot_hash:
+                              type: string
+                              nullable: true
+                            moneyline_architecture_layers:
+                              type: object
+                              description: >
+                                Layer-by-layer observability from the 12-stage pipeline.
+                                Keys: sport_model, simulation, failure_path, disagreement_audit,
+                                calibration, classification, market_comparison, final_refresh,
+                                slate_integrity.
+                              properties:
+                                sport_model:
+                                  type: object
+                                  description: Independent model (Elo/H2H/power). submodel_probs shows per-submodel point estimates.
+                                simulation:
+                                  type: object
+                                  description: >
+                                    Monte Carlo regime simulation. adjusted_prob is post-simulation independent probability.
+                                    regime_distribution maps regime names to frequencies (0-1).
+                                disagreement_audit:
+                                  type: object
+                                  description: >
+                                    Cross-submodel disagreement. LOW=1x, MODERATE=1.15x, HIGH=1.35x uncertainty widening.
+                                  properties:
+                                    disagreement_grade:
+                                      type: string
+                                      enum: [LOW, MODERATE, HIGH]
+                                    uncertainty_widening_factor:
+                                      type: number
+                                calibration:
+                                  type: object
+                                  description: >
+                                    Dynamic calibration. market_weight <= 50%. Reports dynamic_uncertainty
+                                    and all eight uncertainty components.
+                                  properties:
+                                    dynamic_uncertainty:
+                                      type: number
+                                    model_weight:
+                                      type: number
+                                    market_weight:
+                                      type: number
+                                    market_dependent_flag:
+                                      type: boolean
+                                classification:
+                                  type: object
+                                  description: >
+                                    Lane (FAVORITE/UNDERDOG) determined by CLB only.
+                                    Upset taxonomy: STRUCTURAL, VARIANCE_ASSISTED, TAIL_ONLY.
+                                    TAIL_ONLY cannot qualify (REJECT_TAIL_ONLY_UPSET).
+                                  properties:
+                                    lane:
+                                      type: string
+                                      enum: [FAVORITE, UNDERDOG]
+                                    upset_profile_type:
+                                      type: string
+                                    qualification_gate:
+                                      type: string
+                                market_comparison:
+                                  type: object
+                                  description: Exact no-vig comparison (stage 11, downstream only).
+                        can_execute:
+                          type: boolean
+                          description: Always false
+                        can_approve_bets:
+                          type: boolean
+                          description: Always false
+                  outright_winner_contract_failures:
+                    type: array
+                    description: OUTRIGHT_WINNER rows that failed data-contract validation before scoring
+                    items:
+                      type: object
+                      additionalProperties: true
+                  outright_event_dedup_map:
+                    type: object
+                    description: >
+                      dedup_key to list of original_row_ids. Same game submitted from multiple sportsbooks
+                      is scored once; all source appearances preserved in platform_appearances.
+                    additionalProperties:
+                      type: array
+                      items:
+                        type: string
         "400":
           description: Missing or invalid rows array
           content:
