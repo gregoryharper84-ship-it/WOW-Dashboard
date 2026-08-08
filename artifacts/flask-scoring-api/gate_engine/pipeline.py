@@ -35,6 +35,8 @@ from . import llp_mlb_winner_preflight
 from . import mlb_directional_firewall, wnba_composite_gate, cross_ticket_governor
 # WOW v16 Tennis Total Games lane — exact Markov chain, three-outcome model
 from . import tennis_total_games_gate
+# WOW v16 Fantasy Score Generative Model — shadow/test only; can_execute=False unconditional
+from . import fantasy_score_model as _fantasy_score_model
 # WOW v16 WNBA Generative Probability lane — role-regime / Poisson mixture model
 from . import wnba_generative_gate
 from .mlb import plate_appearances_gate as _mlb_pa_gate
@@ -699,6 +701,11 @@ def run_pipeline(
         # PROVISIONAL ceiling (MODEL_QUALIFIED_HOLD). can_execute=False unconditional.
         # No-op for all rows except TENNIS / TOTAL_GAMES.
         tennis_total_games_gate.run(row)
+
+        # WOW v16 Fantasy Score Generative Model (shadow / test)
+        # PROVISIONAL ceiling; can_execute=False unconditional; no-op for non-FS rows.
+        # Writes to row["gates"]["fantasy_score_model"] only; never touches terminal_label.
+        _fantasy_score_model.run(row)
 
         classifier.classify(row)
 
