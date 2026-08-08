@@ -23752,6 +23752,26 @@ def kalshi_gpt_evaluate_weather(city):
     # ── Step 8: Terminal label ─────────────────────────────────────────────────
     terminal_label = _weather_terminal_label_v2(weather_label, brackets_scored, price_gate)
 
+    # WOW-PATCH-2026-08-08: fail-closed guard.
+    # An unknown terminal label must never reach the API response.
+    # No silent remapping — surface the defect immediately.
+    if not _validate_wx_terminal_label(terminal_label):
+        app.logger.error(
+            "[KALSHI_WX_LABEL_VIOLATION] route=GET/kalshi/evaluate/weather "
+            "invalid terminal_label=%r city=%s date=%s",
+            terminal_label, city, date_str,
+        )
+        return jsonify({
+            "ok":          False,
+            "status":      "INTERNAL_LABEL_VIOLATION",
+            "detail":      (
+                f"terminal_label={terminal_label!r} is not in the registered "
+                "Kalshi Weather label set — this is a governance defect, not "
+                "a user error; report to maintainers"
+            ),
+            "can_execute": False,
+        }), 500
+
     return jsonify({
         "ok":                     True,
         "city":                   city,
@@ -24702,6 +24722,44 @@ def _apply_weather_price_gate(
     return _block("Unknown price_source", "KALSHI_DATA_UNOBTAINABLE")
 
 
+# ── WOW-PATCH-2026-08-08-KALSHI-WX-TERMINAL-LABEL-FAIL-CLOSED ────────────────
+# Canonical registry of confirmed-reachable Kalshi Weather terminal labels.
+#
+# Only labels that _weather_terminal_label_v2() can actually return via a
+# reachable code path are included.  Labels mentioned in comments or docstrings
+# but NOT reachable from production code are intentionally excluded:
+#   KALSHI_REJECT_THIN_BOOK  — docstring only; no return statement emits it
+#   KALSHI_REJECT_FEE_DRAG   — docstring only; no return statement emits it
+#
+# Do NOT add a label here until its code path is confirmed reachable.
+# This registry is the sole authority for weather terminal-label validity.
+_KALSHI_WX_TERMINAL_LABEL_REGISTRY: frozenset[str] = frozenset({
+    "KALSHI_PLAYABLE_LIMIT_ONLY",
+    "KALSHI_WATCH",
+    "KALSHI_REJECT_NO_EDGE",
+    "KALSHI_REJECT_BAD_RULES",
+    "KALSHI_REJECT_UNCALIBRATED",
+    "KALSHI_DATA_UNOBTAINABLE",
+})
+
+
+def _validate_wx_terminal_label(label: str) -> bool:
+    """
+    WOW-PATCH-2026-08-08-KALSHI-WX-TERMINAL-LABEL-FAIL-CLOSED
+
+    Return True iff `label` is a member of _KALSHI_WX_TERMINAL_LABEL_REGISTRY.
+    Return False for any unrecognised string, including labels mentioned only
+    in comments/docstrings (e.g. KALSHI_REJECT_THIN_BOOK, KALSHI_REJECT_FEE_DRAG).
+
+    Scope: standalone guard on the Kalshi Weather engine's own output only.
+    This function MUST NOT be called by or wired into:
+      - gate_engine/wow_runtime_manifest.py  (CEILING_RANK / resolve_lowest_ceiling)
+      - gate_engine/command_center/cc_labels.py + ceiling_resolver.py
+    Those ceiling resolvers are independent systems with their own label registries.
+    """
+    return label in _KALSHI_WX_TERMINAL_LABEL_REGISTRY
+
+
 def _weather_terminal_label_v2(
     weather_label: str, brackets_scored: list, price_gate: dict
 ) -> str:
@@ -25494,6 +25552,27 @@ def wow_kalshi_weather_evaluate():
 
     # ── Step 8: Terminal label ────────────────────────────────────────────────
     terminal_label = _weather_terminal_label_v2(weather_label, brackets_scored, price_gate)
+
+    # WOW-PATCH-2026-08-08: fail-closed guard.
+    # An unknown terminal label must never reach the calibration ledger or the
+    # API response.  Suppress the ledger write entirely and return a distinct
+    # governance-violation response.  No silent remapping to a valid label.
+    if not _validate_wx_terminal_label(terminal_label):
+        app.logger.error(
+            "[KALSHI_WX_LABEL_VIOLATION] route=POST/wow/kalshi/weather/evaluate "
+            "invalid terminal_label=%r city=%s date=%s scoring_mode=%s",
+            terminal_label, city, date_str, scoring_mode,
+        )
+        return jsonify({
+            "ok":          False,
+            "status":      "INTERNAL_LABEL_VIOLATION",
+            "detail":      (
+                f"terminal_label={terminal_label!r} is not in the registered "
+                "Kalshi Weather label set — this is a governance defect, not "
+                "a user error; report to maintainers"
+            ),
+            "can_execute": False,
+        }), 500
 
     # ── DST note ─────────────────────────────────────────────────────────────
     try:
