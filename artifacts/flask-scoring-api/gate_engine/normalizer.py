@@ -232,6 +232,12 @@ _STAT_KEY_MAP: dict[str, dict[str, Any]] = {
         "fpts":                 "FANTASY_SCORE",
         "games won":            "GAMES_WON",
         "games":                "GAMES_WON",
+        # Total Games (match-level) — both players' games combined
+        "total games":          "TOTAL_GAMES",
+        "total_games":          "TOTAL_GAMES",
+        "match total games":    "TOTAL_GAMES",
+        "match games":          "TOTAL_GAMES",
+        "game total":           "TOTAL_GAMES",
         "aces":                 "ACES",
         "ace":                  "ACES",
         "double faults":        "DOUBLE_FAULTS",

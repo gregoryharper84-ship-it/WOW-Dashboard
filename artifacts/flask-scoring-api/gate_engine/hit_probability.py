@@ -195,7 +195,9 @@ _NFL_TD_STATS = {"td", "pass_td", "rush_td", "rec_td", "anytime_td",
                  "passing_tds", "rushing_tds", "receiving_tds"}
 
 # Tennis stats that use Gaussian (match-level continuous distributions)
-_TENNIS_GAUSSIAN_STATS = {"fantasy_score", "fpts", "fantasy", "games_won", "games"}
+# total_games: historical Gaussian baseline; definitive model is tennis_total_games_gate
+_TENNIS_GAUSSIAN_STATS = {"fantasy_score", "fpts", "fantasy", "games_won", "games",
+                           "total_games", "total_game"}
 # Tennis stats where Poisson still fits (discrete counts: aces, DFs)
 _TENNIS_POISSON_STATS  = {"aces", "ace", "double_faults", "df", "double_fault"}
 

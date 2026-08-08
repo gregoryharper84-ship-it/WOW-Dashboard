@@ -33,6 +33,8 @@ from . import route_registry
 # LLP MLB Winner Preflight Gate (reviewer-mandated, patch-level required)
 from . import llp_mlb_winner_preflight
 from . import mlb_directional_firewall, wnba_composite_gate, cross_ticket_governor
+# WOW v16 Tennis Total Games lane — exact Markov chain, three-outcome model
+from . import tennis_total_games_gate
 from .mlb import plate_appearances_gate as _mlb_pa_gate
 from .wnba import opportunity_engine as _wnba_opp_gate
 from .wnba import evidence_acquisition as _wnba_evidence_acq
@@ -676,6 +678,12 @@ def run_pipeline(
         # MODEL_QUALIFIED_HOLD ceiling until 20 unique player-games settled.
         # Blocks promo upgrades on unresolved role/status.
         wnba_composite_gate.run(row)
+
+        # WOW v16 Tennis Total Games lane
+        # Exact Markov chain simulation; three-outcome (More+Exact+Less=1) contract.
+        # PROVISIONAL ceiling (MODEL_QUALIFIED_HOLD). can_execute=False unconditional.
+        # No-op for all rows except TENNIS / TOTAL_GAMES.
+        tennis_total_games_gate.run(row)
 
         classifier.classify(row)
 

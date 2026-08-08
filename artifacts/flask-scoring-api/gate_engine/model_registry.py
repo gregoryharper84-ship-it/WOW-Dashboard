@@ -304,6 +304,14 @@ _REGISTRY: dict = {
     ("TENNIS", "FPTS"):          _prov("tennis_fantasy_gaussian_v1", ["game_log"]),
     ("TENNIS", "GAMES_WON"):     _prov("tennis_gaussian_v1", ["game_log"], "Gaussian; games won per match"),
     ("TENNIS", "GAMES"):         _prov("tennis_gaussian_v1", ["game_log"]),
+    # Total Games: exact Markov chain simulation via tennis_total_games_gate.
+    # Requires surface/tour context; falls back to historical Gaussian distribution.
+    # Three-outcome model (More+Exact+Less=1) for integer lines.
+    # Ceiling: MODEL_QUALIFIED_HOLD (PROVISIONAL until settled postmortem validates).
+    ("TENNIS", "TOTAL_GAMES"):   _prov(
+        "tennis_total_games_markov_v1", ["enrichment"],
+        "Markov chain match simulation; surface-adjusted serve baselines; three-outcome contract"
+    ),
     ("TENNIS", "ACES"):          _prov("tennis_counting_poisson_v1", ["game_log"], "Poisson; aces per match"),
     ("TENNIS", "DOUBLE_FAULTS"): _prov("tennis_counting_poisson_v1", ["game_log"], "Poisson; double faults per match"),
     ("TENNIS", "DF"):            _prov("tennis_counting_poisson_v1", ["game_log"]),

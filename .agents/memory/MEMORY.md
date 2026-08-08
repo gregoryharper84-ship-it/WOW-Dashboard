@@ -63,3 +63,4 @@
 - [role_timestamp null-safe staleness format](role-timestamp-null-safe.md) — role_timestamp.py STALE/RECHECK f-strings crash when status_age is None; must guard with conditional str before formatting.
 - [analyze-and-score TypeErrors](analyze-and-score-typeerrors.md) — two crashes in /analyze-and-score: NormalizedRow is immutable (use dict(r) after _normalize_legs); .get(key,"")[:N] crashes on None values (use (row.get(key) or "")[:N]).
 - [OUTRIGHT_WINNER moneyline routing](outright-moneyline-routing.md) — OUTRIGHT_WINNER→OUTRIGHT_WIN_PROBABILITY_ONLY→wow.llp-moneyline-probability-expert; guard returns 409 RUN_INVALID_ROUTE_CONFIGURATION (not NO_PLAY) on mixed batch.
+- [Tennis Total Games lane](tennis-total-games-lane.md) — exact Markov chain (not Monte Carlo); three-outcome simplex (store raw/cal as full floats, not round-6dp, to prevent FP drift); gate runs after wnba_composite_gate; PROVISIONAL ceiling MODEL_QUALIFIED_HOLD; 71 tests pass.
