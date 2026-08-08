@@ -119,6 +119,11 @@ _MLB_STAT_FIELDS: dict[str, str] = {
     "RBI":        "rbi",
     "BB":         "baseOnBalls",
     "ER":         "earnedRuns",
+    # Plate appearances — batter stat; MLB Stats API hitting split field.
+    # normalizer.py maps "plate appearances"/"pa"/"plate_appearances" → stat_key "PA".
+    # "PLATE_APPEARANCES" alias registered for belt-and-suspenders lookups.
+    "PA":               "plateAppearances",
+    "PLATE_APPEARANCES": "plateAppearances",
     # combo
     "H+R+RBI":    None,          # handled specially in _fetch_mlb
 }

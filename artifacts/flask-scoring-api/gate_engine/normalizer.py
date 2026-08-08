@@ -151,6 +151,15 @@ _STAT_KEY_MAP: dict[str, dict[str, Any]] = {
         "innings pitched":      "IP",
         "ip":                   "IP",
         "pitching outs":        "OUTS",
+        # ── Plate Appearances aliases ────────────────────────────────────
+        # "Wade Meckler MORE 3.5 Plate Appearances" and variants must
+        # resolve to PA so the model registry (and downstream scoring)
+        # can handle them; without this alias every such prop returns
+        # UNKNOWN_PROP_TYPE and permanently DATA_CONTRACT_FAIL.
+        "plate appearances":    "PA",
+        "plate_appearances":    "PA",
+        "pa":                   "PA",
+        "plate apps":           "PA",
         # ── WOW-PATCH-2026-08-06-PROP-TYPE-MAPPING-GAP ──────────────────
         # Section 18.4 MLB 1st-Inning Pitches Thrown display-label aliases.
         # All variants resolve to 1IP_PITCHES_THROWN so the route_registry

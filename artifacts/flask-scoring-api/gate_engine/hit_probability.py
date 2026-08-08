@@ -174,6 +174,9 @@ _MLB_COUNTING_STATS = {
     # post-probability overlay via first_inning_efficiency.py — base
     # routing here just needs the Poisson path.
     "1ip_pitches_thrown",
+    # Plate appearances: per-game counting stat (3–5 PA/game); Poisson λ=game-log mean.
+    # PA is a batter stat — normalizer maps "plate appearances"/"pa" → "PA".
+    "pa", "plate_appearances",
 }
 
 # NFL counting stats eligible for Poisson model (yards, receptions, etc.)

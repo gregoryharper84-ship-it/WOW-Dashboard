@@ -129,6 +129,14 @@ _REGISTRY: dict = {
     ("MLB", "INNINGS"):     _prov("mlb_counting_poisson_v1", ["game_log"]),
     ("MLB", "OUTS"):        _prov("mlb_counting_poisson_v1", ["game_log"]),
 
+    # ── MLB: plate appearances (Poisson counting) ────────────────────
+    # PA is a per-game counting stat well-modelled by Poisson λ=game-log mean.
+    # PROVISIONAL until back-tested against settled results.
+    ("MLB", "PA"):                _prov("mlb_counting_poisson_v1", ["game_log"],
+                                        "Poisson λ=game-log mean plate appearances per game; PROVISIONAL"),
+    ("MLB", "PLATE_APPEARANCES"): _prov("mlb_counting_poisson_v1", ["game_log"],
+                                        "Alias for PA; Poisson λ=game-log mean; PROVISIONAL"),
+
     # ── MLB: 1st-inning pitches thrown (Poisson) ─────────────────────────
     # Poisson λ = game-log mean of 1st-inning pitch counts.
     # Ceiling modifications from the first-inning efficiency deterioration
