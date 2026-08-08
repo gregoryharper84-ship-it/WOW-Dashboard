@@ -108,9 +108,17 @@ SOURCE_TYPE_GRADES: dict[str, str] = {
     "official_weather_station": "A",  # alias for nws_cli
     "espn_api":                "A-",  # ESPN public API (event identity only, not odds)
 
-    # ── Tier A-: official records ────────────────────────────────────────────
+    # ── Tier A-: official records + TRUSTED_STRUCTURED_STATS direct APIs ────
     "box_score":               "A-",
     "official_gamelog":        "A-",
+    # BallDontLie: TRUSTED_STRUCTURED_STATS — direct timestamped API,
+    # below official league feeds, above B-grade stat-site reconstruction.
+    # Grade A- because: direct API with retrieval timestamp, structured verified
+    # game records, machine-readable IDs (game/player/team), real-time capable.
+    # Does NOT carry official league authority → not Tier A.
+    # SOURCE_CONFLICT with any A-grade source still blocks money labels.
+    "balldontlie_api":         "A-",
+    "balldontlie":             "A-",  # alias used in existing auto_game_log.py
 
     # ── Tier B: trusted stat and research sites ──────────────────────────────
     "statmuse":                "B",

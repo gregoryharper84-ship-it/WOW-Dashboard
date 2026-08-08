@@ -69,22 +69,41 @@ def test_can_execute_false():
 # Normalizer alias tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("label", [
-    "plate appearances",
-    "plate appearance",
-    "plate_appearances",
-    "pa",
-    "plate app",
-    "plate app.",
-    "total plate appearances",
-    "total pa",
-    "mlb plate appearances",
+@pytest.mark.parametrize("label,expected_stat_key", [
+    # Task #124: common user-facing aliases now route to canonical "PA"
+    ("plate appearances",  "PA"),
+    ("plate appearance",   "MLB_PLATE_APPEARANCES"),   # distinct singular form → Section 18.9
+    # NOTE: "plate_appearances" / "pa" now map to "PA" (task #124); tested separately below
+    # Section 18.9 gate-specific display labels → MLB_PLATE_APPEARANCES
+    ("plate app",                  "MLB_PLATE_APPEARANCES"),
+    ("plate app.",                 "MLB_PLATE_APPEARANCES"),
+    ("total plate appearances",    "MLB_PLATE_APPEARANCES"),
+    ("total pa",                   "MLB_PLATE_APPEARANCES"),
+    ("mlb plate appearances",      "MLB_PLATE_APPEARANCES"),
 ])
-def test_normalizer_aliases_resolve_to_canonical(label):
+def test_normalizer_aliases_resolve_to_canonical(label, expected_stat_key):
     result = normalizer._map_stat_key(label, "MLB")
     stat_key = result.get("stat_key")
-    assert stat_key == "MLB_PLATE_APPEARANCES", (
-        f"Expected MLB_PLATE_APPEARANCES for {label!r}, got {stat_key!r} (full={result})"
+    assert stat_key == expected_stat_key, (
+        f"Expected {expected_stat_key!r} for {label!r}, got {stat_key!r} (full={result})"
+    )
+
+
+@pytest.mark.parametrize("label,expected_stat_key", [
+    # Task #124 canonical PA aliases — these override any MLB_PLATE_APPEARANCES mapping
+    ("plate_appearances",  "PA"),
+    ("pa",                 "PA"),
+])
+def test_task124_aliases_resolve_to_pa(label, expected_stat_key):
+    """
+    Task #124 established that 'plate_appearances' / 'pa' must resolve to
+    canonical stat_key 'PA' (Poisson counting model) rather than the
+    Section 18.9 gate's MLB_PLATE_APPEARANCES internal stat_key.
+    """
+    result = normalizer._map_stat_key(label, "MLB")
+    stat_key = result.get("stat_key")
+    assert stat_key == expected_stat_key, (
+        f"Expected {expected_stat_key!r} for {label!r}, got {stat_key!r} (full={result})"
     )
 
 
@@ -92,15 +111,17 @@ def test_normalizer_aliases_resolve_to_canonical(label):
 # Model registry tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("stat_key", [
-    "MLB_PLATE_APPEARANCES",
-    "PA",
-    "PLATE_APPEARANCES",
+@pytest.mark.parametrize("stat_key,expected_model", [
+    # Section 18.9 specialized gate model
+    ("MLB_PLATE_APPEARANCES", "mlb_pa_opportunity_v1"),
+    # Canonical PA stat_key (task #124 Poisson model)
+    ("PA",               "mlb_counting_poisson_v1"),
+    ("PLATE_APPEARANCES", "mlb_counting_poisson_v1"),
 ])
-def test_model_registry_entries_exist(stat_key):
+def test_model_registry_entries_exist(stat_key, expected_model):
     entry = model_registry.lookup("MLB", stat_key)
-    assert entry.get("model_id") == "mlb_pa_opportunity_v1", (
-        f"Wrong model_id for {stat_key}: {entry}"
+    assert entry.get("model_id") == expected_model, (
+        f"Wrong model_id for {stat_key}: expected {expected_model}, got {entry}"
     )
     assert entry.get("status") == "PROVISIONAL"
     assert "game_log" in (entry.get("minimum_inputs") or [])

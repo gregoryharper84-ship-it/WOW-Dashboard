@@ -165,10 +165,10 @@ _REGISTRY: dict = {
         "mlb/plate_appearances_gate.py (Section 18.9); numeric distribution "
         "supplied as pre-computed enrichment; PROVISIONAL — not back-tested",
     ),
-    ("MLB", "PA"):               _prov("mlb_pa_opportunity_v1", ["game_log"],
-                                       "Alias for MLB_PLATE_APPEARANCES"),
-    ("MLB", "PLATE_APPEARANCES"): _prov("mlb_pa_opportunity_v1", ["game_log"],
-                                        "Alias for MLB_PLATE_APPEARANCES"),
+    # NOTE: ("MLB", "PA") and ("MLB", "PLATE_APPEARANCES") canonical entries are
+    # defined above (task #124) with mlb_counting_poisson_v1.  Do not add
+    # duplicate keys here — Python dicts use the last definition, which would
+    # silently override the task #124 entries.
 
     # ── NBA: counting stats (Poisson λ = game-log mean) ──────────────────
     # PROVISIONAL: ignores minutes distribution, role changes, opponent context

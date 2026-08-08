@@ -49,6 +49,14 @@ from gate_engine.moneyline.failure_path import integrate_failure_paths
 from gate_engine.moneyline.model_disagreement import audit_model_disagreement
 from gate_engine.moneyline.dynamic_calibration import calibrate
 from gate_engine.moneyline.classification import classify_candidate
+from gate_engine.moneyline.teamrankings_adapter import (
+    extract_teamrankings_enrichment,
+    inject_tr_features_into_clean_enrichment,
+    TeamRankingsMatchupEnrichment,
+)
+from gate_engine.moneyline.external_analyst.orchestrator import (
+    run_external_analyst_intelligence,
+)
 
 # Import existing helpers (preserved without behavior change)
 from gate_engine.moneyline_probability import (
@@ -141,6 +149,15 @@ def _build_market_comparison(
 # Terminal label logic (WOW v16 governance preserved)
 # ---------------------------------------------------------------------------
 
+# Review-flag prefixes that are surfaced in MoneylineResult.blockers for
+# observability but MUST NOT trigger a terminal DATA_CONTRACT_FAIL.
+_NON_TERMINAL_REVIEW_PREFIXES: tuple[str, ...] = (
+    "TEAMRANKINGS_CONTRADICTION_REVIEW",
+    "EXTERNAL_ANALYST_CONTRADICTION_REVIEW",
+    "ANALYST_CONSENSUS_UNRESOLVED",
+)
+
+
 def _assign_terminal_label(
     model_status:            str,
     blockers:                list[str],
@@ -157,9 +174,15 @@ def _assign_terminal_label(
     market no-vig was used as a bounded observation.  Cap is MODEL_QUALIFIED_HOLD
     — the observation is publishable but can never qualify for money placement.
     """
-    if blockers:
+    # Partition: review flags are kept in MoneylineResult.blockers for observability
+    # but must NOT trigger a terminal DATA_CONTRACT_FAIL.
+    terminal_blockers = [
+        b for b in blockers
+        if not any(b.startswith(pfx) for pfx in _NON_TERMINAL_REVIEW_PREFIXES)
+    ]
+    if terminal_blockers:
         # Check for specific terminal-label blockers
-        for b in blockers:
+        for b in terminal_blockers:
             if "STALE_MODEL_INVALIDATED" in b:
                 return "STALE_MODEL_INVALIDATED"
             if "PARTICIPANT_LOCK_FAILED" in b:
@@ -268,10 +291,31 @@ def run_moneyline_pipeline(
         return result
 
     # -----------------------------------------------------------------------
+    # Stage 2.5: TeamRankings secondary enrichment extraction.
+    # Runs AFTER participant lock (stage 2) so lineup blockers still fire first.
+    # TR data is extracted here; contradiction analysis is completed after
+    # stage 6 once independent_prob_final is available.
+    # TR display_odds are stored in tr_enr but NEVER passed to the independent
+    # model or to extract_no_vig_probability().
+    # -----------------------------------------------------------------------
+    tr_enr: TeamRankingsMatchupEnrichment = extract_teamrankings_enrichment(
+        enrichment, sport, core_independent_prob_home=None,
+    )
+
+    # -----------------------------------------------------------------------
     # Strip all odds fields from enrichment before handing to independent model.
     # Also extract market_no_vig early — needed for the fallback path below.
     # -----------------------------------------------------------------------
     clean_enr = strip_odds_fields(enrichment)
+
+    # Inject non-market TR features into clean_enr for the sport model.
+    # Only injected when TR is RETRIEVED, non-stale, and has a direct matchup prob.
+    # TR display_odds are NEVER injected (they stay in tr_enr only).
+    clean_enr = inject_tr_features_into_clean_enrichment(clean_enr, tr_enr)
+
+    # Store initial TR record (contradiction fields = ABSENT until stage 6.5).
+    # This ensures all early-return paths below also carry the TR acquisition audit.
+    result.teamrankings = tr_enr.to_dict()
 
     # Determine candidate side once — used for inversion at stage 6
     from gate_engine.moneyline.sport_model import _is_home_side
@@ -427,19 +471,115 @@ def run_moneyline_pipeline(
     result.outputs.independent_probability = round(independent_prob_final, 4)
 
     # -----------------------------------------------------------------------
+    # Stage 6.5: TeamRankings contradiction analysis.
+    # Now that independent_prob_final is known (home-team perspective), fill in
+    # the contradiction fields.  TR contradictions are surfaced in the
+    # disagreement audit and, for OPPOSITE_SIDE, also logged as a review flag.
+    # TR contradiction NEVER flips the pick — it lowers confidence only.
+    # -----------------------------------------------------------------------
+    # Convert candidate-side prob back to home perspective for comparison:
+    # If row is away, independent_prob_final = P(away wins) = 1 - P(home wins)
+    _prob_for_tr_comparison = (
+        independent_prob_final if is_home else 1.0 - independent_prob_final
+    )
+    tr_enr.fill_contradiction(_prob_for_tr_comparison)
+    result.teamrankings = tr_enr.to_dict()
+
+    # -----------------------------------------------------------------------
     # Stage 7: Model-disagreement audit
     # -----------------------------------------------------------------------
     submodel_probs = dict(sport_model_out.get("submodel_probs") or {})
     submodel_probs["simulation_output"] = round(independent_prob_post_sim, 4)
     dis_audit = audit_model_disagreement(submodel_probs)
-    result.disagreement_audit = dis_audit.to_dict()
+    dis_audit_dict = dis_audit.to_dict()
+
+    # Annotate TR contradiction into the disagreement audit for full observability
+    if tr_enr.teamrankings_contradiction_flag:
+        dis_audit_dict.setdefault("notes", []).append(
+            f"TEAMRANKINGS_CONTRADICTION:{tr_enr.teamrankings_model_agreement}"
+            f" delta={tr_enr.teamrankings_model_delta}"
+            f" reason={tr_enr.teamrankings_contradiction_reason}"
+        )
+        if tr_enr.teamrankings_model_agreement == "OPPOSITE_SIDE":
+            # OPPOSITE_SIDE → add a review flag (not a terminal blocker) so the
+            # candidate is routed through the existing contradiction/final-refresh audit
+            blockers.append(
+                f"TEAMRANKINGS_CONTRADICTION_REVIEW:"
+                f"TR_favors_opposite_side:delta={tr_enr.teamrankings_model_delta:.4f}"
+            )
+
+    result.disagreement_audit = dis_audit_dict
+
+    # -----------------------------------------------------------------------
+    # Stage 7.5: External Analyst Intelligence (discovery / contradiction only)
+    # direct_probability_weight = 0.0 — analyst opinions NEVER adjust P(win)
+    # -----------------------------------------------------------------------
+    team_side = row.get("team") or row.get("player") or "home"
+    opponent  = row.get("opponent") or row.get("opponent_team") or None
+    # Compute market_no_vig early so the ledger snapshot is complete.
+    # This is the same call that Stage 8 makes — read-only, no side effects.
+    _market_no_vig_early = extract_no_vig_probability(
+        enrichment, side=team_side, opponent=opponent
+    )
+    wow_side_for_analyst = "home" if is_home else "away"
+    try:
+        ai_result = run_external_analyst_intelligence(
+            row                  = row,
+            enrichment           = enrichment,
+            sport                = sport,
+            team                 = team_side,
+            opponent             = opponent or "",
+            wow_side             = wow_side_for_analyst,
+            wow_independent_prob = independent_prob_final,
+            wow_calibrated_lb    = None,   # not yet computed; filled after stage 9
+            market_no_vig        = _market_no_vig_early,
+        )
+        result.external_analyst_intelligence = ai_result.to_dict()
+
+        # Annotate disagreement audit with analyst contradiction
+        cr = ai_result.contradiction_report
+        if cr.external_analyst_conflict_flag:
+            dis_audit_dict.setdefault("notes", []).append(
+                f"EXTERNAL_ANALYST_CONTRADICTION:"
+                f"oppose={cr.external_analyst_contradiction_count}"
+                f":agree={cr.external_analyst_agreement_count}"
+                f":consensus={cr.external_analyst_consensus_side}"
+            )
+            result.disagreement_audit = dis_audit_dict
+
+        # Non-terminal contradiction review blockers
+        if cr.force_contradiction_review:
+            blockers.append(
+                "EXTERNAL_ANALYST_CONTRADICTION_REVIEW:"
+                f"force_review=True:"
+                f"opposing_analysts={cr.external_analyst_contradiction_count}"
+            )
+        elif cr.external_analyst_conflict_flag:
+            blockers.append(
+                "EXTERNAL_ANALYST_CONTRADICTION_REVIEW:"
+                f"opposing_analysts={cr.external_analyst_contradiction_count}"
+            )
+
+        # ANALYST_CONSENSUS_UNRESOLVED → lower confidence ceiling (non-terminal review)
+        if cr.external_analyst_consensus_side == "ANALYST_CONSENSUS_UNRESOLVED":
+            blockers.append(
+                "ANALYST_CONSENSUS_UNRESOLVED:"
+                "analysts_disagree_with_each_other:held_at_lower_confidence_ceiling"
+            )
+
+    except Exception as _eai_exc:
+        # Analyst layer failure is NON-FATAL — base model continues unchanged
+        result.external_analyst_intelligence = {
+            "direct_probability_weight": 0.0,
+            "sources_consulted": [],
+            "sources_failed": [],
+            "acquisition_notes": [f"LAYER_ERROR:{_eai_exc!s:.80}"],
+        }
 
     # -----------------------------------------------------------------------
     # Stage 8: Dynamic calibration (market_no_vig enters HERE for first time)
     # -----------------------------------------------------------------------
-    team_side    = row.get("team") or row.get("player") or "home"
-    opponent     = row.get("opponent") or row.get("opponent_team") or None
-    market_no_vig = extract_no_vig_probability(enrichment, side=team_side, opponent=opponent)
+    market_no_vig = _market_no_vig_early   # reuse already-computed value
 
     n_books = len(enrichment.get("sportsbook_odds") or [])
     hours_open = float(enrichment.get("market_hours_open") or 0.0)

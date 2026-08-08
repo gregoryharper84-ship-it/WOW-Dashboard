@@ -42,6 +42,12 @@ from . import wnba_generative_gate
 from .mlb import plate_appearances_gate as _mlb_pa_gate
 from .wnba import opportunity_engine as _wnba_opp_gate
 from .wnba import evidence_acquisition as _wnba_evidence_acq
+# WOW Task #136 — Opportunity, Event & Exact-Market Acquisition Layer
+from .opportunity_acquisition.orchestrator import (
+    AcquisitionOrchestrator as _OppOrchestrator,
+    is_composite_prop_row as _is_composite_prop_row,
+)
+_opp_orchestrator = _OppOrchestrator()
 from .portfolio.cross_slip_exposure import PortfolioExposureGovernor as _PortfolioGov
 
 
@@ -250,6 +256,53 @@ def run_pipeline(
             _wnba_opp_gate.LABEL_REJECT_ROTATION,
         ):
             continue
+
+        # -------------------------------------------------------------------
+        # Task #136: Opportunity, Event & Exact-Market Acquisition Layer
+        # Runs after the WNBA opportunity gate so role/status signals are
+        # available.  Only fires for NBA/WNBA composite props (PRA, P+R,
+        # R+A, P+A).  Non-composite and non-NBA/WNBA rows pass through.
+        #
+        # On success:
+        #   - row["gates"]["opportunity_acquisition"] is populated
+        #   - enr["minutes_conflict_penalty"] / enr["source_conflict"] are
+        #     set for downstream calibration awareness
+        #   - enr["joint_model_provided"] = True signals that composite
+        #     gates (wnba_generative_gate, wnba_composite_gate,
+        #     component_composite) should use the correlated joint model
+        #   - enr["opportunity_state"] holds the OpportunityState for the
+        #     composite simulator
+        #
+        # can_execute=False is unconditional in every output.
+        # -------------------------------------------------------------------
+        if _is_composite_prop_row(row):
+            # Capture any pre-supplied OpportunityState with live data before
+            # the orchestrator overwrites it (orchestrator may get no live data
+            # when running without credentials in test/dev environments).
+            _pre_supplied_opp_state = enr.get("opportunity_state")
+            try:
+                _opp_state = _opp_orchestrator.acquire(row, enr)
+                # Prefer the orchestrator state if it obtained live minutes/rates;
+                # otherwise fall back to a pre-supplied state that already has them.
+                if (
+                    not _opp_state.has_live_opportunity_data()
+                    and _pre_supplied_opp_state is not None
+                    and _pre_supplied_opp_state.has_live_opportunity_data()
+                ):
+                    enr["opportunity_state"] = _pre_supplied_opp_state
+                else:
+                    enr["opportunity_state"] = _opp_state
+                enr["joint_model_provided"] = True
+                # Set flag where component_composite.run() reads it
+                # (row["enrichment_flags"]["joint_model_provided"], not enr)
+                row.setdefault("enrichment_flags", {})["joint_model_provided"] = True
+            except Exception as _opp_exc:
+                row.setdefault("blockers", []).append(
+                    f"OPPORTUNITY_ACQUISITION:ORCHESTRATOR_ERROR:{_opp_exc!s:.80}"
+                )
+                row.setdefault("gates", {}).setdefault(
+                    "opportunity_acquisition", {"error": str(_opp_exc)[:80], "can_execute": False}
+                )
 
         # -------------------------------------------------------------------
         # Phase 3: Injury Decision Tree
@@ -695,6 +748,125 @@ def run_pipeline(
         # MODEL_QUALIFIED_HOLD ceiling until 20 unique player-games settled.
         # Blocks promo upgrades on unresolved role/status.
         wnba_composite_gate.run(row)
+
+        # WOW-PATCH-2026-08-08-FOUR-PILLAR — Composite Joint Probability Engine
+        # Status: SHADOW_MODE — diagnostic only; can_execute=False unconditional.
+        # For NBA/WNBA composite prop rows with an acquired OpportunityState:
+        #   1. Invoke run_composite_simulation() → posterior samples (production call site)
+        #   2. Build WOWProbabilityOutputs (Beta epistemic posterior over the hit rate)
+        #   3. If minutes_conflict_penalty > 0: add FALLBACK_HAIRCUT risk factor that
+        #      widens p_lb, representing genuine epistemic uncertainty about minutes
+        #   4. Set calibrated_probability = p_true (posterior median)
+        #   5. Set calibrated_probability_lower_bound = p_lb (Q10 – conflict haircut)
+        #   6. Store full shadow output in row["gates"]["composite_joint_probability"]
+        #
+        # Aleatoric uncertainty (game-to-game volatility) lives inside the simulator.
+        # Epistemic uncertainty (uncertainty about which probability model is correct)
+        # lives in the Beta posterior drawn here.  Market contradiction is a
+        # HARD_BLOCK/ceiling, never a posterior random variable — per doctrine.
+        if _is_composite_prop_row(row):
+            _cjp_enr  = row.get("_enr") or {}
+            _opp_st   = _cjp_enr.get("opportunity_state")
+            if _opp_st is not None:
+                _cfam_raw = (row.get("prop_type") or "").lower().replace(" ", "")
+                _cline: float | None = None
+                for _lf in ("line", "line_value", "threshold"):
+                    try:
+                        _cline = float(row.get(_lf) or 0)
+                        if _cline > 0:
+                            break
+                        _cline = None
+                    except (TypeError, ValueError):
+                        _cline = None
+                if _cline and _cline > 0:
+                    try:
+                        from gate_engine.opportunity_acquisition.composite_simulator import (
+                            run_composite_simulation as _run_comp_sim,
+                            canonicalize_prop_family as _canon_fam,
+                        )
+                        from gate_engine.probability_uncertainty_engine import (
+                            build_composite_probability_outputs as _build_cpo,
+                        )
+                        # Fix (3): canonicalize prop family so "pts+reb+ast" →
+                        # "pra", "pts+reb" → "p+r", etc.  Without this, unrecognized
+                        # aliases fall through to a points-only composite silently.
+                        _cfam = _canon_fam(_cfam_raw)
+
+                        # Fix (1): select hit probability by row side.
+                        # MORE/OVER bets use p_more; LESS/UNDER bets use p_less.
+                        _cjp_side = (
+                            row.get("side") or row.get("direction") or "more"
+                        ).lower().strip()
+
+                        _cjp_sim     = _run_comp_sim(_opp_st, _cfam, _cline, n_sims=3000)
+                        _cjp_penalty = float(_cjp_enr.get("minutes_conflict_penalty") or 0.0)
+                        _cjp_outputs = _build_cpo(
+                            _cjp_sim,
+                            conflict_penalty=_cjp_penalty,
+                            side=_cjp_side,
+                        )
+
+                        # Fix (2): fail closed when opportunity data is synthetic.
+                        # Only publish joint-model calibrated fields when the
+                        # OpportunityState carries real (non-default) minutes.
+                        # If data is synthetic: store gate report for diagnostics
+                        # but do NOT overwrite existing calibrated_probability.
+                        _has_live = _opp_st.has_live_opportunity_data()
+                        _data_quality = "LIVE" if _has_live else "SYNTHETIC_DEFAULTS"
+
+                        if _has_live and _cjp_outputs.publishable:
+                            if _cjp_outputs.p_true is not None:
+                                row["calibrated_probability"] = round(_cjp_outputs.p_true, 4)
+                            if _cjp_outputs.p_lb is not None:
+                                row["calibrated_probability_lower_bound"] = round(
+                                    _cjp_outputs.p_lb, 4
+                                )
+                        elif not _has_live:
+                            # Diagnostic note: data was synthetic; do not publish
+                            row.setdefault("blockers", []).append(
+                                "COMPOSITE_JOINT_PROBABILITY:SYNTHETIC_DATA_NO_PUBLISH:"
+                                "calibrated_probability unchanged (no live minutes)"
+                            )
+
+                        # Always store shadow diagnostic regardless of data quality
+                        row.setdefault("gates", {})["composite_joint_probability"] = {
+                            "can_execute":         False,
+                            "patch_id":            "WOW-PATCH-2026-08-08-FOUR-PILLAR",
+                            "patch_status":        "SHADOW_MODE",
+                            "data_quality":        _data_quality,
+                            "side":                _cjp_side,
+                            "prop_family":         _cfam,
+                            "prop_family_raw":     _cfam_raw,
+                            "uncertainty_mode":    _cjp_outputs.uncertainty_mode.value,
+                            "p_structural":        _cjp_outputs.p_structural,
+                            "p_scenario":          _cjp_outputs.p_scenario,
+                            "p_calibrated":        _cjp_outputs.p_calibrated,
+                            "p_true":              _cjp_outputs.p_true,
+                            "p_lb":                _cjp_outputs.p_lb,
+                            "p_ub":                _cjp_outputs.p_ub,
+                            "epistemic_width":     _cjp_outputs.epistemic_width,
+                            "floor_distance":      _cjp_outputs.floor_distance,
+                            "n_posterior_samples": len(_cjp_outputs.posterior_samples),
+                            "conflict_penalty":    _cjp_penalty,
+                            "calibrated_fields_published": _has_live,
+                            "risk_factors": [
+                                {
+                                    "risk_id":    r.risk_id,
+                                    "risk_family": r.risk_family.value,
+                                    "effect_mode": r.effect_mode.value,
+                                    "severity":    r.severity,
+                                    "estimated_effect_mean": r.estimated_effect_mean,
+                                }
+                                for r in _cjp_outputs.risks
+                            ],
+                            "sim_summary": _cjp_sim.to_dict(),
+                        }
+                        # Ensure component_composite sees the joint_model_provided flag
+                        row.setdefault("enrichment_flags", {})["joint_model_provided"] = True
+                    except Exception as _cjp_err:
+                        row.setdefault("blockers", []).append(
+                            f"COMPOSITE_JOINT_PROBABILITY:ERROR:{str(_cjp_err)[:60]}"
+                        )
 
         # WOW v16 Tennis Total Games lane
         # Exact Markov chain simulation; three-outcome (More+Exact+Less=1) contract.

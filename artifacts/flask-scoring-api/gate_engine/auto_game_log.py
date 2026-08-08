@@ -807,3 +807,100 @@ def _fetch_tennis(player_id: str, stat_key: str, date_str: str, n: int) -> tuple
         raise GameLogUnavailable(f"Tennis game log: {exc}") from exc
     except Exception as exc:
         raise GameLogUnavailable(f"Tennis game log unexpected error: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# BallDontLie rich player package — TRUSTED_STRUCTURED_STATS (A- grade)
+# ---------------------------------------------------------------------------
+
+def fetch_bdl_player_package(
+    player_id:   str,
+    sport:       str,
+    stat_key:    str,
+    season:      int | None = None,
+    n_games:     int        = 10,
+    target_date: str | None = None,
+) -> dict:
+    """
+    Fetch a comprehensive BallDontLie player package (TRUSTED_STRUCTURED_STATS).
+
+    Returns a dict containing:
+      "game_log"      : list[float]          — WOW canonical, most recent first
+      "box_score_log" : list[dict]           — WOW canonical, most recent first
+      "minutes_stats" : dict                 — mean/variance/cv/role_stability
+      "acquisition_status": str              — BDLStatus constant
+      "provenance"    : dict                 — full BDLProvenance
+      "notes"         : list[str]
+      "source"        : "api.balldontlie.io"
+      "source_grade"  : "A-"
+      "source_type"   : "balldontlie_api"
+
+    Raises GameLogUnavailable when credentials are absent or the sport
+    is unsupported. Never raises on HTTP failures — returns acquisition_status.
+
+    Source grade A- (TRUSTED_STRUCTURED_STATS): direct API with timestamp,
+    below official league feeds, above B-grade stat-site reconstruction.
+
+    can_execute=False unconditional in the BDL layer.
+    """
+    sport_upper = sport.upper().strip()
+
+    if sport_upper in ("NBA", "WNBA"):
+        try:
+            from gate_engine.balldontlie.nba_wnba import fetch_player_package
+        except ImportError as exc:
+            raise GameLogUnavailable(
+                f"BDL NBA/WNBA module unavailable: {exc}"
+            ) from exc
+
+        package = fetch_player_package(
+            player_id   = player_id,
+            sport       = sport_upper,
+            season      = season,
+            n_games     = n_games,
+            target_date = target_date,
+        )
+
+    elif sport_upper == "MLB":
+        # Route MLB to pitcher vs batter based on stat_key
+        _PITCHER_KEYS = {"IP", "OUTS", "K", "BB", "BF", "PC", "PITCHER_OUTS",
+                         "FANTASY_SCORE_PIT"}
+        try:
+            if stat_key.upper() in _PITCHER_KEYS:
+                from gate_engine.balldontlie.mlb import fetch_pitcher_package
+                package = fetch_pitcher_package(
+                    player_id   = player_id,
+                    season      = season,
+                    n_games     = n_games,
+                    target_date = target_date,
+                )
+            else:
+                from gate_engine.balldontlie.mlb import fetch_batter_package
+                package = fetch_batter_package(
+                    player_id   = player_id,
+                    season      = season,
+                    n_games     = n_games,
+                    target_date = target_date,
+                )
+        except ImportError as exc:
+            raise GameLogUnavailable(
+                f"BDL MLB module unavailable: {exc}"
+            ) from exc
+
+    else:
+        raise GameLogUnavailable(
+            f"BDL package not supported for sport={sport_upper}. "
+            f"Supported: NBA, WNBA, MLB."
+        )
+
+    return {
+        "game_log":         package.wow_game_log(stat_key, n_games),
+        "box_score_log":    package.wow_box_score_log(n_games),
+        "minutes_stats":    package.minutes_stats(),
+        "acquisition_status": package.acquisition_status,
+        "provenance":       package.provenance.to_dict(),
+        "notes":            package.notes,
+        "source":           "api.balldontlie.io",
+        "source_grade":     "A-",
+        "source_type":      "balldontlie_api",
+    }

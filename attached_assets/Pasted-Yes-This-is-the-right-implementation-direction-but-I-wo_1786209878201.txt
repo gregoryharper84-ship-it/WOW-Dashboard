@@ -1,0 +1,672 @@
+Yes. This is the right implementation direction, but I would tighten the code before making it authoritative. The conceptual model is now strong; the remaining risk is accidentally encoding the wrong statistical semantics into otherwise clean classes.
+
+The biggest adjustment is this:
+
+aleatoric uncertainty belongs inside P(hit∣s)
+	​
+
+
+while
+
+epistemic uncertainty belongs across plausible p
+(m)
+	​
+
+
+That distinction should be explicit in the codebase.
+
+Your current WOWProbabilityOutputs structure is close, but I would make six changes.
+
+Do not silently fall back from posterior quantiles to p_calibrated. If the model requires a posterior and none exists, that is an uncertainty-state issue, not a reason to pretend there is zero uncertainty.
+Use a declared posterior central estimator. Median is reasonable, but p_true should not accidentally change meaning from model to model. Pick posterior_mean or posterior_median and version it.
+Use proper quantile computation. samples[int(n * .10)] is crude and unstable for small samples.
+Represent hard blocks separately from uncertainty. A HARD_BLOCK should prevent probability publication where required; it should never appear as merely one more risk factor.
+Add dependence groups. ROLE, WORKLOAD, etc. are broad families; two risks inside one family can still represent the same latent uncertainty.
+Track the source of each posterior draw. Otherwise you can produce a lower bound but cannot later explain why it widened.
+
+A stronger schema would look like this:
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import List, Optional, Dict
+import numpy as np
+
+
+class EffectMode(Enum):
+    MODEL_SHIFT = "MODEL_SHIFT"
+    SCENARIO_MIXTURE = "SCENARIO_MIXTURE"
+    VARIANCE_INFLATION = "VARIANCE_INFLATION"
+    CALIBRATION_ADJUSTMENT = "CALIBRATION_ADJUSTMENT"
+    FALLBACK_HAIRCUT = "FALLBACK_HAIRCUT"
+    HARD_BLOCK = "HARD_BLOCK"
+
+
+class RiskFamily(Enum):
+    ROLE = "ROLE"
+    WORKLOAD = "WORKLOAD"
+    ENVIRONMENT = "ENVIRONMENT"
+    MARKET = "MARKET"
+    MODEL = "MODEL"
+    DATA = "DATA"
+
+
+class UncertaintyMode(Enum):
+    POSTERIOR = "POSTERIOR"
+    FALLBACK_HAIRCUT = "FALLBACK_HAIRCUT"
+    BLOCKED = "BLOCKED"
+
+
+@dataclass
+class RiskFactor:
+    risk_id: str
+    risk_family: RiskFamily
+    effect_mode: EffectMode
+
+    state: str
+    severity: str
+
+    dependence_group: Optional[str] = None
+
+    resolved: bool = False
+    material: bool = True
+
+    source: Optional[str] = None
+    retrieved_at: Optional[str] = None
+    source_confidence: Optional[float] = None
+
+    # Only permitted in FALLBACK_HAIRCUT mode.
+    estimated_effect_mean: Optional[float] = None
+    estimated_effect_sd: Optional[float] = None
+
+
+@dataclass
+class PosteriorSample:
+    hit_probability: float
+
+    # Optional diagnostic decomposition.
+    scenario_id: Optional[str] = None
+    role_state: Optional[str] = None
+    workload_state: Optional[str] = None
+    environment_state: Optional[str] = None
+    calibration_draw: Optional[float] = None
+
+
+@dataclass
+class WOWProbabilityOutputs:
+    p_structural: float
+    p_scenario: float
+    p_calibrated: float
+
+    posterior_samples: List[PosteriorSample] = field(default_factory=list)
+
+    uncertainty_mode: UncertaintyMode = UncertaintyMode.POSTERIOR
+    risks: List[RiskFactor] = field(default_factory=list)
+
+    lower_quantile: float = 0.10
+    upper_quantile: float = 0.90
+
+    def _values(self) -> np.ndarray:
+        return np.asarray(
+            [x.hit_probability for x in self.posterior_samples],
+            dtype=float
+        )
+
+    @property
+    def blocking_risks(self) -> List[RiskFactor]:
+        return [
+            r for r in self.risks
+            if r.material
+            and not r.resolved
+            and r.effect_mode == EffectMode.HARD_BLOCK
+        ]
+
+    @property
+    def publishable(self) -> bool:
+        if self.blocking_risks:
+            return False
+
+        if self.uncertainty_mode == UncertaintyMode.POSTERIOR:
+            return len(self.posterior_samples) > 0
+
+        if self.uncertainty_mode == UncertaintyMode.FALLBACK_HAIRCUT:
+            return True
+
+        return False
+
+    @property
+    def p_true(self) -> Optional[float]:
+        if not self.publishable:
+            return None
+
+        values = self._values()
+
+        if len(values):
+            # Declare this convention globally.
+            return float(np.median(values))
+
+        # Fallback mode only.
+        return float(self.p_calibrated)
+
+    @property
+    def p_lb(self) -> Optional[float]:
+        if not self.publishable:
+            return None
+
+        values = self._values()
+
+        if len(values):
+            return float(
+                np.quantile(
+                    values,
+                    self.lower_quantile,
+                    method="linear"
+                )
+            )
+
+        return self._fallback_lower_bound()
+
+    @property
+    def p_ub(self) -> Optional[float]:
+        if not self.publishable:
+            return None
+
+        values = self._values()
+
+        if len(values):
+            return float(
+                np.quantile(
+                    values,
+                    self.upper_quantile,
+                    method="linear"
+                )
+            )
+
+        return float(self.p_calibrated)
+
+    def _fallback_lower_bound(self) -> float:
+        """
+        Fallback-only uncertainty treatment.
+
+        Do NOT simply sum all penalties.
+        Combine by dependence group upstream and pass only
+        non-overlapping residual uncertainty here.
+        """
+        if self.uncertainty_mode != UncertaintyMode.FALLBACK_HAIRCUT:
+            raise RuntimeError(
+                "Posterior samples missing in authoritative posterior mode."
+            )
+
+        haircut = 0.0
+
+        for risk in self.risks:
+            if (
+                risk.material
+                and not risk.resolved
+                and risk.effect_mode == EffectMode.FALLBACK_HAIRCUT
+                and risk.estimated_effect_mean is not None
+            ):
+                haircut += max(0.0, risk.estimated_effect_mean)
+
+        return max(0.0, self.p_calibrated - haircut)
+
+The important part isn't the Python syntax. It's what this forces the engine to acknowledge.
+
+The probability hierarchy should now be explicit
+
+I would define these as four different objects:
+
+p
+structural
+	​
+
+=P(hit∣baseline state)
+p
+scenario
+	​
+
+=
+s
+∑
+	​
+
+P(s)P(hit∣s)
+p
+calibrated
+	​
+
+=C(p
+scenario
+	​
+
+)
+
+and finally:
+
+p
+(m)
+=C
+(m)
+(
+s
+∑
+	​
+
+P
+(m)
+(s)P
+(m)
+(hit∣s))
+
+where the superscript m represents one plausible epistemic world.
+
+Then:
+
+p
+true
+	​
+
+=Median(p
+(1)
+,…,p
+(M)
+)
+	​
+
+
+if median is your declared central estimator, and:
+
+p
+LB
+	​
+
+=Q
+0.10
+	​
+
+(p
+(1)
+,…,p
+(M)
+)
+	​
+
+
+That's much more defensible than subtracting a collection of safety factors.
+
+One subtle distinction matters
+
+A normal sports simulation already contains aleatoric variance.
+
+For example, suppose a WNBA player is definitely playing 32 minutes. Even under that fixed state, she can score 12, 18, 24, or 31 points. That randomness belongs in:
+
+P(points>17.5∣32 minutes).
+
+You should not widen the epistemic posterior simply because individual games are volatile. That volatility is already inside the event distribution.
+
+Epistemic uncertainty is instead:
+
+Maybe she's really a 30–34 minute player rather than a fixed 32-minute player.
+
+Maybe her estimated usage is 25–29%.
+
+Maybe our calibration function for this cohort is slightly overconfident.
+
+Maybe the workload-state probabilities are poorly estimated.
+
+Those produce different plausible probability models, which is what the posterior should sample.
+
+That gives you the clean identity:
+
+Aleatoric uncertainty determines outcomes within a model
+	​
+
+Epistemic uncertainty determines uncertainty across models
+	​
+
+Market conflict should not normally become a posterior random variable
+
+I'd preserve the rule we already established.
+
+If market disagreement reveals new information, update the model.
+
+If settlement/identity is mismatched, fix the comparison.
+
+If it remains materially unexplained:
+
+MARKET_CONFLICT_UNRESOLVED
+
+can impose a ceiling or block money qualification.
+
+But don't quietly represent:
+
+market_conflict_sd = 0.025
+
+and widen the posterior. That turns an unexplained contradiction into apparently quantified knowledge.
+
+Calibration is where this architecture becomes genuinely powerful
+
+Eventually you want each probability model to produce something like:
+
+raw sports model              0.691
+
+scenario integrated           0.663
+
+calibrated central estimate   0.647
+
+epistemic posterior:
+Q10                           0.603
+Q25                           0.624
+Q50                           0.646
+Q75                           0.667
+Q90                           0.682
+
+Now WOW can say:
+
+WOW TRUE PROBABILITY       64.6%
+WOW CONSERVATIVE FLOOR     60.3%
+UNCERTAINTY WIDTH          7.9 pts
+
+And importantly, two props with identical 64.6% central estimates can look completely different:
+
+PROP A
+64.6% true
+62.4% floor
+66.5% upper
+
+versus:
+
+PROP B
+64.6% true
+53.1% floor
+73.9% upper
+
+The first is highly knowable.
+
+The second isn't.
+
+That is information a raw hit probability cannot provide.
+
+Add one more metric: epistemic width
+
+I would expose:
+
+U
+epistemic
+	​
+
+=p
+UB
+	​
+
+−p
+LB
+	​
+
+	​
+
+
+and perhaps:
+
+D
+floor
+	​
+
+=p
+true
+	​
+
+−p
+LB
+	​
+
+	​
+
+
+These make ranking more intelligent.
+
+If two legs have:
+
+A: true 68%, floor 66%
+B: true 71%, floor 59%
+
+WOW's high-hit-probability objective may rationally prefer A despite B having the higher midpoint.
+
+That is precisely what conservative probability modeling should do.
+
+The revised four-pillar doctrine
+
+I would canonize it exactly this way:
+
+Probability tells us how likely we are to be right.
+Uncertainty tells us how wrong that probability might be.
+Payout tells us how right we need to be.
+Structure tells us whether combining those legs creates a sound card.
+
+And underneath it I would add a technical invariant:
+
+Aleatoric risk belongs inside the event distribution. Epistemic risk belongs inside the distribution of plausible probabilities. Critical unknowns are blockers, not penalties.
+
+That is the sentence that prevents future patches from quietly regressing WOW back into arbitrary haircut arithmetic.
+
+Great is this ready to be patched? If so where all should it be patched? 
+Worked for 1m 6s
+
+Yes — the architecture is ready to become a formal patch specification. I would not activate it directly in production yet. The correct state is SHADOW_MODE first, because it changes the semantic meaning of p_true, p_LB, calibration, and several existing haircut rules.
+
+The live WOW runtime I checked is currently v16.5 with 24 active patches, and this four-pillar architecture is not yet registered. More importantly, some active rules still use fixed probability deductions—for example, the current 1IP efficiency/directional patches use -0.02 adjustments. Those are exactly the kinds of rules this new architecture needs to supersede or explicitly classify as FALLBACK_HAIRCUT.
+
+I would create one umbrella patch:
+
+WOW-PATCH-2026-08-08-FOUR-PILLAR-PROBABILITY-UNCERTAINTY-PAYOUT-STRUCTURE
+
+Its governing doctrine:
+
+Probability tells us how likely we are to be right.
+Uncertainty tells us how wrong that probability might be.
+Payout tells us how right we need to be.
+Structure tells us whether combining those legs creates a sound card.
+
+And the technical invariant immediately underneath:
+
+Aleatoric risk belongs inside the event distribution. Epistemic risk belongs inside the distribution of plausible probabilities. Critical unknowns are blockers, not penalties.
+
+Where it should be patched
+Target	What changes	Priority
+1. New governance patch + active registry	Add the four-pillar doctrine, probability identities, uncertainty modes, risk schema, prohibited probability/payout blending, acceptance tests, rollback rules. Register only after shadow tests.	Critical
+2. wow-control-plane-orchestrator-SKILL.md	Split existing “Calibration and Uncertainty” into explicit outputs: p_structural → p_scenario → p_calibrated → epistemic posterior → p_true/p_LB/p_UB. Then payout audit, then structure. The orchestrator already has specialist → failure path → calibration/uncertainty → probability audit → payout sequencing, so this is an extension rather than a redesign.	Critical
+3. Backend pipeline / route registry	Add an authoritative uncertainty stage and required gate. Recommended new gate: uncertainty_gate. Route completion should require it before a probability can become high-confidence. Do this in gate_engine/pipeline.py and gate_engine/route_registry.py.	Critical
+4. New wow.probability-uncertainty-engine skill/module	Centralize posterior construction, quantiles, uncertainty modes, RiskFactor, RiskFamily, dependence groups, hard blocks, epistemic width and fallback haircuts. Do not reimplement this separately inside every sport.	Critical
+5. wow-calibration-ledger-SKILL.md + DB schema	Expand immutable prediction records beyond current raw/calibrated/lower/upper fields to capture structural probability, scenario probability, posterior convention, uncertainty mode, quantile levels, epistemic width, risk-state snapshot and uncertainty-model version. The existing ledger is already designed to preserve probability bounds and calibration versions, so it is the natural audit authority.	Critical
+6. wow-slip-probability-optimizer-SKILL-v3	Keep it probability-only. Replace its current two-field emphasis (raw_model_probability, calibrated_probability_lower_bound) with p_structural, p_scenario, p_true, p_LB, p_UB, uncertainty mode and epistemic width. Keep the current ≥65% lower-bound requirement for YES_MODEL_QUALIFIED unless calibration later justifies changing it. Payout must never change this probability-only qualification.	Critical
+7. WOW-Exact-Line-Payout-Push-No-Vig-Edge-Auditor.md	Make this the authoritative economic engine. It receives probabilities; it never modifies them. Add required_probability, joint_break_even_probability, payout_probability_margin, expected_gross_multiplier, WOW_VALUE_INDEX, and conservative equivalents. Its existing PrizePicks logic already correctly says payout is slip-level, Power break-even is joint, and Flex requires the full hit-count table.	Critical
+8. wow-betting-engine-universal-adapter-SKILL.md	Update universal order to specialist → scenario/failure paths → probability calibration → epistemic uncertainty → payout hurdle → structure. Add the four-pillar fields to every output contract.	High
+9. MLB Pitcher Failure-Path Expert	Mostly preserve, not rewrite. It already uses regime mixtures and unconditional probability—the exact architecture we want. Replace generic “uncertainty haircuts” with posterior uncertainty outputs or explicitly labeled fallback mode. Its regime approach is already structurally correct.	High
+10. MLB 1IP Expert + Aug. 1 efficiency/asymmetry patches	This needs the largest specialist cleanup. Keep the event-tree/regime model, but replace automatic subtract 0.02 probability rules with either model-state changes, posterior widening, or FALLBACK_HAIRCUT when no learned uncertainty treatment exists. The current skill explicitly contains fixed deductions that conflict with the new doctrine.	High
+11. WNBA Opportunity / Composite models	Role/minutes volatility should feed scenario probabilities rather than be numerically deducted again downstream. Existing hard opportunity gates can remain blockers/ceilings; the probability model should consume role states such as normal/reduced/restricted minutes.	High
+12. Market contradiction logic	Market conflict becomes INVESTIGATE → RESOLVE/RERUN/BLOCK, never a generic probability haircut. Exact market evidence still belongs in market/payout lanes.	High
+13. User-facing output schema	Add the attrition funnel and four-pillar outputs: probability, uncertainty, payout, structure. This is how you prevent another opaque “0/622 qualified” result.	High
+14. Regression / shadow test suite	Test mathematical purity, uncertainty semantics, no double-counting, hard blocks, payout separation, old-vs-new p_LB, terminal ceilings, row reconciliation and calibration performance.	Critical before activation
+
+There is one particularly important migration issue: your existing calibration ledger currently stores a field called model_uncertainty_haircut. I would not delete it immediately. Rename its semantic role during migration:
+
+model_uncertainty_haircut
+    → legacy_fallback_haircut
+
+uncertainty_mode
+    = POSTERIOR
+    | FALLBACK_HAIRCUT
+    | BLOCKED
+
+That gives you backward compatibility while making it impossible for a legacy haircut to masquerade as the preferred uncertainty model.
+
+What should not be changed
+
+The exact PrizePicks payout engine is already structurally close to correct. It explicitly says PrizePicks generally has slip-level economics, prohibits fabricated per-leg odds, computes Power joint break-even from the displayed multiplier, and requires the full hit-count distribution for Flex. That should be extended, not replaced.
+
+Likewise, the pitcher failure-path engine already follows:
+
+P(prop)=
+r
+∑
+	​
+
+P(r)P(prop∣r),
+
+which is precisely the scenario-mixture principle we just established.
+
+And I would not change terminal labels yet. Keep backend terminal-label authority intact. Add diagnostic fields such as:
+
+probability_grade
+uncertainty_grade
+payout_status
+structure_status
+
+but let the existing backend classifier continue to own MODEL_QUALIFIED_HOLD, REJECT_DATA_QUALITY, etc.
+
+New canonical probability contract
+
+Every specialist should ultimately return the same object:
+
+p_structural
+p_scenario
+p_calibrated
+
+p_true
+p_lb
+p_ub
+
+lower_quantile
+upper_quantile
+
+uncertainty_mode
+uncertainty_model_version
+epistemic_width
+floor_distance
+
+scenario_states
+risk_families
+dependence_groups
+blocking_risks
+
+calibration_method
+calibration_version
+
+probability_publishable
+
+Then the payout module adds—not modifies:
+
+required_probability
+payout_probability_margin
+
+joint_break_even_probability
+expected_gross_multiplier
+conservative_expected_gross_multiplier
+
+wow_value_index
+conservative_wow_value_index
+
+And structure adds:
+
+power_eligibility
+flex_eligibility
+joint_probability
+joint_lower_bound
+correlation_penalty
+clustered_miss_probability
+duplicate_thesis_status
+weakest_leg
+
+That is the clean separation.
+
+I would deploy it in four steps
+Patch specification + schemas only. Add the new governance patch, uncertainty schema and output fields, but run old and new probability outputs side-by-side. No label changes.
+Shadow uncertainty engine. Calculate posterior p_true/p_LB/p_UB beside the legacy lower bound for every supported prop. Log both into the immutable ledger. Do not let the new value upgrade a terminal label yet. Your ledger already prohibits automatic activation and requires regression/shadow comparison before model promotion.
+Specialist migration. Convert MLB pitcher first, then WNBA, then 1IP. Pitcher props are the cleanest starting point because their regime model already matches the new theory. Remove or isolate fixed probability haircuts as each lane receives a posterior implementation.
+Authority switch. Only after out-of-sample calibration is no worse, regression tests pass, no ceiling unexpectedly upgrades, row reconciliation is clean, and governance review passes should p_LB from the new uncertainty engine become the controlling lower bound.
+
+So: yes, ready to patch as a formal v1 architecture; no, not ready to flip directly to ACTIVE. I would classify it initially as:
+
+Patch:
+WOW-PATCH-2026-08-08-FOUR-PILLAR-PROBABILITY-UNCERTAINTY-PAYOUT-STRUCTURE
+
+Version:
+1.0
+
+Status:
+SHADOW_MODE
+
+can_execute:
+false
+
+Authority:
+New probability/uncertainty outputs are diagnostic during shadow.
+Existing terminal ceilings remain controlling until promotion tests pass.
+
+That is the safest way to introduce a major probability-semantic change without destabilizing the rest of WOW.
+
+Where does it need to go first? Replit?
+
+Yes — Replit first.
+
+Your Replit backend is the live authority for governance, probability outputs, terminal labels, active patches, and the scoring pipeline. If we modify the GPT knowledge files first, the GPT could start describing a four-pillar system that the actual engine does not yet implement. That creates exactly the kind of model/runtime mismatch WOW is designed to prevent.
+
+The installation order I recommend is:
+
+Replit — create the umbrella patch first. Add WOW-PATCH-2026-08-08-FOUR-PILLAR-PROBABILITY-UNCERTAINTY-PAYOUT-STRUCTURE, initially SHADOW_MODE, can_execute=false. This defines the doctrine, schemas, migration rules, allowed uncertainty modes, and old-vs-new comparison requirements.
+Replit — implement the Uncertainty Engine. Add the authoritative objects and calculations for p_structural, p_scenario, p_calibrated, posterior samples, p_true, p_lb, p_ub, epistemic width, risk families, dependence groups, and POSTERIOR / FALLBACK_HAIRCUT / BLOCKED.
+Replit — wire it into the gate pipeline. The sequence should become roughly:
+identity
+→ slate/status
+→ specialist sports model
+→ scenario / failure-path integration
+→ calibration
+→ epistemic uncertainty
+→ probability claim audit
+→ payout hurdle
+→ structure / correlation
+→ terminal resolution
+
+The crucial rule is:
+
+PAYOUT MAY READ p_true / p_lb
+PAYOUT MAY NOT MODIFY p_true / p_lb
+Replit — extend the immutable ledger. Save both old and new probability outputs during shadow mode:
+legacy_probability
+legacy_lower_bound
+
+p_structural
+p_scenario
+p_calibrated
+p_true
+p_lb
+p_ub
+uncertainty_mode
+uncertainty_model_version
+epistemic_width
+risk_snapshot
+
+This is what lets us verify that the new architecture actually improves calibration rather than merely sounding better.
+
+Replit — update specialist models. Start with MLB pitcher props, because the current failure-path model already uses regime mixtures and is closest to the new architecture. Then WNBA. Then MLB 1IP, where the existing fixed -0.02-style haircuts need to be migrated or explicitly isolated as fallback behavior.
+Replit — update payout/structure modules. Add required_probability, probability_margin, WOW Value Index, conservative value, Power joint probability, Flex hit-count distribution, correlation penalties, etc. Again, these are downstream of probability.
+Only then update the GPT/skill files. Once the backend can actually return these fields, update the control-plane skill, probability optimizer, calibration ledger documentation, exact-line/payout auditor, universal adapter, MLB specialist docs, WNBA docs, and 1IP docs so the GPT's instructions match the implementation.
+
+So the clean hierarchy is:
+
+REPLIT BACKEND
+     ↓
+GOVERNANCE / PATCH REGISTRY
+     ↓
+PIPELINE + UNCERTAINTY ENGINE
+     ↓
+SPECIALIST MODELS
+     ↓
+LEDGER + PAYOUT + STRUCTURE
+     ↓
+TEST / SHADOW VALIDATION
+     ↓
+GPT SKILLS / KNOWLEDGE FILES
+
+Do not start by patching the Custom GPT instructions. Replit should learn the architecture first; afterward the GPT becomes the interface/orchestrator for capabilities the backend actually has.
+
+The very first artifact I would create is the Replit patch specification for WOW-PATCH-2026-08-08-FOUR-PILLAR-PROBABILITY-UNCERTAINTY-PAYOUT-STRUCTURE, with status SHADOW_MODE. After that, implement the probability_uncertainty_engine module and wire its outputs into the pipeline.

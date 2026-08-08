@@ -27,6 +27,8 @@ from gate_engine.moneyline.types import (
 
 can_execute: bool = False  # UNCONDITIONAL re-declaration
 
+from gate_engine.moneyline.teamrankings_adapter import TR_WEIGHT_MAX, TR_WEIGHT_ZERO
+
 # ---------------------------------------------------------------------------
 # Sport-specific parameters
 # ---------------------------------------------------------------------------
@@ -57,12 +59,14 @@ _POWER_COEF = 0.05
 # Soccer: baseline draw rate (league-average)
 _SOCCER_DRAW_BASE = 0.27
 
-# Weights for ensemble: how to weight each submodel when present
+# Weights for ensemble: how to weight each submodel when present.
+# teamrankings_predictive has a hard ceiling enforced post-normalization (see below).
 _ENSEMBLE_WEIGHTS = {
-    "h2h_historical": 0.35,
-    "elo_differential": 0.30,
-    "power_rating": 0.25,
-    "home_adjustment": 0.10,
+    "h2h_historical":         0.35,
+    "elo_differential":       0.30,
+    "power_rating":           0.25,
+    "home_adjustment":        0.10,
+    "teamrankings_predictive": 0.075,   # 7.5% default; ceiling TR_WEIGHT_MAX=10%
 }
 
 # ---------------------------------------------------------------------------
@@ -164,6 +168,44 @@ def _power_rating(enrichment: dict[str, Any]) -> float | None:
         return _logistic(_POWER_COEF * diff)
     except (TypeError, ValueError):
         return None
+
+
+def _teamrankings_predictive(enrichment: dict[str, Any]) -> float | None:
+    """
+    TeamRankings secondary enrichment submodel.
+
+    Uses ONLY enrichment["teamrankings_matchup_win_prob_home"] — a direct
+    win-probability projection from TeamRankings (already in home-team perspective).
+
+    Raw predictive ratings are NOT converted to a probability here: no calibrated
+    logistic mapping exists, per WOW governance spec.
+
+    Returns None when:
+    - teamrankings_matchup_win_prob_home is absent
+    - effective_weight is 0 (stale, unavailable, proxy, conflict)
+    - value is outside (0.01, 0.99)
+
+    Display odds (display_odds) are NEVER read here — they are market data
+    and live only in the TeamRankings record stored in MoneylineResult.teamrankings.
+    """
+    eff_w = enrichment.get("teamrankings_effective_weight")
+    if eff_w is not None:
+        try:
+            if float(eff_w) <= 0.0:
+                return None
+        except (TypeError, ValueError):
+            return None
+
+    prob = enrichment.get("teamrankings_matchup_win_prob_home")
+    if prob is None:
+        return None
+    try:
+        p = float(prob)
+        if 0.01 < p < 0.99:
+            return p
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
 def _home_advantage_prior(sport: str) -> float:
@@ -274,6 +316,20 @@ def compute_independent_probability(
     else:
         notes.append("power_rating:NO_DATA")
 
+    # --- TeamRankings secondary enrichment submodel ---
+    # Only fires when: RETRIEVED, not stale, direct matchup_win_prob_home present.
+    # Raw predictive ratings are NOT converted to probability (no calibrated mapping).
+    # TR display_odds are never read here.
+    p_tr = _teamrankings_predictive(clean_enrichment)
+    if p_tr is not None:
+        submodel_probs["teamrankings_predictive"] = p_tr
+        active_submodels.append("teamrankings_predictive")
+        notes.append(
+            f"teamrankings_predictive:active matchup_win_prob_home={p_tr:.4f}"
+        )
+    else:
+        notes.append("teamrankings_predictive:NO_DATA_OR_INACTIVE")
+
     if not submodel_probs:
         # No data at all — cannot produce independent probability
         notes.append("NO_SUBMODEL_DATA:independent_probability_unavailable")
@@ -287,11 +343,44 @@ def compute_independent_probability(
             "notes":                   notes,
         }
 
-    # --- Weighted ensemble (equal weights among active submodels) ---
-    # Use configured weights, normalised to present submodels
+    # --- Weighted ensemble (normalised to present submodels) ---
+    # Use configured weights, normalised to present submodels.
     raw_weights = {k: _ENSEMBLE_WEIGHTS.get(k, 0.1) for k in submodel_probs}
     total_w = sum(raw_weights.values())
     norm_weights = {k: v / total_w for k, v in raw_weights.items()}
+
+    # Enforce TeamRankings hard ceiling (TR_WEIGHT_MAX = 10%) after normalisation.
+    # When TR's normalised share exceeds the ceiling (e.g. when few other submodels
+    # are active), redistribute the excess proportionally to remaining submodels.
+    if "teamrankings_predictive" in norm_weights:
+        tr_cap = min(
+            clean_enrichment.get("teamrankings_effective_weight") or TR_WEIGHT_ZERO,
+            TR_WEIGHT_MAX,
+        )
+        tr_normed = norm_weights["teamrankings_predictive"]
+        if tr_normed > tr_cap and tr_cap > 0.0:
+            excess = tr_normed - tr_cap
+            norm_weights["teamrankings_predictive"] = tr_cap
+            others = [k for k in norm_weights if k != "teamrankings_predictive"]
+            other_total = sum(norm_weights[k] for k in others)
+            if other_total > 0.0:
+                for k in others:
+                    norm_weights[k] += excess * (norm_weights[k] / other_total)
+            notes.append(
+                f"teamrankings_weight_capped:{tr_normed:.4f}->{tr_cap:.4f} "
+                f"(hard_ceiling={TR_WEIGHT_MAX})"
+            )
+        elif tr_cap <= 0.0:
+            # Should not reach here (TR excluded from submodel_probs when weight=0)
+            # but defensively zero it out and redistribute
+            norm_weights["teamrankings_predictive"] = 0.0
+            others = [k for k in norm_weights if k != "teamrankings_predictive"]
+            other_total = sum(norm_weights[k] for k in others)
+            if other_total > 0.0:
+                for k in norm_weights:
+                    if k != "teamrankings_predictive":
+                        norm_weights[k] /= other_total
+            notes.append("teamrankings_weight_zeroed:effective_weight_zero")
 
     ensemble_prob = sum(norm_weights[k] * submodel_probs[k] for k in submodel_probs)
 
