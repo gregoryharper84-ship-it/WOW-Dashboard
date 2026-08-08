@@ -550,6 +550,42 @@ def run_pipeline(
                 row["gates"]["acquisition"] = _tracker.build_row_report()
                 continue
 
+        # -------------------------------------------------------------------
+        # WOW-PATCH-2026-08-08-1IP-LEDGER-WIRING — 1IP event-tree field gate
+        # Fires UNCONDITIONALLY for 1IP_PITCHES_THROWN, regardless of whether
+        # run_deferred ran (first_inning_bf_distribution is not in
+        # ENRICHMENT_REQUIRED_FIELDS so _tracker._missing_at_intake never
+        # flags it).  Enforces the same DATA_CONTRACT_FAIL convention as every
+        # other required enrichment field.
+        #
+        # Governance: lane_status=TEST_ONLY, can_execute=False unconditional,
+        # ceiling=MODEL_QUALIFIED_HOLD; this gate does not raise that ceiling.
+        # -------------------------------------------------------------------
+        _1ip_stat = (row.get("stat_key") or row.get("prop_type") or "").upper()
+        if (not skip_data_contract
+                and _1ip_stat == "1IP_PITCHES_THROWN"
+                and row.get("terminal_label") != PropLabel.DATA_CONTRACT_FAIL.value):
+            if not enr.get("first_inning_bf_distribution"):
+                row["terminal_label"] = PropLabel.DATA_CONTRACT_FAIL.value
+                row.setdefault("blockers", []).append(
+                    "DATA_CONTRACT_FAIL:missing_field:first_inning_bf_distribution"
+                )
+                row.setdefault("gates", {})["data_contract"] = {
+                    "passed":         False,
+                    "missing_fields": ["first_inning_bf_distribution"],
+                    "code":           "DATA_CONTRACT_FAIL",
+                    "detail": (
+                        "1IP_PITCHES_THROWN: first_inning_bf_distribution not supplied "
+                        "in enrichment. The GPT event-tree specialist "
+                        "(wow.mlb-first-inning-pitch-count-expert) must compute and "
+                        "submit this field. mlb_1ip_pitches_poisson_v1 unconditionally "
+                        "excluded; Poisson model never fires for this stat key."
+                    ),
+                    "phase": "1ip_event_tree_enrichment_check",
+                }
+                row["gates"]["acquisition"] = _tracker.build_row_report()
+                continue
+
         # Stamp the per-row acquisition gate result
         row["gates"]["acquisition"] = _tracker.build_row_report()
 

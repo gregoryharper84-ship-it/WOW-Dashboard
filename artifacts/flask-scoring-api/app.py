@@ -11375,8 +11375,43 @@ def wow_health():
 
     results["cs2"] = "Manual Only — permanent"
 
+    # MLB 1IP ledger wiring (WOW-PATCH-2026-08-08-1IP-LEDGER-WIRING)
+    # Probe: attempt a real Savant CSV fetch for a known pitcher (Tarik Skubal,
+    # MLBAM 669373) to verify the wiring is live, not merely code-present.
+    # Reports "Ready" only after a successful data round-trip.
+    # lane_status=TEST_ONLY; can_execute=False unconditional.
+    try:
+        import datetime as _h_dt
+        from gate_engine.mlb.savant_1ip_ledger import build_1ip_ledger as _probe_1ip
+        _probe_season = str(_h_dt.date.today().year)
+        _probe_date   = _h_dt.date.today().isoformat()
+        _probe_result = _probe_1ip(
+            pitcher_id=669373,   # Tarik Skubal — known active 2026 starter
+            season=_probe_season,
+            board_date=_probe_date,
+            max_starts=1,
+        )
+        if _probe_result.get("error"):
+            results["mlb_1ip_ledger_wiring"] = (
+                f"Degraded — probe fetch error: {str(_probe_result['error'])[:80]}"
+            )
+        elif not _probe_result.get("ledger_rows"):
+            results["mlb_1ip_ledger_wiring"] = (
+                "Degraded — probe returned 0 ledger rows "
+                "(short history or Savant unavailable)"
+            )
+        else:
+            _n = len(_probe_result["ledger_rows"])
+            results["mlb_1ip_ledger_wiring"] = (
+                f"Ready — Savant ledger live ({_n} start(s) fetched; "
+                f"lane_status=TEST_ONLY; can_execute=False)"
+            )
+    except Exception as _e1ip:
+        results["mlb_1ip_ledger_wiring"] = f"Degraded — {str(_e1ip)[:80]}"
+
     overall = "UP" if all(v == "Available"
-                          for k, v in results.items() if k != "cs2") else "PARTIAL"
+                          for k, v in results.items()
+                          if k not in ("cs2", "mlb_1ip_ledger_wiring")) else "PARTIAL"
     return jsonify({"status": overall, "sports": results})
 
 

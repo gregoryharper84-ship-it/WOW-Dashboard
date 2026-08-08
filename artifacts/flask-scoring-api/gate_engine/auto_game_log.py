@@ -226,7 +226,18 @@ def fetch_game_log(
     elif sport_upper == "WNBA":
         values, source = _fetch_wnba(player_id, stat_key, date_str, n_games)
     elif sport_upper == "MLB":
-        values, source, _game_meta = _fetch_mlb(player_id, stat_key, date_str, n_games)
+        if stat_key_upper == "1IP_PITCHES_THROWN":
+            # ── 1st-Inning Pitches Thrown: routed to Baseball Savant ledger ──
+            # MLB Stats API has no per-inning pitch counts, so _fetch_mlb would
+            # raise GameLogUnavailable for this stat_key.  savant_1ip_ledger
+            # is the sole correct source; route here before _fetch_mlb is
+            # ever called.  Identity: canonical MLBAM player_id (same integer
+            # already used by every other MLB pitcher route).  No name-lookup
+            # fallback — fail closed if player_id is absent or non-castable.
+            values, source = _fetch_1ip(player_id, date_str, n_games)
+            _game_meta = {}   # Savant path does not supply game_date/opponent metadata
+        else:
+            values, source, _game_meta = _fetch_mlb(player_id, stat_key, date_str, n_games)
     elif sport_upper == "NFL":
         values, source = _fetch_nfl(player_id, stat_key, date_str, n_games)
     elif sport_upper == "TENNIS":
@@ -517,6 +528,90 @@ def _fetch_mlb(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[li
             _meta["opponent"] = _opp_name
 
     return values, "statsapi.mlb.com (MLB Stats API)", _meta
+
+
+# ---------------------------------------------------------------------------
+# 1IP_PITCHES_THROWN fetch — Baseball Savant ledger (savant_1ip_ledger.py)
+# ---------------------------------------------------------------------------
+
+def _fetch_1ip(player_id: str, date_str: str, n: int) -> tuple[list, str]:
+    """
+    Fetch first-inning pitch counts from Baseball Savant via
+    gate_engine.mlb.savant_1ip_ledger.build_1ip_ledger().
+
+    Identity contract
+    -----------------
+    player_id is the canonical MLBAM integer string already set by the
+    normalizer from the MLB Stats API roster (/sports/1/players).  This is
+    the same ID space used by every other MLB pitcher route (K, SO, OUTS, etc.)
+    and by Baseball Savant's pitchers_lookup[] parameter.  No name-to-ID
+    fallback is added here — if player_id is absent or cannot be cast to an
+    integer that is an identity/data-contract failure and this function raises
+    GameLogUnavailable so the caller surfaces it honestly.
+
+    Returns
+    -------
+    (values, source)
+      values : list[float] — first_inning_pitches per start, most-recent first
+      source : str         — provenance label from the ledger
+    """
+    try:
+        pitcher_id = int(player_id)
+    except (TypeError, ValueError):
+        raise GameLogUnavailable(
+            f"1IP_PITCHES_THROWN: player_id '{player_id}' cannot be cast to "
+            "MLBAM integer — identity failure; no name-lookup fallback added"
+        )
+
+    # Lazy import keeps module-level load cost zero and avoids circular imports
+    from gate_engine.mlb.savant_1ip_ledger import build_1ip_ledger as _build_1ip
+
+    date = datetime.date.fromisoformat(date_str)
+    season = str(date.year)
+
+    result = _build_1ip(
+        pitcher_id=pitcher_id,
+        season=season,
+        board_date=date_str,
+        max_starts=n,
+    )
+
+    if result.get("error"):
+        raise GameLogUnavailable(
+            f"1IP Savant ledger failed for pitcher_id={pitcher_id} "
+            f"season={season}: {result['error']}"
+        )
+
+    ledger_rows = result.get("ledger_rows") or []
+    if not ledger_rows:
+        # Distinguishable from a broken fetch: error is None but no rows were found.
+        # This means the pitcher has no verified first-inning Statcast starts this
+        # season — a short-history pitcher, not a network failure.
+        raise GameLogUnavailable(
+            f"1IP Savant ledger: 0 verified starts for pitcher_id={pitcher_id} "
+            f"season={season} (short history or season not yet started)"
+        )
+
+    # build_1ip_ledger returns ledger_rows already sorted most-recent-first.
+    # Extract the canonical `first_inning_pitches` integer per start.
+    values: list[float] = [
+        float(r["first_inning_pitches"])
+        for r in ledger_rows
+        if r.get("first_inning_pitches") is not None
+    ]
+
+    if not values:
+        raise GameLogUnavailable(
+            f"1IP Savant ledger has {len(ledger_rows)} row(s) but none contain "
+            f"first_inning_pitches for pitcher_id={pitcher_id}"
+        )
+
+    source = result.get("source") or "Baseball Savant (Statcast pitch-level data)"
+    logger.debug(
+        "auto_game_log._fetch_1ip: pitcher_id=%s season=%s starts=%d values=%s",
+        pitcher_id, season, len(values), values[:3],
+    )
+    return values, source
 
 
 # ---------------------------------------------------------------------------
