@@ -24725,22 +24725,20 @@ def _apply_weather_price_gate(
 # ── WOW-PATCH-2026-08-08-KALSHI-WX-TERMINAL-LABEL-FAIL-CLOSED ────────────────
 # Canonical registry of confirmed-reachable Kalshi Weather terminal labels.
 #
-# Only labels that _weather_terminal_label_v2() can actually return via a
-# reachable code path are included.  Labels mentioned in comments or docstrings
-# but NOT reachable from production code are intentionally excluded:
-#   KALSHI_REJECT_THIN_BOOK  — docstring only; no return statement emits it
-#   KALSHI_REJECT_FEE_DRAG   — docstring only; no return statement emits it
+# The authoritative frozenset definition lives in:
+#   gate_engine/kalshi_wx_terminal_labels.py
+# It is imported here (as a private alias) so that:
+#   (a) app.py's _validate_wx_terminal_label() continues to work unchanged, and
+#   (b) the shadow-pilot taxonomy registry (gate_engine/kalshi_wx_shadow_registry.py)
+#       can import the same object — one definition, no duplication.
 #
-# Do NOT add a label here until its code path is confirmed reachable.
-# This registry is the sole authority for weather terminal-label validity.
-_KALSHI_WX_TERMINAL_LABEL_REGISTRY: frozenset[str] = frozenset({
-    "KALSHI_PLAYABLE_LIMIT_ONLY",
-    "KALSHI_WATCH",
-    "KALSHI_REJECT_NO_EDGE",
-    "KALSHI_REJECT_BAD_RULES",
-    "KALSHI_REJECT_UNCALIBRATED",
-    "KALSHI_DATA_UNOBTAINABLE",
-})
+# Do NOT add a label here until its code path in _weather_terminal_label_v2()
+# is confirmed reachable.  Intentionally excluded (docstring-only, unreachable):
+#   KALSHI_REJECT_THIN_BOOK
+#   KALSHI_REJECT_FEE_DRAG
+from gate_engine.kalshi_wx_terminal_labels import (
+    KALSHI_WX_TERMINAL_LABEL_REGISTRY as _KALSHI_WX_TERMINAL_LABEL_REGISTRY,
+)
 
 
 def _validate_wx_terminal_label(label: str) -> bool:
