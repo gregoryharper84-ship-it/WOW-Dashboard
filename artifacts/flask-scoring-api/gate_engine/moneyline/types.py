@@ -155,57 +155,43 @@ class MoneylineResult:
     three_state_1x2:      dict | None    = None
 
     def build_snapshot_hash(self) -> str:
-        """Produce immutable SHA-256 hash of the probability outputs."""
+        """Produce immutable SHA-256 hash of the core probability outputs."""
         body = {
             "independent_probability":            self.outputs.independent_probability,
-
             "calibrated_probability_lower_bound": self.outputs.calibrated_probability_lower_bound,
+            "terminal_label":                     self.terminal_label,
+            "created_at":                         self.created_at,
+        }
+        return hashlib.sha256(
+            json.dumps(body, sort_keys=True, default=str).encode()
+        ).hexdigest()
 
-            "terminal_label":        self.terminal_label,
-
-            "created_at":            self.created_at,
-
-            "can_execute":           self.can_execute,
-
-            "can_approve_bets":      self.can_approve_bets,
-
-            "objective":             self.objective,
-
-            "controlling_skill":     self.controlling_skill,
-
-            "blockers":              self.blockers,
-
-            "model_id":              self.model_id,
-
-            "model_status":          self.model_status,
-
-            "snapshot_hash":         self.snapshot_hash,
-
-            "three_state_1x2":       self.three_state_1x2,
+    def to_dict(self) -> dict[str, Any]:
+        """Return a full serializable representation of this MoneylineResult."""
+        d: dict[str, Any] = {
+            "can_execute":        self.can_execute,
+            "can_approve_bets":   self.can_approve_bets,
+            "objective":          self.objective,
+            "controlling_skill":  self.controlling_skill,
+            "terminal_label":     self.terminal_label,
+            "blockers":           self.blockers,
+            "model_id":           self.model_id,
+            "model_status":       self.model_status,
+            "snapshot_hash":      self.snapshot_hash,
+            "three_state_1x2":    self.three_state_1x2,
         }
         d.update(self.outputs.to_dict())
         d["layers"] = {
-
-            "sport_model":        self.sport_model,
-
-            "simulation":         self.simulation,
-
-            "failure_path":       self.failure_path,
-
-            "disagreement_audit": self.disagreement_audit,
-
-            "calibration":        self.calibration,
-
-            "classification":     self.classification,
-
-            "market_comparison":  self.market_comparison,
-
-            "final_refresh":      self.final_refresh,
-
-            "slate_integrity":    self.slate_integrity,
-
-            "teamrankings":       self.teamrankings,
-
-            "external_analyst_intelligence": self.external_analyst_intelligence,
+            "sport_model":                    self.sport_model,
+            "simulation":                     self.simulation,
+            "failure_path":                   self.failure_path,
+            "disagreement_audit":             self.disagreement_audit,
+            "calibration":                    self.calibration,
+            "classification":                 self.classification,
+            "market_comparison":              self.market_comparison,
+            "final_refresh":                  self.final_refresh,
+            "slate_integrity":                self.slate_integrity,
+            "teamrankings":                   self.teamrankings,
+            "external_analyst_intelligence":  self.external_analyst_intelligence,
         }
         return d

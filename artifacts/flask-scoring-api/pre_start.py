@@ -43,45 +43,9 @@ except Exception as _e:
 # Ledger table creation (Task-49 — pitcher, WNBA, cross-ticket)
 # ---------------------------------------------------------------------------
 _LEDGER_DDL = [
-    # PATCH-016: MLB directional pitcher ledger
-    """
-    CREATE TABLE IF NOT EXISTS mlb_directional_pitcher_ledger (
-        id                              BIGSERIAL PRIMARY KEY,
-        pitcher                         TEXT,
-        event_id                        TEXT,
-        event_date                      DATE,
-        market_type                     TEXT,
-        directional_lane                TEXT,
-        line                            NUMERIC,
-        offer_type                      TEXT,
-        starter_confirmation            TEXT,
-        lineup_confirmation             TEXT,
-        health_regime                   TEXT,
-        predicted_innings               NUMERIC,
-        predicted_batters_faced         NUMERIC,
-        predicted_pitch_count           NUMERIC,
-        predicted_strikeouts            NUMERIC,
-        failure_path_score              NUMERIC,
-        short_outing_support_share      NUMERIC,
-        conditional_probability_given_normal_workload NUMERIC,
-        unconditional_probability       NUMERIC,
-        calibrated_lower_bound          NUMERIC,
-        actual_innings                  NUMERIC,
-        actual_batters_faced            NUMERIC,
-        actual_pitch_count              NUMERIC,
-        actual_strikeouts               NUMERIC,
-        settled_result                  TEXT,
-        observed_failure_category       TEXT,
-        process_pass_or_fail            TEXT,
-        duplicate_group_id              TEXT,
-        row_id                          TEXT,
-        logged_at                       TIMESTAMPTZ DEFAULT NOW()
-    )
-    """,
-    "CREATE INDEX IF NOT EXISTS mlb_dl_pitcher_idx     ON mlb_directional_pitcher_ledger(pitcher)",
-    "CREATE INDEX IF NOT EXISTS mlb_dl_lane_idx        ON mlb_directional_pitcher_ledger(directional_lane)",
-    "CREATE INDEX IF NOT EXISTS mlb_dl_event_date_idx  ON mlb_directional_pitcher_ledger(event_date DESC)",
-    "CREATE INDEX IF NOT EXISTS mlb_dl_duplicate_idx   ON mlb_directional_pitcher_ledger(duplicate_group_id)",
+    # NOTE: mlb_directional_pitcher_ledger was intentionally removed.
+    # Its DDL has been deleted. Do not add it back.
+    # (WOW-PATCH-2026-08-08-BALLDONTLIE-TRUSTED-STATS schema cleanup)
 
     # PATCH-017: WNBA composite forward-test ledger
     """
@@ -148,8 +112,7 @@ try:
         _cur.close()
         _conn.close()
         print("pre_start: ledger tables created/verified OK "
-              "(mlb_directional_pitcher_ledger, wnba_composite_forward_test_ledger, "
-              "cross_ticket_exposure_log)", flush=True)
+              "(wnba_composite_forward_test_ledger, cross_ticket_exposure_log)", flush=True)
     else:
         print("pre_start: WARN: DATABASE_URL not set — skipping ledger table creation", flush=True)
 except Exception as _e:

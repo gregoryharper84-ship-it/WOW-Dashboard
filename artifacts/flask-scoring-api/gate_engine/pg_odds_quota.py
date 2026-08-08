@@ -46,18 +46,6 @@ ADVISORY_LOCK_KEY = 778597324
 # Ignore DB rows older than this many seconds when building a snapshot.
 FRESHNESS_WINDOW_SEC = int(os.environ.get("ODDS_QUOTA_DB_FRESHNESS_SEC", "120"))
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS wow_odds_quota_state (
-    tier                TEXT PRIMARY KEY,
-    requests_remaining  INTEGER,
-    requests_used       INTEGER,
-    quota_warning       BOOLEAN NOT NULL DEFAULT FALSE,
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_by_pid      INTEGER
-);
-"""
-
-
 def _get_conn(conn_string: Optional[str] = None):
     import psycopg2  # type: ignore
     url = conn_string or os.environ.get("DATABASE_URL", "")
@@ -67,14 +55,11 @@ def _get_conn(conn_string: Optional[str] = None):
 
 
 def ensure_table_exists(conn_string: Optional[str] = None) -> None:
-    """Create wow_odds_quota_state if it doesn't exist. Safe to call repeatedly."""
-    conn = _get_conn(conn_string)
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(_DDL)
-    finally:
-        conn.close()
+    """
+    No-op — wow_odds_quota_state was removed (WOW-PATCH-2026-08-08-BALLDONTLIE-TRUSTED-STATS).
+    Retained as a callable stub so existing call sites don't need changes.
+    """
+    pass  # table intentionally removed; do not recreate
 
 
 def persist_quota_update(
