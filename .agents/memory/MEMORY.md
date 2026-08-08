@@ -65,3 +65,4 @@
 - [OUTRIGHT_WINNER moneyline routing](outright-moneyline-routing.md) — OUTRIGHT_WINNER→OUTRIGHT_WIN_PROBABILITY_ONLY→wow.llp-moneyline-probability-expert; guard returns 409 RUN_INVALID_ROUTE_CONFIGURATION (not NO_PLAY) on mixed batch.
 - [Tennis Total Games lane](tennis-total-games-lane.md) — exact Markov chain (not Monte Carlo); three-outcome simplex (store raw/cal as full floats, not round-6dp, to prevent FP drift); gate runs after wnba_composite_gate; PROVISIONAL ceiling MODEL_QUALIFIED_HOLD; 71 tests pass.
 - [WNBA Generative Probability Model](wnba-generative-model.md) — role-regime Poisson mixture; 6 deps; 65% LB floor; market capped 25%; can_execute=False unconditional; 87 tests pass; pipeline: stash enr on row, call before wnba_composite_gate.
+- [Ranking, ledger, backtesting, source-health architecture](ranking-ledger-backtesting-arch.md) — 5 new gate_engine modules + 11 Flask routes + 4 dashboard pages; 217 tests pass; all invariants can_execute=False.

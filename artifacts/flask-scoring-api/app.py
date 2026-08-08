@@ -34897,6 +34897,353 @@ def settle_slip_drafts():
     }), 200
 
 
+# ===========================================================================
+# WOW v16 — Multi-Sport Prop Probability & Ranking Engine API
+# Routes: /wow/rankings, /wow/predictions, /wow/source-health, /wow/backtest
+# ===========================================================================
+
+def _ensure_ledger_tables(conn):
+    """Idempotent — create ledger tables if missing."""
+    from gate_engine.prediction_ledger import ensure_tables as _plt
+    from gate_engine.source_health_monitor import ensure_table as _sht
+    _plt(conn)
+    _sht(conn)
+
+
+# ---------------------------------------------------------------------------
+# Rankings — cross-sport prop ranking by calibrated lower bound
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/rankings", methods=["GET"])
+def wow_rankings():
+    """
+    GET /wow/rankings
+    Return cross-sport prop rankings from the prediction ledger.
+
+    Query params:
+      sport       — filter by sport (WNBA | TENNIS | MLB | ...)
+      since_date  — ISO date string (default: today)
+      top_n       — max per lane (default 10)
+      multi_leg   — multi-leg size (default 4)
+    """
+    from gate_engine.cross_sport_ranker import from_db, rank as _rank_rows
+    sport      = request.args.get("sport")
+    since_date = request.args.get("since_date")
+    top_n      = int(request.args.get("top_n", 10))
+    multi_leg  = int(request.args.get("multi_leg", 4))
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        result = from_db(conn, sport=sport, since_date=since_date, top_n=top_n, multi_leg_size=multi_leg)
+        conn.close()
+        return jsonify({"ok": True, **result.to_dict()}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/rankings/score", methods=["POST"])
+def wow_rankings_score():
+    """
+    POST /wow/rankings/score
+    Rank a submitted batch of pipeline-scored rows in-memory (no DB write).
+
+    Body: { "rows": [...pipeline row dicts...], "top_n": 10, "multi_leg": 4 }
+    """
+    from gate_engine.cross_sport_ranker import rank as _rank_rows
+    body      = request.get_json(force=True) or {}
+    rows      = body.get("rows") or []
+    top_n     = int(body.get("top_n", 10))
+    multi_leg = int(body.get("multi_leg", 4))
+
+    if not rows:
+        return jsonify({"ok": False, "error": "rows array is required"}), 400
+
+    try:
+        result = _rank_rows(rows, top_n=top_n, multi_leg_size=multi_leg)
+        return jsonify({"ok": True, **result.to_dict()}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Prediction ledger — immutable write-once records
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/predictions", methods=["GET"])
+def wow_predictions_list():
+    """
+    GET /wow/predictions
+    Return prediction history from the ledger.
+
+    Query params:
+      sport          — filter by sport
+      since_date     — ISO date (default: last 7 days)
+      terminal_label — filter by label
+      min_lb         — minimum calibrated lower bound (float)
+      limit          — max rows (default 100)
+    """
+    from gate_engine.prediction_ledger import read_predictions
+
+    sport   = request.args.get("sport")
+    since   = request.args.get("since_date")
+    label   = request.args.get("terminal_label")
+    min_lb  = request.args.get("min_lb", type=float)
+    limit   = request.args.get("limit", 100, type=int)
+
+    if not since:
+        from datetime import date, timedelta
+        since = (date.today() - timedelta(days=7)).isoformat()
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        rows = read_predictions(conn, sport=sport, since_date=since,
+                                terminal_label=label, min_lower_bound=min_lb, limit=limit)
+        conn.close()
+        return jsonify({"ok": True, "count": len(rows), "predictions": rows}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/predictions", methods=["POST"])
+def wow_predictions_write():
+    """
+    POST /wow/predictions
+    Write one prediction to the immutable ledger.
+
+    Body: pipeline row dict (or array of rows for batch write).
+    Returns: { prediction_id(s), ok }
+    """
+    from gate_engine.prediction_ledger import write_prediction
+
+    body = request.get_json(force=True) or {}
+    rows_input = body if isinstance(body, list) else body.get("rows") or [body]
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        ids = []
+        for row in rows_input:
+            pid = write_prediction(conn, row, pipeline_meta={"source": "api"})
+            ids.append(pid)
+        conn.close()
+        result = ids[0] if len(ids) == 1 else ids
+        return jsonify({"ok": True, "prediction_id": result, "n": len(ids)}), 201
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/predictions/<prediction_id>", methods=["GET"])
+def wow_prediction_get(prediction_id: str):
+    from gate_engine.prediction_ledger import read_prediction
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        row = read_prediction(conn, prediction_id)
+        conn.close()
+        if row is None:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        return jsonify({"ok": True, "prediction": row}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/predictions/<prediction_id>/settle", methods=["POST"])
+def wow_predictions_settle(prediction_id: str):
+    """
+    POST /wow/predictions/<id>/settle
+    Record a settlement outcome for a prediction.
+
+    Body: {
+      official_result: numeric stat total (or null),
+      result_label: "HIT" | "MISS" | "PUSH",
+      settlement_source: str,
+      closing_market_probability: float (optional),
+      observed_path: str (optional),
+      process_classification: str (optional)
+    }
+    """
+    from gate_engine.settlement_audit import write_outcome
+
+    body = request.get_json(force=True) or {}
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        outcome_id = write_outcome(conn, prediction_id, body)
+        conn.close()
+        return jsonify({"ok": True, "outcome_id": outcome_id}), 201
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/calibration/summary", methods=["GET"])
+def wow_calibration_summary():
+    """
+    GET /wow/calibration/summary
+    Return calibration health summary (Brier, CLV, LB reliability).
+
+    Query params: sport, days (default 30)
+    """
+    from gate_engine.prediction_ledger import calibration_summary
+    from gate_engine.settlement_audit import batch_compute_metrics
+
+    sport = request.args.get("sport")
+    days  = int(request.args.get("days", 30))
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        summary = calibration_summary(conn, sport=sport, days=days)
+        metrics = batch_compute_metrics(conn, days=days, sport=sport)
+        conn.close()
+        return jsonify({
+            "ok":      True,
+            "summary": summary,
+            "metrics": metrics,
+            "sport":   sport,
+            "days":    days,
+        }), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Source health
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/source-health", methods=["GET"])
+def wow_source_health():
+    """
+    GET /wow/source-health
+    Return aggregated source health summary for the dashboard.
+    Also probes the active internal health endpoints and records results.
+    """
+    from gate_engine.source_health_monitor import aggregate_health_summary, probe_from_health_response
+    import time as _time
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+
+        # Probe internal health endpoints to record current state
+        _health_probes = [
+            ("odds_api",       "/wow/odds/health"),
+            ("mlb_stats_api",  "/wow/mlb-stats/health"),
+            ("open_meteo",     "/wow/open-meteo/health"),
+            ("nba_api",        "/wow/nba-stats/health"),
+            ("balldontlie",    "/wow/balldontlie/health"),
+            ("prizepicks",     "/wow/prizepicks/board"),
+        ]
+
+        for src_id, path in _health_probes:
+            try:
+                _t0 = _time.monotonic()
+                with app.test_client() as _cli:
+                    resp = _cli.get(path)
+                    _lat = int((_time.monotonic() - _t0) * 1000)
+                    try:
+                        _data = resp.get_json() or {}
+                    except Exception:
+                        _data = {}
+                    probe_from_health_response(conn, src_id, _data, latency_ms=_lat)
+            except Exception:
+                pass  # best-effort probing
+
+        summary = aggregate_health_summary(conn)
+        conn.close()
+        return jsonify({"ok": True, **summary}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/source-health/probe", methods=["POST"])
+def wow_source_health_probe():
+    """
+    POST /wow/source-health/probe
+    Manually record a source probe result.
+
+    Body: { source_id, status, latency_ms, http_status, error_message }
+    """
+    from gate_engine.source_health_monitor import record_probe, STATUS_OK, STATUS_DEGRADED, STATUS_DOWN
+
+    body = request.get_json(force=True) or {}
+    source_id = body.get("source_id")
+    if not source_id:
+        return jsonify({"ok": False, "error": "source_id required"}), 400
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        record_probe(
+            conn,
+            source_id=source_id,
+            status=body.get("status", "UNKNOWN"),
+            latency_ms=body.get("latency_ms"),
+            http_status=body.get("http_status"),
+            error_message=body.get("error_message"),
+            response_meta=body.get("response_meta"),
+        )
+        conn.close()
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Backtesting
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/backtest/run", methods=["POST"])
+def wow_backtest_run():
+    """
+    POST /wow/backtest/run
+    Run a backtest against the prediction ledger.
+
+    Body: {
+      mode:  "CALIBRATION" | "CLB_RELIABILITY" | "SPORT_SLICE" | "LABEL_AUDIT",
+      days:  90,
+      sport: "WNBA" | "TENNIS" | "MLB" | null
+    }
+    """
+    from gate_engine.backtesting import run_backtest
+
+    body  = request.get_json(force=True) or {}
+    mode  = body.get("mode", "CALIBRATION")
+    days  = int(body.get("days", 90))
+    sport = body.get("sport")
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        result = run_backtest(conn, mode=mode, days=days, sport=sport)
+        conn.close()
+        return jsonify({"ok": True, **result}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/backtest/modes", methods=["GET"])
+def wow_backtest_modes():
+    return jsonify({
+        "ok":   True,
+        "modes": [
+            {"id": "CALIBRATION",     "description": "Bin predictions by probability; measure actual hit rate per bin"},
+            {"id": "CLB_RELIABILITY", "description": "Verify lower-bound reliability across the CLB range"},
+            {"id": "SPORT_SLICE",     "description": "Per-sport Brier/hit-rate breakdown"},
+            {"id": "LABEL_AUDIT",     "description": "Per-terminal-label accuracy"},
+        ],
+        "can_execute": False,
+    }), 200
+
+
+# ===========================================================================
+# END — Multi-Sport Prop Probability & Ranking Engine API
+# ===========================================================================
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)
