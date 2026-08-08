@@ -104,19 +104,9 @@ FACTS_ALLOWED_KEYS: frozenset[str] = frozenset({
 })
 
 # probabilities — bracket-level probability assessments
-#   brackets_scored items are further validated by BRACKET_ITEM_ALLOWED_KEYS
 PROBABILITIES_ALLOWED_KEYS: frozenset[str] = frozenset({
-    "brackets_scored",       # list[BracketItem] — one entry per market bracket
     "model_prob_sum",        # float — sum of model_prob across brackets (sanity check)
     "calibration_status",    # str — e.g. "CALIBRATED" | "PROVISIONAL" | "UNAVAILABLE"
-})
-
-# Each item inside brackets_scored
-# NOTE: "bracket_range" is used instead of "label" to avoid the forbidden key.
-BRACKET_ITEM_ALLOWED_KEYS: frozenset[str] = frozenset({
-    "bracket_range",   # str — human-readable range e.g. "≤79", "80-84", "≥85"
-    "model_prob",      # float 0–1 — model probability for this bracket
-    "verdict",         # str — e.g. "WATCH", "KALSHI_PLAYABLE_LIMIT_ONLY"
 })
 
 # uncertainty — characterisation of forecast uncertainty
@@ -257,36 +247,6 @@ def _check_extra_keys(
     return None
 
 
-def _validate_bracket_item(
-    item: Any,
-    path: str,
-) -> Optional[ShadowValidationResult]:
-    """Validate a single entry in probabilities.brackets_scored."""
-    if not isinstance(item, dict):
-        return _fail(
-            ShadowSchemaViolation.WRONG_TYPE,
-            f"brackets_scored item must be an object, got {type(item).__name__}",
-            path,
-        )
-    # additionalProperties = false on bracket items
-    err = _check_extra_keys(item, BRACKET_ITEM_ALLOWED_KEYS, path)
-    if err:
-        return err
-    # Type checks on the fields that are present
-    if "bracket_range" in item and not isinstance(item["bracket_range"], str):
-        return _fail(ShadowSchemaViolation.WRONG_TYPE,
-                     "bracket_range must be a string", f"{path}.bracket_range")
-    if "model_prob" in item:
-        mp = item["model_prob"]
-        if not isinstance(mp, (int, float)) or isinstance(mp, bool):
-            return _fail(ShadowSchemaViolation.WRONG_TYPE,
-                         "model_prob must be a number", f"{path}.model_prob")
-    if "verdict" in item and not isinstance(item["verdict"], str):
-        return _fail(ShadowSchemaViolation.WRONG_TYPE,
-                     "verdict must be a string", f"{path}.verdict")
-    return None
-
-
 def _validate_facts(obj: Any, path: str) -> Optional[ShadowValidationResult]:
     """Validate the facts nested object."""
     if not isinstance(obj, dict):
@@ -329,16 +289,6 @@ def _validate_probabilities(obj: Any, path: str) -> Optional[ShadowValidationRes
     err = _check_extra_keys(obj, PROBABILITIES_ALLOWED_KEYS, path)
     if err:
         return err
-    if "brackets_scored" in obj:
-        bs = obj["brackets_scored"]
-        if not isinstance(bs, list):
-            return _fail(ShadowSchemaViolation.WRONG_TYPE,
-                         "probabilities.brackets_scored must be an array",
-                         f"{path}.brackets_scored")
-        for i, item in enumerate(bs):
-            err = _validate_bracket_item(item, f"{path}.brackets_scored[{i}]")
-            if err:
-                return err
     if "model_prob_sum" in obj:
         v = obj["model_prob_sum"]
         if not isinstance(v, (int, float)) or isinstance(v, bool):
@@ -413,8 +363,7 @@ def validate_shadow_output(payload: Any) -> ShadowValidationResult:
       8. advisory_only must be the boolean literal True (not 1, not "true").
       9. recommended_ceiling must be in CEILING_CAPABLE_LABELS.
      10. facts — nested schema + additionalProperties=false.
-     11. probabilities — nested schema + additionalProperties=false,
-         including per-item validation of brackets_scored entries.
+     11. probabilities — nested schema + additionalProperties=false.
      12. uncertainty — nested schema + additionalProperties=false.
      13. agent_observed_blockers — must be an array of strings.
      14. source_conflicts — must be an array of strings.

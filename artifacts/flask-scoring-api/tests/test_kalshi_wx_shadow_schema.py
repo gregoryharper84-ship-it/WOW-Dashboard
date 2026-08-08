@@ -17,7 +17,8 @@ Section B — Forbidden governance-authority key detection (recursive)
       regardless of value).
   B3: "final_label" at root level.
   B4: "capital_allocation" two levels deep inside uncertainty.
-  B5: "authorized" inside a brackets_scored array item.
+  B5: "authorized" key inside a dict injected into agent_observed_blockers
+      (a list) — confirms the forbidden scan descends into lists.
   B6: "approved_for_execution" inside source_conflicts (list, not dict) —
       confirm the scan descends into arrays too.
   B7: "governance_state" nested in facts.data_acquisition_notes item
@@ -53,8 +54,6 @@ Section G — additionalProperties=false enforcement
   G4: Extra key "debug_info" at root → EXTRA_FIELD.
   G5: "blockers" used instead of "agent_observed_blockers" (exact field name
       required; "blockers" is an unrecognized root key) → EXTRA_FIELD.
-  G6: Extra key in a bracket item inside probabilities.brackets_scored →
-      EXTRA_FIELD.
 
 Section H — type enforcement
   H1: facts is a list, not a dict → WRONG_TYPE.
@@ -123,12 +122,6 @@ def _valid_payload() -> dict:
             "forecast_high_f":    88.0,
         },
         "probabilities": {
-            "brackets_scored": [
-                {"bracket_range": "≤79",   "model_prob": 0.20, "verdict": "WATCH"},
-                {"bracket_range": "80-84", "model_prob": 0.35, "verdict": "WATCH"},
-                {"bracket_range": "≥85",   "model_prob": 0.45,
-                 "verdict": "KALSHI_PLAYABLE_LIMIT_ONLY"},
-            ],
             "model_prob_sum":     1.0,
             "calibration_status": "CALIBRATED",
         },
@@ -231,15 +224,16 @@ class TestForbiddenGovernanceKeys(unittest.TestCase):
         p["uncertainty"]["nested"] = {"capital_allocation": 500}
         self._assert_forbidden(p, "capital_allocation")
 
-    def test_B5_authorized_inside_bracket_item(self):
-        """Forbidden key inside an array item — scanner must descend into lists."""
+    def test_B5_authorized_inside_list_item(self):
+        """
+        Forbidden key inside a dict that is an item of a list field.
+        agent_observed_blockers is a list; injecting a dict containing a
+        forbidden key confirms the scanner descends into list elements.
+        The forbidden scan runs before the string-array type check at step 13,
+        so FORBIDDEN_GOVERNANCE_KEY fires first.
+        """
         p = _valid_payload()
-        p["probabilities"]["brackets_scored"].append({
-            "bracket_range": "≥90",
-            "model_prob": 0.05,
-            "verdict": "WATCH",
-            "authorized": True,   # FORBIDDEN
-        })
+        p["agent_observed_blockers"] = [{"authorized": True}]   # FORBIDDEN key in list item
         self._assert_forbidden(p, "authorized")
 
     def test_B6_approved_for_execution_key_name_in_source_conflicts_list(self):
@@ -458,11 +452,6 @@ class TestAdditionalProperties(unittest.TestCase):
         self.assertIn("blockers", result.failure_reason,
                       "failure_reason should name the unexpected key 'blockers'")
 
-    def test_G6_extra_key_in_bracket_item(self):
-        """Extra key inside a brackets_scored array item."""
-        p = _valid_payload()
-        p["probabilities"]["brackets_scored"][0]["extra_field"] = "bad"
-        self._assert_extra_field(p)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
