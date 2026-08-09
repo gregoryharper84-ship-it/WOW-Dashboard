@@ -12696,6 +12696,26 @@ CREATE TABLE IF NOT EXISTS cm_settled_slips (
 );
 CREATE INDEX IF NOT EXISTS cm_settled_slips_slip_idx ON cm_settled_slips(slip_id);
 CREATE INDEX IF NOT EXISTS cm_settled_slips_date_idx ON cm_settled_slips(settled_at DESC);
+
+-- Kalshi Weather shadow queue tables (WOW-PATCH-2026-08-08-MULTI-AGENT-KALSHI-WX-SHADOW Step 12.5)
+-- Shadow-only: never touched by any production scoring, settlement, or LLP logic.
+CREATE TABLE IF NOT EXISTS kalshi_wx_shadow_snapshot_queue (
+    id                    SERIAL       PRIMARY KEY,
+    research_snapshot_id  TEXT         NOT NULL UNIQUE,
+    snapshot_json         JSONB        NOT NULL,
+    status                TEXT         NOT NULL DEFAULT 'PENDING',
+    inserted_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS kalshi_wx_shadow_results (
+    id                    SERIAL       PRIMARY KEY,
+    research_snapshot_id  TEXT,
+    agent_id              TEXT,
+    run_id                TEXT,
+    validated_output_json JSONB,
+    status                TEXT,
+    created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
 """
 
 # PATCH-014–020: Migration DDL — adds 24 new columns to cm_slips for existing tables.

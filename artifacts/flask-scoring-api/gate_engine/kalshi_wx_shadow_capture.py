@@ -1,49 +1,45 @@
 """
 gate_engine/kalshi_wx_shadow_capture.py
-WOW-PATCH-2026-08-08-MULTI-AGENT-KALSHI-WX-SHADOW — Step 10D (non-blocking)
+WOW-PATCH-2026-08-08-MULTI-AGENT-KALSHI-WX-SHADOW — Step 12.5 (durable DB queue)
 
-Minimal flag-gated capture bridge: reads already-computed deterministic weather
-values from the /wow/kalshi/weather/evaluate route, constructs a frozen
-WeatherResearchSnapshot, and dispatches the shadow orchestrator in a daemon
-thread so the live HTTP response is never blocked by Claude latency.
+Flag-gated shadow snapshot persistence bridge.
 
 WHAT THIS MODULE DOES
   maybe_fire_shadow_snapshot() receives local variables already computed at
-  the insertion point in the route handler, constructs a WeatherResearchSnapshot,
-  then starts a daemon thread that calls run_shadow_orchestrator().  The function
-  returns to the route immediately after .start().
+  the insertion point in the route handler, constructs a frozen
+  WeatherResearchSnapshot, serialises it, and performs a single synchronous
+  INSERT into kalshi_wx_shadow_snapshot_queue (status='PENDING').
+  The live route immediately returns its production response after the call.
 
 WHAT THIS MODULE DOES NOT DO
   - Does not call any fetch function or make any new network request.
+  - Does not spawn any thread of any kind.
+  - Does not call Claude, coordinate subagents, or build any SDK client.
   - Does not read any value that is not already a local variable at the
-    insertion point.
-  - Does not alter, substitute, recompute, or feed anything back into the
-    deterministic route.
-  - Does not interpret evidence, call Claude directly on the request thread,
-    produce advisory ceilings, or write shadow analytical results from the
-    request thread.
+    insertion point in the route handler.
+  - Does not alter, substitute, recompute, or feed anything back into
+    the deterministic route.
   - Does not propagate any exception to its caller under any circumstances.
 
-NON-BLOCKING DISPATCH
-  Snapshot construction and SDK client validation happen synchronously on the
-  request thread (both are fast — pure Python, no I/O).  The orchestrator call
-  (which makes 5 sequential Anthropic API calls) is dispatched to a daemon thread
-  via _Thread, matching the existing fire-and-forget pattern used throughout
-  app.py (threading.Thread(target=_run, daemon=True).start()).
+REMOVED RELATIVE TO PREVIOUS VERSION
+  - Daemon-thread dispatch and concurrency guard (no async execution of any kind)
+  - Orchestrator invocation (live route never calls the orchestrator)
+  - SDK client construction (live route never calls Claude)
 
-CONCURRENCY LIMIT
-  _SHADOW_SEMAPHORE = Semaphore(1) ensures at most one shadow run is in flight
-  per worker process at any time.  A second concurrent request acquires(False)
-  → logs SHADOW_CAPTURE_SKIPPED and returns immediately, never queuing work.
-  The semaphore is always released in the daemon thread's finally block.
-  _Thread is a module-level alias for threading.Thread, patchable in tests
-  without touching the global threading module.
+NEW BEHAVIOUR
+  1. Construct WeatherResearchSnapshot (same fields, same UNAVAILABLE sentinels
+     for fields not exposed by the deterministic pipeline — unchanged).
+  2. Call insert_shadow_snapshot(snapshot) from gate_engine.kalshi_wx_shadow_db
+     (single synchronous INSERT, no thread).
+  3. Log SHADOW_CAPTURE_OK on success.
+  4. Return None.
 
 UNAVAILABLE SENTINEL
-  Fields not exposed at the capture insertion point are set to UNAVAILABLE_SENTINEL
-  explicitly — never None, never fabricated, never inferred.
-    dict  fields  → {"_status": UNAVAILABLE_SENTINEL}
-    tuple fields  → (UNAVAILABLE_SENTINEL,)
+  Fields not exposed at the capture insertion point are set to
+  UNAVAILABLE_SENTINEL explicitly — never None, never fabricated, never
+  inferred.
+    dict  fields → {"_status": UNAVAILABLE_SENTINEL}
+    tuple fields → (UNAVAILABLE_SENTINEL,)
   Affected: nws_gridpoint_forecast, open_meteo_forecast, noaa_ncei_forecast,
             official_observations_at_cutoff, source_provenance, source_disagreements
 
@@ -52,16 +48,15 @@ FEATURE FLAG (defense in depth)
   both in app.py and independently inside this module.  Default "false".
 
 EXCEPTION SAFETY
-  The entire active body (construction + thread dispatch) is wrapped in a
-  try/except that catches every exception, logs it as a shadow failure, and
-  returns None.  The daemon thread also has its own inner try/except so that
-  orchestrator failures are logged without affecting anything.
+  The entire active body (snapshot construction + DB insert) is wrapped in a
+  try/except that catches every exception, logs it as SHADOW_CAPTURE_FAILURE,
+  and returns None.  A database error during the shadow insert cannot affect
+  the production route's response.
 """
 from __future__ import annotations
 
 import logging
 import os
-import threading as _threading
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -74,16 +69,6 @@ _logger = logging.getLogger(__name__)
 _SHADOW_ENABLED: bool = (
     os.environ.get("KALSHI_WX_SHADOW_AGENT_ENABLED", "false").strip().lower() == "true"
 )
-
-# ── Thread alias (patchable without touching the global threading module) ──────
-# Tests patch: patch("gate_engine.kalshi_wx_shadow_capture._Thread", _SyncThread)
-_Thread = _threading.Thread
-
-# ── Concurrency semaphore — at most 1 shadow run in flight per worker ──────────
-# acquire(blocking=False): skip if already running (never queue duplicate work).
-# Released unconditionally in the daemon thread's finally block.
-# Tests may patch: patch("gate_engine.kalshi_wx_shadow_capture._SHADOW_SEMAPHORE", ...)
-_SHADOW_SEMAPHORE = _threading.Semaphore(1)
 
 # ── UNAVAILABLE sentinel ───────────────────────────────────────────────────────
 UNAVAILABLE_SENTINEL: str = "UNAVAILABLE_NOT_EXPOSED_BY_DETERMINISTIC_FETCH"
@@ -133,34 +118,6 @@ def _derive_source_timestamps(
     return {weather_data_source_tier: source_cutoff_timestamp}
 
 
-def _build_shadow_sdk_client():
-    """
-    Build an Anthropic SDK client from environment variables.
-    Raises RuntimeError if SDK not installed or no API key found.
-    """
-    try:
-        import anthropic as _sdk
-    except ImportError as exc:
-        raise RuntimeError(
-            "SHADOW_CAPTURE: anthropic SDK not installed"
-        ) from exc
-
-    api_key = (
-        os.environ.get("AI_INTEGRATIONS_ANTHROPIC_API_KEY")
-        or os.environ.get("ANTHROPIC_API_KEY")
-    )
-    if not api_key:
-        raise RuntimeError(
-            "SHADOW_CAPTURE: no Anthropic API key — "
-            "set AI_INTEGRATIONS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY"
-        )
-
-    base_url = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_BASE_URL")
-    if base_url:
-        return _sdk.Anthropic(api_key=api_key, base_url=base_url)
-    return _sdk.Anthropic(api_key=api_key)
-
-
 # ── Main capture entry point ──────────────────────────────────────────────────
 
 def maybe_fire_shadow_snapshot(
@@ -174,13 +131,14 @@ def maybe_fire_shadow_snapshot(
     tier_detail: dict,
 ) -> None:
     """
-    Flag-gated, non-blocking shadow capture.
+    Flag-gated, synchronous shadow snapshot persistence.
 
-    Constructs WeatherResearchSnapshot synchronously (fast), then dispatches
-    run_shadow_orchestrator() to a daemon thread.  Returns immediately after
-    thread.start() so the production HTTP response is never blocked.
+    Constructs a WeatherResearchSnapshot from already-computed route locals,
+    then inserts it into kalshi_wx_shadow_snapshot_queue via a single
+    synchronous DB write.  Returns immediately after the insert commits.
 
     Returns None always.  Exception-safe — no exception can reach the caller.
+    No threads are spawned.  No Claude calls are made.
     """
     # ── Independent second flag gate (defense in depth) ───────────────────────
     if not _SHADOW_ENABLED:
@@ -190,9 +148,7 @@ def maybe_fire_shadow_snapshot(
     try:
         # Lazy imports — only executed when flag is on.
         from gate_engine.kalshi_wx_shadow_snapshot import WeatherResearchSnapshot
-        from gate_engine.kalshi_wx_shadow_capability_boundary import CapabilityBoundary
-        from gate_engine.kalshi_wx_shadow_ledger import get_default_ledger
-        from gate_engine.kalshi_wx_shadow_orchestrator import run_shadow_orchestrator
+        from gate_engine.kalshi_wx_shadow_db import insert_shadow_snapshot
 
         # ── Derive values from already-computed route locals ──────────────────
         source_cutoff = (
@@ -230,57 +186,17 @@ def maybe_fire_shadow_snapshot(
             source_disagreements=_UNAVAIL_TUPLE,           # sentinel
         )
 
-        # ── Validate SDK client before dispatching thread ─────────────────────
-        sdk_client = _build_shadow_sdk_client()
+        # ── Persist to Postgres shadow queue — synchronous INSERT, no thread ──
+        insert_shadow_snapshot(snapshot)
 
-        # ── Concurrency gate — skip if a run is already in flight ─────────────
-        if not _SHADOW_SEMAPHORE.acquire(blocking=False):
-            _logger.info(
-                "SHADOW_CAPTURE_SKIPPED city=%s date=%s "
-                "reason=concurrent_run_already_in_flight",
-                city, market_date,
-            )
-            return
-
-        # ── Capture closure vars for daemon thread ────────────────────────────
-        # All are immutable or thread-safe by construction.
-        _city        = city
-        _market_date = market_date
-        _snap_id     = snapshot_id
-
-        def _fire_orchestrator():
-            """Daemon thread body — runs fully async from the HTTP request."""
-            try:
-                run_shadow_orchestrator(
-                    city=_city,
-                    date=_market_date,
-                    run_id=_snap_id,
-                    sdk_client=sdk_client,
-                    capability_boundary=CapabilityBoundary(),
-                    ledger=get_default_ledger(),
-                    snapshot=snapshot,
-                )
-            except Exception as exc:
-                _logger.warning(
-                    "SHADOW_ORCHESTRATOR_FAILURE city=%s date=%s "
-                    "error_type=%s error=%s",
-                    _city, _market_date, type(exc).__name__, exc,
-                    exc_info=True,
-                )
-            finally:
-                # Always release — even if the orchestrator raised.
-                _SHADOW_SEMAPHORE.release()
-
-        # ── Dispatch — returns immediately; route is now unblocked ────────────
-        _Thread(
-            target=_fire_orchestrator,
-            daemon=True,
-            name=f"kalshi-wx-shadow-{snapshot_id}",
-        ).start()
+        _logger.info(
+            "SHADOW_CAPTURE_OK city=%s date=%s snapshot_id=%s",
+            city, market_date, snapshot_id,
+        )
 
     except Exception as exc:
-        # Outer fence: catches snapshot construction failure, SDK failure,
-        # Thread.start() failure, or any import error.  Never propagates.
+        # Outer fence: catches snapshot construction failure, DB connection
+        # failure, INSERT error, or any import error.  Never propagates.
         _logger.warning(
             "SHADOW_CAPTURE_FAILURE city=%s date=%s error_type=%s error=%s",
             city, market_date, type(exc).__name__, exc,
