@@ -79,3 +79,4 @@
 - [Kalshi WX shadow pilot Stages 1–3](kalshi-wx-shadow-stages-123.md) — CapabilityBoundary+5 subagents+orchestrator+ledger; 179 total shadow tests pass; flag still False by default.
 - [Kalshi WX shadow hook and shadow_failure_only invariants](kalshi-wx-shadow-hook-invariants.md) — pre/post hooks scan the same dict (pre always fires first); shadow_failure_only=True only for client-level gate failures, not orchestrator BLOCKED results.
 - [Kalshi WX WeatherResearchSnapshot contract](kalshi-wx-shadow-snapshot.md) — frozen dataclass 10C; build_test_snapshot() only constructor; same instance to all 5 subagents; no governance keys; object.__setattr__ bypasses frozen — tests must use setattr().
+- [Kalshi WX shadow capture (Step 10D)](kalshi-wx-shadow-capture.md) — lazy-import patch targets, UNAVAILABLE sentinel design, tier_detail structure, app.py insertion point, find-with-offset pattern for structural tests.
