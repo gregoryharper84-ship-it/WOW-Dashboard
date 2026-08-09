@@ -24522,6 +24522,33 @@ def _open_meteo_forecast(lat: float, lon: float, timeout: int = 10) -> dict:
         return {"ok": False, "source_status": "FAILED", "reason": str(exc)}
 
 
+def _market_is_open(status: str | None) -> bool:
+    """WOW-PATCH-2026-08-09-KALSHI-WX-ACTIVE-STATUS-NORMALIZATION
+
+    Translate Kalshi's Market object ``status`` field to a boolean indicating
+    whether the market is in a state where orderbook/price-gate evaluation
+    should proceed.
+
+    Kalshi REST API market lifecycle statuses (OpenAPI spec):
+      initialized  — not yet at open_time; NOT open
+      inactive     — temporarily deactivated by exchange; NOT open
+      active       — live trading window; treated as OPEN  ← the fix
+      closed       — no longer accepting new orders; NOT open
+      determined   — result determined, awaiting settlement; NOT open
+      disputed     — resolution under review; NOT open
+      amended      — terms amended post-close; NOT open
+      finalized    — fully settled; NOT open
+
+    The outbound query filter ``status=open`` sent to the Kalshi API is
+    Kalshi's own filter vocabulary (maps to active markets server-side) and
+    is correct as-is; ONLY the returned Market object's status field is
+    interpreted here — not the query parameter.
+
+    Fail-closed: any unrecognized string, empty string, or None → False.
+    """
+    return status == "active"
+
+
 def _fetch_kalshi_nhigh_markets(series: str, date_str: str) -> dict:
     """Connector 4a: Fetch open NHIGH bracket markets for a series + date.
     Uses direct Kalshi public REST API (not kalshi_engine wrapper).
@@ -24551,7 +24578,14 @@ def _fetch_kalshi_nhigh_markets(series: str, date_str: str) -> dict:
     if not date_markets:
         date_markets = markets   # fall back to all returned if no date filter matches
 
-    any_open      = any((m.get("status") or "") == "open" for m in date_markets)
+    # WOW-PATCH-2026-08-09-KALSHI-WX-ACTIVE-STATUS-NORMALIZATION
+    # Use _market_is_open() to normalise Kalshi's returned status vocabulary.
+    # Kalshi returns status="active" for live markets; the old inline check
+    # compared against "open" (only a valid query-filter parameter, never a
+    # response field value), so any_open was permanently False and
+    # KALSHI_PLAYABLE_LIMIT_ONLY was structurally unreachable via the live
+    # price path.  _market_is_open() is fail-closed: unknown/None → False.
+    any_open      = any(_market_is_open(m.get("status")) for m in date_markets)
     market_status = "open" if any_open else ("closed" if date_markets else None)
     tickers_found = [m.get("ticker", "") for m in date_markets]
 
