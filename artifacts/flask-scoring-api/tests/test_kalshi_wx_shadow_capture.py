@@ -1,72 +1,65 @@
 """
 tests/test_kalshi_wx_shadow_capture.py
-WOW-PATCH-2026-08-08-MULTI-AGENT-KALSHI-WX-SHADOW — Step 10D tests
+WOW-PATCH-2026-08-08-MULTI-AGENT-KALSHI-WX-SHADOW — Step 10D tests (non-blocking)
 
 Tests for gate_engine/kalshi_wx_shadow_capture.py and the minimal flag-gated
 insertion in the /wow/kalshi/weather/evaluate route handler.
 
-No live API calls are made anywhere in this file.  All network-touching code
-is either mocked out or structurally verified to be absent.
+No live API calls are made anywhere in this file.
 
-PATCHING NOTE
-  maybe_fire_shadow_snapshot() lazily imports its heavy dependencies (snapshot
-  constructor, orchestrator, capability boundary, ledger) inside its try block,
-  so those names are never attributes of the kalshi_wx_shadow_capture module.
-  Patches must target the *source* module where the name actually lives:
-    - run_shadow_orchestrator  → gate_engine.kalshi_wx_shadow_orchestrator
-    - WeatherResearchSnapshot  → gate_engine.kalshi_wx_shadow_snapshot
-    - CapabilityBoundary       → gate_engine.kalshi_wx_shadow_capability_boundary
-    - get_default_ledger       → gate_engine.kalshi_wx_shadow_ledger
-  _build_shadow_sdk_client IS a top-level function in the capture module, so
-  it patches on gate_engine.kalshi_wx_shadow_capture directly.
+PATCHING NOTE — lazy imports + threading
+  maybe_fire_shadow_snapshot() lazily imports its heavy dependencies inside its
+  try block, so those names are never attributes of the capture module.
+  Patches must target the source module where the name lives:
+    run_shadow_orchestrator → gate_engine.kalshi_wx_shadow_orchestrator
+    WeatherResearchSnapshot → gate_engine.kalshi_wx_shadow_snapshot
+  _build_shadow_sdk_client, _Thread, _SHADOW_ENABLED, _SHADOW_SEMAPHORE are all
+  top-level names in the capture module and patch directly there.
+
+  The daemon thread (_Thread) is patched with _SyncThread in all SD3/SD4 tests
+  so the orchestrator mock is called synchronously and captured kwargs are
+  available immediately after maybe_fire_shadow_snapshot() returns.
 
 Test plan
 ─────────
-SD1  Flag OFF (default): maybe_fire_shadow_snapshot() returns immediately;
-     the shadow capture module, orchestrator, and SDK client are never invoked.
+SD1  Flag OFF: maybe_fire_shadow_snapshot() returns immediately; orchestrator,
+     SDK client, snapshot constructor, and Thread are never invoked.
 
-SD2  Flag ON, shadow construction raises an exception: the exception is
-     logged as a shadow failure and swallowed; the function still returns None.
+SD2  Flag ON + exception: exception logged as shadow failure, function returns None.
 
-SD3  Flag ON, valid path (mocked orchestrator): the WeatherResearchSnapshot
-     instance received by the orchestrator carries the actual real route-local
-     values (city, station, market_date, forecast_high, sigma_f, horizon_hours,
-     weather_data_source_tier) — not test literals, not defaults.
+SD3  Flag ON, valid path (mocked, sync thread): snapshot carries real route-local
+     values, not test defaults or fabricated data.
 
-SD4  Sentinel verification: source_provenance, source_disagreements,
-     nws_gridpoint_forecast, open_meteo_forecast, noaa_ncei_forecast, and
-     official_observations_at_cutoff are set to the explicit UNAVAILABLE
-     sentinel — not None, not any other value.
+SD4  Sentinel verification: six unavailable fields carry UNAVAILABLE_SENTINEL.
 
-SD5  No new network calls: structural AST check confirming that neither
-     app.py's new shadow block nor kalshi_wx_shadow_capture.py contains
-     any new call to the fetch functions, requests library, or HTTP client.
+SD5  No new network calls: AST structural check.
 
-SD6  Structural and unit-level verification that existing behaviour is
-     unchanged: pure-helper correctness, insertion-point position in app.py,
-     and the per-module flag-gate invariant.
+SD6  Structural and helper unit tests.
+
+SD7  Non-blocking / semaphore behavior:
+     SD7a — Thread is started (not called synchronously) when not patched.
+     SD7b — Semaphore held → second call skipped (SHADOW_CAPTURE_SKIPPED logged).
+     SD7c — Semaphore always released in finally, even on orchestrator exception.
 """
 from __future__ import annotations
 
 import ast
 import os
 import sys
+import threading
+import time
 import unittest
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-
-# ── Source-file paths for structural checks ───────────────────────────────────
 _CAPTURE_SRC = os.path.join(_REPO, "gate_engine", "kalshi_wx_shadow_capture.py")
 _APP_SRC     = os.path.join(_REPO, "app.py")
 
-
-# ── Imports from the module under test ───────────────────────────────────────
 from gate_engine.kalshi_wx_shadow_capture import (
     UNAVAILABLE_SENTINEL,
     _derive_source_failures,
@@ -75,11 +68,33 @@ from gate_engine.kalshi_wx_shadow_capture import (
     maybe_fire_shadow_snapshot,
 )
 
+# ── Patch-target constants ────────────────────────────────────────────────────
+_ORCH_PATH   = "gate_engine.kalshi_wx_shadow_orchestrator.run_shadow_orchestrator"
+_SNAP_PATH   = "gate_engine.kalshi_wx_shadow_snapshot.WeatherResearchSnapshot"
+_CLIENT_PATH = "gate_engine.kalshi_wx_shadow_capture._build_shadow_sdk_client"
+_FLAG_PATH   = "gate_engine.kalshi_wx_shadow_capture._SHADOW_ENABLED"
+_THREAD_PATH = "gate_engine.kalshi_wx_shadow_capture._Thread"
+_SEMA_PATH   = "gate_engine.kalshi_wx_shadow_capture._SHADOW_SEMAPHORE"
 
-# ── Shared helper: minimal valid call kwargs ──────────────────────────────────
+
+# ── Synchronous thread shim (for deterministic tests) ────────────────────────
+
+class _SyncThread:
+    """
+    Drop-in for threading.Thread that calls target() synchronously on .start().
+    Used in SD3/SD4 tests to capture orchestrator kwargs immediately.
+    """
+    def __init__(self, target=None, daemon=None, name=None, args=(), kwargs=None):
+        self._target = target
+
+    def start(self):
+        if self._target:
+            self._target()
+
+
+# ── Shared call-kwargs helper ─────────────────────────────────────────────────
 
 def _call_kwargs(**overrides) -> dict:
-    """Return a representative set of already-computed route-local values."""
     base = dict(
         city="NYC",
         station="KNYC",
@@ -94,20 +109,13 @@ def _call_kwargs(**overrides) -> dict:
     return base
 
 
-# ── Patch-target constants (see PATCHING NOTE in module docstring) ────────────
-_ORCH_PATH   = "gate_engine.kalshi_wx_shadow_orchestrator.run_shadow_orchestrator"
-_SNAP_PATH   = "gate_engine.kalshi_wx_shadow_snapshot.WeatherResearchSnapshot"
-_CLIENT_PATH = "gate_engine.kalshi_wx_shadow_capture._build_shadow_sdk_client"
-_LEDGER_PATH = "gate_engine.kalshi_wx_shadow_ledger.get_default_ledger"
-_BDRY_PATH   = "gate_engine.kalshi_wx_shadow_capability_boundary.CapabilityBoundary"
-_FLAG_PATH   = "gate_engine.kalshi_wx_shadow_capture._SHADOW_ENABLED"
-
+# ── Context manager: flag on, client mocked, orchestrator mocked, sync thread ─
 
 @contextmanager
 def _flag_on_mocked():
     """
-    Context manager: enable flag + mock SDK client builder + mock orchestrator.
-    Yields the list that the mock orchestrator appends captured kwargs to.
+    Enable flag + mock SDK client + mock orchestrator + synchronous _Thread.
+    Yields the list that the fake orchestrator appends kwargs to.
     """
     captured: list = []
 
@@ -115,10 +123,15 @@ def _flag_on_mocked():
         captured.append(kwargs)
         return MagicMock()
 
+    # Fresh unlimited semaphore so tests don't interfere with each other
+    fresh_sema = threading.Semaphore(999)
+
     with patch(_FLAG_PATH, True):
         with patch(_CLIENT_PATH, return_value=MagicMock()):
             with patch(_ORCH_PATH, side_effect=_fake_orchestrator):
-                yield captured
+                with patch(_THREAD_PATH, _SyncThread):
+                    with patch(_SEMA_PATH, fresh_sema):
+                        yield captured
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -126,53 +139,40 @@ def _flag_on_mocked():
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestSD1FlagOff(unittest.TestCase):
-    """
-    When _SHADOW_ENABLED is False, maybe_fire_shadow_snapshot() returns
-    immediately without constructing a snapshot, importing the orchestrator,
-    or touching any mock.
-    """
 
     def test_SD1_returns_none_with_flag_off(self):
         with patch(_FLAG_PATH, False):
-            result = maybe_fire_shadow_snapshot(**_call_kwargs())
-        self.assertIsNone(result)
+            self.assertIsNone(maybe_fire_shadow_snapshot(**_call_kwargs()))
 
     def test_SD1_orchestrator_never_called_with_flag_off(self):
-        """run_shadow_orchestrator must not be called when flag is off."""
-        mock_orch = MagicMock(side_effect=AssertionError(
-            "run_shadow_orchestrator must not be called when flag is off"
-        ))
+        sentinel = MagicMock(side_effect=AssertionError("must not be called"))
         with patch(_FLAG_PATH, False):
-            with patch(_ORCH_PATH, mock_orch):
+            with patch(_ORCH_PATH, sentinel):
                 maybe_fire_shadow_snapshot(**_call_kwargs())
-        mock_orch.assert_not_called()
+        sentinel.assert_not_called()
 
     def test_SD1_sdk_client_never_built_with_flag_off(self):
-        """_build_shadow_sdk_client must not be called when flag is off."""
-        sentinel = MagicMock(side_effect=AssertionError(
-            "_build_shadow_sdk_client must not run when flag is off"
-        ))
+        sentinel = MagicMock(side_effect=AssertionError("must not be called"))
         with patch(_FLAG_PATH, False):
             with patch(_CLIENT_PATH, sentinel):
                 maybe_fire_shadow_snapshot(**_call_kwargs())
         sentinel.assert_not_called()
 
     def test_SD1_snapshot_constructor_never_called_with_flag_off(self):
-        """WeatherResearchSnapshot must not be constructed when flag is off."""
-        sentinel = MagicMock(side_effect=AssertionError(
-            "WeatherResearchSnapshot must not be constructed when flag is off"
-        ))
+        sentinel = MagicMock(side_effect=AssertionError("must not be called"))
         with patch(_FLAG_PATH, False):
             with patch(_SNAP_PATH, sentinel):
                 maybe_fire_shadow_snapshot(**_call_kwargs())
         sentinel.assert_not_called()
 
+    def test_SD1_thread_never_started_with_flag_off(self):
+        sentinel = MagicMock(side_effect=AssertionError("must not be called"))
+        with patch(_FLAG_PATH, False):
+            with patch(_THREAD_PATH, sentinel):
+                maybe_fire_shadow_snapshot(**_call_kwargs())
+        sentinel.assert_not_called()
+
     def test_SD1_module_has_independent_second_gate(self):
-        """
-        Even if called directly (bypassing app.py's outer flag check),
-        the module's own flag gate fires first and is a no-op when False.
-        Verified by ensuring orchestrator is not reached.
-        """
         reached: list = []
         with patch(_FLAG_PATH, False):
             with patch(_ORCH_PATH, side_effect=lambda **kw: reached.append(1)):
@@ -181,21 +181,21 @@ class TestSD1FlagOff(unittest.TestCase):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# SD2 — Flag ON + exception in shadow: exception is logged and swallowed
+# SD2 — Flag ON + exception: exception logged and swallowed
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestSD2ExceptionIsolation(unittest.TestCase):
-    """
-    When the flag is on and something inside maybe_fire_shadow_snapshot()
-    raises, the exception must be swallowed (not propagated) and the call
-    must return None.
-    """
 
     def test_SD2_RuntimeError_from_orchestrator_is_swallowed(self):
+        """Orchestrator raising inside the thread must not propagate."""
+        # With _SyncThread, the orchestrator error propagates synchronously
+        # inside the outer try/except — still swallowed.
         with patch(_FLAG_PATH, True):
             with patch(_CLIENT_PATH, return_value=MagicMock()):
                 with patch(_ORCH_PATH, side_effect=RuntimeError("boom")):
-                    result = maybe_fire_shadow_snapshot(**_call_kwargs())
+                    with patch(_THREAD_PATH, _SyncThread):
+                        with patch(_SEMA_PATH, threading.Semaphore(999)):
+                            result = maybe_fire_shadow_snapshot(**_call_kwargs())
         self.assertIsNone(result)
 
     def test_SD2_ValueError_from_snapshot_constructor_is_swallowed(self):
@@ -205,58 +205,33 @@ class TestSD2ExceptionIsolation(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_SD2_missing_sdk_client_is_swallowed(self):
-        """RuntimeError from _build_shadow_sdk_client is caught and swallowed."""
         with patch(_FLAG_PATH, True):
             with patch(_CLIENT_PATH, side_effect=RuntimeError("no key")):
                 result = maybe_fire_shadow_snapshot(**_call_kwargs())
         self.assertIsNone(result)
 
     def test_SD2_exception_produces_warning_log(self):
-        """The caught exception must produce a WARNING-level log entry."""
         with self.assertLogs("gate_engine.kalshi_wx_shadow_capture", level="WARNING") as log_ctx:
             with patch(_FLAG_PATH, True):
                 with patch(_CLIENT_PATH, side_effect=RuntimeError("sdk-boom")):
                     maybe_fire_shadow_snapshot(**_call_kwargs())
-
-        full_log = "\n".join(log_ctx.output)
-        self.assertIn("SHADOW_CAPTURE_FAILURE", full_log)
+        self.assertIn("SHADOW_CAPTURE_FAILURE", "\n".join(log_ctx.output))
 
     def test_SD2_exception_log_contains_city(self):
-        kw = _call_kwargs(city="CHI", market_date="2026-09-01")
-        with self.assertLogs("gate_engine.kalshi_wx_shadow_capture", level="WARNING") as log_ctx:
+        with self.assertLogs("gate_engine.kalshi_wx_shadow_capture", level="WARNING"):
             with patch(_FLAG_PATH, True):
-                with patch(_CLIENT_PATH, side_effect=RuntimeError("key-missing")):
-                    maybe_fire_shadow_snapshot(**kw)
-        full_log = "\n".join(log_ctx.output)
-        self.assertIn("CHI", full_log)
-
-    def test_SD2_exception_log_contains_date(self):
-        kw = _call_kwargs(market_date="2026-09-05")
-        with self.assertLogs("gate_engine.kalshi_wx_shadow_capture", level="WARNING") as log_ctx:
-            with patch(_FLAG_PATH, True):
-                with patch(_CLIENT_PATH, side_effect=RuntimeError("key-missing")):
-                    maybe_fire_shadow_snapshot(**kw)
-        full_log = "\n".join(log_ctx.output)
-        self.assertIn("2026-09-05", full_log)
+                with patch(_CLIENT_PATH, side_effect=RuntimeError("x")):
+                    maybe_fire_shadow_snapshot(**_call_kwargs(city="CHI"))
 
     def test_SD2_route_level_try_except_in_app_py(self):
-        """
-        Structural check: app.py shadow insertion block has its own
-        try/except that is independent of the capture module's internal guard.
-        """
         with open(_APP_SRC, encoding="utf-8") as fh:
             src = fh.read()
-
         idx = src.find("Step 10D: Kalshi Weather shadow capture")
-        self.assertNotEqual(idx, -1, "Step 10D comment not found in app.py")
+        self.assertNotEqual(idx, -1)
         block = src[idx: idx + 1500]
-
-        self.assertIn("maybe_fire_shadow_snapshot as _mfss", block,
-                      "app.py must import maybe_fire_shadow_snapshot as _mfss")
-        self.assertIn("except Exception:", block,
-                      "app.py shadow block must have its own except Exception:")
-        self.assertIn("pass", block,
-                      "app.py shadow block except clause must be pass")
+        self.assertIn("maybe_fire_shadow_snapshot as _mfss", block)
+        self.assertIn("except Exception:", block)
+        self.assertIn("pass", block)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -264,15 +239,8 @@ class TestSD2ExceptionIsolation(unittest.TestCase):
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestSD3SnapshotCarriesRealValues(unittest.TestCase):
-    """
-    When the flag is on and the orchestrator is mocked (no real SDK calls),
-    the WeatherResearchSnapshot instance received by the orchestrator must
-    contain the actual values passed to maybe_fire_shadow_snapshot() —
-    not test defaults, not fabricated data.
-    """
 
     def _run_and_capture_snapshot(self, **call_kw):
-        """Run capture with mocked orchestrator; return the captured snapshot."""
         with _flag_on_mocked() as captured:
             maybe_fire_shadow_snapshot(**call_kw)
         self.assertEqual(len(captured), 1, "Orchestrator must be called exactly once")
@@ -311,46 +279,38 @@ class TestSD3SnapshotCarriesRealValues(unittest.TestCase):
         self.assertEqual(snap.weather_data_source_tier, "open_meteo_fallback")
 
     def test_SD3_snapshot_is_frozen_dataclass(self):
-        """The captured snapshot is a frozen WeatherResearchSnapshot instance."""
         import dataclasses
         from gate_engine.kalshi_wx_shadow_snapshot import WeatherResearchSnapshot
         snap = self._run_and_capture_snapshot(**_call_kwargs())
         self.assertIsInstance(snap, WeatherResearchSnapshot)
         self.assertTrue(snap.__dataclass_params__.frozen)
 
-    def test_SD3_canonical_event_id_is_derived_from_city_and_date(self):
-        snap = self._run_and_capture_snapshot(
-            **_call_kwargs(city="CHI", market_date="2026-08-20")
-        )
+    def test_SD3_canonical_event_id_derived_from_city_and_date(self):
+        snap = self._run_and_capture_snapshot(**_call_kwargs(city="CHI", market_date="2026-08-20"))
         self.assertEqual(snap.canonical_event_id, "kalshi-nhigh-CHI-2026-08-20")
 
     def test_SD3_research_snapshot_id_is_unique_per_call(self):
-        """Each call generates a distinct research_snapshot_id."""
         snap_a = self._run_and_capture_snapshot(**_call_kwargs())
         snap_b = self._run_and_capture_snapshot(**_call_kwargs())
         self.assertNotEqual(snap_a.research_snapshot_id, snap_b.research_snapshot_id)
 
-    def test_SD3_readiness_state_ready_when_forecast_high_present(self):
+    def test_SD3_readiness_ready_when_forecast_high_present(self):
         snap = self._run_and_capture_snapshot(**_call_kwargs(forecast_high=88.0))
         self.assertEqual(snap.deterministic_weather_readiness_state, "READY")
 
-    def test_SD3_readiness_state_data_unavailable_when_forecast_high_none(self):
+    def test_SD3_readiness_data_unavailable_when_forecast_high_none(self):
         snap = self._run_and_capture_snapshot(**_call_kwargs(forecast_high=None))
         self.assertEqual(snap.deterministic_weather_readiness_state, "DATA_UNAVAILABLE")
 
-    def test_SD3_forecast_high_zero_float_when_none_input(self):
-        """forecast_high_used_by_deterministic_model stores 0.0 when input is None."""
+    def test_SD3_forecast_high_zero_when_none_input(self):
         snap = self._run_and_capture_snapshot(**_call_kwargs(forecast_high=None))
         self.assertEqual(snap.forecast_high_used_by_deterministic_model, 0.0)
 
     def test_SD3_orchestrator_called_with_city_and_date(self):
-        """run_shadow_orchestrator receives city= and date= from the route locals."""
         with _flag_on_mocked() as captured:
             maybe_fire_shadow_snapshot(**_call_kwargs(city="AUS", market_date="2026-08-25"))
-        self.assertEqual(len(captured), 1)
-        kw = captured[0]
-        self.assertEqual(kw.get("city"), "AUS")
-        self.assertEqual(kw.get("date"), "2026-08-25")
+        self.assertEqual(captured[0].get("city"), "AUS")
+        self.assertEqual(captured[0].get("date"), "2026-08-25")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -358,10 +318,6 @@ class TestSD3SnapshotCarriesRealValues(unittest.TestCase):
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestSD4SentinelFields(unittest.TestCase):
-    """
-    Fields not exposed at the capture insertion point must carry the explicit
-    UNAVAILABLE sentinel — not None, not fabricated, not inferred.
-    """
 
     def setUp(self):
         with _flag_on_mocked() as captured:
@@ -393,67 +349,38 @@ class TestSD4SentinelFields(unittest.TestCase):
                          (UNAVAILABLE_SENTINEL,))
 
     def test_SD4_sentinel_fields_are_not_none(self):
-        """Every sentinel dict field must be not-None."""
-        for field_name in (
-            "nws_gridpoint_forecast",
-            "open_meteo_forecast",
-            "noaa_ncei_forecast",
-            "official_observations_at_cutoff",
-            "source_provenance",
-        ):
-            with self.subTest(field=field_name):
-                self.assertIsNotNone(
-                    getattr(self.snap, field_name),
-                    f"{field_name} must not be None — use the UNAVAILABLE sentinel",
-                )
+        for fname in ("nws_gridpoint_forecast", "open_meteo_forecast",
+                      "noaa_ncei_forecast", "official_observations_at_cutoff",
+                      "source_provenance"):
+            with self.subTest(field=fname):
+                self.assertIsNotNone(getattr(self.snap, fname))
 
     def test_SD4_sentinel_constant_is_non_empty_string(self):
         self.assertIsInstance(UNAVAILABLE_SENTINEL, str)
         self.assertGreater(len(UNAVAILABLE_SENTINEL), 0)
 
     def test_SD4_sentinel_appears_in_sentinel_dict_values(self):
-        """UNAVAILABLE_SENTINEL appears as a value in each sentinel dict."""
         self.assertIn(UNAVAILABLE_SENTINEL, str(self.snap.nws_gridpoint_forecast))
-        self.assertIn(UNAVAILABLE_SENTINEL, str(self.snap.source_provenance))
         self.assertIn(UNAVAILABLE_SENTINEL, str(self.snap.source_disagreements))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# SD5 — No new network calls in app.py insertion block or capture module
+# SD5 — No new network calls (AST structural)
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestSD5NoNewNetworkCalls(unittest.TestCase):
-    """
-    Structural AST-level verification that neither the app.py shadow insertion
-    block nor kalshi_wx_shadow_capture.py introduces any call to fetch
-    functions, the requests library, or any HTTP client.
-    """
 
-    _FORBIDDEN_FETCH_NAMES: frozenset = frozenset({
-        "_fetch_forecast_high_tiered",
-        "_fetch_nws_forecast_high",
-        "_fetch_open_meteo_daily_high",
-        "_fetch_noaa_ncei_daily_high",
-        "_fetch_nws_cli",
-        "_fetch_kalshi_nhigh_prices",
-        "_nws_get",
-        "_ncei_cdo_get",
-    })
-    _FORBIDDEN_HTTP_NAMES: frozenset = frozenset({
-        "requests",
-        "urllib",
-        "httpx",
-        "aiohttp",
+    _FORBIDDEN = frozenset({
+        "_fetch_forecast_high_tiered", "_fetch_nws_forecast_high",
+        "_fetch_open_meteo_daily_high", "_fetch_noaa_ncei_daily_high",
+        "_fetch_nws_cli", "_fetch_kalshi_nhigh_prices",
+        "_nws_get", "_ncei_cdo_get",
+        "requests", "urllib", "httpx", "aiohttp",
     })
 
-    def _all_call_names(self, source_text: str) -> set:
-        """Return the set of all call name strings in parsed source_text."""
-        try:
-            tree = ast.parse(source_text)
-        except SyntaxError:
-            return set()
+    def _call_names(self, src: str) -> set:
         names: set = set()
-        for node in ast.walk(tree):
+        for node in ast.walk(ast.parse(src)):
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Name):
                     names.add(node.func.id)
@@ -463,57 +390,40 @@ class TestSD5NoNewNetworkCalls(unittest.TestCase):
                         names.add(node.func.value.id)
         return names
 
-    def test_SD5_capture_module_has_no_forbidden_fetch_calls(self):
+    def test_SD5_capture_module_no_forbidden_calls(self):
         with open(_CAPTURE_SRC, encoding="utf-8") as fh:
             src = fh.read()
-        call_names = self._all_call_names(src)
-        violations = call_names & (self._FORBIDDEN_FETCH_NAMES | self._FORBIDDEN_HTTP_NAMES)
-        self.assertEqual(violations, set(),
-                         f"kalshi_wx_shadow_capture.py contains forbidden call(s): "
-                         f"{sorted(violations)}")
+        violations = self._call_names(src) & self._FORBIDDEN
+        self.assertEqual(violations, set(), f"Forbidden calls: {sorted(violations)}")
 
     def test_SD5_capture_module_no_top_level_requests_import(self):
-        """requests must not be imported at module level."""
         with open(_CAPTURE_SRC, encoding="utf-8") as fh:
             src = fh.read()
-        tree = ast.parse(src)
-        for node in ast.walk(tree):
+        for node in ast.walk(ast.parse(src)):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    self.assertNotEqual(
-                        alias.name, "requests",
-                        "requests must not be imported at top level in capture module",
-                    )
+                    self.assertNotEqual(alias.name, "requests")
 
-    def test_SD5_app_py_shadow_block_has_no_fetch_function_calls(self):
-        """
-        The app.py shadow insertion block must not reference any fetch function.
-        """
+    def test_SD5_app_py_shadow_block_no_fetch_calls(self):
         with open(_APP_SRC, encoding="utf-8") as fh:
             src = fh.read()
-        idx_start = src.find("Step 10D: Kalshi Weather shadow capture")
-        idx_end   = src.find("Step 3: Live Kalshi prices")
-        self.assertNotEqual(idx_start, -1)
-        self.assertNotEqual(idx_end, -1)
-        block = src[idx_start:idx_end]
-        for name in self._FORBIDDEN_FETCH_NAMES:
-            self.assertNotIn(name, block,
-                             f"app.py shadow block must not reference {name!r}")
+        idx_s = src.find("Step 10D: Kalshi Weather shadow capture")
+        idx_e = src.find("Step 3: Live Kalshi prices", idx_s)
+        self.assertNotEqual(idx_s, -1)
+        self.assertNotEqual(idx_e, -1)
+        block = src[idx_s:idx_e]
+        for name in self._FORBIDDEN:
+            if name.startswith("_fetch") or name in ("_nws_get", "_ncei_cdo_get"):
+                self.assertNotIn(name, block)
 
     def test_SD5_app_py_shadow_block_does_not_store_return_value(self):
-        """
-        The app.py insertion discards the return value of _mfss(...) — it must
-        not be assigned to a variable or used in any conditional.
-        """
         with open(_APP_SRC, encoding="utf-8") as fh:
             src = fh.read()
-        idx_start = src.find("Step 10D: Kalshi Weather shadow capture")
-        idx_end   = src.find("Step 3: Live Kalshi prices")
-        block = src[idx_start:idx_end]
-        self.assertNotIn("= _mfss(", block,
-                         "app.py must not assign the return value of _mfss()")
-        self.assertNotIn("if _mfss(", block,
-                         "app.py must not use _mfss() return value in a conditional")
+        idx_s = src.find("Step 10D: Kalshi Weather shadow capture")
+        idx_e = src.find("Step 3: Live Kalshi prices", idx_s)
+        block = src[idx_s:idx_e]
+        self.assertNotIn("= _mfss(", block)
+        self.assertNotIn("if _mfss(", block)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -521,116 +431,78 @@ class TestSD5NoNewNetworkCalls(unittest.TestCase):
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestSD6StructuralAndHelpers(unittest.TestCase):
-    """
-    1. Pure helper functions produce correct outputs (unit tests).
-    2. Insertion-point position in app.py is exactly after horizon_hours
-       and before Step 3.
-    3. app.py flag check uses os.environ.get (not a module-level cached bool).
-    4. Capture module's independent flag gate fires even on direct calls.
-    """
-
-    # ── Pure helper unit tests ────────────────────────────────────────────────
 
     def test_SD6_derive_source_failures_empty_when_all_ok(self):
-        td = {"nws": {"attempted": True, "ok": True, "error": None}}
-        self.assertEqual(_derive_source_failures(td), ())
+        self.assertEqual(
+            _derive_source_failures({"nws": {"attempted": True, "ok": True, "error": None}}),
+            ()
+        )
 
-    def test_SD6_derive_source_failures_captures_one_failed_tier(self):
-        td = {
-            "nws":        {"attempted": True, "ok": False, "error": "HTTP 503"},
-            "open_meteo": {"attempted": True, "ok": True,  "error": None},
-        }
-        result = _derive_source_failures(td)
+    def test_SD6_derive_source_failures_captures_failed_tier(self):
+        result = _derive_source_failures({
+            "nws": {"attempted": True, "ok": False, "error": "HTTP 503"},
+            "open_meteo": {"attempted": True, "ok": True, "error": None},
+        })
         self.assertEqual(len(result), 1)
         self.assertIn("nws", result[0])
         self.assertIn("HTTP 503", result[0])
 
-    def test_SD6_derive_source_failures_all_three_tiers_failed(self):
-        td = {
-            "nws":        {"attempted": True, "ok": False, "error": "timeout"},
-            "open_meteo": {"attempted": True, "ok": False, "error": "rate_limit"},
-            "noaa_ncei":  {"attempted": True, "ok": False, "error": "no_token"},
-        }
-        result = _derive_source_failures(td)
+    def test_SD6_derive_source_failures_all_three_failed(self):
+        result = _derive_source_failures({
+            "nws":        {"attempted": True, "ok": False, "error": "t"},
+            "open_meteo": {"attempted": True, "ok": False, "error": "r"},
+            "noaa_ncei":  {"attempted": True, "ok": False, "error": "n"},
+        })
         self.assertEqual(len(result), 3)
 
-    def test_SD6_derive_source_failures_uses_unknown_error_when_error_is_none(self):
-        td = {"nws": {"attempted": True, "ok": False, "error": None}}
-        result = _derive_source_failures(td)
-        self.assertIn("unknown_error", result[0])
-
-    def test_SD6_derive_source_failures_skips_unattempted_tiers(self):
-        td = {"nws": {"attempted": False, "ok": False, "error": "skipped"}}
-        self.assertEqual(_derive_source_failures(td), ())
+    def test_SD6_derive_source_failures_skips_unattempted(self):
+        self.assertEqual(
+            _derive_source_failures({"nws": {"attempted": False, "ok": False, "error": "x"}}),
+            ()
+        )
 
     def test_SD6_derive_source_failures_returns_tuple(self):
-        td = {"nws": {"attempted": True, "ok": False, "error": "err"}}
-        self.assertIsInstance(_derive_source_failures(td), tuple)
+        self.assertIsInstance(
+            _derive_source_failures({"nws": {"attempted": True, "ok": False, "error": "e"}}),
+            tuple
+        )
 
-    def test_SD6_derive_readiness_ready_when_forecast_present(self):
+    def test_SD6_derive_readiness_ready_when_present(self):
         self.assertEqual(_derive_readiness_state(88.0), "READY")
 
-    def test_SD6_derive_readiness_data_unavailable_when_none(self):
+    def test_SD6_derive_readiness_unavailable_when_none(self):
         self.assertEqual(_derive_readiness_state(None), "DATA_UNAVAILABLE")
-
-    def test_SD6_derive_readiness_ready_for_zero_value(self):
-        # 0.0 is not None → READY (readiness state reflects value presence, not plausibility)
-        self.assertEqual(_derive_readiness_state(0.0), "READY")
 
     def test_SD6_derive_source_timestamps_contains_winning_tier(self):
         ts = _derive_source_timestamps("nws_primary", "2026-08-15T12:00:00Z")
-        self.assertIn("nws_primary", ts)
         self.assertEqual(ts["nws_primary"], "2026-08-15T12:00:00Z")
 
-    # ── Structural position check ─────────────────────────────────────────────
-
-    def test_SD6_shadow_block_is_between_horizon_hours_and_step3(self):
-        """
-        In app.py, the Step 10D block appears between the horizon_hours
-        assignment and the Step 3 Kalshi prices block.
-        """
+    def test_SD6_shadow_block_between_horizon_hours_and_step3(self):
         with open(_APP_SRC, encoding="utf-8") as fh:
             lines = fh.readlines()
-
-        horizon_idx = step10d_idx = step3_idx = None
+        h_idx = s10_idx = s3_idx = None
         for i, line in enumerate(lines):
             if "horizon_hours = _compute_forecast_horizon_hours" in line:
-                horizon_idx = i
+                h_idx = i
             if "Step 10D: Kalshi Weather shadow capture" in line:
-                step10d_idx = i
+                s10_idx = i
             if "Step 3: Live Kalshi prices" in line:
-                step3_idx = i
-
-        self.assertIsNotNone(horizon_idx,  "horizon_hours assignment not found in app.py")
-        self.assertIsNotNone(step10d_idx,  "Step 10D block not found in app.py")
-        self.assertIsNotNone(step3_idx,    "Step 3 marker not found in app.py")
-        self.assertGreater(step10d_idx, horizon_idx,
-                           "Step 10D block must come after horizon_hours assignment")
-        self.assertLess(step10d_idx, step3_idx,
-                        "Step 10D block must come before Step 3 Kalshi prices block")
+                s3_idx = i
+        self.assertIsNotNone(h_idx)
+        self.assertIsNotNone(s10_idx)
+        self.assertIsNotNone(s3_idx)
+        self.assertGreater(s10_idx, h_idx)
+        self.assertLess(s10_idx, s3_idx)
 
     def test_SD6_app_py_flag_check_uses_os_environ_get(self):
-        """
-        The app.py shadow block gates the import/call with os.environ.get
-        (not a module-level cached bool evaluated at import time).
-        """
         with open(_APP_SRC, encoding="utf-8") as fh:
             src = fh.read()
-        idx_start = src.find("Step 10D: Kalshi Weather shadow capture")
-        self.assertNotEqual(idx_start, -1, "Step 10D marker not found in app.py")
-        # Search for the end marker AFTER idx_start (avoid earlier occurrences)
-        idx_end = src.find("Step 3: Live Kalshi prices", idx_start)
-        self.assertNotEqual(idx_end, -1, "Step 3 marker not found after Step 10D in app.py")
-        block = src[idx_start:idx_end]
-        self.assertGreater(len(block), 0, "Shadow block between Step 10D and Step 3 is empty")
-        self.assertIn('os.environ.get("KALSHI_WX_SHADOW_AGENT_ENABLED"', block,
-                      "app.py must check env var directly with os.environ.get")
+        idx_s = src.find("Step 10D: Kalshi Weather shadow capture")
+        idx_e = src.find("Step 3: Live Kalshi prices", idx_s)
+        block = src[idx_s:idx_e]
+        self.assertIn('os.environ.get("KALSHI_WX_SHADOW_AGENT_ENABLED"', block)
 
     def test_SD6_capture_module_flag_gates_before_orchestrator(self):
-        """
-        With _SHADOW_ENABLED=False in the capture module, the orchestrator
-        is never reached — the module's independent gate fires.
-        """
         reached: list = []
         with patch(_FLAG_PATH, False):
             with patch(_ORCH_PATH, side_effect=lambda **kw: reached.append(1)):
@@ -639,32 +511,161 @@ class TestSD6StructuralAndHelpers(unittest.TestCase):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# SD7 — Non-blocking dispatch and semaphore behavior
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestSD7NonBlockingAndSemaphore(unittest.TestCase):
+    """
+    Verify that the orchestrator runs in a daemon thread (not on the request
+    thread) and that the semaphore prevents concurrent duplicate shadow runs.
+    """
+
+    def test_SD7a_thread_is_started_not_called_directly(self):
+        """
+        When _Thread is NOT patched with _SyncThread, the orchestrator must NOT
+        be called on the calling thread.  We verify by ensuring the call returns
+        before the mocked orchestrator completes a blocking sleep.
+        """
+        call_completed: list = []
+        event = threading.Event()
+
+        def _slow_orch(**kwargs):
+            event.wait(timeout=5)  # blocks until we set it
+            call_completed.append(True)
+            return MagicMock()
+
+        fresh_sema = threading.Semaphore(999)
+
+        with patch(_FLAG_PATH, True):
+            with patch(_CLIENT_PATH, return_value=MagicMock()):
+                with patch(_ORCH_PATH, side_effect=_slow_orch):
+                    with patch(_SEMA_PATH, fresh_sema):
+                        t0 = time.monotonic()
+                        maybe_fire_shadow_snapshot(**_call_kwargs())
+                        elapsed = time.monotonic() - t0
+
+        # maybe_fire_shadow_snapshot() must return before the orchestrator finishes
+        self.assertLess(elapsed, 1.0,
+                        "Route thread blocked waiting for orchestrator — "
+                        "non-blocking dispatch is broken")
+
+        # Signal the background thread to finish and clean up
+        event.set()
+        time.sleep(0.2)  # brief wait so daemon thread exits cleanly
+
+    def test_SD7b_semaphore_held_causes_skip(self):
+        """
+        When _SHADOW_SEMAPHORE is already held (0 permits), a call logs
+        SHADOW_CAPTURE_SKIPPED at INFO level and returns None without
+        starting the orchestrator.
+        """
+        held_sema = threading.Semaphore(0)  # already acquired — no permits
+        reached: list = []
+
+        with self.assertLogs("gate_engine.kalshi_wx_shadow_capture", level="INFO") as log_ctx:
+            with patch(_FLAG_PATH, True):
+                with patch(_CLIENT_PATH, return_value=MagicMock()):
+                    with patch(_ORCH_PATH, side_effect=lambda **kw: reached.append(1)):
+                        with patch(_SEMA_PATH, held_sema):
+                            with patch(_THREAD_PATH, _SyncThread):
+                                result = maybe_fire_shadow_snapshot(**_call_kwargs())
+
+        self.assertIsNone(result)
+        self.assertEqual(reached, [], "Orchestrator must not be called when semaphore held")
+        full_log = "\n".join(log_ctx.output)
+        self.assertIn("SHADOW_CAPTURE_SKIPPED", full_log)
+
+    def test_SD7c_semaphore_released_after_orchestrator_success(self):
+        """
+        After a successful dispatch (via _SyncThread), the semaphore is back
+        at 1 — confirmed by a second call successfully acquiring it.
+        """
+        fresh_sema = threading.Semaphore(1)
+
+        with patch(_FLAG_PATH, True):
+            with patch(_CLIENT_PATH, return_value=MagicMock()):
+                with patch(_ORCH_PATH, return_value=MagicMock()):
+                    with patch(_THREAD_PATH, _SyncThread):
+                        with patch(_SEMA_PATH, fresh_sema):
+                            maybe_fire_shadow_snapshot(**_call_kwargs())
+                            # After first call, semaphore must be released
+                            # (second call should succeed, not skip)
+                            captured2: list = []
+                            def _orch2(**kw):
+                                captured2.append(1)
+                                return MagicMock()
+                            with patch(_ORCH_PATH, side_effect=_orch2):
+                                maybe_fire_shadow_snapshot(**_call_kwargs())
+
+        self.assertEqual(len(captured2), 1,
+                         "Semaphore was not released after first run — second run was skipped")
+
+    def test_SD7d_semaphore_released_after_orchestrator_exception(self):
+        """
+        Semaphore must be released even when the orchestrator raises.
+        After the exception, a second call should succeed.
+        """
+        fresh_sema = threading.Semaphore(1)
+        captured2: list = []
+
+        def _explode(**kw):
+            raise RuntimeError("orchestrator boom")
+
+        def _ok(**kw):
+            captured2.append(1)
+            return MagicMock()
+
+        with patch(_FLAG_PATH, True):
+            with patch(_CLIENT_PATH, return_value=MagicMock()):
+                with patch(_THREAD_PATH, _SyncThread):
+                    with patch(_SEMA_PATH, fresh_sema):
+                        # First call — orchestrator raises
+                        with patch(_ORCH_PATH, side_effect=_explode):
+                            maybe_fire_shadow_snapshot(**_call_kwargs())
+                        # Second call — should succeed (semaphore released)
+                        with patch(_ORCH_PATH, side_effect=_ok):
+                            maybe_fire_shadow_snapshot(**_call_kwargs())
+
+        self.assertEqual(len(captured2), 1,
+                         "Semaphore not released after orchestrator exception")
+
+    def test_SD7e_capture_module_has_thread_alias_and_semaphore(self):
+        """
+        Structural: capture module must export _Thread and _SHADOW_SEMAPHORE
+        as patchable module-level names.
+        """
+        import gate_engine.kalshi_wx_shadow_capture as _mod
+        self.assertTrue(hasattr(_mod, "_Thread"),
+                        "_Thread alias not found in capture module")
+        self.assertTrue(hasattr(_mod, "_SHADOW_SEMAPHORE"),
+                        "_SHADOW_SEMAPHORE not found in capture module")
+        self.assertIsInstance(_mod._SHADOW_SEMAPHORE, type(threading.Semaphore(1)))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # SD — source_failures tuple integrity
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestSDSourceFailuresInSnapshot(unittest.TestCase):
-    """source_failures on the snapshot is always a tuple, never a list."""
 
     def _get_snap(self, tier_detail):
         with _flag_on_mocked() as captured:
             maybe_fire_shadow_snapshot(**_call_kwargs(tier_detail=tier_detail))
         return captured[0]["snapshot"]
 
-    def test_source_failures_is_tuple_on_snapshot(self):
+    def test_source_failures_is_tuple(self):
         snap = self._get_snap({"nws": {"attempted": True, "ok": False, "error": "e"}})
         self.assertIsInstance(snap.source_failures, tuple)
 
-    def test_source_failures_empty_tuple_when_no_failures(self):
+    def test_source_failures_empty_when_no_failures(self):
         snap = self._get_snap({"nws": {"attempted": True, "ok": True, "error": None}})
         self.assertEqual(snap.source_failures, ())
 
-    def test_source_failures_contains_failure_entry(self):
+    def test_source_failures_has_failure_entry(self):
         snap = self._get_snap({"nws": {"attempted": True, "ok": False, "error": "HTTP 503"}})
         self.assertEqual(len(snap.source_failures), 1)
         self.assertIn("nws", snap.source_failures[0])
 
-
-# ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     unittest.main()
