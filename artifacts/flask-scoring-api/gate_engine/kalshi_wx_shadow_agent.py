@@ -55,6 +55,19 @@ _AGENT_ID: str = "kalshi-wx-forecast-context-agent-v1"
 _MODEL: str = "claude-3-5-haiku-20241022"
 _MAX_TOKENS: int = 1024
 
+# ── Feature flag — default OFF ────────────────────────────────────────────────
+# Live agent invocations are disabled unless this flag is explicitly set.
+# Read from environment variable KALSHI_WX_SHADOW_AGENT_ENABLED.
+# Any value other than "true" (case-insensitive) — including absent — is False.
+#
+# With the flag off (the default), invoke_forecast_context_agent() is guaranteed
+# to make zero network calls regardless of whether an API key is present.
+# The flag is the FIRST check in the function, before _build_client() is called,
+# before any SDK object is constructed, and before any network activity occurs.
+KALSHI_WX_SHADOW_AGENT_ENABLED: bool = (
+    os.environ.get("KALSHI_WX_SHADOW_AGENT_ENABLED", "false").strip().lower() == "true"
+)
+
 # ── System prompt ─────────────────────────────────────────────────────────────
 # Scoped exclusively to the KALSHI_WEATHER lane.  No tools are granted; no
 # write capability of any kind is described or available.
@@ -196,11 +209,26 @@ def invoke_forecast_context_agent(
         every other outcome — schema violation, forbidden key, wrong type, SDK
         exception, unparseable JSON, missing API key, or anything else.
 
+    FEATURE FLAG
+        KALSHI_WX_SHADOW_AGENT_ENABLED must be True for any invocation to
+        proceed past the gate.  With the flag off (the default), this function
+        returns a SHADOW_AGENT_DISABLED failure immediately — no client is
+        built, no API key is consulted, no network activity occurs.
+
     VALIDATOR INVARIANT
         This function never returns raw model output.  Every return statement
         calls either validate_shadow_output(payload) or _call_failure(reason).
         The structural test_T4 in the test file enforces this with AST analysis.
     """
+    # ── Feature flag gate — unconditional first check ─────────────────────────
+    # Fires before any client construction, SDK call, or network activity.
+    # A present API key does NOT bypass this gate.
+    if not KALSHI_WX_SHADOW_AGENT_ENABLED:
+        return _call_failure(
+            "SHADOW_AGENT_DISABLED: feature flag KALSHI_WX_SHADOW_AGENT_ENABLED "
+            "is not set to 'true' — no agent invocation will occur"
+        )
+
     # ── Resolve client ────────────────────────────────────────────────────────
     client = sdk_client if sdk_client is not None else _build_client()
     if client is None:

@@ -30,6 +30,20 @@ T4: Structural / AST check — every return statement in
     invoke_forecast_context_agent calls either validate_shadow_output() or
     _call_failure().  No return path can return a raw dict, None, or any value
     that has not passed through one of those two functions.
+
+T5: Feature flag off (default) — with KALSHI_WX_SHADOW_AGENT_ENABLED=False,
+    calling the entry point returns a SHADOW_AGENT_DISABLED closed failure and
+    makes zero calls to messages.create.  A strict mock with side_effect=
+    AssertionError is supplied so the test fails loudly if the function somehow
+    reaches the API call despite the flag being off.
+
+T6: Feature flag on (patched True) — with KALSHI_WX_SHADOW_AGENT_ENABLED=True,
+    the function proceeds past the gate and returns SHADOW_PASS for a valid
+    mocked payload, proving the flag does not break the existing happy path.
+
+Note: T1, T2, T3 each carry a @patch decorator setting the flag to True so
+the flag gate does not block their already-validated mock-client paths.
+T4 is a structural test that never invokes the function; no patch needed.
 """
 from __future__ import annotations
 
@@ -40,7 +54,7 @@ import os
 import sys
 import textwrap
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # ── path setup ────────────────────────────────────────────────────────────────
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -123,6 +137,7 @@ def _make_raising_mock_client(exc: Exception) -> MagicMock:
 # T1 — Valid payload passes through validator unchanged
 # ─────────────────────────────────────────────────────────────────────────────
 
+@patch("gate_engine.kalshi_wx_shadow_agent.KALSHI_WX_SHADOW_AGENT_ENABLED", True)
 class TestT1ValidPayloadPassesThrough(unittest.TestCase):
 
     def test_T1_valid_payload_passes_through_validator(self):
@@ -173,6 +188,7 @@ class TestT1ValidPayloadPassesThrough(unittest.TestCase):
 # T2 — Forbidden governance key returns shadow-failure, not raw payload
 # ─────────────────────────────────────────────────────────────────────────────
 
+@patch("gate_engine.kalshi_wx_shadow_agent.KALSHI_WX_SHADOW_AGENT_ENABLED", True)
 class TestT2ForbiddenKeyReturnsShadowFailure(unittest.TestCase):
 
     def test_T2_forbidden_key_returns_shadow_failure_not_raw_payload(self):
@@ -232,6 +248,7 @@ class TestT2ForbiddenKeyReturnsShadowFailure(unittest.TestCase):
 # T3 — SDK exception produces closed failure, not a crash or None
 # ─────────────────────────────────────────────────────────────────────────────
 
+@patch("gate_engine.kalshi_wx_shadow_agent.KALSHI_WX_SHADOW_AGENT_ENABLED", True)
 class TestT3SdkExceptionReturnsClosed(unittest.TestCase):
 
     def test_T3_sdk_exception_returns_closed_failure_not_none(self):
@@ -396,6 +413,117 @@ class TestT4StructuralReturnPathCheck(unittest.TestCase):
                 f"The following return statements bypass the validator:\n"
                 + "\n".join(f"  • {v}" for v in violations)
             )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T5 — Feature flag off: returns SHADOW_AGENT_DISABLED, zero API calls
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestT5FlagOffReturnsShadowAgentDisabled(unittest.TestCase):
+
+    def test_T5_flag_off_returns_disabled_failure_no_api_call(self):
+        """
+        With KALSHI_WX_SHADOW_AGENT_ENABLED=False (patched explicitly, matching
+        its default), calling invoke_forecast_context_agent must return a closed
+        SHADOW_AGENT_DISABLED failure and must never call messages.create.
+
+        A strict mock client with side_effect=AssertionError is passed as
+        sdk_client.  If the function somehow reaches the API call despite the
+        flag being off, the AssertionError fires and the test fails loudly.
+        The flag check firing first means the mock is never touched.
+
+        Assertions:
+          1. result.passed is False
+          2. result.shadow_failure_only is True
+          3. result.failure_reason contains "SHADOW_AGENT_DISABLED"
+          4. result is a ShadowValidationResult (not None, not a dict)
+          5. messages.create was never called (assert_not_called passes)
+        """
+        # Strict mock — any call to messages.create would immediately fail the test
+        strict_mock = MagicMock()
+        strict_mock.messages.create.side_effect = AssertionError(
+            "messages.create must NEVER be called when the feature flag is off"
+        )
+
+        with patch("gate_engine.kalshi_wx_shadow_agent.KALSHI_WX_SHADOW_AGENT_ENABLED", False):
+            result = invoke_forecast_context_agent(
+                city="NYC",
+                date="2026-08-08",
+                run_id="run-test-t5",
+                sdk_client=strict_mock,
+            )
+
+        # 1. Must fail
+        self.assertFalse(result.passed,
+                         "Flag-off invocation must return a failure result")
+
+        # 2. shadow_failure_only must be True
+        self.assertTrue(
+            result.shadow_failure_only,
+            "Flag-off result must have shadow_failure_only=True",
+        )
+
+        # 3. Reason must identify this as a flag-disabled failure, not a schema
+        #    or API failure
+        self.assertIn(
+            "SHADOW_AGENT_DISABLED",
+            result.failure_reason,
+            f"failure_reason must contain 'SHADOW_AGENT_DISABLED'; "
+            f"got {result.failure_reason!r}",
+        )
+
+        # 4. Correct type — not None, not a raw dict
+        self.assertIsNotNone(result)
+        self.assertIsInstance(result, ShadowValidationResult)
+        self.assertNotIsInstance(result, dict)
+
+        # 5. The strict mock was never reached — flag gate returned first
+        strict_mock.messages.create.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T6 — Feature flag on: proceeds normally to SHADOW_PASS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@patch("gate_engine.kalshi_wx_shadow_agent.KALSHI_WX_SHADOW_AGENT_ENABLED", True)
+class TestT6FlagOnProceedsNormally(unittest.TestCase):
+
+    def test_T6_flag_on_proceeds_to_validation(self):
+        """
+        With KALSHI_WX_SHADOW_AGENT_ENABLED=True (explicitly patched), the
+        function must proceed past the gate and return SHADOW_PASS for a valid
+        mocked payload — confirming the flag does not break the working path.
+
+        Assertions:
+          1. result.passed is True
+          2. result is the SHADOW_PASS singleton (not a copy)
+          3. messages.create was called exactly once (flag did not block it)
+        """
+        payload = _valid_agent_payload(run_id="run-test-t6")
+        mock_client = _make_mock_client(payload)
+
+        result = invoke_forecast_context_agent(
+            city="NYC",
+            date="2026-08-08",
+            run_id="run-test-t6",
+            sdk_client=mock_client,
+        )
+
+        # 1. Must pass
+        self.assertTrue(
+            result.passed,
+            f"Expected SHADOW_PASS with flag=True; got "
+            f"violation={result.violation} reason={result.failure_reason!r}",
+        )
+
+        # 2. SHADOW_PASS singleton
+        self.assertIs(
+            result, SHADOW_PASS,
+            "With flag=True and a valid payload, must return the SHADOW_PASS singleton",
+        )
+
+        # 3. messages.create called once — the flag gate did not block it
+        mock_client.messages.create.assert_called_once()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

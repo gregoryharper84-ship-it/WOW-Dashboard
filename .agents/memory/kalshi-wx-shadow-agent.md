@@ -8,6 +8,17 @@ description: SDK adapter for one Kalshi Weather forecast-context subagent; prove
 `gate_engine/kalshi_wx_shadow_agent.py` is the ONLY public entry point.
 It always returns a `ShadowValidationResult` — never a raw dict, never None.
 
+## Feature flag (default OFF)
+`KALSHI_WX_SHADOW_AGENT_ENABLED` (module-level bool, read from env at import time,
+defaults False). The flag check fires as the VERY FIRST thing in the function —
+before sdk_client is resolved, before `_build_client()`, before any network activity.
+With flag=False, returns `_call_failure("SHADOW_AGENT_DISABLED: ...")` immediately.
+Set env var `KALSHI_WX_SHADOW_AGENT_ENABLED=true` to enable live calls.
+
+Because the flag check is first, T1/T2/T3 tests each carry
+`@patch("gate_engine.kalshi_wx_shadow_agent.KALSHI_WX_SHADOW_AGENT_ENABLED", True)`
+as a class decorator — the test method bodies are unchanged.
+
 **Why:** The shadow pilot requires that model output NEVER escapes to callers
 without passing through `validate_shadow_output`. This is the architectural
 invariant the whole pilot depends on.
@@ -65,4 +76,4 @@ For SDK-raise tests: `mock_client.messages.create.side_effect = exc`.
 
 ## Files
 - `gate_engine/kalshi_wx_shadow_agent.py` — the adapter module
-- `tests/test_kalshi_wx_shadow_agent.py` — 4 tests (T1–T4), all pass
+- `tests/test_kalshi_wx_shadow_agent.py` — 6 tests (T1–T6), all pass
