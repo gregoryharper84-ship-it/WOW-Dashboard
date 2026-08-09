@@ -88,6 +88,71 @@ def _success_result(**overrides) -> dict:
     return base
 
 
+# ── Per-agent minimum valid tool_input shapes ─────────────────────────────────
+# Satisfy the native closed-schema validator (kalshi_wx_shadow_native_schema)
+# for each subagent.  Required for any mock caller that needs the outer
+# enforcement choke point in run_pilot to treat the result as COMPLETE.
+
+_VALID_TOOL_INPUTS: dict = {
+    "forecast_context": {
+        "scoring_mode":       "gaussian_forecast",
+        "calibration_status": "PROVISIONAL",
+        "uncertainty_tier":   "MODERATE",
+        "recommended_ceiling": "KALSHI_WATCH",
+        "blockers":           [],
+        "notes":              "test fixture",
+    },
+    "source_reconciliation": {
+        "sources_present":      [],
+        "sources_missing":      [],
+        "conflicts":            [],
+        "reconciliation_status": "OK",
+        "notes":                "test fixture",
+    },
+    "contradiction_detection": {
+        "contradictions_found": [],
+        "ceiling_impacted":     False,
+        "notes":                "test fixture",
+    },
+    "unusual_regime": {
+        "regime_unusual":    False,
+        "regime_factors":    [],
+        "reliability_impact": "NONE",
+        "notes":             "test fixture",
+    },
+    "uncertainty_explanation": {
+        "uncertainty_tier":    "LOW",
+        "uncertainty_sources": [],
+        "ceiling_impact":      "NONE",
+        "sigma_f_estimate":    2.0,
+        "horizon_hours_estimate": 12.0,
+        "notes":               "test fixture",
+    },
+}
+
+
+def _valid_result(agent_id: str, **overrides) -> dict:
+    """
+    Like _success_result() but with a per-agent fully valid tool_input that
+    passes the native closed-schema validator used by the outer enforcement
+    choke point in run_pilot().  Use this in any mock caller that expects
+    status=COMPLETE to be persisted.
+    """
+    tool_input = dict(_VALID_TOOL_INPUTS.get(agent_id, _VALID_TOOL_INPUTS["forecast_context"]))
+    base = {
+        "success":                 True,
+        "tool_input":              tool_input,
+        "failure_reason":          None,
+        "latency_ms":              42,
+        "model":                   None,
+        "input_tokens":            10,
+        "output_tokens":           5,
+        "usage_accounting_status": "AVAILABLE",
+    }
+    base.update(overrides)
+    return base
+
+
 def _failure_result(**overrides) -> dict:
     """A mock agent result that looks like a failed subagent response."""
     base = {
@@ -736,8 +801,10 @@ class TestResultRowPersistence(unittest.TestCase):
         return writes
 
     def test_SDRROW_success_writes_COMPLETE_status(self):
+        # Must return a fully valid per-agent output so the outer enforcement
+        # choke point in run_pilot() accepts it as COMPLETE (not BLOCKED).
         def success_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
-            return _success_result(tool_input={"key": "value"})
+            return _valid_result(agent_id)
 
         rows = self._run_one_snap_one_agent(success_call)
         self.assertEqual(len(rows), 1)

@@ -594,6 +594,11 @@ def call_one_agent(
             "usage_accounting_status": "UNAVAILABLE",
         }
 
+    # Module-reference import so _MODEL is looked up at call time via attribute
+    # access.  This means patch.object(sub_mod, "_MODEL", "new-model") in tests
+    # (and a real _MODEL change in the subagents file) is automatically reflected
+    # in what call_one_agent returns — no runner code change required.
+    import gate_engine.kalshi_wx_shadow_subagents as _sa_mod  # noqa: PLC0415
     from gate_engine.kalshi_wx_shadow_subagents import (  # noqa: PLC0415
         run_contradiction_detection_subagent,
         run_forecast_context_subagent,
@@ -644,7 +649,11 @@ def call_one_agent(
         "tool_input":              result.tool_input,
         "failure_reason":          result.failure_reason,
         "latency_ms":              latency_ms,
-        "model":                   None,
+        # Read _MODEL via module attribute reference (not a static import) so
+        # that patching gate_engine.kalshi_wx_shadow_subagents._MODEL in tests
+        # — or changing _MODEL in that file for a real model migration — is
+        # automatically reflected here without any runner code change.
+        "model":                   _sa_mod._MODEL,
         "input_tokens":            result.input_tokens,
         "output_tokens":           result.output_tokens,
         "usage_accounting_status": result.usage_accounting_status,
@@ -809,6 +818,55 @@ def run_pilot(
                 failure_reason = result.get("failure_reason")
                 model          = result.get("model")
                 status         = "COMPLETE" if success else "BLOCKED"
+
+                # ── Outer enforcement choke point ──────────────────────────────
+                # Runs for BOTH the real SDK path (call_one_agent) and the
+                # test/mock path (call_agent_fn).  Guarantees that no mock can
+                # produce a false PASS by taking an easier route than production
+                # code.  The goal is verification-harness integrity: the same
+                # enforcement that gates real subagent output must also gate
+                # mock output before it is accepted into prior_results or
+                # persisted.
+                #
+                # (a) Native per-subagent closed-schema validator:
+                #     validate_subagent_output — covers unknown properties,
+                #     required fields, type errors, and enum violations.
+                #     Shared code with the inner check in _run_single_tool_subagent.
+                #
+                # (b) CapabilityBoundary post_tool_use_hook: forbidden-governance-
+                #     key scan on the output dict.  We use post_tool_use_hook
+                #     (not pre_tool_use_hook) here because at this outer point we
+                #     do not have the model's actual called-tool name — only
+                #     agent_id.  The pre_hook's tool-name-against-allowlist gate
+                #     cannot be exercised without the tool name; the post_hook
+                #     performs the same forbidden-key scan without that gate.
+                #     Treated as BLOCKING at this outer point, unlike the inner
+                #     post-hook which is advisory only.
+                if success and tool_input:
+                    from gate_engine.kalshi_wx_shadow_native_schema import (  # noqa: PLC0415
+                        validate_subagent_output as _outer_validate_native,
+                    )
+                    _outer_ns_ok, _outer_ns_reason = _outer_validate_native(
+                        agent_id, tool_input
+                    )
+                    if not _outer_ns_ok:
+                        success        = False
+                        failure_reason = (
+                            f"OUTER_NATIVE_SCHEMA_VIOLATION: {_outer_ns_reason}"
+                        )
+                        status         = "BLOCKED"
+                        tool_input     = {}
+                    elif cap_boundary is not None:
+                        _outer_post = cap_boundary.post_tool_use_hook(
+                            agent_id, agent_id, tool_input
+                        )
+                        if not _outer_post.passed:
+                            success        = False
+                            failure_reason = (
+                                f"OUTER_CAP_BOUNDARY_VIOLATION: {_outer_post.reason}"
+                            )
+                            status         = "BLOCKED"
+                            tool_input     = {}
 
                 # ── Post-call usage accounting ─────────────────────────────────
                 # AVAILABLE  → real token counts used for cumulative tracking and
