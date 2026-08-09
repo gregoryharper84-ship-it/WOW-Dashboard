@@ -196,6 +196,7 @@ def fetch_eligible_snapshots(conn, max_count: int) -> List[Dict]:
             FROM   kalshi_wx_shadow_snapshot_queue q
             INNER JOIN kalshi_wx_shadow_deterministic_outcome o
                    ON q.research_snapshot_id = o.research_snapshot_id
+            WHERE  q.excluded_reason IS NULL
             ORDER  BY q.inserted_at ASC
             LIMIT  %s
             """,
