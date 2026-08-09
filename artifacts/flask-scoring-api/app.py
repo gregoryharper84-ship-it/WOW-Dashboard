@@ -25466,6 +25466,30 @@ def wow_kalshi_weather_evaluate():
     # ── Step 2: Forecast horizon (PATCH-002) ──────────────────────────────────
     horizon_hours = _compute_forecast_horizon_hours(date_str, station["tz"])
 
+    # ── Step 10D: Kalshi Weather shadow capture (flag-gated, inert when off) ──
+    # Reads only already-computed local variables.  Makes no new network call,
+    # alters no local variable, and cannot affect the response under any path.
+    # Belt-and-suspenders: flag checked here AND inside the capture module.
+    if os.environ.get("KALSHI_WX_SHADOW_AGENT_ENABLED", "").strip().lower() == "true":
+        try:
+            from gate_engine.kalshi_wx_shadow_capture import (  # noqa: PLC0415
+                maybe_fire_shadow_snapshot as _mfss,
+            )
+            _mfss(
+                city=city,
+                station=station["station"],
+                market_date=date_str,
+                forecast_high=forecast_high,
+                weather_data_source_tier=(
+                    fc_result.get("weather_data_source_tier") or "unknown"
+                ),
+                sigma_f=sigma_f,
+                horizon_hours=horizon_hours,
+                tier_detail=fc_result.get("tier_detail") or {},
+            )
+        except Exception:
+            pass  # shadow failure must never affect the production route
+
     # ── Step 3: Live Kalshi prices (PATCH-003) ────────────────────────────────
     # Explicit price_source override → skip live fetch
     if price_source_req in ("synthetic_test", "operator_supplied"):
