@@ -320,6 +320,25 @@ def _run_single_tool_subagent(
             # Post-hook failure is recorded but does not block collection;
             # the orchestrator may promote it to a run-level failure if desired.
 
+        # ── Native per-subagent closed-schema validation ──────────────────────
+        # Runs AFTER CapabilityBoundary hooks.  Enforces additionalProperties=false
+        # and full type/enum checks on the model's tool_input.  Failure is fatal:
+        # the invalid output is discarded (tool_input={}) and NOT persisted.
+        from gate_engine.kalshi_wx_shadow_native_schema import (  # noqa: PLC0415
+            validate_subagent_output as _validate_native,
+        )
+        _ns_passed, _ns_reason = _validate_native(subagent_id, tool_input_dict)
+        if not _ns_passed:
+            return SubagentResult(
+                subagent_id=subagent_id,
+                tool_name=tool_name,
+                tool_input={},
+                hook_violations=hook_violations,
+                success=False,
+                failure_reason=f"NATIVE_SCHEMA_VIOLATION: {_ns_reason}",
+                turns_used=turn + 1,
+            )
+
         # ── Tool input accepted — build usage fields ──────────────────────────
         if _all_avail and (_total_in > 0 or _total_out > 0):
             _in_tok:    Optional[int] = _total_in

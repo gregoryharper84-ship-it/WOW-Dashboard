@@ -172,11 +172,23 @@ def apply_schema_migrations(conn) -> None:
 
     CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_results_rsid_agent
         ON kalshi_wx_shadow_results (research_snapshot_id, agent_id);
+
+    CREATE TABLE IF NOT EXISTS kalshi_wx_shadow_snapshot_schema_validation (
+        id                     SERIAL PRIMARY KEY,
+        research_snapshot_id   TEXT        NOT NULL,
+        canonical_payload_json JSONB,
+        validation_status      TEXT        NOT NULL,
+        validation_detail      TEXT,
+        recorded_at            TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_snap_schema_val_rsid
+        ON kalshi_wx_shadow_snapshot_schema_validation (research_snapshot_id);
     """
     with conn.cursor() as cur:
         cur.execute(ddl)
     conn.commit()
-    _log.info("Schema migrations applied to kalshi_wx_shadow_results")
+    _log.info("Schema migrations applied (kalshi_wx_shadow_results + snapshot_schema_validation)")
 
 
 def fetch_eligible_snapshots(conn, max_count: int) -> List[Dict]:
@@ -300,6 +312,120 @@ def write_result_row(
             ),
         )
     conn.commit()
+
+
+def write_snapshot_validation_row(
+    conn,
+    research_snapshot_id: str,
+    canonical_payload: Optional[Dict],
+    validation_status: str,
+    validation_detail: Optional[str],
+) -> None:
+    """
+    Upsert one row into kalshi_wx_shadow_snapshot_schema_validation.
+
+    ON CONFLICT (research_snapshot_id) → update all fields so replay runs and
+    subsequent live runs always reflect the most recent validation outcome.
+
+    validation_status must be one of: SCHEMA_VALID, SCHEMA_INVALID, INCOMPLETE.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO kalshi_wx_shadow_snapshot_schema_validation
+                (research_snapshot_id, canonical_payload_json,
+                 validation_status, validation_detail)
+            VALUES (%s, %s::jsonb, %s, %s)
+            ON CONFLICT (research_snapshot_id) DO UPDATE SET
+                canonical_payload_json = EXCLUDED.canonical_payload_json,
+                validation_status      = EXCLUDED.validation_status,
+                validation_detail      = EXCLUDED.validation_detail,
+                recorded_at            = NOW()
+            """,
+            (
+                research_snapshot_id,
+                json.dumps(canonical_payload) if canonical_payload is not None else None,
+                validation_status,
+                validation_detail,
+            ),
+        )
+    conn.commit()
+
+
+def _record_snapshot_schema_validation(
+    conn,
+    rsid: str,
+    snap_json: Any,
+    run_id: str,
+    prior_results: Dict,
+    expected_agent_count: int,
+) -> None:
+    """
+    Assemble the 5 subagent results into the Step 9 canonical payload,
+    validate through validate_shadow_output(), and upsert one row to
+    kalshi_wx_shadow_snapshot_schema_validation.
+
+    Called after ALL agents for a snapshot have been attempted (success or failure).
+    prior_results contains only COMPLETE (success=True) SubagentResult objects —
+    failed/blocked agents are absent, which causes _assemble_payload() to use
+    safe empty-dict defaults for their fields.
+
+    Statuses:
+      SCHEMA_VALID   — all 5 agents complete, validate_shadow_output() passes.
+      SCHEMA_INVALID — all 5 complete, validate_shadow_output() fails; reason recorded.
+      INCOMPLETE     — fewer than 5 agents produced COMPLETE results.
+    """
+    try:
+        from gate_engine.kalshi_wx_shadow_orchestrator import _assemble_payload  # noqa: PLC0415
+        from gate_engine.kalshi_wx_shadow_schema import validate_shadow_output   # noqa: PLC0415
+    except ImportError as exc:
+        _log.warning("Snapshot validation skipped — import error: %s", exc)
+        return
+
+    city = snap_json.get("city", "") if isinstance(snap_json, dict) else ""
+    date = snap_json.get("market_date", "") if isinstance(snap_json, dict) else ""
+
+    n_complete = len(prior_results)
+    canonical_payload: Optional[Dict] = None
+
+    try:
+        canonical_payload = _assemble_payload(city, date, run_id, prior_results)
+    except Exception as exc:
+        _log.warning("Assembly failed for snapshot %s: %s", rsid[:16], exc)
+        write_snapshot_validation_row(
+            conn, rsid, None, "INCOMPLETE", f"ASSEMBLY_ERROR: {exc}",
+        )
+        return
+
+    if n_complete < expected_agent_count:
+        missing = sorted(
+            set(AGENT_IDS) - set(prior_results.keys())
+        )
+        val_status = "INCOMPLETE"
+        val_detail = (
+            f"{n_complete}/{expected_agent_count} agents produced COMPLETE results; "
+            f"missing or failed: {missing}"
+        )
+    else:
+        try:
+            vr = validate_shadow_output(canonical_payload)
+            if vr.passed:
+                val_status = "SCHEMA_VALID"
+                val_detail = None
+            else:
+                val_status = "SCHEMA_INVALID"
+                val_detail = vr.reason
+        except Exception as exc:
+            val_status = "SCHEMA_INVALID"
+            val_detail = f"VALIDATION_EXCEPTION: {exc}"
+
+    write_snapshot_validation_row(conn, rsid, canonical_payload, val_status, val_detail)
+    _log.info(
+        "Snapshot %s canonical validation: %s%s",
+        rsid[:16],
+        val_status,
+        f" — {val_detail}" if val_detail else "",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -770,6 +896,14 @@ def run_pilot(
                 output_tokens         = row_out_tok,
                 estimated_cost_usd    = row_cost,
             )
+
+        # ── Snapshot-level canonical assembly + Step 9 validation ────────────
+        # Runs after ALL agents for this snapshot have been attempted.
+        # prior_results holds only COMPLETE SubagentResults; absent agents
+        # are filled with safe empty-dict defaults inside _assemble_payload().
+        _record_snapshot_schema_validation(
+            db_conn, rsid, snap_json, run_id, prior_results, len(AGENT_IDS),
+        )
 
         snapshots_done += 1
 
