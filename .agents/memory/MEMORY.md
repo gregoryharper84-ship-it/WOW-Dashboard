@@ -78,3 +78,4 @@
 - [Kalshi WX shadow research client scaffold](kalshi-wx-shadow-client.md) — gate_engine/kalshi_wx_shadow_client.py; KalshiWxShadowResearchClient; CAN_EXECUTE/PRODUCTION_AUTHORITY/USER_OUTPUT_AUTHORITY all False; 3 gates in research(); inert until future step; 16 tests pass.
 - [Kalshi WX shadow pilot Stages 1–3](kalshi-wx-shadow-stages-123.md) — CapabilityBoundary+5 subagents+orchestrator+ledger; 179 total shadow tests pass; flag still False by default.
 - [Kalshi WX shadow hook and shadow_failure_only invariants](kalshi-wx-shadow-hook-invariants.md) — pre/post hooks scan the same dict (pre always fires first); shadow_failure_only=True only for client-level gate failures, not orchestrator BLOCKED results.
+- [Kalshi WX WeatherResearchSnapshot contract](kalshi-wx-shadow-snapshot.md) — frozen dataclass 10C; build_test_snapshot() only constructor; same instance to all 5 subagents; no governance keys; object.__setattr__ bypasses frozen — tests must use setattr().
