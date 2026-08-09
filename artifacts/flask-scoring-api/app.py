@@ -12716,6 +12716,15 @@ CREATE TABLE IF NOT EXISTS kalshi_wx_shadow_results (
     status                TEXT,
     created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS kalshi_wx_shadow_deterministic_outcome (
+    id                     SERIAL       PRIMARY KEY,
+    research_snapshot_id   TEXT         NOT NULL,
+    terminal_label         TEXT,
+    price_gate_disposition TEXT,
+    can_execute            BOOLEAN,
+    recorded_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
 """
 
 # PATCH-014–020: Migration DDL — adds 24 new columns to cm_slips for existing tables.
@@ -25487,15 +25496,20 @@ def wow_kalshi_weather_evaluate():
     horizon_hours = _compute_forecast_horizon_hours(date_str, station["tz"])
 
     # ── Step 10D: Kalshi Weather shadow capture (flag-gated, inert when off) ──
-    # Reads only already-computed local variables.  Makes no new network call,
-    # alters no local variable, and cannot affect the response under any path.
-    # Belt-and-suspenders: flag checked here AND inside the capture module.
+    # research_snapshot_id is generated here (not inside the capture module) so
+    # the exact same key is available at Step 10D-b after the terminal label is
+    # known, creating a durable link between the two shadow DB rows.
+    # _shadow_rsid is always assigned so Step 10D-b can reference it safely.
+    _shadow_rsid = None
     if os.environ.get("KALSHI_WX_SHADOW_AGENT_ENABLED", "").strip().lower() == "true":
         try:
+            import uuid as _shadow_uuid_mod
+            _shadow_rsid = f"wx-capture-{_shadow_uuid_mod.uuid4()}"
             from gate_engine.kalshi_wx_shadow_capture import (  # noqa: PLC0415
                 maybe_fire_shadow_snapshot as _mfss,
             )
             _mfss(
+                research_snapshot_id=_shadow_rsid,
                 city=city,
                 station=station["station"],
                 market_date=date_str,
@@ -25653,6 +25667,27 @@ def wow_kalshi_weather_evaluate():
             model_prob_sum= mp_sum,
             brackets_scored = brackets_scored,
         )
+
+    # ── Step 10D-b: Shadow deterministic outcome capture (flag-gated) ─────────
+    # Runs after terminal_label and price_gate are both finalized — i.e. after
+    # Step 8 and the WEATHER_SCOUT log write — so the outcome row is guaranteed
+    # to contain the real deterministic result, not a pre-computation estimate.
+    # Linked to the snapshot row via the same _shadow_rsid generated at Step 10D.
+    # _shadow_rsid is None when flag is off; the `and _shadow_rsid` check ensures
+    # we only write an outcome row when a matching snapshot row was also written.
+    if os.environ.get("KALSHI_WX_SHADOW_AGENT_ENABLED", "").strip().lower() == "true" and _shadow_rsid:
+        try:
+            from gate_engine.kalshi_wx_shadow_capture import (  # noqa: PLC0415
+                maybe_link_shadow_deterministic_outcome as _mlsdo,
+            )
+            _mlsdo(
+                research_snapshot_id=_shadow_rsid,
+                terminal_label=terminal_label,
+                price_gate_disposition=price_gate.get("trade_block_reason"),
+                can_execute=bool(price_gate.get("can_execute", False)),
+            )
+        except Exception:
+            pass  # shadow failure must never affect the production route
 
     return jsonify({
         # Identity
