@@ -2,6 +2,7 @@
 gate_engine/kalshi_wx_terminal_labels.py
 WOW-PATCH-2026-08-08-KALSHI-WX-TERMINAL-LABEL-FAIL-CLOSED
 WOW-PATCH-2026-08-08-MULTI-AGENT-KALSHI-WX-SHADOW
+WOW-PATCH-2026-08-09-KALSHI-WX-UNCALIBRATED-REMOVAL
 
 Single source of truth for confirmed-reachable Kalshi Weather terminal labels.
 
@@ -16,8 +17,15 @@ ADDING LABELS:
   a docstring or comment.
 
 INTENTIONALLY EXCLUDED (docstring-only, no reachable return path today):
-  KALSHI_REJECT_THIN_BOOK
-  KALSHI_REJECT_FEE_DRAG
+  KALSHI_REJECT_THIN_BOOK    — referenced in docstring; no route assigns the
+                               corresponding internal weather_label
+  KALSHI_REJECT_FEE_DRAG     — referenced in docstring; same reason
+  KALSHI_REJECT_UNCALIBRATED — removed 2026-08-09: no route handler ever
+                               assigned weather_label="WEATHER_REJECT_UNCALIBRATED",
+                               making the _weather_terminal_label_v2() branch
+                               that produced this label permanently dead code.
+                               Re-add only after adding a real calibration-check
+                               assignment in both route handlers.
 
 ISOLATION INVARIANT:
   This module must NOT be imported by or referenced from:
@@ -32,6 +40,5 @@ KALSHI_WX_TERMINAL_LABEL_REGISTRY: frozenset[str] = frozenset({
     "KALSHI_WATCH",
     "KALSHI_REJECT_NO_EDGE",
     "KALSHI_REJECT_BAD_RULES",
-    "KALSHI_REJECT_UNCALIBRATED",
     "KALSHI_DATA_UNOBTAINABLE",
 })

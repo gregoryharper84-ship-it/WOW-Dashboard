@@ -38,20 +38,17 @@ from gate_engine.kalshi_wx_shadow_capability_boundary import (
     CapabilityBoundary,
 )
 from gate_engine.kalshi_wx_shadow_snapshot import WeatherResearchSnapshot
+from gate_engine.kalshi_wx_terminal_labels import KALSHI_WX_TERMINAL_LABEL_REGISTRY
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 _MODEL: str = "claude-3-5-haiku-20241022"
 _MAX_TOKENS: int = 1024
 _MAX_TURNS: int = 4   # guard; with forced tool_choice, normally 1 turn suffices
 
-_VALID_CEILINGS = (
-    "KALSHI_WATCH",
-    "KALSHI_PLAYABLE_LIMIT_ONLY",
-    "KALSHI_REJECT_NO_EDGE",
-    "KALSHI_REJECT_UNCALIBRATED",
-    "KALSHI_REJECT_BAD_RULES",
-    "KALSHI_DATA_UNOBTAINABLE",
-)
+# Derived from the canonical registry (single source of truth).
+# Do NOT add labels here — update gate_engine/kalshi_wx_terminal_labels.py.
+# KALSHI_REJECT_UNCALIBRATED was removed 2026-08-09: dead code in the weather engine.
+_VALID_CEILINGS: tuple[str, ...] = tuple(sorted(KALSHI_WX_TERMINAL_LABEL_REGISTRY))
 
 _FORBIDDEN_KEYS_REMINDER = (
     "FORBIDDEN KEY NAMES — must NEVER appear in your tool input at any depth: "

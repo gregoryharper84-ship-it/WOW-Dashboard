@@ -24809,10 +24809,16 @@ def _weather_terminal_label_v2(
 ) -> str:
     """Map internal WEATHER_* + PATCH-003 price gate to terminal KALSHI_* label.
 
-    Terminal label set (complete):
+    Terminal label set (confirmed-reachable):
       KALSHI_PLAYABLE_LIMIT_ONLY, KALSHI_WATCH, KALSHI_REJECT_NO_EDGE,
-      KALSHI_REJECT_BAD_RULES, KALSHI_REJECT_THIN_BOOK, KALSHI_REJECT_FEE_DRAG,
-      KALSHI_REJECT_UNCALIBRATED, KALSHI_DATA_UNOBTAINABLE
+      KALSHI_REJECT_BAD_RULES, KALSHI_DATA_UNOBTAINABLE
+
+    Intentionally excluded (no route handler assigns the corresponding
+    internal weather_label value, so these branches would be dead code):
+      KALSHI_REJECT_UNCALIBRATED — removed 2026-08-09; re-add only when a
+        calibration-check assigns weather_label="WEATHER_REJECT_UNCALIBRATED"
+        in both route handlers.
+      KALSHI_REJECT_THIN_BOOK, KALSHI_REJECT_FEE_DRAG — future price-gate work
     """
     # PATCH-003 gate override always wins (TF-WX-12, TF-WX-18)
     if price_gate.get("adjusted_terminal_label"):
@@ -24823,8 +24829,6 @@ def _weather_terminal_label_v2(
         return "KALSHI_DATA_UNOBTAINABLE"
     if weather_label == "WEATHER_REJECT_SETTLEMENT":
         return "KALSHI_REJECT_BAD_RULES"
-    if weather_label == "WEATHER_REJECT_UNCALIBRATED":
-        return "KALSHI_REJECT_UNCALIBRATED"
     if weather_label in ("WEATHER_SCOUT", "WEATHER_WATCH"):
         return "KALSHI_WATCH"   # TF-WX-18: WATCH/SCOUT blocks PLAYABLE
 

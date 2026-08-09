@@ -555,5 +555,84 @@ class TestLD6ThreadSafety(unittest.TestCase):
         self.assertEqual(ledger.total_recorded(), n_threads * n_per_thread)
 
 
+# ── OR9: KALSHI_REJECT_UNCALIBRATED removal regression ───────────────────────
+#
+# Added 2026-08-09 (WOW-PATCH-2026-08-09-KALSHI-WX-UNCALIBRATED-REMOVAL).
+# Confirms the removed label cannot re-enter the system via subagent tool enums,
+# the orchestrator ceiling validator, or _safe_ceiling().
+
+class TestOR9UncalibratedRemovalRegression(unittest.TestCase):
+    """
+    Regression: KALSHI_REJECT_UNCALIBRATED was removed from the canonical registry
+    because no weather route handler assigns weather_label="WEATHER_REJECT_UNCALIBRATED".
+    Confirm the removal propagated to all derived sets in the shadow pipeline.
+    """
+
+    def test_OR9a_UNCALIBRATED_not_in_orchestrator_ceiling_capable_labels(self):
+        """_CEILING_CAPABLE_LABELS in the orchestrator must not contain the removed label."""
+        from gate_engine import kalshi_wx_shadow_orchestrator as orch
+        self.assertNotIn(
+            "KALSHI_REJECT_UNCALIBRATED",
+            orch._CEILING_CAPABLE_LABELS,
+            "_CEILING_CAPABLE_LABELS must derive from the canonical registry, "
+            "which no longer contains KALSHI_REJECT_UNCALIBRATED",
+        )
+
+    def test_OR9b_safe_ceiling_falls_back_for_removed_label(self):
+        """_safe_ceiling must NOT accept KALSHI_REJECT_UNCALIBRATED — fall back to KALSHI_WATCH."""
+        from gate_engine.kalshi_wx_shadow_orchestrator import _safe_ceiling, _DEFAULT_CEILING
+        result = _safe_ceiling("KALSHI_REJECT_UNCALIBRATED")
+        self.assertEqual(
+            result,
+            _DEFAULT_CEILING,
+            f"_safe_ceiling('KALSHI_REJECT_UNCALIBRATED') must fall back to "
+            f"{_DEFAULT_CEILING!r}, got {result!r}",
+        )
+
+    def test_OR9c_UNCALIBRATED_not_in_subagent_valid_ceilings(self):
+        """_VALID_CEILINGS in subagents (used for tool-schema enums) must not contain the removed label."""
+        from gate_engine import kalshi_wx_shadow_subagents as sa
+        self.assertNotIn(
+            "KALSHI_REJECT_UNCALIBRATED",
+            sa._VALID_CEILINGS,
+            "_VALID_CEILINGS must derive from the canonical registry — "
+            "KALSHI_REJECT_UNCALIBRATED must be absent",
+        )
+
+    def test_OR9d_forecast_context_tool_enum_excludes_removed_label(self):
+        """The forecast_context tool schema enum must not expose KALSHI_REJECT_UNCALIBRATED to the model."""
+        from gate_engine.kalshi_wx_shadow_subagents import _FC_TOOL_DEF
+        # Walk the schema to find the recommended_ceiling enum
+        props = _FC_TOOL_DEF["input_schema"]["properties"]
+        ceiling_enum = props["recommended_ceiling"]["enum"]
+        self.assertNotIn(
+            "KALSHI_REJECT_UNCALIBRATED",
+            ceiling_enum,
+            "forecast_context recommended_ceiling enum must not contain the removed label",
+        )
+
+    def test_OR9e_contradiction_detection_tool_enum_excludes_removed_label(self):
+        """The contradiction_detection tool schema enum must not expose KALSHI_REJECT_UNCALIBRATED."""
+        from gate_engine.kalshi_wx_shadow_subagents import _CD_TOOL_DEF
+        props = _CD_TOOL_DEF["input_schema"]["properties"]
+        ceiling_enum = props["revised_ceiling"]["enum"]
+        self.assertNotIn(
+            "KALSHI_REJECT_UNCALIBRATED",
+            ceiling_enum,
+            "contradiction_detection revised_ceiling enum must not contain the removed label",
+        )
+
+    def test_OR9f_valid_ceilings_size_matches_canonical_registry(self):
+        """_VALID_CEILINGS size must equal the canonical registry size (5)."""
+        from gate_engine import kalshi_wx_shadow_subagents as sa
+        from gate_engine.kalshi_wx_terminal_labels import KALSHI_WX_TERMINAL_LABEL_REGISTRY
+        self.assertEqual(
+            len(sa._VALID_CEILINGS),
+            len(KALSHI_WX_TERMINAL_LABEL_REGISTRY),
+            f"_VALID_CEILINGS has {len(sa._VALID_CEILINGS)} entries; "
+            f"canonical registry has {len(KALSHI_WX_TERMINAL_LABEL_REGISTRY)}; they must match",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

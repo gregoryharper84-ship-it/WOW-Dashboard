@@ -1,14 +1,20 @@
 """
 tests/test_kalshi_wx_terminal_label_failclosed.py
 WOW-PATCH-2026-08-08-KALSHI-WX-TERMINAL-LABEL-FAIL-CLOSED
+WOW-PATCH-2026-08-09-KALSHI-WX-UNCALIBRATED-REMOVAL
 
 Validates the fail-closed terminal-label guard introduced by the patch.
 
 Test plan
 ─────────
 Section A — Registry membership (unit, no Flask)
-  A1–A6: each of the 6 confirmed-reachable labels is accepted by the registry
+  A1–A5: each of the 5 confirmed-reachable labels is accepted by the registry
          and by _validate_wx_terminal_label().
+  A5 (updated 2026-08-09): KALSHI_REJECT_UNCALIBRATED was removed from the
+         registry because no route handler ever assigns the corresponding
+         internal weather_label="WEATHER_REJECT_UNCALIBRATED", making the
+         _weather_terminal_label_v2() branch permanently dead code.
+         A5 now asserts the label is ABSENT from the registry.
   A7:    KALSHI_REJECT_THIN_BOOK is rejected (appears in a docstring but
          is not reachable from any production code path).
   A8:    KALSHI_REJECT_FEE_DRAG is rejected (same reason).
@@ -120,8 +126,16 @@ class TestRegistryMembership(unittest.TestCase):
     def test_A4_KALSHI_REJECT_BAD_RULES_in_registry(self):
         self.assertIn("KALSHI_REJECT_BAD_RULES", _REGISTRY)
 
-    def test_A5_KALSHI_REJECT_UNCALIBRATED_in_registry(self):
-        self.assertIn("KALSHI_REJECT_UNCALIBRATED", _REGISTRY)
+    def test_A5_KALSHI_REJECT_UNCALIBRATED_NOT_in_registry(self):
+        """
+        Removed 2026-08-09 (WOW-PATCH-2026-08-09-KALSHI-WX-UNCALIBRATED-REMOVAL):
+        KALSHI_REJECT_UNCALIBRATED was listed as confirmed-reachable but no route
+        handler ever assigns weather_label="WEATHER_REJECT_UNCALIBRATED", so the
+        _weather_terminal_label_v2() branch that returned this label was dead code.
+        The label has been removed from the registry until a real calibration-check
+        code path is added to both route handlers.
+        """
+        self.assertNotIn("KALSHI_REJECT_UNCALIBRATED", _REGISTRY)
 
     def test_A6_KALSHI_DATA_UNOBTAINABLE_in_registry(self):
         self.assertIn("KALSHI_DATA_UNOBTAINABLE", _REGISTRY)
@@ -134,8 +148,9 @@ class TestRegistryMembership(unittest.TestCase):
         """docstring-only label must be absent."""
         self.assertNotIn("KALSHI_REJECT_FEE_DRAG", _REGISTRY)
 
-    def test_A9_registry_has_exactly_six_members(self):
-        self.assertEqual(len(_REGISTRY), 6)
+    def test_A9_registry_has_exactly_five_members(self):
+        """Registry shrank from 6 to 5 when KALSHI_REJECT_UNCALIBRATED was removed."""
+        self.assertEqual(len(_REGISTRY), 5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -244,13 +259,17 @@ VALID_LABELS = [
     "KALSHI_WATCH",
     "KALSHI_REJECT_NO_EDGE",
     "KALSHI_REJECT_BAD_RULES",
-    "KALSHI_REJECT_UNCALIBRATED",
     "KALSHI_DATA_UNOBTAINABLE",
 ]
 
 
 class TestPostRouteValidLabels(unittest.TestCase):
-    """C1-C6: each valid label returns 200 with ok=True and the correct terminal_label."""
+    """C1-C5: each valid label returns 200 with ok=True and the correct terminal_label.
+
+    Note: C5 (KALSHI_REJECT_UNCALIBRATED) was removed — the label was removed from
+    the registry on 2026-08-09 as confirmed dead code (see test A5 for rationale).
+    C6 (KALSHI_DATA_UNOBTAINABLE) is renumbered C5 in VALID_LABELS above.
+    """
 
     def _run_for_label(self, expected_label: str):
         """
@@ -311,10 +330,7 @@ class TestPostRouteValidLabels(unittest.TestCase):
     def test_C4_KALSHI_REJECT_BAD_RULES(self):
         self._run_for_label("KALSHI_REJECT_BAD_RULES")
 
-    def test_C5_KALSHI_REJECT_UNCALIBRATED(self):
-        self._run_for_label("KALSHI_REJECT_UNCALIBRATED")
-
-    def test_C6_KALSHI_DATA_UNOBTAINABLE(self):
+    def test_C5_KALSHI_DATA_UNOBTAINABLE(self):
         self._run_for_label("KALSHI_DATA_UNOBTAINABLE")
 
 

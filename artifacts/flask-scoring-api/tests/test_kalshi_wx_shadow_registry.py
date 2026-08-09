@@ -9,7 +9,7 @@ Test plan
 Section A — Namespace membership (unit)
   A1:  OperationalState.MEMBERS == {"SHADOW_ONLY", "DRY_RUN_ONLY"}
   A2:  ModelReadiness.MEMBERS == {"WEATHER_SCOUT","WEATHER_WATCH","WEATHER_MODEL_READY"}
-  A3:  TerminalProjection.kalshi_weather.MEMBERS contains exactly the 6 labels.
+  A3:  TerminalProjection.kalshi_weather.MEMBERS contains exactly the 5 labels.
   A4:  String constants on each namespace class match their MEMBERS set.
 
 Section B — Single source of truth (no drift from prerequisite patch)
@@ -77,8 +77,11 @@ _EXPECTED_TERMINAL_LABELS: frozenset[str] = frozenset({
     "KALSHI_WATCH",
     "KALSHI_REJECT_NO_EDGE",
     "KALSHI_REJECT_BAD_RULES",
-    "KALSHI_REJECT_UNCALIBRATED",
     "KALSHI_DATA_UNOBTAINABLE",
+    # KALSHI_REJECT_UNCALIBRATED removed 2026-08-09: no route handler ever assigns
+    # weather_label="WEATHER_REJECT_UNCALIBRATED", so the return branch in
+    # _weather_terminal_label_v2() was permanently dead code. See test A5 in
+    # test_kalshi_wx_terminal_label_failclosed.py for full rationale.
 })
 
 _EXPECTED_OPERATIONAL: frozenset[str] = frozenset({"SHADOW_ONLY", "DRY_RUN_ONLY"})
@@ -207,8 +210,9 @@ class TestCeilingCapableSubset(unittest.TestCase):
     def test_C5_invented_string_not_ceiling_capable(self):
         self.assertNotIn("KALSHI_INVENTED_XYZ", CEILING_CAPABLE_LABELS)
 
-    def test_C6_ceiling_capable_size_exactly_6(self):
-        self.assertEqual(len(CEILING_CAPABLE_LABELS), 6)
+    def test_C6_ceiling_capable_size_exactly_5(self):
+        """Registry shrank from 6 to 5 when KALSHI_REJECT_UNCALIBRATED was removed."""
+        self.assertEqual(len(CEILING_CAPABLE_LABELS), 5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

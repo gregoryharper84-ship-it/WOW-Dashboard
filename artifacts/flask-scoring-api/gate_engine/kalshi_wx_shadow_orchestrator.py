@@ -62,19 +62,17 @@ from gate_engine.kalshi_wx_shadow_subagents import (
     run_uncertainty_explanation_subagent,
     run_unusual_regime_subagent,
 )
+from gate_engine.kalshi_wx_terminal_labels import KALSHI_WX_TERMINAL_LABEL_REGISTRY
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 _AGENT_ID: str = "kalshi-wx-shadow-research-agent-v1"
 
-# CEILING_CAPABLE_LABELS — 6 approved terminal projection values
-_CEILING_CAPABLE_LABELS: frozenset[str] = frozenset({
-    "KALSHI_WATCH",
-    "KALSHI_PLAYABLE_LIMIT_ONLY",
-    "KALSHI_REJECT_NO_EDGE",
-    "KALSHI_REJECT_UNCALIBRATED",
-    "KALSHI_REJECT_BAD_RULES",
-    "KALSHI_DATA_UNOBTAINABLE",
-})
+# CEILING_CAPABLE_LABELS — derived from the canonical registry (single source of truth).
+# Do NOT add labels here — update gate_engine/kalshi_wx_terminal_labels.py instead.
+# KALSHI_REJECT_UNCALIBRATED was removed 2026-08-09: no route handler ever assigns
+# weather_label="WEATHER_REJECT_UNCALIBRATED", making the corresponding branch in
+# _weather_terminal_label_v2() permanently dead code.
+_CEILING_CAPABLE_LABELS: frozenset[str] = KALSHI_WX_TERMINAL_LABEL_REGISTRY
 _DEFAULT_CEILING: str = "KALSHI_WATCH"
 
 
