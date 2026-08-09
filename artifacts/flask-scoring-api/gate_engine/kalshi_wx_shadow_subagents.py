@@ -42,7 +42,7 @@ from gate_engine.kalshi_wx_shadow_snapshot import WeatherResearchSnapshot
 from gate_engine.kalshi_wx_terminal_labels import KALSHI_WX_TERMINAL_LABEL_REGISTRY
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-_MODEL: str = "claude-3-5-haiku-20241022"
+_MODEL: str = "claude-haiku-4-5-20251001"
 _MAX_TOKENS: int = 1024
 _MAX_TURNS: int = 4   # guard; with forced tool_choice, normally 1 turn suffices
 

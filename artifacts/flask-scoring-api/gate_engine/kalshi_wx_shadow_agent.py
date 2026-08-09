@@ -52,7 +52,7 @@ except ImportError:
 
 # ── Agent identity and model ──────────────────────────────────────────────────
 _AGENT_ID: str = "kalshi-wx-forecast-context-agent-v1"
-_MODEL: str = "claude-3-5-haiku-20241022"
+_MODEL: str = "claude-haiku-4-5-20251001"
 _MAX_TOKENS: int = 1024
 
 # ── Feature flag — default OFF ────────────────────────────────────────────────
