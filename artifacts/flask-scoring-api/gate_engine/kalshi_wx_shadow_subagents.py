@@ -37,6 +37,7 @@ from typing import Any, Optional
 from gate_engine.kalshi_wx_shadow_capability_boundary import (
     CapabilityBoundary,
 )
+from gate_engine.kalshi_wx_shadow_snapshot import WeatherResearchSnapshot
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 _MODEL: str = "claude-3-5-haiku-20241022"
@@ -63,6 +64,60 @@ _ADVISORY_REMINDER = (
     "You are ADVISORY ONLY. You cannot place orders, modify positions, write to any "
     "system, or call any execution endpoint. Output only via your designated tool."
 )
+
+
+# ── Snapshot evidence formatter ───────────────────────────────────────────────
+
+def _format_snapshot_evidence(snap: WeatherResearchSnapshot) -> str:
+    """
+    Render a WeatherResearchSnapshot as a structured evidence block for
+    inclusion in a subagent user message.  All fields are evidence only.
+
+    When snapshot is None (legacy path), each subagent falls back to the
+    city/date/run_id-only message format to preserve backward compatibility
+    with existing tests.
+    """
+    def _fmt_dict(d: Optional[dict], label: str) -> str:
+        if d is None:
+            return f"{label}: unavailable"
+        if not d:
+            return f"{label}: {{}}"
+        lines = [f"{label}:"]
+        for k, v in d.items():
+            lines.append(f"  {k}={v!r}")
+        return "\n".join(lines)
+
+    failures_str = (
+        "\n".join(f"  - {f}" for f in snap.source_failures)
+        if snap.source_failures else "  (none)"
+    )
+    disagreements_str = (
+        "\n".join(f"  - {d}" for d in snap.source_disagreements)
+        if snap.source_disagreements else "  (none)"
+    )
+
+    return (
+        f"research_snapshot_id={snap.research_snapshot_id!r}\n"
+        f"canonical_event_id={snap.canonical_event_id!r}\n"
+        f"city={snap.city!r}  station={snap.station!r}\n"
+        f"market_date={snap.market_date!r}\n"
+        f"source_cutoff_timestamp={snap.source_cutoff_timestamp!r}\n"
+        f"\n"
+        f"WEATHER EVIDENCE\n"
+        f"forecast_high_used_by_deterministic_model="
+        f"{snap.forecast_high_used_by_deterministic_model:.2f}\u00b0F\n"
+        f"weather_data_source_tier={snap.weather_data_source_tier!r}\n"
+        f"forecast_horizon_hours={snap.forecast_horizon_hours:.1f}h\n"
+        f"sigma_f={snap.sigma_f:.3f}\u00b0F\n"
+        f"deterministic_weather_readiness_state="
+        f"{snap.deterministic_weather_readiness_state!r}\n"
+        f"{_fmt_dict(snap.nws_gridpoint_forecast, 'nws_gridpoint_forecast')}\n"
+        f"{_fmt_dict(snap.open_meteo_forecast, 'open_meteo_forecast')}\n"
+        f"{_fmt_dict(snap.noaa_ncei_forecast, 'noaa_ncei_forecast')}\n"
+        f"{_fmt_dict(snap.official_observations_at_cutoff, 'official_observations_at_cutoff')}\n"
+        f"source_failures:\n{failures_str}\n"
+        f"source_disagreements:\n{disagreements_str}"
+    )
 
 
 # ── SubagentResult ────────────────────────────────────────────────────────────
@@ -310,6 +365,7 @@ def run_forecast_context_subagent(
     client: Any,
     context: dict,
     capability_boundary: CapabilityBoundary,
+    snapshot: Optional[WeatherResearchSnapshot] = None,
 ) -> SubagentResult:
     """
     Run the forecast-context interpretation subagent.
@@ -320,20 +376,35 @@ def run_forecast_context_subagent(
     context            : Dict with keys: city, date, run_id, and optionally
                          any additional weather context the caller provides.
     capability_boundary: CapabilityBoundary instance for hook enforcement.
+    snapshot           : Immutable evidence snapshot for this run.  When
+                         provided, its fields replace the city/date-only message.
+                         When None (default), falls back to context-only format
+                         for backward compatibility.
     """
-    city    = context.get("city", "unknown")
-    date    = context.get("date", "unknown")
-    run_id  = context.get("run_id", "unknown")
+    run_id = context.get("run_id", "unknown")
 
-    user_msg = (
-        f"Shadow research run: run_id={run_id!r}\n"
-        f"Market: Kalshi Weather temperature market\n"
-        f"City: {city}\n"
-        f"Date: {date}\n\n"
-        f"Interpret the forecast context for this city and date. "
-        f"Assess the scoring mode, calibration, uncertainty, and shadow ceiling. "
-        f"Call emit_forecast_context with your structured analysis."
-    )
+    if snapshot is not None:
+        evidence = _format_snapshot_evidence(snapshot)
+        user_msg = (
+            f"Shadow research run:\n{evidence}\n\n"
+            f"Interpret the forecast context from the weather evidence above. "
+            f"Assess the scoring mode (gaussian_forecast vs binary_final_cli based on "
+            f"forecast_horizon_hours and deterministic_weather_readiness_state), "
+            f"calibration status, uncertainty tier, and recommend a shadow ceiling. "
+            f"Call emit_forecast_context with your structured analysis."
+        )
+    else:
+        city  = context.get("city", "unknown")
+        date  = context.get("date", "unknown")
+        user_msg = (
+            f"Shadow research run: run_id={run_id!r}\n"
+            f"Market: Kalshi Weather temperature market\n"
+            f"City: {city}\n"
+            f"Date: {date}\n\n"
+            f"Interpret the forecast context for this city and date. "
+            f"Assess the scoring mode, calibration, uncertainty, and shadow ceiling. "
+            f"Call emit_forecast_context with your structured analysis."
+        )
 
     return _run_single_tool_subagent(
         client=client,
@@ -412,19 +483,30 @@ def run_source_reconciliation_subagent(
     client: Any,
     context: dict,
     capability_boundary: CapabilityBoundary,
+    snapshot: Optional[WeatherResearchSnapshot] = None,
 ) -> SubagentResult:
     """Run the source reconciliation subagent."""
-    city   = context.get("city", "unknown")
-    date   = context.get("date", "unknown")
     run_id = context.get("run_id", "unknown")
 
-    user_msg = (
-        f"Shadow research run: run_id={run_id!r}\n"
-        f"City: {city}  Date: {date}\n\n"
-        f"Identify the expected weather data sources for this Kalshi Weather market, "
-        f"assess which are present vs missing, note any source conflicts, "
-        f"and emit a reconciliation result."
-    )
+    if snapshot is not None:
+        evidence = _format_snapshot_evidence(snapshot)
+        user_msg = (
+            f"Shadow research run:\n{evidence}\n\n"
+            f"Assess which weather data sources are present vs missing for this market. "
+            f"Use source_failures and source_disagreements from the evidence above. "
+            f"Identify any source-level conflicts. "
+            f"Emit a source reconciliation result via emit_source_reconciliation."
+        )
+    else:
+        city   = context.get("city", "unknown")
+        date   = context.get("date", "unknown")
+        user_msg = (
+            f"Shadow research run: run_id={run_id!r}\n"
+            f"City: {city}  Date: {date}\n\n"
+            f"Identify the expected weather data sources for this Kalshi Weather market, "
+            f"assess which are present vs missing, note any source conflicts, "
+            f"and emit a reconciliation result."
+        )
 
     return _run_single_tool_subagent(
         client=client,
@@ -498,10 +580,9 @@ def run_contradiction_detection_subagent(
     capability_boundary: CapabilityBoundary,
     forecast_context: Optional[SubagentResult] = None,
     source_reconciliation: Optional[SubagentResult] = None,
+    snapshot: Optional[WeatherResearchSnapshot] = None,
 ) -> SubagentResult:
     """Run the contradiction detection subagent."""
-    city   = context.get("city", "unknown")
-    date   = context.get("date", "unknown")
     run_id = context.get("run_id", "unknown")
 
     fc_summary = ""
@@ -521,14 +602,28 @@ def run_contradiction_detection_subagent(
             f"conflicts={sr_out.get('conflicts', [])!r}"
         )
 
-    user_msg = (
-        f"Shadow research run: run_id={run_id!r}\n"
-        f"City: {city}  Date: {date}"
-        f"{fc_summary}{sr_summary}\n\n"
-        f"Detect any contradictions between signals or sources. "
-        f"Determine if any contradiction revises the ceiling. "
-        f"Call emit_contradiction_detection with your result."
-    )
+    if snapshot is not None:
+        evidence = _format_snapshot_evidence(snapshot)
+        user_msg = (
+            f"Shadow research run:\n{evidence}"
+            f"{fc_summary}{sr_summary}\n\n"
+            f"Detect any contradictions between signals or sources in the evidence above. "
+            f"Pay attention to source_disagreements and any tension between the "
+            f"forecast_context and source_reconciliation results. "
+            f"Determine if any contradiction revises the ceiling. "
+            f"Call emit_contradiction_detection with your result."
+        )
+    else:
+        city   = context.get("city", "unknown")
+        date   = context.get("date", "unknown")
+        user_msg = (
+            f"Shadow research run: run_id={run_id!r}\n"
+            f"City: {city}  Date: {date}"
+            f"{fc_summary}{sr_summary}\n\n"
+            f"Detect any contradictions between signals or sources. "
+            f"Determine if any contradiction revises the ceiling. "
+            f"Call emit_contradiction_detection with your result."
+        )
 
     return _run_single_tool_subagent(
         client=client,
@@ -597,20 +692,33 @@ def run_unusual_regime_subagent(
     client: Any,
     context: dict,
     capability_boundary: CapabilityBoundary,
+    snapshot: Optional[WeatherResearchSnapshot] = None,
 ) -> SubagentResult:
     """Run the unusual-regime identification subagent."""
-    city   = context.get("city", "unknown")
-    date   = context.get("date", "unknown")
     run_id = context.get("run_id", "unknown")
 
-    user_msg = (
-        f"Shadow research run: run_id={run_id!r}\n"
-        f"City: {city}  Date: {date}\n\n"
-        f"Assess the meteorological regime for this city and date. "
-        f"Is it unusual for this season? What factors drive any unusualness? "
-        f"How does it impact forecast reliability? "
-        f"Call emit_regime_assessment with your analysis."
-    )
+    if snapshot is not None:
+        evidence = _format_snapshot_evidence(snapshot)
+        user_msg = (
+            f"Shadow research run:\n{evidence}\n\n"
+            f"Assess whether the meteorological regime for this city, station, and date "
+            f"is unusual relative to climatological norms for the season. "
+            f"Consider the forecast_high, sigma_f, and forecast_horizon_hours from the "
+            f"evidence above. Identify any factors that make it unusual and assess their "
+            f"impact on forecast reliability. "
+            f"Call emit_regime_assessment with your analysis."
+        )
+    else:
+        city   = context.get("city", "unknown")
+        date   = context.get("date", "unknown")
+        user_msg = (
+            f"Shadow research run: run_id={run_id!r}\n"
+            f"City: {city}  Date: {date}\n\n"
+            f"Assess the meteorological regime for this city and date. "
+            f"Is it unusual for this season? What factors drive any unusualness? "
+            f"How does it impact forecast reliability? "
+            f"Call emit_regime_assessment with your analysis."
+        )
 
     return _run_single_tool_subagent(
         client=client,
@@ -691,10 +799,9 @@ def run_uncertainty_explanation_subagent(
     forecast_context: Optional[SubagentResult] = None,
     contradiction_detection: Optional[SubagentResult] = None,
     unusual_regime: Optional[SubagentResult] = None,
+    snapshot: Optional[WeatherResearchSnapshot] = None,
 ) -> SubagentResult:
     """Run the uncertainty explanation subagent."""
-    city   = context.get("city", "unknown")
-    date   = context.get("date", "unknown")
     run_id = context.get("run_id", "unknown")
 
     fc_summary = ""
@@ -721,14 +828,30 @@ def run_uncertainty_explanation_subagent(
             f"reliability_impact={ur_out.get('reliability_impact')!r}"
         )
 
-    user_msg = (
-        f"Shadow research run: run_id={run_id!r}\n"
-        f"City: {city}  Date: {date}"
-        f"{fc_summary}{cd_summary}{ur_summary}\n\n"
-        f"Synthesize the above results. What are the primary sources of forecast "
-        f"uncertainty? What is the final uncertainty tier? How does it impact the ceiling? "
-        f"Call emit_uncertainty_summary with your final assessment."
-    )
+    if snapshot is not None:
+        evidence = _format_snapshot_evidence(snapshot)
+        user_msg = (
+            f"Shadow research run:\n{evidence}"
+            f"{fc_summary}{cd_summary}{ur_summary}\n\n"
+            f"Synthesize the weather evidence and upstream results above. "
+            f"Use sigma_f={snapshot.sigma_f:.3f}°F and "
+            f"forecast_horizon_hours={snapshot.forecast_horizon_hours:.1f}h as "
+            f"the authoritative quantitative uncertainty inputs. "
+            f"What are the primary sources of forecast uncertainty? "
+            f"What is the final uncertainty tier? How does it impact the ceiling? "
+            f"Call emit_uncertainty_summary with your final assessment."
+        )
+    else:
+        city   = context.get("city", "unknown")
+        date   = context.get("date", "unknown")
+        user_msg = (
+            f"Shadow research run: run_id={run_id!r}\n"
+            f"City: {city}  Date: {date}"
+            f"{fc_summary}{cd_summary}{ur_summary}\n\n"
+            f"Synthesize the above results. What are the primary sources of forecast "
+            f"uncertainty? What is the final uncertainty tier? How does it impact the ceiling? "
+            f"Call emit_uncertainty_summary with your final assessment."
+        )
 
     return _run_single_tool_subagent(
         client=client,

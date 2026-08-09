@@ -47,6 +47,7 @@ import os
 from typing import Any, Optional
 
 from gate_engine.kalshi_wx_shadow_capability_boundary import CapabilityBoundary
+from gate_engine.kalshi_wx_shadow_snapshot import WeatherResearchSnapshot
 from gate_engine.kalshi_wx_shadow_ledger import ShadowLedger
 from gate_engine.kalshi_wx_shadow_schema import (
     SHADOW_PASS,
@@ -256,6 +257,7 @@ def run_shadow_orchestrator(
     sdk_client: Any,
     capability_boundary: CapabilityBoundary,
     ledger: ShadowLedger,
+    snapshot: Optional[WeatherResearchSnapshot] = None,
 ) -> ShadowValidationResult:
     """
     Run the full Kalshi Weather shadow research pipeline.
@@ -273,6 +275,11 @@ def run_shadow_orchestrator(
                          the None case before calling this function).
     capability_boundary: CapabilityBoundary for hook enforcement.
     ledger             : ShadowLedger to record the run outcome.
+    snapshot           : Immutable evidence snapshot for this run.  The SAME
+                         instance is passed unchanged to all five subagents —
+                         "one snapshot, same immutable evidence to every agent."
+                         When None (default), subagents fall back to city/date
+                         context-only messages for backward compatibility.
 
     Returns
     -------
@@ -297,6 +304,7 @@ def run_shadow_orchestrator(
             client=sdk_client,
             context=context,
             capability_boundary=capability_boundary,
+            snapshot=snapshot,  # same instance to every subagent — closure variable
             **kwargs,
         )
         results[subagent_id] = result
