@@ -12757,6 +12757,18 @@ ALTER TABLE cm_slips
     ADD COLUMN IF NOT EXISTS legs_enriched                JSONB;
 """
 
+_CM_SHADOW_RESULT_MIGRATE_DDL = """
+ALTER TABLE kalshi_wx_shadow_results
+    ADD COLUMN IF NOT EXISTS latency_ms          INTEGER,
+    ADD COLUMN IF NOT EXISTS model               TEXT,
+    ADD COLUMN IF NOT EXISTS input_tokens        INTEGER,
+    ADD COLUMN IF NOT EXISTS output_tokens       INTEGER,
+    ADD COLUMN IF NOT EXISTS estimated_cost_usd  NUMERIC;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_results_rsid_agent
+    ON kalshi_wx_shadow_results (research_snapshot_id, agent_id);
+"""
+
 def _cm_ensure_schema():
     """Idempotently create all CM tables and run column migrations. Safe to call repeatedly."""
     global _CM_SCHEMA_READY
@@ -12774,9 +12786,14 @@ def _cm_ensure_schema():
                         cur.execute(_CM_SLIP_MIGRATE_DDL)
                     except Exception as mig_err:
                         app.logger.warning(f"CM slip migration (non-fatal): {mig_err}")
+                    # Step 12.5B: add new columns + UNIQUE index to kalshi_wx_shadow_results
+                    try:
+                        cur.execute(_CM_SHADOW_RESULT_MIGRATE_DDL)
+                    except Exception as mig_err:
+                        app.logger.warning(f"Shadow result migration (non-fatal): {mig_err}")
                 conn.commit()
             _CM_SCHEMA_READY = True
-            app.logger.info("CM schema ready (PATCH-014–020 migrations applied)")
+            app.logger.info("CM schema ready (PATCH-014–020 + shadow result migrations applied)")
         except Exception as e:
             app.logger.error(f"CM schema bootstrap failed: {e}")
             raise
