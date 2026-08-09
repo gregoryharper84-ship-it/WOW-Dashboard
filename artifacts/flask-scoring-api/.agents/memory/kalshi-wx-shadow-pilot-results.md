@@ -1,7 +1,18 @@
 ---
 name: Kalshi WX shadow pilot trial results and BLOCKED-SHADOW-PASS pattern
 description: Results of the 25-trial shadow pilot and key behavioral invariants discovered during trials.
+pilot_status: VALIDATED_COMPLETE
+step15_ruling: APPROVED_CLOSED
+total_real_spend: $0.410970
+closure_step: 16
 ---
+
+## Pilot status: VALIDATED_COMPLETE
+
+Step 15 ChatGPT final ruling: **APPROVED_CLOSED**  
+Total real spend: **$0.410970** (125 rows Step 14B + 5 rows Step 14C canary)  
+Full step history and spend breakdown: `pilot_audit/kalshi_wx_shadow_pilot_status_tracker.md`  
+Closure record: `pilot_audit/step16_closure.md`
 
 ## BLOCKED-but-SHADOW-PASS is correct and expected behavior
 
