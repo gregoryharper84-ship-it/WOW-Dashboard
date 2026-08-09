@@ -187,6 +187,16 @@ def invoke_forecast_context_agent(
     sdk_client: Optional[Any] = None,
 ) -> ShadowValidationResult:
     """
+    TEST-ONLY DIRECT COMPLETION HELPER.
+
+    This function uses client.messages.create() directly — a bare chat
+    completion call, not the class-based research client scaffold.  It exists
+    for the Step 10.1 proof-of-concept and for mocked unit tests.
+
+    For production shadow research use KalshiWxShadowResearchClient.research()
+    in gate_engine/kalshi_wx_shadow_client.py instead.
+
+    ──────────────────────────────────────────────────────────────────────────
     Invoke the Kalshi Weather forecast-context interpretation subagent and
     return a schema-validated ShadowValidationResult.
 
