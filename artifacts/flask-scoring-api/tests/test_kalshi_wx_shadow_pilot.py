@@ -75,13 +75,14 @@ def _make_snap(rsid: str) -> dict:
 def _success_result(**overrides) -> dict:
     """A mock agent result that looks like a successful subagent response."""
     base = {
-        "success":        True,
-        "tool_input":     {"scoring_mode": "gaussian_forecast"},
-        "failure_reason": None,
-        "latency_ms":     42,
-        "model":          None,
-        "input_tokens":   10,
-        "output_tokens":  5,
+        "success":                 True,
+        "tool_input":              {"scoring_mode": "gaussian_forecast"},
+        "failure_reason":          None,
+        "latency_ms":              42,
+        "model":                   None,
+        "input_tokens":            10,
+        "output_tokens":           5,
+        "usage_accounting_status": "AVAILABLE",
     }
     base.update(overrides)
     return base
@@ -90,13 +91,14 @@ def _success_result(**overrides) -> dict:
 def _failure_result(**overrides) -> dict:
     """A mock agent result that looks like a failed subagent response."""
     base = {
-        "success":        False,
-        "tool_input":     {},
-        "failure_reason": "PRE_HOOK_DENIED: forbidden key detected",
-        "latency_ms":     12,
-        "model":          None,
-        "input_tokens":   8,
-        "output_tokens":  0,
+        "success":                 False,
+        "tool_input":              {},
+        "failure_reason":          "PRE_HOOK_DENIED: forbidden key detected",
+        "latency_ms":              12,
+        "model":                   None,
+        "input_tokens":            None,
+        "output_tokens":           None,
+        "usage_accounting_status": "UNAVAILABLE",
     }
     base.update(overrides)
     return base
@@ -304,7 +306,7 @@ class TestMaxSnapshotsCap(unittest.TestCase):
         calls  = []
         writes = []
 
-        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             calls.append(agent_id)
             return _success_result()
 
@@ -333,7 +335,7 @@ class TestMaxSnapshotsCap(unittest.TestCase):
         snaps  = [_make_snap(f"rsid-{i}") for i in range(25)]
         calls  = []
 
-        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             calls.append(agent_id)
             return _success_result()
 
@@ -389,7 +391,7 @@ class TestMaxSubagentCallsCap(unittest.TestCase):
 
         call_count = [0]
 
-        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             call_count[0] += 1
             # If this ever reaches 126, the cap has failed
             self.assertLessEqual(
@@ -465,7 +467,7 @@ class TestSpendGuard(unittest.TestCase):
         snaps = [_make_snap("rsid-budget-test")]
         called = [0]
 
-        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             called[0] += 1
             return _success_result()
 
@@ -503,7 +505,7 @@ class TestSpendGuard(unittest.TestCase):
         zero_budget = dict(_MOCK_CONFIG, PILOT_BUDGET_USD=0.0)
         called = [0]
 
-        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             called[0] += 1
             return _success_result()
 
@@ -530,7 +532,7 @@ class TestSpendGuard(unittest.TestCase):
         snaps = [_make_snap("rsid-config-test")]
         writes = []
 
-        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             return _success_result(tool_input={"foo": "bar"})
 
         with patch("run_kalshi_wx_shadow_pilot.fetch_eligible_snapshots", return_value=snaps):
@@ -589,7 +591,7 @@ class TestResumability(unittest.TestCase):
         def mock_is_completed(conn, rsid, agent_id):
             return (rsid, agent_id) in completed_pairs
 
-        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             called_agents.append(agent_id)
             return _success_result()
 
@@ -642,7 +644,7 @@ class TestResumability(unittest.TestCase):
 
         called_count = [0]
 
-        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             called_count[0] += 1
             return _success_result()
 
@@ -676,7 +678,7 @@ class TestResumability(unittest.TestCase):
             completed_in_db.add((kw["research_snapshot_id"], kw["agent_id"]))
             all_calls.append(("write", kw["agent_id"]))
 
-        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def mock_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             all_calls.append(("call", agent_id))
             return _success_result()
 
@@ -734,7 +736,7 @@ class TestResultRowPersistence(unittest.TestCase):
         return writes
 
     def test_SDRROW_success_writes_COMPLETE_status(self):
-        def success_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def success_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             return _success_result(tool_input={"key": "value"})
 
         rows = self._run_one_snap_one_agent(success_call)
@@ -743,7 +745,7 @@ class TestResultRowPersistence(unittest.TestCase):
         self.assertEqual(rows[0]["agent_id"], AGENT_IDS[0])
 
     def test_SDRROW_failure_writes_BLOCKED_status(self):
-        def fail_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def fail_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             return _failure_result()
 
         rows = self._run_one_snap_one_agent(fail_call)
@@ -751,7 +753,7 @@ class TestResultRowPersistence(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "BLOCKED")
 
     def test_SDRROW_exception_writes_ERROR_status(self):
-        def raising_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def raising_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             raise RuntimeError("simulated subagent crash")
 
         rows = self._run_one_snap_one_agent(raising_call)
@@ -764,7 +766,7 @@ class TestResultRowPersistence(unittest.TestCase):
         snaps = [_make_snap("rsid-err")]
         call_count = [0]
 
-        def raising_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def raising_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             call_count[0] += 1
             raise RuntimeError("crash")
 
@@ -811,7 +813,7 @@ class TestResultRowPersistence(unittest.TestCase):
         snaps = [_make_snap("rsid-noretry")]
         call_ids = []
 
-        def once_only(agent_id, snap_json, prior, run_id, sdk, cap):
+        def once_only(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             call_ids.append(agent_id)
             return _failure_result()
 
@@ -900,7 +902,7 @@ class TestZeroRealNetworkCalls(unittest.TestCase):
         snaps = [_make_snap("rsid-agentids")]
         seen_agent_ids = []
 
-        def spy_call(agent_id, snap_json, prior, run_id, sdk, cap):
+        def spy_call(agent_id, snap_json, prior, run_id, sdk, cap, **kwargs):
             seen_agent_ids.append(agent_id)
             return _success_result()
 

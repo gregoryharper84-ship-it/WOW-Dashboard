@@ -142,6 +142,8 @@ class MoneylineResult:
     teamrankings:         dict[str, Any] = field(default_factory=dict)
     # External Analyst Intelligence layer (WOW-PATCH-2026-08-08-EXTERNAL-ANALYST)
     external_analyst_intelligence: dict[str, Any] = field(default_factory=dict)
+    # MLB Starter-Change analysis (WOW-PATCH-2026-08-08-MLB-SP-SCRATCH)
+    starter_change:       dict[str, Any] = field(default_factory=dict)
 
     # Metadata
     model_id:             str | None     = None
@@ -193,5 +195,6 @@ class MoneylineResult:
             "slate_integrity":                self.slate_integrity,
             "teamrankings":                   self.teamrankings,
             "external_analyst_intelligence":  self.external_analyst_intelligence,
+            "starter_change":                 self.starter_change,
         }
         return d

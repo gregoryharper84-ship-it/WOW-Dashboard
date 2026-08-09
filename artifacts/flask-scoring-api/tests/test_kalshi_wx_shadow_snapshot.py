@@ -54,6 +54,22 @@ from gate_engine.kalshi_wx_shadow_subagents import (
     run_uncertainty_explanation_subagent,
 )
 from gate_engine.kalshi_wx_shadow_capability_boundary import CapabilityBoundary
+from unittest.mock import patch as _uc_patch
+
+# ── Module-level Gate B patch ─────────────────────────────────────────────────
+# SC3 tests call run_*_subagent() directly with mock SDK clients to verify that
+# snapshot evidence reaches the user messages.  Gate B (_RESEARCH_API_ENABLED)
+# would block them without this patch.  SC1/SC2/SC4 do not call the subagents
+# and are unaffected.
+_patch_research_enabled = _uc_patch(
+    "gate_engine.kalshi_wx_shadow_subagents._RESEARCH_API_ENABLED", True
+)
+
+def setUpModule() -> None:   # noqa: N802
+    _patch_research_enabled.start()
+
+def tearDownModule() -> None:  # noqa: N802
+    _patch_research_enabled.stop()
 
 
 # ── Shared test snapshot ──────────────────────────────────────────────────────

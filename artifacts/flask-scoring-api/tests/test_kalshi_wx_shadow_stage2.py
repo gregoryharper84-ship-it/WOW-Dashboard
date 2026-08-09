@@ -52,6 +52,23 @@ _BOUNDARY = CapabilityBoundary()
 _CONTEXT  = {"city": "NYC", "date": "2026-08-08", "run_id": "run-stage2"}
 
 
+# ── Module-level Gate B patch ─────────────────────────────────────────────────
+# SA1–SA11 call run_*_subagent() and _run_single_tool_subagent() directly with
+# mock SDK clients — they legitimately need to reach messages.create().
+# Gate B (_RESEARCH_API_ENABLED) would block them without this patch.
+# SA12 tests KalshiWxShadowResearchClient.research() (Gate 1 only) and is
+# unaffected by this module-level patch.
+_patch_research_enabled = patch(
+    "gate_engine.kalshi_wx_shadow_subagents._RESEARCH_API_ENABLED", True
+)
+
+def setUpModule() -> None:   # noqa: N802
+    _patch_research_enabled.start()
+
+def tearDownModule() -> None:  # noqa: N802
+    _patch_research_enabled.stop()
+
+
 # ── Mock helpers ──────────────────────────────────────────────────────────────
 
 def _make_tool_use_mock(tool_name: str, tool_input: dict) -> MagicMock:

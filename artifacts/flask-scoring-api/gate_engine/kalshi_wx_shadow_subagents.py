@@ -32,6 +32,7 @@ OUT OF SCOPE
 from __future__ import annotations
 
 import dataclasses
+import os
 from typing import Any, Optional
 
 from gate_engine.kalshi_wx_shadow_capability_boundary import (
@@ -60,6 +61,18 @@ _FORBIDDEN_KEYS_REMINDER = (
 _ADVISORY_REMINDER = (
     "You are ADVISORY ONLY. You cannot place orders, modify positions, write to any "
     "system, or call any execution endpoint. Output only via your designated tool."
+)
+
+# ── Research-call authorization gate (Gate B) ─────────────────────────────────
+# Cached at module load time; patchable by tests via
+#   patch("gate_engine.kalshi_wx_shadow_subagents._RESEARCH_API_ENABLED", True/False)
+# This flag is INDEPENDENT of KALSHI_WX_SHADOW_AGENT_ENABLED (which gates
+# snapshot capture) and completely independent of the CAN_EXECUTE /
+# PRODUCTION_AUTHORITY / USER_OUTPUT_AUTHORITY constants in
+# KalshiWxShadowResearchClient (those govern trading authority, not
+# research-call authorization).
+_RESEARCH_API_ENABLED: bool = (
+    os.environ.get("SHADOW_RESEARCH_API_ENABLED", "false").strip().lower() == "true"
 )
 
 
@@ -140,6 +153,13 @@ class SubagentResult:
     success:        bool
     failure_reason: Optional[str] = None
     turns_used:     int = 0
+    # ── Usage accounting fields ───────────────────────────────────────────────
+    # Populated from response.usage when the Anthropic SDK returns real token
+    # counts.  UNAVAILABLE means the SDK response lacked parseable usage data;
+    # None (not 0) is stored so callers can distinguish "unknown" from "zero".
+    input_tokens:   Optional[int] = None
+    output_tokens:  Optional[int] = None
+    usage_accounting_status: str = "UNAVAILABLE"
 
 
 # ── Generic single-tool subagent loop ─────────────────────────────────────────
@@ -152,6 +172,7 @@ def _run_single_tool_subagent(
     user_message: str,
     capability_boundary: CapabilityBoundary,
     model: str = _MODEL,
+    max_output_tokens: int = _MAX_TOKENS,
     max_turns: int = _MAX_TURNS,
 ) -> SubagentResult:
     """
@@ -171,12 +192,37 @@ def _run_single_tool_subagent(
     messages: list[dict] = [{"role": "user", "content": user_message}]
     hook_violations: list[dict] = []
 
+    # ── Gate B: SHADOW_RESEARCH_API_ENABLED ──────────────────────────────────
+    # Defense-in-depth authorization gate — independent of Gate A in the pilot
+    # runner (call_one_agent) and completely independent of the CAN_EXECUTE /
+    # PRODUCTION_AUTHORITY / USER_OUTPUT_AUTHORITY constants in
+    # KalshiWxShadowResearchClient (those govern trading authority, not
+    # research-call authorization).  Set SHADOW_RESEARCH_API_ENABLED=true
+    # explicitly to allow live messages.create() calls on this path.
+    if not _RESEARCH_API_ENABLED:
+        return SubagentResult(
+            subagent_id=subagent_id,
+            tool_name=tool_name,
+            tool_input={},
+            hook_violations=[],
+            success=False,
+            failure_reason=(
+                "RESEARCH_API_DISABLED: SHADOW_RESEARCH_API_ENABLED is not set "
+                "to 'true' — set it explicitly to enable live Anthropic API calls"
+            ),
+        )
+
+    # ── Usage tracking across turns ───────────────────────────────────────────
+    _total_in:  int  = 0
+    _total_out: int  = 0
+    _all_avail: bool = True
+
     for turn in range(max_turns):
         # ── SDK call ──────────────────────────────────────────────────────────
         try:
             response = client.messages.create(
                 model=model,
-                max_tokens=_MAX_TOKENS,
+                max_tokens=max_output_tokens,
                 system=system_prompt,
                 tools=[tool_def],
                 messages=messages,
@@ -192,6 +238,21 @@ def _run_single_tool_subagent(
                 failure_reason=f"SDK_ERROR: {type(exc).__name__}: {exc}",
                 turns_used=turn + 1,
             )
+
+        # ── Extract usage from this response ──────────────────────────────────
+        # isinstance(int) guards prevent MagicMock values from silently reading
+        # as AVAILABLE during unit tests that don't configure usage explicitly.
+        try:
+            _u  = getattr(response, "usage", None)
+            _it = getattr(_u, "input_tokens",  None) if _u is not None else None
+            _ot = getattr(_u, "output_tokens", None) if _u is not None else None
+            if isinstance(_it, int) and isinstance(_ot, int):
+                _total_in  += _it
+                _total_out += _ot
+            else:
+                _all_avail = False
+        except Exception:
+            _all_avail = False
 
         # ── Extract tool_use block ────────────────────────────────────────────
         tool_uses = [
@@ -259,7 +320,16 @@ def _run_single_tool_subagent(
             # Post-hook failure is recorded but does not block collection;
             # the orchestrator may promote it to a run-level failure if desired.
 
-        # ── Tool input accepted ───────────────────────────────────────────────
+        # ── Tool input accepted — build usage fields ──────────────────────────
+        if _all_avail and (_total_in > 0 or _total_out > 0):
+            _in_tok:    Optional[int] = _total_in
+            _out_tok:   Optional[int] = _total_out
+            _tok_status: str          = "AVAILABLE"
+        else:
+            _in_tok     = None
+            _out_tok    = None
+            _tok_status = "UNAVAILABLE"
+
         return SubagentResult(
             subagent_id=subagent_id,
             tool_name=called_name,
@@ -267,6 +337,9 @@ def _run_single_tool_subagent(
             hook_violations=hook_violations,
             success=True,
             turns_used=turn + 1,
+            input_tokens=_in_tok,
+            output_tokens=_out_tok,
+            usage_accounting_status=_tok_status,
         )
 
     # Exceeded max_turns without a tool call
@@ -363,6 +436,7 @@ def run_forecast_context_subagent(
     context: dict,
     capability_boundary: CapabilityBoundary,
     snapshot: Optional[WeatherResearchSnapshot] = None,
+    max_output_tokens: int = _MAX_TOKENS,
 ) -> SubagentResult:
     """
     Run the forecast-context interpretation subagent.
@@ -410,6 +484,7 @@ def run_forecast_context_subagent(
         system_prompt=_FC_SYSTEM_PROMPT,
         user_message=user_msg,
         capability_boundary=capability_boundary,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -481,6 +556,7 @@ def run_source_reconciliation_subagent(
     context: dict,
     capability_boundary: CapabilityBoundary,
     snapshot: Optional[WeatherResearchSnapshot] = None,
+    max_output_tokens: int = _MAX_TOKENS,
 ) -> SubagentResult:
     """Run the source reconciliation subagent."""
     run_id = context.get("run_id", "unknown")
@@ -512,6 +588,7 @@ def run_source_reconciliation_subagent(
         system_prompt=_SR_SYSTEM_PROMPT,
         user_message=user_msg,
         capability_boundary=capability_boundary,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -578,6 +655,7 @@ def run_contradiction_detection_subagent(
     forecast_context: Optional[SubagentResult] = None,
     source_reconciliation: Optional[SubagentResult] = None,
     snapshot: Optional[WeatherResearchSnapshot] = None,
+    max_output_tokens: int = _MAX_TOKENS,
 ) -> SubagentResult:
     """Run the contradiction detection subagent."""
     run_id = context.get("run_id", "unknown")
@@ -629,6 +707,7 @@ def run_contradiction_detection_subagent(
         system_prompt=_CD_SYSTEM_PROMPT,
         user_message=user_msg,
         capability_boundary=capability_boundary,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -690,6 +769,7 @@ def run_unusual_regime_subagent(
     context: dict,
     capability_boundary: CapabilityBoundary,
     snapshot: Optional[WeatherResearchSnapshot] = None,
+    max_output_tokens: int = _MAX_TOKENS,
 ) -> SubagentResult:
     """Run the unusual-regime identification subagent."""
     run_id = context.get("run_id", "unknown")
@@ -724,6 +804,7 @@ def run_unusual_regime_subagent(
         system_prompt=_UR_SYSTEM_PROMPT,
         user_message=user_msg,
         capability_boundary=capability_boundary,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -797,6 +878,7 @@ def run_uncertainty_explanation_subagent(
     contradiction_detection: Optional[SubagentResult] = None,
     unusual_regime: Optional[SubagentResult] = None,
     snapshot: Optional[WeatherResearchSnapshot] = None,
+    max_output_tokens: int = _MAX_TOKENS,
 ) -> SubagentResult:
     """Run the uncertainty explanation subagent."""
     run_id = context.get("run_id", "unknown")
@@ -857,4 +939,5 @@ def run_uncertainty_explanation_subagent(
         system_prompt=_UE_SYSTEM_PROMPT,
         user_message=user_msg,
         capability_boundary=capability_boundary,
+        max_output_tokens=max_output_tokens,
     )

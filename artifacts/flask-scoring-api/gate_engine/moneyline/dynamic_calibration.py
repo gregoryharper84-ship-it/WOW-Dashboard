@@ -198,6 +198,28 @@ def _model_status_penalty(model_status: str) -> float:
     return 0.0
 
 
+def _starter_change_uncertainty(enrichment: dict[str, Any]) -> float:
+    """
+    WOW-PATCH-2026-08-08-MLB-SP-SCRATCH: consume uncertainty expansion
+    produced by analyze_mlb_starter_change and injected into enrichment.
+
+    This is a SEPARATE effect from the point-estimate quality delta applied
+    at pipeline stage 5.5.  It widens the distribution and lowers the
+    calibrated lower bound — it does NOT move the point estimate here.
+
+    Returns 0.0 when the key is absent (non-MLB sports, no change).
+    """
+    val = enrichment.get("starter_change_uncertainty_expansion")
+    if val is None:
+        return 0.0
+    try:
+        v = float(val)
+        # Guard: the patch module already caps at 0.05; defend here too
+        return max(0.0, min(0.05, v))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 # ---------------------------------------------------------------------------
 # Market weight computation
 # ---------------------------------------------------------------------------
@@ -333,8 +355,14 @@ def calibrate(
     ms = _model_status_penalty(model_status)
     comps["model_status_penalty"] = ms
 
+    # MLB Starter-Change uncertainty (WOW-PATCH-2026-08-08-MLB-SP-SCRATCH)
+    # Separate from the quality-delta applied at pipeline stage 5.5; widens the
+    # distribution without moving the point estimate (no double-counting).
+    scu = _starter_change_uncertainty(enrichment)
+    comps["starter_change_uncertainty"] = scu
+
     # Sum base uncertainty
-    raw_uncertainty = base_vol + sp + lc + sc + fp + hc + ms
+    raw_uncertainty = base_vol + sp + lc + sc + fp + hc + ms + scu
 
     # Model disagreement widening
     widening_factor = 1.0

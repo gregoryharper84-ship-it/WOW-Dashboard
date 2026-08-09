@@ -54,6 +54,23 @@ from gate_engine.kalshi_wx_shadow_orchestrator import (
 from gate_engine.kalshi_wx_shadow_schema import SHADOW_PASS, ShadowValidationResult, validate_shadow_output
 from gate_engine.kalshi_wx_shadow_subagents import SubagentResult
 
+# ── Module-level Gate B patch ─────────────────────────────────────────────────
+# OR1–OR7 tests call run_shadow_orchestrator() / run_*_subagent() with mock SDK
+# clients — they legitimately need to reach messages.create().  Gate B
+# (_RESEARCH_API_ENABLED) would block them without this patch.
+# OR8 tests KalshiWxShadowResearchClient.research() with _SHADOW_ENABLED=False
+# (Gate 1 only) and is unaffected by this module-level patch.
+_patch_research_enabled = patch(
+    "gate_engine.kalshi_wx_shadow_subagents._RESEARCH_API_ENABLED", True
+)
+
+def setUpModule() -> None:   # noqa: N802
+    _patch_research_enabled.start()
+
+def tearDownModule() -> None:  # noqa: N802
+    _patch_research_enabled.stop()
+
+
 _BOUNDARY = CapabilityBoundary()
 _CITY  = "NYC"
 _DATE  = "2026-08-08"

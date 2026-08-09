@@ -57,6 +57,7 @@ from gate_engine.moneyline.teamrankings_adapter import (
 from gate_engine.moneyline.external_analyst.orchestrator import (
     run_external_analyst_intelligence,
 )
+from gate_engine.moneyline.mlb_starter_change import analyze_mlb_starter_change
 
 # Import existing helpers (preserved without behavior change)
 from gate_engine.moneyline_probability import (
@@ -417,6 +418,61 @@ def run_moneyline_pipeline(
         simulation_regimes=sim_result.regime_distribution,
     )
     result.failure_path = fp_result.to_dict()
+
+    # -----------------------------------------------------------------------
+    # Stage 5.5: MLB Starter-Change analysis (WOW-PATCH-2026-08-08-MLB-SP-SCRATCH)
+    #
+    # Only fires for MLB.  For all other sports the module returns immediately
+    # with NO_CHANGE_DETECTED and zero adjustments.
+    #
+    # Two separate effects — no double-counting:
+    #   probability_adjustment — quality-delta applied to independent_prob_post_sim
+    #                            (replacement ERA vs original ERA; ±8pp cap)
+    #   uncertainty_expansion  — injected into enrichment for calibration (stage 8)
+    #                            to widen the distribution and lower the CLB
+    #
+    # UNRESOLVED_REPLACEMENT → fail-closed to MODEL_QUALIFIED_HOLD immediately.
+    # Opener/bulk and bullpen-game plans are treated as legitimate architectures.
+    # Market data does NOT enter here; it only enters at stage 8.
+    # -----------------------------------------------------------------------
+    _sc_result = analyze_mlb_starter_change(row, clean_enr)
+    result.starter_change = _sc_result.to_dict()
+
+    if _sc_result.should_hold:
+        # Unresolved replacement plan — fail closed before candidate extraction
+        blockers.append(
+            "MLB_SP_SCRATCH:UNRESOLVED_REPLACEMENT_PLAN:"
+            "replacement_era_unavailable:fail_closed_to_HOLD"
+        )
+        result.blockers       = blockers
+        result.terminal_label = "MODEL_QUALIFIED_HOLD"
+        result.snapshot_hash  = result.build_snapshot_hash()
+        return result
+
+    # Apply quality-delta adjustment in HOME-TEAM perspective.
+    # Stages 3–5 all operate in home-team perspective; stage 6 reads
+    # fp_result.adjusted_win_prob as independent_prob_home.  We adjust that
+    # value in-place so stage 6 naturally inherits the shifted probability.
+    if _sc_result.probability_adjustment != 0.0:
+        _before_adj = fp_result.adjusted_win_prob
+        fp_result.adjusted_win_prob = max(
+            0.01, min(0.99, fp_result.adjusted_win_prob + _sc_result.probability_adjustment)
+        )
+        # Keep independent_prob_post_sim consistent for logging/observability
+        independent_prob_post_sim = fp_result.adjusted_win_prob
+        result.starter_change["probability_adjustment_applied"] = {
+            "before":     round(_before_adj, 4),
+            "adjustment": round(_sc_result.probability_adjustment, 4),
+            "after":      round(fp_result.adjusted_win_prob, 4),
+            "note":       "quality_delta_only:not_a_fixed_scratch_penalty",
+        }
+
+    # Inject uncertainty expansion into enrichment so calibration (stage 8) can
+    # widen the distribution without moving the point estimate.
+    # This is the second, separate effect — not double-counted with the delta above.
+    if _sc_result.uncertainty_expansion > 0.0:
+        enrichment = dict(enrichment)   # shallow copy — do not mutate caller's dict
+        enrichment["starter_change_uncertainty_expansion"] = _sc_result.uncertainty_expansion
 
     # -----------------------------------------------------------------------
     # Stage 6: Candidate-side probability extraction.

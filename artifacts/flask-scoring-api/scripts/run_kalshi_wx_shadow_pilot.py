@@ -268,9 +268,9 @@ def write_result_row(
     status: str,
     latency_ms: Optional[int],
     model: Optional[str],
-    input_tokens: int,
-    output_tokens: int,
-    estimated_cost_usd: float,
+    input_tokens: Optional[int],
+    output_tokens: Optional[int],
+    estimated_cost_usd: Optional[float],
 ) -> None:
     """
     Insert one result row into kalshi_wx_shadow_results.
@@ -426,6 +426,7 @@ def call_one_agent(
     run_id: str,
     sdk_client: Any,
     capability_boundary: Any,
+    max_output_tokens: int = 1024,
 ) -> Dict[str, Any]:
     """
     Call a single shadow research subagent and return a result dict.
@@ -436,14 +437,36 @@ def call_one_agent(
     Anthropic API calls in any mocked test run.
 
     Returns a dict with keys:
-      success       bool
-      tool_input    dict   SubagentResult.tool_input
-      failure_reason str | None
-      latency_ms    int
-      model         str | None   (None — not exposed by SubagentResult)
-      input_tokens  int          (0 — not exposed by SubagentResult)
-      output_tokens int          (0 — not exposed by SubagentResult)
+      success                  bool
+      tool_input               dict   SubagentResult.tool_input
+      failure_reason           str | None
+      latency_ms               int
+      model                    str | None
+      input_tokens             int | None   (None when UNAVAILABLE)
+      output_tokens            int | None   (None when UNAVAILABLE)
+      usage_accounting_status  str          "AVAILABLE" or "UNAVAILABLE"
     """
+    # ── Gate A: SHADOW_RESEARCH_API_ENABLED ──────────────────────────────────
+    # Checked live on every call (not cached) so the env var can be set after
+    # process start.  Independent of Gate B in _run_single_tool_subagent.
+    # SHADOW_RESEARCH_API_ENABLED must NOT appear in app.py or in the authority
+    # constants of KalshiWxShadowResearchClient — it lives here and in the
+    # subagent module only.
+    if os.environ.get("SHADOW_RESEARCH_API_ENABLED", "false").strip().lower() != "true":
+        return {
+            "success":                 False,
+            "tool_input":              {},
+            "failure_reason":          (
+                "SHADOW_RESEARCH_API_DISABLED: SHADOW_RESEARCH_API_ENABLED is "
+                "not set to 'true' — no subagent function will be dispatched"
+            ),
+            "latency_ms":              0,
+            "model":                   None,
+            "input_tokens":            None,
+            "output_tokens":           None,
+            "usage_accounting_status": "UNAVAILABLE",
+        }
+
     from gate_engine.kalshi_wx_shadow_subagents import (  # noqa: PLC0415
         run_contradiction_detection_subagent,
         run_forecast_context_subagent,
@@ -484,18 +507,20 @@ def call_one_agent(
         context,
         capability_boundary,
         snapshot=snapshot,
+        max_output_tokens=max_output_tokens,
         **kwargs,
     )
     latency_ms = int((time.monotonic() - t0) * 1000)
 
     return {
-        "success":        result.success,
-        "tool_input":     result.tool_input,
-        "failure_reason": result.failure_reason,
-        "latency_ms":     latency_ms,
-        "model":          None,   # not exposed by SubagentResult
-        "input_tokens":   0,      # not exposed by SubagentResult
-        "output_tokens":  0,      # not exposed by SubagentResult
+        "success":                 result.success,
+        "tool_input":              result.tool_input,
+        "failure_reason":          result.failure_reason,
+        "latency_ms":              latency_ms,
+        "model":                   None,
+        "input_tokens":            result.input_tokens,
+        "output_tokens":           result.output_tokens,
+        "usage_accounting_status": result.usage_accounting_status,
     }
 
 
@@ -630,27 +655,61 @@ def run_pilot(
                 total_calls, max_calls, agent_id, rsid,
             )
 
-            t0            = time.monotonic()
-            status        = "ERROR"
-            tool_input:   Dict = {}
+            t0             = time.monotonic()
+            status         = "ERROR"
+            tool_input:    Dict = {}
             failure_reason: Optional[str] = None
-            input_tokens  = input_tok_est
-            output_tokens = 0
-            model: Optional[str] = None
+            model:         Optional[str] = None
+            usage_status   = "UNAVAILABLE"
+            row_in_tok:    Optional[int]   = None
+            row_out_tok:   Optional[int]   = None
+            row_cost:      Optional[float] = None
+            # Pessimistic pre-call estimate used for cumulative tracking when
+            # actual usage is UNAVAILABLE (fail-safe: never under-account)
+            acc_cost = input_tok_est * config["INPUT_PRICE_PER_TOKEN"]
+            acc_in   = input_tok_est
+            acc_out  = 0
 
             try:
                 result = _caller(
                     agent_id, snap_json, prior_results,
                     run_id, sdk_client, cap_boundary,
+                    max_output_tokens=config["MAX_OUTPUT_TOKENS_PER_CALL"],
                 )
                 latency_ms     = result.get("latency_ms") or int((time.monotonic() - t0) * 1000)
                 success        = bool(result.get("success", False))
                 tool_input     = result.get("tool_input") or {}
                 failure_reason = result.get("failure_reason")
-                input_tokens   = int(result.get("input_tokens") or input_tok_est)
-                output_tokens  = int(result.get("output_tokens") or 0)
                 model          = result.get("model")
                 status         = "COMPLETE" if success else "BLOCKED"
+
+                # ── Post-call usage accounting ─────────────────────────────────
+                # AVAILABLE  → real token counts used for cumulative tracking and
+                #              persisted on the row with an estimated_cost_usd.
+                # UNAVAILABLE→ pessimistic pre-call estimate for cumulative budget
+                #              tracking; row values are None, never 0, so the
+                #              auditor can distinguish "unknown" from "zero-cost".
+                usage_status = result.get("usage_accounting_status", "UNAVAILABLE")
+                res_in  = result.get("input_tokens")
+                res_out = result.get("output_tokens")
+                if (
+                    usage_status == "AVAILABLE"
+                    and isinstance(res_in, int)
+                    and isinstance(res_out, int)
+                ):
+                    row_in_tok  = res_in
+                    row_out_tok = res_out
+                    row_cost    = (
+                        row_in_tok  * config["INPUT_PRICE_PER_TOKEN"]
+                        + row_out_tok * config["OUTPUT_PRICE_PER_TOKEN"]
+                    )
+                    acc_cost = row_cost
+                    acc_in   = row_in_tok
+                    acc_out  = row_out_tok
+                else:
+                    usage_status = "UNAVAILABLE"
+                    # row_in_tok / row_out_tok / row_cost remain None
+
             except Exception as exc:
                 latency_ms     = int((time.monotonic() - t0) * 1000)
                 failure_reason = f"{type(exc).__name__}: {exc}"
@@ -659,15 +718,12 @@ def run_pilot(
                     failure_reason,
                 )
                 # status stays "ERROR"; failure counts toward 125 cap — no retry
+                # acc_cost / acc_in / acc_out stay as initialized (pessimistic)
 
-            # ── Accumulate actual spend ───────────────────────────────────────
-            actual_cost = (
-                input_tokens  * config["INPUT_PRICE_PER_TOKEN"]
-                + output_tokens * config["OUTPUT_PRICE_PER_TOKEN"]
-            )
-            cumulative_spend   += actual_cost
-            cumulative_in_tok  += input_tokens
-            cumulative_out_tok += output_tokens
+            # ── Accumulate running totals ─────────────────────────────────────
+            cumulative_spend   += acc_cost
+            cumulative_in_tok  += acc_in
+            cumulative_out_tok += acc_out
 
             # ── Update prior_results for downstream dependency chain ──────────
             if status == "COMPLETE":
@@ -686,9 +742,12 @@ def run_pilot(
             # ── Persist result row ────────────────────────────────────────────
             # Pricing config is embedded in every row so accounting is
             # reconstructable from the DB without needing runtime context.
+            # usage_accounting_status lets the auditor distinguish real token
+            # counts from unavailable/estimated values without reading code.
             output_payload = {
-                "agent_output":    tool_input,
-                "failure_reason":  failure_reason,
+                "agent_output":            tool_input,
+                "failure_reason":          failure_reason,
+                "usage_accounting_status": usage_status,
                 "run_config": {
                     "PILOT_BUDGET_USD":           config["PILOT_BUDGET_USD"],
                     "INPUT_PRICE_PER_TOKEN":      config["INPUT_PRICE_PER_TOKEN"],
@@ -706,9 +765,9 @@ def run_pilot(
                 status                = status,
                 latency_ms            = latency_ms,
                 model                 = model,
-                input_tokens          = input_tokens,
-                output_tokens         = output_tokens,
-                estimated_cost_usd    = actual_cost,
+                input_tokens          = row_in_tok,
+                output_tokens         = row_out_tok,
+                estimated_cost_usd    = row_cost,
             )
 
         snapshots_done += 1
