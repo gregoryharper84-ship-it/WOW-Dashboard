@@ -827,5 +827,239 @@ class TestSDAppStructural(unittest.TestCase):
         self.assertIn("research_snapshot_id=_shadow_rsid", self._app_src())
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# SDINT — Live-DB integration: orphan-row scenario
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@unittest.skipIf(
+    not os.environ.get("DATABASE_URL"),
+    "DATABASE_URL not set — skipping live-DB integration tests",
+)
+class TestSDOrphanRowIntegration(unittest.TestCase):
+    """
+    Integration test proving the orphan-row scenario against a real Postgres
+    connection.  No mocks for the DB layer.
+
+    "Orphan" = a snapshot row exists in kalshi_wx_shadow_snapshot_queue
+    but no matching row exists in kalshi_wx_shadow_deterministic_outcome.
+    This happens when the route captures the input snapshot (Step 10D) but
+    throws or returns before reaching the terminal-label point (Step 10D-b).
+
+    The test also proves the eligibility distinction:
+      - orphan is excluded from the pilot-eligible INNER JOIN result
+      - a "complete" snapshot (both tables populated) is included
+    """
+
+    # ── Per-test setup/teardown ───────────────────────────────────────────────
+
+    def setUp(self):
+        import uuid as _u
+        # Fresh unique rsids for every test method — prevents cross-run collision.
+        self._rsid_orphan   = f"wx-capture-inttest-orphan-{_u.uuid4()}"
+        self._rsid_complete = f"wx-capture-inttest-complete-{_u.uuid4()}"
+
+    def tearDown(self):
+        """Best-effort cleanup: delete test rows from both shadow tables."""
+        try:
+            import psycopg2
+            conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=10)
+            rsids = [self._rsid_orphan, self._rsid_complete]
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM kalshi_wx_shadow_snapshot_queue"
+                    " WHERE research_snapshot_id = ANY(%s)",
+                    (rsids,),
+                )
+                cur.execute(
+                    "DELETE FROM kalshi_wx_shadow_deterministic_outcome"
+                    " WHERE research_snapshot_id = ANY(%s)",
+                    (rsids,),
+                )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass  # never let cleanup failure mask a test failure
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _get_conn(self):
+        import psycopg2
+        return psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=10)
+
+    def _snap_kwargs(self, rsid: str) -> dict:
+        return dict(
+            research_snapshot_id=rsid,
+            city="NYC",
+            station="KNYC",
+            market_date="2026-08-15",
+            forecast_high=85.0,
+            weather_data_source_tier="nws_primary",
+            sigma_f=3.5,
+            horizon_hours=18.0,
+            tier_detail={"nws": {"attempted": True, "ok": True, "error": None}},
+        )
+
+    # ── The integration test ──────────────────────────────────────────────────
+
+    def test_SDINT_orphan_row_scenario_and_eligibility_join(self):
+        """
+        Step-by-step proof of the orphan-row scenario:
+
+        (A) Insert snapshot for _rsid_orphan via maybe_fire_shadow_snapshot()
+            with flag patched on and a real DB connection.
+        (B) Confirm the row exists in kalshi_wx_shadow_snapshot_queue with
+            status='PENDING'.
+        (C) Do NOT call maybe_link_shadow_deterministic_outcome() for that ID
+            — simulating the route having thrown or returned before Step 10D-b.
+        (D) Confirm NO row exists in kalshi_wx_shadow_deterministic_outcome
+            for _rsid_orphan.
+        (E) Insert BOTH snapshot and outcome for _rsid_complete.
+        (F) INNER JOIN eligibility query: _rsid_orphan excluded, _rsid_complete
+            included.
+        (G) LEFT JOIN orphan-detection query: _rsid_orphan included,
+            _rsid_complete excluded.
+        """
+        from gate_engine.kalshi_wx_shadow_capture import (
+            maybe_fire_shadow_snapshot,
+            maybe_link_shadow_deterministic_outcome,
+        )
+
+        # ── (A) Insert snapshot for the orphan via real DB ────────────────────
+        with patch(_FLAG_PATH, True):
+            maybe_fire_shadow_snapshot(**self._snap_kwargs(self._rsid_orphan))
+
+        # ── (B) Confirm snapshot row is in the queue table ────────────────────
+        conn = self._get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, snapshot_json IS NOT NULL"
+                " FROM kalshi_wx_shadow_snapshot_queue"
+                " WHERE research_snapshot_id = %s",
+                (self._rsid_orphan,),
+            )
+            queue_row = cur.fetchone()
+        conn.close()
+
+        self.assertIsNotNone(
+            queue_row,
+            f"Orphan snapshot row must exist in kalshi_wx_shadow_snapshot_queue "
+            f"for rsid={self._rsid_orphan!r}",
+        )
+        status, has_json = queue_row
+        self.assertEqual(status, "PENDING",
+                         "Newly inserted orphan row must have status='PENDING'")
+        self.assertTrue(has_json, "snapshot_json must be non-null in the queue row")
+
+        # ── (C) Deliberately skip maybe_link_shadow_deterministic_outcome() ───
+        #    This is the simulation: the route threw between Step 10D and 10D-b.
+        #    Nothing more to do here — just don't call the outcome function.
+
+        # ── (D) Confirm NO outcome row for the orphan ─────────────────────────
+        conn = self._get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM kalshi_wx_shadow_deterministic_outcome"
+                " WHERE research_snapshot_id = %s",
+                (self._rsid_orphan,),
+            )
+            orphan_outcome_row = cur.fetchone()
+        conn.close()
+
+        self.assertIsNone(
+            orphan_outcome_row,
+            f"Orphan must have NO row in kalshi_wx_shadow_deterministic_outcome "
+            f"for rsid={self._rsid_orphan!r}",
+        )
+
+        # ── (E) Insert BOTH snapshot and outcome for the "complete" rsid ──────
+        with patch(_FLAG_PATH, True):
+            maybe_fire_shadow_snapshot(**self._snap_kwargs(self._rsid_complete))
+            maybe_link_shadow_deterministic_outcome(
+                research_snapshot_id=self._rsid_complete,
+                terminal_label="KALSHI_WATCH",
+                price_gate_disposition=(
+                    "DRY_RUN_ONLY: execution disabled per system policy"
+                ),
+                can_execute=False,
+            )
+
+        # Confirm the outcome row actually landed for the complete rsid
+        conn = self._get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT terminal_label, can_execute"
+                " FROM kalshi_wx_shadow_deterministic_outcome"
+                " WHERE research_snapshot_id = %s",
+                (self._rsid_complete,),
+            )
+            complete_outcome = cur.fetchone()
+        conn.close()
+
+        self.assertIsNotNone(complete_outcome,
+                             "Complete rsid must have an outcome row")
+        term_label, can_exec = complete_outcome
+        self.assertEqual(term_label, "KALSHI_WATCH")
+        self.assertFalse(can_exec, "can_execute must be stored as False")
+
+        # ── (F) INNER JOIN eligibility query ──────────────────────────────────
+        # "pilot eligible" = has BOTH a snapshot row AND a linked outcome row.
+        # Orphan must be EXCLUDED; complete must be INCLUDED.
+        conn = self._get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT q.research_snapshot_id
+                FROM kalshi_wx_shadow_snapshot_queue q
+                INNER JOIN kalshi_wx_shadow_deterministic_outcome o
+                  ON q.research_snapshot_id = o.research_snapshot_id
+                WHERE q.research_snapshot_id = ANY(%s)
+                """,
+                ([self._rsid_orphan, self._rsid_complete],),
+            )
+            eligible = {r[0] for r in cur.fetchall()}
+        conn.close()
+
+        self.assertNotIn(
+            self._rsid_orphan, eligible,
+            "MISSING OUTCOME: orphan snapshot must be excluded from pilot-eligible "
+            "INNER JOIN (diagnostic only, NOT PILOT ELIGIBLE)",
+        )
+        self.assertIn(
+            self._rsid_complete, eligible,
+            "Complete snapshot (snapshot + outcome) must be included in "
+            "pilot-eligible INNER JOIN",
+        )
+
+        # ── (G) LEFT JOIN orphan-detection query ──────────────────────────────
+        # Inverse query: which queue rows have NO outcome row?
+        # Orphan must be INCLUDED; complete must be EXCLUDED.
+        conn = self._get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT q.research_snapshot_id
+                FROM kalshi_wx_shadow_snapshot_queue q
+                LEFT JOIN kalshi_wx_shadow_deterministic_outcome o
+                  ON q.research_snapshot_id = o.research_snapshot_id
+                WHERE q.research_snapshot_id = ANY(%s)
+                  AND o.id IS NULL
+                """,
+                ([self._rsid_orphan, self._rsid_complete],),
+            )
+            orphans = {r[0] for r in cur.fetchall()}
+        conn.close()
+
+        self.assertIn(
+            self._rsid_orphan, orphans,
+            "Orphan snapshot must appear in LEFT JOIN orphan-detection query "
+            "(o.id IS NULL)",
+        )
+        self.assertNotIn(
+            self._rsid_complete, orphans,
+            "Complete snapshot must NOT appear in LEFT JOIN orphan-detection "
+            "query (it has an outcome row, so o.id is not NULL)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
