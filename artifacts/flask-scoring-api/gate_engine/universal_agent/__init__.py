@@ -1,30 +1,40 @@
 """
-gate_engine/universal_agent — Universal Agent Core B0
-WOW-PATCH-2026-08-09-UNIVERSAL-AGENT-CORE-V1 / Phase B0
+gate_engine/universal_agent — Universal Agent Core B0 + B1 + B2
+WOW-PATCH-2026-08-09-UNIVERSAL-AGENT-CORE-V1 / Phases B0–B2
 
 Lane-agnostic shared infrastructure generalizing patterns proven in the
 Kalshi Weather shadow pilot (WOW-PATCH-2026-08-08-MULTI-AGENT-KALSHI-WX-SHADOW).
 
 Phase B0 components:
-  evidence_packet    — Shared Immutable Evidence Packet
-  agent_registry     — Shared Agent Registry (advisory_only always True)
-  handoff_contract   — Canonical Handoff Contract (data schema only)
-  output_contract    — Closed Output Contract + allowlist validator
+  evidence_packet     — Shared Immutable Evidence Packet
+  agent_registry      — Shared Agent Registry (advisory_only always True)
+  handoff_contract    — Canonical Handoff Contract (data schema only)
+  output_contract     — Closed Output Contract + allowlist validator
   capability_boundary — Common Capability Boundary (deny-by-default)
-  audit_store        — Shared Audit/Cost Structures (Postgres-backed)
+  audit_store         — Shared Audit/Cost Structures (Postgres-backed)
 
-NOT YET BUILT (Phase B1+):
+Phase B1 components (gate_engine/universal_agent/roles/):
+  Six advisory role contracts with closed schemas and two-phase validators.
+
+Phase B2 components:
+  role_runner         — RoleRunnerStatus constants + MockRoleRunner
+  role_result         — RoleResult frozen dataclass
+  contradiction_detector — Four deterministic cross-role contradiction rules
+  bundle_assembler    — EvidenceBundle frozen dataclass + assemble_bundle()
+  orchestrator        — run_orchestrator() entry point + OrchestratorResult
+
+NOT YET BUILT (Phase B3+):
   Lane adapters (MLB, WNBA, Tennis, etc.)
-  Production routing
-  Automatic agent execution
-  User-facing label changes
+  Production routing / app.py wiring
+  Live LLM runner implementations
 
 INVARIANTS — permanently enforced:
   advisory_only = True in all registry entries (cannot be overridden)
   No terminal_label authority in any output contract
   No can_execute or capital-allocation fields permitted anywhere
   Deny-by-default capability boundary
-  Durable state only in Postgres, never in-memory ledger
+  Durable state only in Postgres (uac_* tables), never in-memory ledger
+  Same EvidencePacket object passed to all runners (identity guaranteed)
 """
 from gate_engine.universal_agent.evidence_packet import (
     Lane,
