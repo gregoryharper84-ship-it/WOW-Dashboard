@@ -253,60 +253,178 @@ paths:
                     actual current date — do not use a future or past date.
                 rows:
                   type: array
-                  description: Non-empty array of prop rows to score
+                  description: >
+                    Non-empty array of rows to score. Supports two row contracts:
+
+                    PLAYER_PROP — standard player prop (MORE/LESS threshold).
+                      Required: player, sport, prop_type, line, direction,
+                                slate_date, board_source, game.
+
+                    MONEYLINE_V1 — outright winner / game winner / h2h moneyline.
+                      Required: sport, team, opponent, market_type, event_id,
+                                slate_date, board_source.
+                      PROHIBITED (causes DATA_CONTRACT_FAIL if present):
+                                line, direction, prop_type, player, game.
+
+                    Auto-detection: set market_type to any outright key
+                    ("h2h", "moneyline", "ml", "match_winner", "game_winner",
+                    "outright_winner", "1x2", etc.) and the engine routes the
+                    row to the WOW Moneyline Probability Expert automatically.
+
+                    Mixed batches (PLAYER_PROP + MONEYLINE_V1 in the same
+                    request) are allowed — each lane is scored independently.
+                    MONEYLINE_V1 results appear in outright_winner_ledger;
+                    PLAYER_PROP results appear in prop_ledger.
                   items:
-                    type: object
-                    required:
-                      - player
-                      - sport
-                      - prop_type
-                      - line
-                      - direction
-                      - slate_date
-                      - board_source
-                      - game
-                    properties:
-                      player:
-                        type: string
-                        description: Full player name, e.g. "LeBron James"
-                      sport:
-                        type: string
+                    anyOf:
+                      - title: PlayerPropRow
                         description: >
-                          Sport identifier: NBA, MLB, WNBA, NHL, NFL,
-                          NCAAF, NCAAB, Soccer, Tennis, Golf, MMA
-                      prop_type:
-                        type: string
+                          Standard player prop row (MORE/LESS threshold).
+                          Required: player, sport, prop_type, line, direction,
+                          slate_date, board_source, game.
+                        type: object
+                        required:
+                          - player
+                          - sport
+                          - prop_type
+                          - line
+                          - direction
+                          - slate_date
+                          - board_source
+                          - game
+                        properties:
+                          player:
+                            type: string
+                            description: Full player name, e.g. "LeBron James"
+                          sport:
+                            type: string
+                            description: >
+                              Sport identifier: NBA, MLB, WNBA, NHL, NFL,
+                              NCAAF, NCAAB, Soccer, Tennis, Golf, MMA
+                          prop_type:
+                            type: string
+                            description: >
+                              Stat category, e.g. "Points", "Rebounds",
+                              "Pitcher Strikeouts", "Plate Appearances"
+                          line:
+                            type: number
+                            description: The prop line value, e.g. 27.5
+                          direction:
+                            type: string
+                            enum: [MORE, LESS]
+                            description: Pick direction — MORE (over) or LESS (under)
+                          slate_date:
+                            type: string
+                            format: date
+                            description: Game date YYYY-MM-DD
+                          board_source:
+                            type: string
+                            description: >
+                              Originating board, e.g. "PrizePicks", "Underdog",
+                              "DraftKings", "FanDuel"
+                          game:
+                            type: string
+                            description: Matchup string, e.g. "LAL vs GSW"
+                          player_id:
+                            type: integer
+                            description: >
+                              MLBAM / NBA / ESPN numeric player ID (optional but
+                              strongly recommended — enables automatic game-log
+                              fetch when game_log is absent from enrichment).
+                          stat_key:
+                            type: string
+                            description: >
+                              Canonical stat key if known, e.g. "K", "PA",
+                              "1IP_PITCHES_THROWN". Derived from prop_type when omitted.
+                          team:
+                            type: string
+                            description: Player's team abbreviation (optional hint)
+                          opponent:
+                            type: string
+                            description: Opposing team abbreviation (optional hint)
+                          market_line:
+                            type: number
+                            description: Sportsbook line for market comparison (optional)
+                          row_id:
+                            type: string
+                            description: >
+                              Caller-supplied stable row ID. If omitted the engine
+                              generates one. Supply to join enrichment keys across calls.
+
+                      - title: MoneylineV1Row
                         description: >
-                          Prop category, e.g. "Points", "Rebounds",
-                          "Pitcher Strikeouts", "Passing Yards"
-                      line:
-                        type: number
-                        description: The prop line value, e.g. 27.5
-                      direction:
-                        type: string
-                        enum: [MORE, LESS]
-                        description: Pick direction — MORE (over) or LESS (under)
-                      slate_date:
-                        type: string
-                        format: date
-                        description: Game date YYYY-MM-DD
-                      board_source:
-                        type: string
-                        description: >
-                          Originating board, e.g. "PrizePicks", "Underdog",
-                          "DraftKings", "FanDuel"
-                      game:
-                        type: string
-                        description: Game matchup string, e.g. "LAL vs GSW"
-                      market_line:
-                        type: number
-                        description: Sportsbook line for market comparison (optional)
-                      row_id:
-                        type: string
-                        description: >
-                          Caller-supplied stable row ID (optional). If omitted,
-                          the engine generates one. Supply this when you need
-                          to match enrichment keys to rows across calls.
+                          Outright winner / game-winner / h2h moneyline row
+                          (MONEYLINE_V1 contract).
+                          Required: sport, team, opponent, market_type,
+                          event_id, slate_date, board_source.
+                          DO NOT include: line, direction, prop_type, player, game.
+                          Scored by the WOW Moneyline Probability Expert;
+                          result appears in outright_winner_ledger.
+                        type: object
+                        required:
+                          - sport
+                          - team
+                          - opponent
+                          - market_type
+                          - event_id
+                          - slate_date
+                          - board_source
+                        properties:
+                          sport:
+                            type: string
+                            description: >
+                              Sport identifier: MLB, NBA, WNBA, NFL, NHL,
+                              ATP, WTA, TENNIS, MMA, UFC, SOCCER, EPL, MLS
+                          team:
+                            type: string
+                            description: >
+                              Full name of the team/participant being evaluated
+                              for a win, e.g. "Los Angeles Dodgers", "Boston Celtics".
+                              This is the side whose win probability is computed.
+                          opponent:
+                            type: string
+                            description: >
+                              Full name of the opposing team/participant,
+                              e.g. "San Francisco Giants".
+                          market_type:
+                            type: string
+                            description: >
+                              Canonical outright-market key. Use one of:
+                              "h2h", "moneyline", "ml", "match_winner",
+                              "game_winner", "outright_winner", "1x2",
+                              "bout_winner", "fight_winner".
+                              This field is what triggers MONEYLINE_V1 routing.
+                          event_id:
+                            type: string
+                            description: >
+                              Unique event identifier. May be platform-supplied
+                              (e.g. "mlb-2026-08-10-lad-sfg") or synthesised as
+                              "{sport}-{slate_date}-{team_abbr}-{opponent_abbr}".
+                              Used for dedup across sportsbooks.
+                          slate_date:
+                            type: string
+                            format: date
+                            description: Game date YYYY-MM-DD
+                          board_source:
+                            type: string
+                            description: >
+                              Originating book, e.g. "DraftKings", "FanDuel",
+                              "BetMGM", "Caesars"
+                          game_time:
+                            type: string
+                            description: >
+                              Game start time ISO-8601 or display string (optional),
+                              e.g. "2026-08-10T19:10:00Z". Used for freshness checks.
+                          home_team:
+                            type: string
+                            description: >
+                              Full name of the home team (optional — helps the engine
+                              determine home_field advantage automatically).
+                          row_id:
+                            type: string
+                            description: >
+                              Caller-supplied stable row ID. If omitted the engine
+                              generates one. Use to join enrichment keys.
                 target_date:
                   type: string
                   format: date
@@ -599,6 +717,125 @@ paths:
                               acquisition_notes:
                                 type: array
                                 items: { type: string }
+                      moneyline:
+                        type: object
+                        description: >
+                          Moneyline-specific enrichment for MONEYLINE_V1 rows.
+                          Keyed like any enrichment entry — by row_id or
+                          "team:market_type" (lower-case). Provides odds context,
+                          starting lineup, head-to-head history, and weather for
+                          the calibration and net-edge layers.
+
+                          Absence of any sub-field is safe — that layer degrades
+                          gracefully rather than blocking scoring.
+                        properties:
+                          odds_american_home:
+                            type: integer
+                            description: >
+                              American moneyline for the home team (negative = favourite),
+                              e.g. -145 or +130. Used for no-vig calculation;
+                              combined with odds_american_away to derive market_no_vig.
+                          odds_american_away:
+                            type: integer
+                            description: >
+                              American moneyline for the away team, e.g. +125 or -115.
+                          odds_source:
+                            type: string
+                            description: Bookmaker name, e.g. "DraftKings", "FanDuel", "BetMGM"
+                          odds_retrieved_at:
+                            type: string
+                            format: date-time
+                            description: ISO-8601 UTC timestamp when odds were read
+                          starting_pitcher_home:
+                            type: string
+                            description: >
+                              Confirmed starting pitcher for the home team (MLB only),
+                              e.g. "Shohei Ohtani". Absence triggers pitcher-uncertainty
+                              widening in the MLB model.
+                          starting_pitcher_away:
+                            type: string
+                            description: Confirmed starting pitcher for the away team (MLB only)
+                          pitchers_confirmed:
+                            type: boolean
+                            description: >
+                              True when both starters are officially confirmed for today.
+                              False or absent applies an uncertainty penalty to the model output.
+                          head_to_head_record:
+                            type: object
+                            description: >
+                              Recent head-to-head record between the two teams.
+                              Used as a secondary calibration signal — never the
+                              primary input.
+                            properties:
+                              last_n_games:
+                                type: integer
+                                description: >
+                                  Number of recent matchups covered, e.g. 10.
+                                  Recommend ≥5 for meaningful signal; fewer
+                                  games produce higher uncertainty widening.
+                              team_wins:
+                                type: integer
+                                description: Wins for the evaluated team in the last_n_games window
+                              opponent_wins:
+                                type: integer
+                              pushes:
+                                type: integer
+                                description: Ties / no-decisions (optional)
+                              season:
+                                type: string
+                                description: Season or date range, e.g. "2026" or "last_30_days"
+                          rest_days_team:
+                            type: integer
+                            description: Days of rest for the evaluated team (0 = back-to-back)
+                          rest_days_opponent:
+                            type: integer
+                            description: Days of rest for the opponent
+                          home_field:
+                            type: string
+                            enum: [HOME, AWAY, NEUTRAL]
+                            description: >
+                              Whether the evaluated team (team field) is home, away,
+                              or at a neutral site. Derived from home_team when omitted.
+                          injuries_team:
+                            type: array
+                            items:
+                              type: string
+                            description: >
+                              Key injured players for the evaluated team,
+                              e.g. ["Trea Turner - IL60", "Freddie Freeman - DTD"].
+                              Drives injury-uncertainty widening in the model.
+                          injuries_opponent:
+                            type: array
+                            items:
+                              type: string
+                            description: Key injured players for the opponent
+                          weather:
+                            type: object
+                            description: >
+                              Weather context for outdoor games (MLB, NFL).
+                              Indoor / dome games: omit or set roof_closed=true.
+                            properties:
+                              condition:
+                                type: string
+                                description: >
+                                  e.g. "Clear", "Partly Cloudy", "Rain", "Snow", "Wind"
+                              wind_mph:
+                                type: number
+                                description: Wind speed in mph at game time
+                              wind_direction:
+                                type: string
+                                description: e.g. "Out to CF", "In from RF", "SW"
+                              temperature_f:
+                                type: number
+                                description: Temperature in Fahrenheit at first pitch
+                              roof_closed:
+                                type: boolean
+                                description: >
+                                  True for retractable-roof stadiums when closed.
+                                  Causes weather to be ignored by the model.
+                              precipitation_pct:
+                                type: number
+                                description: Probability of precipitation 0–100
                 record_entries:
                   type: boolean
                   description: >
@@ -651,18 +888,45 @@ paths:
                     Omit unless you want strict version matching.
             example:
               expected_governance_hash: "2a74d11e20ee24526de6db9401f39b4a9228c0f46948d07cea72dc4a21111908"
-              session_id: "session-2026-07-17-A"
-              research_run_id: "rr-2026-07-17-001"
-              as_of: "2026-07-17"
+              session_id: "session-2026-08-10-A"
+              research_run_id: "rr-2026-08-10-001"
+              as_of: "2026-08-10"
               rows:
                 - player: "LeBron James"
                   sport: "NBA"
                   prop_type: "Points"
                   line: 27.5
                   direction: "MORE"
-                  slate_date: "2026-07-17"
+                  slate_date: "2026-08-10"
                   board_source: "PrizePicks"
                   game: "LAL vs GSW"
+                - sport: "MLB"
+                  team: "Los Angeles Dodgers"
+                  opponent: "San Francisco Giants"
+                  market_type: "h2h"
+                  event_id: "mlb-2026-08-10-lad-sfg"
+                  slate_date: "2026-08-10"
+                  board_source: "DraftKings"
+                  home_team: "Los Angeles Dodgers"
+                  row_id: "ml-lad-sfg-001"
+              enrichment:
+                ml-lad-sfg-001:
+                  moneyline:
+                    odds_american_home: -155
+                    odds_american_away: +130
+                    odds_source: "DraftKings"
+                    odds_retrieved_at: "2026-08-10T18:00:00Z"
+                    starting_pitcher_home: "Shohei Ohtani"
+                    starting_pitcher_away: "Logan Webb"
+                    pitchers_confirmed: true
+                    home_field: "HOME"
+                    rest_days_team: 1
+                    rest_days_opponent: 2
+                    head_to_head_record:
+                      last_n_games: 10
+                      team_wins: 6
+                      opponent_wins: 4
+                      season: "2026"
       responses:
         "200":
           description: >
