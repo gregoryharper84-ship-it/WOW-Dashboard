@@ -1090,8 +1090,20 @@ def _build_market_join_audit(row: dict, enrichment: dict) -> dict[str, Any]:
     enrichment = enrichment if isinstance(enrichment, dict) else {}
     enr_by_rid = enrichment.get(rid) if rid else None
     enr_by_key = enrichment.get(prop_join_key)
-    enr_for_row = enr_by_rid if isinstance(enr_by_rid, dict) else (
-        enr_by_key if isinstance(enr_by_key, dict) else None
+    # FIX-C: also try stat_key as alternate prop join key (display-name vs
+    # canonical mismatch — e.g. caller keys by "rebounds" but row has "REB")
+    stat_key_lower = (row.get("stat_key") or "").lower()
+    enr_by_stat = (
+        enrichment.get(f"{player}:{stat_key_lower}")
+        if stat_key_lower and stat_key_lower != prop
+        else None
+    )
+    enr_for_row = (
+        enr_by_rid if isinstance(enr_by_rid, dict) else (
+            enr_by_key if isinstance(enr_by_key, dict) else (
+                enr_by_stat if isinstance(enr_by_stat, dict) else None
+            )
+        )
     )
     source_called = enr_for_row is not None
 
@@ -1501,4 +1513,21 @@ def _get_enrichment(enrichment: dict, row: dict) -> dict:
     prop   = (row.get("prop_type") or "").lower()
     key = f"{player}:{prop}"
 
-    return enrichment.get(rid) or enrichment.get(key) or {}
+    # FIX-C: Also try stat_key as alternate enrichment key.
+    # When the normalizer converts "Rebounds" → stat_key "REB", the pipeline
+    # row's prop_type becomes "REB" but the caller may have keyed enrichment
+    # under "angel reese:rebounds" (display name).  Trying both prevents a
+    # JOIN_KEY_MISMATCH that hides a legitimate sportsbook_line.
+    stat_key_lower = (row.get("stat_key") or "").lower()
+    key_by_stat = (
+        f"{player}:{stat_key_lower}"
+        if stat_key_lower and stat_key_lower != prop
+        else None
+    )
+
+    return (
+        enrichment.get(rid)
+        or enrichment.get(key)
+        or (enrichment.get(key_by_stat) if key_by_stat else None)
+        or {}
+    )

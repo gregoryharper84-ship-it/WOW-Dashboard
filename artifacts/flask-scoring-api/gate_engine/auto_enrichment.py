@@ -37,6 +37,85 @@ from services import odds_api, status as status_service
 from gate_engine.auto_game_log import fetch_game_log, GameLogUnavailable
 
 
+# ---------------------------------------------------------------------------
+# Stat-key canonicalization
+# ---------------------------------------------------------------------------
+# Maps display prop_type strings (from GPT / normalizer) → the canonical
+# stat_key that fetch_game_log and _MLB_STAT_FIELDS understand.
+# This prevents display strings like "Pitcher Strikeouts" from reaching
+# fetch_game_log as-is and causing GameLogUnavailable → NOT_CALLED.
+_STAT_KEY_CANONICAL: dict[str, str] = {
+    # MLB pitcher
+    "pitcher strikeouts":          "K",
+    "strikeouts":                  "K",
+    "k":                           "K",
+    "so":                          "K",
+    "pitching outs":               "OUTS",
+    "pitching out":                "OUTS",
+    "outs":                        "OUTS",
+    "plate appearances":           "PA",
+    "plate_appearances":           "PA",
+    "pa":                          "PA",
+    "1st inning pitches thrown":   "1IP_PITCHES_THROWN",
+    "1ip pitches thrown":          "1IP_PITCHES_THROWN",
+    "1ip":                         "1IP_PITCHES_THROWN",
+    "1ip_pitches_thrown":          "1IP_PITCHES_THROWN",
+    # MLB hitter combos
+    "hits + runs + rbi":           "H+R+RBI",
+    "hits+runs+rbi":               "H+R+RBI",
+    "h+r+rbi":                     "H+R+RBI",
+    "h + r + rbi":                 "H+R+RBI",
+    "hitter fantasy score":        "FANTASY_SCORE",
+    "fantasy score":               "FANTASY_SCORE",
+    "fantasy_score":               "FANTASY_SCORE",
+    # NBA/WNBA
+    "points rebounds assists":     "PTS+REB+AST",
+    "pra":                         "PTS+REB+AST",
+    "pts+reb+ast":                 "PTS+REB+AST",
+    "pts + reb + ast":             "PTS+REB+AST",
+}
+
+
+def _canonicalize_stat_key(raw: str | None) -> str:
+    """Return canonical stat_key for a display or short-form input, or the
+    original (stripped) value if no alias is registered.  Never returns None."""
+    if not raw:
+        return ""
+    stripped = raw.strip()
+    return _STAT_KEY_CANONICAL.get(stripped.lower(), stripped)
+
+
+def _lookup_mlb_player_id(player_name: str) -> "str | None":
+    """Best-effort MLB player ID lookup by full name via MLB Stats API.
+
+    Called only when the row does not already carry a player_id.  Returns the
+    string id of the first matching active player, or None on any failure.
+    Network errors, timeouts, and unexpected response shapes are silently
+    swallowed — the caller falls through to the honest gap path.
+    """
+    if not player_name or not player_name.strip():
+        return None
+    try:
+        import json
+        import urllib.parse
+        import urllib.request
+        name_enc = urllib.parse.quote(player_name.strip())
+        url = (
+            f"https://statsapi.mlb.com/api/v1/people/search"
+            f"?names={name_enc}&sportIds=1"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "WOW/1.0"})
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read())
+        people = data.get("people") or []
+        if people:
+            pid = people[0].get("id")
+            return str(pid) if pid else None
+    except Exception:
+        pass
+    return None
+
+
 # Conservative, explicit prop_type -> odds_api market-suffix mapping.
 # Only unambiguous, commonly-seen WOW prop types are listed. Anything not
 # listed here is left unmapped on purpose — the row gets no auto-filled
@@ -355,16 +434,23 @@ def build_auto_enrichment(
                 entry["role_timestamp"] = _fetch_ts
 
         # --- Game log auto-fetch + [FIX-3] l5/l10 computation ---
-        # Only fetch when: game_log not already supplied (None OR empty list),
-        # player_id and stat_key are present on the row, and sport is supported.
-        # NOTE: `is None` was deliberately changed to `not ...` so that an
-        # explicitly supplied empty list (game_log:[]) also triggers auto-fetch.
-        # Callers that pass [] intend "no data yet" — treating it as "already
-        # provided" caused silent L10:NO_GAME_LOG_PROVIDED on every MLB pitcher
-        # prop when the GPT omitted historical values from the enrichment body.
+        # FIX-D: canonicalize stat_key BEFORE attempting game log fetch.
+        # The normalizer may emit display strings ("Pitcher Strikeouts") or
+        # short canonical forms ("K") depending on path.  fetch_game_log
+        # only understands canonical keys; anything not in _MLB_STAT_FIELDS
+        # was silently swallowed as GameLogUnavailable, appearing as NOT_CALLED
+        # in the acquisition trace.  _canonicalize_stat_key maps both forms.
+        # FIX-D: also attempt MLB name-to-ID lookup when player_id is absent,
+        # so rows submitted without a player_id can still get game logs.
         if not entry.get("game_log"):
             player_id = row.get("player_id")
-            stat_key  = row.get("stat_key")
+            raw_sk    = row.get("stat_key") or row.get("prop_type") or ""
+            stat_key  = _canonicalize_stat_key(raw_sk)
+            # MLB name lookup when player_id missing
+            if not player_id and sport == "MLB" and stat_key:
+                _looked_up = _lookup_mlb_player_id(row.get("player") or "")
+                if _looked_up:
+                    player_id = _looked_up
             if player_id and stat_key:
                 try:
                     gl_result = fetch_game_log(
@@ -523,11 +609,19 @@ def fetch_missing_game_logs(
         prop_type = row.get("prop_type") or ""
         sport     = (row.get("sport") or "").upper()
         player_id = row.get("player_id")
-        stat_key  = row.get("stat_key") or prop_type
+        raw_sk   = row.get("stat_key") or prop_type
+        stat_key = _canonicalize_stat_key(raw_sk)  # FIX-D: normalize display names
 
         if not player or not prop_type:
             continue
-        if not player_id or not stat_key:
+        if not stat_key:
+            continue
+        # FIX-D: attempt MLB name-to-ID lookup when player_id absent
+        if not player_id and sport == "MLB":
+            _nlookup = _lookup_mlb_player_id(player)
+            if _nlookup:
+                player_id = _nlookup
+        if not player_id:
             continue
         if sport not in _SUPPORTED_SPORTS:
             continue

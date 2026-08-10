@@ -446,11 +446,44 @@ def _attempt_event_status(packet: dict, enr: dict) -> RouteAttemptResult:
         if len(_cleaned) >= 8:
             date_str_for_scoreboard = _cleaned[:8]
 
+    # FIX-A: Build a non-blank game_str or classify as IDENTITY_HANDOFF_ERROR.
+    # packet["game"] is now populated by build_packet() from the canonical row
+    # game field (e.g. "ATL vs TOR").  The f-string fallback is kept only when
+    # BOTH team and opponent are known; constructing " vs " from two empty
+    # strings is a plumbing defect, not a data-unavailable gap.
+    _team_str     = packet.get("team") or ""
+    _opponent_str = packet.get("opponent") or ""
     game_str = (
         packet.get("game")
         or enr.get("game")
-        or f"{packet.get('team', '')} vs {packet.get('opponent', '')}"
+        or (f"{_team_str} vs {_opponent_str}" if (_team_str and _opponent_str) else "")
     )
+
+    # Blank game_str means canonical identity was not threaded through to this
+    # adapter — classify as IDENTITY_HANDOFF_ERROR, not a data-unavailable gap.
+    _blank_matchup = not game_str or game_str.strip() in ("vs", "@", "vs.", "")
+    if _blank_matchup:
+        ni_recs2, ni_names2 = _not_impl_records_for("event_status")
+        return RouteAttemptResult(
+            field_category         = "event_status",
+            source_id              = "IDENTITY_HANDOFF_ERROR",
+            source_grade           = SourceGrade.C,
+            method                 = AcquisitionMethod.NOT_ATTEMPTED,
+            status                 = AcquisitionFieldStatus.DATA_UNOBTAINABLE_AFTER_EXHAUSTION,
+            value_retrieved        = None,
+            note                   = (
+                "IDENTITY_HANDOFF_ERROR: game_str is blank — canonical team/"
+                "opponent was not threaded from the upstream pipeline row to "
+                "this adapter. team and opponent must be non-null before WNBA "
+                "event lookup. This is a plumbing defect, not a data gap."
+            ),
+            routes_attempted       = [],
+            adapter_result         = None,
+            request_count          = 0,
+            route_records          = list(ni_recs2),
+            routes_not_implemented = ni_names2,
+        )
+
     adapter     = fetch_event_status(game_str, date_str=date_str_for_scoreboard)
     adapter_rec = _adapter_route_record(adapter)
     http_attempted = [adapter.provider] if adapter.request_count > 0 else []

@@ -474,6 +474,26 @@ def build_packet(
         or row.get("game_id")
         or ""
     )
+
+    # FIX-A: Preserve the canonical game string from the row.
+    # When a row carries game="ATL vs TOR" (from the GPT or event_identity
+    # module), build_packet must copy it into the packet so that
+    # fallback_router.game_str can use it instead of constructing " vs "
+    # from empty team/opponent strings.
+    game_from_row = row.get("game") or enr.get("game") or ""
+
+    # FIX-A: If team/opponent are absent but game string is present, parse
+    # them out so downstream code that uses packet["team"]/packet["opponent"]
+    # has canonical values.  Only fills blanks — never overwrites explicit values.
+    if game_from_row and not (team and opponent):
+        import re as _re
+        _parts = _re.split(r"\s+(?:vs\.?|@)\s+", game_from_row, maxsplit=1)
+        if len(_parts) == 2:
+            _parsed_home, _parsed_away = _parts[0].strip(), _parts[1].strip()
+            if not team and _parsed_home:
+                team = _parsed_home
+            if not opponent and _parsed_away:
+                opponent = _parsed_away
     market  = row.get("prop_type") or row.get("market") or ""
     line    = row.get("line")
     side    = row.get("direction") or row.get("side") or ""
@@ -541,6 +561,7 @@ def build_packet(
         "team":                   team,
         "opponent":               opponent,
         "event_id":               event_id,
+        "game":                   game_from_row,   # FIX-A: canonical game string
         "market":                 market,
         "line":                   line,
         "side":                   side,

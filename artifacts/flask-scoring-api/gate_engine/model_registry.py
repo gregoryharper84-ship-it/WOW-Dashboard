@@ -295,6 +295,22 @@ _REGISTRY: dict = {
         "formula=W×6+QS×4+K×3+Outs×1+ER×−3; verify against settled results"
     ),
 
+    # ── MLB: H+R+RBI composite (Hits + Runs + RBI per game) ──────────────────
+    # PROVISIONAL: Gaussian fit over L10 composite series.
+    # Proprietary/thin market — no exact Odds API sportsbook line exists.
+    # Distribution reconstructed from official H, R, RBI game logs via MLB
+    # Stats API (statsapi.mlb.com).  The auto_game_log fetch_game_log()
+    # handles "H+R+RBI" via the combo path (hits+runs+rbi per split).
+    # Thin-market uncertainty haircut applies; MONEY_GRADE blocked until
+    # validated against settled results in the postmortem ledger.
+    # Normalizer maps "Hits + Runs + RBIs" / "H+R+RBI" → stat_key "H+R+RBI".
+    ("MLB",  "H+R+RBI"): _prov(
+        "mlb_hrr_gaussian_v1", ["game_log"],
+        "UNVALIDATED: Hits+Runs+RBI composite per game; Gaussian fit over L10 series; "
+        "thin market (no Odds API coverage); reconstruct from MLB Stats API splits; "
+        "use thin-market uncertainty haircut; verify against settled results"
+    ),
+
     # ── Tennis: match stats (Gaussian fit over historical match distribution) ─
     # PROVISIONAL: Gaussian λ=match-log mean, σ=match-log std.
     # Coverage limited to ATP/WTA main-draw; ITF/Challenger → NO_REGISTERED_MODEL.

@@ -3062,6 +3062,27 @@ def analyze_board():
         if "," in image_base64:
             image_base64 = image_base64.split(",", 1)[1]
 
+        # FIX-G: Strip whitespace (spaces, newlines, tabs) that GPT or HTTP
+        # transport may inject into the base64 payload.  The stdlib decoder
+        # rejects any non-base64-alphabet bytes, so a single stray newline
+        # causes IMAGE_DECODE_ERROR even though the payload is valid.
+        image_base64 = "".join(image_base64.split())
+
+        # FIX-G: Validate the base64 is decodable before spending a round-trip
+        # to Anthropic.  Return IMAGE_DECODE_ERROR instead of a confusing 500.
+        try:
+            _b64_test = _base64.b64decode(image_base64[:64], validate=True)
+        except Exception as _b64_exc:
+            return jsonify({
+                "error": "IMAGE_DECODE_ERROR",
+                "message": (
+                    "The image_base64 payload could not be decoded. "
+                    "Strip any data:image/...;base64, prefix, remove all "
+                    "whitespace, and send raw base64 bytes only."
+                ),
+                "detail": str(_b64_exc)[:200],
+            }), 422
+
         # Auto-detect real media type from magic bytes — ignore what caller sent
         try:
             header = _base64.b64decode(image_base64[:16])
@@ -3404,6 +3425,20 @@ def analyze_and_score():
         # ── JSON transport (base64 string or remote URL) ─────────────────
         raw_img = body.get("image") or body.get("image_base64") or body.get("screenshot")
         if raw_img and isinstance(raw_img, str):
+            # Guard: reject local filesystem paths (/mnt/data/..., /tmp/..., etc.)
+            # These cannot be read by the server and produce confusing decode errors.
+            if raw_img.startswith("/") or raw_img.lower().startswith("file://"):
+                return jsonify({
+                    "ok":         False,
+                    "error": (
+                        "Local filesystem paths are not supported. "
+                        "Send the image as base64-encoded bytes in the `image_base64` field "
+                        "(optionally prefixed with 'data:image/jpeg;base64,'), or supply a "
+                        "public HTTPS URL in the `image` field."
+                    ),
+                    "error_code": "LOCAL_PATH_REJECTED",
+                    "can_execute": False,
+                }), 422
             if raw_img.startswith("http"):
                 image_url = raw_img
             else:
@@ -21654,8 +21689,14 @@ def gate_engine_run():
     except Exception as _fmgl_err:
         app.logger.warning("fetch_missing_game_logs error: %s", _fmgl_err)
 
-    # Wire session exposure ledger for cross-request persistence
-    _session_exposure_ledger = _get_session_ledger(_session_id)
+    # Wire session exposure ledger for cross-request persistence.
+    # IMPORTANT: only create the ledger when this is a card-registration run
+    # (record_entries=True).  Scoring-only / QA runs must NOT write exposure
+    # rows — repeated rescans of the same props otherwise accumulate session
+    # counts and eventually trigger PLAYER_EXPOSURE / ARCHETYPE_EXPOSURE
+    # concentration blockers that have nothing to do with actual card submissions.
+    # Exposure is meaningful only when a card is proposed / open / submitted.
+    _session_exposure_ledger = _get_session_ledger(_session_id) if record_entries else None
 
     # PATCH-PORTFOLIO-001/002: Cross-Slip Exposure Governor
     # Stage 2A: DB-backed when DATABASE_URL is present (cross-request persistence).

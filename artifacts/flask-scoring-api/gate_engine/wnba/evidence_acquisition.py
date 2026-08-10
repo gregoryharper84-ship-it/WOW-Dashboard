@@ -776,6 +776,28 @@ def run(
         reconciliation,
     )
 
+    # FIX-B: Post-merge mutual-exclusion cleanup — role_status sub-fields only.
+    # A role_status sub-field cannot simultaneously appear in fields_unresolved
+    # AND have a valid value in the packet.  This removes false positives that
+    # arise when a route-level status (e.g. FALLBACK_RETRIEVED for the
+    # "role_status" category) is applied to a sub-field (e.g. projected_minutes)
+    # that was never written to the packet because the adapter (ESPN injuries)
+    # does not emit that specific sub-field.
+    #
+    # IMPORTANT: This cleanup is intentionally scoped to role_status.* only.
+    # _validate_critical_field_value returns True unconditionally for all other
+    # critical fields (event_status, box_score_log, l5_ledger, l10_ledger) —
+    # those fields are already correctly tracked by detect_missing.  Applying
+    # the cleanup to them would incorrectly clear their unresolved state even
+    # when they are absent from the packet.
+    fields_unresolved = [
+        f for f in fields_unresolved
+        if not (
+            f.startswith("role_status.")
+            and _validate_critical_field_value(f, packet)
+        )
+    ]
+
     packet["packet_status"] = packet_status
 
     # ------------------------------------------------------------------

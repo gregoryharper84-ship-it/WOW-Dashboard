@@ -443,7 +443,72 @@ paths:
                         type: array
                         items:
                           type: number
-                        description: Last-N game log values for this stat
+                        description: >
+                          Last-N per-game values for the specific stat being scored.
+                          MUST be plain numbers — one value per game, most recent first.
+                          Do NOT mix stat types: if scoring WNBA Rebounds supply raw
+                          rebound totals only (not PRA). For PRA supply the per-game
+                          sum PTS+REB+AST. For H+R+RBI supply per-game H+R+RBI.
+                          For Hitter Fantasy Score supply the per-game computed FS total.
+                          Minimum recommended: 5 games; 10 preferred.
+                          Fewer than 3 qualifying (non-DNP) games triggers ROLE_HOLD.
+                      box_score_log:
+                        type: array
+                        description: >
+                          WNBA only — full box-score rows as dicts, one per game.
+                          CANNOT substitute for game_log (different contract layers):
+                          game_log is the numeric stat series; box_score_log is the
+                          role/usage evidence packet consumed by the WNBA composite gate.
+
+                          Required keys per dict (missing or wrong types cause
+                          WNBA_ENRICHMENT_TYPE_MISMATCH):
+                            MIN   — float, minutes played
+                            PTS   — float, points scored
+                            REB   — float, total rebounds
+                            AST   — float, assists
+                            FGA   — float, field goal attempts
+                            USG%  — float, usage rate as decimal (0.28) or percent (28.0);
+                                    also accepted as "USG", "usg_pct", "usage"
+
+                          Optional but recommended: STL, BLK, TOV, FGM, FG3M, FG3A,
+                          FTA, FTM, OREB, DREB, game_date, opponent, outcome.
+
+                          Example: {"MIN":34.0,"PTS":18.0,"REB":7.0,"AST":3.0,
+                                    "FGA":14.0,"USG%":0.28,"STL":1.0,"BLK":0.0}
+                        items:
+                          type: object
+                          additionalProperties: true
+                          properties:
+                            MIN:  { type: number }
+                            PTS:  { type: number }
+                            REB:  { type: number }
+                            AST:  { type: number }
+                            FGA:  { type: number }
+                            "USG%": { type: number, description: "Usage rate — decimal (0.28) or percent (28.0)" }
+                      role_status:
+                        type: string
+                        enum: [STARTER, RESERVE, SPOT_STARTER, DNP_RISK, DNP, INACTIVE, UNKNOWN]
+                        description: >
+                          Player's confirmed role for this game. Required for WNBA props
+                          — absence triggers LINEUP_UNCONFIRMED hold.
+                          STARTER/RESERVE: confirmed. DNP_RISK: listed but uncertain.
+                          DNP: did not play — exclude this game from game_log and box_score_log.
+                          Source: official injury report, beat reporter, or ESPN API.
+                      role_timestamp:
+                        type: string
+                        format: date-time
+                        description: >
+                          ISO-8601 UTC timestamp when role_status was confirmed,
+                          e.g. "2026-08-10T18:30:00Z". Role data older than 4 hours
+                          before tip-off is treated as STALE → capped at DNP_RISK.
+                          Supply within 2 hours of tip for STARTER/RESERVE to reach
+                          full confidence.
+                      projected_minutes:
+                        type: number
+                        description: >
+                          Expected minutes for this game (WNBA optional, required for
+                          2PA/3PA/FGA attempt-rate props to escape MODEL_QUALIFIED_HOLD).
+                          When absent, model uses role_status + L10 minute average.
                       season_log:
                         type: array
                         items:

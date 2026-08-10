@@ -69,6 +69,39 @@ def _cache_set(key: str, values: list, source: str, games_fetched: int,
 # Public exception
 # ---------------------------------------------------------------------------
 
+def ip_str_to_outs(ip_str: "str | float | int") -> int:
+    """Convert a baseball innings-pitched string (or float) to a whole-outs count.
+
+    Baseball IP notation uses a fractional part of .1 or .2 (never .3) to mean
+    one or two additional outs beyond whole innings:
+        6.0 → 18 outs   (6 full innings)
+        6.1 → 19 outs   (6 innings + 1 out)
+        6.2 → 20 outs   (6 innings + 2 outs)
+        4.1 → 13 outs
+        0.1 →  1 out
+
+    This function is the canonical IP → outs converter for WOW.  The MLB Stats
+    API game-log splits already return an integer ``outs`` field, so this helper
+    is used when parsing the ``inningsPitched`` string representation (e.g. from
+    reconstruction sources or user-supplied data) rather than the API integer.
+
+    Raises ValueError for inputs that cannot be parsed.
+    """
+    s = str(ip_str).strip()
+    if "." in s:
+        whole_part, frac_part = s.split(".", 1)
+        whole_innings = int(whole_part)
+        extra_outs    = int(frac_part[0]) if frac_part else 0   # only first digit matters
+        if extra_outs not in (0, 1, 2):
+            raise ValueError(
+                f"ip_str_to_outs: invalid fractional part '{frac_part}' in '{ip_str}'. "
+                "Baseball IP notation only uses .0, .1, .2"
+            )
+        return whole_innings * 3 + extra_outs
+    else:
+        return int(s) * 3
+
+
 class GameLogUnavailable(Exception):
     """Raised when a game log cannot be fetched for this player/sport/stat."""
     pass
