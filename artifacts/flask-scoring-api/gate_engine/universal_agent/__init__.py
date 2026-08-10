@@ -23,8 +23,12 @@ Phase B2 components:
   bundle_assembler    — EvidenceBundle frozen dataclass + assemble_bundle()
   orchestrator        — run_orchestrator() entry point + OrchestratorResult
 
-NOT YET BUILT (Phase B3+):
-  Lane adapters (MLB, WNBA, Tennis, etc.)
+Phase B3A components (gate_engine/universal_agent/lanes/mlb_moneyline/):
+  MLB Moneyline lane adapter — maps WOW/LLP MLB moneyline evidence rows
+  (read-only, post-preflight) into EvidencePacket + six B1 role payloads.
+
+NOT YET BUILT (Phase B3B+):
+  Additional lane adapters (WNBA, Tennis, Player Props, etc.)
   Production routing / app.py wiring
   Live LLM runner implementations
 
