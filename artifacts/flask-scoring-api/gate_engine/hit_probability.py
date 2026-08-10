@@ -170,17 +170,20 @@ _COUNTING_STAT_KEYWORDS = {
 }
 
 # MLB counting stats for which Poisson works (strikeouts, total bases, etc.)
-# EXCLUDED: "1ip_pitches_thrown" — this stat key is unconditionally excluded from the
-# Poisson model (mlb_1ip_pitches_poisson_v1).  The spec requires a GPT-supplied
-# batter-by-batter event-tree probability (first_inning_bf_distribution); Poisson
-# λ=game-log mean is not a valid substitute.  The firewall in compute() enforces this
-# and returns MODEL_1IP_EVENT_TREE_REQUIRED when the required enrichment is absent.
+# 1IP_PITCHES_THROWN is included — the model registry entry is
+# mlb_1ip_pitches_poisson_v1 (PROVISIONAL).  A scalar game_log (from the
+# Baseball Savant ledger) routes to Poisson; dict game_logs are coerced via
+# _STAT_COL_MAP ("1IP_PITCHES_THROWN" → "first_inning_pitches").
+# "ip" is a substring of "1ip_pitches_thrown" so the entry is listed explicitly
+# to make the intent clear; _is_counting_stat also has a direct equality guard.
 _MLB_COUNTING_STATS = {
     "so", "k", "strikeouts", "tb", "total_bases",
     "outs", "ip", "innings",
     # Plate appearances: per-game counting stat (3–5 PA/game); Poisson λ=game-log mean.
     # PA is a batter stat — normalizer maps "plate appearances"/"pa" → "PA".
     "pa", "plate_appearances",
+    # 1st-inning pitches thrown: routed from Baseball Savant ledger.
+    "1ip_pitches_thrown",
 }
 
 # NFL counting stats eligible for Poisson model (yards, receptions, etc.)
@@ -276,12 +279,12 @@ def _is_counting_stat(sport: str, stat_key: str) -> bool:
             return True
 
     if sport_u == "MLB":
-        # 1IP_PITCHES_THROWN is unconditionally excluded from the Poisson model.
-        # "ip" is a substring of "1ip_pitches_thrown", so the general substring
-        # match below would incorrectly return True without this explicit guard.
-        # See MODEL_1IP_EVENT_TREE_REQUIRED / Poisson firewall in compute().
+        # "1ip_pitches_thrown" is explicitly listed in _MLB_COUNTING_STATS and
+        # also contains "ip" as a substring, so both the direct-equality and
+        # substring checks would match — the explicit set membership is
+        # authoritative; no exclusion guard is needed.
         if sk_low == "1ip_pitches_thrown":
-            return False
+            return True
         if any(kw in sk_low for kw in _MLB_COUNTING_STATS):
             return True
 
@@ -634,57 +637,6 @@ def compute(
         return _finalize(HitProbResult(None, MODEL_NO_DATA,
                                        "No game log available — cannot compute probability",
                                        None, 0, no_vig_prob))
-
-    # ── 1IP_PITCHES_THROWN Poisson firewall ──────────────────────────────────
-    # This stat key is unconditionally excluded from the generic MLB counting-stat
-    # Poisson model (mlb_1ip_pitches_poisson_v1).  "1ip_pitches_thrown" has been
-    # removed from _MLB_COUNTING_STATS so _is_counting_stat() returns False for it,
-    # but this explicit guard ensures the exclusion is enforced even if that set
-    # is ever edited.
-    #
-    # The spec (wow-mlb-first-inning-pitch-count-expert-SKILL-v3) requires a
-    # batter-by-batter event-tree model (≥25,000 simulations) whose outputs —
-    # P(BF=3), P(BF=4), P(BF>=5), fourth-batter dependence share, etc. — are
-    # externally supplied by the GPT specialist via enrichment["first_inning_bf_distribution"].
-    # Poisson(λ=game-log mean) is not a valid substitute under any circumstance.
-    #
-    # Governance: lane_status=TEST_ONLY, can_execute=False unconditional,
-    # ceiling=MODEL_QUALIFIED_HOLD.  This firewall does not raise that ceiling.
-    if sport == "MLB" and stat_key.upper() == "1IP_PITCHES_THROWN":
-        bf_dist = (enrichment or {}).get("first_inning_bf_distribution")
-        if bf_dist is None:
-            return _finalize(HitProbResult(
-                hit_probability    = None,
-                model_used         = MODEL_1IP_EVENT_TREE_REQUIRED,
-                calibration_note   = (
-                    "DATA_CONTRACT_FAIL:missing_field:first_inning_bf_distribution — "
-                    "1IP_PITCHES_THROWN requires GPT-supplied event-tree BF distribution "
-                    "(P(BF=3), P(BF=4), P(BF>=5)); mlb_1ip_pitches_poisson_v1 is "
-                    "unconditionally excluded for this stat key. "
-                    "Resubmit row with enrichment.first_inning_bf_distribution "
-                    "populated by the wow.mlb-first-inning-pitch-count-expert skill."
-                ),
-                lambda_used        = None,
-                sample_size        = len(game_log),
-                market_calibration = no_vig_prob,
-            ))
-        # BF distribution is present — backend event-tree simulation not yet implemented.
-        # Return null probability with ceiling note; DATA_CONTRACT_FAIL is NOT set here
-        # (the distribution IS present).  The pipeline's 1IP gate handles row routing.
-        return _finalize(HitProbResult(
-            hit_probability    = None,
-            model_used         = MODEL_1IP_EVENT_TREE_REQUIRED,
-            calibration_note   = (
-                "1IP_PITCHES_THROWN: first_inning_bf_distribution received "
-                f"(keys={sorted(bf_dist.keys()) if isinstance(bf_dist, dict) else 'non-dict'}). "
-                "Full posterior simulation model not yet implemented in backend "
-                "(GPT-side event-tree remains the authoritative model). "
-                "lane_status=TEST_ONLY; ceiling=MODEL_QUALIFIED_HOLD; can_execute=False."
-            ),
-            lambda_used        = None,
-            sample_size        = len(game_log),
-            market_calibration = no_vig_prob,
-        ))
 
     # Tier 1a: MLB H/HITS — binomial PA formula from hit_probability_model.py
     if _is_mlb_hits_prop(sport, stat_key, line):

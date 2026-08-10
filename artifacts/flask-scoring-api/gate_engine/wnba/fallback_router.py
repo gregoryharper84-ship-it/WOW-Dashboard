@@ -584,7 +584,55 @@ def _attempt_role_status(packet: dict, enr: dict) -> RouteAttemptResult:
             routes_not_implemented = ni_names,
         )
 
-    # No role fields at all — try ESPN injuries (real HTTP)
+    # No role fields at all.
+    # ── Step 2a: box-score reconstruction (zero HTTP cost) ───────────────────
+    # When box_score_log is already present in the enrichment (written by
+    # _attempt_box_score_log which runs BEFORE _attempt_role_status per
+    # CATEGORY_DISPATCH_ORDER, or from primary acquisition), try reconstruction
+    # BEFORE making any external HTTP call.  This avoids a live ESPN request
+    # when the data we need is already on hand.
+    as_of_ts = enr.get("_acquisition_as_of") or datetime.datetime.now(
+        datetime.timezone.utc
+    ).isoformat()
+    pre_game_rows: list = (
+        enr.get("box_score_log")      # written by _attempt_box_score_log or GPT-supplied
+        or packet.get("box_score_log")  # from primary acquisition
+        or []
+    )
+    pre_reconstructed = _reconstruct_role_from_box_scores(pre_game_rows, as_of=as_of_ts)
+
+    if pre_reconstructed:
+        # Sufficient box-score evidence found — return canonical reconstruction
+        # without making any ESPN HTTP request.
+        bsr_record = _make_route_record(
+            "reconstructed_from_box_scores",
+            request_made   = False,
+            method         = "RECONSTRUCTION",
+            request_status = "RECONSTRUCTION_SUCCEEDED",
+        )
+        return RouteAttemptResult(
+            field_category         = "role_status",
+            source_id              = "reconstructed_from_box_scores",
+            source_grade           = SourceGrade.B,
+            method                 = AcquisitionMethod.RECONSTRUCTED,
+            status                 = AcquisitionFieldStatus.MULTI_SOURCE_RECONSTRUCTED,
+            value_retrieved        = pre_reconstructed,
+            note                   = (
+                f"box-score reconstruction from {pre_reconstructed['games_used']} "
+                f"completed games (pre-ESPN path; box_score_log already in enrichment). "
+                f"projected_minutes={pre_reconstructed['projected_minutes']}, "
+                f"starter_status={pre_reconstructed['starter_status']}, "
+                f"confidence={pre_reconstructed['confidence']}"
+            ),
+            routes_attempted       = [],    # no HTTP request made
+            request_count          = 0,
+            route_records          = [bsr_record] + list(ni_recs),
+            routes_not_implemented = ni_names,
+        )
+
+    # ── Step 2b: ESPN WNBA injuries (real HTTP) ───────────────────────────────
+    # Box-score reconstruction was insufficient (< 3 qualifying rows or empty).
+    # Fall back to ESPN injuries endpoint.
     player_name   = packet.get("player") or ""
     adapter       = fetch_role_status(player_name)
     adapter_rec   = _adapter_route_record(adapter)
@@ -611,30 +659,19 @@ def _attempt_role_status(packet: dict, enr: dict) -> RouteAttemptResult:
                 routes_not_implemented = ni_names,
             )
 
-        # ── Step 3: box-score reconstruction ─────────────────────────────────
-        # ESPN returned PROXY_ONLY (player absent from injury report → ACTIVE_INFERRED).
-        # ACTIVE_INFERRED is not in _CANONICAL_ACTIVE_STATUSES and would remain
-        # unresolved in _validate_packet.  Before giving up, check whether the
-        # already-retrieved box_score_log provides direct observational evidence.
-        #
-        # _attempt_box_score_log is always dispatched BEFORE _attempt_role_status
-        # (enforced by CATEGORY_DISPATCH_ORDER) and writes its game rows into
-        # enr["box_score_log"].  The canonical packet may also already have them
-        # from primary acquisition.
-        game_rows = (
-            enr.get("box_score_log")            # written by _attempt_box_score_log
-            or packet.get("box_score_log")       # from primary acquisition
+        # ── Step 3: box-score reconstruction (post-ESPN PROXY_ONLY) ──────────
+        # ESPN returned PROXY_ONLY (player absent from injury report →
+        # ACTIVE_INFERRED).  Check again whether game rows were written to
+        # enr["box_score_log"] by _attempt_box_score_log during this same
+        # fallback pass (may have arrived after the pre-ESPN check above).
+        post_game_rows: list = (
+            enr.get("box_score_log")
+            or packet.get("box_score_log")
             or []
         )
-        as_of_ts  = enr.get("_acquisition_as_of") or datetime.datetime.now(
-            datetime.timezone.utc
-        ).isoformat()
-        reconstructed = _reconstruct_role_from_box_scores(game_rows, as_of=as_of_ts)
+        reconstructed = _reconstruct_role_from_box_scores(post_game_rows, as_of=as_of_ts)
 
         if reconstructed:
-            # Successful reconstruction — return MULTI_SOURCE_RECONSTRUCTED so
-            # _validate_critical_field_value will accept all three subfields.
-            # inference_basis is guaranteed None by _reconstruct_role_from_box_scores.
             bsr_record = _make_route_record(
                 "reconstructed_from_box_scores",
                 request_made   = False,
@@ -664,13 +701,16 @@ def _attempt_role_status(packet: dict, enr: dict) -> RouteAttemptResult:
                 routes_not_implemented = ni_names,
             )
 
-        # Reconstruction had insufficient game data — fall through to PROXY_ONLY
+        # Reconstruction had insufficient game data — PROXY_ONLY
         bsr_fail_record = _make_route_record(
             "reconstructed_from_box_scores",
             request_made   = False,
             method         = "RECONSTRUCTION",
             request_status = "RECONSTRUCTION_INSUFFICIENT_DATA",
-            failure_reason = f"fewer than 3 qualifying game rows (got {len(game_rows)})",
+            failure_reason = (
+                f"fewer than 3 qualifying game rows "
+                f"(pre-ESPN: {len(pre_game_rows)}, post-ESPN: {len(post_game_rows)})"
+            ),
         )
         return RouteAttemptResult(
             field_category         = "role_status",
@@ -681,8 +721,8 @@ def _attempt_role_status(packet: dict, enr: dict) -> RouteAttemptResult:
             value_retrieved        = nf,
             note                   = (
                 "ACTIVE_INFERRED from absence on ESPN injury report (PROXY_ONLY); "
-                f"box-score reconstruction failed: {len(game_rows)} rows, need ≥ 3 "
-                "with minutes > 0"
+                f"box-score reconstruction failed: "
+                f"{len(post_game_rows)} rows available, need ≥ 3 with minutes > 0"
             ),
             routes_attempted       = http_attempted,
             adapter_result         = adapter,
@@ -698,7 +738,8 @@ def _attempt_role_status(packet: dict, enr: dict) -> RouteAttemptResult:
         method                 = AcquisitionMethod.NOT_ATTEMPTED,
         status                 = AcquisitionFieldStatus.DATA_UNOBTAINABLE_AFTER_EXHAUSTION,
         note                   = (
-            f"role_status unobtainable after {len(http_attempted)} HTTP route(s). "
+            f"role_status unobtainable: pre-ESPN reconstruction had "
+            f"{len(pre_game_rows)} rows (need ≥ 3); "
             f"ESPN injuries: {adapter.request_status}. "
             f"failure_reason={adapter.failure_reason}"
         ),
@@ -1017,13 +1058,17 @@ def _attempt_news_contradiction(packet: dict, enr: dict) -> RouteAttemptResult:
 # Dispatcher
 # ---------------------------------------------------------------------------
 
-_CATEGORY_HANDLERS = {
-    "event_status":      _attempt_event_status,
-    "role_status":       _attempt_role_status,
-    "box_score_log":     _attempt_box_score_log,
-    "matchup":           _attempt_matchup,
-    "market_comparison": _attempt_market_comparison,
-    "news_contradiction": _attempt_news_contradiction,
+# Use lambdas so that monkey-patching any of these module-level functions
+# (e.g. `_fr._attempt_role_status = fake`) is picked up at call time.
+# A static dict of direct function references captures the original reference
+# at module load and ignores later reassignments.
+_CATEGORY_HANDLERS: dict[str, Any] = {
+    "event_status":       lambda p, e: _attempt_event_status(p, e),
+    "role_status":        lambda p, e: _attempt_role_status(p, e),
+    "box_score_log":      lambda p, e: _attempt_box_score_log(p, e),
+    "matchup":            lambda p, e: _attempt_matchup(p, e),
+    "market_comparison":  lambda p, e: _attempt_market_comparison(p, e),
+    "news_contradiction": lambda p, e: _attempt_news_contradiction(p, e),
 }
 
 
