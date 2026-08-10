@@ -90,3 +90,4 @@
 - [Universal Agent B3B shadow pipeline](universal-agent-b3b-shadow-pipeline.md) — 3 shadow/ modules; DeterministicAdapterRunner(role_payloads) keyed by role_id; SHADOW_ENABLED=False default; docstring "from app" substring false-positive anti-pattern.
 - [B3C canary build lessons](b3c-canary-lessons.md) — EvidencePacket has no scoring_context (use to_dict()); patch.object needs autospec=True for instance-method call_count; object.__setattr__ bypasses frozen; model-string scan tests need updating when new module pins same model.
 - [B3C-R1 repair](b3c-r1-repair.md) — abort-state (fail-fast) + cost-before-scan restructure + prompt hardening; 21 new tests; 9 pre-existing failures unchanged; place_bet/settlement still missing from FORBIDDEN_GOVERNANCE_KEYS.
+- [B3C-R2 canary run](b3c-r2-canary.md) — first 6/6 ACCEPTED run; pipeline_status=FAILED was a bug (orch.bundle.status → orch.bundle.bundle_status); R2 run ID 92faf125; $0.022012 total; all safety invariants green.

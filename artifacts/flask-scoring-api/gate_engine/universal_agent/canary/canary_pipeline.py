@@ -137,7 +137,8 @@ def _sha256_json(obj: Any) -> Optional[str]:
 def _pipeline_status_from_orchestrator(orch: OrchestratorResult) -> str:
     """Map orchestrator bundle status to CanaryPipelineStatus."""
     from gate_engine.universal_agent.bundle_assembler import BundleStatus
-    bs = orch.bundle.status
+    # EvidenceBundle uses .bundle_status, not .status (field name from dataclass)
+    bs = orch.bundle.bundle_status
     if bs == BundleStatus.COMPLETE:
         return CanaryPipelineStatus.COMPLETE
     if bs == BundleStatus.PARTIAL:
