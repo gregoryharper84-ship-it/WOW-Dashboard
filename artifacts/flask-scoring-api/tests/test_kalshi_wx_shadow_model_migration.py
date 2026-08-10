@@ -484,7 +484,26 @@ class TestM6AuthorityAndCodeIntegrity(unittest.TestCase):
                          f"Retired model string found in production files: {hits}")
 
     def test_M6_new_model_present_only_in_subagents_and_agent(self):
-        """New model string appears in exactly the two expected production files."""
+        """New model string appears in exactly the expected production files.
+
+        Authorized locations (updated as each new module is granted use of the
+        pinned model string):
+          - kalshi_wx_shadow_agent.py      — Kalshi WX shadow agent (original)
+          - kalshi_wx_shadow_subagents.py  — Kalshi WX shadow subagents (original)
+          - __init__.py                    — B3C canary package re-export of PINNED_MODEL
+          - canary_config.py               — B3C canary: defines PINNED_MODEL constant
+          - claude_role_runner.py          — B3C canary: uses _PINNED_MODEL in API calls
+        """
+        _AUTHORIZED = sorted([
+            "kalshi_wx_shadow_agent.py",
+            "kalshi_wx_shadow_subagents.py",
+            # B3C Universal Agent Core canary (WOW-PATCH-2026-08-10):
+            # These three files are the authorized offline-only canary infrastructure.
+            # UAC_MLB_ML_CLAUDE_SHADOW_ENABLED=False by default; no live trading.
+            "__init__.py",
+            "canary_config.py",
+            "claude_role_runner.py",
+        ])
         prod_dirs = [_REPO / "gate_engine", _REPO / "scripts"]
         hits = []
         for d in prod_dirs:
@@ -495,7 +514,7 @@ class TestM6AuthorityAndCodeIntegrity(unittest.TestCase):
                     hits.append(f.name)
         self.assertEqual(
             sorted(hits),
-            ["kalshi_wx_shadow_agent.py", "kalshi_wx_shadow_subagents.py"],
+            _AUTHORIZED,
             f"New model string found in unexpected files: {hits}",
         )
 
