@@ -47,7 +47,7 @@ FORBIDDEN_GOVERNANCE_KEYS: frozenset[str] = frozenset({
     "capital", "capital_allocation", "capital_authorized",
     "trade", "trading", "live_trading",
     "authorized", "approved", "approved_for_execution",
-    "production_authority", "user_output_authority", "deployment_authority",
+    "production_authority", "user_output_authority", "deployment_authority", "deploy",
     # Governance state / decisions
     "governance_state", "governance_override",
     "final_decision", "stake_tier", "is_playable",

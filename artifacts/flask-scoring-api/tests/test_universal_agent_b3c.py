@@ -528,19 +528,28 @@ class TestClaudeRoleRunnerForbiddenKeys(unittest.TestCase):
         self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
 
     def test_trade_in_output_is_rejected(self):
+        # "trade" is in FORBIDDEN_GOVERNANCE_KEYS — caught by the forbidden-key scan.
         rec = self._run_with_forbidden("trade")
         self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
 
-    def test_is_playable_in_output_is_rejected(self):
-        # "is_playable" is in FORBIDDEN_GOVERNANCE_KEYS (output_contract.py line 53).
-        # Confirmed present in the real B0 scanner reused by B3C.
-        rec = self._run_with_forbidden("is_playable")
+    def test_deploy_in_output_is_rejected(self):
+        # "deploy" added to B0 FORBIDDEN_GOVERNANCE_KEYS (additive — no existing keys
+        # removed). Caught by _scan_forbidden_keys, same object identity as B0.
+        rec = self._run_with_forbidden("deploy")
         self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
 
-    def test_user_output_authority_in_output_is_rejected(self):
-        # "user_output_authority" is in FORBIDDEN_GOVERNANCE_KEYS (output_contract.py line 50).
-        # Confirmed present in the real B0 scanner reused by B3C.
-        rec = self._run_with_forbidden("user_output_authority")
+    def test_place_bet_in_output_is_rejected(self):
+        # "place_bet" is not in FORBIDDEN_GOVERNANCE_KEYS but is also absent from
+        # _ROOT_ALLOWED; rejected by the output contract's EXTRA_FIELD allowlist
+        # check (not the forbidden-key scan). Output is still rejected — mechanism
+        # is the allowlist, not the forbidden scan. Kept as belt-and-suspenders coverage.
+        rec = self._run_with_forbidden("place_bet")
+        self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
+
+    def test_settlement_in_output_is_rejected(self):
+        # "settlement" — same as place_bet: caught by EXTRA_FIELD (not in _ROOT_ALLOWED),
+        # not by the forbidden-key scan. Still produces OUTPUT_REJECTED.
+        rec = self._run_with_forbidden("settlement")
         self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
 
     def test_forbidden_key_raises_canary_output_rejected_error(self):
@@ -1476,6 +1485,27 @@ class TestCanaryInvariants(unittest.TestCase):
             CanaryPipelineStatus.ADAPTER_ERROR,
         }
         self.assertEqual(len(statuses), 5)
+
+    def test_b3c_required_forbidden_keys_all_present_in_b0(self):
+        """Every key in the locked B3C required set must be in the real B0 scanner.
+
+        If anyone removes one of these 10 specifically named keys from
+        FORBIDDEN_GOVERNANCE_KEYS in output_contract.py, this test fails
+        immediately rather than the gap going unnoticed.
+        """
+        from gate_engine.universal_agent.output_contract import FORBIDDEN_GOVERNANCE_KEYS
+        B3C_REQUIRED_FORBIDDEN_KEYS = {
+            "can_execute", "terminal_label", "final_decision", "stake_tier",
+            "is_playable", "production_authority", "user_output_authority",
+            "capital", "deploy", "execute",
+        }
+        missing = B3C_REQUIRED_FORBIDDEN_KEYS - FORBIDDEN_GOVERNANCE_KEYS
+        self.assertEqual(
+            missing,
+            set(),
+            f"These B3C-required keys are missing from B0 FORBIDDEN_GOVERNANCE_KEYS: "
+            f"{missing}. Add them to gate_engine/universal_agent/output_contract.py.",
+        )
 
     def test_forbidden_governance_keys_shared_with_b0(self):
         """The FORBIDDEN_GOVERNANCE_KEYS imported in runner is the SAME set as B0."""
