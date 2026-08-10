@@ -1,6 +1,7 @@
 """
 gate_engine/universal_agent/canary/claude_role_runner.py
 WOW-PATCH-2026-08-10-UNIVERSAL-AGENT-CORE-V1 / Phase B3C
+Repaired: B3C-R1 (fail-fast abort, all-attempt cost accounting, prompt hardening)
 
 ClaudeRoleRunner — live-Claude-backed role runner for the bounded canary.
 
@@ -20,22 +21,46 @@ AUTHORIZED CALL PATH (ONE only):
   → REAL B2 run_orchestrator() / B1 validators (called by orchestrator)
   → canonical evidence bundle
 
+ABORT CONTROL (B3C-R1 FIX 1):
+  CanaryAbortState is created ONCE per canary run and shared across all
+  6 role dispatches via the ClaudeRoleRunner. Any structural failure sets
+  abort_state.is_aborted=True. Every subsequent __call__() checks this
+  flag FIRST (step 0), BEFORE the budget guard, BEFORE record_attempt(),
+  and makes ZERO additional Anthropic API calls — returning immediately
+  with status SKIPPED_DUE_TO_PRIOR_ABORT.
+
+COST ACCOUNTING (B3C-R1 FIX 2):
+  actual_cost is computed IMMEDIATELY after usage metadata is extracted
+  and confirmed (step 6b), BEFORE any content scan or schema validation.
+  Every CanaryCallRecord created after step 6b carries calculated_cost_usd,
+  whether the call is ultimately accepted or rejected. cumulative_run_cost_usd
+  includes every billed API response.
+
+PROMPT HARDENING (B3C-R1 FIX 3):
+  _build_prompt() includes an explicit advisory key-name contract warning
+  Claude not to use forbidden governance key names at any nesting depth.
+  This is defense-in-depth prompt guidance ONLY — it does not replace,
+  weaken, or become a substitute for the real recursive B0 scanner, which
+  remains the actual enforcement mechanism regardless of prompt content.
+
 FORBIDDEN-KEY BEHAVIOR:
   Any of {can_execute, terminal_label, final_decision, stake_tier, is_playable,
   production_authority, user_output_authority, capital, deploy, execute} appearing
-  at ANY nesting depth in the Claude response → OUTPUT_REJECTED, CanaryOutputRejectedError.
+  at ANY nesting depth in the Claude response → OUTPUT_REJECTED, abort set,
+  CanaryOutputRejectedError raised.
   Uses the real B0 _scan_forbidden_keys() — not a reimplementation.
 
 FAIL-CLOSED MODES (all raise, no synthetic replacement, zero retries):
-  Timeout            → CanaryCallFailedError("CALL_TIMEOUT")
-  Network failure    → CanaryCallFailedError("CALL_NETWORK_ERROR")
-  API error          → CanaryCallFailedError("CALL_API_ERROR")
-  Wrong model        → CanaryModelIdentityError("CANARY_FAIL_MODEL_IDENTITY")
-  Missing usage      → CanaryCallFailedError("MISSING_USAGE_METADATA")
-  No tool_use block  → CanaryCallFailedError("MISSING_TOOL_USE")
-  Malformed response → CanaryCallFailedError("MALFORMED_RESPONSE")
-  Forbidden key      → CanaryOutputRejectedError("OUTPUT_REJECTED")
-  Budget exceeded    → CanaryBudgetGuardError("STOP_CANARY_BUDGET_GUARD")
+  Prior abort       → CanaryCallFailedError("SKIPPED_DUE_TO_PRIOR_ABORT")
+  Timeout           → CanaryCallFailedError("CALL_TIMEOUT")
+  Network failure   → CanaryCallFailedError("CALL_NETWORK_ERROR")
+  API error         → CanaryCallFailedError("CALL_API_ERROR")
+  Wrong model       → CanaryModelIdentityError("CANARY_FAIL_MODEL_IDENTITY")
+  Missing usage     → CanaryCallFailedError("MISSING_USAGE_METADATA")
+  No tool_use block → CanaryCallFailedError("MISSING_TOOL_USE")
+  Malformed response→ CanaryCallFailedError("MALFORMED_RESPONSE")
+  Forbidden key     → CanaryOutputRejectedError("OUTPUT_REJECTED")
+  Budget exceeded   → CanaryBudgetGuardError("STOP_CANARY_BUDGET_GUARD")
 
 No app.py import. No Flask routes. No Weather/Kalshi imports.
 No CAN_EXECUTE, SHADOW_ENABLED, or weather-lane references.
@@ -99,6 +124,8 @@ class CanaryCallStatus:
     NO_TOOL_DEFINITION       = "NO_TOOL_DEFINITION"
     VALIDATOR_EXCEPTION      = "VALIDATOR_EXCEPTION"
     CAPABILITY_DENIED        = "CAPABILITY_DENIED"
+    # B3C-R1: added for fail-fast abort (FIX 1)
+    SKIPPED_ABORT            = "SKIPPED_DUE_TO_PRIOR_ABORT"
 
 
 # ── Exception hierarchy ───────────────────────────────────────────────────────
@@ -130,7 +157,7 @@ class CanaryOutputRejectedError(CanaryRunnerError):
 
 
 class CanaryCallFailedError(CanaryRunnerError):
-    """Any other call-level failure (timeout, network, malformed, etc.)."""
+    """Any other call-level failure (timeout, network, malformed, skip, etc.)."""
     def __init__(self, status: str, detail: str = "") -> None:
         super().__init__(status, detail)
 
@@ -143,6 +170,11 @@ class CanaryCallRecord:
     Mutable record for one Claude API call attempt.
     Appended to ClaudeRoleRunner.call_log regardless of success or failure.
     Merged with OrchestratorResult by canary_pipeline for b3c_canary_runs persistence.
+
+    B3C-R1 (FIX 2): calculated_cost_usd is now set on ALL records that
+    received an API response (including rejected calls), not only on
+    successful calls. It remains None only for records where no API
+    call was made (SKIPPED_DUE_TO_PRIOR_ABORT, STOP_BUDGET_GUARD, etc.).
     """
     role_id:                     str
     agent_id:                    str
@@ -177,6 +209,9 @@ class BudgetState:
     Both checks must pass before an API call is attempted.
     calls_attempted increments at attempt time (before the call) so failures
     count toward the ceiling. calls_successful increments only on full success.
+
+    B3C-R1 (FIX 2): record_failure_cost() is now called with the real
+    actual_cost for all rejected calls (computed before the content scan).
     """
 
     def __init__(self) -> None:
@@ -221,14 +256,51 @@ class BudgetState:
 
     def record_failure_cost(self, estimated_cost_usd: float = 0.0) -> None:
         """
-        On a failed call, add the estimated/partial cost (conservative).
-        If no usage data is available, pass 0.0 (caller's choice).
+        On a failed call, add the actual cost from real token usage.
+        B3C-R1 (FIX 2): always called with the real computed cost when
+        usage was available; 0.0 only when no response was received.
         """
         self.cumulative_spend_usd += estimated_cost_usd
 
     @property
     def worst_case_cost_per_call(self) -> float:
         return WORST_CASE_COST_PER_CALL
+
+
+# ── CanaryAbortState (B3C-R1 FIX 1) ──────────────────────────────────────────
+
+class CanaryAbortState:
+    """
+    Shared abort-state object scoped to a single canary run.
+
+    Created ONCE per canary run in canary_pipeline.run_canary_pipeline()
+    and passed into ClaudeRoleRunner. Shared across all 6 role dispatches
+    via the same runner instance.
+
+    When is_aborted=True (set by any structural failure on any role):
+      - Every subsequent ClaudeRoleRunner.__call__() returns immediately
+        at step 0, BEFORE the budget guard and BEFORE record_attempt().
+      - ZERO additional Anthropic API calls are made for that role.
+      - A CanaryCallRecord with status=SKIPPED_DUE_TO_PRIOR_ABORT is
+        appended to call_log.
+
+    This does NOT change the generic B2 orchestrator's dispatch-loop
+    behavior (it may still iterate through all role entries internally).
+    The abort check belongs in the canary-specific runner layer.
+
+    Thread safety: canary runs are sequential (one role at a time within
+    a run), so no locking is required.
+    """
+
+    def __init__(self) -> None:
+        self.is_aborted: bool = False
+        self.abort_reason: Optional[str] = None
+
+    def set_aborted(self, reason: str) -> None:
+        """Mark this run as aborted. Idempotent — first reason wins."""
+        if not self.is_aborted:
+            self.is_aborted = True
+            self.abort_reason = reason
 
 
 # ── Role tool definitions ─────────────────────────────────────────────────────
@@ -429,6 +501,12 @@ def _build_prompt(role_id: str, packet: Any) -> str:
     Uses real EvidencePacket attributes (to_dict() when available, otherwise
     falls back to direct attribute access with getattr defaults).
     Does NOT include any governance language or terminal-label instructions.
+
+    B3C-R1 (FIX 3): Includes an explicit advisory key-name contract warning
+    Claude not to use forbidden governance key names at any nesting depth.
+    This is DEFENSE-IN-DEPTH PROMPT GUIDANCE ONLY — it does not replace,
+    weaken, or become a substitute for the real recursive B0 scanner, which
+    remains the actual enforcement mechanism regardless of prompt content.
     """
     try:
         if hasattr(packet, "to_dict"):
@@ -458,6 +536,26 @@ def _build_prompt(role_id: str, packet: Any) -> str:
     lane               = getattr(packet, "lane",               "UNKNOWN")
     event_date         = getattr(packet, "event_date",         "UNKNOWN")
 
+    # B3C-R1 FIX 3: advisory key-name contract (defense-in-depth prompt guidance)
+    _KEY_CONTRACT = (
+        "\n\n"
+        "ADVISORY KEY-NAME CONTRACT (defense-in-depth prompt guidance only):\n"
+        "The real recursive B0 scanner is the enforcement mechanism regardless of "
+        "what the prompt says — this warning does not replace or weaken it.\n"
+        "Never use any of the following as a key name at ANY nesting depth in your "
+        "tool output, including inside advisory_findings, sub-objects, or arrays "
+        "of objects:\n"
+        "  terminal_label, final_label, label, qualifying_label, final_decision,\n"
+        "  stake_tier, is_playable, can_execute, production_authority,\n"
+        "  user_output_authority, capital, deploy, execute, trade\n"
+        "These are reserved governance key names. Using any of them as a dict key "
+        "at any depth — even inside a nested statistical_assessment, "
+        "role_outputs_summary, or any other sub-object — will cause your entire "
+        "output to be rejected by the scanner. Use descriptive alternative names "
+        "for any analytical fields (e.g. 'assessment_verdict', 'recommendation', "
+        "'readiness_signal', 'model_outcome')."
+    )
+
     return (
         f"You are an advisory analyst for role: {role_id}.\n"
         f"Event ID: {canonical_event_id}\n"
@@ -466,6 +564,7 @@ def _build_prompt(role_id: str, packet: Any) -> str:
         f"Evidence context:\n{ctx}\n\n"
         f"Use the tool to emit your advisory finding. "
         f"Your finding is ADVISORY ONLY — it does not affect any decision."
+        f"{_KEY_CONTRACT}"
     )
 
 
@@ -479,7 +578,7 @@ class ClaudeRoleRunner:
     Dispatches to the correct tool definition by entry.role (role_id).
 
     The SAME instance must be shared across all 6 role calls so that
-    BudgetState accumulates correctly across the full run.
+    BudgetState and CanaryAbortState accumulate correctly across the run.
 
     Callable interface (matches B2 orchestrator role_runner contract):
         runner(entry, packet) -> dict
@@ -498,6 +597,10 @@ class ClaudeRoleRunner:
         Shared BudgetState instance. Must be the same object for all 6 calls.
         Pre-call check runs BEFORE record_attempt(), so budget guard cannot
         be bypassed by concurrent calls.
+    abort_state
+        Shared CanaryAbortState instance (B3C-R1 FIX 1). Must be the same
+        object for all 6 role dispatches in a run. Created in canary_pipeline
+        and injected here. If None, a private instance is created (tests only).
 
     can_execute = False — no live trading, no market mutations, no capital.
     """
@@ -512,9 +615,11 @@ class ClaudeRoleRunner:
         self,
         client: Any,
         budget: Optional[BudgetState] = None,
+        abort_state: Optional[CanaryAbortState] = None,
     ) -> None:
         self._client = client
         self._budget = budget if budget is not None else BudgetState()
+        self._abort_state = abort_state if abort_state is not None else CanaryAbortState()
         self.call_log: List[CanaryCallRecord] = []
 
     def __call__(self, entry: Any, packet: Any) -> dict:
@@ -532,15 +637,36 @@ class ClaudeRoleRunner:
 
         Raises
         ------
-        CanaryBudgetGuardError      — budget ceiling exceeded before call
-        CanaryModelIdentityError    — response.model != PINNED_MODEL
-        CanaryOutputRejectedError   — forbidden governance key in Claude output
+        CanaryCallFailedError       — SKIPPED_DUE_TO_PRIOR_ABORT (step 0)
+        CanaryBudgetGuardError      — budget ceiling exceeded before call (step 1)
+        CanaryModelIdentityError    — response.model != PINNED_MODEL (step 7)
+        CanaryOutputRejectedError   — forbidden governance key in Claude output (step 9)
         CanaryCallFailedError       — all other fail-closed modes
         """
         role_id  = entry.role
         agent_id = entry.agent_id
 
-        # ── 1. Budget guard — checked BEFORE any API call ─────────────────────
+        # ── Step 0. Abort check — BEFORE budget guard, BEFORE any API call ───────
+        # B3C-R1 FIX 1: If a prior role in this run had a structural failure,
+        # abort_state.is_aborted=True. Do NOT call record_attempt() (no API call
+        # was made). Append a SKIPPED_DUE_TO_PRIOR_ABORT record and raise.
+        if self._abort_state.is_aborted:
+            rec = CanaryCallRecord(
+                role_id=role_id,
+                agent_id=agent_id,
+                status=CanaryCallStatus.SKIPPED_ABORT,
+                requested_model=_PINNED_MODEL,
+                error_classification=(
+                    f"SKIPPED_DUE_TO_PRIOR_ABORT: {self._abort_state.abort_reason}"
+                ),
+            )
+            self.call_log.append(rec)
+            raise CanaryCallFailedError(
+                CanaryCallStatus.SKIPPED_ABORT,
+                f"prior abort: {self._abort_state.abort_reason}",
+            )
+
+        # ── Step 1. Budget guard — checked BEFORE any API call ────────────────────
         ok, denial_reason = self._budget.pre_call_check()
         if not ok:
             rec = CanaryCallRecord(
@@ -551,13 +677,16 @@ class ClaudeRoleRunner:
                 error_classification=CanaryCallStatus.STOP_BUDGET_GUARD,
             )
             self.call_log.append(rec)
+            self._abort_state.set_aborted(
+                f"budget_guard_tripped on role {role_id}: {denial_reason}"
+            )
             raise CanaryBudgetGuardError(denial_reason)
 
-        # ── 2. Record attempt (increment BEFORE the call) ─────────────────────
+        # ── Step 2. Record attempt (increment BEFORE the call) ────────────────────
         self._budget.record_attempt()
         request_ts = datetime.now(timezone.utc)
 
-        # ── 3. Select tool definition ──────────────────────────────────────────
+        # ── Step 3. Select tool definition ────────────────────────────────────────
         tool_def = _ROLE_TOOL_DEFINITIONS.get(role_id)
         if tool_def is None:
             rec = CanaryCallRecord(
@@ -569,16 +698,19 @@ class ClaudeRoleRunner:
                 error_classification=CanaryCallStatus.NO_TOOL_DEFINITION,
             )
             self.call_log.append(rec)
+            self._abort_state.set_aborted(
+                f"no_tool_definition for role {role_id}"
+            )
+            self._budget.record_failure_cost(0.0)
             raise CanaryCallFailedError(
                 CanaryCallStatus.NO_TOOL_DEFINITION,
                 f"No tool definition for role_id={role_id!r}",
             )
 
-        # ── 4. Make the API call ───────────────────────────────────────────────
+        # ── Step 4. Make the API call ──────────────────────────────────────────────
         try:
             prompt = _build_prompt(role_id, packet)
         except Exception as exc:  # noqa: BLE001
-            # Prompt-building failure is unusual but must be recorded.
             rec = CanaryCallRecord(
                 role_id=role_id,
                 agent_id=agent_id,
@@ -588,8 +720,11 @@ class ClaudeRoleRunner:
                 error_classification=f"PROMPT_BUILD_ERROR: {exc}",
             )
             self.call_log.append(rec)
+            self._abort_state.set_aborted(f"prompt_build_error on role {role_id}: {exc}")
             self._budget.record_failure_cost(0.0)
-            raise CanaryCallFailedError(CanaryCallStatus.CALL_API_ERROR, f"prompt build failed: {exc}") from exc
+            raise CanaryCallFailedError(
+                CanaryCallStatus.CALL_API_ERROR, f"prompt build failed: {exc}"
+            ) from exc
 
         t0 = time.monotonic()
         try:
@@ -604,7 +739,6 @@ class ClaudeRoleRunner:
         except Exception as exc:
             latency_ms = int((time.monotonic() - t0) * 1000)
             completion_ts = datetime.now(timezone.utc)
-            # Classify the error by exception type name (lazy — no anthropic import at top)
             exc_type = type(exc).__name__
             if "Timeout" in exc_type or "timeout" in str(exc).lower():
                 status = CanaryCallStatus.CALL_TIMEOUT
@@ -623,13 +757,14 @@ class ClaudeRoleRunner:
                 error_classification=f"{exc_type}: {exc}",
             )
             self.call_log.append(rec)
-            self._budget.record_failure_cost(0.0)  # no usage data
+            self._abort_state.set_aborted(f"api_call_failed ({status}) on role {role_id}: {exc}")
+            self._budget.record_failure_cost(0.0)  # no usage data available
             raise CanaryCallFailedError(status, str(exc)) from exc
 
         latency_ms = int((time.monotonic() - t0) * 1000)
         completion_ts = datetime.now(timezone.utc)
 
-        # ── 5. Validate response structure ─────────────────────────────────────
+        # ── Step 5. Validate response structure ────────────────────────────────────
         if not hasattr(response, "content") or not hasattr(response, "usage"):
             rec = CanaryCallRecord(
                 role_id=role_id,
@@ -642,13 +777,14 @@ class ClaudeRoleRunner:
                 error_classification="response missing content or usage attribute",
             )
             self.call_log.append(rec)
+            self._abort_state.set_aborted(f"malformed_response on role {role_id}: missing content/usage")
             self._budget.record_failure_cost(0.0)
             raise CanaryCallFailedError(
                 CanaryCallStatus.MALFORMED_RESPONSE,
                 "response missing .content or .usage",
             )
 
-        # ── 6. Usage metadata — fail-closed if missing ─────────────────────────
+        # ── Step 6. Usage metadata — fail-closed if missing ───────────────────────
         usage = response.usage
         if usage is None:
             rec = CanaryCallRecord(
@@ -662,6 +798,7 @@ class ClaudeRoleRunner:
                 error_classification="response.usage is None",
             )
             self.call_log.append(rec)
+            self._abort_state.set_aborted(f"missing_usage_metadata on role {role_id}: usage is None")
             self._budget.record_failure_cost(0.0)
             raise CanaryCallFailedError(
                 CanaryCallStatus.MISSING_USAGE_METADATA,
@@ -683,14 +820,29 @@ class ClaudeRoleRunner:
                 error_classification="response.usage missing input_tokens or output_tokens",
             )
             self.call_log.append(rec)
+            self._abort_state.set_aborted(
+                f"missing_usage_metadata on role {role_id}: missing token counts"
+            )
             self._budget.record_failure_cost(0.0)
             raise CanaryCallFailedError(
                 CanaryCallStatus.MISSING_USAGE_METADATA,
                 "response.usage missing input_tokens or output_tokens",
             )
 
-        # ── 7. Model identity assertion — both requested AND response must match ─
+        # ── Step 6b. Compute actual_cost IMMEDIATELY after usage is confirmed ──────
+        # B3C-R1 FIX 2: cost is computed HERE, BEFORE model identity check,
+        # content parsing, or forbidden-key scan. Every CanaryCallRecord
+        # created from this point forward carries calculated_cost_usd.
+        # This ensures rejected calls have non-null cost in the audit trail.
+        actual_cost: float = (
+            input_tokens  / 1_000_000 * INPUT_COST_PER_MTOK
+            + output_tokens / 1_000_000 * OUTPUT_COST_PER_MTOK
+        )
         response_model = getattr(response, "model", None)
+        cache_read     = getattr(usage, "cache_read_input_tokens",     None)
+        cache_create   = getattr(usage, "cache_creation_input_tokens", None)
+
+        # ── Step 7. Model identity assertion — both requested AND response match ───
         if response_model != _PINNED_MODEL:
             rec = CanaryCallRecord(
                 role_id=role_id,
@@ -703,23 +855,25 @@ class ClaudeRoleRunner:
                 latency_ms=latency_ms,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_create,
+                calculated_cost_usd=actual_cost,   # B3C-R1: always set after step 6b
                 error_classification=(
                     f"model_identity_mismatch: "
                     f"requested={_PINNED_MODEL!r} response={response_model!r}"
                 ),
             )
             self.call_log.append(rec)
-            # Charge conservative cost (we did spend tokens)
-            actual_cost = (
-                input_tokens / 1_000_000 * INPUT_COST_PER_MTOK
-                + output_tokens / 1_000_000 * OUTPUT_COST_PER_MTOK
+            self._abort_state.set_aborted(
+                f"model_identity_mismatch on role {role_id}: "
+                f"requested={_PINNED_MODEL!r} response={response_model!r}"
             )
             self._budget.record_failure_cost(actual_cost)
             raise CanaryModelIdentityError(
                 f"requested={_PINNED_MODEL!r} but response.model={response_model!r}"
             )
 
-        # ── 8. Parse tool_use block from response.content ─────────────────────
+        # ── Step 8. Parse tool_use block from response.content ────────────────────
         tool_input: Optional[dict] = None
         try:
             for block in response.content:
@@ -738,13 +892,13 @@ class ClaudeRoleRunner:
                 latency_ms=latency_ms,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_create,
+                calculated_cost_usd=actual_cost,   # B3C-R1: always set after step 6b
                 error_classification=f"content parse error: {exc}",
             )
             self.call_log.append(rec)
-            actual_cost = (
-                input_tokens / 1_000_000 * INPUT_COST_PER_MTOK
-                + output_tokens / 1_000_000 * OUTPUT_COST_PER_MTOK
-            )
+            self._abort_state.set_aborted(f"content_parse_error on role {role_id}: {exc}")
             self._budget.record_failure_cost(actual_cost)
             raise CanaryCallFailedError(
                 CanaryCallStatus.MALFORMED_RESPONSE, str(exc)
@@ -762,6 +916,9 @@ class ClaudeRoleRunner:
                 latency_ms=latency_ms,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_create,
+                calculated_cost_usd=actual_cost,   # B3C-R1: always set after step 6b
                 error_classification=(
                     "no tool_use block in response.content"
                     if tool_input is None
@@ -769,20 +926,22 @@ class ClaudeRoleRunner:
                 ),
             )
             self.call_log.append(rec)
-            actual_cost = (
-                input_tokens / 1_000_000 * INPUT_COST_PER_MTOK
-                + output_tokens / 1_000_000 * OUTPUT_COST_PER_MTOK
-            )
+            self._abort_state.set_aborted(f"missing_tool_use on role {role_id}")
             self._budget.record_failure_cost(actual_cost)
             raise CanaryCallFailedError(
                 CanaryCallStatus.MISSING_TOOL_USE,
                 "no tool_use block with dict input in response.content",
             )
 
-        # ── 9. Forbidden-key scan — THE REAL B0 scanner (not reimplemented) ───
+        # ── Step 9. Forbidden-key scan — THE REAL B0 scanner (not reimplemented) ──
         # _scan_forbidden_keys is imported from output_contract at the top of
         # this module. Tests must verify this is the SAME function object as B0's
         # via unittest.mock.patch at gate_engine.universal_agent.canary.claude_role_runner._scan_forbidden_keys.
+        #
+        # B3C-R1 FIX 2: actual_cost is already computed (step 6b) and is included
+        # in the rejection record. calculated_cost_usd is NEVER null for a call
+        # that received a valid API response with usable token counts.
+        raw_hash = _sha256_json(tool_input)
         violation = _scan_forbidden_keys(tool_input, path="claude_tool_output")
         if violation is not None:
             rec = CanaryCallRecord(
@@ -796,21 +955,23 @@ class ClaudeRoleRunner:
                 latency_ms=latency_ms,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                raw_output_hash=_sha256_json(tool_input),
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_create,
+                calculated_cost_usd=actual_cost,   # B3C-R1: always set after step 6b
+                raw_output_hash=raw_hash,
                 violation_codes=[violation.code],
                 error_classification=f"OUTPUT_REJECTED: {violation.message}",
             )
             self.call_log.append(rec)
-            actual_cost = (
-                input_tokens / 1_000_000 * INPUT_COST_PER_MTOK
-                + output_tokens / 1_000_000 * OUTPUT_COST_PER_MTOK
+            self._abort_state.set_aborted(
+                f"forbidden_key ({violation.code}) at {violation.path} on role {role_id}"
             )
             self._budget.record_failure_cost(actual_cost)
             raise CanaryOutputRejectedError(
                 f"{violation.code} at {violation.path}: {violation.message}"
             )
 
-        # ── 10. Inject common fields and build full output contract payload ────
+        # ── Step 10. Inject common fields and build full output contract payload ───
         # advisory_only=True is ALWAYS injected here — never sourced from Claude.
         findings = dict(tool_input)
         findings.setdefault("role_id",        role_id)
@@ -828,15 +989,11 @@ class ClaudeRoleRunner:
             "output_tokens":    output_tokens,
         }
 
-        # ── 11. Calculate cost and update budget ───────────────────────────────
-        actual_cost = (
-            input_tokens  / 1_000_000 * INPUT_COST_PER_MTOK
-            + output_tokens / 1_000_000 * OUTPUT_COST_PER_MTOK
-        )
+        # ── Step 11. Update budget (success) using pre-computed cost ──────────────
+        # actual_cost was computed at step 6b — no recalculation needed.
         self._budget.record_success(actual_cost)
 
-        # ── 12. Record call in call_log ────────────────────────────────────────
-        raw_hash = _sha256_json(tool_input)
+        # ── Step 12. Record successful call in call_log ───────────────────────────
         rec = CanaryCallRecord(
             role_id=role_id,
             agent_id=agent_id,
@@ -848,8 +1005,8 @@ class ClaudeRoleRunner:
             latency_ms=latency_ms,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", None),
-            cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", None),
+            cache_read_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_create,
             calculated_cost_usd=actual_cost,
             raw_output_hash=raw_hash,
             violation_codes=[],

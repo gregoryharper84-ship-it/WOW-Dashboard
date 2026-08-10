@@ -498,11 +498,12 @@ class TestM6AuthorityAndCodeIntegrity(unittest.TestCase):
             "kalshi_wx_shadow_agent.py",
             "kalshi_wx_shadow_subagents.py",
             # B3C Universal Agent Core canary (WOW-PATCH-2026-08-10):
-            # These three files are the authorized offline-only canary infrastructure.
+            # These files are the authorized offline-only canary infrastructure.
             # UAC_MLB_ML_CLAUDE_SHADOW_ENABLED=False by default; no live trading.
             "__init__.py",
             "canary_config.py",
             "claude_role_runner.py",
+            "run_b3c_canary.py",  # offline-only deployment script; added B3C build
         ])
         prod_dirs = [_REPO / "gate_engine", _REPO / "scripts"]
         hits = []

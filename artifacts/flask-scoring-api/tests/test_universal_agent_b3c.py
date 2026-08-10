@@ -1503,5 +1503,603 @@ class TestCanaryInvariants(unittest.TestCase):
         )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 13. TestB3CR1Repairs — B3C-R1 offline tests (FIX 1/2/3)
+#
+# REQUIRED TESTS:
+#   R1  – rejection at role 1  → exactly 1 messages.create call
+#   R2  – rejection at role 4  → exactly 4 messages.create calls
+#   R3  – skipped roles report SKIPPED_DUE_TO_PRIOR_ABORT
+#   R4  – rejected call carries non-null calculated_cost_usd from real tokens
+#   R5  – cumulative cost includes rejected + accepted calls
+#   R6  – existing B3C enforcement proof objects unchanged (object identity)
+#   R7  – zero real Anthropic API calls in this test class
+#
+# ZERO real Anthropic API calls. All tests use MagicMock() clients.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestB3CR1Repairs(unittest.TestCase):
+    """
+    B3C-R1: offline repair tests for fail-fast abort, all-attempt cost
+    accounting, and prompt hardening. All clients are MagicMock() — no real
+    Anthropic API calls occur anywhere in this class.
+    """
+
+    # Canonical canary role order — matches B3A adapter + registry iteration
+    _ROLE_ORDER = [
+        "DATA_SLATE_INTEGRITY",
+        "NEWS_STATUS",
+        "MARKET_EXACT_LINE",
+        "SPORT_SPECIALIST",
+        "FAILURE_CONTRADICTION",
+        "FINAL_REFRESH",
+    ]
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _rejection_response(self, in_tok: int = 800, out_tok: int = 400) -> MagicMock:
+        """Response whose tool_input contains terminal_label → B0 → OUTPUT_REJECTED."""
+        return _make_mock_response(
+            _PINNED_MODEL,
+            {"statistical_assessment": {"terminal_label": "REJECT_BAD"}},
+            in_tok, out_tok,
+        )
+
+    def _success_response(self, role_id: str, in_tok: int = 500, out_tok: int = 200) -> MagicMock:
+        """Clean response for a role (no forbidden keys)."""
+        tool_input = dict(_VALID_TOOL_INPUTS_BY_ROLE.get(role_id, _VALID_DSI_TOOL_INPUT))
+        return _make_mock_response(_PINNED_MODEL, tool_input, in_tok, out_tok)
+
+    def _make_runner(self, client: Any):
+        """
+        Create a fresh CanaryAbortState + BudgetState + ClaudeRoleRunner
+        sharing the abort_state. Returns (runner, budget, abort_state).
+        """
+        from gate_engine.universal_agent.canary.claude_role_runner import CanaryAbortState
+        abort_state = CanaryAbortState()
+        budget = BudgetState()
+        runner = ClaudeRoleRunner(client=client, budget=budget, abort_state=abort_state)
+        return runner, budget, abort_state
+
+    def _dispatch_role(self, runner: Any, role_id: str, packet: Any):
+        """Call runner for a role; return ('ok', payload) or ('err', exc)."""
+        entry = _make_entry_for_role(role_id)
+        try:
+            payload = runner(entry, packet)
+            return ("ok", payload)
+        except Exception as exc:
+            return ("err", exc)
+
+    # ── REQUIRED TEST R1 ─────────────────────────────────────────────────────
+
+    def test_r1_required_1_rejection_at_role1_exactly_one_api_call(self):
+        """
+        R1: Structural rejection at role 1 (DATA_SLATE_INTEGRITY) →
+        exactly 1 messages.create invocation; roles 2-6 never make a real call.
+        """
+        packet = _make_mock_packet()
+        client = MagicMock()
+        client.messages.create.return_value = self._rejection_response(400, 300)
+
+        runner, budget, abort_state = self._make_runner(client)
+
+        # Role 1 — should reject (terminal_label in nested output)
+        status1, exc1 = self._dispatch_role(runner, "DATA_SLATE_INTEGRITY", packet)
+        self.assertEqual(status1, "err")
+        self.assertIsInstance(exc1, CanaryOutputRejectedError)
+
+        # Abort state must be set immediately after first rejection
+        self.assertTrue(abort_state.is_aborted)
+        self.assertIsNotNone(abort_state.abort_reason)
+
+        # Roles 2-6 — dispatcher iterates but runner skips every one
+        for role_id in self._ROLE_ORDER[1:]:
+            status, exc = self._dispatch_role(runner, role_id, packet)
+            self.assertEqual(status, "err", f"role {role_id}: expected err, got ok")
+            self.assertIsInstance(exc, CanaryCallFailedError)
+            self.assertEqual(
+                exc.canary_status,
+                CanaryCallStatus.SKIPPED_ABORT,
+                f"role {role_id}: expected SKIPPED_DUE_TO_PRIOR_ABORT, got {exc.canary_status}",
+            )
+
+        # REQUIRED: exactly 1 real API invocation
+        self.assertEqual(
+            client.messages.create.call_count, 1,
+            f"Expected 1 messages.create call; got {client.messages.create.call_count}. "
+            "Roles 2-6 must not dispatch to the Anthropic API after a prior abort.",
+        )
+
+        # Budget: only 1 attempt (SKIPPED_ABORT records never call record_attempt)
+        self.assertEqual(budget.calls_attempted, 1)
+        self.assertEqual(budget.calls_successful, 0)
+
+        # call_log: 6 entries (1 rejected + 5 skipped)
+        self.assertEqual(len(runner.call_log), 6)
+
+    # ── REQUIRED TEST R2 ─────────────────────────────────────────────────────
+
+    def test_r1_required_2_rejection_at_role4_exactly_four_api_calls(self):
+        """
+        R2: Structural rejection at role 4 (SPORT_SPECIALIST) →
+        exactly 4 messages.create invocations; roles 5-6 never make a real call.
+        """
+        packet = _make_mock_packet()
+        client = MagicMock()
+        # side_effect as list: 4 responses; 5th+ never reached
+        client.messages.create.side_effect = [
+            self._success_response("DATA_SLATE_INTEGRITY", 500, 200),
+            self._success_response("NEWS_STATUS",          500, 200),
+            self._success_response("MARKET_EXACT_LINE",    500, 200),
+            self._rejection_response(800, 400),   # role 4: SPORT_SPECIALIST
+        ]
+
+        runner, budget, abort_state = self._make_runner(client)
+
+        for i, role_id in enumerate(self._ROLE_ORDER):
+            status, result = self._dispatch_role(runner, role_id, packet)
+            if i < 3:
+                # Roles 1-3: should succeed
+                self.assertEqual(status, "ok",
+                    f"role {role_id} (index {i}): expected success, got err: {result}")
+            elif i == 3:
+                # Role 4: should reject
+                self.assertEqual(status, "err")
+                self.assertIsInstance(result, CanaryOutputRejectedError)
+            else:
+                # Roles 5-6: should be skipped
+                self.assertEqual(status, "err")
+                self.assertIsInstance(result, CanaryCallFailedError)
+                self.assertEqual(result.canary_status, CanaryCallStatus.SKIPPED_ABORT,
+                    f"role {role_id}: expected SKIPPED_DUE_TO_PRIOR_ABORT")
+
+        # REQUIRED: exactly 4 real API invocations
+        self.assertEqual(
+            client.messages.create.call_count, 4,
+            f"Expected 4 messages.create calls; got {client.messages.create.call_count}. "
+            "Roles 5-6 must not dispatch to the Anthropic API after a prior abort.",
+        )
+
+        # Budget: 4 attempts (3 success + 1 reject), 0 skip increments
+        self.assertEqual(budget.calls_attempted, 4)
+        self.assertEqual(budget.calls_successful, 3)
+
+        # Abort state set
+        self.assertTrue(abort_state.is_aborted)
+
+    # ── REQUIRED TEST R3 ─────────────────────────────────────────────────────
+
+    def test_r1_required_3_skipped_roles_report_skipped_abort_status(self):
+        """
+        R3: Roles dispatched after an abort must carry SKIPPED_DUE_TO_PRIOR_ABORT
+        status — not any other error status — on both the exception and the
+        CanaryCallRecord in call_log.
+        """
+        packet = _make_mock_packet()
+        client = MagicMock()
+        client.messages.create.return_value = self._rejection_response(300, 100)
+
+        runner, budget, abort_state = self._make_runner(client)
+
+        # Trigger abort at role 1
+        self._dispatch_role(runner, "DATA_SLATE_INTEGRITY", packet)
+        self.assertTrue(abort_state.is_aborted)
+
+        # All remaining roles: exception status must be SKIPPED_ABORT
+        for role_id in self._ROLE_ORDER[1:]:
+            status, exc = self._dispatch_role(runner, role_id, packet)
+            self.assertEqual(status, "err")
+            self.assertEqual(
+                exc.canary_status, CanaryCallStatus.SKIPPED_ABORT,
+                f"role {role_id}: exception.canary_status should be "
+                f"SKIPPED_DUE_TO_PRIOR_ABORT, got {exc.canary_status}",
+            )
+
+        # call_log records for skipped roles must carry SKIPPED_ABORT status
+        skipped_records = [
+            r for r in runner.call_log
+            if r.status == CanaryCallStatus.SKIPPED_ABORT
+        ]
+        self.assertEqual(len(skipped_records), 5,
+            f"Expected 5 SKIPPED_DUE_TO_PRIOR_ABORT records; statuses: "
+            f"{[r.status for r in runner.call_log]}")
+
+        # Skipped records: no API call → no cost, no tokens
+        for rec in skipped_records:
+            self.assertIsNone(rec.calculated_cost_usd,
+                f"role {rec.role_id}: SKIPPED record must not carry calculated_cost_usd")
+            self.assertIsNone(rec.input_tokens)
+            self.assertIsNone(rec.output_tokens)
+            self.assertIsNone(rec.response_model)
+
+    # ── REQUIRED TEST R4 ─────────────────────────────────────────────────────
+
+    def test_r1_required_4_rejected_call_calculated_cost_usd_non_null(self):
+        """
+        R4: A call rejected by the B0 forbidden-key scanner must have
+        calculated_cost_usd set from its real token usage, not null.
+        The value must exactly match the independently computed formula.
+        """
+        IN_TOK, OUT_TOK = 1259, 728   # exact tokens from the real B3C canary run
+        expected_cost = (
+            IN_TOK / 1_000_000 * INPUT_COST_PER_MTOK
+            + OUT_TOK / 1_000_000 * OUTPUT_COST_PER_MTOK
+        )
+
+        packet = _make_mock_packet()
+        client = MagicMock()
+        client.messages.create.return_value = _make_mock_response(
+            _PINNED_MODEL,
+            {"statistical_assessment": {"terminal_label": "REJECT_LIVE"}},
+            IN_TOK, OUT_TOK,
+        )
+
+        runner, budget, abort_state = self._make_runner(client)
+        entry = _make_entry_for_role("SPORT_SPECIALIST")
+
+        with self.assertRaises(CanaryOutputRejectedError):
+            runner(entry, packet)
+
+        self.assertEqual(len(runner.call_log), 1)
+        rec = runner.call_log[0]
+
+        # REQUIRED: non-null
+        self.assertIsNotNone(rec.calculated_cost_usd,
+            "Rejected call must carry non-null calculated_cost_usd — "
+            "the API was billed for the tokens even though the output was rejected")
+
+        # REQUIRED: correct formula
+        self.assertAlmostEqual(
+            rec.calculated_cost_usd, expected_cost, places=9,
+            msg=(
+                f"calculated_cost_usd={rec.calculated_cost_usd!r} "
+                f"expected={expected_cost!r} "
+                f"(in={IN_TOK}, out={OUT_TOK}, "
+                f"in_rate={INPUT_COST_PER_MTOK}, out_rate={OUTPUT_COST_PER_MTOK})"
+            ),
+        )
+
+        # Token counts preserved on rejection record
+        self.assertEqual(rec.input_tokens,  IN_TOK)
+        self.assertEqual(rec.output_tokens, OUT_TOK)
+
+        # Status and violation codes correct
+        self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
+        self.assertIsNotNone(rec.raw_output_hash, "raw_output_hash must be set on rejected call")
+        self.assertTrue(rec.violation_codes, "violation_codes must be non-empty on rejected call")
+
+    # ── REQUIRED TEST R5 ─────────────────────────────────────────────────────
+
+    def test_r1_required_5_cumulative_includes_all_billed_call_costs(self):
+        """
+        R5: cumulative_run_cost_usd must sum ALL billed API responses
+        (accepted and rejected), not just the successful ones.
+        Also verified via call_log.calculated_cost_usd and budget.cumulative_spend_usd.
+        """
+        S_IN, S_OUT = 500, 200     # role 1 success tokens
+        R_IN, R_OUT = 800, 400     # role 2 rejection tokens
+
+        success_cost  = S_IN / 1_000_000 * INPUT_COST_PER_MTOK + S_OUT / 1_000_000 * OUTPUT_COST_PER_MTOK
+        rejected_cost = R_IN / 1_000_000 * INPUT_COST_PER_MTOK + R_OUT / 1_000_000 * OUTPUT_COST_PER_MTOK
+        expected_total = success_cost + rejected_cost
+
+        packet = _make_mock_packet()
+        client = MagicMock()
+        client.messages.create.side_effect = [
+            self._success_response("DATA_SLATE_INTEGRITY", S_IN, S_OUT),
+            _make_mock_response(
+                _PINNED_MODEL,
+                {"nested": {"terminal_label": "STOP"}},
+                R_IN, R_OUT,
+            ),
+        ]
+
+        runner, budget, abort_state = self._make_runner(client)
+
+        # Role 1: success
+        status1, _ = self._dispatch_role(runner, "DATA_SLATE_INTEGRITY", packet)
+        self.assertEqual(status1, "ok")
+
+        # Role 2: reject
+        status2, exc2 = self._dispatch_role(runner, "NEWS_STATUS", packet)
+        self.assertEqual(status2, "err")
+        self.assertIsInstance(exc2, CanaryOutputRejectedError)
+
+        # Roles 3-6: skipped (no cost added)
+        for role_id in self._ROLE_ORDER[2:]:
+            self._dispatch_role(runner, role_id, packet)
+
+        # REQUIRED: budget.cumulative_spend_usd includes both billed calls
+        self.assertAlmostEqual(
+            budget.cumulative_spend_usd, expected_total, places=9,
+            msg=(
+                f"budget.cumulative_spend_usd={budget.cumulative_spend_usd:.9f} "
+                f"expected={expected_total:.9f}. "
+                f"Rejected call cost ({rejected_cost:.9f}) must be included."
+            ),
+        )
+
+        # REQUIRED: call_log sum of non-null calculated_cost_usd == expected_total
+        log_total = sum(
+            r.calculated_cost_usd
+            for r in runner.call_log
+            if r.calculated_cost_usd is not None
+        )
+        self.assertAlmostEqual(log_total, expected_total, places=9,
+            msg="Sum of call_log.calculated_cost_usd must include rejected call cost")
+
+        # Skipped records must not contribute any cost
+        skipped = [r for r in runner.call_log if r.status == CanaryCallStatus.SKIPPED_ABORT]
+        self.assertEqual(len(skipped), 4)
+        for rec in skipped:
+            self.assertIsNone(rec.calculated_cost_usd)
+
+    # ── REQUIRED TEST R6 ─────────────────────────────────────────────────────
+
+    def test_r1_required_6a_b0_scanner_object_identity_preserved(self):
+        """
+        R6a: B3C-R1 repair must not break the existing enforcement proof —
+        _scan_forbidden_keys in the runner is the SAME object as in output_contract.
+        """
+        import gate_engine.universal_agent.canary.claude_role_runner as runner_mod
+        import gate_engine.universal_agent.output_contract as oc_mod
+        self.assertIs(
+            runner_mod._scan_forbidden_keys,
+            oc_mod._scan_forbidden_keys,
+            "Object identity broken: runner._scan_forbidden_keys must be the real B0 scanner",
+        )
+
+    def test_r1_required_6b_forbidden_keys_frozenset_identity_preserved(self):
+        """
+        R6b: FORBIDDEN_GOVERNANCE_KEYS imported in runner is same frozenset
+        as B0 output_contract — no copy or reimplementation introduced.
+        """
+        import gate_engine.universal_agent.canary.claude_role_runner as runner_mod
+        import gate_engine.universal_agent.output_contract as oc_mod
+        self.assertIs(
+            runner_mod.FORBIDDEN_GOVERNANCE_KEYS,
+            oc_mod.FORBIDDEN_GOVERNANCE_KEYS,
+        )
+
+    def test_r1_required_6c_abort_does_not_bypass_b0_scanner_when_not_aborted(self):
+        """
+        R6c: When abort_state.is_aborted=False, the runner must still execute
+        the full B0 scan. A non-aborted role with forbidden keys must still reject.
+        """
+        packet = _make_mock_packet()
+        client = MagicMock()
+        client.messages.create.return_value = _make_mock_response(
+            _PINNED_MODEL,
+            {"nested": {"terminal_label": "MUST_BE_CAUGHT"}},
+            300, 100,
+        )
+        runner, budget, abort_state = self._make_runner(client)
+        self.assertFalse(abort_state.is_aborted)  # pre-condition
+
+        entry = _make_entry_for_role("DATA_SLATE_INTEGRITY")
+        with self.assertRaises(CanaryOutputRejectedError):
+            runner(entry, packet)
+
+        # API was called (scanner ran on the response — not skipped)
+        self.assertEqual(client.messages.create.call_count, 1)
+        # Abort state set as a consequence
+        self.assertTrue(abort_state.is_aborted)
+
+    def test_r1_required_6d_can_execute_invariant_unchanged(self):
+        """R6d: can_execute=False invariant on ClaudeRoleRunner preserved after repair."""
+        self.assertFalse(ClaudeRoleRunner.can_execute)
+
+    def test_r1_required_6e_automatic_retries_zero_unchanged(self):
+        """R6e: AUTOMATIC_RETRIES=0 invariant preserved after repair."""
+        self.assertEqual(ClaudeRoleRunner.AUTOMATIC_RETRIES, 0)
+
+    # ── REQUIRED TEST R7 ─────────────────────────────────────────────────────
+
+    def test_r1_required_7_no_real_anthropic_api_calls_in_b3cr1_tests(self):
+        """
+        R7: Structural AST check — no real Anthropic() SDK client is instantiated
+        anywhere in this test file. All ClaudeRoleRunner instances use MagicMock().
+        UAC_MLB_ML_CLAUDE_SHADOW_ENABLED must be False during test execution.
+        """
+        import ast as _ast
+        import pathlib as _pathlib
+
+        source = _pathlib.Path(__file__).read_text()
+        tree = _ast.parse(source)
+
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Call):
+                func = node.func
+                # Direct Anthropic() call
+                if isinstance(func, _ast.Name) and func.id in ("Anthropic", "AsyncAnthropic"):
+                    self.fail(
+                        f"Real Anthropic SDK instantiation found at line {node.lineno}. "
+                        "All B3C tests must use MagicMock() clients only."
+                    )
+                # Module-qualified: anthropic.Anthropic() or sdk.Anthropic()
+                if isinstance(func, _ast.Attribute) and func.attr in ("Anthropic", "AsyncAnthropic"):
+                    self.fail(
+                        f"Real Anthropic SDK instantiation via attribute at line {node.lineno}. "
+                        "All B3C tests must use MagicMock() clients only."
+                    )
+
+        # Flag must be off during test execution
+        import gate_engine.universal_agent.canary.canary_config as cc
+        self.assertFalse(
+            cc._read_bool_flag("UAC_MLB_ML_CLAUDE_SHADOW_ENABLED"),
+            "UAC_MLB_ML_CLAUDE_SHADOW_ENABLED must be False during test execution",
+        )
+
+    # ── Additional structural tests ───────────────────────────────────────────
+
+    def test_r1_abort_state_class_exists_and_importable(self):
+        """CanaryAbortState is importable from claude_role_runner."""
+        from gate_engine.universal_agent.canary.claude_role_runner import CanaryAbortState
+        state = CanaryAbortState()
+        self.assertFalse(state.is_aborted)
+        self.assertIsNone(state.abort_reason)
+
+    def test_r1_abort_state_set_aborted_idempotent(self):
+        """set_aborted() is idempotent — first reason wins, second call ignored."""
+        from gate_engine.universal_agent.canary.claude_role_runner import CanaryAbortState
+        state = CanaryAbortState()
+        state.set_aborted("first")
+        state.set_aborted("second")
+        self.assertEqual(state.abort_reason, "first",
+            "set_aborted must be idempotent: first reason must not be overwritten")
+
+    def test_r1_skipped_abort_status_constant_correct(self):
+        """SKIPPED_DUE_TO_PRIOR_ABORT is defined with the correct string value."""
+        self.assertEqual(CanaryCallStatus.SKIPPED_ABORT, "SKIPPED_DUE_TO_PRIOR_ABORT")
+
+    def test_r1_abort_state_wired_into_canary_pipeline(self):
+        """CanaryAbortState is importable from canary_pipeline (verifies wiring)."""
+        from gate_engine.universal_agent.canary.canary_pipeline import CanaryAbortState as CAPIPE
+        from gate_engine.universal_agent.canary.claude_role_runner import CanaryAbortState as CARUN
+        self.assertIs(CAPIPE, CARUN, "Pipeline must import CanaryAbortState from runner")
+
+    def test_r1_prompt_contains_key_name_contract(self):
+        """FIX 3: every role prompt includes the advisory key-name contract section."""
+        from gate_engine.universal_agent.canary.claude_role_runner import _build_prompt
+        packet = _make_mock_packet()
+        packet.to_dict.return_value = {}
+
+        for role_id in self._ROLE_ORDER:
+            prompt = _build_prompt(role_id, packet)
+            self.assertIn(
+                "terminal_label", prompt,
+                f"role {role_id}: prompt must name 'terminal_label' as forbidden example",
+            )
+            self.assertIn(
+                "ADVISORY KEY-NAME CONTRACT", prompt,
+                f"role {role_id}: prompt must contain ADVISORY KEY-NAME CONTRACT header",
+            )
+            self.assertIn(
+                "defense-in-depth", prompt,
+                f"role {role_id}: prompt must clarify this is defense-in-depth only",
+            )
+            self.assertIn(
+                "recursive B0 scanner", prompt,
+                f"role {role_id}: prompt must name recursive B0 scanner as enforcement",
+            )
+            # Prompt must NOT claim to be a substitute for the scanner
+            self.assertNotIn(
+                "replaces", prompt.lower(),
+                f"role {role_id}: prompt must not claim to replace the B0 scanner",
+            )
+
+    def test_r1_budget_guard_sets_abort_state(self):
+        """Budget guard trip must set abort_state before raising CanaryBudgetGuardError."""
+        from gate_engine.universal_agent.canary.claude_role_runner import CanaryAbortState
+        from gate_engine.universal_agent.canary.canary_config import MAX_TOTAL_SPEND_USD
+
+        packet = _make_mock_packet()
+        client = MagicMock()
+        abort_state = CanaryAbortState()
+        budget = BudgetState()
+        # Pre-fill spend to trigger ceiling
+        budget.cumulative_spend_usd = MAX_TOTAL_SPEND_USD
+
+        runner = ClaudeRoleRunner(client=client, budget=budget, abort_state=abort_state)
+        entry = _make_entry_for_role("DATA_SLATE_INTEGRITY")
+
+        with self.assertRaises(CanaryBudgetGuardError):
+            runner(entry, packet)
+
+        self.assertTrue(abort_state.is_aborted)
+        client.messages.create.assert_not_called()
+
+    def test_r1_model_identity_failure_carries_cost_and_sets_abort(self):
+        """Wrong response model sets abort and carries calculated_cost_usd."""
+        from gate_engine.universal_agent.canary.claude_role_runner import CanaryAbortState
+
+        IN_TOK, OUT_TOK = 400, 150
+        expected_cost = (
+            IN_TOK / 1_000_000 * INPUT_COST_PER_MTOK
+            + OUT_TOK / 1_000_000 * OUTPUT_COST_PER_MTOK
+        )
+
+        packet = _make_mock_packet()
+        client = MagicMock()
+        client.messages.create.return_value = _make_mock_response(
+            "claude-opus-wrong-model",    # wrong model
+            _VALID_DSI_TOOL_INPUT,
+            IN_TOK, OUT_TOK,
+        )
+
+        abort_state = CanaryAbortState()
+        budget = BudgetState()
+        runner = ClaudeRoleRunner(client=client, budget=budget, abort_state=abort_state)
+        entry = _make_entry_for_role("DATA_SLATE_INTEGRITY")
+
+        with self.assertRaises(CanaryModelIdentityError):
+            runner(entry, packet)
+
+        self.assertTrue(abort_state.is_aborted)
+        rec = runner.call_log[0]
+        self.assertEqual(rec.status, CanaryCallStatus.FAIL_MODEL_IDENTITY)
+        self.assertIsNotNone(rec.calculated_cost_usd)
+        self.assertAlmostEqual(rec.calculated_cost_usd, expected_cost, places=9)
+
+    def test_r1_success_call_still_has_calculated_cost(self):
+        """Regression: successful calls still carry calculated_cost_usd after repair."""
+        from gate_engine.universal_agent.canary.claude_role_runner import CanaryAbortState
+
+        IN_TOK, OUT_TOK = 1366, 274
+        expected_cost = (
+            IN_TOK / 1_000_000 * INPUT_COST_PER_MTOK
+            + OUT_TOK / 1_000_000 * OUTPUT_COST_PER_MTOK
+        )
+
+        packet = _make_mock_packet()
+        client = MagicMock()
+        client.messages.create.return_value = _make_mock_response(
+            _PINNED_MODEL, _VALID_DSI_TOOL_INPUT, IN_TOK, OUT_TOK,
+        )
+
+        runner = ClaudeRoleRunner(client=client, abort_state=CanaryAbortState())
+        entry = _make_entry_for_role("DATA_SLATE_INTEGRITY")
+        runner(entry, packet)
+
+        rec = runner.call_log[0]
+        self.assertEqual(rec.status, CanaryCallStatus.SUCCESS)
+        self.assertIsNotNone(rec.calculated_cost_usd)
+        self.assertAlmostEqual(rec.calculated_cost_usd, expected_cost, places=9)
+
+    def test_r1_private_abort_state_created_when_none_passed(self):
+        """ClaudeRoleRunner creates a private CanaryAbortState when abort_state=None."""
+        client = MagicMock()
+        runner = ClaudeRoleRunner(client=client)
+        self.assertIsNotNone(runner._abort_state)
+        self.assertFalse(runner._abort_state.is_aborted)
+
+    def test_r1_no_raw_model_output_persisted(self):
+        """
+        Structural: raw model output text must never appear in call_log records.
+        Only raw_output_hash (SHA-256) is stored. This applies to both accepted
+        and rejected records.
+        """
+        packet = _make_mock_packet()
+        client = MagicMock()
+        client.messages.create.return_value = self._rejection_response(300, 100)
+
+        runner, _, _ = self._make_runner(client)
+        entry = _make_entry_for_role("DATA_SLATE_INTEGRITY")
+
+        with self.assertRaises(CanaryOutputRejectedError):
+            runner(entry, packet)
+
+        rec = runner.call_log[0]
+        # raw_output_hash is a hex string (64 chars for SHA-256)
+        self.assertIsNotNone(rec.raw_output_hash)
+        self.assertEqual(len(rec.raw_output_hash), 64)
+        # The CanaryCallRecord dataclass must not have any field storing the raw text
+        import dataclasses
+        field_names = {f.name for f in dataclasses.fields(rec)}
+        self.assertNotIn("raw_output", field_names)
+        self.assertNotIn("tool_output_text", field_names)
+        self.assertNotIn("response_text", field_names)
+
+
 if __name__ == "__main__":
     unittest.main()

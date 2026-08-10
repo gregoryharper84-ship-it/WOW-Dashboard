@@ -52,6 +52,7 @@ from gate_engine.universal_agent.canary.canary_config import (
 )
 from gate_engine.universal_agent.canary.claude_role_runner import (
     BudgetState,
+    CanaryAbortState,
     CanaryCallRecord,
     ClaudeRoleRunner,
 )
@@ -282,9 +283,13 @@ def run_canary_pipeline(
 
     packet = adapter_result.packet
 
-    # ── Step 2: Budget state + ClaudeRoleRunner (shared across 6 roles) ───────
-    budget = BudgetState()
-    runner = ClaudeRoleRunner(client=_client, budget=budget)
+    # ── Step 2: Budget state + abort state + ClaudeRoleRunner (shared) ───────
+    # B3C-R1 FIX 1: CanaryAbortState is created ONCE per run and shared across
+    # all 6 role dispatches. Any structural failure sets is_aborted=True;
+    # subsequent roles check this flag first (step 0) and make ZERO API calls.
+    budget      = BudgetState()
+    abort_state = CanaryAbortState()
+    runner      = ClaudeRoleRunner(client=_client, budget=budget, abort_state=abort_state)
 
     # ── Step 3: B1 registry + role_runners dict (one runner, 6 entries) ───────
     registry = build_b1_registry()
