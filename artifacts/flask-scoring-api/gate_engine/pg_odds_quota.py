@@ -55,11 +55,32 @@ def _get_conn(conn_string: Optional[str] = None):
 
 
 def ensure_table_exists(conn_string: Optional[str] = None) -> None:
+    """Create wow_odds_quota_state if it doesn't exist. Safe to call repeatedly."""
+    _DDL = """
+    CREATE TABLE IF NOT EXISTS wow_odds_quota_state (
+        tier                TEXT PRIMARY KEY,
+        requests_remaining  INTEGER,
+        requests_used       INTEGER,
+        quota_warning       BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_by_pid      INTEGER
+    )
     """
-    No-op — wow_odds_quota_state was removed (WOW-PATCH-2026-08-08-BALLDONTLIE-TRUSTED-STATS).
-    Retained as a callable stub so existing call sites don't need changes.
-    """
-    pass  # table intentionally removed; do not recreate
+    conn = None
+    try:
+        conn = _get_conn(conn_string)
+        cur = conn.cursor()
+        cur.execute(_DDL)
+        conn.commit()
+        cur.close()
+    except Exception:
+        pass  # fail-open — schema creation must not block startup
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def persist_quota_update(
