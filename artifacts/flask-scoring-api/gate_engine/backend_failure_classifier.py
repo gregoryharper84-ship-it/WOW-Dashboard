@@ -107,6 +107,25 @@ _ROUTE_FAIL_BLOCKER_FRAGMENTS: frozenset[str] = frozenset({
 
 
 # ---------------------------------------------------------------------------
+# Labels that represent a positive evaluation outcome (row ran, produced a
+# result that is not a technical failure or a scored rejection).
+# Used to distinguish Case A (hold/qualify/watch) from Case B (pure rejection)
+# in mixed-batch classification.
+# ---------------------------------------------------------------------------
+
+_POSITIVE_EVALUATION_LABELS: frozenset[str] = frozenset({
+    "FINAL_APPROVED",
+    "MODEL_QUALIFIED_HOLD",
+    "WATCH",
+    "LLP_SCOUT",
+    "PLAYER_ANALYSIS",
+    "QUALIFIED_HOLD",
+    "RESEARCH_APPROVED",
+    "DEFERRED_WATCH",
+})
+
+
+# ---------------------------------------------------------------------------
 # Row-level classification
 # ---------------------------------------------------------------------------
 
@@ -189,14 +208,50 @@ def classify_run_failure(
     all_failed    = n_failed == len(prop_ledger)
 
     if not all_failed:
-        # Some rows passed — the run produced a usable result.
-        # Still surface which rows failed so the caller can reconstruct them.
+        # Some rows completed evaluation.  Distinguish two sub-cases:
+        #
+        #   A) At least one row reached a POSITIVE_EVALUATION label
+        #      (FINAL_APPROVED, MODEL_QUALIFIED_HOLD, WATCH, LLP_SCOUT, …).
+        #      These rows are publishable results — the run is healthy even if
+        #      other rows failed.  Return failure_type=NONE, publishable=True.
+        #
+        #   B) No positive-evaluation rows exist: every "passing" row is a
+        #      scored rejection (REJECT_*, LLP_REJECT, …).  The run produced no
+        #      qualifying or held candidates, and some rows failed technically.
+        #      Surface the dominant failure type so the caller knows to
+        #      reconstruct the failed rows rather than treating this as a clean
+        #      NO_PLAY.
+        positive_rows = [
+            r for r in prop_ledger
+            if (r.get("terminal_label") or "").upper() in _POSITIVE_EVALUATION_LABELS
+        ]
+        if positive_rows:
+            # Case A — clean run with incidental failures
+            return _build_classification(
+                failure_type="NONE",
+                candidate_evaluation_completed=True,
+                probability_publishable=True,
+                affected_rows=failed_rows,
+                reconstruction_recommended=bool(failed_rows),
+            )
+
+        # Case B — mixed scored-rejections + technical failures, no final card
+        unique_types = set(row_types) - {"NONE"}
+        dominant = (
+            min(unique_types, key=lambda ft: FAILURE_TIER.get(ft, 99))
+            if unique_types else "NONE"
+        )
+        reconstruction_recommended = dominant in {
+            "DATA_CONTRACT_FAIL",
+            "SOURCE_ACQUISITION_FAIL",
+            "MODEL_ROUTE_FAIL",
+        }
         return _build_classification(
-            failure_type="NONE",
-            candidate_evaluation_completed=True,
-            probability_publishable=True,
+            failure_type=dominant,
+            candidate_evaluation_completed=True,   # some rows DID evaluate
+            probability_publishable=False,          # but nothing qualified
             affected_rows=failed_rows,
-            reconstruction_recommended=bool(failed_rows),
+            reconstruction_recommended=reconstruction_recommended,
         )
 
     # All rows failed — pick the dominant (highest-severity) failure type
@@ -293,7 +348,10 @@ def build_partial_failure_terminal(failure_classification: dict) -> dict:
     return {
         "terminal_disposition":            "RUN_PARTIAL_BACKEND_FAILURE",
         "strict_runtime_disposition":      "RUN_PARTIAL_BACKEND_FAILURE",
-        "candidate_evaluation_completed":  False,
+        # Preserve whether some rows DID complete evaluation (mixed-batch case).
+        "candidate_evaluation_completed":  failure_classification.get(
+            "candidate_evaluation_completed", False
+        ),
         "probability_publishable":         False,
     }
 

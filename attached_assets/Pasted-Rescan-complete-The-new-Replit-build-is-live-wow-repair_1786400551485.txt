@@ -1,0 +1,43 @@
+Rescan complete. **The new Replit build is live**: `wow-repair-2026-08-10-schema-acquisition-bounds`. I reran the exact **223 previously extracted MORE-side props** through the fresh v16.5 backend.
+
+| Category              | Props | Fresh result                                                     |
+| --------------------- | ----: | ---------------------------------------------------------------- |
+| WNBA PRA              |    36 | **36 `DATA_CONTRACT_FAIL`**                                      |
+| WNBA Rebounds         |    39 | **39 `MODEL_QUALIFIED_HOLD`**                                    |
+| MLB Pitcher Ks        |    20 | **19 `DATA_CONTRACT_FAIL`, 1 `REJECT_MARKET_ADVERSE_THRESHOLD`** |
+| MLB Pitching Outs     |    20 | **20 `REJECT_DATA_QUALITY`**                                     |
+| MLB Plate Appearances |    80 | **80 `DATA_CONTRACT_FAIL`**                                      |
+| Tennis Total Games    |     8 | **8 `DATA_CONTRACT_FAIL`**                                       |
+| MLB 1IP Pitches       |    20 | **20 `DATA_CONTRACT_FAIL`**                                      |
+
+So the headline count is still **163 `DATA_CONTRACT_FAIL` + 39 `MODEL_QUALIFIED_HOLD` + 20 `REJECT_DATA_QUALITY` + 1 true market rejection**.
+
+There **are real improvements in the republish**. The Angel Reese probability-schema bug is fixed: her fresh result now has `calibrated_probability = 0.2013769969` and `calibrated_probability_lower_bound = 0.2013769969`, so the lower bound no longer exceeds the point probability. Also, the backend now correctly classifies a Jameson Taillon K failure as `SOURCE_ACQUISITION_FAIL`, with `candidate_evaluation_completed=false` and `probability_publishable=false`. That is exactly the distinction we wanted between “bad bet” and “never successfully evaluated.”
+
+But several important fixes are **still not functioning**:
+
+1. **WNBA identity handoff is still broken.** Reese still reaches the WNBA scoreboard adapter as `game_str=' vs '`, with `team=null` and `opponent=null`, despite the original row containing ATL vs TOR. Event status therefore remains unresolved.
+
+2. **The WNBA merge contradiction still exists.** `role_status.projected_minutes` is reported as `FALLBACK_RETRIEVED` and simultaneously remains in `fields_unresolved`.
+
+3. **MLB historical acquisition is still not wired into scoring.** Taillon's K diagnostic still shows `L10:NO_GAME_LOG_PROVIDED`, and both historical source attempts are literally `NOT_CALLED`. That is why 19/20 Ks remain contract failures.
+
+4. **Plate Appearances are still completely unscored.** All **80/80** again returned `DATA_CONTRACT_FAIL` with `NO_GAME_LOG_PROVIDED`.
+
+5. **1IP still never reaches the dedicated event-tree model.** All **20/20** fail before specialist scoring.
+
+6. **Tennis acquisition is still unsupported by the deployed auto-enrichment path.** It explicitly reports market/status `NOT_CALLED`.
+
+7. **The mixed-batch aggregation bug remains.** The 20-pitcher-K batch still reports `terminal_disposition="NO_PLAY"` even though 19 rows were technical failures and only one received an actual model/market rejection.
+
+8. **Settlement/calibration is still empty.** The worker is running with no current error, but `last_success_tick=null` and `props_graded=0`.
+
+9. **The screenshot composite path still fails from this integration with invalid base64.** I attempted `/analyze-and-score` first as required; it still returned the image-base64 transport error, so I used the manual gate-engine fallback for the rescan.
+
+The only prop on this board that again received a genuine evaluated market rejection is:
+
+**Trevor Rogers — MORE 5.5 Pitcher Strikeouts — `REJECT_MARKET_ADVERSE_THRESHOLD`**
+
+I still **would not rank the 39 WNBA rebound holds as picks**. Their probability-bound arithmetic is now repaired, which is progress, but event identity/status, lineup/settlement verification and parts of the acquisition packet are still unresolved.
+
+So: **the republish successfully fixed part of the probability/error-classification layer, but it did not fix the core acquisition/identity plumbing.** The next Replit patch should be much narrower now: identity propagation + MLB game-log adapters + WNBA merge consistency + 1IP routing + mixed-batch aggregation + settlement worker.

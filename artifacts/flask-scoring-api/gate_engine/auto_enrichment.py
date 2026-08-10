@@ -476,3 +476,118 @@ def build_auto_enrichment(
             enrichment[write_key] = entry
 
     return enrichment, source_status
+
+
+# ---------------------------------------------------------------------------
+# Standalone game-log pre-fetch (unconditional — not gated by auto_enrich)
+# ---------------------------------------------------------------------------
+
+def fetch_missing_game_logs(
+    rows: "list[dict]",
+    enrichment: "dict",
+    target_date: "object | None" = None,
+) -> "dict":
+    """
+    Fetch game logs for rows that have player_id + stat_key but no game_log in
+    the enrichment dict.  Mirrors the game-log section of build_auto_enrichment
+    but runs unconditionally (no auto_enrich flag required) so the pipeline
+    always has historical data for supported sports.
+
+    Caller-supplied non-empty game_log values always win.
+    Only fills entries where entry.get("game_log") is falsy.
+
+    ``target_date`` may be a ``datetime.date`` object, an ISO-8601 string, or
+    None (defaults to today when auto_game_log resolves it internally).
+
+    Returns the (possibly-mutated) enrichment dict.
+    """
+    _SUPPORTED_SPORTS = {"NBA", "WNBA", "MLB", "NFL", "TENNIS"}
+
+    # Normalise target_date to datetime.date once
+    _tgt: "object | None" = None
+    if isinstance(target_date, str):
+        try:
+            import datetime as _dt_mod
+            _tgt = _dt_mod.date.fromisoformat(target_date)
+        except (ValueError, AttributeError):
+            _tgt = None
+    else:
+        _tgt = target_date  # already a date / None
+
+    # Build the set of enrichment keys already claimed by callers so we pick
+    # the right write_key for each row (mirrors build_auto_enrichment logic).
+    _claimed_keys_this_batch: set = set()
+
+    for row in rows:
+        player    = row.get("player") or ""
+        prop_type = row.get("prop_type") or ""
+        sport     = (row.get("sport") or "").upper()
+        player_id = row.get("player_id")
+        stat_key  = row.get("stat_key") or prop_type
+
+        if not player or not prop_type:
+            continue
+        if not player_id or not stat_key:
+            continue
+        if sport not in _SUPPORTED_SPORTS:
+            continue
+
+        rid = row.get("row_id", "")
+        key = f"{player.lower()}:{prop_type.lower()}"
+
+        if rid and rid in enrichment:
+            write_key = rid
+        elif key in enrichment:
+            write_key = key
+        elif key not in _claimed_keys_this_batch:
+            write_key = key
+            _claimed_keys_this_batch.add(key)
+        else:
+            write_key = rid or key
+
+        entry = dict(enrichment.get(write_key) or {})
+
+        if entry.get("game_log"):
+            continue  # already populated — caller data wins
+
+        try:
+            gl_result = fetch_game_log(
+                player_id=player_id,
+                sport=sport,
+                stat_key=stat_key,
+                target_date=_tgt,
+            )
+            if gl_result.get("values"):
+                entry["game_log"] = gl_result["values"]
+                existing_sources = entry.get("data_sources") or []
+                if gl_result["source"] not in existing_sources:
+                    entry["data_sources"] = existing_sources + [gl_result["source"]]
+                _vals = gl_result["values"]
+                if _vals and entry.get("l5_values") is None:
+                    entry["l5_values"] = _vals[:5]
+                if _vals and entry.get("l10_values") is None:
+                    entry["l10_values"] = _vals[:10]
+                _l10v: list = entry.get("l10_values") or []
+                if _l10v and entry.get("l10_median") is None:
+                    try:
+                        entry["l10_median"] = round(_statistics.median(_l10v), 2)
+                    except Exception:
+                        pass
+                if _l10v and entry.get("l10_mean") is None:
+                    try:
+                        entry["l10_mean"] = round(sum(_l10v) / len(_l10v), 2)
+                    except (ZeroDivisionError, TypeError):
+                        pass
+                if entry.get("l5_line_used") is None:
+                    entry["l5_line_used"] = row.get("line")
+                if gl_result.get("game_date") and entry.get("game_date") is None:
+                    entry["game_date"] = gl_result["game_date"]
+                if gl_result.get("opponent") and entry.get("opponent") is None:
+                    entry["opponent"] = gl_result["opponent"]
+                enrichment[write_key] = entry
+        except GameLogUnavailable:
+            pass  # source unavailable — honest gap, no fabrication
+        except Exception:
+            pass  # unexpected error — never block the pipeline
+
+    return enrichment

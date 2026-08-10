@@ -141,7 +141,7 @@ _APP_START_TIME = time.time()
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
 _bt("flask app created — registering routes")
 
-BUILD_ID = "wow-repair-2026-08-10-schema-acquisition-bounds"
+BUILD_ID = "wow-repair-2026-08-10-acquisition-routing-identity"
 
 
 # ---------------------------------------------------------------------------
@@ -3982,7 +3982,8 @@ def _norm_to_pipeline_row(norm_row: dict) -> dict:
         "board_source": norm_row.get("platform") or "UNKNOWN",
         "start_time":   norm_row.get("game_time") or "",
         "slate_date":   (norm_row.get("game_time") or "")[:10] or "",
-        "game":         f"{norm_row.get('team', '')} vs {norm_row.get('opponent', '')}",
+        "game":         (f"{norm_row.get('team', '')} vs {norm_row.get('opponent', '')}"
+                        if (norm_row.get('team') or norm_row.get('opponent')) else ""),
         "stat_key":     norm_row.get("stat_key") or "",
         "stat_formula": norm_row.get("stat_formula") or "",
         "line_modifier": norm_row.get("line_modifier") or "standard",
@@ -21638,6 +21639,21 @@ def gate_engine_run():
             app.logger.error("gate_engine_run auto_enrich error: %s", exc)
             auto_enrichment_status = {"error": str(exc)}
 
+    # ── Unconditional game-log pre-fetch ──────────────────────────────────────
+    # fetch_missing_game_logs() runs regardless of the auto_enrich flag.
+    # build_auto_enrichment() above already fetched game logs when auto_enrich
+    # is True, so entries are skipped when game_log is already populated.
+    # When auto_enrich is False (the default for direct /gate-engine/run calls),
+    # this fills the gap so MLB Ks, PA, 1IP, WNBA, and Tennis props are not
+    # blocked by NO_GAME_LOG_PROVIDED at the data-contract gate.
+    try:
+        from gate_engine.auto_enrichment import (
+            fetch_missing_game_logs as _fmgl,
+        )
+        enrichment = _fmgl(raw_rows, enrichment, target_date=target_date)
+    except Exception as _fmgl_err:
+        app.logger.warning("fetch_missing_game_logs error: %s", _fmgl_err)
+
     # Wire session exposure ledger for cross-request persistence
     _session_exposure_ledger = _get_session_ledger(_session_id)
 
@@ -21982,12 +21998,14 @@ def gate_engine_run():
     )
     result["failure_classification"] = _bfc_result
 
-    # Upgrade NO_PLAY → RUN_PARTIAL_BACKEND_FAILURE when all rows failed
-    # without completing evaluation and the run was not a governance hard stop.
+    # Upgrade NO_PLAY → RUN_PARTIAL_BACKEND_FAILURE when rows failed without
+    # completing evaluation OR in a mixed batch (some rows evaluated but none
+    # qualified, and technical failures exist).  Governance failures are a hard
+    # stop and never produce RUN_PARTIAL_BACKEND_FAILURE.
     _bfc_all_failed = (
-        not _bfc_result["candidate_evaluation_completed"]
-        and result.get("terminal_disposition") == "NO_PLAY"
+        result.get("terminal_disposition") == "NO_PLAY"
         and _bfc_result["failure_type"] not in ("GOVERNANCE_FAIL", "NONE")
+        and bool(_bfc_result.get("affected_rows"))
     )
     if _bfc_all_failed:
         result.update(_bfc_partial_terminal(_bfc_result))
