@@ -87,3 +87,4 @@
 - [Universal Agent B1 roles](universal-agent-b1-roles.md) — Two-phase validator (Phase 1=B0, Phase 2=role schema); Lane in evidence_packet not agent_registry; 6 roles + registry_b1; 267 B1 tests.
 - [Universal Agent B2 orchestrator](universal-agent-b2-orchestrator.md) — 5 new modules; same packet id() to all runners; 4 contradiction rules; SKIPPED_RESUMED=effectively_accepted; bundle COMPLETE requires all roles + no HIGH contradiction.
 - [Universal Agent B3A MLB Moneyline adapter](universal-agent-b3a-mlb-moneyline-adapter.md) — 4 modules in lanes/mlb_moneyline/; maps post-preflight row→EvidencePacket+6 B1 payloads; _scan_forbidden_keys returns None (not []) on clean; object.__setattr__ bypasses frozen.
+- [Universal Agent B3B shadow pipeline](universal-agent-b3b-shadow-pipeline.md) — 3 shadow/ modules; DeterministicAdapterRunner(role_payloads) keyed by role_id; SHADOW_ENABLED=False default; docstring "from app" substring false-positive anti-pattern.
