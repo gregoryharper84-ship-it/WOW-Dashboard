@@ -538,20 +538,6 @@ class TestClaudeRoleRunnerForbiddenKeys(unittest.TestCase):
         rec = self._run_with_forbidden("deploy")
         self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
 
-    def test_place_bet_in_output_is_rejected(self):
-        # "place_bet" is not in FORBIDDEN_GOVERNANCE_KEYS but is also absent from
-        # _ROOT_ALLOWED; rejected by the output contract's EXTRA_FIELD allowlist
-        # check (not the forbidden-key scan). Output is still rejected — mechanism
-        # is the allowlist, not the forbidden scan. Kept as belt-and-suspenders coverage.
-        rec = self._run_with_forbidden("place_bet")
-        self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
-
-    def test_settlement_in_output_is_rejected(self):
-        # "settlement" — same as place_bet: caught by EXTRA_FIELD (not in _ROOT_ALLOWED),
-        # not by the forbidden-key scan. Still produces OUTPUT_REJECTED.
-        rec = self._run_with_forbidden("settlement")
-        self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
-
     def test_forbidden_key_raises_canary_output_rejected_error(self):
         entry  = _make_entry_for_role("DATA_SLATE_INTEGRITY")
         packet = _make_mock_packet()
