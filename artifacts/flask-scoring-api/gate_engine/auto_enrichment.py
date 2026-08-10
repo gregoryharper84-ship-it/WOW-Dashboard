@@ -355,10 +355,14 @@ def build_auto_enrichment(
                 entry["role_timestamp"] = _fetch_ts
 
         # --- Game log auto-fetch + [FIX-3] l5/l10 computation ---
-        # Only fetch when: game_log not already supplied, player_id and stat_key
-        # are present on the row (set by the normalization adapter), and sport
-        # is one the module supports.
-        if entry.get("game_log") is None:
+        # Only fetch when: game_log not already supplied (None OR empty list),
+        # player_id and stat_key are present on the row, and sport is supported.
+        # NOTE: `is None` was deliberately changed to `not ...` so that an
+        # explicitly supplied empty list (game_log:[]) also triggers auto-fetch.
+        # Callers that pass [] intend "no data yet" — treating it as "already
+        # provided" caused silent L10:NO_GAME_LOG_PROVIDED on every MLB pitcher
+        # prop when the GPT omitted historical values from the enrichment body.
+        if not entry.get("game_log"):
             player_id = row.get("player_id")
             stat_key  = row.get("stat_key")
             if player_id and stat_key:

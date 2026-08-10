@@ -1362,6 +1362,14 @@ def score(
     mkt_nv    = mkt["market_no_vig_prob"]
     cal_sel_blended, mkt_wt, mdl_wt = _blend_market(cal_selected, mkt_nv, discount)
 
+    # Invariant: lower_bound must always be <= the final blended calibrated probability.
+    # Market blending can pull cal_sel_blended below the pre-blend cal_lower_bound
+    # (computed from the stress PMF before blending), producing an inverted interval
+    # that prob_ledger correctly marks rank_eligible=False.  Clamp here so the
+    # schema invariant holds at the model boundary regardless of blend direction.
+    if cal_lower_bound > cal_sel_blended:
+        cal_lower_bound = cal_sel_blended
+
     # ── Stage 10: L5/L10 diagnostic ───────────────────────────────────────
     l10_diag  = _l5_l10_diagnostic(enr, line, is_integer, stat_key)
     l10_rate  = l10_diag.get("l10_more_rate")

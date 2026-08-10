@@ -141,7 +141,7 @@ _APP_START_TIME = time.time()
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
 _bt("flask app created — registering routes")
 
-BUILD_ID = "wow-patch-outright-moneyline-routing-2026-08-07"
+BUILD_ID = "wow-repair-2026-08-10-schema-acquisition-bounds"
 
 
 # ---------------------------------------------------------------------------
