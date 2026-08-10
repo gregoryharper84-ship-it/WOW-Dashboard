@@ -531,6 +531,18 @@ class TestClaudeRoleRunnerForbiddenKeys(unittest.TestCase):
         rec = self._run_with_forbidden("trade")
         self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
 
+    def test_is_playable_in_output_is_rejected(self):
+        # "is_playable" is in FORBIDDEN_GOVERNANCE_KEYS (output_contract.py line 53).
+        # Confirmed present in the real B0 scanner reused by B3C.
+        rec = self._run_with_forbidden("is_playable")
+        self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
+
+    def test_user_output_authority_in_output_is_rejected(self):
+        # "user_output_authority" is in FORBIDDEN_GOVERNANCE_KEYS (output_contract.py line 50).
+        # Confirmed present in the real B0 scanner reused by B3C.
+        rec = self._run_with_forbidden("user_output_authority")
+        self.assertEqual(rec.status, CanaryCallStatus.OUTPUT_REJECTED)
+
     def test_forbidden_key_raises_canary_output_rejected_error(self):
         entry  = _make_entry_for_role("DATA_SLATE_INTEGRITY")
         packet = _make_mock_packet()
