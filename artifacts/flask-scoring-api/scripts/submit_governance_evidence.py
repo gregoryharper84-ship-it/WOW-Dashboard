@@ -84,12 +84,20 @@ def _collect_shadow_pilot_summary() -> dict:
     Return the validated Kalshi Weather shadow pilot closure record.
     Real data from the Step 16 closure documentation.
     """
+    # Read the model identifier from the subagents module attribute at call time
+    # (Weather Step 14D pattern: module reference, not hardcoded literal).
+    try:
+        from gate_engine import kalshi_wx_shadow_subagents as _sa_mod
+        _pilot_model = getattr(_sa_mod, "_MODEL", None)
+    except ImportError:
+        _pilot_model = None
+
     return {
         "pilot_status":          "VALIDATED_COMPLETE",
         "step15_ruling":         "APPROVED_CLOSED",
         "total_real_spend_usd":  0.410970,
         "total_rows":            130,
-        "model":                 "claude-haiku-4-5-20251001",
+        "model":                 _pilot_model,
         "model_null_count":      0,
         "blocked_rows":          0,
         "forbidden_key_violations": 0,
