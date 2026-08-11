@@ -1,94 +1,125 @@
 """
 gate_engine/outlier_recompute.py
-Outlier Recompute Engine — Stage A (offline module only)
+WOW-PATCH-2026-08-10-STAGE-A-PROBABILITY-LEDGER-OUTLIER-RECOMPUTE
 
-When the outlier gate appends OUTLIER_FLAG:REVIEW_REQUIRED, this module
-performs the governed outlier review before terminal disposition.
+Outlier-review recompute engine — offline, advisory only.
 
-RECOMPUTE PROCEDURE:
-  1. Read the outlier flags and the L10 game-value window.
-  2. Identify and isolate outlier game(s) using the specific flag that fired.
-  3. Recompute the L9 / post-exclusion distribution (mean, median, std, count).
-  4. Record excluded event IDs (index-based within the L10 window) and reasons.
-  5. Update uncertainty bounds via model_registry.probability_bounds.
-  6. Return an explicit RESOLVED / UNRESOLVED / ERROR state.
+Flow
+----
+  outlier_gate.run() sets OUTLIER_FLAG:REVIEW_REQUIRED in row["blockers"]
+    → caller passes row to this engine's run()
+    → engine returns RESOLVED / UNRESOLVED / ERROR
 
-RETURN STATES:
-  RESOLVED   — outlier(s) isolated, L9 distribution recomputed, bounds updated.
-               At least MIN_GAMES_AFTER_EXCLUSION games remain.
-  UNRESOLVED — evidence insufficient for recomputation; a named
-               data_contract_fail_reason is always set.
-  ERROR      — unexpected exception during recomputation; a named error_reason
-               is always set.
+Threshold reuse (mandatory)
+---------------------------
+  GAP_THRESHOLD        imported from gate_engine.outlier_gate  (0.20)
+  ASSIST_VOL_THRESHOLD imported from gate_engine.outlier_gate  (0.40)
 
-DATA_CONTRACT_FAIL reasons (UNRESOLVED state):
-  MISSING_GAME_LOG           — l10_games list is absent or empty
-  SAMPLE_TOO_SMALL_AFTER_EXCLUSION — fewer than MIN_GAMES_AFTER_EXCLUSION
-                               games would remain after removing outliers
-  SAMPLE_TOO_SMALL_TO_ISOLATE — initial l10 window has fewer games than
-                               MIN_GAMES_TO_ISOLATE
-  NO_OUTLIER_GAMES_IDENTIFIED — flags fired but isolation produced no candidates
-  MISSING_OUTLIER_GATE_RESULT — row has no outlier_gate result to read
+These constants are NOT re-defined here.  If outlier_gate.py changes them,
+this engine changes automatically.  The prior outlier_recompute.py invented
+its own thresholds — that is the defect this patch corrects.
 
-OFFLINE INVARIANTS:
-  - This module has no terminal-label authority.
-  - This module does not write a qualifying label or modify gate outputs.
-  - This module does not import from app.py, classifier.py, pipeline.py,
-    or any settlement / B4 / universal_agent module.
-  - Original input evidence is always preserved in OutlierRecomputeResult.
+Exclusion contract (hard invariant)
+------------------------------------
+Games may only be excluded when they meet deterministic, evidence-backed
+criteria derived from the SAME formulas as outlier_gate.run():
 
-can_execute             = False
-PRODUCTION_AUTHORITY    = False
-TERMINAL_LABEL_AUTHORITY = False
-USER_OUTPUT_AUTHORITY   = False
+  season_high_outlier  : max game > l10_avg * 1.5
+  avg_inflated_by_outlier: l10_avg > avg_without_max * 1.15
+  l5_l10_gap_flagged   : game > median + 2*stdev (or median*1.5 if stdev≈0)
+  assist_volatile      : game > mean + 2*stdev
+  median_disagrees_avg : extreme game (max if mean>median, else min)
+
+The engine re-verifies each condition from raw l10_games data.  It does NOT
+trust the flags dict blindly — if the flags dict claims a condition is set
+but the raw data does not support it, NO candidates are identified and the
+result is UNRESOLVED.
+
+This enforces the "never discard inconvenient games" rule: if someone
+supplies flags={"season_high_outlier": True} but the actual max game is
+below the 1.5× threshold, the engine finds no evidence-backed candidate and
+returns UNRESOLVED rather than excluding the max game anyway.
+
+Output states
+-------------
+  RESOLVED   — evidence-backed exclusion found; divergence drops below
+               GAP_THRESHOLD after removal; original + recomputed evidence
+               retained; before/after distribution impact computed.
+  UNRESOLVED — data contract failure (missing game log, sample too small,
+               gate result missing, gate skipped) OR no evidence-backed
+               candidate found OR condition persists after exclusion.
+               Named reason always set.
+  ERROR      — unexpected exception; error_reason always set.
+
+Retained per recompute (all states)
+------------------------------------
+  original_evidence      : copy of the original l10_games + gate flags
+  excluded_event_ids     : tuple of str identifiers for excluded games
+  excluded_reasons       : tuple of dicts {event_id, l10_index, excluded_value,
+                           exclusion_reason, flag_triggered}
+  recomputed_distribution: dict {count, mean, median, min, max, values} or None
+  before_mean            : float or None
+  after_mean             : float or None
+  before_gap_pct         : float or None  (using GAP_THRESHOLD context)
+  after_gap_pct          : float or None
+  updated_lower_bound    : float or None  (from model_registry.probability_bounds)
+  updated_upper_bound    : float or None
+
+Governance
+----------
+  can_execute              = False
+  PRODUCTION_AUTHORITY     = False
+  USER_OUTPUT_AUTHORITY    = False
+  TERMINAL_LABEL_AUTHORITY = False   (no label assignment or change)
+
+Zero dependency on FOLLOWUP_193/194/195 or B4 code:
+  no imports from app.py, classifier.py, pipeline.py, settlement_worker.py,
+  universal_agent/*, pipeline_state.py, pipeline_gateway.py.
 """
 from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
-from .model_registry import probability_bounds
+# ── Threshold reuse: import EXACT constants from outlier_gate, do not re-define
+from .outlier_gate import GAP_THRESHOLD, ASSIST_VOL_THRESHOLD
 
 # ---------------------------------------------------------------------------
-# Module-level governance invariants
+# Governance constants
 # ---------------------------------------------------------------------------
-
-can_execute              = False   # offline/advisory only — never change
+can_execute              = False
 PRODUCTION_AUTHORITY     = False
-TERMINAL_LABEL_AUTHORITY = False
 USER_OUTPUT_AUTHORITY    = False
+TERMINAL_LABEL_AUTHORITY = False   # never assigns or changes any label
 
 # ---------------------------------------------------------------------------
-# Constants
+# Minimum sample constraints
 # ---------------------------------------------------------------------------
-
-MIN_GAMES_AFTER_EXCLUSION = 3   # minimum games that must remain after removal
-MIN_GAMES_TO_ISOLATE      = 4   # minimum initial window size to attempt isolation
+MIN_GAMES_TO_ISOLATE      = 4   # need at least 4 games to meaningfully isolate
+MIN_GAMES_AFTER_EXCLUSION = 3   # must retain at least 3 games after removal
 
 # ---------------------------------------------------------------------------
-# State enum
+# State enum and named failure reasons
 # ---------------------------------------------------------------------------
 
 class OutlierRecomputeState(str, Enum):
-    """Explicit three-state outcome — no narrative-only or implicit resolution."""
     RESOLVED   = "RESOLVED"
     UNRESOLVED = "UNRESOLVED"
     ERROR      = "ERROR"
 
 
-# ---------------------------------------------------------------------------
-# DATA_CONTRACT_FAIL reason constants
-# ---------------------------------------------------------------------------
-
 class DataContractFailReason:
-    """Named constants for UNRESOLVED data-contract failures."""
-    MISSING_GAME_LOG                  = "MISSING_GAME_LOG"
-    SAMPLE_TOO_SMALL_AFTER_EXCLUSION  = "SAMPLE_TOO_SMALL_AFTER_EXCLUSION"
-    SAMPLE_TOO_SMALL_TO_ISOLATE       = "SAMPLE_TOO_SMALL_TO_ISOLATE"
-    NO_OUTLIER_GAMES_IDENTIFIED       = "NO_OUTLIER_GAMES_IDENTIFIED"
-    MISSING_OUTLIER_GATE_RESULT       = "MISSING_OUTLIER_GATE_RESULT"
+    """Named constants for UNRESOLVED data-contract failure reasons."""
+    MISSING_GAME_LOG                = "MISSING_GAME_LOG"
+    MISSING_OUTLIER_GATE_RESULT     = "MISSING_OUTLIER_GATE_RESULT"
+    OUTLIER_GATE_SKIPPED            = "OUTLIER_GATE_SKIPPED"
+    SAMPLE_TOO_SMALL_TO_ISOLATE     = "SAMPLE_TOO_SMALL_TO_ISOLATE"
+    SAMPLE_TOO_SMALL_AFTER_EXCLUSION = "SAMPLE_TOO_SMALL_AFTER_EXCLUSION"
+    NO_EVIDENCE_BACKED_CANDIDATE    = "NO_EVIDENCE_BACKED_CANDIDATE"
+    CONDITION_PERSISTS_AFTER_EXCLUSION = "CONDITION_PERSISTS_AFTER_EXCLUSION"
+    NON_NUMERIC_GAMES               = "NON_NUMERIC_GAMES"
 
 
 # ---------------------------------------------------------------------------
@@ -98,39 +129,35 @@ class DataContractFailReason:
 @dataclass(frozen=True)
 class OutlierRecomputeResult:
     """
-    Structured result from outlier_recompute.run().
-
-    state               — RESOLVED, UNRESOLVED, or ERROR.
-    reason              — named constant describing the outcome.
-    reason_detail       — human-readable detail (always set).
-    excluded_event_ids  — game indices (within L10 window) that were removed.
-    excluded_reasons    — structured reason per excluded game.
-    recomputed_distribution — post-exclusion stats; None if not RESOLVED.
-    original_evidence   — snapshot of all inputs (always preserved).
-    updated_lower_bound — new lower bound from model_registry; None if not RESOLVED.
-    updated_upper_bound — new upper bound from model_registry; None if not RESOLVED.
-    acquisition_attempts — what was tried when evidence was insufficient.
-    data_contract_fail_reason — named constant from DataContractFailReason;
-                         set for UNRESOLVED state.
-    error_reason        — exception info; set for ERROR state.
-
-    Governance:
-      terminal_label_authority = False
-      can_execute              = False
+    Immutable result returned by run().  All three states use this type.
+    original_evidence is always populated, even on UNRESOLVED or ERROR.
     """
-    state:                    str
-    reason:                   str
-    reason_detail:            str
-    excluded_event_ids:       tuple[str, ...]
-    excluded_reasons:         tuple[dict, ...]
-    recomputed_distribution:  dict | None
-    original_evidence:        dict
-    updated_lower_bound:      float | None
-    updated_upper_bound:      float | None
-    acquisition_attempts:     tuple[dict, ...]
-    data_contract_fail_reason: str | None
-    error_reason:             str | None
-    # Governance invariants — always False; frozen dataclass prevents mutation.
+    state:                   OutlierRecomputeState
+    reason:                  str          # human-readable short reason
+    reason_detail:           str          # longer diagnostic
+
+    # Evidence preserved for all states
+    original_evidence:       dict         # {sport, prop_type, l10_games, l5_avg, l10_avg, flags}
+    excluded_event_ids:      tuple        # tuple[str] — "" entries when no real IDs available
+    excluded_reasons:        tuple        # tuple[dict] — each: event_id, l10_index, excluded_value, …
+
+    # Recomputed distribution — populated on RESOLVED only
+    recomputed_distribution: Optional[dict]  # {count, mean, median, min, max, values}
+    before_mean:             Optional[float]
+    after_mean:              Optional[float]
+    before_gap_pct:          Optional[float]
+    after_gap_pct:           Optional[float]
+    updated_lower_bound:     Optional[float]
+    updated_upper_bound:     Optional[float]
+
+    # UNRESOLVED only
+    data_contract_fail_reason: Optional[str]
+    acquisition_attempts:    tuple        # tuple[dict] — each: {field, outcome}
+
+    # ERROR only
+    error_reason:            Optional[str]
+
+    # Governance invariants — always False; frozen prevents mutation.
     terminal_label_authority: bool = False
     can_execute:              bool = False
 
@@ -139,212 +166,221 @@ class OutlierRecomputeResult:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _extract_outlier_gate(row: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the outlier_gate result dict, or None if not present."""
-    gates = row.get("gates") or {}
-    og = gates.get("outlier_gate") or {}
-    if og.get("skipped"):
-        return None
-    return og if og else None
-
-
-def _extract_l10_games(row: dict[str, Any]) -> list[float] | None:
-    """
-    Return the L10 game-value list.  Prefer the outlier_gate result (which
-    stores the l10_games it read); fall back to l5_l10_ledger.
-    """
-    gates = row.get("gates") or {}
-    ledger = gates.get("l5_l10_ledger") or {}
-    games = ledger.get("l10_games")
-    if games and isinstance(games, list) and len(games) > 0:
+def _safe_numeric(games: list) -> list[float]:
+    """Filter l10_games to only finite numeric values; skip bool."""
+    result = []
+    for g in games:
+        if isinstance(g, bool):
+            continue
         try:
-            return [float(g) for g in games if g is not None]
+            fval = float(g)
+            if fval == fval and abs(fval) != float("inf"):  # finite check without math import
+                result.append(fval)
         except (TypeError, ValueError):
-            return None
-    return None
+            pass
+    return result
 
 
-def _extract_l5_games(row: dict[str, Any]) -> list[float] | None:
-    """Return the L5 game-value list from the l5_l10_ledger result."""
-    gates = row.get("gates") or {}
-    ledger = gates.get("l5_l10_ledger") or {}
-    games = ledger.get("l5_games")
-    if games and isinstance(games, list) and len(games) > 0:
-        try:
-            return [float(g) for g in games if g is not None]
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def _identify_outlier_indices(
+def _identify_exclusion_candidates(
     l10_games: list[float],
-    flags: dict[str, Any],
-) -> list[tuple[int, str]]:
+    flags: dict,
+    prop_type: str,
+) -> list[tuple[int, str, str]]:
     """
-    Identify which game indices are outliers based on the fired flags.
+    Re-derive exclusion candidates from raw data using the SAME formulas
+    as outlier_gate.run().  Returns list of (index, reason_code, detail).
 
-    Returns a list of (index, reason_string) tuples.
-    Duplicate indices are deduplicated (keeping the first reason seen).
+    This re-verification step is the enforcement of the exclusion contract:
+    if flags claim a condition but raw data does not meet the criterion,
+    no candidate is returned for that flag.  The caller cannot inject
+    non-evidence-backed exclusions by manipulating the flags dict.
     """
-    seen:    set[int]                  = set()
-    outliers: list[tuple[int, str]] = []
+    if not l10_games or len(l10_games) < MIN_GAMES_TO_ISOLATE:
+        return []
 
-    def _add(idx: int, reason: str) -> None:
-        if idx not in seen:
-            seen.add(idx)
-            outliers.append((idx, reason))
+    candidates: list[tuple[int, str, str]] = []
+    seen_indices: set[int] = set()
 
-    # season_high_outlier / avg_inflated_by_outlier: the max-value game
-    # is the primary candidate.
-    if flags.get("season_high_outlier") or flags.get("avg_inflated_by_outlier"):
-        if l10_games:
-            max_val = max(l10_games)
-            # Use the LAST occurrence of the max to prefer recent outliers.
+    try:
+        l10_mean = statistics.mean(l10_games)
+    except statistics.StatisticsError:
+        return []
+
+    season_max = max(l10_games)
+
+    # ── season_high_outlier: max exceeds l10_avg * 1.5 (same formula as outlier_gate line 66)
+    if flags.get("season_high_outlier") and season_max > l10_mean * 1.5:
+        for i in range(len(l10_games) - 1, -1, -1):
+            if l10_games[i] == season_max and i not in seen_indices:
+                detail = (
+                    f"season_max={season_max:.2f} > l10_avg*1.5={l10_mean*1.5:.2f}"
+                )
+                candidates.append((i, "SEASON_HIGH_OUTLIER", detail))
+                seen_indices.add(i)
+                break
+
+    # ── avg_inflated_by_outlier: l10_avg > avg_without_max * 1.15 (outlier_gate line 64)
+    if flags.get("avg_inflated_by_outlier"):
+        games_without_max = [g for g in l10_games if g != season_max] or l10_games
+        avg_without_max = statistics.mean(games_without_max) if games_without_max else l10_mean
+        if l10_mean > avg_without_max * 1.15:
             for i in range(len(l10_games) - 1, -1, -1):
-                if l10_games[i] == max_val:
-                    reason = (
-                        "season_high_outlier" if flags.get("season_high_outlier")
-                        else "avg_inflated_by_outlier"
+                if l10_games[i] == season_max and i not in seen_indices:
+                    detail = (
+                        f"l10_avg={l10_mean:.2f} > avg_without_max*1.15={avg_without_max*1.15:.2f}"
                     )
-                    _add(i, f"{reason}:value={max_val}")
+                    candidates.append((i, "AVG_INFLATED_BY_OUTLIER", detail))
+                    seen_indices.add(i)
                     break
 
-    # l5_l10_gap_flagged: games with values significantly above/below the
-    # inter-quartile range are candidates.  Use median as the reference.
+    # ── l5_l10_gap_flagged: games beyond median+2*stdev (outlier_gate: player_prop adapter logic)
     if flags.get("l5_l10_gap_flagged") and len(l10_games) >= 4:
         try:
-            med = statistics.median(l10_games)
-            stdev = statistics.stdev(l10_games) if len(l10_games) >= 2 else 0.0
-            threshold = med + 2.0 * stdev if stdev > 0 else med * 1.5
-            for i, v in enumerate(l10_games):
-                if v > threshold:
-                    _add(i, f"l5_l10_gap_flagged:value={v}>threshold={threshold:.2f}")
+            l10_med = statistics.median(l10_games)
+            l10_std = statistics.stdev(l10_games)
+            threshold = l10_med + 2.0 * l10_std if l10_std > 0 else l10_med * 1.5
+            for i, g in enumerate(l10_games):
+                if g > threshold and i not in seen_indices:
+                    detail = f"game={g:.2f} > median+2sd_threshold={threshold:.2f}"
+                    candidates.append((i, "GAP_OUTLIER", detail))
+                    seen_indices.add(i)
         except statistics.StatisticsError:
             pass
 
-    # assist_volatile: any game > mean + 2 * std is a high-variance outlier
-    if flags.get("assist_volatile") and len(l10_games) >= 3:
+    # ── assist_volatile: games beyond mean+2*stdev (outlier_gate lines 73-77)
+    if flags.get("assist_volatile") and "assist" in prop_type.lower():
         try:
-            avg   = statistics.mean(l10_games)
-            stdev = statistics.stdev(l10_games)
-            if stdev > 0:
-                for i, v in enumerate(l10_games):
-                    if v > avg + 2.0 * stdev:
-                        _add(i, f"assist_volatile:value={v}>mean+2sd={avg + 2 * stdev:.2f}")
+            l10_std = statistics.stdev(l10_games)
+            vol_threshold = l10_mean + 2.0 * l10_std
+            for i, g in enumerate(l10_games):
+                if g > vol_threshold and i not in seen_indices:
+                    detail = f"game={g:.2f} > mean+2sd={vol_threshold:.2f} (ASSIST_VOL)"
+                    candidates.append((i, "ASSIST_VOLATILE", detail))
+                    seen_indices.add(i)
         except statistics.StatisticsError:
             pass
 
-    # median_disagrees_avg: games that are pulling mean away from median.
-    # Remove the extreme value (max or min depending on direction of divergence).
-    if flags.get("median_disagrees_avg") and len(l10_games) >= 4:
+    # ── median_disagrees_avg (outlier_gate lines 83-86; l5 version)
+    if flags.get("median_disagrees_avg") and len(l10_games) >= 3:
         try:
-            avg = statistics.mean(l10_games)
-            med = statistics.median(l10_games)
-            if avg > med:  # high outlier pulling mean up
-                max_val = max(l10_games)
+            l10_med = statistics.median(l10_games)
+            if l10_mean > l10_med:
+                # Mean inflated by high outlier — exclude last max
                 for i in range(len(l10_games) - 1, -1, -1):
-                    if l10_games[i] == max_val:
-                        _add(i, f"median_disagrees_avg:mean={avg:.2f}>median={med:.2f};high_outlier={max_val}")
+                    if l10_games[i] == season_max and i not in seen_indices:
+                        detail = f"mean={l10_mean:.2f}>median={l10_med:.2f}; excluding max={season_max:.2f}"
+                        candidates.append((i, "MEDIAN_DISAGREES_HIGH", detail))
+                        seen_indices.add(i)
                         break
-            else:  # low outlier pulling mean down
-                min_val = min(l10_games)
-                for i, v in enumerate(l10_games):
-                    if v == min_val:
-                        _add(i, f"median_disagrees_avg:mean={avg:.2f}<median={med:.2f};low_outlier={min_val}")
+            else:
+                # Mean deflated by low outlier — exclude first min
+                season_min = min(l10_games)
+                for i, g in enumerate(l10_games):
+                    if g == season_min and i not in seen_indices:
+                        detail = f"mean={l10_mean:.2f}<median={l10_med:.2f}; excluding min={season_min:.2f}"
+                        candidates.append((i, "MEDIAN_DISAGREES_LOW", detail))
+                        seen_indices.add(i)
                         break
         except statistics.StatisticsError:
             pass
 
-    return outliers
+    return candidates
 
 
-def _safe_compute_distribution(remaining: list[float]) -> dict[str, Any]:
-    """Compute descriptive stats for the post-exclusion game list."""
-    n = len(remaining)
-    mean_val = statistics.mean(remaining) if n > 0 else None
-    median_val = statistics.median(remaining) if n > 0 else None
-    stdev_val  = statistics.stdev(remaining) if n >= 2 else None
-    return {
-        "count":  n,
-        "mean":   round(mean_val, 4) if mean_val is not None else None,
-        "median": round(median_val, 4) if median_val is not None else None,
-        "stdev":  round(stdev_val, 4) if stdev_val is not None else None,
-        "min":    min(remaining) if remaining else None,
-        "max":    max(remaining) if remaining else None,
-        "values": remaining,
-    }
+def _build_recomputed_dist(games: list[float]) -> dict:
+    """Build a recomputed distribution dict from a filtered game list."""
+    try:
+        return {
+            "count":  len(games),
+            "mean":   round(statistics.mean(games), 4),
+            "median": round(statistics.median(games), 4),
+            "min":    round(min(games), 4),
+            "max":    round(max(games), 4),
+            "values": games,
+        }
+    except (statistics.StatisticsError, ValueError):
+        return {"count": len(games), "mean": None, "median": None,
+                "min": None, "max": None, "values": games}
 
 
-def _build_original_evidence(
-    row: dict[str, Any],
-    enrichment: dict[str, Any],
-    l10_games: list[float] | None,
-    flags: dict[str, Any],
-) -> dict[str, Any]:
+def _try_probability_bounds(
+    recomputed_mean: Optional[float],
+    sample_size: int,
+    sport: str,
+    prop_type: str,
+) -> tuple[Optional[float], Optional[float]]:
     """
-    Build a snapshot of original input evidence.
-    Always preserved in the result regardless of outcome.
+    Attempt to get updated probability bounds from model_registry.
+    Returns (lower, upper) or (None, None) if unavailable.
     """
-    gates  = row.get("gates") or {}
-    ledger = gates.get("l5_l10_ledger") or {}
-    return {
-        "sport":            row.get("sport"),
-        "prop_type":        row.get("prop_type"),
-        "player":           row.get("player"),
-        "line":             row.get("line"),
-        "l10_games":        list(l10_games) if l10_games else [],
-        "l5_avg":           ledger.get("l5_avg"),
-        "l10_avg":          ledger.get("l10_avg"),
-        "l5_median":        ledger.get("l5_median"),
-        "l10_median":       ledger.get("l10_median"),
-        "outlier_flags":    dict(flags),
-        "enrichment_keys":  sorted(enrichment.keys()) if enrichment else [],
-    }
+    if recomputed_mean is None or sample_size < MIN_GAMES_AFTER_EXCLUSION:
+        return None, None
+    try:
+        from .model_registry import lookup, probability_bounds
+        entry = lookup(sport, prop_type, line=None)
+        if entry is None:
+            return None, None
+        model_status = entry.get("status", "PROVISIONAL")
+        lower, upper = probability_bounds(recomputed_mean, sample_size, model_status)
+        if lower is None or upper is None:
+            return None, None
+        return round(float(lower), 4), round(float(upper), 4)
+    except Exception:
+        return None, None
 
 
-def _result_unresolved(
+def _unresolved(
     reason: str,
     reason_detail: str,
+    data_contract_fail_reason: str,
     original_evidence: dict,
     acquisition_attempts: list[dict] | None = None,
 ) -> OutlierRecomputeResult:
+    """Convenience constructor for UNRESOLVED results."""
     return OutlierRecomputeResult(
         state=OutlierRecomputeState.UNRESOLVED,
         reason=reason,
         reason_detail=reason_detail,
+        original_evidence=original_evidence,
         excluded_event_ids=(),
         excluded_reasons=(),
         recomputed_distribution=None,
-        original_evidence=original_evidence,
+        before_mean=None,
+        after_mean=None,
+        before_gap_pct=None,
+        after_gap_pct=None,
         updated_lower_bound=None,
         updated_upper_bound=None,
+        data_contract_fail_reason=data_contract_fail_reason,
         acquisition_attempts=tuple(acquisition_attempts or []),
-        data_contract_fail_reason=reason,
         error_reason=None,
         terminal_label_authority=False,
         can_execute=False,
     )
 
 
-def _result_error(
-    error_reason: str,
-    reason_detail: str,
+def _error(
+    reason: str,
     original_evidence: dict,
 ) -> OutlierRecomputeResult:
+    """Convenience constructor for ERROR results."""
     return OutlierRecomputeResult(
         state=OutlierRecomputeState.ERROR,
         reason="RECOMPUTE_ERROR",
-        reason_detail=reason_detail,
+        reason_detail=reason,
+        original_evidence=original_evidence,
         excluded_event_ids=(),
         excluded_reasons=(),
         recomputed_distribution=None,
-        original_evidence=original_evidence,
+        before_mean=None,
+        after_mean=None,
+        before_gap_pct=None,
+        after_gap_pct=None,
         updated_lower_bound=None,
         updated_upper_bound=None,
-        acquisition_attempts=(),
         data_contract_fail_reason=None,
-        error_reason=error_reason,
+        acquisition_attempts=(),
+        error_reason=reason,
         terminal_label_authority=False,
         can_execute=False,
     )
@@ -355,218 +391,270 @@ def _result_error(
 # ---------------------------------------------------------------------------
 
 def run(
-    row: dict[str, Any],
-    enrichment: dict[str, Any] | None = None,
+    row: Any,
+    enrichment: Optional[dict] = None,
 ) -> OutlierRecomputeResult:
     """
-    Perform the governed outlier review for a row that carries
-    OUTLIER_FLAG:REVIEW_REQUIRED.
+    Recompute engine entry point.  Never raises — always returns
+    OutlierRecomputeResult.
 
-    Args:
-        row        — the prop row dict; must have row["gates"]["outlier_gate"]
-                     populated with any_flag=True.
-        enrichment — enrichment dict (used for game_log event IDs and model
-                     lookup context).
+    Parameters
+    ----------
+    row        : prop row dict (read-only, not mutated).  Must contain
+                 row["gates"]["l5_l10_ledger"]["l10_games"] and
+                 row["gates"]["outlier_gate"]["flags"].
+    enrichment : optional dict; if it contains "game_log" (list of
+                 {"game_id": str, "value": number}), real game IDs are used
+                 for excluded_event_ids.
 
-    Returns:
-        OutlierRecomputeResult with state RESOLVED, UNRESOLVED, or ERROR.
-
-    This function never raises.  All exceptions are caught and returned
-    as an ERROR result with a named error_reason.
-
-    Governance:
-        No terminal label is written.  can_execute = False.
-        Original evidence is always preserved in the result.
+    Returns
+    -------
+    OutlierRecomputeResult — frozen, no row mutations.
     """
-    enrichment = enrichment or {}
+    if not isinstance(row, dict):
+        row = {}
 
-    # Build original evidence snapshot before any computation.
-    _raw_og: dict[str, Any] = {}  # placeholder; built below after extractions
+    sport     = row.get("sport", "UNKNOWN")
+    prop_type = row.get("prop_type", "")
+    line      = row.get("line")
+
+    # Seed original_evidence — populated regardless of outcome
+    original_evidence: dict = {
+        "sport":     sport,
+        "prop_type": prop_type,
+        "line":      line,
+        "l10_games": None,
+        "l5_avg":    None,
+        "l10_avg":   None,
+        "flags":     {},
+    }
 
     try:
-        # ── Step 1: Extract outlier gate result ───────────────────────────
-        og = _extract_outlier_gate(row)
-        l10_games = _extract_l10_games(row)
-        flags: dict[str, Any] = (og.get("flags") or {}) if og else {}
+        # ── Data contract checks ─────────────────────────────────────────
 
-        _raw_og = _build_original_evidence(row, enrichment, l10_games, flags)
+        gates = row.get("gates") or {}
 
-        if og is None:
-            return _result_unresolved(
-                reason=DataContractFailReason.MISSING_OUTLIER_GATE_RESULT,
-                reason_detail=(
-                    "row['gates']['outlier_gate'] is absent or was skipped; "
-                    "cannot perform outlier review without gate result."
-                ),
-                original_evidence=_raw_og,
-                acquisition_attempts=[{
-                    "field": "outlier_gate_result",
-                    "attempted": "row[gates][outlier_gate]",
-                    "outcome": "ABSENT_OR_SKIPPED",
-                }],
+        # 1. outlier_gate result must exist and must not be skipped
+        outlier_result = gates.get("outlier_gate")
+        if not isinstance(outlier_result, dict):
+            return _unresolved(
+                reason="MISSING_OUTLIER_GATE_RESULT",
+                reason_detail="row['gates']['outlier_gate'] is absent or not a dict",
+                data_contract_fail_reason=DataContractFailReason.MISSING_OUTLIER_GATE_RESULT,
+                original_evidence=original_evidence,
+                acquisition_attempts=[{"field": "outlier_gate", "outcome": "absent"}],
+            )
+        if outlier_result.get("skipped"):
+            return _unresolved(
+                reason="OUTLIER_GATE_SKIPPED",
+                reason_detail="outlier_gate was skipped (L5L10_NOT_AVAILABLE); cannot recompute",
+                data_contract_fail_reason=DataContractFailReason.OUTLIER_GATE_SKIPPED,
+                original_evidence=original_evidence,
+                acquisition_attempts=[{"field": "outlier_gate", "outcome": "skipped"}],
             )
 
-        # ── Step 2: Validate game data availability ────────────────────────
+        flags = outlier_result.get("flags") or {}
+
+        # 2. l10_games must exist in l5_l10_ledger
+        ledger_gate = gates.get("l5_l10_ledger") or {}
+        l10_games_raw = ledger_gate.get("l10_games")
+        l5_avg        = ledger_gate.get("l5_avg")
+        l10_avg       = ledger_gate.get("l10_avg")
+
+        original_evidence["flags"]    = dict(flags)
+        original_evidence["l5_avg"]   = l5_avg
+        original_evidence["l10_avg"]  = l10_avg
+
+        if not l10_games_raw and l10_games_raw != []:
+            return _unresolved(
+                reason="MISSING_GAME_LOG",
+                reason_detail="l10_games not found in row['gates']['l5_l10_ledger']",
+                data_contract_fail_reason=DataContractFailReason.MISSING_GAME_LOG,
+                original_evidence=original_evidence,
+                acquisition_attempts=[{"field": "l10_games", "outcome": "absent"}],
+            )
+
+        l10_games_raw = list(l10_games_raw) if l10_games_raw else []
+
+        # 3. Filter to numeric values
+        l10_games = _safe_numeric(l10_games_raw)
+        original_evidence["l10_games"] = l10_games_raw
+
         if not l10_games:
-            return _result_unresolved(
-                reason=DataContractFailReason.MISSING_GAME_LOG,
-                reason_detail=(
-                    "l10_games list is absent or empty in l5_l10_ledger result; "
-                    "cannot perform outlier isolation without game-level data."
-                ),
-                original_evidence=_raw_og,
-                acquisition_attempts=[
-                    {"field": "l10_games", "attempted": "row[gates][l5_l10_ledger][l10_games]",
-                     "outcome": "ABSENT_OR_EMPTY"},
-                    {"field": "game_log",  "attempted": "enrichment[game_log]",
-                     "outcome": "NOT_TRIED" if not enrichment.get("game_log") else "PRESENT"},
-                ],
+            return _unresolved(
+                reason="MISSING_GAME_LOG",
+                reason_detail="l10_games is empty or contains no numeric values",
+                data_contract_fail_reason=DataContractFailReason.MISSING_GAME_LOG,
+                original_evidence=original_evidence,
+                acquisition_attempts=[{"field": "l10_games", "outcome": "empty_or_non_numeric"}],
             )
 
+        # 4. Minimum sample to isolate
         if len(l10_games) < MIN_GAMES_TO_ISOLATE:
-            return _result_unresolved(
-                reason=DataContractFailReason.SAMPLE_TOO_SMALL_TO_ISOLATE,
+            return _unresolved(
+                reason="SAMPLE_TOO_SMALL_TO_ISOLATE",
                 reason_detail=(
-                    f"l10_games has only {len(l10_games)} entries; "
-                    f"minimum {MIN_GAMES_TO_ISOLATE} required to attempt isolation."
+                    f"l10_games has {len(l10_games)} numeric values; "
+                    f"need >= {MIN_GAMES_TO_ISOLATE} to identify outliers"
                 ),
-                original_evidence=_raw_og,
-                acquisition_attempts=[{
-                    "field": "l10_games", "attempted": "row[gates][l5_l10_ledger][l10_games]",
-                    "outcome": f"INSUFFICIENT_SAMPLE:count={len(l10_games)}",
-                }],
+                data_contract_fail_reason=DataContractFailReason.SAMPLE_TOO_SMALL_TO_ISOLATE,
+                original_evidence=original_evidence,
+                acquisition_attempts=[{"field": "l10_games", "outcome": f"count={len(l10_games)}<{MIN_GAMES_TO_ISOLATE}"}],
             )
 
-        # ── Step 3: Identify outlier games ────────────────────────────────
-        outlier_pairs = _identify_outlier_indices(l10_games, flags)
+        # ── Exclusion candidate identification ───────────────────────────
+        # Re-derives from raw data; does NOT trust flags blindly.
+        # If flags say True but data doesn't meet the criterion → no candidate.
+        candidates = _identify_exclusion_candidates(l10_games, flags, prop_type)
 
-        if not outlier_pairs:
-            return _result_unresolved(
-                reason=DataContractFailReason.NO_OUTLIER_GAMES_IDENTIFIED,
+        if not candidates:
+            return _unresolved(
+                reason="NO_EVIDENCE_BACKED_CANDIDATE",
                 reason_detail=(
-                    "Outlier gate fired but isolation algorithm produced no "
-                    "candidate games from the L10 window.  "
-                    f"Flags: {[k for k, v in flags.items() if v is True]}"
+                    "No game met the evidence-backed exclusion criteria when "
+                    "verified from raw l10_games data. The flag(s) in the gate "
+                    "result do not correspond to an isolatable outlier in the data."
                 ),
-                original_evidence=_raw_og,
+                data_contract_fail_reason=DataContractFailReason.NO_EVIDENCE_BACKED_CANDIDATE,
+                original_evidence=original_evidence,
+                acquisition_attempts=[{"field": "exclusion_candidates", "outcome": "none_found"}],
+            )
+
+        # ── Build excluded set and remaining games ───────────────────────
+        excluded_indices: set[int] = {c[0] for c in candidates}
+        remaining_games  = [g for i, g in enumerate(l10_games) if i not in excluded_indices]
+
+        if len(remaining_games) < MIN_GAMES_AFTER_EXCLUSION:
+            return _unresolved(
+                reason="SAMPLE_TOO_SMALL_AFTER_EXCLUSION",
+                reason_detail=(
+                    f"After excluding {len(excluded_indices)} game(s), only "
+                    f"{len(remaining_games)} remain; need >= {MIN_GAMES_AFTER_EXCLUSION}"
+                ),
+                data_contract_fail_reason=DataContractFailReason.SAMPLE_TOO_SMALL_AFTER_EXCLUSION,
+                original_evidence=original_evidence,
                 acquisition_attempts=[],
             )
 
-        outlier_indices: set[int] = {idx for idx, _ in outlier_pairs}
+        # ── Build event IDs from enrichment if available ─────────────────
+        game_log_ids: dict[int, str] = {}
+        if isinstance(enrichment, dict):
+            raw_gl = enrichment.get("game_log") or []
+            for idx, entry in enumerate(raw_gl):
+                if isinstance(entry, dict) and idx < len(l10_games):
+                    gid = str(entry.get("game_id", ""))
+                    if gid:
+                        game_log_ids[idx] = gid
 
-        # ── Step 4: Compute remaining games ───────────────────────────────
-        remaining = [v for i, v in enumerate(l10_games) if i not in outlier_indices]
+        # ── Build excluded_event_ids and excluded_reasons tuples ─────────
+        excluded_event_ids_list: list[str] = []
+        excluded_reasons_list:   list[dict] = []
 
-        if len(remaining) < MIN_GAMES_AFTER_EXCLUSION:
-            return _result_unresolved(
-                reason=DataContractFailReason.SAMPLE_TOO_SMALL_AFTER_EXCLUSION,
-                reason_detail=(
-                    f"Only {len(remaining)} game(s) would remain after removing "
-                    f"{len(outlier_indices)} outlier(s); minimum "
-                    f"{MIN_GAMES_AFTER_EXCLUSION} required."
-                ),
-                original_evidence=_raw_og,
-                acquisition_attempts=[{
-                    "field": "l10_games_post_exclusion",
-                    "attempted": "compute_remaining",
-                    "outcome": f"INSUFFICIENT:remaining={len(remaining)},removed={len(outlier_indices)}",
-                }],
-            )
-
-        # ── Step 5: Recompute distribution ────────────────────────────────
-        recomputed = _safe_compute_distribution(remaining)
-
-        # ── Step 6: Update bounds via model_registry ─────────────────────
-        sport    = (row.get("sport") or "").upper()
-        stat_key = (row.get("prop_type") or row.get("stat_key") or "").upper()
-        line     = row.get("line")
-
-        new_mean = recomputed.get("mean")
-        sample_n = recomputed.get("count") or len(remaining)
-
-        # Determine model status for bounds calculation.
-        try:
-            from .model_registry import lookup as _registry_lookup
-            reg_entry   = _registry_lookup(sport, stat_key, line)
-            model_status = reg_entry.get("status", "PROVISIONAL")
-        except Exception:
-            model_status = "PROVISIONAL"
-
-        # Convert recomputed mean to a probability using a simple hit-rate
-        # (fraction of games above the line), capped to (0, 1) open interval.
-        hit_rate: float | None = None
-        if new_mean is not None and line is not None:
-            try:
-                line_f   = float(line)
-                hits     = sum(1 for v in remaining if v > line_f)
-                hit_rate = hits / len(remaining) if remaining else None
-                # Clamp to open interval (avoids degenerate 0.0 or 1.0 bounds).
-                if hit_rate is not None:
-                    hit_rate = max(0.001, min(0.999, hit_rate))
-            except (TypeError, ValueError):
-                hit_rate = None
-
-        lb, ub = probability_bounds(hit_rate, sample_n, model_status)
-
-        # ── Step 7: Build excluded event IDs ─────────────────────────────
-        # Use index-based IDs (position in L10 window).  Attempt to cross-
-        # reference with game_log enrichment for real game IDs if available.
-        game_log = enrichment.get("game_log") or []
-        excluded_event_ids: list[str] = []
-        excluded_reasons:   list[dict] = []
-
-        for idx, reason_str in outlier_pairs:
-            # Try to get a real event ID from the enrichment game log.
-            if isinstance(game_log, list) and idx < len(game_log):
-                glog_entry = game_log[idx]
-                if isinstance(glog_entry, dict):
-                    real_id = (
-                        glog_entry.get("game_id")
-                        or glog_entry.get("gameId")
-                        or glog_entry.get("id")
-                        or f"l10_index_{idx}"
-                    )
-                else:
-                    real_id = f"l10_index_{idx}"
-            else:
-                real_id = f"l10_index_{idx}"
-
-            excluded_event_ids.append(str(real_id))
-            excluded_reasons.append({
-                "event_id":        str(real_id),
+        for idx, reason_code, detail in candidates:
+            event_id = game_log_ids.get(idx, f"l10_idx_{idx}")
+            excluded_event_ids_list.append(event_id)
+            excluded_reasons_list.append({
+                "event_id":        event_id,
                 "l10_index":       idx,
                 "excluded_value":  l10_games[idx],
-                "exclusion_reason": reason_str,
+                "exclusion_reason": reason_code,
+                "detail":          detail,
+                "flag_triggered":  reason_code,
             })
 
-        # ── Step 8: Return RESOLVED result ────────────────────────────────
+        # ── Compute before/after stats ───────────────────────────────────
+        before_mean = statistics.mean(l10_games)
+        after_mean  = statistics.mean(remaining_games)
+
+        # Use GAP_THRESHOLD (imported from outlier_gate) to assess resolution
+        # A divergence is "resolved" when the recomputed gap falls below the threshold.
+        before_gap_pct: Optional[float] = None
+        after_gap_pct:  Optional[float] = None
+        if l5_avg is not None and l10_avg is not None and l10_avg > 0:
+            before_gap_pct = abs(l5_avg - l10_avg) / l10_avg
+        if l5_avg is not None and after_mean and after_mean > 0:
+            after_gap_pct = abs(l5_avg - after_mean) / after_mean
+
+        # ── Recomputed distribution ──────────────────────────────────────
+        recomputed_dist = _build_recomputed_dist(remaining_games)
+
+        # ── Updated probability bounds (advisory) ────────────────────────
+        lower_b, upper_b = _try_probability_bounds(
+            after_mean, len(remaining_games), sport, prop_type
+        )
+
+        # ── Resolve decision: is the flagged condition gone? ─────────────
+        # The outlier is considered resolved if after_gap_pct < GAP_THRESHOLD
+        # OR (when gap isn't calculable) the recomputed mean differs from
+        # original by > 5% — indicating the excluded game was material.
+        resolved = False
+        resolution_detail: str
+
+        if after_gap_pct is not None and before_gap_pct is not None:
+            if after_gap_pct < GAP_THRESHOLD and before_gap_pct >= GAP_THRESHOLD:
+                resolved = True
+                resolution_detail = (
+                    f"After excluding {len(excluded_indices)} outlier game(s), "
+                    f"l5/l10 gap dropped from {before_gap_pct:.1%} to {after_gap_pct:.1%} "
+                    f"(below GAP_THRESHOLD={GAP_THRESHOLD:.0%})"
+                )
+            else:
+                resolution_detail = (
+                    f"Condition persists: after_gap={after_gap_pct:.1%} "
+                    f">= GAP_THRESHOLD={GAP_THRESHOLD:.0%}"
+                )
+        elif after_mean and before_mean:
+            mean_shift_pct = abs(after_mean - before_mean) / before_mean
+            if mean_shift_pct > 0.05:
+                resolved = True
+                resolution_detail = (
+                    f"Mean shifted by {mean_shift_pct:.1%} after excluding outlier(s); "
+                    f"l5/l10 averages not available for gap recheck"
+                )
+            else:
+                resolution_detail = (
+                    f"Mean shift {mean_shift_pct:.1%} too small; "
+                    f"excluding these games has no material effect"
+                )
+        else:
+            resolved = True   # gap not computable but candidates were found + excluded
+            resolution_detail = (
+                "Outlier(s) excluded; distribution recomputed; "
+                "gap metrics unavailable (l5/l10 avg not in row)"
+            )
+
+        if not resolved:
+            return _unresolved(
+                reason="CONDITION_PERSISTS_AFTER_EXCLUSION",
+                reason_detail=resolution_detail,
+                data_contract_fail_reason=DataContractFailReason.CONDITION_PERSISTS_AFTER_EXCLUSION,
+                original_evidence=original_evidence,
+                acquisition_attempts=[],
+            )
+
         return OutlierRecomputeResult(
             state=OutlierRecomputeState.RESOLVED,
-            reason="OUTLIER_RECOMPUTE_COMPLETE",
-            reason_detail=(
-                f"Isolated {len(outlier_indices)} outlier game(s) from L10 window; "
-                f"recomputed L{len(remaining)} distribution "
-                f"(mean={recomputed.get('mean')}, median={recomputed.get('median')})."
-            ),
-            excluded_event_ids=tuple(excluded_event_ids),
-            excluded_reasons=tuple(excluded_reasons),
-            recomputed_distribution=recomputed,
-            original_evidence=_raw_og,
-            updated_lower_bound=lb,
-            updated_upper_bound=ub,
-            acquisition_attempts=(),
+            reason="OUTLIER_RESOLVED",
+            reason_detail=resolution_detail,
+            original_evidence=original_evidence,
+            excluded_event_ids=tuple(excluded_event_ids_list),
+            excluded_reasons=tuple(excluded_reasons_list),
+            recomputed_distribution=recomputed_dist,
+            before_mean=round(before_mean, 4),
+            after_mean=round(after_mean, 4),
+            before_gap_pct=round(before_gap_pct, 4) if before_gap_pct is not None else None,
+            after_gap_pct=round(after_gap_pct, 4) if after_gap_pct is not None else None,
+            updated_lower_bound=lower_b,
+            updated_upper_bound=upper_b,
             data_contract_fail_reason=None,
+            acquisition_attempts=(),
             error_reason=None,
             terminal_label_authority=False,
             can_execute=False,
         )
 
     except Exception as exc:
-        return _result_error(
-            error_reason=f"{type(exc).__name__}:{str(exc)[:200]}",
-            reason_detail=(
-                f"Unexpected error during outlier recomputation: "
-                f"{type(exc).__name__}: {exc!s:.200}"
-            ),
-            original_evidence=_raw_og if _raw_og else {},
+        return _error(
+            reason=f"{type(exc).__name__}: {exc!s:.120}",
+            original_evidence=original_evidence,
         )

@@ -1,120 +1,147 @@
 """
 gate_engine/prob_ledger_enforcer.py
-Probability-Ledger Completeness Enforcer — Stage A (offline module only)
+WOW-PATCH-2026-08-10-STAGE-A-PROBABILITY-LEDGER-OUTLIER-RECOMPUTE
 
-Validates that any row bearing a probability-qualifying label exposes a
-complete, valid, and non-manufactured probability ledger before the label
-may be committed.
+Probability-ledger completeness enforcer — offline, advisory only.
 
-CONTRACT (all ten fields required):
-  Stage-2 schema fields (7):
-    raw_probability, calibrated_probability, lower_bound, upper_bound,
-    model_timestamp, source_snapshot_id, calibration_method
-  Required probability components (3):
-    market_no_vig, l10_distribution, role_usage
+Registry design (taxonomy-driven, two-layer)
+---------------------------------------------
+The probability-bearing label class is built at module load time from two
+layers into PROBABILITY_BEARING_LABELS (frozenset[str]):
 
-ENFORCEMENT RULES:
-  - All 10 fields must be present, non-None, non-empty-string.
-  - Numeric fields must be finite floats in the open interval (0, 1).
-  - lower_bound ≤ calibrated_probability ≤ upper_bound.
-  - lower_bound ≤ upper_bound.
-  - Boolean values are rejected as probability numbers.
-  - Components are validated from the `components` list in ledger_payload.
-  - If a raw_probability_derivation field is set to a prohibited source
-    (L5_AVG, L10_AVG, MARKET_NO_VIG), the enforcer flags a source violation.
-  - If the registered model cannot produce a complete ledger, the row must
-    receive a scoped technical failure — not a qualifying label.
+  Layer 1 — _PROB_BEARING_PROP_LABELS
+    PropLabel enum members (gate_engine/labels.py, the canonical label
+    registry) that require a complete probability ledger.  Taxonomy audit
+    (2026-08-10): MODEL_QUALIFIED_HOLD, MARKET_VERIFIED_HOLD, MONEY_QUALIFIED,
+    FINAL_APPROVED.
 
-OFFLINE INVARIANTS:
-  - This module has no terminal-label authority.
-  - This module does not mutate the input row or ledger dict.
-  - This module has no dependency on app.py, classifier.py, pipeline.py,
-    or any settlement / B4 / universal_agent module.
+  Layer 2 — _PROB_BEARING_EXTENDED
+    Qualifying labels identified in the taxonomy audit that exist as string
+    literals in the codebase but are not yet PropLabel enum members:
+    MARKET_VERIFIED_HOLD_STALE, FINAL_CONFIDENCE_HIGH, FINAL_LOCK,
+    EDGE_QUALIFIED.
 
-PROBABILITY-BEARING LABEL CLASS:
-  The class of probability-bearing / qualifying labels is defined here as
-  PROBABILITY_BEARING_LABELS (frozenset).  MODEL_QUALIFIED_HOLD,
-  MARKET_VERIFIED_HOLD, MONEY_QUALIFIED, and FINAL_CONFIDENCE_HIGH are
-  mandatory regression fixtures within this class.  Any future qualifying
-  label must be added to PROBABILITY_BEARING_LABELS for the contract to
-  apply to it — the four named labels are fixtures, not the definition.
+Enforcement logic:   label in PROBABILITY_BEARING_LABELS
+Never:               if label == "MODEL_QUALIFIED_HOLD" or ...
+Adding a new qualifying label requires only extending _PROB_BEARING_PROP_LABELS
+or _PROB_BEARING_EXTENDED — no change to enforcement logic.
 
-Stage B wiring (into the pre-label choke point in classifier.py) is a
-separate, independently-authorized task.
+Mandatory regression fixtures (test-enforced):
+  MODEL_QUALIFIED_HOLD, MARKET_VERIFIED_HOLD, MONEY_QUALIFIED,
+  FINAL_CONFIDENCE_HIGH.
+A synthetic 5th label (not one of those four) is also governed — tested to
+prove the registry is not hardcoded to exactly four strings.
 
-can_execute           = False
-PRODUCTION_AUTHORITY  = False
-USER_OUTPUT_AUTHORITY = False
+Ledger contract (10 required fields)
+-------------------------------------
+Stage-2 schema (7): raw_probability, calibrated_probability,
+  lower_bound, upper_bound, model_timestamp, source_snapshot_id,
+  calibration_method.
+Required components (3): market_no_vig, l10_distribution, role_usage.
+
+Validity invariants:
+  - No null/None for any required field
+  - No NaN/Infinity for any numeric probability field
+  - Probability values in open interval (0, 1) — booleans rejected
+  - lower_bound ≤ calibrated_probability ≤ upper_bound
+  - lower_bound ≤ upper_bound
+  - No manufactured derivation source (L5_AVG, L10_AVG, MARKET_NO_VIG, …)
+  - Non-dict or malformed components entries treated as invalid/missing
+
+Governance
+----------
+  can_execute              = False   (advisory/validation only)
+  PRODUCTION_AUTHORITY     = False
+  USER_OUTPUT_AUTHORITY    = False
+  TERMINAL_LABEL_AUTHORITY = False   (never assigns or changes any label)
+
+Zero dependency on FOLLOWUP_193/194/195 or B4 code:
+  no imports from app.py, classifier.py, pipeline.py, settlement_worker.py,
+  universal_agent/*, pipeline_state.py, pipeline_gateway.py.
 """
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
 
-# Import reusable validation logic from prob_ledger — no duplication.
+from .labels import PropLabel
 from .prob_ledger import (
-    _validate_stage2_schema,   # noqa: PLC2701  (private by convention, shared internally)
     REQUIRED_COMPONENTS,
     STAGE2_REQUIRED_FIELDS,
+    _validate_stage2_schema,
 )
 
 # ---------------------------------------------------------------------------
-# Module-level governance invariants
+# Governance constants
+# ---------------------------------------------------------------------------
+can_execute              = False
+PRODUCTION_AUTHORITY     = False
+USER_OUTPUT_AUTHORITY    = False
+TERMINAL_LABEL_AUTHORITY = False   # never assigns or changes any label
+
+# ---------------------------------------------------------------------------
+# Registry: probability-bearing label class — two layers, taxonomy-driven
 # ---------------------------------------------------------------------------
 
-can_execute           = False   # offline/advisory only — never change
-PRODUCTION_AUTHORITY  = False
-USER_OUTPUT_AUTHORITY = False
-
-# ---------------------------------------------------------------------------
-# Probability-bearing label class
-# ---------------------------------------------------------------------------
-
-# Every label that requires a complete probability ledger before it can be
-# committed to a row.  MODEL_QUALIFIED_HOLD, MARKET_VERIFIED_HOLD,
-# MONEY_QUALIFIED, and FINAL_CONFIDENCE_HIGH are mandatory regression
-# fixtures.  FINAL_APPROVED and MARKET_VERIFIED_HOLD_STALE are also
-# probability-bearing because they represent dispositions reached via a
-# quantitative model output.  Add future qualifying labels here.
-PROBABILITY_BEARING_LABELS: frozenset[str] = frozenset({
-    "MODEL_QUALIFIED_HOLD",
-    "MARKET_VERIFIED_HOLD",
-    "MARKET_VERIFIED_HOLD_STALE",
-    "MONEY_QUALIFIED",
-    "FINAL_APPROVED",
-    "FINAL_CONFIDENCE_HIGH",
+# Layer 1: PropLabel enum members whose qualifying semantics require a complete
+# probability ledger.  Source: gate_engine/labels.py (canonical enum).
+# Taxonomy audit 2026-08-10 identified these four as the PropLabel members
+# at or above the MODEL_QUALIFIED tier in the qualifying hierarchy.
+_PROB_BEARING_PROP_LABELS: frozenset[PropLabel] = frozenset({
+    PropLabel.MODEL_QUALIFIED_HOLD,
+    PropLabel.MARKET_VERIFIED_HOLD,
+    PropLabel.MONEY_QUALIFIED,
+    PropLabel.FINAL_APPROVED,
 })
 
-# ---------------------------------------------------------------------------
-# All required ledger fields (ten total)
-# ---------------------------------------------------------------------------
+# Layer 2: Qualifying labels found in the taxonomy audit that exist as string
+# literals in the codebase but are not yet PropLabel enum members.
+# Sources: classifier.py, route_registry.py, wow_runtime_manifest.py, app.py.
+_PROB_BEARING_EXTENDED: frozenset[str] = frozenset({
+    "MARKET_VERIFIED_HOLD_STALE",   # stale variant of MARKET_VERIFIED_HOLD
+    "FINAL_CONFIDENCE_HIGH",         # high-confidence qualifying variant
+    "FINAL_LOCK",                    # terminal approval state
+    "EDGE_QUALIFIED",                # edge-qualified approval state
+})
 
-# Stage-2 schema fields (subset validated by _validate_stage2_schema):
-_STAGE2_FIELDS: tuple[str, ...] = STAGE2_REQUIRED_FIELDS   # 7 fields
+# Authoritative probability-bearing label registry — union of both layers,
+# built once at import time.  Enforcement is a single membership check:
+#   label in PROBABILITY_BEARING_LABELS
+# No if/elif on specific label names anywhere in this module.
+PROBABILITY_BEARING_LABELS: frozenset[str] = frozenset(
+    {lbl.value for lbl in _PROB_BEARING_PROP_LABELS}
+    | _PROB_BEARING_EXTENDED
+)
 
-# Required component names (must appear in ledger_payload["components"]):
-_REQUIRED_COMPONENT_NAMES: frozenset[str] = REQUIRED_COMPONENTS  # 3 names
+# Mandatory regression fixtures — tests assert these are always present.
+MANDATORY_REGRESSION_FIXTURES: tuple[str, ...] = (
+    "MODEL_QUALIFIED_HOLD",
+    "MARKET_VERIFIED_HOLD",
+    "MONEY_QUALIFIED",
+    "FINAL_CONFIDENCE_HIGH",
+)
 
-# Full ordered list for audit reporting:
-ALL_REQUIRED_LEDGER_FIELDS: tuple[str, ...] = _STAGE2_FIELDS + tuple(
-    sorted(_REQUIRED_COMPONENT_NAMES)
-)  # 10 fields total
+# All required ledger fields (10 = 7 stage-2 + 3 component names).
+# Exported for tests; derived from canonical constants in prob_ledger.py.
+ALL_REQUIRED_LEDGER_FIELDS: frozenset[str] = (
+    frozenset(STAGE2_REQUIRED_FIELDS)
+    | frozenset(f"component:{c}" for c in REQUIRED_COMPONENTS)
+)
 
-# Prohibited derivation sources for raw_probability.
-# If ledger_payload["raw_probability_derivation"] matches one of these, it
-# indicates the probability was derived directly from L5/L10 averages or
-# market odds — not from the registered model.
+# Prohibited raw_probability_derivation sources — manufactured probabilities.
 _PROHIBITED_DERIVATION_SOURCES: frozenset[str] = frozenset({
     "L5_AVG",
     "L10_AVG",
-    "L10_MEAN",
-    "L5_MEAN",
     "MARKET_NO_VIG",
-    "MARKET_ODDS",
-    "SPORTSBOOK_ODDS",
-    "DIRECT_MARKET",
+    "L5_AVERAGE",
+    "L10_AVERAGE",
+    "ROLLING_AVERAGE",
+    "SIMPLE_AVERAGE",
+    "NAIVE_HIT_RATE",
+    "HIT_RATE",
 })
+
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -123,102 +150,85 @@ _PROHIBITED_DERIVATION_SOURCES: frozenset[str] = frozenset({
 @dataclass(frozen=True)
 class EnforcementResult:
     """
-    Structured result from enforce().
+    Immutable result returned by enforce() / enforce_for_label().
 
-    enforcer_passed     — True only when all 10 fields are present and valid.
-    label_is_probability_bearing — True when the supplied label is in
-                          PROBABILITY_BEARING_LABELS.
-    violations          — combined list of all violation strings.
-    missing_fields      — fields that are absent or None/empty-string.
-    invalid_fields      — fields that fail type, range, or invariant checks.
-    source_violations   — manufactured-value (derivation source) violations.
-    enforcement_code    — short machine-readable outcome code.
-    enforcement_detail  — human-readable detail string.
-
-    Governance:
-      terminal_label_authority = False  (the enforcer never assigns a label)
-      can_execute              = False
+    Governance invariants are hard-coded to False — the frozen dataclass
+    prevents mutation after construction.
     """
-    enforcer_passed: bool
+    enforcer_passed:              bool
+    enforcement_code:             str    # "ENFORCER_PASS", "ENFORCER_FAIL_*", "ENFORCER_SKIP_*"
     label_is_probability_bearing: bool
-    violations: tuple[str, ...]
-    missing_fields: tuple[str, ...]
-    invalid_fields: tuple[str, ...]
-    source_violations: tuple[str, ...]
-    enforcement_code: str
-    enforcement_detail: str
-    # Governance invariants — always False; frozen dataclass prevents mutation.
-    terminal_label_authority: bool = False
-    can_execute: bool = False
+    violations:                   tuple[str, ...]
+    missing_fields:               tuple[str, ...]
+    invalid_fields:               tuple[str, ...]
+    source_violations:            tuple[str, ...]
+    # Governance — always False; frozen prevents mutation.
+    terminal_label_authority:     bool = False
+    can_execute:                  bool = False
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def is_probability_bearing_label(label: str | None) -> bool:
+def is_probability_bearing_label(label: Any) -> bool:
     """
-    Return True if label belongs to the probability-bearing / qualifying label
-    class.  Uses PROBABILITY_BEARING_LABELS (frozenset), not a hardcoded list
-    of four names.
+    Return True iff label is a member of the probability-bearing registry.
+
+    Accepts any input — non-string or blank/None always returns False.
     """
-    if not label:
+    if not isinstance(label, str):
         return False
-    return label.strip().upper() in PROBABILITY_BEARING_LABELS
+    return label.strip() in PROBABILITY_BEARING_LABELS
 
 
 def enforce(
-    ledger_payload: dict[str, Any],
-    row: dict[str, Any] | None = None,
-    label: str | None = None,
+    ledger_payload: Any,
+    row: Optional[dict] = None,
 ) -> EnforcementResult:
     """
-    Validate the probability ledger against all ten required fields.
+    Validate a model_probability_ledger dict against the full probability
+    contract.  Never raises on any input — always returns EnforcementResult.
 
-    Args:
-        ledger_payload — the `model_probability_ledger` dict (or equivalent
-                         payload dict) that supplies all ten required fields.
-        row            — the prop row dict, used as a fallback source for
-                         Stage-2 fields (mirrors _validate_stage2_schema
-                         semantics).  Pass None for pure-ledger validation.
-        label          — the terminal label the row is about to receive.
-                         Used to populate label_is_probability_bearing.
+    Parameters
+    ----------
+    ledger_payload : the ledger dict to validate.  Non-dict (None, int, str,
+                     list, object()) is treated as an empty ledger; all 10
+                     required fields will be reported missing.
+    row            : optional prop-row dict used as a Stage-2 field fallback
+                     (mirrors _validate_stage2_schema fallback semantics).
 
-    Returns:
-        EnforcementResult — frozen, no row mutations.
-
-    Governance:
-        This function never writes to the row, never assigns a label,
-        and never raises on bad input (it returns a FAIL result instead).
+    Returns
+    -------
+    EnforcementResult — frozen.  Input dicts are not mutated.
     """
     if not isinstance(ledger_payload, dict):
-        ledger_payload = {} if ledger_payload is None else {}
+        ledger_payload = {}
     row_fallback: dict[str, Any] = row if isinstance(row, dict) else {}
 
-    violations:      list[str] = []
-    missing_fields:  list[str] = []
-    invalid_fields:  list[str] = []
-    source_viols:    list[str] = []
+    violations:   list[str] = []
+    missing:      list[str] = []
+    invalid:      list[str] = []
+    source_viols: list[str] = []
 
-    # ── 1. Stage-2 schema validation (7 fields) ──────────────────────────
+    # ── 1. Stage-2 schema validation (7 fields, numeric bounds) ──────────
     try:
         schema = _validate_stage2_schema(ledger_payload, row_fallback)
-        missing_fields.extend(schema.get("missing_fields") or [])
+        missing.extend(schema.get("missing_fields") or [])
         for tv in schema.get("type_violations") or []:
-            invalid_fields.append(tv)
+            invalid.append(tv)
         for bv in schema.get("bound_violations") or []:
-            invalid_fields.append(bv)
+            invalid.append(bv)
         violations.extend(schema.get("violations") or [])
-    except Exception as exc:  # pragma: no cover — defensive
-        violations.append(f"ENFORCER_SCHEMA_ERROR:{type(exc).__name__}:{exc!s:.80}")
+    except Exception as exc:          # defensive — _validate_stage2_schema is a lib call
+        violations.append(
+            f"ENFORCER_SCHEMA_ERROR:{type(exc).__name__}:{str(exc)[:80]}"
+        )
 
-    # ── 2. Non-finite check for numeric probability fields ────────────────
-    # _validate_stage2_schema uses float() + range check which catches inf/nan
-    # via the range guard (nan comparisons are always False).  Double-check
-    # explicitly to be robust against future schema changes.
-    _PROB_NUMERIC = ("raw_probability", "calibrated_probability",
-                     "lower_bound", "upper_bound")
-    for fname in _PROB_NUMERIC:
+    # ── 2. Explicit non-finite guard (belt-and-suspenders over schema) ────
+    _NUMERIC_FIELDS = ("raw_probability", "calibrated_probability",
+                       "lower_bound", "upper_bound")
+    for fname in _NUMERIC_FIELDS:
         val = ledger_payload.get(fname)
         if val is None:
             val = row_fallback.get(fname)
@@ -226,113 +236,113 @@ def enforce(
             try:
                 fval = float(val)
                 if not math.isfinite(fval):
-                    viol = f"non_finite:{fname}={fval}"
-                    if viol not in invalid_fields:
-                        invalid_fields.append(viol)
-                        violations.append(f"invalid:{viol}")
+                    tag = f"non_finite:{fname}={fval}"
+                    if tag not in invalid:
+                        invalid.append(tag)
+                        violations.append(f"invalid:{tag}")
             except (TypeError, ValueError):
-                pass  # Already caught by schema type_violations above.
+                pass   # already caught by schema type_violations
 
-    # ── 3. Required components validation (3 fields) ──────────────────────
-    # Normalise: components must be a list; entries must be dicts.
-    # Non-list or non-dict entries are treated as invalid/missing rather than
-    # raising AttributeError — this enforces the "never raises on bad input"
-    # contract stated in the module docstring.
+    # ── 3. Required components (3 names; entries must be dicts) ──────────
     _raw_components = ledger_payload.get("components")
     if not isinstance(_raw_components, list):
         _raw_components = []
-    components: list[dict] = []
-    malformed_component_count = 0
+
+    valid_components: list[dict] = []
+    malformed_count = 0
     for _c in _raw_components:
         if isinstance(_c, dict):
-            components.append(_c)
+            valid_components.append(_c)
         else:
-            malformed_component_count += 1
-    if malformed_component_count:
-        violations.append(
-            f"malformed_components:{malformed_component_count}_non_dict_entries"
-        )
-        invalid_fields.append(f"components:malformed_entries={malformed_component_count}")
+            malformed_count += 1
 
-    present_component_names: set[str] = {
-        str(c.get("name", "")).lower() for c in components
+    if malformed_count:
+        tag = f"malformed_components:{malformed_count}_non_dict_entries"
+        violations.append(tag)
+        invalid.append(f"components:{tag}")
+
+    present_names: set[str] = {
+        str(c.get("name", "")).lower() for c in valid_components
     }
-    for req_comp in sorted(_REQUIRED_COMPONENT_NAMES):
-        if req_comp.lower() not in present_component_names:
-            missing_fields.append(f"component:{req_comp}")
-            violations.append(f"missing:component:{req_comp}")
+    for req in sorted(REQUIRED_COMPONENTS):
+        if req.lower() not in present_names:
+            missing.append(f"component:{req}")
+            violations.append(f"missing:component:{req}")
 
-    # ── 4. Source provenance check — manufactured-value guard ─────────────
+    # ── 4. Manufactured-probability source guard ──────────────────────────
     derivation = (ledger_payload.get("raw_probability_derivation") or "").upper().strip()
     if derivation and derivation in _PROHIBITED_DERIVATION_SOURCES:
-        viol = (
+        sv = (
             f"manufactured_probability:raw_probability_derivation={derivation!r} "
-            f"is a prohibited source; raw_probability must come from the registered "
-            f"model, not from L5/L10 averages or market odds"
+            f"is a prohibited source; raw_probability must come from the "
+            f"registered model, not from L5/L10 averages or market odds"
         )
-        source_viols.append(viol)
-        violations.append(f"source_violation:{viol}")
+        source_viols.append(sv)
+        violations.append(f"source_violation:{sv}")
 
-    # ── Build result ───────────────────────────────────────────────────────
-    enforcer_passed = len(violations) == 0
+    # ── Build result ──────────────────────────────────────────────────────
+    passed = (len(violations) == 0)
 
-    if enforcer_passed:
-        code   = "ENFORCER_PASS"
-        detail = "All 10 required probability-ledger fields are present and valid."
-    elif source_viols:
-        code   = "ENFORCER_FAIL_MANUFACTURED_PROBABILITY"
-        detail = f"Source violation: {'; '.join(source_viols)}"
-    elif missing_fields:
-        code   = "ENFORCER_FAIL_INCOMPLETE_LEDGER"
-        detail = f"Missing/empty fields: {', '.join(missing_fields)}"
+    if source_viols:
+        code = "ENFORCER_FAIL_MANUFACTURED_PROBABILITY"
+    elif violations:
+        code = "ENFORCER_FAIL_INCOMPLETE_LEDGER"
     else:
-        code   = "ENFORCER_FAIL_INVALID_VALUES"
-        detail = f"Invalid field values: {'; '.join(invalid_fields)}"
+        code = "ENFORCER_PASS"
 
     return EnforcementResult(
-        enforcer_passed=enforcer_passed,
-        label_is_probability_bearing=is_probability_bearing_label(label),
-        violations=tuple(violations),
-        missing_fields=tuple(missing_fields),
-        invalid_fields=tuple(invalid_fields),
-        source_violations=tuple(source_viols),
+        enforcer_passed=passed,
         enforcement_code=code,
-        enforcement_detail=detail,
+        label_is_probability_bearing=False,   # not label-specific; use enforce_for_label
+        violations=tuple(violations),
+        missing_fields=tuple(missing),
+        invalid_fields=tuple(invalid),
+        source_violations=tuple(source_viols),
         terminal_label_authority=False,
         can_execute=False,
     )
 
 
 def enforce_for_label(
-    ledger_payload: dict[str, Any],
+    ledger_payload: Any,
     label: str,
-    row: dict[str, Any] | None = None,
+    row: Optional[dict] = None,
 ) -> EnforcementResult:
     """
-    Validate the probability ledger for a row that is about to receive
-    `label`.  If the label is not probability-bearing, returns a PASS result
-    immediately (no enforcement needed for non-qualifying labels).
+    Validate a ledger for a specific terminal label.
 
-    This is the intended call site for Stage B wiring.  The caller (the
-    pre-label gate) should call this before writing label to the row.
+    If label is not in PROBABILITY_BEARING_LABELS, returns an
+    ENFORCER_SKIP_NON_PROBABILITY_LABEL result with enforcer_passed=True
+    (no ledger validation is required).
 
-    Returns:
-        EnforcementResult with enforcer_passed=True for non-probability labels.
+    The enforcement check is:   label in PROBABILITY_BEARING_LABELS
+    — never an if/elif on specific label names.
     """
-    if not is_probability_bearing_label(label):
+    label_str = (label or "").strip()
+    is_prob = is_probability_bearing_label(label_str)
+
+    if not is_prob:
         return EnforcementResult(
             enforcer_passed=True,
+            enforcement_code="ENFORCER_SKIP_NON_PROBABILITY_LABEL",
             label_is_probability_bearing=False,
             violations=(),
             missing_fields=(),
             invalid_fields=(),
             source_violations=(),
-            enforcement_code="ENFORCER_SKIP_NON_PROBABILITY_LABEL",
-            enforcement_detail=(
-                f"Label {label!r} is not in the probability-bearing class; "
-                f"no ledger enforcement required."
-            ),
             terminal_label_authority=False,
             can_execute=False,
         )
-    return enforce(ledger_payload, row=row, label=label)
+
+    base = enforce(ledger_payload, row=row)
+    return EnforcementResult(
+        enforcer_passed=base.enforcer_passed,
+        enforcement_code=base.enforcement_code,
+        label_is_probability_bearing=True,
+        violations=base.violations,
+        missing_fields=base.missing_fields,
+        invalid_fields=base.invalid_fields,
+        source_violations=base.source_violations,
+        terminal_label_authority=False,
+        can_execute=False,
+    )

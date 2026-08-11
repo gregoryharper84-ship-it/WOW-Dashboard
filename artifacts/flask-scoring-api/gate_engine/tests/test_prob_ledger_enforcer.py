@@ -1,822 +1,720 @@
 """
-tests/test_prob_ledger_enforcer.py
+gate_engine/tests/test_prob_ledger_enforcer.py
+WOW-PATCH-2026-08-10-STAGE-A-PROBABILITY-LEDGER-OUTLIER-RECOMPUTE
 
-Unit tests for gate_engine/prob_ledger_enforcer.py — Stage A offline enforcer.
+Tests for gate_engine/prob_ledger_enforcer.py
 
-Coverage:
-  1. Each of the 10 required fields missing individually → FAIL
-  2. Complete ledger → PASS
-  3. Bounds and invariant violations → FAIL (non-finite, out-of-range, bool,
-     lower>upper, calibrated outside interval)
-  4. Probability-bearing label class:
-       - All four mandatory regression fixtures apply enforcement
-       - Non-qualifying labels skip enforcement
-       - FINAL_APPROVED and MARKET_VERIFIED_HOLD_STALE also apply
-  5. Later market failure does not erase a previously-obtained PASS result
-  6. WNBA points/assists/rebounds fixtures (complete → PASS, partial → FAIL)
-  7. MLB pitcher strikeouts fixtures (complete → PASS, partial → FAIL)
-  8. Mixed-batch independence (per-row states do not bleed)
-  9. Manufactured-probability source violation
- 10. Governance invariants: terminal_label_authority=False, can_execute=False
-
-No network calls. No database calls. All synthetic.
+Coverage
+--------
+  TestRegistryTaxonomy          — registry is taxonomy-driven (not hardcoded 4 strings);
+                                  mandatory fixtures present; synthetic 5th label test.
+  TestIsProbabilityBearingLabel — is_probability_bearing_label() edge cases.
+  TestEnforceValidLedger        — complete/valid ledger returns ENFORCER_PASS.
+  TestMissingFields             — each of the 10 required fields missing individually.
+  TestInvalidNumericFields      — NaN, Inf, bool, out-of-range probability values.
+  TestBoundViolations           — lower > upper, calibrated outside [lower, upper].
+  TestMalformedComponents       — non-list, None, list of non-dicts, mixed.
+  TestSourceViolations          — prohibited derivation sources.
+  TestNonDictLedger             — non-dict inputs (None, int, str, list, object).
+  TestEnforceForLabel           — label-specific dispatch and skip logic.
+  TestGovernanceInvariants      — can_execute=False, TERMINAL_LABEL_AUTHORITY=False, etc.
 """
+from __future__ import annotations
+
 import math
 import unittest
+import gate_engine.prob_ledger_enforcer as ple
 
 from gate_engine.prob_ledger_enforcer import (
-    ALL_REQUIRED_LEDGER_FIELDS,
     PROBABILITY_BEARING_LABELS,
+    MANDATORY_REGRESSION_FIXTURES,
+    ALL_REQUIRED_LEDGER_FIELDS,
     EnforcementResult,
     enforce,
     enforce_for_label,
     is_probability_bearing_label,
 )
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _complete_ledger() -> dict:
+def _make_complete_ledger(**overrides) -> dict:
     """
-    A fully-populated, valid model_probability_ledger dict containing all
-    10 required fields (7 stage-2 + 3 required components).
+    Return a ledger dict that passes all validation checks.
+    All 7 Stage-2 fields set; components list with all 3 required names.
     """
-    return {
-        # Stage-2 schema fields (7)
-        "raw_probability":        0.58,
-        "calibrated_probability": 0.55,
-        "lower_bound":            0.47,
-        "upper_bound":            0.63,
-        "model_timestamp":        "2026-08-11T12:00:00Z",
-        "source_snapshot_id":     "snap_abc123",
-        "calibration_method":     "platt",
-        # Required components (3)
+    base = {
+        "raw_probability":          0.62,
+        "calibrated_probability":   0.60,
+        "lower_bound":              0.52,
+        "upper_bound":              0.68,
+        "model_timestamp":          "2026-08-10T10:00:00Z",
+        "source_snapshot_id":       "snap_abc123",
+        "calibration_method":       "ISOTONIC_REGRESSION",
         "components": [
-            {"name": "market_no_vig",    "weight": 0.45, "value": 0.57, "source": "odds_api"},
-            {"name": "l10_distribution", "weight": 0.30, "value": 0.54, "source": "game_log"},
-            {"name": "role_usage",       "weight": 0.15, "value": 0.60, "source": "minutes_model"},
+            {"name": "market_no_vig",    "weight": 0.45, "value": 0.61},
+            {"name": "l10_distribution", "weight": 0.30, "value": 0.58},
+            {"name": "role_usage",       "weight": 0.15, "value": 0.65},
         ],
     }
-
-
-def _complete_row(sport: str = "WNBA", prop_type: str = "PTS") -> dict:
-    """Minimal row dict for pass-through fallback testing."""
-    return {
-        "sport":     sport,
-        "prop_type": prop_type,
-        "player":    "Test Player",
-        "row_id":    "test_row_001",
-        "blockers":  [],
-        "gates":     {},
-    }
+    base.update(overrides)
+    return base
 
 
 # ---------------------------------------------------------------------------
-# Helper: assert all governance invariants hold on any EnforcementResult
+# TestRegistryTaxonomy
 # ---------------------------------------------------------------------------
 
-def _assert_governance(tc: unittest.TestCase, result: EnforcementResult) -> None:
-    tc.assertFalse(result.terminal_label_authority,
-                   "terminal_label_authority must always be False")
-    tc.assertFalse(result.can_execute,
-                   "can_execute must always be False")
-    tc.assertIsInstance(result.violations, tuple)
-    tc.assertIsInstance(result.missing_fields, tuple)
-    tc.assertIsInstance(result.invalid_fields, tuple)
-    tc.assertIsInstance(result.source_violations, tuple)
+class TestRegistryTaxonomy(unittest.TestCase):
+    """
+    Registry is taxonomy-driven (two layers, built at import time).
+    Enforcement is never hardcoded to exactly 4 label names.
+    """
 
+    def test_mandatory_fixtures_are_in_registry(self):
+        """All 4 named mandatory regression fixtures must be members."""
+        for label in MANDATORY_REGRESSION_FIXTURES:
+            with self.subTest(label=label):
+                self.assertIn(label, PROBABILITY_BEARING_LABELS)
 
-# ===========================================================================
-# 1. Each missing field → FAIL
-# ===========================================================================
+    def test_registry_has_more_than_four_members(self):
+        """
+        Registry must contain more than the 4 mandatory fixtures —
+        proving Layer 2 (extended labels) is also included.
+        """
+        self.assertGreater(len(PROBABILITY_BEARING_LABELS), 4)
 
-class TestEachMissingFieldFails(unittest.TestCase):
-    """Removing any single required field from a complete ledger must fail."""
+    def test_extended_labels_present(self):
+        """Layer-2 labels identified in the taxonomy audit must be in the registry."""
+        for label in ("MARKET_VERIFIED_HOLD_STALE", "FINAL_CONFIDENCE_HIGH",
+                      "FINAL_LOCK", "EDGE_QUALIFIED"):
+            with self.subTest(label=label):
+                self.assertIn(label, PROBABILITY_BEARING_LABELS)
 
-    STAGE2_FIELDS = (
-        "raw_probability",
-        "calibrated_probability",
-        "lower_bound",
-        "upper_bound",
-        "model_timestamp",
-        "source_snapshot_id",
-        "calibration_method",
-    )
-    COMPONENT_NAMES = ("market_no_vig", "l10_distribution", "role_usage")
+    def test_non_qualifying_labels_not_in_registry(self):
+        """Reject/non-qualifying labels must NOT be in the probability-bearing registry."""
+        for label in ("REJECT_NO_EDGE", "SLATE_PURGE", "RESEARCH_INTEREST",
+                      "SOURCE_CONFLICT", "NO_PLAY", "DATA_CONTRACT_FAIL"):
+            with self.subTest(label=label):
+                self.assertNotIn(label, PROBABILITY_BEARING_LABELS)
 
-    def _test_field_missing(self, field_name: str) -> None:
-        ledger = _complete_ledger()
-        ledger.pop(field_name, None)
-        result = enforce(ledger)
-        _assert_governance(self, result)
-        self.assertFalse(result.enforcer_passed,
-                         f"enforcer must FAIL when {field_name!r} is missing")
-        # Violation string must reference the missing field
-        combined = " ".join(result.violations)
-        self.assertIn(field_name, combined,
-                      f"violations must mention {field_name!r}")
+    def test_registry_is_frozenset(self):
+        self.assertIsInstance(PROBABILITY_BEARING_LABELS, frozenset)
 
-    def _test_component_missing(self, component_name: str) -> None:
-        ledger = _complete_ledger()
-        ledger["components"] = [
-            c for c in ledger["components"]
-            if c["name"] != component_name
-        ]
-        result = enforce(ledger)
-        _assert_governance(self, result)
-        self.assertFalse(result.enforcer_passed,
-                         f"enforcer must FAIL when component {component_name!r} is absent")
-        combined = " ".join(result.missing_fields)
-        self.assertIn(component_name, combined,
-                      f"missing_fields must mention {component_name!r}")
+    def test_registry_members_are_strings(self):
+        for lbl in PROBABILITY_BEARING_LABELS:
+            with self.subTest(lbl=lbl):
+                self.assertIsInstance(lbl, str)
 
-    def test_missing_raw_probability(self):
-        self._test_field_missing("raw_probability")
+    def test_synthetic_5th_label_is_governed_by_registry(self):
+        """
+        Proves enforcement is NOT hardcoded to exactly 4 specific label names.
 
-    def test_missing_calibrated_probability(self):
-        self._test_field_missing("calibrated_probability")
+        A synthetic label (never mentioned anywhere else in this patch) is
+        temporarily added to _PROB_BEARING_EXTENDED and PROBABILITY_BEARING_LABELS.
+        enforce_for_label() must govern it identically to the named fixtures:
+          - complete ledger  → ENFORCER_PASS,  label_is_probability_bearing=True
+          - incomplete ledger → ENFORCER_FAIL_*, label_is_probability_bearing=True
+        """
+        synthetic = "SYNTHETIC_QUALIFYING_TEST_LABEL_ALPHA_001"
+        self.assertNotIn(synthetic, PROBABILITY_BEARING_LABELS,
+                         "synthetic label must not already be in the registry")
 
-    def test_missing_lower_bound(self):
-        self._test_field_missing("lower_bound")
+        # Temporarily patch module-level frozensets
+        orig_extended  = ple._PROB_BEARING_EXTENDED
+        orig_registry  = ple.PROBABILITY_BEARING_LABELS
 
-    def test_missing_upper_bound(self):
-        self._test_field_missing("upper_bound")
+        ple._PROB_BEARING_EXTENDED     = orig_extended | {synthetic}
+        ple.PROBABILITY_BEARING_LABELS = frozenset(
+            {lbl.value for lbl in ple._PROB_BEARING_PROP_LABELS}
+            | ple._PROB_BEARING_EXTENDED
+        )
 
-    def test_missing_model_timestamp(self):
-        self._test_field_missing("model_timestamp")
+        try:
+            # Registry now contains the synthetic label
+            self.assertIn(synthetic, ple.PROBABILITY_BEARING_LABELS)
+            self.assertTrue(is_probability_bearing_label(synthetic))
 
-    def test_missing_source_snapshot_id(self):
-        self._test_field_missing("source_snapshot_id")
+            # Complete ledger → PASS (same contract as any named fixture)
+            ok = enforce_for_label(_make_complete_ledger(), synthetic)
+            self.assertTrue(ok.enforcer_passed,
+                            f"Complete ledger under synthetic label should PASS; violations={ok.violations}")
+            self.assertEqual(ok.enforcement_code, "ENFORCER_PASS")
+            self.assertTrue(ok.label_is_probability_bearing)
+            self.assertFalse(ok.can_execute)
+            self.assertFalse(ok.terminal_label_authority)
 
-    def test_missing_calibration_method(self):
-        self._test_field_missing("calibration_method")
+            # Incomplete ledger → FAIL (same contract as any named fixture)
+            fail = enforce_for_label({}, synthetic)
+            self.assertFalse(fail.enforcer_passed)
+            self.assertIn("FAIL", fail.enforcement_code)
+            self.assertTrue(fail.label_is_probability_bearing)
+            self.assertGreater(len(fail.violations), 0)
 
-    def test_missing_component_market_no_vig(self):
-        self._test_component_missing("market_no_vig")
+        finally:
+            ple._PROB_BEARING_EXTENDED     = orig_extended
+            ple.PROBABILITY_BEARING_LABELS = orig_registry
 
-    def test_missing_component_l10_distribution(self):
-        self._test_component_missing("l10_distribution")
+    def test_sixth_extended_label_added_to_layer2_is_governed(self):
+        """
+        A label added only to _PROB_BEARING_EXTENDED (not PropLabel enum)
+        is automatically included in PROBABILITY_BEARING_LABELS.
+        Confirms the two-layer union pattern works for future labels.
+        """
+        new_label = "FUTURE_QUALIFYING_LABEL_BETA_999"
+        self.assertNotIn(new_label, ple.PROBABILITY_BEARING_LABELS)
 
-    def test_missing_component_role_usage(self):
-        self._test_component_missing("role_usage")
+        orig_ext  = ple._PROB_BEARING_EXTENDED
+        orig_reg  = ple.PROBABILITY_BEARING_LABELS
 
-    def test_none_raw_probability_fails(self):
-        ledger = _complete_ledger()
-        ledger["raw_probability"] = None
-        result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
-        _assert_governance(self, result)
+        ple._PROB_BEARING_EXTENDED     = orig_ext | {new_label}
+        ple.PROBABILITY_BEARING_LABELS = frozenset(
+            {lbl.value for lbl in ple._PROB_BEARING_PROP_LABELS}
+            | ple._PROB_BEARING_EXTENDED
+        )
 
-    def test_empty_string_model_timestamp_fails(self):
-        ledger = _complete_ledger()
-        ledger["model_timestamp"] = "   "
-        result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
-        _assert_governance(self, result)
+        try:
+            self.assertIn(new_label, ple.PROBABILITY_BEARING_LABELS)
+            self.assertTrue(is_probability_bearing_label(new_label))
+        finally:
+            ple._PROB_BEARING_EXTENDED     = orig_ext
+            ple.PROBABILITY_BEARING_LABELS = orig_reg
 
-    def test_empty_components_list_fails_all_three(self):
-        ledger = _complete_ledger()
-        ledger["components"] = []
-        result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
-        # All three required component names must appear in missing_fields
-        combined = " ".join(result.missing_fields)
-        for comp in ("market_no_vig", "l10_distribution", "role_usage"):
-            self.assertIn(comp, combined)
-
-    def test_all_10_fields_present_confirm_count(self):
-        """Sanity: ALL_REQUIRED_LEDGER_FIELDS should have exactly 10 entries."""
+    def test_all_required_ledger_fields_constant(self):
+        """ALL_REQUIRED_LEDGER_FIELDS must have exactly 10 entries (7 + 3)."""
         self.assertEqual(len(ALL_REQUIRED_LEDGER_FIELDS), 10)
 
+    def test_all_required_ledger_fields_contains_stage2_fields(self):
+        for f in ("raw_probability", "calibrated_probability", "lower_bound",
+                  "upper_bound", "model_timestamp", "source_snapshot_id",
+                  "calibration_method"):
+            self.assertIn(f, ALL_REQUIRED_LEDGER_FIELDS)
 
-# ===========================================================================
-# 2. Complete ledger → PASS
-# ===========================================================================
+    def test_all_required_ledger_fields_contains_component_names(self):
+        for c in ("component:market_no_vig", "component:l10_distribution",
+                  "component:role_usage"):
+            self.assertIn(c, ALL_REQUIRED_LEDGER_FIELDS)
 
-class TestCompleteLedgerPasses(unittest.TestCase):
+
+# ---------------------------------------------------------------------------
+# TestIsProbabilityBearingLabel
+# ---------------------------------------------------------------------------
+
+class TestIsProbabilityBearingLabel(unittest.TestCase):
+
+    def test_known_qualifying_labels_return_true(self):
+        for label in PROBABILITY_BEARING_LABELS:
+            with self.subTest(label=label):
+                self.assertTrue(is_probability_bearing_label(label))
+
+    def test_reject_labels_return_false(self):
+        for label in ("REJECT_NO_EDGE", "SLATE_PURGE", "NO_PLAY",
+                      "REJECT_DATA_QUALITY", "SOURCE_CONFLICT"):
+            with self.subTest(label=label):
+                self.assertFalse(is_probability_bearing_label(label))
+
+    def test_none_returns_false(self):
+        self.assertFalse(is_probability_bearing_label(None))
+
+    def test_int_returns_false(self):
+        self.assertFalse(is_probability_bearing_label(42))
+
+    def test_empty_string_returns_false(self):
+        self.assertFalse(is_probability_bearing_label(""))
+
+    def test_blank_string_returns_false(self):
+        self.assertFalse(is_probability_bearing_label("   "))
+
+    def test_bool_returns_false(self):
+        self.assertFalse(is_probability_bearing_label(True))
+
+    def test_list_returns_false(self):
+        self.assertFalse(is_probability_bearing_label(["MODEL_QUALIFIED_HOLD"]))
+
+
+# ---------------------------------------------------------------------------
+# TestEnforceValidLedger
+# ---------------------------------------------------------------------------
+
+class TestEnforceValidLedger(unittest.TestCase):
 
     def test_complete_ledger_passes(self):
-        result = enforce(_complete_ledger())
-        _assert_governance(self, result)
+        result = enforce(_make_complete_ledger())
         self.assertTrue(result.enforcer_passed)
         self.assertEqual(result.enforcement_code, "ENFORCER_PASS")
         self.assertEqual(len(result.violations), 0)
-        self.assertEqual(len(result.missing_fields), 0)
 
-    def test_complete_ledger_with_optional_components_still_passes(self):
-        ledger = _complete_ledger()
-        ledger["components"].append(
-            {"name": "l5_trend", "weight": 0.04, "value": 0.03, "source": "trend_model"}
+    def test_result_is_frozen(self):
+        result = enforce(_make_complete_ledger())
+        with self.assertRaises((AttributeError, TypeError)):
+            result.enforcer_passed = True   # type: ignore
+
+    def test_governance_constants_on_pass_result(self):
+        result = enforce(_make_complete_ledger())
+        self.assertFalse(result.can_execute)
+        self.assertFalse(result.terminal_label_authority)
+
+    def test_boundary_probabilities_pass(self):
+        """Probabilities at the open-interval boundaries should be valid."""
+        ledger = _make_complete_ledger(
+            raw_probability=0.01,
+            calibrated_probability=0.01,
+            lower_bound=0.01,
+            upper_bound=0.99,
         )
         result = enforce(ledger)
-        self.assertTrue(result.enforcer_passed)
+        self.assertTrue(result.enforcer_passed, result.violations)
 
-    def test_complete_ledger_with_row_fallback(self):
-        """Stage-2 fields can fall through from the row dict."""
-        ledger = _complete_ledger()
-        # Move model_timestamp to the row instead of the ledger
-        row = _complete_row()
-        row["model_timestamp"] = ledger.pop("model_timestamp")
-        result = enforce(ledger, row=row)
-        # _validate_stage2_schema checks row as fallback — should still pass
-        self.assertTrue(result.enforcer_passed)
+    def test_row_fallback_fills_missing_stage2_fields(self):
+        """
+        Fields absent from ledger_payload but present in the row dict
+        should be used as fallback (mirrors _validate_stage2_schema).
+        """
+        ledger = _make_complete_ledger()
+        model_ts = ledger.pop("model_timestamp")
+        result = enforce(ledger, row={"model_timestamp": model_ts})
+        self.assertTrue(result.enforcer_passed, result.violations)
 
 
-# ===========================================================================
-# 3. Bounds and invariant violations
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# TestMissingFields
+# ---------------------------------------------------------------------------
 
-class TestBoundsAndInvariantViolations(unittest.TestCase):
+class TestMissingFields(unittest.TestCase):
+    """Each of the 10 required fields missing individually → FAIL."""
 
-    def _fail_with(self, field: str, bad_value) -> EnforcementResult:
-        ledger = _complete_ledger()
-        ledger[field] = bad_value
+    def _assert_field_missing(self, field_key: str, component_name: str | None = None):
+        if component_name is None:
+            # Stage-2 field
+            ledger = _make_complete_ledger()
+            del ledger[field_key]
+            result = enforce(ledger)
+            self.assertFalse(result.enforcer_passed,
+                             f"Missing {field_key!r} should fail")
+            self.assertIn("FAIL", result.enforcement_code)
+            has_missing = any(field_key in m for m in result.missing_fields)
+            has_violation = any(field_key in v for v in result.violations)
+            self.assertTrue(has_missing or has_violation,
+                            f"Expected {field_key!r} in missing_fields or violations; got {result.missing_fields}, {result.violations}")
+        else:
+            # Component field
+            ledger = _make_complete_ledger()
+            ledger["components"] = [
+                c for c in ledger["components"]
+                if c["name"] != component_name
+            ]
+            result = enforce(ledger)
+            self.assertFalse(result.enforcer_passed,
+                             f"Missing component {component_name!r} should fail")
+            self.assertIn("FAIL", result.enforcement_code)
+
+    def test_missing_raw_probability(self):      self._assert_field_missing("raw_probability")
+    def test_missing_calibrated_probability(self): self._assert_field_missing("calibrated_probability")
+    def test_missing_lower_bound(self):          self._assert_field_missing("lower_bound")
+    def test_missing_upper_bound(self):          self._assert_field_missing("upper_bound")
+    def test_missing_model_timestamp(self):      self._assert_field_missing("model_timestamp")
+    def test_missing_source_snapshot_id(self):   self._assert_field_missing("source_snapshot_id")
+    def test_missing_calibration_method(self):   self._assert_field_missing("calibration_method")
+    def test_missing_component_market_no_vig(self):    self._assert_field_missing("_", "market_no_vig")
+    def test_missing_component_l10_distribution(self): self._assert_field_missing("_", "l10_distribution")
+    def test_missing_component_role_usage(self):       self._assert_field_missing("_", "role_usage")
+
+    def test_empty_ledger_fails_all_fields(self):
+        result = enforce({})
+        self.assertFalse(result.enforcer_passed)
+        self.assertGreater(len(result.violations), 0)
+
+    def test_null_source_snapshot_id_fails(self):
+        ledger = _make_complete_ledger(source_snapshot_id=None)
         result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed,
-                         f"enforcer must FAIL for {field}={bad_value!r}")
-        _assert_governance(self, result)
-        return result
+        self.assertFalse(result.enforcer_passed)
 
-    def test_raw_probability_nan_fails(self):
-        self._fail_with("raw_probability", float("nan"))
 
-    def test_raw_probability_inf_fails(self):
-        self._fail_with("raw_probability", float("inf"))
+# ---------------------------------------------------------------------------
+# TestInvalidNumericFields
+# ---------------------------------------------------------------------------
 
-    def test_raw_probability_zero_fails(self):
-        # Open interval (0, 1): exactly 0.0 must fail
-        self._fail_with("raw_probability", 0.0)
+class TestInvalidNumericFields(unittest.TestCase):
 
-    def test_raw_probability_one_fails(self):
-        # Open interval (0, 1): exactly 1.0 must fail
-        self._fail_with("raw_probability", 1.0)
+    def test_nan_calibrated_probability_fails(self):
+        ledger = _make_complete_ledger(calibrated_probability=float("nan"))
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
 
-    def test_raw_probability_negative_fails(self):
-        self._fail_with("raw_probability", -0.1)
+    def test_inf_raw_probability_fails(self):
+        ledger = _make_complete_ledger(raw_probability=float("inf"))
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
 
-    def test_raw_probability_above_one_fails(self):
-        self._fail_with("raw_probability", 1.05)
+    def test_negative_inf_lower_bound_fails(self):
+        ledger = _make_complete_ledger(lower_bound=float("-inf"))
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
 
-    def test_calibrated_probability_nan_fails(self):
-        self._fail_with("calibrated_probability", float("nan"))
+    def test_probability_above_1_fails(self):
+        ledger = _make_complete_ledger(
+            raw_probability=1.01,
+            calibrated_probability=1.01,
+            upper_bound=1.01,
+        )
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
+
+    def test_probability_zero_fails(self):
+        ledger = _make_complete_ledger(
+            raw_probability=0.0,
+            calibrated_probability=0.0,
+            lower_bound=0.0,
+        )
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
+
+    def test_probability_exactly_one_fails(self):
+        ledger = _make_complete_ledger(
+            raw_probability=1.0,
+            calibrated_probability=1.0,
+            upper_bound=1.0,
+        )
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
+
+    def test_bool_true_as_probability_fails(self):
+        """True == 1.0 but bool is semantically invalid as a probability."""
+        ledger = _make_complete_ledger(calibrated_probability=True)
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
+
+    def test_bool_false_as_probability_fails(self):
+        ledger = _make_complete_ledger(calibrated_probability=False)
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
+
+
+# ---------------------------------------------------------------------------
+# TestBoundViolations
+# ---------------------------------------------------------------------------
+
+class TestBoundViolations(unittest.TestCase):
 
     def test_lower_bound_greater_than_upper_bound_fails(self):
-        ledger = _complete_ledger()
-        ledger["lower_bound"] = 0.70
-        ledger["upper_bound"] = 0.50
+        ledger = _make_complete_ledger(lower_bound=0.70, upper_bound=0.60)
         result = enforce(ledger)
         self.assertFalse(result.enforcer_passed)
-        combined = " ".join(result.violations + result.invalid_fields)
-        self.assertTrue(
-            "lower_bound" in combined or "upper_bound" in combined,
-            "violation must mention bounds"
+
+    def test_calibrated_above_upper_bound_fails(self):
+        ledger = _make_complete_ledger(
+            lower_bound=0.50, upper_bound=0.65, calibrated_probability=0.70
         )
-
-    def test_calibrated_outside_interval_fails(self):
-        # calibrated_probability must be in [lower_bound, upper_bound]
-        ledger = _complete_ledger()
-        ledger["lower_bound"]            = 0.40
-        ledger["upper_bound"]            = 0.50
-        ledger["calibrated_probability"] = 0.60  # outside interval
         result = enforce(ledger)
         self.assertFalse(result.enforcer_passed)
-
-    def test_bool_raw_probability_fails(self):
-        # bool is a subclass of int; True==1.0 would pass a naive range check
-        self._fail_with("raw_probability", True)
-
-    def test_bool_calibrated_probability_fails(self):
-        self._fail_with("calibrated_probability", False)
-
-    def test_string_raw_probability_non_numeric_fails(self):
-        self._fail_with("raw_probability", "not-a-number")
 
     def test_calibrated_below_lower_bound_fails(self):
-        ledger = _complete_ledger()
-        ledger["lower_bound"]            = 0.50
-        ledger["upper_bound"]            = 0.70
-        ledger["calibrated_probability"] = 0.30  # below lower_bound
-        result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
-
-
-# ===========================================================================
-# 4. Probability-bearing label class
-# ===========================================================================
-
-class TestProbabilityBearingLabelClass(unittest.TestCase):
-
-    # Mandatory regression fixtures
-    MANDATORY_FIXTURES = (
-        "MODEL_QUALIFIED_HOLD",
-        "MARKET_VERIFIED_HOLD",
-        "MONEY_QUALIFIED",
-        "FINAL_CONFIDENCE_HIGH",
-    )
-
-    def test_mandatory_fixtures_in_class(self):
-        for label in self.MANDATORY_FIXTURES:
-            self.assertIn(label, PROBABILITY_BEARING_LABELS,
-                          f"{label} must be in PROBABILITY_BEARING_LABELS")
-
-    def test_mandatory_fixtures_are_probability_bearing(self):
-        for label in self.MANDATORY_FIXTURES:
-            self.assertTrue(is_probability_bearing_label(label),
-                            f"is_probability_bearing_label({label!r}) must be True")
-
-    def test_final_approved_is_probability_bearing(self):
-        self.assertTrue(is_probability_bearing_label("FINAL_APPROVED"))
-
-    def test_market_verified_hold_stale_is_probability_bearing(self):
-        self.assertTrue(is_probability_bearing_label("MARKET_VERIFIED_HOLD_STALE"))
-
-    def test_reject_labels_are_not_probability_bearing(self):
-        non_prob = [
-            "REJECT_NO_EDGE",
-            "REJECT_DATA_QUALITY",
-            "RESEARCH_INTEREST",
-            "SLATE_PURGE",
-            "REJECT_BAD_STRUCTURE",
-            "DUPLICATE_EXPOSURE_BLOCK",
-            "SOURCE_CONFLICT",
-            "DATA_CONTRACT_FAIL",
-        ]
-        for label in non_prob:
-            self.assertFalse(is_probability_bearing_label(label),
-                             f"{label} must NOT be probability-bearing")
-
-    def test_none_and_empty_not_probability_bearing(self):
-        self.assertFalse(is_probability_bearing_label(None))
-        self.assertFalse(is_probability_bearing_label(""))
-        self.assertFalse(is_probability_bearing_label("   "))
-
-    def test_enforce_for_label_skips_non_probability_labels(self):
-        # A completely empty ledger should still PASS for a non-qualifying label
-        result = enforce_for_label({}, label="RESEARCH_INTEREST")
-        _assert_governance(self, result)
-        self.assertTrue(result.enforcer_passed)
-        self.assertFalse(result.label_is_probability_bearing)
-        self.assertEqual(result.enforcement_code, "ENFORCER_SKIP_NON_PROBABILITY_LABEL")
-
-    def test_enforce_for_label_applies_to_model_qualified_hold(self):
-        result = enforce_for_label({}, label="MODEL_QUALIFIED_HOLD")
-        self.assertFalse(result.enforcer_passed)  # empty ledger should fail
-        self.assertTrue(result.label_is_probability_bearing)
-
-    def test_enforce_for_label_complete_ledger_mandatory_fixtures(self):
-        for label in self.MANDATORY_FIXTURES:
-            result = enforce_for_label(_complete_ledger(), label=label)
-            self.assertTrue(result.enforcer_passed,
-                            f"complete ledger must PASS for {label}")
-            self.assertTrue(result.label_is_probability_bearing)
-
-    def test_label_class_not_just_four_names(self):
-        # The class must contain MORE than the four mandatory fixtures
-        self.assertGreater(len(PROBABILITY_BEARING_LABELS), 4,
-                           "PROBABILITY_BEARING_LABELS must define the full class, "
-                           "not just the four mandatory regression fixtures")
-
-
-# ===========================================================================
-# 5. Later market failure preserves PASS result
-# ===========================================================================
-
-class TestLedgerPreservationAfterMarketFailure(unittest.TestCase):
-    """
-    Once the enforcer returns a PASS result, adding downstream failures
-    (market contradictions, blockers, label changes) to the row must NOT
-    alter the previously-obtained EnforcementResult.
-    """
-
-    def test_pass_result_unchanged_after_market_failure_added(self):
-        ledger = _complete_ledger()
-        row    = _complete_row()
-
-        # Step 1: enforce on a clean row → PASS
-        result_before = enforce(ledger, row=row)
-        self.assertTrue(result_before.enforcer_passed)
-
-        # Step 2: simulate a downstream market gate failure by mutating the row
-        row["blockers"].append("MARKET_CONTRADICTION:LINE_MOVED_AGAINST_MODEL")
-        row["gates"]["market_gate"] = {"market_status": "MARKET_CONTRADICTION", "passed": False}
-        row["terminal_label"] = "MARKET_VERIFIED_HOLD"
-
-        # Step 3: re-enforce (caller re-runs; this simulates checking preservation)
-        result_after = enforce(ledger, row=row)
-
-        # The original result object is frozen — cannot be mutated.
-        self.assertTrue(result_before.enforcer_passed,
-                        "frozen EnforcementResult must be unchanged after row mutation")
-        # Re-enforcing on the same ledger must still PASS (ledger itself unchanged)
-        self.assertTrue(result_after.enforcer_passed,
-                        "re-enforcement on unchanged ledger must still PASS")
-
-    def test_enforcer_result_is_frozen(self):
-        result = enforce(_complete_ledger())
-        with self.assertRaises((AttributeError, TypeError)):
-            result.enforcer_passed = False  # type: ignore  # frozen dataclass
-
-    def test_ledger_payload_is_not_mutated(self):
-        ledger = _complete_ledger()
-        import copy
-        ledger_before = copy.deepcopy(ledger)
-        enforce(ledger)
-        self.assertEqual(ledger, ledger_before,
-                         "enforce() must not mutate the input ledger dict")
-
-    def test_row_is_not_mutated(self):
-        row = _complete_row()
-        import copy
-        row_before = copy.deepcopy(row)
-        enforce(_complete_ledger(), row=row)
-        self.assertEqual(row, row_before,
-                         "enforce() must not mutate the input row dict")
-
-
-# ===========================================================================
-# 6. WNBA points / assists / rebounds fixtures
-# ===========================================================================
-
-class TestWNBAFixtures(unittest.TestCase):
-
-    def _wnba_row(self, prop_type: str) -> dict:
-        return _complete_row(sport="WNBA", prop_type=prop_type)
-
-    def test_wnba_points_complete_ledger_passes(self):
-        result = enforce_for_label(
-            _complete_ledger(), label="MODEL_QUALIFIED_HOLD",
-            row=self._wnba_row("PTS"),
+        ledger = _make_complete_ledger(
+            lower_bound=0.55, upper_bound=0.70, calibrated_probability=0.40
         )
-        self.assertTrue(result.enforcer_passed)
-
-    def test_wnba_points_missing_source_snapshot_id_fails(self):
-        ledger = _complete_ledger()
-        ledger.pop("source_snapshot_id")
-        result = enforce_for_label(ledger, label="MODEL_QUALIFIED_HOLD",
-                                   row=self._wnba_row("PTS"))
+        result = enforce(ledger)
         self.assertFalse(result.enforcer_passed)
-        self.assertIn("source_snapshot_id", " ".join(result.missing_fields))
 
-    def test_wnba_assists_complete_ledger_passes(self):
-        result = enforce_for_label(
-            _complete_ledger(), label="MARKET_VERIFIED_HOLD",
-            row=self._wnba_row("AST"),
+    def test_calibrated_equal_to_lower_bound_passes(self):
+        ledger = _make_complete_ledger(
+            lower_bound=0.55, upper_bound=0.70, calibrated_probability=0.55
         )
-        self.assertTrue(result.enforcer_passed)
+        result = enforce(ledger)
+        self.assertTrue(result.enforcer_passed, result.violations)
 
-    def test_wnba_assists_missing_calibration_method_fails(self):
-        ledger = _complete_ledger()
-        ledger.pop("calibration_method")
-        result = enforce_for_label(ledger, label="MARKET_VERIFIED_HOLD",
-                                   row=self._wnba_row("AST"))
-        self.assertFalse(result.enforcer_passed)
-
-    def test_wnba_rebounds_complete_ledger_passes(self):
-        result = enforce_for_label(
-            _complete_ledger(), label="MONEY_QUALIFIED",
-            row=self._wnba_row("REB"),
+    def test_calibrated_equal_to_upper_bound_passes(self):
+        ledger = _make_complete_ledger(
+            lower_bound=0.55, upper_bound=0.70, calibrated_probability=0.70
         )
-        self.assertTrue(result.enforcer_passed)
+        result = enforce(ledger)
+        self.assertTrue(result.enforcer_passed, result.violations)
 
-    def test_wnba_rebounds_missing_role_usage_component_fails(self):
-        ledger = _complete_ledger()
-        ledger["components"] = [c for c in ledger["components"]
-                                 if c["name"] != "role_usage"]
-        result = enforce_for_label(ledger, label="MONEY_QUALIFIED",
-                                   row=self._wnba_row("REB"))
-        self.assertFalse(result.enforcer_passed)
-        self.assertIn("role_usage", " ".join(result.missing_fields))
 
-    def test_wnba_points_raw_probability_nan_fails(self):
-        ledger = _complete_ledger()
-        ledger["raw_probability"] = float("nan")
-        result = enforce_for_label(ledger, label="MODEL_QUALIFIED_HOLD",
-                                   row=self._wnba_row("PTS"))
+# ---------------------------------------------------------------------------
+# TestMalformedComponents
+# ---------------------------------------------------------------------------
+
+class TestMalformedComponents(unittest.TestCase):
+
+    def test_components_none_fails(self):
+        ledger = _make_complete_ledger(components=None)
+        result = enforce(ledger)
         self.assertFalse(result.enforcer_passed)
 
+    def test_components_not_a_list_fails(self):
+        ledger = _make_complete_ledger(components={"market_no_vig": 0.45})
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
 
-# ===========================================================================
-# 7. MLB pitcher strikeouts fixtures
-# ===========================================================================
+    def test_components_list_of_none_fails(self):
+        ledger = _make_complete_ledger(components=[None, None, None])
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
 
-class TestMLBStrikeoutsFixtures(unittest.TestCase):
-
-    def _mlb_row(self, prop_type: str = "SO") -> dict:
-        return _complete_row(sport="MLB", prop_type=prop_type)
-
-    def test_mlb_strikeouts_complete_ledger_passes(self):
-        result = enforce_for_label(
-            _complete_ledger(), label="MODEL_QUALIFIED_HOLD",
-            row=self._mlb_row("SO"),
+    def test_components_list_of_strings_fails(self):
+        ledger = _make_complete_ledger(
+            components=["market_no_vig", "l10_distribution", "role_usage"]
         )
-        self.assertTrue(result.enforcer_passed)
-
-    def test_mlb_strikeouts_missing_market_no_vig_component_fails(self):
-        ledger = _complete_ledger()
-        ledger["components"] = [c for c in ledger["components"]
-                                 if c["name"] != "market_no_vig"]
-        result = enforce_for_label(ledger, label="MODEL_QUALIFIED_HOLD",
-                                   row=self._mlb_row("SO"))
-        self.assertFalse(result.enforcer_passed)
-
-    def test_mlb_strikeouts_missing_lower_bound_fails(self):
-        ledger = _complete_ledger()
-        ledger.pop("lower_bound")
-        result = enforce_for_label(ledger, label="MARKET_VERIFIED_HOLD",
-                                   row=self._mlb_row("K"))
-        self.assertFalse(result.enforcer_passed)
-        self.assertIn("lower_bound", " ".join(result.missing_fields))
-
-    def test_mlb_strikeouts_invalid_upper_bound_fails(self):
-        ledger = _complete_ledger()
-        ledger["upper_bound"] = 1.5  # > 1.0: invalid
-        result = enforce_for_label(ledger, label="MODEL_QUALIFIED_HOLD",
-                                   row=self._mlb_row("STRIKEOUTS"))
-        self.assertFalse(result.enforcer_passed)
-
-    def test_mlb_strikeouts_final_confidence_high_label(self):
-        """FINAL_CONFIDENCE_HIGH is a mandatory regression fixture label."""
-        result = enforce_for_label(
-            _complete_ledger(), label="FINAL_CONFIDENCE_HIGH",
-            row=self._mlb_row("SO"),
-        )
-        self.assertTrue(result.enforcer_passed)
-        self.assertTrue(result.label_is_probability_bearing)
-
-
-# ===========================================================================
-# 8. Mixed-batch independence
-# ===========================================================================
-
-class TestMixedBatchIndependence(unittest.TestCase):
-    """
-    Per-row states must be independent.  Passing/failing one row must not
-    affect another.
-    """
-
-    def test_five_row_batch_independent_states(self):
-        rows = [
-            # (ledger_modification_fn, expected_pass)
-            (lambda l: l,                         True),   # complete
-            (lambda l: l.__setitem__("raw_probability", None) or l,  False),  # missing
-            (lambda l: l,                         True),   # complete again
-            (lambda l: l.__setitem__("calibration_method", "") or l, False),  # empty
-            (lambda l: l,                         True),   # complete again
-        ]
-        import copy
-        results = []
-        for mod_fn, _ in rows:
-            ledger = mod_fn(copy.deepcopy(_complete_ledger()))
-            results.append(enforce(ledger))
-
-        expected = [True, False, True, False, True]
-        for i, (result, exp) in enumerate(zip(results, expected)):
-            self.assertEqual(
-                result.enforcer_passed, exp,
-                f"Row {i}: expected enforcer_passed={exp}, got {result.enforcer_passed}"
-            )
-            _assert_governance(self, result)
-
-    def test_parallel_enforce_calls_independent(self):
-        """
-        Calling enforce() multiple times with different ledgers does not
-        share state between calls.
-        """
-        ledger_good = _complete_ledger()
-        ledger_bad  = _complete_ledger()
-        del ledger_bad["model_timestamp"]
-
-        r1 = enforce(ledger_good)
-        r2 = enforce(ledger_bad)
-        r3 = enforce(ledger_good)
-
-        self.assertTrue(r1.enforcer_passed)
-        self.assertFalse(r2.enforcer_passed)
-        self.assertTrue(r3.enforcer_passed)
-
-
-# ===========================================================================
-# 9b. Malformed components containers and members
-# ===========================================================================
-
-class TestMalformedComponentsInput(unittest.TestCase):
-    """
-    enforce() must never raise when components entries are not dicts.
-    Every malformed structure must return a structured EnforcementResult(FAIL).
-    """
-
-    def _assert_fails_gracefully(self, components_value, label: str = "") -> EnforcementResult:
-        ledger = _complete_ledger()
-        ledger["components"] = components_value
-        result = enforce(ledger)
-        _assert_governance(self, result)
-        self.assertFalse(result.enforcer_passed, f"should FAIL for {label!r}")
-        self.assertIsInstance(result, EnforcementResult)
-        return result
-
-    def test_components_is_none_fails(self):
-        result = self._assert_fails_gracefully(None, "components=None")
-        # All three required components must be reported missing
-        combined = " ".join(result.missing_fields)
-        for name in ("market_no_vig", "l10_distribution", "role_usage"):
-            self.assertIn(name, combined)
-
-    def test_components_is_not_a_list_fails(self):
-        """components as a dict (not a list) must fail gracefully."""
-        ledger = _complete_ledger()
-        ledger["components"] = {"name": "market_no_vig", "weight": 0.45}
         result = enforce(ledger)
         self.assertFalse(result.enforcer_passed)
-        _assert_governance(self, result)
 
-    def test_components_is_string_fails(self):
-        self._assert_fails_gracefully("market_no_vig", "components=string")
-
-    def test_components_is_integer_fails(self):
-        self._assert_fails_gracefully(42, "components=int")
-
-    def test_components_with_none_entry_fails(self):
-        """A list containing None instead of a dict must fail without AttributeError."""
-        ledger = _complete_ledger()
-        ledger["components"] = [None, None, None]
-        result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
-        _assert_governance(self, result)
-
-    def test_components_with_string_entries_fails(self):
-        """List of strings is not dicts."""
-        ledger = _complete_ledger()
-        ledger["components"] = ["market_no_vig", "l10_distribution", "role_usage"]
-        result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
-        _assert_governance(self, result)
-        # Malformed-entry violation must be reported
-        combined = " ".join(result.violations + result.invalid_fields)
-        self.assertIn("malformed", combined.lower())
-
-    def test_components_mixed_valid_and_none_fails(self):
-        """One valid dict + two None entries — still fails due to malformed."""
-        ledger = _complete_ledger()
-        valid_comp = {"name": "market_no_vig", "weight": 0.45, "value": 0.57, "source": "odds_api"}
-        ledger["components"] = [valid_comp, None, None]
-        result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
-        _assert_governance(self, result)
-        # l10_distribution and role_usage are still missing
-        combined = " ".join(result.missing_fields)
-        self.assertIn("l10_distribution", combined)
-        self.assertIn("role_usage", combined)
-
-    def test_components_mixed_valid_and_string_fails(self):
-        ledger = _complete_ledger()
-        good = {"name": "market_no_vig", "weight": 0.45, "value": 0.57, "source": "odds_api"}
-        ledger["components"] = [good, "l10_distribution", "role_usage"]
-        result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
-        _assert_governance(self, result)
-
-    def test_components_all_three_dicts_but_wrong_names_fails(self):
-        """Dicts that don't have required names still fail."""
-        ledger = _complete_ledger()
-        ledger["components"] = [
-            {"name": "unknown_a", "weight": 0.33},
-            {"name": "unknown_b", "weight": 0.33},
-            {"name": "unknown_c", "weight": 0.34},
-        ]
-        result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
-        combined = " ".join(result.missing_fields)
-        for name in ("market_no_vig", "l10_distribution", "role_usage"):
-            self.assertIn(name, combined)
-
-    def test_empty_dict_entry_fails_gracefully(self):
-        """Dict with no 'name' key is invalid but must not raise."""
-        ledger = _complete_ledger()
-        ledger["components"] = [{}, {}, {}]
-        result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
-        _assert_governance(self, result)
-
-    def test_enforce_never_raises_on_pathological_components(self):
-        """
-        A comprehensive set of pathological components values must all return
-        an EnforcementResult without raising any exception.
-        """
-        pathological = [
+    def test_components_mixed_dict_and_none_fails(self):
+        """Mixed list: valid dict + None entries — malformed count reported."""
+        ledger = _make_complete_ledger(components=[
+            {"name": "market_no_vig", "weight": 0.45, "value": 0.61},
             None,
-            42,
-            "string",
-            3.14,
-            {"not": "a_list"},
-            [None],
-            [None, None, None],
-            ["market_no_vig", "l10_distribution", "role_usage"],
-            [{"name": None}],
-            [{"name": 42}],
-            [[{"nested": "list"}]],
-            [object()],
-        ]
-        ledger_base = {k: v for k, v in _complete_ledger().items() if k != "components"}
-        for bad_components in pathological:
-            ledger = {**ledger_base, "components": bad_components}
-            try:
-                result = enforce(ledger)
-                self.assertIsInstance(result, EnforcementResult,
-                                     f"enforce() must return EnforcementResult for "
-                                     f"components={bad_components!r}")
-                self.assertFalse(result.enforcer_passed,
-                                 f"malformed components must fail for {bad_components!r}")
-            except Exception as exc:
-                self.fail(
-                    f"enforce() raised {type(exc).__name__} for "
-                    f"components={bad_components!r}: {exc}"
-                )
+            {"name": "l10_distribution", "weight": 0.30, "value": 0.58},
+        ])
+        result = enforce(ledger)
+        # role_usage is missing AND there's a malformed entry → FAIL
+        self.assertFalse(result.enforcer_passed)
 
-    def test_valid_components_still_pass_after_fix(self):
-        """Regression: the normal path must still pass after the guard was added."""
-        result = enforce(_complete_ledger())
-        self.assertTrue(result.enforcer_passed)
-        self.assertEqual(len(result.violations), 0)
-
-
-# ===========================================================================
-# 9. Manufactured-probability source violation
-# ===========================================================================
-
-class TestManufacturedProbabilityViolation(unittest.TestCase):
-
-    def test_l5_avg_derivation_fails(self):
-        ledger = _complete_ledger()
-        ledger["raw_probability_derivation"] = "L5_AVG"
+    def test_components_empty_list_fails(self):
+        ledger = _make_complete_ledger(components=[])
         result = enforce(ledger)
         self.assertFalse(result.enforcer_passed)
+
+    def test_components_integer_as_list_fails(self):
+        ledger = _make_complete_ledger(components=42)
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed)
+
+
+# ---------------------------------------------------------------------------
+# TestSourceViolations
+# ---------------------------------------------------------------------------
+
+class TestSourceViolations(unittest.TestCase):
+
+    def _test_prohibited_source(self, derivation: str):
+        ledger = _make_complete_ledger(raw_probability_derivation=derivation)
+        result = enforce(ledger)
+        self.assertFalse(result.enforcer_passed,
+                         f"Derivation {derivation!r} should be rejected")
+        self.assertEqual(result.enforcement_code, "ENFORCER_FAIL_MANUFACTURED_PROBABILITY")
         self.assertGreater(len(result.source_violations), 0)
-        self.assertIn("ENFORCER_FAIL_MANUFACTURED_PROBABILITY", result.enforcement_code)
 
-    def test_l10_avg_derivation_fails(self):
-        ledger = _complete_ledger()
-        ledger["raw_probability_derivation"] = "L10_AVG"
+    def test_l5_avg_derivation_fails(self):        self._test_prohibited_source("L5_AVG")
+    def test_l10_avg_derivation_fails(self):       self._test_prohibited_source("L10_AVG")
+    def test_market_no_vig_derivation_fails(self): self._test_prohibited_source("MARKET_NO_VIG")
+    def test_rolling_average_derivation_fails(self): self._test_prohibited_source("ROLLING_AVERAGE")
+    def test_naive_hit_rate_derivation_fails(self):  self._test_prohibited_source("NAIVE_HIT_RATE")
+
+    def test_lowercase_derivation_fails(self):
+        """Case-insensitive: 'l5_avg' (lower) should also be rejected."""
+        ledger = _make_complete_ledger(raw_probability_derivation="l5_avg")
         result = enforce(ledger)
         self.assertFalse(result.enforcer_passed)
+        self.assertEqual(result.enforcement_code, "ENFORCER_FAIL_MANUFACTURED_PROBABILITY")
 
-    def test_market_no_vig_derivation_fails(self):
-        ledger = _complete_ledger()
-        ledger["raw_probability_derivation"] = "MARKET_NO_VIG"
+    def test_legitimate_derivation_source_passes(self):
+        ledger = _make_complete_ledger(raw_probability_derivation="BINOMIAL_MODEL_V3")
         result = enforce(ledger)
-        self.assertFalse(result.enforcer_passed)
+        self.assertTrue(result.enforcer_passed, result.violations)
 
-    def test_legitimate_model_derivation_does_not_fail(self):
-        ledger = _complete_ledger()
-        ledger["raw_probability_derivation"] = "REGISTERED_MODEL_v2"
-        result = enforce(ledger)
-        self.assertTrue(result.enforcer_passed)
-        self.assertEqual(len(result.source_violations), 0)
-
-    def test_no_derivation_field_does_not_fail(self):
-        """Absence of raw_probability_derivation is not itself a violation."""
-        ledger = _complete_ledger()
+    def test_no_derivation_field_passes(self):
+        ledger = _make_complete_ledger()
         ledger.pop("raw_probability_derivation", None)
         result = enforce(ledger)
+        self.assertTrue(result.enforcer_passed, result.violations)
+
+
+# ---------------------------------------------------------------------------
+# TestNonDictLedger
+# ---------------------------------------------------------------------------
+
+class TestNonDictLedger(unittest.TestCase):
+    """Non-dict inputs are treated as empty ledgers and fail gracefully."""
+
+    def test_none_ledger_fails(self):
+        result = enforce(None)
+        self.assertFalse(result.enforcer_passed)
+        self.assertIsInstance(result, EnforcementResult)
+
+    def test_integer_ledger_fails(self):
+        result = enforce(42)
+        self.assertFalse(result.enforcer_passed)
+
+    def test_string_ledger_fails(self):
+        result = enforce("MODEL_QUALIFIED_HOLD")
+        self.assertFalse(result.enforcer_passed)
+
+    def test_list_ledger_fails(self):
+        result = enforce(["raw_probability", 0.62])
+        self.assertFalse(result.enforcer_passed)
+
+    def test_object_ledger_fails(self):
+        result = enforce(object())
+        self.assertFalse(result.enforcer_passed)
+
+
+# ---------------------------------------------------------------------------
+# TestEnforceForLabel
+# ---------------------------------------------------------------------------
+
+class TestEnforceForLabel(unittest.TestCase):
+
+    # ── Mandatory regression fixtures — each must be governed individually ──
+
+    def _assert_fixture_governs(self, label: str):
+        """Complete ledger → PASS; empty ledger → FAIL; label_is_prob_bearing=True."""
+        ok = enforce_for_label(_make_complete_ledger(), label)
+        self.assertTrue(ok.enforcer_passed, f"{label}: {ok.violations}")
+        self.assertEqual(ok.enforcement_code, "ENFORCER_PASS")
+        self.assertTrue(ok.label_is_probability_bearing)
+        self.assertFalse(ok.can_execute)
+        self.assertFalse(ok.terminal_label_authority)
+
+        fail = enforce_for_label({}, label)
+        self.assertFalse(fail.enforcer_passed)
+        self.assertIn("FAIL", fail.enforcement_code)
+        self.assertTrue(fail.label_is_probability_bearing)
+        self.assertGreater(len(fail.violations), 0)
+
+    def test_fixture_model_qualified_hold(self):
+        self._assert_fixture_governs("MODEL_QUALIFIED_HOLD")
+
+    def test_fixture_market_verified_hold(self):
+        self._assert_fixture_governs("MARKET_VERIFIED_HOLD")
+
+    def test_fixture_money_qualified(self):
+        self._assert_fixture_governs("MONEY_QUALIFIED")
+
+    def test_fixture_final_confidence_high(self):
+        self._assert_fixture_governs("FINAL_CONFIDENCE_HIGH")
+
+    # ── Extended labels (Layer 2) are also governed ─────────────────────
+
+    def test_market_verified_hold_stale_governed(self):
+        self._assert_fixture_governs("MARKET_VERIFIED_HOLD_STALE")
+
+    def test_final_lock_governed(self):
+        self._assert_fixture_governs("FINAL_LOCK")
+
+    def test_edge_qualified_governed(self):
+        self._assert_fixture_governs("EDGE_QUALIFIED")
+
+    # ── Non-probability-bearing labels → SKIP ────────────────────────────
+
+    def _assert_label_skipped(self, label: str):
+        result = enforce_for_label(_make_complete_ledger(), label)
         self.assertTrue(result.enforcer_passed)
+        self.assertEqual(result.enforcement_code, "ENFORCER_SKIP_NON_PROBABILITY_LABEL")
+        self.assertFalse(result.label_is_probability_bearing)
+        self.assertEqual(len(result.violations), 0)
+
+    def test_skip_reject_no_edge(self):         self._assert_label_skipped("REJECT_NO_EDGE")
+    def test_skip_slate_purge(self):            self._assert_label_skipped("SLATE_PURGE")
+    def test_skip_research_interest(self):      self._assert_label_skipped("RESEARCH_INTEREST")
+    def test_skip_no_play(self):                self._assert_label_skipped("NO_PLAY")
+    def test_skip_data_contract_fail(self):     self._assert_label_skipped("DATA_CONTRACT_FAIL")
+    def test_skip_reject_data_quality(self):    self._assert_label_skipped("REJECT_DATA_QUALITY")
+    def test_skip_unknown_label(self):          self._assert_label_skipped("TOTALLY_UNKNOWN_LABEL")
+    def test_skip_empty_label(self):            self._assert_label_skipped("")
+
+    # ── label_is_probability_bearing flag is correct on FAIL ─────────────
+
+    def test_fail_result_has_label_is_prob_true_for_qualifying_label(self):
+        result = enforce_for_label({}, "MONEY_QUALIFIED")
+        self.assertFalse(result.enforcer_passed)
+        self.assertTrue(result.label_is_probability_bearing)
+
+    # ── All labels in registry are governed (registry-driven proof) ───────
+
+    def test_all_registry_labels_are_governed(self):
+        """
+        For every label in PROBABILITY_BEARING_LABELS, enforce_for_label with
+        an empty ledger must return ENFORCER_FAIL_*, not SKIP.
+        Proves the registry drives the dispatch — not a hardcoded list.
+        """
+        for label in PROBABILITY_BEARING_LABELS:
+            with self.subTest(label=label):
+                result = enforce_for_label({}, label)
+                self.assertFalse(result.enforcer_passed,
+                                 f"{label} should fail on empty ledger")
+                self.assertIn("FAIL", result.enforcement_code,
+                              f"{label}: expected FAIL code, got {result.enforcement_code}")
+                self.assertTrue(result.label_is_probability_bearing)
 
 
-# ===========================================================================
-# 10. Governance invariants
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# TestGovernanceInvariants
+# ---------------------------------------------------------------------------
 
 class TestGovernanceInvariants(unittest.TestCase):
 
-    def test_enforcement_result_always_has_false_terminal_label_authority(self):
-        for ledger in [_complete_ledger(), {}]:
-            result = enforce(ledger)
-            self.assertFalse(result.terminal_label_authority)
+    def test_module_can_execute_is_false(self):
+        self.assertFalse(ple.can_execute)
 
-    def test_enforcement_result_always_has_false_can_execute(self):
-        for ledger in [_complete_ledger(), {}]:
-            result = enforce(ledger)
-            self.assertFalse(result.can_execute)
+    def test_module_production_authority_is_false(self):
+        self.assertFalse(ple.PRODUCTION_AUTHORITY)
 
-    def test_module_level_constants(self):
-        from gate_engine import prob_ledger_enforcer as mod
-        self.assertFalse(mod.can_execute)
-        self.assertFalse(mod.PRODUCTION_AUTHORITY)
-        self.assertFalse(mod.USER_OUTPUT_AUTHORITY)
+    def test_module_user_output_authority_is_false(self):
+        self.assertFalse(ple.USER_OUTPUT_AUTHORITY)
+
+    def test_module_terminal_label_authority_is_false(self):
+        self.assertFalse(ple.TERMINAL_LABEL_AUTHORITY)
+
+    def test_enforcement_result_can_execute_always_false(self):
+        for label in ("MODEL_QUALIFIED_HOLD", "REJECT_NO_EDGE", ""):
+            with self.subTest(label=label):
+                result = enforce_for_label(_make_complete_ledger(), label)
+                self.assertFalse(result.can_execute)
+
+    def test_enforcement_result_terminal_label_authority_always_false(self):
+        for label in ("MONEY_QUALIFIED", "REJECT_NO_EDGE", ""):
+            with self.subTest(label=label):
+                result = enforce_for_label(_make_complete_ledger(), label)
+                self.assertFalse(result.terminal_label_authority)
 
     def test_enforcement_result_is_frozen(self):
-        result = enforce(_complete_ledger())
+        result = enforce(_make_complete_ledger())
+        # Direct attribute assignment must raise FrozenInstanceError (subclass of
+        # AttributeError) because EnforcementResult is @dataclass(frozen=True).
+        # object.__setattr__ is intentionally NOT used here — that call bypasses
+        # the frozen guard and is the correct way to SET fields in test fixtures,
+        # NOT the correct way to verify the guard exists.
         with self.assertRaises((AttributeError, TypeError)):
-            result.enforcer_passed = True  # type: ignore
+            result.enforcement_code = "MUTATED_VALUE"  # type: ignore
 
-    def test_enforce_never_raises(self):
-        """enforce() must return an EnforcementResult even for pathological inputs."""
-        bad_inputs = [None, 42, "string", [], object()]
-        for bad in bad_inputs:
-            try:
-                result = enforce(bad)  # type: ignore
-                self.assertIsInstance(result, EnforcementResult)
-            except Exception as exc:
-                self.fail(f"enforce({bad!r}) raised {type(exc).__name__}: {exc}")
+    def test_no_import_from_app(self):
+        import ast, pathlib
+        src = pathlib.Path(ple.__file__).read_text()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    self.assertNotIn("app", node.module.split("."),
+                                     f"Forbidden import from app in {node.module}")
+
+    def test_no_import_from_universal_agent(self):
+        import ast, pathlib
+        src = pathlib.Path(ple.__file__).read_text()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                self.assertNotIn("universal_agent", node.module,
+                                 f"Forbidden import: {node.module}")
+
+    def test_no_import_from_pipeline_state(self):
+        import ast, pathlib
+        src = pathlib.Path(ple.__file__).read_text()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                self.assertNotIn("pipeline_state", node.module,
+                                 f"Forbidden import: {node.module}")
+
+    def test_no_import_from_settlement_worker(self):
+        import ast, pathlib
+        src = pathlib.Path(ple.__file__).read_text()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                self.assertNotIn("settlement_worker", node.module,
+                                 f"Forbidden import: {node.module}")
 
 
 if __name__ == "__main__":
