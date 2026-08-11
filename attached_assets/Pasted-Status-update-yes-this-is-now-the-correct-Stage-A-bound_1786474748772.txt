@@ -1,0 +1,55 @@
+Status update: **yes — this is now the correct Stage A boundary.** It cleanly separates offline construction from production wiring and avoids touching `classifier`, `pipeline`, `app.py`, routing, or governance.
+
+I would make **two small guardrail additions before clicking Build in background**:
+
+1. **Do not hard-code the probability contract to only those four named labels.** The enforcer should cover the defined class of **all probability-bearing / qualifying labels**, with the current labels used as regression fixtures. Otherwise a future or alternate qualifying label could bypass the contract.
+
+2. **Add a Stage-A diff allowlist as an acceptance test.** Stage A should automatically fail if the task modifies any live-path file, including the classifier, pipeline wiring, app routing, settlement code, B4 code, governance configuration, or `can_execute` behavior.
+
+So I’d want the final Stage A acceptance state to be:
+
+```text
+STAGE_A_SCOPE=OFFLINE_ONLY
+
+ALLOWED:
+- probability-ledger enforcer module
+- outlier recompute module
+- supporting schemas/types
+- focused tests
+- offline fixtures
+
+PROHIBITED:
+- classifier production wiring
+- pipeline production wiring
+- app.py behavior changes
+- routing changes
+- qualifying-label behavior changes
+- settlement changes
+- B4 changes
+- governance changes
+- can_execute changes
+
+PROBABILITY_CONTRACT:
+- applies to every qualifying/probability-bearing output class
+- current named labels are mandatory regression cases
+- incomplete ledger => fail closed
+- complete ledger => pass
+- invalid/null/non-finite probability fields => fail closed
+- probability bounds/invariants validated
+
+OUTLIER_RECOMPUTE:
+- REVIEW_REQUIRED triggers offline recompute
+- recompute returns explicit RESOLVED / UNRESOLVED / ERROR state
+- no narrative-only resolution
+- original evidence preserved
+- no terminal-label authority
+
+FULL_REPO_REGRESSION=REQUIRED
+STAGE_B_AUTOMATICALLY_STARTS=false
+```
+
+With those two additions, **click Build in background**.
+
+Then we let Replit build both engines completely offline. When it finishes, we audit Stage A against the allowed-file boundary and full-repo regression before authorizing a single production wiring change in Stage B.
+
+That gets us speed without giving the task any opportunity to quietly repair production while it is supposed to be building the machinery offline.
