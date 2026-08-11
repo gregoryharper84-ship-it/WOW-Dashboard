@@ -1,0 +1,162 @@
+Fix the pipeline before loosening the model. Most props never reached scoring.
+
+## Immediate patch
+
+### 1. Stop converting technical failures into `NO_PLAY`
+
+Use distinct outcomes:
+
+```text
+SCORED_APPROVE
+SCORED_REJECT
+WAIT_FINAL_REFRESH
+UNSCORABLE_DATA_MISSING
+SOURCE_ACQUISITION_FAILED
+MODEL_VALIDATION_ERROR
+GOVERNANCE_HOLD
+```
+
+Only `SCORED_REJECT` means the model found no play.
+
+### 2. Split offer data from statistical data
+
+Current `source` field mixes two different concepts:
+
+```json
+{
+  "offer_source": "prizepicks",
+  "stats_source": "mlb_stats_api",
+  "market_source": "sportsbook_consensus",
+  "availability_source": "official_lineup"
+}
+```
+
+A PrizePicks prop enriched through MLB data should not be tagged generically as `bookmaker` or `engine`.
+
+### 3. Add category-specific data adapters
+
+| Category | Required calculation/source |
+|---|---|
+| WNBA PRA | points + rebounds + assists from game logs |
+| WNBA rebounds | rebounds from game logs |
+| Pitcher strikeouts | pitcher game logs |
+| Pitching outs | recorded outs; never treat `5.2 IP` as `5.2 × 3` |
+| Plate appearances | official `plateAppearances`, or derive using validated MLB fields |
+| First-inning pitches | pitch-by-pitch data filtered to inning 1 |
+| Tennis total games | completed match set scores and total games played |
+
+Each adapter must return L5/L10 values in the exact unit used by the prop.
+
+### 4. Add source fallbacks
+
+```text
+PRIMARY SOURCE
+  ↓ missing/error
+SECONDARY SOURCE
+  ↓ missing/error
+DERIVED CALCULATION
+  ↓ unavailable
+SOURCE_ACQUISITION_FAILED
+```
+
+Log every attempt:
+
+```json
+{
+  "field": "raw_vals",
+  "attempts": [
+    {"source": "mlb_stats_api", "result": "missing"},
+    {"source": "statcast", "result": "success"}
+  ]
+}
+```
+
+“No data” is valid only after this trace exists.
+
+### 5. Fix lineup handling
+
+Historical participation does not confirm today’s lineup. The existing tagging rule that treats a player found in historical BallDontLie data as `lineupConfirmed=true` is wrong.
+
+Use:
+
+```text
+confirmed today → lineupConfirmed=true
+active but lineup not posted → WAIT_FINAL_REFRESH
+questionable/GTD → Gate 1 conditional probability
+out → Gate 1 kill
+```
+
+Do not turn “lineup not posted yet” into a permanent rejection.
+
+### 6. Add calibration invariants
+
+Reject malformed model output before ranking:
+
+```javascript
+if (
+  lowerBound < 0 ||
+  lowerBound > pointProbability ||
+  pointProbability > upperBound ||
+  upperBound > 1
+) {
+  return "MODEL_VALIDATION_ERROR";
+}
+```
+
+The WNBA rebound result with `lower_bound > point_probability` must be recalculated, not excluded as a normal no-play.
+
+### 7. Separate model quality from governance
+
+Return both:
+
+```json
+{
+  "model_verdict": "QUALIFIED",
+  "governance_verdict": "SHADOW_ONLY",
+  "can_execute": false
+}
+```
+
+`can_execute=false` must not overwrite the underlying model verdict.
+
+The 1IP TEST_ONLY model should still rank research candidates while clearly blocking execution.
+
+## Do not weaken these gates yet
+
+Keep:
+
+- confirmed availability checks;
+- minimum recent-data requirements;
+- exact-line validation;
+- market-adverse checks;
+- calibration requirements.
+
+First rerun the same 223 props after fixing acquisition. Then measure:
+
+```text
+extracted
+→ schema-valid
+→ successfully enriched
+→ gate-cleared
+→ fully scored
+→ model rejected
+→ qualified
+→ governance held
+```
+
+Recommended acceptance targets:
+
+- 100% receive an explicit acquisition trace.
+- At least 95% of supported props become schema-valid.
+- Zero malformed probability intervals.
+- Zero technical failures labeled `NO_PLAY`.
+- Identical frozen inputs reproduce identical outputs.
+- Every final rejection names the exact gate or probability threshold.
+
+The main patch should be named something like:
+
+```text
+WOW-PATCH-DATA-ACQUISITION-AND-TERMINAL-SEMANTICS
+```
+
+Do this before the larger model-consistency patch. Walk-forward testing helps long-term reliability, but it will not fix today’s missing game logs, broken adapters, or misleading terminal labels.
