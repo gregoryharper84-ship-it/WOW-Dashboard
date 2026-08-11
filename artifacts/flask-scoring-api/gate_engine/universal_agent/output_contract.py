@@ -51,6 +51,14 @@ FORBIDDEN_GOVERNANCE_KEYS: frozenset[str] = frozenset({
     # Governance state / decisions
     "governance_state", "governance_override",
     "final_decision", "stake_tier", "is_playable",
+    # Settlement / wagering authority — explicitly blocked (B4 hardening, #193 governance).
+    # External and advisory model outputs must NEVER use these keys to acquire
+    # trading authority, settlement authority, terminal-label authority, capital
+    # authority, user-output authority, or production authority.
+    # Applies at any nesting depth via _scan_forbidden_keys().
+    "place_bet", "bet", "wager",
+    "settlement", "settle", "settle_result",
+    "market_order", "order_placement",
 })
 
 
