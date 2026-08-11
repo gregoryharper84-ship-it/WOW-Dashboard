@@ -1,0 +1,80 @@
+Status update: **this is a separate production-repair track, not B4**, and the task has not started. The safest move is **do not click Build yet** in its current form.
+
+The read-only audit confirms both defects are real, but they differ from B4 because they ultimately must alter the existing live scoring pipeline to have any effect. The good news is we can use exactly the architecture we just agreed on: **build everything offline first, then wire it incrementally after each gate passes.**
+
+I would click **Revise** and make the plan explicitly two-stage:
+
+```text
+STAGE A — OFFLINE BUILD ONLY
+
+Build and test:
+1. Probability-ledger completeness enforcer
+2. Outlier recompute/review engine
+
+Requirements:
+- pure/additive modules
+- no classifier wiring
+- no pipeline wiring
+- no app.py behavior change
+- no production routing change
+- no qualifying-label behavior change yet
+- no governance/can_execute changes
+- full-repo regression required
+
+Acceptance:
+- incomplete probability ledger is detected correctly
+- complete ledger passes
+- ledger fields survive downstream test scenarios
+- L5/L10 outlier path performs the intended recomputation
+- outlier branch produces explicit resolved/unresolved state
+- focused tests PASS
+- canonical full-repo regression PASS
+
+STOP AFTER STAGE A.
+Independent audit required before Stage B.
+```
+
+Only after that passes should we authorize:
+
+```text
+STAGE B — PRODUCTION WIRING
+
+Defect 1:
+wire the validated probability-ledger enforcer into the actual
+pre-qualifying-label decision choke point.
+
+Defect 2:
+wire the validated outlier recompute immediately after the live
+outlier-gate invocation.
+
+Requirements:
+- prove EVERY probability-bearing/qualifying label is actually covered
+- do not assume a central classifier catches bypass paths;
+  verify moneyline, WNBA, confidence, preflight, and other label paths
+- incomplete ledger must fail closed before qualification
+- valid completed ledger must not be erased by later downstream failure
+- REVIEW_REQUIRED must not silently reach terminal disposition without
+  the recompute/review branch completing or explicitly failing closed
+- full-repo regression PASS
+- independent audit PASS
+```
+
+There’s one point where I would be stricter than Replit’s current audit: it suggested a single classifier choke point may cover all qualifying labels. **That must be proven, not assumed.** The same audit identified qualifying-label writes in moneyline, WNBA, preflight, confidence, and pipeline paths. Before Stage B passes, we need a call-path test demonstrating that none can bypass the new probability contract.
+
+So the state is:
+
+```text
+TASK_205=DRAFT
+CODE_LANDED=0
+
+B4_OVERLAP=NONE
+FOLLOWUP_193_OVERLAP=NONE
+FOLLOWUP_194_OVERLAP=NONE
+FOLLOWUP_195_OVERLAP=NONE
+
+RECOMMENDED_ACTION=REVISE_TO_OFFLINE_STAGE_A
+BUILD_IN_BACKGROUND_AFTER_REVISION=YES
+PRODUCTION_WIRING=SEPARATE_STAGE_B
+```
+
+This gives you the same autonomous-development advantage without allowing a probability-label or outlier change to slip into production before we have independently verified the new machinery.
