@@ -574,36 +574,55 @@ class Test1IPPitchesThrown:
 
     # ── compute() with scalar log ────────────────────────────────────────────
 
-    def test_scalar_log_returns_poisson(self):
+    def test_scalar_log_returns_event_tree_required(self):
+        """
+        After Task-186 repair: 1IP_PITCHES_THROWN always routes to the event-tree
+        firewall (MODEL_1IP_EVENT_TREE_REQUIRED), never to Poisson.
+        hit_probability=None until bf_distribution is supplied.
+        """
+        from gate_engine.hit_probability import MODEL_1IP_EVENT_TREE_REQUIRED
         result = compute(self.LEG, self.SCALAR_LOG)
-        assert result.hit_probability is not None, "Expected Poisson probability, got None"
-        assert result.model_used == MODEL_POISSON
+        assert result.hit_probability is None, (
+            "1IP_PITCHES_THROWN must be blocked by the event-tree firewall; "
+            "Poisson is unconditionally excluded"
+        )
+        assert result.model_used == MODEL_1IP_EVENT_TREE_REQUIRED
 
     def test_scalar_log_not_no_registered_model(self):
         result = compute(self.LEG, self.SCALAR_LOG)
         assert result.model_used != MODEL_NO_REGISTERED_MODEL
 
-    def test_scalar_log_probability_in_range(self):
+    def test_scalar_log_firewall_blocked_note_present(self):
+        """
+        After Task-186 repair: calibration_note contains the firewall sentinel text.
+        Replaces the old probability-in-range assertion (no longer applicable).
+        """
+        from gate_engine.hit_probability import MODEL_1IP_EVENT_TREE_REQUIRED
         result = compute(self.LEG, self.SCALAR_LOG)
-        assert 0.0 <= result.hit_probability <= 1.0
+        assert result.model_used == MODEL_1IP_EVENT_TREE_REQUIRED
+        # Note must reference the firewall block
+        assert "1IP" in result.calibration_note.upper() or "EVENT_TREE" in result.calibration_note.upper()
 
     # ── compute_batch() with dict log (GPT enrichment contract) ─────────────
 
-    def test_dict_log_coerces_via_stat_col_map(self):
+    def test_dict_log_coerces_and_fires_event_tree_firewall(self):
         """
-        compute_batch() must extract values from first_inning_pitches keys.
-        Without the _STAT_COL_MAP entry, _coerce_game_log returns [] → no_data.
+        After Task-186 repair: dict game_log correctly coerced, but 1IP still
+        routes to EVENT_TREE_REQUIRED (not Poisson). hit_probability=None.
+        _coerce_game_log must still work (the coercion logic is intact).
         """
+        from gate_engine.hit_probability import MODEL_1IP_EVENT_TREE_REQUIRED
         results = compute_batch(
             legs=[self.LEG],
             enrichment={"bello_1ip": {"game_log": self.DICT_LOG}},
         )
         r = results[0]
-        assert r["hit_probability"] is not None, (
-            "Dict game_log with first_inning_pitches should coerce to floats; "
-            f"got model_used={r['model_used']!r} note={r['calibration_note']!r}"
+        # After coercion, the 1IP firewall fires — Poisson must not run
+        assert r["model_used"] != MODEL_POISSON, (
+            "mlb_1ip_pitches_poisson_v1 must never run for 1IP_PITCHES_THROWN"
         )
-        assert r["model_used"] == MODEL_POISSON
+        assert r["model_used"] == MODEL_1IP_EVENT_TREE_REQUIRED
+        assert r["hit_probability"] is None
 
     def test_dict_log_not_no_data(self):
         """Dict log must not silently fall back to no_data."""

@@ -105,6 +105,50 @@ _ROUTE_FAIL_BLOCKER_FRAGMENTS: frozenset[str] = frozenset({
     "RUN_INVALID_ROUTE",
 })
 
+# ---------------------------------------------------------------------------
+# Scoped DATA_CONTRACT_FAIL sub-type fragment sets (Task 186 — Step 7)
+# ---------------------------------------------------------------------------
+# These frozensets sub-classify DATA_CONTRACT_FAIL rows by which pipeline
+# layer the failure occurred in.  When a row carries a non-null
+# calibrated_probability AND the blocker maps to a market/money/slip layer,
+# the probability field survives the gate failure (probability_survived=True).
+
+#: Blockers that originate in the market-data / sportsbook-line layer.
+_MARKET_FAIL_FRAGMENTS: frozenset[str] = frozenset({
+    "MARKET_DATA_FAIL",
+    "NO_MARKET_AVAILABLE",
+    "MARKET:NO_MARKET",
+    "MARKET_GATE",
+    "SPORTSBOOK_LINE_MISSING",
+    "MARKET_VERIFICATION_FAILED",
+    "MARKET_CONTRADICTION",
+    "MARKET_STATUS_NONE",
+    "MARKET_JOIN_FAILED",
+})
+
+#: Blockers that originate in the money-edge / EV layer.
+_MONEY_FAIL_FRAGMENTS: frozenset[str] = frozenset({
+    "MONEY_EDGE_FAIL",
+    "NO_VIG_UNAVAILABLE",
+    "EDGE_BELOW_THRESHOLD",
+    "MONEYLINE_PROBABILITY_FAIL",
+    "EV_FAIL",
+    "NO_VIG_FAIL",
+    "MONEY_GATE",
+    "BREAKEVEN_FAIL",
+})
+
+#: Blockers that originate in the slip-construction / portfolio layer.
+_SLIP_FAIL_FRAGMENTS: frozenset[str] = frozenset({
+    "SLIP_CONSTRUCTION_FAIL",
+    "SLIP_GATE",
+    "SLIP_FRAGILITY",
+    "CROSS_SLIP_DUPLICATE",
+    "SLIP_EV",
+    "SLIP_INVALID",
+    "PORTFOLIO_BLOCKED",
+})
+
 
 # ---------------------------------------------------------------------------
 # Labels that represent a positive evaluation outcome (row ran, produced a
@@ -135,6 +179,13 @@ def classify_row_failure(row: dict) -> str:
 
     Returns one of the FAILURE_TIER keys, or "NONE" when the row reached a
     non-failure terminal label.
+
+    Sub-classification logic (Task 186 — Step 7)
+    ---------------------------------------------
+    When a row has a non-null calibrated_probability AND the blocker maps to
+    a market/money/slip layer, the row summary carries probability_survived=True.
+    The sub-type tags (MARKET_DATA_FAIL, MONEY_EDGE_FAIL, SLIP_CONSTRUCTION_FAIL)
+    are injected onto the row dict as row["_failure_sub_type"] for consumers.
     """
     label      = (row.get("terminal_label") or "").upper()
     blockers   = row.get("blockers") or []
@@ -148,6 +199,26 @@ def classify_row_failure(row: dict) -> str:
         # Distinguish acquisition gaps from schema/contract errors
         if any(frag in blocker_str for frag in _ACQUISITION_BLOCKER_FRAGMENTS):
             return "SOURCE_ACQUISITION_FAIL"
+
+        # Scoped sub-type detection: check market/money/slip layers
+        # When calibrated_probability survived, tag the row accordingly.
+        has_prob = row.get("calibrated_probability") is not None
+        if any(frag in blocker_str for frag in _MARKET_FAIL_FRAGMENTS):
+            row["_failure_sub_type"] = "MARKET_DATA_FAIL"
+            if has_prob:
+                row["_probability_survived"] = True
+            return "DATA_CONTRACT_FAIL"
+        if any(frag in blocker_str for frag in _MONEY_FAIL_FRAGMENTS):
+            row["_failure_sub_type"] = "MONEY_EDGE_FAIL"
+            if has_prob:
+                row["_probability_survived"] = True
+            return "DATA_CONTRACT_FAIL"
+        if any(frag in blocker_str for frag in _SLIP_FAIL_FRAGMENTS):
+            row["_failure_sub_type"] = "SLIP_CONSTRUCTION_FAIL"
+            if has_prob:
+                row["_probability_survived"] = True
+            return "DATA_CONTRACT_FAIL"
+
         return "DATA_CONTRACT_FAIL"
 
     # Any other label means the row was at least partially evaluated

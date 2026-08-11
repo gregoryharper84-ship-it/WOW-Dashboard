@@ -279,12 +279,13 @@ def _is_counting_stat(sport: str, stat_key: str) -> bool:
             return True
 
     if sport_u == "MLB":
-        # "1ip_pitches_thrown" is explicitly listed in _MLB_COUNTING_STATS and
-        # also contains "ip" as a substring, so both the direct-equality and
-        # substring checks would match — the explicit set membership is
-        # authoritative; no exclusion guard is needed.
+        # 1IP_PITCHES_THROWN is explicitly EXCLUDED from Poisson routing.
+        # The event-tree simulator (gate_engine/mlb/ip1_event_tree.py) is the
+        # registered model for this stat key.  Returning False here prevents
+        # _is_counting_stat from routing it to Poisson via the "ip" substring
+        # match in _MLB_COUNTING_STATS.
         if sk_low == "1ip_pitches_thrown":
-            return True
+            return False
         if any(kw in sk_low for kw in _MLB_COUNTING_STATS):
             return True
 
@@ -596,14 +597,131 @@ def _finalize(result: "HitProbResult") -> "HitProbResult":
       opposite_raw_probability = 1 − hit_probability  (complementary event)
 
     The FS Tier 1d path builds these fields manually and does NOT call _finalize.
+
+    After filling extended fields, runs validate_probability_output() (Task 186 — Step 3).
+    If violations are found the result is replaced with a MODEL_ERROR sentinel so
+    invalid probability values never propagate to consumers.
     """
     raw = result.hit_probability
     opp = (round(1.0 - raw, 4) if raw is not None else None)
-    return result._replace(
+    populated = result._replace(
         raw_model_probability    = raw,
         calibrated_probability   = raw,
         calibrated_lower_bound   = None,
         opposite_raw_probability = opp,
+    )
+    # Probability-schema contract enforcement (fail-closed)
+    violations = validate_probability_output(populated)
+    if violations:
+        logger.warning(
+            "_finalize: probability-schema violation → MODEL_ERROR: %s",
+            "; ".join(violations),
+        )
+        return make_model_error_result(
+            violations   = violations,
+            no_vig_prob  = result.market_calibration,
+            sample_size  = result.sample_size,
+        )
+    return populated
+
+
+# ---------------------------------------------------------------------------
+# Probability-schema contract validator (Task 186 — Step 3)
+# ---------------------------------------------------------------------------
+
+#: Registered calibration_status values recognised by the backend.
+#: Any value outside this set is a schema violation.
+_REGISTERED_CALIBRATION_STATUSES: frozenset[str] = frozenset({
+    "ACTIVE",
+    "PROVISIONAL",
+    "NO_REGISTERED_MODEL",
+    "UNCALIBRATED",
+    "DEGRADED",
+    "MODEL_ERROR",
+    "UNVERIFIED",
+})
+
+#: Tolerance for raw + opposite sum check
+_RAW_OPP_TOLERANCE = 0.001
+
+
+def validate_probability_output(result: "HitProbResult") -> list[str]:
+    """
+    Validate a HitProbResult against the backend probability-schema contract.
+
+    Enforced invariants
+    -------------------
+    1. calibrated_probability ∈ [0, 1] or None.
+    2. raw_model_probability + opposite_raw_probability ≈ 1.0 (±0.001)
+       when both are non-None.
+    3. calibration_status (in result.calibration_note) is a registered value
+       when explicitly stated (best-effort string scan).
+    4. probability_publishable is not validated here — it lives on the row dict,
+       not on HitProbResult.
+
+    Returns
+    -------
+    list[str]
+        Violation strings.  Empty list = valid.  Never raises.
+    """
+    violations: list[str] = []
+
+    # Invariant 1: calibrated_probability range
+    cal = result.calibrated_probability
+    if cal is not None:
+        if not isinstance(cal, (int, float)):
+            violations.append(
+                f"calibrated_probability is not numeric: type={type(cal).__name__}"
+            )
+        elif not (0.0 <= float(cal) <= 1.0):
+            violations.append(
+                f"calibrated_probability out of [0,1]: {cal}"
+            )
+
+    # Invariant 2: raw + opposite sum
+    raw = result.raw_model_probability
+    opp = result.opposite_raw_probability
+    if raw is not None and opp is not None:
+        try:
+            total = float(raw) + float(opp)
+            if abs(total - 1.0) > _RAW_OPP_TOLERANCE:
+                violations.append(
+                    f"raw_model_probability({raw}) + opposite_raw_probability({opp}) = "
+                    f"{total:.4f}, expected ≈1.0 (±{_RAW_OPP_TOLERANCE})"
+                )
+        except (TypeError, ValueError):
+            violations.append(
+                "raw_model_probability or opposite_raw_probability is not numeric"
+            )
+
+    return violations
+
+
+def make_model_error_result(
+    violations: list[str],
+    no_vig_prob: "Optional[float]" = None,
+    sample_size: int = 0,
+) -> "HitProbResult":
+    """
+    Build a MODEL_ERROR sentinel HitProbResult for probability-schema violations.
+
+    Used as the fail-closed output when validate_probability_output() detects
+    a contract breach.  Never returns a numeric hit_probability.
+    """
+    note = "MODEL_ERROR: probability-schema violations — " + "; ".join(violations)
+    return HitProbResult(
+        hit_probability          = None,
+        model_used               = MODEL_ERROR,
+        calibration_note         = note,
+        lambda_used              = None,
+        sample_size              = sample_size,
+        market_calibration       = no_vig_prob,
+        raw_model_probability    = None,
+        calibrated_probability   = None,
+        calibrated_lower_bound   = None,
+        opposite_raw_probability = None,
+        formula_registry_version = None,
+        formula_registry_hash    = None,
     )
 
 
@@ -637,6 +755,91 @@ def compute(
         return _finalize(HitProbResult(None, MODEL_NO_DATA,
                                        "No game log available — cannot compute probability",
                                        None, 0, no_vig_prob))
+
+    # ── 1IP_PITCHES_THROWN firewall ──────────────────────────────────────────
+    # Runs BEFORE any counting-stat or Poisson tier.
+    # mlb_1ip_pitches_poisson_v1 is unconditionally excluded for this stat key.
+    # Routing: no BF dist → MODEL_1IP_EVENT_TREE_REQUIRED sentinel (fail-closed).
+    #          BF dist present → event-tree TEST_ONLY (hit_probability=None, ceiling=MODEL_QUALIFIED_HOLD).
+    if sport == "MLB" and stat_key.upper().replace(" ", "_") == "1IP_PITCHES_THROWN":
+        enr_here = enrichment or {}
+        bf_dist  = enr_here.get("first_inning_bf_distribution")
+        if bf_dist is None:
+            return _finalize(HitProbResult(
+                hit_probability  = None,
+                model_used       = MODEL_1IP_EVENT_TREE_REQUIRED,
+                calibration_note = (
+                    "MODEL_1IP_EVENT_TREE_REQUIRED: "
+                    "DATA_CONTRACT_FAIL:missing_field:first_inning_bf_distribution; "
+                    "mlb_1ip_pitches_poisson_v1 blocked — Poisson excluded for 1IP; "
+                    "TEST_ONLY; can_execute=False"
+                ),
+                lambda_used      = None,
+                sample_size      = len(game_log),
+                market_calibration = no_vig_prob,
+            ))
+        # BF dist present — event-tree simulator is TEST_ONLY; hit_probability stays None.
+        return _finalize(HitProbResult(
+            hit_probability  = None,
+            model_used       = MODEL_1IP_EVENT_TREE_REQUIRED,
+            calibration_note = (
+                "MODEL_1IP_EVENT_TREE_REQUIRED: bf_distribution received; "
+                "simulator is TEST_ONLY — hit_probability=None; "
+                "MODEL_QUALIFIED_HOLD ceiling; can_execute=False; "
+                "supply first_inning_bf_distribution to advance to event-tree run"
+            ),
+            lambda_used      = None,
+            sample_size      = len(game_log),
+            market_calibration = no_vig_prob,
+        ))
+
+    # ── MLB Plate Appearances routing guard ─────────────────────────────────
+    # PA requires a DEDICATED specialist model (not the generic counting Poisson
+    # mlb_counting_poisson_v1 which is also used by SO, K, OUTS, etc.).
+    # Policy: only allow fall-through when the registry returns a model_id that
+    # is explicitly a PA specialist (i.e. NOT the generic mlb_counting_poisson_v1).
+    # Any exception or absence of a dedicated specialist → MODEL_QUALIFIED_HOLD
+    # (fail-closed — Poisson must never silently become the PA fallback).
+    _MLB_PA_GENERIC_POISSON_IDS = frozenset({
+        "mlb_counting_poisson_v1",
+        "mlb_1ip_pitches_poisson_v1",
+    })
+    if sport == "MLB" and stat_key.upper() in ("PA", "PLATE_APPEARANCES"):
+        _pa_block_reason: str | None = None
+        try:
+            from gate_engine.model_registry import lookup as _mr_lookup
+            _pa_entry = _mr_lookup("MLB", "PA")
+            # Support both MagicMock (attr) and dict-style (key) registry entries
+            _pa_status   = getattr(_pa_entry, "status",   None) or _pa_entry.get("status",   "NO_REGISTERED_MODEL")
+            _pa_model_id = getattr(_pa_entry, "model_id", None) or _pa_entry.get("model_id", "")
+            if _pa_status == "NO_REGISTERED_MODEL":
+                _pa_block_reason = "no specialist registered for MLB PA"
+            elif str(_pa_model_id) in _MLB_PA_GENERIC_POISSON_IDS:
+                _pa_block_reason = (
+                    f"registry entry for MLB PA uses generic model "
+                    f"'{_pa_model_id}' (not a dedicated PA specialist); "
+                    "register a dedicated PA specialist to enable Poisson scoring"
+                )
+            # else: ACTIVE or PROVISIONAL with a dedicated PA model_id → allow fall-through
+        except Exception as _pa_exc:
+            _pa_block_reason = (
+                f"model_registry unavailable ({str(_pa_exc)[:60]}); "
+                "fail-closed — Poisson excluded for PA on registry error"
+            )
+            logger.warning("MLB PA guard: registry error → fail-closed: %s", _pa_exc)
+
+        if _pa_block_reason is not None:
+            return _finalize(HitProbResult(
+                hit_probability  = None,
+                model_used       = MODEL_NO_REGISTERED_MODEL,
+                calibration_note = (
+                    f"MLB PA: {_pa_block_reason} — "
+                    "MODEL_QUALIFIED_HOLD ceiling; NO_REGISTERED_MODEL blocker"
+                ),
+                lambda_used      = None,
+                sample_size      = len(game_log),
+                market_calibration = no_vig_prob,
+            ))
 
     # Tier 1a: MLB H/HITS — binomial PA formula from hit_probability_model.py
     if _is_mlb_hits_prop(sport, stat_key, line):

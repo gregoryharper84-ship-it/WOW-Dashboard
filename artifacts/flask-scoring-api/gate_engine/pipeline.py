@@ -940,6 +940,36 @@ def run_pipeline(
         _derive_four_lanes(row)
 
     # -------------------------------------------------------------------
+    # Task-186 — Reconstructed Evidence Promotion Cap
+    # Must run AFTER _derive_four_lanes() because confidence_lane is one of
+    # the reconstruction signals (it can be stamped "RECONSTRUCTED" by lane
+    # derivation, which runs only above).  Checking before lane derivation
+    # would miss rows whose reconstruction is identified only by lane logic.
+    #
+    # Rows with enrichment_source=RECONSTRUCTED (or equivalent provenance
+    # tag, including confidence_lane=RECONSTRUCTED) must not reach
+    # FINAL_APPROVED or MODEL_QUALIFIED_HOLD.
+    # Downgrade to WATCH and stamp RECONSTRUCTED_EVIDENCE_CEILING.
+    # -------------------------------------------------------------------
+    for row in rows:
+        _recon_label = row.get("terminal_label") or ""
+        _is_reconstructed = (
+            row.get("enrichment_source") == "RECONSTRUCTED"
+            or row.get("provenance_source_type") == "RECONSTRUCTED"
+            or (row.get("provenance") or {}).get("source_type") == "RECONSTRUCTED"
+            or "RECONSTRUCTED" in str(row.get("confidence_lane") or "").upper()
+        )
+        if _is_reconstructed and _recon_label in (
+            PropLabel.FINAL_APPROVED.value,
+            PropLabel.MODEL_QUALIFIED_HOLD.value,
+        ):
+            row["terminal_label"] = PropLabel.WATCH.value
+            row.setdefault("blockers", []).append(
+                "RECONSTRUCTED_EVIDENCE_CEILING:enrichment_source=RECONSTRUCTED "
+                "→ max_label=WATCH; cannot reach FINAL_APPROVED or MODEL_QUALIFIED_HOLD"
+            )
+
+    # -------------------------------------------------------------------
     # WOW Stage 2 — Weakest-Leg Finalizer (reviewer-mandated, code-enforced)
     # Runs after all label mutations are finalized and lanes are stamped.
     # Identifies and removes the weakest leg when the gap is material (>0.05)

@@ -1036,8 +1036,16 @@ class Test1IPEnrichmentE2E:
         """
         The leg_id-keyed remap in Step F must copy player:prop entries to leg_id
         so compute_batch can find them.
+
+        After Task-186 repair: 1IP_PITCHES_THROWN is blocked by the event-tree
+        firewall; the remap still works (enrichment is found) but hit_probability
+        is None and model_used=MODEL_1IP_EVENT_TREE_REQUIRED (not Poisson).
         """
-        from gate_engine.hit_probability import compute_batch as _compute_hit_prob
+        from gate_engine.hit_probability import (
+            compute_batch as _compute_hit_prob,
+            MODEL_1IP_EVENT_TREE_REQUIRED,
+            MODEL_POISSON,
+        )
         row = {**_1IP_RESOLVED_ROW}
         leg_id = row["leg_id"]
         player = row["player_name_resolved"].lower()
@@ -1054,19 +1062,22 @@ class Test1IPEnrichmentE2E:
             if pkey in prob_enrichment:
                 prob_enrichment[lid] = prob_enrichment[pkey]
 
-        # Now compute_batch should find the game_log
+        # Now compute_batch should find the game_log (remap succeeded)
         leg = {
             **row,
             "player_name": row["player_name_resolved"],
         }
         results = _compute_hit_prob([leg], prob_enrichment)
         r = results[0]
-        assert r["hit_probability"] is not None, (
-            f"compute_batch must return a Poisson result after remap; "
-            f"got model_used={r['model_used']!r} note={r['calibration_note']!r}"
+        # After Task-186 repair: the 1IP firewall blocks Poisson unconditionally
+        assert r["model_used"] != MODEL_POISSON, (
+            "mlb_1ip_pitches_poisson_v1 must never fire for 1IP_PITCHES_THROWN"
         )
-        assert r["model_used"] == "poisson_l10", (
-            f"Expected poisson_l10, got {r['model_used']!r}"
+        assert r["model_used"] == MODEL_1IP_EVENT_TREE_REQUIRED, (
+            f"Expected MODEL_1IP_EVENT_TREE_REQUIRED, got {r['model_used']!r}"
+        )
+        assert r["hit_probability"] is None, (
+            "1IP_PITCHES_THROWN must return hit_probability=None until bf_distribution is supplied"
         )
 
     def test_compute_batch_without_remap_returns_no_data(self):
@@ -1174,11 +1185,18 @@ class Test1IPEnrichmentE2E:
 
         leg = legs[0]
         hp = leg.get("hit_probability")
-        assert hp is not None, (
-            f"hit_probability must not be None when game_log is supplied; "
-            f"model_used={leg.get('hit_probability_model_used')!r}"
+        model = leg.get("hit_probability_model_used") or leg.get("model_used")
+        # After Task-186 repair: 1IP_PITCHES_THROWN is blocked by the event-tree
+        # firewall; hit_probability=None and model=MODEL_1IP_EVENT_TREE_REQUIRED.
+        # Poisson must never fire for 1IP_PITCHES_THROWN.
+        assert hp is None, (
+            f"After Task-186 repair, 1IP_PITCHES_THROWN must return hit_probability=None; "
+            f"got hp={hp!r} model_used={model!r}"
         )
-        assert 0.0 <= hp <= 1.0, f"hit_probability out of range: {hp}"
+        assert model != "poisson_l10", (
+            f"mlb_1ip_pitches_poisson_v1 must never run for 1IP_PITCHES_THROWN; "
+            f"got model_used={model!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

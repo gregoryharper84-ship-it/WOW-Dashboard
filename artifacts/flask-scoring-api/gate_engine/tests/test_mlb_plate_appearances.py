@@ -262,7 +262,12 @@ class TestPlateAppearancesGameLogFieldMapping:
 # ===========================================================================
 
 class TestPlateAppearancesHitProbabilityRouting:
-    """_is_counting_stat must return True for MLB PA so Poisson model fires."""
+    """
+    MLB PA routing — after Task-186 repair the PA guard is fail-closed.
+    PA has no dedicated specialist in the registry (only the generic
+    mlb_counting_poisson_v1 which is shared with SO/K/OUTS).
+    compute() must return NO_REGISTERED_MODEL/None, never generic Poisson.
+    """
 
     def test_is_counting_stat_pa(self):
         from gate_engine.hit_probability import _is_counting_stat
@@ -286,15 +291,15 @@ class TestPlateAppearancesHitProbabilityRouting:
         from gate_engine.hit_probability import _is_mlb_hits_prop
         assert _is_mlb_hits_prop("MLB", "PA", 3.5) is False
 
-    def test_compute_pa_more_produces_probability(self):
+    def test_compute_pa_more_blocked_no_specialist(self):
         """
-        compute() with MLB PA and a 10-game log must return a non-None
-        hit_probability via the Poisson path (MODEL_QUALIFIED_HOLD tier).
-        Not DATA_CONTRACT_FAIL / NO_REGISTERED_MODEL.
+        After Task-186 repair: compute() with MLB PA returns NO_REGISTERED_MODEL
+        because the registry entry uses the generic mlb_counting_poisson_v1 model
+        (not a dedicated PA specialist). hit_probability=None, never Poisson.
         """
-        from gate_engine.hit_probability import compute, MODEL_NO_REGISTERED_MODEL, MODEL_NO_DATA
+        from gate_engine.hit_probability import compute, MODEL_NO_REGISTERED_MODEL, MODEL_POISSON
 
-        game_log = [4.0, 3.0, 5.0, 4.0, 3.0, 4.0, 5.0, 3.0, 4.0, 4.0]  # 10 games
+        game_log = [4.0, 3.0, 5.0, 4.0, 3.0, 4.0, 5.0, 3.0, 4.0, 4.0]
         leg = {
             "sport":       "MLB",
             "stat_key":    "PA",
@@ -304,18 +309,19 @@ class TestPlateAppearancesHitProbabilityRouting:
         }
         result = compute(leg, game_log)
 
-        assert result.hit_probability is not None, (
-            f"Expected a probability, got None. model_used={result.model_used!r}, "
-            f"note={result.calibration_note!r}"
+        assert result.model_used != MODEL_POISSON, (
+            "PA must not route to generic Poisson (mlb_counting_poisson_v1); "
+            "a dedicated specialist must be registered first"
         )
-        assert result.model_used not in (MODEL_NO_REGISTERED_MODEL, MODEL_NO_DATA), (
-            f"Routed to fail-closed path: {result.model_used!r}"
+        assert result.model_used == MODEL_NO_REGISTERED_MODEL, (
+            f"Expected NO_REGISTERED_MODEL for PA with generic Poisson registry; "
+            f"got model_used={result.model_used!r}, note={result.calibration_note!r}"
         )
-        assert 0.0 <= result.hit_probability <= 1.0
+        assert result.hit_probability is None
 
-    def test_compute_pa_less_produces_probability(self):
-        """LESS side also produces a valid probability for PA."""
-        from gate_engine.hit_probability import compute, MODEL_NO_REGISTERED_MODEL
+    def test_compute_pa_less_blocked_no_specialist(self):
+        """LESS side also returns NO_REGISTERED_MODEL — Poisson excluded for PA."""
+        from gate_engine.hit_probability import compute, MODEL_NO_REGISTERED_MODEL, MODEL_POISSON
 
         game_log = [4.0, 3.0, 5.0, 4.0, 3.0, 4.0, 5.0, 3.0, 4.0, 4.0]
         leg = {
@@ -326,20 +332,18 @@ class TestPlateAppearancesHitProbabilityRouting:
             "player_name": "Wade Meckler",
         }
         result = compute(leg, game_log)
-        assert result.hit_probability is not None
-        assert result.model_used != MODEL_NO_REGISTERED_MODEL
-        assert 0.0 <= result.hit_probability <= 1.0
+        assert result.model_used != MODEL_POISSON
+        assert result.model_used == MODEL_NO_REGISTERED_MODEL
+        assert result.hit_probability is None
 
-    def test_compute_pa_more_and_less_sum_to_one(self):
-        """Poisson MORE + LESS probabilities must sum to ~1.0 (complementary)."""
+    def test_compute_pa_calibration_note_mentions_ceiling(self):
+        """calibration_note for blocked PA must mention MODEL_QUALIFIED_HOLD or no specialist."""
         from gate_engine.hit_probability import compute
 
-        game_log = [4.0, 3.0, 5.0, 4.0, 3.0, 4.0, 5.0, 3.0, 4.0, 4.0]
-        base = {"sport": "MLB", "stat_key": "PA", "line_value": 3.5, "player_name": "Meckler"}
-
-        p_more = compute({**base, "side": "MORE"}, game_log).hit_probability
-        p_less = compute({**base, "side": "LESS"}, game_log).hit_probability
-
-        assert p_more is not None and p_less is not None
-        # For a half-integer line the Poisson CDF split won't be exactly 1.0 but close
-        assert abs(p_more + p_less - 1.0) < 0.02, f"MORE={p_more} + LESS={p_less} != ~1.0"
+        leg = {"sport": "MLB", "stat_key": "PA", "line_value": 3.5, "side": "MORE"}
+        result = compute(leg, [4.0, 3.0, 5.0])
+        assert (
+            "MODEL_QUALIFIED_HOLD" in result.calibration_note
+            or "no specialist" in result.calibration_note.lower()
+            or "generic" in result.calibration_note.lower()
+        ), f"calibration_note should explain the block: {result.calibration_note!r}"

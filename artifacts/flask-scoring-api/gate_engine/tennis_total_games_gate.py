@@ -90,6 +90,37 @@ def run(row: dict[str, Any]) -> None:
     try:
         from gate_engine import tennis_total_games as _ttg
         result = _ttg.score(row, enrichment)
+        # ── fail-closed probability validation ──────────────────────────────
+        # If the solver returns out-of-range probabilities, treat as MODEL_ERROR.
+        # Tennis rows with out-of-range probabilities must not propagate.
+        _cal_sel = result.get("cal_selected")
+        _raw_m   = result.get("raw_more")
+        _raw_e   = result.get("raw_exact")
+        _raw_l   = result.get("raw_less")
+        _prob_violation = None
+        if _cal_sel is not None:
+            if not (0.0 <= float(_cal_sel) <= 1.0):
+                _prob_violation = f"cal_selected={_cal_sel} out of [0,1]"
+        if _prob_violation is None and _raw_m is not None and _raw_e is not None and _raw_l is not None:
+            _triple_sum = float(_raw_m) + float(_raw_e) + float(_raw_l)
+            if abs(_triple_sum - 1.0) > 0.01:
+                _prob_violation = (
+                    f"raw_more({_raw_m})+raw_exact({_raw_e})+raw_less({_raw_l})"
+                    f"={_triple_sum:.4f} ≠ 1.0"
+                )
+        if _prob_violation:
+            logger.warning(
+                "tennis_total_games_gate: probability out-of-range → MODEL_ERROR: %s",
+                _prob_violation,
+            )
+            result = {
+                "can_execute":     False,
+                "model_status":    "MODEL_ERROR",
+                "classification":  "Reject",
+                "blockers":        [f"TENNIS_TG_PROBABILITY_OUT_OF_RANGE:{_prob_violation}"],
+                "cal_selected":    None,
+                "cal_lower_bound": None,
+            }
     except Exception as exc:
         logger.exception("tennis_total_games_gate: model error: %s", exc)
         result = {
