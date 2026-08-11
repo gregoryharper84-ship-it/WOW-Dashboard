@@ -16,8 +16,9 @@ assembles a ValidatedAdapterResult containing:
 All outputs are advisory only. Nothing here alters production probabilities,
 changes terminal labels, or triggers any live-market action.
 
-FOLLOWUP_193 must be resolved before authoritative decision integration.
-FOLLOWUP_195 must be resolved before B4 closure.
+FOLLOWUP_193 (Pipeline State Separation + Scoped DATA_CONTRACT_FAIL) must be resolved before authoritative decision integration.
+FOLLOWUP_194 (Settlement Worker Reliability) must be resolved before authoritative decision integration.
+FOLLOWUP_195 (Full-Pipeline Integration Fixtures) must be resolved before B4 closure.
 
 can_execute = False
 """
@@ -170,8 +171,9 @@ class ModelValidationWrapper:
             "ceiling":               "MODEL_QUALIFIED_HOLD",
             "can_execute":           False,
             "followup_blockers": [
-                "FOLLOWUP_193: settlement worker backoff/heartbeat — required for authoritative decision integration",
-                "FOLLOWUP_195: regression fixtures — required for B4 closure",
+                "FOLLOWUP_193: Pipeline State Separation + Scoped DATA_CONTRACT_FAIL — required for authoritative decision integration",
+                "FOLLOWUP_194: Settlement Worker Reliability — required for authoritative decision integration",
+                "FOLLOWUP_195: Full-Pipeline Integration Fixtures — required for B4 closure",
             ],
         }
 
