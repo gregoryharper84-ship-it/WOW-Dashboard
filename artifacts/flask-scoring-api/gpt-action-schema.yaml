@@ -718,6 +718,191 @@ paths:
       security:
         - ApiKeyAuth: []
 
+  /learning-log:
+    post:
+      operationId: saveLearningLog
+      x-openai-isConsequential: false
+      summary: Save a slip postmortem to the permanent learning log
+      description: >
+        Saves a slip postmortem entry to the durable wow_learning_log table.
+        Idempotent on entry_id — retrying with the same entry_id never creates
+        a duplicate row; the existing record is returned with created=false.
+        Use a stable, human-readable entry_id such as
+        "pm-2026-08-11-aja-wilson-points" so the GPT can safely retry on
+        network failure without producing duplicates.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - entry_id
+                - date
+                - slip_result
+                - legs
+                - root_cause
+              additionalProperties: true
+              properties:
+                entry_id:
+                  type: string
+                  description: >
+                    Stable unique identifier for this postmortem, e.g.
+                    "pm-2026-08-11-aja-wilson-points". Used as the idempotency
+                    key — retrying with the same value returns the existing row.
+                  example: "pm-2026-08-11-aja-wilson-points"
+                date:
+                  type: string
+                  description: "Game date YYYY-MM-DD"
+                  example: "2026-08-11"
+                slip_result:
+                  type: string
+                  enum: [WIN, LOSS, PUSH, MIXED]
+                  description: Overall slip outcome
+                legs:
+                  type: array
+                  description: >
+                    Array of leg objects. Each leg should include player, prop,
+                    line, side, and result at minimum. Structure is flexible.
+                  items:
+                    type: object
+                    additionalProperties: true
+                  minItems: 1
+                root_cause:
+                  type: string
+                  description: >
+                    One-to-three sentence analysis of why this slip hit or
+                    missed. Required — this is the primary learning signal.
+                  example: "Model over-estimated usage; role uncertainty not captured."
+                correlation_flag:
+                  type: boolean
+                  nullable: true
+                  description: "True if legs were correlated; false otherwise"
+                execution_discipline:
+                  type: string
+                  nullable: true
+                  description: "Execution tier or label, e.g. TIER_1, TIER_2"
+                patch_recommendation:
+                  type: string
+                  nullable: true
+                  description: "Optional recommended model or process patch"
+            example:
+              entry_id: "pm-2026-08-11-aja-wilson-points"
+              date: "2026-08-11"
+              slip_result: WIN
+              legs:
+                - player: "A'ja Wilson"
+                  prop: points
+                  line: 22.5
+                  side: MORE
+                  result: HIT
+                  actual: 28
+              root_cause: "Strong market confirmation; L10 aligned with model projection."
+              correlation_flag: false
+              execution_discipline: "TIER_1"
+              patch_recommendation: "No patch required."
+      responses:
+        "200":
+          description: Entry saved (or already existed)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  saved:
+                    type: boolean
+                    example: true
+                  entry_id:
+                    type: string
+                    example: "pm-2026-08-11-aja-wilson-points"
+                  created:
+                    type: boolean
+                    description: "true = new row inserted; false = existing row returned unchanged"
+                    example: true
+        "400":
+          description: Validation error — missing or invalid required fields
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: false
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        "401":
+          description: Unauthorized — missing or invalid API key
+      security:
+        - ApiKeyAuth: []
+
+    get:
+      operationId: getLearningLog
+      x-openai-isConsequential: false
+      summary: Retrieve learning-log postmortem entries
+      description: >
+        Fetch entries from the permanent learning log.
+        Provide entry_id to retrieve a single exact record (found=true/false).
+        Omit entry_id to retrieve recent entries, newest-first, bounded by
+        limit (default 50, max 100).
+      parameters:
+        - name: entry_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            When supplied, return only this exact entry. Returns found=false
+            (not an error) when no row exists for this entry_id.
+          example: "pm-2026-08-11-aja-wilson-points"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+          description: "Max records to return when listing (no entry_id). Silently capped at 100."
+      responses:
+        "200":
+          description: Learning log results
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - description: Single-record lookup (entry_id supplied)
+                    type: object
+                    properties:
+                      found:
+                        type: boolean
+                      entry_id:
+                        type: string
+                        description: "Echo of the requested entry_id (only when found=false)"
+                      record:
+                        type: object
+                        description: "Full saved record (only when found=true)"
+                        additionalProperties: true
+                  - description: List response (no entry_id supplied)
+                    type: object
+                    properties:
+                      found:
+                        type: boolean
+                        example: true
+                      count:
+                        type: integer
+                        example: 3
+                      records:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: true
+        "401":
+          description: Unauthorized — missing or invalid API key
+      security:
+        - ApiKeyAuth: []
+
   /scan-results:
     get:
       operationId: getScanResults

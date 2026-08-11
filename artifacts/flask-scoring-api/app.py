@@ -35549,6 +35549,171 @@ def wow_backtest_modes():
 # ===========================================================================
 
 
+# ===========================================================================
+# Learning Log — permanent postmortem ledger
+# ===========================================================================
+# Durable, database-backed record of slip postmortems for calibration and
+# patch tracking.  Every entry is idempotent on entry_id — retries from the
+# GPT session never produce duplicate rows.
+#
+# Auth: same @require_api_key pattern as every other WOW endpoint.
+#   • GPT Actions send the key as X-API-Key header (ApiKeyAuth scheme).
+#   • All endpoints are behind SCORING_API_KEY — no anonymous access.
+#
+# Security note: GPT Action endpoints are authenticated via SCORING_API_KEY.
+# The key is stored as a Replit Secret and is never embedded in the schema
+# file.  The OpenAPI schema documents the ApiKeyAuth scheme; callers must
+# supply the key in the ChatGPT Action configuration.
+
+_LEARNING_LOG_VALID_RESULTS = frozenset({"WIN", "LOSS", "PUSH", "MIXED"})
+_LEARNING_LOG_LIMIT_MAX = 100
+
+
+def _ensure_learning_log_table(conn):
+    """CREATE TABLE IF NOT EXISTS — safe to call on every request."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS wow_learning_log (
+                entry_id              TEXT PRIMARY KEY,
+                created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                date                  TEXT NOT NULL,
+                slip_result           TEXT NOT NULL,
+                legs                  JSONB NOT NULL,
+                correlation_flag      BOOLEAN,
+                execution_discipline  TEXT,
+                root_cause            TEXT NOT NULL,
+                patch_recommendation  TEXT,
+                payload               JSONB
+            )
+        """)
+    conn.commit()
+
+
+@app.route("/learning-log", methods=["POST"])
+@require_api_key
+def learning_log_save():
+    """
+    operationId: saveLearningLog
+    Save a slip postmortem entry. Upserts on entry_id — retries are safe.
+    Returns {saved, entry_id, created} where created=false means the row
+    already existed and was not overwritten.
+    """
+    body = request.get_json(silent=True) or {}
+
+    entry_id    = (body.get("entry_id")    or "").strip()
+    date        = (body.get("date")        or "").strip()
+    slip_result = (body.get("slip_result") or "").strip().upper()
+    legs        = body.get("legs")
+    root_cause  = (body.get("root_cause")  or "").strip()
+
+    errors = []
+    if not entry_id:
+        errors.append("entry_id is required")
+    if not date:
+        errors.append("date is required")
+    if not slip_result:
+        errors.append("slip_result is required")
+    elif slip_result not in _LEARNING_LOG_VALID_RESULTS:
+        errors.append(
+            f"slip_result must be one of {sorted(_LEARNING_LOG_VALID_RESULTS)}"
+        )
+    if not isinstance(legs, list) or len(legs) == 0:
+        errors.append("legs must be a non-empty list")
+    if not root_cause:
+        errors.append("root_cause is required")
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
+
+    correlation_flag     = body.get("correlation_flag")
+    execution_discipline = (body.get("execution_discipline") or "").strip() or None
+    patch_recommendation = (body.get("patch_recommendation") or "").strip() or None
+    # Store entire original request payload for forensic replay.
+    payload_json = json.dumps(body)
+
+    try:
+        conn = get_db_conn()
+        _ensure_learning_log_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO wow_learning_log
+                    (entry_id, date, slip_result, legs, correlation_flag,
+                     execution_discipline, root_cause, patch_recommendation, payload)
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (entry_id) DO NOTHING
+                """,
+                (
+                    entry_id, date, slip_result, json.dumps(legs),
+                    correlation_flag, execution_discipline, root_cause,
+                    patch_recommendation, payload_json,
+                ),
+            )
+            inserted = cur.rowcount == 1
+        conn.commit()
+        conn.close()
+        return jsonify({"saved": True, "entry_id": entry_id, "created": inserted}), 200
+    except Exception as exc:
+        app.logger.exception("[learning-log POST] %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/learning-log", methods=["GET"])
+@require_api_key
+def learning_log_get():
+    """
+    operationId: getLearningLog
+    Retrieve learning-log entries.
+    • ?entry_id=<id>  → return the exact saved record (found=true/false).
+    • no entry_id     → return recent entries, newest-first, bounded by limit
+                        (default 50, max 100).
+    """
+    entry_id = (request.args.get("entry_id") or "").strip() or None
+    try:
+        limit = min(int(request.args.get("limit", 50)), _LEARNING_LOG_LIMIT_MAX)
+    except (TypeError, ValueError):
+        limit = 50
+
+    try:
+        conn = get_db_conn()
+        _ensure_learning_log_table(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if entry_id:
+                cur.execute(
+                    "SELECT * FROM wow_learning_log WHERE entry_id = %s",
+                    (entry_id,),
+                )
+                row = cur.fetchone()
+                conn.close()
+                if row is None:
+                    return jsonify({"found": False, "entry_id": entry_id}), 200
+                return app.response_class(
+                    json.dumps({"found": True, "record": dict(row)}, default=str),
+                    mimetype="application/json",
+                ), 200
+            else:
+                cur.execute(
+                    "SELECT * FROM wow_learning_log ORDER BY created_at DESC LIMIT %s",
+                    (limit,),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return app.response_class(
+            json.dumps(
+                {"found": True, "count": len(rows), "records": rows},
+                default=str,
+            ),
+            mimetype="application/json",
+        ), 200
+    except Exception as exc:
+        app.logger.exception("[learning-log GET] %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ===========================================================================
+# END — Learning Log
+# ===========================================================================
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 25643))
     app.run(host="0.0.0.0", port=port, debug=False)
