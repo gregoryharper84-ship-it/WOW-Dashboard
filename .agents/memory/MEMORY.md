@@ -92,3 +92,4 @@
 - [B3C-R1 repair](b3c-r1-repair.md) — abort-state (fail-fast) + cost-before-scan restructure + prompt hardening; 21 new tests; 9 pre-existing failures unchanged; place_bet/settlement still missing from FORBIDDEN_GOVERNANCE_KEYS.
 - [B3C-R2 canary run](b3c-r2-canary.md) — first 6/6 ACCEPTED run; pipeline_status=FAILED was a bug (orch.bundle.status → orch.bundle.bundle_status); R2 run ID 92faf125; $0.022012 total; all safety invariants green.
 - [Acquisition routing / identity plumbing patch](acquisition-routing-patch.md) — WNBA identity/ merge/ market join + MLB NOT_CALLED + image base64; _validate_critical_field_value returns True for non-role_status fields (never use for non-role_status cleanup).
+- [B4 WNBA/NBA Props Lane Adapter](b4-wnba-props-lane-adapter.md) — lanes/wnba_props/ + game_script/ + model_validation/; drift monitor needs shared histogram range; object.__setattr__ bypasses frozen; FOLLOWUP_193/195 still block authoritative integration.
