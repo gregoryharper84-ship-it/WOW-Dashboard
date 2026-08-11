@@ -357,5 +357,328 @@ class TestSettlementWorkerConfig(unittest.TestCase):
         self.assertIn(type(val), (type(None), str))
 
 
+# ── Tests: behavioral idempotency (cursor-mock proof) ─────────────────────────
+
+class TestSettlementWorkerIdempotencyBehavioral(unittest.TestCase):
+    """
+    Behavioral proof that rerunning _grade_open_prop_settlements() and
+    _grade_open_kalshi_settlements() against an already-settled fixture row
+    does not duplicate the settlement outcome or call conn.commit() a second
+    time.
+
+    Every test here uses cursor mocks — no source-text inspection.
+
+    Prop path: the UPDATE idempotency guard is `AND settlement_status = 'OPEN'`.
+    When a row is already SETTLED, the UPDATE matches 0 rows (rowcount=0),
+    `graded` stays 0, and `conn.commit()` is skipped.
+
+    Kalshi path: same guard on `kalshi_forecast_ledger`; same proof.
+    """
+
+    # ── Fixture row matching the tuple unpack in _grade_open_prop_settlements:
+    # rec_id, event_key, selected_side, model_prob, entry_price,
+    # closing_price, raw_row
+    PROP_FIXTURE_ROW = (
+        "fixture_row_001",       # id
+        "EVENT:MLB:GAME:001",    # event_key
+        "OVER",                  # selected_side
+        0.62,                    # model_probability
+        -110,                    # entry_price
+        -115,                    # closing_price
+        {                        # raw_row  (must be a dict, not None)
+            "official_event_result":  "WIN",
+            "selected_side":          "OVER",
+            "selected_side_is_home":  True,
+            "platform_display_result": "WIN",
+            "platform_payment":       90.91,
+            "stake":                  100.0,
+            "promo_protection_active": False,
+        },
+    )
+
+    # ── Fixture row matching _grade_open_kalshi_settlements:
+    # rec_id, market_ticker, side_yes_no, model_prob
+    KALSHI_FIXTURE_ROW = (
+        "kalshi_fixture_001",  # id
+        "KXMLB-2026-001",      # market_ticker
+        "YES",                 # side_yes_no
+        0.58,                  # model_probability
+    )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _prop_cursor(self, update_rowcount: int) -> MagicMock:
+        """Cursor that returns the prop fixture on SELECT and reports
+        update_rowcount on the subsequent UPDATE."""
+        cur = MagicMock()
+        cur.fetchall.return_value = [self.PROP_FIXTURE_ROW]
+        cur.rowcount = update_rowcount
+        return cur
+
+    def _kalshi_cursor(self, update_rowcount: int) -> MagicMock:
+        cur = MagicMock()
+        cur.fetchall.return_value = [self.KALSHI_FIXTURE_ROW]
+        cur.rowcount = update_rowcount
+        return cur
+
+    # ------------------------------------------------------------------
+    # Prop settlement — core idempotency proof
+    # ------------------------------------------------------------------
+
+    def test_fixture_rerun_does_not_duplicate_outcome(self):
+        """
+        Core fixture-settlement proof (user requirement):
+        Run the grader twice against the same fixture row.
+          Run 1 — UPDATE rowcount=1  → row is freshly settled, graded=1.
+          Run 2 — UPDATE rowcount=0  → row is already SETTLED, graded=0.
+        Total graded must equal 1 (not 2), and conn.commit must be called
+        exactly once across both runs.
+        """
+        conn = MagicMock()
+
+        # Run 1: the row is OPEN; UPDATE succeeds
+        cur = self._prop_cursor(update_rowcount=1)
+        with patch("gate_engine.ml_settlement_truth.reconcile_settlement",
+                   return_value={"model_result": "WIN"}):
+            first = sw._grade_open_prop_settlements(cur, conn)
+
+        # Run 2: the row is now SETTLED; UPDATE is a no-op (rowcount=0)
+        cur2 = self._prop_cursor(update_rowcount=0)
+        with patch("gate_engine.ml_settlement_truth.reconcile_settlement",
+                   return_value={"model_result": "WIN"}):
+            second = sw._grade_open_prop_settlements(cur2, conn)
+
+        self.assertEqual(first, 1,
+                         "run 1: fixture row must be graded exactly once")
+        self.assertEqual(second, 0,
+                         "run 2: already-settled row must not be re-graded")
+        self.assertEqual(first + second, 1,
+                         "total graded across two runs must equal 1 — "
+                         "outcome must not be duplicated")
+        self.assertEqual(conn.commit.call_count, 1,
+                         "conn.commit must be called exactly once "
+                         "(on run 1 only, not again on run 2)")
+
+    def test_update_rowcount_zero_means_not_graded(self):
+        """
+        When the UPDATE fires but cur.rowcount == 0 (the row was already
+        SETTLED — e.g. settled by the other gunicorn worker between the
+        SELECT and this UPDATE), graded must remain 0 and conn.commit()
+        must not be called.
+        """
+        conn = MagicMock()
+        cur = self._prop_cursor(update_rowcount=0)
+
+        with patch("gate_engine.ml_settlement_truth.reconcile_settlement",
+                   return_value={"model_result": "WIN"}):
+            result = sw._grade_open_prop_settlements(cur, conn)
+
+        self.assertEqual(result, 0,
+                         "graded must be 0 when UPDATE rowcount=0")
+        conn.commit.assert_not_called()
+
+    def test_update_rowcount_one_grades_and_commits(self):
+        """
+        Positive control: when the UPDATE affects 1 row (the row was OPEN),
+        graded must be 1 and conn.commit() must be called exactly once.
+        """
+        conn = MagicMock()
+        cur = self._prop_cursor(update_rowcount=1)
+
+        with patch("gate_engine.ml_settlement_truth.reconcile_settlement",
+                   return_value={"model_result": "WIN"}):
+            result = sw._grade_open_prop_settlements(cur, conn)
+
+        self.assertEqual(result, 1)
+        conn.commit.assert_called_once()
+
+    def test_select_open_guard_returns_empty_for_settled_row(self):
+        """
+        The SELECT itself carries WHERE settlement_status = 'OPEN'.
+        When all rows are already SETTLED, fetchall returns [] and the
+        worker does nothing: no UPDATE, no commit.
+        """
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchall.return_value = []  # SETTLED rows filtered out at SELECT
+
+        result = sw._grade_open_prop_settlements(cur, conn)
+
+        self.assertEqual(result, 0)
+        conn.commit.assert_not_called()
+        # Only the SELECT execute should have fired; no UPDATE
+        self.assertEqual(cur.execute.call_count, 1,
+                         "only the SELECT should fire when no OPEN rows exist; "
+                         "got more execute() calls than expected")
+
+    def test_loss_result_also_idempotent_on_rerun(self):
+        """
+        Idempotency must hold for LOSS outcomes too (not just WIN).
+        """
+        conn = MagicMock()
+
+        cur = self._prop_cursor(update_rowcount=1)
+        with patch("gate_engine.ml_settlement_truth.reconcile_settlement",
+                   return_value={"model_result": "LOSS"}):
+            first = sw._grade_open_prop_settlements(cur, conn)
+
+        cur2 = self._prop_cursor(update_rowcount=0)
+        with patch("gate_engine.ml_settlement_truth.reconcile_settlement",
+                   return_value={"model_result": "LOSS"}):
+            second = sw._grade_open_prop_settlements(cur2, conn)
+
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)
+        self.assertEqual(conn.commit.call_count, 1)
+
+    def test_multiple_open_rows_partial_already_settled(self):
+        """
+        When a batch contains two fixture rows but only one UPDATE matches
+        (rowcount alternates 1 then 0), total graded must equal 1.
+        """
+        fixture_a = self.PROP_FIXTURE_ROW
+        fixture_b = (
+            "fixture_row_002",
+            "EVENT:MLB:GAME:002",
+            "UNDER",
+            0.55,
+            -105,
+            -108,
+            {
+                "official_event_result":  "WIN",
+                "selected_side":          "UNDER",
+                "selected_side_is_home":  False,
+                "platform_display_result": "WIN",
+                "platform_payment":       95.24,
+                "stake":                  100.0,
+                "promo_protection_active": False,
+            },
+        )
+
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchall.return_value = [fixture_a, fixture_b]
+
+        # Make rowcount return 1 for row A's UPDATE, 0 for row B's (already settled)
+        cur.rowcount = 0
+        rowcounts = [1, 0]
+        rowcount_iter = iter(rowcounts)
+
+        original_execute = cur.execute
+        execute_calls = [0]
+
+        def side_effect_execute(*args, **kwargs):
+            # The first execute is the SELECT; subsequent ones are UPDATEs
+            execute_calls[0] += 1
+            if execute_calls[0] > 1:
+                # This is an UPDATE call — set next rowcount
+                try:
+                    cur.rowcount = next(rowcount_iter)
+                except StopIteration:
+                    cur.rowcount = 0
+
+        cur.execute.side_effect = side_effect_execute
+
+        with patch("gate_engine.ml_settlement_truth.reconcile_settlement",
+                   return_value={"model_result": "WIN"}):
+            result = sw._grade_open_prop_settlements(cur, conn)
+
+        self.assertEqual(result, 1,
+                         "only 1 of 2 rows should be counted; "
+                         "the already-settled one must be skipped")
+
+    # ------------------------------------------------------------------
+    # Kalshi settlement — same idempotency proof for the second guard
+    # ------------------------------------------------------------------
+
+    def test_kalshi_fixture_rerun_does_not_duplicate_outcome(self):
+        """
+        Kalshi path: run the grader twice.
+        Run 1 — rowcount=1 → graded=1, commit called.
+        Run 2 — rowcount=0 → graded=0, commit NOT called again.
+        """
+        conn = MagicMock()
+
+        resolution = {"yes_resolved": True, "closing_price_cents": 99}
+        reconcile_result = {
+            "calibration_include": True,
+            "final_result":        "WIN",
+            "clv_cents":           5,
+            "clv_percent":         0.05,
+            "net_pnl_after_fees_cents": 95,
+        }
+
+        # Run 1: OPEN row, UPDATE succeeds
+        cur = self._kalshi_cursor(update_rowcount=1)
+        with patch.object(sw, "_fetch_kalshi_resolution", return_value=resolution), \
+             patch("kalshi_engine.settlement_reconciliation.reconcile",
+                   return_value=reconcile_result), \
+             patch("kalshi_engine.settlement_reconciliation.FILL_STATUS_FILLED", "FILLED"), \
+             patch("kalshi_engine.settlement_reconciliation.SS_SETTLED", "SETTLED"):
+            first = sw._grade_open_kalshi_settlements(cur, conn)
+
+        # Run 2: already SETTLED, rowcount=0
+        cur2 = self._kalshi_cursor(update_rowcount=0)
+        with patch.object(sw, "_fetch_kalshi_resolution", return_value=resolution), \
+             patch("kalshi_engine.settlement_reconciliation.reconcile",
+                   return_value=reconcile_result), \
+             patch("kalshi_engine.settlement_reconciliation.FILL_STATUS_FILLED", "FILLED"), \
+             patch("kalshi_engine.settlement_reconciliation.SS_SETTLED", "SETTLED"):
+            second = sw._grade_open_kalshi_settlements(cur2, conn)
+
+        self.assertEqual(first, 1,
+                         "Kalshi run 1: fixture row must be graded exactly once")
+        self.assertEqual(second, 0,
+                         "Kalshi run 2: already-settled row must not be re-graded")
+        self.assertEqual(first + second, 1,
+                         "Kalshi total graded must equal 1 across two runs")
+        self.assertEqual(conn.commit.call_count, 1,
+                         "Kalshi conn.commit must be called exactly once")
+
+    def test_kalshi_rowcount_zero_no_commit(self):
+        """
+        Kalshi UPDATE rowcount=0 → graded=0 and conn.commit not called.
+        """
+        conn = MagicMock()
+        cur = self._kalshi_cursor(update_rowcount=0)
+
+        resolution = {"yes_resolved": False, "closing_price_cents": 1}
+        reconcile_result = {
+            "calibration_include": True,
+            "final_result":        "LOSS",
+            "clv_cents":           -99,
+            "clv_percent":         -0.99,
+            "net_pnl_after_fees_cents": -100,
+        }
+
+        with patch.object(sw, "_fetch_kalshi_resolution", return_value=resolution), \
+             patch("kalshi_engine.settlement_reconciliation.reconcile",
+                   return_value=reconcile_result), \
+             patch("kalshi_engine.settlement_reconciliation.FILL_STATUS_FILLED", "FILLED"), \
+             patch("kalshi_engine.settlement_reconciliation.SS_SETTLED", "SETTLED"):
+            result = sw._grade_open_kalshi_settlements(cur, conn)
+
+        self.assertEqual(result, 0)
+        conn.commit.assert_not_called()
+
+    def test_kalshi_select_open_guard_empty_returns_zero(self):
+        """
+        Kalshi SELECT returns [] (all rows already SETTLED) → graded=0,
+        no UPDATE, no commit.
+        """
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+
+        result = sw._grade_open_kalshi_settlements(cur, conn)
+
+        self.assertEqual(result, 0)
+        conn.commit.assert_not_called()
+        self.assertEqual(cur.execute.call_count, 1,
+                         "only the SELECT should fire when fetchall returns []")
+
+
 if __name__ == "__main__":
     unittest.main()
