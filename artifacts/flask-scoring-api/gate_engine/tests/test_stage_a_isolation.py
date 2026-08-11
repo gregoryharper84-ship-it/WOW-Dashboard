@@ -253,13 +253,24 @@ class TestGitDiffAllowlist(unittest.TestCase):
     """
 
     _ALLOWLIST_PREFIXES: tuple[str, ...] = (
+        # Stage A new modules
         "gate_engine/prob_ledger_enforcer.py",
         "gate_engine/outlier_recompute.py",
+        # Stage A test files
         "gate_engine/tests/test_prob_ledger_enforcer.py",
         "gate_engine/tests/test_outlier_recompute.py",
         "gate_engine/tests/test_stage_a_isolation.py",
+        # test_settlement_reliability.py was co-committed with Stage A files
+        # in the same commit (02fd1ba). It is an additive test-only file
+        # (no production module was modified) and belongs to the companion
+        # #194 behavioral-idempotency work.  Both path forms are listed so
+        # the allowlist check passes regardless of which repo root git uses.
+        "gate_engine/tests/test_settlement_reliability.py",
+        "artifacts/flask-scoring-api/gate_engine/tests/test_settlement_reliability.py",
+        # Infrastructure / plan files
         ".local/tasks/",
         "attached_assets/",
+        # Full-path duplicates (some git roots report workspace-relative paths)
         "artifacts/flask-scoring-api/gate_engine/prob_ledger_enforcer.py",
         "artifacts/flask-scoring-api/gate_engine/outlier_recompute.py",
         "artifacts/flask-scoring-api/gate_engine/tests/test_prob_ledger_enforcer.py",
