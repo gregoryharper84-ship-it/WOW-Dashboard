@@ -158,10 +158,14 @@ class ScopedContractFailure:
 
 # ── Upgrade-guard result ──────────────────────────────────────────────────────
 
-@dataclass
+@dataclass(frozen=True)
 class UpgradeGuardResult:
     """
-    Result of PipelineStateGuard.can_upgrade().
+    Immutable result of PipelineStateGuard.can_upgrade().
+
+    frozen=True so this can be embedded in other frozen dataclasses
+    (e.g. WnbaPropsAdapterResult) without losing the immutability
+    contract on the containing result.
 
     allowed
         True iff the upgrade is permitted.
@@ -172,6 +176,8 @@ class UpgradeGuardResult:
     preserved_upstream_result
         Non-None only when allowed=True and the row has a TECHNICAL failure.
         Contains the upstream work completed before the failure.
+        The dict itself is mutable (shallow copy from the failure record);
+        the field reference is frozen.
     """
     allowed:                   bool
     reason:                    str
