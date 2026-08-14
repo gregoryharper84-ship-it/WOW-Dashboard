@@ -177,10 +177,34 @@ def record_evidence_packet(
     # Call auditSourceProvenance at the UAC ingestion point: when a fact is
     # first attached to a candidate via the evidence packet.
     # checkpoint = "uac_evidence_intake"
+    #
+    # SAVEPOINT isolation: the provenance UPDATE runs on the caller's shared
+    # connection.  If it fails (e.g. schema migration not yet applied), psycopg2
+    # puts the connection into InFailedSqlTransaction state, poisoning every
+    # subsequent operation for the caller.  A blind conn.rollback() would
+    # discard legitimate prior work in the same transaction; ROLLBACK TO
+    # SAVEPOINT undoes ONLY the failed provenance operation and restores the
+    # connection to a clean, usable state.  ROLLBACK TO SAVEPOINT is permitted
+    # by PostgreSQL even when the transaction is in aborted state.
+    #
+    # Success path: the hook commits internally (see _audit_uac_evidence_provenance);
+    # that commit auto-releases the savepoint — no explicit RELEASE needed.
+    # Failure path: ROLLBACK TO SAVEPOINT + RELEASE returns the connection to
+    # exactly the state it was in after the INSERT commit above.
+    _PROV_SP = "_uac_prov_audit"
     try:
+        with conn.cursor() as _sp_cur:
+            _sp_cur.execute(f"SAVEPOINT {_PROV_SP}")
         _audit_uac_evidence_provenance(conn, snapshot_id, lane, packet_dict)
+        # Hook succeeded and committed; savepoint auto-released by that commit.
     except Exception:
-        pass  # Best-effort — never blocks the evidence write
+        try:
+            with conn.cursor() as _sp_cur:
+                _sp_cur.execute(f"ROLLBACK TO SAVEPOINT {_PROV_SP}")
+                _sp_cur.execute(f"RELEASE SAVEPOINT {_PROV_SP}")
+        except Exception:
+            pass  # Savepoint may not exist (creation failed or hook already committed)
+        # Best-effort — provenance audit failed; evidence packet committed above.
 
 
 def _audit_uac_evidence_provenance(
