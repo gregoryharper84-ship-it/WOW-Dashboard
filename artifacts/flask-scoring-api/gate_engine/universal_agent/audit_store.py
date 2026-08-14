@@ -173,6 +173,91 @@ def record_evidence_packet(
             json.dumps(packet_dict),
         ))
     conn.commit()
+    # ── Provenance audit (best-effort, never blocks evidence persistence) ─────
+    # Call auditSourceProvenance at the UAC ingestion point: when a fact is
+    # first attached to a candidate via the evidence packet.
+    # checkpoint = "uac_evidence_intake"
+    try:
+        _audit_uac_evidence_provenance(conn, snapshot_id, lane, packet_dict)
+    except Exception:
+        pass  # Best-effort — never blocks the evidence write
+
+
+def _audit_uac_evidence_provenance(
+    conn: Any,
+    snapshot_id: str,
+    lane: str,
+    packet_dict: dict[str, Any],
+) -> None:
+    """
+    Build a StructuredEvidence from a UAC evidence packet and run
+    auditSourceProvenance, then write the audit columns back to the
+    uac_evidence_packets row.
+
+    UAC ingestion call site:
+        checkpoint = "uac_evidence_intake"
+        fact_type  derived from packet_dict["market"] or lane fallback
+
+    Best-effort: caller suppresses all exceptions.
+    """
+    from gate_engine.source_provenance import (
+        auditSourceProvenance,
+        build_evidence_from_dict,
+    )
+
+    fact_type = (
+        packet_dict.get("market")
+        or packet_dict.get("fact_type")
+        or f"uac_evidence:{lane}"
+    )
+    evidence_data = {
+        "evidence_id":     snapshot_id,
+        "snapshot_id":     snapshot_id,
+        "fact_type":       fact_type,
+        "source_name":     packet_dict.get("source_name") or packet_dict.get("book") or lane,
+        "source_type":     packet_dict.get("source_type") or "",
+        "fetch_timestamp": packet_dict.get("retrieved_at") or packet_dict.get("source_timestamp"),
+        "sport":           packet_dict.get("sport"),
+        "market":          packet_dict.get("market"),
+        "fact_value":      packet_dict.get("line") or packet_dict.get("odds"),
+        "published_at":    packet_dict.get("published_at"),
+        "observed_at":     packet_dict.get("observed_at") or packet_dict.get("source_timestamp"),
+        "effective_at":    packet_dict.get("effective_at"),
+        "materiality":     packet_dict.get("materiality") or "MEDIUM",
+    }
+    evidence = build_evidence_from_dict(evidence_data)
+    result   = auditSourceProvenance(evidence, "uac_evidence_intake")
+
+    # Write audit results back to uac_evidence_packets row
+    update_sql = """
+        UPDATE uac_evidence_packets SET
+            fact_type               = %s,
+            fact_value_hash         = %s,
+            source_grade            = %s,
+            freshness_policy_id     = %s,
+            freshness_basis         = %s,
+            freshness_status        = %s,
+            materiality             = %s,
+            conflict_status         = %s,
+            reconstruction_status   = %s,
+            max_supportable_ceiling = %s
+        WHERE snapshot_id = %s
+    """
+    with conn.cursor() as cur:
+        cur.execute(update_sql, (
+            evidence.fact_type,
+            evidence.fact_value_hash,
+            evidence.source_grade,
+            evidence.freshness_policy_id,
+            evidence.freshness_basis.value if evidence.freshness_basis else None,
+            evidence.freshness_status.value,
+            evidence.materiality.value,
+            evidence.conflict_status.value,
+            evidence.reconstruction_status.value,
+            evidence.max_supportable_ceiling,
+            snapshot_id,
+        ))
+    conn.commit()
 
 
 def get_evidence_packet(

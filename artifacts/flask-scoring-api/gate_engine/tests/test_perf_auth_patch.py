@@ -433,39 +433,42 @@ class TestInternalClientAuth(unittest.TestCase):
     # ── action_get ────────────────────────────────────────────────────────────
 
     def test_action_get_sends_wow_action_key_header(self):
-        """action_get() must send X-WOW-Action-Key, never X-API-Key."""
+        """action_get() now delegates to scoring_get() and sends X-API-Key (migrated 2026-08-14).
+        X-WOW-Action-Key is no longer used for /wow/odds/* routes.
+        """
         ic = self.ic
-        fake_secret = "test-gpt-secret-abc"
+        fake_key = "test-scoring-key-abc"
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"ok": True}
 
-        with patch.dict(os.environ, {"GPT_ACTION_SECRET": fake_secret}):
+        with patch.dict(os.environ, {"SCORING_API_KEY": fake_key}):
             with patch("requests.get", return_value=mock_resp) as mock_get:
                 body, status, err = ic.action_get("/wow/odds/events", {"sport": "baseball_mlb"})
 
         call_headers = mock_get.call_args[1]["headers"]
-        self.assertIn("X-WOW-Action-Key", call_headers)
-        self.assertNotIn("X-API-Key", call_headers)
+        # Post-migration: action_get delegates to scoring_get → sends X-API-Key
+        self.assertIn("X-API-Key", call_headers)
+        self.assertNotIn("X-WOW-Action-Key", call_headers)
         self.assertEqual(status, 200)
         self.assertIsNone(err)
 
     def test_action_get_does_not_log_secret_value(self):
-        """action_get() header value must never appear as a test assertion string here."""
-        # This is an architectural invariant: we verify headers are sent by name,
-        # not by asserting the actual secret value in test output.
+        """action_get() header value must never appear as a test assertion string here.
+        Post-migration: action_get delegates to scoring_get and uses SCORING_API_KEY.
+        """
         ic = self.ic
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"ok": True}
 
-        with patch.dict(os.environ, {"GPT_ACTION_SECRET": "REDACTED_IN_TEST"}):
+        with patch.dict(os.environ, {"SCORING_API_KEY": "REDACTED_IN_TEST"}):
             with patch("requests.get", return_value=mock_resp) as mock_get:
                 ic.action_get("/wow/odds/events")
 
         call_headers = mock_get.call_args[1]["headers"]
         # Only assert the KEY NAME is present — not the value
-        self.assertIn("X-WOW-Action-Key", call_headers)
+        self.assertIn("X-API-Key", call_headers)
 
     def test_action_get_returns_auth_contract_fail_when_secret_missing(self):
         """action_get() with no GPT_ACTION_SECRET must return AUTH_CONTRACT_FAIL."""
