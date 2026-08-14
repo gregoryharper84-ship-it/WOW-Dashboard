@@ -3,22 +3,29 @@ gate_engine/internal_client.py
 ================================
 Auth-correct helpers for calling WOW Flask routes from internal Python code.
 
-Two auth surfaces exist in the WOW backend:
+All WOW backend routes that require authentication use the single unified
+contract:
 
   @require_api_key routes  →  X-API-Key: <SCORING_API_KEY>
-      e.g. /wow/kalshi/category-scan, /wow/mlb/pitcher, /wow/l10/v2
+      e.g. /wow/odds/events, /wow/odds/event-markets, /wow/odds/event-odds,
+           /wow/odds/quota-status, /wow/kalshi/category-scan, /wow/mlb/pitcher,
+           /wow/l10/v2
 
-  _verify_wow_action_key   →  X-WOW-Action-Key: <GPT_ACTION_SECRET>
-      e.g. /wow/odds/events, /wow/odds/event-markets, /wow/odds/quota-status
+MIGRATION NOTE (2026-08-14):
+  /wow/odds/* routes were previously protected by _verify_wow_action_key
+  (X-WOW-Action-Key / GPT_ACTION_SECRET).  That auth surface has been retired.
+  All four odds routes now require X-API-Key (SCORING_API_KEY).
+  action_get() is preserved as an alias to scoring_get() for backward
+  compatibility with existing callers; it will be removed in a future cleanup.
 
 Using the wrong header results in a 401 that is classified as
 AUTH_CONTRACT_FAIL (not a backend outage, not NO_PLAY).
 
 Usage
 -----
-    from gate_engine.internal_client import action_get, scoring_get
+    from gate_engine.internal_client import scoring_get
 
-    data, status, err = action_get("/wow/odds/events", {"sport": "baseball_mlb"})
+    data, status, err = scoring_get("/wow/odds/events", {"sport": "baseball_mlb"})
     if err == AUTH_CONTRACT_FAIL:
         # wrong secret configured — not a backend failure
         ...
@@ -79,7 +86,7 @@ def _do_get(
                 status = resp.status
                 body   = _json.loads(resp.read().decode())
             return body, status, None
-        except Exception as exc:
+        except Exception:
             return None, 0, FETCH_FAILED
 
     try:
@@ -99,39 +106,19 @@ def _do_get(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def action_get(
-    path: str,
-    params: Optional[Dict[str, Any]] = None,
-    timeout: int = 30,
-) -> Tuple[Optional[Dict], int, Optional[str]]:
-    """GET a route protected by _verify_wow_action_key (X-WOW-Action-Key).
-
-    Reads GPT_ACTION_SECRET from env at call time.  Never logs the secret value.
-    Returns (body_dict, status_code, error_class).
-
-    Routes: /wow/odds/events, /wow/odds/event-markets, /wow/odds/quota-status
-    """
-    secret = os.environ.get("GPT_ACTION_SECRET", "")
-    if not secret:
-        return None, 0, AUTH_CONTRACT_FAIL  # misconfigured server
-    headers = {
-        "X-WOW-Action-Key": secret,
-        "Accept": "application/json",
-    }
-    return _do_get(path, params, headers, timeout)
-
-
 def scoring_get(
     path: str,
     params: Optional[Dict[str, Any]] = None,
     timeout: int = 30,
 ) -> Tuple[Optional[Dict], int, Optional[str]]:
-    """GET a route protected by @require_api_key (X-API-Key).
+    """GET a route protected by @require_api_key (X-API-Key / SCORING_API_KEY).
 
     Reads SCORING_API_KEY from env at call time.  Never logs the key value.
     Returns (body_dict, status_code, error_class).
 
-    Routes: /wow/kalshi/category-scan, /wow/mlb/pitcher, /wow/l10/v2, etc.
+    Routes: /wow/odds/events, /wow/odds/event-markets, /wow/odds/event-odds,
+            /wow/odds/quota-status, /wow/kalshi/category-scan,
+            /wow/mlb/pitcher, /wow/l10/v2, etc.
     """
     api_key = os.environ.get("SCORING_API_KEY", "")
     if not api_key:
@@ -141,3 +128,21 @@ def scoring_get(
         "Accept": "application/json",
     }
     return _do_get(path, params, headers, timeout)
+
+
+def action_get(
+    path: str,
+    params: Optional[Dict[str, Any]] = None,
+    timeout: int = 30,
+) -> Tuple[Optional[Dict], int, Optional[str]]:
+    """Backward-compatibility alias for scoring_get().
+
+    DEPRECATED: action_get() previously sent X-WOW-Action-Key
+    (GPT_ACTION_SECRET) to /wow/odds/* routes.  Those routes now require
+    X-API-Key (SCORING_API_KEY) — the same contract as all other @require_api_key
+    routes.  This alias delegates to scoring_get() so existing callers continue
+    to work without modification.  Will be removed in a future cleanup pass.
+
+    Returns (body_dict, status_code, error_class).
+    """
+    return scoring_get(path, params, timeout)

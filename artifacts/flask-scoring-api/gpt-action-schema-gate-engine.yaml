@@ -2006,6 +2006,259 @@ paths:
       security:
         - ApiKeyAuth: []
 
+  /wow/odds/events:
+    get:
+      operationId: getOddsApiEvents
+      x-openai-isConsequential: false
+      summary: Get upcoming or live events for a sport
+      description: >
+        Low-cost event discovery call. Uses the free key by default.
+        Returns a list of events with IDs needed for subsequent market and odds calls.
+        Auth: X-API-Key (SCORING_API_KEY). Migrated from X-WOW-Action-Key 2026-08-14.
+      parameters:
+        - name: sport
+          in: query
+          required: true
+          description: >
+            Odds API sport key, e.g. baseball_mlb, basketball_nba,
+            americanfootball_nfl, basketball_wnba
+          schema:
+            type: string
+        - name: commence_time_from
+          in: query
+          required: false
+          description: ISO 8601 datetime — only return events starting at or after this time
+          schema:
+            type: string
+        - name: commence_time_to
+          in: query
+          required: false
+          description: ISO 8601 datetime — only return events starting at or before this time
+          schema:
+            type: string
+        - name: include_rotation_numbers
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Event list and quota metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_key_tier:
+                    type: string
+                    enum: [free, paid]
+                  requests_remaining:
+                    type: string
+                  requests_used:
+                    type: string
+                  request_cost:
+                    type: string
+                  quota_warning:
+                    type: boolean
+                    description: >
+                      True when requests_remaining for this key tier has dropped
+                      below the server-side threshold (default 50). Stop non-essential
+                      calls immediately.
+                  quota_threshold:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        "400":
+          description: Missing required parameter
+        "401":
+          description: Missing or invalid X-API-Key
+        "502":
+          description: Both Odds API key paths failed
+      security:
+        - ApiKeyAuth: []
+
+  /wow/odds/event-markets:
+    get:
+      operationId: getOddsApiEventMarkets
+      x-openai-isConsequential: false
+      summary: Get available sportsbook market keys for one event
+      description: >
+        Returns the list of market keys available for a specific event
+        (e.g. h2h, spreads, totals, player_pass_tds). Use the market
+        keys returned here as input to getOddsApiEventOdds.
+        Uses the paid key by default.
+        Auth: X-API-Key (SCORING_API_KEY). Migrated from X-WOW-Action-Key 2026-08-14.
+      parameters:
+        - name: sport
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: event_id
+          in: query
+          required: true
+          description: Event ID from getOddsApiEvents
+          schema:
+            type: string
+        - name: regions
+          in: query
+          required: false
+          schema:
+            type: string
+            default: us
+        - name: bookmakers
+          in: query
+          required: false
+          description: Comma-separated bookmaker keys to filter results
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Available market keys for the event
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_key_tier:
+                    type: string
+                  quota_warning:
+                    type: boolean
+                  data:
+                    type: object
+                    additionalProperties: true
+        "400":
+          description: Missing required parameter
+        "401":
+          description: Missing or invalid X-API-Key
+        "502":
+          description: Both Odds API key paths failed
+      security:
+        - ApiKeyAuth: []
+
+  /wow/odds/event-odds:
+    get:
+      operationId: getOddsApiEventOdds
+      x-openai-isConsequential: false
+      summary: Get exact two-way pricing for selected markets
+      description: >
+        Exact two-way pricing for selected markets on a specific event.
+        Uses the paid key by default.
+        Auth: X-API-Key (SCORING_API_KEY). Migrated from X-WOW-Action-Key 2026-08-14.
+      parameters:
+        - name: sport
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: event_id
+          in: query
+          required: true
+          description: Event ID from getOddsApiEvents
+          schema:
+            type: string
+        - name: markets
+          in: query
+          required: true
+          description: Comma-separated market keys, e.g. h2h,spreads,totals
+          schema:
+            type: string
+        - name: regions
+          in: query
+          required: false
+          schema:
+            type: string
+            default: us
+        - name: bookmakers
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: odds_format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [american, decimal]
+            default: american
+      responses:
+        "200":
+          description: Odds for the selected markets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_key_tier:
+                    type: string
+                  quota_warning:
+                    type: boolean
+                  data:
+                    type: object
+                    additionalProperties: true
+        "400":
+          description: Missing required parameter
+        "401":
+          description: Missing or invalid X-API-Key
+        "502":
+          description: Both Odds API key paths failed
+      security:
+        - ApiKeyAuth: []
+
+  /wow/odds/quota-status:
+    get:
+      operationId: getOddsApiQuotaStatus
+      x-openai-isConsequential: false
+      summary: Check current Odds API quota without making a chargeable call
+      description: >
+        Returns last-known requests_remaining / requests_used for each key tier
+        (paid, free) without making any chargeable Odds API request.
+        Values update after every successful /wow/odds/* call across all workers
+        (cross-worker state via Postgres). Call at the start of a scoring session
+        to confirm quota headroom before issuing market or odds requests.
+        Auth: X-API-Key (SCORING_API_KEY). Migrated from X-WOW-Action-Key 2026-08-14.
+      responses:
+        "200":
+          description: Current quota snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  quota_threshold:
+                    type: integer
+                    description: Remaining-count floor below which quota_warning fires
+                  quota_warning:
+                    type: boolean
+                    description: True when any key tier is below quota_threshold
+                  tiers:
+                    type: object
+                    description: >
+                      One key per tier ("paid", "free"). Each value contains
+                      requests_remaining (int), requests_used (int),
+                      updated_at (ISO-8601 UTC), quota_warning (bool).
+                    additionalProperties:
+                      type: object
+                      properties:
+                        requests_remaining:
+                          type: integer
+                        requests_used:
+                          type: integer
+                        updated_at:
+                          type: string
+                        quota_warning:
+                          type: boolean
+                  note:
+                    type: string
+        "401":
+          description: Missing or invalid X-API-Key
+      security:
+        - ApiKeyAuth: []
+
 components:
   schemas: {}
   securitySchemes:
@@ -2017,4 +2270,4 @@ components:
         Pass your SCORING_API_KEY value in the X-API-Key header.
         /wow/engine/health, /wow/governance/status, and /wow/stage2/health
         are public and do not require this key. /gate-engine/run, /normalize-legs,
-        /analyze-and-score, and /wow/slip-review-log require it.
+        /analyze-and-score, /wow/slip-review-log, and /wow/odds/* require it.

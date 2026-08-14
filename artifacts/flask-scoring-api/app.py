@@ -34055,18 +34055,16 @@ def _odds_api_request(path, params, prefer_paid=True):
 
 
 @app.route("/wow/odds/events", methods=["GET"])
+@require_api_key
 def wow_odds_events():
     """
     GET /wow/odds/events
     Query params: sport (required), commence_time_from, commence_time_to,
                   include_rotation_numbers (bool, default false)
     Low-cost event discovery — uses the free key by default.
-    Requires X-WOW-Action-Key header.
+    Requires X-API-Key header (SCORING_API_KEY).
+    Auth migrated from X-WOW-Action-Key to X-API-Key (intentional contract migration).
     """
-    ok, err = _verify_wow_action_key()
-    if not ok:
-        return err
-
     sport = request.args.get("sport", "").strip()
     if not sport:
         return jsonify({"error": "sport is required"}), 400
@@ -34090,18 +34088,16 @@ def wow_odds_events():
 
 
 @app.route("/wow/odds/event-markets", methods=["GET"])
+@require_api_key
 def wow_odds_event_markets():
     """
     GET /wow/odds/event-markets
     Query params: sport (required), event_id (required),
                   regions (default us), bookmakers (csv, optional)
     Returns available sportsbook market keys for one event — paid key by default.
-    Requires X-WOW-Action-Key header.
+    Requires X-API-Key header (SCORING_API_KEY).
+    Auth migrated from X-WOW-Action-Key to X-API-Key (intentional contract migration).
     """
-    ok, err = _verify_wow_action_key()
-    if not ok:
-        return err
-
     sport    = request.args.get("sport",    "").strip()
     event_id = request.args.get("event_id", "").strip()
     if not sport or not event_id:
@@ -34122,6 +34118,7 @@ def wow_odds_event_markets():
 
 
 @app.route("/wow/odds/event-odds", methods=["GET"])
+@require_api_key
 def wow_odds_event_odds():
     """
     GET /wow/odds/event-odds
@@ -34129,12 +34126,9 @@ def wow_odds_event_odds():
                   regions (default us), bookmakers (csv, optional),
                   odds_format (american|decimal, default american)
     Exact two-way pricing for selected markets — paid key by default.
-    Requires X-WOW-Action-Key header.
+    Requires X-API-Key header (SCORING_API_KEY).
+    Auth migrated from X-WOW-Action-Key to X-API-Key (intentional contract migration).
     """
-    ok, err = _verify_wow_action_key()
-    if not ok:
-        return err
-
     sport    = request.args.get("sport",    "").strip()
     event_id = request.args.get("event_id", "").strip()
     markets  = request.args.get("markets",  "").strip()
@@ -34160,18 +34154,16 @@ def wow_odds_event_odds():
 
 
 @app.route("/wow/odds/quota-status", methods=["GET"])
+@require_api_key
 def wow_odds_quota_status():
     """
     GET /wow/odds/quota-status
     Returns the last-known requests_remaining / requests_used for each key
     tier without making a chargeable Odds API call.  Values are updated after
     every successful /wow/odds/* call in this worker process.
-    Requires X-WOW-Action-Key header.
+    Requires X-API-Key header (SCORING_API_KEY).
+    Auth migrated from X-WOW-Action-Key to X-API-Key (intentional contract migration).
     """
-    ok, err = _verify_wow_action_key()
-    if not ok:
-        return err
-
     snapshot = _odds_quota_snapshot_cross_worker()
     any_warning = any(v.get("quota_warning") for v in snapshot.values())
 
