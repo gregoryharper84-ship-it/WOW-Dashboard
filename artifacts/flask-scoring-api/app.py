@@ -20898,6 +20898,12 @@ def _run_startup_warmup():
         _ensure_ucl()
     except Exception:
         pass
+    # Cross-worker Odds API quota state (wow_odds_quota_state)
+    try:
+        from gate_engine.pg_odds_quota import ensure_table_exists as _ensure_odds_quota_table
+        _ensure_odds_quota_table()
+    except Exception:
+        pass
     # MLB pitcher startup prewarm — fetch today's ESPN probable pitchers and
     # submit identity + Statcast prefetch jobs to the bounded ThreadPoolExecutor.
     # Fire-and-forget: returns immediately, jobs run in background workers.
@@ -33906,11 +33912,11 @@ _ODDS_QUOTA_STORE: dict = {
 }
 
 
-def _odds_quota_update(key_tier: str, remaining_str, used_str) -> bool:
+def _odds_quota_update(key_tier: str, remaining_str, used_str, cost_str=None) -> bool:
     """
     Parse and store quota headers for key_tier ('paid' or 'free').
     Returns True when remaining drops below _ODDS_QUOTA_THRESHOLD.
-    Thread-safe.
+    Thread-safe. cost_str is the x-requests-last header value (may be None).
     """
     import datetime as _dt
     try:
@@ -33923,12 +33929,18 @@ def _odds_quota_update(key_tier: str, remaining_str, used_str) -> bool:
     except (TypeError, ValueError):
         used = None
 
+    try:
+        cost = float(cost_str) if cost_str is not None else None
+    except (TypeError, ValueError):
+        cost = None
+
     warning = (remaining is not None) and (remaining < _ODDS_QUOTA_THRESHOLD)
 
     with _ODDS_QUOTA_LOCK:
         _ODDS_QUOTA_STORE[key_tier] = {
             "requests_remaining": remaining,
             "requests_used":      used,
+            "request_cost":       cost,
             "updated_at":         _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
             "quota_warning":      warning,
         }
@@ -33941,7 +33953,7 @@ def _odds_quota_update(key_tier: str, remaining_str, used_str) -> bool:
     if not os.environ.get("PYTEST_CURRENT_TEST"):
         try:
             from gate_engine.pg_odds_quota import persist_quota_update
-            persist_quota_update(key_tier, remaining, used, warning)
+            persist_quota_update(key_tier, remaining, used, warning, cost)
         except Exception:
             pass  # fail-open — quota tracking must never break the caller
     return warning
@@ -33953,7 +33965,7 @@ def _odds_quota_snapshot() -> dict:
         return {k: dict(v) for k, v in _ODDS_QUOTA_STORE.items()}
 
 
-def _odds_quota_snapshot_cross_worker() -> dict:
+def _odds_quota_snapshot_cross_worker() -> tuple:
     """
     Merge the local in-process snapshot with the Postgres cross-worker view
     so GET /wow/odds/quota-status reflects quota consumed by ANY gunicorn
@@ -33963,10 +33975,16 @@ def _odds_quota_snapshot_cross_worker() -> dict:
     Skipped under pytest — the empty-store assertion in
     TestQuotaStatusEndpoint::test_empty_store_returns_200 would become
     flaky if Postgres rows from a different test leaked in.
+
+    Returns (merged_snapshot: dict, data_source: str) where data_source is:
+      "postgres_cross_worker"  — at least one tier came from Postgres
+      "process_memory_fallback" — Postgres returned nothing; using local only
+      "empty"                  — no data in either source
+      "process_memory_pytest"  — running under pytest (Postgres bypassed)
     """
     local = _odds_quota_snapshot()
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        return local
+        return local, "process_memory_pytest"
     try:
         from gate_engine.pg_odds_quota import fetch_quota_snapshot
         remote = fetch_quota_snapshot()
@@ -33977,7 +33995,17 @@ def _odds_quota_snapshot_cross_worker() -> dict:
         local_row = local.get(tier)
         if local_row is None or remote_row.get("updated_at", "") > local_row.get("updated_at", ""):
             merged[tier] = remote_row
-    return merged
+    # Determine authoritative data source for the caller
+    has_postgres = any(
+        v.get("source") == "postgres_cross_worker" for v in merged.values()
+    )
+    if has_postgres:
+        data_source = "postgres_cross_worker"
+    elif merged:
+        data_source = "process_memory_fallback"
+    else:
+        data_source = "empty"
+    return merged, data_source
 
 
 def _verify_wow_action_key():
@@ -34031,7 +34059,8 @@ def _odds_api_request(path, params, prefer_paid=True):
         if resp.status_code == 200:
             remaining_str = resp.headers.get("x-requests-remaining")
             used_str      = resp.headers.get("x-requests-used")
-            warning = _odds_quota_update(key_tier, remaining_str, used_str)
+            cost_str      = resp.headers.get("x-requests-last")
+            warning = _odds_quota_update(key_tier, remaining_str, used_str, cost_str)
             return {
                 "source_key_tier":    key_tier,
                 "requests_remaining": remaining_str,
@@ -34164,17 +34193,21 @@ def wow_odds_quota_status():
     Requires X-API-Key header (SCORING_API_KEY).
     Auth migrated from X-WOW-Action-Key to X-API-Key (intentional contract migration).
     """
-    snapshot = _odds_quota_snapshot_cross_worker()
+    snapshot, data_source = _odds_quota_snapshot_cross_worker()
     any_warning = any(v.get("quota_warning") for v in snapshot.values())
+    degraded = data_source == "process_memory_fallback"
 
     return jsonify({
         "quota_threshold":     _ODDS_QUOTA_THRESHOLD,
         "quota_warning":       any_warning,
         "tiers":               snapshot,
+        "data_source":         data_source,
+        "degraded":            degraded,
         "note": (
             "Values reflect the last successful Odds API call across all "
             "gunicorn workers (cross-worker state via Postgres). "
-            "Tiers are empty only when no calls have been made since startup."
+            "Tiers are empty only when no calls have been made since startup. "
+            "degraded=true means Postgres was unavailable; process memory used as fallback."
         ),
     }), 200
 

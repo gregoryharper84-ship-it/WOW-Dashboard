@@ -25,6 +25,9 @@ Design notes:
     is exactly the reliability bug this module exists to fix. The lock
     just matches the codebase's existing cross-worker-coordination idiom
     and reduces interleaved-write log noise.
+  - Newer-wins: the ON CONFLICT DO UPDATE has a WHERE clause that only
+    applies when the incoming updated_at is >= the stored one, so a slow
+    stale writer cannot overwrite a fresher snapshot.
   - Fail-open: any DB error is swallowed. Quota tracking is an
     observability signal, not a WOW gate — it must never block a request
     or raise into request handling. can_execute is untouched everywhere;
@@ -32,6 +35,10 @@ Design notes:
   - A freshness window (default 120s, ODDS_QUOTA_DB_FRESHNESS_SEC env var)
     is applied on read so a stale/abandoned row doesn't report a phantom
     warning forever.
+  - request_cost (x-requests-last header) is persisted alongside the
+    remaining/used counts so callers can see cost per-tier without
+    making an additional upstream request.
+  - No API key values or fragments are ever written; only quota counters.
 """
 from __future__ import annotations
 
@@ -55,22 +62,30 @@ def _get_conn(conn_string: Optional[str] = None):
 
 
 def ensure_table_exists(conn_string: Optional[str] = None) -> None:
-    """Create wow_odds_quota_state if it doesn't exist. Safe to call repeatedly."""
+    """Create wow_odds_quota_state if it doesn't exist, and apply any
+    pending column migrations. Safe to call repeatedly (idempotent)."""
     _DDL = """
     CREATE TABLE IF NOT EXISTS wow_odds_quota_state (
         tier                TEXT PRIMARY KEY,
         requests_remaining  INTEGER,
         requests_used       INTEGER,
         quota_warning       BOOLEAN NOT NULL DEFAULT FALSE,
+        request_cost        NUMERIC,
         updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_by_pid      INTEGER
     )
+    """
+    # Idempotent migration for tables created before request_cost was added.
+    _ADD_COST_COL = """
+    ALTER TABLE wow_odds_quota_state
+        ADD COLUMN IF NOT EXISTS request_cost NUMERIC
     """
     conn = None
     try:
         conn = _get_conn(conn_string)
         cur = conn.cursor()
         cur.execute(_DDL)
+        cur.execute(_ADD_COST_COL)
         conn.commit()
         cur.close()
     except Exception:
@@ -88,14 +103,21 @@ def persist_quota_update(
     requests_remaining: Optional[int],
     requests_used: Optional[int],
     quota_warning: bool,
+    request_cost: Optional[float] = None,
     conn_string: Optional[str] = None,
 ) -> bool:
     """
     Write-through a quota update to Postgres so every gunicorn worker can
     see it. Always performs the UPSERT — the advisory lock is best-effort
     serialization only, never a gate on whether the write happens (see
-    module docstring). Returns True on success, False on any failure;
-    never raises.
+    module docstring).
+
+    Newer-wins: the ON CONFLICT clause only updates when the incoming
+    updated_at (NOW()) is >= the stored row, preventing a slow stale
+    writer from overwriting a fresher snapshot.
+
+    Returns True on success, False on any failure; never raises.
+    No API key values or fragments are accepted or stored.
     """
     conn = None
     cur = None
@@ -114,16 +136,19 @@ def persist_quota_update(
             """
             INSERT INTO wow_odds_quota_state
                 (tier, requests_remaining, requests_used, quota_warning,
-                 updated_at, updated_by_pid)
-            VALUES (%s, %s, %s, %s, NOW(), %s)
+                 request_cost, updated_at, updated_by_pid)
+            VALUES (%s, %s, %s, %s, %s, NOW(), %s)
             ON CONFLICT (tier) DO UPDATE SET
                 requests_remaining = EXCLUDED.requests_remaining,
                 requests_used      = EXCLUDED.requests_used,
                 quota_warning      = EXCLUDED.quota_warning,
+                request_cost       = EXCLUDED.request_cost,
                 updated_at         = EXCLUDED.updated_at,
                 updated_by_pid     = EXCLUDED.updated_by_pid
+            WHERE wow_odds_quota_state.updated_at <= EXCLUDED.updated_at
             """,
-            (tier, requests_remaining, requests_used, quota_warning, os.getpid()),
+            (tier, requests_remaining, requests_used, quota_warning,
+             request_cost, os.getpid()),
         )
         conn.commit()
         return True
@@ -150,6 +175,8 @@ def fetch_quota_snapshot(conn_string: Optional[str] = None) -> dict[str, Any]:
     store; this function never raises.
 
     Only rows updated within FRESHNESS_WINDOW_SEC are returned.
+    Each tier entry includes a 'source' key of 'postgres_cross_worker' so
+    callers can distinguish DB-sourced data from process-local data.
     """
     conn = None
     try:
@@ -158,7 +185,7 @@ def fetch_quota_snapshot(conn_string: Optional[str] = None) -> dict[str, Any]:
         cur.execute(
             """
             SELECT tier, requests_remaining, requests_used, quota_warning,
-                   updated_at
+                   request_cost, updated_at
             FROM wow_odds_quota_state
             WHERE updated_at > NOW() - (%s || ' seconds')::interval
             """,
@@ -166,11 +193,12 @@ def fetch_quota_snapshot(conn_string: Optional[str] = None) -> dict[str, Any]:
         )
         rows = cur.fetchall()
         out: dict[str, Any] = {}
-        for tier, remaining, used, warning, updated_at in rows:
+        for tier, remaining, used, warning, cost, updated_at in rows:
             out[tier] = {
                 "requests_remaining": remaining,
                 "requests_used":      used,
                 "quota_warning":      bool(warning),
+                "request_cost":       float(cost) if cost is not None else None,
                 "updated_at":         updated_at.astimezone(timezone.utc)
                                         .isoformat().replace("+00:00", "Z"),
                 "source":             "postgres_cross_worker",
