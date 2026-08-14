@@ -14,6 +14,8 @@ paths:
   /wow/odds/events:
     get:
       operationId: getOddsApiEvents
+      security:
+        - WowActionKey: []
       summary: Get upcoming or live events for a sport
       description: >
         Low-cost event discovery call. Uses the free key by default.
@@ -87,6 +89,8 @@ paths:
   /wow/odds/event-markets:
     get:
       operationId: getOddsApiEventMarkets
+      security:
+        - WowActionKey: []
       summary: Get available sportsbook market keys for one event
       description: >
         Returns the list of market keys available for a specific event
@@ -156,6 +160,8 @@ paths:
   /wow/odds/event-odds:
     get:
       operationId: getOddsApiEventOdds
+      security:
+        - WowActionKey: []
       summary: Get exact odds for selected markets on one event
       description: >
         Returns two-way pricing from one or more sportsbooks for the
@@ -239,6 +245,8 @@ paths:
   /wow/odds/quota-status:
     get:
       operationId: getOddsApiQuotaStatus
+      security:
+        - WowActionKey: []
       summary: Check current Odds API quota without making a chargeable call
       description: >
         Returns the last-known requests_remaining and requests_used for each
@@ -281,3 +289,15 @@ paths:
                     type: string
         "401":
           description: Invalid or missing X-WOW-Action-Key
+
+components:
+  securitySchemes:
+    WowActionKey:
+      type: apiKey
+      in: header
+      name: X-WOW-Action-Key
+      description: >
+        GPT_ACTION_SECRET — configure in the GPT Action editor under
+        Authentication → API Key, Header name: X-WOW-Action-Key.
+        The server validates this header on every /wow/odds/* request.
+        Never log or expose the value.

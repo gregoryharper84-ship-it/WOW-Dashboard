@@ -20898,6 +20898,26 @@ def _run_startup_warmup():
         _ensure_ucl()
     except Exception:
         pass
+    # MLB pitcher startup prewarm — fetch today's ESPN probable pitchers and
+    # submit identity + Statcast prefetch jobs to the bounded ThreadPoolExecutor.
+    # Fire-and-forget: returns immediately, jobs run in background workers.
+    # Fail-closed: any error is logged but never raised (non-fatal).
+    try:
+        from gate_engine.mlb.startup_prewarm import (
+            prewarm_today_pitchers as _sp_prewarm_today,
+        )
+        _sp_queued, _sp_errors = _sp_prewarm_today(
+            _pb_lookup_mlbam_id, _get_pitcher_savant
+        )
+        if _sp_errors:
+            import logging as _startup_log_mod
+            _startup_log_mod.getLogger("startup-prewarm").warning(
+                "[startup-prewarm] partial errors (%d): %s",
+                len(_sp_errors),
+                "; ".join(_sp_errors),
+            )
+    except Exception:
+        pass
 
 _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
 _bt("startup daemon spawned — app fully ready")
