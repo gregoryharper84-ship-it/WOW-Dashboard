@@ -1,0 +1,34 @@
+Implement and verify the diagnosed WOW backend performance/auth patch. Scope only these fixes; do not weaken auth, raise Gunicorn timeouts, change model thresholds, or alter betting governance.
+
+1) AUTH CALLERS
+- Find every internal caller of /wow/odds/events, /wow/odds/event-markets, and /wow/odds/quota-status.
+- Send X-WOW-Action-Key using GPT_ACTION_SECRET on those routes.
+- Keep their existing require_wow_action_key guard unchanged.
+- Ensure Kalshi/scoring-key callers consistently send the proper scoring credential/header before first request.
+- Add contract tests proving correct key=>200/non-auth downstream response and wrong/missing key=>401, without logging secrets.
+
+2) PERSISTENT MLB IDENTITY/CACHE
+- Persist pybaseball playerid_lookup identity results across worker/process restarts using the project's existing DB/cache pattern. Include schema/version, TTL/freshness, deterministic keys, atomic writes, corrupt-cache recovery, and no secret/PII storage.
+- Preserve fail-closed behavior on missing/stale data.
+
+3) BOUNDED CONCURRENCY + PREWARM
+- Replace serial multi-pitcher cold acquisition with a bounded ThreadPoolExecutor or equivalent suitable for blocking pybaseball I/O.
+- Make worker count configurable and conservative; preserve input/result identity, deterministic output ordering, per-pitcher errors/timeouts, and partial-failure isolation.
+- At discovery startup, pre-warm today's pitcher identities and Statcast/L10 dependencies through the same cache path. Do not duplicate fetches; coalesce in-flight requests if feasible.
+- Do not parallelize shared mutable state unsafely.
+
+4) TELEMETRY + EXPLICIT STATES
+- Add route/dependency latency telemetry: route, dependency, cache hit/miss, elapsed_ms, candidate count, success/failure class; never log credentials.
+- Classify healthy backend + slow MLB acquisition as BACKEND_HEALTH=OK and MLB_DATA_ACQUISITION=DEGRADED_LATENCY (or DATA_ACQUISITION_PENDING/SLOW).
+- Classify wrong internal credentials as ODDS_INTERNAL_AUTH=CONTRACT_FAIL / AUTH_CONTRACT_FAIL.
+- Ensure neither becomes NO_PLAY, model rejection, generic 504, or backend outage.
+- Update scan summary/error mapping to emit these distinctions and retain successful upstream state.
+
+5) TESTS + VALIDATION
+- Add unit/integration tests for persistent cache surviving a reconstructed cache/service instance, bounded concurrency vs serial behavior using mocked delays, deterministic ordering, one-pitcher failure isolation, cold prewarm followed by cache hits, auth-header routing, Kalshi first-call auth, and status/error classification.
+- Run focused tests, then full existing test suite. Report exact commands/results.
+- Perform a safe read-only health check and, if available, a mocked/staging cold-scan benchmark. Do not place bets or execute market orders.
+- Provide before/after timing evidence or a deterministic mocked benchmark proving multi-pitcher acquisition is concurrent.
+- Review diff for unrelated changes and revert only your own unrelated edits.
+
+Finish with: files changed, root causes fixed, tests/benchmark results, remaining risks, deployment/restart requirements, and rollback plan. Do not claim production verification unless actually observed.
