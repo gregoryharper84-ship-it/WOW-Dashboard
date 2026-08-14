@@ -8641,16 +8641,84 @@ _PB_MLB_WORKFLOW_FIELDS = [
 
 def _pb_lookup_mlbam_id(first: str, last: str) -> int | None:
     """Map a name to an MLBAM ID via pybaseball's lookup table.
-    Returns None on failure (lookup table empty or name not found)."""
+
+    Checks the persistent DB identity cache first (survives worker/process
+    restarts).  Falls back to a live pybaseball.playerid_lookup() call and
+    writes the result back to the cache.  Returns None on failure (fail-closed).
+    Telemetry is recorded for every call.
+    """
+    import time as _t
+    _t0 = _t.monotonic()
+
+    # ── 1. Persistent DB cache ─────────────────────────────────────────────
+    cache_hit = False
+    try:
+        from gate_engine.mlb.player_identity_cache import (
+            lookup as _pic_lookup,
+            store  as _pic_store,
+        )
+        cached_id = _pic_lookup(first, last)
+        if cached_id is not None:
+            cache_hit = True
+            # Record cache-HIT telemetry
+            try:
+                from gate_engine.mlb.acquisition_telemetry import (
+                    record_event, AcquisitionEvent,
+                    IDENTITY_CACHE_HIT, MLB_DATA_ACQ_OK,
+                )
+                record_event(AcquisitionEvent(
+                    route="/wow/mlb/pitcher",
+                    dependency="player_identity_cache",
+                    cache_hit=True,
+                    elapsed_ms=(_t.monotonic() - _t0) * 1000,
+                    status_class=MLB_DATA_ACQ_OK,
+                ))
+            except Exception:
+                pass
+            return cached_id
+    except Exception:
+        _pic_store = None  # cache unavailable — fall through to live fetch
+
+    # ── 2. Live pybaseball fetch ───────────────────────────────────────────
     if not _ensure_pybaseball():
         return None
+    mlbam_id = None
     try:
+        print("Gathering Player Data")  # keep existing log marker
         df = _pb.playerid_lookup(last, first)
-        if df.empty:
-            return None
-        return int(df.iloc[0]["key_mlbam"])
+        if not df.empty:
+            mlbam_id = int(df.iloc[0]["key_mlbam"])
     except Exception:
-        return None
+        mlbam_id = None
+
+    elapsed_ms = (_t.monotonic() - _t0) * 1000
+
+    # ── 3. Write back to cache (non-fatal) ────────────────────────────────
+    if mlbam_id is not None:
+        try:
+            from gate_engine.mlb.player_identity_cache import store as _pic_store2
+            _pic_store2(first, last, mlbam_id)
+        except Exception:
+            pass
+
+    # ── 4. Record telemetry ───────────────────────────────────────────────
+    try:
+        from gate_engine.mlb.acquisition_telemetry import (
+            record_event, AcquisitionEvent,
+            IDENTITY_CACHE_MISS, MLB_DATA_ACQ_OK, MLB_DATA_ACQ_FAILED,
+        )
+        status = MLB_DATA_ACQ_OK if mlbam_id is not None else MLB_DATA_ACQ_FAILED
+        record_event(AcquisitionEvent(
+            route="/wow/mlb/pitcher",
+            dependency="player_identity_cache",
+            cache_hit=False,
+            elapsed_ms=elapsed_ms,
+            status_class=status,
+        ))
+    except Exception:
+        pass
+
+    return mlbam_id
 
 
 def _pb_statcast_ledgers(player_id: int, prop: str, direction: str,
@@ -10873,24 +10941,101 @@ def wow_mlb_pitcher():
     if line_move.get("opening_line") is not None:
         data_sources.append("line_movement")
 
+    # ── Acquisition telemetry block ───────────────────────────────────────
+    try:
+        from gate_engine.mlb.acquisition_telemetry import get_scan_summary
+        acquisition_status = get_scan_summary()
+    except Exception:
+        acquisition_status = {"backend_health": "OK", "mlb_data_acquisition": "OK"}
+
     return jsonify({
-        "ok":             True,
-        "player":         f"{first} {last}",
-        "prop":           prop,
-        "line":           line,
-        "side":           side,
-        "opponent":       opp,
-        "leash":          leash,
-        "savant":         savant,
-        "opponent_k_pct": opp_k,
-        "platoon_splits": platoon,
-        "line_movement":  line_move,
-        "efficiency":     efficiency,
-        "fantasy":        fantasy,
-        "gate_flags":     gate_flags,
-        "wow_verdict":    wow_verdict,
-        "data_sources":   data_sources,
+        "ok":                 True,
+        "player":             f"{first} {last}",
+        "prop":               prop,
+        "line":               line,
+        "side":               side,
+        "opponent":           opp,
+        "leash":              leash,
+        "savant":             savant,
+        "opponent_k_pct":     opp_k,
+        "platoon_splits":     platoon,
+        "line_movement":      line_move,
+        "efficiency":         efficiency,
+        "fantasy":            fantasy,
+        "gate_flags":         gate_flags,
+        "wow_verdict":        wow_verdict,
+        "data_sources":       data_sources,
+        "acquisition_status": acquisition_status,
     })
+
+
+@app.route("/wow/mlb/prewarm", methods=["POST"])
+@require_api_key
+def wow_mlb_prewarm():
+    """POST /wow/mlb/prewarm
+    Pre-warm pitcher identity + Statcast cache for a list of pitchers.
+
+    Submits fetches to the bounded ThreadPoolExecutor in the background so the
+    first synchronous /wow/mlb/pitcher call for each pitcher gets a cache hit.
+    Returns immediately (fire-and-forget).
+
+    Body:
+      { "pitchers": [{"first": str, "last": str}, ...] }
+
+    Response:
+      { "ok": true, "queued": N, "workers": M }
+    """
+    import os as _os
+    body     = request.get_json(silent=True) or {}
+    raw_list = body.get("pitchers", [])
+    if not isinstance(raw_list, list):
+        return jsonify({"ok": False, "error": "pitchers must be a list"}), 400
+
+    pairs: list[tuple[str, str]] = []
+    for item in raw_list:
+        if isinstance(item, dict):
+            f = (item.get("first") or "").strip()
+            l = (item.get("last")  or "").strip()
+            if f and l:
+                pairs.append((f, l))
+
+    if not pairs:
+        return jsonify({"ok": True, "queued": 0, "workers": 0,
+                        "note": "no valid pitchers supplied"}), 200
+
+    try:
+        from gate_engine.mlb.pitcher_prefetch import prewarm as _prewarm
+        _prewarm(pairs, _pb_lookup_mlbam_id, _get_pitcher_savant)
+        workers = int(_os.environ.get("WOW_PITCHER_FETCH_WORKERS", "4"))
+        return jsonify({
+            "ok":      True,
+            "queued":  len(pairs),
+            "workers": min(workers, 8),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+
+
+@app.route("/wow/mlb/acquisition-status", methods=["GET"])
+@require_api_key
+def wow_mlb_acquisition_status():
+    """GET /wow/mlb/acquisition-status
+    Returns current MLB data acquisition telemetry and status classification.
+
+    Status classes:
+      backend_health:        OK
+      mlb_data_acquisition:  OK | DEGRADED_LATENCY | DATA_ACQUISITION_PENDING | FETCH_FAILED
+      odds_internal_auth:    OK | AUTH_CONTRACT_FAIL
+      player_identity_cache: HIT | MISS | UNAVAILABLE
+
+    None of these statuses maps to NO_PLAY, model rejection, 504, or backend outage.
+    """
+    try:
+        from gate_engine.mlb.acquisition_telemetry import get_scan_summary
+        summary = get_scan_summary()
+        return jsonify({"ok": True, **summary})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
 
 
 # ── Cross-sport: line movement query ──────────────────────────────────────

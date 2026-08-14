@@ -175,3 +175,35 @@ def post_fork(server, worker):
             )
     except Exception as exc:
         server.log.warning(f"[post_fork] keep-alive start failed (non-fatal): {exc}")
+
+    # ── Pitcher prefetch executor reset ───────────────────────────────────────
+    # Each worker must own its own ThreadPoolExecutor. With --preload the master
+    # process imports pitcher_prefetch before forking, so _executor may already
+    # be set. Resetting it here ensures each worker creates a fresh executor on
+    # first use and does not share state with sibling workers.
+    try:
+        from gate_engine.mlb import pitcher_prefetch as _ppf
+        _ppf._executor = None
+        _ppf._executor_lock = threading.Lock()
+        _ppf._inflight = {}
+        _ppf._inflight_lock = threading.Lock()
+        server.log.info(
+            f"[post_fork] worker {worker.pid}: pitcher_prefetch executor reset"
+        )
+    except Exception as exc:
+        server.log.warning(
+            f"[post_fork] pitcher_prefetch reset failed (non-fatal): {exc}"
+        )
+
+    # ── Player identity cache schema-ready reset ──────────────────────────────
+    # Force each worker to verify/create the DB schema on its first lookup.
+    try:
+        from gate_engine.mlb import player_identity_cache as _pic
+        _pic.reset_schema_ready()
+        server.log.info(
+            f"[post_fork] worker {worker.pid}: player_identity_cache schema_ready reset"
+        )
+    except Exception as exc:
+        server.log.warning(
+            f"[post_fork] player_identity_cache reset failed (non-fatal): {exc}"
+        )
