@@ -30,6 +30,8 @@ from .governance import get_governance_status
 # WOW Stage 2 — hard structural gates + weakest-leg finalizer (reviewer-mandated)
 from . import card_finalizer, hitter_fantasy_score as _hfs_mod
 from . import route_registry
+# WOW-PATCH-FMCG-v1.0 — Full Model Contract Gatekeeper
+from . import full_model_gatekeeper as _fmcg
 # LLP MLB Winner Preflight Gate (reviewer-mandated, patch-level required)
 from . import llp_mlb_winner_preflight
 from . import mlb_directional_firewall, wnba_composite_gate, cross_ticket_governor
@@ -916,6 +918,14 @@ def run_pipeline(
         _fantasy_score_model.run(row)
 
         classifier.classify(row)
+
+        # WOW-PATCH-FMCG-v1.0 — Full Model Contract Gatekeeper
+        # Fail-closed: any FINAL_APPROVED without a valid Gatekeeper PASS is
+        # downgraded to MODEL_QUALIFIED_HOLD before route completion propagates
+        # the label through settlement_loopback and four-lane stamping.
+        # Insertion order: after classify() (terminal_label is set),
+        # before route_registry (corrected label must propagate downstream).
+        _fmcg.apply_gatekeeper(row)
 
         # WOW-PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION
         # Enforce that all required gates ran before a qualifying label stands.

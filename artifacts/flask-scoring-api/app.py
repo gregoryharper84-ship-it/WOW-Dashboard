@@ -33678,6 +33678,12 @@ def wow_v16_run():
         context = request.get_json(force=True) or {}
         orch = SkillOrchestrator()
         result = orch.run(context)
+        # WOW-PATCH-FMCG-v1.0 — Full Model Contract Gatekeeper (v16 path)
+        # Verify that any final_label == FINAL_APPROVED carries a valid Gatekeeper
+        # PASS from a skill that ran the full-model contract. Fail-closed:
+        # no valid pass → final_label downgraded to MODEL_QUALIFIED_HOLD.
+        from gate_engine import full_model_gatekeeper as _fmcg_v16
+        _fmcg_v16.verify_v16_result(result)
         result['can_execute'] = False
         result['execution_rule'] = 'DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS'
         reg = SkillRegistry.get()

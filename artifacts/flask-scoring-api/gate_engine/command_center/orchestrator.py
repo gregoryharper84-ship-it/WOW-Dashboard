@@ -194,6 +194,16 @@ def run_command_center(
     # need slate-integrity and row-completeness checks)
     service_report = run_shared_services(all_envs, target_date, freshness_window_minutes)
 
+    # ── Step 5.5: Full Model Contract Gatekeeper — Command Center path ───────
+    # Verify that any envelope whose engine_label == FINAL_APPROVED carries a
+    # valid Gatekeeper PASS from the originating engine. Fail-closed: if the
+    # engine result lacks a Gatekeeper PASS, engine_label is downgraded to
+    # MODEL_QUALIFIED_HOLD before monotonic ceiling enforcement runs.
+    # can_execute = False is enforced unconditionally by the gatekeeper module.
+    from gate_engine import full_model_gatekeeper as _fmcg
+    for _env in all_envs:
+        _fmcg.verify_cc_envelope(_env)
+
     # ── Step 6: Monotonic ceiling enforcement ─────────────────────────────
     ceiling_report = enforce_batch_ceilings(all_envs)
     erasure_violations = check_no_upstream_erasure(all_envs)
