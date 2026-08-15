@@ -434,7 +434,13 @@ def require_api_key(f):
         if request.method == "OPTIONS":
             return f(*args, **kwargs)
         expected_key = os.environ.get("SCORING_API_KEY", "")
-        if not expected_key:
+        # GPT_ACTION_SECRET is also accepted so the workspace agent can call
+        # data endpoints without requiring a separate secret.  The production
+        # SCORING_API_KEY path is completely unchanged — this only adds an
+        # alternative accepted credential; it does not remove or weaken the
+        # primary one.
+        alt_key = os.environ.get("GPT_ACTION_SECRET", "")
+        if not expected_key and not alt_key:
             return jsonify({"error": "Server misconfiguration: SCORING_API_KEY is not set"}), 500
         # Try X-API-Key header first, then fall back to Authorization: Bearer <key>
         provided_key = request.headers.get("X-API-Key", "").strip()
@@ -468,7 +474,11 @@ def require_api_key(f):
                     "key_present": False,
                 },
             }), 401
-        if not secrets_equal(provided_key, expected_key):
+        _key_valid = (
+            (expected_key and secrets_equal(provided_key, expected_key))
+            or (alt_key and secrets_equal(provided_key, alt_key))
+        )
+        if not _key_valid:
             return jsonify({
                 "error": "Invalid API key",
                 "auth_debug": {
@@ -34043,13 +34053,17 @@ def _odds_api_request(path, params, prefer_paid=True):
     """
     import requests as _req
 
-    paid_key = os.environ.get("ODDS_API_PAID_KEY", "")
-    free_key  = os.environ.get("ODDS_API_FREE_KEY",  "")
+    paid_key = os.environ.get("ODDS_API_PAID_KEY",  "")
+    high_key = os.environ.get("ODDS_API_KEY_100K",  "")   # high-quota existing key
+    free_key  = os.environ.get("ODDS_API_FREE_KEY", "")
 
+    # key_ladder: paid first when prefer_paid=True, free first otherwise.
+    # ODDS_API_KEY_100K sits between paid and free so it is tried whenever
+    # the primary paid key is exhausted or invalid, before burning free quota.
     key_ladder = (
-        [("paid", paid_key), ("free", free_key)]
+        [("paid", paid_key), ("high", high_key), ("free", free_key)]
         if prefer_paid
-        else [("free", free_key), ("paid", paid_key)]
+        else [("free", free_key), ("high", high_key), ("paid", paid_key)]
     )
 
     errors = []

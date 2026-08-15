@@ -679,9 +679,10 @@ def test_fetch_market_comparison_no_env_key_returns_auth_required(monkeypatch):
     When ODDS_API_KEY is not configured, fetch_market_comparison must return
     AUTH_REQUIRED immediately without making any HTTP request (request_count=0).
     """
-    monkeypatch.delenv("ODDS_API_KEY", raising=False)
+    monkeypatch.delenv("ODDS_API_KEY",      raising=False)
     monkeypatch.delenv("ODDS_API_FREE_KEY", raising=False)
     monkeypatch.delenv("ODDS_API_PAID_KEY", raising=False)
+    monkeypatch.delenv("ODDS_API_KEY_100K", raising=False)  # added to ladder; must clear
 
     with patch("requests.get") as mock_get:
         result = fetch_market_comparison("A'ja Wilson", "points", line=23.5)
@@ -1262,6 +1263,7 @@ def test_bug003a_odds_api_resolver_prefers_paid_key(monkeypatch):
     from services.odds_api import resolve_odds_api_key_with_source
 
     monkeypatch.setenv("ODDS_API_PAID_KEY", "paid-test-key")
+    monkeypatch.setenv("ODDS_API_KEY_100K", "100k-test-key")
     monkeypatch.setenv("ODDS_API_FREE_KEY", "free-test-key")
     monkeypatch.setenv("ODDS_API_KEY",      "legacy-deactivated-key")
 
@@ -1271,11 +1273,19 @@ def test_bug003a_odds_api_resolver_prefers_paid_key(monkeypatch):
     )
     assert key == "paid-test-key"
 
-    # Free key priority when paid absent
+    # ODDS_API_KEY_100K is next when paid is absent
     monkeypatch.delenv("ODDS_API_PAID_KEY")
+    key_100k, source_100k = resolve_odds_api_key_with_source()
+    assert source_100k == "ODDS_API_KEY_100K", (
+        f"Expected ODDS_API_KEY_100K when paid absent, got {source_100k!r}"
+    )
+    assert key_100k == "100k-test-key"
+
+    # Free key priority when paid AND 100K absent
+    monkeypatch.delenv("ODDS_API_KEY_100K")
     key2, source2 = resolve_odds_api_key_with_source()
     assert source2 == "ODDS_API_FREE_KEY", (
-        f"Expected ODDS_API_FREE_KEY when paid absent, got {source2!r}"
+        f"Expected ODDS_API_FREE_KEY when paid+100K absent, got {source2!r}"
     )
 
     # Legacy key as last resort

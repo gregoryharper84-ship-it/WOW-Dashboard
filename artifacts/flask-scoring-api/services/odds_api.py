@@ -79,13 +79,18 @@ def _resolve_key() -> str:
 
     Priority:
       1. ODDS_API_PAID_KEY  (higher quota)
-      2. ODDS_API_FREE_KEY  (fallback)
-      3. ODDS_API_KEY       (legacy / back-compat)
+      2. ODDS_API_KEY_100K  (high-quota existing key)
+      3. ODDS_API_FREE_KEY  (fallback)
+      4. ODDS_API_KEY       (legacy / back-compat)
 
     Returns empty string when none are configured.
+    Note: _get() now retries the full ladder on auth/quota failures, so
+    this function is used only for the no-key guard (returns empty when
+    none are configured at all).
     """
     return (
         os.environ.get("ODDS_API_PAID_KEY", "")
+        or os.environ.get("ODDS_API_KEY_100K", "")
         or os.environ.get("ODDS_API_FREE_KEY", "")
         or os.environ.get("ODDS_API_KEY", "")
     )
@@ -94,10 +99,11 @@ def _resolve_key() -> str:
 def resolve_odds_api_key_with_source() -> "tuple[str, str]":
     """Public helper — returns (api_key, source_env_var_name).
 
-    Priority: ODDS_API_PAID_KEY → ODDS_API_FREE_KEY → ODDS_API_KEY (legacy).
+    Priority: ODDS_API_PAID_KEY → ODDS_API_KEY_100K → ODDS_API_FREE_KEY → ODDS_API_KEY (legacy).
 
     source_env_var_name values:
       "ODDS_API_PAID_KEY"   — paid quota key in use
+      "ODDS_API_KEY_100K"   — high-quota key in use
       "ODDS_API_FREE_KEY"   — free-tier key in use
       "ODDS_API_KEY_LEGACY" — legacy/back-compat key in use
       "NONE"                — no key configured; api_key is ""
@@ -110,6 +116,9 @@ def resolve_odds_api_key_with_source() -> "tuple[str, str]":
     paid = os.environ.get("ODDS_API_PAID_KEY", "")
     if paid:
         return paid, "ODDS_API_PAID_KEY"
+    high = os.environ.get("ODDS_API_KEY_100K", "")
+    if high:
+        return high, "ODDS_API_KEY_100K"
     free = os.environ.get("ODDS_API_FREE_KEY", "")
     if free:
         return free, "ODDS_API_FREE_KEY"
@@ -120,29 +129,40 @@ def resolve_odds_api_key_with_source() -> "tuple[str, str]":
 
 
 def _get(path, params=None):
-    # Read key dynamically so a rotation takes effect without a process restart.
-    key = _resolve_key()
-    if not key:
+    # Try all configured keys in priority order: PAID → 100K → FREE → LEGACY.
+    # Falls back to the next key only on auth (401) or quota (422/429) errors;
+    # non-retriable HTTP errors stop immediately.
+    _key_ladder = [k for k in [
+        os.environ.get("ODDS_API_PAID_KEY", ""),
+        os.environ.get("ODDS_API_KEY_100K", ""),
+        os.environ.get("ODDS_API_FREE_KEY",  ""),
+        os.environ.get("ODDS_API_KEY",       ""),
+    ] if k]
+    if not _key_ladder:
         return None, "NOT_CALLED: ODDS_API_KEY not set"
     params = dict(params or {})   # copy — never mutate the caller's dict
-    params["apiKey"] = key
-    try:
-        r = requests.get(f"{BASE_URL}{path}", params=params, timeout=15)
+    _last_msg = "FAILED: invalid ODDS_API_KEY"
+    for _key in _key_ladder:
+        _p = {**params, "apiKey": _key}
+        try:
+            r = requests.get(f"{BASE_URL}{path}", params=_p, timeout=15)
+        except requests.exceptions.Timeout:
+            return None, "FAILED: timeout"
+        except Exception as e:
+            return None, f"FAILED: {e}"
         remaining = r.headers.get("x-requests-remaining", "?")
         if r.status_code == 200:
             return r.json(), f"AVAILABLE (remaining={remaining})"
-        elif r.status_code == 401:
-            return None, "FAILED: invalid ODDS_API_KEY"
+        elif r.status_code in (401, 429):
+            _last_msg = "FAILED: quota exhausted" if r.status_code == 429 else "FAILED: invalid ODDS_API_KEY"
+            continue   # try next key in ladder
         elif r.status_code == 422:
-            return None, f"FAILED: unprocessable ({r.text[:120]})"
-        elif r.status_code == 429:
-            return None, "FAILED: quota exhausted"
+            # Out-of-credits returns 422; treat as quota exhausted and try next key
+            _last_msg = f"FAILED: unprocessable ({r.text[:120]})"
+            continue
         else:
             return None, f"FAILED: HTTP {r.status_code}"
-    except requests.exceptions.Timeout:
-        return None, "FAILED: timeout"
-    except Exception as e:
-        return None, f"FAILED: {e}"
+    return None, _last_msg
 
 
 def _normalize_rundown_to_h2h_events(rundown_events):
