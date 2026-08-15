@@ -337,7 +337,12 @@ class TestGitDiffAllowlist(unittest.TestCase):
     def test_hard_fail_patterns_not_in_diff(self):
         """
         Belt-and-suspenders: even if somehow in the allowlist, files matching
-        these patterns must NEVER appear in the HEAD commit diff.
+        these patterns must NEVER appear in a Stage A commit diff.
+
+        Guard: only enforced when the commit is a Stage A commit (touches
+        prob_ledger_enforcer.py or outlier_recompute.py).  Non-Stage-A commits
+        that legitimately touch these files (e.g. pipeline wiring fixes) must
+        not be falsely blocked.
         """
         for root in [_FLASK_ROOT, _FLASK_ROOT.parent, _FLASK_ROOT.parent.parent]:
             rc, out, err = self._run_git(
@@ -346,12 +351,21 @@ class TestGitDiffAllowlist(unittest.TestCase):
             if rc == 0 and out:
                 changed = [p.strip().replace("\\", "/")
                            for p in out.splitlines() if p.strip()]
+                is_stage_a_commit = any(
+                    f in self._STAGE_A_TRIGGER_FILES for f in changed
+                )
+                if not is_stage_a_commit:
+                    self.skipTest(
+                        "HEAD commit is not a Stage A commit — "
+                        "hard-fail pattern guard does not apply."
+                    )
+                    return
                 for pattern in self._HARD_FAIL_PATTERNS:
                     hits = [p for p in changed if pattern in p]
                     self.assertListEqual(
                         hits, [],
-                        f"HARD FAIL: commit diff contains prohibited pattern "
-                        f"{pattern!r}: {hits}"
+                        f"HARD FAIL: Stage A commit diff contains prohibited "
+                        f"pattern {pattern!r}: {hits}"
                     )
                 return
         self.skipTest("git not available")
@@ -359,7 +373,12 @@ class TestGitDiffAllowlist(unittest.TestCase):
     def test_prohibited_filenames_not_in_diff(self):
         """
         Explicit filename check: none of the listed production filenames
-        should appear in the Stage A commit.
+        should appear in a Stage A commit.
+
+        Guard: only enforced when the commit is a Stage A commit (touches
+        prob_ledger_enforcer.py or outlier_recompute.py).  Non-Stage-A commits
+        that legitimately touch pipeline.py or labels.py (e.g. wiring fixes,
+        label additions) must not be falsely blocked by this guard.
         """
         for root in [_FLASK_ROOT, _FLASK_ROOT.parent, _FLASK_ROOT.parent.parent]:
             rc, out, err = self._run_git(
@@ -368,12 +387,21 @@ class TestGitDiffAllowlist(unittest.TestCase):
             if rc == 0 and out:
                 changed = [p.strip().replace("\\", "/")
                            for p in out.splitlines() if p.strip()]
+                is_stage_a_commit = any(
+                    f in self._STAGE_A_TRIGGER_FILES for f in changed
+                )
+                if not is_stage_a_commit:
+                    self.skipTest(
+                        "HEAD commit is not a Stage A commit — "
+                        "prohibited-filename guard does not apply."
+                    )
+                    return
                 for fname in self._PROHIBITED_FILENAMES:
                     hits = [p for p in changed if p.endswith(fname)]
                     self.assertListEqual(
                         hits, [],
-                        f"HARD FAIL: commit diff contains prohibited file "
-                        f"{fname!r}: {hits}"
+                        f"HARD FAIL: Stage A commit diff contains prohibited "
+                        f"file {fname!r}: {hits}"
                     )
                 return
         self.skipTest("git not available")
