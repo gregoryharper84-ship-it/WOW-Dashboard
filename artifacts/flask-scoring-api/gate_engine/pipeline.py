@@ -30,6 +30,8 @@ from .governance import get_governance_status
 # WOW Stage 2 — hard structural gates + weakest-leg finalizer (reviewer-mandated)
 from . import card_finalizer, hitter_fantasy_score as _hfs_mod
 from . import route_registry
+# WOW-PATCH-2026-08-15 — PP Promotion Gate, Final Refresh, Pregame Snapshot
+from . import pp_promotion_gate, pp_final_refresh, pp_pregame_snapshot
 # WOW-PATCH-FMCG-v1.0 — Full Model Contract Gatekeeper
 from . import full_model_gatekeeper as _fmcg
 # LLP MLB Winner Preflight Gate (reviewer-mandated, patch-level required)
@@ -988,6 +990,68 @@ def run_pipeline(
     # -------------------------------------------------------------------
     card_finalizer_report = card_finalizer.finalize_card(rows)
 
+    # -------------------------------------------------------------------
+    # WOW-PATCH-2026-08-15 — Binding Final Refresh (always runs)
+    # Checks enrichment[row_id]["pp_baseline"] per row.  Material changes
+    # to lineup, market, price, or source cap paid-card labels at
+    # MARKET_VERIFIED_HOLD until the row is re-scored with fresh data.
+    # Vacuous pass when no baseline is supplied for a row.
+    # -------------------------------------------------------------------
+    _pp_baselines: dict[str, dict] = {}
+    for _rid, _enr_dict in enrichment.items():
+        _bl = _enr_dict.get("pp_baseline") if isinstance(_enr_dict, dict) else None
+        if isinstance(_bl, dict):
+            _pp_baselines[_rid] = _bl
+    pp_final_refresh_report = pp_final_refresh.run(rows, baselines=_pp_baselines)
+
+    # -------------------------------------------------------------------
+    # WOW-PATCH-2026-08-15 — PP Promotion Gate (always runs, no DB)
+    # Caps FINAL_APPROVED / MONEY_QUALIFIED at MARKET_VERIFIED_HOLD when:
+    #   1. Calibrated lower bound < break-even + safety_buffer
+    #   2. Two-way no-vig probability < break-even + safety_buffer
+    #   3. Recency-shock LOO detects result concentration (|Δ| ≥ 0.030)
+    # HIGH_PROBABILITY ≠ QUALIFIED_PAID_CARD.
+    # Probability fields and research labels are never modified.
+    # Insertion: after finalize_card() so weakest-leg exclusions are set.
+    # -------------------------------------------------------------------
+    pp_promotion_report = pp_promotion_gate.run(rows)
+
+    # -------------------------------------------------------------------
+    # WOW-PATCH-2026-08-15 — Pregame Snapshot (write-once, fail-closed)
+    # Written for each row that still holds a paid-card label after the
+    # promotion gate.  Write failure caps label at MARKET_VERIFIED_HOLD
+    # but never silences research output.
+    # Only runs when record_entries=True (same guard as tracker.record_entry).
+    # -------------------------------------------------------------------
+    _pp_snap_results: list[dict] = []
+    if record_entries:
+        try:
+            import os as _pp_os
+            import psycopg2 as _pp_pg  # type: ignore
+            _pp_db_url = _pp_os.environ.get("DATABASE_URL")
+            if _pp_db_url:
+                _pp_conn = _pp_pg.connect(_pp_db_url, connect_timeout=10)
+                try:
+                    pp_pregame_snapshot.ensure_table(_pp_conn)
+                    _paid_labels = {"MONEY_QUALIFIED", "FINAL_APPROVED"}
+                    for _pp_row in rows:
+                        if _pp_row.get("terminal_label") not in _paid_labels:
+                            continue
+                        _refresh_passed = not bool(
+                            _pp_row.get("final_refresh_required")
+                        )
+                        _snap_res = pp_pregame_snapshot.snapshot_and_enforce(
+                            _pp_conn, _pp_row, final_refresh_passed=_refresh_passed
+                        )
+                        _pp_snap_results.append(_snap_res)
+                    _pp_conn.commit()
+                finally:
+                    _pp_conn.close()
+        except Exception as _pp_snap_err:
+            failed_modules.append(
+                f"pp_pregame_snapshot:{str(_pp_snap_err)[:80]}"
+            )
+
     if record_entries:
         for row in rows:
             if row.get("terminal_label") == PropLabel.FINAL_APPROVED.value:
@@ -1009,8 +1073,12 @@ def run_pipeline(
         opportunity_state_report     = opportunity_state_report,
     )
     # Attach Stage 2 gate reports so callers can inspect hard gate outcomes
-    _result["card_hard_gate_report"]  = card_hard_gate_report
-    _result["card_finalizer_report"]  = card_finalizer_report
+    _result["card_hard_gate_report"]    = card_hard_gate_report
+    _result["card_finalizer_report"]    = card_finalizer_report
+    # WOW-PATCH-2026-08-15 gate reports
+    _result["pp_final_refresh_report"]  = pp_final_refresh_report
+    _result["pp_promotion_report"]      = pp_promotion_report
+    _result["pp_pregame_snap_results"]  = _pp_snap_results
     return _result
 
 

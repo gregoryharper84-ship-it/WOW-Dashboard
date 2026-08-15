@@ -20904,6 +20904,12 @@ def _run_startup_warmup():
         _ensure_odds_quota_table()
     except Exception:
         pass
+    # WOW-PATCH-2026-08-15 — Pregame snapshot table (wow_pp_pregame_snapshots)
+    try:
+        from gate_engine.pp_pregame_snapshot import ensure_table_standalone as _ensure_pp_snap_table
+        _ensure_pp_snap_table()
+    except Exception:
+        pass
     # MLB pitcher startup prewarm — fetch today's ESPN probable pitchers and
     # submit identity + Statcast prefetch jobs to the bounded ThreadPoolExecutor.
     # Fire-and-forget: returns immediately, jobs run in background workers.

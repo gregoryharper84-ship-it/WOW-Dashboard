@@ -93,6 +93,28 @@ def ensure_table(conn) -> None:
     conn.commit()
 
 
+def ensure_table_standalone() -> None:
+    """
+    No-arg wrapper for startup-warmup contexts.
+    Creates its own short-lived connection from DATABASE_URL and closes it
+    immediately — safe to call from daemon threads or gunicorn post_fork hooks.
+    Errors are silenced (non-fatal): the table will be created on first write.
+    """
+    import os as _os
+    try:
+        import psycopg2 as _pg  # type: ignore
+        db_url = _os.environ.get("DATABASE_URL")
+        if not db_url:
+            return
+        conn = _pg.connect(db_url, connect_timeout=10)
+        try:
+            ensure_table(conn)
+        finally:
+            conn.close()
+    except Exception:
+        pass  # non-fatal; first write call will also ensure the table
+
+
 # ---------------------------------------------------------------------------
 # Fingerprinting helpers
 # ---------------------------------------------------------------------------
