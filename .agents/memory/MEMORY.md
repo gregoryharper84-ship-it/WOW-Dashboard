@@ -100,3 +100,4 @@
 - [Full Model Contract Gatekeeper](fmcg-gatekeeper.md) — WOW-FMCG-v1.0, Patch #25, Precedence 104; fail-closed FINAL_APPROVED enforcement; wired into all 3 routes (pipeline/CC/v16); 60 tests pass.
 - [Cross-worker quota fix](cross-worker-quota-fix.md) — ensure_table_exists missing from startup was root cause; newer-wins WHERE added; request_cost threaded through; data_source/degraded in response.
 - [UAC provenance hook transaction isolation](uac-provenance-tx-isolation.md) — best-effort hooks sharing caller's psycopg2 conn MUST use SAVEPOINT; except:pass alone leaves conn in InFailedSqlTransaction; separate-conn is for primary operators only.
+- [WOW Governed Red-Team Reviewer](wow-red-team-reviewer.md) — skill #22 (wow.governed-red-team-reviewer v1.0.0); registry count now 22; governance hash unaffected; advisory/downgrade-only; 13 dims; AT-26–37; 171 tests pass.

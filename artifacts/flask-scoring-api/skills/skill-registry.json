@@ -127,6 +127,12 @@
       "id": "wow.referee-umpire-tendency",
       "name": "Referee & Umpire Tendency Analyst",
       "path": "skills/referee-umpire-tendency/SKILL.md"
+    },
+    {
+      "priority": 22,
+      "id": "wow.governed-red-team-reviewer",
+      "name": "WOW Governed Red-Team Reviewer",
+      "path": "skills/red-team-reviewer/SKILL.md"
     }
   ]
 }

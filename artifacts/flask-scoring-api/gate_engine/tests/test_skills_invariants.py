@@ -776,11 +776,11 @@ class TestInvariantConfidenceClamp(unittest.TestCase):
 
 
 class TestInvariantRegistryLoads(unittest.TestCase):
-    """skill-registry.json must be loadable and contain 21 skills."""
+    """skill-registry.json must be loadable and contain 22 skills."""
 
-    def test_registry_has_21_skills(self):
+    def test_registry_has_22_skills(self):
         reg = SkillRegistry.get()
-        self.assertEqual(len(reg.all_skills()), 21)
+        self.assertEqual(len(reg.all_skills()), 22)
 
     def test_all_expected_ids_present(self):
         reg = SkillRegistry.get()
@@ -796,6 +796,7 @@ class TestInvariantRegistryLoads(unittest.TestCase):
             "wow.historical-trend-researcher", "wow.sportsbook-promo-optimizer",
             "wow.dfs-analyst", "wow.sports-psychology-context",
             "wow.referee-umpire-tendency",
+            "wow.governed-red-team-reviewer",  # #22 — advisory downgrade-only reviewer
         }
         missing = expected - set(reg.skill_ids())
         self.assertEqual(missing, set(), f"Missing skills: {missing}")
