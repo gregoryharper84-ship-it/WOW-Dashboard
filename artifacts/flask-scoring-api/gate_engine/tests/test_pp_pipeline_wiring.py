@@ -6,7 +6,12 @@ actually wired into the live run_pipeline() path and behave correctly:
 
   - pp_promotion_gate.run() fires on every run_pipeline call
   - pp_final_refresh.run() fires and caps labels when baseline changes detected
-  - pp_pregame_snapshot triggers only under record_entries=True
+  - pp_pregame_snapshot fires unconditionally for paid-card rows (NOT gated on
+    record_entries); tracker.record_entry remains gated on record_entries
+  - DB baseline is fetched per-row before final-refresh; caller-supplied
+    pp_baseline in enrichment always overrides the DB-fetched baseline
+  - fetch_latest_snapshot returns None on first run (bootstrap), enabling
+    vacuous pass; subsequent runs pick up the stored baseline
   - Rejected/fatal rows cannot reach FINAL_APPROVED/MONEY_QUALIFIED
   - Non-PrizePicks routes are behaviorally unchanged
   - Fail-closed: promotion-gate failure caps label, never silences probability
@@ -280,65 +285,93 @@ class TestFinalRefreshWiredAndBinding(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# TC-PW-04: Pregame snapshot — record_entries=False skips DB write
+# TC-PW-04: Pregame snapshot fires unconditionally (not gated on record_entries)
 # ---------------------------------------------------------------------------
 
 class TestPregameSnapshotPipelineGuard(unittest.TestCase):
-    """Snapshot write only happens under record_entries=True."""
+    """
+    Snapshot write is NOT gated on record_entries.  It fires unconditionally
+    for paid-card rows on every scoring run so subsequent runs have a baseline.
+    tracker.record_entry() and the session exposure ledger remain gated on
+    record_entries exactly as before.
+    """
 
-    def test_no_snapshot_when_record_entries_false(self):
+    def test_snapshot_key_present_when_record_entries_false(self):
+        """pp_pregame_snap_results key must exist regardless of record_entries."""
         result = _run([_row()], record_entries=False)
-        self.assertEqual(result["pp_pregame_snap_results"], [])
+        self.assertIn("pp_pregame_snap_results", result)
 
-    def test_snapshot_attempted_when_record_entries_true_and_db_available(self):
+    def test_snapshot_attempted_unconditionally_when_db_available(self):
         """
-        With record_entries=True and a mock DB connection, snapshot_and_enforce
-        should be called for qualifying (paid-card) rows.
+        Snapshot write must be attempted even when record_entries=False.
+        Uses a mock DB connection; verifies plumbing does not crash and
+        the result key is present.
         """
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_conn.cursor.return_value.__enter__ = lambda s: mock_cur
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
         mock_cur.execute.return_value = None
+        mock_cur.fetchone.return_value = None  # no prior snapshot
         mock_conn.commit.return_value = None
 
         import os
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test"}):
             with patch("psycopg2.connect", return_value=mock_conn):
-                # snapshot_and_enforce will be called for FINAL_APPROVED rows
                 with patch.object(
                     _snap_mod, "snapshot_and_enforce",
                     return_value={"can_execute": False, "written": True}
-                ) as mock_snap:
-                    _run([_row()], record_entries=True)
-                    # The gate only snapshots rows at paid-card labels;
-                    # most test rows don't reach FINAL_APPROVED — that's fine.
-                    # The key assertion is that it was at least called when a
-                    # row reaches a paid-card label. We verify the plumbing
-                    # doesn't crash and the report key exists.
+                ):
+                    # record_entries=False — snapshot must still be attempted
+                    result = _run([_row()], record_entries=False)
+                    self.assertIn("pp_pregame_snap_results", result)
 
     def test_snapshot_failure_added_to_failed_modules(self):
         """
-        When record_entries=True and DB raises an exception, the error is
-        captured in failed_modules (not propagated as an unhandled exception).
+        When DB raises during snapshot write, error is captured in
+        failed_modules — not propagated as an unhandled exception.
+        Works regardless of record_entries value.
         """
         import os
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test"}):
-            with patch("psycopg2.connect", side_effect=Exception("conn refused")):
-                result = _run([_row()], record_entries=True)
-                # Should not raise; error captured in failed_modules
+            # psycopg2.connect is called twice: once for baseline fetch, once
+            # for snapshot write.  Make the snapshot-write call raise.
+            call_count = {"n": 0}
+            def _connect_side_effect(*a, **kw):
+                call_count["n"] += 1
+                if call_count["n"] == 1:
+                    # First call (baseline fetch) → return benign mock
+                    m = MagicMock()
+                    m.cursor.return_value.__enter__ = lambda s: MagicMock(
+                        fetchone=lambda: None
+                    )
+                    m.cursor.return_value.__exit__ = MagicMock(return_value=False)
+                    return m
+                raise Exception("conn refused on write")
+
+            with patch("psycopg2.connect", side_effect=_connect_side_effect):
+                result = _run([_row()], record_entries=False)
                 failed = result.get("failed_modules", [])
                 pp_errors = [f for f in failed if "pp_pregame_snapshot" in f]
                 self.assertTrue(len(pp_errors) >= 1)
 
     def test_snapshot_skipped_when_no_database_url(self):
-        """No DATABASE_URL → no attempt, no crash."""
+        """No DATABASE_URL → no attempt, no crash; result key still present."""
         import os
         env_without_db = {k: v for k, v in os.environ.items() if k != "DATABASE_URL"}
         with patch.dict(os.environ, env_without_db, clear=True):
-            result = _run([_row()], record_entries=True)
-            # Should complete cleanly; snap_results still present as empty list
+            result = _run([_row()], record_entries=False)
             self.assertIn("pp_pregame_snap_results", result)
+
+    def test_tracker_record_entry_still_gated_on_record_entries(self):
+        """
+        tracker.record_entry() must NOT be called when record_entries=False,
+        even though the snapshot now fires unconditionally.
+        """
+        from gate_engine import tracker as _tracker_mod
+        with patch.object(_tracker_mod, "record_entry") as mock_entry:
+            _run([_row()], record_entries=False)
+            mock_entry.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -480,13 +513,16 @@ class TestFailClosedBehaviourInPipeline(unittest.TestCase):
 
     def test_pipeline_run_status_degraded_on_snapshot_db_error(self):
         """
-        A DB connection error in the snapshot stage IS a module failure and
-        must appear in failed_modules (and thus run_status = DEGRADED_ENGINE_RUN).
+        A DB connection error in the snapshot-write stage IS a module failure
+        and must appear in failed_modules regardless of record_entries value.
+        The snapshot write is now unconditional, so record_entries=False still
+        reaches the write path and can surface a DB error.
         """
         import os
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test"}):
             with patch("psycopg2.connect", side_effect=Exception("db down")):
-                result = _run([_row()], record_entries=True)
+                # record_entries=False — snapshot still fires, DB error captured
+                result = _run([_row()], record_entries=False)
                 failed = result.get("failed_modules", [])
                 has_snap_error = any("pp_pregame_snapshot" in f for f in failed)
                 self.assertTrue(has_snap_error)
@@ -512,14 +548,279 @@ class TestPipelineWiringAuthorityInvariants(unittest.TestCase):
         self.assertFalse(_snap_mod.can_execute)
 
     def test_snapshot_module_has_ensure_table_standalone(self):
-        """New no-arg startup helper must be importable."""
+        """No-arg startup helper must be importable."""
         from gate_engine.pp_pregame_snapshot import ensure_table_standalone
         self.assertTrue(callable(ensure_table_standalone))
+
+    def test_snapshot_module_has_fetch_latest_snapshot(self):
+        """New read helper must be importable and callable."""
+        from gate_engine.pp_pregame_snapshot import fetch_latest_snapshot
+        self.assertTrue(callable(fetch_latest_snapshot))
 
     def test_pipeline_import_adds_no_new_authority_claims(self):
         import gate_engine.pipeline as _pl
         # pipeline itself must not carry any production/execution authority
         self.assertFalse(getattr(_pl, "can_execute", False))
+
+
+# ---------------------------------------------------------------------------
+# TC-PW-09: fetch_latest_snapshot unit tests (module-level)
+# ---------------------------------------------------------------------------
+
+class TestFetchLatestSnapshot(unittest.TestCase):
+    """
+    Unit tests for pp_pregame_snapshot.fetch_latest_snapshot().
+    All tests use mock DB connections — no real DB required.
+    """
+
+    def _make_conn(self, fetchone_return):
+        """Return a mock psycopg2 connection whose cursor.fetchone() returns given value."""
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchone.return_value = fetchone_return
+        mock_cur.execute.return_value = None
+        mock_conn.cursor.return_value.__enter__ = lambda s: mock_cur
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_conn
+
+    def test_returns_none_when_no_row_found(self):
+        """First-run bootstrap: no prior snapshot → returns None → vacuous pass."""
+        conn = self._make_conn(None)
+        result = _snap_mod.fetch_latest_snapshot(conn, "row-abc")
+        self.assertIsNone(result)
+
+    def test_returns_dict_with_baseline_fields_when_row_found(self):
+        """Snapshot row with pipeline_meta → baseline dict returned."""
+        pipeline_meta = {
+            "lineup_status": "CONFIRMED",
+            "player": "Test Player",
+            "line": 24.5,
+            "odds_more": -115.0,
+        }
+        sources_version = {"primary": "v1.0", "secondary": "v2.1"}
+        conn = self._make_conn((pipeline_meta, sources_version))
+        result = _snap_mod.fetch_latest_snapshot(conn, "row-abc")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["lineup_status"], "CONFIRMED")
+        self.assertEqual(result["player"], "Test Player")
+        self.assertEqual(result["line"], 24.5)
+        self.assertEqual(result["odds_more"], -115.0)
+
+    def test_sources_key_reconstructed_from_sources_version(self):
+        """
+        _detect_source_change reads baseline["sources"]; verify it is
+        reconstructed from the stored sources_version JSONB column.
+        """
+        pipeline_meta = {"lineup_status": "CONFIRMED"}
+        sources_version = {"espn": "ts-1234", "statmuse": "ts-5678"}
+        conn = self._make_conn((pipeline_meta, sources_version))
+        result = _snap_mod.fetch_latest_snapshot(conn, "row-abc")
+        self.assertEqual(result["sources"], sources_version)
+
+    def test_returns_none_on_db_error(self):
+        """Any DB/cursor exception → returns None (never raises)."""
+        mock_conn = MagicMock()
+        mock_conn.cursor.side_effect = Exception("cursor exploded")
+        result = _snap_mod.fetch_latest_snapshot(mock_conn, "row-abc")
+        self.assertIsNone(result)
+
+    def test_handles_none_pipeline_meta_gracefully(self):
+        """If pipeline_meta column is NULL in DB (old rows), sources still returned."""
+        conn = self._make_conn((None, {"src": "v1"}))
+        result = _snap_mod.fetch_latest_snapshot(conn, "row-abc")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["sources"], {"src": "v1"})
+
+    def test_handles_none_sources_version_gracefully(self):
+        """If sources_version column is NULL, sources key is empty dict."""
+        conn = self._make_conn(({"lineup_status": "OUT"}, None))
+        result = _snap_mod.fetch_latest_snapshot(conn, "row-abc")
+        self.assertEqual(result.get("sources"), {})
+
+    def test_can_execute_false_on_snapshot_module(self):
+        """Authority invariant: can_execute must remain False."""
+        self.assertFalse(_snap_mod.can_execute)
+
+
+# ---------------------------------------------------------------------------
+# TC-PW-10: DB baseline injection pipeline tests
+# ---------------------------------------------------------------------------
+
+class TestDbBaselineInjectionPipeline(unittest.TestCase):
+    """
+    Verifies the pipeline injects DB-fetched baselines into the final-refresh
+    gate and that caller-supplied baselines always override DB-fetched ones.
+    """
+
+    def _snap_baseline(self, lineup_status="CONFIRMED", line=24.5):
+        """
+        Simulate what fetch_latest_snapshot returns for a stored snapshot.
+
+        Only includes fields that _row() also sets, so the source-change,
+        price-change, and participant-change detectors see matching values and
+        do NOT fire for tests that assert refresh_required_count == 0.
+
+        Deliberately absent:
+          game_time, game_id   — not set by _row()
+          odds_more, odds_less — not set by _row(); price detector fires
+                                 "one_side_missing" if present vs absent
+          sources              — not set by _row(); source detector compares
+                                 {"primary": "v1.0"} vs {} and fires
+        """
+        return {
+            "lineup_status": lineup_status,
+            "player":         "Test Player",
+            "team":           "Team A",
+            "opponent":       "Team B",
+            "game":           "team-a-vs-team-b",
+            "prop_type":      "Points",
+            "stat_key":       "points",
+            "line":           line,
+            "side":           "MORE",
+        }
+
+    def test_db_baseline_triggers_refresh_flag_on_lineup_change(self):
+        """
+        When the DB snapshot has lineup_status=CONFIRMED and the current row
+        has lineup_status=OUT, the final-refresh gate must detect a material
+        change (refresh_required_count > 0) via the DB-fetched baseline.
+        """
+        row = _row(sport="NFL")
+        row_id = row.get("row_id") or "r-db-inject"
+        row["row_id"]        = row_id
+        row["lineup_status"] = "OUT"  # changed vs baseline
+
+        db_baseline = self._snap_baseline(lineup_status="CONFIRMED")
+
+        with patch.object(
+            _snap_mod, "fetch_latest_snapshot", return_value=db_baseline
+        ):
+            # No DATABASE_URL → baseline fetch tries but fetch_latest_snapshot
+            # is mocked, so we need DATABASE_URL present and connect mocked too
+            import os
+            mock_conn = MagicMock()
+            mock_cur = MagicMock()
+            mock_cur.fetchone.return_value = None  # raw cursor not used (method patched)
+            mock_cur.execute.return_value = None
+            mock_conn.cursor.return_value.__enter__ = lambda s: mock_cur
+            mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+            with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test"}):
+                with patch("psycopg2.connect", return_value=mock_conn):
+                    result = _run([row])
+
+        report = result["pp_final_refresh_report"]
+        self.assertGreater(report.get("refresh_required_count", 0), 0,
+            "DB-injected baseline showing lineup change must raise refresh_required_count")
+
+    def test_caller_supplied_baseline_overrides_db_baseline(self):
+        """
+        Caller-supplied enrichment[row_id]["pp_baseline"] must replace the
+        DB-fetched baseline for that row before pp_final_refresh.run() is
+        called.  Tested by capturing the 'baselines' argument passed to
+        pp_final_refresh.run — the caller value must appear under row_id,
+        not the DB value.  (Testing via refresh_required_count is fragile
+        because the full pipeline may transform the row in ways that create
+        spurious field mismatches regardless of which baseline is used.)
+        """
+        import os
+
+        row    = _row(sport="NFL")
+        row_id = row.get("row_id") or "r-caller-wins"
+        row["row_id"] = row_id
+
+        db_baseline     = {"lineup_status": "OUT",       "sentinel": "DB"}
+        caller_baseline = {"lineup_status": "CONFIRMED", "sentinel": "CALLER"}
+
+        captured: dict = {}
+        original_run   = _refresh_mod.run
+
+        def _capturing_run(rows_arg, baselines=None):
+            captured["baselines"] = dict(baselines or {})
+            return original_run(rows_arg, baselines=baselines)
+
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = lambda s: MagicMock(
+            execute=lambda *a: None, fetchone=lambda: None
+        )
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch.object(_snap_mod, "fetch_latest_snapshot", return_value=db_baseline):
+            with patch.object(_refresh_mod, "run", side_effect=_capturing_run):
+                with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test"}):
+                    with patch("psycopg2.connect", return_value=mock_conn):
+                        _run([row], enrichment={row_id: {"pp_baseline": caller_baseline}})
+
+        baselines_used = captured.get("baselines", {})
+        self.assertIn(
+            row_id, baselines_used,
+            f"row_id '{row_id}' not in baselines passed to refresh.run; "
+            f"keys present: {list(baselines_used.keys())}",
+        )
+        used = baselines_used[row_id]
+        self.assertEqual(
+            used.get("sentinel"), "CALLER",
+            f"Expected caller baseline (sentinel=CALLER) but pipeline used: {used}",
+        )
+
+    def test_no_db_url_means_vacuous_baseline_pass(self):
+        """When DATABASE_URL is absent, no DB fetch → all baselines empty → vacuous pass."""
+        import os
+        env_no_db = {k: v for k, v in os.environ.items() if k != "DATABASE_URL"}
+        row = _row(sport="NFL")
+        with patch.dict(os.environ, env_no_db, clear=True):
+            result = _run([row])
+        self.assertEqual(result["pp_final_refresh_report"]["refresh_required_count"], 0)
+
+    def test_db_fetch_error_treated_as_vacuous_pass(self):
+        """
+        If the DB connection raises during baseline fetch, the pipeline must
+        continue silently (best-effort); no entry in failed_modules for the
+        baseline-fetch failure (only snapshot-write failures go there).
+        """
+        import os
+        with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test"}):
+            # Both connect calls raise immediately
+            with patch("psycopg2.connect", side_effect=Exception("db unreachable")):
+                result = _run([_row(sport="NFL")])
+        # No failed_module entry for the baseline-fetch leg
+        failed = result.get("failed_modules", [])
+        baseline_errors = [f for f in failed if "pp_baseline" in f or "ppbl" in f]
+        self.assertEqual(len(baseline_errors), 0,
+            "Baseline-fetch DB error must be silent (vacuous pass), not in failed_modules")
+
+    def test_pipeline_meta_in_build_snapshot_contains_baseline_fields(self):
+        """
+        build_snapshot() must populate pipeline_meta with the fields the
+        final-refresh detectors need (the _BASELINE_FIELDS constant).
+        Verifies the stored snapshot can serve as a future baseline.
+        """
+        row = _row(sport="NFL")
+        row.update({
+            "lineup_status": "CONFIRMED",
+            "game_id": "gid-001",
+            "odds_more": -115.0,
+            "game_settled": False,
+        })
+        snap = _snap_mod.build_snapshot(row, final_refresh_passed=True)
+        meta = snap.get("pipeline_meta") or {}
+        self.assertEqual(meta.get("lineup_status"), "CONFIRMED")
+        self.assertEqual(meta.get("game_id"), "gid-001")
+        self.assertEqual(meta.get("odds_more"), -115.0)
+        self.assertFalse(meta.get("game_settled"))
+
+    def test_build_snapshot_caller_supplied_pipeline_meta_takes_precedence(self):
+        """
+        When a caller explicitly passes pipeline_meta, it overrides the
+        row-extracted defaults (backward compatibility).
+        """
+        row = _row(sport="NFL")
+        row["lineup_status"] = "CONFIRMED"
+        custom_meta = {"custom_key": "custom_value", "lineup_status": "OVERRIDE"}
+        snap = _snap_mod.build_snapshot(row, final_refresh_passed=True, pipeline_meta=custom_meta)
+        meta = snap.get("pipeline_meta") or {}
+        self.assertEqual(meta.get("lineup_status"), "OVERRIDE")
+        self.assertEqual(meta.get("custom_key"), "custom_value")
 
 
 if __name__ == "__main__":

@@ -55,6 +55,27 @@ _SNAPSHOT_BLOCK_LABEL = "PREGAME_SNAPSHOT_BLOCK"
 _CAP_LABEL            = "MARKET_VERIFIED_HOLD"
 
 # ---------------------------------------------------------------------------
+# Fields captured in pipeline_meta for use as final-refresh baselines.
+# Must cover the union of all fields read by pp_final_refresh detectors.
+# ---------------------------------------------------------------------------
+_BASELINE_FIELDS: frozenset[str] = frozenset({
+    # LINEUP detector
+    "lineup_status", "status", "injury_flag", "is_confirmed", "dnp_flag",
+    # PARTICIPANT detector
+    "player", "team", "opponent", "game", "game_id", "game_time",
+    # MARKET detector
+    "prop_type", "market", "stat_key", "line", "side", "direction",
+    # PRICE detector
+    "odds_more", "odds_less", "price", "price_more", "price_less",
+    # SETTLEMENT detector
+    "game_settled", "series_settled", "settlement_state", "game_status",
+    # WEATHER detector
+    "weather_condition", "weather_forecast", "precipitation_probability",
+    "wind_speed", "temperature", "weather_risk_flag",
+    # SOURCE detector: stored separately via sources_version JSONB column
+})
+
+# ---------------------------------------------------------------------------
 # DDL
 # ---------------------------------------------------------------------------
 
@@ -91,6 +112,45 @@ def ensure_table(conn) -> None:
         cur.execute(_CREATE_IDX_RUN)
         cur.execute(_CREATE_IDX_DATE)
     conn.commit()
+
+
+_SELECT_LATEST_SNAPSHOT = """
+SELECT pipeline_meta, sources_version
+FROM   wow_pp_pregame_snapshots
+WHERE  row_id = %s
+ORDER  BY snapshot_at DESC
+LIMIT  1
+"""
+
+
+def fetch_latest_snapshot(conn, row_id: str) -> dict | None:
+    """
+    Return the most recent pregame snapshot for *row_id* as a baseline dict
+    compatible with pp_final_refresh detectors, or None if no record exists.
+
+    The returned dict merges pipeline_meta (raw field values captured at
+    write time) with a reconstructed ``"sources"`` key from the stored
+    sources_version JSONB, matching the shape _detect_source_change expects.
+
+    Never raises — any DB or deserialization error returns None so the
+    caller falls back to a vacuous pass in the final-refresh gate.
+
+    Authority: read-only; carries no execution or approval authority.
+    can_execute = False unconditional.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_SELECT_LATEST_SNAPSHOT, (row_id,))
+            record = cur.fetchone()
+        if record is None:
+            return None
+        pipeline_meta, sources_version = record
+        baseline: dict = dict(pipeline_meta) if isinstance(pipeline_meta, dict) else {}
+        # Reconstruct the "sources" key the source-change detector needs
+        baseline["sources"] = sources_version if isinstance(sources_version, dict) else {}
+        return baseline
+    except Exception:
+        return None  # best-effort: DB unavailable → vacuous pass
 
 
 def ensure_table_standalone() -> None:
@@ -222,7 +282,12 @@ def build_snapshot(
         "upper_bound":             upper_bound,
         "slip_type":               (row.get("slip_type") or "NONE").upper(),
         "sources_version":         sources_version,
-        "pipeline_meta":           pipeline_meta or {},
+        # Populate pipeline_meta with the fields the final-refresh detectors
+        # need so a subsequent scoring run can load this snapshot as a
+        # baseline and detect lineup/market/price/source changes.
+        # Caller-supplied pipeline_meta overrides the row-extracted defaults.
+        "pipeline_meta":           pipeline_meta if pipeline_meta is not None
+                                   else {k: row.get(k) for k in _BASELINE_FIELDS},
     }
 
 

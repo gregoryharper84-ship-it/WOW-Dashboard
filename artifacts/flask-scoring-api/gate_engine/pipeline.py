@@ -991,17 +991,45 @@ def run_pipeline(
     card_finalizer_report = card_finalizer.finalize_card(rows)
 
     # -------------------------------------------------------------------
-    # WOW-PATCH-2026-08-15 — Binding Final Refresh (always runs)
-    # Checks enrichment[row_id]["pp_baseline"] per row.  Material changes
-    # to lineup, market, price, or source cap paid-card labels at
-    # MARKET_VERIFIED_HOLD until the row is re-scored with fresh data.
-    # Vacuous pass when no baseline is supplied for a row.
+    # WOW-PATCH-2026-08-15 — Binding Final Refresh baseline fetch (always)
+    # Fetch the most recent pregame snapshot per row_id from the database
+    # so the final-refresh detectors can compare lineup, participant,
+    # market, price, settlement, weather, and source state against the
+    # last recorded scoring run.  Caller-supplied pp_baseline in enrichment
+    # always overrides the DB-fetched baseline (caller wins).
+    # First-run bootstrap: no prior snapshot → _pp_baselines empty →
+    # pp_final_refresh.run() vacuous pass → snapshot written below →
+    # comparison becomes live on the second scoring run.
+    # Best-effort: DB unavailable → vacuous pass for all rows.
     # -------------------------------------------------------------------
     _pp_baselines: dict[str, dict] = {}
+    try:
+        import os as _ppbl_os
+        import psycopg2 as _ppbl_pg  # type: ignore
+        _ppbl_url = _ppbl_os.environ.get("DATABASE_URL")
+        if _ppbl_url:
+            _ppbl_conn = _ppbl_pg.connect(_ppbl_url, connect_timeout=5)
+            try:
+                for _ppbl_row in rows:
+                    _ppbl_rid = _ppbl_row.get("row_id") or ""
+                    if not _ppbl_rid:
+                        continue
+                    _ppbl_snap = pp_pregame_snapshot.fetch_latest_snapshot(
+                        _ppbl_conn, _ppbl_rid
+                    )
+                    if isinstance(_ppbl_snap, dict):
+                        _pp_baselines[_ppbl_rid] = _ppbl_snap
+            finally:
+                _ppbl_conn.close()
+    except Exception:
+        pass  # best-effort; DB unavailable → vacuous pass for all rows
+
+    # Caller-supplied pp_baseline in enrichment always overrides DB-fetched
     for _rid, _enr_dict in enrichment.items():
         _bl = _enr_dict.get("pp_baseline") if isinstance(_enr_dict, dict) else None
         if isinstance(_bl, dict):
             _pp_baselines[_rid] = _bl
+
     pp_final_refresh_report = pp_final_refresh.run(rows, baselines=_pp_baselines)
 
     # -------------------------------------------------------------------
@@ -1017,40 +1045,45 @@ def run_pipeline(
     pp_promotion_report = pp_promotion_gate.run(rows)
 
     # -------------------------------------------------------------------
-    # WOW-PATCH-2026-08-15 — Pregame Snapshot (write-once, fail-closed)
+    # WOW-PATCH-2026-08-15 — Pregame Snapshot (unconditional, fail-closed)
     # Written for each row that still holds a paid-card label after the
-    # promotion gate.  Write failure caps label at MARKET_VERIFIED_HOLD
-    # but never silences research output.
-    # Only runs when record_entries=True (same guard as tracker.record_entry).
+    # promotion gate.  Runs unconditionally — NOT gated on record_entries.
+    # The snapshot is an immutable audit trail, not an exposure counter;
+    # it must fire on every qualifying scoring run (including analysis-only
+    # runs where record_entries=False) so subsequent runs have a baseline
+    # to compare against via the final-refresh gate above.
+    # tracker.record_entry() and the session exposure ledger remain gated
+    # on record_entries exactly as before (see line below this block).
+    # Write failure → label capped at MARKET_VERIFIED_HOLD; research output
+    # never silenced.
     # -------------------------------------------------------------------
     _pp_snap_results: list[dict] = []
-    if record_entries:
-        try:
-            import os as _pp_os
-            import psycopg2 as _pp_pg  # type: ignore
-            _pp_db_url = _pp_os.environ.get("DATABASE_URL")
-            if _pp_db_url:
-                _pp_conn = _pp_pg.connect(_pp_db_url, connect_timeout=10)
-                try:
-                    pp_pregame_snapshot.ensure_table(_pp_conn)
-                    _paid_labels = {"MONEY_QUALIFIED", "FINAL_APPROVED"}
-                    for _pp_row in rows:
-                        if _pp_row.get("terminal_label") not in _paid_labels:
-                            continue
-                        _refresh_passed = not bool(
-                            _pp_row.get("final_refresh_required")
-                        )
-                        _snap_res = pp_pregame_snapshot.snapshot_and_enforce(
-                            _pp_conn, _pp_row, final_refresh_passed=_refresh_passed
-                        )
-                        _pp_snap_results.append(_snap_res)
-                    _pp_conn.commit()
-                finally:
-                    _pp_conn.close()
-        except Exception as _pp_snap_err:
-            failed_modules.append(
-                f"pp_pregame_snapshot:{str(_pp_snap_err)[:80]}"
-            )
+    try:
+        import os as _pp_os
+        import psycopg2 as _pp_pg  # type: ignore
+        _pp_db_url = _pp_os.environ.get("DATABASE_URL")
+        if _pp_db_url:
+            _pp_conn = _pp_pg.connect(_pp_db_url, connect_timeout=10)
+            try:
+                pp_pregame_snapshot.ensure_table(_pp_conn)
+                _paid_labels = {"MONEY_QUALIFIED", "FINAL_APPROVED"}
+                for _pp_row in rows:
+                    if _pp_row.get("terminal_label") not in _paid_labels:
+                        continue
+                    _refresh_passed = not bool(
+                        _pp_row.get("final_refresh_required")
+                    )
+                    _snap_res = pp_pregame_snapshot.snapshot_and_enforce(
+                        _pp_conn, _pp_row, final_refresh_passed=_refresh_passed
+                    )
+                    _pp_snap_results.append(_snap_res)
+                _pp_conn.commit()
+            finally:
+                _pp_conn.close()
+    except Exception as _pp_snap_err:
+        failed_modules.append(
+            f"pp_pregame_snapshot:{str(_pp_snap_err)[:80]}"
+        )
 
     if record_entries:
         for row in rows:
