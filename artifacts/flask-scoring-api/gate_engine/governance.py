@@ -619,6 +619,41 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
         ),
     },
     {
+        "patch_id":    "WOW-PATCH-2026-08-15-PP-PROMOTION-AND-SAME-GAME-FRAGILITY",
+        "version":     "1.0",
+        "effective_at": "2026-08-15",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  104,
+        "can_execute": False,
+        "description": (
+            "PrizePicks Paid-Card Promotion Gate & Same-Game Fragility (2026-08-15). "
+            "HIGH_PROBABILITY != QUALIFIED_PAID_CARD. "
+            "PP Promotion Gate: calibrated lower bound must clear break-even + safety_buffer "
+            "(POWER=0.556+0.020, FLEX=0.500+0.020); two-way no-vig market check; "
+            "recency-shock LOO (|full_hit_rate - loo_hit_rate| >= 0.030 blocks qualification). "
+            "Gate is price-aware; probability leaderboard remains price-independent. "
+            "Same-game fragility: Power cards with exactly 2 legs from the same event "
+            "require a valid joint dependence model (joint_model_present=True); "
+            "3+ same-event Power legs are already hard-rejected by MAX_SAME_EVENT_LEGS=2. "
+            "Weakest-leg elimination binding: rejected leg surviving final card construction "
+            "is fatal (FATAL_REJECTED_LEG_IN_CARD). "
+            "Pregame snapshot: immutable, written after final refresh passes, before "
+            "card publication; write failure blocks FINAL_APPROVED/MONEY_QUALIFIED but "
+            "preserves research output. "
+            "Final refresh binding: material lineup/participant/market/price/settlement/"
+            "weather/source changes force rerun (not warning); rows cap at "
+            "MARKET_VERIFIED_HOLD until re-scored. "
+            "Postmortem classifications: variance/price/market/structure/outlier/"
+            "weakest-leg/refresh/data-gap/missing-pregame-evidence. "
+            "Modules: pp_promotion_gate.py, pp_pregame_snapshot.py, pp_final_refresh.py. "
+            "New labels: REJECT_PP_PROMOTION_GATE, REJECT_SAME_EVENT_NO_JOINT_MODEL, "
+            "REJECT_RECENCY_SHOCK, FATAL_REJECTED_LEG_IN_CARD, PREGAME_SNAPSHOT_BLOCK, "
+            "FINAL_REFRESH_REQUIRED. "
+            "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
+        ),
+    },
+    {
         "patch_id":    "WOW-PATCH-2026-08-07-BACKEND-FAILOVER-RESEARCH",
         "version":     "1.0",
         "effective_at": "2026-08-07",

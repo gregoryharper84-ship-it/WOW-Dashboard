@@ -32,6 +32,65 @@ from typing import Any, Optional
 can_execute: bool = False
 
 # ---------------------------------------------------------------------------
+# Postmortem process classifications (WOW-PATCH-2026-08-15)
+# ---------------------------------------------------------------------------
+
+class PostmortemClassification:
+    """
+    Canonical postmortem process classifications for outcome attribution.
+    Written to wow_prop_outcomes.process_classification at settlement time.
+
+    These distinguish HOW a prediction failed so calibration drift can be
+    attributed to a cause rather than treated as undifferentiated variance.
+    """
+    # Normal statistical variance — model was calibrated, outcome was within
+    # expected miss-rate; no structural or data failure
+    VARIANCE                  = "VARIANCE"
+
+    # Odds / line moved materially against position after scoring lock
+    PRICE                     = "PRICE"
+
+    # Market structure changed (prop type, line, side, or push rule changed)
+    MARKET                    = "MARKET"
+
+    # Card or slip structure violation caused the loss (correlation, same-event)
+    STRUCTURE                 = "STRUCTURE"
+
+    # Extreme outlier result outside model confidence bounds
+    OUTLIER                   = "OUTLIER"
+
+    # Weakest leg failed and dragged the card
+    WEAKEST_LEG               = "WEAKEST_LEG"
+
+    # Stale data at card construction time (final refresh was required but missed)
+    REFRESH                   = "REFRESH"
+
+    # Incomplete or missing data gap caused model mispricing
+    DATA_GAP                  = "DATA_GAP"
+
+    # No pregame snapshot on record; pre-game state cannot be verified
+    MISSING_PREGAME_EVIDENCE  = "MISSING_PREGAME_EVIDENCE"
+
+    @classmethod
+    def all_values(cls) -> frozenset[str]:
+        return frozenset({
+            cls.VARIANCE,
+            cls.PRICE,
+            cls.MARKET,
+            cls.STRUCTURE,
+            cls.OUTLIER,
+            cls.WEAKEST_LEG,
+            cls.REFRESH,
+            cls.DATA_GAP,
+            cls.MISSING_PREGAME_EVIDENCE,
+        })
+
+    @classmethod
+    def validate(cls, value: str) -> bool:
+        """Return True if value is a known classification."""
+        return value in cls.all_values()
+
+# ---------------------------------------------------------------------------
 # DDL
 # ---------------------------------------------------------------------------
 
