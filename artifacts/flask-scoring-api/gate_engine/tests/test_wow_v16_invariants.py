@@ -635,13 +635,13 @@ class TestInvariantUnconfirmedUmpire(unittest.TestCase):
 
 
 class TestInvariantRegistryIntegrity(unittest.TestCase):
-    """Registry must have exactly 21 skills with no duplicates; validate_registry() clean."""
+    """Registry must have exactly 22 skills with no duplicates; validate_registry() clean."""
 
     def setUp(self):
         self._reg = SkillRegistry.get()
 
-    def test_registry_has_21_skills(self):
-        self.assertEqual(len(self._reg.all_skills()), 21)
+    def test_registry_has_22_skills(self):
+        self.assertEqual(len(self._reg.all_skills()), 22)
 
     def test_validate_registry_returns_no_errors(self):
         errors = self._reg.validate_registry()
