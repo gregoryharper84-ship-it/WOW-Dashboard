@@ -32,3 +32,18 @@ When ALL rows in the batch are rejected (single-row SLATE_PURGE, etc.), there is
 
 ## Tests
 87 new tests (TC-01..TC-12) in `gate_engine/tests/test_pp_promotion_gate.py`; 4494 total pass, 1 pre-existing failure unchanged.
+
+## Pipeline wiring (Task #226 — completed)
+
+**Insertion order in run_pipeline() after finalize_card():**
+1. `pp_final_refresh.run(rows, baselines=_pp_baselines)` — baselines extracted from `enrichment[row_id]["pp_baseline"]`; vacuous pass when absent.
+2. `pp_promotion_gate.run(rows)` — unconditional, no DB.
+3. Under `record_entries=True`: open own DB conn → `ensure_table()` → `snapshot_and_enforce()` for paid-card rows → commit → close; DB error → `failed_modules`.
+
+**Key wiring lessons:**
+- `pp_promotion_gate.run()` returns keys: `can_execute`, `execution_rule`, `safety_buffer`, `eligible_total`, `passed_total`, `failed_total`, `row_summaries` — no `total_rows` key.
+- Full pipeline overwrites `calibrated_probability` from game_log; don't test raw input value surviving full pipeline.
+- Passing `game_log=[float, float]` in enrichment for a WNBA row crashes fallback_router (tries `.get()` on each float); use sport=NFL for isolation tests.
+- `ensure_table_standalone()` added to `pp_pregame_snapshot.py` as no-arg startup helper.
+- `pp_pregame_snapshot.snapshot_and_enforce()` only fires when `record_entries=True` — callers must opt in.
+- `pp_final_refresh` gate is vacuous until callers populate `enrichment[row_id]["pp_baseline"]`.
