@@ -15,8 +15,25 @@ _KEEPALIVE_INTERVAL_S = 600   # 10 minutes  (< 15-min autoscale threshold)
 _KEEPALIVE_INITIAL_DELAY_S = 90  # let gunicorn fully stabilise before first ping
 
 
+_KEEPALIVE_MAX_CONSECUTIVE_FAILURES = 5   # log WARNING after this many in a row
+
+
 def _keepalive_loop(prod_url: str, worker_pid: int, log) -> None:
+    """
+    Ping /wow/engine/health every _KEEPALIVE_INTERVAL_S seconds.
+
+    Logging policy (#66 fix):
+      - SUCCESS: silent (no log).  Routine pings have no diagnostic value and
+        clutter deployment logs.
+      - FAILURE: log.warning on every failure.  After
+        _KEEPALIVE_MAX_CONSECUTIVE_FAILURES consecutive failures, escalate to
+        log.error so an unhealthy server is visible rather than masked (#65 fix).
+
+    The keepalive loop NEVER stops — if the server recovers, pings resume.
+    The consecutive-failure counter resets on the next success.
+    """
     time.sleep(_KEEPALIVE_INITIAL_DELAY_S)
+    consecutive_failures = 0
     while True:
         try:
             import urllib.request
@@ -24,10 +41,29 @@ def _keepalive_loop(prod_url: str, worker_pid: int, log) -> None:
                 f"{prod_url}/wow/engine/health", timeout=10
             ) as resp:
                 status = resp.status
+            if status == 200:
+                consecutive_failures = 0   # reset on success; no log (policy #66)
+            else:
+                consecutive_failures += 1
+                _log_keepalive_failure(log, worker_pid, f"HTTP {status}", consecutive_failures)
         except Exception as exc:
-            status = f"ERR({exc})"
-        log.info(f"[keepalive] worker {worker_pid}: pinged health → {status}")
+            consecutive_failures += 1
+            _log_keepalive_failure(log, worker_pid, str(exc), consecutive_failures)
         time.sleep(_KEEPALIVE_INTERVAL_S)
+
+
+def _log_keepalive_failure(log, worker_pid: int, detail: str, consecutive: int) -> None:
+    msg = (
+        f"[keepalive] worker {worker_pid}: health check failed "
+        f"(consecutive={consecutive}): {detail}"
+    )
+    if consecutive >= _KEEPALIVE_MAX_CONSECUTIVE_FAILURES:
+        log.error(
+            msg + f" — server appears persistently unhealthy "
+            f"(≥{_KEEPALIVE_MAX_CONSECUTIVE_FAILURES} consecutive failures)"
+        )
+    else:
+        log.warning(msg)
 
 
 def post_fork(server, worker):

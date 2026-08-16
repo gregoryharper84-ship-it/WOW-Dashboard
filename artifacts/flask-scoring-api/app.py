@@ -23712,8 +23712,11 @@ def kalshi_settle_result():
     # ── NO-side calibration ledger settlement (non-fatal) ─────────────────────
     # When the caller passes no_side_calibration_id (returned by evaluate-contract
     # with side=NO), settle the corresponding no_side_calibration_ledger record.
+    # Task #52: if no_side_calibration_id is absent, surface a warning so the
+    # caller knows a NO-side record may be left orphaned/unsettled.
     _no_cal_settle_result: dict | None = None
     _no_cal_id = body.get("no_side_calibration_id")
+    _no_cal_orphan_warning: str | None = None
     if _no_cal_id:
         try:
             from kalshi_engine import no_side_calibration_ledger as _no_cal_sr
@@ -23726,6 +23729,17 @@ def kalshi_settle_result():
             )
         except Exception as _exc:
             _no_cal_settle_result = {"ok": False, "detail": str(_exc)}
+    else:
+        # Task #52: warn the caller that a NO-side calibration record may be
+        # orphaned.  The evaluate-contract endpoint (side=NO) returns a
+        # no_side_calibration_id when a NO-side paper-trade was logged.
+        # Callers should always pass that ID here to keep the ledger consistent.
+        _no_cal_orphan_warning = (
+            "no_side_calibration_id was not provided.  If evaluate-contract "
+            "returned a no_side_calibration_id for this ticker, that NO-side "
+            "record remains OPEN (orphaned) in no_side_calibration_ledger.  "
+            "Re-call settle-result with no_side_calibration_id to settle it."
+        )
 
     # Optional Claude post-trade review
     review = None
@@ -23748,6 +23762,7 @@ def kalshi_settle_result():
     return jsonify({
         **result,
         "no_side_calibration_settlement": _no_cal_settle_result,
+        "no_side_calibration_orphan_warning": _no_cal_orphan_warning,
         "post_trade_review": review,
         "can_approve_bets":  False,
     }), (201 if result.get("ok") else 400)

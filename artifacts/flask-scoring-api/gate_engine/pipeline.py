@@ -30,6 +30,9 @@ from .governance import get_governance_status
 # WOW Stage 2 — hard structural gates + weakest-leg finalizer (reviewer-mandated)
 from . import card_finalizer, hitter_fantasy_score as _hfs_mod
 from . import route_registry
+# WOW-PATCH-2026-08-10-STAGE-A — Prob-ledger enforcer + outlier recompute (advisory only)
+from . import prob_ledger_enforcer as _ple
+from . import outlier_recompute as _or_mod
 # WOW-PATCH-2026-08-15 — PP Promotion Gate, Final Refresh, Pregame Snapshot
 from . import pp_promotion_gate, pp_final_refresh, pp_pregame_snapshot
 # WOW-PATCH-FMCG-v1.0 — Full Model Contract Gatekeeper
@@ -1678,6 +1681,50 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         failed_source_calls=failed_modules or [],
     )
 
+    # WOW-PATCH-2026-08-10-STAGE-A — Prob-ledger completeness enforcement pass
+    # Advisory only; never raises; never mutates rows.
+    # Runs over ALL rows so incomplete ledgers on qualifying labels are surfaced
+    # in the summary even when the row reached a non-terminal label.
+    _ple_violations: list[dict] = []
+    _ple_incomplete_count = 0
+    for _ple_row in rows:
+        _ple_label = _ple_row.get("terminal_label") or ""
+        _ple_ledger = (
+            (_ple_row.get("gates") or {})
+            .get("prob_ledger") or {}
+        )
+        try:
+            _ple_result = _ple.enforce_for_label(_ple_label, _ple_ledger, row=_ple_row)
+            if _ple_result.label_is_probability_bearing and not _ple_result.enforcer_passed:
+                _ple_incomplete_count += 1
+                _ple_violations.append({
+                    "row_id":           _ple_row.get("row_id"),
+                    "terminal_label":   _ple_label,
+                    "enforcement_code": _ple_result.enforcement_code,
+                    "violations":       list(_ple_result.violations),
+                    "missing_fields":   list(_ple_result.missing_fields),
+                })
+        except Exception:
+            pass  # enforcer is advisory; never block the response
+
+    # WOW-PATCH-2026-08-10-STAGE-A — Outlier recompute engine pass
+    # Advisory only; runs on rows that have OUTLIER_FLAG:REVIEW_REQUIRED in blockers.
+    _or_results: list[dict] = []
+    for _or_row in rows:
+        _or_blockers = _or_row.get("blockers") or []
+        if not any("OUTLIER_FLAG:REVIEW_REQUIRED" in str(b) for b in _or_blockers):
+            continue
+        try:
+            _enr_for_row = (enrichment or {}).get(_or_row.get("row_id") or "", {})
+            _or_result = _or_mod.run(_or_row, enrichment=_enr_for_row)
+            _or_results.append({
+                "row_id":   _or_row.get("row_id"),
+                "status":   _or_result.status if hasattr(_or_result, "status") else str(_or_result),
+                "can_execute": False,
+            })
+        except Exception:
+            pass  # recompute engine is advisory; never block
+
     # WOW-PATCH-2026-07-15 — governance fingerprint in every output
     _gov_status = get_governance_status()
 
@@ -1721,6 +1768,17 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         "can_execute":          False,
         # WOW-PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION
         "gate_execution_summary": gate_execution_summary,
+        # WOW-PATCH-2026-08-10-STAGE-A — Prob-ledger enforcer + outlier recompute
+        "prob_ledger_enforcement_report": {
+            "incomplete_count": _ple_incomplete_count,
+            "violations":       _ple_violations,
+            "can_execute":      False,
+        },
+        "outlier_recompute_report": {
+            "recomputed_count": len(_or_results),
+            "results":          _or_results,
+            "can_execute":      False,
+        },
         "summary": {
             "total_rows":               len(rows),
             "by_label":                 label_counts,
@@ -1733,6 +1791,9 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
             "injury_dependency_count":  _dep_count,
             "unresolved_dependency_count": _unresolved_count,
             "route_completion_failures": _route_failures,
+            # WOW-PATCH-2026-08-10-STAGE-A — task #71: surface incomplete prob ledgers
+            "prob_ledger_incomplete":   _ple_incomplete_count > 0,
+            "prob_ledger_incomplete_count": _ple_incomplete_count,
         },
     }
 
