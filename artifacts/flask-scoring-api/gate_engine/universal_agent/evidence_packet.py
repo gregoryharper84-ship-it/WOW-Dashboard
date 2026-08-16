@@ -35,6 +35,7 @@ class Lane:
     MLB_MONEYLINE  = "MLB_MONEYLINE"
     WNBA_PROPS     = "WNBA_PROPS"
     MLB_PROPS      = "MLB_PROPS"
+    TENNIS_PROPS   = "TENNIS_PROPS"
     TENNIS         = "TENNIS"
     PLAYER_PROPS   = "PLAYER_PROPS"
     UNKNOWN        = "UNKNOWN"
