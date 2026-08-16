@@ -173,27 +173,14 @@ def run_pipeline(
 
         # -------------------------------------------------------------------
         # In-pipeline game-log acquisition (WOW-PATCH-2026-08-16-R3)
-        # Mirrors AcquisitionOrchestrator.acquire(row, enr) in-place pattern.
+        # Mirrors AcquisitionOrchestrator.acquire(row, enr) in-place mutation.
         #
-        # The pre-pipeline orchestrator writes to enrichment[row_id], but only
-        # after the caller has stamped row_id on raw_rows (auto_enrich path).
-        # When raw_rows arrive without row_id (direct /gate-engine/run default),
-        # normalize_board() generates a fresh uuid4 here that differs from what
-        # the orchestrator used, so the pre-pipeline write is missed by
-        # _get_enrichment().  This block re-attempts the fetch using the
-        # final, canonical rid so the result always lands in enrichment[rid].
-        #
-        # Strategy:
-        #   1. Attach enr to enrichment[rid] so in-place mutations propagate.
-        #   2. If game_log is still absent, resolve player_id and call
-        #      _attempt_game_log_fetch, which writes directly into
-        #      enrichment[rid].
-        #   3. Re-bind enr to enrichment[rid] so downstream gates read the
-        #      freshly populated dict.
+        # Uses a per-row temporary enrichment dict for the fetch so the batch
+        # enrichment dict is NEVER mutated before the market-join audit reads
+        # it.  Fetched fields are merged into enr in-place; downstream gates
+        # (including l5_l10_ledger) read enr directly and therefore see the
+        # game_log without any change to the batch enrichment snapshot.
         # -------------------------------------------------------------------
-        if rid not in enrichment:
-            enrichment[rid] = enr          # attach so writes propagate
-
         if not enr.get("game_log"):
             _sport = (row.get("sport") or "").upper()
             if _sport in {"NBA", "WNBA", "MLB"}:
@@ -213,16 +200,22 @@ def run_pipeline(
                     if _pid:
                         if not row.get("player_id"):
                             row["player_id"] = _pid
+                        # Fetch into a per-row scratch dict — never touches the
+                        # batch enrichment dict before the market-join audit.
+                        _row_enr: dict = {rid: dict(enr)}
                         _orch_fetch_gl(
                             row_id=rid,
                             player_id=_pid,
                             sport=_sport,
                             stat_key=row.get("stat_key") or row.get("prop_type") or "",
-                            enrichment=enrichment,
+                            enrichment=_row_enr,
                             target_date=str(target_date) if target_date else None,
                         )
-                        # Re-bind enr so downstream gates use the populated dict
-                        enr = enrichment.get(rid, enr)
+                        # Merge only the fetched fields into enr in-place.
+                        # Downstream gates read enr directly; no batch mutation.
+                        _fetched = _row_enr.get(rid) or {}
+                        if _fetched.get("game_log"):
+                            enr.update(_fetched)
                 except Exception:
                     pass  # fail-closed: missing game_log surfaces as DATA_CONTRACT_FAIL
 
