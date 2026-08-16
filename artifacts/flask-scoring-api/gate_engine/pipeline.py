@@ -200,6 +200,24 @@ def run_pipeline(
                     if _pid:
                         if not row.get("player_id"):
                             row["player_id"] = _pid
+                        # Resolve canonical stat_key via normalizer alias table.
+                        # normalize_board() copies prop_type verbatim (e.g. "Hits",
+                        # "hits", "H"); _MLB_STAT_FIELDS only has uppercase short
+                        # keys ("H", "K", …).  Without this step, _fetch_mlb raises
+                        # GameLogUnavailable for any non-canonical prop_type string,
+                        # which _attempt_game_log_fetch catches and silently discards,
+                        # leaving direct_game_log_feed=NOT_CALLED.
+                        _raw_sk: str = (
+                            row.get("stat_key") or row.get("prop_type") or ""
+                        ).strip()
+                        try:
+                            from gate_engine.normalizer import (  # noqa: PLC0415
+                                _resolve_stat_key as _norm_resolve_sk,
+                            )
+                            _canon_sk, _ = _norm_resolve_sk(_raw_sk, _sport)
+                            _stat_key_for_fetch: str = _canon_sk or _raw_sk
+                        except Exception:
+                            _stat_key_for_fetch = _raw_sk
                         # Fetch into a per-row scratch dict — never touches the
                         # batch enrichment dict before the market-join audit.
                         _row_enr: dict = {rid: dict(enr)}
@@ -207,7 +225,7 @@ def run_pipeline(
                             row_id=rid,
                             player_id=_pid,
                             sport=_sport,
-                            stat_key=row.get("stat_key") or row.get("prop_type") or "",
+                            stat_key=_stat_key_for_fetch,
                             enrichment=_row_enr,
                             target_date=str(target_date) if target_date else None,
                         )
