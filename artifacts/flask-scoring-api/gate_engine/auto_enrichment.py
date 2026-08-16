@@ -520,6 +520,12 @@ def build_auto_enrichment(
                     )
                     if gl_result["values"]:
                         entry["game_log"] = gl_result["values"]
+                        # WOW-PATCH-2026-08-16-R4: persist player_id so the
+                        # acquisition_orchestrator's key-promotion step can carry
+                        # it onto the raw_row (making player_id visible in the
+                        # pipeline's row output and in acquisition diagnostics).
+                        if entry.get("player_id") is None and player_id:
+                            entry["player_id"] = player_id
                         # Track data source provenance
                         existing_sources = entry.get("data_sources") or []
                         if gl_result["source"] not in existing_sources:

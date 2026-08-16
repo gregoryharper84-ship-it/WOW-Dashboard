@@ -171,6 +171,15 @@ def run_pipeline(
         rid = row["row_id"]
         enr = _get_enrichment(enrichment, row)
 
+        # WOW-PATCH-2026-08-16-R4: carry player_id from enrichment to the
+        # normalized row if not already set.  build_auto_enrichment writes
+        # player_id to entry["player_id"] after its MLB-ID lookup.  The R3c
+        # block below only runs when game_log is absent from enr, so when
+        # auto_enrich has already populated it, player_id would otherwise
+        # stay None on the row output even though acquisition succeeded.
+        if not row.get("player_id") and enr.get("player_id"):
+            row["player_id"] = enr["player_id"]
+
         # -------------------------------------------------------------------
         # In-pipeline game-log acquisition (WOW-PATCH-2026-08-16-R3)
         # Mirrors AcquisitionOrchestrator.acquire(row, enr) in-place mutation.

@@ -163,7 +163,19 @@ def _check_prop_game_log(
             enrichment[row_id] = {**_enr_by_pp, **_enr_by_rid}
             _enr_by_rid = enrichment[row_id]
 
+    # WOW-PATCH-2026-08-16-R4: unconditionally carry player_id from enrichment
+    # to the raw_row object so the pipeline's normalized-row output includes it.
+    # This runs regardless of whether the promotion block above triggered:
+    #   - Promotion path: game_log was under player:prop key → promoted to rid
+    #     entry; player_id was written by build_auto_enrichment to that entry.
+    #   - Direct path: game_log already under rid entry (GPT supplied enrichment
+    #     under row_id AND build_auto_enrichment added game_log + player_id to it).
+    # In both cases _enr_by_rid (after any promotion) or _enr_by_pp may carry
+    # player_id.  Take whichever is non-empty first.
     enr_entry = _enr_by_rid if _enr_by_rid else _enr_by_pp
+    _pid_from_enr = enr_entry.get("player_id") or _enr_by_pp.get("player_id")
+    if _pid_from_enr and not row.get("player_id"):
+        row["player_id"] = _pid_from_enr
 
     # Already populated (by caller or auto_enrich)?
     game_log = enr_entry.get("game_log") or row.get("game_log")
