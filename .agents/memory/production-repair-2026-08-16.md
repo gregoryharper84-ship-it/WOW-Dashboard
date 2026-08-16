@@ -1,70 +1,51 @@
 ---
-name: WOW-PATCH-2026-08-16 Production Repair
-description: Six-condition RUN_PARTIAL_BACKEND_FAILURE fix + R2 active-fetch patch — key lessons on schema migration, acquisition orchestration, and accent-strip fallbacks.
+name: Production repair 2026-08-16
+description: Six-patch R1→R3c chain fixing RUN_PARTIAL_BACKEND_FAILURE and direct_game_log_feed=NOT_CALLED for MLB batter props in live GPT sessions.
 ---
 
-## Rules
+## R1 (b97eca1) — Six structural defects
+Schema migration ordering, moneyline team acquisition, exposure ledger idempotency,
+snapshot refresh, Stage 2 schema repair endpoint, quota table sync.
 
-### Schema migration must run BEFORE index DDL on existing tables
-`llp_stage2_tables.ensure_all_tables()` must call `run_provenance_migration(conn)` at the TOP of the function, before the `for ddl in [...]` loop. Any index referencing a column added by the migration (e.g. `freshness_status`) crashes on pre-existing tables that lack the column.
+## R2 (e38da2a) — Accent-strip + active fetch
+`_lookup_mlb_player_id` failed on accented names; `_check_prop_game_log` was
+advisory-only (never fetched). Both fixed. Deployed — still showed NOT_CALLED.
 
-**Why:** `CREATE TABLE IF NOT EXISTS` is a no-op when the table exists. Columns added in later patches are absent. `CREATE INDEX ... ON tbl (new_col)` then fails.
+## R3 (eaf8cc0) — Enrichment identity + in-pipeline acquisition
+Two bugs:
+- `pipeline.py`: `enrichment = enrichment or {}` replaced caller's dict with
+  a new private object; fixed to `if enrichment is None: enrichment = {}`.
+- Pre-pipeline orchestrator keyed writes by player name; `normalize_board()`
+  generated a fresh uuid4 rid that never matched. Fixed by adding the fetch
+  INSIDE the pipeline loop (after canonical rid is known), using a per-row
+  scratch dict (`_row_enr`) so the batch enrichment dict is not touched before
+  the market-join audit.
 
-**Where:** `gate_engine/llp_stage2_tables.py` `ensure_all_tables()`.
+## R3b (a025cdd) — Preserve batch enrichment audit semantics
+R3 wrote `enrichment[rid] = enr` for every row before market-join audit,
+inserting unexpected keys. Changed to per-row scratch dict; fetched fields
+merged into `enr` in-place via `enr.update(_fetched)`.
 
----
+## R3c (e2d6deb) — Canonical stat_key via normalizer ← FINAL ROOT CAUSE
+`_MLB_STAT_FIELDS` uses short uppercase keys (`"H"`, `"K"`, `"PA"`).
+`normalize_board()` copies `prop_type` verbatim from GPT payload
+("Hits", "hits", "hitter hits"). `_fetch_mlb` raised `GameLogUnavailable`
+for any non-canonical string; `_attempt_game_log_fetch` caught silently,
+returned None → `NOT_CALLED`.
 
-### ExposureLedger guards belong INSIDE check_and_register, not in the pipeline skip loop
-The pipeline's post-scoring loop populates `row["gates"]["exposure_gate"]`. Skipping a row at the loop level prevents that dict entry, breaking downstream test assertions. Any per-row exception (e.g. DATA_CONTRACT_FAIL should not consume slots) must be handled INSIDE `ExposureLedger.check_and_register()`, setting `registered=False + skipped_reason=...` while still populating the gates dict.
+Fix: lazy-import `normalizer._resolve_stat_key(prop_type, sport)` in the
+R3 in-pipeline block and use the canonical form for the fetch.
 
-**Where:** `gate_engine/exposure_gate.py`.
+**Why:** normalizer's alias table already maps all common display labels to
+canonical stat_key; _fetch_mlb's dict does not and never should (it is a
+low-level MLB API mapping, not a display-label resolver).
 
----
+**How to apply:** any code path that takes user-supplied `prop_type` and
+passes it to `fetch_game_log` / `_fetch_mlb` MUST resolve through
+`normalizer._resolve_stat_key` first. Direct uppercase of the raw string
+is NOT sufficient ("HITS" ≠ "H").
 
-### Acquisition orchestrator must actively FETCH, not just check
-The acquisition orchestrator's `_check_prop_game_log` was advisory-only — it checked whether game_log was present but never fetched it. This caused `l5_l10_ledger.run()` to receive `game_log=None` and record `direct_game_log_feed=NOT_CALLED`.
-
-**Fix:** After player_id is resolved, call `_attempt_game_log_fetch()` which writes `game_log`/`l5_values`/`l10_values` into `enrichment[row_id]`.
-
-**Write to `enrichment[row_id]` not `enrichment["player:prop_type"]`** — the pipeline's `_get_enrichment()` tries `enrichment[rid]` first; writing to `row_id` avoids write-key mismatches when `normalize_board()` changes prop_type.
-
----
-
-### MLB Stats API /people/search silently returns empty for accented names
-`urllib.parse.quote("Jeremy Peña")` → `"Jeremy%20Pe%C3%B1a"`. The MLB Stats API endpoint `/api/v1/people/search?names=Jeremy%20Pe%C3%B1a` returns `{"people": []}` silently. Fix: strip Unicode combining marks via NFD decomposition and retry with ASCII name.
-
-```python
-import unicodedata
-ascii_name = "".join(
-    c for c in unicodedata.normalize("NFD", player_name)
-    if unicodedata.category(c) != "Mn"
-)
-```
-
-**Where:** `gate_engine/acquisition_orchestrator._resolve_mlb_player_id` and `gate_engine/auto_enrichment._lookup_mlb_player_id`.
-
----
-
-### BallDontLie client uses `fetch_all(url, params, max_pages, per_page)`, not `bdl_get`
-`gate_engine/balldontlie/client.py` exports `fetch_all`, `BDLResponse`, `BDLStatus`, etc. There is no `bdl_get`. `fetch_all` returns a `BDLResponse` with `.ok`, `.data`, `.meta`, `.raw`.
-
----
-
-### Odds API quota table sync: ensure before background warmup, not inside it
-Call `ensure_table_exists()` synchronously in the main process before starting the warmup thread. Otherwise the first request races with the thread and `fetch_quota_snapshot()` marks `degraded=True`.
-
-**Where:** `app.py` just before `_threading.Thread(target=_run_startup_warmup, ...)`.
-
----
-
-### pytest `patch()` vs direct attribute replacement for local imports
-When a function imports a module locally (e.g. `import urllib.request` inside a closure), `patch("urllib.request.urlopen")` works in isolation but can fail in a full pytest run due to test isolation. Direct attribute replacement is reliable:
-
-```python
-orig = urllib.request.urlopen
-urllib.request.urlopen = mock_fn
-try:
-    result = func_under_test()
-finally:
-    urllib.request.urlopen = orig
-```
+## Persistent runtime sentinel
+`uac_b9_readiness_ruling.json` is rewritten by the running gunicorn worker
+on every deploy. The git-diff sentinel test always sees it as dirty during
+test runs. Commit it after each run as housekeeping; it is not a code defect.
