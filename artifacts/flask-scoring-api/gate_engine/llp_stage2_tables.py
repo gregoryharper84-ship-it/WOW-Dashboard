@@ -471,6 +471,22 @@ def ensure_all_tables() -> None:
             return
         try:
             conn = _get_conn()
+
+            # WOW-PATCH-2026-08-16: Run provenance column migration FIRST so that
+            # columns like freshness_status exist on any pre-existing tables BEFORE
+            # we try to CREATE INDEX ... ON llp_source_snapshots (freshness_status).
+            # Without this ordering the index DDL crashes on existing deployments
+            # that have the table but are missing the later-added columns.
+            # ADD COLUMN IF NOT EXISTS is idempotent — safe to call before table
+            # creation too (fails silently when the table doesn't exist yet).
+            try:
+                from gate_engine.source_provenance.schema_migration import (
+                    run_provenance_migration,
+                )
+                run_provenance_migration(conn)
+            except Exception:
+                pass  # Best-effort; main DDL continues regardless
+
             cur  = conn.cursor()
             for ddl in [
                 _DDL_LLP_SOURCE_SNAPSHOTS,
@@ -485,17 +501,6 @@ def ensure_all_tables() -> None:
                 cur.execute(ddl)
             conn.commit()
             cur.close()
-            # Run provenance migration for existing deployments that already
-            # have the tables but are missing the new provenance columns and
-            # the llp_calibration_ledger FK fix.
-            # ADD COLUMN IF NOT EXISTS is idempotent — safe to re-run.
-            try:
-                from gate_engine.source_provenance.schema_migration import (
-                    run_provenance_migration,
-                )
-                run_provenance_migration(conn)
-            except Exception:
-                pass  # Best-effort; primary table creation already committed
             conn.close()
             _TABLES_READY      = True
             _TABLES_LAST_ERROR = None
