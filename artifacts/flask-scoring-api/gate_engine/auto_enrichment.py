@@ -92,25 +92,50 @@ def _lookup_mlb_player_id(player_name: str) -> "str | None":
     string id of the first matching active player, or None on any failure.
     Network errors, timeouts, and unexpected response shapes are silently
     swallowed — the caller falls through to the honest gap path.
+
+    WOW-PATCH-2026-08-16-R2: Adds Unicode accent-strip fallback so names like
+    "Jeremy Peña" retry as "Jeremy Pena" when the MLB Stats API /people/search
+    endpoint returns empty results for the accented form.
     """
     if not player_name or not player_name.strip():
         return None
+
+    def _query(name: str) -> "str | None":
+        try:
+            import json
+            import urllib.parse
+            import urllib.request
+            name_enc = urllib.parse.quote(name.strip())
+            url = (
+                f"https://statsapi.mlb.com/api/v1/people/search"
+                f"?names={name_enc}&sportIds=1"
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "WOW/1.0"})
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                data = json.loads(resp.read())
+            people = data.get("people") or []
+            if people:
+                pid = people[0].get("id")
+                return str(pid) if pid else None
+        except Exception:
+            pass
+        return None
+
+    # Primary attempt with the name as supplied
+    result = _query(player_name)
+    if result:
+        return result
+
+    # Fallback: strip Unicode combining marks (NFD decomposition drops diacritics).
+    # "Jeremy Peña" → "Jeremy Pena", "Néstor Cortés" → "Nestor Cortes", etc.
     try:
-        import json
-        import urllib.parse
-        import urllib.request
-        name_enc = urllib.parse.quote(player_name.strip())
-        url = (
-            f"https://statsapi.mlb.com/api/v1/people/search"
-            f"?names={name_enc}&sportIds=1"
+        import unicodedata
+        ascii_name = "".join(
+            c for c in unicodedata.normalize("NFD", player_name)
+            if unicodedata.category(c) != "Mn"
         )
-        req = urllib.request.Request(url, headers={"User-Agent": "WOW/1.0"})
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            data = json.loads(resp.read())
-        people = data.get("people") or []
-        if people:
-            pid = people[0].get("id")
-            return str(pid) if pid else None
+        if ascii_name != player_name:
+            return _query(ascii_name)
     except Exception:
         pass
     return None

@@ -83,6 +83,289 @@ class TestAcquisitionOrchestratorPropRows(unittest.TestCase):
         self.assertEqual(row.get("player_id"), "999")
 
 
+class TestAcquisitionOrchestratorActiveFetch(unittest.TestCase):
+    """
+    WOW-PATCH-2026-08-16-R2: orchestrator must ACTIVELY fetch game_log
+    when player_id is resolvable, not just report UNAVAILABLE.
+
+    Root-cause regression: Jeremy Peña MORE 0.5 Hits scored
+    direct_game_log_feed=NOT_CALLED because the orchestrator was advisory-only.
+    """
+
+    def _run(self, rows, enrichment, **kw):
+        from gate_engine.acquisition_orchestrator import run
+        return run(rows, enrichment, **kw)
+
+    # ── MLB Hits: active fetch succeeds ──────────────────────────────────────
+
+    def test_mlb_hits_player_id_resolved_and_game_log_written_to_enrichment(self):
+        """When MLB player_id resolves, orchestrator fetches and writes game_log."""
+        row = {
+            "row_id":   "pena-r1",
+            "sport":    "MLB",
+            "player":   "Jeremy Peña",
+            "prop_type": "H",
+            "stat_key": "H",
+            "market_family": "PLAYER_PROP",
+        }
+        enr = {}
+        mock_values = [1.0, 0.0, 1.0, 2.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+
+        with patch("gate_engine.acquisition_orchestrator._resolve_mlb_player_id",
+                   return_value="665750") as mock_resolve, \
+             patch("gate_engine.acquisition_orchestrator._attempt_game_log_fetch",
+                   return_value=mock_values) as mock_fetch:
+            enr_out, report = self._run([row], enr, target_date="2026-08-16")
+
+        mock_resolve.assert_called_once_with("Jeremy Peña")
+        mock_fetch.assert_called_once()
+        call_kwargs = mock_fetch.call_args
+        self.assertEqual(call_kwargs.kwargs.get("row_id") or call_kwargs.args[0], "pena-r1")
+        self.assertEqual(report["pena-r1"]["status"], "ACQUIRED")
+        self.assertEqual(report["pena-r1"]["reason"], "game_log_fetched_by_orchestrator")
+        self.assertIn("game_log", report["pena-r1"]["fields_populated"])
+        self.assertEqual(report["pena-r1"]["direct_game_log_feed"], "FETCHED")
+        self.assertEqual(row.get("player_id"), "665750")
+
+    def test_mlb_hits_player_id_resolved_game_log_written_to_enrichment_by_row_id(self):
+        """game_log must be written under enrichment[row_id] (first pipeline lookup key)."""
+        row = {
+            "row_id":   "pena-r2",
+            "sport":    "MLB",
+            "player":   "Jeremy Peña",
+            "prop_type": "H",
+            "stat_key": "H",
+            "market_family": "PLAYER_PROP",
+        }
+        mock_values = [1.0, 0.0, 1.0, 1.0, 0.0]
+
+        with patch("gate_engine.acquisition_orchestrator._resolve_mlb_player_id",
+                   return_value="665750"), \
+             patch("gate_engine.acquisition_orchestrator._attempt_game_log_fetch",
+                   side_effect=lambda *, row_id, player_id, sport, stat_key,
+                                        enrichment, target_date: (
+                       enrichment.update({row_id: {"game_log": mock_values}}) or mock_values
+                   )):
+            enr_out, report = self._run([row], {}, target_date="2026-08-16")
+
+        self.assertIn("pena-r2", enr_out)
+        self.assertEqual(enr_out["pena-r2"]["game_log"], mock_values)
+
+    def test_mlb_hits_player_id_lookup_fails_returns_unavailable_fail_closed(self):
+        """If player_id cannot be resolved, must return UNAVAILABLE (fail-closed)."""
+        row = {
+            "row_id":   "pena-r3",
+            "sport":    "MLB",
+            "player":   "Jeremy Peña",
+            "prop_type": "H",
+            "stat_key": "H",
+            "market_family": "PLAYER_PROP",
+        }
+        with patch("gate_engine.acquisition_orchestrator._resolve_mlb_player_id",
+                   return_value=None):
+            _, report = self._run([row], {})
+
+        self.assertEqual(report["pena-r3"]["status"], "UNAVAILABLE")
+        self.assertIn("player_id_missing", report["pena-r3"]["reason"])
+        self.assertEqual(report["pena-r3"]["direct_game_log_feed"], "NOT_CALLED")
+
+    def test_mlb_hits_player_id_resolved_but_fetch_returns_empty_is_unavailable(self):
+        """fetch_game_log succeeds but returns no values → fail-closed UNAVAILABLE."""
+        row = {
+            "row_id":   "pena-r4",
+            "sport":    "MLB",
+            "player":   "Jeremy Peña",
+            "prop_type": "H",
+            "stat_key": "H",
+            "market_family": "PLAYER_PROP",
+        }
+        with patch("gate_engine.acquisition_orchestrator._resolve_mlb_player_id",
+                   return_value="665750"), \
+             patch("gate_engine.acquisition_orchestrator._attempt_game_log_fetch",
+                   return_value=None):
+            _, report = self._run([row], {})
+
+        self.assertEqual(report["pena-r4"]["status"], "UNAVAILABLE")
+        self.assertIn("fetch_failed", report["pena-r4"]["reason"])
+        self.assertEqual(report["pena-r4"]["direct_game_log_feed"], "FAILED")
+
+    # ── _attempt_game_log_fetch unit tests ───────────────────────────────────
+
+    def test_attempt_game_log_fetch_writes_to_enrichment_and_returns_values(self):
+        """_attempt_game_log_fetch writes game_log to enrichment[row_id]."""
+        from gate_engine.acquisition_orchestrator import _attempt_game_log_fetch
+        enrichment: dict = {}
+        mock_values = [1.0, 0.0, 2.0, 1.0, 1.0, 0.0]
+
+        with patch("gate_engine.acquisition_orchestrator.fetch_game_log",
+                   return_value={"values": mock_values, "source": "mlb-stats-api"},
+                   create=True), \
+             patch("gate_engine.auto_game_log.fetch_game_log",
+                   return_value={"values": mock_values, "source": "mlb-stats-api"}):
+            # Import the actual function and test via the module's import path
+            import gate_engine.acquisition_orchestrator as _acq_mod
+            orig = None
+            try:
+                from gate_engine.auto_game_log import fetch_game_log as _real_fgl
+                with patch.object(_acq_mod, "_attempt_game_log_fetch",
+                                  wraps=_acq_mod._attempt_game_log_fetch):
+                    # Direct invocation: mock the inner import
+                    with patch("gate_engine.auto_game_log.fetch_game_log",
+                               return_value={"values": mock_values, "source": "mlb"}):
+                        result = _attempt_game_log_fetch(
+                            row_id="test-row",
+                            player_id="665750",
+                            sport="MLB",
+                            stat_key="H",
+                            enrichment=enrichment,
+                            target_date="2026-08-16",
+                        )
+            except Exception:
+                result = None
+
+        # Even if inner import path differs, verify contract via explicit write
+        enrichment2: dict = {}
+        from unittest.mock import MagicMock
+        mock_fgl = MagicMock(return_value={"values": mock_values, "source": "mlb"})
+        import gate_engine.auto_game_log as _agl_mod
+        orig_fgl = _agl_mod.fetch_game_log
+        try:
+            _agl_mod.fetch_game_log = mock_fgl
+            result2 = _attempt_game_log_fetch(
+                row_id="test-row",
+                player_id="665750",
+                sport="MLB",
+                stat_key="H",
+                enrichment=enrichment2,
+                target_date="2026-08-16",
+            )
+        finally:
+            _agl_mod.fetch_game_log = orig_fgl
+
+        self.assertEqual(result2, mock_values)
+        self.assertIn("test-row", enrichment2)
+        self.assertEqual(enrichment2["test-row"]["game_log"], mock_values)
+        # l5 / l10 populated
+        self.assertEqual(enrichment2["test-row"]["l5_values"], mock_values[:5])
+        self.assertEqual(enrichment2["test-row"]["l10_values"], mock_values[:10])
+
+    def test_attempt_game_log_fetch_returns_none_on_exception_fail_closed(self):
+        """_attempt_game_log_fetch must return None (not raise) on any error."""
+        from gate_engine.acquisition_orchestrator import _attempt_game_log_fetch
+        import gate_engine.auto_game_log as _agl_mod
+        orig_fgl = _agl_mod.fetch_game_log
+        try:
+            _agl_mod.fetch_game_log = MagicMock(side_effect=RuntimeError("API down"))
+            result = _attempt_game_log_fetch(
+                row_id="row-err",
+                player_id="999",
+                sport="MLB",
+                stat_key="H",
+                enrichment={},
+                target_date=None,
+            )
+        finally:
+            _agl_mod.fetch_game_log = orig_fgl
+        self.assertIsNone(result)
+
+    # ── _resolve_mlb_player_id accent-strip tests ─────────────────────────────
+
+    def test_resolve_mlb_accent_strip_fallback_called_on_empty_primary(self):
+        """
+        If the accented name returns no results, the ASCII fallback must be tried.
+        Root cause: Jeremy Peña → MLB API returns [] → retry with Jeremy Pena.
+
+        Uses direct attribute replacement on urllib.request (not patch()) because
+        _resolve_mlb_player_id imports urllib.request locally inside the nested
+        _query closure, and the direct replacement is verified to work in both
+        isolated and full-suite runs.
+        """
+        import io, json, urllib.request
+        from gate_engine.acquisition_orchestrator import _resolve_mlb_player_id
+
+        call_names: list[str] = []
+        _orig = urllib.request.urlopen
+
+        def _mock_urlopen(req, timeout=None):
+            url = req.full_url
+            call_names.append(url)
+            # urllib.parse.quote("ñ") → "%C3%B1" (uppercase hex)
+            if "%C3%B1" in url or "%c3%b1" in url:
+                return io.BytesIO(json.dumps({"people": []}).encode())
+            return io.BytesIO(json.dumps(
+                {"people": [{"id": 665750, "fullName": "Jeremy Pena"}]}
+            ).encode())
+
+        urllib.request.urlopen = _mock_urlopen
+        try:
+            result = _resolve_mlb_player_id("Jeremy Peña")
+        finally:
+            urllib.request.urlopen = _orig
+
+        self.assertEqual(len(call_names), 2,
+                         f"Expected 2 API calls (accented + ascii fallback), got: {call_names}")
+        self.assertEqual(result, "665750")
+
+    def test_resolve_mlb_accent_strip_not_called_when_primary_succeeds(self):
+        """If the primary (accented) name finds a player, no fallback needed."""
+        from gate_engine.acquisition_orchestrator import _resolve_mlb_player_id
+
+        call_count = [0]
+
+        class _FakeResp:
+            def __init__(self):
+                import io, json
+                call_count[0] += 1
+                self._buf = io.BytesIO(
+                    json.dumps({"people": [{"id": 665750}]}).encode()
+                )
+            def read(self): return self._buf.read()
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        with patch("urllib.request.urlopen", return_value=_FakeResp()):
+            result = _resolve_mlb_player_id("Jeremy Pena")
+
+        self.assertEqual(result, "665750")
+        self.assertEqual(call_count[0], 1, "Fallback must NOT fire when primary succeeds")
+
+    # ── NOT_CALLED regression ─────────────────────────────────────────────────
+
+    def test_l5_l10_ledger_records_not_called_when_game_log_none(self):
+        """
+        Reproduce the production NOT_CALLED observation.
+        l5_l10_ledger.run() with game_log=None, season_log=None must record
+        direct_game_log_feed=NOT_CALLED and season_log_reconstruction=NOT_CALLED
+        in source_attempts, and emit L10:NO_GAME_LOG_PROVIDED blocker.
+        """
+        from gate_engine.l5_l10_ledger import run as l5_run
+        from gate_engine.acquisition import SourceStatus
+
+        row = {
+            "row_id": "pena-not-called",
+            "player": "Jeremy Peña",
+            "sport": "MLB",
+            "prop_type": "H",
+            "stat_key": "H",
+            "line": 0.5,
+            "direction": "MORE",
+            "gates": {},
+            "blockers": [],
+        }
+        l5_run(row, game_log=None, season_log=None)
+        result = row["gates"]["l5_l10_ledger"]
+        attempts = {a["source"]: a["status"] for a in result.get("source_attempts", [])}
+        self.assertEqual(
+            attempts.get("direct_game_log_feed"), SourceStatus.NOT_CALLED,
+            "direct_game_log_feed must be NOT_CALLED when game_log is None",
+        )
+        self.assertEqual(
+            attempts.get("season_log_reconstruction"), SourceStatus.NOT_CALLED,
+            "season_log_reconstruction must be NOT_CALLED when season_log is None",
+        )
+        self.assertIn("L10:NO_GAME_LOG_PROVIDED", row["blockers"])
+
+
 # ── Req 2: moneyline team acquisition ────────────────────────────────────────
 
 class TestMoneylineTeamAcquisition(unittest.TestCase):
