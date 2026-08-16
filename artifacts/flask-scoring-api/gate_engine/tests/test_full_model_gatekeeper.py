@@ -1,6 +1,6 @@
 """
 gate_engine/tests/test_full_model_gatekeeper.py
-WOW Full Model Contract Gatekeeper v1.0 — Regression Suite
+WOW Full Model Contract Gatekeeper v1.1 — Regression Suite
 
 Covers all 11 mandatory regression scenarios from the spec:
   T01  Missing or role-mismatched L10 cannot silently pass where required
@@ -665,11 +665,43 @@ class TestUnitCalibrationStatus(unittest.TestCase):
         gk = _apply(row)
         self.assertEqual(gk["gate_results"]["calibrated_probability"]["status"], GATE_FAIL)
 
-    def test_cal_prob_zero_is_valid(self):
+
+    def test_cal_prob_zero_is_rejected(self):
+        """p=0.0 is structurally degenerate — strict exclusive (0,1) rejects it (v1.1)."""
         row = _base_row()
         row["calibrated_probability"] = 0.0
         gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["calibrated_probability"]["status"], GATE_FAIL)
+        self.assertTrue(any("OUT_OF_RANGE_EXCLUSIVE" in b for b in gk["blockers"]))
+
+    def test_cal_prob_one_is_rejected(self):
+        """p=1.0 is structurally degenerate — strict exclusive (0,1) rejects it (v1.1)."""
+        row = _base_row()
+        row["calibrated_probability"] = 1.0
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["calibrated_probability"]["status"], GATE_FAIL)
+        self.assertTrue(any("OUT_OF_RANGE_EXCLUSIVE" in b for b in gk["blockers"]))
+
+    def test_cal_prob_near_zero_is_valid(self):
+        """p=0.001 is in the interior — must pass strict exclusive bounds."""
+        row = _base_row()
+        row["calibrated_probability"] = 0.001
+        gk = _apply(row)
         self.assertEqual(gk["gate_results"]["calibrated_probability"]["status"], GATE_PASS)
+
+    def test_cal_prob_near_one_is_valid(self):
+        """p=0.999 is in the interior — must pass strict exclusive bounds."""
+        row = _base_row()
+        row["calibrated_probability"] = 0.999
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["calibrated_probability"]["status"], GATE_PASS)
+
+    def test_cal_prob_out_of_range_above_one_fails(self):
+        """p=1.5 is out of range — must fail."""
+        row = _base_row()
+        row["calibrated_probability"] = 1.5
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["calibrated_probability"]["status"], GATE_FAIL)
 
     def test_provisional_model_is_hold(self):
         row = _base_row()
@@ -699,7 +731,7 @@ class TestUnitInvalidation(unittest.TestCase):
 class TestUnitContractIdentifiers(unittest.TestCase):
 
     def test_gatekeeper_version_constant(self):
-        self.assertEqual(fmcg.GATEKEEPER_VERSION, "WOW-FMCG-v1.0")
+        self.assertEqual(fmcg.GATEKEEPER_VERSION, "WOW-FMCG-v1.1")
 
     def test_can_execute_always_false(self):
         self.assertIs(CAN_EXECUTE, False)
@@ -707,11 +739,406 @@ class TestUnitContractIdentifiers(unittest.TestCase):
         gk = _apply(row)
         self.assertIs(gk["can_execute"], False)
 
-    def test_patch_precedence_104(self):
-        self.assertEqual(fmcg.PATCH_PRECEDENCE, 104)
+    def test_patch_precedence_105(self):
+        self.assertEqual(fmcg.PATCH_PRECEDENCE, 105)
 
     def test_patch_id(self):
-        self.assertEqual(fmcg.PATCH_ID, "WOW-PATCH-FMCG-v1.0")
+        self.assertEqual(fmcg.PATCH_ID, "WOW-PATCH-FMCG-v1.1")
+
+    def test_nested_custom_gpt_not_required(self):
+        """Host abstraction: nested Custom-GPT must not be required (v1.1)."""
+        self.assertIs(fmcg.NESTED_CUSTOM_GPT_REQUIRED, False)
+        row = _base_row()
+        gk = _apply(row)
+        self.assertIs(gk["nested_custom_gpt_required"], False)
+
+    def test_cross_sport_selector_proposed_not_binding(self):
+        """Cross-sport selector is PROPOSED_NOT_BINDING — not wired into scoring."""
+        self.assertEqual(fmcg.CROSS_SPORT_HIGH_PROBABILITY_SELECTOR_STATUS, "PROPOSED_NOT_BINDING")
+        row = _base_row()
+        gk = _apply(row)
+        self.assertEqual(gk["cross_sport_selector_status"], "PROPOSED_NOT_BINDING")
+
+    def test_kalshi_recovery_mode_constant_present(self):
+        self.assertEqual(fmcg.KALSHI_RECOVERY_MODE, "ACTIVE")
+
+
+# ---------------------------------------------------------------------------
+# v1.1 gate tests
+# ---------------------------------------------------------------------------
+
+class TestV11CalibrationHealthGate(unittest.TestCase):
+    """Gate 15 — calibration health precheck (Layer 0.5 result)."""
+
+    def test_suppress_grade_blocks(self):
+        row = _base_row()
+        row["gates"]["calibration_health"] = {"health_grade": "SUPPRESS", "detail": "too many failures"}
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["calibration_health"]["status"], GATE_FAIL)
+        self.assertTrue(any("CALIBRATION_HEALTH:SUPPRESS" in b for b in gk["blockers"]))
+        self.assertEqual(row["terminal_label"], MODEL_QUALIFIED_HOLD)
+
+    def test_watch_grade_holds(self):
+        row = _base_row()
+        row["gates"]["calibration_health"] = {"health_grade": "WATCH", "detail": "warning"}
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["calibration_health"]["status"], GATE_HOLD)
+        self.assertTrue(any("CALIBRATION_HEALTH:WATCH" in b for b in gk["blockers"]))
+
+    def test_green_grade_passes(self):
+        row = _base_row()
+        row["gates"]["calibration_health"] = {"health_grade": "GREEN", "detail": "healthy"}
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["calibration_health"]["status"], GATE_PASS)
+        self.assertFalse(any("CALIBRATION_HEALTH" in b for b in gk["blockers"]))
+
+    def test_absent_calibration_health_gate_skips(self):
+        """Absent calibration_health gate skips gracefully (backward compat)."""
+        row = _base_row()
+        # No calibration_health in gates
+        gk = _apply(row)
+        result = gk["gate_results"]["calibration_health"]
+        self.assertEqual(result["status"], GATE_SKIP)
+        # Skipped gate must not add a blocker
+        self.assertFalse(any("CALIBRATION_HEALTH" in b for b in gk["blockers"]))
+
+    def test_data_gap_grade_passes(self):
+        row = _base_row()
+        row["gates"]["calibration_health"] = {"health_grade": "DATA_GAP"}
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["calibration_health"]["status"], GATE_PASS)
+
+
+class TestV11BidirectionalMoreLess(unittest.TestCase):
+    """Gate 16 — bidirectional MORE/LESS enforcement."""
+
+    def test_prop_with_both_sides_evaluated_passes(self):
+        row = _base_row()
+        row["prop_type"] = "hits"
+        row["gates"]["bidirectional_analysis"] = {
+            "both_sides_evaluated": True,
+            "more_evaluated": True,
+            "less_evaluated": True,
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["bidirectional_sides"]["status"], GATE_PASS)
+
+    def test_prop_missing_less_side_holds(self):
+        row = _base_row()
+        row["prop_type"] = "hits"
+        row["gates"]["bidirectional_analysis"] = {
+            "both_sides_evaluated": False,
+            "more_evaluated": True,
+            "less_evaluated": False,
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["bidirectional_sides"]["status"], GATE_HOLD)
+        self.assertTrue(any("BIDIRECTIONAL:MISSING_SIDES" in b for b in gk["blockers"]))
+
+    def test_prop_missing_more_side_holds(self):
+        row = _base_row()
+        row["prop_type"] = "pts"
+        row["gates"]["bidirectional_analysis"] = {
+            "both_sides_evaluated": False,
+            "more_evaluated": False,
+            "less_evaluated": True,
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["bidirectional_sides"]["status"], GATE_HOLD)
+
+    def test_prop_row_field_false_holds(self):
+        row = _base_row()
+        row["prop_type"] = "strikeouts"
+        row["bidirectional_evaluation_complete"] = False
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["bidirectional_sides"]["status"], GATE_HOLD)
+        self.assertTrue(any("BIDIRECTIONAL" in b for b in gk["blockers"]))
+
+    def test_prop_row_field_true_passes(self):
+        row = _base_row()
+        row["prop_type"] = "strikeouts"
+        row["bidirectional_evaluation_complete"] = True
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["bidirectional_sides"]["status"], GATE_PASS)
+
+    def test_absent_bidirectional_gate_skips(self):
+        """No bidirectional gate data → SKIP (backward compat)."""
+        row = _base_row()
+        row["prop_type"] = "hits"
+        # No bidirectional_analysis and no bidirectional_evaluation_complete
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["bidirectional_sides"]["status"], GATE_SKIP)
+        self.assertFalse(any("BIDIRECTIONAL" in b for b in gk["blockers"]))
+
+
+class TestV11ProbabilityLedgerGate(unittest.TestCase):
+    """Gate 18 — probability component ledger + shrinkage verdict."""
+
+    def test_calibrated_status_passes(self):
+        row = _base_row()
+        row["gates"]["prob_ledger"] = {
+            "calibration_status": "CALIBRATED",
+            "shrinkage_applied": True,
+            "shrinkage_required": False,
+            "missing_required_components": [],
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["prob_ledger"]["status"], GATE_PASS)
+
+    def test_uncalibrated_status_holds(self):
+        row = _base_row()
+        row["gates"]["prob_ledger"] = {
+            "calibration_status": "UNCALIBRATED",
+            "shrinkage_applied": False,
+            "shrinkage_required": False,
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["prob_ledger"]["status"], GATE_HOLD)
+        self.assertTrue(any("PROB_LEDGER:NOT_CALIBRATED" in b for b in gk["blockers"]))
+
+    def test_proxy_only_holds(self):
+        row = _base_row()
+        row["gates"]["prob_ledger"] = {"calibration_status": "PROXY_ONLY"}
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["prob_ledger"]["status"], GATE_HOLD)
+
+    def test_shrinkage_required_but_not_applied_holds(self):
+        row = _base_row()
+        row["gates"]["prob_ledger"] = {
+            "calibration_status": "CALIBRATED",
+            "shrinkage_applied": False,
+            "shrinkage_required": True,
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["prob_ledger"]["status"], GATE_HOLD)
+        self.assertTrue(any("SHRINKAGE_REQUIRED_NOT_APPLIED" in b for b in gk["blockers"]))
+
+    def test_absent_prob_ledger_gate_skips(self):
+        """Absent prob_ledger gate → SKIP (backward compat)."""
+        row = _base_row()
+        gk = _apply(row)
+        result = gk["gate_results"]["prob_ledger"]
+        self.assertEqual(result["status"], GATE_SKIP)
+        self.assertFalse(any("PROB_LEDGER" in b for b in gk["blockers"]))
+
+
+class TestV11SessionDirectionalExposure(unittest.TestCase):
+    """Gate 19 — session directional exposure (separate from structural correlation)."""
+
+    def test_session_block_fails(self):
+        row = _base_row()
+        row["gates"]["directional_exposure"] = {
+            "session_verdict": "SESSION_BLOCK",
+            "dominant_count": 7,
+            "dominant_script_type": "OVER",
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["session_directional_exposure"]["status"], GATE_FAIL)
+        self.assertTrue(any("SESSION_DIRECTIONAL:BLOCK" in b for b in gk["blockers"]))
+        self.assertEqual(row["terminal_label"], MODEL_QUALIFIED_HOLD)
+
+    def test_session_warning_holds(self):
+        row = _base_row()
+        row["gates"]["directional_exposure"] = {
+            "session_verdict": "SESSION_WARNING",
+            "dominant_count": 5,
+            "dominant_script_type": "OVER",
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["session_directional_exposure"]["status"], GATE_HOLD)
+        self.assertTrue(any("SESSION_DIRECTIONAL:WARNING" in b for b in gk["blockers"]))
+
+    def test_no_session_exposure_passes(self):
+        row = _base_row()
+        row["gates"]["directional_exposure"] = {
+            "session_verdict": "CLEAR",
+            "dominant_count": 2,
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["session_directional_exposure"]["status"], GATE_PASS)
+
+    def test_absent_directional_exposure_skips(self):
+        """No directional_exposure gate → SKIP (backward compat)."""
+        row = _base_row()
+        gk = _apply(row)
+        result = gk["gate_results"]["session_directional_exposure"]
+        self.assertEqual(result["status"], GATE_SKIP)
+        self.assertFalse(any("SESSION_DIRECTIONAL" in b for b in gk["blockers"]))
+
+    def test_structural_slip_correlation_is_separate(self):
+        """
+        Slip correlation (downstream governor) must not be conflated with
+        session/directional exposure gate.  Both can be present independently.
+        """
+        row = _base_row()
+        # Session gate: clear
+        row["gates"]["directional_exposure"] = {"session_verdict": "CLEAR"}
+        # Slip structure gate present: independent
+        row["gates"]["slip_structure"] = {"passed": True, "correlation_score": 0.1}
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["session_directional_exposure"]["status"], GATE_PASS)
+
+
+class TestV11PregameSnapshotGate(unittest.TestCase):
+    """Gate 20 — pregame snapshot / final refresh enforcement."""
+
+    def test_final_refresh_passed_true_passes(self):
+        row = _base_row()
+        row["final_refresh_passed"] = True
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["pregame_snapshot"]["status"], GATE_PASS)
+
+    def test_final_refresh_passed_false_holds_for_money_row(self):
+        """FINAL_APPROVED row with refresh=False must be held."""
+        row = _base_row()
+        row["final_refresh_passed"] = False
+        row["terminal_label"] = FINAL_APPROVED
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["pregame_snapshot"]["status"], GATE_HOLD)
+        self.assertTrue(any("PREGAME_SNAPSHOT:FINAL_REFRESH_NOT_PASSED" in b
+                            for b in gk["blockers"]))
+
+    def test_final_refresh_required_without_passed_flag_holds(self):
+        row = _base_row()
+        row["final_refresh_required"] = True
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["pregame_snapshot"]["status"], GATE_HOLD)
+        self.assertTrue(any("FINAL_REFRESH_REQUIRED_NOT_RESOLVED" in b
+                            for b in gk["blockers"]))
+
+    def test_vacuous_refresh_on_money_row_holds(self):
+        """A vacuous-pass final_refresh on a FINAL_APPROVED row must be held."""
+        row = _base_row()
+        row["gates"]["pp_final_refresh"] = {"code": "FINAL_REFRESH_VACUOUS"}
+        row["terminal_label"] = FINAL_APPROVED
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["pregame_snapshot"]["status"], GATE_HOLD)
+        self.assertTrue(any("VACUOUS_REFRESH_ON_MONEY_ROW" in b for b in gk["blockers"]))
+
+    def test_refresh_clear_code_passes(self):
+        row = _base_row()
+        row["gates"]["pp_final_refresh"] = {"code": "FINAL_REFRESH_CLEAR"}
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["pregame_snapshot"]["status"], GATE_PASS)
+
+    def test_absent_refresh_data_skips(self):
+        """No refresh data → SKIP (backward compat)."""
+        row = _base_row()
+        gk = _apply(row)
+        result = gk["gate_results"]["pregame_snapshot"]
+        self.assertEqual(result["status"], GATE_SKIP)
+        self.assertFalse(any("PREGAME_SNAPSHOT" in b for b in gk["blockers"]))
+
+
+class TestV11CanonicalCeilingResolver(unittest.TestCase):
+    """canonical_ceiling_resolve() used by all three final-row paths."""
+
+    def test_canonical_function_exists(self):
+        self.assertTrue(callable(fmcg.canonical_ceiling_resolve))
+
+    def test_none_inputs_handled(self):
+        self.assertIsNone(fmcg.canonical_ceiling_resolve(None, None))
+        self.assertEqual(fmcg.canonical_ceiling_resolve(None, FINAL_APPROVED), FINAL_APPROVED)
+        self.assertEqual(fmcg.canonical_ceiling_resolve(FINAL_APPROVED, None), FINAL_APPROVED)
+
+    def test_more_restrictive_wins(self):
+        """MODEL_QUALIFIED_HOLD is more restrictive than FINAL_APPROVED."""
+        result = fmcg.canonical_ceiling_resolve(FINAL_APPROVED, MODEL_QUALIFIED_HOLD)
+        self.assertEqual(result, MODEL_QUALIFIED_HOLD)
+
+    def test_equal_inputs_stable(self):
+        result = fmcg.canonical_ceiling_resolve(MODEL_QUALIFIED_HOLD, MODEL_QUALIFIED_HOLD)
+        self.assertEqual(result, MODEL_QUALIFIED_HOLD)
+
+    def test_apply_gatekeeper_uses_canonical_resolver(self):
+        """apply_gatekeeper downgrade uses canonical_ceiling_resolve."""
+        row = _base_row(model_status="NO_REGISTERED_MODEL")
+        apply_gatekeeper(row, governance_hash="test-hash")
+        # Downgrade must not upgrade past entry ceiling
+        self.assertEqual(row["terminal_label"], MODEL_QUALIFIED_HOLD)
+
+    def test_verify_cc_envelope_uses_canonical_resolver(self):
+        """verify_cc_envelope downgrade uses canonical_ceiling_resolve."""
+        envelope = {
+            "engine_label": FINAL_APPROVED,
+            "engine_result": {},  # No gatekeeper result
+        }
+        result = verify_cc_envelope(envelope)
+        self.assertFalse(result)
+        self.assertEqual(envelope["engine_label"], MODEL_QUALIFIED_HOLD)
+
+    def test_verify_v16_result_uses_canonical_resolver(self):
+        """verify_v16_result downgrade uses canonical_ceiling_resolve."""
+        result = {"final_label": FINAL_APPROVED, "skill_results": []}
+        verify_v16_result(result)
+        self.assertEqual(result["final_label"], MODEL_QUALIFIED_HOLD)
+        self.assertTrue(any("FMCG:V16" in b for b in result.get("blockers", [])))
+
+    def test_more_restrictive_alias_delegates_to_canonical(self):
+        """_more_restrictive is an alias for canonical_ceiling_resolve."""
+        a = fmcg.canonical_ceiling_resolve(FINAL_APPROVED, MODEL_QUALIFIED_HOLD)
+        b = fmcg._more_restrictive(FINAL_APPROVED, MODEL_QUALIFIED_HOLD)
+        self.assertEqual(a, b)
+
+
+class TestV11HostAbstraction(unittest.TestCase):
+    """Req 1 — host abstraction; engine must not depend on Replit app lookup."""
+
+    def test_nested_custom_gpt_required_is_false(self):
+        self.assertIs(fmcg.NESTED_CUSTOM_GPT_REQUIRED, False)
+
+    def test_evaluate_output_carries_nested_gpt_false(self):
+        row = _base_row()
+        gk = _apply(row)
+        self.assertIn("nested_custom_gpt_required", gk)
+        self.assertIs(gk["nested_custom_gpt_required"], False)
+
+    def test_cross_sport_selector_not_binding(self):
+        """Cross-sport selector must be PROPOSED_NOT_BINDING — not enforced."""
+        self.assertEqual(
+            fmcg.CROSS_SPORT_HIGH_PROBABILITY_SELECTOR_STATUS,
+            "PROPOSED_NOT_BINDING",
+        )
+        # Confirm it is absent from gate logic (no gate in results named cross_sport)
+        row = _base_row()
+        gk = _apply(row)
+        gate_names = list(gk["gate_results"].keys())
+        self.assertFalse(any("cross_sport" in g for g in gate_names))
+
+
+class TestV11StrictProbBoundsEndToEnd(unittest.TestCase):
+    """Req 6 — strict exclusive (0,1) bounds through full evaluate() path."""
+
+    def test_p_zero_downgrade_to_hold(self):
+        row = _base_row()
+        row["calibrated_probability"] = 0.0
+        apply_gatekeeper(row)
+        self.assertEqual(row["terminal_label"], MODEL_QUALIFIED_HOLD)
+
+    def test_p_one_downgrade_to_hold(self):
+        row = _base_row()
+        row["calibrated_probability"] = 1.0
+        apply_gatekeeper(row)
+        self.assertEqual(row["terminal_label"], MODEL_QUALIFIED_HOLD)
+
+    def test_p_epsilon_above_zero_qualifies(self):
+        row = _base_row()
+        row["calibrated_probability"] = 0.001
+        gk = _apply(row)
+        self.assertEqual(gk["qualification_result"], QUAL_PASS)
+
+    def test_p_epsilon_below_one_qualifies(self):
+        row = _base_row()
+        row["calibrated_probability"] = 0.999
+        gk = _apply(row)
+        self.assertEqual(gk["qualification_result"], QUAL_PASS)
+
+    def test_bounds_rule_in_output(self):
+        """probability_summary must carry the strict bounds rule label."""
+        row = _base_row()
+        gk = _apply(row)
+        rule = gk["probability_summary"].get("bounds_rule", "")
+        self.assertIn("exclusive", rule)
 
 
 if __name__ == "__main__":
