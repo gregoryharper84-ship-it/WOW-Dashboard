@@ -894,5 +894,270 @@ class TestPipelineEnrichmentIdentityIntegration(unittest.TestCase):
                       "Fixed None-check must preserve caller's dict identity")
 
 
+class TestBuildAutoEnrichHitsPropIntegration(unittest.TestCase):
+    """
+    Integration tests through build_auto_enrichment → run_pipeline.
+
+    Covers the WOW-PATCH-2026-08-16-R3d root-cause fix:
+    _STAT_KEY_CANONICAL was missing MLB hitter aliases ("hits"→"H", etc.),
+    causing _canonicalize_stat_key("Hits") to return "Hits" unchanged.
+    _fetch_mlb raised GameLogUnavailable("stat_key 'Hits' not mapped"),
+    which both build_auto_enrichment and fetch_missing_game_logs caught
+    silently, leaving game_log=None → direct_game_log_feed=NOT_CALLED.
+
+    These tests go through the SAME functions used by the /gate-engine/run
+    production path (auto_enrich=true):
+      1. build_auto_enrichment(normalized_rows)  — pre-pipeline fetch
+      2. run_pipeline(raw_rows, enrichment=enrichment) — prop pipeline
+    """
+
+    _MOCK_GAME_LOG = [
+        1.0, 0.0, 2.0, 1.0, 0.0,
+        1.0, 1.0, 0.0, 1.0, 2.0,
+        1.0,  # 11 games total so games_available ≥ 10
+    ]
+    _MOCK_FETCH_RESULT = {
+        "values": _MOCK_GAME_LOG,
+        "source": "mlb_statsapi_gamelog",
+        "game_date": "2026-08-15",
+        "opponent": "New York Yankees",
+    }
+
+    @staticmethod
+    def _raw_row(**overrides):
+        import datetime as _dt
+        base = {
+            "player":     "Jeremy Peña",
+            "sport":      "MLB",
+            "prop_type":  "Hits",        # display label — NOT the canonical "H"
+            "line":       0.5,
+            "direction":  "MORE",
+            # slate_date required: slate_validation fires unconditionally and
+            # issues SLATE_PURGE:NO_SLATE_DATE when the field is absent, which
+            # sets terminal_label before l5_l10_ledger can run.
+            "slate_date": _dt.date.today().isoformat(),
+        }
+        base.update(overrides)
+        return base
+
+    # ------------------------------------------------------------------
+    # 1. _canonicalize_stat_key must map "Hits" → "H" after R3d patch
+    # ------------------------------------------------------------------
+    def test_canonicalize_stat_key_maps_hits_to_H(self):
+        from gate_engine.auto_enrichment import _canonicalize_stat_key
+        self.assertEqual(_canonicalize_stat_key("Hits"), "H")
+        self.assertEqual(_canonicalize_stat_key("hits"), "H")
+        self.assertEqual(_canonicalize_stat_key("hitter hits"), "H")
+        self.assertEqual(_canonicalize_stat_key("Hitter Hits"), "H")
+
+    def test_canonicalize_stat_key_maps_common_mlb_hitter_aliases(self):
+        from gate_engine.auto_enrichment import _canonicalize_stat_key
+        cases = {
+            "Runs":          "R",
+            "runs scored":   "R",
+            "RBI":           "RBI",
+            "RBIs":          "RBI",
+            "Total Bases":   "TB",
+            "Walks":         "BB",
+            "Earned Runs":   "ER",
+            "Hits Allowed":  "H_allowed",
+        }
+        for display, expected in cases.items():
+            with self.subTest(display=display):
+                self.assertEqual(_canonicalize_stat_key(display), expected)
+
+    # ------------------------------------------------------------------
+    # 2. build_auto_enrichment fetches game_log via the "Hits" display label
+    # ------------------------------------------------------------------
+    def test_build_auto_enrichment_fetches_game_log_for_hits_prop(self):
+        """
+        With mocked MLB-ID lookup and fetch_game_log, build_auto_enrichment
+        must write game_log into the enrichment entry for a "Hits" prop row.
+        """
+        from gate_engine import board_intake
+        from gate_engine.auto_enrichment import build_auto_enrichment
+
+        raw_row = self._raw_row()
+        normalized_rows = board_intake.normalize_board([raw_row])
+
+        with (
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment._lookup_mlb_player_id",
+                return_value="665161",
+            ),
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment.fetch_game_log",
+                return_value=self._MOCK_FETCH_RESULT,
+            ),
+        ):
+            enrichment, _status = build_auto_enrichment(normalized_rows)
+
+        # At least one enrichment entry must contain game_log
+        all_game_logs = [
+            v.get("game_log")
+            for v in enrichment.values()
+            if isinstance(v, dict)
+        ]
+        self.assertTrue(
+            any(gl for gl in all_game_logs),
+            f"build_auto_enrichment must write game_log for Hits prop; "
+            f"enrichment keys: {list(enrichment.keys())}",
+        )
+
+    # ------------------------------------------------------------------
+    # 3. fetch_missing_game_logs also canonicalises and fetches
+    # ------------------------------------------------------------------
+    def test_fetch_missing_game_logs_canonicalizes_hits_and_fetches(self):
+        from gate_engine import board_intake
+        from gate_engine.auto_enrichment import fetch_missing_game_logs
+
+        raw_row = self._raw_row()
+        board_intake.normalize_board([raw_row])   # stamps row_id onto raw_row
+
+        enrichment: dict = {}
+        with (
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment._lookup_mlb_player_id",
+                return_value="665161",
+            ),
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment.fetch_game_log",
+                return_value=self._MOCK_FETCH_RESULT,
+            ),
+        ):
+            enrichment = fetch_missing_game_logs([raw_row], enrichment)
+
+        all_game_logs = [
+            v.get("game_log")
+            for v in enrichment.values()
+            if isinstance(v, dict)
+        ]
+        self.assertTrue(
+            any(gl for gl in all_game_logs),
+            f"fetch_missing_game_logs must write game_log for Hits prop; "
+            f"enrichment: {enrichment}",
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Full pipeline integration: build_auto_enrichment → run_pipeline
+    # ------------------------------------------------------------------
+    def test_full_pipeline_games_available_and_no_not_called(self):
+        """
+        End-to-end test through the exact production code path used by
+        /gate-engine/run with auto_enrich=true:
+
+          normalize_board → build_auto_enrichment → run_pipeline
+
+        Starting from enrichment={} and no player_id / game_log, after
+        mocking the MLB-ID lookup and game-log provider:
+          - games_available must be >= 10
+          - direct_game_log_feed must not be NOT_CALLED
+          - L10:NO_GAME_LOG_PROVIDED must be absent from blockers
+        """
+        import datetime
+        from gate_engine import board_intake
+        from gate_engine.auto_enrichment import build_auto_enrichment
+        from gate_engine.pipeline import run_pipeline
+
+        raw_row = self._raw_row()
+
+        # Mirror the app.py auto_enrich=true setup: normalize first,
+        # stamp row_id back onto raw_row so run_pipeline reuses the id.
+        normalized_rows = board_intake.normalize_board([raw_row])
+        raw_row["row_id"] = normalized_rows[0]["row_id"]
+
+        with (
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment._lookup_mlb_player_id",
+                return_value="665161",
+            ),
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment.fetch_game_log",
+                return_value=self._MOCK_FETCH_RESULT,
+            ),
+        ):
+            enrichment, _status = build_auto_enrichment(
+                normalized_rows, base_enrichment={}
+            )
+            result = run_pipeline(
+                raw_rows=[raw_row],
+                target_date=datetime.date.today(),
+                enrichment=enrichment,
+                skip_data_contract=True,
+            )
+
+        self.assertIn("prop_ledger", result, "run_pipeline must return prop_ledger")
+        rows_out = result["prop_ledger"]
+        self.assertEqual(len(rows_out), 1)
+        row_out = rows_out[0]
+        gates = row_out.get("gates", {})
+        l5 = gates.get("l5_l10_ledger", {})
+
+        games_available = l5.get("games_available", 0)
+        self.assertGreaterEqual(
+            games_available, 10,
+            f"games_available must be ≥10; l5_l10_ledger: {l5}",
+        )
+
+        # direct_game_log_feed must not be NOT_CALLED
+        source_attempts = l5.get("source_attempts") or []
+        feed_statuses = [
+            a.get("status", "") for a in source_attempts
+            if a.get("source") == "direct_game_log_feed"
+        ]
+        self.assertTrue(
+            any(s not in ("NOT_CALLED", "") for s in feed_statuses),
+            f"direct_game_log_feed must not be NOT_CALLED; "
+            f"source_attempts: {source_attempts}",
+        )
+
+        # L10:NO_GAME_LOG_PROVIDED must be absent
+        blockers = row_out.get("blockers") or []
+        self.assertNotIn(
+            "L10:NO_GAME_LOG_PROVIDED",
+            blockers,
+            f"L10:NO_GAME_LOG_PROVIDED must not appear; blockers: {blockers}",
+        )
+
+    # ------------------------------------------------------------------
+    # 5. Market-join audit is not disturbed by the acquisition path
+    # ------------------------------------------------------------------
+    def test_batch_enrichment_key_not_mutated_before_audit(self):
+        """
+        build_auto_enrichment must not write to enrichment[row_id] when the
+        caller started with an empty dict — the market-join audit must see
+        only the player:prop key (same as before), not a new uuid4 key.
+        """
+        from gate_engine import board_intake
+        from gate_engine.auto_enrichment import build_auto_enrichment
+
+        raw_row = self._raw_row()
+        normalized_rows = board_intake.normalize_board([raw_row])
+        rid = normalized_rows[0]["row_id"]
+
+        with (
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment._lookup_mlb_player_id",
+                return_value="665161",
+            ),
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment.fetch_game_log",
+                return_value=self._MOCK_FETCH_RESULT,
+            ),
+        ):
+            enrichment, _ = build_auto_enrichment(normalized_rows, base_enrichment={})
+
+        # uuid4 key must NOT be in enrichment (write_key should be player:prop)
+        self.assertNotIn(
+            rid, enrichment,
+            f"build_auto_enrichment must not write enrichment[rid] for fresh "
+            f"empty base_enrichment; keys present: {list(enrichment.keys())}",
+        )
+        # player:prop key must be present and have game_log
+        player_prop_key = "jeremy peña:hits"
+        self.assertIn(player_prop_key, enrichment)
+        self.assertIsNotNone(enrichment[player_prop_key].get("game_log"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

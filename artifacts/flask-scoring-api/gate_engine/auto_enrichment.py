@@ -45,7 +45,7 @@ from gate_engine.auto_game_log import fetch_game_log, GameLogUnavailable
 # This prevents display strings like "Pitcher Strikeouts" from reaching
 # fetch_game_log as-is and causing GameLogUnavailable → NOT_CALLED.
 _STAT_KEY_CANONICAL: dict[str, str] = {
-    # MLB pitcher
+    # ── MLB pitcher ──────────────────────────────────────────────────────────
     "pitcher strikeouts":          "K",
     "strikeouts":                  "K",
     "k":                           "K",
@@ -60,7 +60,7 @@ _STAT_KEY_CANONICAL: dict[str, str] = {
     "1ip pitches thrown":          "1IP_PITCHES_THROWN",
     "1ip":                         "1IP_PITCHES_THROWN",
     "1ip_pitches_thrown":          "1IP_PITCHES_THROWN",
-    # MLB hitter combos
+    # ── MLB hitter combos ────────────────────────────────────────────────────
     "hits + runs + rbi":           "H+R+RBI",
     "hits+runs+rbi":               "H+R+RBI",
     "h+r+rbi":                     "H+R+RBI",
@@ -68,7 +68,41 @@ _STAT_KEY_CANONICAL: dict[str, str] = {
     "hitter fantasy score":        "FANTASY_SCORE",
     "fantasy score":               "FANTASY_SCORE",
     "fantasy_score":               "FANTASY_SCORE",
-    # NBA/WNBA
+    # ── MLB hitter single-stat aliases (WOW-PATCH-2026-08-16-R3d) ───────────
+    # _STAT_KEY_CANONICAL previously only covered pitcher and combo props.
+    # GPT payloads send prop_type as display labels ("Hits", "Runs", "RBI"),
+    # which _canonicalize_stat_key lowercases before lookup.  Without these
+    # aliases, _canonicalize_stat_key("Hits") returned "Hits" unchanged, then
+    # _fetch_mlb raised GameLogUnavailable("stat_key 'Hits' not mapped for MLB")
+    # which build_auto_enrichment and fetch_missing_game_logs both caught
+    # silently, leaving game_log absent → direct_game_log_feed=NOT_CALLED.
+    "hits":                        "H",
+    "hitter hits":                 "H",
+    "home runs":                   "HR",
+    "rbi":                         "RBI",
+    "rbis":                        "RBI",
+    "runs":                        "R",
+    "runs scored":                 "R",
+    "stolen bases":                "SB",
+    "total bases":                 "TB",
+    "walks":                       "BB",
+    "bases on balls":              "BB",
+    "earned runs":                 "ER",
+    "hits allowed":                "H_allowed",
+    "walks allowed":               "BB",
+    # ── NBA / WNBA single-stat aliases ───────────────────────────────────────
+    # Same issue affects NBA/WNBA props when prop_type is a display label.
+    "points":                      "PTS",
+    "pts":                         "PTS",
+    "rebounds":                    "REB",
+    "reb":                         "REB",
+    "assists":                     "AST",
+    "ast":                         "AST",
+    "steals":                      "STL",
+    "stl":                         "STL",
+    "blocks":                      "BLK",
+    "blk":                         "BLK",
+    # ── NBA/WNBA combos ──────────────────────────────────────────────────────
     "points rebounds assists":     "PTS+REB+AST",
     "pra":                         "PTS+REB+AST",
     "pts+reb+ast":                 "PTS+REB+AST",
