@@ -7,6 +7,13 @@ Public API for the six universal advisory role contracts.
 All validators are advisory-only, fail-closed, and forbidden-governance-safe.
 No LLM calls, no production routing, no app.py wiring.
 """
+can_execute           = False
+PRODUCTION_AUTHORITY  = False
+USER_OUTPUT_AUTHORITY = False
+CAPITAL_AUTHORITY     = False
+NO_AUTO_PROMOTION     = True
+PATCH_ID              = "WOW-PATCH-2026-08-09-UNIVERSAL-AGENT-CORE-V1"
+
 from gate_engine.universal_agent.roles.role_base import (
     SCHEMA_VERSION,
     RoleViolationCode,

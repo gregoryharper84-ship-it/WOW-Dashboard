@@ -27,10 +27,29 @@ Phase B3A components (gate_engine/universal_agent/lanes/mlb_moneyline/):
   MLB Moneyline lane adapter — maps WOW/LLP MLB moneyline evidence rows
   (read-only, post-preflight) into EvidencePacket + six B1 role payloads.
 
-NOT YET BUILT (Phase B3B+):
-  Additional lane adapters (WNBA, Tennis, Player Props, etc.)
+Phase B3B components (gate_engine/universal_agent/shadow/):
+  Offline, default-off MLB Moneyline shadow pipeline —
+  DeterministicAdapterRunner + ShadowPipeline (SHADOW_ENABLED=False default).
+  Patch: WOW-PATCH-2026-08-10-UNIVERSAL-AGENT-CORE-V1-B3B
+
+Phase B3C components (gate_engine/universal_agent/canary/):
+  Bounded real-Claude canary infrastructure for offline audit —
+  ClaudeRoleRunner + CanaryPipeline (UAC_MLB_ML_CLAUDE_SHADOW_ENABLED=False
+  default, pinned model, hard budget caps, zero retries).
+  Patch: WOW-PATCH-2026-08-10-UNIVERSAL-AGENT-CORE-V1 / Phase B3C
+
+Phase B4 components (gate_engine/universal_agent/lanes/wnba_props/ and
+gate_engine/universal_agent/model_validation/):
+  WNBA/NBA Props lane adapter + game-script shadow, plus the Shared Model
+  Consistency & Validation Layer (feature store, manifests, champion/
+  challenger registry, calibration, drift, health state, promotion gates,
+  walk-forward replay, validation wrapper).
+  Patches: WOW-PATCH-2026-08-11-UNIVERSAL-AGENT-CORE-V1-B4,
+           WOW-PATCH-2026-08-11-UNIVERSAL-AGENT-CORE-V1-B4-MODELVAL
+
+NOT BUILT (requires separate governance approval):
   Production routing / app.py wiring
-  Live LLM runner implementations
+  Live LLM runner implementations beyond the bounded B3C canary
 
 INVARIANTS — permanently enforced:
   advisory_only = True in all registry entries (cannot be overridden)
@@ -40,6 +59,13 @@ INVARIANTS — permanently enforced:
   Durable state only in Postgres (uac_* tables), never in-memory ledger
   Same EvidencePacket object passed to all runners (identity guaranteed)
 """
+can_execute           = False
+PRODUCTION_AUTHORITY  = False
+USER_OUTPUT_AUTHORITY = False
+CAPITAL_AUTHORITY     = False
+NO_AUTO_PROMOTION     = True
+PATCH_ID              = "WOW-PATCH-2026-08-09-UNIVERSAL-AGENT-CORE-V1"
+
 from gate_engine.universal_agent.evidence_packet import (
     Lane,
     EvidencePacket,

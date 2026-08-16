@@ -39,6 +39,11 @@ from gate_engine.universal_agent.shadow.shadow_pipeline import (
 
 can_execute    = False
 EXECUTION_RULE = "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
+PRODUCTION_AUTHORITY  = False
+USER_OUTPUT_AUTHORITY = False
+CAPITAL_AUTHORITY     = False
+NO_AUTO_PROMOTION     = True
+PATCH_ID              = "WOW-PATCH-2026-08-10-UNIVERSAL-AGENT-CORE-V1-B3B"
 
 __all__ = [
     "DeterministicAdapterRunner",

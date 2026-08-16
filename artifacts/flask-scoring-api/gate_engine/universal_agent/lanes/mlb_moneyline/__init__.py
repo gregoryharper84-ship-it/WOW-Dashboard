@@ -25,6 +25,13 @@ Usage
 
 can_execute = False — all authority remains in existing WOW decision logic.
 """
+can_execute           = False
+PRODUCTION_AUTHORITY  = False
+USER_OUTPUT_AUTHORITY = False
+CAPITAL_AUTHORITY     = False
+NO_AUTO_PROMOTION     = True
+PATCH_ID              = "WOW-PATCH-2026-08-10-UNIVERSAL-AGENT-CORE-V1-B3A"
+
 from gate_engine.universal_agent.lanes.mlb_moneyline.adapter import (
     MlbMoneylineAdapter,
     MlbMoneylineAdapterResult,

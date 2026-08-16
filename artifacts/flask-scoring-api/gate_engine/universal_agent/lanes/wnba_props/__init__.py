@@ -13,6 +13,13 @@ optional enrichment into the Universal Agent Core contracts:
 
 can_execute = False — all authority remains in existing WOW decision logic.
 """
+can_execute           = False
+PRODUCTION_AUTHORITY  = False
+USER_OUTPUT_AUTHORITY = False
+CAPITAL_AUTHORITY     = False
+NO_AUTO_PROMOTION     = True
+PATCH_ID              = "WOW-PATCH-2026-08-11-UNIVERSAL-AGENT-CORE-V1-B4"
+
 from gate_engine.universal_agent.lanes.wnba_props.adapter import (
     WnbaPropsAdapter,
     WnbaPropsAdapterResult,

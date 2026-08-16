@@ -18,6 +18,11 @@ from __future__ import annotations
 
 can_execute    = False
 advisory_only  = True
+PRODUCTION_AUTHORITY  = False
+USER_OUTPUT_AUTHORITY = False
+CAPITAL_AUTHORITY     = False
+NO_AUTO_PROMOTION     = True
+PATCH_ID              = "WOW-PATCH-2026-08-10-UNIVERSAL-AGENT-CORE-V1 / Phase B3C"
 CANARY_PACKAGE = "gate_engine.universal_agent.canary"
 
 # ── Public re-exports ─────────────────────────────────────────────────────────
