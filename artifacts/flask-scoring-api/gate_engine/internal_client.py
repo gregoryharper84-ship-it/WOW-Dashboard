@@ -143,6 +143,13 @@ def action_get(
     routes.  This alias delegates to scoring_get() so existing callers continue
     to work without modification.  Will be removed in a future cleanup pass.
 
+    Auth guard: GPT_ACTION_SECRET is still checked for presence so that a
+    misconfigured action key is reported as AUTH_CONTRACT_FAIL rather than
+    masking as a generic FETCH_FAILED.
+
     Returns (body_dict, status_code, error_class).
     """
+    gpt_secret = os.environ.get("GPT_ACTION_SECRET", "")
+    if not gpt_secret:
+        return None, 0, AUTH_CONTRACT_FAIL
     return scoring_get(path, params, timeout)
