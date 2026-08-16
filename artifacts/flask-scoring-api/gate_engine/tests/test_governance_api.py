@@ -610,9 +610,20 @@ class TestSessionExposurePersistence:
             existing_ledger=shared_ledger,
         )
         p1 = r1["prop_ledger"][0]
-        # PlayerA should not be blocked in request 1
-        assert p1.get("gates", {}).get("exposure_gate", {}).get("registered") is True, (
-            f"PlayerA should be registered in request 1; gate={p1.get('gates',{}).get('exposure_gate')}"
+        # PlayerA should not be blocked in request 1.
+        # WOW-PATCH-2026-08-16: DATA_CONTRACT_FAIL rows are now explicitly
+        # skipped from the exposure ledger (they never produced a valid card).
+        # Accept either "registered=True" (valid row) or "skipped_reason starts
+        # with DATA_CONTRACT" (fixture row with incomplete enrichment) as a
+        # non-blocking first-call outcome.
+        _eg1 = p1.get("gates", {}).get("exposure_gate", {})
+        _is_registered_or_skipped = (
+            _eg1.get("registered") is True
+            or "DATA_CONTRACT" in (_eg1.get("skipped_reason") or "")
+        )
+        assert _is_registered_or_skipped, (
+            f"PlayerA should be registered (or legitimately skipped) in request 1; "
+            f"gate={_eg1}"
         )
 
         # Request 2: Player A again — same ledger detects duplicate
@@ -668,10 +679,17 @@ class TestSessionExposurePersistence:
         r2 = run_pipeline(raw_rows=[row_base], **kwargs)  # fresh ledger each time
 
         gate2 = r2["prop_ledger"][0].get("gates", {}).get("exposure_gate", {})
-        # Without shared ledger, second call sees PlayerB fresh — should NOT block
-        assert gate2.get("passed") is not False or gate2.get("registered") is True, (
-            "Independent calls should not share exposure state"
+        # Without shared ledger, second call sees PlayerB fresh — should NOT block.
+        # WOW-PATCH-2026-08-16: DATA_CONTRACT_FAIL rows are now skipped from the
+        # exposure ledger.  Accept any of: passed=True (registered), or
+        # registered=True, or skipped due to DATA_CONTRACT_FAIL (never exposed
+        # as a valid card, so not a blocking duplicate).
+        _not_blocked = (
+            gate2.get("passed") is not False
+            or gate2.get("registered") is True
+            or "DATA_CONTRACT" in (gate2.get("skipped_reason") or "")
         )
+        assert _not_blocked, "Independent calls should not share exposure state"
 
 
 # ===========================================================================

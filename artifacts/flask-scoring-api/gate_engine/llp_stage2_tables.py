@@ -759,7 +759,13 @@ def get_stage2_schema_health() -> dict[str, Any]:
     for the post_fork hook thread to complete.
     """
     if not _TABLES_READY:
-        ensure_all_tables()    # no-op when tables already exist; sets _TABLES_READY
+        try:
+            ensure_all_tables()    # no-op when tables already exist; sets _TABLES_READY
+        except Exception as _exc:
+            # WOW-PATCH-2026-08-16: ensure_all_tables normally catches internally;
+            # wrap here as a second defensive layer so health checks never raise.
+            global _TABLES_LAST_ERROR
+            _TABLES_LAST_ERROR = f"ensure_all_tables raised: {_exc!s}"
     return {
         "schema_ready":   _TABLES_READY,
         "last_error":     _TABLES_LAST_ERROR,

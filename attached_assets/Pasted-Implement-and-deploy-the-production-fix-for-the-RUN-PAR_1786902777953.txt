@@ -1,0 +1,22 @@
+Implement and deploy the production fix for the RUN_PARTIAL_BACKEND_FAILURE found in today's live WOW scan. Preserve all fail-closed gates and can_execute=false; do not manufacture probabilities or loosen qualification thresholds.
+
+Observed production evidence:
+- Engine/governance/auth are healthy: v16.5, 25 patches, DB configured.
+- /wow/engine/ready reported snapshot_available=true but snapshot_is_fresh=false, age 1221.8s vs max 300s.
+- /wow/stage2/health reported schema_ready=false; worker enabled/started with zero errors but last_success_tick=null and zero rows graded.
+- /wow/odds/quota-status reported degraded=true with data_source=process_memory_fallback, although paid/free quotas were healthy.
+- PLAYER_PROP rows submitted to /gate-engine/run with auto_enrich failed L10:NO_GAME_LOG_PROVIDED and incomplete probability ledger. The current auto_enrich contract appears to fetch market and injury/status data but not exact player L5/L10 game logs.
+- MONEYLINE_V1 rows failed INDEPENDENT_PROBABILITY_UNAVAILABLE:insufficient_non_market_data because no Elo/power-rating/H2H or equivalent independent inputs were acquired.
+- The allowed repair retry reused the exposure/session ledger and triggered duplicate/concentration blocking before inputs were complete.
+
+Required outcome:
+1. Add a pre-scoring acquisition/orchestration layer so supported player props obtain exact player identity, slate/game mapping, role/status, and model-grade L5/L10 game logs before the row reaches qualification gates. Keep unsupported/unavailable sources fail-closed with explicit acquisition blockers.
+2. For supported MONEYLINE_V1 sports, acquire or compute auditable non-market probability components (sport-appropriate ratings/form/H2H where valid) before scoring. Never derive independent probability from sportsbook odds alone; unsupported lanes must return a precise acquisition-unavailable reason.
+3. Make acquisition repair retries idempotent and prevent incomplete first-pass rows from contaminating duplicate/concentration exposure ledgers. Only commit exposure after the data contract is complete, or use an equivalent staged transaction.
+4. Refresh stale governance/data snapshots automatically before scoring and verify freshness afterward.
+5. Initialize/repair Stage 2 schema when DB is configured so schema_ready becomes true, without changing dry-run execution rules.
+6. Persist Odds API quota state in Postgres across workers; process-memory fallback may remain only as an explicitly degraded emergency path.
+7. Update relevant OpenAPI descriptions/contracts and GPT-facing diagnostics so the caller knows which endpoint builds evidence and which fields remain caller-supplied.
+8. Add regression tests for all six conditions above, run the full relevant suite, deploy production, and provide the commit, test results, production health/readiness/quota results, plus one real-data player-prop and one real-data MONEYLINE_V1 smoke test. A synthetic DATA_CONTRACT_FAIL does not satisfy the final smoke test.
+
+Investigate the current implementation first and make the smallest coherent fix. Do not mark success if any required live evidence source is still unavailable; report the exact remaining blocker instead.

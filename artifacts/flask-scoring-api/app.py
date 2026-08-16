@@ -20978,6 +20978,17 @@ def _run_startup_warmup():
     except Exception:
         pass
 
+# WOW-PATCH-2026-08-16: Ensure the Odds API quota table exists SYNCHRONOUSLY
+# before any request can arrive.  The background warmup thread races with the
+# first incoming request; when it loses, fetch_quota_snapshot() hits a missing
+# table and marks degraded=True.  Calling synchronously here (at module load,
+# before the thread starts) guarantees the table is present on first request.
+try:
+    from gate_engine.pg_odds_quota import ensure_table_exists as _ensure_odds_quota_sync
+    _ensure_odds_quota_sync()
+except Exception:
+    pass  # No DATABASE_URL configured; fallback to process-memory is safe
+
 _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
 _bt("startup daemon spawned — app fully ready")
 
@@ -21362,6 +21373,53 @@ def wow_stage2_health():
         "can_execute":       False,
         "execution_rule":    "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
     }), 200
+
+
+@app.route("/wow/stage2/repair", methods=["POST"])
+def wow_stage2_repair():
+    """
+    POST /wow/stage2/repair
+
+    WOW-PATCH-2026-08-16-REQ5 — On-demand Stage 2 schema repair.
+
+    Forces a re-run of ensure_all_tables() (idempotent DDL) and returns the
+    resulting schema_ready state.  Use when /wow/stage2/health reports
+    schema_ready=false after a failed startup or a DB connectivity hiccup.
+
+    Does NOT change any execution rules:
+      - can_execute always False
+      - DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS always enforced
+
+    Response:
+      { "ok": bool, "schema_ready": bool, "repaired": bool,
+        "last_error": str|null, "can_execute": false }
+    """
+    repaired   = False
+    last_error = None
+    try:
+        from gate_engine.llp_stage2_tables import (
+            ensure_all_tables       as _s2_ensure,
+            get_stage2_schema_health as _s2_health,
+            _TABLES_READY,
+        )
+        was_ready = _TABLES_READY
+        _s2_ensure()
+        schema_health = _s2_health()
+        repaired      = not was_ready and schema_health.get("schema_ready", False)
+        last_error    = schema_health.get("last_error")
+    except Exception as exc:
+        schema_health = {"schema_ready": False, "last_error": str(exc)}
+        last_error    = str(exc)
+
+    schema_ready = schema_health.get("schema_ready", False)
+    return jsonify({
+        "ok":          schema_ready,
+        "schema_ready": schema_ready,
+        "repaired":    repaired,
+        "last_error":  last_error,
+        "can_execute": False,
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    }), (200 if schema_ready else 503)
 
 
 @app.route("/wow/engine/ready", methods=["GET"])
@@ -21932,6 +21990,33 @@ def gate_engine_run():
         slate_date=target_date,   # None → PgPortfolioGovernor uses date.today()
     )
 
+    # WOW-PATCH-2026-08-16-REQ4: Refresh stale governance snapshot before scoring.
+    # /wow/engine/ready reports snapshot_is_fresh=false when the cached snapshot
+    # exceeds 300s.  get_or_refresh() is a no-op when already fresh (O(1)) and
+    # triggers a refresh only when stale, ensuring every pipeline call starts
+    # with an up-to-date governance view.
+    try:
+        _ge_get_snapshot().get_or_refresh()
+    except Exception as _snap_exc:
+        app.logger.warning("gate_engine_run: snapshot refresh failed: %s", _snap_exc)
+
+    # WOW-PATCH-2026-08-16-REQ1: Pre-scoring acquisition pre-check.
+    # Runs before the pipeline to verify game-log availability per prop row and
+    # attempt team-data acquisition for OUTRIGHT_WINNER rows.  Produces an
+    # explicit per-row acquisition_report surfaced in the response.
+    _acquisition_report: dict = {}
+    try:
+        from gate_engine.acquisition_orchestrator import run as _acq_run
+        _all_rows_for_acq = list(raw_rows) + list(_outright_rows_for_moneyline)
+        enrichment, _acquisition_report = _acq_run(
+            _all_rows_for_acq,
+            enrichment,
+            target_date=str(target_date) if target_date else None,
+            auto_enrich_attempted=auto_enrich,
+        )
+    except Exception as _acq_exc:
+        app.logger.warning("gate_engine_run: acquisition pre-check failed: %s", _acq_exc)
+
     # ── Player-prop gate pipeline (OUTRIGHT_WINNER rows are already separated) ─
     if raw_rows:
         try:
@@ -22033,7 +22118,32 @@ def gate_engine_run():
         )
         _ow_deduped, _ow_dedup_map = _dedup_events(_outright_rows_for_moneyline)
         for _ow_row in _ow_deduped:
-            _ow_enr    = enrichment.get(_ow_row.get("row_id") or "") or {}
+            _ow_row_id = _ow_row.get("row_id") or ""
+            _ow_enr    = dict(enrichment.get(_ow_row_id) or {})
+
+            # WOW-PATCH-2026-08-16-REQ2: Acquire non-market team probability
+            # components before the independence gate.  Populates home_win_pct /
+            # away_win_pct / home_power / away_power from BallDontLie (NBA) or
+            # MLB Stats API (MLB) so sport_model.compute_independent_probability
+            # can produce a non-market ensemble instead of failing with
+            # INDEPENDENT_PROBABILITY_UNAVAILABLE:insufficient_non_market_data.
+            _ow_sport = (_ow_row.get("sport") or "").upper()
+            if _ow_sport in ("NBA", "MLB") and not any(
+                _ow_enr.get(k)
+                for k in ("home_win_pct", "away_win_pct", "home_power", "away_power")
+            ):
+                try:
+                    from gate_engine.moneyline.team_acquisition import acquire_team_data as _acq_team
+                    _team_data = _acq_team(_ow_row, _ow_sport)
+                    if _team_data:
+                        _ow_enr.update(_team_data)
+                        # Persist back into enrichment dict for response transparency
+                        enrichment[_ow_row_id] = _ow_enr
+                except Exception as _ta_exc:
+                    app.logger.debug(
+                        "moneyline team_acquisition failed for %s: %s", _ow_row_id, _ta_exc
+                    )
+
             _ow_scored = _score_moneyline(_ow_row, enrichment=_ow_enr)
             _ow_entry  = {
                 "row_id":               _ow_row.get("row_id"),
