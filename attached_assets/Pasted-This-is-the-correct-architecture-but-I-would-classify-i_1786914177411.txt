@@ -1,0 +1,106 @@
+This is the correct architecture, but I would classify it as **delivered—not yet independently trusted**. The actual `replit.md`, governor, and scripts were not included here, so their implementation cannot yet be accepted from the summary alone.
+
+The required order is:
+
+1. **#249 — populate and classify contracts**
+2. Independently verify #249
+3. **#250 — controlled-failure validation**
+4. Independently verify #250
+5. Resume Universal Agent Core/B4 work
+
+### Why #249 must run first
+
+The verification scripts cannot validate binding authority while `docs/wow/contracts/` is empty. Copying the documents is not enough; their lifecycle must be preserved.
+
+The supplied files contain mixed authority:
+
+| Classification                          | Documents                                                                                                               |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `EMERGENCY_ACTIVE`                      | Kalshi Recovery and Combo Governance patch                                                                              |
+| `ACTIVE`                                | MLB Pitcher Failure-Path patches 010–013                                                                                |
+| `TEST_ONLY`                             | MLB first-inning pitch-count skill; ceiling remains `MODEL_QUALIFIED_HOLD`                                              |
+| `RESEARCH_ONLY`                         | MLB pitcher failure-path expert                                                                                         |
+| `PROBABILITY_ONLY`                      | Slip optimizer and MLB game-win probability expert                                                                      |
+| Governance/specialist contract          | Slate integrity, final refresh, dynamic calibration, failure-path framework, LLP auditors/governors, exact-line auditor |
+| Activation not proven merely by copying | Any document without an explicit approved project-activation record                                                     |
+
+Task #249 must never convert `TEST_ONLY`, `RESEARCH_ONLY`, or `PROBABILITY_ONLY` into production or final-approval authority.
+
+### Dispatch #249 now
+
+```text
+Proceed with task #249 only.
+
+change_id: WOW-PATCH-2026-08-16-CONTRACT-REGISTRY-POPULATION-V1
+
+Objective:
+Populate docs/wow/contracts/ from the supplied WOW documents without changing runtime behavior or promoting any document beyond its declared authority.
+
+Requirements:
+1. Inventory every supplied Markdown and ZIP document.
+2. Safely extract ZIP contents without overwriting existing files.
+3. Preserve an immutable canonical source copy.
+4. Calculate and record SHA-256 for every source.
+5. Create docs/wow/contracts/registry.yaml containing:
+   - canonical_contract_id
+   - source_filename
+   - sha256
+   - version
+   - declared_status
+   - project_authority_status
+   - lane
+   - precedence
+   - supersedes
+   - effective_date
+   - can_execute
+6. Keep source-declared status separate from project activation.
+7. Preserve:
+   - Kalshi recovery patch = EMERGENCY_ACTIVE
+   - MLB failure-path patches 010–013 = ACTIVE
+   - MLB 1IP skill = TEST_ONLY
+   - MLB pitcher failure-path expert = RESEARCH_ONLY
+   - slip optimizer and MLB game-win expert = PROBABILITY_ONLY
+8. Mark uncertain activation or precedence as UNRESOLVED_AUTHORITY; do not infer approval.
+9. Update docs/wow/contracts/README.md with the registry and precedence explanation.
+10. Add contract-registry validation tests for duplicate IDs, missing hashes, invalid statuses, unsafe promotion, missing can_execute=false, and broken document links.
+11. Do not alter probabilities, endpoints, schemas, terminal labels, runtime gates, deployments, or production data.
+12. publish_authorized=false
+13. can_execute=false
+
+Return:
+- exact changed files
+- registry rows
+- hashes
+- classification decisions
+- tests and raw results
+- diff-boundary evidence
+- unresolved authority questions
+- commit ID
+```
+
+### Then run #250
+
+Task #250 should prove both scripts fail closed against:
+
+* Dirty working tree
+* Missing protected file
+* Modified file outside `allowed_files`
+* Staged, unstaged, and untracked boundary violations
+* Secret/token fixtures with redacted output
+* Every equivalent true form: `can_execute=true`, `can_execute = True`, JSON/YAML variants
+* Forced isolation-smoke failure
+* Unexpected regression failure
+* Changed or additional sentinel failure
+* Missing tests or suspicious test-count reduction
+* Live-check failure with fresh session/run IDs
+* Nonzero exit code and deployment prohibition after every failure
+
+The regression gate should rely on the test runner’s exit status, a minimum expected inventory, and an exact sentinel allowlist—not merely “5137+ passed.”
+
+This control-plane patch does **not** complete Universal Agent Core/B4. After #249 and #250 pass, resume the preserved sequence:
+
+`frozen snapshot → adapter → role runner → real forbidden-key scanner → real validator → orchestrator → canonical evidence bundle → isolated persistence`
+
+No shortcut validator or parallel authority path should be introduced.
+
+`can_execute=false`
