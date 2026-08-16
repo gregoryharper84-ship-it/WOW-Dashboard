@@ -768,21 +768,29 @@ def _check_source_timestamp_grading(
     if not isinstance(sg, dict):
         # Also check row-level flag
         ts_grade = str(row.get("source_timestamp_grade") or "").upper()
-        if ts_grade in {"N", "T", "NO_TIMESTAMP", "TIMESTAMP_MISSING"}:
+        if ts_grade in {"N", "T", "N/T", "NT", "NO_TIMESTAMP", "TIMESTAMP_MISSING"}:
             b = f"FMCG:SOURCE_TIMESTAMP:NO_TIMESTAMP_GRADE:{ts_grade}"
             return _gr(GATE_HOLD, {"source_timestamp_grade": ts_grade}, b), [b]
         return _gr(GATE_SKIP, {"reason": "source_grade_gate_absent"}), []
 
-    grade_type = str(sg.get("grade_type") or sg.get("timestamp_grade") or "").upper()
-    has_ts     = sg.get("has_timestamp", True)   # assume present if not stated
-    evidence   = {
-        "grade_type":         grade_type,
-        "has_timestamp":      has_ts,
-        "source_grade_grade": sg.get("grade"),
+    # source_grade result dict uses "worst_critical" for the worst critical-path
+    # grade (e.g. "A", "B", "N/T").  The legacy field names "grade_type" and
+    # "timestamp_grade" do not exist — reading them always returns "".
+    # Per-source timestamp availability lives in source_grades[*].has_timestamp.
+    worst = str(sg.get("worst_critical") or "A").upper()
+    critical_no_ts = any(
+        not s.get("has_timestamp", True)
+        for s in sg.get("source_grades", [])
+        if s.get("is_critical", False)
+    )
+    evidence = {
+        "worst_critical":    worst,
+        "critical_no_ts":    critical_no_ts,
+        "source_grade_code": sg.get("code"),
     }
 
-    if grade_type in {"N", "T"} or has_ts is False:
-        b = f"FMCG:SOURCE_TIMESTAMP:NO_TIMESTAMP_GRADE:{grade_type or 'UNKNOWN'}"
+    if worst in {"N/T", "NT"} or critical_no_ts:
+        b = f"FMCG:SOURCE_TIMESTAMP:NO_TIMESTAMP_GRADE:{worst}"
         return _gr(GATE_HOLD, evidence, b), [b]
 
     return _gr(GATE_PASS, evidence), []

@@ -1106,6 +1106,138 @@ class TestV11HostAbstraction(unittest.TestCase):
         self.assertFalse(any("cross_sport" in g for g in gate_names))
 
 
+class TestV11SourceTimestampGate(unittest.TestCase):
+    """Gate 17 — source timestamp/freshness grading via worst_critical field."""
+
+    def _make_row_with_source_grade(self, worst_critical, critical_has_ts=True):
+        """Build a row with row['gates']['source_grade'] populated correctly."""
+        row = _base_row()
+        row["gates"]["source_grade"] = {
+            "passed":          critical_has_ts and worst_critical not in {"N/T", "NT"},
+            "worst_critical":  worst_critical,
+            "code":            "SOURCE_GRADE_OK" if worst_critical == "A" else f"SOURCE_GRADE_DEGRADED:{worst_critical}",
+            "source_grades": [
+                {
+                    "name":        "test-source",
+                    "source_type": "stat_feed",
+                    "role":        "l5_l10",
+                    "grade":       worst_critical,
+                    "effective_grade": worst_critical,
+                    "has_timestamp": critical_has_ts,
+                    "corroborated": False,
+                    "is_critical":  True,
+                    "reconciliation_flags": [],
+                }
+            ],
+            "critical_grades": [worst_critical],
+            "source_conflict": False,
+            "reconciliation_blockers": [],
+        }
+        return row
+
+    def test_nt_worst_critical_holds(self):
+        """worst_critical == 'N/T' → HOLD (no timestamp on critical source)."""
+        row = self._make_row_with_source_grade("N/T")
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["source_timestamp_grading"]["status"], GATE_HOLD)
+        self.assertTrue(any("SOURCE_TIMESTAMP" in b for b in gk["blockers"]))
+
+    def test_grade_a_passes(self):
+        """worst_critical == 'A' and all timestamped → PASS."""
+        row = self._make_row_with_source_grade("A")
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["source_timestamp_grading"]["status"], GATE_PASS)
+        self.assertFalse(any("SOURCE_TIMESTAMP" in b for b in gk["blockers"]))
+
+    def test_grade_b_passes_on_timestamp(self):
+        """worst_critical == 'B' with timestamp → PASS (B is not N/T)."""
+        row = self._make_row_with_source_grade("B", critical_has_ts=True)
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["source_timestamp_grading"]["status"], GATE_PASS)
+
+    def test_critical_no_timestamp_holds(self):
+        """Critical source with has_timestamp=False → HOLD even if worst_critical is not N/T."""
+        row = _base_row()
+        row["gates"]["source_grade"] = {
+            "worst_critical": "B",
+            "code": "SOURCE_GRADE_B_UNCORROBORATED",
+            "source_grades": [
+                {
+                    "name":        "timestampless-source",
+                    "source_type": "stat_feed",
+                    "role":        "l5_l10",
+                    "grade":       "B",
+                    "effective_grade": "B",
+                    "has_timestamp": False,
+                    "corroborated":  False,
+                    "is_critical":   True,
+                    "reconciliation_flags": [],
+                }
+            ],
+            "critical_grades": ["B"],
+            "source_conflict": False,
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["source_timestamp_grading"]["status"], GATE_HOLD)
+        self.assertTrue(any("SOURCE_TIMESTAMP" in b for b in gk["blockers"]))
+
+    def test_non_critical_no_timestamp_passes(self):
+        """Non-critical source with no timestamp does NOT trigger HOLD."""
+        row = _base_row()
+        row["gates"]["source_grade"] = {
+            "worst_critical": "A",
+            "code": "SOURCE_GRADE_OK",
+            "source_grades": [
+                {
+                    "name":        "non-critical-no-ts",
+                    "source_type": "news",
+                    "role":        "context",
+                    "grade":       "C",
+                    "effective_grade": "C",
+                    "has_timestamp": False,
+                    "corroborated":  False,
+                    "is_critical":   False,
+                    "reconciliation_flags": [],
+                }
+            ],
+            "critical_grades": ["A"],
+            "source_conflict": False,
+        }
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["source_timestamp_grading"]["status"], GATE_PASS)
+
+    def test_absent_source_grade_gate_skips(self):
+        """Absent source_grade gate → SKIP (backward compat)."""
+        row = _base_row()
+        # No source_grade in gates
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["source_timestamp_grading"]["status"], GATE_SKIP)
+        self.assertFalse(any("SOURCE_TIMESTAMP" in b for b in gk["blockers"]))
+
+    def test_row_level_nt_flag_holds_when_gate_absent(self):
+        """row['source_timestamp_grade'] == 'N/T' is honored when gate dict absent."""
+        row = _base_row()
+        row["source_timestamp_grade"] = "N/T"
+        gk = _apply(row)
+        self.assertEqual(gk["gate_results"]["source_timestamp_grading"]["status"], GATE_HOLD)
+
+    def test_legacy_grade_type_field_not_used(self):
+        """Confirm gate does NOT read the nonexistent 'grade_type' field — N/T must come from worst_critical."""
+        row = _base_row()
+        # Populate a source_grade dict with grade_type but NOT worst_critical
+        row["gates"]["source_grade"] = {
+            "grade_type":    "N/T",   # legacy field — should NOT be read
+            "worst_critical": "A",    # actual field — says grade is fine
+            "code":          "SOURCE_GRADE_OK",
+            "source_grades": [],
+            "critical_grades": ["A"],
+            "source_conflict": False,
+        }
+        gk = _apply(row)
+        # If gate correctly reads worst_critical="A" → PASS; not "grade_type"="N/T" → HOLD
+        self.assertEqual(gk["gate_results"]["source_timestamp_grading"]["status"], GATE_PASS)
+
+
 class TestV11StrictProbBoundsEndToEnd(unittest.TestCase):
     """Req 6 — strict exclusive (0,1) bounds through full evaluate() path."""
 

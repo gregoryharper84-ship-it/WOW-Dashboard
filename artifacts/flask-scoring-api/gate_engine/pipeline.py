@@ -752,6 +752,42 @@ def run_pipeline(
         if portfolio_governor is not None:
             portfolio_governor.check_and_register(row)
 
+    # -------------------------------------------------------------------
+    # WOW-PATCH-FMCG-v1.1 — Pre-fetch final-refresh baselines so the
+    # FMCG pregame_snapshot gate can fire per-row before apply_gatekeeper.
+    # Moved here (from post-gatekeeper position) so enforce_final_refresh
+    # writes row["gates"]["pp_final_refresh"] before FMCG reads it.
+    # Caller-supplied pp_baseline in enrichment always overrides DB-fetched.
+    # Best-effort: DB unavailable → vacuous pass for all rows.
+    # -------------------------------------------------------------------
+    _pp_baselines: dict[str, dict] = {}
+    try:
+        import os as _ppbl_os
+        import psycopg2 as _ppbl_pg  # type: ignore
+        _ppbl_url = _ppbl_os.environ.get("DATABASE_URL")
+        if _ppbl_url:
+            _ppbl_conn = _ppbl_pg.connect(_ppbl_url, connect_timeout=5)
+            try:
+                for _ppbl_row in rows:
+                    _ppbl_rid = _ppbl_row.get("row_id") or ""
+                    if not _ppbl_rid:
+                        continue
+                    _ppbl_snap = pp_pregame_snapshot.fetch_latest_snapshot(
+                        _ppbl_conn, _ppbl_rid
+                    )
+                    if isinstance(_ppbl_snap, dict):
+                        _pp_baselines[_ppbl_rid] = _ppbl_snap
+            finally:
+                _ppbl_conn.close()
+    except Exception:
+        pass  # best-effort; DB unavailable → vacuous pass for all rows
+
+    # Caller-supplied pp_baseline in enrichment always overrides DB-fetched
+    for _rid, _enr_dict in enrichment.items():
+        _bl = _enr_dict.get("pp_baseline") if isinstance(_enr_dict, dict) else None
+        if isinstance(_bl, dict):
+            _pp_baselines[_rid] = _bl
+
     for row in rows:
         # WOW-PATCH-2026-07-10: SETTLEMENT_SOURCE_CONFLICT is terminal — the
         # classifier must not overwrite it with REJECT_DATA_QUALITY or any
@@ -921,6 +957,16 @@ def run_pipeline(
 
         classifier.classify(row)
 
+        # WOW-PATCH-FMCG-v1.1 — Wire per-row final-refresh check so the
+        # FMCG pregame_snapshot gate reads row["gates"]["pp_final_refresh"]
+        # before apply_gatekeeper fires.  Uses the _pp_baselines dict fetched
+        # above (before this loop).  The batch pp_final_refresh.run() below
+        # re-enforces for the batch report; result is identical so double-call
+        # is safe (enforce_final_refresh is idempotent on same baseline).
+        pp_final_refresh.enforce_final_refresh(
+            row, _pp_baselines.get(row.get("row_id") or "")
+        )
+
         # WOW-PATCH-FMCG-v1.0 — Full Model Contract Gatekeeper
         # Fail-closed: any FINAL_APPROVED without a valid Gatekeeper PASS is
         # downgraded to MODEL_QUALIFIED_HOLD before route completion propagates
@@ -990,46 +1036,9 @@ def run_pipeline(
     # -------------------------------------------------------------------
     card_finalizer_report = card_finalizer.finalize_card(rows)
 
-    # -------------------------------------------------------------------
-    # WOW-PATCH-2026-08-15 — Binding Final Refresh baseline fetch (always)
-    # Fetch the most recent pregame snapshot per row_id from the database
-    # so the final-refresh detectors can compare lineup, participant,
-    # market, price, settlement, weather, and source state against the
-    # last recorded scoring run.  Caller-supplied pp_baseline in enrichment
-    # always overrides the DB-fetched baseline (caller wins).
-    # First-run bootstrap: no prior snapshot → _pp_baselines empty →
-    # pp_final_refresh.run() vacuous pass → snapshot written below →
-    # comparison becomes live on the second scoring run.
-    # Best-effort: DB unavailable → vacuous pass for all rows.
-    # -------------------------------------------------------------------
-    _pp_baselines: dict[str, dict] = {}
-    try:
-        import os as _ppbl_os
-        import psycopg2 as _ppbl_pg  # type: ignore
-        _ppbl_url = _ppbl_os.environ.get("DATABASE_URL")
-        if _ppbl_url:
-            _ppbl_conn = _ppbl_pg.connect(_ppbl_url, connect_timeout=5)
-            try:
-                for _ppbl_row in rows:
-                    _ppbl_rid = _ppbl_row.get("row_id") or ""
-                    if not _ppbl_rid:
-                        continue
-                    _ppbl_snap = pp_pregame_snapshot.fetch_latest_snapshot(
-                        _ppbl_conn, _ppbl_rid
-                    )
-                    if isinstance(_ppbl_snap, dict):
-                        _pp_baselines[_ppbl_rid] = _ppbl_snap
-            finally:
-                _ppbl_conn.close()
-    except Exception:
-        pass  # best-effort; DB unavailable → vacuous pass for all rows
-
-    # Caller-supplied pp_baseline in enrichment always overrides DB-fetched
-    for _rid, _enr_dict in enrichment.items():
-        _bl = _enr_dict.get("pp_baseline") if isinstance(_enr_dict, dict) else None
-        if isinstance(_bl, dict):
-            _pp_baselines[_rid] = _bl
-
+    # _pp_baselines was pre-fetched before the classifier loop (above) so the
+    # FMCG pregame_snapshot gate could fire per-row.  Re-use the same dict
+    # here for the batch report (no second DB round-trip needed).
     pp_final_refresh_report = pp_final_refresh.run(rows, baselines=_pp_baselines)
 
     # -------------------------------------------------------------------
