@@ -47,6 +47,7 @@ from . import fantasy_score_model as _fantasy_score_model
 # WOW v16 WNBA Generative Probability lane — role-regime / Poisson mixture model
 from . import wnba_generative_gate
 from .mlb import plate_appearances_gate as _mlb_pa_gate
+from .mlb import first_inning_efficiency as _1ip_eff
 from .wnba import opportunity_engine as _wnba_opp_gate
 from .wnba import evidence_acquisition as _wnba_evidence_acq
 # WOW Task #136 — Opportunity, Event & Exact-Market Acquisition Layer
@@ -884,6 +885,56 @@ def run_pipeline(
         # or MLB_WINNER_PREFLIGHT_BLOCK before the classifier ever sees it.
         # POSTPONED/CANCELLED/SUSPENDED → SLATE_PURGE (pick dies; rerun required).
         llp_mlb_winner_preflight.run(row)
+
+        # WOW-PATCH-2026-08-16 — First-Inning Efficiency Deterioration Gate (#119/#118)
+        # Applies probability haircut and ceiling when the GPT supplies pitcher
+        # metric flags (via enrichment key "pitcher_metric_flags").
+        # Advisory only when metric_flags is absent — function returns
+        # EFFICIENCY_SCORE_INCOMPLETE ceiling=MODEL_QUALIFIED_HOLD by design.
+        # Runs only for 1IP_PITCHES_THROWN rows that haven't been terminated.
+        _1ip_sk = (row.get("stat_key") or row.get("prop_type") or "").upper()
+        if _1ip_sk == "1IP_PITCHES_THROWN" and row.get("terminal_label") is None:
+            _1ip_enr = row.get("_enr") or {}
+            _1ip_result = _1ip_eff.calculate_recent_1ip_efficiency_score(
+                pitcher_id            = str(row.get("player") or ""),
+                as_of                 = str(row.get("game_date") or ""),
+                metric_flags          = _1ip_enr.get("pitcher_metric_flags") or None,
+                whip_increase_15pct   = _1ip_enr.get("whip_increase_15pct"),
+                hard_hit_increase_5pp = _1ip_enr.get("hard_hit_increase_5pp"),
+                chase_decrease_4pp    = _1ip_enr.get("chase_decrease_4pp"),
+            )
+            row.setdefault("gates", {})["first_inning_efficiency"] = _1ip_result
+            # Apply ceiling from efficiency result if it is more restrictive
+            _1ip_ceiling = _1ip_result.get("efficiency_ceiling")
+            if _1ip_ceiling:
+                _current_label = row.get("terminal_label")
+                # MODEL_QUALIFIED_HOLD ceiling: cap anything above it
+                if (_1ip_ceiling == _1ip_eff.CEILING_HOLD
+                        and _current_label not in (
+                            None,
+                            PropLabel.REJECT_NO_PLAY.value,
+                            PropLabel.REJECT_DATA_QUALITY.value,
+                            PropLabel.DATA_CONTRACT_FAIL.value,
+                        )):
+                    row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
+                    row.setdefault("blockers", []).append(
+                        "FIRST_INNING_EFFICIENCY:ceiling=MODEL_QUALIFIED_HOLD:"
+                        f"score={_1ip_result.get('final_efficiency_deterioration_score')}"
+                    )
+                # WATCH ceiling: cap anything above WATCH
+                elif (_1ip_ceiling == _1ip_eff.CEILING_WATCH
+                        and _current_label not in (
+                            None,
+                            PropLabel.REJECT_NO_PLAY.value,
+                            PropLabel.REJECT_DATA_QUALITY.value,
+                            PropLabel.DATA_CONTRACT_FAIL.value,
+                            PropLabel.MODEL_QUALIFIED_HOLD.value,
+                        )):
+                    row["terminal_label"] = PropLabel.WATCH.value
+                    row.setdefault("blockers", []).append(
+                        "FIRST_INNING_EFFICIENCY:ceiling=WATCH:"
+                        f"score={_1ip_result.get('final_efficiency_deterioration_score')}"
+                    )
 
         # PATCH-015 — MLB Directional Firewall
         # K LESS=WATCH_ONLY, OUTS MORE=MODEL_QUALIFIED_HOLD ceiling.

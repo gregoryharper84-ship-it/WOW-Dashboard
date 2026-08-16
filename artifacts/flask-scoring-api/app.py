@@ -1570,7 +1570,12 @@ def wow_daily_scan():
                 grouped[cat_key].append(_compact_prop(row))
 
         counts = {k: summary_counts.get(cls_name, 0) for k, cls_name in CAT_KEYS.items()}
-        counts["total_final_approved"] = counts["market_verified"] + counts["final_approved_internal"]
+        # Task #74: also count old rows stored with classification="FINAL_APPROVED"
+        # (pre-split label format) so they aren't silently undercounted.
+        _legacy_fa = summary_counts.get("FINAL_APPROVED", 0)
+        counts["total_final_approved"] = (
+            counts["market_verified"] + counts["final_approved_internal"] + _legacy_fa
+        )
         counts["playable_count"]       = counts["total_final_approved"] + counts["model_qualified"]
 
         def _avail(key):
@@ -2195,7 +2200,7 @@ def scan_results_summary():
             "status_lineups_called":         int(flags.get("status_called",0) or 0) > 0,
             "internal_projection_called":    True,
             "external_projection_available": False,
-            "final_approved_count":          counts.get("total_final_approved", counts["market_verified"] + counts["final_approved_internal"]),
+            "final_approved_count":          counts.get("total_final_approved", counts["market_verified"] + counts["final_approved_internal"] + summary_counts.get("FINAL_APPROVED", 0)),
             "market_verified_count":         counts["market_verified"],
             "final_approved_internal_count": counts["final_approved_internal"],
             "model_qualified_count":         counts["model_qualified"],
