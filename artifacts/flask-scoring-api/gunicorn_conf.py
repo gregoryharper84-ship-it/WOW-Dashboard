@@ -243,3 +243,45 @@ def post_fork(server, worker):
         server.log.warning(
             f"[post_fork] player_identity_cache reset failed (non-fatal): {exc}"
         )
+
+    # ── Governance snapshot pre-warm (#69 fix) ────────────────────────────────
+    # On a fresh deploy the GovernanceSnapshot LKG cache is empty in every new
+    # worker.  The first request to /gate-engine/run passes expected_governance_hash,
+    # which requires a valid cached snapshot to verify; without one the endpoint
+    # returns 409 GOVERNANCE_UNAVAILABLE and FINAL_APPROVED cannot be reached.
+    #
+    # Fix: each worker synchronously refreshes the snapshot immediately after
+    # fork (but BEFORE serving any request) with a short timeout to bound startup
+    # latency.  Exceptions are swallowed — the worker still starts and the degraded
+    # path (MODEL_QUALIFIED_HOLD ceiling) handles the first request gracefully.
+    try:
+        import threading as _gov_threading
+        _gov_warmed = [False]
+        _gov_exc    = [None]
+
+        def _gov_warmup():
+            try:
+                from gate_engine.governance_resilience import GovernanceSnapshot
+                GovernanceSnapshot.instance().refresh()
+                _gov_warmed[0] = True
+            except Exception as _e:
+                _gov_exc[0] = _e
+
+        _gov_t = _gov_threading.Thread(target=_gov_warmup, daemon=True)
+        _gov_t.start()
+        _gov_t.join(timeout=5.0)   # 5-second bound; never blocks restart
+
+        if _gov_warmed[0]:
+            server.log.info(
+                f"[post_fork] worker {worker.pid}: governance snapshot pre-warmed successfully"
+            )
+        else:
+            server.log.warning(
+                f"[post_fork] worker {worker.pid}: governance snapshot pre-warm "
+                f"incomplete (timeout or error: {_gov_exc[0]}) — "
+                f"first request may hit degraded path"
+            )
+    except Exception as exc:
+        server.log.warning(
+            f"[post_fork] governance snapshot pre-warm failed (non-fatal): {exc}"
+        )

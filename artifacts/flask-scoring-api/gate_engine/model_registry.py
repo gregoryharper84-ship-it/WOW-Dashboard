@@ -116,6 +116,31 @@ _REGISTRY: dict = {
     ("MLB", "BB"):  _prov("mlb_binary_bernoulli_v1", ["game_log"]),
     ("MLB", "R"):   _prov("mlb_binary_bernoulli_v1", ["game_log"]),
     ("MLB", "TB"):  _prov("mlb_binary_bernoulli_v1", ["game_log"]),
+
+    # ── MLB: at-bats, batting average, on-base percentage (#126) ─────────────
+    # Prop lines for these stats are game-level counts/rates, not season averages.
+    # AB: counting stat → Poisson λ=game-log mean is a reasonable first-pass model.
+    # AVG/OBP: game-level binary (did the batter reach base / get a hit ≥1x?).
+    # All PROVISIONAL — not back-tested against settled results.
+    ("MLB", "AB"):                  _prov("mlb_counting_poisson_v1", ["game_log"],
+                                          "At-bats per game; Poisson λ=game-log mean; PROVISIONAL"),
+    ("MLB", "AT_BATS"):             _prov("mlb_counting_poisson_v1", ["game_log"],
+                                          "Alias for AB; at-bats per game"),
+    ("MLB", "AVG"):                 _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "Batting average game prop: P(≥1 hit); "
+                                          "game-level Bernoulli hit rate from game log; "
+                                          "distinct from season AVG; PROVISIONAL"),
+    ("MLB", "BA"):                  _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "Alias for AVG/batting average game hit rate"),
+    ("MLB", "BATTING_AVERAGE"):     _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "Alias for AVG; batting average game prop"),
+    ("MLB", "OBP"):                 _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "On-base percentage game prop: P(reached base ≥1x); "
+                                          "Bernoulli hit+walk rate from game log; PROVISIONAL"),
+    ("MLB", "ON_BASE_PCT"):         _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "Alias for OBP"),
+    ("MLB", "ON_BASE_PERCENTAGE"):  _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "Alias for OBP"),
     ("MLB", "1B"):  _prov("mlb_binary_bernoulli_v1", ["game_log"]),
     ("MLB", "2B"):  _prov("mlb_binary_bernoulli_v1", ["game_log"]),
     ("MLB", "3B"):  _prov("mlb_binary_bernoulli_v1", ["game_log"]),

@@ -750,8 +750,17 @@ def _audit_calibration_entry_provenance(conn: Any, entry: dict[str, Any]) -> Non
             )
             conn.commit()
             cur.close()
-        except Exception:
-            pass  # snapshot write failure never blocks caller
+        except Exception as _snap_exc:
+            # Snapshot write failure is non-fatal — never blocks the caller.
+            # Task #72: log the failure so silently orphaned records are visible.
+            import logging as _snap_log_mod
+            _snap_log_mod.getLogger("llp_stage2_tables").warning(
+                "[source_snapshot] INSERT failed for snapshot_id=%r: %s — "
+                "calibration_entry_provenance persisted but llp_source_snapshots "
+                "record is missing; run reconciliation if this repeats.",
+                snapshot_id,
+                _snap_exc,
+            )
 
 
 def get_stage2_schema_health() -> dict[str, Any]:
