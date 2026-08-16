@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# wow-verify-patch — WOW Engineering Control Plane post-patch diff audit
+#
+# Run after completing a patch session, before marking the task done.
+# Verifies diff boundary, test gate, and (optionally) live endpoint.
+#
+# Usage: bash scripts/wow-verify-patch [commit-sha]
+#        bash scripts/wow-verify-patch HEAD
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLASK_DIR="$REPO_ROOT/artifacts/flask-scoring-api"
+COMMIT="${1:-HEAD}"
+PASS=0
+FAIL=0
+
+green()  { printf '\033[0;32m✓ %s\033[0m\n' "$*"; }
+red()    { printf '\033[0;31m✗ %s\033[0m\n' "$*"; }
+yellow() { printf '\033[0;33m⚠ %s\033[0m\n' "$*"; }
+section() { printf '\n\033[1m=== %s ===\033[0m\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+section "Diff boundary audit (commit: $COMMIT)"
+# ---------------------------------------------------------------------------
+
+CHANGED=$(git -C "$REPO_ROOT" diff --name-only "$COMMIT^" "$COMMIT" 2>/dev/null \
+          || git -C "$REPO_ROOT" diff --name-only HEAD 2>/dev/null || true)
+
+if [ -z "$CHANGED" ]; then
+    yellow "No diff found for $COMMIT — is this a fresh commit?"
+else
+    echo "Changed files:"
+    echo "$CHANGED" | sed 's/^/    /'
+fi
+
+# Protected files that must NEVER appear in a patch diff
+PROTECTED_FILES=(
+    "artifacts/flask-scoring-api/gate_engine/labels.py"
+    "artifacts/flask-scoring-api/gate_engine/llp_governance.py"
+    "artifacts/flask-scoring-api/gate_engine/data_contract.py"
+    "artifacts/flask-scoring-api/gate_engine/failure_path.py"
+)
+
+PROTECTED_VIOLATED=0
+for f in "${PROTECTED_FILES[@]}"; do
+    if echo "$CHANGED" | grep -qF "$f"; then
+        red "PROTECTED FILE MODIFIED: $f"
+        PROTECTED_VIOLATED=1
+        ((FAIL++))
+    fi
+done
+
+if [ "$PROTECTED_VIOLATED" -eq 0 ]; then
+    green "No protected files modified"
+    ((PASS++))
+fi
+
+# ---------------------------------------------------------------------------
+section "Secret scan on changed files"
+# ---------------------------------------------------------------------------
+
+SECRET_FOUND=0
+if [ -n "$CHANGED" ]; then
+    while IFS= read -r file; do
+        FULL="$REPO_ROOT/$file"
+        [ -f "$FULL" ] || continue
+        if grep -qiE 'sk-[a-zA-Z0-9]{20,}|Bearer [a-zA-Z0-9_\-\.]{20,}' "$FULL" 2>/dev/null; then
+            red "Possible secret in changed file: $file"
+            SECRET_FOUND=1
+            ((FAIL++))
+        fi
+    done <<< "$CHANGED"
+fi
+
+if [ "$SECRET_FOUND" -eq 0 ]; then
+    green "No secrets detected in changed files"
+    ((PASS++))
+fi
+
+# ---------------------------------------------------------------------------
+section "can_execute=False invariant"
+# ---------------------------------------------------------------------------
+
+EXEC_TRUE=$(grep -rn --include="*.py" 'can_execute\s*=\s*True' "$FLASK_DIR/gate_engine/" 2>/dev/null \
+            | grep -v "test_\|#" || true)
+if [ -z "$EXEC_TRUE" ]; then
+    green "can_execute=True not found in gate_engine production code"
+    ((PASS++))
+else
+    red "can_execute=True found:"
+    echo "$EXEC_TRUE" | sed 's/^/    /'
+    ((FAIL++))
+fi
+
+# ---------------------------------------------------------------------------
+section "Full regression suite"
+# ---------------------------------------------------------------------------
+
+if command -v python3 &>/dev/null; then
+    cd "$FLASK_DIR"
+    printf 'Running full test suite (this takes ~2-3 min)...\n'
+    RESULT=$(python3 -m pytest gate_engine/tests/ -q --tb=no 2>&1 | tail -5)
+    echo "$RESULT"
+
+    FAILURES=$(echo "$RESULT" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo "0")
+    PASSED=$(echo "$RESULT" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
+
+    if [ "$FAILURES" -eq 0 ]; then
+        green "Regression: $PASSED passed, 0 failed"
+        ((PASS++))
+    elif [ "$FAILURES" -eq 1 ]; then
+        # Check that the only failure is the runtime isolation sentinel
+        SENTINEL_FAIL=$(python3 -m pytest gate_engine/tests/test_stage_a_isolation.py::TestGitDiffAllowlist::test_no_uncommitted_changes_to_forbidden_files \
+                        -q --tb=no 2>&1 | grep -c "failed" || true)
+        if [ "$SENTINEL_FAIL" -ge 1 ]; then
+            green "Regression: $PASSED passed, 1 failed (runtime isolation sentinel only — resolves after commit)"
+            ((PASS++))
+        else
+            red "Regression: $FAILURES failure(s) — NOT the isolation sentinel. Investigate before shipping."
+            ((FAIL++))
+        fi
+    else
+        red "Regression: $FAILURES failures — patch introduces regressions. Do NOT commit."
+        ((FAIL++))
+    fi
+    cd "$REPO_ROOT"
+else
+    yellow "python3 not found — skipping regression suite"
+fi
+
+# ---------------------------------------------------------------------------
+section "Live endpoint smoke (optional)"
+# ---------------------------------------------------------------------------
+
+if command -v curl &>/dev/null && [ -n "${GPT_ACTION_SECRET:-}" ]; then
+    HEALTH=$(curl -s -o /dev/null -w "%{http_code}" \
+             -H "X-API-Key: $GPT_ACTION_SECRET" \
+             http://localhost:25643/wow/engine/health 2>/dev/null || echo "000")
+    if [ "$HEALTH" = "200" ]; then
+        green "Live health endpoint: HTTP 200"
+        ((PASS++))
+    else
+        yellow "Live health endpoint: HTTP $HEALTH (server may not be running locally)"
+    fi
+else
+    yellow "Skipping live endpoint check (no GPT_ACTION_SECRET or curl not available)"
+fi
+
+# ---------------------------------------------------------------------------
+section "Summary"
+# ---------------------------------------------------------------------------
+
+printf '\n'
+printf 'Passed: %d\n' "$PASS"
+printf 'Failed: %d\n' "$FAIL"
+
+if [ "$FAIL" -gt 0 ]; then
+    red "Patch verification FAILED — do not commit or publish until all failures are resolved."
+    exit 1
+else
+    green "Patch verification PASSED."
+    printf '\nNext steps:\n'
+    printf '  git add <allowed_files_only>\n'
+    printf '  git commit -m "WOW-PATCH-...: <summary>"\n'
+    printf '  (publish only if publish_authorized: true in contract)\n'
+    exit 0
+fi

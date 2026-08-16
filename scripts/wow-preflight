@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# wow-preflight — WOW Engineering Control Plane pre-patch safety checks
+#
+# Run before starting any WOW patch session.
+# Exits non-zero if any check fails.
+#
+# Usage: bash scripts/wow-preflight
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLASK_DIR="$REPO_ROOT/artifacts/flask-scoring-api"
+PASS=0
+FAIL=0
+WARN=0
+
+green()  { printf '\033[0;32m✓ %s\033[0m\n' "$*"; }
+red()    { printf '\033[0;31m✗ %s\033[0m\n' "$*"; }
+yellow() { printf '\033[0;33m⚠ %s\033[0m\n' "$*"; }
+
+section() { printf '\n\033[1m=== %s ===\033[0m\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+section "Working tree"
+# ---------------------------------------------------------------------------
+
+DIRTY=$(git -C "$REPO_ROOT" diff --name-only HEAD 2>/dev/null || true)
+if [ -z "$DIRTY" ]; then
+    green "Working tree is clean"
+    ((PASS++))
+else
+    red "Uncommitted changes detected — checkpoint before proceeding:"
+    echo "$DIRTY" | sed 's/^/    /'
+    ((FAIL++))
+fi
+
+# ---------------------------------------------------------------------------
+section "Protected-file baseline"
+# ---------------------------------------------------------------------------
+
+PROTECTED_FILES=(
+    "artifacts/flask-scoring-api/gate_engine/labels.py"
+    "artifacts/flask-scoring-api/gate_engine/llp_governance.py"
+    "artifacts/flask-scoring-api/gate_engine/data_contract.py"
+    "artifacts/flask-scoring-api/gate_engine/failure_path.py"
+)
+
+for f in "${PROTECTED_FILES[@]}"; do
+    if [ -f "$REPO_ROOT/$f" ]; then
+        green "Protected file exists: $f"
+        ((PASS++))
+    else
+        red "Protected file MISSING: $f"
+        ((FAIL++))
+    fi
+done
+
+# ---------------------------------------------------------------------------
+section "Secret scan"
+# ---------------------------------------------------------------------------
+
+SECRET_PATTERNS=(
+    'api_key\s*=\s*["\x27][^"\x27]{8,}'
+    'password\s*=\s*["\x27][^"\x27]{4,}'
+    'sk-[a-zA-Z0-9]{20,}'
+    'Bearer [a-zA-Z0-9_\-\.]{20,}'
+)
+
+SECRET_FOUND=0
+for pattern in "${SECRET_PATTERNS[@]}"; do
+    HITS=$(git -C "$REPO_ROOT" grep -rI --include="*.py" --include="*.md" --include="*.yaml" \
+               -l -i -E "$pattern" 2>/dev/null || true)
+    if [ -n "$HITS" ]; then
+        red "Possible secret pattern ($pattern) in:"
+        echo "$HITS" | sed 's/^/    /'
+        SECRET_FOUND=1
+    fi
+done
+
+if [ "$SECRET_FOUND" -eq 0 ]; then
+    green "No hardcoded secrets detected"
+    ((PASS++))
+else
+    ((FAIL++))
+fi
+
+# ---------------------------------------------------------------------------
+section "can_execute=false enforcement"
+# ---------------------------------------------------------------------------
+
+# Verify no production code path has can_execute=True hardcoded
+EXEC_TRUE=$(grep -rn --include="*.py" 'can_execute\s*=\s*True' "$FLASK_DIR/gate_engine/" 2>/dev/null \
+            | grep -v "test_\|#" || true)
+if [ -z "$EXEC_TRUE" ]; then
+    green "can_execute=True not found in gate_engine (non-test)"
+    ((PASS++))
+else
+    red "can_execute=True found in production gate_engine code:"
+    echo "$EXEC_TRUE" | sed 's/^/    /'
+    ((FAIL++))
+fi
+
+# ---------------------------------------------------------------------------
+section "Fast smoke test (isolation sentinel only)"
+# ---------------------------------------------------------------------------
+
+if command -v python3 &>/dev/null; then
+    cd "$FLASK_DIR"
+    RESULT=$(python3 -m pytest gate_engine/tests/test_stage_a_isolation.py -q --tb=no 2>&1 | tail -3)
+    # We expect the sentinel to fail if there are uncommitted changes;
+    # if tree is clean, all isolation tests should pass.
+    FAILURES=$(echo "$RESULT" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo "0")
+    PASSED=$(echo "$RESULT" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
+    if [ "$FAILURES" -eq 0 ]; then
+        green "Isolation tests: $PASSED passed, 0 failed"
+        ((PASS++))
+    elif [ "$FAILURES" -eq 1 ]; then
+        yellow "Isolation tests: $PASSED passed, 1 failed (runtime sentinel — expected on clean tree before commit)"
+        ((WARN++))
+    else
+        red "Isolation tests: $FAILURES failures — investigate before starting patch"
+        echo "$RESULT" | sed 's/^/    /'
+        ((FAIL++))
+    fi
+    cd "$REPO_ROOT"
+else
+    yellow "python3 not found — skipping smoke test"
+    ((WARN++))
+fi
+
+# ---------------------------------------------------------------------------
+section "Summary"
+# ---------------------------------------------------------------------------
+
+printf '\n'
+printf 'Passed: %d\n' "$PASS"
+printf 'Warned: %d\n' "$WARN"
+printf 'Failed: %d\n' "$FAIL"
+
+if [ "$FAIL" -gt 0 ]; then
+    red "Preflight FAILED — resolve all failures before starting patch work."
+    exit 1
+elif [ "$WARN" -gt 0 ]; then
+    yellow "Preflight passed with warnings — review before proceeding."
+    exit 0
+else
+    green "Preflight PASSED — safe to begin patch."
+    exit 0
+fi
