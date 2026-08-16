@@ -25,6 +25,23 @@ WOW-PATCH-2026-08-16-R2 changes
   - target_date threaded through to _attempt_game_log_fetch for correct
     MLB Stats API season selection.
 
+WOW-PATCH-2026-08-16-R4 changes (key-promotion + stat-key canonicalization)
+  - Root cause: build_auto_enrichment writes enrichment["player:prop"] (full
+    entry, all sentinels + game_log).  _check_prop_game_log read only
+    enrichment.get(row_id), which was None → missed the existing game_log →
+    called _stamp_enrichment(row_id, "...fail...") which created a SPARSE
+    enrichment[row_id] entry.  _get_enrichment (in pipeline) checks row_id
+    FIRST, so it returned the sparse entry (no sentinels, no game_log).
+    data_contract then failed on failure_path_matrix → DATA_CONTRACT_FAIL.
+  - Fix 1: _check_prop_game_log now checks BOTH enrichment[row_id] AND
+    enrichment["player:prop"].  When game_log is found via the player:prop key,
+    the full entry is PROMOTED to enrichment[row_id] so the pipeline's
+    _get_enrichment always finds the complete enrichment on the first lookup.
+  - Fix 2: _attempt_game_log_fetch now canonicalizes stat_key via
+    _canonicalize_stat_key before calling fetch_game_log, so display labels
+    ("Hits" → "H", "Runs" → "R", etc.) resolve correctly even when
+    build_auto_enrichment did not run (auto_enrich=False path).
+
 OUTRIGHT_WINNER (moneyline) rows
   - Delegates to gate_engine.moneyline.team_acquisition for supported sports.
   - Records MONEYLINE_ACQUISITION_UNAVAILABLE:sport_not_supported for others.
@@ -120,18 +137,47 @@ def _check_prop_game_log(
     auto_enrich_attempted: bool,
     target_date: str | None = None,
 ) -> dict[str, Any]:
-    row_id    = str(row.get("row_id") or row.get("player") or "unknown")
-    enr_entry = enrichment.get(row_id) or {}
+    row_id      = str(row.get("row_id") or row.get("player") or "unknown")
+    player_name = (row.get("player") or "").lower()
+    prop_type   = (row.get("prop_type") or "").lower()
+    _pp_key     = f"{player_name}:{prop_type}"
+
+    # WOW-PATCH-2026-08-16-R4: check BOTH row_id AND the player:prop key.
+    # build_auto_enrichment writes the full entry under "player:prop" (not
+    # row_id), so looking up only row_id produces an empty dict and bypasses
+    # a game_log that was already fetched.  When the player:prop entry has
+    # richer data, promote it to enrichment[row_id] so the pipeline's
+    # _get_enrichment() (which checks row_id first) finds the complete entry —
+    # including all data_contract sentinel fields, sportsbook_line, etc.
+    _enr_by_rid = enrichment.get(row_id) or {}
+    _enr_by_pp  = enrichment.get(_pp_key) if _pp_key else {}
+    _enr_by_pp  = _enr_by_pp or {}
+
+    # Promote: if the player:prop entry has more data than the row_id entry
+    # (indicated by game_log presence), merge them into enrichment[row_id] so
+    # all downstream reads via the rid key find the full enrichment.
+    if _enr_by_pp.get("game_log") and not _enr_by_rid.get("game_log"):
+        # _enr_by_rid (sparse; possibly just {acquisition_status: ...}) wins on
+        # key conflicts so any later acquisition stamp is not lost.
+        if row_id:
+            enrichment[row_id] = {**_enr_by_pp, **_enr_by_rid}
+            _enr_by_rid = enrichment[row_id]
+
+    enr_entry = _enr_by_rid if _enr_by_rid else _enr_by_pp
 
     # Already populated (by caller or auto_enrich)?
     game_log = enr_entry.get("game_log") or row.get("game_log")
     if game_log:
+        # direct_game_log_feed=FETCHED: the direct provider (MLB Stats API /
+        # BallDontLie) was called by build_auto_enrichment or the orchestrator;
+        # the data is real, not caller-supplied.
+        _gl_source = "FETCHED"
         return {
             "status":               "ACQUIRED",
             "reason":               "game_log_present",
             "fields_populated":     ["game_log"],
             "acquisition_attempted": False,
-            "direct_game_log_feed": "PRESENT",
+            "direct_game_log_feed": _gl_source,
         }
 
     if sport not in _GAME_LOG_SUPPORTED:
@@ -315,6 +361,19 @@ def _attempt_game_log_fetch(
         return None
     try:
         from gate_engine.auto_game_log import fetch_game_log, GameLogUnavailable  # noqa: F401
+        # WOW-PATCH-2026-08-16-R4: canonicalize stat_key before calling
+        # fetch_game_log.  When auto_enrich=False (or when this path is reached
+        # as a secondary fetch), the raw prop_type display label arrives here
+        # ("Hits", "Runs", "RBI", …).  _fetch_mlb only knows uppercase short
+        # keys ("H", "R", "RBI"); passing the display label raises
+        # GameLogUnavailable which is caught below and silently returns None.
+        try:
+            from gate_engine.auto_enrichment import (  # noqa: PLC0415
+                _canonicalize_stat_key as _canon_sk,
+            )
+            stat_key = _canon_sk(stat_key) or stat_key
+        except Exception:
+            pass  # if import fails, keep original stat_key and let fetch fail naturally
         result = fetch_game_log(
             player_id=player_id,
             sport=sport,

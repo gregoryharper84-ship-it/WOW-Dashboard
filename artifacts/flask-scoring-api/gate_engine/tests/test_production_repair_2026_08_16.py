@@ -1120,7 +1120,187 @@ class TestBuildAutoEnrichHitsPropIntegration(unittest.TestCase):
         )
 
     # ------------------------------------------------------------------
-    # 5. Market-join audit is not disturbed by the acquisition path
+    # 5. Full production path including acq_run (the key-promotion fix)
+    # ------------------------------------------------------------------
+    def test_full_production_path_build_enrich_acq_run_pipeline(self):
+        """
+        WOW-PATCH-2026-08-16-R4 regression test.
+
+        Exact production sequence (auto_enrich=true):
+          1. normalize_board(raw_rows)         — stamps row_id
+          2. build_auto_enrichment(norm_rows)  — writes enrichment["player:prop"]
+          3. acq_run(raw_rows, enrichment)     — must PROMOTE to enrichment[row_id]
+             (old code: _stamp_enrichment created sparse row_id entry → DATA_CONTRACT_FAIL)
+          4. run_pipeline(raw_rows, enrichment) — _get_enrichment(rid) must find full entry
+
+        Assertions:
+          - games_available >= 10
+          - direct_game_log_feed != NOT_CALLED in acq_report
+          - L10:NO_GAME_LOG_PROVIDED absent from blockers
+          - terminal_label != DATA_CONTRACT_FAIL
+        """
+        import datetime
+        from gate_engine import board_intake
+        from gate_engine.auto_enrichment import build_auto_enrichment
+        from gate_engine.acquisition_orchestrator import run as acq_run
+        from gate_engine.pipeline import run_pipeline
+
+        raw_row = self._raw_row()
+        normalized_rows = board_intake.normalize_board([raw_row])
+        raw_row["row_id"] = normalized_rows[0]["row_id"]
+
+        with (
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment._lookup_mlb_player_id",
+                return_value="665161",
+            ),
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment.fetch_game_log",
+                return_value=self._MOCK_FETCH_RESULT,
+            ),
+            # Also mock the orchestrator's fetch so it doesn't hit the network
+            unittest.mock.patch(
+                "gate_engine.acquisition_orchestrator._resolve_mlb_player_id",
+                return_value="665161",
+            ),
+            unittest.mock.patch(
+                "gate_engine.auto_game_log.fetch_game_log",
+                return_value=self._MOCK_FETCH_RESULT,
+            ),
+        ):
+            enrichment, _ = build_auto_enrichment(
+                normalized_rows, base_enrichment={}
+            )
+            enrichment, acq_report = acq_run(
+                [raw_row],
+                enrichment,
+                target_date=datetime.date.today().isoformat(),
+                auto_enrich_attempted=True,
+            )
+            result = run_pipeline(
+                raw_rows=[raw_row],
+                target_date=datetime.date.today(),
+                enrichment=enrichment,
+                skip_data_contract=True,
+            )
+
+        rid = raw_row["row_id"]
+        rows_out = result["prop_ledger"]
+        self.assertEqual(len(rows_out), 1)
+        row_out = rows_out[0]
+        gates = row_out.get("gates", {})
+        l5 = gates.get("l5_l10_ledger", {})
+
+        # acq_report must report FETCHED not NOT_CALLED
+        acq = acq_report.get(rid, {})
+        self.assertNotEqual(
+            acq.get("direct_game_log_feed"), "NOT_CALLED",
+            f"direct_game_log_feed must not be NOT_CALLED; acq_report: {acq}",
+        )
+
+        # enrichment[row_id] must have game_log (promotion worked)
+        self.assertIsNotNone(
+            enrichment.get(rid, {}).get("game_log"),
+            f"enrichment[row_id] must have game_log after promotion; "
+            f"keys={list(enrichment.keys())}",
+        )
+
+        games_available = l5.get("games_available", 0)
+        self.assertGreaterEqual(
+            games_available, 10,
+            f"games_available must be >= 10 after full production path; l5={l5}",
+        )
+
+        blockers = row_out.get("blockers") or []
+        self.assertNotIn(
+            "L10:NO_GAME_LOG_PROVIDED", blockers,
+            f"L10:NO_GAME_LOG_PROVIDED must not appear; blockers: {blockers}",
+        )
+
+        terminal = row_out.get("terminal_label")
+        self.assertNotEqual(
+            terminal, "DATA_CONTRACT_FAIL",
+            f"terminal_label must not be DATA_CONTRACT_FAIL; "
+            f"blockers: {blockers}",
+        )
+
+    def test_acq_run_promotes_player_prop_entry_to_row_id(self):
+        """
+        acq_run must promote enrichment['player:prop'] to enrichment[row_id]
+        when game_log is present under the player:prop key but not row_id.
+
+        This is the key invariant of WOW-PATCH-2026-08-16-R4:
+          before: _stamp_enrichment created sparse enrichment[row_id]={acq_status}
+                  that shadowed the full enrichment['player:prop'] entry
+          after:  promotion merges the full entry into enrichment[row_id]
+        """
+        import datetime
+        from gate_engine import board_intake
+        from gate_engine.auto_enrichment import build_auto_enrichment
+        from gate_engine.acquisition_orchestrator import run as acq_run
+
+        raw_row = self._raw_row()
+        normalized_rows = board_intake.normalize_board([raw_row])
+        raw_row["row_id"] = normalized_rows[0]["row_id"]
+        rid = raw_row["row_id"]
+
+        with (
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment._lookup_mlb_player_id",
+                return_value="665161",
+            ),
+            unittest.mock.patch(
+                "gate_engine.auto_enrichment.fetch_game_log",
+                return_value=self._MOCK_FETCH_RESULT,
+            ),
+            unittest.mock.patch(
+                "gate_engine.acquisition_orchestrator._resolve_mlb_player_id",
+                return_value="665161",
+            ),
+            unittest.mock.patch(
+                "gate_engine.auto_game_log.fetch_game_log",
+                return_value=self._MOCK_FETCH_RESULT,
+            ),
+        ):
+            enrichment, _ = build_auto_enrichment(
+                normalized_rows, base_enrichment={}
+            )
+            # Before acq_run: game_log under player:prop, NOT under row_id
+            self.assertIsNotNone(
+                enrichment.get("jeremy peña:hits", {}).get("game_log"),
+                "pre-condition: build_auto_enrichment must have set game_log",
+            )
+            self.assertIsNone(
+                enrichment.get(rid),
+                "pre-condition: enrichment[row_id] must not exist yet",
+            )
+
+            enrichment, acq_report = acq_run(
+                [raw_row],
+                enrichment,
+                target_date=datetime.date.today().isoformat(),
+                auto_enrich_attempted=True,
+            )
+
+        # Post-acq_run: row_id entry must exist and have game_log
+        self.assertIsNotNone(
+            enrichment.get(rid),
+            f"enrichment[row_id] must exist after acq_run; keys={list(enrichment.keys())}",
+        )
+        self.assertIsNotNone(
+            enrichment[rid].get("game_log"),
+            f"enrichment[row_id] must have game_log after promotion; "
+            f"enrichment[rid]={enrichment[rid]}",
+        )
+        # acq_report must report FETCHED
+        acq = acq_report.get(rid, {})
+        self.assertEqual(
+            acq.get("direct_game_log_feed"), "FETCHED",
+            f"direct_game_log_feed must be FETCHED; acq_report: {acq}",
+        )
+
+    # ------------------------------------------------------------------
+    # 6. Market-join audit is not disturbed by the acquisition path
     # ------------------------------------------------------------------
     def test_batch_enrichment_key_not_mutated_before_audit(self):
         """
