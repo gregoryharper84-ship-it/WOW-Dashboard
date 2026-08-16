@@ -16,9 +16,11 @@ assembles a ValidatedAdapterResult containing:
 All outputs are advisory only. Nothing here alters production probabilities,
 changes terminal labels, or triggers any live-market action.
 
-FOLLOWUP_193 (Pipeline State Separation + Scoped DATA_CONTRACT_FAIL) must be resolved before authoritative decision integration.
-FOLLOWUP_194 (Settlement Worker Reliability) must be resolved before authoritative decision integration.
-FOLLOWUP_195 (Full-Pipeline Integration Fixtures) must be resolved before B4 closure.
+B4 completion status (all three blocking items resolved — 2026-08-16):
+  FOLLOWUP_193: Pipeline State Separation — DONE (pipeline_state.py + pipeline_gateway.py wired)
+  FOLLOWUP_194: Settlement Worker Reliability — DONE (backoff/heartbeat in settlement_worker.py)
+  FOLLOWUP_195: Full-Pipeline Integration Fixtures — DONE (test_b4_full_pipeline_integration.py,
+                test_b4_pipeline_state_wired.py, test_pipeline_state.py, test_settlement_reliability.py)
 
 can_execute = False
 """
@@ -170,10 +172,10 @@ class ModelValidationWrapper:
             "no_auto_promotion":     True,
             "ceiling":               "MODEL_QUALIFIED_HOLD",
             "can_execute":           False,
-            "followup_blockers": [
-                "FOLLOWUP_193: Pipeline State Separation + Scoped DATA_CONTRACT_FAIL — required for authoritative decision integration",
-                "FOLLOWUP_194: Settlement Worker Reliability — required for authoritative decision integration",
-                "FOLLOWUP_195: Full-Pipeline Integration Fixtures — required for B4 closure",
+            "completed_blockers": [
+                "FOLLOWUP_193: Pipeline State Separation + Scoped DATA_CONTRACT_FAIL — RESOLVED 2026-08-16 (pipeline_state.py + pipeline_gateway.py)",
+                "FOLLOWUP_194: Settlement Worker Reliability — RESOLVED 2026-08-16 (backoff/heartbeat in settlement_worker.py)",
+                "FOLLOWUP_195: Full-Pipeline Integration Fixtures — RESOLVED 2026-08-16 (test_b4_full_pipeline_integration.py, test_b4_pipeline_state_wired.py)",
             ],
         }
 

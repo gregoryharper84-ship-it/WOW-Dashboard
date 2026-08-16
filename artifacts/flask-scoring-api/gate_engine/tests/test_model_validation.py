@@ -619,11 +619,19 @@ class TestValidationWrapper(unittest.TestCase):
         )
         self.assertNotEqual(r.promotion_status, PromotionStatus.APPROVED)
 
-    def test_followup_blockers_present(self):
+    def test_completed_blockers_resolved(self):
+        # FOLLOWUP_193/194/195 are closed; validation_summary now carries
+        # completed_blockers (resolved records) not followup_blockers (open items).
         r = self._wrap()
-        blockers = r.validation_summary.get("followup_blockers", [])
-        self.assertTrue(any("FOLLOWUP_193" in b for b in blockers))
-        self.assertTrue(any("FOLLOWUP_195" in b for b in blockers))
+        # No open followup_blockers key
+        self.assertNotIn("followup_blockers", r.validation_summary)
+        # Completed blockers key present with all three resolution records
+        completed = r.validation_summary.get("completed_blockers", [])
+        self.assertTrue(any("FOLLOWUP_193" in b for b in completed))
+        self.assertTrue(any("FOLLOWUP_194" in b for b in completed))
+        self.assertTrue(any("FOLLOWUP_195" in b for b in completed))
+        # All entries must contain RESOLVED
+        self.assertTrue(all("RESOLVED" in b for b in completed))
 
     def test_ceiling_model_qualified_hold(self):
         r = self._wrap()

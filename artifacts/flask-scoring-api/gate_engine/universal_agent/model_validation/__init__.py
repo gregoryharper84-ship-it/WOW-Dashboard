@@ -25,10 +25,11 @@ Governance invariants (unconditional)
   NO_AUTO_PROMOTION       = True   # champions never switch automatically
   NO_FORMULA_MUTATION     = True   # production probability formulas unchanged
 
-FOLLOWUP_193 must be resolved before authoritative decision integration.
-FOLLOWUP_195 must be resolved before B4 closure.
+B4 blocking items resolved (2026-08-16):
+  FOLLOWUP_193 — DONE (pipeline_state.py + pipeline_gateway.py)
+  FOLLOWUP_195 — DONE (test_b4_full_pipeline_integration.py + test_b4_pipeline_state_wired.py)
 Explicit place_bet/settlement governance resolution required before any
-live external-model canary.
+live external-model canary (architectural decision, not a code gap).
 """
 can_execute           = False
 PRODUCTION_AUTHORITY  = False
