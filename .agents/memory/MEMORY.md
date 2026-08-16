@@ -103,3 +103,4 @@
 - [WOW Governed Red-Team Reviewer](wow-red-team-reviewer.md) — skill #22 (wow.governed-red-team-reviewer v1.0.0); registry count now 22; governance hash unaffected; advisory/downgrade-only; 13 dims; AT-26–37; 171 tests pass.
 - [PP Promotion Gate patch](pp-promotion-gate-patch.md) — patch #25 (precedence 104); 3 modules + PostmortemClassification; fatal-rejected-leg gate needs pre_existing_reject_ids + qualifying_count>0 guard; float precision: 0.556+0.020≠0.576 in tests.
 - [UAC Fast-Track Conveyor](uac-fast-track-conveyor.md) — B0–B9 all CLOSED at cced129; 5 lanes; 5083/0 regression; B9 ruling JSON on disk pending architectural authority acceptance.
+- [Production repair 2026-08-16](production-repair-2026-08-16.md) — schema migration order, ExposureLedger guard placement, BDL fetch_all API, quota table sync-before-warmup.
