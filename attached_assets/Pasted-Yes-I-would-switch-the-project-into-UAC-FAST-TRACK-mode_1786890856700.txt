@@ -1,0 +1,230 @@
+Yes. I would switch the project into **UAC FAST-TRACK mode now**.
+
+The main reason it has taken days is that we have been treating every increment like a fresh architecture/research exercise. We no longer need to. B3C's closure package explicitly recommends **CLOSE B3C**, and its core invariants were proven: the real recursive governance scanner, fail-fast behavior, cost accounting, isolated persistence, zero production-routing changes, and zero `can_execute` violations.  
+
+Removing Claude should **not trigger a rebuild of that foundation**. The proof remains useful even though Claude is no longer part of the forward architecture.
+
+### What I want to change immediately
+
+1. **Freeze B0–B3C.** Mark them closed. No more design reviews, no more canaries, no more repeated proof unless a later change actually touches those contracts. The only B3C carry-forward I would fix now is the known recursive-governance hardening around `place_bet` / `settlement`; that was explicitly identified as a separate non-blocking item. 
+
+2. **Do not rewrite `ClaudeRoleRunner` right now.** Treat it as a historical/optional provider implementation. ChatGPT becomes the orchestration/model host; Replit remains the deterministic capability/backend layer. That is already consistent with the active Full Model host-abstraction contract: the Project can run the model locally, while Replit is only required for capabilities actually hosted there.  This alone avoids a potentially large provider-neutral/OpenAI-SDK detour.
+
+3. **Close B4 by evidence, not rebuilding it.** Based on our existing project record, the WNBA/NBA adapter work was already reported built and conversationally approved; what remained was machine-auditable closure evidence. So the job becomes: persist commit/SHA, exact regression command, timestamps, test artifact, representative fixtures, and closure marker. Do not rebuild working B4 code just to prove it again.
+
+4. **Immediately advance through B5 → B6 → B7 using one adapter template.** B5 is MLB props, B6 Tennis, B7 generic moneyline/other sports. No new orchestration architecture in any of them. Each adapter only maps its lane into the already-frozen UAC contract. The MLB requirements are already quite explicit: strikeouts need unconditional failure-path probability, outs must correctly convert baseball innings notation, and 1IP must route exclusively through the dedicated event-tree rather than a generic model. 
+
+5. **Collapse verification into one gate per increment.** Replit implements → targeted tests → full relevant regression → persist raw evidence → ChatGPT rules PASS/HOLD. We eliminate the former cycle of Replit → Claude inspection → ChatGPT inspection → revised Replit question → second inspection. One authority, one acceptance pass.
+
+6. **Do not stop after every successful packet.** Replit should have a standing instruction: after a packet passes all acceptance tests, commit it and immediately start the next dependency-unblocked packet. Stop only for a genuine blocker, failed regression, governance conflict, schema incompatibility, or destructive migration concern. Do not stop for ordinary architectural questions that the frozen contract already answers.
+
+7. **Finish B8/B9 as consolidated phases.** B8 should be one controlled multi-lane shadow validation rather than a bespoke pilot for every sport. B9 is then the production-readiness ruling. Production/user-output authority and execution stay false unless separately governed; we are accelerating construction, **not loosening the safety gates**.
+
+The resulting conveyor is:
+
+```text
+UAC FAST-TRACK
+
+B0-B3C
+CLOSED + FROZEN
+        │
+        ├── tiny B0 authority-key hardening
+        ▼
+B4
+PERSIST MACHINE-AUDITABLE CLOSURE
+        │
+        ▼
+B5
+MLB PROP ADAPTER
+        │
+        ▼
+B6
+TENNIS ADAPTER
+        │
+        ▼
+B7
+GENERIC ML / OTHER SPORTS ADAPTER
+        │
+        ▼
+B8
+CONSOLIDATED SHADOW VALIDATION
+        │
+        ▼
+B9
+PRODUCTION-READINESS RULING
+        │
+        ▼
+UAC V1 COMPLETE
+```
+
+### The instruction I would give Replit now
+
+```text
+UAC_FAST_TRACK_MODE=ACTIVE
+
+Target:
+WOW-PATCH-2026-08-09-UNIVERSAL-AGENT-CORE-V1
+
+Authority:
+ChatGPT owns architecture, scope, acceptance, and sequencing.
+Replit owns implementation, tests, persisted evidence, and deployment preparation.
+
+Do not request approval between ordinary dependency-unblocked increments.
+
+GLOBAL INVARIANTS
+- WOW_VERSION=WOW_v16_CLEAN_CORE
+- can_execute=false
+- DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
+- no capital allocation
+- no market orders
+- no live execution
+- no downstream blocker erasure
+- deterministic governance remains authoritative
+- do not alter production model formulas unless the specific packet requires it
+- do not introduce a new ceiling resolver
+- preserve canonical native WOW labels
+
+FAST-TRACK RULES
+
+A. FREEZE B0-B3C
+Treat B0, B1, B2, B3A, B3B, and B3C as CLOSED.
+Do not redesign or re-canary them.
+Preserve existing B3C evidence.
+
+Apply only the carried-forward B0 recursive-governance hardening required
+for known missing forbidden authority semantics including place_bet and
+settlement, with regression tests proving nested detection.
+
+B. CLOSE B4 MACHINE-AUDITABLY
+Do not rebuild B4 merely for documentation.
+
+Persist:
+- git commit SHA
+- dirty/clean status
+- exact test commands
+- started_at / completed_at
+- full pass/fail counts
+- raw test artifact/log path
+- representative WNBA/NBA fixture outputs
+- authority invariant results
+- row reconciliation
+- closure JSON/record
+
+If implementation regression tests fail, repair only the failing behavior.
+If they pass, mark B4 machine-auditable closure PASS and immediately continue.
+
+C. IMPLEMENT B5 — MLB PROPS
+Reuse the frozen UAC contract and EvidenceBundle.
+Do not create a new orchestrator.
+
+Required routes include:
+- MLB pitcher strikeouts
+- MLB pitching outs
+- MLB 1IP pitches through dedicated event-tree only
+- supported additional MLB prop families only where a controlling specialist exists
+
+Require:
+- exact market identity
+- acquisition completeness
+- role/starter/lineup evidence
+- specialist routing
+- failure-path/unconditional probability
+- dynamic calibration
+- bidirectional scoring where applicable
+- final refresh
+- row reconciliation
+
+D. AFTER B5 PASSES, CONTINUE DIRECTLY TO B6 — TENNIS
+Reuse identical universal contracts.
+Implement only tennis-specific acquisition/model adapters.
+
+E. AFTER B6 PASSES, CONTINUE DIRECTLY TO B7 — GENERIC MONEYLINE / OTHER SPORTS
+Reuse the existing LLP probability specialist and sport-specific models.
+Do not create generic probability fallbacks for unsupported sports.
+
+F. AFTER B7 PASSES, RUN B8 CONSOLIDATED SHADOW VALIDATION
+Use representative fixtures across completed lanes.
+Verify:
+- zero authority violations
+- zero upstream blocker erasures
+- zero illegal label writes
+- zero schema bypasses
+- exact row reconciliation
+- stable canonical EvidenceBundle
+- deterministic core remains controlling
+- can_execute=false everywhere
+
+G. IF B8 PASSES, PRODUCE B9 READINESS PACKAGE
+Do not activate execution.
+Return the production-readiness evidence and strict remaining blockers.
+
+CONTINUATION RULE
+After each PASS:
+1. persist evidence,
+2. commit the isolated increment,
+3. automatically begin the next dependency-unblocked phase.
+
+STOP ONLY FOR:
+- failing regression that cannot be safely repaired,
+- active governance conflict,
+- destructive/ambiguous database migration,
+- missing required specialist architecture,
+- security/authority boundary failure,
+- unreconciled schema incompatibility.
+
+Do not stop for:
+- stylistic questions,
+- naming questions already answered by existing code,
+- requests to reconfirm frozen architecture,
+- optional refactors,
+- documentation polish,
+- provider abstraction work not required by the current phase.
+
+FINAL REPORT AFTER EACH PHASE
+- phase
+- status
+- exact files changed
+- migration(s)
+- commit SHA
+- tests added
+- exact commands
+- pass/fail totals
+- regression failures
+- representative fixture results
+- authority invariant results
+- row reconciliation
+- unresolved blockers
+- next phase started
+```
+
+### One further change that will speed this up significantly
+
+**Do not put the Bayesian/model-risk package into Replit yet.**
+
+We have the right ordering now:
+
+```text
+FINISH UAC B4-B7
+        ↓
+B8 shadow proof
+        ↓
+freeze UAC interfaces
+        ↓
+PROP INTELLIGENCE / MODEL-RISK FOUNDATION
+        ↓
+BAYESIAN POSTERIOR V1
+```
+
+We can **design the schemas now**, but implementation should not interrupt B5–B7. Otherwise we'll be changing probability contracts at the same time we're trying to finish adapter coverage, which creates unnecessary churn.
+
+The wider Command Center architecture already contemplated this sort of staged approach—first orchestration/tests, then shared acquisition/canonical events, exposure, calibration, GPT-facing integration and dashboarding—rather than rebuilding everything simultaneously. 
+
+### How I can make this even faster from here
+
+This specific session does **not currently expose a Replit workspace connector**, so I can't directly type changes into the Replit filesystem from this chat. I checked the available integrations and there isn't a Replit plugin exposed here.
+
+However, **GitHub is connected**. If the WOW Replit codebase is mirrored to a GitHub repository, give me the repo identifier/URL once and I can work much closer to the code path here—inspect diffs, address failures, prepare changes, and drive PR-level implementation rather than continuously translating instructions between ChatGPT and Replit.
+
+Until then, I would send the directive above to the existing WOW Replit app and **keep the conveyor moving B4 → B5 → B6 → B7 without another architecture stop.**
+
+The key change is: **we are done designing UAC. Now we close lanes.**
