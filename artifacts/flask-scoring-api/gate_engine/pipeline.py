@@ -1745,7 +1745,7 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
             .get("prob_ledger") or {}
         )
         try:
-            _ple_result = _ple.enforce_for_label(_ple_label, _ple_ledger, row=_ple_row)
+            _ple_result = _ple.enforce_for_label(_ple_ledger, _ple_label, row=_ple_row)
             if _ple_result.label_is_probability_bearing and not _ple_result.enforcer_passed:
                 _ple_incomplete_count += 1
                 _ple_violations.append({
