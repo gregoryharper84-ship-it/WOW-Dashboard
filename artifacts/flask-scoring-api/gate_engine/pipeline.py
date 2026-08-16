@@ -93,7 +93,12 @@ def run_pipeline(
           settlement_status   dict         — loopback freshness result
         }
     """
-    enrichment    = enrichment or {}
+    # Explicit None check: preserves object identity when caller passes {}.
+    # enrichment or {} would silently replace an empty dict with a new private
+    # one, severing the caller's reference and discarding any writes the
+    # pre-pipeline orchestrator already made into that dict.
+    if enrichment is None:
+        enrichment = {}
     failed_modules: list[str] = []
 
     rows = board_intake.normalize_board(raw_rows)
@@ -165,6 +170,61 @@ def run_pipeline(
 
         rid = row["row_id"]
         enr = _get_enrichment(enrichment, row)
+
+        # -------------------------------------------------------------------
+        # In-pipeline game-log acquisition (WOW-PATCH-2026-08-16-R3)
+        # Mirrors AcquisitionOrchestrator.acquire(row, enr) in-place pattern.
+        #
+        # The pre-pipeline orchestrator writes to enrichment[row_id], but only
+        # after the caller has stamped row_id on raw_rows (auto_enrich path).
+        # When raw_rows arrive without row_id (direct /gate-engine/run default),
+        # normalize_board() generates a fresh uuid4 here that differs from what
+        # the orchestrator used, so the pre-pipeline write is missed by
+        # _get_enrichment().  This block re-attempts the fetch using the
+        # final, canonical rid so the result always lands in enrichment[rid].
+        #
+        # Strategy:
+        #   1. Attach enr to enrichment[rid] so in-place mutations propagate.
+        #   2. If game_log is still absent, resolve player_id and call
+        #      _attempt_game_log_fetch, which writes directly into
+        #      enrichment[rid].
+        #   3. Re-bind enr to enrichment[rid] so downstream gates read the
+        #      freshly populated dict.
+        # -------------------------------------------------------------------
+        if rid not in enrichment:
+            enrichment[rid] = enr          # attach so writes propagate
+
+        if not enr.get("game_log"):
+            _sport = (row.get("sport") or "").upper()
+            if _sport in {"NBA", "WNBA", "MLB"}:
+                try:
+                    from gate_engine.acquisition_orchestrator import (  # noqa: PLC0415
+                        _resolve_mlb_player_id as _orch_mlb_id,
+                        _resolve_bdl_player_id as _orch_bdl_id,
+                        _attempt_game_log_fetch as _orch_fetch_gl,
+                    )
+                    _pid: str = row.get("player_id") or ""
+                    _pname: str = row.get("player") or ""
+                    if not _pid:
+                        if _sport == "MLB":
+                            _pid = _orch_mlb_id(_pname) or ""
+                        elif _sport in ("NBA", "WNBA"):
+                            _pid = _orch_bdl_id(_pname, _sport) or ""
+                    if _pid:
+                        if not row.get("player_id"):
+                            row["player_id"] = _pid
+                        _orch_fetch_gl(
+                            row_id=rid,
+                            player_id=_pid,
+                            sport=_sport,
+                            stat_key=row.get("stat_key") or row.get("prop_type") or "",
+                            enrichment=enrichment,
+                            target_date=str(target_date) if target_date else None,
+                        )
+                        # Re-bind enr so downstream gates use the populated dict
+                        enr = enrichment.get(rid, enr)
+                except Exception:
+                    pass  # fail-closed: missing game_log surfaces as DATA_CONTRACT_FAIL
 
         # -------------------------------------------------------------------
         # WOW-PATCH-MANDATORY-RECONSTRUCTION-v1.0

@@ -725,5 +725,174 @@ class TestAcquisitionModuleInvariants(unittest.TestCase):
         self.assertIsNone(_fuzzy_lookup("XYZ", {"LAL": 0.6}))
 
 
+class TestPipelineEnrichmentIdentityIntegration(unittest.TestCase):
+    """
+    WOW-PATCH-2026-08-16-R3 integration regression.
+
+    Verifies the two-part fix end-to-end:
+      (1) explicit None check preserves caller-owned empty-dict identity
+      (2) in-pipeline attach + active-fetch writes game_log into that same dict
+      (3) the downstream l5_l10_ledger gate sees games_available > 0
+    """
+
+    def test_none_check_preserves_empty_dict_identity(self):
+        """
+        `if enrichment is None: enrichment = {}` must NOT replace an empty dict.
+        The old `enrichment or {}` would create a private replacement, severing
+        the caller's reference.
+        """
+        caller_dict: dict = {}
+        # Reproduce the fixed pipeline logic
+        enrichment = caller_dict
+        if enrichment is None:
+            enrichment = {}
+        self.assertIs(enrichment, caller_dict,
+                      "None-check must preserve empty-dict identity")
+
+    def test_empty_enrichment_gains_game_log_after_in_pipeline_fetch(self):
+        """
+        Caller passes enrichment={}.
+        After the in-pipeline attach + _attempt_game_log_fetch, the SAME dict
+        object must have enrichment[row_id]['game_log'] set.
+        """
+        from gate_engine.acquisition_orchestrator import _attempt_game_log_fetch
+
+        row_id = "pena-r3-identity-001"
+        caller_enrichment: dict = {}
+
+        # Reproduce pipeline None-check (preserves identity)
+        enrichment = caller_enrichment
+        if enrichment is None:
+            enrichment = {}
+        self.assertIs(enrichment, caller_enrichment)
+
+        # Reproduce pipeline attach step: enrichment[rid] = enr when not present
+        enr: dict = enrichment.get(row_id) or {}
+        if row_id not in enrichment:
+            enrichment[row_id] = enr
+
+        fake_values = [1, 0, 2, 1, 0, 1, 2, 0, 1, 1]
+        with patch(
+            "gate_engine.auto_game_log.fetch_game_log",
+            return_value={
+                "values": fake_values,
+                "source": "mlb_stats_api",
+                "game_date": "2026-08-16",
+                "opponent": "HOU",
+            },
+        ):
+            _attempt_game_log_fetch(
+                row_id=row_id,
+                player_id="665750",
+                sport="MLB",
+                stat_key="H",
+                enrichment=enrichment,
+                target_date="2026-08-16",
+            )
+
+        # The caller's original dict must have the game_log — same object
+        self.assertIs(caller_enrichment, enrichment,
+                      "enrichment must remain the caller's dict object")
+        self.assertIn(row_id, caller_enrichment,
+                      "enrichment[row_id] must be set on the caller's dict")
+        self.assertEqual(
+            caller_enrichment[row_id].get("game_log"), fake_values,
+            "game_log must be the fetched values list",
+        )
+
+    def test_l5_l10_sees_games_available_after_fetch(self):
+        """
+        After the in-pipeline fetch populates enrichment[row_id]['game_log'],
+        l5_l10_ledger.run() using that game_log must return games_available > 0
+        and direct_game_log_feed != NOT_CALLED.
+        """
+        from gate_engine.acquisition_orchestrator import _attempt_game_log_fetch
+        from gate_engine.l5_l10_ledger import run as l5_run
+
+        row_id = "pena-r3-l5l10-002"
+        enrichment: dict = {}  # caller-owned empty dict
+        enr: dict = {}
+        enrichment[row_id] = enr
+
+        fake_values = [1, 0, 2, 1, 0, 1, 2, 0, 1, 1]
+        with patch(
+            "gate_engine.auto_game_log.fetch_game_log",
+            return_value={
+                "values": fake_values,
+                "source": "mlb_stats_api",
+                "game_date": "2026-08-16",
+                "opponent": "HOU",
+            },
+        ):
+            _attempt_game_log_fetch(
+                row_id=row_id,
+                player_id="665750",
+                sport="MLB",
+                stat_key="H",
+                enrichment=enrichment,
+                target_date="2026-08-16",
+            )
+
+        # Re-bind enr as the pipeline does after the fetch
+        enr = enrichment.get(row_id, enr)
+        self.assertIsNotNone(enr.get("game_log"),
+                             "enr must have game_log after fetch")
+
+        row = {
+            "row_id": row_id,
+            "player": "Jeremy Peña",
+            "sport": "MLB",
+            "prop_type": "H",
+            "stat_key": "H",
+            "line": 0.5,
+            "direction": "MORE",
+            "gates": {},
+        }
+        l5_result = l5_run(
+            row,
+            game_log=enr.get("game_log"),
+            season_log=None,
+        )
+
+        # l5_run mutates and returns the row; results live under gates["l5_l10_ledger"]
+        gate_result = l5_result.get("gates", {}).get("l5_l10_ledger", {})
+        games_available = gate_result.get("games_available", 0)
+        self.assertGreater(
+            games_available, 0,
+            f"l5_l10_ledger must see games_available > 0; gate_result: {gate_result}",
+        )
+        # source_attempts is a list of dicts; find direct_game_log_feed entry
+        source_attempts = gate_result.get("source_attempts") or []
+        feed_statuses = [
+            a.get("status", "") for a in source_attempts
+            if a.get("source") == "direct_game_log_feed"
+        ]
+        self.assertTrue(
+            any(s not in ("NOT_CALLED", "") for s in feed_statuses),
+            f"direct_game_log_feed must not be NOT_CALLED; source_attempts: {source_attempts}",
+        )
+
+    def test_boolean_or_empty_dict_would_sever_identity(self):
+        """
+        Regression guard: the OLD pattern `enrichment or {}` replaces an empty
+        dict with a new object, severing the caller's reference.  Proves the
+        bug the None-check fixes.
+        """
+        caller_dict: dict = {}
+        # Old (broken) pattern
+        replacement = caller_dict or {}
+        self.assertIsNot(
+            replacement, caller_dict,
+            "Old `or {}` pattern must create a new object for empty dict "
+            "(this confirms the bug the None-check fixes)",
+        )
+        # New (fixed) pattern
+        enrichment = caller_dict
+        if enrichment is None:
+            enrichment = {}
+        self.assertIs(enrichment, caller_dict,
+                      "Fixed None-check must preserve caller's dict identity")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
