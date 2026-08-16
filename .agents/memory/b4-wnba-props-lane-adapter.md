@@ -57,6 +57,11 @@ gate_engine/tests/
 
 ## Outstanding blockers
 
-- FOLLOWUP_193: settlement worker backoff/heartbeat — required before authoritative decision integration.
-- FOLLOWUP_195: regression fixtures — required before B4 closure.
-- Explicit governance resolution required before any live external-model canary.
+All three blocking items resolved (2026-08-16):
+- FOLLOWUP_193: DONE — pipeline_state.py + pipeline_gateway.py wired; ScopedContractFailure separates TECHNICAL/CONTRACT/LEGITIMATE_OUTCOME.
+- FOLLOWUP_194: DONE — settlement_worker.py backoff/heartbeat added.
+- FOLLOWUP_195: DONE — test_b4_full_pipeline_integration.py, test_b4_pipeline_state_wired.py, test_pipeline_state.py, test_settlement_reliability.py all passing.
+
+Stale FOLLOWUP markers removed from validation_wrapper.py docstring and validation_summary output (replaced with completed_blockers resolution records). B4 is fully complete.
+
+Remaining (architectural, not code): explicit place_bet/settlement governance resolution required before any live external-model canary.
