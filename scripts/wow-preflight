@@ -27,11 +27,11 @@ section "Working tree"
 DIRTY=$(git -C "$REPO_ROOT" diff --name-only HEAD 2>/dev/null || true)
 if [ -z "$DIRTY" ]; then
     green "Working tree is clean"
-    ((PASS++))
+    (( ++PASS ))
 else
     red "Uncommitted changes detected — checkpoint before proceeding:"
     echo "$DIRTY" | sed 's/^/    /'
-    ((FAIL++))
+    (( ++FAIL ))
 fi
 
 # ---------------------------------------------------------------------------
@@ -48,10 +48,10 @@ PROTECTED_FILES=(
 for f in "${PROTECTED_FILES[@]}"; do
     if [ -f "$REPO_ROOT/$f" ]; then
         green "Protected file exists: $f"
-        ((PASS++))
+        ((++PASS))
     else
         red "Protected file MISSING: $f"
-        ((FAIL++))
+        ((++FAIL))
     fi
 done
 
@@ -60,16 +60,16 @@ section "Secret scan"
 # ---------------------------------------------------------------------------
 
 SECRET_PATTERNS=(
-    'api_key\s*=\s*["\x27][^"\x27]{8,}'
-    'password\s*=\s*["\x27][^"\x27]{4,}'
+    "api_key[[:space:]]*=[[:space:]]*[\"'][^\"']{8,}"
+    "password[[:space:]]*=[[:space:]]*[\"'][^\"']{4,}"
     'sk-[a-zA-Z0-9]{20,}'
-    'Bearer [a-zA-Z0-9_\-\.]{20,}'
+    'Bearer [a-zA-Z0-9_.-]{20,}'
 )
 
 SECRET_FOUND=0
 for pattern in "${SECRET_PATTERNS[@]}"; do
-    HITS=$(git -C "$REPO_ROOT" grep -rI --include="*.py" --include="*.md" --include="*.yaml" \
-               -l -i -E "$pattern" 2>/dev/null || true)
+    HITS=$(grep -rI --include="*.py" --include="*.md" --include="*.yaml" \
+               -l -i -E "$pattern" "$REPO_ROOT" 2>/dev/null || true)
     if [ -n "$HITS" ]; then
         red "Possible secret pattern ($pattern) in:"
         echo "$HITS" | sed 's/^/    /'
@@ -79,9 +79,9 @@ done
 
 if [ "$SECRET_FOUND" -eq 0 ]; then
     green "No hardcoded secrets detected"
-    ((PASS++))
+    ((++PASS))
 else
-    ((FAIL++))
+    ((++FAIL))
 fi
 
 # ---------------------------------------------------------------------------
@@ -93,11 +93,11 @@ EXEC_TRUE=$(grep -rn --include="*.py" 'can_execute\s*=\s*True' "$FLASK_DIR/gate_
             | grep -v "test_\|#" || true)
 if [ -z "$EXEC_TRUE" ]; then
     green "can_execute=True not found in gate_engine (non-test)"
-    ((PASS++))
+    ((++PASS))
 else
     red "can_execute=True found in production gate_engine code:"
     echo "$EXEC_TRUE" | sed 's/^/    /'
-    ((FAIL++))
+    ((++FAIL))
 fi
 
 # ---------------------------------------------------------------------------
@@ -113,19 +113,19 @@ if command -v python3 &>/dev/null; then
     PASSED=$(echo "$RESULT" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
     if [ "$FAILURES" -eq 0 ]; then
         green "Isolation tests: $PASSED passed, 0 failed"
-        ((PASS++))
+        ((++PASS))
     elif [ "$FAILURES" -eq 1 ]; then
         yellow "Isolation tests: $PASSED passed, 1 failed (runtime sentinel — expected on clean tree before commit)"
-        ((WARN++))
+        ((++WARN))
     else
         red "Isolation tests: $FAILURES failures — investigate before starting patch"
         echo "$RESULT" | sed 's/^/    /'
-        ((FAIL++))
+        ((++FAIL))
     fi
     cd "$REPO_ROOT"
 else
     yellow "python3 not found — skipping smoke test"
-    ((WARN++))
+    ((++WARN))
 fi
 
 # ---------------------------------------------------------------------------

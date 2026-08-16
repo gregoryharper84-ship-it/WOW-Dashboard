@@ -47,13 +47,13 @@ for f in "${PROTECTED_FILES[@]}"; do
     if echo "$CHANGED" | grep -qF "$f"; then
         red "PROTECTED FILE MODIFIED: $f"
         PROTECTED_VIOLATED=1
-        ((FAIL++))
+        ((++FAIL))
     fi
 done
 
 if [ "$PROTECTED_VIOLATED" -eq 0 ]; then
     green "No protected files modified"
-    ((PASS++))
+    (( ++PASS ))
 fi
 
 # ---------------------------------------------------------------------------
@@ -68,14 +68,14 @@ if [ -n "$CHANGED" ]; then
         if grep -qiE 'sk-[a-zA-Z0-9]{20,}|Bearer [a-zA-Z0-9_\-\.]{20,}' "$FULL" 2>/dev/null; then
             red "Possible secret in changed file: $file"
             SECRET_FOUND=1
-            ((FAIL++))
+            ((++FAIL))
         fi
     done <<< "$CHANGED"
 fi
 
 if [ "$SECRET_FOUND" -eq 0 ]; then
     green "No secrets detected in changed files"
-    ((PASS++))
+    ((++PASS))
 fi
 
 # ---------------------------------------------------------------------------
@@ -86,11 +86,11 @@ EXEC_TRUE=$(grep -rn --include="*.py" 'can_execute\s*=\s*True' "$FLASK_DIR/gate_
             | grep -v "test_\|#" || true)
 if [ -z "$EXEC_TRUE" ]; then
     green "can_execute=True not found in gate_engine production code"
-    ((PASS++))
+    ((++PASS))
 else
     red "can_execute=True found:"
     echo "$EXEC_TRUE" | sed 's/^/    /'
-    ((FAIL++))
+    ((++FAIL))
 fi
 
 # ---------------------------------------------------------------------------
@@ -108,21 +108,21 @@ if command -v python3 &>/dev/null; then
 
     if [ "$FAILURES" -eq 0 ]; then
         green "Regression: $PASSED passed, 0 failed"
-        ((PASS++))
+        ((++PASS))
     elif [ "$FAILURES" -eq 1 ]; then
         # Check that the only failure is the runtime isolation sentinel
         SENTINEL_FAIL=$(python3 -m pytest gate_engine/tests/test_stage_a_isolation.py::TestGitDiffAllowlist::test_no_uncommitted_changes_to_forbidden_files \
                         -q --tb=no 2>&1 | grep -c "failed" || true)
         if [ "$SENTINEL_FAIL" -ge 1 ]; then
             green "Regression: $PASSED passed, 1 failed (runtime isolation sentinel only — resolves after commit)"
-            ((PASS++))
+            ((++PASS))
         else
             red "Regression: $FAILURES failure(s) — NOT the isolation sentinel. Investigate before shipping."
-            ((FAIL++))
+            ((++FAIL))
         fi
     else
         red "Regression: $FAILURES failures — patch introduces regressions. Do NOT commit."
-        ((FAIL++))
+        ((++FAIL))
     fi
     cd "$REPO_ROOT"
 else
@@ -139,7 +139,7 @@ if command -v curl &>/dev/null && [ -n "${GPT_ACTION_SECRET:-}" ]; then
              http://localhost:25643/wow/engine/health 2>/dev/null || echo "000")
     if [ "$HEALTH" = "200" ]; then
         green "Live health endpoint: HTTP 200"
-        ((PASS++))
+        ((++PASS))
     else
         yellow "Live health endpoint: HTTP $HEALTH (server may not be running locally)"
     fi
