@@ -104,4 +104,5 @@
 - [PP Promotion Gate patch](pp-promotion-gate-patch.md) — patch #25 (precedence 104); 3 modules + PostmortemClassification; fatal-rejected-leg gate needs pre_existing_reject_ids + qualifying_count>0 guard; float precision: 0.556+0.020≠0.576 in tests.
 - [UAC Fast-Track Conveyor](uac-fast-track-conveyor.md) — B0–B9 all CLOSED at cced129; 5 lanes; 5083/0 regression; B9 ruling JSON on disk pending architectural authority acceptance.
 - [Production repair 2026-08-16](production-repair-2026-08-16.md) — schema migration order, ExposureLedger guard placement, BDL fetch_all API, quota table sync-before-warmup.
+- [Task batch 2026-08-16](production-repair-2026-08-16-batch.md) — 13 tasks fixed (keepalive, enforcer wiring, 1IP efficiency, AB/OBP/AVG registry, governance pre-warm, NO-side test); enforce_for_label is (ledger, label, row) not (label, ledger).
 - [Auto-enrich acquisition key-promotion](auto-enrich-acquisition-key-promotion.md) — build_auto_enrichment writes under player:prop key; _check_prop_game_log must promote it to enrichment[rid] or sparse stamp shadows the full entry → DATA_CONTRACT_FAIL.
