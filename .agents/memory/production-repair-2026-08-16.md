@@ -1,36 +1,70 @@
 ---
 name: WOW-PATCH-2026-08-16 Production Repair
-description: Six-condition RUN_PARTIAL_BACKEND_FAILURE fix — lessons on schema migration ordering, exposure ledger guards, and acquisition orchestration.
+description: Six-condition RUN_PARTIAL_BACKEND_FAILURE fix + R2 active-fetch patch — key lessons on schema migration, acquisition orchestration, and accent-strip fallbacks.
 ---
 
 ## Rules
 
-**Schema migration must run BEFORE index DDL on existing tables.**
-`llp_stage2_tables.ensure_all_tables()` previously ran `run_provenance_migration` AFTER the DDL loop. Any index referencing a column added by the migration (e.g. `freshness_status`) would crash on pre-existing tables that lacked the column. Fix: call `run_provenance_migration(conn)` at the TOP of `ensure_all_tables()` before the `for ddl in [...]` loop.
+### Schema migration must run BEFORE index DDL on existing tables
+`llp_stage2_tables.ensure_all_tables()` must call `run_provenance_migration(conn)` at the TOP of the function, before the `for ddl in [...]` loop. Any index referencing a column added by the migration (e.g. `freshness_status`) crashes on pre-existing tables that lack the column.
 
-**Why:** `CREATE TABLE IF NOT EXISTS` is a no-op when the table exists. Columns added in later patches are absent. `CREATE INDEX IF NOT EXISTS ... ON tbl (new_col)` then fails. The migration must run first.
+**Why:** `CREATE TABLE IF NOT EXISTS` is a no-op when the table exists. Columns added in later patches are absent. `CREATE INDEX ... ON tbl (new_col)` then fails.
 
-**How to apply:** Any time new columns are added to an existing Stage 2 table AND indexes are created on those columns in the same DDL string, ensure the ADD COLUMN migration runs before the index DDL. See `gate_engine/llp_stage2_tables.py` `ensure_all_tables()`.
-
----
-
-**ExposureLedger guards belong INSIDE check_and_register, not in the pipeline skip loop.**
-The pipeline's post-scoring loop (`for row in rows: if terminal_label in SKIP: continue; ledger.check_and_register(row)`) doubles as the gate that populates `row["gates"]["exposure_gate"]`. Skipping a row at the loop level prevents the gates dict entry from being set, which breaks downstream test assertions and gate-output completeness invariants.
-
-**Why:** `ExposureLedger.check_and_register()` is both the gate runner AND the ledger registration in one call. Any per-row exception (e.g. DATA_CONTRACT_FAIL should not consume slots) must be handled INSIDE the method, which can set `registered=False + skipped_reason=...` while still populating the gates dict.
-
-**How to apply:** To skip registration for a specific label, add the guard at the top of `ExposureLedger.check_and_register()` in `gate_engine/exposure_gate.py`, not in the pipeline iteration loop.
+**Where:** `gate_engine/llp_stage2_tables.py` `ensure_all_tables()`.
 
 ---
 
-**BallDontLie client uses `fetch_all(url, params, max_pages, per_page)`, not `bdl_get`.**
-The `gate_engine/balldontlie/client.py` module exports `fetch_all`, `BDLResponse`, `BDLStatus`, `BDLTier`, `credentials_available`, `detect_tier`, `endpoint_available`, `endpoint_available_for_tier`, `timezone`. There is no `bdl_get`. `fetch_all` returns a `BDLResponse` with `.ok` (bool), `.data` (list), `.meta` (dict|None), `.raw` (dict).
+### ExposureLedger guards belong INSIDE check_and_register, not in the pipeline skip loop
+The pipeline's post-scoring loop populates `row["gates"]["exposure_gate"]`. Skipping a row at the loop level prevents that dict entry, breaking downstream test assertions. Any per-row exception (e.g. DATA_CONTRACT_FAIL should not consume slots) must be handled INSIDE `ExposureLedger.check_and_register()`, setting `registered=False + skipped_reason=...` while still populating the gates dict.
 
-**How to apply:** Always use `fetch_all(url, params=..., max_pages=1)` for single-page lookups. Mock as `BDLResponse(status=BDLStatus.OK, endpoint=..., data=[...], meta=None, raw={})`.
+**Where:** `gate_engine/exposure_gate.py`.
 
 ---
 
-**Odds API quota table sync: ensure before background warmup, not inside it.**
-The background warmup thread races with the first incoming request. If the request arrives before the thread creates the quota table, `fetch_quota_snapshot()` fails and marks `degraded=True`. Fix: call `ensure_table_exists()` synchronously (in the main process, at module load time) before starting the warmup thread.
+### Acquisition orchestrator must actively FETCH, not just check
+The acquisition orchestrator's `_check_prop_game_log` was advisory-only — it checked whether game_log was present but never fetched it. This caused `l5_l10_ledger.run()` to receive `game_log=None` and record `direct_game_log_feed=NOT_CALLED`.
+
+**Fix:** After player_id is resolved, call `_attempt_game_log_fetch()` which writes `game_log`/`l5_values`/`l10_values` into `enrichment[row_id]`.
+
+**Write to `enrichment[row_id]` not `enrichment["player:prop_type"]`** — the pipeline's `_get_enrichment()` tries `enrichment[rid]` first; writing to `row_id` avoids write-key mismatches when `normalize_board()` changes prop_type.
+
+---
+
+### MLB Stats API /people/search silently returns empty for accented names
+`urllib.parse.quote("Jeremy Peña")` → `"Jeremy%20Pe%C3%B1a"`. The MLB Stats API endpoint `/api/v1/people/search?names=Jeremy%20Pe%C3%B1a` returns `{"people": []}` silently. Fix: strip Unicode combining marks via NFD decomposition and retry with ASCII name.
+
+```python
+import unicodedata
+ascii_name = "".join(
+    c for c in unicodedata.normalize("NFD", player_name)
+    if unicodedata.category(c) != "Mn"
+)
+```
+
+**Where:** `gate_engine/acquisition_orchestrator._resolve_mlb_player_id` and `gate_engine/auto_enrichment._lookup_mlb_player_id`.
+
+---
+
+### BallDontLie client uses `fetch_all(url, params, max_pages, per_page)`, not `bdl_get`
+`gate_engine/balldontlie/client.py` exports `fetch_all`, `BDLResponse`, `BDLStatus`, etc. There is no `bdl_get`. `fetch_all` returns a `BDLResponse` with `.ok`, `.data`, `.meta`, `.raw`.
+
+---
+
+### Odds API quota table sync: ensure before background warmup, not inside it
+Call `ensure_table_exists()` synchronously in the main process before starting the warmup thread. Otherwise the first request races with the thread and `fetch_quota_snapshot()` marks `degraded=True`.
 
 **Where:** `app.py` just before `_threading.Thread(target=_run_startup_warmup, ...)`.
+
+---
+
+### pytest `patch()` vs direct attribute replacement for local imports
+When a function imports a module locally (e.g. `import urllib.request` inside a closure), `patch("urllib.request.urlopen")` works in isolation but can fail in a full pytest run due to test isolation. Direct attribute replacement is reliable:
+
+```python
+orig = urllib.request.urlopen
+urllib.request.urlopen = mock_fn
+try:
+    result = func_under_test()
+finally:
+    urllib.request.urlopen = orig
+```
