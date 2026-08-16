@@ -409,11 +409,10 @@ paths:
       x-openai-isConsequential: false
       summary: Get today's MLB schedule with probable pitchers (trimmed ESPN proxy)
       description: >
-        Returns a GPT-safe (~2–4 KB) summary of today's MLB slate scraped from ESPN's
-        public scoreboard API. Includes event_id, start_time, home/away team abbreviations,
-        game status, and probable pitchers. Use this instead of calling ESPN directly —
-        the raw ESPN payload is 300–400 KB and will cause a ResponseTooLargeError in any
-        GPT Action. Pass dates=YYYYMMDD to target a specific date; omit for today.
+        GPT-safe (~2–4 KB) summary of today's MLB slate from ESPN. Includes event_id,
+        start_time, home/away teams, game status, and probable pitchers. Use instead of
+        calling ESPN directly — the raw payload is 300–400 KB. Pass dates=YYYYMMDD to
+        target a specific date; omit for today.
       parameters:
         - name: dates
           in: query
@@ -485,14 +484,10 @@ paths:
       x-openai-isConsequential: false
       summary: Run WOW daily scan and return completed results directly
       description: >
-        Runs the full WOW data pipeline synchronously: pulls today's events and player
-        props from The Odds API (TheRundown as backup), fetches ESPN player game logs,
-        calculates exact-line L5/L10 hit rates and medians, pulls injury/status data,
-        scores each prop using WOW v14.8+ rules, classifies as Market Verified Approved /
-        Model Qualified / Conditional / Watch / Reject / Data Insufficient, saves all
-        results to the database, and returns a compact classified summary directly.
-        Response shape is identical to getScanSummary. Pass async=true to run in
-        background and poll getScanSummary instead.
+        Runs the full WOW data pipeline: pulls events and props from The Odds API,
+        fetches game logs, calculates L5/L10 hit rates, scores props using WOW v14.8+
+        rules, and returns a compact classified summary. Same shape as getScanSummary.
+        Pass async=true to run in background and poll getScanSummary.
       requestBody:
         required: false
         content:
@@ -605,11 +600,10 @@ paths:
       x-openai-isConsequential: false
       summary: Get compact scan summary (use this — avoids GPT response size limits)
       description: >
-        Returns a compact, GPT-friendly summary of the latest WOW daily scan.
-        Excludes raw event payloads, market odds arrays, and full game logs.
-        Returns only classified picks with key stats per prop.
-        Use this endpoint instead of getScanResults to stay within GPT response size limits.
-        Supports limit (default 10), category, and status filters.
+        GPT-friendly summary of the latest WOW daily scan. Excludes raw event payloads,
+        odds arrays, and full game logs. Returns classified picks with key stats per prop.
+        Use instead of getScanResults to stay within GPT response size limits. Supports
+        limit, category, and status filters.
       parameters:
         - name: run_date
           in: query
@@ -724,12 +718,10 @@ paths:
       x-openai-isConsequential: false
       summary: Save a slip postmortem to the permanent learning log
       description: >
-        Saves a slip postmortem entry to the durable wow_learning_log table.
-        Idempotent on entry_id — retrying with the same entry_id never creates
-        a duplicate row; the existing record is returned with created=false.
-        Use a stable, human-readable entry_id such as
-        "pm-2026-08-11-aja-wilson-points" so the GPT can safely retry on
-        network failure without producing duplicates.
+        Saves a slip postmortem entry to wow_learning_log. Idempotent on entry_id —
+        retrying the same entry_id never duplicates; the existing record is returned with
+        created=false. Use a stable entry_id such as "pm-2026-08-11-aja-wilson-points"
+        to safely retry on network failure.
       requestBody:
         required: true
         content:

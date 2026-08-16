@@ -2895,6 +2895,11 @@ _API_PREFIXES = frozenset([
     "scan-results", "wow-daily-scan", "random-forest-score", "gpt-score",
     "request-log", "stats", "leaderboard", "health", "openapi", "openapi.json",
     "debug", "picks", "gpt-action-schema.json", "gpt-action-schema.yaml",
+    "gpt-action-schema-gate-engine.yaml",
+    "gpt-action-schema-kalshi.yaml",
+    "gpt-action-schema-odds-gateway.yaml",
+    "gpt-action-schema-vendors.yaml",
+    "gpt-action-schema-custom-services.yaml",
     "score", "scores",
 ])
 
@@ -2972,6 +2977,38 @@ def gpt_action_schema_yaml():
         os.path.basename(schema_path),
         mimetype="text/yaml"
     )
+
+
+def _serve_schema_yaml(filename: str):
+    """Return a schema YAML file with the correct content-type (text/yaml).
+    Never falls through to the SPA catch-all."""
+    schema_dir = os.path.dirname(os.path.abspath(__file__))
+    return send_from_directory(schema_dir, filename, mimetype="text/yaml")
+
+
+@app.route("/gpt-action-schema-gate-engine.yaml", methods=["GET"])
+def gpt_action_schema_gate_engine_yaml():
+    return _serve_schema_yaml("gpt-action-schema-gate-engine.yaml")
+
+
+@app.route("/gpt-action-schema-kalshi.yaml", methods=["GET"])
+def gpt_action_schema_kalshi_yaml():
+    return _serve_schema_yaml("gpt-action-schema-kalshi.yaml")
+
+
+@app.route("/gpt-action-schema-odds-gateway.yaml", methods=["GET"])
+def gpt_action_schema_odds_gateway_yaml():
+    return _serve_schema_yaml("gpt-action-schema-odds-gateway.yaml")
+
+
+@app.route("/gpt-action-schema-vendors.yaml", methods=["GET"])
+def gpt_action_schema_vendors_yaml():
+    return _serve_schema_yaml("gpt-action-schema-vendors.yaml")
+
+
+@app.route("/gpt-action-schema-custom-services.yaml", methods=["GET"])
+def gpt_action_schema_custom_services_yaml():
+    return _serve_schema_yaml("gpt-action-schema-custom-services.yaml")
 
 
 @app.route("/analyze-board", methods=["POST"])

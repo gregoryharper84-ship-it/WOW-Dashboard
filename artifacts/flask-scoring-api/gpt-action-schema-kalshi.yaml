@@ -367,17 +367,10 @@ paths:
       x-openai-isConsequential: false
       summary: Dry-run WOW weather evaluation for a city
       description: >
-        Fetches NWS forecast data + live Kalshi open markets, auto-builds
-        temperature brackets from the live tickers, and runs the full WOW
-        weather scoring pipeline (Gaussian Φ-based probability model pre-
-        settlement; binary scorer after NWS CLI FINAL is issued).
-
-        ALWAYS returns can_execute=false and dry_run_only=true regardless of
-        internal scoring. No trades are placed. This is a read-only evaluation
-        for research and calibration purposes.
-
-        For precise bracket scoring, use POST /wow/kalshi/weather/evaluate with
-        explicit bracket labels and a yes_price per bracket.
+        Fetches NWS forecast + live Kalshi markets, builds temperature brackets from
+        tickers, and runs the WOW weather scoring pipeline (Gaussian pre-settlement;
+        binary after NWS CLI FINAL). Always returns can_execute=false — read-only.
+        For precise scoring use POST /wow/kalshi/weather/evaluate.
       security:
         - ApiKeyAuth: []
       parameters:
