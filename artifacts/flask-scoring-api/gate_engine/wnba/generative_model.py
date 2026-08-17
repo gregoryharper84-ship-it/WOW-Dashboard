@@ -29,7 +29,12 @@ can_execute = False  (unconditional; module-level)
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Any
+
+# Stage-2 provenance identifier for this model's calibration transform —
+# emitted with every scored output so downstream ledgers carry real provenance.
+CALIBRATION_METHOD = "wnba_generative_role_regime_mixture_v1"
 
 can_execute = False  # UNCONDITIONAL — never set True
 
@@ -1370,6 +1375,20 @@ def score(
     if cal_lower_bound > cal_sel_blended:
         cal_lower_bound = cal_sel_blended
 
+    # Optimistic-scenario upper bound — a real model quantity, symmetric to the
+    # stress lower bound: the calibrated triple recomputed with the uncertainty
+    # discount relaxed by the same 0.05 step used to tighten the stress bound.
+    # Clamped so lower_bound <= calibrated <= upper_bound always holds at the
+    # model boundary.  This is emitted BY the model (never synthesized
+    # downstream by an adapter).
+    o_cal_more, _oe, o_cal_less = _calibrate_triple(
+        raw_more, raw_exact, raw_less, max(discount - 0.05, 0.0), is_integer
+    )
+    cal_upper_bound = o_cal_more if side == "MORE" else o_cal_less
+    if cal_upper_bound < cal_sel_blended:
+        cal_upper_bound = cal_sel_blended
+    cal_upper_bound = min(cal_upper_bound, 0.999999)
+
     # ── Stage 10: L5/L10 diagnostic ───────────────────────────────────────
     l10_diag  = _l5_l10_diagnostic(enr, line, is_integer, stat_key)
     l10_rate  = l10_diag.get("l10_more_rate")
@@ -1420,6 +1439,12 @@ def score(
         "cal_less":          float(cal_less),
         "cal_selected":      float(cal_sel_blended),
         "cal_lower_bound":   float(cal_lower_bound),
+        "cal_upper_bound":   float(cal_upper_bound),
+
+        # Stage-2 provenance — genuine model emissions (adapters copy these;
+        # they never synthesize them)
+        "model_timestamp":    datetime.now(timezone.utc).isoformat(),
+        "calibration_method": CALIBRATION_METHOD,
 
         # L5/L10 (diagnostic only — do not drive generative probability)
         "l5_stat_mean":        l10_diag.get("l5_stat_mean"),

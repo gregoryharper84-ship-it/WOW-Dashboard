@@ -137,6 +137,10 @@ from . import route_registry
 # WOW-PATCH-2026-08-10-STAGE-A — Prob-ledger enforcer + outlier recompute (advisory only)
 from . import prob_ledger_enforcer as _ple
 from . import outlier_recompute as _or_mod
+# WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — canonical ledger contract + adapters
+from . import prob_ledger_schema as _pls
+from .wnba import prob_ledger_adapter as _wnba_pla
+from .mlb import pitcher_prob_ledger_adapter as _mlb_pla
 # WOW-PATCH-2026-08-15 — PP Promotion Gate, Final Refresh, Pregame Snapshot
 from . import pp_promotion_gate, pp_final_refresh, pp_pregame_snapshot
 # WOW-PATCH-FMCG-v1.0 — Full Model Contract Gatekeeper
@@ -211,6 +215,11 @@ def run_pipeline(
     failed_modules: list[str] = []
 
     rows = board_intake.normalize_board(raw_rows)
+
+    # WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — stage counter reconciliation
+    _pl_counter = ProbabilityPipelineCounter()
+    _pl_counter.counts["rows_discovered"] = len(rows)
+    _pl_contract_breaches: list[str] = []
 
     # -------------------------------------------------------------------
     # Phase 1: PP Threshold Conversion (whole-number push rules)
@@ -719,9 +728,26 @@ def run_pipeline(
                 row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
 
         # -------------------------------------------------------------------
+        # WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — sport ingestion adapters
+        # Translate the acquisition packet (ESPN / MLB Stats API) into the
+        # canonical ProbabilityLedgerInput components BEFORE prob_ledger and
+        # failure_path consume the enrichment.  Adapters populate data only;
+        # no label authority; can_execute=False in every module.
+        # -------------------------------------------------------------------
+        _pla_breach = _apply_prob_ledger_adapter(row, enr)
+        if _pla_breach:
+            _pl_contract_breaches.append(_pla_breach)
+        _pl_counter.increment("rows_acquired")
+
+        # -------------------------------------------------------------------
         # Module D: Probability Component Ledger + Shrinkage
         # -------------------------------------------------------------------
         prob_ledger.run(row, enrichment=enr)
+        row["_pl_hydrated"] = True
+        # Stash enrichment now so the finalize pass can re-evaluate the ledger
+        # even when a later gate terminates this row with `continue` before
+        # the end-of-loop `row["_enr"] = enr` assignment.
+        row["_enr"] = enr
 
         # -------------------------------------------------------------------
         # Module F: Failure Path Matrix
@@ -1194,6 +1220,12 @@ def run_pipeline(
         # Writes to row["gates"]["fantasy_score_model"] only; never touches terminal_label.
         _fantasy_score_model.run(row)
 
+        # WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — finalize the probability
+        # ledger IN the live path, after model/specialist outputs (e.g.
+        # wnba_generative) are available and BEFORE classify/FMCG, so the
+        # classifier and gatekeeper decide against the completed ledger.
+        _finalize_prob_ledger_row(row)
+
         classifier.classify(row)
 
         # WOW-PATCH-FMCG-v1.1 — Wire per-row final-refresh check so the
@@ -1438,6 +1470,8 @@ def run_pipeline(
 
     _result = _build_output(
         rows, ledger,
+        pl_counter=_pl_counter,
+        pl_contract_breaches=_pl_contract_breaches,
         health_report                = health_report,
         settlement_status            = settlement_status,
         enrichment                   = enrichment,
@@ -1790,7 +1824,21 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
                   mutex_report: list[dict] | None = None,
                   settlement_conflict_map: dict | None = None,
                   component_composite_report: dict | None = None,
-                  opportunity_state_report: dict | None = None) -> dict[str, Any]:
+                  opportunity_state_report: dict | None = None,
+                  pl_counter: "ProbabilityPipelineCounter | None" = None,
+                  pl_contract_breaches: list[str] | None = None) -> dict[str, Any]:
+    # WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — counter is created by
+    # run_pipeline; a direct _build_output test call gets a fresh one whose
+    # rows_discovered/acquired are backfilled from the hydrated-row count so
+    # reconciliation stays exact.
+    _pl_counter = pl_counter if pl_counter is not None else ProbabilityPipelineCounter()
+    _pl_contract_breaches: list[str] = (
+        pl_contract_breaches if pl_contract_breaches is not None else []
+    )
+    if pl_counter is None:
+        _n_hydrated = sum(1 for r in rows if r.get("_pl_hydrated"))
+        _pl_counter.counts["rows_discovered"] = len(rows)
+        _pl_counter.counts["rows_acquired"]   = _n_hydrated
     # -------------------------------------------------------------------
     # DEGRADED_ENGINE_RUN ceiling: applied here (not only in run_pipeline)
     # so that _build_output works correctly when called directly in tests.
@@ -1933,12 +1981,71 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         failed_source_calls=failed_modules or [],
     )
 
-    # WOW-PATCH-2026-08-10-STAGE-A — Prob-ledger completeness enforcement pass
-    # Advisory only; never raises; never mutates rows.
-    # Runs over ALL rows so incomplete ledgers on qualifying labels are surfaced
-    # in the summary even when the row reached a non-terminal label.
+    # WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — per-row live ledger sequence.
+    # Replaces the former post-processing-only advisory passes.  For every
+    # hydrated row, in order, before rank eligibility is committed:
+    #   1. per-row outlier_recompute when outlier_gate flagged the row
+    #      (RESOLVED/UNRESOLVED attached before prob_ledger evaluates
+    #      rank_eligible)
+    #   2. adapter refresh — model outputs (e.g. wnba_generative) produced in
+    #      the second per-row loop are folded into the canonical ledger
+    #   3. prob_ledger.run re-evaluation with fully-populated ledger data
+    #   4. prob_ledger_enforcer.enforce_for_label — existing downgrade logic,
+    #      now firing with fully-populated ledger data
+    # All modules retain can_execute=False; no new label authority.
     _ple_violations: list[dict] = []
     _ple_incomplete_count = 0
+    _or_results: list[dict] = []
+    _pipeline_diagnostics: list[dict] = []
+
+    for _fr in rows:
+        if not _fr.get("_pl_hydrated"):
+            continue
+        _pl_counter.increment("rows_hydrated")
+        _enr_for_row = _fr.get("_enr") or {}
+
+        # Live-path finalize already ran (before classify/FMCG in the per-row
+        # loop).  This call is a no-op there and only finalizes rows that
+        # terminated early (continue) before reaching the classify block —
+        # their ledger state is still completed for reporting/diagnostics.
+        _finalize_prob_ledger_row(_fr)
+        _fr.pop("_pl_hydrated", None)
+        _fr.pop("_pl_finalized", None)
+
+        # Collect per-row finalize artifacts (stamped by the helper).
+        if _fr.get("outlier_recompute_status") is not None:
+            _or_results.append({
+                "row_id":      _fr.get("row_id"),
+                "status":      _fr.get("outlier_recompute_status"),
+                "can_execute": False,
+            })
+        for _pla_breach2 in _fr.pop("_pl_breaches", []):
+            _pl_contract_breaches.append(_pla_breach2)
+        _pl_counter.increment("outlier_review_complete")
+
+        if _fr.get("model_probability_complete"):
+            _pl_counter.increment("rows_model_ready")
+        # failure_path either ran (gate stamped) or was intentionally skipped
+        # via skip_data_contract — both count as a completed boundary for the
+        # reconciliation invariant (a crash inside failure_path.run surfaces
+        # as MODULE_FAILURE and terminates the row before hydration).
+        _pl_counter.increment("failure_path_complete")
+        _fr["failure_path_executed"] = (_fr.get("gates") or {}).get("failure_path") is not None
+        if _fr.get("rank_eligible"):
+            _pl_counter.increment("ledgers_complete")
+            _pl_counter.increment("probabilities_validated")
+            _pl_counter.increment("rank_eligible")
+        else:
+            # Typed diagnostic — never a bare PROB_LEDGER_INCOMPLETE.
+            _diag = _build_pipeline_diagnostic(_fr, _enr_for_row)
+            _fr["pipeline_diagnostic"] = _diag.to_dict()
+            _fr.setdefault("blockers", []).append(_diag.to_blocker_string())
+            _pipeline_diagnostics.append(_diag.to_dict())
+
+    # (4) Prob-ledger completeness enforcement — existing downgrade logic,
+    # moved after the per-row sequence so it fires with fully-populated
+    # ledger data.  Runs over ALL rows so incomplete ledgers on qualifying
+    # labels are surfaced even when the row reached a non-terminal label.
     for _ple_row in rows:
         _ple_label = _ple_row.get("terminal_label") or ""
         _ple_ledger = (
@@ -1982,23 +2089,25 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
                 f"UNLABELED_ROW_NORMALIZED:terminal_label_was={_lbl_a!r}"
             )
 
-    # WOW-PATCH-2026-08-10-STAGE-A — Outlier recompute engine pass
-    # Advisory only; runs on rows that have OUTLIER_FLAG:REVIEW_REQUIRED in blockers.
-    _or_results: list[dict] = []
-    for _or_row in rows:
-        _or_blockers = _or_row.get("blockers") or []
-        if not any("OUTLIER_FLAG:REVIEW_REQUIRED" in str(b) for b in _or_blockers):
-            continue
-        try:
-            _enr_for_row = (enrichment or {}).get(_or_row.get("row_id") or "", {})
-            _or_result = _or_mod.run(_or_row, enrichment=_enr_for_row)
-            _or_results.append({
-                "row_id":   _or_row.get("row_id"),
-                "status":   _or_result.status if hasattr(_or_result, "status") else str(_or_result),
-                "can_execute": False,
-            })
-        except Exception:
-            pass  # recompute engine is advisory; never block
+    # NOTE (WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF): the former
+    # post-processing outlier recompute pass was promoted to the per-row live
+    # sequence above — outlier_recompute now fires per-row when
+    # outlier_gate.any_flag is set, before prob_ledger evaluates
+    # rank_eligible.  _or_results is populated there.
+
+    # WOW-PATCH-2026-08-17 — stage counter reconciliation (Step 8).
+    # rows_discovered >= rows_acquired >= rows_hydrated >= rows_model_ready
+    # and ledgers_complete + typed missing-field blocker rows == rows_hydrated.
+    # A mismatch adds a run-level PROBABILITY_PIPELINE_CONTRACT_BREACH blocker;
+    # the run still returns so the GPT can report the discrepancy.
+    _pl_counter_breaches = _pl_counter.reconcile(
+        typed_blocker_rows=len(_pipeline_diagnostics),
+    )
+    _run_blockers: list[str] = list(_pl_counter_breaches)
+    for _cb in _pl_contract_breaches:
+        _run_blockers.append(
+            f"{_pls.PROBABILITY_PIPELINE_CONTRACT_BREACH}:{_cb}"
+        )
 
     # WOW-PATCH-2026-07-15 — governance fingerprint in every output
     _gov_status = get_governance_status()
@@ -2081,6 +2190,10 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
             "results":          _or_results,
             "can_execute":      False,
         },
+        # WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — Steps 7 & 8
+        "pipeline_diagnostic": _pipeline_diagnostics,
+        "probability_pipeline_counter": _pl_counter.as_dict(),
+        "run_blockers": _run_blockers,
         "summary": {
             "total_rows":               len(rows),
             "by_label":                 label_counts,
@@ -2132,6 +2245,289 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
             "can_execute":                  False,
         },
     }
+
+
+class ProbabilityPipelineCounter:
+    """
+    WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — Step 8.
+
+    Atomic stage counters at each named pipeline boundary.  reconcile()
+    verifies the monotonic invariants and returns a list of run-level
+    PROBABILITY_PIPELINE_CONTRACT_BREACH blocker strings (empty when clean).
+    can_execute=False — diagnostic only; never a label authority.
+    """
+
+    STAGES = (
+        "rows_discovered", "rows_acquired", "rows_hydrated", "rows_model_ready",
+        "ledgers_complete", "outlier_review_complete", "failure_path_complete",
+        "probabilities_validated", "rank_eligible",
+    )
+
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = {s: 0 for s in self.STAGES}
+
+    def increment(self, stage: str) -> None:
+        if stage not in self.counts:
+            raise KeyError(f"unknown pipeline counter stage: {stage}")
+        self.counts[stage] += 1
+
+    def as_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = dict(self.counts)
+        out["can_execute"] = False
+        return out
+
+    def reconcile(self, typed_blocker_rows: int) -> list[str]:
+        breaches: list[str] = []
+        c = self.counts
+        _breach = _pls.PROBABILITY_PIPELINE_CONTRACT_BREACH
+        if not (c["rows_discovered"] >= c["rows_acquired"]
+                >= c["rows_hydrated"] >= c["rows_model_ready"]):
+            breaches.append(
+                f"{_breach}:stage_monotonicity:"
+                f"discovered={c['rows_discovered']},acquired={c['rows_acquired']},"
+                f"hydrated={c['rows_hydrated']},model_ready={c['rows_model_ready']}"
+            )
+        if c["ledgers_complete"] + typed_blocker_rows != c["rows_hydrated"]:
+            breaches.append(
+                f"{_breach}:ledger_reconciliation:"
+                f"ledgers_complete={c['ledgers_complete']}+"
+                f"typed_blocker_rows={typed_blocker_rows}"
+                f"!=rows_hydrated={c['rows_hydrated']}"
+            )
+        return breaches
+
+
+def _apply_prob_ledger_adapter(row: dict, enr: dict) -> "str | None":
+    """
+    WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — Steps 3–5.
+
+    Route the row to its sport ingestion adapter (WNBA player props / MLB
+    pitcher K+Outs), translate the acquisition packet into the canonical
+    ProbabilityLedgerInput, and merge the resulting payload into
+    enr["model_probability_ledger"] without clobbering caller-supplied fields.
+
+    Returns a contract-breach detail string when the adapter provably dropped
+    a populated component between input and payload (test-G invariant), or
+    None on success / no-op.  Adapter type errors surface as typed blockers
+    on the row — never a bare PROB_LEDGER_INCOMPLETE.
+    """
+    # Contract-version enforcement at ledger ingress — BEFORE the adapter
+    # reads the supplied payload, so a stale/unsupported payload's values can
+    # never seed the canonical ledger.  Rejected payload is quarantined for
+    # diagnostics; a typed blocker is attached.
+    _sup0 = enr.get("model_probability_ledger")
+    if isinstance(_sup0, dict):
+        _sup_cv = _sup0.get("contract_version")
+        if _sup_cv is not None and str(_sup_cv) not in _pls.SUPPORTED_CONTRACT_VERSIONS:
+            row.setdefault("blockers", []).append(
+                f"PROB_LEDGER_SCHEMA:UNSUPPORTED_CONTRACT_VERSION:"
+                f"supplied={str(_sup_cv)[:20]}:supported={sorted(_pls.SUPPORTED_CONTRACT_VERSIONS)}:"
+                f"row_id={row.get('row_id')}"
+            )
+            enr["model_probability_ledger_rejected"] = _sup0
+            enr.pop("model_probability_ledger", None)
+
+    sport = str(row.get("sport") or "").upper()
+    ledger_input = None
+    try:
+        if sport == "WNBA" and (
+            enr.get("game_log") is not None or enr.get("box_score_log") is not None
+        ):
+            ledger_input = _wnba_pla.build_ledger_input(row, enr)
+        elif sport == "MLB" and _mlb_pla.canonical_stat_key(
+            row.get("stat_key") or row.get("prop_type")
+        ) is not None:
+            ledger_input = _mlb_pla.build_ledger_input(row, enr)
+    except ValueError as exc:
+        row.setdefault("blockers", []).append(
+            f"PROB_LEDGER_ADAPTER:{str(exc)[:160]}"
+        )
+        return None
+    except Exception as exc:
+        row.setdefault("blockers", []).append(
+            f"PROB_LEDGER_ADAPTER:ADAPTER_ERROR:{type(exc).__name__}:{str(exc)[:120]}"
+        )
+        return None
+
+    if ledger_input is None:
+        return None
+
+    payload = ledger_input.to_ledger_payload()
+
+    # Structural drop/rename check (test G): every component populated on the
+    # canonical input must survive into the ledger payload.
+    _payload_comp_names = {
+        (c.get("name") or "").lower() for c in payload.get("components") or []
+    }
+    for _comp in _pls.COMPONENT_GUARDS:
+        if isinstance(getattr(ledger_input, _comp, None), dict) and _comp not in _payload_comp_names:
+            return (
+                f"adapter_dropped_field:row_id={row.get('row_id')}:"
+                f"component={_comp}:contract_version={ledger_input.contract_version}"
+            )
+
+    # Contract-version enforcement at ledger ingress: a caller-supplied
+    # payload carrying an unsupported contract_version is rejected (typed
+    # blocker; adapter-built canonical payload used instead) — an arbitrary
+    # or stale payload cannot reach the scorer by carrying a version string.
+    supplied = enr.get("model_probability_ledger")
+    if isinstance(supplied, dict) and supplied:
+        _sup_cv = supplied.get("contract_version")
+        if _sup_cv is not None and str(_sup_cv) not in _pls.SUPPORTED_CONTRACT_VERSIONS:
+            row.setdefault("blockers", []).append(
+                f"PROB_LEDGER_SCHEMA:UNSUPPORTED_CONTRACT_VERSION:"
+                f"supplied={str(_sup_cv)[:20]}:supported={sorted(_pls.SUPPORTED_CONTRACT_VERSIONS)}:"
+                f"row_id={row.get('row_id')}"
+            )
+            supplied = None
+    if isinstance(supplied, dict) and supplied:
+        merged = dict(supplied)
+        _sup_comps = [
+            c for c in (supplied.get("components") or []) if isinstance(c, dict)
+        ]
+        _sup_names = {(c.get("name") or "").lower() for c in _sup_comps}
+        merged_comps = _sup_comps + [
+            c for c in payload["components"]
+            if (c.get("name") or "").lower() not in _sup_names
+        ]
+        for k, v in payload.items():
+            if k == "components":
+                continue
+            if merged.get(k) is None:
+                merged[k] = v
+        merged["components"] = merged_comps
+        # The merged canonical record is always stamped with the enforced
+        # contract version (supplied version already validated above).
+        merged["contract_version"] = _pls.CONTRACT_VERSION
+        enr["model_probability_ledger"] = merged
+    else:
+        enr["model_probability_ledger"] = payload
+
+    # Enforce the versioned schema at ingress: validate the canonical input
+    # (adapter fields + merged caller payload) and attach the structured
+    # result so diagnostics never degrade to a vague incompleteness flag.
+    _sv = _pls.validate_schema(
+        dict(enr["model_probability_ledger"],
+             row_id=row.get("row_id"),
+             acquisition_status=ledger_input.acquisition_status,
+             provider_status=dict(ledger_input.provider_status),
+             missing_fields=list(ledger_input.missing_fields)),
+        stage="prob_ledger_ingress",
+    )
+    row["prob_ledger_schema_validation"] = _sv.to_dict()
+    for _iv in _sv.invalid_fields:
+        if str(_iv).startswith("contract_version:unsupported"):
+            row.setdefault("blockers", []).append(
+                f"PROB_LEDGER_SCHEMA:UNSUPPORTED_CONTRACT_VERSION:{_iv}:"
+                f"row_id={row.get('row_id')}"
+            )
+
+    row["prob_ledger_input"] = {
+        "contract_version":   ledger_input.contract_version,
+        "acquisition_status": ledger_input.acquisition_status,
+        "provider_status":    dict(ledger_input.provider_status),
+        "missing_fields":     list(ledger_input.missing_fields),
+        "can_execute":        False,
+    }
+    return None
+
+
+def _finalize_prob_ledger_row(row: dict) -> None:
+    """
+    WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — per-row live ledger finalize.
+
+    Runs in the LIVE scoring path, immediately before classifier.classify /
+    FMCG, so classification and gatekeeping see the fully-populated ledger:
+      1. per-row outlier_recompute when outlier_gate flagged the row
+      2. adapter refresh — model outputs (e.g. wnba_generative) produced
+         earlier in the same per-row loop are folded into the canonical ledger
+      3. prob_ledger.run re-evaluation (prior ledger blockers stripped first)
+    Idempotent: no-ops when the row was never hydrated or already finalized.
+    Breaches are stashed on row["_pl_breaches"]; outlier results on
+    row["outlier_recompute_status"].  can_execute=False; no label authority.
+    """
+    if not row.get("_pl_hydrated") or row.get("_pl_finalized"):
+        return
+    enr = row.get("_enr") or {}
+
+    # (1) per-row outlier recompute — live scoring path, not post-report
+    _blockers = row.get("blockers") or []
+    if any("OUTLIER_FLAG:REVIEW_REQUIRED" in str(b) for b in _blockers):
+        try:
+            _or_result = _or_mod.run(row, enrichment=enr)
+            _or_status = (
+                _or_result.status if hasattr(_or_result, "status") else str(_or_result)
+            )
+        except Exception as _or_exc:
+            _or_status = f"UNRESOLVED:recompute_error:{type(_or_exc).__name__}"
+        row["outlier_recompute_status"] = _or_status
+
+    # (2) adapter refresh with model outputs now available on the row
+    _breach = _apply_prob_ledger_adapter(row, enr)
+    if _breach:
+        row.setdefault("_pl_breaches", []).append(_breach)
+
+    # (3) prob_ledger re-evaluation — strip prior ledger blockers first so
+    # the re-run does not duplicate them.
+    row["blockers"] = [
+        b for b in (row.get("blockers") or [])
+        if not (isinstance(b, str)
+                and (b.startswith("PROB_LEDGER:") or b.startswith("MARKET_LANE:")))
+    ]
+    prob_ledger.run(row, enrichment=enr)
+    row["_pl_finalized"] = True
+
+
+def _build_pipeline_diagnostic(row: dict, enr: dict) -> "_pls.PipelineDiagnostic":
+    """Build the typed per-row diagnostic for a row that failed rank eligibility."""
+    _gates = row.get("gates") if isinstance(row.get("gates"), dict) else {}
+    pl_gate = _gates.get("prob_ledger")
+    if not isinstance(pl_gate, dict):
+        pl_gate = {}
+    schema = pl_gate.get("probability_schema")
+    if not isinstance(schema, dict):
+        schema = {}
+    pli = row.get("prob_ledger_input")
+    if not isinstance(pli, dict):
+        pli = {}
+    ledger_payload = enr.get("model_probability_ledger") if isinstance(enr, dict) else None
+    if not isinstance(ledger_payload, dict):
+        ledger_payload = {}
+    missing = list(dict.fromkeys(
+        (schema.get("missing_fields") or [])
+        + (pl_gate.get("model_missing_components") or [])
+        + (pli.get("missing_fields") or [])
+    ))
+    invalid = list(
+        (schema.get("type_violations") or []) + (schema.get("bound_violations") or [])
+    )
+    fp_gate = (row.get("gates") or {}).get("failure_path")
+    retryable = bool(pli.get("acquisition_status") in ("ATTEMPTED", "NOT_ATTEMPTED", None)
+                     or any(m for m in missing if m not in ("narrative",)))
+    return _pls.PipelineDiagnostic(
+        stage="prob_ledger_rank_eligibility",
+        contract_version=str(pli.get("contract_version")
+                             or ledger_payload.get("contract_version")
+                             or _pls.CONTRACT_VERSION),
+        row_id=str(row.get("row_id") or ""),
+        received_fields=[k for k in ledger_payload.keys() if k != "components"],
+        normalized_fields=[
+            (c.get("name") or "") for c in (ledger_payload.get("components") or [])
+            if isinstance(c, dict)
+        ],
+        missing_fields=missing,
+        invalid_fields=invalid,
+        acquisition_attempted=(pli.get("acquisition_status") not in (None, "NOT_ATTEMPTED")),
+        provider_status=dict(pli.get("provider_status") or {}),
+        specialist_status=_gates.get("wnba_generative", {}).get("model_status")
+            if isinstance(_gates.get("wnba_generative"), dict) else None,
+        ledger_status=pl_gate.get("code"),
+        outlier_status=row.get("outlier_recompute_status"),
+        failure_path_status=(fp_gate or {}).get("code") if isinstance(fp_gate, dict) else None,
+        market_status=row.get("market_status"),
+        rank_eligible=bool(row.get("rank_eligible")),
+        retryable=retryable,
+    )
 
 
 def _get_enrichment(enrichment: dict, row: dict) -> dict:

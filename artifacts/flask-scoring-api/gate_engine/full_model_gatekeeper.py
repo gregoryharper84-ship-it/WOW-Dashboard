@@ -819,12 +819,32 @@ def _check_prob_ledger(
     shrinkage_req     = pl.get("shrinkage_required", False)
     missing_comps     = pl.get("missing_required_components") or pl.get("missing_required", [])
 
+    # WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — lane separation.
+    # Probability contract check reads model_probability_complete;
+    # money-qualification gate reads market_lane_available, separately.
+    model_complete  = pl.get("model_probability_complete")
+    market_available = pl.get("market_lane_available")
+    market_status    = pl.get("market_status")
+
     evidence = {
         "calibration_status":     cal_status,
         "shrinkage_applied":      shrinkage_applied,
         "shrinkage_required":     shrinkage_req,
         "missing_components":     missing_comps,
+        "model_probability_complete": model_complete,
+        "market_lane_available":      market_available,
+        "market_status":              market_status,
     }
+
+    # Lane-separated checks fire first when the new flags are present.
+    if model_complete is False:
+        b = "FMCG:PROB_LEDGER:MODEL_PROBABILITY_INCOMPLETE"
+        return _gr(GATE_HOLD, evidence, b), [b]
+    if market_available is False:
+        # Money-qualification lane held on typed market status; the sporting
+        # probability contract itself is complete (model_complete is not False).
+        b = f"FMCG:MARKET_LANE:{market_status or 'UNAVAILABLE'}:money_qualification_held"
+        return _gr(GATE_HOLD, evidence, b), [b]
 
     if cal_status == "CALIBRATED" and not shrinkage_req:
         return _gr(GATE_PASS, evidence), []
