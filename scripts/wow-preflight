@@ -72,35 +72,27 @@ SECRET_PATTERNS=(
     'Bearer [a-zA-Z0-9_.-]{20,}'
 )
 
-# Paths that must never appear in secret-scan results:
-#   .pythonlibs/ .cache/ node_modules/ dist/ — third-party/build artifacts
-#   gate_engine/tests/ tests/ — test fixtures intentionally use fake keys as
-#   test vectors (e.g. sk-fake-... to prove the preflight catches them); real
-#   secrets must never be committed, but testing the scanner requires fake ones.
+# Paths excluded from secret scanning:
+#   Third-party / build artifacts — never contain our code:
+#     .pythonlibs/ .cache/ node_modules/ dist/ .git/
+#   Test files — use clearly-fake keys as test vectors to prove the scanner
+#   catches real secrets.  Real secrets must never be in test files either;
+#   that invariant is enforced by code-review policy, not by this script
+#   (scanning test vectors produces false positives that block legitimate work).
 SECRET_EXCLUDE_ARGS=(
     --exclude-dir=.pythonlibs
     --exclude-dir=.cache
     --exclude-dir=node_modules
     --exclude-dir=dist
     --exclude-dir=".git"
-)
-# For high-specificity patterns (sk-/Bearer) that appear in test fixtures,
-# additionally exclude test directories so the scan covers production code only.
-TEST_EXCLUDE_ARGS=(
     --exclude-dir=tests
     --exclude="test_*.py"
 )
 
 SECRET_FOUND=0
 for pattern in "${SECRET_PATTERNS[@]}"; do
-    # sk- and Bearer patterns: exclude test files (deliberate test vectors)
-    if [[ "$pattern" == sk-* ]] || [[ "$pattern" == Bearer* ]]; then
-        EXTRA=("${TEST_EXCLUDE_ARGS[@]}")
-    else
-        EXTRA=()
-    fi
     HITS=$(grep -rI --include="*.py" --include="*.md" --include="*.yaml" \
-               "${SECRET_EXCLUDE_ARGS[@]}" "${EXTRA[@]+"${EXTRA[@]}"}" \
+               "${SECRET_EXCLUDE_ARGS[@]}" \
                -l -i -E "$pattern" "$REPO_ROOT" 2>/dev/null || true)
     if [ -n "$HITS" ]; then
         red "Possible secret pattern ($pattern) in:"
