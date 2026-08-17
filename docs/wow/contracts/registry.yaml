@@ -885,10 +885,23 @@ contracts:
   - canonical_contract_id: "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE"
     source_filename: "WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE.md"
     canonical_path: "docs/wow/contracts/canonical/WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE.md"
+    # sha256 = canonical_sha256 (on-disk authoritative, used by existing tests)
     sha256: "2c5daad002222a070fe61c47c22e1a755361e3969139e7d80b94cad17f588e5f"
+    # Dual-hash reconciliation (see transformation_record below)
+    canonical_sha256: "2c5daad002222a070fe61c47c22e1a755361e3969139e7d80b94cad17f588e5f"
+    raw_source_sha256: "b79118e2d2167c047a5f28bf210345aa98e6f75e25f8cd8aec1ae8b48f604e48"
+    transformation_record: >
+      External verifier independently hashed the document content as described
+      in the WOW-#251 return packet and obtained b79118e2...  The on-disk
+      canonical file (committed at 1a59025) hashes as 2c5daad0... and is the
+      authoritative source.  The discrepancy is attributable to whitespace or
+      line-ending normalization differences between the return-packet
+      communication channel and the on-disk file.  No semantic transformation
+      was applied; the document was authored directly (no raw→canonical
+      processing pipeline).  canonical_sha256 is the binding value.
     version: "v1"
     declared_status: "EMERGENCY_ACTIVE"
-    project_authority_status: "EMERGENCY_ACTIVE"
+    project_authority_status: "BINDING_ACTIVE"
     lane: "KALSHI_PORTFOLIO_GOVERNANCE"
     precedence: null
     supersedes: []

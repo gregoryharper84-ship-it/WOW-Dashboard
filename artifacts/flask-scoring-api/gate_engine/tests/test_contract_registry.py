@@ -36,6 +36,7 @@ CANONICAL_DIR = os.path.join(REPO_ROOT, "docs", "wow", "contracts", "canonical")
 VALID_STATUSES = {
     "ACTIVE",
     "EMERGENCY_ACTIVE",
+    "BINDING_ACTIVE",      # Formally registered + binding; used for promoted EMERGENCY_ACTIVE
     "TEST_ONLY",
     "RESEARCH_ONLY",
     "PROBABILITY_ONLY",
@@ -69,7 +70,11 @@ PROMOTION_RULES = {
     "PROBABILITY_ONLY": {"PROBABILITY_ONLY", "UNRESOLVED_AUTHORITY"},
     "GOVERNANCE_DOCUMENT": {"GOVERNANCE_DOCUMENT"},
     "ACTIVE":           {"ACTIVE", "UNRESOLVED_AUTHORITY"},
-    "EMERGENCY_ACTIVE": {"EMERGENCY_ACTIVE", "UNRESOLVED_AUTHORITY"},
+    # BINDING_ACTIVE: EMERGENCY_ACTIVE contract that has been formally
+    # registered with a canonical document and dual SHA-256 reconciliation.
+    # Kept separate from declared_status=EMERGENCY_ACTIVE so lifecycle status
+    # and project authority level remain independently queryable.
+    "EMERGENCY_ACTIVE": {"EMERGENCY_ACTIVE", "BINDING_ACTIVE", "UNRESOLVED_AUTHORITY"},
     "UNRESOLVED_AUTHORITY": {"UNRESOLVED_AUTHORITY"},
 }
 
@@ -496,9 +501,10 @@ class TestContractRegistry(unittest.TestCase):
             "Kalshi recovery contract must have declared_status=EMERGENCY_ACTIVE",
         )
         self.assertEqual(
-            kalshi.get("project_authority_status"), "EMERGENCY_ACTIVE",
-            "Kalshi recovery contract must have project_authority_status=EMERGENCY_ACTIVE "
-            "(was UNRESOLVED_AUTHORITY before WOW-#251)",
+            kalshi.get("project_authority_status"), "BINDING_ACTIVE",
+            "Kalshi recovery contract must have project_authority_status=BINDING_ACTIVE "
+            "(EMERGENCY_ACTIVE declared_status + formal canonical document = BINDING_ACTIVE "
+            "project authority; was UNRESOLVED_AUTHORITY before WOW-#251)",
         )
         self.assertEqual(
             kalshi.get("lane"), "KALSHI_PORTFOLIO_GOVERNANCE",
@@ -582,6 +588,64 @@ class TestContractRegistry(unittest.TestCase):
             "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
             content.upper().replace("-", "_"),
             "Canonical document must contain the DRY_RUN_ONLY execution rule",
+        )
+
+    def test_kalshi_recovery_dual_sha_fields_present(self):
+        """
+        After WOW-#251 with dual-hash reconciliation, the Kalshi recovery
+        entry must carry both canonical_sha256 (on-disk authoritative) and
+        raw_source_sha256 (external verifier's reconstruction hash), plus a
+        transformation_record explaining the discrepancy.
+
+        canonical_sha256 must match the on-disk file.
+        raw_source_sha256 is allowed to differ from the on-disk file (it records
+        the external verifier's independently reconstructed hash).
+        """
+        kalshi = next(
+            (c for c in self.contracts
+             if c["canonical_contract_id"] == "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE"),
+            None,
+        )
+        self.assertIsNotNone(kalshi)
+
+        canonical_sha = kalshi.get("canonical_sha256")
+        raw_sha = kalshi.get("raw_source_sha256")
+        transformation = kalshi.get("transformation_record")
+
+        self.assertIsNotNone(
+            canonical_sha, "canonical_sha256 must be present after #251 dual-hash reconciliation"
+        )
+        self.assertIsNotNone(
+            raw_sha, "raw_source_sha256 must be present after #251 dual-hash reconciliation"
+        )
+        self.assertIsNotNone(
+            transformation,
+            "transformation_record must be present to explain hash discrepancy",
+        )
+
+        # canonical_sha256 must match the on-disk file
+        canonical_path = kalshi.get("canonical_path")
+        if canonical_path:
+            abs_path = os.path.join(REPO_ROOT, canonical_path)
+            if os.path.isfile(abs_path):
+                actual = sha256_file(abs_path)
+                self.assertEqual(
+                    canonical_sha, actual,
+                    f"canonical_sha256 must match on-disk file. "
+                    f"registry={canonical_sha}, file={actual}",
+                )
+
+        # sha256 and canonical_sha256 must agree (sha256 is the backward-compat alias)
+        sha256_field = kalshi.get("sha256")
+        self.assertEqual(
+            sha256_field, canonical_sha,
+            "sha256 and canonical_sha256 must agree (sha256 is the authoritative on-disk hash)",
+        )
+
+        # transformation_record must reference the discrepancy
+        self.assertIn(
+            "b79118e2", transformation,
+            "transformation_record must record the external verifier's reconstruction hash",
         )
 
     def test_kalshi_recovery_unresolved_002_removed(self):
