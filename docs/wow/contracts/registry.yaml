@@ -52,15 +52,9 @@ registry_metadata:
         _PATCH_REGISTRY. Their formal governance authority, precedence order relative
         to registered patches, and lane classification are unresolved until they are
         either formally registered or superseded by a documented patch.
-    - id: "UNRESOLVED-002"
-      description: >
-        Kalshi Recovery/Combo governance: KALSHI_RECOVERY_MODE is hardcoded to
-        "ACTIVE" as a module-level constant in gate_engine/command_center/cc_labels.py
-        and gate_engine/command_center/__init__.py. This constitutes an always-on
-        enforcement equivalent to EMERGENCY_ACTIVE, but there is no formal patch
-        document registered in _PATCH_REGISTRY declaring it as EMERGENCY_ACTIVE.
-        The effective authority (emergency-level activation) is unresolved in the
-        formal registry until a governance patch document formalizes it.
+    # UNRESOLVED-002 resolved by WOW-#251: canonical document created at
+    # docs/wow/contracts/canonical/WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE.md
+    # project_authority_status promoted from UNRESOLVED_AUTHORITY to EMERGENCY_ACTIVE.
     - id: "UNRESOLVED-003"
       description: >
         PATCH-014 / PATCH-015 numbering collision: The original WOW v16.1 Slip
@@ -889,25 +883,26 @@ contracts:
       formal registration. References UNRESOLVED-001.
 
   - canonical_contract_id: "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE"
-    source_filename: null
-    canonical_path: null
-    sha256: null
+    source_filename: "WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE.md"
+    canonical_path: "docs/wow/contracts/canonical/WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE.md"
+    sha256: "2c5daad002222a070fe61c47c22e1a755361e3969139e7d80b94cad17f588e5f"
     version: "v1"
     declared_status: "EMERGENCY_ACTIVE"
-    project_authority_status: "UNRESOLVED_AUTHORITY"
-    lane: "GOVERNANCE"
+    project_authority_status: "EMERGENCY_ACTIVE"
+    lane: "KALSHI_PORTFOLIO_GOVERNANCE"
     precedence: null
     supersedes: []
-    effective_date: "2026-08-06"
+    effective_date: "2026-07-21"
     can_execute: false
     notes: >
-      UNRESOLVED-002. KALSHI_RECOVERY_MODE is hardcoded to "ACTIVE" as a module-level
-      constant in gate_engine/command_center/cc_labels.py and gate_engine/command_center/__init__.py.
-      This constitutes an always-on emergency-level enforcement — functionally equivalent
-      to EMERGENCY_ACTIVE — but there is no formal governance patch document registered
-      in _PATCH_REGISTRY that declares it as EMERGENCY_ACTIVE. The effective
-      authority is EMERGENCY_ACTIVE (Kalshi isolation always active; unconditional;
-      cannot be disabled at runtime), but the formal registry classification is
-      UNRESOLVED_AUTHORITY pending a governance patch that formally registers this
-      behavior. Combined with WOW-PATCH-2026-07-10-COMBO-SETTLEMENT for combo-market
-      settlement mechanics. References UNRESOLVED-002.
+      Resolved UNRESOLVED-002 (WOW-#251). KALSHI_RECOVERY_MODE = "ACTIVE" is a
+      hardcoded module-level constant in gate_engine/command_center/cc_labels.py
+      and gate_engine/command_center/__init__.py — unconditional, cannot be
+      disabled at runtime. Enforces: singles-only research, no combos
+      (combos_allowed=false, maximum_combo_underlying_markets=1), no capital
+      allocation, recovery_exit_minimum_reconciled_singles=20. Recovery exit
+      does not reactivate combos. No downstream pass may erase the Kalshi
+      portfolio blocker. Registration does not newly activate any behavior —
+      authority was already EMERGENCY_ACTIVE; this document formalizes it.
+      Combined with WOW-PATCH-2026-07-10-COMBO-SETTLEMENT for combo-market
+      settlement mechanics.

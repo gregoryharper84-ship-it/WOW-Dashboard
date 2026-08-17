@@ -404,7 +404,7 @@ class TestContractRegistry(unittest.TestCase):
             "WOW-PATCH-2026-07-23-SLIP-CONSISTENCY",               # ACTIVE slip patch
             "WOW-PATCH-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR",     # PROPOSED — must not be ACTIVE
             "WOW-MLB-PITCHER-FAILURE-PATH-PATCHES-010-013",        # UNRESOLVED_AUTHORITY
-            "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE",                # UNRESOLVED_AUTHORITY
+            "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE",                # EMERGENCY_ACTIVE (resolved #251)
         }
         present_ids = {c["canonical_contract_id"] for c in self.contracts}
         missing = required_ids - present_ids
@@ -474,6 +474,139 @@ class TestContractRegistry(unittest.TestCase):
                 hex64.match(sha),
                 f"{cid}: sha256 '{sha}' is not a valid 64-character lowercase hex string",
             )
+
+
+    # ── T16: Kalshi recovery authority invariants (WOW-#251) ─────────────────
+
+    def test_kalshi_recovery_contract_is_emergency_active(self):
+        """
+        WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE must be formally registered as
+        EMERGENCY_ACTIVE with a canonical source document and SHA-256.
+        Resolves UNRESOLVED-002; registration must not newly activate behavior.
+        """
+        kalshi = next(
+            (c for c in self.contracts
+             if c["canonical_contract_id"] == "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE"),
+            None,
+        )
+        self.assertIsNotNone(kalshi, "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE missing from registry")
+
+        self.assertEqual(
+            kalshi.get("declared_status"), "EMERGENCY_ACTIVE",
+            "Kalshi recovery contract must have declared_status=EMERGENCY_ACTIVE",
+        )
+        self.assertEqual(
+            kalshi.get("project_authority_status"), "EMERGENCY_ACTIVE",
+            "Kalshi recovery contract must have project_authority_status=EMERGENCY_ACTIVE "
+            "(was UNRESOLVED_AUTHORITY before WOW-#251)",
+        )
+        self.assertEqual(
+            kalshi.get("lane"), "KALSHI_PORTFOLIO_GOVERNANCE",
+            "Kalshi recovery contract must be in lane=KALSHI_PORTFOLIO_GOVERNANCE",
+        )
+        self.assertFalse(
+            kalshi.get("can_execute", True),
+            "Kalshi recovery contract must have can_execute=false",
+        )
+        self.assertEqual(
+            kalshi.get("effective_date"), "2026-07-21",
+            "Effective date must be 2026-07-21 (original activation, not registration date)",
+        )
+
+    def test_kalshi_recovery_contract_has_canonical_document(self):
+        """
+        The Kalshi recovery canonical document must exist on disk and its
+        SHA-256 must match the registry entry.
+        """
+        kalshi = next(
+            (c for c in self.contracts
+             if c["canonical_contract_id"] == "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE"),
+            None,
+        )
+        self.assertIsNotNone(kalshi, "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE missing from registry")
+
+        canonical_path = kalshi.get("canonical_path")
+        self.assertIsNotNone(canonical_path, "canonical_path must not be null after #251 resolution")
+
+        abs_path = os.path.join(REPO_ROOT, canonical_path)
+        self.assertTrue(
+            os.path.isfile(abs_path),
+            f"Canonical document not found at: {abs_path}",
+        )
+
+        sha = kalshi.get("sha256")
+        self.assertIsNotNone(sha, "sha256 must not be null after #251 resolution")
+        actual_sha = sha256_file(abs_path)
+        self.assertEqual(
+            sha, actual_sha,
+            f"SHA-256 mismatch for {canonical_path}: "
+            f"registry={sha}, file={actual_sha}",
+        )
+
+    def test_kalshi_recovery_contract_enforces_no_execute_and_no_capital(self):
+        """
+        The Kalshi recovery canonical document must assert can_execute=false
+        and capital_allocation=false in its content.
+        These are unconditional invariants that must survive any registry edit.
+        """
+        kalshi = next(
+            (c for c in self.contracts
+             if c["canonical_contract_id"] == "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE"),
+            None,
+        )
+        self.assertIsNotNone(kalshi)
+        canonical_path = kalshi.get("canonical_path")
+        if canonical_path is None:
+            self.skipTest("canonical_path is null — document not yet created")
+
+        abs_path = os.path.join(REPO_ROOT, canonical_path)
+        if not os.path.isfile(abs_path):
+            self.skipTest(f"canonical document not found at {abs_path}")
+
+        with open(abs_path) as f:
+            content = f.read()
+
+        self.assertIn(
+            "can_execute", content.lower(),
+            "Canonical document must assert can_execute invariant",
+        )
+        self.assertIn(
+            "capital_allocation", content.lower(),
+            "Canonical document must assert capital_allocation=false invariant",
+        )
+        self.assertIn(
+            "false", content.lower(),
+            "Canonical document must contain 'false' (for can_execute and capital_allocation)",
+        )
+        self.assertIn(
+            "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+            content.upper().replace("-", "_"),
+            "Canonical document must contain the DRY_RUN_ONLY execution rule",
+        )
+
+    def test_kalshi_recovery_unresolved_002_removed(self):
+        """
+        After WOW-#251, UNRESOLVED-002 must no longer appear in
+        unresolved_authority_items. Its resolution is recorded in the
+        Kalshi contract entry's notes and the canonical document.
+        """
+        unresolved_ids = [i["id"] for i in self.metadata.get("unresolved_authority_items", [])]
+        self.assertNotIn(
+            "UNRESOLVED-002", unresolved_ids,
+            "UNRESOLVED-002 must be removed from unresolved_authority_items "
+            "after WOW-#251 resolution",
+        )
+        # The resolution note should appear in the contract's notes
+        kalshi = next(
+            (c for c in self.contracts
+             if c["canonical_contract_id"] == "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE"),
+            None,
+        )
+        notes = (kalshi.get("notes") or "") if kalshi else ""
+        self.assertIn(
+            "UNRESOLVED-002", notes,
+            "Kalshi contract notes must reference UNRESOLVED-002 (as resolved)",
+        )
 
 
 if __name__ == "__main__":
