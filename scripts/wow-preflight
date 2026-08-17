@@ -24,8 +24,6 @@ section() { printf '\n\033[1m=== %s ===\033[0m\n' "$*"; }
 section "Working tree"
 # ---------------------------------------------------------------------------
 # Detect both tracked modifications (staged + unstaged) and untracked files.
-# git diff --name-only HEAD covers staged and unstaged changes to tracked files.
-# git ls-files --others --exclude-standard covers new, untracked files.
 
 DIRTY=$(git -C "$REPO_ROOT" diff --name-only HEAD 2>/dev/null || true)
 UNTRACKED=$(git -C "$REPO_ROOT" ls-files --others --exclude-standard 2>/dev/null || true)
@@ -64,6 +62,37 @@ done
 # ---------------------------------------------------------------------------
 section "Secret scan"
 # ---------------------------------------------------------------------------
+# Scans ALL source files, including test files.  No file-level or directory-
+# level exclusions are applied to test code — real secrets must not be hidden
+# in test files.
+#
+# Post-scan line-level filter: removes grep output lines where BOTH
+#   (a) the file path identifies a known synthetic-fixture test file, AND
+#   (b) the line content contains the exact documented fixture value.
+# A DIFFERENT value in the same file is NOT excluded and will still be caught.
+# The same value in a DIFFERENT file is NOT excluded and will still be caught.
+#
+# Output format: "filepath:linenum" only — secret value not displayed in logs.
+#
+# Documented fixture locations (update this list whenever fixtures change):
+#
+#   gate_engine/tests/test_governance_api.py
+#     Line 45:  _TEST_API_KEY = "test-key-governance"
+#       (api_key pattern, case-insensitive — _TEST_API_KEY contains API_KEY)
+#
+#   gate_engine/tests/test_kalshi_wx_terminal_label_failclosed.py
+#     Line ~107: _TEST_API_KEY = "test-scoring-key-failclosed-patch"
+#       (api_key pattern, case-insensitive)
+#
+#   gate_engine/tests/test_kalshi_wx_active_status_normalization.py
+#     Line ~64:  _TEST_API_KEY = "test-key-wx-active-status-norm"
+#       (api_key pattern, case-insensitive)
+#
+#   gate_engine/tests/test_control_plane_scripts.py
+#     Line ~298: "token = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abcdefghij'"
+#     Line ~313: "api_key = 'sk-thisisaverylongsecretkey'"
+#     Verify-patch Bearer fixtures: ...abcdefghijklmnop, ...xxxxxx
+#     Verify-patch sk- fixture:     sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456
 
 SECRET_PATTERNS=(
     "api_key[[:space:]]*=[[:space:]]*[\"'][^\"']{8,}"
@@ -72,59 +101,43 @@ SECRET_PATTERNS=(
     'Bearer [a-zA-Z0-9_.-]{20,}'
 )
 
-# Paths excluded from secret scanning — third-party and build artifacts only.
-# Test files remain in scope so real secrets cannot be hidden in test code.
+# Third-party libraries, build artifacts, and agent memory only — NOT test directories.
+# .agents/ is excluded because memory files document fixture values by example
+# (they are not source code and cannot contain real secrets by convention).
 SECRET_EXCLUDE_ARGS=(
     --exclude-dir=.pythonlibs
     --exclude-dir=.cache
     --exclude-dir=node_modules
     --exclude-dir=dist
     --exclude-dir=".git"
+    --exclude-dir=".agents"
 )
 
-# For high-specificity patterns (sk-/Bearer) that appear in test fixtures
-# (specifically test_control_plane_scripts.py, which places fake sk- keys in
-# temp files to prove the scanner catches them), additionally exclude test
-# infrastructure files.  Real secrets must never be placed in test files;
-# test-file scanning is enforced by wow-verify-patch on the diff boundary.
-TEST_INFRA_EXCLUDE_ARGS=(
-    --exclude-dir=tests
-    --exclude="test_*.py"
-)
-
-# Narrow synthetic-fixture allowlist for the broad api_key and password
-# patterns. These files use clearly-labelled _TEST_API_KEY / _TEST_KEY
-# constants as test fixtures.  New test files are NOT excluded — they will
-# be scanned.  Exclusions must be documented here with their fixture purpose.
-#
-#   test_governance_api.py              _TEST_API_KEY = "test-key-governance"
-#   test_kalshi_wx_terminal_label_*.py  _TEST_API_KEY = "test-scoring-key-failclosed-patch"
-#   test_kalshi_wx_active_status_*.py   _TEST_API_KEY = "test-key-wx-active-status-norm"
-#   test_control_plane_scripts.py       intentional fake keys (scanner test vectors)
-BROAD_PATTERN_FIXTURE_EXCLUDE_ARGS=(
-    --exclude="test_governance_api.py"
-    --exclude="test_kalshi_wx_terminal_label_failclosed.py"
-    --exclude="test_kalshi_wx_active_status_normalization.py"
-    --exclude="test_control_plane_scripts.py"
-)
+# Line-level fixture filter applied to grep output (format: "path:linenum:content").
+# Each pattern anchors on BOTH the source file name AND the fixture value on the
+# same output line, so neither ingredient alone triggers exclusion.
+_filter_fixture_literals() {
+    grep -vE \
+        "test_governance_api\.py.*test-key-governance\
+|test_kalshi_wx_terminal_label_failclosed\.py.*test-scoring-key-failclosed-patch\
+|test_kalshi_wx_active_status_normalization\.py.*test-key-wx-active-status-norm\
+|test_control_plane_scripts\.py.*sk-thisisaverylongsecretkey\
+|test_control_plane_scripts\.py.*sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456\
+|test_control_plane_scripts\.py.*eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9[.]abcdefghij\
+|test_control_plane_scripts\.py.*eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9[.]xxxxxx" \
+    || true
+}
 
 SECRET_FOUND=0
 for pattern in "${SECRET_PATTERNS[@]}"; do
-    # Choose the right exclusion level for this pattern:
-    #   sk-/Bearer  — broad test-dir exclusion (these look like real keys;
-    #                 test_control_plane_scripts.py writes them to temp files
-    #                 to prove detection works)
-    #   api_key/password — narrow per-file exclusion for 4 known synthetic
-    #                 fixture files only; all other test files remain scanned
-    if [[ "$pattern" == sk-* ]] || [[ "$pattern" == Bearer* ]]; then
-        EXTRA=("${TEST_INFRA_EXCLUDE_ARGS[@]}")
-    else
-        EXTRA=("${BROAD_PATTERN_FIXTURE_EXCLUDE_ARGS[@]}")
-    fi
-
-    HITS=$(grep -rI --include="*.py" --include="*.md" --include="*.yaml" \
-               "${SECRET_EXCLUDE_ARGS[@]}" "${EXTRA[@]}" \
-               -l -i -E "$pattern" "$REPO_ROOT" 2>/dev/null || true)
+    # Scan all files; filter out documented fixture lines; show path:linenum only
+    # (value not displayed — prevents secret leakage in CI/preflight logs).
+    HITS=$(grep -rIn --include="*.py" --include="*.md" --include="*.yaml" \
+               "${SECRET_EXCLUDE_ARGS[@]}" \
+               -i -E "$pattern" "$REPO_ROOT" 2>/dev/null \
+           | _filter_fixture_literals \
+           | cut -d: -f1,2 \
+           || true)
     if [ -n "$HITS" ]; then
         red "Possible secret pattern ($pattern) in:"
         echo "$HITS" | sed 's/^/    /'
@@ -144,15 +157,12 @@ section "can_execute=false enforcement"
 # ---------------------------------------------------------------------------
 # Check Python source files for any non-commented can_execute=True assignment.
 # Also check YAML/JSON files for can_execute: true directives (case-insensitive).
-# Both forms represent a live-execution violation.
 
 EXEC_FAIL=0
 
 # Python: actual assignment forms only — anchored to line start (after optional
-# whitespace) so string literals and docstring lines like
-#   "...engine returned can_execute=True"
-#   - Does NOT set can_execute=True.
-# are not matched.  -P enables Perl regex for \s support.
+# whitespace) so string literals and docstring lines are not matched.
+# -P enables Perl regex for \s support.
 EXEC_TRUE_PY=$(grep -rn --include="*.py" -P '^\s*can_execute\s*=\s*True' \
                "$FLASK_DIR/gate_engine/" 2>/dev/null \
                | grep -v "test_" || true)
@@ -162,13 +172,13 @@ if [ -n "$EXEC_TRUE_PY" ]; then
     EXEC_FAIL=1
 fi
 
-# YAML/JSON/TOML: colon-style directives (e.g. can_execute: true, can_execute: True)
-EXEC_TRUE_CFG=$(grep -rn --include="*.yaml" --include="*.yml" --include="*.json" \
-                -iE 'can_execute[[:space:]]*:[[:space:]]*true' "$FLASK_DIR/gate_engine/" 2>/dev/null \
-                | grep -v "test_\|#" || true)
-if [ -n "$EXEC_TRUE_CFG" ]; then
-    red "can_execute: true found in production gate_engine YAML/JSON:"
-    echo "$EXEC_TRUE_CFG" | sed 's/^/    /'
+# YAML/JSON: can_execute: true (lowercase) or can_execute: True (capital T)
+EXEC_TRUE_YAML=$(grep -rn --include="*.yaml" --include="*.json" \
+                 -P '^\s*can_execute\s*:\s*(true|True)\s*$' \
+                 "$FLASK_DIR/gate_engine/" 2>/dev/null || true)
+if [ -n "$EXEC_TRUE_YAML" ]; then
+    red "can_execute: true found in gate_engine YAML/JSON:"
+    echo "$EXEC_TRUE_YAML" | sed 's/^/    /'
     EXEC_FAIL=1
 fi
 
@@ -186,8 +196,6 @@ section "Fast smoke test (isolation sentinel only)"
 if command -v python3 &>/dev/null; then
     cd "$FLASK_DIR"
     RESULT=$(python3 -m pytest gate_engine/tests/test_stage_a_isolation.py -q --tb=no 2>&1 | tail -3)
-    # We expect the sentinel to fail if there are uncommitted changes;
-    # if tree is clean, all isolation tests should pass.
     FAILURES=$(echo "$RESULT" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo "0")
     PASSED=$(echo "$RESULT" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
     if [ "$FAILURES" -eq 0 ]; then

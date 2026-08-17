@@ -318,6 +318,68 @@ class TestWowPreflight(_ScriptBase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("Possible secret pattern", r.stdout)
 
+    def test_realistic_secret_in_fixture_file_still_fails(self):
+        """
+        Line-level fixture exclusion does NOT over-exclude: a realistic secret
+        placed in a documented fixture file alongside the documented fixture
+        value must still be caught by the scanner.
+
+        Proof structure:
+          - File path: test_governance_api.py (a documented fixture file)
+          - Line 1: documented fixture value → excluded by line-level filter
+          - Line 2: novel realistic secret → NOT excluded → must be caught
+
+        The realistic-secret value is constructed programmatically so that NO
+        verbatim scanner-catchable pattern appears in THIS source file (which is
+        itself scanned by wow-preflight in the production repository).  Splitting
+        the key across concatenation prevents the literal regex target from
+        existing on any single source line.
+        """
+        # Build the realistic key split across assignments so no single source line
+        # contains a scanner-catchable literal (sk- + 20+ alphanum chars).
+        _pfx = "sk-"
+        _body = "A" * 30        # joined at runtime, not present verbatim in source
+        _realistic_key = _pfx + _body
+
+        # Build fixture content lines split across assignments so no single source
+        # line contains a scanner-catchable api_key = '...' literal.
+        _fname = "_TEST_API" + "_KEY"
+        _fval = "test-key" + "-governance"
+        _fixture_line = _fname + " = '" + _fval + "'\n"
+
+        # Second line: realistic secret.  Split so 'api_key' and '= <value>' are
+        # on separate assignment lines in this source file.
+        _ak = "api"
+        _rest = "_key = '"
+        _secret_line = _ak + _rest + _realistic_key + "'\n"
+
+        # Use test_governance_api.py — its exclusion covers only 'test-key-governance'.
+        # A different value (our realistic key) in the same file is NOT excluded.
+        fixture_file = (
+            self._repo / "artifacts" / "flask-scoring-api"
+            / "gate_engine" / "tests" / "test_governance_api.py"
+        )
+        fixture_file.parent.mkdir(parents=True, exist_ok=True)
+        fixture_file.write_text(_fixture_line + _secret_line)
+
+        self._git("add",
+                  "artifacts/flask-scoring-api/gate_engine/tests/"
+                  "test_governance_api.py")
+        self._git("commit", "-m", "realistic secret alongside documented fixture value")
+
+        r = self._run("wow-preflight")
+        self.assertNotEqual(
+            r.returncode, 0,
+            "Preflight must fail when a realistic (non-fixture) secret is placed "
+            "alongside a documented fixture value in a fixture file.  "
+            f"stdout={r.stdout!r}",
+        )
+        self.assertIn(
+            "Possible secret pattern", r.stdout,
+            "Preflight output must identify the realistic secret pattern even "
+            "though the documented fixture value on the adjacent line is excluded.",
+        )
+
     def test_normal_constants_no_false_positive(self):
         """Preflight does not flag normal constant assignments as secrets."""
         clean = (
