@@ -72,27 +72,58 @@ SECRET_PATTERNS=(
     'Bearer [a-zA-Z0-9_.-]{20,}'
 )
 
-# Paths excluded from secret scanning:
-#   Third-party / build artifacts — never contain our code:
-#     .pythonlibs/ .cache/ node_modules/ dist/ .git/
-#   Test files — use clearly-fake keys as test vectors to prove the scanner
-#   catches real secrets.  Real secrets must never be in test files either;
-#   that invariant is enforced by code-review policy, not by this script
-#   (scanning test vectors produces false positives that block legitimate work).
+# Paths excluded from secret scanning — third-party and build artifacts only.
+# Test files remain in scope so real secrets cannot be hidden in test code.
 SECRET_EXCLUDE_ARGS=(
     --exclude-dir=.pythonlibs
     --exclude-dir=.cache
     --exclude-dir=node_modules
     --exclude-dir=dist
     --exclude-dir=".git"
+)
+
+# For high-specificity patterns (sk-/Bearer) that appear in test fixtures
+# (specifically test_control_plane_scripts.py, which places fake sk- keys in
+# temp files to prove the scanner catches them), additionally exclude test
+# infrastructure files.  Real secrets must never be placed in test files;
+# test-file scanning is enforced by wow-verify-patch on the diff boundary.
+TEST_INFRA_EXCLUDE_ARGS=(
     --exclude-dir=tests
     --exclude="test_*.py"
 )
 
+# Narrow synthetic-fixture allowlist for the broad api_key and password
+# patterns. These files use clearly-labelled _TEST_API_KEY / _TEST_KEY
+# constants as test fixtures.  New test files are NOT excluded — they will
+# be scanned.  Exclusions must be documented here with their fixture purpose.
+#
+#   test_governance_api.py              _TEST_API_KEY = "test-key-governance"
+#   test_kalshi_wx_terminal_label_*.py  _TEST_API_KEY = "test-scoring-key-failclosed-patch"
+#   test_kalshi_wx_active_status_*.py   _TEST_API_KEY = "test-key-wx-active-status-norm"
+#   test_control_plane_scripts.py       intentional fake keys (scanner test vectors)
+BROAD_PATTERN_FIXTURE_EXCLUDE_ARGS=(
+    --exclude="test_governance_api.py"
+    --exclude="test_kalshi_wx_terminal_label_failclosed.py"
+    --exclude="test_kalshi_wx_active_status_normalization.py"
+    --exclude="test_control_plane_scripts.py"
+)
+
 SECRET_FOUND=0
 for pattern in "${SECRET_PATTERNS[@]}"; do
+    # Choose the right exclusion level for this pattern:
+    #   sk-/Bearer  — broad test-dir exclusion (these look like real keys;
+    #                 test_control_plane_scripts.py writes them to temp files
+    #                 to prove detection works)
+    #   api_key/password — narrow per-file exclusion for 4 known synthetic
+    #                 fixture files only; all other test files remain scanned
+    if [[ "$pattern" == sk-* ]] || [[ "$pattern" == Bearer* ]]; then
+        EXTRA=("${TEST_INFRA_EXCLUDE_ARGS[@]}")
+    else
+        EXTRA=("${BROAD_PATTERN_FIXTURE_EXCLUDE_ARGS[@]}")
+    fi
+
     HITS=$(grep -rI --include="*.py" --include="*.md" --include="*.yaml" \
-               "${SECRET_EXCLUDE_ARGS[@]}" \
+               "${SECRET_EXCLUDE_ARGS[@]}" "${EXTRA[@]}" \
                -l -i -E "$pattern" "$REPO_ROOT" 2>/dev/null || true)
     if [ -n "$HITS" ]; then
         red "Possible secret pattern ($pattern) in:"

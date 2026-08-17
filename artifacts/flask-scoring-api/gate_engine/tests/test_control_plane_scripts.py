@@ -775,6 +775,62 @@ class TestWowVerifyPatch(_ScriptBase):
         r = self._run("wow-verify-patch", sha)
         self.assertNotIn("can_execute: true found", r.stdout)
 
+    # -----------------------------------------------------------------------
+    # Failure: live endpoint — HTTP 000 (connection refused) when check enabled
+    # -----------------------------------------------------------------------
+
+    def test_live_check_http_000_fails_when_enabled(self):
+        """
+        When GPT_ACTION_SECRET is set (live check enabled) and the endpoint
+        returns HTTP 000 (connection refused), verify-patch must exit non-zero.
+
+        This test targets a non-listening port (port 1 via REPLIT_APP_URL) to
+        guarantee connection refusal without relying on the dev server running.
+        Behavior: live check enabled + HTTP 000 → hard failure, not a warning.
+
+        Note on #250 acceptance: the 'warn-on-000' change (39328be) was a
+        post-acceptance modification that relaxed this invariant.  This test
+        formally locks the fail-closed behavior for all future changes.
+        """
+        sha = self._commit({"docs/live-check-test.md": "# live check test\n"})
+        r = self._run(
+            "wow-verify-patch", sha,
+            extra_env={
+                # Enable the live check by providing a secret
+                "GPT_ACTION_SECRET": "fake-secret-for-live-check-test",
+                # Point at a port where nothing is listening → guaranteed 000
+                "REPLIT_APP_URL": "http://localhost:1",
+            },
+        )
+        self.assertNotEqual(
+            r.returncode, 0,
+            "verify-patch must exit non-zero when live check returns HTTP 000. "
+            f"stdout={r.stdout!r}",
+        )
+        # The script prints the HTTP code in its error line; connection refused
+        # shows as HTTP 000 (or 000000 if curl writes the format code before
+        # the shell fallback appends "000" — either form starts with "000").
+        combined = r.stdout + r.stderr
+        self.assertTrue(
+            "server must return 200" in combined or "000" in combined,
+            f"verify-patch output must mention failure; got: {combined!r}",
+        )
+
+    def test_live_check_skipped_without_secret(self):
+        """
+        When GPT_ACTION_SECRET is absent, the live endpoint check must be
+        skipped (NOT_RUN) and must not cause a failure by itself.
+
+        This is the default behavior in all other tests (GPT_ACTION_SECRET is
+        suppressed by _run).  This test makes that contract explicit.
+        """
+        sha = self._commit({"docs/no-live-check.md": "# no live check\n"})
+        # _run already suppresses GPT_ACTION_SECRET; be explicit for clarity
+        r = self._run("wow-verify-patch", sha, extra_env={"GPT_ACTION_SECRET": ""})
+        # Without the secret, the live check section should be skipped/warned
+        # and must NOT add to the FAIL count.
+        self.assertIn("Skipping live endpoint check", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -203,13 +203,12 @@ if command -v curl &>/dev/null && [ -n "${GPT_ACTION_SECRET:-}" ]; then
     if [ "$HEALTH" = "200" ]; then
         green "Live health endpoint: HTTP 200 (${_LIVE_URL})"
         ((++PASS))
-    elif [ "$HEALTH" = "000" ]; then
-        # Connection refused / no server running — warn only.
-        # This is normal for documentation-only patches where the dev server
-        # is stopped. A running server returning 5xx/4xx is a real failure.
-        yellow "Live health endpoint: server unreachable (${_LIVE_URL}) — warn only for docs patches"
     else
-        red "Live health endpoint: HTTP $HEALTH (${_LIVE_URL}) — server reachable but unhealthy"
+        # Any non-200 response — including HTTP 000 (connection refused / no
+        # server) — is a hard failure when the live check is enabled.
+        # HTTP 000 means the server is unreachable, which is itself an error
+        # when verification is explicitly requested.
+        red "Live health endpoint: HTTP $HEALTH (${_LIVE_URL}) — server must return 200"
         ((++FAIL))
     fi
 else
