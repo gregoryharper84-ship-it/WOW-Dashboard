@@ -590,6 +590,49 @@ class TestContractRegistry(unittest.TestCase):
             "Canonical document must contain the DRY_RUN_ONLY execution rule",
         )
 
+    def test_kalshi_recovery_raw_source_status_and_provenance(self):
+        """
+        R2 requirement: the Kalshi Recovery entry must carry raw_source_status
+        and raw_source_provenance_path fields, and the provenance document must
+        exist on disk.  documented_authority_changed must be true.
+        """
+        entry = next(
+            (c for c in self.contracts
+             if c.get("canonical_contract_id") == "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE"),
+            None,
+        )
+        self.assertIsNotNone(entry, "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE not found")
+
+        # raw_source_status must be present and non-empty
+        self.assertIn("raw_source_status", entry,
+                      "raw_source_status field missing from Kalshi Recovery entry")
+        self.assertTrue(entry["raw_source_status"],
+                        "raw_source_status must be a non-empty string")
+
+        # raw_source_provenance_path must exist and point to a real file
+        self.assertIn("raw_source_provenance_path", entry,
+                      "raw_source_provenance_path field missing")
+        prov_path = os.path.join(REPO_ROOT, entry["raw_source_provenance_path"])
+        self.assertTrue(
+            os.path.isfile(prov_path),
+            f"raw_source_provenance_path points to missing file: {prov_path}",
+        )
+
+        # documented_authority_changed must be True
+        self.assertIn("documented_authority_changed", entry,
+                      "documented_authority_changed field missing")
+        self.assertTrue(
+            entry["documented_authority_changed"] is True,
+            "documented_authority_changed must be boolean true",
+        )
+
+        # raw_source_sha256 must reference the external verifier's hash
+        self.assertIn("b79118e2", entry.get("raw_source_sha256", ""),
+                      "raw_source_sha256 must reference b79118e2 (external verifier hash)")
+
+        # runtime_governance_changed: not in the schema (doc-only entry) — verified
+        # implicitly by confirmed absence of runtime file changes in this commit.
+
     def test_kalshi_recovery_dual_sha_fields_present(self):
         """
         After WOW-#251 with dual-hash reconciliation, the Kalshi recovery

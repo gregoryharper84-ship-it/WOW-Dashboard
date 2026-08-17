@@ -894,11 +894,16 @@ contracts:
       External verifier independently hashed the document content as described
       in the WOW-#251 return packet and obtained b79118e2...  The on-disk
       canonical file (committed at 1a59025) hashes as 2c5daad0... and is the
-      authoritative source.  The discrepancy is attributable to whitespace or
-      line-ending normalization differences between the return-packet
-      communication channel and the on-disk file.  No semantic transformation
-      was applied; the document was authored directly (no raw→canonical
-      processing pipeline).  canonical_sha256 is the binding value.
+      authoritative source.  Exhaustive byte-level transformation tests (CRLF,
+      strip/append trailing newline, per-line rstrip, combinations) confirm that
+      b79118e2... is not derivable from the on-disk canonical by any deterministic
+      transformation — it represents the document as transcribed through the
+      communication channel, whose exact bytes are unavailable.  No semantic
+      transformation was applied; the document was authored directly.
+      canonical_sha256 is the binding value.  Full analysis in raw_source_provenance_path.
+    raw_source_status: "CHANNEL_TRANSCRIPTION_BYTES_UNAVAILABLE"
+    raw_source_provenance_path: "docs/wow/contracts/raw_source/WOW-PATCH-2026-07-21-KALSHI-RECOVERY-provenance.md"
+    documented_authority_changed: true
     version: "v1"
     declared_status: "EMERGENCY_ACTIVE"
     project_authority_status: "BINDING_ACTIVE"
