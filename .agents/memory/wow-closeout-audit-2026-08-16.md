@@ -17,10 +17,13 @@ External GPT audits will check all of these before accepting a closeout:
 
 ## Key Gotchas Discovered
 - `target_date` in run_pipeline() must be a `date` object (not string) — slate_validation calls .isoformat()
-- `_rc_held = len(rows) - _rc_completed - _rc_rejected` gives exact reconciliation by construction
+- `held = len - completed - rejected` is tautological — audit will reject it; use three explicit frozensets
+- Frozensets for row classification must be at module level (not inside run_pipeline()) — tests can't import local vars
+- PropLabel member NAME can differ from VALUE: `HIGH_CONFIDENCE_SUSPENDED` has value `HIGH_CONFIDENCE_SUSPENDED_CALIBRATION_FAILURE`
 - SAVEPOINT in psycopg2: `cur.execute("SAVEPOINT sp_name")` — shares the existing transaction
 - Public validator must be exported from the module so tests can call it without importing app.py (avoids import side effects)
 - app.py has TWO scan-summary locations that both set total_final_approved — fix both or one drifts back
+- `rows_unknown` field must be in summary AND row_balance_valid must check BOTH equality AND unknown==0
 
-**Why:** External GPT returned HOLD on 9ecfea2 for these 8 specific deficiencies; 51775e1 resolved all.
-**How to apply:** Before submitting any future external GPT audit report, verify all 8 categories are addressed.
+**Why:** External GPT returned HOLD on 51775e1 for 3 remaining gaps; 708072c resolved all.
+**How to apply:** Before submitting any future external GPT audit report, verify all items including tautological checks and enum member name mapping.
