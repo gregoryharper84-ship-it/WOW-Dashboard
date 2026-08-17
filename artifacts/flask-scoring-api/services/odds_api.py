@@ -129,20 +129,62 @@ def resolve_odds_api_key_with_source() -> "tuple[str, str]":
 
 
 def _get(path, params=None):
-    # Try all configured keys in priority order: PAID → 100K → FREE → LEGACY.
-    # Falls back to the next key only on auth (401) or quota (422/429) errors;
-    # non-retriable HTTP errors stop immediately.
-    _key_ladder = [k for k in [
-        os.environ.get("ODDS_API_PAID_KEY", ""),
-        os.environ.get("ODDS_API_KEY_100K", ""),
-        os.environ.get("ODDS_API_FREE_KEY",  ""),
-        os.environ.get("ODDS_API_KEY",       ""),
-    ] if k]
+    """
+    Try all configured keys in priority order: PAID → 100K → FREE → LEGACY.
+
+    Failover logic
+    ---------------
+    Reactive:  falls back to the next key on auth (401), quota (422/429).
+    Proactive: before each HTTP attempt, checks the Postgres cross-worker
+               quota state (best-effort, fail-open). When a tier's
+               requests_remaining is recorded as exactly 0, skip its HTTP
+               call entirely and move to the next tier — saving a round-trip
+               that would consume quota on whichever key receives it.
+
+    Non-retriable HTTP errors (timeout, 5xx, etc.) stop immediately.
+
+    key_tier names used in pg_odds_quota:
+      'paid'   → ODDS_API_PAID_KEY
+      'high'   → ODDS_API_KEY_100K (100K-request key)
+      'free'   → ODDS_API_FREE_KEY
+      'legacy' → ODDS_API_KEY (back-compat)
+    """
+    # Build the per-key ladder with tier labels so the proactive quota check
+    # can look up the right tier name from the Postgres snapshot.
+    _key_ladder = [
+        (tier, key)
+        for tier, key in [
+            ("paid",   os.environ.get("ODDS_API_PAID_KEY", "")),
+            ("high",   os.environ.get("ODDS_API_KEY_100K", "")),
+            ("free",   os.environ.get("ODDS_API_FREE_KEY", "")),
+            ("legacy", os.environ.get("ODDS_API_KEY", "")),
+        ]
+        if key
+    ]
     if not _key_ladder:
         return None, "NOT_CALLED: ODDS_API_KEY not set"
+
+    # Best-effort proactive quota snapshot from Postgres.
+    # Fail-open: any DB error leaves _quota_snapshot as {} and we proceed
+    # without proactive skipping (reactive fallback still works fine).
+    _quota_snapshot: dict = {}
+    try:
+        from gate_engine.pg_odds_quota import fetch_quota_snapshot as _fqs
+        _quota_snapshot = _fqs() or {}
+    except Exception:
+        pass   # fail-open — quota tracking must never block the caller
+
     params = dict(params or {})   # copy — never mutate the caller's dict
     _last_msg = "FAILED: invalid ODDS_API_KEY"
-    for _key in _key_ladder:
+    for _tier, _key in _key_ladder:
+        # Proactive skip: if cross-worker quota store already shows this tier
+        # is exhausted (remaining == 0), skip the HTTP call and try the next.
+        _tier_state = _quota_snapshot.get(_tier, {})
+        _remaining  = _tier_state.get("requests_remaining")
+        if _remaining is not None and _remaining == 0:
+            _last_msg = f"proactive_skip:{_tier}:quota_exhausted"
+            continue
+
         _p = {**params, "apiKey": _key}
         try:
             r = requests.get(f"{BASE_URL}{path}", params=_p, timeout=15)

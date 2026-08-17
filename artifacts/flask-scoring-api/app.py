@@ -6896,9 +6896,10 @@ def tennis_stats_today():
 
     tour_filter = request.args.get("tour", "").strip().lower()  # atp | wta | "" = both
 
-    odds_key = os.environ.get("ODDS_API_KEY", "")
+    from services.odds_api import resolve_odds_api_key_with_source as _resolve_key_tennis
+    odds_key, _odds_key_src = _resolve_key_tennis()
     if not odds_key:
-        return jsonify({"ok": False, "error": "ODDS_API_KEY secret not configured"}), 500
+        return jsonify({"ok": False, "error": "No Odds API key configured (checked ODDS_API_PAID_KEY, ODDS_API_KEY_100K, ODDS_API_FREE_KEY, ODDS_API_KEY)"}), 500
 
     base = "https://api.the-odds-api.com/v4"
 
@@ -9393,7 +9394,8 @@ def _get_cross_book_variance(player_name: str, odds_market: str,
     (median), min/max, and per-book variance.  Uses ODDS API — costs quota.
     Only called when the caller explicitly requests variance data."""
     import requests as _req, statistics as _stats
-    odds_key = os.environ.get("ODDS_API_KEY", "")
+    from services.odds_api import resolve_odds_api_key_with_source as _resolve_key_cbv
+    odds_key, _cbv_key_src = _resolve_key_cbv()
     if not odds_key:
         return {"error": "ODDS_API_KEY_MISSING"}
     base = "https://api.the-odds-api.com/v4"
@@ -11674,14 +11676,14 @@ def wow_odds_health():
     from services import odds_api as _odds
     checked_at = datetime.now(timezone.utc).isoformat()
 
-    if not _odds.ODDS_API_KEY:
+    if not _odds._resolve_key():
         return jsonify({
             "source":         "api.the-odds-api.com",
             "endpoint":       "/v4/sports",
             "timestamp":      checked_at,
             "source_status":  "NOT_CALLED",
             "source_grade":   None,
-            "data_status":    "NOT_CALLED: ODDS_API_KEY not set",
+            "data_status":    "NOT_CALLED: no Odds API key configured",
             "sports_count":   0,
             "dry_run_only":   True,
             "can_execute":    False,
@@ -16514,7 +16516,8 @@ def _llp_fetch_odds(sport_key, regions="us", markets=None):
         return hit[1]
     # Back-compat: also keep the legacy sport_key-only cache key warm so
     # any other reader hitting it via sport_key alone gets the latest.
-    key = os.environ.get("ODDS_API_KEY", "")
+    from services.odds_api import resolve_odds_api_key_with_source as _resolve_key_llp
+    key, _llp_key_src = _resolve_key_llp()
     if not key: return None
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
     try:
@@ -34382,7 +34385,8 @@ _ODDS_QUOTA_STORE: dict = {
 
 def _odds_quota_update(key_tier: str, remaining_str, used_str, cost_str=None) -> bool:
     """
-    Parse and store quota headers for key_tier ('paid' or 'free').
+    Parse and store quota headers for key_tier.
+    Valid key_tier values: 'paid', 'high' (ODDS_API_KEY_100K), 'free', 'legacy'.
     Returns True when remaining drops below _ODDS_QUOTA_THRESHOLD.
     Thread-safe. cost_str is the x-requests-last header value (may be None).
     """
@@ -34516,6 +34520,22 @@ def _odds_api_request(path, params, prefer_paid=True):
     for key_tier, key in key_ladder:
         if not key:
             errors.append({"key_tier": key_tier, "error": "key not configured"})
+            continue
+
+        # Proactive quota skip: if in-process quota store shows this tier is
+        # already exhausted (remaining == 0), skip the HTTP round-trip and try
+        # the next key immediately.  This saves a quota-costing network call
+        # and means the 100K key takes over as soon as the paid key hits zero —
+        # not just after the next 429 is received.
+        with _ODDS_QUOTA_LOCK:
+            _tier_quota = _ODDS_QUOTA_STORE.get(key_tier, {})
+        _remaining = _tier_quota.get("requests_remaining")
+        if _remaining is not None and _remaining == 0:
+            errors.append({
+                "key_tier": key_tier,
+                "error":    "proactive_skip:quota_exhausted_in_store",
+                "remaining": 0,
+            })
             continue
 
         try:
