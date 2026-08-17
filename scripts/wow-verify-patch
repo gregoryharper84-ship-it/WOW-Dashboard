@@ -6,6 +6,10 @@
 #
 # Usage: bash scripts/wow-verify-patch [commit-sha]
 #        bash scripts/wow-verify-patch HEAD
+#
+# Environment:
+#   WOW_MIN_TESTS   Minimum passing test count required (default: 5000).
+#                   Set to a lower value in test harnesses.
 
 set -euo pipefail
 
@@ -14,6 +18,14 @@ FLASK_DIR="$REPO_ROOT/artifacts/flask-scoring-api"
 COMMIT="${1:-HEAD}"
 PASS=0
 FAIL=0
+
+# Minimum passing tests expected from the full regression suite.
+# A count below this floor signals suspicious test removal.
+MIN_TESTS="${WOW_MIN_TESTS:-5000}"
+
+# The only test that is allowed to fail on an uncommitted working tree.
+# Any other failing test ID is treated as an unexpected regression.
+_SENTINEL="gate_engine/tests/test_stage_a_isolation.py::TestGitDiffAllowlist::test_no_uncommitted_changes_to_forbidden_files"
 
 green()  { printf '\033[0;32m✓ %s\033[0m\n' "$*"; }
 red()    { printf '\033[0;31m✗ %s\033[0m\n' "$*"; }
@@ -81,43 +93,87 @@ fi
 # ---------------------------------------------------------------------------
 section "can_execute=False invariant"
 # ---------------------------------------------------------------------------
+# Check Python source files for any non-commented can_execute=True assignment.
+# Also check YAML/JSON files for can_execute: true directives (case-insensitive).
 
-EXEC_TRUE=$(grep -rn --include="*.py" 'can_execute\s*=\s*True' "$FLASK_DIR/gate_engine/" 2>/dev/null \
-            | grep -v "test_\|#" || true)
-if [ -z "$EXEC_TRUE" ]; then
+EXEC_FAIL=0
+
+# Python: all equivalent assignment forms (spaces or no spaces around =)
+EXEC_TRUE_PY=$(grep -rn --include="*.py" 'can_execute\s*=\s*True' "$FLASK_DIR/gate_engine/" 2>/dev/null \
+               | grep -v "test_\|#" || true)
+if [ -n "$EXEC_TRUE_PY" ]; then
+    red "can_execute=True found in production gate_engine Python code:"
+    echo "$EXEC_TRUE_PY" | sed 's/^/    /'
+    EXEC_FAIL=1
+fi
+
+# YAML/JSON: colon-style directives (e.g. can_execute: true, can_execute: True)
+EXEC_TRUE_CFG=$(grep -rn --include="*.yaml" --include="*.yml" --include="*.json" \
+                -iE 'can_execute[[:space:]]*:[[:space:]]*true' "$FLASK_DIR/gate_engine/" 2>/dev/null \
+                | grep -v "test_\|#" || true)
+if [ -n "$EXEC_TRUE_CFG" ]; then
+    red "can_execute: true found in production gate_engine YAML/JSON:"
+    echo "$EXEC_TRUE_CFG" | sed 's/^/    /'
+    EXEC_FAIL=1
+fi
+
+if [ "$EXEC_FAIL" -eq 0 ]; then
     green "can_execute=True not found in gate_engine production code"
     ((++PASS))
 else
-    red "can_execute=True found:"
-    echo "$EXEC_TRUE" | sed 's/^/    /'
     ((++FAIL))
 fi
 
 # ---------------------------------------------------------------------------
 section "Full regression suite"
 # ---------------------------------------------------------------------------
+# Gate rules (applied in order):
+#   1. No tests ran                  → fail (collection failure)
+#   2. Failures > 1                  → fail (multiple regressions)
+#   3. Failures == 1, wrong test     → fail (unexpected regression)
+#   4. Failures == 0 or sentinel OK, passing count < MIN_TESTS → fail (test removal)
+#   5. Otherwise                     → pass
+#
+# Only the exact sentinel test ID is accepted as the allowed single failure.
+# Any other failing test ID is treated as an unexpected regression.
 
 if command -v python3 &>/dev/null; then
     cd "$FLASK_DIR"
     printf 'Running full test suite (this takes ~2-3 min)...\n'
-    RESULT=$(python3 -m pytest gate_engine/tests/ -q --tb=no 2>&1 | tail -5)
-    echo "$RESULT"
+    # || true: pytest exits non-zero on failures; capture output before evaluating exit code.
+    PYTEST_OUT=$(python3 -m pytest gate_engine/tests/ -q --tb=no 2>&1 || true)
+    echo "$PYTEST_OUT" | tail -5
 
-    FAILURES=$(echo "$RESULT" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo "0")
-    PASSED=$(echo "$RESULT" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
+    FAILURES=$(echo "$PYTEST_OUT" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo "0")
+    PASSED=$(echo "$PYTEST_OUT"   | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+' || echo "0")
+    # Extract the test ID from each "FAILED <id> - <reason>" line
+    FAILING_IDS=$(echo "$PYTEST_OUT" | grep '^FAILED' | sed 's/^FAILED[[:space:]]*//; s/[[:space:]]*-[[:space:]]*.*//' || true)
 
-    if [ "$FAILURES" -eq 0 ]; then
-        green "Regression: $PASSED passed, 0 failed"
-        ((++PASS))
-    elif [ "$FAILURES" -eq 1 ]; then
-        # Check that the only failure is the runtime isolation sentinel
-        SENTINEL_FAIL=$(python3 -m pytest gate_engine/tests/test_stage_a_isolation.py::TestGitDiffAllowlist::test_no_uncommitted_changes_to_forbidden_files \
-                        -q --tb=no 2>&1 | grep -c "failed" || true)
-        if [ "$SENTINEL_FAIL" -ge 1 ]; then
-            green "Regression: $PASSED passed, 1 failed (runtime isolation sentinel only — resolves after commit)"
-            ((++PASS))
+    if [ "$PASSED" -eq 0 ] && [ "$FAILURES" -eq 0 ]; then
+        red "Regression: no tests ran — test collection may have failed. Do NOT commit."
+        ((++FAIL))
+    elif [ "$FAILURES" -eq 0 ]; then
+        if [ "$PASSED" -lt "$MIN_TESTS" ]; then
+            red "Regression: only $PASSED tests passed (minimum required: $MIN_TESTS) — possible test removal. Do NOT commit."
+            ((++FAIL))
         else
-            red "Regression: $FAILURES failure(s) — NOT the isolation sentinel. Investigate before shipping."
+            green "Regression: $PASSED passed, 0 failed"
+            ((++PASS))
+        fi
+    elif [ "$FAILURES" -eq 1 ]; then
+        FAILING_TEST=$(echo "$FAILING_IDS" | head -1 | tr -d '[:space:]')
+        if [ "$FAILING_TEST" = "$_SENTINEL" ]; then
+            if [ "$PASSED" -lt "$MIN_TESTS" ]; then
+                red "Regression: sentinel OK but only $PASSED tests passed (minimum: $MIN_TESTS) — possible test removal. Do NOT commit."
+                ((++FAIL))
+            else
+                green "Regression: $PASSED passed, 1 failed (runtime isolation sentinel only — resolves after commit)"
+                ((++PASS))
+            fi
+        else
+            red "Regression: 1 failure — NOT the expected isolation sentinel. Do NOT commit."
+            printf '    Expected sentinel: %s\n' "$_SENTINEL"
+            printf '    Actual failure:    %s\n' "$FAILING_TEST"
             ((++FAIL))
         fi
     else
@@ -141,7 +197,8 @@ if command -v curl &>/dev/null && [ -n "${GPT_ACTION_SECRET:-}" ]; then
         green "Live health endpoint: HTTP 200"
         ((++PASS))
     else
-        yellow "Live health endpoint: HTTP $HEALTH (server may not be running locally)"
+        red "Live health endpoint: HTTP $HEALTH — server may be unhealthy or unreachable"
+        ((++FAIL))
     fi
 else
     yellow "Skipping live endpoint check (no GPT_ACTION_SECRET or curl not available)"

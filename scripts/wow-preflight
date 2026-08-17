@@ -23,14 +23,20 @@ section() { printf '\n\033[1m=== %s ===\033[0m\n' "$*"; }
 # ---------------------------------------------------------------------------
 section "Working tree"
 # ---------------------------------------------------------------------------
+# Detect both tracked modifications (staged + unstaged) and untracked files.
+# git diff --name-only HEAD covers staged and unstaged changes to tracked files.
+# git ls-files --others --exclude-standard covers new, untracked files.
 
 DIRTY=$(git -C "$REPO_ROOT" diff --name-only HEAD 2>/dev/null || true)
-if [ -z "$DIRTY" ]; then
+UNTRACKED=$(git -C "$REPO_ROOT" ls-files --others --exclude-standard 2>/dev/null || true)
+
+if [ -z "$DIRTY" ] && [ -z "$UNTRACKED" ]; then
     green "Working tree is clean"
     (( ++PASS ))
 else
     red "Uncommitted changes detected — checkpoint before proceeding:"
-    echo "$DIRTY" | sed 's/^/    /'
+    [ -n "$DIRTY" ]     && echo "$DIRTY"     | sed 's/^/    M /'
+    [ -n "$UNTRACKED" ] && echo "$UNTRACKED" | sed 's/^/    ? /'
     (( ++FAIL ))
 fi
 
@@ -87,16 +93,35 @@ fi
 # ---------------------------------------------------------------------------
 section "can_execute=false enforcement"
 # ---------------------------------------------------------------------------
+# Check Python source files for any non-commented can_execute=True assignment.
+# Also check YAML/JSON files for can_execute: true directives (case-insensitive).
+# Both forms represent a live-execution violation.
 
-# Verify no production code path has can_execute=True hardcoded
-EXEC_TRUE=$(grep -rn --include="*.py" 'can_execute\s*=\s*True' "$FLASK_DIR/gate_engine/" 2>/dev/null \
-            | grep -v "test_\|#" || true)
-if [ -z "$EXEC_TRUE" ]; then
+EXEC_FAIL=0
+
+# Python: all equivalent assignment forms (spaces or no spaces around =)
+EXEC_TRUE_PY=$(grep -rn --include="*.py" 'can_execute\s*=\s*True' "$FLASK_DIR/gate_engine/" 2>/dev/null \
+               | grep -v "test_\|#" || true)
+if [ -n "$EXEC_TRUE_PY" ]; then
+    red "can_execute=True found in production gate_engine Python code:"
+    echo "$EXEC_TRUE_PY" | sed 's/^/    /'
+    EXEC_FAIL=1
+fi
+
+# YAML/JSON/TOML: colon-style directives (e.g. can_execute: true, can_execute: True)
+EXEC_TRUE_CFG=$(grep -rn --include="*.yaml" --include="*.yml" --include="*.json" \
+                -iE 'can_execute[[:space:]]*:[[:space:]]*true' "$FLASK_DIR/gate_engine/" 2>/dev/null \
+                | grep -v "test_\|#" || true)
+if [ -n "$EXEC_TRUE_CFG" ]; then
+    red "can_execute: true found in production gate_engine YAML/JSON:"
+    echo "$EXEC_TRUE_CFG" | sed 's/^/    /'
+    EXEC_FAIL=1
+fi
+
+if [ "$EXEC_FAIL" -eq 0 ]; then
     green "can_execute=True not found in gate_engine (non-test)"
     ((++PASS))
 else
-    red "can_execute=True found in production gate_engine code:"
-    echo "$EXEC_TRUE" | sed 's/^/    /'
     ((++FAIL))
 fi
 

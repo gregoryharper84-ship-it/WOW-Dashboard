@@ -146,19 +146,51 @@ class _ScriptBase(unittest.TestCase):
     # Script runner
     # ------------------------------------------------------------------
 
-    def _run(self, script_name, *extra_args):
+    def _run(self, script_name, *extra_args, extra_env=None):
         """
         Execute a script from the fake repo's scripts/ directory.
+
         GPT_ACTION_SECRET is suppressed so the optional live-endpoint
         section of wow-verify-patch is always skipped.
+
+        WOW_MIN_TESTS defaults to "1" so the stub regression suite
+        (which only has one test) satisfies the minimum-count gate.
+        Tests that specifically exercise the min-count gate should pass
+        extra_env={"WOW_MIN_TESTS": "<higher value>"}.
         """
         env = os.environ.copy()
         env.pop("GPT_ACTION_SECRET", None)
+        env["WOW_MIN_TESTS"] = "1"   # override for test harness; real default is 5000
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
             ["bash", str(self._repo / "scripts" / script_name)] + list(extra_args),
             capture_output=True, text=True,
             cwd=str(self._repo), env=env,
         )
+
+    def _add_always_failing_test(self):
+        """
+        Commit a test file to the fake repo whose single test always fails.
+        Used to inject a non-sentinel regression so wow-verify-patch can be
+        proven to reject it.  Returns the SHA of the injected commit.
+        """
+        always_fail = textwrap.dedent("""\
+            import unittest
+
+            class TestAlwaysFails(unittest.TestCase):
+                def test_unexpected_regression(self):
+                    self.fail("Simulated unexpected regression — not the isolation sentinel")
+        """)
+        target = (
+            self._repo
+            / "artifacts" / "flask-scoring-api" / "gate_engine" / "tests"
+            / "test_always_fails.py"
+        )
+        target.write_text(always_fail)
+        self._git("add", str(target.relative_to(self._repo)))
+        self._git("commit", "-m", "inject always-failing test for sentinel-allowlist validation")
+        return self._git("rev-parse", "HEAD").stdout.strip()
 
 
 # ===========================================================================
@@ -376,6 +408,94 @@ class TestWowPreflight(_ScriptBase):
                 self.assertGreaterEqual(count, 2)
                 break
 
+    # -----------------------------------------------------------------------
+    # Failure: untracked files in working tree
+    # -----------------------------------------------------------------------
+
+    def test_untracked_file_in_tree_fails(self):
+        """Preflight fails when there are untracked (never-staged) files in the tree."""
+        untracked = (
+            self._repo / "artifacts" / "flask-scoring-api"
+            / "gate_engine" / "untracked_new.py"
+        )
+        untracked.write_text("# brand-new file, never staged\nx = 1\n")
+        # Deliberately NOT staging or committing this file
+
+        r = self._run("wow-preflight")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Uncommitted changes detected", r.stdout)
+
+    def test_untracked_file_appears_in_output(self):
+        """Preflight prints the untracked filename so the engineer knows what to commit."""
+        untracked = (
+            self._repo / "artifacts" / "flask-scoring-api"
+            / "gate_engine" / "mystery_file.py"
+        )
+        untracked.write_text("mystery = True\n")
+
+        r = self._run("wow-preflight")
+        self.assertIn("mystery_file.py", r.stdout)
+
+    # -----------------------------------------------------------------------
+    # Failure: can_execute=True — compact form and YAML/JSON variants
+    # -----------------------------------------------------------------------
+
+    def test_can_execute_compact_true_no_spaces_fails(self):
+        """Preflight catches can_execute=True with no spaces around the equals sign."""
+        bad = (
+            self._repo / "artifacts" / "flask-scoring-api"
+            / "gate_engine" / "compact.py"
+        )
+        bad.write_text("can_execute=True\n")
+        self._git("add", "artifacts/flask-scoring-api/gate_engine/compact.py")
+        self._git("commit", "-m", "compact form violation")
+
+        r = self._run("wow-preflight")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("can_execute=True found", r.stdout)
+
+    def test_can_execute_yaml_colon_true_lowercase_fails(self):
+        """Preflight catches can_execute: true (YAML colon form, lowercase) in gate_engine."""
+        bad_yaml = (
+            self._repo / "artifacts" / "flask-scoring-api"
+            / "gate_engine" / "bad_contract.yaml"
+        )
+        bad_yaml.write_text("can_execute: true\nversion: v1\n")
+        self._git("add", "artifacts/flask-scoring-api/gate_engine/bad_contract.yaml")
+        self._git("commit", "-m", "yaml can_execute: true violation")
+
+        r = self._run("wow-preflight")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("can_execute: true found", r.stdout)
+
+    def test_can_execute_yaml_colon_true_capital_T_fails(self):
+        """Preflight catches can_execute: True (YAML colon form, capital T) in gate_engine."""
+        bad_yaml = (
+            self._repo / "artifacts" / "flask-scoring-api"
+            / "gate_engine" / "bad_contract2.yaml"
+        )
+        bad_yaml.write_text("can_execute: True\nversion: v1\n")
+        self._git("add", "artifacts/flask-scoring-api/gate_engine/bad_contract2.yaml")
+        self._git("commit", "-m", "yaml can_execute: True violation")
+
+        r = self._run("wow-preflight")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("can_execute: true found", r.stdout)
+
+    def test_can_execute_yaml_false_not_flagged(self):
+        """Preflight does not flag can_execute: false in a YAML file — that is correct."""
+        good_yaml = (
+            self._repo / "artifacts" / "flask-scoring-api"
+            / "gate_engine" / "good_contract.yaml"
+        )
+        good_yaml.write_text("can_execute: false\nversion: v1\n")
+        self._git("add", "artifacts/flask-scoring-api/gate_engine/good_contract.yaml")
+        self._git("commit", "-m", "yaml can_execute: false is fine")
+
+        r = self._run("wow-preflight")
+        self.assertNotIn("can_execute: true found", r.stdout)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
 
 # ===========================================================================
 # wow-verify-patch controlled-failure tests
@@ -562,6 +682,98 @@ class TestWowVerifyPatch(_ScriptBase):
         sha = self._commit({"docs/sha.md": "sha\n"})
         r = self._run("wow-verify-patch", sha)
         self.assertIn(sha[:7], r.stdout)
+
+    # -----------------------------------------------------------------------
+    # Failure: test-count floor (minimum expected inventory)
+    # -----------------------------------------------------------------------
+
+    def test_low_test_count_is_rejected(self):
+        """verify-patch rejects a run where the test count is suspiciously low.
+
+        With WOW_MIN_TESTS=10 and a stub that only has 1 test, the regression
+        gate must fail with a 'possible test removal' message even though there
+        are zero failures.
+        """
+        sha = self._commit({"docs/safe.md": "safe\n"})
+        # WOW_MIN_TESTS=10 but stub only has 1 test → count below floor
+        r = self._run("wow-verify-patch", sha, extra_env={"WOW_MIN_TESTS": "10"})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("possible test removal", r.stdout)
+
+    # -----------------------------------------------------------------------
+    # Failure: unexpected failing test (not the isolation sentinel)
+    # -----------------------------------------------------------------------
+
+    def test_wrong_failing_test_is_rejected(self):
+        """verify-patch rejects when the failing test is not the isolation sentinel.
+
+        Injects a non-sentinel always-failing test into the fake repo, then runs
+        verify-patch on a subsequent innocuous commit.  The script must report
+        that the failure is NOT the expected sentinel and exit non-zero.
+        """
+        # Commit the always-failing test into the fake repo
+        self._add_always_failing_test()
+        # Make an innocuous follow-up commit so we have a diff to audit
+        sha = self._commit({"docs/after_injection.md": "after\n"})
+
+        r = self._run("wow-verify-patch", sha)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("NOT the expected isolation sentinel", r.stdout)
+
+    def test_wrong_failing_test_prints_both_expected_and_actual_ids(self):
+        """verify-patch prints expected vs. actual test IDs when sentinel check fails."""
+        self._add_always_failing_test()
+        sha = self._commit({"docs/ids.md": "ids\n"})
+
+        r = self._run("wow-verify-patch", sha)
+        self.assertNotEqual(r.returncode, 0)
+        # Should print the sentinel ID so the engineer knows what was expected
+        self.assertIn("test_stage_a_isolation.py", r.stdout)
+        # Should print the actually-failing test
+        self.assertIn("test_always_fails", r.stdout)
+
+    # -----------------------------------------------------------------------
+    # Failure: can_execute=True — compact form and YAML/JSON variants in diff
+    # -----------------------------------------------------------------------
+
+    def test_can_execute_compact_true_no_spaces_in_diff_fails(self):
+        """verify-patch catches can_execute=True (compact, no spaces) committed to gate_engine."""
+        sha = self._commit(
+            {"artifacts/flask-scoring-api/gate_engine/cex_compact.py":
+                "can_execute=True\n"}
+        )
+        r = self._run("wow-verify-patch", sha)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("can_execute=True found", r.stdout)
+
+    def test_can_execute_yaml_colon_true_in_diff_fails(self):
+        """verify-patch catches can_execute: true in a YAML file committed to gate_engine."""
+        sha = self._commit(
+            {"artifacts/flask-scoring-api/gate_engine/live_contract.yaml":
+                "can_execute: true\nversion: v1\n"}
+        )
+        r = self._run("wow-verify-patch", sha)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("can_execute: true found", r.stdout)
+
+    def test_can_execute_yaml_capital_T_in_diff_fails(self):
+        """verify-patch catches can_execute: True (capital T YAML form) in committed file."""
+        sha = self._commit(
+            {"artifacts/flask-scoring-api/gate_engine/live_contract2.yaml":
+                "can_execute: True\nversion: v1\n"}
+        )
+        r = self._run("wow-verify-patch", sha)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("can_execute: true found", r.stdout)
+
+    def test_can_execute_yaml_false_not_flagged_in_diff(self):
+        """verify-patch does not flag can_execute: false in a committed YAML file."""
+        sha = self._commit(
+            {"artifacts/flask-scoring-api/gate_engine/good_contract.yaml":
+                "can_execute: false\nversion: v1\n"}
+        )
+        r = self._run("wow-verify-patch", sha)
+        self.assertNotIn("can_execute: true found", r.stdout)
 
 
 if __name__ == "__main__":
