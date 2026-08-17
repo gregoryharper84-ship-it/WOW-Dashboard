@@ -25,8 +25,12 @@ enum in that module only; they do not conflict.
 
 **Gate 4 is 3-way (MarketGateOutcome), not binary:**
 - `AVAILABLE` — all market data present; both confidence/model AND market-edge/money lanes open
-- `UNAVAILABLE` — market data absent or outage; confidence/model lane survives; market-edge/money blocked; ceiling lowered. **This does NOT block MODEL_READY.**
-- `BLOCKING` — SOURCE_CONFLICT or expired TTL; row fully blocked (same as Gates 1/2/3 failures)
+- `UNAVAILABLE` — `market_no_vig_probability` absent (market-specific field only); confidence/model lane survives; market-edge/money blocked; ceiling lowered. **This does NOT block MODEL_READY.**
+- `BLOCKING` — SOURCE_CONFLICT, expired TTL, OR missing `data_timestamp` (general provenance, not market-specific); row fully blocked
+
+**Critical distinction — `data_timestamp` vs `market_no_vig_probability`:**
+- `data_timestamp` is a **general intake provenance field** stamped by `auto_enrichment.py` on every acquired row and listed in `data_contract.py`. Its absence is an **intake failure → BLOCKING**.
+- `market_no_vig_probability` is **market-specific** (the two-way no-vig line). Its absence → **UNAVAILABLE** (non-blocking).
 
 **Why Gate 4 is 3-way:** Under the reconstructed-confidence architecture and Full Model Gatekeeper contract, an exact two-way market is NOT required to run the probability model. Absent market evidence lowers the ceiling (max MODEL_QUALIFIED_HOLD); it does not prevent model execution.
 
@@ -35,7 +39,10 @@ enum in that module only; they do not conflict.
 - RunController hard-aborts: (1) `contract_complete_count == 0`, (2) all rows provider outage, (3) systemic threshold exceeded
 - `reconcile_run()`: five equations + no-duplicate check; any failure → `LABEL_RUN_INVALID_HYDRATION_RECONCILIATION`
 - New label constants in module (labels.py is protected): `LABEL_RUN_INVALID_HYDRATION_RECONCILIATION`, `LABEL_HYDRATION_ABORT`
-- Governance patch #26, version 1.1, precedence 105
+- Ceiling enforcement: `enforce_market_ceiling(result, proposed_label) → (label, audit_status)` — FINAL_APPROVED/MONEY_QUALIFIED capped to MODEL_QUALIFIED_HOLD when `market_lane_available=False`; idempotent; BLOCKED rows → DATA_CONTRACT_FAIL
+- Exposure gate: `validate_exposure_write(result) → (allowed, reason)` — market-edge/slip/final-card/exposure writes require `MODEL_READY + market_lane_available=True`
+- Constants: `MARKET_REQUIRED_LABELS`, `MARKET_AUDIT_STATUS_AVAILABLE`, `MARKET_AUDIT_STATUS_UNAVAILABLE`
+- Governance patch #26, version 1.2, precedence 105
 
 ## How to apply
 
