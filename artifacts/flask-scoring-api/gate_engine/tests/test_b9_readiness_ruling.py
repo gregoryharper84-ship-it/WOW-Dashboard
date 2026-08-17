@@ -518,7 +518,23 @@ class TestR12ClosureRecordsPresent(unittest.TestCase):
 class TestR13ConveyorSummary(unittest.TestCase):
 
     def test_conveyor_summary_logged(self):
-        import json, datetime
+        import json, datetime, subprocess
+        out_path = _REPO_ROOT / "uac_b9_readiness_ruling.json"
+
+        # Restore to exact git-HEAD state after this test so the Stage A
+        # isolation sentinel (test_no_uncommitted_changes_to_forbidden_files)
+        # does not see an uncommitted modification to a tracked file.
+        # Using `git checkout HEAD -- <path>` ensures the on-disk content
+        # matches HEAD regardless of what was present before the test ran.
+        def _restore_to_head():
+            subprocess.run(
+                ["git", "checkout", "HEAD", "--",
+                 "artifacts/flask-scoring-api/uac_b9_readiness_ruling.json"],
+                cwd=str(_REPO_ROOT.parent.parent),
+                capture_output=True,
+            )
+        self.addCleanup(_restore_to_head)
+
         summary = {
             "conveyor": "UAC_FAST_TRACK",
             "version":  "V1",
