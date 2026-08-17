@@ -485,7 +485,7 @@ class TestModuleInvariants(unittest.TestCase):
             _ACTIVE_PATCH_IDS,
         )
         active = _active_patches()
-        self.assertEqual(len(active), 27, f"Expected 27 active patches, got {len(active)}")
+        self.assertEqual(len(active), 28, f"Expected 28 active patches, got {len(active)}")
 
     def test_wnba_tennis_sport_families_distinct(self):
         """

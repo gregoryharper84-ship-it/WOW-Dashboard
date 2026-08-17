@@ -319,18 +319,22 @@ class TestTaillon1IPPitches:
         assert "mlb_1ip_pitches_poisson_v1" in result.calibration_note
 
     def test_bf_dist_present_still_event_tree_required(self):
-        """BF dist present → TEST_ONLY; still MODEL_1IP_EVENT_TREE_REQUIRED, None probability."""
-        from gate_engine.hit_probability import compute, MODEL_1IP_EVENT_TREE_REQUIRED
+        """BF dist present → event-tree simulation runs (promoted from TEST_ONLY).
+
+        WOW-PATCH-2026-08-17-1IP-PRODUCTION-HYDRATION: simulator now runs when
+        bf_distribution is present; model_used = 1ip_monte_carlo_event_tree_v1.
+        ceiling=MODEL_QUALIFIED_HOLD; can_execute=False unconditional.
+        """
+        from gate_engine.hit_probability import compute
         game_log = [18.0, 21.0, 19.0, 22.0, 17.0, 20.0, 23.0, 18.0, 19.0, 21.0]
         bf_dist = {"p_bf_3": 0.40, "p_bf_4": 0.35, "p_bf_gte5": 0.25}
         result = compute(
             self._make_leg(), game_log,
             enrichment={"first_inning_bf_distribution": bf_dist},
         )
-        assert result.hit_probability is None
-        assert result.model_used == MODEL_1IP_EVENT_TREE_REQUIRED
+        assert result.model_used == "1ip_monte_carlo_event_tree_v1"
         assert "Poisson" not in result.model_used
-        assert "TEST_ONLY" in result.calibration_note
+        assert "1IP_EVENT_TREE" in result.calibration_note
         assert "can_execute=False" in result.calibration_note
 
     def test_empty_game_log_returns_no_data(self):

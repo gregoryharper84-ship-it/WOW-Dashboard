@@ -221,16 +221,22 @@ class TestPoissonFirewall:
     # B2: game_log populated, BF dist present → still not Poisson (event tree held)
     # ------------------------------------------------------------------
     def test_game_log_and_bf_dist_present_not_poisson(self):
+        """BF dist present → event-tree simulation runs (promoted from TEST_ONLY).
+
+        WOW-PATCH-2026-08-17-1IP-PRODUCTION-HYDRATION: the simulator now returns
+        a numeric hit_probability; model_used = 1ip_monte_carlo_event_tree_v1.
+        Poisson is still excluded; can_execute=False unconditional.
+        """
         game_log = [18.0, 21.0, 19.0, 22.0, 17.0, 20.0, 23.0, 18.0, 19.0, 21.0]
         bf_dist = {"p_bf_3": 0.40, "p_bf_4": 0.35, "p_bf_gte5": 0.25}
-        result, expected_model = self._compute(
+        result, _expected_model = self._compute(
             game_log, enrichment={"first_inning_bf_distribution": bf_dist}
         )
 
-        assert result.hit_probability is None
-        assert result.model_used == expected_model
+        # Simulation now runs → probability returned (not None)
+        assert result.model_used == "1ip_monte_carlo_event_tree_v1"
         assert "Poisson" not in result.model_used
-        assert "TEST_ONLY" in result.calibration_note
+        assert "1IP_EVENT_TREE" in result.calibration_note
         assert "can_execute=False" in result.calibration_note
 
     # ------------------------------------------------------------------

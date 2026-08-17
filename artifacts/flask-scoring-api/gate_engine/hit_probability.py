@@ -759,37 +759,75 @@ def compute(
     # ── 1IP_PITCHES_THROWN firewall ──────────────────────────────────────────
     # Runs BEFORE any counting-stat or Poisson tier.
     # mlb_1ip_pitches_poisson_v1 is unconditionally excluded for this stat key.
-    # Routing: no BF dist → MODEL_1IP_EVENT_TREE_REQUIRED sentinel (fail-closed).
-    #          BF dist present → event-tree TEST_ONLY (hit_probability=None, ceiling=MODEL_QUALIFIED_HOLD).
+    #
+    # WOW-PATCH-2026-08-17-1IP-PRODUCTION-HYDRATION:
+    #   - No BF dist   → PROBABILITY_PIPELINE_CONTRACT_BREACH (typed missing_fields)
+    #   - BF dist present → run ip1_event_tree.simulate_1ip(); return hit_probability
+    #     (MODEL_QUALIFIED_HOLD ceiling enforced by caller; can_execute=False)
     if sport == "MLB" and stat_key.upper().replace(" ", "_") == "1IP_PITCHES_THROWN":
         enr_here = enrichment or {}
         bf_dist  = enr_here.get("first_inning_bf_distribution")
-        if bf_dist is None:
+        # Reject only when bf_dist is absent OR when the Savant ledger explicitly
+        # reported n=0 (no verified starts).  A GPT/test-supplied dict that omits
+        # "n" but carries probability values is treated as valid input.
+        _bf_n_explicit = bf_dist.get("n") if isinstance(bf_dist, dict) else None
+        if bf_dist is None or (_bf_n_explicit is not None and _bf_n_explicit == 0):
+            # Typed breach contract — acquisition either failed or was never attempted.
+            _breach_note = (
+                "PROBABILITY_PIPELINE_CONTRACT_BREACH: "
+                "DATA_CONTRACT_FAIL:missing_field:first_inning_bf_distribution; "
+                "missing_fields=['first_inning_bf_distribution']; "
+                "stage=1IP_SAVANT_LEDGER_ACQUISITION; "
+                "mlb_1ip_pitches_poisson_v1 blocked — Poisson excluded for 1IP; "
+                "can_execute=False; retryable=True"
+            )
             return _finalize(HitProbResult(
-                hit_probability  = None,
-                model_used       = MODEL_1IP_EVENT_TREE_REQUIRED,
-                calibration_note = (
-                    "MODEL_1IP_EVENT_TREE_REQUIRED: "
-                    "DATA_CONTRACT_FAIL:missing_field:first_inning_bf_distribution; "
-                    "mlb_1ip_pitches_poisson_v1 blocked — Poisson excluded for 1IP; "
-                    "TEST_ONLY; can_execute=False"
-                ),
-                lambda_used      = None,
-                sample_size      = len(game_log),
+                hit_probability    = None,
+                model_used         = MODEL_1IP_EVENT_TREE_REQUIRED,
+                calibration_note   = _breach_note,
+                lambda_used        = None,
+                sample_size        = len(game_log),
                 market_calibration = no_vig_prob,
             ))
-        # BF dist present — event-tree simulator is TEST_ONLY; hit_probability stays None.
-        return _finalize(HitProbResult(
-            hit_probability  = None,
-            model_used       = MODEL_1IP_EVENT_TREE_REQUIRED,
+
+        # BF dist present — run the Monte Carlo event-tree simulator.
+        # ceiling = MODEL_QUALIFIED_HOLD (enforced by pipeline; can_execute=False).
+        ppb_dist = enr_here.get("pitches_per_batter_distribution") or {"mean": 4.2, "std": 1.1}
+        _acq_status = enr_here.get("1ip_acquisition_status", "UNKNOWN")
+        try:
+            from gate_engine.mlb.ip1_event_tree import simulate_1ip
+            sim = simulate_1ip(
+                bf_distribution         = bf_dist,
+                pitches_per_batter_dist = ppb_dist,
+                line_value              = line,
+                side                    = side,
+                n_trials                = 25000,
+            )
+            raw_prob = sim.get("raw_less") if side == "LESS" else sim.get("raw_more")
+            # Fail closed on degenerate simulation output.
+            if raw_prob is None or not (0.01 <= float(raw_prob) <= 0.99):
+                raw_prob = None
             calibration_note = (
-                "MODEL_1IP_EVENT_TREE_REQUIRED: bf_distribution received; "
-                "simulator is TEST_ONLY — hit_probability=None; "
-                "MODEL_QUALIFIED_HOLD ceiling; can_execute=False; "
-                "supply first_inning_bf_distribution to advance to event-tree run"
-            ),
-            lambda_used      = None,
-            sample_size      = len(game_log),
+                f"1IP_EVENT_TREE:model=1ip_monte_carlo_event_tree_v1;"
+                f"n_trials={sim.get('n_trials', 25000)};"
+                f"mean_pitches={sim.get('mean_pitches')};"
+                f"raw_more={sim.get('raw_more')};raw_less={sim.get('raw_less')};"
+                f"bf_n={bf_dist.get('n')};ppb_mean={ppb_dist.get('mean')};"
+                f"acq_status={_acq_status};"
+                f"ceiling=MODEL_QUALIFIED_HOLD;can_execute=False"
+            )
+        except Exception as _sim_exc:
+            raw_prob = None
+            calibration_note = (
+                f"1IP_EVENT_TREE_ERROR:{_sim_exc!s:.120};"
+                f"ceiling=MODEL_QUALIFIED_HOLD;can_execute=False"
+            )
+        return _finalize(HitProbResult(
+            hit_probability    = raw_prob,
+            model_used         = "1ip_monte_carlo_event_tree_v1",
+            calibration_note   = calibration_note,
+            lambda_used        = None,
+            sample_size        = len(game_log),
             market_calibration = no_vig_prob,
         ))
 

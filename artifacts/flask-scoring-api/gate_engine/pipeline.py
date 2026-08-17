@@ -794,11 +794,13 @@ def run_pipeline(
                     "missing_fields": ["first_inning_bf_distribution"],
                     "code":           "DATA_CONTRACT_FAIL",
                     "detail": (
-                        "1IP_PITCHES_THROWN: first_inning_bf_distribution not supplied "
-                        "in enrichment. The GPT event-tree specialist "
-                        "(wow.mlb-first-inning-pitch-count-expert) must compute and "
-                        "submit this field. mlb_1ip_pitches_poisson_v1 unconditionally "
-                        "excluded; Poisson model never fires for this stat key."
+                        "1IP_PITCHES_THROWN: first_inning_bf_distribution absent after "
+                        "acquisition. Backend attempts Savant CSV → pybaseball fallback; "
+                        "if both fail, a PROBABILITY_PIPELINE_CONTRACT_BREACH is recorded "
+                        "in enrichment['1ip_breach_contract']. GPT may also supply "
+                        "first_inning_bf_distribution directly in enrichment. "
+                        "mlb_1ip_pitches_poisson_v1 unconditionally excluded; "
+                        "Poisson model never fires for this stat key."
                     ),
                     "phase": "1ip_event_tree_enrichment_check",
                 }

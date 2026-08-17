@@ -782,6 +782,54 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
         ),
     },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-17-1IP-PRODUCTION-HYDRATION",
+        "version":     "1.0",
+        "effective_at": "2026-08-17",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  107,
+        "can_execute": False,
+        "description": (
+            "1IP Pitcher Prop Production Hydration (2026-08-17): "
+            "Root cause: acquisition_orchestrator dispatched MLB 1IP_PITCHES_THROWN rows "
+            "through _check_prop_game_log (MLB Stats API game_log — IP counts), never "
+            "calling savant_1ip_ledger.build_1ip_ledger. "
+            "first_inning_bf_distribution was always absent from enrichment; "
+            "pipeline gate (pipeline.py:783-806) unconditionally rejected rows with "
+            "DATA_CONTRACT_FAIL:missing_field:first_inning_bf_distribution. "
+            "ip1_event_tree.simulate_1ip() was complete but hit_probability.py "
+            "short-circuited it as TEST_ONLY (hit_probability=None). "
+            "Key mismatch: savant_1ip_ledger._bf_distribution returned 'p_bf_5plus' "
+            "but simulate_1ip() consumed 'p_bf_gte5' — silent zero inputs. "
+            "Fix 1 — savant_1ip_ledger.py: _bf_distribution now emits both 'p_bf_5plus' "
+            "(legacy) and 'p_bf_gte5' (alias for simulate_1ip); "
+            "new compute_pitches_per_batter_dist() derives ppb mean/std from ledger rows "
+            "(3+ starts required; otherwise genre-calibrated defaults mean=4.2 std=1.1). "
+            "Fix 2 — acquisition_orchestrator.py: new _check_1ip_acquisition() fetches "
+            "Savant first-inning ledger for every 1IP_PITCHES_THROWN row; "
+            "populates first_inning_bf_distribution + pitches_per_batter_distribution + "
+            "savant_1ip_ledger summary in enrichment[row_id]; "
+            "_check_prop_game_log detects 1IP rows and routes to this function early "
+            "(before generic game_log fetch). "
+            "Typed breach contract on failure: PROBABILITY_PIPELINE_CONTRACT_BREACH dict "
+            "with missing_fields, stage, acquisition_sources_tried, retryable=True. "
+            "Fix 3 — hit_probability.py: 1IP firewall promoted from TEST_ONLY sentinel "
+            "to production probability generator; when bf_dist present, calls "
+            "simulate_1ip() and returns side-specific hit_probability (raw_less/raw_more); "
+            "degenerate output (outside 0.01-0.99) fails closed to None. "
+            "Missing BF dist now emits PROBABILITY_PIPELINE_CONTRACT_BREACH note "
+            "with typed missing_fields instead of vague MODEL_1IP_EVENT_TREE_REQUIRED. "
+            "Fix 4 — pipeline.py: gate detail message updated to reflect backend "
+            "acquisition attempt (Savant → pybaseball) not GPT-only supply. "
+            "Source hierarchy: Savant CSV (inning=1 server-side) → pybaseball fallback → "
+            "GPT-supplied first_inning_bf_distribution → PROBABILITY_PIPELINE_CONTRACT_BREACH. "
+            "Ceiling: MODEL_QUALIFIED_HOLD (unconditional; can_execute=False; "
+            "market/model readiness remain separate). "
+            "Regression suite: gate_engine/tests/test_1ip_production_hydration.py (7 tests). "
+            "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
+        ),
+    },
 ]
 
 # ---------------------------------------------------------------------------
