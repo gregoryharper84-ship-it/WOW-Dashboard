@@ -25241,24 +25241,13 @@ def _apply_weather_price_gate(
 #   KALSHI_REJECT_FEE_DRAG
 from gate_engine.kalshi_wx_terminal_labels import (
     KALSHI_WX_TERMINAL_LABEL_REGISTRY as _KALSHI_WX_TERMINAL_LABEL_REGISTRY,
+    validate_wx_terminal_label as _validate_wx_terminal_label,  # single implementation
 )
-
-
-def _validate_wx_terminal_label(label: str) -> bool:
-    """
-    WOW-PATCH-2026-08-08-KALSHI-WX-TERMINAL-LABEL-FAIL-CLOSED
-
-    Return True iff `label` is a member of _KALSHI_WX_TERMINAL_LABEL_REGISTRY.
-    Return False for any unrecognised string, including labels mentioned only
-    in comments/docstrings (e.g. KALSHI_REJECT_THIN_BOOK, KALSHI_REJECT_FEE_DRAG).
-
-    Scope: standalone guard on the Kalshi Weather engine's own output only.
-    This function MUST NOT be called by or wired into:
-      - gate_engine/wow_runtime_manifest.py  (CEILING_RANK / resolve_lowest_ceiling)
-      - gate_engine/command_center/cc_labels.py + ceiling_resolver.py
-    Those ceiling resolvers are independent systems with their own label registries.
-    """
-    return label in _KALSHI_WX_TERMINAL_LABEL_REGISTRY
+# WOW-PATCH-2026-08-16-AUDIT fix (gap 2): _validate_wx_terminal_label is now a
+# direct import alias of the exported module function — not a local duplicate.
+# app.py and the test suite use the same function object, so the production path
+# and the test path cannot diverge.  Do NOT re-define _validate_wx_terminal_label
+# as a local function below this line.
 
 
 def _weather_terminal_label_v2(

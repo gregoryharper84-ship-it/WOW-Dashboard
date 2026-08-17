@@ -24,6 +24,110 @@ from . import acquisition as _acq_mod
 from .acquisition import AcquisitionTracker, SourceStatus, build_run_acquisition_report
 from .labels import PropLabel
 from .exposure_gate import ExposureLedger
+
+# ── WOW-PATCH-2026-08-16-AUDIT: module-level terminal-label classification sets ──
+# These frozensets drive the non-tautological row reconciliation in run_pipeline().
+# Defining them at module level lets tests import them directly to verify
+# membership without running the full pipeline.
+
+_RC_COMPLETED_LABELS: frozenset = frozenset({
+    PropLabel.FINAL_APPROVED.value,
+})
+
+_RC_HELD_LABELS: frozenset = frozenset({
+    # Core hold / research states
+    PropLabel.MODEL_QUALIFIED_HOLD.value,
+    PropLabel.MARKET_VERIFIED_HOLD.value,
+    PropLabel.CALIBRATION_STALE_HOLD.value,
+    PropLabel.MLB_OUTS_MORE_HOLD.value,
+    PropLabel.MONEY_QUALIFIED.value,
+    PropLabel.RESEARCH_INTEREST.value,
+    PropLabel.FORMAT_PENDING.value,
+    PropLabel.DEGRADED_ENGINE_RUN.value,
+    PropLabel.MARKET_QUALIFIED_BUT_SLIP_NEGATIVE.value,
+    # Watch / scout / advisory states
+    PropLabel.MLB_K_LESS_WATCH.value,
+    PropLabel.WNBA_COMPOSITE_WATCH.value,
+    PropLabel.WNBA_COMPOSITE_SCOUT.value,
+    PropLabel.WNBA_COMPOSITE_MODEL_READY.value,
+    PropLabel.FLIP_CANDIDATE.value,
+    # Caution / exposure states
+    PropLabel.SESSION_EXPOSURE_WARNING.value,
+    PropLabel.HOUSE_RULES_CAUTION.value,
+    PropLabel.SERIES_STATE_CAUTION.value,
+    # Conflict / audit review states (non-terminal rejects)
+    PropLabel.COMPONENT_COMPOSITE_CONFLICT.value,
+    PropLabel.HIGH_CONFIDENCE_SUSPENDED.value,  # value: HIGH_CONFIDENCE_SUSPENDED_CALIBRATION_FAILURE
+    PropLabel.PREDICTION_MARKET_SOURCE_CEILING.value,
+    PropLabel.HISTORICAL_NON_OCCURRENCE_MISUSED.value,
+    PropLabel.LINE_ACTIVE_UNCONFIRMED.value,
+    PropLabel.RECONCILIATION_REQUIRED.value,
+    PropLabel.EXACT_LINE_AUDIT_REQUIRED.value,
+    PropLabel.WEATHER_SOURCE_INVALID_FOR_SETTLEMENT.value,
+    PropLabel.ESPN_BLURB_STALE_AVERAGES.value,
+    PropLabel.SETTLEMENT_SOURCE_CONFLICT.value,
+    PropLabel.PREGAME_SNAPSHOT_BLOCK.value,
+    PropLabel.FINAL_REFRESH_REQUIRED.value,
+    # Analytical caution states
+    PropLabel.VARIANCE_INCREASE.value,
+    PropLabel.CROSS_BOOK_PARLAY_ILLUSION.value,
+    PropLabel.SAME_GAME_CORRELATED_STACK.value,
+    PropLabel.SELECTIVE_RECENCY_APPLIED.value,
+    PropLabel.RECENT_FORM_DIVERGENCE.value,
+    PropLabel.OUTLIER_OR_ROLE_AUDIT_REQUIRED.value,
+    PropLabel.SAME_PLAYER_SHARED_THESIS.value,
+    PropLabel.NEXT_DAY_PREVIEW.value,
+    PropLabel.LAW_OF_AVERAGES_SUPPORT.value,
+    PropLabel.HOT_STREAK_AS_PROBABILITY.value,
+    PropLabel.ONE_GAME_SAMPLE_INSUFFICIENT.value,
+})
+
+_RC_REJECTED_LABELS: frozenset = frozenset({
+    PropLabel.DATA_CONTRACT_FAIL.value,
+    PropLabel.SLATE_PURGE.value,
+    PropLabel.WNBA_SLATE_PURGE.value,
+    PropLabel.NO_PLAY.value,
+    PropLabel.DUPLICATE_EXPOSURE_BLOCK.value,
+    PropLabel.DIRECTIONAL_EXPOSURE_BLOCK.value,
+    PropLabel.SESSION_DIRECTIONAL_EXPOSURE_BLOCK.value,
+    PropLabel.PIPELINE_INTEGRITY_FAILURE.value,
+    PropLabel.HARD_REJECT_COMBO_MULTIPLICATION.value,
+    PropLabel.MLB_WINNER_PREFLIGHT_BLOCK.value,
+    PropLabel.REJECT_PP_PROMOTION_GATE.value,
+    PropLabel.REJECT_SAME_EVENT_NO_JOINT_MODEL.value,
+    PropLabel.REJECT_RECENCY_SHOCK.value,
+    PropLabel.FATAL_REJECTED_LEG_IN_CARD.value,
+    PropLabel.NO_DUPLICATE_EXPOSURE.value,
+    PropLabel.SOURCE_CONFLICT.value,
+    PropLabel.REJECT_BAD_STRUCTURE.value,
+    PropLabel.REJECT_DATA_QUALITY.value,
+    PropLabel.REJECT_NO_EDGE.value,
+    PropLabel.REJECT_SHARP_CONFLICT.value,
+    PropLabel.REJECT_FALLING_KNIFE.value,
+    PropLabel.REJECT_HOUSE_RULES_VULNERABILITY.value,
+    PropLabel.REJECT_EXECUTION_STALE.value,
+    PropLabel.REJECT_PAYOUT_CHANGED.value,
+    PropLabel.REJECT_LOW_LIQUIDITY.value,
+    PropLabel.REJECT_LINE_MOVED_AGAINST_SIDE.value,
+    PropLabel.REJECT_POWER_CORRELATED.value,
+    PropLabel.REJECT_MARKET_ADVERSE_THRESHOLD.value,
+    PropLabel.REJECT_MARKET_ADVERSE_PUSH_LOSS.value,
+    PropLabel.REJECT_CONTRADICTORY_ROLE_STATE.value,
+    PropLabel.REJECT_OPPORTUNITY_SUM_MISMATCH.value,
+    PropLabel.REJECT_ALTERNATE_THRESHOLD_DUPLICATE.value,
+    PropLabel.REJECT_EXACT_DUPLICATE.value,
+    PropLabel.REJECT_DUPLICATE_STRUCTURE.value,
+    PropLabel.REJECT_DUPLICATE_PITCHER_THESIS.value,
+    # Acquisition failure labels (not PropLabel enum members — string literals)
+    "RUN_INVALID — ACQUISITION_INCOMPLETE",
+    "RUN_INVALID_GOVERNANCE_MISMATCH",
+    "INPUT_FAILURE — ACQUISITION_NOT_COMPLETED",
+})
+
+
+def _rc_label_is_reject(lbl: str) -> bool:
+    """Return True if lbl is an explicit reject label or has a REJECT_ prefix."""
+    return lbl in _RC_REJECTED_LABELS or lbl.startswith("REJECT_")
 # WOW-PATCH-2026-07-15 — new gates
 from . import market_adverse, component_composite, opportunity_state
 from .governance import get_governance_status
@@ -1868,16 +1972,14 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         except Exception:
             pass  # enforcer is advisory; never block the response
 
-    # WOW-PATCH-2026-08-16-AUDIT fix (1): row label normalization.
-    # Every row must terminate in exactly one bucket (completed/held/rejected).
-    # rows_other must equal zero.  Any row whose terminal_label is still None
-    # after all enforcement passes is assigned DATA_CONTRACT_FAIL so it lands
-    # in the rejected bucket and is not silently dropped from the reconciliation.
+    # WOW-PATCH-2026-08-16-AUDIT fix (1): row label normalization pass A.
+    # None / empty labels are normalized to DATA_CONTRACT_FAIL immediately.
     for _norm_row in rows:
-        if _norm_row.get("terminal_label") is None:
+        _lbl_a = _norm_row.get("terminal_label")
+        if not _lbl_a:
             _norm_row["terminal_label"] = PropLabel.DATA_CONTRACT_FAIL.value
             _norm_row.setdefault("blockers", []).append(
-                "UNLABELED_ROW_NORMALIZED:terminal_label_was_None"
+                f"UNLABELED_ROW_NORMALIZED:terminal_label_was={_lbl_a!r}"
             )
 
     # WOW-PATCH-2026-08-10-STAGE-A — Outlier recompute engine pass
@@ -1908,37 +2010,32 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
     ]
     _route_failures = sum(1 for t in gate_execution_summary if t["route_downgraded"])
 
-    # WOW-PATCH-2026-08-16-AUDIT fix (1): exact row reconciliation pre-computation.
-    # After the normalization sweep, terminal_label is non-None for every row.
-    # Buckets are mutually exclusive and exhaustive: completed + held + rejected == rows_in.
-    # rows_other is always 0 by construction (held absorbs any label not in the other two).
-    _RC_REJECT_TERMINAL: frozenset = frozenset({
-        PropLabel.DATA_CONTRACT_FAIL.value,
-        PropLabel.SLATE_PURGE.value,
-        PropLabel.NO_PLAY.value,
-        PropLabel.DUPLICATE_EXPOSURE_BLOCK.value,
-        PropLabel.DIRECTIONAL_EXPOSURE_BLOCK.value,
-        PropLabel.SESSION_DIRECTIONAL_EXPOSURE_BLOCK.value,
-        PropLabel.PIPELINE_INTEGRITY_FAILURE.value,
-        PropLabel.HARD_REJECT_COMBO_MULTIPLICATION.value,
-        PropLabel.MLB_WINNER_PREFLIGHT_BLOCK.value,
-        PropLabel.REJECT_PP_PROMOTION_GATE.value,
-        PropLabel.REJECT_SAME_EVENT_NO_JOINT_MODEL.value,
-        PropLabel.REJECT_RECENCY_SHOCK.value,
-        PropLabel.FATAL_REJECTED_LEG_IN_CARD.value,
-        PropLabel.WNBA_SLATE_PURGE.value,
-        PropLabel.NO_DUPLICATE_EXPOSURE.value,
-        PropLabel.SOURCE_CONFLICT.value,
-    })
+    # WOW-PATCH-2026-08-16-AUDIT fix (1) revised: module-level frozensets.
+    # _RC_COMPLETED_LABELS, _RC_HELD_LABELS, _RC_REJECTED_LABELS, and
+    # _rc_label_is_reject() are defined at module level (imported by tests directly).
 
-    def _rc_in_reject(lbl: str | None) -> bool:
-        lbl = lbl or ""
-        return lbl.startswith("REJECT_") or lbl in _RC_REJECT_TERMINAL
+    # Normalization pass B: any label not in a registered bucket → DATA_CONTRACT_FAIL.
+    # Catches CONDITIONAL, BOGUS_LABEL, "conditional", whitespace, etc.
+    for _norm_row in rows:
+        _lbl_b = _norm_row.get("terminal_label") or ""
+        if (
+            _lbl_b not in _RC_COMPLETED_LABELS
+            and _lbl_b not in _RC_HELD_LABELS
+            and not _rc_label_is_reject(_lbl_b)
+        ):
+            _old_b = _lbl_b
+            _norm_row["terminal_label"] = PropLabel.DATA_CONTRACT_FAIL.value
+            _norm_row.setdefault("blockers", []).append(
+                f"UNKNOWN_LABEL_NORMALIZED:was={_old_b!r}"
+            )
 
-    _rc_completed = sum(1 for r in rows if r.get("terminal_label") == PropLabel.FINAL_APPROVED.value)
-    _rc_rejected  = sum(1 for r in rows if _rc_in_reject(r.get("terminal_label")))
-    _rc_held      = len(rows) - _rc_completed - _rc_rejected
-    _rc_other     = 0  # enforced: normalization sweep + held absorbs all remaining labels
+    # Explicit, non-tautological counting after both normalization passes.
+    # After passes A+B every label is in exactly one registered bucket.
+    _rc_completed = sum(1 for r in rows if r.get("terminal_label") in _RC_COMPLETED_LABELS)
+    _rc_held      = sum(1 for r in rows if r.get("terminal_label") in _RC_HELD_LABELS)
+    _rc_rejected  = sum(1 for r in rows if _rc_label_is_reject(r.get("terminal_label") or ""))
+    _rc_unknown   = len(rows) - _rc_completed - _rc_held - _rc_rejected   # must be 0
+    _rc_other     = 0
 
     return {
         "prop_ledger":        rows,
@@ -1999,15 +2096,21 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
             # WOW-PATCH-2026-08-10-STAGE-A — task #71: surface incomplete prob ledgers
             "prob_ledger_incomplete":   _ple_incomplete_count > 0,
             "prob_ledger_incomplete_count": _ple_incomplete_count,
-            # WOW-PATCH-2026-08-16-AUDIT fix (1): exact row reconciliation.
-            # rows_in == rows_completed + rows_held + rows_rejected exactly.
-            # rows_other == 0 enforced by normalization sweep + held bucket absorbs remainder.
+            # WOW-PATCH-2026-08-16-AUDIT fix (1) revised: exact, non-tautological
+            # row reconciliation using three explicit registered frozensets.
+            # Normalization passes A+B guarantee every label is in a known bucket.
+            # rows_unknown must be 0; row_balance_valid requires both equality
+            # AND rows_unknown == 0 so the check is never tautological.
             "rows_in":         len(rows),
             "rows_completed":  _rc_completed,
             "rows_held":       _rc_held,
             "rows_rejected":   _rc_rejected,
-            "rows_other":      _rc_other,
-            "row_balance_valid": (_rc_completed + _rc_held + _rc_rejected) == len(rows),
+            "rows_unknown":    _rc_unknown,   # must be 0 after normalization passes A+B
+            "rows_other":      _rc_other,     # always 0 (alias preserved for API compat)
+            "row_balance_valid": (
+                (_rc_completed + _rc_held + _rc_rejected) == len(rows)
+                and _rc_unknown == 0
+            ),
         },
         # WOW-PATCH-2026-08-16-AUDIT fix (8): canonical ceiling enforcement status.
         # Each active ceiling mechanism reports its enforcement mode.  ACTIVE_FAIL_CLOSED
