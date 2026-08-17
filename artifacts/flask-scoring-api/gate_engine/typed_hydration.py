@@ -3,6 +3,14 @@ typed_hydration.py — WOW-PATCH-2026-08-17-TYPED-HYDRATION-AND-MODEL-READINESS-
 
 Typed lifecycle state machine and four-gate data-presence enforcement layer.
 
+SCOPE: Player-prop markets only (PrizePicks props, NBA/WNBA/MLB/NFL/NHL).
+  This module is NOT universal.  Moneylines, tennis totals, Kalshi weather
+  contracts, and event-level (non-player) markets are out of scope.  Their
+  controlling specialists and the Full Model Gatekeeper govern lane entry
+  for those market families.  Fields such as player, lineup, L5/L10, and
+  projected_minutes_or_workload are unconditional requirements because they
+  are unconditionally required for the player-prop model contract.
+
 Architectural invariant (per patch spec):
   Data acquisition failure must NEVER be presented as model judgment.
   lifecycle_state / data_status / model_status / failure_class are separate
@@ -12,19 +20,29 @@ Architectural invariant (per patch spec):
 
 Lifecycle (state machine, forward-only):
   BOARD_EXTRACTED → DATA_HYDRATING
-    → BLOCKED           (any data gate fails — missing, stale, outage, conflict)
+    → BLOCKED              (Gate 1/2/3 failure — or Gate 4 BLOCKING)
     → CONTRACT_COMPLETE → FOUR_GATES_CLEARED → MODEL_READY
                                                   → SCORING_ATOMIC → SCORED
                                                   → BLOCKED (calibration/write fail)
 
-Only MODEL_READY rows may be ranked, slipped, or entered into exposure ledgers.
-Blocked rows are structurally excluded by the RunController before any ranking step.
+Gate 4 (Market/Settlement) is 3-way — only BLOCKING outcomes block MODEL_READY:
+  AVAILABLE   — market data complete → all lanes (confidence + market-edge + money)
+  UNAVAILABLE — market data absent/outage → confidence/model lane survives;
+                market-edge and money lanes blocked; terminal ceiling lowered
+  BLOCKING    — SOURCE_CONFLICT or STALE_DATA → row is BLOCKED entirely
 
-Four data-presence gates (not analytical gates — no probability/threshold logic):
+Design rationale: under the reconstructed-confidence architecture and the Full
+Model Gatekeeper contract, an exact two-way market is NOT required to run the
+confidence/model lane.  Absent market evidence should reduce the ceiling, not
+prevent the probability model from running.
+
+Only MODEL_READY rows may be ranked, slipped, or entered into exposure ledgers.
+
+Four data-presence gates (no probability / no analytical gate logic):
   1. Identity / Status Gate    — canonical identity, correct slate, active participant
   2. Role / Opportunity Gate   — minutes, workload, lineup slot, role certainty
   3. Historical-Ledger Gate    — raw L5/L10, hit rates, median, sample window, push rate
-  4. Market / Settlement Gate  — exact line, both directions, no-vig, timestamp, TTL
+  4. Market / Settlement Gate  — 3-way (see above); TTL freshness; SOURCE_CONFLICT blocking
 
 can_execute: False  (DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS)
 """
@@ -108,6 +126,27 @@ class FailureClass(str, Enum):
     NONE              = "NONE"
 
 
+class MarketGateOutcome(str, Enum):
+    """
+    3-way outcome for Gate 4 (Market / Settlement).
+
+    Only BLOCKING outcomes prevent MODEL_READY.  UNAVAILABLE allows the
+    confidence/model lane to proceed with a reduced terminal ceiling —
+    consistent with the Full Model Gatekeeper contract and the reconstructed-
+    confidence architecture, which do not require an exact two-way market to
+    run the probability model.
+
+      AVAILABLE   — all market data present; all lanes open
+      UNAVAILABLE — market data absent or provider outage; confidence/model
+                    lane survives; market-edge and money lanes are blocked;
+                    terminal ceiling is lowered (MODEL_QUALIFIED_HOLD max)
+      BLOCKING    — SOURCE_CONFLICT or STALE_DATA; row is BLOCKED entirely
+    """
+    AVAILABLE   = "AVAILABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+    BLOCKING    = "BLOCKING"
+
+
 # ---------------------------------------------------------------------------
 # State machine — valid forward transitions
 # ---------------------------------------------------------------------------
@@ -171,12 +210,14 @@ ALL_GATES:     tuple[str, ...] = (GATE_IDENTITY, GATE_ROLE, GATE_LEDGER, GATE_MA
 
 @dataclass
 class FourGateResult:
-    gate_id:        str
-    passed:         bool
-    missing_fields: list[str]
-    data_status:    DataStatus
-    failure_class:  FailureClass
-    failure_reason: str
+    gate_id:             str
+    passed:              bool
+    missing_fields:      list[str]
+    data_status:         DataStatus
+    failure_class:       FailureClass
+    failure_reason:      str
+    # Gate 4 only — None for Gates 1/2/3
+    market_gate_outcome: "MarketGateOutcome | None" = None
 
 
 @dataclass
@@ -188,6 +229,14 @@ class HydrationResult:
     failure_class) are separate from terminal_label, which remains a native
     WOW label (e.g., DATA_CONTRACT_FAIL for blocked rows, "" for MODEL_READY
     rows pending scoring).
+
+    Gate 4 (Market/Settlement) is 3-way — see MarketGateOutcome.  A row may
+    reach MODEL_READY even when market data is absent (UNAVAILABLE outcome),
+    in which case:
+      confidence_lane_available = True   (probability model may run)
+      market_lane_available     = False  (market-edge/money lanes blocked)
+    This is consistent with the Full Model Gatekeeper contract: absent market
+    evidence lowers the terminal ceiling; it does not prevent model execution.
     """
     row_id:          str
     lifecycle_state: LifecycleState
@@ -200,6 +249,10 @@ class HydrationResult:
     gates_failed:    int = 0
     missing_fields:  list[str] = field(default_factory=list)
     failure_summary: str = ""
+    # Gate 4 market-lane separation (player-prop scope)
+    market_gate_outcome:     "MarketGateOutcome"     = MarketGateOutcome.AVAILABLE
+    market_lane_available:   bool                    = True   # market-edge / money
+    confidence_lane_available: bool                  = True   # probability model
     # Acquisition provenance
     provider_attempts: list[dict[str, Any]] = field(default_factory=list)
     fallback_sources:  list[str] = field(default_factory=list)
@@ -452,7 +505,7 @@ def _run_market_gate(
     if now is None:
         now = datetime.now(timezone.utc)
 
-    # SOURCE_CONFLICT check first
+    # SOURCE_CONFLICT → BLOCKING (row fully blocked)
     no_vig = str(enrichment.get("market_no_vig_probability") or "").strip().upper()
     if no_vig == "SOURCE_CONFLICT":
         return FourGateResult(
@@ -462,9 +515,11 @@ def _run_market_gate(
             data_status=DataStatus.SOURCE_CONFLICT,
             failure_class=FailureClass.CONFLICT_FAILURE,
             failure_reason="market_no_vig_probability=SOURCE_CONFLICT across sources",
+            market_gate_outcome=MarketGateOutcome.BLOCKING,
         )
 
-    # TTL freshness check — runs before field-presence check
+    # TTL freshness check — runs before field-presence check.
+    # Expired TTL → BLOCKING (cannot refresh by reusing the old value).
     market_checked_at = enrichment.get("market_checked_at")
     market_ttl        = enrichment.get("market_ttl")
     if market_checked_at is not None and market_ttl is not None:
@@ -486,11 +541,14 @@ def _run_market_gate(
                         f"Market data TTL expired (age={age:.0f}s > ttl={ttl_seconds:.0f}s). "
                         "Expired TTL cannot be refreshed by reusing the old value."
                     ),
+                    market_gate_outcome=MarketGateOutcome.BLOCKING,
                 )
         except (ValueError, TypeError, AttributeError):
             pass  # malformed timestamp — fall through to field presence
 
-    # Field presence check
+    # Field presence check.
+    # Missing market fields → UNAVAILABLE (non-blocking per reconstructed-confidence
+    # architecture: confidence/model lane survives, market-edge/money lanes blocked).
     enr_required = ["market_no_vig_probability", "data_timestamp"]
     missing: list[str] = []
     for f in enr_required:
@@ -501,11 +559,15 @@ def _run_market_gate(
     if missing:
         return FourGateResult(
             gate_id=GATE_MARKET,
-            passed=False,
+            passed=False,          # gate did not fully pass
             missing_fields=missing,
             data_status=DataStatus.INCOMPLETE_INPUT,
             failure_class=FailureClass.INPUT_FAILURE,
-            failure_reason=f"Missing market/settlement fields: {missing}",
+            failure_reason=(
+                f"Market data unavailable — fields absent: {missing}. "
+                "Confidence/model lane survives; market-edge and money lanes blocked."
+            ),
+            market_gate_outcome=MarketGateOutcome.UNAVAILABLE,  # non-blocking
         )
 
     return FourGateResult(
@@ -515,6 +577,7 @@ def _run_market_gate(
         data_status=DataStatus.COMPLETE,
         failure_class=FailureClass.NONE,
         failure_reason="",
+        market_gate_outcome=MarketGateOutcome.AVAILABLE,
     )
 
 
@@ -574,16 +637,35 @@ def run_hydration_check(
         GATE_LEDGER:   g3,
         GATE_MARKET:   g4,
     }
-    failed_gates = [g for g in gate_results.values() if not g.passed]
-    passed_count = len(gate_results) - len(failed_gates)
-    all_missing  = [f for g in failed_gates for f in g.missing_fields]
 
-    if failed_gates:
-        # Fail-closed: any gate failure → BLOCKED
+    # Gate 4 uses a 3-way outcome.  Only BLOCKING prevents MODEL_READY.
+    # UNAVAILABLE (missing market data / provider outage on market) allows
+    # the confidence/model lane while blocking market-edge and money lanes.
+    g4_outcome: MarketGateOutcome = (
+        g4.market_gate_outcome
+        if g4.market_gate_outcome is not None
+        else MarketGateOutcome.AVAILABLE
+    )
+
+    # Hard-blocking failures: Gates 1/2/3 failures + Gate 4 BLOCKING
+    hard_blocking = [g for g in [g1, g2, g3] if not g.passed]
+    if g4_outcome == MarketGateOutcome.BLOCKING:
+        hard_blocking.append(g4)
+    market_soft_fail = (not g4.passed) and g4_outcome == MarketGateOutcome.UNAVAILABLE
+
+    # Counts for the reconciliation equations
+    failed_gates = [g for g in gate_results.values() if not g.passed]
+    passed_count = sum(1 for g in gate_results.values() if g.passed)
+    all_missing  = [f for g in hard_blocking for f in g.missing_fields]
+    if market_soft_fail and g4.missing_fields:
+        all_missing.extend(g4.missing_fields)
+
+    if hard_blocking:
+        # Fail-closed: hard blocking failures → BLOCKED
         _validate_transition(LifecycleState.DATA_HYDRATING, LifecycleState.BLOCKED)
-        worst_ds  = _worst_data_status(failed_gates)
-        worst_fc  = _worst_failure_class(failed_gates)
-        summary   = "; ".join(g.failure_reason for g in failed_gates if g.failure_reason)
+        worst_ds = _worst_data_status(hard_blocking)
+        worst_fc = _worst_failure_class(hard_blocking)
+        summary  = "; ".join(g.failure_reason for g in hard_blocking if g.failure_reason)
 
         return HydrationResult(
             row_id=row_id,
@@ -597,27 +679,37 @@ def run_hydration_check(
             gates_failed=len(failed_gates),
             missing_fields=all_missing,
             failure_summary=summary,
+            market_gate_outcome=g4_outcome,
+            market_lane_available=False,
+            confidence_lane_available=False,
             provider_attempts=list(provider_attempts or []),
             fallback_sources=list(fallback_sources or []),
         )
 
-    # All four gates passed: CONTRACT_COMPLETE → FOUR_GATES_CLEARED → MODEL_READY
+    # Gates 1/2/3 all passed; Gate 4 is AVAILABLE or UNAVAILABLE.
+    # Row reaches MODEL_READY in both cases.
     _validate_transition(LifecycleState.DATA_HYDRATING,     LifecycleState.CONTRACT_COMPLETE)
     _validate_transition(LifecycleState.CONTRACT_COMPLETE,  LifecycleState.FOUR_GATES_CLEARED)
     _validate_transition(LifecycleState.FOUR_GATES_CLEARED, LifecycleState.MODEL_READY)
 
+    market_lane_ok = (g4_outcome == MarketGateOutcome.AVAILABLE)
+    soft_summary   = g4.failure_reason if market_soft_fail else ""
+
     return HydrationResult(
         row_id=row_id,
         lifecycle_state=LifecycleState.MODEL_READY,
-        data_status=DataStatus.COMPLETE,
+        data_status=DataStatus.COMPLETE if market_lane_ok else DataStatus.INCOMPLETE_INPUT,
         model_status=ModelStatus.READY,
         failure_class=FailureClass.NONE,
         terminal_label="",      # cleared at MODEL_READY; set by scoring after SCORED
         gate_results=gate_results,
         gates_passed=passed_count,
-        gates_failed=0,
-        missing_fields=[],
-        failure_summary="",
+        gates_failed=len(failed_gates),
+        missing_fields=list(g4.missing_fields) if market_soft_fail else [],
+        failure_summary=soft_summary,
+        market_gate_outcome=g4_outcome,
+        market_lane_available=market_lane_ok,
+        confidence_lane_available=True,   # Gates 1/2/3 passed
         provider_attempts=list(provider_attempts or []),
         fallback_sources=list(fallback_sources or []),
     )

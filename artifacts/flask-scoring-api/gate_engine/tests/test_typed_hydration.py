@@ -1,11 +1,14 @@
 """
 test_typed_hydration.py — WOW-PATCH-2026-08-17-TYPED-HYDRATION-AND-MODEL-READINESS-V1
 
-22 mandatory tests for the typed hydration and model-readiness enforcement layer.
+27 mandatory tests for the typed hydration and model-readiness enforcement layer.
 
 Tests 1-10:  Core gate-behavior and run-controller scenarios.
 Tests 11-22: Extended lifecycle, reconciliation, and isolation invariants
              (as specified in the build packet).
+Test  23:    Gate-4 market-lane separation — UNAVAILABLE outcome allows
+             confidence/model lane while blocking market-edge/money lanes.
+Tests 24-27: Module-level invariants.
 
 All tests: can_execute=False unconditional.
 """
@@ -25,6 +28,7 @@ from gate_engine.typed_hydration import (
     DataStatus,
     FailureClass,
     LifecycleState,
+    MarketGateOutcome,
     ModelStatus,
     advance_lifecycle,
     can_execute,
@@ -105,6 +109,10 @@ class TestTypedHydration(unittest.TestCase):
         self.assertEqual(result.missing_fields,  [])
         # terminal_label is cleared at MODEL_READY (set after scoring)
         self.assertEqual(result.terminal_label, "")
+        # When Gate 4 is AVAILABLE, both lanes are open
+        self.assertEqual(result.market_gate_outcome, MarketGateOutcome.AVAILABLE)
+        self.assertTrue(result.market_lane_available)
+        self.assertTrue(result.confidence_lane_available)
         # All four gate results must be present and passed
         for gate_id in ALL_GATES:
             self.assertIn(gate_id, result.gate_results)
@@ -160,18 +168,32 @@ class TestTypedHydration(unittest.TestCase):
         self.assertEqual(result.terminal_label, PropLabel.DATA_CONTRACT_FAIL.value)
 
     # -----------------------------------------------------------------------
-    # Test 5 — Missing market field → BLOCKED (gate 4 fails)
+    # Test 5 — Missing market field → MODEL_READY with market lane blocked
     # -----------------------------------------------------------------------
-    def test_05_missing_market_field_blocked(self):
-        """Row missing 'market_no_vig_probability' → BLOCKED on Gate 4 (market/settlement)."""
+    def test_05_missing_market_field_allows_confidence_lane(self):
+        """
+        Row missing 'market_no_vig_probability' → MODEL_READY with:
+          - confidence_lane_available = True   (probability model may run)
+          - market_lane_available     = False  (market-edge/money lanes blocked)
+          - market_gate_outcome       = UNAVAILABLE
+          - terminal_label            = ""     (cleared at MODEL_READY)
+
+        Per the Full Model Gatekeeper contract and reconstructed-confidence
+        architecture: absent market evidence lowers the ceiling but does NOT
+        prevent the probability model from running.  Only SOURCE_CONFLICT and
+        STALE_DATA (BLOCKING outcomes) prevent MODEL_READY.
+        """
         enr = _complete_enrichment()
         del enr["market_no_vig_probability"]
         result = run_hydration_check(_complete_row(), enr)
 
-        self.assertEqual(result.lifecycle_state, LifecycleState.BLOCKED)
+        self.assertEqual(result.lifecycle_state,           LifecycleState.MODEL_READY)
+        self.assertEqual(result.market_gate_outcome,       MarketGateOutcome.UNAVAILABLE)
+        self.assertFalse(result.market_lane_available)
+        self.assertTrue(result.confidence_lane_available)
+        self.assertEqual(result.terminal_label,            "")
+        # Gate 4 still did not fully pass (it recorded the missing field)
         self.assertFalse(result.gate_results[GATE_MARKET].passed)
-        self.assertIn("market_no_vig_probability", result.missing_fields)
-        self.assertEqual(result.terminal_label, PropLabel.DATA_CONTRACT_FAIL.value)
 
     # -----------------------------------------------------------------------
     # Test 6 — SOURCE_CONFLICT → BLOCKED / CONFLICT_FAILURE
@@ -550,6 +572,55 @@ class TestTypedHydration(unittest.TestCase):
                 row_id,
                 ctrl.model_ready_row_ids,
                 f"Blocked row {row_id!r} must not appear in model_ready_row_ids",
+            )
+
+    # -----------------------------------------------------------------------
+    # Test 23 — Gate-4 UNAVAILABLE: confidence lane survives, market lane blocked
+    # -----------------------------------------------------------------------
+    def test_23_market_unavailable_confidence_lane_survives(self):
+        """
+        When both market_no_vig_probability AND data_timestamp are absent,
+        Gate 4 returns MarketGateOutcome.UNAVAILABLE (not BLOCKING).
+
+        The row must reach MODEL_READY because Gates 1/2/3 all pass and the
+        market gate outcome is non-blocking.  Lane availability:
+          - confidence_lane_available = True   (probability model may run)
+          - market_lane_available     = False  (market-edge / money blocked)
+
+        This is the correct behavior per the Full Model Gatekeeper contract
+        and reconstructed-confidence architecture: absent market evidence lowers
+        the terminal ceiling; it does not prevent model execution.
+
+        Contrast with SOURCE_CONFLICT and STALE_DATA (both BLOCKING) which
+        fully block the row (see tests 6 and 8).
+        """
+        enr = _complete_enrichment()
+        del enr["market_no_vig_probability"]
+        del enr["data_timestamp"]
+        result = run_hydration_check(_complete_row(), enr)
+
+        # Row reaches MODEL_READY despite market data being absent
+        self.assertEqual(result.lifecycle_state,     LifecycleState.MODEL_READY)
+        self.assertEqual(result.market_gate_outcome, MarketGateOutcome.UNAVAILABLE)
+
+        # Lane separation: confidence ok, market-edge/money blocked
+        self.assertTrue(result.confidence_lane_available,
+                        "Confidence/model lane must survive when market data is absent")
+        self.assertFalse(result.market_lane_available,
+                         "Market-edge/money lane must be blocked when market data is absent")
+
+        # Gate 4 recorded the missing fields but is non-blocking
+        self.assertFalse(result.gate_results[GATE_MARKET].passed)
+        self.assertIn("market_no_vig_probability", result.missing_fields)
+
+        # terminal_label is cleared at MODEL_READY — ceiling is set by scoring layer
+        self.assertEqual(result.terminal_label, "")
+
+        # Gates 1/2/3 must all have passed
+        for gate_id in (GATE_IDENTITY, GATE_ROLE, GATE_LEDGER):
+            self.assertTrue(
+                result.gate_results[gate_id].passed,
+                f"{gate_id} must pass for MODEL_READY to be reached",
             )
 
 

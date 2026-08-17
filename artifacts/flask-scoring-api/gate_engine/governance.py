@@ -691,14 +691,16 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
     },
     {
         "patch_id":    "WOW-PATCH-2026-08-17-TYPED-HYDRATION-AND-MODEL-READINESS-V1",
-        "version":     "1.0",
+        "version":     "1.1",
         "effective_at": "2026-08-17",
         "expires_at":  None,
         "status":      "ACTIVE",
         "precedence":  105,
         "can_execute": False,
         "description": (
-            "Typed Hydration & Model Readiness V1 (2026-08-17): "
+            "Typed Hydration & Model Readiness V1.1 (2026-08-17): "
+            "Player-prop scope only (NBA/WNBA/MLB/NFL/NHL PrizePicks props). "
+            "Moneylines, tennis, Kalshi weather, event-level markets are out of scope. "
             "Prevents incomplete or stale prop rows from entering modeling, ranking, "
             "direction selection, final cards, or exposure ledgers. "
             "Architectural correction: lifecycle_state / data_status / model_status / "
@@ -715,8 +717,14 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "(2) Role/Opportunity — minutes, workload, lineup slot, role certainty, timestamp. "
             "(3) Historical-Ledger — raw L5/L10, hit rates, median, recent avg, sample window, "
             "role-valid sample, push rate. "
-            "(4) Market/Settlement — exact line, both directions (or explicit unavailable), "
-            "no-vig, timestamp, TTL. Expired TTL cannot be refreshed by reusing the old value. "
+            "(4) Market/Settlement — 3-way outcome (MarketGateOutcome): "
+            "AVAILABLE (all market data present, all lanes open), "
+            "UNAVAILABLE (market data absent/outage — confidence/model lane survives, "
+            "market-edge and money lanes blocked, ceiling lowered to MODEL_QUALIFIED_HOLD max), "
+            "BLOCKING (SOURCE_CONFLICT or expired TTL — row fully blocked). "
+            "Consistent with Full Model Gatekeeper contract: absent market evidence lowers "
+            "the ceiling, does not prevent the probability model from running. "
+            "Expired TTL cannot be refreshed by reusing the old value. "
             "RunController hard-abort conditions: (1) contract_complete_count == 0, "
             "(2) all rows share a required-provider outage, "
             "(3) systemic hydration threshold exceeded. "
@@ -730,7 +738,7 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "every row terminates exactly once. Reconciliation failure → RUN_INVALID. "
             "New labels: RUN_INVALID_HYDRATION_RECONCILIATION, HYDRATION_ABORT. "
             "Module: gate_engine/typed_hydration.py. "
-            "Regression suite: gate_engine/tests/test_typed_hydration.py (22 tests). "
+            "Regression suite: gate_engine/tests/test_typed_hydration.py (27 tests). "
             "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
         ),
     },
