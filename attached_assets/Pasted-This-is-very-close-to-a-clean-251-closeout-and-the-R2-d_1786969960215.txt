@@ -1,0 +1,147 @@
+This is **very close to a clean #251 closeout**, and the R2 design resolves the substantive HOLD issues I was concerned about. But under the fail-closed WOW standard, I would **not stamp final external-verifier PASS yet because of the single failing full-regression test**.
+
+My external-verifier disposition would be:
+
+```text
+WOW-251-R2 EXTERNAL REVIEW
+
+scope_integrity: PASS
+registration_only_boundary: PASS
+runtime_governance_change: FALSE
+documented_authority_change: TRUE
+raw_source_provenance: PASS_WITH_DISCLOSED_LIMITATION
+fixture_exclusion_design: PASS
+control_plane_verification: PASS
+wow_verify_patch: PASS 5/5
+
+full_regression:
+  7328 passed
+  20 skipped
+  1 failed
+  disposition: CLOSEOUT_BLOCKER_PENDING_EXPLANATION_OR_CLEAN_RERUN
+
+overall:
+  HOLD_CLOSEOUT_ONLY
+  implementation_rework_required: NO
+  runtime_rework_required: NO
+```
+
+### Why I would not waive the one failure
+
+The failing test is:
+
+```text
+test_no_uncommitted_changes_to_forbidden_files
+```
+
+and you're describing it as the **runtime isolation sentinel**.
+
+That is precisely the kind of test we should not casually waive on a change whose defining invariant is:
+
+```text
+runtime_governance_changed=false
+```
+
+The fact that both committed boundaries passed `wow-verify-patch` 5/5 and the #251 boundary contains only registry/provenance/tests is strong evidence that this is probably an environmental/working-tree sentinel issue rather than a real runtime modification. But **probable isn't enough to convert a red test into PASS**.
+
+The clean closure is simple:
+
+```text
+checkout/verify the exact committed #251-R2 state
+↓
+prove working tree clean
+↓
+rerun test_no_uncommitted_changes_to_forbidden_files
+↓
+PASS
+↓
+rerun relevant regression / verifier
+↓
+#251 CLOSED
+```
+
+If that isolated test **still fails on a clean committed tree**, diagnose it before closeout. Don't add a waiver merely to make #251 green.
+
+### Everything else looks correctly resolved
+
+The raw-source issue is handled the right way. You aren't fabricating unavailable original bytes or pretending the old hash was reproduced. Instead:
+
+```text
+raw_source_status =
+CHANNEL_TRANSCRIPTION_BYTES_UNAVAILABLE
+```
+
+with provenance recorded and the authority-document change explicitly separated from runtime behavior. That's exactly the right audit treatment.
+
+The fixture exclusion fix is also much safer than file-level exclusion. An exact:
+
+```text
+fixture path
++
+fixture literal
+```
+
+pair means a real secret in that same fixture file should still be caught if it doesn't equal the sanctioned test value.
+
+And limiting the scanner-tooling exception to the two scanner files that inherently contain detection vectors is a defensible narrow exception—not a broad secret-scan bypass.
+
+### UNRESOLVED-001 and UNRESOLVED-003 do not block #251
+
+I would explicitly preserve them rather than dragging them into this registration change:
+
+```text
+UNRESOLVED-001
+PATCH-010–013 implementation/authority registration gap
+→ OUT_OF_SCOPE_251
+→ CARRY_TO_PHASE_A
+
+UNRESOLVED-003
+PATCH-014/015 numbering collision
+→ OUT_OF_SCOPE_251
+→ CARRY_TO_PHASE_A
+```
+
+Those are actually excellent examples of why the v16 Phase A reconciliation is necessary. The proposed v17 amendment requires us to establish the real active patch stack and backend-enforcement state before freezing v16. 
+
+### After that last regression issue clears
+
+I would record #251 as:
+
+```text
+change_id:
+WOW-251-KALSHI-EMERGENCY-RECOVERY-AUTHORITY-REGISTRATION
+
+final_status:
+CLOSED_VERIFIED
+
+authority_effect:
+FORMAL_REGISTRATION_OF_EXISTING_BINDING_AUTHORITY
+
+runtime_effect:
+NONE
+
+documented_authority_changed:
+true
+
+runtime_governance_changed:
+false
+
+kalshi_recovery_authority:
+BINDING_ACTIVE
+
+recovery_mode:
+ACTIVE
+
+combos_allowed:
+false
+
+capital_allocation:
+false
+
+can_execute:
+false
+```
+
+Then **#251 becomes an input to Phase A rather than unfinished work competing with Phase A**.
+
+So: **no additional #251 design changes from me. Clear the one failing sentinel on the clean committed state, independently verify the registry/zero-runtime boundary, close #251, and then move directly into the v16 authority reconciliation.**
