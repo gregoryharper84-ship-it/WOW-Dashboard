@@ -1,0 +1,65 @@
+## Debug report
+
+Task #256 worked, but failure occurred outside its repaired path.
+
+### What happened
+
+Three separate outcomes got labeled like one failure:
+
+- **MLB model pipeline:** Completed successfully.
+- **MLB market hydration:** Still returned `NO_MARKET_DATA`.
+- **WNBA/tennis hydration:** Failed with `INDEPENDENT_PROBABILITY_UNAVAILABLE`.
+- **Final `NO_PLAY`:** Correct gate result given available inputs.
+
+### Root cause
+
+Market data existed—the response displayed DraftKings no-vig prices—but it came from a “separately refreshed market audit.” Backend scorer never received that same snapshot.
+
+This created split-brain processing:
+
+```text
+Backend model → no market snapshot → MODEL_QUALIFIED_HOLD
+Separate audit → DraftKings prices available
+ChatGPT combines results for display
+Gate refuses qualification
+```
+
+Task #256 preserves `event_id` and snapshot data **after a snapshot enters pipeline**. It does not guarantee:
+
+- ChatGPT action sends snapshot into backend.
+- Odds acquisition successfully creates snapshot.
+- Updated action/OpenAPI schema is loaded.
+- WNBA/tennis specialist adapters populate independent probabilities.
+
+### Why `NO_PLAY` remained
+
+Even externally displayed odds did not produce conservative edge:
+
+- Athletics: point edge `+12.11 pp`, lower-bound edge `-4.39 pp`
+- Padres: point edge `+6.00 pp`, lower-bound edge `-10.50 pp`
+
+Gate correctly rejected them. Point probability cannot override negative calibrated lower-bound edge.
+
+### Actual defects still open
+
+1. **Odds-to-backend acquisition gap:** Market exists externally but backend receives `NO_MARKET_DATA`.
+2. **Possible stale ChatGPT action schema:** Production backend changed, but GPT connector may still use old request contract.
+3. **WNBA/tennis specialist hydration gap:** Unrelated to Task #256.
+4. **Observability gap:** Response lacks one trace ID proving which snapshot reached each stage.
+
+### Required next fix
+
+Run one end-to-end test through exact ChatGPT action—not direct backend tests—and verify:
+
+```text
+odds acquired
+→ snapshot created
+→ event_id matched
+→ snapshot passed in action payload
+→ scorer receives market
+→ market gate evaluates
+```
+
+Also prohibit separate market audits from being displayed as if backend consumed them. If displayed market and scorer snapshot differ, return `MARKET_PIPELINE_CONTRACT_BREACH`.
+
+Task #256 fixed handoff integrity. Current failure is upstream acquisition/caller integration plus separate WNBA/tennis hydration.
