@@ -1,0 +1,33 @@
+**Code acceptance: PASS.** Commit `708072c` closes the remaining code-level audit gaps, with `3b9f6d0` adding documentation/memory only.
+
+| Area                       | Status                               |
+| -------------------------- | ------------------------------------ |
+| Corrective implementation  | **ACCEPTED**                         |
+| Regression suite           | **PASS — 5,274 tests**               |
+| Exact row reconciliation   | **ACTIVE_FAIL_CLOSED**               |
+| Provenance transaction     | **ACTIVE_FAIL_CLOSED**               |
+| Kalshi label validator     | **Single production implementation** |
+| Legacy approval separation | **PASS**                             |
+| Model ceilings             | **PASS**                             |
+| Working tree               | **Clean**                            |
+| Production deployment      | **PENDING VERIFICATION**             |
+| #249/#250                  | **Queued, not completed**            |
+| UAC final closeout         | **Pending**                          |
+
+The reported smoke should be classified as **single-worker health verification**, not multi-worker production verification. It shows only worker PID 35, no deployed revision identifier proving production runs `708072c`, and no fresh production pipeline run/session ID. Because `publish_authorized=false`, that does not block code acceptance or #249.
+
+At final publication, capture:
+
+* Deployed revision equals `708072c` or a verified descendant.
+* At least two distinct Gunicorn worker PIDs successfully prewarm governance.
+* Fresh production session/run IDs through the real pipeline.
+* Exact row reconciliation from that production response.
+* Cross-worker quota consistency.
+* All ceiling components returned as `ACTIVE_FAIL_CLOSED`.
+* `can_execute=false`.
+
+Proceed now with:
+
+**#249 → independent verification → #250 → independent verification → UAC final closeout → authorized publication → true multi-worker post-publish smoke.**
+
+No additional runtime correction is required before #249.
