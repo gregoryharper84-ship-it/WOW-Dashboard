@@ -689,6 +689,51 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "can_execute=False unconditional."
         ),
     },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-17-TYPED-HYDRATION-AND-MODEL-READINESS-V1",
+        "version":     "1.0",
+        "effective_at": "2026-08-17",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  105,
+        "can_execute": False,
+        "description": (
+            "Typed Hydration & Model Readiness V1 (2026-08-17): "
+            "Prevents incomplete or stale prop rows from entering modeling, ranking, "
+            "direction selection, final cards, or exposure ledgers. "
+            "Architectural correction: lifecycle_state / data_status / model_status / "
+            "failure_class are separate typed dimensions; terminal_label remains a "
+            "native WOW label. INCOMPLETE_INPUT, DATA_PROVIDER_OUTAGE, and STALE_DATA "
+            "are typed data_status values — NOT replacements for native WOW terminal labels. "
+            "Lifecycle states: BOARD_EXTRACTED / DATA_HYDRATING / CONTRACT_COMPLETE / "
+            "FOUR_GATES_CLEARED / MODEL_READY / SCORING_ATOMIC / SCORED / BLOCKED. "
+            "DataStatus values: COMPLETE / INCOMPLETE_INPUT / DATA_PROVIDER_OUTAGE / "
+            "STALE_DATA / SOURCE_CONFLICT. "
+            "Four data-presence gates (not analytical gates — no probability/threshold logic): "
+            "(1) Identity/Status — canonical identity, correct slate, active participant, "
+            "lineup/starter checked. "
+            "(2) Role/Opportunity — minutes, workload, lineup slot, role certainty, timestamp. "
+            "(3) Historical-Ledger — raw L5/L10, hit rates, median, recent avg, sample window, "
+            "role-valid sample, push rate. "
+            "(4) Market/Settlement — exact line, both directions (or explicit unavailable), "
+            "no-vig, timestamp, TTL. Expired TTL cannot be refreshed by reusing the old value. "
+            "RunController hard-abort conditions: (1) contract_complete_count == 0, "
+            "(2) all rows share a required-provider outage, "
+            "(3) systemic hydration threshold exceeded. "
+            "Alert-only at failure_rate > 0.05. "
+            "Partial failure: preserve complete rows, isolate blocked rows, mark run DEGRADED. "
+            "Exact row reconciliation: "
+            "rows_extracted = rows_hydrating + rows_blocked_before_hydration; "
+            "rows_hydrating = rows_contract_complete + rows_hydration_failed; "
+            "rows_contract_complete = rows_model_ready + rows_gate_blocked; "
+            "rows_model_ready = rows_scored + rows_model_failed; "
+            "every row terminates exactly once. Reconciliation failure → RUN_INVALID. "
+            "New labels: RUN_INVALID_HYDRATION_RECONCILIATION, HYDRATION_ABORT. "
+            "Module: gate_engine/typed_hydration.py. "
+            "Regression suite: gate_engine/tests/test_typed_hydration.py (22 tests). "
+            "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
+        ),
+    },
 ]
 
 # ---------------------------------------------------------------------------

@@ -467,6 +467,6 @@ class TestGovernancePatchCount:
 
     def test_patch_count_is_24(self):
         from gate_engine.governance import _active_patches
-        assert len(_active_patches()) == 25, (
-            f"Expected 25 active patches, got {len(_active_patches())}"
+        assert len(_active_patches()) == 26, (
+            f"Expected 26 active patches, got {len(_active_patches())}"
         )
