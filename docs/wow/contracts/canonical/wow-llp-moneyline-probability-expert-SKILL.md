@@ -1444,3 +1444,765 @@ price_used_for_edge_rank=true
 can_execute=false
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
 ```
+
+---
+
+# 2026-08-04 Enforcement Patch — Per-Row Publication Gate
+
+## Active patch
+
+```text
+WOW-PATCH-2026-08-04-LLP-PER-ROW-PUBLICATION-GATE
+```
+
+## Problem this patch fixes
+
+The prior workflow described the correct checks but did not block publication when
+they were skipped. A report could publish with:
+
+- 16 of 17 rows missing injury/lineup status
+- prices quoted with no timestamps
+- no line-drift grade on any row
+- no retirement-settlement re-check for tennis when a retirement had already
+  occurred on the same slate
+- no correlation pass before the shortlist was written
+- no calibration ledger rows produced
+
+These are not "near misses" — they are silent omissions that make every probability
+estimate in the report untrustworthy.
+
+## Rule: every row must pass the per-row gate before entering any shortlist
+
+A row may not appear in the Highest-Probability Winners table, the
+Highest-Probability Upsets table, or any Near Misses table until all seven
+per-row gate items below are either **completed** or carry an explicit
+**`NOT_RETRIEVED`** declaration with a stated reason.
+
+Silence is not allowed. `NOT_CALLED` is prohibited. Omitting a field from the
+output is treated as a silent `NOT_RETRIEVED` and the row is removed.
+
+---
+
+## Per-Row Gate — seven mandatory items
+
+### 1. Line movement and drift grade (Step 3)
+
+For every row, record:
+
+```text
+opening_price         — first available market price for this event
+current_price         — price at time of this analysis
+price_direction       — MOVED_TOWARD_FAVORITE | MOVED_TOWARD_UNDERDOG | STABLE
+price_drift_magnitude — price change in American odds points
+drift_classification  — ALIGNED | MILD | STRONG | SEVERE
+drift_source          — source(s) consulted
+```
+
+If the spread across books is wider than 50 American-odds points, add:
+
+```text
+SOURCE_CONFLICT — wide book spread: <low> to <high>
+```
+
+A wide spread (e.g., -820 to -1020 across books) is not "market noise" — it
+is an unresolved data-quality signal that must be labeled and addressed before
+the row qualifies.
+
+If opening price is genuinely unobtainable:
+
+```text
+opening_price: NOT_RETRIEVED — <reason>
+drift_classification: NOT_RETRIEVED
+```
+
+This is acceptable. What is not acceptable: omitting these fields entirely.
+
+---
+
+### 2. Price timestamps and freshness score (Step 11)
+
+Every quoted price in this report must carry a capture timestamp.
+
+```text
+price_capture_timestamp  — ISO datetime of when this price was recorded
+minutes_to_event_start   — calculated at time of analysis
+freshness_status         — FRESH | STALE | UNKNOWN
+```
+
+Freshness thresholds:
+
+```text
+< 10 min old   → FRESH (any sport)
+10–30 min old  → FRESH for most sports; STALE for live-market-only plays
+> 30 min old   → STALE
+> 2 hours old  → STALE_HIGH_RISK — row capped at WATCH tier
+unknown age    → UNKNOWN — row capped at WATCH tier
+```
+
+A price range like "-820 to -1020" presented without book-specific timestamps
+is UNKNOWN and must be labeled as such. It may not be presented as if it is a
+single current market price.
+
+---
+
+### 3. Injury and lineup status — every row (Step 8)
+
+Injury/lineup checks are mandatory for every candidate without exception.
+
+```text
+injury_lineup_check_status  — RETRIEVED | NOT_RETRIEVED | NOT_APPLICABLE
+injury_lineup_source        — source name and timestamp
+key_absences                — list any confirmed absences; empty list if none found
+material_injury_flag        — true | false
+```
+
+Sport-specific requirements:
+
+```text
+MLB    → confirmed starting pitcher + lineup absences
+NBA    → injury report timestamp + key rotations
+WNBA   → injury report + minutes restrictions
+NFL    → QB status + O-line health
+NHL    → goalie confirmation
+Soccer → confirmed XI or expected XI with source
+Tennis → retirement/injury history for this event (see item 5 below)
+```
+
+A check that found no injuries is still a completed check — record
+`key_absences: []` and `material_injury_flag: false`.
+
+A check that was not performed is `NOT_RETRIEVED`. The row is capped at
+WATCH tier until status is confirmed. It may not appear in a top-3 shortlist.
+
+---
+
+### 4. MLB: bullpen quality and weather/park (Step 6 MLB module)
+
+For any MLB candidate, the sport-specific model is not complete if it covers
+only starter ERA/WHIP. The following are also mandatory per row:
+
+```text
+bullpen_quality           — recent bullpen ERA/xFIP or role-availability note
+bullpen_availability      — any key relievers unavailable
+park_factor               — run-environment adjustment
+weather_wind_status       — wind speed/direction if material to run scoring;
+                            or explicit NOT_MATERIAL with stated reason
+```
+
+If bullpen data is unobtainable:
+
+```text
+bullpen_quality: NOT_RETRIEVED — <reason>
+```
+
+The row may still qualify, but the `uncertainty_drivers` field must include
+`BULLPEN_DATA_MISSING` and the calibrated lower bound must be widened
+accordingly.
+
+---
+
+### 5. Tennis: retirement and withdrawal settlement (per-slate rule)
+
+Tennis matches settle differently under retirement or withdrawal depending on
+platform and exact contract terms. This check is not optional.
+
+For every tennis candidate:
+
+```text
+retirement_settlement_rule  — what the platform pays if the selected player
+                              retires or withdraws before the match completes
+withdrawal_settlement_rule  — same for pre-match withdrawal
+retirement_check_source     — platform T&C page, contract terms, or explicit
+                              platform communication
+retirement_check_status     — RETRIEVED | NOT_RETRIEVED
+```
+
+**In-slate precedent rule:** if any match in the current slate has already
+resolved via retirement, withdrawal, or walkover, then every remaining tennis
+match in the same slate must confirm its retirement/withdrawal settlement terms
+before it can appear in any shortlist — even if the original scan was completed
+before the retirement occurred.
+
+Retirement on the same slate is not incidental context. It is direct evidence
+that the settlement assumption you made earlier is actively relevant and must
+be re-verified.
+
+---
+
+### 6. Correlation guard (pre-shortlist)
+
+Before any multi-row shortlist is written, `wow.correlation-guard` must run.
+
+```text
+correlation_guard_status  — PASSED | FAILED | NOT_RUN
+correlated_pairs_found    — list of any pairs sharing game, pitcher, or script
+correlation_adjustments   — any rows removed or downgraded
+```
+
+`NOT_RUN` blocks publication of any multi-selection output.
+
+If two candidates share the same game (e.g., both sides of an MLB game, or a
+pitcher and a team in the same game), only one may appear in the final shortlist.
+
+If two candidates share a game script or common failure path (e.g., two NBA
+home favorites on the same night who both lose if their star is scratched), the
+combined exposure must be noted and the pair cannot both reach the top tier
+without explicit modeling of the joint failure path.
+
+---
+
+### 7. Calibration ledger row
+
+One calibration ledger row must be generated per candidate, regardless of
+whether the candidate qualifies or is rejected.
+
+```text
+calibration_ledger_row:
+  candidate_id
+  event_date
+  participant
+  sport
+  platform
+  market_type
+  model_probability_at_analysis
+  no_vig_market_probability_at_analysis
+  price_at_analysis
+  analysis_timestamp
+  final_label
+  outcome              — PENDING (filled in at settlement)
+```
+
+The row is written at analysis time. Settlement fills in `outcome` later.
+Without this row, CLV and Brier scoring cannot happen. Without CLV and Brier
+scoring, the model cannot be validated.
+
+`NOT_PRODUCED` is not a valid state for this field. If the candidate is in
+the report, the row exists.
+
+---
+
+## Publication gate enforcement
+
+Before writing the final shortlist, verify the per-row gate for every
+candidate. Use this checklist:
+
+```text
+[ ] line movement and drift grade completed or NOT_RETRIEVED stated
+[ ] price timestamps present on every quoted price
+[ ] freshness status computed for every row
+[ ] injury/lineup check completed or NOT_RETRIEVED stated for every row
+[ ] MLB rows: bullpen and weather/park explicitly addressed
+[ ] tennis rows: retirement/withdrawal settlement terms confirmed
+[ ] in-slate precedent rule applied if any retirement occurred in this slate
+[ ] correlation guard run (status = PASSED)
+[ ] calibration ledger row produced for every candidate
+```
+
+A row that fails any item is removed from the shortlist and placed in the
+Rejected table with the specific gate item that failed.
+
+A shortlist with more than two rows where any gate item is `NOT_RETRIEVED`
+must include a header warning:
+
+```text
+DATA QUALITY WARNING: [N] rows have NOT_RETRIEVED fields.
+These rows are capped at WATCH tier and excluded from top-3.
+```
+
+## Added audit footer fields
+
+```text
+rows_gate_passed=
+rows_gate_failed=
+rows_with_not_retrieved_drift=
+rows_with_not_retrieved_injury_status=
+rows_with_not_retrieved_timestamps=
+rows_missing_bullpen_weather=
+rows_missing_tennis_retirement_check=
+in_slate_precedent_rule_applied=
+correlation_guard_status=
+calibration_ledger_rows_produced=
+```
+
+---
+
+# 2026-08-04 Enforcement Patch B — Multi-Recommendation Concentration Gate
+
+## Active patch
+
+```text
+WOW-PATCH-2026-08-04-LLP-MULTI-RECOMMENDATION-CONCENTRATION-GATE
+```
+
+## Problem this patch fixes
+
+A research article or analysis piece containing multiple recommendations can
+produce a bundled shortlist where all candidates share:
+
+- the same game;
+- the same injured player or roster change;
+- the same starter's performance assumption;
+- the same scoring-environment thesis.
+
+These are not three independent opportunities. They are one thesis expressed
+three ways. The prior workflow had no gate that detected this and applied a
+shared ceiling before shortlist construction.
+
+Example: a three-play card of (team ML + game total Under + starter strikeout Over)
+built on the same game shares the causal assumptions:
+- opposing lineup is weakened
+- starter works efficiently and deeply
+- run environment stays suppressed
+- opponent bullpen does not create unexpected scoring
+
+Each of those three props can win or lose somewhat independently, but their
+probabilities are materially linked through the starter's performance and the
+run environment. They must receive shared-event and shared-thesis tags and a
+concentration ceiling before appearing in any shortlist together.
+
+---
+
+## Multi-Recommendation Evidence and Concentration Gate
+
+For every input that contains multiple recommendations — whether from an article,
+analysis piece, research note, screenshot, or user-supplied text — run this
+nine-step gate before any shortlist is constructed.
+
+### Step 1: Extract candidates separately
+
+Every recommendation is a separate row. Do not aggregate them into a single
+probability estimate. Do not carry a confidence label from the source through
+to the model output.
+
+### Step 2: Individual timestamped market evidence
+
+Each candidate requires its own:
+
+```text
+named_sportsbook_price
+price_timestamp
+opposing_price
+two_way_no_vig_probability
+```
+
+A price range without book-specific timestamps (e.g., "-142 to -150") is
+`NOT_VERIFIED` for that candidate.
+
+### Step 3: Individual status and lineup checks
+
+Each candidate requires its own:
+
+```text
+event_status
+participant_status
+lineup_or_starter_status
+injury_check_status
+```
+
+A status check performed for one candidate does not transfer to another, even
+in the same game.
+
+### Step 4: Independent probability model per market type
+
+A moneyline model is not a total model. A total model is not a strikeout-prop
+model. Each market type requires its own model:
+
+```text
+ML      → wow.mlb-moneyline-enrichment-contract or equivalent
+Total   → full-game run distribution, park/weather, both bullpens
+Prop    → exact-line ledger, workload distribution, failure paths
+```
+
+Deriving a player-prop edge from the game thesis is prohibited. "The starter
+is favored in this game" does not establish a strikeout-prop probability.
+
+### Step 5: Contradiction check per candidate
+
+Run the contradiction audit for each candidate independently:
+
+```text
+market_contradiction_status
+late_news_contradiction_status
+starter_status_contradiction
+```
+
+A contradiction resolved for one candidate is not automatically resolved for
+another sharing the same game.
+
+### Step 6: Shared-event and shared-thesis tagging
+
+Assign event tags and thesis tags to every candidate.
+
+Event tags (examples):
+
+```text
+EVENT_CLE_NYM_2026_08_04
+```
+
+Thesis tags (examples):
+
+```text
+METS_OFFENSE_DOWNGRADE
+CANTILLO_STARTER_SUCCESS
+LOW_RUN_ENVIRONMENT
+CLEVELAND_CONTROL_SCRIPT
+```
+
+Record:
+
+```text
+shared_event_count     — number of candidates sharing this event tag
+shared_thesis_count    — number of candidates sharing >= 2 thesis tags
+```
+
+### Step 7: Correlated failure exposure
+
+When two or more candidates share an event or thesis tag, estimate the
+probability that they fail together:
+
+```text
+joint_failure_probability
+correlated_failure_path
+```
+
+This is not optional. "They can each win independently" is an incomplete
+analysis when their probabilities are materially linked.
+
+### Step 8: Prohibit confidence language when gates are NOT RETRIEVED
+
+Any candidate where any required gate item is `NOT_RETRIEVED` must not carry:
+
+```text
+"Strong Play"
+"Analytical Lean"
+"High Confidence"
+"Best Bet"
+"Lock"
+"Approved Play"
+```
+
+When a confidence label is present in the source material but the calibrated
+probability is missing, apply:
+
+```text
+UNSUPPORTED_CONFIDENCE_CLAIM
+=> downgrade to LLP_SCOUT
+```
+
+### Step 9: Apply lowest shared ceiling to the bundled recommendation
+
+```text
+three_or_more_candidates_from_same_event
+AND shared_thesis_count >= 2
+AND correlation_not_quantified
+=> MULTI_CANDIDATE_SHORTLIST_BLOCK
+=> maximum ceiling = LLP_WATCH for all candidates in the bundle
+```
+
+The ceiling applies to the entire bundle, not just the weakest candidate. A
+strong individual candidate inside a correlated bundle cannot receive a higher
+label than the bundle ceiling.
+
+---
+
+## Required shortlist-gate output format
+
+When a multi-recommendation input is processed, the output must show a
+per-candidate gate result before any shortlist:
+
+```text
+Candidate N: [participant / market]
+LLP label:              [label]
+Fresh timestamped price: VERIFIED | NOT VERIFIED
+Lineup/status check:     RETRIEVED | NOT RETRIEVED
+Independent model:       RETRIEVED | NOT RETRIEVED
+Contradiction review:    PASSED | NOT RUN
+Shared event tags:       [list]
+Shared thesis tags:      [list]
+Correlated failure:      quantified | NOT QUANTIFIED
+Shortlist eligible:      YES | NO
+Blocker:                 [reason if NO]
+```
+
+A candidate with `Shortlist eligible: NO` appears in the Rejected table, not
+the shortlist.
+
+---
+
+## Hard labels added by this patch
+
+```text
+MULTI_CANDIDATE_SHORTLIST_BLOCK
+  — 3+ candidates from same event, shared thesis >= 2, correlation unquantified
+  — ceiling: LLP_WATCH for all candidates in bundle
+
+UNSUPPORTED_CONFIDENCE_CLAIM
+  — confidence label present, calibrated probability missing
+  — downgrade: LLP_SCOUT
+
+COMMON_THESIS_CONCENTRATION
+  — shared thesis count >= 2 across any two candidates
+  — requires joint failure probability before shortlist entry
+
+MARKET_PRICE_NOT_VERIFIED
+  — price range without named source and timestamp
+  — candidate capped at LLP_SCOUT
+```
+
+---
+
+## Additional audit footer fields
+
+```text
+multi_recommendation_inputs=
+candidates_extracted=
+candidates_shortlist_eligible=
+candidates_blocked_concentration=
+shared_event_pairs=
+shared_thesis_pairs=
+unsupported_confidence_claims_downgraded=
+multi_candidate_shortlist_blocks=
+```
+
+---
+
+# 2026-08-08 TeamRankings Secondary Enrichment — Operator Schema
+
+## Active patch
+
+```text
+WOW-PATCH-2026-08-08-TEAMRANKINGS-SECONDARY-ENRICHMENT
+```
+
+## Overview
+
+TeamRankings.com has **no authorized public API** available to this application.
+All TR data must be read by the GPT operator from TeamRankings.com and supplied
+in `enrichment["teamrankings"]` when submitting a moneyline row to the backend.
+
+If `enrichment["teamrankings"]` is absent, the backend returns
+`source_status=DATA_UNOBTAINABLE` and the base model runs unchanged.
+
+Supported sports: **NBA, WNBA, MLB, NFL, NCAAF, NCAAB**
+Weight contribution: **7.5% default — hard ceiling 10%**
+
+---
+
+## Enrichment Schema
+
+Supply `enrichment["teamrankings"]` as the following JSON object. Every field
+is optional — supply what is available and omit the rest. The adapter never
+fabricates missing values.
+
+```json
+{
+  "teamrankings": {
+    "source_status": "RETRIEVED",
+    "source_url": "https://www.teamrankings.com/...",
+    "retrieved_at": "2026-08-08T14:30:00Z",
+
+    "matchup_win_prob_home": 0.62,
+
+    "home": {
+      "team_name": "Los Angeles Lakers",
+      "league": "NBA",
+      "sport": "NBA",
+      "predictive_rating": 4.8,
+      "predictive_rank": 7,
+      "home_rating": 6.1,
+      "home_rank": 5,
+      "away_rating": 3.5,
+      "away_rank": 11,
+      "neutral_rating": 4.9,
+      "strength_of_schedule": 0.502,
+      "future_strength_of_schedule": 0.498,
+      "last_5_rating": 5.3,
+      "last_10_rating": 4.9,
+      "consistency_rating": 0.71,
+      "vs_top_25_pct": 0.48,
+      "vs_bottom_25_pct": 0.74,
+      "projected_win_pct": 0.58,
+      "projected_playoff_prob": 0.82,
+      "display_odds": -155,
+      "source_url": "https://www.teamrankings.com/nba/ranking/predictive-by-other",
+      "retrieved_at": "2026-08-08T14:30:00Z",
+      "freshness_age_hours": 1.5,
+      "source_status": "RETRIEVED"
+    },
+
+    "away": {
+      "team_name": "Golden State Warriors",
+      "league": "NBA",
+      "sport": "NBA",
+      "predictive_rating": 2.1,
+      "predictive_rank": 14,
+      "home_rating": 3.0,
+      "home_rank": 13,
+      "away_rating": 1.2,
+      "away_rank": 18,
+      "neutral_rating": 2.0,
+      "strength_of_schedule": 0.495,
+      "future_strength_of_schedule": 0.501,
+      "last_5_rating": 1.8,
+      "last_10_rating": 2.3,
+      "consistency_rating": 0.58,
+      "vs_top_25_pct": 0.34,
+      "vs_bottom_25_pct": 0.60,
+      "projected_win_pct": 0.44,
+      "projected_playoff_prob": 0.55,
+      "display_odds": 135,
+      "source_url": "https://www.teamrankings.com/nba/ranking/predictive-by-other",
+      "retrieved_at": "2026-08-08T14:30:00Z",
+      "freshness_age_hours": 1.5,
+      "source_status": "RETRIEVED"
+    }
+  }
+}
+```
+
+---
+
+## Field Definitions
+
+### Top-level fields
+
+| Field | Type | Description |
+|---|---|---|
+| `source_status` | string | Acquisition status (see below). Overrides per-team statuses when present. |
+| `source_url` | string | TeamRankings page URL where data was read. |
+| `retrieved_at` | string | ISO 8601 UTC timestamp when the operator retrieved the data. |
+| `matchup_win_prob_home` | float (0.01–0.99) | TR's direct matchup win-probability projection for the home team. **This is the only TR field that contributes to the probability model.** Required for non-zero weight. |
+
+### Per-team fields (`home` and `away`)
+
+| Field | Type | Description |
+|---|---|---|
+| `team_name` | string | Full team name as shown on TeamRankings. |
+| `league` | string | League abbreviation, e.g. `"NBA"`. |
+| `sport` | string | Sport, e.g. `"NBA"`. |
+| `predictive_rating` | float | TR predictive power rating. |
+| `predictive_rank` | int | Rank by predictive rating (1 = best). |
+| `home_rating` | float | Performance rating at home. |
+| `home_rank` | int | Home-rating rank. |
+| `away_rating` | float | Performance rating on the road. |
+| `away_rank` | int | Away-rating rank. |
+| `neutral_rating` | float | Neutral-site rating. |
+| `strength_of_schedule` | float | Season SOS (also accepted as `sos`). |
+| `future_strength_of_schedule` | float | Remaining SOS (also accepted as `future_sos`). |
+| `last_5_rating` | float | Rating over last 5 games (also accepted as `l5_rating`). |
+| `last_10_rating` | float | Rating over last 10 games (also accepted as `l10_rating`). |
+| `consistency_rating` | float | TR consistency metric. |
+| `vs_top_25_pct` | float | Win % vs top-25% opponents. |
+| `vs_bottom_25_pct` | float | Win % vs bottom-25% opponents. |
+| `projected_win_pct` | float | Season win % projection. |
+| `projected_playoff_prob` | float | TR playoff probability. |
+| `display_odds` | int | American moneyline from TR — **market context ONLY; never fed to the sport model**. |
+| `source_url` | string | Team-specific TR page URL. |
+| `retrieved_at` | string | ISO 8601 UTC retrieval timestamp. |
+| `freshness_age_hours` | float | Age of data in hours at submission time. Computed automatically if `retrieved_at` is supplied. |
+| `source_status` | string | Per-team acquisition status. |
+
+---
+
+## Source Status Vocabulary
+
+| Status | Weight | Meaning |
+|---|---:|---|
+| `RETRIEVED` | 7.5% (up to 10%) | Operator directly read TR data; `matchup_win_prob_home` present and fresh. |
+| `PROXY_ONLY` | **0%** | Data was inferred or reconstructed, not directly retrieved. Zero weight per governance. |
+| `DATA_UNOBTAINABLE` | **0%** | TR data was not available or not found. Base model unchanged. |
+| `STALE` | **0%** | `freshness_age_hours > 4` or derived `retrieved_at` age > 4 h. Zero weight. |
+| `SOURCE_CONFLICT` | **0%** | Internal conflict between home/away records. Zero weight. |
+| `NOT_ATTEMPTED` | **0%** | Operator did not include TR data. Same as absent — base model unchanged. |
+| `UNSUPPORTED_SPORT` | **0%** | Sport is not in the supported set. |
+
+**Freshness rule:** TR data with `freshness_age_hours > 4.0` (or computed age from
+`retrieved_at > 4 h`) is treated as `STALE` and receives zero weight regardless of
+any other field. Refresh the TR data within 4 hours of game time.
+
+---
+
+## display_odds Hard Rule
+
+`display_odds` is the American moneyline shown on TeamRankings. It is stored in
+the team record for audit transparency but is **permanently excluded** from the
+sport model:
+
+```text
+display_odds → MARKET_CONTEXT_ONLY
+display_odds → NEVER passed to extract_no_vig_probability()
+display_odds → NEVER included in the market prior computation
+display_odds → NEVER copied into sportsbook_odds
+```
+
+Using `display_odds` as a model input or as a proxy for `sportsbook_odds`
+corrupts the market prior and is a governance violation. The backend always
+sets `display_odds_excluded_from_model=true` regardless of what the operator supplies.
+
+---
+
+## Weight Governance
+
+```text
+Default TR ensemble weight:  7.5%
+Hard ceiling:               10.0%
+Zero-weight triggers: STALE | DATA_UNOBTAINABLE | PROXY_ONLY | SOURCE_CONFLICT
+                      NOT_ATTEMPTED | UNSUPPORTED_SPORT | matchup_win_prob_home absent
+```
+
+**Raw predictive ratings cannot be converted to a win probability** — no
+calibrated logistic mapping exists in WOW governance. The only field that
+activates a non-zero TR weight is `matchup_win_prob_home` (a direct TR matchup
+projection, not a computed value).
+
+---
+
+## Contradiction Behavior
+
+When TR weight is non-zero and `matchup_win_prob_home` is present:
+
+| Condition | Agreement | contradiction_flag |
+|---|---|---|
+| TR and core model agree (delta < 8 pp, same winner) | `AGREE` | false |
+| Same winner but delta ≥ 8 pp | `DISCREPANCY` | true |
+| TR favors opposite winner (TR crosses 50% boundary) | `OPPOSITE_SIDE` | true |
+
+A contradiction **lowers confidence and may reduce the label tier** but
+**never flips the pick**. The contradiction is surfaced in `teamrankings_contradiction_reason`
+and routes through the disagreement audit before final qualification.
+
+---
+
+## Minimal Submission Example
+
+When you have only `matchup_win_prob_home` and no per-team detail:
+
+```json
+{
+  "teamrankings": {
+    "source_status": "RETRIEVED",
+    "retrieved_at": "2026-08-08T18:00:00Z",
+    "matchup_win_prob_home": 0.61,
+    "home": { "team_name": "Cleveland Guardians" },
+    "away": { "team_name": "New York Mets" }
+  }
+}
+```
+
+This is the minimum required to achieve non-zero TR weight.
+
+---
+
+## Supported Sports
+
+```text
+NBA     — full support
+WNBA    — full support
+MLB     — full support
+NFL     — full support
+NCAAF   — full support
+NCAAB   — full support
+```
+
+All other sports (NHL, Soccer, Tennis, Golf, MMA, Boxing) return
+`UNSUPPORTED_SPORT` and zero TR weight. The base model is unaffected.

@@ -456,3 +456,169 @@ The efficiency and directional ceilings cannot be erased by downstream model or 
 7. The hard override caps at WATCH.
 8. The batter-by-batter event tree remains controlling.
 9. `can_execute=false` remains enforced.
+
+---
+
+# v4 Patch Integration — Baseball Savant Ledger Source Hierarchy
+
+## Active patch
+
+```text
+WOW-PATCH-1IP-SAVANT-LEDGER-SOURCE
+```
+
+## Source hierarchy
+
+Step 3 of the 1IP method ("Build the raw exact first-inning ledger") must use the following source hierarchy. No proxy substitution is permitted.
+
+```text
+1. Baseball Savant — controlling ledger source
+2. FanGraphs       — role and start validation
+3. Brooks Baseball — pitch-sequence cross-check (QA only)
+```
+
+### 1. Baseball Savant (controlling)
+
+**Backend endpoint.** The WOW scoring server provides first-inning Statcast data
+via `gate_engine/mlb/savant_1ip_ledger.py`. Call the backend — do not attempt
+to scrape Baseball Savant directly.
+
+Extraction logic (applied server-side):
+
+```text
+filter:  pitcher = MLBAM pitcher ID
+         inning  = 1
+         season  = current season through board_date (board_date itself excluded)
+group:   game_pk × game_date
+count:   pitch rows  → first_inning_pitches
+         distinct at_bat_number → first_inning_batters_faced
+derive:  events column → first_inning_hits, first_inning_walks, first_inning_hbp,
+                          first_inning_errors
+keep:    most recent 10 eligible starts
+```
+
+The backend returns a structured ledger with these fields per start:
+
+```text
+game_date
+game_pk                  (Savant game_pk — the canonical source_game_id)
+opponent
+starter_confirmed        (LIKELY / UNLIKELY / UNKNOWN from max inning in Statcast)
+first_inning_pitches     (primary ledger count)
+first_inning_batters_faced
+first_inning_hits
+first_inning_walks
+first_inning_hbp
+first_inning_errors
+source                   "Baseball Savant (statcast_pitcher)"
+source_game_id           game_pk as string
+```
+
+It also returns:
+
+```text
+bf_distribution          P(BF=3), P(BF=4), P(BF>=5) — computed from ledger rows
+l5_pitch_mean
+l10_pitch_mean
+l5_hit_rate              (when a line and side are supplied)
+l10_hit_rate
+gaps                     list of any missing rows and their reasons
+```
+
+### 2. FanGraphs (role and start validation — Claude web access)
+
+FanGraphs is blocked from the WOW server. Claude must access it directly.
+
+Use FanGraphs game logs to verify per start:
+
+```text
+start_date
+opponent
+starter designation
+innings_pitched (total)
+total_batters_faced
+strikeouts, walks, full-game workload
+```
+
+FanGraphs does not provide first-inning pitch totals. It supplements the
+Baseball Savant ledger for starter confirmation only.
+
+If a Savant row has `starter_confirmed = UNLIKELY` (max inning in Statcast ≤ 2),
+cross-check via FanGraphs before including the row in the ledger.
+If FanGraphs also does not confirm a start, mark the row as a gap.
+
+### 3. Brooks Baseball (pitch-sequence QA — Claude web access)
+
+Brooks Baseball is blocked from the WOW server. Claude must access it directly.
+
+Use Brooks Baseball only for cross-checking individual starts that are
+ambiguous or missing in Baseball Savant — for example, a known start date
+where the Savant `game_pk` group returned an unusually low or high pitch count.
+
+Brooks Baseball does not replace Baseball Savant as the primary count source.
+One Savant row that has been verified by Brooks is still labelled:
+
+```text
+source: "Baseball Savant (statcast_pitcher)"
+source_game_id: <game_pk>
+```
+
+Add a note field: `"brooks_verified": true` when a cross-check was performed.
+
+## Acquisition sequence (per pitcher)
+
+```text
+1.  Resolve MLBAM pitcher ID from name via the backend or pybaseball lookup.
+2.  Call backend to retrieve Baseball Savant first-inning ledger (all 2026 starts
+    through board_date).
+3.  Filter: keep inning = 1 groups only (already filtered by backend).
+4.  Group by game_pk — one row per start (already grouped by backend).
+5.  Count pitches (first_inning_pitches from backend).
+6.  Count distinct plate appearances (first_inning_batters_faced from backend).
+7.  Retrieve H, BB, HBP and error-extension paths (from backend events counts).
+8.  Verify starter status via FanGraphs or MLB Stats API for any
+    starter_confirmed = UNLIKELY rows.
+9.  Cross-check questionable games through Brooks Baseball when Savant
+    has an ambiguous or outlier pitch count for that game.
+10. Keep the most recent 10 eligible MLB starts.
+```
+
+## Field-level source attribution
+
+```text
+Date and opponent          Baseball Savant (game_date, home_team/away_team)
+Starter confirmed          FanGraphs or MLB Stats API (step 8)
+First-inning pitches       Baseball Savant (row count per game_pk × inning=1)
+Batters faced              Baseball Savant (distinct at_bat_number)
+Hits, walks, HBP           Baseball Savant (events column)
+Error extension            Baseball Savant (field_error / fielders_choice_error)
+P(BF=3/4/5+)              Computed from Baseball Savant ledger rows
+Exact-line result          Calculated from first_inning_pitches vs board line
+Source game ID             Savant game_pk
+```
+
+## Gaps and data-quality rules
+
+A gap is any start that cannot be confirmed by Baseball Savant. Gaps are:
+
+```text
+— marked explicitly in the ledger (first_inning_pitches = GAP)
+— counted against the sample size (L8, not L10, if 2 rows missing)
+— not filled by web search, Wikipedia, or estimated averages
+— not filled by Brooks Baseball alone (Brooks supplements, it does not
+  replace a missing Savant game_pk group)
+```
+
+If the backend `gaps` list is non-empty, include each gap reason verbatim
+in the ledger output.
+
+## Lane ceiling
+
+```text
+Maximum label:   MODEL_QUALIFIED_HOLD — MLB_1IP_TEST_ONLY
+can_execute:     false
+proxy substitution required: no
+```
+
+This ceiling cannot be lifted by the Baseball Savant source upgrade alone.
+The lane ceiling is controlled by the v3 efficiency and directional patches.
