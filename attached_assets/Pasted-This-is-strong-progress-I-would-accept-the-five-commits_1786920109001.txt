@@ -1,0 +1,67 @@
+This is strong progress. I would accept the five commits as a completed implementation batch, but **not yet declare the overall WOW/UAC program fully closed** from this summary alone.
+
+### Current defensible status
+
+| Area                                  | Status                                                 |
+| ------------------------------------- | ------------------------------------------------------ |
+| 13 reported tasks                     | Implementation complete                                |
+| Regression suite                      | Reported 5,215 passing                                 |
+| Probability ledger/outlier passes     | `PARTIAL_ENFORCEMENT`—still advisory                   |
+| Global row-level ceiling enforcement  | `PARTIAL_OR_PENDING`                                   |
+| MLB first-inning lane                 | Still `TEST_ONLY`; maximum `MODEL_QUALIFIED_HOLD`      |
+| AB/AVG/OBP models                     | `PROVISIONAL`; registration does not prove calibration |
+| #249 contract registry                | Not shown in this batch                                |
+| #250 controlled-failure validation    | Not shown in this batch                                |
+| Universal Agent Core final acceptance | Not established by these commits                       |
+
+### Four issues to lock down
+
+1. **#206 remains advisory.**
+   Reporting `prob_ledger_enforcement_report` and `outlier_recompute_report` is useful, but neither can support `FINAL_APPROVED` until their blockers feed the canonical terminal-ceiling reducer.
+
+2. **#126 must preserve a provisional ceiling.**
+   The new models eliminate `NO_REGISTERED_MODEL`, but `PROVISIONAL` AB/AVG/OBP models must not become final-qualified simply because a registry entry now exists.
+
+3. **#74 needs a lowest-ceiling regression.**
+   A row with legacy `classification="FINAL_APPROVED"` must not be counted when its canonical terminal label, enforcement report, or upstream blocker is stricter.
+
+4. **#52 and #72 improve detection, not prevention.**
+   Warnings eliminate silent failures, but they do not themselves prevent orphan calibration records or missing provenance. Where provenance is mandatory, write failure must lower the ceiling or block promotion.
+
+### Exact closeout audit to run next
+
+```text
+Run a verification-only closeout for the five-commit, 5215-test batch.
+Do not change code unless a required invariant fails.
+
+Report:
+1. All five commit SHAs and exact files changed per commit.
+2. Clean git status and diff-boundary evidence.
+3. Raw full-suite command, exit code, passed/failed/skipped/xfailed counts,
+   duration, and exact sentinel status.
+4. Runtime proof that:
+   a. prob_ledger_incomplete=true cannot coexist with FINAL_APPROVED;
+   b. a PROVISIONAL registry model cannot receive FINAL_APPROVED without
+      its required calibration and lower-bound gates;
+   c. legacy classification=FINAL_APPROVED is not counted when the strict
+      canonical terminal ceiling is HOLD/WATCH/REJECT/DATA_UNOBTAINABLE;
+   d. a required calibration-provenance write failure lowers the ceiling;
+   e. the 1IP lane cannot exceed MODEL_QUALIFIED_HOLD while TEST_ONLY.
+5. Behavioral integration tests—not AST-only—for:
+   - KALSHI_REJECT_UNCALIBRATED registry exclusion;
+   - NO-side high-price tail-risk rejection without calibrated evidence.
+6. Fresh multi-worker production smoke verifying:
+   - governance prewarm per worker;
+   - timeout/failure remains fail-closed;
+   - quota state is cross-worker consistent;
+   - summary counts reconcile with canonical row labels.
+7. rows_in = rows_completed + rows_held + rows_rejected.
+8. backend_global_ceiling_enforcement_status.
+9. Whether tasks #249 and #250 are separately complete.
+
+publish_authorized=false
+can_execute=false
+DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
+```
+
+If that audit passes, close these 13 tasks permanently and proceed with **#249 → #250 → remaining Universal Agent Core closeout**. Do not reopen the completed batch during UAC work unless a regression directly implicates it.

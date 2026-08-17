@@ -648,16 +648,50 @@ def log_calibration_entry_pg(entry: dict[str, Any]) -> bool:
         # If source_snapshot_id is present, also write the snapshot row so
         # llp_source_snapshots finally receives data (addresses orphan issue).
         try:
-            _audit_calibration_entry_provenance(conn, entry)
-        except Exception:
-            pass  # Best-effort — never blocks the calibration write
+            _prov_result = _audit_calibration_entry_provenance(conn, entry)
+        except Exception as _prov_exc:
+            _prov_result = {"write_ok": False, "error": str(_prov_exc)}
+        # Fix (d): if provenance snapshot write failed AND entry was FINAL_APPROVED,
+        # downgrade the calibration record in-place so it cannot support a live
+        # FINAL_APPROVED routing decision without verified provenance.
+        if (
+            not _prov_result.get("write_ok")
+            and entry.get("final_label") == "FINAL_APPROVED"
+        ):
+            try:
+                import logging as _prov_log
+                _prov_log.getLogger("llp_stage2_tables").warning(
+                    "[provenance_ceiling] Downgrading FINAL_APPROVED→MODEL_QUALIFIED_HOLD "
+                    "for event_key=%r run_id=%r — snapshot write failed: %s",
+                    entry.get("event_key"),
+                    entry.get("run_id"),
+                    _prov_result.get("error"),
+                )
+                _conn2 = _get_connection()
+                _cur2  = _conn2.cursor()
+                _cur2.execute(
+                    """
+                    UPDATE llp_calibration_ledger
+                    SET    final_label = 'MODEL_QUALIFIED_HOLD'
+                    WHERE  event_key = %s
+                      AND  run_id    = %s
+                      AND  final_label = 'FINAL_APPROVED'
+                      AND  settled_at IS NULL
+                    """,
+                    (entry.get("event_key"), entry.get("run_id")),
+                )
+                _conn2.commit()
+                _cur2.close()
+                _conn2.close()
+            except Exception:
+                pass  # Downgrade is best-effort; original calibration write already succeeded
         conn.close()
         return True
     except Exception:
         return False
 
 
-def _audit_calibration_entry_provenance(conn: Any, entry: dict[str, Any]) -> None:
+def _audit_calibration_entry_provenance(conn: Any, entry: dict[str, Any]) -> dict:
     """
     Build a StructuredEvidence from a calibration entry and run auditSourceProvenance.
 
@@ -750,9 +784,13 @@ def _audit_calibration_entry_provenance(conn: Any, entry: dict[str, Any]) -> Non
             )
             conn.commit()
             cur.close()
+            # Snapshot write succeeded — return structured result so caller can
+            # act on provenance write status (fix d).
+            return {"write_ok": True, "snapshot_id": snapshot_id, "ceiling_lowered": False}
         except Exception as _snap_exc:
             # Snapshot write failure is non-fatal — never blocks the caller.
             # Task #72: log the failure so silently orphaned records are visible.
+            # Return write_ok=False so the caller can lower the ceiling.
             import logging as _snap_log_mod
             _snap_log_mod.getLogger("llp_stage2_tables").warning(
                 "[source_snapshot] INSERT failed for snapshot_id=%r: %s — "
@@ -761,6 +799,10 @@ def _audit_calibration_entry_provenance(conn: Any, entry: dict[str, Any]) -> Non
                 snapshot_id,
                 _snap_exc,
             )
+            return {"write_ok": False, "snapshot_id": snapshot_id, "ceiling_lowered": False,
+                    "error": str(_snap_exc)}
+    # No snapshot_id present — provenance still ran, write not attempted.
+    return {"write_ok": True, "snapshot_id": None, "ceiling_lowered": False}
 
 
 def get_stage2_schema_health() -> dict[str, Any]:

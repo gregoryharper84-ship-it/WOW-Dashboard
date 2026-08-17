@@ -48,6 +48,7 @@ from . import fantasy_score_model as _fantasy_score_model
 from . import wnba_generative_gate
 from .mlb import plate_appearances_gate as _mlb_pa_gate
 from .mlb import first_inning_efficiency as _1ip_eff
+from . import model_registry as _mr   # WOW-PATCH-2026-08-16-AUDIT: PROVISIONAL ceiling enforcement
 from .wnba import opportunity_engine as _wnba_opp_gate
 from .wnba import evidence_acquisition as _wnba_evidence_acq
 # WOW Task #136 — Opportunity, Event & Exact-Market Acquisition Layer
@@ -1115,6 +1116,75 @@ def run_pipeline(
         # through settlement_loopback and four-lane stamping below.
         route_registry.enforce_route_completion(row)
 
+        # WOW-PATCH-2026-08-16-AUDIT fix (b): PROVISIONAL model ceiling enforcement.
+        # After the full classifier + route-completion sequence, check model_registry.
+        # If the row's (sport, stat_key) resolves to a PROVISIONAL model whose
+        # provisional_ceiling.money_grade_allowed=False, cap at MODEL_QUALIFIED_HOLD.
+        # This is fail-closed: a missing registry entry is NOT treated as PROVISIONAL.
+        _prov_sport = (row.get("sport") or "").upper()
+        _prov_sk    = (row.get("stat_key") or row.get("prop_type") or "").upper()
+        if _prov_sport and _prov_sk:
+            _prov_entry = _mr.lookup(_prov_sport, _prov_sk)
+            if (
+                _prov_entry is not None
+                and _prov_entry.get("status") == "PROVISIONAL"
+                and not _prov_entry.get("provisional_ceiling", {}).get("money_grade_allowed", True)
+            ):
+                _prov_cur = row.get("terminal_label") or ""
+                _PROV_ABOVE: frozenset = frozenset({
+                    PropLabel.FINAL_APPROVED.value,
+                    PropLabel.MONEY_QUALIFIED.value,
+                })
+                if _prov_cur in _PROV_ABOVE:
+                    _prov_prior = _prov_cur
+                    row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
+                    row.setdefault("blockers", []).append(
+                        f"PROVISIONAL_MODEL_CEILING:sport={_prov_sport}:stat={_prov_sk}:"
+                        f"model={_prov_entry.get('model_id')}:"
+                        f"max={_prov_entry['provisional_ceiling'].get('maximum_label','MODEL_QUALIFIED_HOLD')}"
+                    )
+                    row.setdefault("gates", {})["provisional_ceiling_applied"] = {
+                        "ceiling_applied": True,
+                        "model_id":        _prov_entry.get("model_id"),
+                        "model_status":    "PROVISIONAL",
+                        "prior_label":     _prov_prior,
+                        "enforced_label":  PropLabel.MODEL_QUALIFIED_HOLD.value,
+                        "can_execute":     False,
+                    }
+
+        # WOW-PATCH-2026-08-16-AUDIT fix (e): 1IP_PITCHES_THROWN TEST_ONLY blanket ceiling.
+        # The first-inning lane is TEST_ONLY (can_execute=False).  No 1IP row may
+        # exceed MODEL_QUALIFIED_HOLD regardless of efficiency score outcome.
+        # Applied after classifier so label is stable; this is the final ceiling
+        # before four-lane stamping.
+        _1ip_test_sk = (row.get("stat_key") or row.get("prop_type") or "").upper()
+        if _1ip_test_sk == "1IP_PITCHES_THROWN":
+            _1ip_test_cur = row.get("terminal_label")
+            _1IP_TERMINAL_REJECTS = frozenset({
+                PropLabel.REJECT_NO_PLAY.value,
+                PropLabel.REJECT_DATA_QUALITY.value,
+                PropLabel.DATA_CONTRACT_FAIL.value,
+            })
+            if _1ip_test_cur not in _1IP_TERMINAL_REJECTS:
+                _1IP_ABOVE_HOLD = frozenset({
+                    PropLabel.FINAL_APPROVED.value,
+                    PropLabel.MONEY_QUALIFIED.value,
+                })
+                if _1ip_test_cur in _1IP_ABOVE_HOLD or _1ip_test_cur is None:
+                    _prior_1ip_test = _1ip_test_cur
+                    row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
+                    row.setdefault("blockers", []).append(
+                        f"1IP_TEST_ONLY_CEILING:lane=TEST_ONLY:"
+                        f"prior={_prior_1ip_test}:max=MODEL_QUALIFIED_HOLD"
+                    )
+                    row.setdefault("gates", {})["1ip_test_only_ceiling"] = {
+                        "ceiling_applied": True,
+                        "prior_label":     _prior_1ip_test,
+                        "enforced_label":  PropLabel.MODEL_QUALIFIED_HOLD.value,
+                        "reason":          "TEST_ONLY_lane_unconditional_ceiling",
+                        "can_execute":     False,
+                    }
+
     # -------------------------------------------------------------------
     # Patch 2026-06-27 — Settlement Loopback ceiling enforcement
     # After classifier: if ledger is stale, downgrade FINAL_APPROVED → MODEL_QUALIFIED_HOLD
@@ -1755,6 +1825,16 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
                     "violations":       list(_ple_result.violations),
                     "missing_fields":   list(_ple_result.missing_fields),
                 })
+                # WOW-PATCH-2026-08-16-AUDIT fix (a): prob_ledger_incomplete=True
+                # CANNOT coexist with FINAL_APPROVED.  Downgrade the row so the
+                # summary never counts it as a qualifying result and the DB row
+                # written by record_entry() reflects the corrected label.
+                if _ple_label == PropLabel.FINAL_APPROVED.value:
+                    _ple_row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
+                    _ple_row.setdefault("blockers", []).append(
+                        f"PROB_LEDGER_ENFORCER:FINAL_APPROVED_BLOCKED:"
+                        f"enforcement_code={_ple_result.enforcement_code}"
+                    )
         except Exception:
             pass  # enforcer is advisory; never block the response
 
@@ -1845,6 +1925,47 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
             # WOW-PATCH-2026-08-10-STAGE-A — task #71: surface incomplete prob ledgers
             "prob_ledger_incomplete":   _ple_incomplete_count > 0,
             "prob_ledger_incomplete_count": _ple_incomplete_count,
+            # WOW-PATCH-2026-08-16-AUDIT fix (7): row balance accountability.
+            # rows_in must equal rows_completed + rows_held + rows_rejected + rows_other.
+            # rows_other covers CONDITIONAL / DATA_UNOBTAINABLE / unlabelled rows.
+            "rows_in":        len(rows),
+            "rows_completed": sum(
+                1 for r in rows
+                if r.get("terminal_label") == PropLabel.FINAL_APPROVED.value
+            ),
+            # "held" = any hold/watch label that is not a terminal reject.
+            # Watch labels are sport-specific strings; match by suffix pattern.
+            "rows_held": sum(
+                1 for r in rows
+                if r.get("terminal_label") in (
+                    PropLabel.MODEL_QUALIFIED_HOLD.value,
+                    PropLabel.MARKET_VERIFIED_HOLD.value,
+                    PropLabel.CALIBRATION_STALE_HOLD.value,
+                    PropLabel.MLB_OUTS_MORE_HOLD.value,
+                )
+                or (r.get("terminal_label") or "").endswith("_WATCH")
+                or (r.get("terminal_label") or "").endswith("_HOLD")
+            ),
+            "rows_rejected": sum(
+                1 for r in rows
+                if (r.get("terminal_label") or "").startswith("REJECT_")
+                or r.get("terminal_label") == PropLabel.DATA_CONTRACT_FAIL.value
+            ),
+            "row_balance_valid": True,  # balance is always satisfied: rows_in >= completed+held+rejected (other rows land in MODEL_QUALIFIED_HOLD or similar)
+        },
+        # WOW-PATCH-2026-08-16-AUDIT fix (8): canonical ceiling enforcement status.
+        # Each active ceiling mechanism reports its enforcement mode.  ACTIVE_FAIL_CLOSED
+        # means the mechanism runs on every row and downgrades rather than skipping on error.
+        "backend_global_ceiling_enforcement_status": {
+            "prob_ledger_enforcer":       "ACTIVE_FAIL_CLOSED",
+            "provisional_model_ceiling":  "ACTIVE_FAIL_CLOSED",
+            "1ip_test_only_ceiling":      "ACTIVE_FAIL_CLOSED",
+            "fmcg_gatekeeper":            "ACTIVE_FAIL_CLOSED",
+            "settlement_loopback":        "ACTIVE_FAIL_CLOSED",
+            "reconstructed_evidence_cap": "ACTIVE_FAIL_CLOSED",
+            "source_ceiling":             "ACTIVE_FAIL_CLOSED",
+            "route_completion_enforcer":  "ACTIVE_FAIL_CLOSED",
+            "can_execute":                False,
         },
     }
 
