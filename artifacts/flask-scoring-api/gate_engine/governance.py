@@ -691,7 +691,7 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
     },
     {
         "patch_id":    "WOW-PATCH-2026-08-17-TYPED-HYDRATION-AND-MODEL-READINESS-V1",
-        "version":     "1.1",
+        "version":     "1.2",
         "effective_at": "2026-08-17",
         "expires_at":  None,
         "status":      "ACTIVE",

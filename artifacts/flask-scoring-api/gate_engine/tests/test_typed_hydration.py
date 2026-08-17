@@ -1,14 +1,20 @@
 """
 test_typed_hydration.py — WOW-PATCH-2026-08-17-TYPED-HYDRATION-AND-MODEL-READINESS-V1
 
-27 mandatory tests for the typed hydration and model-readiness enforcement layer.
+32 mandatory tests for the typed hydration and model-readiness enforcement layer.
 
 Tests 1-10:  Core gate-behavior and run-controller scenarios.
-Tests 11-22: Extended lifecycle, reconciliation, and isolation invariants
-             (as specified in the build packet).
+Tests 11-22: Extended lifecycle, reconciliation, and isolation invariants.
 Test  23:    Gate-4 market-lane separation — UNAVAILABLE outcome allows
              confidence/model lane while blocking market-edge/money lanes.
-Tests 24-27: Module-level invariants.
+Tests 24-28: End-to-end ceiling enforcement proof (verifier-requested):
+             24 — market UNAVAILABLE → MODEL_QUALIFIED_HOLD ceiling, never MONEY_QUALIFIED
+             25 — market UNAVAILABLE → DATA_UNOBTAINABLE audit, exposure writes prohibited
+             26 — market BLOCKING → NOT_STARTED, no exposure writes
+             27 — FINAL_APPROVED cannot bypass market_lane_available=False
+             28 — ceiling is idempotent; every confidence-only row gets one canonical outcome
+Test  29:    data_timestamp absence → BLOCKING (not UNAVAILABLE) — general provenance field.
+Tests 30-33: Module-level invariants.
 
 All tests: can_execute=False unconditional.
 """
@@ -25,6 +31,9 @@ from gate_engine.typed_hydration import (
     GATE_ROLE,
     LABEL_HYDRATION_ABORT,
     LABEL_RUN_INVALID_HYDRATION_RECONCILIATION,
+    MARKET_AUDIT_STATUS_AVAILABLE,
+    MARKET_AUDIT_STATUS_UNAVAILABLE,
+    MARKET_REQUIRED_LABELS,
     DataStatus,
     FailureClass,
     LifecycleState,
@@ -32,9 +41,11 @@ from gate_engine.typed_hydration import (
     ModelStatus,
     advance_lifecycle,
     can_execute,
+    enforce_market_ceiling,
     reconcile_run,
     run_controller,
     run_hydration_check,
+    validate_exposure_write,
 )
 from gate_engine.labels import PropLabel
 
@@ -579,49 +590,236 @@ class TestTypedHydration(unittest.TestCase):
     # -----------------------------------------------------------------------
     def test_23_market_unavailable_confidence_lane_survives(self):
         """
-        When both market_no_vig_probability AND data_timestamp are absent,
+        When market_no_vig_probability is absent (but data_timestamp IS present),
         Gate 4 returns MarketGateOutcome.UNAVAILABLE (not BLOCKING).
 
-        The row must reach MODEL_READY because Gates 1/2/3 all pass and the
-        market gate outcome is non-blocking.  Lane availability:
+        data_timestamp is a general intake provenance field stamped by
+        auto_enrichment — it is NOT market-specific.  Its absence is an intake
+        failure (BLOCKING), not market-data absence.  Test 29 covers that case.
+        Only market_no_vig_probability (market-specific) produces UNAVAILABLE.
+
+        Lane availability when UNAVAILABLE:
           - confidence_lane_available = True   (probability model may run)
           - market_lane_available     = False  (market-edge / money blocked)
-
-        This is the correct behavior per the Full Model Gatekeeper contract
-        and reconstructed-confidence architecture: absent market evidence lowers
-        the terminal ceiling; it does not prevent model execution.
-
-        Contrast with SOURCE_CONFLICT and STALE_DATA (both BLOCKING) which
-        fully block the row (see tests 6 and 8).
         """
         enr = _complete_enrichment()
         del enr["market_no_vig_probability"]
-        del enr["data_timestamp"]
+        # data_timestamp deliberately kept — it is a general provenance field;
+        # its absence would produce BLOCKING, not UNAVAILABLE (see test 29).
         result = run_hydration_check(_complete_row(), enr)
 
-        # Row reaches MODEL_READY despite market data being absent
+        # Row reaches MODEL_READY despite market odds being absent
         self.assertEqual(result.lifecycle_state,     LifecycleState.MODEL_READY)
         self.assertEqual(result.market_gate_outcome, MarketGateOutcome.UNAVAILABLE)
 
         # Lane separation: confidence ok, market-edge/money blocked
         self.assertTrue(result.confidence_lane_available,
-                        "Confidence/model lane must survive when market data is absent")
+                        "Confidence/model lane must survive when market odds absent")
         self.assertFalse(result.market_lane_available,
-                         "Market-edge/money lane must be blocked when market data is absent")
+                         "Market-edge/money lane must be blocked when market odds absent")
 
-        # Gate 4 recorded the missing fields but is non-blocking
+        # Gate 4 recorded the missing field but is non-blocking
         self.assertFalse(result.gate_results[GATE_MARKET].passed)
         self.assertIn("market_no_vig_probability", result.missing_fields)
 
-        # terminal_label is cleared at MODEL_READY — ceiling is set by scoring layer
+        # terminal_label cleared at MODEL_READY; ceiling set by enforce_market_ceiling
         self.assertEqual(result.terminal_label, "")
 
         # Gates 1/2/3 must all have passed
         for gate_id in (GATE_IDENTITY, GATE_ROLE, GATE_LEDGER):
-            self.assertTrue(
-                result.gate_results[gate_id].passed,
-                f"{gate_id} must pass for MODEL_READY to be reached",
+            self.assertTrue(result.gate_results[gate_id].passed,
+                            f"{gate_id} must pass for MODEL_READY to be reached")
+
+    # -----------------------------------------------------------------------
+    # Test 24 — market UNAVAILABLE → ceiling capped at MODEL_QUALIFIED_HOLD
+    # -----------------------------------------------------------------------
+    def test_24_market_unavailable_ceiling_enforced(self):
+        """
+        enforce_market_ceiling must cap MONEY_QUALIFIED and FINAL_APPROVED to
+        MODEL_QUALIFIED_HOLD when market_lane_available=False.
+        Market audit status must be DATA_UNOBTAINABLE.
+        """
+        enr = _complete_enrichment()
+        del enr["market_no_vig_probability"]
+        result = run_hydration_check(_complete_row(), enr)
+
+        self.assertEqual(result.lifecycle_state, LifecycleState.MODEL_READY)
+        self.assertFalse(result.market_lane_available)
+
+        for money_label in [
+            PropLabel.MONEY_QUALIFIED.value,
+            PropLabel.FINAL_APPROVED.value,
+        ]:
+            enforced, audit = enforce_market_ceiling(result, money_label)
+            self.assertEqual(
+                enforced,
+                PropLabel.MODEL_QUALIFIED_HOLD.value,
+                f"{money_label} must be capped at MODEL_QUALIFIED_HOLD when market absent",
             )
+            self.assertNotEqual(enforced, PropLabel.MONEY_QUALIFIED.value)
+            self.assertNotEqual(enforced, PropLabel.FINAL_APPROVED.value)
+            self.assertEqual(audit, MARKET_AUDIT_STATUS_UNAVAILABLE)
+
+        # MODEL_QUALIFIED_HOLD is already the ceiling — passes through unchanged
+        hold, audit_hold = enforce_market_ceiling(
+            result, PropLabel.MODEL_QUALIFIED_HOLD.value
+        )
+        self.assertEqual(hold,       PropLabel.MODEL_QUALIFIED_HOLD.value)
+        self.assertEqual(audit_hold, MARKET_AUDIT_STATUS_UNAVAILABLE)
+
+    # -----------------------------------------------------------------------
+    # Test 25 — market UNAVAILABLE → DATA_UNOBTAINABLE audit + exposure prohibited
+    # -----------------------------------------------------------------------
+    def test_25_market_unavailable_exposure_writes_prohibited(self):
+        """
+        When market_lane_available=False:
+          - market audit status = DATA_UNOBTAINABLE (from enforce_market_ceiling)
+          - market-edge, slip, final-card, and exposure writes are prohibited
+            (validate_exposure_write returns False)
+          - confidence/model lane is still available (confidence_lane_available=True)
+        """
+        enr = _complete_enrichment()
+        del enr["market_no_vig_probability"]
+        result = run_hydration_check(_complete_row(), enr)
+
+        # Market audit status via enforce_market_ceiling
+        _, audit = enforce_market_ceiling(result, PropLabel.MODEL_QUALIFIED_HOLD.value)
+        self.assertEqual(audit, MARKET_AUDIT_STATUS_UNAVAILABLE)
+
+        # Exposure write prohibited
+        allowed, reason = validate_exposure_write(result)
+        self.assertFalse(allowed, "Exposure write must be prohibited when market data absent")
+        self.assertIn("market_lane_available", reason)
+
+        # Confidence lane still available
+        self.assertTrue(result.confidence_lane_available)
+
+    # -----------------------------------------------------------------------
+    # Test 26 — market BLOCKING → NOT_STARTED, no exposure writes
+    # -----------------------------------------------------------------------
+    def test_26_market_blocking_no_model_or_exposure(self):
+        """
+        When Gate 4 is BLOCKING (SOURCE_CONFLICT):
+          - lifecycle_state = BLOCKED
+          - model_status = NOT_STARTED
+          - confidence_lane_available = False
+          - enforce_market_ceiling → DATA_CONTRACT_FAIL + DATA_UNOBTAINABLE
+          - validate_exposure_write → False
+        """
+        enr = _complete_enrichment()
+        enr["market_no_vig_probability"] = "SOURCE_CONFLICT"
+        result = run_hydration_check(_complete_row(), enr)
+
+        self.assertEqual(result.lifecycle_state, LifecycleState.BLOCKED)
+        self.assertEqual(result.model_status,    ModelStatus.NOT_STARTED)
+        self.assertFalse(result.confidence_lane_available)
+        self.assertFalse(result.market_lane_available)
+
+        # enforce_market_ceiling returns DATA_CONTRACT_FAIL for BLOCKED rows
+        enforced, audit = enforce_market_ceiling(
+            result, PropLabel.MODEL_QUALIFIED_HOLD.value
+        )
+        self.assertEqual(enforced, PropLabel.DATA_CONTRACT_FAIL.value)
+        self.assertEqual(audit,    MARKET_AUDIT_STATUS_UNAVAILABLE)
+
+        # Exposure write prohibited
+        allowed, _ = validate_exposure_write(result)
+        self.assertFalse(allowed)
+
+    # -----------------------------------------------------------------------
+    # Test 27 — preloaded FINAL_APPROVED cannot bypass market_lane_available=False
+    # -----------------------------------------------------------------------
+    def test_27_final_approved_cannot_bypass_market_unavailable(self):
+        """
+        FINAL_APPROVED must be capped regardless of how it arrives
+        (preloaded, downstream routing, or direct assignment).
+        enforce_market_ceiling is the unconditional gate.
+        """
+        enr = _complete_enrichment()
+        del enr["market_no_vig_probability"]
+        result = run_hydration_check(_complete_row(), enr)
+
+        self.assertFalse(result.market_lane_available)
+
+        # All money-lane labels must be rejected
+        bypass_attempts = {
+            PropLabel.FINAL_APPROVED.value,
+            PropLabel.MONEY_QUALIFIED.value,
+        }
+        for attempt in bypass_attempts:
+            enforced, _ = enforce_market_ceiling(result, attempt)
+            self.assertNotIn(
+                enforced,
+                bypass_attempts,
+                f"{attempt!r} must not reach output when market_lane_available=False",
+            )
+            self.assertEqual(
+                enforced,
+                PropLabel.MODEL_QUALIFIED_HOLD.value,
+                f"Ceiling must reduce {attempt!r} to MODEL_QUALIFIED_HOLD",
+            )
+
+        # Confirm MARKET_REQUIRED_LABELS contains exactly these two labels
+        self.assertIn(PropLabel.FINAL_APPROVED.value,   MARKET_REQUIRED_LABELS)
+        self.assertIn(PropLabel.MONEY_QUALIFIED.value,  MARKET_REQUIRED_LABELS)
+
+    # -----------------------------------------------------------------------
+    # Test 28 — ceiling is idempotent; every confidence-only row gets one outcome
+    # -----------------------------------------------------------------------
+    def test_28_ceiling_is_idempotent_one_canonical_outcome(self):
+        """
+        enforce_market_ceiling is deterministic and idempotent.
+        Applying it twice produces the same output.
+        Every MODEL_READY confidence-only row receives exactly one canonical
+        terminal outcome, and that outcome is stable under repeated application.
+        """
+        enr = _complete_enrichment()
+        del enr["market_no_vig_probability"]
+        result = run_hydration_check(_complete_row(), enr)
+
+        # Idempotency for money-lane labels
+        for label in [PropLabel.MONEY_QUALIFIED.value, PropLabel.FINAL_APPROVED.value]:
+            r1, a1 = enforce_market_ceiling(result, label)
+            r2, a2 = enforce_market_ceiling(result, label)
+            self.assertEqual(r1, r2, "enforce_market_ceiling must be deterministic")
+            self.assertEqual(a1, a2)
+            self.assertEqual(r1, PropLabel.MODEL_QUALIFIED_HOLD.value)
+
+        # MODEL_QUALIFIED_HOLD is stable under ceiling (idempotent)
+        hold1, _ = enforce_market_ceiling(result, PropLabel.MODEL_QUALIFIED_HOLD.value)
+        hold2, _ = enforce_market_ceiling(result, hold1)
+        self.assertEqual(hold1, hold2,
+                         "MODEL_QUALIFIED_HOLD must be stable under repeated ceiling application")
+
+        # Confirmed: one canonical outcome per confidence-only row
+        self.assertEqual(hold1, PropLabel.MODEL_QUALIFIED_HOLD.value)
+
+    # -----------------------------------------------------------------------
+    # Test 29 — data_timestamp absent → BLOCKING (general provenance field)
+    # -----------------------------------------------------------------------
+    def test_29_missing_data_timestamp_is_blocking_not_unavailable(self):
+        """
+        data_timestamp is a general intake provenance field stamped by
+        auto_enrichment (listed in data_contract.py as a required field).
+        Its absence indicates an intake-level failure, NOT market-data absence.
+
+        Expected: row is BLOCKED (not MODEL_READY), market_gate_outcome=BLOCKING.
+        This is explicitly different from market_no_vig_probability absence (UNAVAILABLE).
+        """
+        enr = _complete_enrichment()
+        del enr["data_timestamp"]
+        # market_no_vig_probability IS present — only the provenance field is missing
+        result = run_hydration_check(_complete_row(), enr)
+
+        self.assertEqual(result.lifecycle_state,     LifecycleState.BLOCKED)
+        self.assertEqual(result.market_gate_outcome, MarketGateOutcome.BLOCKING)
+        self.assertFalse(result.confidence_lane_available)
+        self.assertFalse(result.market_lane_available)
+        self.assertIn("data_timestamp", result.missing_fields)
+        self.assertEqual(result.terminal_label, PropLabel.DATA_CONTRACT_FAIL.value)
+
+        # Contrast: missing market_no_vig_probability (market-specific) → MODEL_READY
+        # (see test 23 for that case)
 
 
 # ---------------------------------------------------------------------------

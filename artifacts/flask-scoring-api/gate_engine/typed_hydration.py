@@ -496,10 +496,21 @@ def _run_market_gate(
     """
     Gate 4 — Market / Settlement Gate (data presence + TTL freshness).
 
-    Required enrichment fields: market_no_vig_probability, data_timestamp
-    TTL check: if market_checked_at + market_ttl (seconds) < now → STALE_DATA.
-    SOURCE_CONFLICT overrides missing-field classification.
+    Three distinct outcome classes (MarketGateOutcome):
 
+    BLOCKING  — SOURCE_CONFLICT, expired TTL, or missing general provenance
+                field (data_timestamp).  Row is fully BLOCKED.  data_timestamp
+                is a general intake field stamped by auto_enrichment; its
+                absence is an intake failure, not market-data absence.
+
+    UNAVAILABLE — market_no_vig_probability absent.  Confidence/model lane
+                  survives; market-edge and money lanes blocked; ceiling capped
+                  at MODEL_QUALIFIED_HOLD.  data_timestamp MUST be present
+                  before this path is reachable (checked above).
+
+    AVAILABLE — all market-specific fields present and fresh; all lanes open.
+
+    TTL check: if market_checked_at + market_ttl (seconds) < now → BLOCKING.
     Expired TTL cannot be refreshed merely by reusing the old value.
     """
     if now is None:
@@ -546,12 +557,37 @@ def _run_market_gate(
         except (ValueError, TypeError, AttributeError):
             pass  # malformed timestamp — fall through to field presence
 
-    # Field presence check.
-    # Missing market fields → UNAVAILABLE (non-blocking per reconstructed-confidence
-    # architecture: confidence/model lane survives, market-edge/money lanes blocked).
-    enr_required = ["market_no_vig_probability", "data_timestamp"]
+    # ── General intake provenance check (BLOCKING) ──────────────────────────
+    # data_timestamp is stamped by auto_enrichment for every acquired row and
+    # listed as required in data_contract.py.  It is a general acquisition
+    # field, NOT market-specific; its absence indicates an intake-level failure,
+    # not market-data unavailability.  Absence → BLOCKING (not UNAVAILABLE).
+    _provenance_required = ["data_timestamp"]
+    for _f in _provenance_required:
+        _v = enrichment.get(_f)
+        if _v is None or (isinstance(_v, str) and not _v.strip()):
+            return FourGateResult(
+                gate_id=GATE_MARKET,
+                passed=False,
+                missing_fields=[_f],
+                data_status=DataStatus.INCOMPLETE_INPUT,
+                failure_class=FailureClass.INPUT_FAILURE,
+                failure_reason=(
+                    f"Missing intake provenance field {_f!r} — row BLOCKED. "
+                    "data_timestamp is stamped by auto_enrichment on every acquired "
+                    "row; its absence indicates a row-level intake failure, not "
+                    "market-data unavailability."
+                ),
+                market_gate_outcome=MarketGateOutcome.BLOCKING,
+            )
+
+    # ── Market-specific fields (UNAVAILABLE if absent) ───────────────────────
+    # market_no_vig_probability is market-specific (the two-way no-vig line).
+    # Absent market odds → confidence/model lane survives with a lower ceiling;
+    # market-edge and money lanes are blocked.
+    _market_specific = ["market_no_vig_probability"]
     missing: list[str] = []
-    for f in enr_required:
+    for f in _market_specific:
         v = enrichment.get(f)
         if v is None or (isinstance(v, str) and not v.strip()):
             missing.append(f)
@@ -559,15 +595,16 @@ def _run_market_gate(
     if missing:
         return FourGateResult(
             gate_id=GATE_MARKET,
-            passed=False,          # gate did not fully pass
+            passed=False,
             missing_fields=missing,
             data_status=DataStatus.INCOMPLETE_INPUT,
             failure_class=FailureClass.INPUT_FAILURE,
             failure_reason=(
-                f"Market data unavailable — fields absent: {missing}. "
-                "Confidence/model lane survives; market-edge and money lanes blocked."
+                f"Market data unavailable — market-specific fields absent: {missing}. "
+                "Confidence/model lane survives under ceiling (MODEL_QUALIFIED_HOLD max); "
+                "market-edge and money lanes blocked."
             ),
-            market_gate_outcome=MarketGateOutcome.UNAVAILABLE,  # non-blocking
+            market_gate_outcome=MarketGateOutcome.UNAVAILABLE,
         )
 
     return FourGateResult(
@@ -943,3 +980,104 @@ def run_controller(
         all_rows_provider_outage=all_rows_provider_outage,
         systemic_threshold_exceeded=systemic_threshold_exceeded,
     )
+
+
+# ---------------------------------------------------------------------------
+# Market ceiling enforcement
+# ---------------------------------------------------------------------------
+
+# Labels that require market_lane_available=True.
+# Rows with market_lane_available=False must never reach these labels.
+MARKET_REQUIRED_LABELS: frozenset[str] = frozenset({
+    PropLabel.MONEY_QUALIFIED.value,
+    PropLabel.FINAL_APPROVED.value,
+})
+
+# Canonical market audit status strings for enforce_market_ceiling callers
+MARKET_AUDIT_STATUS_AVAILABLE:   str = "AVAILABLE"
+MARKET_AUDIT_STATUS_UNAVAILABLE: str = "DATA_UNOBTAINABLE"
+
+
+def enforce_market_ceiling(
+    result: HydrationResult,
+    proposed_label: str,
+) -> tuple[str, str]:
+    """
+    Canonical ceiling reducer — every MODEL_READY row must pass through this
+    before its terminal_label is published.
+
+    Returns (enforced_terminal_label, market_audit_status).
+
+    Rules (applied in order):
+
+    1. BLOCKED row (confidence_lane_available=False):
+       → (DATA_CONTRACT_FAIL, DATA_UNOBTAINABLE)
+       Model never ran; no probability, prediction, calibration, or exposure.
+
+    2. MODEL_READY, market_lane_available=False,
+       proposed_label in MARKET_REQUIRED_LABELS:
+       → (MODEL_QUALIFIED_HOLD, DATA_UNOBTAINABLE)
+       MONEY_QUALIFIED and FINAL_APPROVED cannot bypass absent market data.
+
+    3. MODEL_READY, market_lane_available=False,
+       proposed_label NOT in MARKET_REQUIRED_LABELS:
+       → (proposed_label, DATA_UNOBTAINABLE)
+       Label is below the money lane — ceiling does not lower it further,
+       but market audit records DATA_UNOBTAINABLE.
+
+    4. MODEL_READY, market_lane_available=True:
+       → (proposed_label, AVAILABLE)
+       All lanes are open; caller's label passes through unchanged.
+
+    This function is idempotent: applying it twice with the same inputs
+    produces the same output.  FINAL_APPROVED and MONEY_QUALIFIED cannot
+    bypass market_lane_available=False regardless of how they arrive
+    (preloaded, downstream routing, or direct assignment).
+    """
+    # Rule 1: BLOCKED row
+    if not result.confidence_lane_available:
+        return (PropLabel.DATA_CONTRACT_FAIL.value, MARKET_AUDIT_STATUS_UNAVAILABLE)
+
+    market_audit = (
+        MARKET_AUDIT_STATUS_AVAILABLE
+        if result.market_lane_available
+        else MARKET_AUDIT_STATUS_UNAVAILABLE
+    )
+
+    # Rules 2 & 3: market-lane ceiling
+    if not result.market_lane_available and proposed_label in MARKET_REQUIRED_LABELS:
+        return (PropLabel.MODEL_QUALIFIED_HOLD.value, market_audit)
+
+    # Rule 4: all lanes open, or non-money label under ceiling
+    return (proposed_label, market_audit)
+
+
+def validate_exposure_write(
+    result: HydrationResult,
+) -> tuple[bool, str]:
+    """
+    Returns (allowed, reason).
+
+    Market-edge, slip, final-card, and exposure ledger writes require:
+      1. Row is MODEL_READY (not BLOCKED).
+      2. market_lane_available=True.
+
+    A confidence-only row (market_lane_available=False) may proceed to model
+    scoring but MUST NOT write to market-edge, slip, final-card, or exposure
+    ledgers.  These writes are the sole responsibility of the caller to gate;
+    this function provides the canonical allow/deny decision.
+    """
+    if result.lifecycle_state == LifecycleState.BLOCKED:
+        return (
+            False,
+            f"Row {result.row_id!r} is BLOCKED (lifecycle_state=BLOCKED) — "
+            "no market-edge, slip, final-card, or exposure writes permitted",
+        )
+    if not result.market_lane_available:
+        return (
+            False,
+            f"Row {result.row_id!r} has market_lane_available=False "
+            f"(market_gate_outcome={result.market_gate_outcome.value}); "
+            "market-edge, slip, final-card, and exposure writes are prohibited",
+        )
+    return (True, "")
