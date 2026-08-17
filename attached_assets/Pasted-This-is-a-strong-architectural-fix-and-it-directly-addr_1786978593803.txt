@@ -1,0 +1,57 @@
+This is a strong architectural fix, and it directly addresses the class of failure we hit earlier: rows reaching scoring with partially hydrated evidence and then collapsing into an ambiguous `DATA_CONTRACT_FAIL`.
+
+The most important improvement is the separation of **lifecycle state, data state, model state, failure class, and native WOW terminal label**. That gives us a deterministic answer to *where* a row failed without abusing the terminal taxonomy. The pre-model exclusion of blocked rows is especially important: a partially hydrated row can no longer contaminate ranking simply because some numerical fields happen to exist.
+
+There is **one governance issue I would verify before calling `d0dd3c8` fully closed**, though. Your fourth hydration gate currently appears to require `market_no_vig_probability` before a row may become `MODEL_READY`. Under the active reconstructed-confidence architecture, an exact two-way market is **not required to run the confidence/model lane**; its absence should block the market-edge/money lane while allowing a fully supported model probability to exist.  The Full Model Gatekeeper says the same thing explicitly: the model can complete while market evidence remains `DATA_UNOBTAINABLE`, with the terminal ceiling lowered appropriately rather than treating the model itself as unavailable. 
+
+So the desired behavior should be closer to:
+
+```text
+IDENTITY_STATUS = COMPLETE
+ROLE_OPPORTUNITY = COMPLETE
+HISTORICAL_LEDGER = COMPLETE
+
+MODEL_INPUT_CONTRACT_COMPLETE
+        ↓
+MODEL_READY
+        ↓
+MODEL MAY RUN
+
+MARKET_SETTLEMENT =
+    COMPLETE
+    or MARKET_DATA_UNAVAILABLE
+
+If unavailable:
+    confidence/model lane survives
+    market-edge lane blocked
+    money lane blocked
+    terminal ceiling lowered
+```
+
+rather than:
+
+```text
+missing market_no_vig_probability
+    ↓
+cannot reach MODEL_READY
+```
+
+There is a second scope check worth locking down: if `typed_hydration.py` is intended to become **universal**, fields such as `player`, `lineup`, `projected_minutes_or_workload`, and L5/L10 cannot be unconditional requirements for every WOW market. Moneylines, tennis, weather, Kalshi contracts, and other event-level lanes need lane-specific applicability or explicit `NOT_APPLICABLE` semantics. The Gatekeeper contract requires the controlling specialist and its applicable evidence, not one player-prop schema imposed on every market. 
+
+Assuming this module is scoped specifically to player-prop hydration, the build otherwise looks correct. The **26/26 new tests, 7,355 regression passes, 5/5 patch verification, protected taxonomy files untouched, unconditional `can_execute=false`, and reconciliation hard-stop** are exactly the protections I would want around this change.
+
+The next production verification should be very targeted: rerun the exact rows that previously failed hydration and prove that each one now either reaches
+
+```text
+BOARD_EXTRACTED
+→ DATA_HYDRATING
+→ CONTRACT_COMPLETE
+→ FOUR_GATES_CLEARED
+→ MODEL_READY
+→ SCORING_ATOMIC
+→ SCORED
+```
+
+or stops at a **specific typed dimension with a specific `FailureClass`**, while sibling complete rows continue under `DEGRADED`. Most importantly, we need to demonstrate that **no row reaches ranking before `MODEL_READY` and no market-only deficiency incorrectly prevents a valid confidence model from running**.
+
+If that market-lane separation is already implemented behind the gate semantics, then `d0dd3c8` is ready for the exact real-production regression that previously exposed the hydration failure.
