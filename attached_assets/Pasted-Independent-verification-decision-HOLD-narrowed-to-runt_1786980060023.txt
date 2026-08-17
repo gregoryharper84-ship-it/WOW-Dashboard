@@ -1,0 +1,53 @@
+Independent verification decision: **HOLD — narrowed to runtime enforcement proof.** The v1.1 architecture is acceptable; no redesign is presently required.
+
+### Accepted
+
+* Player-prop-only scope is explicit.
+* `AVAILABLE / UNAVAILABLE / BLOCKING` correctly separates market evidence from model-confidence eligibility.
+* Missing market evidence may preserve research/model scoring.
+* Market absence cannot support `MONEY_QUALIFIED` or `FINAL_APPROVED`.
+* Source conflicts and stale evidence remain hard blockers.
+* `UNRESOLVED-001/003` correctly remain unresolved.
+* `can_execute=false` and `publish_authorized=false` are preserved.
+
+The active exact-line contract supports this design: unavailable market evidence can produce `DATA_UNOBTAINABLE` for the market audit while a separate confidence-only lane survives under a lower ceiling.
+
+### Remaining blocker
+
+Test 23 proves the hydration result, but not the claimed end-to-end scoring ceiling. `terminal_label=""` is valid while `MODEL_READY`, but the row must eventually terminate through the canonical ceiling reducer.
+
+Provide or add tests proving:
+
+```text
+1. Market UNAVAILABLE + otherwise strong model
+   → MODEL_QUALIFIED_HOLD
+   → never MONEY_QUALIFIED
+   → never FINAL_APPROVED
+
+2. Market UNAVAILABLE
+   → market audit status DATA_UNOBTAINABLE
+   → confidence/model lane available
+   → market-edge, slip, final-card, and exposure writes prohibited
+
+3. Market BLOCKING
+   → model_status=NOT_STARTED
+   → no probability, prediction, calibration, or exposure publication
+
+4. Preloaded or downstream FINAL_APPROVED cannot bypass
+   market_lane_available=false.
+
+5. Every MODEL_READY confidence-only row eventually receives exactly
+   one canonical terminal outcome.
+```
+
+Also clarify `data_timestamp` in Test 23. If it is a general provenance timestamp, its absence must block the row. Only a missing market-specific timestamp such as `market_checked_at` should produce `MarketGateOutcome.UNAVAILABLE`.
+
+If these assertions already exist among the other 26 tests, return their exact test names and relevant outcomes; no code change is needed. Otherwise, add them and rerun the targeted suite, full regression, and `wow-verify-patch`.
+
+```text
+design_acceptance=PASS
+code_acceptance=HOLD_PENDING_END_TO_END_CEILING_PROOF
+runtime_publication_acceptance=PENDING
+can_execute=false
+publish_authorized=false
+```
