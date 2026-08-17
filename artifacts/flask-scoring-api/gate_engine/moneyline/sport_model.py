@@ -219,6 +219,108 @@ def _home_advantage_prior(sport: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Sport-specific specialist submodels
+# ---------------------------------------------------------------------------
+
+def _wnba_ml_specialist(enrichment: dict[str, Any]) -> float | None:
+    """
+    WNBA_ML_V1 specialist submodel.
+
+    Activates only for WNBA rows (called conditionally in compute_independent_probability).
+    Uses Bradley-Terry from win percentages with a lightweight rest-days adjustment.
+    Never reads game_log / box_score_log.
+
+    Returns P(home team wins) or None when insufficient data.
+    """
+    home_wp = enrichment.get("home_win_pct")
+    away_wp = enrichment.get("away_win_pct")
+
+    if home_wp is not None and away_wp is not None:
+        try:
+            hw = float(home_wp)
+            aw = float(away_wp)
+            if 0.0 <= hw <= 1.0 and 0.0 <= aw <= 1.0:
+                denom = hw + aw
+                if denom > 0.0:
+                    p = hw / denom
+                    # Light rest-days penalty for home team fatigue
+                    rest = enrichment.get("rest_days")
+                    try:
+                        if rest is not None and float(rest) < 2:
+                            p = max(0.01, p - 0.02)  # 2pp fatigue nudge
+                    except (TypeError, ValueError):
+                        pass
+                    return max(0.01, min(0.99, p))
+        except (TypeError, ValueError):
+            pass
+
+    # Fallback: offensive/defensive rating differential
+    off_h = enrichment.get("offensive_rating")
+    def_h = enrichment.get("defensive_rating")
+    if off_h is not None and def_h is not None:
+        try:
+            # Net rating as a probability proxy via logistic
+            net = float(off_h) - float(def_h)
+            return _logistic(net * 0.04)   # 0.04 ≈ empirical WNBA scale
+        except (TypeError, ValueError):
+            pass
+
+    return None
+
+
+def _tennis_match_winner_specialist(enrichment: dict[str, Any]) -> float | None:
+    """
+    TENNIS_MATCH_WINNER_V1 specialist submodel.
+
+    Activates only for ATP/WTA/TENNIS rows.
+    Priority order:
+      1. surface_adjusted_form (direct probability; highest fidelity)
+      2. Elo differential (standard tennis rating formula)
+      3. Hold/break rate dominance (serve advantage proxy)
+      4. H2H win rate
+
+    Returns P(candidate/home player wins) or None when insufficient data.
+    """
+    # 1. Surface-adjusted form (already a probability)
+    saf = enrichment.get("surface_adjusted_form")
+    if saf is not None:
+        try:
+            v = float(saf)
+            if 0.0 < v < 1.0:
+                return v
+        except (TypeError, ValueError):
+            pass
+
+    # 2. Elo differential
+    p_elo = _elo_differential(enrichment)
+    if p_elo is not None:
+        return p_elo
+
+    # 3. Hold-rate dominance
+    hold      = enrichment.get("hold_rate")
+    opp_hold  = enrichment.get("opp_hold_rate")
+    if hold is not None and opp_hold is not None:
+        try:
+            h, oh = float(hold), float(opp_hold)
+            if h + oh > 0:
+                return max(0.01, min(0.99, h / (h + oh)))
+        except (TypeError, ValueError):
+            pass
+
+    # 4. H2H win rate (already home-player perspective)
+    h2h = enrichment.get("h2h_win_rate") or enrichment.get("h2h_win_pct")
+    if h2h is not None:
+        try:
+            v = float(h2h)
+            if 0.0 < v < 1.0:
+                return v
+        except (TypeError, ValueError):
+            pass
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Soccer draw adjustment
 # ---------------------------------------------------------------------------
 
@@ -329,6 +431,30 @@ def compute_independent_probability(
         )
     else:
         notes.append("teamrankings_predictive:NO_DATA_OR_INACTIVE")
+
+    # --- WNBA specialist (WNBA_ML_V1) ---
+    # Activates only for WNBA rows.  Uses BDL WNBA standings win_pct and
+    # optional efficiency metrics.  Never reads game_log / box_score_log.
+    if sport == "WNBA":
+        p_wnba = _wnba_ml_specialist(clean_enrichment)
+        if p_wnba is not None:
+            submodel_probs["wnba_ml_specialist"] = p_wnba
+            active_submodels.append("wnba_ml_specialist")
+            notes.append(f"wnba_ml_specialist:ACTIVE p={p_wnba:.4f}")
+        else:
+            notes.append("wnba_ml_specialist:NO_DATA")
+
+    # --- Tennis specialist (TENNIS_MATCH_WINNER_V1) ---
+    # Activates only for ATP/WTA/TENNIS rows.  Uses surface-adjusted form,
+    # Elo differential, or hold/break rate dominance.
+    if sport in ("ATP", "WTA", "TENNIS"):
+        p_tennis = _tennis_match_winner_specialist(clean_enrichment)
+        if p_tennis is not None:
+            submodel_probs["tennis_match_winner_specialist"] = p_tennis
+            active_submodels.append("tennis_match_winner_specialist")
+            notes.append(f"tennis_match_winner_specialist:ACTIVE p={p_tennis:.4f}")
+        else:
+            notes.append("tennis_match_winner_specialist:NO_DATA")
 
     if not submodel_probs:
         # No data at all — cannot produce independent probability

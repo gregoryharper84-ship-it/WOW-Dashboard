@@ -430,7 +430,47 @@ def run_moneyline_pipeline(
             result.snapshot_hash  = result.build_snapshot_hash()
             return result
         else:
-            blockers.append("INDEPENDENT_PROBABILITY_UNAVAILABLE:insufficient_non_market_data")
+            # ---------------------------------------------------------------
+            # Typed hydration failure object.
+            # Per verifier spec: emit hydration_profile, missing_fields[],
+            # specialist_status, eligible_for_model, retryable — not the
+            # vague "insufficient_non_market_data" string.
+            # ---------------------------------------------------------------
+            _profile_map = {
+                "WNBA":   "WNBA_ML_V1",
+                "ATP":    "TENNIS_MATCH_WINNER_V1",
+                "WTA":    "TENNIS_MATCH_WINNER_V1",
+                "TENNIS": "TENNIS_MATCH_WINNER_V1",
+                "NBA":    "MONEYLINE_V1",
+                "MLB":    "MONEYLINE_V1",
+            }
+            _hydration_profile = (
+                (enrichment or {}).get("hydration_profile")
+                or _profile_map.get(sport, f"MONEYLINE_V1:{sport}")
+            )
+            _notes = sport_model_out.get("notes") or []
+            _missing_fields = sorted({
+                n.split(":")[0]
+                for n in _notes
+                if ":NO_DATA" in n
+                and not n.startswith("NO_SUBMODEL_DATA")
+            })
+            _typed_failure: dict[str, Any] = {
+                "hydration_profile":  _hydration_profile,
+                "missing_fields":     _missing_fields,
+                "specialist_status":  "NOT_READY",
+                "eligible_for_model": False,
+                "retryable":          True,
+            }
+            result.sport_model["hydration_failure"] = _typed_failure
+            blockers.append(
+                f"INDEPENDENT_PROBABILITY_UNAVAILABLE:"
+                f"hydration_profile={_hydration_profile};"
+                f"missing_fields={_missing_fields};"
+                f"specialist_status=NOT_READY;"
+                f"eligible_for_model=false;"
+                f"retryable=true"
+            )
             result.blockers       = blockers
             result.terminal_label = "DATA_CONTRACT_FAIL"
             result.snapshot_hash  = result.build_snapshot_hash()

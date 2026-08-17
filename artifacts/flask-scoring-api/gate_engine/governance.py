@@ -742,6 +742,46 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
         ),
     },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-17-WNBA-TENNIS-ML-LANES",
+        "version":     "1.0",
+        "effective_at": "2026-08-17",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  106,
+        "can_execute": False,
+        "description": (
+            "WNBA and Tennis Moneyline Specialist Lanes (2026-08-17): "
+            "Root cause: WNBA and ATP/WTA OUTRIGHT_WINNER rows bypassed acquisition "
+            "because _MONEYLINE_TEAM_SUPPORTED contained only {NBA, MLB}; every WNBA "
+            "and tennis moneyline row reached the sport_model with all submodels empty "
+            "and returned INDEPENDENT_PROBABILITY_UNAVAILABLE:insufficient_non_market_data. "
+            "Fix 1 — team_acquisition.py: acquire_team_data() now dispatches sport-specifically: "
+            "WNBA → _acquire_wnba_ml() (WNBA_ML_V1 profile; BDL WNBA standings + row-derived); "
+            "ATP/WTA/TENNIS → _acquire_tennis_match() (TENNIS_MATCH_WINNER_V1; row-derived + ESPN). "
+            "HARD CONSTRAINT: _acquire_wnba_ml() never reads game_log / box_score_log — "
+            "those keys belong to the WNBA_Enrichment_Key_Contract (player-prop scope only). "
+            "Fix 2 — acquisition_orchestrator.py: _check_moneyline_acquisition() is a sport-specific "
+            "dispatcher (not a single frozenset). Separate functions: _check_nba_mlb_moneyline, "
+            "_check_wnba_ml_acquisition, _check_tennis_match_acquisition. "
+            "New frozensets: _WNBA_ML_SUPPORTED={WNBA}, _TENNIS_ML_SUPPORTED={ATP,WTA,TENNIS}. "
+            "NOT_CALLED is never a terminal acquisition state. "
+            "Fix 3 — sport_model.py: WNBA specialist (_wnba_ml_specialist) activates for sport=WNBA; "
+            "uses Bradley-Terry on win_pct + optional efficiency-rating logistic; "
+            "never reads game_log/box_score_log. "
+            "Tennis specialist (_tennis_match_winner_specialist) activates for ATP/WTA/TENNIS; "
+            "priority: surface_adjusted_form → Elo differential → hold/break rate → H2H win rate. "
+            "Fix 4 — pipeline.py: vague INDEPENDENT_PROBABILITY_UNAVAILABLE:insufficient_non_market_data "
+            "replaced by typed hydration failure object: "
+            "{'hydration_profile', 'missing_fields[]', 'specialist_status', 'eligible_for_model', 'retryable'}. "
+            "hydration_profile derived from enrichment['hydration_profile'] (stamped by acquisition) "
+            "or inferred from sport. "
+            "Partial acquisition guard: partial data (some fields present, some missing) "
+            "never silently falls back to market-implied probability as the independent model output. "
+            "Regression suite: gate_engine/tests/test_wnba_tennis_ml_hydration.py (6 tests). "
+            "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
+        ),
+    },
 ]
 
 # ---------------------------------------------------------------------------

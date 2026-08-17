@@ -43,8 +43,12 @@ WOW-PATCH-2026-08-16-R4 changes (key-promotion + stat-key canonicalization)
     build_auto_enrichment did not run (auto_enrich=False path).
 
 OUTRIGHT_WINNER (moneyline) rows
-  - Delegates to gate_engine.moneyline.team_acquisition for supported sports.
+  - Routes to a sport-specific acquisition function (not a shared frozenset):
+      NBA/MLB  → _check_nba_mlb_moneyline  (existing MONEYLINE_V1 path)
+      WNBA     → _check_wnba_ml_acquisition (WNBA_ML_V1 profile)
+      ATP/WTA  → _check_tennis_match_acquisition (TENNIS_MATCH_WINNER_V1)
   - Records MONEYLINE_ACQUISITION_UNAVAILABLE:sport_not_supported for others.
+  - NOT_CALLED is never a terminal state; acquisition is always attempted.
 
 Invariants
 ----------
@@ -64,7 +68,11 @@ logger = logging.getLogger(__name__)
 _GAME_LOG_SUPPORTED: frozenset[str] = frozenset({"NBA", "WNBA", "MLB", "TENNIS"})
 
 # Sports where moneyline team data acquisition is supported
+# Each sport family has its OWN dispatch function (sport-specific hydration
+# profile) — do not extend these sets to force a sport through the wrong path.
 _MONEYLINE_TEAM_SUPPORTED: frozenset[str] = frozenset({"NBA", "MLB"})
+_WNBA_ML_SUPPORTED:        frozenset[str] = frozenset({"WNBA"})
+_TENNIS_ML_SUPPORTED:      frozenset[str] = frozenset({"ATP", "WTA", "TENNIS"})
 
 can_execute = False
 PATCH_ID    = "WOW-PATCH-2026-08-16-ACQUISITION-ORCHESTRATOR"
@@ -423,7 +431,7 @@ def _attempt_game_log_fetch(
 
 
 # ---------------------------------------------------------------------------
-# Moneyline acquisition check
+# Moneyline acquisition — sport-specific dispatch
 # ---------------------------------------------------------------------------
 
 def _check_moneyline_acquisition(
@@ -431,16 +439,39 @@ def _check_moneyline_acquisition(
     enrichment: dict[str, Any],
     sport: str,
 ) -> dict[str, Any]:
-    if sport not in _MONEYLINE_TEAM_SUPPORTED:
-        return {
-            "status":               "UNSUPPORTED",
-            "reason":               (
-                f"MONEYLINE_ACQUISITION_UNAVAILABLE:sport_not_supported:{sport}"
-            ),
-            "fields_populated":     [],
-            "acquisition_attempted": False,
-        }
+    """
+    Sport-specific dispatch for moneyline acquisition.
 
+    Each sport family routes to its own acquisition function and hydration
+    profile.  Do NOT collapse families into a shared frozenset — that is how
+    WNBA/tennis ended up going through the wrong path.
+
+    NBA/MLB  → _check_nba_mlb_moneyline  (MONEYLINE_V1)
+    WNBA     → _check_wnba_ml_acquisition (WNBA_ML_V1)
+    ATP/WTA  → _check_tennis_match_acquisition (TENNIS_MATCH_WINNER_V1)
+    Other    → UNSUPPORTED (explicit; NOT_CALLED is never terminal)
+    """
+    if sport in _MONEYLINE_TEAM_SUPPORTED:
+        return _check_nba_mlb_moneyline(row, enrichment, sport)
+    if sport in _WNBA_ML_SUPPORTED:
+        return _check_wnba_ml_acquisition(row, enrichment)
+    if sport in _TENNIS_ML_SUPPORTED:
+        return _check_tennis_match_acquisition(row, enrichment)
+
+    return {
+        "status":                "UNSUPPORTED",
+        "reason":                f"MONEYLINE_ACQUISITION_UNAVAILABLE:sport_not_supported:{sport}",
+        "fields_populated":      [],
+        "acquisition_attempted": False,
+    }
+
+
+def _check_nba_mlb_moneyline(
+    row: dict[str, Any],
+    enrichment: dict[str, Any],
+    sport: str,
+) -> dict[str, Any]:
+    """NBA/MLB moneyline team-data acquisition (MONEYLINE_V1)."""
     row_id    = str(row.get("row_id") or row.get("team") or row.get("player") or "unknown")
     enr_entry = enrichment.get(row_id) or {}
 
@@ -455,13 +486,12 @@ def _check_moneyline_acquisition(
 
     if populated:
         return {
-            "status":               "ACQUIRED",
-            "reason":               "team_non_market_data_present",
-            "fields_populated":     populated,
+            "status":                "ACQUIRED",
+            "reason":                "team_non_market_data_present",
+            "fields_populated":      populated,
             "acquisition_attempted": False,
         }
 
-    # Attempt team acquisition
     try:
         from gate_engine.moneyline.team_acquisition import acquire_team_data
         team_data = acquire_team_data(row, sport)
@@ -471,19 +501,133 @@ def _check_moneyline_acquisition(
             enrichment[row_id].update(team_data)
             populated = list(team_data.keys())
             return {
-                "status":               "ACQUIRED",
-                "reason":               f"team_data_fetched:{sport}",
-                "fields_populated":     populated,
+                "status":                "ACQUIRED",
+                "reason":                f"team_data_fetched:{sport}",
+                "fields_populated":      populated,
                 "acquisition_attempted": True,
             }
     except Exception as exc:
-        logger.warning("Moneyline team acquisition failed for %s/%s: %s", sport, row_id, exc)
+        logger.warning("NBA/MLB team acquisition failed for %s/%s: %s", sport, row_id, exc)
 
     return {
-        "status":               "UNAVAILABLE",
-        "reason":               (
-            f"MONEYLINE_ACQUISITION_UNAVAILABLE:team_data_fetch_failed:{sport}"
-        ),
-        "fields_populated":     [],
+        "status":                "UNAVAILABLE",
+        "reason":                f"MONEYLINE_ACQUISITION_UNAVAILABLE:team_data_fetch_failed:{sport}",
+        "fields_populated":      [],
         "acquisition_attempted": True,
+    }
+
+
+def _check_wnba_ml_acquisition(
+    row: dict[str, Any],
+    enrichment: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    WNBA_ML_V1 moneyline acquisition.
+
+    Attempts BallDontLie WNBA standings + row-derived non-market fields.
+    NEVER reads game_log / box_score_log (player-prop contract is out of scope).
+    """
+    row_id = str(row.get("row_id") or row.get("team") or row.get("player") or "unknown")
+    enr_entry = enrichment.get(row_id) or {}
+
+    # Check pre-populated WNBA_ML_V1 fields (home_win_pct, offensive/def rating, etc.)
+    _wnba_ml_fields = (
+        "home_win_pct", "away_win_pct", "home_power", "away_power",
+        "offensive_rating", "defensive_rating", "pace", "rest_days",
+    )
+    populated = [k for k in _wnba_ml_fields if enr_entry.get(k) is not None]
+    if populated:
+        return {
+            "status":                "ACQUIRED",
+            "reason":                "wnba_ml_v1_non_market_data_present",
+            "fields_populated":      populated,
+            "acquisition_attempted": False,
+            "hydration_profile":     "WNBA_ML_V1",
+        }
+
+    try:
+        from gate_engine.moneyline.team_acquisition import acquire_team_data
+        team_data = acquire_team_data(row, "WNBA")
+        if team_data:
+            if row_id not in enrichment:
+                enrichment[row_id] = {}
+            enrichment[row_id].update(team_data)
+            populated = [k for k in team_data if k not in ("hydration_profile", "team_acq_source")]
+            return {
+                "status":                "ACQUIRED",
+                "reason":                "wnba_ml_v1_data_fetched",
+                "fields_populated":      populated,
+                "acquisition_attempted": True,
+                "hydration_profile":     "WNBA_ML_V1",
+            }
+    except Exception as exc:
+        logger.warning("WNBA_ML_V1 acquisition failed for %s: %s", row_id, exc)
+
+    # Partial data may still reach sport_model; stamp profile for typed failure
+    if row_id not in enrichment:
+        enrichment[row_id] = {}
+    enrichment[row_id].setdefault("hydration_profile", "WNBA_ML_V1")
+    return {
+        "status":                "UNAVAILABLE",
+        "reason":                "MONEYLINE_ACQUISITION_UNAVAILABLE:wnba_ml_v1_fetch_failed",
+        "fields_populated":      [],
+        "acquisition_attempted": True,
+        "hydration_profile":     "WNBA_ML_V1",
+    }
+
+
+def _check_tennis_match_acquisition(
+    row: dict[str, Any],
+    enrichment: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    TENNIS_MATCH_WINNER_V1 acquisition.
+
+    Attempts row-derived field extraction + ESPN best-effort.
+    """
+    sport  = (row.get("sport") or "ATP").upper()
+    row_id = str(row.get("row_id") or row.get("team") or row.get("player") or "unknown")
+    enr_entry = enrichment.get(row_id) or {}
+
+    _tennis_fields = (
+        "surface", "surface_adjusted_form", "hold_rate", "break_rate",
+        "service_points_won", "return_points_won", "home_elo", "away_elo",
+    )
+    populated = [k for k in _tennis_fields if enr_entry.get(k) is not None]
+    if populated:
+        return {
+            "status":                "ACQUIRED",
+            "reason":                "tennis_match_winner_v1_data_present",
+            "fields_populated":      populated,
+            "acquisition_attempted": False,
+            "hydration_profile":     "TENNIS_MATCH_WINNER_V1",
+        }
+
+    try:
+        from gate_engine.moneyline.team_acquisition import acquire_team_data
+        team_data = acquire_team_data(row, sport)
+        if team_data:
+            if row_id not in enrichment:
+                enrichment[row_id] = {}
+            enrichment[row_id].update(team_data)
+            populated = [k for k in team_data if k not in ("hydration_profile", "team_acq_source")]
+            return {
+                "status":                "ACQUIRED",
+                "reason":                "tennis_match_winner_v1_data_fetched",
+                "fields_populated":      populated,
+                "acquisition_attempted": True,
+                "hydration_profile":     "TENNIS_MATCH_WINNER_V1",
+            }
+    except Exception as exc:
+        logger.warning("TENNIS_MATCH_WINNER_V1 acquisition failed for %s: %s", row_id, exc)
+
+    if row_id not in enrichment:
+        enrichment[row_id] = {}
+    enrichment[row_id].setdefault("hydration_profile", "TENNIS_MATCH_WINNER_V1")
+    return {
+        "status":                "UNAVAILABLE",
+        "reason":                "MONEYLINE_ACQUISITION_UNAVAILABLE:tennis_match_winner_v1_fetch_failed",
+        "fields_populated":      [],
+        "acquisition_attempted": True,
+        "hydration_profile":     "TENNIS_MATCH_WINNER_V1",
     }

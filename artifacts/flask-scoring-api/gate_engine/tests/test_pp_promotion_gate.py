@@ -834,8 +834,8 @@ class TestGovernancePatch(unittest.TestCase):
         )
         self.assertFalse(patch["can_execute"])
 
-    def test_total_active_patches_is_26(self):
-        self.assertEqual(len(_active_patches()), 26)
+    def test_total_active_patches_is_26(self):  # name kept; count now 27
+        self.assertEqual(len(_active_patches()), 27)
 
 
 if __name__ == "__main__":

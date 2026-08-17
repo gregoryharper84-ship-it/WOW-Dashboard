@@ -851,7 +851,7 @@ class TestModuleInvariants(unittest.TestCase):
             "WOW-PATCH-2026-08-17-TYPED-HYDRATION-AND-MODEL-READINESS-V1",
             ids,
         )
-        self.assertEqual(status["patch_count"], 26)
+        self.assertEqual(status["patch_count"], 27)
 
     def test_new_labels_in_module_constants(self):
         """
