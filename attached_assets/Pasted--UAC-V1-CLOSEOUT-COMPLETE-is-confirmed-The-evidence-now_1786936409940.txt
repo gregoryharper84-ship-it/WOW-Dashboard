@@ -1,0 +1,87 @@
+`UAC_V1_CLOSEOUT=COMPLETE` is confirmed.
+
+The evidence now covers:
+
+* Accepted runtime baseline in deployed ancestry
+* #249 and #250 commits
+* Two distinct serving Gunicorn workers
+* Fresh session and research-run identities
+* Matching governance snapshot
+* Real production pipeline completion
+* Correct fail-closed slate purge
+* Exact row reconciliation
+* `can_execute=false`
+* `can_approve_bets=false`
+
+#251 is approved to begin as formal registration only.
+
+```yaml
+change_id: WOW-251-KALSHI-EMERGENCY-RECOVERY-AUTHORITY-REGISTRATION
+
+objective: >
+  Formally register the existing Kalshi Recovery and Combo Governance
+  patch as binding emergency authority without changing runtime behavior.
+
+binding_authority:
+  contract: WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE
+  declared_status: EMERGENCY_ACTIVE
+  patch_priority: CRITICAL
+  activation_date: 2026-07-21
+  framework: WOW_v16_CLEAN_CORE
+
+required_registry_state:
+  project_authority_status: BINDING_ACTIVE
+  lane: KALSHI_PORTFOLIO_GOVERNANCE
+  can_execute: false
+  capital_allocation: false
+  recovery_mode: ACTIVE
+  combos_allowed: false
+  maximum_combo_underlying_markets: 1
+  recovery_exit_minimum_reconciled_singles: 20
+
+allowed_changes:
+  - docs/wow/contracts/registry.yaml
+  - docs/wow/contracts/README.md
+  - contract-registry tests
+  - task documentation
+
+protected_scope:
+  - app.py
+  - gate_engine/**
+  - database schemas and migrations
+  - endpoints
+  - terminal-label registries
+  - probability models
+  - exposure thresholds
+  - settlement behavior
+  - deployment configuration
+
+non_negotiable_invariants:
+  - Registration recognizes existing authority; it does not newly activate behavior.
+  - Current master governance remains highest authority.
+  - Newer active patches win only on direct conflict.
+  - No downstream pass may erase the Kalshi portfolio blocker.
+  - Recovery remains singles-only research.
+  - Recovery exit does not reactivate combos.
+  - can_execute=false
+  - capital_allocation=false
+  - DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
+
+stop_condition:
+  - If runtime code imports or consumes this documentation registry, stop and
+    reclassify #251 as a behavior-affecting governance change.
+
+verification:
+  - Run validated wow-preflight before changes.
+  - Verify canonical source hash matches #249.
+  - Validate registry schema and unique contract ID.
+  - Prove no unsafe status promotion.
+  - Prove runtime diff is empty.
+  - Run wow-verify-patch after changes.
+  - Return exact files, tests, diff boundary, commit SHA, and clean status.
+
+publish_authorized: false
+can_execute: false
+```
+
+No UAC work remains open. After #251, independently verify the registry entry and its zero-runtime-diff boundary.

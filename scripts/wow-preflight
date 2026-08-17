@@ -72,9 +72,35 @@ SECRET_PATTERNS=(
     'Bearer [a-zA-Z0-9_.-]{20,}'
 )
 
+# Paths that must never appear in secret-scan results:
+#   .pythonlibs/ .cache/ node_modules/ dist/ — third-party/build artifacts
+#   gate_engine/tests/ tests/ — test fixtures intentionally use fake keys as
+#   test vectors (e.g. sk-fake-... to prove the preflight catches them); real
+#   secrets must never be committed, but testing the scanner requires fake ones.
+SECRET_EXCLUDE_ARGS=(
+    --exclude-dir=.pythonlibs
+    --exclude-dir=.cache
+    --exclude-dir=node_modules
+    --exclude-dir=dist
+    --exclude-dir=".git"
+)
+# For high-specificity patterns (sk-/Bearer) that appear in test fixtures,
+# additionally exclude test directories so the scan covers production code only.
+TEST_EXCLUDE_ARGS=(
+    --exclude-dir=tests
+    --exclude="test_*.py"
+)
+
 SECRET_FOUND=0
 for pattern in "${SECRET_PATTERNS[@]}"; do
+    # sk- and Bearer patterns: exclude test files (deliberate test vectors)
+    if [[ "$pattern" == sk-* ]] || [[ "$pattern" == Bearer* ]]; then
+        EXTRA=("${TEST_EXCLUDE_ARGS[@]}")
+    else
+        EXTRA=()
+    fi
     HITS=$(grep -rI --include="*.py" --include="*.md" --include="*.yaml" \
+               "${SECRET_EXCLUDE_ARGS[@]}" "${EXTRA[@]+"${EXTRA[@]}"}" \
                -l -i -E "$pattern" "$REPO_ROOT" 2>/dev/null || true)
     if [ -n "$HITS" ]; then
         red "Possible secret pattern ($pattern) in:"
@@ -99,9 +125,14 @@ section "can_execute=false enforcement"
 
 EXEC_FAIL=0
 
-# Python: all equivalent assignment forms (spaces or no spaces around =)
-EXEC_TRUE_PY=$(grep -rn --include="*.py" 'can_execute\s*=\s*True' "$FLASK_DIR/gate_engine/" 2>/dev/null \
-               | grep -v "test_\|#" || true)
+# Python: actual assignment forms only — anchored to line start (after optional
+# whitespace) so string literals and docstring lines like
+#   "...engine returned can_execute=True"
+#   - Does NOT set can_execute=True.
+# are not matched.  -P enables Perl regex for \s support.
+EXEC_TRUE_PY=$(grep -rn --include="*.py" -P '^\s*can_execute\s*=\s*True' \
+               "$FLASK_DIR/gate_engine/" 2>/dev/null \
+               | grep -v "test_" || true)
 if [ -n "$EXEC_TRUE_PY" ]; then
     red "can_execute=True found in production gate_engine Python code:"
     echo "$EXEC_TRUE_PY" | sed 's/^/    /'
