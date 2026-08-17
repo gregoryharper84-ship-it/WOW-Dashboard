@@ -113,4 +113,5 @@
 - [Typed Hydration & Model Readiness patch](typed-hydration-model-readiness.md) — PATCH-2026-08-17; gate_engine/typed_hydration.py; 4 data-presence gates; LifecycleState FSM; RunController; reconcile_run; labels.py is protected (no patch may touch it).
 - [Moneyline market-snapshot handoff](moneyline-market-snapshot.md) — one shared odds→scorer contract; incomplete or one-sided market handoffs fail closed instead of scoring or re-fetching.
 - [Prob-ledger live handoff lane split](prob-ledger-live-handoff.md) — rank_eligible=model lane only; market lane typed STALE_MARKET/REHYDRATE_REQUIRED; adapters + counters; WNBA/market fixture gotchas.
+- [1IP production hydration patch](1ip-production-hydration-patch.md) — 4-layer fix: BF key alias (p_bf_gte5), acquisition routing, TEST_ONLY promotion, typed breach; n=0 explicit→breach; n absent (GPT-supplied)→allowed.
 - [wow-verify-patch protected files](wow-verify-patch-protected-files.md) — labels.py / llp_governance.py / data_contract.py / failure_path.py are hard-protected; any patch diff touching them fails; add new per-patch label strings as module-level constants in the originating module instead.
