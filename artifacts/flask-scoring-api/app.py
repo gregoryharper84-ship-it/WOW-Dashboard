@@ -16703,6 +16703,83 @@ def _llp_match_event(events, away, home):
     return None
 
 
+# ── Moneyline market-snapshot acquisition boundary ───────────────────────────
+# WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT
+# Raw matched Odds API events are normalized into MoneylineMarketSnapshot at
+# THIS boundary and preserved by event_id, so downstream scoring consumes the
+# snapshot directly instead of re-fetching/re-mapping through a second schema.
+_LLP_EVENT_SNAPSHOT_CACHE: dict = {}   # event_id -> snapshot dict
+_LLP_EVENT_SNAPSHOT_CACHE_MAX = 512
+
+
+def _llp_cache_event_snapshot(snap_dict) -> None:
+    """Store a snapshot dict by event_id (bounded FIFO eviction)."""
+    eid = (snap_dict or {}).get("event_id")
+    if not eid:
+        return
+    if len(_LLP_EVENT_SNAPSHOT_CACHE) >= _LLP_EVENT_SNAPSHOT_CACHE_MAX:
+        try:
+            _LLP_EVENT_SNAPSHOT_CACHE.pop(next(iter(_LLP_EVENT_SNAPSHOT_CACHE)))
+        except (StopIteration, KeyError):
+            pass
+    _LLP_EVENT_SNAPSHOT_CACHE[eid] = snap_dict
+
+
+def _ow_acquire_market_snapshot(row):
+    """Acquire the normalized MoneylineMarketSnapshot for an OUTRIGHT_WINNER row.
+
+    Resolution order:
+      1. Snapshot cache by the row's event_id (preserved from the board scan —
+         no re-fetch, no re-interpretation through `_llp_extract_market`).
+      2. Live fetch: `_llp_fetch_odds` (TTL-cached) → match the event by
+         event_id first, then by team-alias fuzzy match → normalize through
+         the single shared adapter `build_snapshot_from_odds_event`.
+
+    Returns a snapshot dict (MoneylineMarketSnapshot.to_dict()) or None when
+    no odds event can be found.  Never raises.
+    """
+    try:
+        from gate_engine.moneyline.market_snapshot import build_snapshot_from_odds_event
+
+        event_id = str(row.get("event_id") or "").strip()
+        if event_id and event_id in _LLP_EVENT_SNAPSHOT_CACHE:
+            _cached = _LLP_EVENT_SNAPSHOT_CACHE[event_id]
+            # Cache-key presence wins even for empty/malformed values: return
+            # a dict so the caller attaches it and the scorer's supplied-
+            # snapshot validation fails closed — never fall through to a
+            # fresh fetch for an event the cache already covered.
+            return _cached if isinstance(_cached, dict) else {}
+
+        sport = (row.get("sport") or "").upper().strip()
+        sport_key = _LLP_SPORT_MAP.get(sport.lower())
+        if not sport_key:
+            return None
+        events = _llp_fetch_odds(sport_key, markets="h2h")
+        if not events:
+            return None
+
+        event = None
+        if event_id:
+            event = next((e for e in events if str(e.get("id")) == event_id), None)
+        if event is None:
+            team = row.get("team") or row.get("player") or ""
+            opp  = row.get("opponent") or row.get("opponent_team") or ""
+            if team and opp:
+                event = _llp_match_event(events, opp, team)
+        if event is None:
+            return None
+
+        snap = build_snapshot_from_odds_event(
+            event, sport, market_key="h2h", aliases=_LLP_TEAM_ALIASES,
+        )
+        snap_dict = snap.to_dict()
+        _llp_cache_event_snapshot(snap_dict)
+        return snap_dict
+    except Exception as _snap_exc:
+        app.logger.warning("moneyline snapshot acquisition failed: %s", _snap_exc)
+        return None
+
+
 def _llp_extract_market(event, market_key, side, line=None):
     """
     From an Odds API event, find the user's selection across all bookmakers.
@@ -17211,6 +17288,95 @@ from gate_engine.llp_odds_resolver import (
 _bt("llp_odds_resolver loaded")
 
 
+def _llp_resolve_market_from_snapshot(game, record, market, side,
+                                      board_date, sport_key, sport):
+    """Consume ``game["market_snapshot"]`` as THE market source for LLP
+    analysis — no live fetch, no re-extraction through `_llp_extract_market`.
+
+    WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT.
+
+    Returns (resolution, blocked):
+      * (OddsResolution, False) — snapshot consumed as the market source
+      * (None, True)            — snapshot handoff BREACHED: `record` is
+                                  stamped with MARKET_PIPELINE_CONTRACT_BREACH
+                                  and the caller must return it unscored
+      * (None, False)           — NO snapshot supplied (or non-h2h market):
+                                  caller uses the live resolver ladder
+
+    FAIL-CLOSED GUARANTEE: once an h2h snapshot is supplied, this function
+    never returns (None, False) — an unusable/misaligned/partial snapshot
+    blocks analysis rather than silently re-fetching different odds.
+    Never raises.
+    """
+    # Key PRESENCE (not truthiness) marks a supplied snapshot: an explicitly
+    # supplied empty/malformed snapshot fails closed below — never a silent
+    # fall-through to the live resolver.
+    if "market_snapshot" not in game or market != "h2h":
+        return None, False
+    _g_ms = game.get("market_snapshot")
+
+    def _block(reason):
+        record.setdefault("market_pipeline", {})
+        record["market_pipeline"]["status"] = "MARKET_PIPELINE_CONTRACT_BREACH"
+        record["market_pipeline"].setdefault("counters", {})
+        record["notes"].append(
+            f"market pipeline contract breach ({reason}): supplied snapshot "
+            "cannot feed the scorer — analysis blocked (no live re-fetch)")
+        record["failure_paths"] = ["MARKET_PIPELINE_CONTRACT_BREACH"]
+        record["contract_status"] = "EXTERNAL_MARKET_PENDING"
+        return None, True
+
+    try:
+        from gate_engine.moneyline.market_snapshot import (
+            MoneylineMarketSnapshot as _MLSnap,
+            snapshot_to_scorer_enrichment as _ml_to_scorer,
+            snapshot_to_odds_event as _ml_to_event,
+            select_market_from_snapshot as _ml_select,
+            snapshot_two_sided_gap as _ml_two_sided_gap,
+            MARKET_PIPELINE_CONTRACT_BREACH as _ML_BREACH,
+        )
+        snap = _MLSnap.from_dict(_g_ms) if isinstance(_g_ms, dict) else _g_ms
+        _ml_to_scorer(snap)   # stamps books_sent_to_scorer + breach status
+        record["market_pipeline"] = {
+            "event_id": snap.event_id,
+            "status":   snap.status,
+            "counters": dict(snap.counters),
+        }
+        if snap.status == _ML_BREACH:
+            return _block("zero books survived normalization")
+        # Shared two-sided-market validity check: BOTH participants must be
+        # quoted — regardless of which side is requested.  A one-sided
+        # snapshot must never be scored from the surviving side.
+        _missing = _ml_two_sided_gap(snap)
+        if _missing:
+            return _block(
+                f"one-sided snapshot: no quotes for {_missing}")
+        sel = _ml_select(snap, side)
+        if not sel:
+            # Side-specific alignment failure — fail closed, never re-fetch.
+            return _block(
+                f"requested side {side!r} unresolvable against snapshot "
+                f"participants {snap.home_team!r}/{snap.away_team!r}")
+        if sel.get("novig_prob") is None:
+            return _block(
+                f"no valid two-sided market for side {side!r} "
+                "(partial snapshot)")
+        event = _ml_to_event(snap)
+        resolution = _resolve_odds_source(
+            game=game, sport_key=sport_key, sport=sport,
+            fetch_odds_fn=lambda _sk, _ev=event: [_ev],
+            match_event_fn=lambda evs, _a, _h: evs[0] if evs else None,
+            extract_market_fn=lambda _e, m, _s, line=None, _sel=sel: (
+                _sel if m == "h2h" else None),
+            board_date=board_date,
+        )
+        return resolution, False
+    except Exception as exc:
+        # Fail closed: a supplied snapshot must never be silently replaced
+        # by a live re-fetch, even on unexpected errors.
+        return _block(f"snapshot consumption error: {str(exc)[:80]}")
+
+
 def _llp_analyze_one(game, default_sport, board_date):
     """Analyze a single game/market and return the per-game record."""
     sport_in = (game.get("sport") or default_sport or "").lower().strip()
@@ -17377,13 +17543,36 @@ def _llp_analyze_one(game, default_sport, board_date):
     #   →  3. PrizePicks two-way reconstruction  →  4. DATA_UNOBTAINABLE
     # Only step 4 causes an early return; steps 2-3 allow scoring to continue
     # at a capped label (LLP_SCOUT max, stake_tier=PASS, big_stake=BLOCKED).
-    _resolution = _resolve_odds_source(
-        game=game, sport_key=sport_key, sport=sport,
-        fetch_odds_fn=_llp_fetch_odds,
-        match_event_fn=_llp_match_event,
-        extract_market_fn=_llp_extract_market,
-        board_date=board_date,
+    # WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT: when the caller supplies
+    # a normalized market snapshot, it IS the market source — no live fetch,
+    # no re-extraction.  A snapshot handoff breach blocks analysis entirely.
+    _snap_resolution, _snap_blocked = _llp_resolve_market_from_snapshot(
+        game, record, market, side, board_date, sport_key, sport,
     )
+    if _snap_blocked:
+        return record
+    if _snap_resolution is not None:
+        _resolution = _snap_resolution
+    else:
+        # No snapshot supplied (or snapshot unusable for this side): live
+        # resolver path, matching the event by preserved event_id FIRST —
+        # the fuzzy team-name matcher is only a fallback.
+        _match_event_fn = _llp_match_event
+        _game_event_id = str(game.get("event_id") or "").strip()
+        if _game_event_id:
+            def _match_event_fn(events, away_n, home_n,
+                                _eid=_game_event_id, _fb=_llp_match_event):
+                ev = next((e for e in (events or [])
+                           if str(e.get("id")) == _eid), None)
+                return ev if ev is not None else _fb(events, away_n, home_n)
+
+        _resolution = _resolve_odds_source(
+            game=game, sport_key=sport_key, sport=sport,
+            fetch_odds_fn=_llp_fetch_odds,
+            match_event_fn=_match_event_fn,
+            extract_market_fn=_llp_extract_market,
+            board_date=board_date,
+        )
     if not _resolution.usable:
         record["notes"].append(
             "all odds sources exhausted: " +
@@ -18408,12 +18597,29 @@ def _llp_board_scan(sports, board_date):
             commence = event.get("commence_time")
             if not home or not away:
                 continue
+            # Preserve the raw matched event as a normalized snapshot keyed by
+            # event_id so promotion/scoring consumes THIS snapshot instead of
+            # re-fetching and re-interpreting through a second schema.
+            try:
+                from gate_engine.moneyline.market_snapshot import (
+                    build_snapshot_from_odds_event as _build_ml_snap,
+                )
+                _llp_cache_event_snapshot(
+                    _build_ml_snap(event, sport_up, market_key="h2h",
+                                   aliases=_LLP_TEAM_ALIASES).to_dict()
+                )
+            except Exception as _bs_snap_exc:
+                app.logger.warning(
+                    "board-scan snapshot normalization failed: %s", _bs_snap_exc)
             for side, opp in ((home, away), (away, home)):
                 m = _llp_extract_market(event, "h2h", side)
                 if not m or m.get("novig_prob") is None:
                     continue
                 ranked.append({
                     "sport": sport_up,
+                    # Odds API event id — carried end-to-end so downstream
+                    # dedup/joins never fall back to fuzzy team-name matching.
+                    "event_id": event.get("id"),
                     "home_team": home,
                     "away_team": away,
                     "side": side,
@@ -18540,9 +18746,63 @@ def _llp_board_scan_to_full_run(sports, board_date, top_n):
     postmortem_candidates = []
     for r in promoted:
         game = {"sport": r["sport"], "away": r["away_team"], "home": r["home_team"],
-                "market": "h2h", "side": r["side"]}
+                "market": "h2h", "side": r["side"],
+                # Preserved Odds API event identity — _llp_analyze_one matches
+                # by this id first (no fuzzy re-join for promoted rows).
+                "event_id": r.get("event_id")}
+
+        # WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT: consume the snapshot
+        # cached at board-scan time (by event_id) — the promotion path must not
+        # silently lose books between the scan and the full run.  On a handoff
+        # breach (books fetched but none survive normalization) scoring for
+        # this candidate is BLOCKED with an explicit terminal result.
+        _ml_pipeline_block = None
+        _ml_cache_key = str(r.get("event_id") or "")
+        # Key PRESENCE (not truthiness): a cached-but-empty snapshot must
+        # flow into the analyzer, whose supplied-snapshot validation fails
+        # closed — it must never be silently skipped and re-fetched.
+        if _ml_cache_key in _LLP_EVENT_SNAPSHOT_CACHE:
+            _ml_snap_dict = _LLP_EVENT_SNAPSHOT_CACHE.get(_ml_cache_key)
+            # Attach FIRST (presence semantics): even if parsing below fails,
+            # the analyzer receives the supplied snapshot and its fail-closed
+            # validation blocks — never a silent omission + live re-fetch.
+            game["market_snapshot"] = (
+                _ml_snap_dict if isinstance(_ml_snap_dict, dict) else {})
+            try:
+                from gate_engine.moneyline.market_snapshot import (
+                    MoneylineMarketSnapshot as _MLSnap,
+                    snapshot_to_scorer_enrichment as _ml_to_scorer,
+                    MARKET_PIPELINE_CONTRACT_BREACH as _ML_BREACH,
+                )
+                _snap_obj = _MLSnap.from_dict(_ml_snap_dict)
+                _ml_scorer_enr = _ml_to_scorer(_snap_obj)
+                _ml_pipeline_block = {
+                    "event_id": _snap_obj.event_id,
+                    "status":   _snap_obj.status,
+                    "counters": dict(_snap_obj.counters),
+                }
+                if _snap_obj.status == _ML_BREACH:
+                    full_run_results.append({
+                        "sport": r["sport"], "home_team": r["home_team"],
+                        "away_team": r["away_team"], "side": r["side"],
+                        "label": "LLP_SCOUT", "stake_units": 0,
+                        "message": ("Market pipeline contract breach: books "
+                                    "were fetched but none reached the scorer "
+                                    "— scoring blocked for this candidate."),
+                        "failure_tags": list(_LLP_BOARD_SCAN_FALLBACK_TAGS)
+                                        + [_ML_BREACH],
+                        "market_pipeline": _ml_pipeline_block,
+                    })
+                    continue
+                game["sportsbook_odds"] = _ml_scorer_enr["sportsbook_odds"]
+            except Exception:
+                app.logger.exception(
+                    "board-scan promotion snapshot handoff failed")
+
         try:
             rec = _llp_analyze_one(game, r["sport"].lower(), board_date)
+            if _ml_pipeline_block is not None:
+                rec["market_pipeline"] = _ml_pipeline_block
         except Exception as e:
             app.logger.exception("LLP board-scan full run failed")
             full_run_results.append({
@@ -18610,6 +18870,8 @@ def _llp_board_scan_to_full_run(sports, board_date, top_n):
             "label_ceiling_reason":      rec.get("label_ceiling_reason"),
             "board_source":              rec.get("board_source"),
             "board_timestamp":           rec.get("board_timestamp"),
+            # Market-snapshot handoff observability (counters/status/event_id)
+            "market_pipeline":           rec.get("market_pipeline"),
         }
         if label in (LLPLabel.SCOUT.value, LLPLabel.CUT.value, LLPLabel.REJECT.value):
             entry["message"] = _LLP_BOARD_SCAN_INCOMPLETE_MESSAGE if label == LLPLabel.SCOUT.value else None
@@ -22158,6 +22420,24 @@ def gate_engine_run():
                     app.logger.debug(
                         "moneyline team_acquisition failed for %s: %s", _ow_row_id, _ta_exc
                     )
+
+            # WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT: acquire the
+            # normalized market snapshot at the odds boundary and attach it so
+            # run_moneyline_pipeline stage 0 consumes it directly (single
+            # adapter, per-stage counters, MARKET_PIPELINE_CONTRACT_BREACH
+            # invariant).  Caller-supplied snapshots are respected as-is.
+            # Key PRESENCE (not truthiness): an explicitly supplied snapshot
+            # — even {} — is respected as-is so the pipeline's fail-closed
+            # validation judges it; acquisition only fills a MISSING key.
+            if "market_snapshot" not in _ow_enr:
+                _ow_snap = _ow_acquire_market_snapshot(_ow_row)
+                # Presence semantics: attach whatever acquisition returned
+                # (including a cached empty snapshot) so pipeline stage 0's
+                # fail-closed validation judges it — only a true miss (None)
+                # leaves the key absent.
+                if _ow_snap is not None:
+                    _ow_enr["market_snapshot"] = _ow_snap
+                    enrichment[_ow_row_id] = _ow_enr
 
             _ow_scored = _score_moneyline(_ow_row, enrichment=_ow_enr)
             _ow_entry  = {

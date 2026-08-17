@@ -241,6 +241,42 @@ def run_moneyline_pipeline(
     result.can_approve_bets = False
     blockers: list[str]   = []
 
+    # -----------------------------------------------------------------------
+    # Stage 0: Market snapshot handoff (WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT)
+    #
+    # When the odds endpoint supplies a normalized MoneylineMarketSnapshot in
+    # enrichment["market_snapshot"], it is the SINGLE source of sportsbook
+    # odds — the adapter replaces any caller-supplied sportsbook_odds so no
+    # duplicate mapping path exists.  Hard invariant: books fetched but zero
+    # sent to the scorer → MARKET_PIPELINE_CONTRACT_BREACH, scoring blocked.
+    # -----------------------------------------------------------------------
+    from gate_engine.moneyline.market_snapshot import (
+        attach_snapshot_to_enrichment,
+        MARKET_PIPELINE_CONTRACT_BREACH,
+    )
+    # Key PRESENCE (not truthiness) marks a supplied snapshot: an explicitly
+    # supplied empty/malformed snapshot must fail closed, never be ignored.
+    if "market_snapshot" in enrichment:
+        _raw_snapshot = enrichment.get("market_snapshot")
+        enrichment, _snap, _breached = attach_snapshot_to_enrichment(
+            enrichment, _raw_snapshot, row=row,
+        )
+        result.market_comparison = {
+            "market_snapshot_counters": dict(_snap.counters),
+            "market_snapshot_event_id": _snap.event_id,
+            "market_snapshot_status":   _snap.status,
+        }
+        if _breached:
+            blockers.append(
+                f"{MARKET_PIPELINE_CONTRACT_BREACH}:"
+                f"books_fetched={_snap.counters.get('books_fetched', 0)}:"
+                "books_sent_to_scorer=0:scoring_blocked"
+            )
+            result.blockers       = blockers
+            result.terminal_label = MARKET_PIPELINE_CONTRACT_BREACH
+            result.snapshot_hash  = result.build_snapshot_hash()
+            return result
+
     sport       = (row.get("sport") or "").upper().strip()
     model_entry = get_model_for_sport(sport)
     model_status = model_entry.get("status", ModelStatus.UNAVAILABLE)
@@ -685,9 +721,15 @@ def run_moneyline_pipeline(
     # -----------------------------------------------------------------------
     # Stage 11: Exact no-vig market comparison
     # -----------------------------------------------------------------------
+    _snapshot_observability = {
+        k: v for k, v in (result.market_comparison or {}).items()
+        if k.startswith("market_snapshot_")
+    }
     result.market_comparison = _build_market_comparison(
         row, enrichment, market_no_vig, cal_result.calibrated_probability,
     )
+    # Preserve stage-0 snapshot handoff counters through stage 11 rebuild
+    result.market_comparison.update(_snapshot_observability)
 
     # -----------------------------------------------------------------------
     # Stage 11b: Price/edge audit (probability audit using existing helper)

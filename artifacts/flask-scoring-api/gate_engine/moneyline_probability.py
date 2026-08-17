@@ -160,9 +160,16 @@ def _event_dedup_key(row: dict[str, Any]) -> str:
     """
     Canonical deduplication key for a sporting event.
 
-    Uses (sport, sorted(team, opponent), slate_date) so the same game
-    submitted from three sportsbooks produces one key and is modeled once.
+    Prefers the upstream Odds API event id when present — this is the
+    canonical identity carried by the board scan / MoneylineMarketSnapshot,
+    and is immune to team-name spelling differences between sources.
+
+    Falls back to (sport, sorted(team, opponent), slate_date) so the same
+    game submitted from three sportsbooks produces one key and is modeled once.
     """
+    event_id = str(row.get("event_id") or "").strip()
+    if event_id:
+        return f"EVENT:{event_id}"
     sport  = (row.get("sport") or "").upper().strip()
     team   = (row.get("team") or row.get("player") or "").strip().lower()
     opp    = (row.get("opponent") or "").strip().lower()

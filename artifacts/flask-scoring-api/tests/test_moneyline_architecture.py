@@ -1081,3 +1081,516 @@ class TestFailurePathIntegration:
         result = integrate_failure_paths(0.60, None)
         assert result.status == "NOT_APPLICABLE"
         assert result.adjusted_win_prob == 0.60   # unchanged
+
+
+# ===========================================================================
+# WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT
+# Endpoint → scorer handoff regression suite (verifier-required 8 cases)
+# ===========================================================================
+
+from datetime import datetime, timedelta, timezone as _tz
+
+from gate_engine.moneyline.market_snapshot import (
+    MoneylineMarketSnapshot,
+    BookQuote,
+    build_snapshot_from_odds_event,
+    snapshot_to_scorer_enrichment,
+    attach_snapshot_to_enrichment,
+    check_pipeline_invariant,
+    consensus_no_vig,
+    MARKET_PIPELINE_CONTRACT_BREACH,
+    PIPELINE_COUNTERS,
+)
+from gate_engine.moneyline.pipeline import run_moneyline_pipeline
+from gate_engine.moneyline_probability import _event_dedup_key
+
+_NOW = datetime(2026, 8, 17, 12, 0, 0, tzinfo=_tz.utc)
+_FRESH_TS = (_NOW - timedelta(minutes=30)).isoformat()
+_STALE_TS = (_NOW - timedelta(hours=48)).isoformat()
+
+_ALIASES = {
+    "Minnesota Lynx":   ["MIN", "MIN Lynx", "Lynx"],
+    "New York Liberty": ["NY", "NY Liberty", "Liberty"],
+}
+
+
+def _odds_event(n_books=10, home="Minnesota Lynx", away="New York Liberty",
+                home_price=-130, away_price=+110, market_key="h2h",
+                last_update=None, reversed_outcomes=False):
+    outcomes = [
+        {"name": home, "price": home_price},
+        {"name": away, "price": away_price},
+    ]
+    if reversed_outcomes:
+        outcomes = list(reversed(outcomes))
+    return {
+        "id": "evt-abc-123",
+        "sport_key": "basketball_wnba",
+        "commence_time": "2026-08-17T23:00:00Z",
+        "home_team": home,
+        "away_team": away,
+        "bookmakers": [
+            {
+                "key": f"book{i}",
+                "title": f"Book {i}",
+                "markets": [{
+                    "key": market_key,
+                    "last_update": last_update or _FRESH_TS,
+                    "outcomes": [dict(o) for o in outcomes],
+                }],
+            }
+            for i in range(n_books)
+        ],
+    }
+
+
+class TestMoneylineMarketSnapshotHandoff:
+
+    # -- 1. Count invariant: 10 fetched books reach scorer as 10 books ------
+    def test_ten_book_fixture_reaches_scorer_as_ten_books(self):
+        snap = build_snapshot_from_odds_event(
+            _odds_event(10), "WNBA", now=_NOW, aliases=_ALIASES)
+        enr = snapshot_to_scorer_enrichment(snap)
+        c = snap.counters
+        assert c["books_fetched"] == 10
+        assert c["books_event_matched"] == 10
+        assert c["books_market_matched"] == 10
+        assert c["books_normalized"] == 10
+        assert c["books_fresh"] == 10
+        assert c["books_sent_to_scorer"] == 10
+        # 10 books × 2 participants = 20 flat quotes in scorer shape
+        assert len(enr["sportsbook_odds"]) == 20
+        assert all({"odds", "team", "name"} <= set(b) for b in enr["sportsbook_odds"])
+        assert snap.status == "OK"
+        assert snap.can_execute is False
+
+    # -- 2. Team aliases resolve to canonical participant IDs ---------------
+    def test_alias_resolves_to_canonical_participant(self):
+        snap = build_snapshot_from_odds_event(
+            _odds_event(2), "WNBA", now=_NOW, aliases=_ALIASES)
+        assert snap.resolve_participant("MIN Lynx", _ALIASES) == "Minnesota Lynx"
+        assert snap.resolve_participant("Liberty", _ALIASES) == "New York Liberty"
+        assert snap.resolve_participant("Chicago Sky", _ALIASES) is None
+        # Event id must be carried on the snapshot (root cause 1)
+        assert snap.event_id == "evt-abc-123"
+        # And the scorer dedup key must prefer it over fuzzy team names
+        k1 = _event_dedup_key({"event_id": "evt-abc-123",
+                               "sport": "WNBA", "team": "MIN Lynx",
+                               "opponent": "Liberty", "slate_date": "2026-08-17"})
+        k2 = _event_dedup_key({"event_id": "evt-abc-123",
+                               "sport": "WNBA", "team": "Minnesota Lynx",
+                               "opponent": "New York Liberty",
+                               "slate_date": "2026-08-17"})
+        assert k1 == k2 == "EVENT:evt-abc-123"
+
+    # -- 3. Reversed home/away ordering remains correct ----------------------
+    def test_reversed_home_away_ordering_remains_correct(self):
+        snap_fwd = build_snapshot_from_odds_event(
+            _odds_event(3), "WNBA", now=_NOW, aliases=_ALIASES)
+        snap_rev = build_snapshot_from_odds_event(
+            _odds_event(3, reversed_outcomes=True), "WNBA", now=_NOW,
+            aliases=_ALIASES)
+        for snap in (snap_fwd, snap_rev):
+            home_quotes = [q for q in snap.books if q.team == "Minnesota Lynx"]
+            away_quotes = [q for q in snap.books if q.team == "New York Liberty"]
+            assert len(home_quotes) == 3 and len(away_quotes) == 3
+            assert all(q.american_odds == -130 for q in home_quotes)
+            assert all(q.american_odds == +110 for q in away_quotes)
+        assert (consensus_no_vig(snap_fwd, "Minnesota Lynx")
+                == pytest.approx(consensus_no_vig(snap_rev, "Minnesota Lynx")))
+
+    # -- 4. Stale quotes rejected with explicit counts ------------------------
+    def test_stale_quotes_rejected_with_explicit_counts(self):
+        event = _odds_event(10)
+        # Make 4 of the 10 books stale
+        for bm in event["bookmakers"][:4]:
+            bm["markets"][0]["last_update"] = _STALE_TS
+        snap = build_snapshot_from_odds_event(
+            event, "WNBA", now=_NOW, aliases=_ALIASES)
+        assert snap.counters["books_normalized"] == 10
+        assert snap.counters["books_fresh"] == 6
+        stale_drops = [d for d in snap.dropped if d["reason"] == "STALE_QUOTE"]
+        assert len(stale_drops) == 4
+        enr = snapshot_to_scorer_enrichment(snap)
+        assert snap.counters["books_sent_to_scorer"] == 6
+        assert len(enr["sportsbook_odds"]) == 12
+
+    # -- 5. Unsupported markets cannot masquerade as moneylines --------------
+    def test_unsupported_market_cannot_masquerade_as_moneyline(self):
+        # a) requesting a non-moneyline market key is refused outright
+        snap = build_snapshot_from_odds_event(
+            _odds_event(5, market_key="spreads"), "WNBA",
+            market_key="spreads", now=_NOW, aliases=_ALIASES)
+        assert snap.status == "UNSUPPORTED_MARKET_KEY"
+        assert snap.books == []
+        # b) bookmakers offering only spreads never market-match for h2h
+        snap2 = build_snapshot_from_odds_event(
+            _odds_event(5, market_key="spreads"), "WNBA",
+            market_key="h2h", now=_NOW, aliases=_ALIASES)
+        assert snap2.counters["books_market_matched"] == 0
+        assert snap2.books == []
+        assert all(d["reason"] == "MARKET_KEY_NOT_OFFERED" for d in snap2.dropped)
+
+    # -- 6. Zero normalized books after successful fetch fails hard ----------
+    def test_zero_books_after_fetch_is_contract_breach(self):
+        event = _odds_event(5)
+        # Corrupt every outcome name so participant resolution fails
+        for bm in event["bookmakers"]:
+            for o in bm["markets"][0]["outcomes"]:
+                o["name"] = "???unknown???"
+        snap = build_snapshot_from_odds_event(
+            event, "WNBA", now=_NOW, aliases=_ALIASES)
+        assert snap.counters["books_fetched"] == 5
+        assert snap.counters["books_normalized"] == 0
+        snapshot_to_scorer_enrichment(snap)
+        assert snap.status == MARKET_PIPELINE_CONTRACT_BREACH
+        assert check_pipeline_invariant(snap) is True
+        # Scoring is blocked when the snapshot reaches the pipeline
+        row = _base_row(sport="WNBA", team="Minnesota Lynx",
+                        opponent="New York Liberty")
+        result = run_moneyline_pipeline(
+            row, {**_base_enr(), "market_snapshot": snap.to_dict()})
+        assert result.terminal_label == MARKET_PIPELINE_CONTRACT_BREACH
+        assert result.can_execute is False
+        assert any(MARKET_PIPELINE_CONTRACT_BREACH in b for b in result.blockers)
+
+    # -- 7. Consensus no-vig output matches known fixture --------------------
+    def test_consensus_no_vig_matches_known_fixture(self):
+        snap = build_snapshot_from_odds_event(
+            _odds_event(2, home_price=-120, away_price=+100), "WNBA",
+            now=_NOW, aliases=_ALIASES)
+        # implied(-120) = 120/220 = 0.545455 ; implied(+100) = 0.5
+        # no-vig home = 0.545455 / (0.545455 + 0.5) = 0.521739
+        assert consensus_no_vig(snap, "Minnesota Lynx") == pytest.approx(
+            0.521739, abs=1e-4)
+        assert consensus_no_vig(snap, "New York Liberty") == pytest.approx(
+            0.478261, abs=1e-4)
+        # Alias input resolves before consensus
+        assert consensus_no_vig(snap, "MIN Lynx", aliases=_ALIASES) == \
+            pytest.approx(0.521739, abs=1e-4)
+
+    # -- 8. Smoke: endpoint snapshot → scorer pipeline end-to-end ------------
+    def test_endpoint_to_scorer_pipeline_smoke(self):
+        snap = build_snapshot_from_odds_event(
+            _odds_event(10), "WNBA", now=_NOW, aliases=_ALIASES)
+        row = _base_row(sport="WNBA", team="Minnesota Lynx",
+                        opponent="New York Liberty")
+        enr = _base_enr()
+        enr["market_snapshot"] = snap.to_dict()
+        result = run_moneyline_pipeline(row, enr, seed=7)
+        assert result.terminal_label != MARKET_PIPELINE_CONTRACT_BREACH
+        assert result.can_execute is False
+        mc = result.market_comparison
+        # Stage-0 handoff counters survive the stage-11 rebuild
+        counters = mc.get("market_snapshot_counters") or {}
+        assert counters.get("books_fetched") == 10
+        assert counters.get("books_sent_to_scorer") == 10
+        assert mc.get("market_snapshot_event_id") == "evt-abc-123"
+        assert mc.get("market_snapshot_status") == "OK"
+        # The scorer actually SAW the books (stage 11 comparison)
+        assert mc.get("bookmaker_count") == 10
+        # Market no-vig flowed into the output
+        assert mc.get("market_no_vig") is not None
+
+    # -- roundtrip serialization guard ---------------------------------------
+    def test_snapshot_dict_roundtrip(self):
+        snap = build_snapshot_from_odds_event(
+            _odds_event(3), "WNBA", now=_NOW, aliases=_ALIASES)
+        snap2 = MoneylineMarketSnapshot.from_dict(snap.to_dict())
+        assert snap2.event_id == snap.event_id
+        assert len(snap2.books) == len(snap.books)
+        assert snap2.counters == snap.counters
+        assert set(PIPELINE_COUNTERS) <= set(snap2.counters)
+
+
+# ---------------------------------------------------------------------------
+# Live-path integration: score_outright_winner_row (the production scoring
+# entry point called from app.py Step B) + the app.py acquisition boundary.
+# ---------------------------------------------------------------------------
+
+import ast as _ast
+import os as _os
+
+from gate_engine.moneyline_probability import score_outright_winner_row
+
+_APP_PY = _os.path.join(_os.path.dirname(__file__), "..", "app.py")
+
+
+class TestLiveScoringPathIntegration:
+
+    def test_score_outright_winner_row_consumes_snapshot_counters(self):
+        """The production entry point (not a manual pipeline call) must see
+        the snapshot books and surface the handoff counters."""
+        snap = build_snapshot_from_odds_event(
+            _odds_event(10), "WNBA", now=_NOW, aliases=_ALIASES)
+        row = _base_row(sport="WNBA", team="Minnesota Lynx",
+                        opponent="New York Liberty")
+        enr = _base_enr()
+        enr["market_snapshot"] = snap.to_dict()
+        scored = score_outright_winner_row(row, enrichment=enr)
+        assert scored["can_execute"] is False
+        assert scored["terminal_label"] != MARKET_PIPELINE_CONTRACT_BREACH
+        mc = (scored["probability_snapshot"]
+              ["moneyline_architecture_layers"]["market_comparison"])
+        counters = mc.get("market_snapshot_counters") or {}
+        assert counters.get("books_fetched") == 10
+        assert counters.get("books_sent_to_scorer") == 10
+        assert mc.get("bookmaker_count") == 10
+
+    def test_score_outright_winner_row_blocks_on_breach(self):
+        """All books dropped between fetch and scorer → production entry point
+        must return MARKET_PIPELINE_CONTRACT_BREACH, never a silent zero-book
+        score."""
+        event = _odds_event(5)
+        for bm in event["bookmakers"]:
+            for o in bm["markets"][0]["outcomes"]:
+                o["name"] = "???unknown???"
+        snap = build_snapshot_from_odds_event(
+            event, "WNBA", now=_NOW, aliases=_ALIASES)
+        row = _base_row(sport="WNBA", team="Minnesota Lynx",
+                        opponent="New York Liberty")
+        enr = _base_enr()
+        enr["market_snapshot"] = snap.to_dict()
+        scored = score_outright_winner_row(row, enrichment=enr)
+        assert scored["terminal_label"] == MARKET_PIPELINE_CONTRACT_BREACH
+        assert any(MARKET_PIPELINE_CONTRACT_BREACH in b
+                   for b in scored["blockers"])
+
+    # -- app.py acquisition boundary (extracted from real source) -----------
+
+    @staticmethod
+    def _load_app_fn(names, ns):
+        src = open(_APP_PY).read()
+        tree = _ast.parse(src)
+        lines = src.splitlines(keepends=True)
+        found = {}
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.FunctionDef) and node.name in names:
+                snippet = "".join(lines[node.lineno - 1:node.end_lineno])
+                exec(compile(snippet, f"<app.py:{node.name}>", "exec"), ns)
+                found[node.name] = ns[node.name]
+        missing = set(names) - set(found)
+        assert not missing, f"functions not found in app.py: {missing}"
+        return found
+
+    def test_ow_acquire_market_snapshot_prefers_event_id_cache(self):
+        class _Log:
+            def warning(self, *a, **k): pass
+        cached = {"event_id": "evt-cached-1", "books": [], "counters": {}}
+        ns = {
+            "_LLP_EVENT_SNAPSHOT_CACHE": {"evt-cached-1": cached},
+            "_LLP_EVENT_SNAPSHOT_CACHE_MAX": 512,
+            "_LLP_SPORT_MAP": {"wnba": "basketball_wnba"},
+            "_LLP_TEAM_ALIASES": _ALIASES,
+            "_llp_fetch_odds": lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("must not fetch when cache hit")),
+            "_llp_match_event": lambda *a, **k: None,
+            "app": type("A", (), {"logger": _Log()})(),
+        }
+        fns = self._load_app_fn(["_ow_acquire_market_snapshot"], ns)
+        out = fns["_ow_acquire_market_snapshot"](
+            {"event_id": "evt-cached-1", "sport": "WNBA"})
+        assert out is cached
+
+    def test_ow_acquire_market_snapshot_live_fetch_normalizes(self):
+        class _Log:
+            def warning(self, *a, **k): pass
+        events = [_odds_event(4)]
+        ns = {
+            "_LLP_EVENT_SNAPSHOT_CACHE": {},
+            "_LLP_EVENT_SNAPSHOT_CACHE_MAX": 512,
+            "_LLP_SPORT_MAP": {"wnba": "basketball_wnba"},
+            "_LLP_TEAM_ALIASES": _ALIASES,
+            "_llp_fetch_odds": lambda sk, regions="us", markets=None: events,
+            "_llp_match_event": lambda evs, away, home: evs[0],
+            "app": type("A", (), {"logger": _Log()})(),
+        }
+        fns = self._load_app_fn(
+            ["_llp_cache_event_snapshot", "_ow_acquire_market_snapshot"], ns)
+        out = fns["_ow_acquire_market_snapshot"](
+            {"sport": "WNBA", "team": "Minnesota Lynx",
+             "opponent": "New York Liberty"})
+        assert out is not None
+        assert out["event_id"] == "evt-abc-123"
+        assert out["counters"]["books_fetched"] == 4
+        # Snapshot is preserved by event_id for later promotion/scoring
+        assert ns["_LLP_EVENT_SNAPSHOT_CACHE"]["evt-abc-123"] is out
+
+    def test_app_step_b_attaches_snapshot_before_scoring(self):
+        """Structural guard: the Step B scoring loop in app.py must attach
+        enrichment["market_snapshot"] via _ow_acquire_market_snapshot BEFORE
+        calling _score_moneyline."""
+        src = open(_APP_PY).read()
+        i_call = src.index("_score_moneyline(_ow_row, enrichment=_ow_enr)")
+        block = src[max(0, i_call - 2000):i_call]
+        assert "_ow_acquire_market_snapshot(_ow_row)" in block
+        assert '_ow_enr["market_snapshot"]' in block
+
+
+class TestSnapshotParticipantAlignment:
+    """Row team names are display/abbreviated strings; the snapshot carries
+    canonical Odds API names.  Quotes must align to the row's own strings so
+    the scorer's exact-string matching sees every book — or fail closed."""
+
+    def _run(self, team, opp, n_books=10):
+        snap = build_snapshot_from_odds_event(
+            _odds_event(n_books), "WNBA", now=_NOW, aliases=_ALIASES)
+        row = _base_row(sport="WNBA", team=team, opponent=opp)
+        enr = _base_enr()
+        enr["market_snapshot"] = snap.to_dict()
+        return run_moneyline_pipeline(row, enr, seed=11)
+
+    def test_abbreviated_row_teams_reach_scorer_with_full_book_count(self):
+        result = self._run("MIN Lynx", "Liberty")
+        assert result.terminal_label != MARKET_PIPELINE_CONTRACT_BREACH
+        mc = result.market_comparison
+        assert mc.get("bookmaker_count") == 10
+        assert mc.get("market_no_vig") is not None
+        # -130/+110 fixture: home no-vig ≈ 0.5535/(0.5535+0.4762) ≈ 0.5375
+        assert 0.50 < mc["market_no_vig"] < 0.58
+
+    def test_nickname_only_row_teams_align(self):
+        result = self._run("Lynx", "Liberty")
+        assert result.terminal_label != MARKET_PIPELINE_CONTRACT_BREACH
+        assert result.market_comparison.get("bookmaker_count") == 10
+
+    def test_unrelated_row_team_fails_closed_not_silent_zero(self):
+        result = self._run("Chicago Sky", "Las Vegas Aces")
+        assert result.terminal_label == MARKET_PIPELINE_CONTRACT_BREACH
+        assert any(MARKET_PIPELINE_CONTRACT_BREACH in b for b in result.blockers)
+
+    def test_scorer_entry_point_alias_no_vig_correct(self):
+        """Through score_outright_winner_row with -120/+100 books and an
+        abbreviated row team: nonzero book count AND correct no-vig value."""
+        snap = build_snapshot_from_odds_event(
+            _odds_event(4, home_price=-120, away_price=+100), "WNBA",
+            now=_NOW, aliases=_ALIASES)
+        row = _base_row(sport="WNBA", team="MIN Lynx", opponent="Liberty")
+        enr = _base_enr()
+        enr["market_snapshot"] = snap.to_dict()
+        scored = score_outright_winner_row(row, enrichment=enr)
+        assert scored["terminal_label"] != MARKET_PIPELINE_CONTRACT_BREACH
+        mc = (scored["probability_snapshot"]
+              ["moneyline_architecture_layers"]["market_comparison"])
+        assert mc.get("bookmaker_count") == 4
+        assert mc.get("market_no_vig") == pytest.approx(0.521739, abs=5e-3)
+
+    def test_alias_table_travels_with_snapshot_ny_alias(self):
+        """The acquisition-time alias table is carried inside the snapshot
+        (serialization roundtrip included) so scorer-side alignment resolves
+        configured aliases like 'NY' without re-supplying the mapping."""
+        snap = build_snapshot_from_odds_event(
+            _odds_event(6), "WNBA", now=_NOW, aliases=_ALIASES)
+        rehydrated = MoneylineMarketSnapshot.from_dict(snap.to_dict())
+        assert rehydrated.aliases == {
+            k: list(v) for k, v in _ALIASES.items()}
+        assert rehydrated.resolve_participant("NY") == "New York Liberty"
+        assert rehydrated.resolve_participant("MIN") == "Minnesota Lynx"
+
+        row = _base_row(sport="WNBA", team="NY", opponent="MIN")
+        enr = _base_enr()
+        enr["market_snapshot"] = rehydrated.to_dict()
+        result = run_moneyline_pipeline(row, enr, seed=11)
+        assert result.terminal_label != MARKET_PIPELINE_CONTRACT_BREACH
+        assert result.market_comparison.get("bookmaker_count") == 6
+        assert result.market_comparison.get("market_no_vig") is not None
+
+    def test_one_sided_snapshot_breaches_pipeline(self):
+        """Snapshot stripped to one side must breach — a partial market may
+        never be scored from a single side's vigged implied probability."""
+        snap = build_snapshot_from_odds_event(
+            _odds_event(6), "WNBA", now=_NOW, aliases=_ALIASES)
+        snap.books = [q for q in snap.books if q.team == "Minnesota Lynx"]
+        row = _base_row(sport="WNBA", team="Minnesota Lynx",
+                        opponent="New York Liberty")
+        enr = _base_enr()
+        enr["market_snapshot"] = snap.to_dict()
+        result = run_moneyline_pipeline(row, enr, seed=11)
+        assert result.terminal_label == MARKET_PIPELINE_CONTRACT_BREACH
+        assert any(MARKET_PIPELINE_CONTRACT_BREACH in b for b in result.blockers)
+
+    def test_one_sided_snapshot_breaches_scorer_entry_point(self):
+        snap = build_snapshot_from_odds_event(
+            _odds_event(4), "WNBA", now=_NOW, aliases=_ALIASES)
+        snap.books = [q for q in snap.books if q.team == "New York Liberty"]
+        row = _base_row(sport="WNBA", team="NY", opponent="MIN")
+        enr = _base_enr()
+        enr["market_snapshot"] = snap.to_dict()
+        scored = score_outright_winner_row(row, enrichment=enr)
+        assert scored["terminal_label"] == MARKET_PIPELINE_CONTRACT_BREACH
+
+    def test_consensus_no_vig_unavailable_for_one_sided_snapshot(self):
+        snap = build_snapshot_from_odds_event(
+            _odds_event(4), "WNBA", now=_NOW, aliases=_ALIASES)
+        snap.books = [q for q in snap.books if q.team == "Minnesota Lynx"]
+        assert consensus_no_vig(snap, "Minnesota Lynx") is None
+
+    def test_supplied_empty_snapshot_breaches_pipeline(self):
+        """An explicitly supplied empty snapshot ({}) must fail closed —
+        never be ignored in favor of caller odds or a re-fetch."""
+        row = _base_row(sport="WNBA", team="Minnesota Lynx",
+                        opponent="New York Liberty")
+        enr = _base_enr()
+        enr["market_snapshot"] = {}
+        result = run_moneyline_pipeline(row, enr, seed=11)
+        assert result.terminal_label == MARKET_PIPELINE_CONTRACT_BREACH
+
+    def test_supplied_empty_snapshot_breaches_scorer_entry_point(self):
+        row = _base_row(sport="WNBA", team="Minnesota Lynx",
+                        opponent="New York Liberty")
+        enr = _base_enr()
+        enr["market_snapshot"] = {}
+        scored = score_outright_winner_row(row, enrichment=enr)
+        assert scored["terminal_label"] == MARKET_PIPELINE_CONTRACT_BREACH
+
+
+class TestSnapshotCachePresenceSemantics:
+    """Cache/snapshot supply is judged by key PRESENCE: cached empty (`{}`),
+    `None`, or malformed values must flow to the scorer's fail-closed
+    validation — never fall through to a live fetch."""
+
+    @staticmethod
+    def _acquire(cached_value):
+        class _Log:
+            def warning(self, *a, **k): pass
+        ns = {
+            "_LLP_EVENT_SNAPSHOT_CACHE": {"evt-cached-1": cached_value},
+            "_LLP_EVENT_SNAPSHOT_CACHE_MAX": 512,
+            "_LLP_SPORT_MAP": {"wnba": "basketball_wnba"},
+            "_LLP_TEAM_ALIASES": _ALIASES,
+            "_llp_fetch_odds": lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("live fetch invoked for cached event")),
+            "_llp_match_event": lambda *a, **k: None,
+            "app": type("A", (), {"logger": _Log()})(),
+        }
+        fns = TestLiveScoringPathIntegration._load_app_fn(
+            ["_ow_acquire_market_snapshot"], ns)
+        return fns["_ow_acquire_market_snapshot"](
+            {"event_id": "evt-cached-1", "sport": "WNBA"})
+
+    def test_cached_empty_dict_returned_no_fetch(self):
+        assert self._acquire({}) == {}
+
+    def test_cached_none_returns_empty_dict_no_fetch(self):
+        assert self._acquire(None) == {}
+
+    def test_cached_malformed_value_returns_empty_dict_no_fetch(self):
+        assert self._acquire(["not", "a", "snapshot"]) == {}
+
+    def test_empty_snapshot_blocks_outright_winner_scoring(self):
+        """{} attached via presence semantics → scorer breaches, no score."""
+        row = _base_row(sport="WNBA", team="Minnesota Lynx",
+                        opponent="New York Liberty")
+        enr = _base_enr()
+        enr["market_snapshot"] = {}
+        scored = score_outright_winner_row(row, enrichment=enr)
+        assert scored["terminal_label"] == MARKET_PIPELINE_CONTRACT_BREACH
+
+    def test_step_b_attaches_on_presence_not_truthiness(self):
+        """Structural guard: Step B must use `is not None` (presence), not
+        truthiness, when attaching the acquired snapshot."""
+        src = open(_APP_PY).read()
+        i = src.index('if "market_snapshot" not in _ow_enr:')
+        block = src[i:i + 700]
+        assert "_ow_snap is not None" in block
+        assert "if _ow_snap:" not in block
