@@ -640,51 +640,104 @@ def log_calibration_entry_pg(entry: dict[str, Any]) -> bool:
                 entry.get("postmortem_note"),
             ),
         )
-        conn.commit()
-        cur.close()
-        # ── Provenance audit (best-effort, never blocks calibration insert) ──
-        # Call auditSourceProvenance at the LLP ingestion point: when a fact is
-        # first attached to a calibration entry via source_snapshot_id.
-        # If source_snapshot_id is present, also write the snapshot row so
-        # llp_source_snapshots finally receives data (addresses orphan issue).
-        try:
-            _prov_result = _audit_calibration_entry_provenance(conn, entry)
-        except Exception as _prov_exc:
-            _prov_result = {"write_ok": False, "error": str(_prov_exc)}
-        # Fix (d): if provenance snapshot write failed AND entry was FINAL_APPROVED,
-        # downgrade the calibration record in-place so it cannot support a live
-        # FINAL_APPROVED routing decision without verified provenance.
-        if (
-            not _prov_result.get("write_ok")
-            and entry.get("final_label") == "FINAL_APPROVED"
-        ):
+        # WOW-PATCH-2026-08-16-AUDIT fix (2): transactional provenance enforcement.
+        # The snapshot INSERT runs in the SAME transaction as the calibration INSERT
+        # via SAVEPOINT.  If the snapshot write fails we ROLLBACK TO SAVEPOINT and
+        # downgrade the label atomically in the same commit — no separate-connection
+        # best-effort downgrade; a FINAL_APPROVED/MONEY_QUALIFIED record can NEVER
+        # survive if its required provenance write failed.
+        _snap_id = entry.get("source_snapshot_id")
+        if _snap_id:
             try:
-                import logging as _prov_log
-                _prov_log.getLogger("llp_stage2_tables").warning(
-                    "[provenance_ceiling] Downgrading FINAL_APPROVED→MODEL_QUALIFIED_HOLD "
-                    "for event_key=%r run_id=%r — snapshot write failed: %s",
-                    entry.get("event_key"),
-                    entry.get("run_id"),
-                    _prov_result.get("error"),
+                from datetime import datetime, timezone as _tz
+                from gate_engine.source_provenance import (
+                    auditSourceProvenance as _asp,
+                    build_evidence_from_dict as _befd,
                 )
-                _conn2 = _get_connection()
-                _cur2  = _conn2.cursor()
-                _cur2.execute(
+                _ev_data = {
+                    "evidence_id":     _snap_id,
+                    "snapshot_id":     _snap_id,
+                    "fact_type":       entry.get("market") or "player_line",
+                    "source_name":     entry.get("book") or entry.get("source") or "llp_calibration",
+                    "source_type":     entry.get("source_type") or "odds_aggregator",
+                    "fetch_timestamp": entry.get("model_timestamp") or datetime.now(tz=_tz.utc).isoformat(),
+                    "sport":           entry.get("sport"),
+                    "market":          entry.get("market"),
+                    "fact_value":      entry.get("odds") or entry.get("line"),
+                    "materiality":     "HIGH",
+                    "raw_payload":     {k: entry.get(k) for k in (
+                        "event_key", "run_id", "side", "odds", "line", "book",
+                        "model_probability", "calibrated_probability", "stake", "final_label",
+                    )},
+                }
+                _ev = _befd(_ev_data)
+                _asp(_ev, "llp_calibration")   # pure-Python audit pass; no DB/network
+                cur.execute("SAVEPOINT llp_prov_sp")
+                cur.execute(
                     """
-                    UPDATE llp_calibration_ledger
-                    SET    final_label = 'MODEL_QUALIFIED_HOLD'
-                    WHERE  event_key = %s
-                      AND  run_id    = %s
-                      AND  final_label = 'FINAL_APPROVED'
-                      AND  settled_at IS NULL
+                    INSERT INTO llp_source_snapshots (
+                        snapshot_id, source_name, source_type, fetch_timestamp,
+                        sport, market, raw_payload,
+                        fact_type, fact_value_hash, source_grade,
+                        freshness_policy_id, freshness_basis, freshness_status,
+                        materiality, conflict_status, reconstruction_status,
+                        max_supportable_ceiling
+                    ) VALUES (%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s)
+                    ON CONFLICT (snapshot_id) DO UPDATE SET
+                        freshness_status        = EXCLUDED.freshness_status,
+                        freshness_policy_id     = EXCLUDED.freshness_policy_id,
+                        freshness_basis         = EXCLUDED.freshness_basis,
+                        max_supportable_ceiling = EXCLUDED.max_supportable_ceiling,
+                        conflict_status         = EXCLUDED.conflict_status
                     """,
-                    (entry.get("event_key"), entry.get("run_id")),
+                    (
+                        _snap_id,
+                        _ev.source,
+                        _ev.source_type.value,
+                        _ev.retrieved_at or _ev_data["fetch_timestamp"],
+                        _ev.sport,
+                        _ev.market,
+                        None,
+                        _ev.fact_type,
+                        _ev.fact_value_hash,
+                        _ev.source_grade,
+                        _ev.freshness_policy_id,
+                        _ev.freshness_basis.value if _ev.freshness_basis else None,
+                        _ev.freshness_status.value,
+                        _ev.materiality.value,
+                        _ev.conflict_status.value,
+                        _ev.reconstruction_status.value,
+                        _ev.max_supportable_ceiling,
+                    ),
                 )
-                _conn2.commit()
-                _cur2.close()
-                _conn2.close()
-            except Exception:
-                pass  # Downgrade is best-effort; original calibration write already succeeded
+                cur.execute("RELEASE SAVEPOINT llp_prov_sp")
+            except Exception as _snap_exc:
+                import logging as _sp_log
+                _sp_log.getLogger("llp_stage2_tables").warning(
+                    "[provenance_fail_closed] snapshot INSERT failed for %r: %s — "
+                    "rolling back provenance; downgrading label if FINAL_APPROVED/MONEY_QUALIFIED",
+                    _snap_id, _snap_exc,
+                )
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT llp_prov_sp")
+                except Exception:
+                    pass
+                # Downgrade in the SAME transaction — atomic with the calibration INSERT.
+                # A FINAL_APPROVED or MONEY_QUALIFIED record must never survive without
+                # verified provenance.
+                if entry.get("final_label") in ("FINAL_APPROVED", "MONEY_QUALIFIED"):
+                    cur.execute(
+                        """
+                        UPDATE llp_calibration_ledger
+                        SET    final_label = 'MODEL_QUALIFIED_HOLD'
+                        WHERE  event_key = %s AND run_id = %s
+                          AND  final_label IN ('FINAL_APPROVED', 'MONEY_QUALIFIED')
+                          AND  settled_at IS NULL
+                        """,
+                        (entry.get("event_key"), entry.get("run_id")),
+                    )
+        conn.commit()   # single atomic commit: calibration + snapshot (or label downgrade)
+        cur.close()
         conn.close()
         return True
     except Exception:

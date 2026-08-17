@@ -42,3 +42,20 @@ KALSHI_WX_TERMINAL_LABEL_REGISTRY: frozenset[str] = frozenset({
     "KALSHI_REJECT_BAD_RULES",
     "KALSHI_DATA_UNOBTAINABLE",
 })
+
+
+def validate_wx_terminal_label(label: str) -> bool:
+    """
+    WOW-PATCH-2026-08-16-AUDIT fix (4): public callable for end-to-end
+    behavioral tests and any code that must validate a Kalshi WX terminal label
+    WITHOUT importing app.py.
+
+    Returns True iff `label` is a confirmed-reachable member of
+    KALSHI_WX_TERMINAL_LABEL_REGISTRY.  Returns False for
+    KALSHI_REJECT_UNCALIBRATED and any other unregistered label.
+
+    Semantically identical to app.py's internal _validate_wx_terminal_label();
+    calling either function produces the same result because both delegate to
+    the same frozenset.  Use this module-level version in tests.
+    """
+    return label in KALSHI_WX_TERMINAL_LABEL_REGISTRY

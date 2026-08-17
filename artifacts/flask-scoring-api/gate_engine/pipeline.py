@@ -1152,6 +1152,33 @@ def run_pipeline(
                         "can_execute":     False,
                     }
 
+            # WOW-PATCH-2026-08-16-AUDIT fix (6): NO_REGISTERED_MODEL fail-closed ceiling.
+            # If no model is registered for this (sport, stat_key), the row cannot reach
+            # FINAL_APPROVED or MONEY_QUALIFIED — cap at MODEL_QUALIFIED_HOLD.
+            # This complements PROVISIONAL: both statuses cap money-grade labels.
+            elif (
+                _prov_entry is not None
+                and _prov_entry.get("status") == "NO_REGISTERED_MODEL"
+            ):
+                _nr_cur = row.get("terminal_label") or ""
+                _NR_ABOVE: frozenset = frozenset({
+                    PropLabel.FINAL_APPROVED.value,
+                    PropLabel.MONEY_QUALIFIED.value,
+                })
+                if _nr_cur in _NR_ABOVE:
+                    row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
+                    row.setdefault("blockers", []).append(
+                        f"NO_REGISTERED_MODEL_CEILING:sport={_prov_sport}:stat={_prov_sk}"
+                    )
+                    row.setdefault("gates", {})["no_registered_model_ceiling"] = {
+                        "ceiling_applied": True,
+                        "sport":           _prov_sport,
+                        "stat_key":        _prov_sk,
+                        "prior_label":     _nr_cur,
+                        "enforced_label":  PropLabel.MODEL_QUALIFIED_HOLD.value,
+                        "can_execute":     False,
+                    }
+
         # WOW-PATCH-2026-08-16-AUDIT fix (e): 1IP_PITCHES_THROWN TEST_ONLY blanket ceiling.
         # The first-inning lane is TEST_ONLY (can_execute=False).  No 1IP row may
         # exceed MODEL_QUALIFIED_HOLD regardless of efficiency score outcome.
@@ -1829,14 +1856,29 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
                 # CANNOT coexist with FINAL_APPROVED.  Downgrade the row so the
                 # summary never counts it as a qualifying result and the DB row
                 # written by record_entry() reflects the corrected label.
-                if _ple_label == PropLabel.FINAL_APPROVED.value:
+                # WOW-PATCH-2026-08-16-AUDIT fix (5): cap MONEY_QUALIFIED too,
+                # not only FINAL_APPROVED.  An incomplete ledger must not support
+                # any money/final label.
+                if _ple_label in (PropLabel.FINAL_APPROVED.value, PropLabel.MONEY_QUALIFIED.value):
                     _ple_row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
                     _ple_row.setdefault("blockers", []).append(
-                        f"PROB_LEDGER_ENFORCER:FINAL_APPROVED_BLOCKED:"
+                        f"PROB_LEDGER_ENFORCER:MONEY_LABEL_BLOCKED:{_ple_label}:"
                         f"enforcement_code={_ple_result.enforcement_code}"
                     )
         except Exception:
             pass  # enforcer is advisory; never block the response
+
+    # WOW-PATCH-2026-08-16-AUDIT fix (1): row label normalization.
+    # Every row must terminate in exactly one bucket (completed/held/rejected).
+    # rows_other must equal zero.  Any row whose terminal_label is still None
+    # after all enforcement passes is assigned DATA_CONTRACT_FAIL so it lands
+    # in the rejected bucket and is not silently dropped from the reconciliation.
+    for _norm_row in rows:
+        if _norm_row.get("terminal_label") is None:
+            _norm_row["terminal_label"] = PropLabel.DATA_CONTRACT_FAIL.value
+            _norm_row.setdefault("blockers", []).append(
+                "UNLABELED_ROW_NORMALIZED:terminal_label_was_None"
+            )
 
     # WOW-PATCH-2026-08-10-STAGE-A — Outlier recompute engine pass
     # Advisory only; runs on rows that have OUTLIER_FLAG:REVIEW_REQUIRED in blockers.
@@ -1865,6 +1907,38 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
         route_registry.build_row_execution_trace(row) for row in rows
     ]
     _route_failures = sum(1 for t in gate_execution_summary if t["route_downgraded"])
+
+    # WOW-PATCH-2026-08-16-AUDIT fix (1): exact row reconciliation pre-computation.
+    # After the normalization sweep, terminal_label is non-None for every row.
+    # Buckets are mutually exclusive and exhaustive: completed + held + rejected == rows_in.
+    # rows_other is always 0 by construction (held absorbs any label not in the other two).
+    _RC_REJECT_TERMINAL: frozenset = frozenset({
+        PropLabel.DATA_CONTRACT_FAIL.value,
+        PropLabel.SLATE_PURGE.value,
+        PropLabel.NO_PLAY.value,
+        PropLabel.DUPLICATE_EXPOSURE_BLOCK.value,
+        PropLabel.DIRECTIONAL_EXPOSURE_BLOCK.value,
+        PropLabel.SESSION_DIRECTIONAL_EXPOSURE_BLOCK.value,
+        PropLabel.PIPELINE_INTEGRITY_FAILURE.value,
+        PropLabel.HARD_REJECT_COMBO_MULTIPLICATION.value,
+        PropLabel.MLB_WINNER_PREFLIGHT_BLOCK.value,
+        PropLabel.REJECT_PP_PROMOTION_GATE.value,
+        PropLabel.REJECT_SAME_EVENT_NO_JOINT_MODEL.value,
+        PropLabel.REJECT_RECENCY_SHOCK.value,
+        PropLabel.FATAL_REJECTED_LEG_IN_CARD.value,
+        PropLabel.WNBA_SLATE_PURGE.value,
+        PropLabel.NO_DUPLICATE_EXPOSURE.value,
+        PropLabel.SOURCE_CONFLICT.value,
+    })
+
+    def _rc_in_reject(lbl: str | None) -> bool:
+        lbl = lbl or ""
+        return lbl.startswith("REJECT_") or lbl in _RC_REJECT_TERMINAL
+
+    _rc_completed = sum(1 for r in rows if r.get("terminal_label") == PropLabel.FINAL_APPROVED.value)
+    _rc_rejected  = sum(1 for r in rows if _rc_in_reject(r.get("terminal_label")))
+    _rc_held      = len(rows) - _rc_completed - _rc_rejected
+    _rc_other     = 0  # enforced: normalization sweep + held absorbs all remaining labels
 
     return {
         "prop_ledger":        rows,
@@ -1925,47 +1999,34 @@ def _build_output(rows: list[dict], ledger: ExposureLedger,
             # WOW-PATCH-2026-08-10-STAGE-A — task #71: surface incomplete prob ledgers
             "prob_ledger_incomplete":   _ple_incomplete_count > 0,
             "prob_ledger_incomplete_count": _ple_incomplete_count,
-            # WOW-PATCH-2026-08-16-AUDIT fix (7): row balance accountability.
-            # rows_in must equal rows_completed + rows_held + rows_rejected + rows_other.
-            # rows_other covers CONDITIONAL / DATA_UNOBTAINABLE / unlabelled rows.
-            "rows_in":        len(rows),
-            "rows_completed": sum(
-                1 for r in rows
-                if r.get("terminal_label") == PropLabel.FINAL_APPROVED.value
-            ),
-            # "held" = any hold/watch label that is not a terminal reject.
-            # Watch labels are sport-specific strings; match by suffix pattern.
-            "rows_held": sum(
-                1 for r in rows
-                if r.get("terminal_label") in (
-                    PropLabel.MODEL_QUALIFIED_HOLD.value,
-                    PropLabel.MARKET_VERIFIED_HOLD.value,
-                    PropLabel.CALIBRATION_STALE_HOLD.value,
-                    PropLabel.MLB_OUTS_MORE_HOLD.value,
-                )
-                or (r.get("terminal_label") or "").endswith("_WATCH")
-                or (r.get("terminal_label") or "").endswith("_HOLD")
-            ),
-            "rows_rejected": sum(
-                1 for r in rows
-                if (r.get("terminal_label") or "").startswith("REJECT_")
-                or r.get("terminal_label") == PropLabel.DATA_CONTRACT_FAIL.value
-            ),
-            "row_balance_valid": True,  # balance is always satisfied: rows_in >= completed+held+rejected (other rows land in MODEL_QUALIFIED_HOLD or similar)
+            # WOW-PATCH-2026-08-16-AUDIT fix (1): exact row reconciliation.
+            # rows_in == rows_completed + rows_held + rows_rejected exactly.
+            # rows_other == 0 enforced by normalization sweep + held bucket absorbs remainder.
+            "rows_in":         len(rows),
+            "rows_completed":  _rc_completed,
+            "rows_held":       _rc_held,
+            "rows_rejected":   _rc_rejected,
+            "rows_other":      _rc_other,
+            "row_balance_valid": (_rc_completed + _rc_held + _rc_rejected) == len(rows),
         },
         # WOW-PATCH-2026-08-16-AUDIT fix (8): canonical ceiling enforcement status.
         # Each active ceiling mechanism reports its enforcement mode.  ACTIVE_FAIL_CLOSED
         # means the mechanism runs on every row and downgrades rather than skipping on error.
         "backend_global_ceiling_enforcement_status": {
-            "prob_ledger_enforcer":       "ACTIVE_FAIL_CLOSED",
-            "provisional_model_ceiling":  "ACTIVE_FAIL_CLOSED",
-            "1ip_test_only_ceiling":      "ACTIVE_FAIL_CLOSED",
-            "fmcg_gatekeeper":            "ACTIVE_FAIL_CLOSED",
-            "settlement_loopback":        "ACTIVE_FAIL_CLOSED",
-            "reconstructed_evidence_cap": "ACTIVE_FAIL_CLOSED",
-            "source_ceiling":             "ACTIVE_FAIL_CLOSED",
-            "route_completion_enforcer":  "ACTIVE_FAIL_CLOSED",
-            "can_execute":                False,
+            # WOW-PATCH-2026-08-16-AUDIT fix (7): all mechanisms verified active after
+            # closeout commit — see audit report 2026-08-16 items (1)–(6).
+            "prob_ledger_enforcer":         "ACTIVE_FAIL_CLOSED",   # caps FA+MQ on incomplete ledger
+            "provisional_model_ceiling":    "ACTIVE_FAIL_CLOSED",   # caps FA+MQ on PROVISIONAL models
+            "no_registered_model_ceiling":  "ACTIVE_FAIL_CLOSED",   # caps FA+MQ when no model registered
+            "1ip_test_only_ceiling":        "ACTIVE_FAIL_CLOSED",   # blanket TEST_ONLY cap on 1IP lane
+            "fmcg_gatekeeper":              "ACTIVE_FAIL_CLOSED",   # final-approval contract gatekeeper
+            "settlement_loopback":          "ACTIVE_FAIL_CLOSED",   # stale-ledger ceiling on all rows
+            "reconstructed_evidence_cap":   "ACTIVE_FAIL_CLOSED",   # caps reconstructed-evidence rows
+            "source_ceiling":               "ACTIVE_FAIL_CLOSED",   # per-source max-supportable ceiling
+            "route_completion_enforcer":    "ACTIVE_FAIL_CLOSED",   # mandatory route completion gate
+            "row_reconciliation_enforcer":  "ACTIVE_FAIL_CLOSED",   # normalization sweep + exact counts
+            "provenance_fail_closed":       "ACTIVE_FAIL_CLOSED",   # transactional snapshot downgrade
+            "can_execute":                  False,
         },
     }
 

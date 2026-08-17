@@ -1570,13 +1570,18 @@ def wow_daily_scan():
                 grouped[cat_key].append(_compact_prop(row))
 
         counts = {k: summary_counts.get(cls_name, 0) for k, cls_name in CAT_KEYS.items()}
-        # Task #74: also count old rows stored with classification="FINAL_APPROVED"
-        # (pre-split label format) so they aren't silently undercounted.
+        # WOW-PATCH-2026-08-16-AUDIT fix (3): separate enforced approvals from
+        # legacy rows.  Rows written before the ceiling-enforcement epoch
+        # (classification="FINAL_APPROVED", pre-split label format) cannot be
+        # assumed genuinely approved under current ceiling rules.
+        # They are reported separately and excluded from total_final_approved.
         _legacy_fa = summary_counts.get("FINAL_APPROVED", 0)
+        counts["legacy_unverified_final_approved"] = _legacy_fa
         counts["total_final_approved"] = (
-            counts["market_verified"] + counts["final_approved_internal"] + _legacy_fa
+            counts["market_verified"] + counts["final_approved_internal"]
+            # legacy_unverified rows are intentionally excluded
         )
-        counts["playable_count"]       = counts["total_final_approved"] + counts["model_qualified"]
+        counts["playable_count"] = counts["total_final_approved"] + counts["model_qualified"]
 
         def _avail(key):
             return "AVAILABLE" if int(flags.get(key, 0) or 0) > 0 else "NOT_CALLED"
@@ -2200,7 +2205,9 @@ def scan_results_summary():
             "status_lineups_called":         int(flags.get("status_called",0) or 0) > 0,
             "internal_projection_called":    True,
             "external_projection_available": False,
-            "final_approved_count":          counts.get("total_final_approved", counts["market_verified"] + counts["final_approved_internal"] + summary_counts.get("FINAL_APPROVED", 0)),
+            # WOW-PATCH-2026-08-16-AUDIT fix (3): exclude legacy unverified rows.
+            "final_approved_count":          counts.get("total_final_approved", counts["market_verified"] + counts["final_approved_internal"]),
+            "legacy_unverified_final_approved": summary_counts.get("FINAL_APPROVED", 0),
             "market_verified_count":         counts["market_verified"],
             "final_approved_internal_count": counts["final_approved_internal"],
             "model_qualified_count":         counts["model_qualified"],
@@ -2220,27 +2227,30 @@ def scan_results_summary():
         if total_rows > 0:
             execution_notes.append(f"Total props evaluated: {total_rows}")
 
+        # WOW-PATCH-2026-08-16-AUDIT fix (3): exclude pre-enforcement legacy rows.
+        counts["legacy_unverified_final_approved"] = summary_counts.get("FINAL_APPROVED", 0)
         counts["total_final_approved"] = counts["market_verified"] + counts["final_approved_internal"]
         counts["playable_count"]       = counts["total_final_approved"] + counts["model_qualified"]
 
         return jsonify({
-            "ok":                       True,
-            "status":                   scan_status,
-            "run_date":                 run_date,
-            "source_access_status":     source_access_status,
-            "execution_report":         execution_report,
-            "counts":                   counts,
-            "market_verified":          grouped["market_verified"],
-            "final_approved_internal":  grouped["final_approved_internal"],
-            "model_qualified":          grouped["model_qualified"],
-            "conditional":              grouped["conditional"],
-            "watch":                    grouped["watch"],
-            "reject":                   grouped["reject"],
-            "data_insufficient":        grouped["data_insufficient"],
-            "final_approved_picks":     grouped["market_verified"] + grouped["final_approved_internal"],
-            "playable_card":            grouped["market_verified"] + grouped["final_approved_internal"] + grouped["model_qualified"],
-            "playable_count":           counts["total_final_approved"] + counts["model_qualified"],
-            "execution_notes":          execution_notes,
+            "ok":                              True,
+            "status":                          scan_status,
+            "run_date":                        run_date,
+            "source_access_status":            source_access_status,
+            "execution_report":                execution_report,
+            "counts":                          counts,
+            "legacy_unverified_final_approved": counts["legacy_unverified_final_approved"],
+            "market_verified":                 grouped["market_verified"],
+            "final_approved_internal":         grouped["final_approved_internal"],
+            "model_qualified":                 grouped["model_qualified"],
+            "conditional":                     grouped["conditional"],
+            "watch":                           grouped["watch"],
+            "reject":                          grouped["reject"],
+            "data_insufficient":               grouped["data_insufficient"],
+            "final_approved_picks":            grouped["market_verified"] + grouped["final_approved_internal"],
+            "playable_card":                   grouped["market_verified"] + grouped["final_approved_internal"] + grouped["model_qualified"],
+            "playable_count":                  counts["total_final_approved"] + counts["model_qualified"],
+            "execution_notes":                 execution_notes,
         })
     except Exception as e:
         return jsonify({"ok": False, "error": "Database unavailable", "detail": str(e)}), 503
