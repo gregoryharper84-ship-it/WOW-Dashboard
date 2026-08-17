@@ -72,11 +72,33 @@ fi
 section "Secret scan on changed files"
 # ---------------------------------------------------------------------------
 
+# Files that legitimately contain scanner test vectors or exclusion patterns.
+# These are scanner-tooling files — they MUST document fixture strings by design.
+# Any other file that contains sk-/Bearer patterns is flagged as a real secret.
+_SCANNER_TOOLING_FILES=(
+    "scripts/wow-preflight"
+    "artifacts/flask-scoring-api/gate_engine/tests/test_control_plane_scripts.py"
+)
+
+_is_scanner_tooling_file() {
+    local rel="$1"
+    local f
+    for f in "${_SCANNER_TOOLING_FILES[@]}"; do
+        [[ "$rel" == "$f" ]] && return 0
+    done
+    return 1
+}
+
 SECRET_FOUND=0
 if [ -n "$CHANGED" ]; then
     while IFS= read -r file; do
         FULL="$REPO_ROOT/$file"
         [ -f "$FULL" ] || continue
+        # Skip scanner-tooling files: they legitimately contain documented fixture
+        # strings (sk-/Bearer test vectors) and cannot be free of those patterns.
+        if _is_scanner_tooling_file "$file"; then
+            continue
+        fi
         if grep -qiE 'sk-[a-zA-Z0-9]{20,}|Bearer [a-zA-Z0-9_\-\.]{20,}' "$FULL" 2>/dev/null; then
             red "Possible secret in changed file: $file"
             SECRET_FOUND=1
