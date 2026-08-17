@@ -1,35 +1,42 @@
 ---
-name: Control-plane secret scan exclusion policy
-description: Narrow per-file exclusions for wow-preflight secret scan; HTTP 000 with live check enabled is a hard fail in wow-verify-patch.
+name: Control-plane secret scan exclusion policy (R2)
+description: Line-level fixture exclusions for wow-preflight + scanner-tooling allowlist for wow-verify-patch — R2 design replacing blanket test-dir / file-level exclusions
 ---
 
-## Secret scan exclusion rules (wow-preflight)
+## Rule
 
-**Never** use blanket `--exclude-dir=tests` or `--exclude="test_*.py"` for the `api_key` or `password` patterns. Real secrets could be hidden in test files.
+wow-preflight applies a `_filter_fixture_literals()` post-filter to the raw secret-scan grep output.
+wow-verify-patch applies a `_is_scanner_tooling_file()` allowlist before scanning changed files.
 
-Instead use a narrow per-file allowlist (`BROAD_PATTERN_FIXTURE_EXCLUDE_ARGS`) listing only files whose synthetic fixture content is documented in the script:
+**Why:** file-level exclusions (`--exclude=test_governance_api.py`) excluded entire files regardless of value;
+a real secret could hide behind the exclusion. R2 narrows to file-path+fixture-value pairs.
 
-```bash
-BROAD_PATTERN_FIXTURE_EXCLUDE_ARGS=(
-    --exclude="test_governance_api.py"                       # _TEST_API_KEY = "test-key-governance"
-    --exclude="test_kalshi_wx_terminal_label_failclosed.py"  # _TEST_API_KEY = "test-scoring-key-failclosed-patch"
-    --exclude="test_kalshi_wx_active_status_normalization.py" # _TEST_API_KEY = "test-key-wx-active-status-norm"
-    --exclude="test_control_plane_scripts.py"                 # scanner test vectors
-)
-```
+**How to apply:**
+- Any new test file that uses `_TEST_API_KEY = "..."` or similar must have its exact fixture value
+  added to BOTH `_filter_fixture_literals` in `scripts/wow-preflight` AND documented in the comment block.
+- `scripts/wow-preflight` and `gate_engine/tests/test_control_plane_scripts.py` are the only files
+  in `_SCANNER_TOOLING_FILES` in `scripts/wow-verify-patch`. If a third scanner-tooling file is added,
+  add it to that list too.
+- `.agents/` is in `SECRET_EXCLUDE_ARGS` (not source code; cannot contain real secrets by convention).
+- When writing proof tests that verify the scanner catches realistic secrets: construct the realistic
+  secret VALUE via programmatic concatenation (e.g. `"sk-" + "A" * 30`) so no verbatim pattern appears
+  as a string literal in the test source file — the scanner will catch it in comments too.
 
-For `sk-/Bearer` patterns, directory-level `TEST_INFRA_EXCLUDE_ARGS` is acceptable because `test_control_plane_scripts.py` writes fake `sk-` keys to temp files specifically to test the scanner.
+## Documented fixture locations (7 file+value pairs, as of R2)
 
-**Adding a new synthetic-fixture test file:** Add it to `BROAD_PATTERN_FIXTURE_EXCLUDE_ARGS` with a comment naming the fixture constant and its value. Do NOT add it to `TEST_INFRA_EXCLUDE_ARGS` unless it is scanner infrastructure.
+| file | fixture value |
+|---|---|
+| `test_governance_api.py` | `test-key-governance` |
+| `test_kalshi_wx_terminal_label_failclosed.py` | `test-scoring-key-failclosed-patch` |
+| `test_kalshi_wx_active_status_normalization.py` | `test-key-wx-active-status-norm` |
+| `test_control_plane_scripts.py` | `sk-thisisaverylongsecretkey` |
+| `test_control_plane_scripts.py` | `sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456` |
+| `test_control_plane_scripts.py` | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abcdefghij` (prefix — covers .abcdefghijklmnop too) |
+| `test_control_plane_scripts.py` | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxxxxx` |
 
-## HTTP 000 in wow-verify-patch
+## Scanner-tooling allowlist (wow-verify-patch)
 
-When `GPT_ACTION_SECRET` is set (live check enabled), HTTP 000 (connection refused) is a **hard failure** — not a warning. Any non-200 response fails the check. The rationale: if the engineer explicitly requested live verification, "unreachable" is itself an error.
-
-- `test_live_check_http_000_fails_when_enabled` in `test_control_plane_scripts.py` locks this behavior.
-- Uses `REPLIT_APP_URL=http://localhost:1` + `GPT_ACTION_SECRET=fake` to guarantee connection refused.
-- When `GPT_ACTION_SECRET` is absent (check skipped), exit code is not affected.
-
-## Why
-
-External verifier (finding 3): blanket test exclusion allows real secrets placed in tests to bypass detection. Finding 4: HTTP 000 cannot become a warning when live verification is explicitly requested.
+| file | reason |
+|---|---|
+| `scripts/wow-preflight` | Contains fixture values as exclusion patterns — MUST have them |
+| `gate_engine/tests/test_control_plane_scripts.py` | Contains scanner test vectors — MUST have them |
