@@ -52,6 +52,51 @@ def _keepalive_loop(prod_url: str, worker_pid: int, log) -> None:
         time.sleep(_KEEPALIVE_INTERVAL_S)
 
 
+# ── Daily 1IP outcome ingestion ───────────────────────────────────────────────
+# OBSERVE_ONLY: ingestion attaches Baseball Savant pitch counts to frozen
+# predictions. No model, gate, label, ceiling, or scoring path is modified.
+# Worker 1 runs a daemon thread that fires daily at 09:00 UTC (after US
+# west-coast late games have settled) and calls ingest_outcomes(dry_run=False).
+# Fail-open: any exception is logged; the loop continues uninterrupted.
+
+_INGEST_TARGET_HOUR_UTC = 9    # 09:00 UTC
+_INGEST_MAX_ROWS        = 100  # per daily pass
+
+
+def _seconds_until_next_9am_utc() -> float:
+    from datetime import datetime, timezone, timedelta
+    now      = datetime.now(timezone.utc)
+    today_9  = now.replace(hour=_INGEST_TARGET_HOUR_UTC, minute=0, second=0, microsecond=0)
+    target   = today_9 if now < today_9 else (today_9 + timedelta(days=1))
+    return max((target - now).total_seconds(), 0.0)
+
+
+def _daily_ingest_loop(worker_pid: int, log) -> None:
+    """
+    Sleep until 09:00 UTC, run ingest_outcomes(), repeat every 24 h.
+
+    OBSERVE_ONLY invariant: ingest_outcomes() never modifies labels,
+    probabilities, model state, or scoring decisions.
+    """
+    while True:
+        wait_s = _seconds_until_next_9am_utc()
+        time.sleep(wait_s)
+        try:
+            from validation.outcome_ingestion import ingest_outcomes
+            result = ingest_outcomes(dry_run=False, max_rows=_INGEST_MAX_ROWS)
+            log.info(
+                f"[1ip-ingest] worker {worker_pid}: daily run complete — "
+                f"n_attached={result.n_attached} "
+                f"rows_processed={result.rows_processed} "
+                f"summary={dict(result.summary)}"
+            )
+        except Exception as exc:
+            log.warning(
+                f"[1ip-ingest] worker {worker_pid}: daily ingest failed (non-fatal): {exc}"
+            )
+        time.sleep(60)   # brief pause before computing next target
+
+
 def _log_keepalive_failure(log, worker_pid: int, detail: str, consecutive: int) -> None:
     msg = (
         f"[keepalive] worker {worker_pid}: health check failed "
@@ -211,6 +256,26 @@ def post_fork(server, worker):
             )
     except Exception as exc:
         server.log.warning(f"[post_fork] keep-alive start failed (non-fatal): {exc}")
+
+    # ── Daily 1IP outcome ingestion (worker 1 / production only) ──────────────
+    # OBSERVE_ONLY — ingest_outcomes() never modifies labels, probabilities,
+    # model state, or scoring decisions.  Fail-open; any error is logged and
+    # the loop continues.
+    try:
+        _ingest_prod_url = os.environ.get("REPLIT_APP_URL", "").rstrip("/")
+        if _ingest_prod_url and worker.age == 1:
+            threading.Thread(
+                target=_daily_ingest_loop,
+                args=(worker.pid, server.log),
+                daemon=True,
+                name="1ip-daily-ingest",
+            ).start()
+            server.log.info(
+                f"[post_fork] worker {worker.pid}: daily 1IP outcome ingestion scheduled "
+                f"(target=09:00 UTC, max_rows={_INGEST_MAX_ROWS}, OBSERVE_ONLY)"
+            )
+    except Exception as exc:
+        server.log.warning(f"[post_fork] 1IP ingest scheduler start failed (non-fatal): {exc}")
 
     # ── Pitcher prefetch executor reset ───────────────────────────────────────
     # Each worker must own its own ThreadPoolExecutor. With --preload the master

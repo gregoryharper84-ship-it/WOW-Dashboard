@@ -36297,6 +36297,13 @@ def validation_1ip_status():
         db_status["write_failures_in_process"]       = in_proc.get("write_failures", 0)
         db_status["logged_in_process"]               = in_proc.get("logged", 0)
         db_status["skipped_in_process"]              = in_proc.get("skipped", 0)
+        # OBSERVE_ONLY declaration — surfaced explicitly so callers know the
+        # benchmark cannot modify predictions, probabilities, or model state.
+        validation_mode = os.environ.get("VALIDATION_MODE", "OBSERVE_ONLY")
+        db_status["validation_mode"]                 = validation_mode
+        db_status["model_changes_from_benchmark"]    = False
+        db_status["probability_changes_from_benchmark"] = False
+        db_status["terminal_label_changes_from_benchmark"] = False
         return jsonify({"ok": True, "validation_status": db_status}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:120]}), 500
