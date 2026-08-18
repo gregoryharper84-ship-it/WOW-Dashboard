@@ -113,6 +113,7 @@
 - [Typed Hydration & Model Readiness patch](typed-hydration-model-readiness.md) — PATCH-2026-08-17; gate_engine/typed_hydration.py; 4 data-presence gates; LifecycleState FSM; RunController; reconcile_run; labels.py is protected (no patch may touch it).
 - [WOW Validation Harness v1](wow-validation-harness-v1.md) — isolated offline backtesting for 1IP props; 24 files in validation/; 59 tests; frozen at af96567; DO NOT publish; live data pipeline not yet wired.
 - [1IP Prediction Logger](1ip-prediction-logger.md) — observational data collection; fail-open hook in pipeline.py after 1IP TEST_ONLY ceiling; 3 endpoints; log_dedup_key=(pitcher+date+line+dir) not frozen_at; DB idempotency via ON CONFLICT; commit c8a6bfe.
+- [1IP production route fix](1ip-route-fix.md) — prob_ledger/failure_path bypassed for 1IP lane (both blocked event-tree before it could fire); non-dict bf_dist guard in hit_probability; 14 tests; commit 35bcfa3.
 - [Moneyline market-snapshot handoff](moneyline-market-snapshot.md) — one shared odds→scorer contract; incomplete or one-sided market handoffs fail closed instead of scoring or re-fetching.
 - [Prob-ledger live handoff lane split](prob-ledger-live-handoff.md) — rank_eligible=model lane only; market lane typed STALE_MARKET/REHYDRATE_REQUIRED; adapters + counters; WNBA/market fixture gotchas.
 - [1IP production hydration patch](1ip-production-hydration-patch.md) — 4-layer fix: BF key alias (p_bf_gte5), acquisition routing, TEST_ONLY promotion, typed breach; n=0 explicit→breach; n absent (GPT-supplied)→allowed.
