@@ -45,3 +45,12 @@ Fail-open is unconditional — no scoring route can be blocked by logger failure
 ## Tests
 32 tests in validation/tests/test_prediction_logger.py
 Commit: c8a6bfe — 7,542 regression tests pass.
+
+## Outcome Ingestion (commit after c8a6bfe)
+validation/outcome_ingestion.py + validation/cli_ingest.py
+- `ingest_outcomes(dry_run, before_date, after_date, max_rows)` → IngestResult
+- `_fetch_game_pitch_count(pitcher_mlbam_id, game_date)` — Savant CSV primary, pybaseball fallback
+- Doubleheader: 1 game_pk → OK; pitches in 1 of N → resolved; pitches in 2+ → AMBIGUOUS (fail-closed)
+- CLI: `python -m validation.cli_ingest --no-dry-run --max-rows 50`; default dry-run; exit 0/1/2
+- 31 tests in validation/tests/test_outcome_ingestion.py
+- Module-level imports required for patch() to work (lazy imports inside functions are not patchable)
