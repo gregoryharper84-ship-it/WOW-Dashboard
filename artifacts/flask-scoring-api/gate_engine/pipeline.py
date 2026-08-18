@@ -741,21 +741,67 @@ def run_pipeline(
 
         # -------------------------------------------------------------------
         # Module D: Probability Component Ledger + Shrinkage
+        # WOW-PATCH-2026-08-18-1IP-ROUTE-FIX (part A): bypass prob_ledger and
+        # failure_path for 1IP_PITCHES_THROWN rows.
+        #
+        # Root-cause: MODEL_REQUIRED_COMPONENTS = {"l10_distribution","role_usage"}
+        # are pitcher K/Outs adapter constructs built by mlb.pitcher_prob_ledger_adapter.
+        # That adapter's canonical_stat_key("1IP_PITCHES_THROWN") returns None, so
+        # it never runs for 1IP rows, leaving the ledger empty →
+        # model_probability_complete=False before the event-tree gate can fire.
+        #
+        # Similarly, failure_path_inputs (primary/secondary/black_swan scenarios)
+        # are structurally undefined for the single-path Monte Carlo event-tree lane;
+        # failure_path.run() fires DATA_CONTRACT_FAIL on every 1IP row, which
+        # consumes the row at line 757 — BEFORE the 1IP field gate at line 783+
+        # even has a chance to run.
+        #
+        # Fix: for 1IP rows, stamp model_probability_complete directly from
+        # bf_distribution presence (the event-tree's own data-contract requirement),
+        # then skip failure_path. The 1IP field gate below remains the sole
+        # data-contract enforcer for this lane. can_execute=False unconditional;
+        # terminal ceiling = MODEL_QUALIFIED_HOLD.
         # -------------------------------------------------------------------
-        prob_ledger.run(row, enrichment=enr)
-        row["_pl_hydrated"] = True
-        # Stash enrichment now so the finalize pass can re-evaluate the ledger
-        # even when a later gate terminates this row with `continue` before
-        # the end-of-loop `row["_enr"] = enr` assignment.
-        row["_enr"] = enr
+        _1ip_stat_bypass = (row.get("stat_key") or row.get("prop_type") or "").upper()
+        if _1ip_stat_bypass == "1IP_PITCHES_THROWN":
+            _bf_present = bool(enr.get("first_inning_bf_distribution"))
+            row["model_probability_complete"] = _bf_present
+            row["rank_eligible"]              = _bf_present
+            row["market_lane_available"]      = False
+            row["market_status"]              = "STALE_MARKET"
+            row.setdefault("gates", {})["prob_ledger"] = {
+                "passed":                     _bf_present,
+                "rank_eligible":              _bf_present,
+                "model_probability_complete": _bf_present,
+                "market_lane_available":      False,
+                "market_status":              "STALE_MARKET",
+                "code":   "1IP_EVENT_TREE_BYPASS" if _bf_present else "1IP_BF_DIST_MISSING",
+                "detail": (
+                    "1IP_PITCHES_THROWN: prob_ledger bypassed — Monte Carlo event-tree "
+                    "is the controlling model; l10_distribution/role_usage do not apply; "
+                    "failure_path_inputs undefined for single-path event-tree lane; "
+                    "can_execute=False; ceiling=MODEL_QUALIFIED_HOLD."
+                ),
+            }
+            row["_pl_hydrated"] = True
+            # Stash enrichment for the finalize pass (same reason as the else branch).
+            row["_enr"] = enr
+            # Module F (failure_path) is bypassed for 1IP — see patch note above.
+        else:
+            prob_ledger.run(row, enrichment=enr)
+            row["_pl_hydrated"] = True
+            # Stash enrichment now so the finalize pass can re-evaluate the ledger
+            # even when a later gate terminates this row with `continue` before
+            # the end-of-loop `row["_enr"] = enr` assignment.
+            row["_enr"] = enr
 
-        # -------------------------------------------------------------------
-        # Module F: Failure Path Matrix
-        # -------------------------------------------------------------------
-        if not skip_data_contract:
-            failure_path.run(row, enrichment=enr)
-            if row.get("terminal_label") == PropLabel.DATA_CONTRACT_FAIL.value:
-                continue
+            # -------------------------------------------------------------------
+            # Module F: Failure Path Matrix
+            # -------------------------------------------------------------------
+            if not skip_data_contract:
+                failure_path.run(row, enrichment=enr)
+                if row.get("terminal_label") == PropLabel.DATA_CONTRACT_FAIL.value:
+                    continue
 
         # -------------------------------------------------------------------
         # WOW-PATCH-MANDATORY-RECONSTRUCTION-v1.0 — Module B Phase 2

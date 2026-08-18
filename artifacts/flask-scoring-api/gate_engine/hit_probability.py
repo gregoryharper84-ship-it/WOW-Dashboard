@@ -770,8 +770,13 @@ def compute(
         # Reject only when bf_dist is absent OR when the Savant ledger explicitly
         # reported n=0 (no verified starts).  A GPT/test-supplied dict that omits
         # "n" but carries probability values is treated as valid input.
+        # WOW-PATCH-2026-08-18-1IP-ROUTE-FIX (part B): guard non-dict bf_dist.
+        # If bf_dist is truthy but not a dict (e.g. a list or stray int from a
+        # malformed Savant parse), the prior code fell through to simulate_1ip()
+        # where bf_distribution.get("p_bf_3") raises AttributeError.  Treat any
+        # non-dict value the same as None — typed breach, never a crash.
         _bf_n_explicit = bf_dist.get("n") if isinstance(bf_dist, dict) else None
-        if bf_dist is None or (_bf_n_explicit is not None and _bf_n_explicit == 0):
+        if bf_dist is None or not isinstance(bf_dist, dict) or (_bf_n_explicit is not None and _bf_n_explicit == 0):
             # Typed breach contract — acquisition either failed or was never attempted.
             _breach_note = (
                 "PROBABILITY_PIPELINE_CONTRACT_BREACH: "
