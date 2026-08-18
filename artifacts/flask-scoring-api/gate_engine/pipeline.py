@@ -1350,6 +1350,26 @@ def run_pipeline(
                         "can_execute":     False,
                     }
 
+        # ---------------------------------------------------------------
+        # WOW-PATCH-2026-08-18-1IP-PREDICTION-LOGGER — observational hook.
+        # Fail-open: logging failure never alters scoring outcome.
+        # Fires only for MLB 1IP_PITCHES_THROWN rows reaching
+        # MODEL_QUALIFIED_HOLD with a real model probability.
+        # can_execute=False; no label authority.
+        # ---------------------------------------------------------------
+        if (_1ip_test_sk == "1IP_PITCHES_THROWN"
+                and row.get("terminal_label") == PropLabel.MODEL_QUALIFIED_HOLD.value):
+            try:
+                from validation.prediction_logger import (  # lazy import — cold-start safe
+                    log_1ip_prediction as _log_1ip_pred,
+                )
+                _log_status = _log_1ip_pred(row, enr)
+                row.setdefault("gates", {})["prediction_logger"] = _log_status
+            except Exception as _log_exc:  # fail-open: never propagate
+                row.setdefault("gates", {}).setdefault(
+                    "prediction_logger", {}
+                )["error"] = str(_log_exc)[:80]
+
     # -------------------------------------------------------------------
     # Patch 2026-06-27 — Settlement Loopback ceiling enforcement
     # After classifier: if ledger is stale, downgrade FINAL_APPROVED → MODEL_QUALIFIED_HOLD

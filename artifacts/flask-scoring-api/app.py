@@ -36271,6 +36271,136 @@ def _ensure_learning_log_table(conn):
     conn.commit()
 
 
+# =============================================================================
+# WOW Validation — 1IP Prediction Logger endpoints
+# Read-only status/export + outcome attachment.
+# No secrets exposed; requires API key on all routes.
+# =============================================================================
+
+@app.route("/wow/validation/1ip/status", methods=["GET"])
+@require_api_key
+def validation_1ip_status():
+    """
+    operationId: getValidation1ipStatus
+    Return benchmark readiness status for the 1IP prediction logger.
+    Reports: n_logged, n_settled, n_verified_settled, n_hits,
+             benchmark_sample_count, ready (bool), threshold,
+             plus in-process counters (duplicates_prevented, write_failures).
+    No secrets, model probabilities, or PII exposed.
+    """
+    try:
+        from validation.benchmark_readiness import get_status
+        from validation.prediction_logger import get_in_process_counters
+        db_status   = get_status()
+        in_proc     = get_in_process_counters()
+        db_status["duplicates_prevented_in_process"] = in_proc.get("duplicates_prevented", 0)
+        db_status["write_failures_in_process"]       = in_proc.get("write_failures", 0)
+        db_status["logged_in_process"]               = in_proc.get("logged", 0)
+        db_status["skipped_in_process"]              = in_proc.get("skipped", 0)
+        return jsonify({"ok": True, "validation_status": db_status}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:120]}), 500
+
+
+@app.route("/wow/validation/1ip/export", methods=["GET"])
+@require_api_key
+def validation_1ip_export():
+    """
+    operationId: getValidation1ipExport
+    Export eligible frozen 1IP predictions for offline benchmark runs.
+    Query params:
+      limit        int  (default 100, max 500)
+      offset       int  (default 0)
+      settled_only bool (default false) — only return predictions with outcomes
+    Returns rows with: prediction_id, log_dedup_key, game_date, pitcher_name,
+    pitcher_mlbam_id, opponent, line, direction, model_probability,
+    model_uncertainty, feature_snapshot_id, model_version, frozen_at,
+    logged_at, and (if settled) actual_pitches, hit, outcome_source,
+    outcome_verified.
+    """
+    try:
+        limit        = min(int(request.args.get("limit", 100)), 500)
+        offset       = int(request.args.get("offset", 0))
+        settled_only = request.args.get("settled_only", "false").lower() in ("true", "1", "yes")
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid pagination params"}), 400
+
+    try:
+        from validation.benchmark_readiness import get_eligible_predictions
+        result = get_eligible_predictions(limit=limit, offset=offset,
+                                          settled_only=settled_only)
+        return jsonify({"ok": True, **result}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:120]}), 500
+
+
+@app.route("/wow/validation/1ip/outcome", methods=["POST"])
+@require_api_key
+def validation_1ip_outcome():
+    """
+    operationId: postValidation1ipOutcome
+    Attach a post-game outcome to a frozen 1IP prediction.
+
+    Body (JSON):
+      log_dedup_key    str   required — identifies the frozen prediction
+      actual_pitches   int   required — pitcher's actual first-inning pitch count
+      outcome_source   str   required — e.g. "baseball_savant", "stathead", "manual"
+      outcome_verified bool  optional (default false)
+      notes            str   optional
+      outcome_timestamp str  optional ISO-8601 UTC (defaults to now)
+
+    Errors:
+      400 if body missing required fields
+      404 PREDICTION_NOT_FOUND
+      409 CONFLICTING_OUTCOME | LEAKAGE_GUARD_FAILED
+      503 DB_UNAVAILABLE
+      500 unexpected error
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    log_dedup_key  = (body.get("log_dedup_key") or "").strip()
+    actual_pitches = body.get("actual_pitches")
+    outcome_source = (body.get("outcome_source") or "").strip()
+
+    if not log_dedup_key or actual_pitches is None or not outcome_source:
+        return jsonify({
+            "ok": False,
+            "error": "MISSING_REQUIRED_FIELDS",
+            "required": ["log_dedup_key", "actual_pitches", "outcome_source"],
+        }), 400
+
+    try:
+        actual_pitches = int(actual_pitches)
+        if actual_pitches < 0:
+            raise ValueError("actual_pitches must be >= 0")
+    except (TypeError, ValueError) as e:
+        return jsonify({"ok": False, "error": f"INVALID_ACTUAL_PITCHES:{e}"}), 400
+
+    try:
+        from validation.outcome_logger import attach_outcome, OutcomeLogError
+        result = attach_outcome(
+            log_dedup_key      = log_dedup_key,
+            actual_pitches     = actual_pitches,
+            outcome_source     = outcome_source,
+            outcome_verified   = bool(body.get("outcome_verified", False)),
+            notes              = str(body.get("notes") or "")[:500],
+            outcome_timestamp  = body.get("outcome_timestamp"),
+        )
+        action = result.get("action", "")
+        status = 200 if action in ("OUTCOME_ATTACHED", "ALREADY_SETTLED") else 207
+        return jsonify({"ok": True, **result}), status
+    except OutcomeLogError as oe:
+        code_to_http = {
+            "PREDICTION_NOT_FOUND":  404,
+            "CONFLICTING_OUTCOME":   409,
+            "LEAKAGE_GUARD_FAILED":  409,
+            "DB_UNAVAILABLE":        503,
+        }
+        http = code_to_http.get(oe.code, 500)
+        return jsonify({"ok": False, "error": oe.code, "detail": oe.detail}), http
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:120]}), 500
+
+
 @app.route("/learning-log", methods=["POST"])
 @require_api_key
 def learning_log_save():
