@@ -2206,18 +2206,7 @@ paths:
       operationId: getValidation1ipStatus
       x-openai-isConsequential: false
       summary: 1IP prediction logger benchmark readiness — counts and OBSERVE_ONLY flags
-      description: >
-        Returns benchmark readiness for the 1IP pitches-thrown prediction logger.
-        Reports n_logged (total frozen predictions), n_settled (predictions with
-        any attached outcome), n_verified_settled (Savant-confirmed outcomes only),
-        n_hits, benchmark_sample_count (equals n_verified_settled), and
-        ready (true when n_verified_settled >= threshold, default 20).
-
-        OBSERVE_ONLY: this endpoint is read-only evidence collection.
-        model_changes_from_benchmark, probability_changes_from_benchmark, and
-        terminal_label_changes_from_benchmark are always false.
-        Nothing here modifies WOW predictions, probabilities, or model state.
-        Requires X-API-Key.
+      description: "Returns benchmark readiness for the 1IP pitches-thrown prediction logger: n_logged, n_settled, n_verified_settled, n_hits, and ready (true when n_verified_settled >= 20). Read-only, OBSERVE_ONLY -- never modifies WOW predictions or model state. Requires X-API-Key."
       responses:
         "200":
           description: Benchmark readiness status
@@ -2278,18 +2267,7 @@ paths:
       operationId: getValidation1ipExport
       x-openai-isConsequential: false
       summary: Export frozen 1IP predictions for offline benchmark evaluation
-      description: >
-        Returns paginated frozen 1IP predictions, optionally joined with
-        their attached outcomes. Use settled_only=true to retrieve the
-        benchmark-eligible rows (predictions with verified Savant outcomes).
-        Fields per row: prediction_id, log_dedup_key, game_date, pitcher_name,
-        pitcher_mlbam_id, opponent, line, direction, model_probability,
-        model_uncertainty, feature_snapshot_id, model_version, frozen_at,
-        logged_at, and (if settled) actual_pitches, hit, outcome_source,
-        outcome_verified.
-
-        READ-ONLY. Never modifies predictions, probabilities, or model state.
-        Requires X-API-Key.
+      description: "Returns paginated frozen 1IP predictions, optionally joined with outcomes. Use settled_only=true for benchmark-eligible rows. READ-ONLY -- never modifies predictions, probabilities, or model state. Requires X-API-Key."
       parameters:
         - name: limit
           in: query
