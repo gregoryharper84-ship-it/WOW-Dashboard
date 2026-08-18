@@ -479,6 +479,66 @@ class TestBenchmarkReadiness(unittest.TestCase):
                 status = get_status()
         self.assertEqual(status["threshold"], 5)
 
+    def test_t24b_ready_requires_verified_outcomes_only(self):
+        """
+        ready=True MUST NOT be set when n_settled >= threshold but
+        n_verified_settled < threshold.  Unverified pybaseball fallbacks
+        must never satisfy the 20-row benchmark milestone.
+        """
+        from validation.benchmark_readiness import get_status
+        import unittest.mock as _mock
+
+        # n_settled = 25 (above threshold=20), n_verified = 5 (below threshold)
+        # → ready must be False
+        mock_cursor = _mock.MagicMock()
+        mock_cursor.__enter__ = lambda s: s
+        mock_cursor.__exit__ = _mock.MagicMock(return_value=False)
+        mock_cursor.fetchone.side_effect = [
+            (30,),  # n_logged
+            (25,),  # n_settled (>= 20 threshold)
+            (5,),   # n_verified (< 20 threshold)
+            (3,),   # n_hits
+        ]
+        mock_conn = _mock.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("validation.benchmark_readiness._get_conn", return_value=mock_conn):
+            status = get_status()
+
+        self.assertFalse(status["ready"],
+            "ready must be False when n_verified < threshold even if n_settled >= threshold")
+        self.assertEqual(status["n_settled"], 25)
+        self.assertEqual(status["n_verified_settled"], 5)
+        self.assertEqual(status["benchmark_sample_count"], 5,
+            "benchmark_sample_count must equal n_verified_settled, not n_settled")
+
+    def test_t24c_ready_true_when_verified_reaches_threshold(self):
+        """
+        ready=True only when n_verified_settled >= threshold.
+        """
+        from validation.benchmark_readiness import get_status
+        import unittest.mock as _mock
+
+        # n_verified = 20 exactly → ready=True
+        mock_cursor = _mock.MagicMock()
+        mock_cursor.__enter__ = lambda s: s
+        mock_cursor.__exit__ = _mock.MagicMock(return_value=False)
+        mock_cursor.fetchone.side_effect = [
+            (45,),  # n_logged
+            (22,),  # n_settled
+            (20,),  # n_verified (== threshold)
+            (11,),  # n_hits
+        ]
+        mock_conn = _mock.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("validation.benchmark_readiness._get_conn", return_value=mock_conn):
+            status = get_status()
+
+        self.assertTrue(status["ready"],
+            "ready must be True when n_verified_settled >= threshold")
+        self.assertEqual(status["benchmark_sample_count"], 20)
+
 
 # ---------------------------------------------------------------------------
 # T25–T28: Outcome logger

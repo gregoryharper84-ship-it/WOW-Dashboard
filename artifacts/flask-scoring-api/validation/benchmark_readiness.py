@@ -59,7 +59,7 @@ def get_status() -> dict[str, Any]:
       n_hits:                 int   — settled outcomes where hit=True
       n_duplicates_prevented: int   — ON CONFLICT DO NOTHING skips
       n_write_failures:       int   — DB write errors (from wow_validation_prediction_log skip_reason)
-      benchmark_sample_count: int   — same as n_settled (alias for clarity)
+      benchmark_sample_count: int   — n_verified_settled (only Savant-confirmed outcomes count toward the milestone)
       db_available:           bool
       error:                  str | None
     """
@@ -102,7 +102,11 @@ def get_status() -> dict[str, Any]:
             n_hits = cur.fetchone()[0]
 
         return {
-            "ready":                  n_settled >= threshold,
+            # ready is gated on VERIFIED outcomes only (outcome_verified=True,
+            # meaning the pitch count came from Baseball Savant CSV).
+            # Unverified pybaseball fallbacks do not satisfy the milestone —
+            # they must not contaminate the benchmark label set.
+            "ready":                  n_verified >= threshold,
             "threshold":              threshold,
             "n_logged":               n_logged,
             "n_settled":              n_settled,
@@ -110,7 +114,7 @@ def get_status() -> dict[str, Any]:
             "n_hits":                 n_hits,
             "n_duplicates_prevented": 0,   # in-process only; not persisted to DB
             "n_write_failures":       0,   # in-process only; not persisted to DB
-            "benchmark_sample_count": n_settled,
+            "benchmark_sample_count": n_verified,   # verified-only count
             "db_available":           True,
             "error":                  None,
         }

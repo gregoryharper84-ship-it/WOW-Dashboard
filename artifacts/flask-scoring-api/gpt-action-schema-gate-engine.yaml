@@ -2201,6 +2201,194 @@ paths:
       security:
         - ApiKeyAuth: []
 
+  /wow/validation/1ip/status:
+    get:
+      operationId: getValidation1ipStatus
+      x-openai-isConsequential: false
+      summary: 1IP prediction logger benchmark readiness — counts and OBSERVE_ONLY flags
+      description: >
+        Returns benchmark readiness for the 1IP pitches-thrown prediction logger.
+        Reports n_logged (total frozen predictions), n_settled (predictions with
+        any attached outcome), n_verified_settled (Savant-confirmed outcomes only),
+        n_hits, benchmark_sample_count (equals n_verified_settled), and
+        ready (true when n_verified_settled >= threshold, default 20).
+
+        OBSERVE_ONLY: this endpoint is read-only evidence collection.
+        model_changes_from_benchmark, probability_changes_from_benchmark, and
+        terminal_label_changes_from_benchmark are always false.
+        Nothing here modifies WOW predictions, probabilities, or model state.
+        Requires X-API-Key.
+      responses:
+        "200":
+          description: Benchmark readiness status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  validation_status:
+                    type: object
+                    properties:
+                      ready:
+                        type: boolean
+                        description: True when n_verified_settled >= threshold
+                      threshold:
+                        type: integer
+                        description: Minimum verified outcomes required (default 20)
+                      n_logged:
+                        type: integer
+                        description: Total frozen predictions recorded
+                      n_settled:
+                        type: integer
+                        description: Predictions with any attached outcome (verified or not)
+                      n_verified_settled:
+                        type: integer
+                        description: Outcomes confirmed via Baseball Savant CSV
+                      benchmark_sample_count:
+                        type: integer
+                        description: Same as n_verified_settled — the milestone-eligible count
+                      n_hits:
+                        type: integer
+                        description: Settled outcomes where the prediction was correct
+                      validation_mode:
+                        type: string
+                        description: Always OBSERVE_ONLY in current deployment
+                      model_changes_from_benchmark:
+                        type: boolean
+                      probability_changes_from_benchmark:
+                        type: boolean
+                      terminal_label_changes_from_benchmark:
+                        type: boolean
+                      db_available:
+                        type: boolean
+                      error:
+                        type: string
+                        nullable: true
+        "401":
+          description: Missing or invalid X-API-Key
+        "500":
+          description: Unexpected server error
+      security:
+        - ApiKeyAuth: []
+
+  /wow/validation/1ip/export:
+    get:
+      operationId: getValidation1ipExport
+      x-openai-isConsequential: false
+      summary: Export frozen 1IP predictions for offline benchmark evaluation
+      description: >
+        Returns paginated frozen 1IP predictions, optionally joined with
+        their attached outcomes. Use settled_only=true to retrieve the
+        benchmark-eligible rows (predictions with verified Savant outcomes).
+        Fields per row: prediction_id, log_dedup_key, game_date, pitcher_name,
+        pitcher_mlbam_id, opponent, line, direction, model_probability,
+        model_uncertainty, feature_snapshot_id, model_version, frozen_at,
+        logged_at, and (if settled) actual_pitches, hit, outcome_source,
+        outcome_verified.
+
+        READ-ONLY. Never modifies predictions, probabilities, or model state.
+        Requires X-API-Key.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 500
+          description: Max rows to return (capped at 500)
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: Pagination offset
+        - name: settled_only
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: >
+            When true, only return predictions that have an attached outcome
+            (joined from wow_validation_outcome_log)
+      responses:
+        "200":
+          description: Paginated prediction export
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        prediction_id:
+                          type: string
+                        log_dedup_key:
+                          type: string
+                        game_date:
+                          type: string
+                        pitcher_name:
+                          type: string
+                        pitcher_mlbam_id:
+                          type: integer
+                        opponent:
+                          type: string
+                          nullable: true
+                        line:
+                          type: number
+                        direction:
+                          type: string
+                          enum: [LESS, MORE]
+                        model_probability:
+                          type: number
+                          nullable: true
+                        model_uncertainty:
+                          type: number
+                          nullable: true
+                        feature_snapshot_id:
+                          type: string
+                        model_version:
+                          type: string
+                        frozen_at:
+                          type: string
+                        logged_at:
+                          type: string
+                        actual_pitches:
+                          type: integer
+                          nullable: true
+                        hit:
+                          type: boolean
+                          nullable: true
+                        outcome_source:
+                          type: string
+                          nullable: true
+                        outcome_verified:
+                          type: boolean
+                          nullable: true
+                  total_available:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+                  error:
+                    type: string
+                    nullable: true
+        "400":
+          description: Invalid pagination parameters
+        "401":
+          description: Missing or invalid X-API-Key
+        "500":
+          description: Unexpected server error
+      security:
+        - ApiKeyAuth: []
+
 components:
   schemas: {}
   securitySchemes:
