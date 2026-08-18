@@ -1,0 +1,21 @@
+Follow the harness recommendation: implement the next highest-value step as an observational 1IP prediction logger for a real blind benchmark.
+
+Hard scope:
+- Do not alter model calculations, features, gates, labels, confidence ceilings, approval behavior, endpoint request/response semantics, or existing production predictions.
+- Logger must be fail-open for scoring availability: logging failure must never change a score, but must emit observable diagnostics.
+- Reuse the committed validation PredictionRecord schema from ebd5265. Do not create a competing schema.
+
+Requirements:
+1. At the point an MLB 1IP pitch-count row reaches MODEL_QUALIFIED_HOLD with a real model probability, persist exactly one immutable PredictionRecord containing pitcher, MLBAM ID, opponent/event identity, board date/start time, exact line, direction, frozen probability/uncertainty, model version, feature snapshot ID, source provenance, run/request ID, and timestamps.
+2. Enforce deterministic idempotency so retries/workers cannot duplicate a prediction. Store in Postgres with a migration/table dedicated to validation observations.
+3. Never persist synthetic/test rows, rows missing exact identity/line/direction/probability, or post-start predictions. Emit typed skip reasons and counters.
+4. Add protected read-only status/export endpoints or an offline export command for eligible frozen predictions, settlement readiness, duplicates prevented, write failures, and benchmark sample count. Never expose secrets.
+5. Add outcome attachment workflow using validation OutcomeRecord. It must reject outcomes timestamped before prediction freeze, duplicate/conflicting settlements, identity mismatches, or leakage.
+6. Add benchmark-readiness logic: require 15–20 settled eligible games (default threshold 20, configurable only outside holdout evaluation rules). Do not evaluate holdout early.
+7. Add multi-worker-safe tests for idempotency, retries, DB failure fail-open behavior, no scoring mutation, missing fields, started games, synthetic rows, duplicate/conflicting settlements, and export determinism.
+8. Run focused tests, full regression, and wow-verify-patch.
+9. Commit and report SHA, files, schema/migration, test counts, exact observation point, operational runbook, and deployment requirement.
+10. Do not republish automatically. Ask before deployment.
+11. End by answering: "What is the next highest-value step after logger deployment and data collection begins?" Do not recommend new modeling features before real benchmark evidence.
+
+This is observability/data collection only.
