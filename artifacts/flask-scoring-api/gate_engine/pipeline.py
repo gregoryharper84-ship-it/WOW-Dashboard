@@ -1091,7 +1091,7 @@ def run_pipeline(
                 if (_1ip_ceiling == _1ip_eff.CEILING_HOLD
                         and _current_label not in (
                             None,
-                            PropLabel.REJECT_NO_PLAY.value,
+                            PropLabel.NO_PLAY.value,
                             PropLabel.REJECT_DATA_QUALITY.value,
                             PropLabel.DATA_CONTRACT_FAIL.value,
                         )):
@@ -1104,7 +1104,7 @@ def run_pipeline(
                 elif (_1ip_ceiling == _1ip_eff.CEILING_WATCH
                         and _current_label not in (
                             None,
-                            PropLabel.REJECT_NO_PLAY.value,
+                            PropLabel.NO_PLAY.value,
                             PropLabel.REJECT_DATA_QUALITY.value,
                             PropLabel.DATA_CONTRACT_FAIL.value,
                             PropLabel.MODEL_QUALIFIED_HOLD.value,
@@ -1372,7 +1372,7 @@ def run_pipeline(
         if _1ip_test_sk == "1IP_PITCHES_THROWN":
             _1ip_test_cur = row.get("terminal_label")
             _1IP_TERMINAL_REJECTS = frozenset({
-                PropLabel.REJECT_NO_PLAY.value,
+                PropLabel.NO_PLAY.value,
                 PropLabel.REJECT_DATA_QUALITY.value,
                 PropLabel.DATA_CONTRACT_FAIL.value,
             })
