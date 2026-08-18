@@ -423,6 +423,12 @@ from gate_engine.moneyline.market_snapshot import (
 
 
 def _raw_odds_event(n_books=3, corrupt=False):
+    from datetime import datetime, timezone
+    # Use a timestamp ~30 minutes ago so the freshness check always passes
+    # regardless of when the test suite runs.  The hardcoded 2026-08-17 date
+    # became stale after that calendar day, causing books_fresh=0 and
+    # cascading MARKET_PIPELINE_CONTRACT_BREACH across all snapshot tests.
+    fresh_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     outcomes = [
         {"name": "Home Team", "price": -150},
         {"name": "Away Team", "price": +130},
@@ -437,7 +443,7 @@ def _raw_odds_event(n_books=3, corrupt=False):
         "bookmakers": [
             {"key": f"book{i}", "markets": [{
                 "key": "h2h",
-                "last_update": "2026-08-17T12:00:00Z",
+                "last_update": fresh_ts,
                 "outcomes": [dict(o) for o in outcomes],
             }]}
             for i in range(n_books)
