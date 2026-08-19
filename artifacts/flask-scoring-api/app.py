@@ -139,14 +139,12 @@ _bt("imported psycopg2")
 app = Flask(__name__)
 _APP_START_TIME = time.time()
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
-try:
-    from gate_engine.daily_run_lifecycle import start_manifest_reaper
-    start_manifest_reaper()
-except Exception as _daily_reaper_exc:
-    app.logger.warning(
-        "daily manifest reaper did not start: %s",
-        _daily_reaper_exc,
-    )
+from gate_engine.daily_run_lifecycle import (
+    ensure_manifest_ready,
+    start_manifest_reaper,
+)
+ensure_manifest_ready()
+start_manifest_reaper()
 _bt("flask app created — registering routes")
 
 BUILD_ID = "wow-repair-2026-08-10-acquisition-routing-identity"

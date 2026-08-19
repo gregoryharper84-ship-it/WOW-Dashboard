@@ -46,10 +46,16 @@ def _safe_terminalize(**kwargs: Any) -> None:
 
 def reap_expired_runs_once() -> int:
     """Close deadline-expired headers after a worker or server restart."""
-    from storage.daily_manifest import ensure_tables, reap_expired_runs
+    from storage.daily_manifest import reap_expired_runs
+    ensure_manifest_ready()
+    return reap_expired_runs(now=_now())
+
+
+def ensure_manifest_ready() -> None:
+    """Create the manifest schema before the HTTP service begins accepting runs."""
+    from storage.daily_manifest import ensure_tables
     if not ensure_tables():
         raise RuntimeError("DAILY_MANIFEST_UNAVAILABLE")
-    return reap_expired_runs(now=_now())
 
 
 def _reaper_loop() -> None:

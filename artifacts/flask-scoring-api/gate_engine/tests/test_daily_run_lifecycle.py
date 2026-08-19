@@ -203,6 +203,22 @@ class TestDailyRunLifecycle(unittest.TestCase):
         ensure.assert_called_once()
         self.assertIn("now", reap.call_args.kwargs)
 
+    def test_manifest_readiness_bootstraps_before_serving(self):
+        with patch(
+            "storage.daily_manifest.ensure_tables",
+            return_value=True,
+        ) as ensure:
+            lifecycle.ensure_manifest_ready()
+        ensure.assert_called_once()
+
+    def test_manifest_readiness_fails_closed_when_bootstrap_fails(self):
+        with patch(
+            "storage.daily_manifest.ensure_tables",
+            return_value=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "DAILY_MANIFEST_UNAVAILABLE"):
+                lifecycle.ensure_manifest_ready()
+
 
 class TestManifestTimeoutsAndReconciliation(unittest.TestCase):
     def test_db_connection_has_connect_statement_and_lock_timeouts(self):
