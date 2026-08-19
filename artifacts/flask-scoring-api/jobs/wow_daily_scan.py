@@ -505,7 +505,8 @@ def assign_mutex_groups(cards):
 # Main scan function
 # -------------------------------------------------------------------
 
-def run_scan(sports=None, environment="live", limit_per_sport=50):
+def run_scan(sports=None, environment="live", limit_per_sport=50,
+             runtime_provenance=None):
     """
     Run the WOW daily scan.
 
@@ -513,6 +514,20 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
       requested_sports / scanned_sports / missing_sports / scan_valid
     """
     requested_sports = list(sports) if sports is not None else list(ALL_SPORTS)
+
+    # WOW-PATCH-2026-08-19 — runtime provenance (fail-closed, downgrade-only).
+    # The one attested run record is stamped onto every candidate row; when
+    # the run is not production-backend-verified, playable classifications
+    # are capped to Watch at scoring time so persisted rows (and therefore
+    # /scan-results/summary for async runs) can never expose playable
+    # buckets from an unverified run.
+    _prov_blocker = None
+    if runtime_provenance is not None:
+        try:
+            from gate_engine.runtime_provenance import provenance_blocker
+            _prov_blocker = provenance_blocker(runtime_provenance)
+        except Exception:
+            _prov_blocker = "RUNTIME_PROVENANCE:BACKEND_NOT_VERIFIED:UNSPECIFIED"
 
     run_date = date.today().isoformat()
     run_at   = datetime.now(timezone.utc).isoformat()
@@ -777,7 +792,23 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
             ).startswith("score="):
                 final_approval_blocker = f"REJECT_NO_EDGE: {edge_math} (no verified positive edge vs. no-vig consensus)"
 
+            # WOW-PATCH-2026-08-19 — runtime provenance cap (downgrade-only):
+            # an unverified run can never persist a playable classification.
+            runtime_provenance_hold = False
+            if _prov_blocker is not None and classification in (
+                "Market Verified Approved", "Final Approved — Internal Projection",
+                "Model Qualified — PrizePicks",
+            ):
+                final_approval_blocker = (
+                    (final_approval_blocker + "; " if final_approval_blocker else "")
+                    + _prov_blocker
+                )
+                classification = "Watch"
+                runtime_provenance_hold = True
+
             result_row = {
+                "runtime_provenance":  runtime_provenance,
+                "runtime_provenance_hold": runtime_provenance_hold,
                 "run_date":            run_date,
                 "sport":               sport,
                 "player":              player,
@@ -986,6 +1017,7 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
     return {
         "run_date":  run_date,
         "run_at":    run_at,
+        "runtime_provenance":       runtime_provenance,
         "run_status":               run_status,
         "failed_modules":           failed_modules,
         "requested_sports":         requested_sports,

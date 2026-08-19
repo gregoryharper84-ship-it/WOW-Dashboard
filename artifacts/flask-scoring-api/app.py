@@ -30,7 +30,7 @@ from datetime import datetime, timezone, timedelta
 from functools import wraps
 _bt("imported stdlib")
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, g
 from flask_cors import CORS
 _bt("imported flask + cors")
 
@@ -474,10 +474,20 @@ def require_api_key(f):
                     "key_present": False,
                 },
             }), 401
-        _key_valid = (
-            (expected_key and secrets_equal(provided_key, expected_key))
-            or (alt_key and secrets_equal(provided_key, alt_key))
-        )
+        # WOW-PATCH-2026-08-19 — record WHICH credential authenticated, as a
+        # request-local principal.  GPT_ACTION_SECRET is the designated
+        # WOW_BETTING_ENGINE Custom-GPT Action credential; SCORING_API_KEY is
+        # the general scoring key.  Runtime provenance treats only the
+        # GPT_ACTION principal as the preferred host — a general API-key
+        # caller is a fallback/unverified host.
+        _auth_principal = None
+        if expected_key and secrets_equal(provided_key, expected_key):
+            _auth_principal = "SCORING_API"
+        elif alt_key and secrets_equal(provided_key, alt_key):
+            _auth_principal = "GPT_ACTION"
+        _key_valid = _auth_principal is not None
+        if _key_valid:
+            g.wow_auth_principal = _auth_principal
         if not _key_valid:
             return jsonify({
                 "error": "Invalid API key",
@@ -1500,6 +1510,35 @@ def wow_daily_scan():
     async_mode    = bool(data.get("async", False))   # default False — return results directly
     include_exec  = data.get("include_execution_report", True)
 
+    # WOW-PATCH-2026-08-19 — runtime provenance (fail-closed, downgrade-only).
+    # Server-authoritative: required capabilities come from the route
+    # registry, evidence from in-process probes, and host identity from the
+    # authenticated action credential.  Caller context can only downgrade.
+    from gate_engine.runtime_provenance import (
+        build_route_provenance, provenance_blocker,
+    )
+    runtime_provenance = build_route_provenance(
+        "wow_daily_scan",
+        action_principal=g.get("wow_auth_principal"),
+        caller_context=data.get("runtime_context") or data,
+    )
+    _prov_blocker = provenance_blocker(runtime_provenance)
+
+    # Async runs cannot carry provenance enforcement through the polled
+    # summary endpoint — fail closed rather than expose unverified buckets.
+    if async_mode and _prov_blocker is not None:
+        return jsonify({
+            "ok": False,
+            "status": "rejected",
+            "error": "ASYNC_NOT_PERMITTED_FOR_UNVERIFIED_RUN",
+            "detail": (
+                "This run is not production-backend-verified "
+                f"({_prov_blocker}). Async mode would expose unenforced "
+                "buckets via /scan-results/summary — run synchronously."
+            ),
+            "runtime_provenance": runtime_provenance,
+        }), 409
+
     try:
         from services.status import get_injuries  # noqa: F401 — validate imports work
     except Exception as e:
@@ -1511,7 +1550,9 @@ def wow_daily_scan():
     if async_mode:
         def _run():
             try:
-                run_scan(sports=sports_param, environment=environment, limit_per_sport=limit)
+                run_scan(sports=sports_param, environment=environment,
+                         limit_per_sport=limit,
+                         runtime_provenance=runtime_provenance)
             except Exception as ex:
                 print(f"[wow_daily_scan async] error: {ex}")
         t = threading.Thread(target=_run, daemon=True)
@@ -1522,13 +1563,16 @@ def wow_daily_scan():
             "message": "Scan running in background. Poll /scan-results/summary for results.",
             "sports":  sports_param,
             "environment": environment,
+            "runtime_provenance": runtime_provenance,
         })
 
     # -----------------------------------------------------------------------
     # Synchronous mode — run scan, then return compact summary from DB
     # -----------------------------------------------------------------------
     try:
-        scan_result = run_scan(sports=sports_param, environment=environment, limit_per_sport=limit)
+        scan_result = run_scan(sports=sports_param, environment=environment,
+                               limit_per_sport=limit,
+                               runtime_provenance=runtime_provenance)
     except Exception as e:
         return jsonify({"ok": False, "status": "error", "error": str(e)}), 500
 
@@ -1621,6 +1665,31 @@ def wow_daily_scan():
 
         sports_scanned_db = [s for s in (flags.get("sports") or []) if s]
         execution_notes = list(scan_result.get("execution_notes", []))
+
+        # WOW-PATCH-2026-08-19 — provenance ceiling: a fallback or
+        # missing-backend run can never present playable buckets as
+        # production-verified.  Downgrade-only (mirrors DEGRADED_ENGINE_RUN):
+        # playable cards move to watch with an explicit blocker.
+        if _prov_blocker is not None:
+            for _bname in ("market_verified", "final_approved_internal", "model_qualified"):
+                for _card in grouped[_bname]:
+                    _held = dict(_card)
+                    _held["final_approval_blocker"] = _prov_blocker
+                    _held["runtime_provenance_hold"] = True
+                    _held["postscan_invariant_downgraded_from"] = _bname
+                    grouped["watch"].append(_held)
+                grouped[_bname] = []
+            counts["watch"] = counts.get("watch", 0) + counts.get("market_verified", 0) \
+                + counts.get("final_approved_internal", 0) + counts.get("model_qualified", 0)
+            counts["market_verified"] = 0
+            counts["final_approved_internal"] = 0
+            counts["model_qualified"] = 0
+            counts["total_final_approved"] = 0
+            counts["playable_count"] = 0
+            execution_notes.append(
+                f"RUNTIME PROVENANCE HOLD — {_prov_blocker}: playable buckets "
+                f"held to watch; run is not production-backend-verified"
+            )
         if not execution_notes:
             if sports_scanned_db:
                 execution_notes.append(f"Sports scanned: {', '.join(sorted(sports_scanned_db))}")
@@ -1637,6 +1706,7 @@ def wow_daily_scan():
             "requested_sports":         requested_sports,
             "scanned_sports":           scanned_sports,
             "missing_sports":           missing_sports,
+            "runtime_provenance":       runtime_provenance,
             "source_access_status":     source_access_status,
             "execution_report":         execution_report,
             "counts":                   counts,
@@ -34097,6 +34167,7 @@ def skills_run():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route('/wow/v16/run', methods=['POST'])
+@require_api_key
 def wow_v16_run():
     """
     POST /wow/v16/run
@@ -34143,6 +34214,17 @@ def wow_v16_run():
         context = request.get_json(force=True) or {}
         orch = SkillOrchestrator()
         result = orch.run(context)
+        # WOW-PATCH-2026-08-19 — runtime provenance (fail-closed, downgrade-only).
+        # Server-authoritative (route registry + in-process probes +
+        # authenticated action identity); caller context can only downgrade.
+        # verify_v16_result() enforces the ceiling for fallback / missing-
+        # backend runs.
+        from gate_engine.runtime_provenance import build_route_provenance
+        result['runtime_provenance'] = build_route_provenance(
+            'wow_v16_run',
+            action_principal=g.get('wow_auth_principal'),
+            caller_context=context.get('runtime_context') or context,
+        )
         # WOW-PATCH-FMCG-v1.0 — Full Model Contract Gatekeeper (v16 path)
         # Verify that any final_label == FINAL_APPROVED carries a valid Gatekeeper
         # PASS from a skill that ran the full-model contract. Fail-closed:
@@ -34942,6 +35024,15 @@ def wow_cc_run():
                 "detail": "'candidates' must be a list",
             }), 400
 
+        # WOW-PATCH-2026-08-19 — server-authoritative runtime provenance
+        # propagated onto every CC envelope before gatekeeper verification.
+        from gate_engine.runtime_provenance import build_route_provenance
+        _cc_prov = build_route_provenance(
+            "wow_cc_run",
+            action_principal=g.get("wow_auth_principal"),
+            caller_context=body.get("runtime_context"),
+        )
+
         cc = _cc_module()
         result = cc.run_command_center(
             raw_candidates=candidates,
@@ -34950,8 +35041,9 @@ def wow_cc_run():
             run_id=run_id,
             target_date=target_date,
             freshness_window_minutes=freshness_window,
+            runtime_provenance=_cc_prov,
         )
-        return jsonify({"ok": True, **result}), 200
+        return jsonify({"ok": True, "runtime_provenance": _cc_prov, **result}), 200
 
     except Exception as exc:
         app.logger.exception("CC run error")

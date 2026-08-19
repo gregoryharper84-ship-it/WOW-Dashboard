@@ -652,6 +652,42 @@ def _check_specialist_failure_path(
     return _gr(GATE_PASS, evidence), []
 
 
+# ── v1.1 gate 21 — runtime provenance (WOW-PATCH-2026-08-19) ─────────────────
+
+def _check_runtime_provenance(
+    row: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """
+    Downgrade-only runtime provenance check.
+
+    Reads a run-level provenance record attached at the run entry point
+    (row["runtime_provenance"]).  Rows without a record are SKIP — this gate
+    never invents provenance and never upgrades anything.  A record marked
+    BACKEND_NOT_VERIFIED / fallback holds the row so a fallback or
+    missing-backend run can never reach FINAL_APPROVED.
+    """
+    prov = row.get("runtime_provenance")
+    if not isinstance(prov, dict):
+        return _gr(GATE_SKIP, {"reason": "runtime_provenance_absent"}), []
+
+    from gate_engine.runtime_provenance import provenance_blocker
+    blocker = provenance_blocker(prov)
+    evidence = {
+        "actual_host":                  prov.get("actual_host"),
+        "backend_verification_status":  prov.get("backend_verification_status"),
+        "model_run_status":             prov.get("model_run_status"),
+        "fallback_reason":              prov.get("fallback_reason"),
+        "required_capabilities_unavailable":
+            prov.get("required_capabilities_unavailable"),
+        "production_probability_verified":
+            prov.get("production_probability_verified"),
+    }
+    if blocker is None:
+        return _gr(GATE_PASS, evidence), []
+    b = f"FMCG:{blocker}"
+    return _gr(GATE_HOLD, evidence, b), [b]
+
+
 # ── v1.1 gate 15 — calibration health precheck (Layer 0.5 gate result) ──────
 
 def _check_calibration_health_gate(
@@ -1099,6 +1135,7 @@ def evaluate(
     src_result          = src_ts_result  = prob_ledger_result = None
     bidi_result         = de_result      = snap_result     = None
     native_label_result = spec_result    = None
+    provenance_result   = None
 
     controlling_specialist:    str | None = None
     active_qualification_rule: str | None = None
@@ -1181,6 +1218,14 @@ def evaluate(
         spec_result, blks = _check_specialist_failure_path(row, gates)
         blockers.extend(blks)
 
+        # ── 21. Runtime provenance (WOW-PATCH-2026-08-19) ─────────────────────
+        # Downgrade-only: a run-level provenance record marked
+        # BACKEND_NOT_VERIFIED / fallback holds the row.  Rows without a
+        # provenance record are unaffected (contract is attached at the
+        # run entry points, not invented here).
+        provenance_result, blks = _check_runtime_provenance(row)
+        blockers.extend(blks)
+
     # ── Determine full_model_status ─────────────────────────────────────────
     if is_invalidated:
         full_model_status = STATUS_INVALIDATED
@@ -1195,7 +1240,7 @@ def evaluate(
         cal_prob_result, lb_result, no_vig_result, push_result,
         contra_result, fresh_result, src_result, src_ts_result,
         prob_ledger_result, bidi_result, de_result, snap_result,
-        native_label_result, spec_result,
+        native_label_result, spec_result, provenance_result,
     ] if g is not None]
 
     if is_invalidated or gate_incomplete:
@@ -1299,6 +1344,7 @@ def evaluate(
             "pregame_snapshot":            snap_result,
             "terminal_label_native":       native_label_result,
             "specialist_failure_path":     spec_result,
+            "runtime_provenance":          provenance_result,
         },
         # Upstream summaries (read-only from specialist outputs)
         "probability_summary":         probability_summary,
@@ -1422,6 +1468,19 @@ def verify_cc_envelope(envelope: dict[str, Any]) -> bool:
     engine_result = envelope.get("engine_result") or {}
     gk = engine_result.get("gatekeeper") or engine_result.get("gatekeeper_result")
 
+    # WOW-PATCH-2026-08-19 — runtime provenance (downgrade-only): an envelope
+    # carrying an unverified fallback/missing-backend provenance record cannot
+    # retain FINAL_APPROVED even with an otherwise valid gatekeeper pass.
+    _prov = envelope.get("runtime_provenance") or engine_result.get("runtime_provenance")
+    if isinstance(_prov, dict):
+        from gate_engine.runtime_provenance import provenance_blocker as _pb
+        _pblk = _pb(_prov)
+        if _pblk is not None:
+            new_label = canonical_ceiling_resolve(MODEL_QUALIFIED_HOLD, engine_label)
+            envelope["engine_label"] = new_label
+            envelope.setdefault("cc_blockers", []).append(f"FMCG:CC:{_pblk}")
+            return False
+
     if (gk
             and gk.get("qualification_result") == QUAL_PASS
             and gk.get("full_model_status") == STATUS_COMPLETE
@@ -1445,6 +1504,24 @@ def verify_v16_result(result: dict[str, Any]) -> None:
     final = result.get("final_label") or ""
     if final != FINAL_APPROVED:
         return
+
+    # WOW-PATCH-2026-08-19 — runtime provenance (downgrade-only): a v16 result
+    # carrying an unverified fallback/missing-backend provenance record cannot
+    # retain FINAL_APPROVED regardless of skill-level gatekeeper passes.
+    _prov = result.get("runtime_provenance")
+    if isinstance(_prov, dict):
+        from gate_engine.runtime_provenance import provenance_blocker as _pb
+        _pblk = _pb(_prov)
+        if _pblk is not None:
+            result["final_label"] = canonical_ceiling_resolve(MODEL_QUALIFIED_HOLD, final)
+            result.setdefault("blockers", []).append(f"FMCG:V16:{_pblk}")
+            result["gatekeeper_enforcement"] = {
+                "gatekeeper_version": GATEKEEPER_VERSION,
+                "action":             "DOWNGRADE_FINAL_APPROVED",
+                "reason":             "runtime_provenance_backend_not_verified",
+                "can_execute":        CAN_EXECUTE,
+            }
+            return
 
     skill_results = result.get("skill_results") or []
     has_pass = any(

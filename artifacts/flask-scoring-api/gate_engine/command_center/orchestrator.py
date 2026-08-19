@@ -110,6 +110,7 @@ def run_command_center(
     run_id:          str = "",
     target_date:     str = "",
     freshness_window_minutes: int = 30,
+    runtime_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Full orchestration pipeline (Phase A + B in one call).
@@ -201,6 +202,12 @@ def run_command_center(
     # MODEL_QUALIFIED_HOLD before monotonic ceiling enforcement runs.
     # can_execute = False is enforced unconditionally by the gatekeeper module.
     from gate_engine import full_model_gatekeeper as _fmcg
+    # WOW-PATCH-2026-08-19 — propagate the one attested run-level provenance
+    # record onto every envelope BEFORE gatekeeper verification, so an
+    # unverified fallback run can never retain FINAL_APPROVED at the CC layer.
+    if runtime_provenance is not None:
+        for _env in all_envs:
+            _env.setdefault("runtime_provenance", runtime_provenance)
     for _env in all_envs:
         _fmcg.verify_cc_envelope(_env)
 
