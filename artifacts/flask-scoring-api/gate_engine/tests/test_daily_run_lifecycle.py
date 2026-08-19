@@ -103,6 +103,17 @@ class TestDailyRunLifecycle(unittest.TestCase):
         self.assertFalse(result["can_execute"])
         self.assertEqual(_FakeProcess.started_count, 1)
 
+    def test_identity_is_required_before_manifest_work(self):
+        with self.assertRaisesRegex(ValueError, "idempotency_key or run_id"):
+            lifecycle.start_run(
+                run_id=None,
+                idempotency_key=None,
+                sports=["NBA"],
+                environment="test",
+                runtime_provenance=None,
+                session_id=None,
+            )
+
     def test_worker_is_not_run_in_caller_thread(self):
         with patch.object(lifecycle, "_worker", side_effect=AssertionError("inline worker")):
             result = self._start()
@@ -174,6 +185,14 @@ class TestDailyRunLifecycle(unittest.TestCase):
             "daily_run_lifecycle.worker",
         )
 
+    def test_restart_reaper_delegates_expired_run_terminalization(self):
+        with patch(
+            "storage.daily_manifest.reap_expired_runs",
+            return_value=2,
+        ) as reap:
+            self.assertEqual(lifecycle.reap_expired_runs_once(), 2)
+        self.assertIn("now", reap.call_args.kwargs)
+
 
 class TestManifestTimeoutsAndReconciliation(unittest.TestCase):
     def test_db_connection_has_connect_statement_and_lock_timeouts(self):
@@ -188,6 +207,19 @@ class TestManifestTimeoutsAndReconciliation(unittest.TestCase):
         self.assertEqual(kwargs["connect_timeout"], 5)
         self.assertIn("statement_timeout=30000", kwargs["options"])
         self.assertIn("lock_timeout=5000", kwargs["options"])
+
+    def test_acknowledgement_db_profile_is_short_and_bounded(self):
+        from storage import daily_manifest
+        connection = MagicMock()
+        with (
+            patch.dict(os.environ, {"DATABASE_URL": "postgres://test"}, clear=False),
+            patch.object(daily_manifest.psycopg2, "connect", return_value=connection) as connect,
+        ):
+            daily_manifest._get_conn(acknowledgement=True)
+        kwargs = connect.call_args.kwargs
+        self.assertEqual(kwargs["connect_timeout"], 2)
+        self.assertIn("statement_timeout=3000", kwargs["options"])
+        self.assertIn("lock_timeout=1000", kwargs["options"])
 
     def test_schema_bootstrap_is_cached_and_advisory_locked(self):
         from storage import daily_manifest

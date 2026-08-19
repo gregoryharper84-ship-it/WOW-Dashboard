@@ -139,6 +139,14 @@ _bt("imported psycopg2")
 app = Flask(__name__)
 _APP_START_TIME = time.time()
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
+try:
+    from gate_engine.daily_run_lifecycle import start_manifest_reaper
+    start_manifest_reaper()
+except Exception as _daily_reaper_exc:
+    app.logger.warning(
+        "daily manifest reaper did not start: %s",
+        _daily_reaper_exc,
+    )
 _bt("flask app created — registering routes")
 
 BUILD_ID = "wow-repair-2026-08-10-acquisition-routing-identity"
@@ -1821,6 +1829,11 @@ def wow_daily_run():
         return jsonify({"ok": False, "error": "idempotency_key must be a string"}), 400
     if isinstance(idempotency_key, str) and len(idempotency_key) > 255:
         return jsonify({"ok": False, "error": "idempotency_key exceeds 255 characters"}), 400
+    if not requested_run_id and not idempotency_key:
+        return jsonify({
+            "ok": False,
+            "error": "idempotency_key or run_id is required",
+        }), 400
 
     # Server-authoritative runtime provenance (fail-closed, downgrade-only)
     from gate_engine.runtime_provenance import (

@@ -34,6 +34,9 @@ MODULE_ID = "WOW-DAILY-MANIFEST-v1.0"
 _DB_CONNECT_TIMEOUT_SECONDS = 5
 _DB_STATEMENT_TIMEOUT_MS = 30_000
 _DB_LOCK_TIMEOUT_MS = 5_000
+_ACK_CONNECT_TIMEOUT_SECONDS = 2
+_ACK_STATEMENT_TIMEOUT_MS = 3_000
+_ACK_LOCK_TIMEOUT_MS = 1_000
 _SCHEMA_ADVISORY_LOCK = 441_721_908
 _schema_ready = False
 _schema_lock = threading.Lock()
@@ -42,16 +45,28 @@ _schema_lock = threading.Lock()
 # DB connection helper (mirrors storage/results.py pattern)
 # ---------------------------------------------------------------------------
 
-def _get_conn():
+def _get_conn(*, acknowledgement: bool = False):
     url = os.environ.get("DATABASE_URL", "")
     if not url:
         raise RuntimeError("DATABASE_URL not set")
+    connect_timeout = (
+        _ACK_CONNECT_TIMEOUT_SECONDS
+        if acknowledgement else _DB_CONNECT_TIMEOUT_SECONDS
+    )
+    statement_timeout = (
+        _ACK_STATEMENT_TIMEOUT_MS
+        if acknowledgement else _DB_STATEMENT_TIMEOUT_MS
+    )
+    lock_timeout = (
+        _ACK_LOCK_TIMEOUT_MS
+        if acknowledgement else _DB_LOCK_TIMEOUT_MS
+    )
     return psycopg2.connect(
         url,
-        connect_timeout=_DB_CONNECT_TIMEOUT_SECONDS,
+        connect_timeout=connect_timeout,
         options=(
-            f"-c statement_timeout={_DB_STATEMENT_TIMEOUT_MS} "
-            f"-c lock_timeout={_DB_LOCK_TIMEOUT_MS}"
+            f"-c statement_timeout={statement_timeout} "
+            f"-c lock_timeout={lock_timeout}"
         ),
     )
 
@@ -241,7 +256,7 @@ def create_or_get_run(
     runtime_provenance: dict | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     """Atomically create or reuse one canonical run identity."""
-    conn = _get_conn()
+    conn = _get_conn(acknowledgement=True)
     try:
         with conn:
             with conn.cursor() as cur:
@@ -297,7 +312,7 @@ def create_or_get_run(
 
 def claim_run(run_id: str) -> bool:
     """Claim an accepted run exactly once across workers."""
-    conn = _get_conn()
+    conn = _get_conn(acknowledgement=True)
     try:
         with conn:
             with conn.cursor() as cur:

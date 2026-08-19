@@ -661,7 +661,7 @@ def run_daily_orchestration(
                 for card in scan_result.get(bucket_name, []):
                     _raise_if_deadline_exceeded(deadline_at)
                     sel_id = card.get("canonical_selection_id", "")
-                    save_run_row(
+                    if not save_run_row(
                         run_id=run_id,
                         canonical_selection_id=sel_id,
                         market_version_id=card.get("market_version_id"),
@@ -683,7 +683,10 @@ def run_daily_orchestration(
                             else "EXCESS"
                         ),
                         full_row=card,
-                    )
+                    ):
+                        raise RuntimeError(
+                            f"MANIFEST_ROW_PERSIST_FAILED:{sel_id}"
+                        )
             _raise_if_deadline_exceeded(deadline_at)
             if not finalize_run(
                 run_id=run_id,

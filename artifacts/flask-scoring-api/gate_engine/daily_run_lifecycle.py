@@ -18,9 +18,12 @@ logger = logging.getLogger(__name__)
 
 can_execute = False
 DEFAULT_DEADLINE_SECONDS = 20 * 60
+REAPER_INTERVAL_SECONDS = 30
 
 _processes: dict[str, multiprocessing.Process] = {}
 _processes_lock = threading.Lock()
+_reaper_started = False
+_reaper_lock = threading.Lock()
 
 
 def _now() -> str:
@@ -37,6 +40,35 @@ def _safe_terminalize(**kwargs: Any) -> None:
         terminalize_run(**kwargs)
     except Exception:
         logger.exception("daily lifecycle could not terminalize run=%s", kwargs.get("run_id"))
+
+
+def reap_expired_runs_once() -> int:
+    """Close deadline-expired headers after a worker or server restart."""
+    from storage.daily_manifest import reap_expired_runs
+    return reap_expired_runs(now=_now())
+
+
+def _reaper_loop() -> None:
+    while True:
+        try:
+            reap_expired_runs_once()
+        except Exception:
+            logger.exception("daily lifecycle reaper failed")
+        time.sleep(REAPER_INTERVAL_SECONDS)
+
+
+def start_manifest_reaper() -> None:
+    """Start one restart-recovery reaper per serving process."""
+    global _reaper_started
+    with _reaper_lock:
+        if _reaper_started:
+            return
+        threading.Thread(
+            target=_reaper_loop,
+            daemon=True,
+            name="wow-daily-manifest-reaper",
+        ).start()
+        _reaper_started = True
 
 
 def _worker(
@@ -120,12 +152,13 @@ def start_run(
         claim_run,
         create_or_get_run,
         ensure_tables,
-        get_run,
         reap_expired_runs,
     )
 
     if deadline_seconds <= 0:
         raise ValueError("deadline_seconds must be positive")
+    if not run_id and not idempotency_key:
+        raise ValueError("idempotency_key or run_id is required")
 
     if not ensure_tables():
         raise RuntimeError("DAILY_MANIFEST_UNAVAILABLE")
@@ -194,7 +227,10 @@ def start_run(
             name=f"wow-daily-watch-{canonical_run_id[:8]}",
         ).start()
 
-    current = get_run(canonical_run_id) or run
+    current = dict(run)
+    if claimed:
+        current["run_status"] = "IN_PROGRESS"
+        current["progress_stage"] = "STARTING"
     return {
         "ok": True,
         "accepted": True,
