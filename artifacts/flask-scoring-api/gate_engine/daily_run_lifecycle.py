@@ -17,7 +17,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 can_execute = False
-DEFAULT_DEADLINE_SECONDS = 20 * 60
+# A full live board previously reconciled 1,929 rows in about 25 minutes.
+# Keep a hard bound while leaving enough time for that legitimate workload.
+DEFAULT_DEADLINE_SECONDS = 45 * 60
 REAPER_INTERVAL_SECONDS = 30
 
 _processes: dict[str, multiprocessing.Process] = {}
