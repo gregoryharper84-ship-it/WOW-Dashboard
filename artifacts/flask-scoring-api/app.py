@@ -1730,6 +1730,130 @@ def wow_daily_scan():
         }), 500
 
 
+@app.route("/wow/daily/run", methods=["POST"])
+@require_api_key
+def wow_daily_run():
+    """
+    POST /wow/daily/run — Canonical WOW Daily orchestration endpoint.
+
+    WOW-PATCH-2026-08-19-DAILY-CANONICAL-v1.0 (Task #277)
+
+    This is the authoritative Custom GPT entry point for daily discovery and
+    scoring.  Replit owns the full orchestration pipeline; the caller submits
+    only high-level intent.
+
+    Accepted JSON params
+    --------------------
+    sports          : list[str] | null  — sports to include (default: all)
+    environment     : str               — "live" | "test" (default: "live")
+    session_id      : str | null        — caller session for exposure idempotency
+    runtime_context : dict | null       — forwarded to provenance builder
+
+    Response (200)
+    --------------
+    {
+      run_id          : str   — immutable UUID for this run
+      run_date        : str   — ISO date
+      run_status      : str   — COMPLETE | DEGRADED | RECONCILIATION_WARNING
+      counts          : {...} — bucket counts including total_discovered
+      playable_card   : [...]  — compact list of approved/qualified picks
+      reconciliation  : {...} — exact board reconciliation proof
+      source_union    : {...} — per-sport source availability
+      missing_sports  : [...]
+      failed_modules  : [...]
+      runtime_provenance : {...}
+    }
+
+    Error responses
+    ---------------
+    400  — missing/invalid params
+    409  — provenance blocker (unverified run cannot produce playable output)
+    500  — orchestration failed
+    """
+    try:
+        from gate_engine.daily_orchestrator import run_daily_orchestration
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Orchestrator import failed: {exc}"}), 500
+
+    data = request.get_json(silent=True) or {}
+    sports_param  = data.get("sports") or None
+    environment   = data.get("environment", "live")
+    session_id    = data.get("session_id") or None
+
+    # Server-authoritative runtime provenance (fail-closed, downgrade-only)
+    from gate_engine.runtime_provenance import (
+        build_route_provenance, provenance_blocker,
+    )
+    runtime_provenance = build_route_provenance(
+        "wow_daily_canonical",
+        action_principal=g.get("wow_auth_principal"),
+        caller_context=data.get("runtime_context") or data,
+    )
+    _prov_blocker = provenance_blocker(runtime_provenance)
+
+    try:
+        result = run_daily_orchestration(
+            sports=sports_param,
+            environment=environment,
+            runtime_provenance=runtime_provenance,
+            session_id=session_id,
+            persist=True,
+        )
+    except Exception as exc:
+        return jsonify({
+            "ok":    False,
+            "status": "error",
+            "error":  str(exc),
+            "runtime_provenance": runtime_provenance,
+        }), 500
+
+    # Build compact response — exclude internal _buckets key from GPT output
+    compact = {k: v for k, v in result.items() if k != "_buckets"}
+    return jsonify(compact)
+
+
+@app.route("/wow/daily/manifest/<run_id>", methods=["GET"])
+@require_api_key
+def wow_daily_manifest(run_id):
+    """
+    GET /wow/daily/manifest/<run_id> — Immutable manifest for a completed run.
+
+    Returns the full run header and all evaluated selection rows.
+    """
+    try:
+        from storage.daily_manifest import get_run, get_run_rows
+        run = get_run(run_id)
+        if run is None:
+            return jsonify({"ok": False, "error": f"Run {run_id} not found"}), 404
+        rows = get_run_rows(run_id, limit=500)
+        return jsonify({
+            "ok":   True,
+            "run":  run,
+            "rows": rows,
+            "row_count": len(rows),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/daily/runs", methods=["GET"])
+@require_api_key
+def wow_daily_runs_list():
+    """
+    GET /wow/daily/runs — List recent canonical daily runs.
+
+    Query params: date (ISO date, optional), limit (int, default 10)
+    """
+    try:
+        from storage.daily_manifest import list_runs
+        run_date = request.args.get("date") or None
+        limit    = int(request.args.get("limit", 10))
+        runs     = list_runs(run_date=run_date, limit=limit)
+        return jsonify({"ok": True, "runs": runs, "count": len(runs)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.route("/final-lock", methods=["POST"])
 @require_api_key
 def final_lock():

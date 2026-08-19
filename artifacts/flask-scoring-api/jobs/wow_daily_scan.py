@@ -506,9 +506,24 @@ def assign_mutex_groups(cards):
 # -------------------------------------------------------------------
 
 def run_scan(sports=None, environment="live", limit_per_sport=50,
-             runtime_provenance=None):
+             runtime_provenance=None,
+             _props_by_sport=None,
+             _persist_results=True):
     """
     Run the WOW daily scan.
+
+    Parameters
+    ----------
+    sports             : list[str] | None — sports to evaluate (default: ALL_SPORTS)
+    environment        : str — "live" or "test"
+    limit_per_sport    : int | None — max props per sport after dedup.
+                         Pass None to disable truncation (used by canonical orchestrator).
+    runtime_provenance : dict | None — server-authoritative provenance record
+    _props_by_sport    : dict[str, list] | None — pre-fetched canonical board from the
+                         orchestrator.  When supplied, source fetches are skipped entirely
+                         and the union is already done; limit_per_sport is not applied.
+    _persist_results   : bool — when False, save_scan_result() is NOT called for
+                         individual rows (orchestrator owns persistence via manifest).
 
     Returns structured result dict including:
       requested_sports / scanned_sports / missing_sports / scan_valid
@@ -548,44 +563,58 @@ def run_scan(sports=None, environment="live", limit_per_sport=50,
     for sport in requested_sports:
         execution_notes.append(f"--- {sport} ---")
 
-        # Step 1-3: Props (Odds API primary, Rundown backup)
-        # WOW-PATCH-2026-07-06 item 9: a raw fetch exception here previously
-        # propagated out of run_scan uncaught (surfacing as a bare 500 to the
-        # caller, e.g. a ClientResponseError from the upstream odds/rundown
-        # HTTP client) instead of being recorded and labeled. Catch and
-        # record it as a failed module so the run can be marked
-        # DEGRADED_ENGINE_RUN instead of silently erroring out mid-scan.
-        try:
-            props, odds_status = fetch_all_props(sport)
-        except Exception as exc:
-            failed_modules.append(f"{sport}:fetch_all_props:{exc}")
-            source_access[f"{sport}_odds"] = f"FAILED: {exc}"
-            props, odds_status = [], f"FAILED: {exc}"
+        # Step 1-3: Props
+        # When the canonical orchestrator supplies a pre-fetched, unioned board
+        # via _props_by_sport, skip all HTTP fetches — source union was already
+        # done upstream and no truncation applies.
+        if _props_by_sport is not None:
+            props = list(_props_by_sport.get(sport) or [])
+            source_access[f"{sport}_odds"]    = "ORCHESTRATOR_CANONICAL_BOARD"
+            source_access[f"{sport}_rundown"] = "ORCHESTRATOR_CANONICAL_BOARD"
+            if not props:
+                execution_notes.append(
+                    f"{sport}: no props in orchestrator board — MISSING"
+                )
+                continue
+        else:
+            # WOW-PATCH-2026-08-19-DAILY-CANONICAL: always union primary AND
+            # backup instead of replacing primary with backup on empty.
+            # WOW-PATCH-2026-07-06 item 9: exceptions are recorded, not raised.
+            primary_props = []
+            odds_status   = "NOT_CALLED"
+            try:
+                primary_props, odds_status = fetch_all_props(sport)
+                source_access[f"{sport}_odds"] = (
+                    odds_status.get("props", odds_status)
+                    if isinstance(odds_status, dict) else str(odds_status)
+                )
+            except Exception as exc:
+                failed_modules.append(f"{sport}:fetch_all_props:{exc}")
+                source_access[f"{sport}_odds"] = f"FAILED: {exc}"
 
-        source_access[f"{sport}_odds"] = (
-            odds_status.get("props", odds_status)
-            if isinstance(odds_status, dict) else odds_status
-        )
-
-        if not props:
             try:
                 rundown_props, rd_status = fetch_backup_props(sport)
             except Exception as exc:
                 failed_modules.append(f"{sport}:fetch_backup_props:{exc}")
                 rundown_props, rd_status = [], f"FAILED: {exc}"
             source_access[f"{sport}_rundown"] = rd_status
-            if rundown_props:
-                props = rundown_props
-                execution_notes.append(
-                    f"{sport}: using TheRundown backup ({len(props)} props)"
-                )
+
+            # Union both sources (never replace)
+            props = list(primary_props or []) + list(rundown_props or [])
+            if props:
+                if primary_props and rundown_props:
+                    execution_notes.append(
+                        f"{sport}: unioned primary+backup ({len(primary_props)}+{len(rundown_props)} props)"
+                    )
+                elif rundown_props:
+                    execution_notes.append(
+                        f"{sport}: primary empty, using TheRundown backup ({len(rundown_props)} props)"
+                    )
             else:
                 execution_notes.append(
-                    f"{sport}: no props available from either source — MISSING"
+                    f"{sport}: no props from any source — MISSING"
                 )
                 continue
-        else:
-            source_access[f"{sport}_rundown"] = "NOT_CALLED: primary succeeded"
 
         # WOW-PATCH-2026-07-06 item 4 (scoped) — cross-book consensus, used
         # for board_consensus_delta / no_vig_probability, and a SOURCE_CONFLICT
@@ -596,7 +625,13 @@ def run_scan(sports=None, environment="live", limit_per_sport=50,
         consensus_map = build_consensus_map(props)
 
         props = dedup_props(props)
-        if len(props) > limit_per_sport:
+        # Truncation only applies to direct legacy callers.
+        # The canonical orchestrator passes _props_by_sport and limit_per_sport=None.
+        if (
+            _props_by_sport is None
+            and limit_per_sport is not None
+            and len(props) > limit_per_sport
+        ):
             props = props[:limit_per_sport]
         execution_notes.append(f"{sport}: {len(props)} unique props to evaluate")
         scanned_sports.append(sport)
@@ -871,7 +906,8 @@ def run_scan(sports=None, environment="live", limit_per_sport=50,
                 "mutex_group_id":         None,       # filled in post-scan by assign_mutex_groups
                 "preferred_candidate":    None,
             }
-            save_scan_result(result_row)
+            if _persist_results:
+                save_scan_result(result_row)
 
             card = {
                 "player": player, "sport": sport, "prop": prop_key,

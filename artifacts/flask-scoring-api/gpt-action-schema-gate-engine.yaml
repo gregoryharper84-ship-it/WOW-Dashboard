@@ -2367,6 +2367,275 @@ paths:
       security:
         - ApiKeyAuth: []
 
+  /wow/daily/run:
+    post:
+      operationId: runWowDailyCanonical
+      x-openai-isConsequential: false
+      summary: >
+        Canonical WOW Daily orchestration — submit high-level intent, Replit owns
+        the full discovery-to-reconciliation pipeline.
+      description: >
+        WOW-PATCH-2026-08-19-DAILY-CANONICAL-v1.0
+
+        Single authoritative daily run endpoint.  The caller submits only
+        high-level intent (which sports, environment).  Replit owns:
+          - Source union across all readable providers (Odds API + TheRundown)
+          - Canonical selection identity assignment (stable, deterministic IDs)
+          - Full-board preservation (no pre-score truncation)
+          - Participant-side resolution (fail-closed — no silent home default)
+          - Specialist readiness contracts (WNBA_ML_V1, TENNIS_MATCH_WINNER_V1)
+          - Soccer 1X2 outcome normalisation (HOME / DRAW / AWAY, server-side)
+          - Evaluation via the full WOW gate-engine pipeline
+          - Exact reconciliation proof (discovered = sum of all terminal buckets)
+          - Immutable run-manifest persistence
+          - Compact GPT output sized for response limits
+
+        Use GET /wow/daily/manifest/{run_id} to retrieve the full immutable
+        manifest for a completed run.
+
+        Use GET /wow/daily/runs to list recent runs by date.
+
+        Requires X-API-Key header.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sports:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                  description: >
+                    Sports to include in this run.
+                    Default: all supported sports
+                    (NBA, WNBA, MLB, NFL, NHL, NCAAB, NCAAF, Soccer, Tennis).
+                  example: ["NBA", "MLB"]
+                environment:
+                  type: string
+                  enum: [live, test]
+                  default: live
+                  description: Scoring environment.
+                session_id:
+                  type: string
+                  nullable: true
+                  description: >
+                    Optional caller session ID for exposure idempotency tracking.
+                runtime_context:
+                  type: object
+                  nullable: true
+                  description: >
+                    Optional runtime context forwarded to the provenance builder.
+                    Caller context can only downgrade — never upgrade — verification.
+      responses:
+        "200":
+          description: Daily run completed (success or degraded)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  run_id:
+                    type: string
+                    description: Immutable UUID for this run. Use with /wow/daily/manifest/{run_id}.
+                  run_date:
+                    type: string
+                    description: ISO date (YYYY-MM-DD) of this run.
+                  run_status:
+                    type: string
+                    enum: [COMPLETE, DEGRADED, RECONCILIATION_WARNING, FAILED]
+                    description: >
+                      COMPLETE — all sports discovered and all selections reconciled.
+                      DEGRADED — one or more source fetches failed; playable buckets cleared.
+                      RECONCILIATION_WARNING — terminal bucket totals don't match discovered count.
+                      FAILED — run_scan raised an unhandled exception.
+                  counts:
+                    type: object
+                    description: Bucket counts including total_discovered and playable_count.
+                    properties:
+                      total_discovered:
+                        type: integer
+                      playable_count:
+                        type: integer
+                      total_final_approved:
+                        type: integer
+                      market_verified:
+                        type: integer
+                      final_approved_internal:
+                        type: integer
+                      model_qualified:
+                        type: integer
+                      watch:
+                        type: integer
+                      reject:
+                        type: integer
+                  playable_card:
+                    type: array
+                    description: Compact list of approved/qualified picks sized for GPT response limits.
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: Canonical selection ID (SEL_<hex>).
+                        player:
+                          type: string
+                        sport:
+                          type: string
+                        prop:
+                          type: string
+                        side:
+                          type: string
+                        line:
+                          type: number
+                        score:
+                          type: number
+                          nullable: true
+                        bucket:
+                          type: string
+                        blocker:
+                          type: string
+                          nullable: true
+                        audit_valid:
+                          type: boolean
+                          nullable: true
+                  reconciliation:
+                    type: object
+                    description: Exact board reconciliation proof.
+                    properties:
+                      reconciled:
+                        type: boolean
+                      discovered_count:
+                        type: integer
+                      total_terminal:
+                        type: integer
+                      duplicate_ids:
+                        type: array
+                        items:
+                          type: string
+                      missing_ids:
+                        type: array
+                        items:
+                          type: string
+                      excess_ids:
+                        type: array
+                        items:
+                          type: string
+                  source_union:
+                    type: object
+                    description: Per-sport source availability status strings.
+                    additionalProperties:
+                      type: string
+                  missing_sports:
+                    type: array
+                    items:
+                      type: string
+                    description: Sports with zero discovered props.
+                  failed_modules:
+                    type: array
+                    items:
+                      type: string
+                    description: Acquisition errors recorded during this run.
+                  runtime_provenance:
+                    type: object
+                    nullable: true
+                    description: Server-authoritative provenance record (echoed back).
+                  engine:
+                    type: string
+                    description: Orchestrator engine version string.
+                  patch_id:
+                    type: string
+                    description: Patch identifier for this orchestration version.
+        "401":
+          description: Missing or invalid X-API-Key
+        "500":
+          description: Orchestration failed (error field contains reason)
+      security:
+        - ApiKeyAuth: []
+
+  /wow/daily/manifest/{run_id}:
+    get:
+      operationId: getWowDailyManifest
+      x-openai-isConsequential: false
+      summary: Retrieve the immutable full manifest for a completed canonical daily run.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The run_id returned by runWowDailyCanonical.
+      responses:
+        "200":
+          description: Run manifest with header and all evaluated selection rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  run:
+                    type: object
+                    description: Run header record.
+                  rows:
+                    type: array
+                    description: All evaluated selection rows (up to 500).
+                    items:
+                      type: object
+                  row_count:
+                    type: integer
+        "404":
+          description: Run ID not found
+        "401":
+          description: Missing or invalid X-API-Key
+      security:
+        - ApiKeyAuth: []
+
+  /wow/daily/runs:
+    get:
+      operationId: listWowDailyRuns
+      x-openai-isConsequential: false
+      summary: List recent canonical daily runs, optionally filtered by date.
+      parameters:
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+          description: ISO date (YYYY-MM-DD) to filter runs. Defaults to all recent runs.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+          description: Maximum number of runs to return.
+      responses:
+        "200":
+          description: List of run headers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  runs:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+        "401":
+          description: Missing or invalid X-API-Key
+      security:
+        - ApiKeyAuth: []
+
 components:
   schemas: {}
   securitySchemes:
@@ -2378,4 +2647,5 @@ components:
         Pass your SCORING_API_KEY value in the X-API-Key header.
         /wow/engine/health, /wow/governance/status, and /wow/stage2/health
         are public and do not require this key. /gate-engine/run, /normalize-legs,
-        /analyze-and-score, /wow/slip-review-log, and /wow/odds/* require it.
+        /analyze-and-score, /wow/slip-review-log, /wow/odds/*, and /wow/daily/*
+        require it.
