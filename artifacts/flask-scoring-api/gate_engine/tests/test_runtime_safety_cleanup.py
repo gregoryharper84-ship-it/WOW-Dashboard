@@ -113,6 +113,196 @@ class TestTypedOrientationResolver:
             "enrichment": {"home_away": "AWAY"},
         }) == "SIDE_UNKNOWN"
 
+    # ------------------------------------------------------------------
+    # home_team / away_team derivation (contract-schema-aligned rows)
+    # ------------------------------------------------------------------
+
+    def test_home_team_away_team_resolves_home_participant(self):
+        """team == home_team → HOME (schema-perfect GPT row, no explicit marker)."""
+        from gate_engine.moneyline.orientation import (
+            ParticipantOrientation,
+            resolve_participant_orientation,
+        )
+
+        row = {
+            "sport": "MLB", "team": "Texas Rangers",
+            "opponent": "Washington Nationals",
+            "market_type": "h2h", "event_id": "mlb-2026-08-19-wsh-tex",
+            "slate_date": "2026-08-19", "board_source": "draftkings",
+            "home_team": "Texas Rangers", "away_team": "Washington Nationals",
+        }
+        result = resolve_participant_orientation(row)
+        assert result.orientation == ParticipantOrientation.HOME
+        assert result.resolved is True
+        assert result.is_home is True
+        assert "row.home_team" in result.source_fields
+
+    def test_home_team_away_team_resolves_away_participant(self):
+        """team == away_team → AWAY (schema-perfect GPT row, no explicit marker)."""
+        from gate_engine.moneyline.orientation import (
+            ParticipantOrientation,
+            resolve_participant_orientation,
+        )
+
+        row = {
+            "sport": "MLB", "team": "Washington Nationals",
+            "opponent": "Texas Rangers",
+            "market_type": "h2h", "event_id": "mlb-2026-08-19-wsh-tex",
+            "slate_date": "2026-08-19", "board_source": "draftkings",
+            "home_team": "Texas Rangers", "away_team": "Washington Nationals",
+        }
+        result = resolve_participant_orientation(row)
+        assert result.orientation == ParticipantOrientation.AWAY
+        assert result.resolved is True
+        assert result.is_home is False
+        assert "row.away_team" in result.source_fields
+
+    def test_derivation_is_case_insensitive(self):
+        from gate_engine.moneyline.orientation import (
+            ParticipantOrientation,
+            resolve_participant_orientation,
+        )
+
+        row = {
+            "team": "texas rangers",
+            "home_team": "Texas Rangers", "away_team": "Washington Nationals",
+        }
+        result = resolve_participant_orientation(row)
+        assert result.orientation == ParticipantOrientation.HOME
+
+    def test_partial_name_only_home_team_stays_missing(self):
+        """Only home_team supplied (away_team absent) → MISSING, never derived."""
+        from gate_engine.moneyline.orientation import (
+            OrientationFailureReason,
+            ParticipantOrientation,
+            resolve_participant_orientation,
+        )
+
+        row = {"team": "Texas Rangers", "home_team": "Texas Rangers"}
+        result = resolve_participant_orientation(row)
+        assert result.orientation == ParticipantOrientation.UNRESOLVED
+        assert result.reason == OrientationFailureReason.MISSING
+
+    def test_partial_name_only_away_team_stays_missing(self):
+        """Only away_team supplied (home_team absent) → MISSING, never derived."""
+        from gate_engine.moneyline.orientation import (
+            OrientationFailureReason,
+            ParticipantOrientation,
+            resolve_participant_orientation,
+        )
+
+        row = {"team": "Washington Nationals", "away_team": "Washington Nationals"}
+        result = resolve_participant_orientation(row)
+        assert result.orientation == ParticipantOrientation.UNRESOLVED
+        assert result.reason == OrientationFailureReason.MISSING
+
+    def test_team_matches_neither_name_stays_missing(self):
+        """team matches neither home_team nor away_team → MISSING (no derivation)."""
+        from gate_engine.moneyline.orientation import (
+            OrientationFailureReason,
+            ParticipantOrientation,
+            resolve_participant_orientation,
+        )
+
+        row = {
+            "team": "Los Angeles Dodgers",
+            "home_team": "Texas Rangers", "away_team": "Washington Nationals",
+        }
+        result = resolve_participant_orientation(row)
+        assert result.orientation == ParticipantOrientation.UNRESOLVED
+        assert result.reason == OrientationFailureReason.MISSING
+
+    def test_explicit_marker_takes_priority_over_derivation(self):
+        """explicit home_away field beats home_team/away_team derivation."""
+        from gate_engine.moneyline.orientation import (
+            ParticipantOrientation,
+            resolve_participant_orientation,
+        )
+
+        # Explicit AWAY marker, but name derivation would also say AWAY — both agree
+        row = {
+            "team": "Washington Nationals",
+            "home_away": "AWAY",
+            "home_team": "Texas Rangers", "away_team": "Washington Nationals",
+        }
+        result = resolve_participant_orientation(row)
+        assert result.orientation == ParticipantOrientation.AWAY
+        # Source must reference the explicit marker, not the derived name
+        assert "row.home_away" in result.source_fields
+
+    def test_explicit_home_marker_on_away_participant_is_conflict_not_silent_pass(self):
+        """home_away=HOME on the away participant → explicit marker wins; derivation
+        is NOT attempted because an explicit marker was already found.  The marker
+        result (HOME) is returned, which downstream callers may audit separately.
+        This test validates that the resolver does not silently derive AWAY and
+        override the explicit claim — that would bypass the caller's instruction."""
+        from gate_engine.moneyline.orientation import (
+            ParticipantOrientation,
+            resolve_participant_orientation,
+        )
+
+        # Caller set home_away=HOME explicitly — resolver must honour the explicit field
+        row = {
+            "team": "Washington Nationals",  # is actually the away team
+            "home_away": "HOME",             # explicit (incorrect) marker
+            "home_team": "Texas Rangers", "away_team": "Washington Nationals",
+        }
+        result = resolve_participant_orientation(row)
+        # Derivation is skipped because an explicit marker was found
+        assert result.orientation == ParticipantOrientation.HOME
+        assert "row.home_away" in result.source_fields
+
+    def test_canonical_wrapper_resolves_with_home_team_away_team(self):
+        """resolve_participant_side uses derivation path correctly."""
+        from gate_engine.daily_orchestrator import resolve_participant_side
+
+        home_row = {
+            "team": "Texas Rangers",
+            "home_team": "Texas Rangers", "away_team": "Washington Nationals",
+        }
+        away_row = {
+            "team": "Washington Nationals",
+            "home_team": "Texas Rangers", "away_team": "Washington Nationals",
+        }
+        assert resolve_participant_side(home_row) == "HOME"
+        assert resolve_participant_side(away_row) == "AWAY"
+
+    def test_wnba_row_with_home_away_team_resolves(self):
+        """WNBA candidate with home_team/away_team resolves correctly."""
+        from gate_engine.moneyline.orientation import (
+            ParticipantOrientation,
+            resolve_participant_orientation,
+        )
+
+        row = {
+            "sport": "WNBA", "team": "Washington Mystics",
+            "opponent": "Indiana Fever",
+            "market_type": "h2h", "event_id": "wnba-2026-08-19-ind-was",
+            "slate_date": "2026-08-19", "board_source": "fanduel",
+            "home_team": "Washington Mystics", "away_team": "Indiana Fever",
+        }
+        result = resolve_participant_orientation(row)
+        assert result.orientation == ParticipantOrientation.HOME
+        assert result.resolved is True
+
+    def test_atp_row_with_home_away_team_resolves(self):
+        """ATP row (no true home/away) can still use names when caller sets them."""
+        from gate_engine.moneyline.orientation import (
+            ParticipantOrientation,
+            resolve_participant_orientation,
+        )
+
+        row = {
+            "sport": "ATP", "team": "Carlos Alcaraz",
+            "opponent": "Jannik Sinner",
+            "market_type": "match_winner", "event_id": "atp-2026-08-19-cin",
+            "slate_date": "2026-08-19", "board_source": "draftkings",
+            "home_team": "Carlos Alcaraz", "away_team": "Jannik Sinner",
+        }
+        result = resolve_participant_orientation(row)
+        assert result.orientation == ParticipantOrientation.HOME
+        assert result.resolved is True
+
 
 class TestMoneylineCallerBoundaries:
     def test_legacy_helper_now_returns_typed_result_without_default(self):

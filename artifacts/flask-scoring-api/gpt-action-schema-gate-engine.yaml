@@ -418,8 +418,31 @@ paths:
                           home_team:
                             type: string
                             description: >
-                              Full name of the home team (optional — helps the engine
-                              determine home_field advantage automatically).
+                              Full name of the home team (optional — strongly
+                              recommended for MLB/WNBA/ATP/WTA).  When both
+                              home_team and away_team are supplied, the engine
+                              derives participant orientation automatically by
+                              comparing team against these names (exact,
+                              case-insensitive).  Omitting both requires the
+                              caller to set home_away explicitly.
+                          away_team:
+                            type: string
+                            description: >
+                              Full name of the away team (optional — strongly
+                              recommended; required for automatic orientation
+                              derivation when home_away is not set).
+                          home_away:
+                            type: string
+                            description: >
+                              Explicit participant-side marker for the team
+                              being evaluated.  Use "HOME" or "AWAY".
+                              Accepted synonyms — HOME: "home", "vs", "vs.",
+                              "H", "1", "yes", "true".  AWAY: "away", "@",
+                              "0", "no", "false".
+                              When home_team + away_team are both supplied,
+                              this field is optional (the engine derives it).
+                              When only one name is available, set this field
+                              explicitly to avoid PARTICIPANT_ORIENTATION_UNRESOLVED.
                           row_id:
                             type: string
                             description: >
