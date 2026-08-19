@@ -1790,19 +1790,15 @@ def wow_daily_run():
     session_id      : str | null        — caller session for exposure idempotency
     runtime_context : dict | null       — forwarded to provenance builder
 
-    Response (200)
+    Response (202 while running; 200 if an idempotent run is already terminal)
     --------------
     {
       run_id          : str   — immutable UUID for this run
       run_date        : str   — ISO date
-      run_status      : str   — COMPLETE | DEGRADED | RECONCILIATION_WARNING
-      counts          : {...} — bucket counts including total_discovered
-      playable_card   : [...]  — compact list of approved/qualified picks
-      reconciliation  : {...} — exact board reconciliation proof
-      source_union    : {...} — per-sport source availability
-      missing_sports  : [...]
-      failed_modules  : [...]
-      runtime_provenance : {...}
+       run_status      : str   — ACCEPTED | IN_PROGRESS | terminal status
+       progress_stage  : str   — persisted lifecycle milestone
+       deadline_at     : str   — server-authoritative whole-run deadline
+       reused          : bool  — same idempotency key reused one canonical run
     }
 
     Error responses
@@ -1811,15 +1807,20 @@ def wow_daily_run():
     409  — provenance blocker (unverified run cannot produce playable output)
     500  — orchestration failed
     """
-    try:
-        from gate_engine.daily_orchestrator import run_daily_orchestration
-    except Exception as exc:
-        return jsonify({"ok": False, "error": f"Orchestrator import failed: {exc}"}), 500
-
     data = request.get_json(silent=True) or {}
     sports_param  = data.get("sports") or None
     environment   = data.get("environment", "live")
     session_id    = data.get("session_id") or None
+    requested_run_id = data.get("run_id") or None
+    idempotency_key = (
+        request.headers.get("Idempotency-Key")
+        or data.get("idempotency_key")
+        or None
+    )
+    if idempotency_key is not None and not isinstance(idempotency_key, str):
+        return jsonify({"ok": False, "error": "idempotency_key must be a string"}), 400
+    if isinstance(idempotency_key, str) and len(idempotency_key) > 255:
+        return jsonify({"ok": False, "error": "idempotency_key exceeds 255 characters"}), 400
 
     # Server-authoritative runtime provenance (fail-closed, downgrade-only)
     from gate_engine.runtime_provenance import (
@@ -1833,12 +1834,14 @@ def wow_daily_run():
     _prov_blocker = provenance_blocker(runtime_provenance)
 
     try:
-        result = run_daily_orchestration(
+        from gate_engine.daily_run_lifecycle import start_run
+        result = start_run(
+            run_id=requested_run_id,
+            idempotency_key=idempotency_key,
             sports=sports_param,
             environment=environment,
             runtime_provenance=runtime_provenance,
             session_id=session_id,
-            persist=True,
         )
     except Exception as exc:
         return jsonify({
@@ -1848,9 +1851,9 @@ def wow_daily_run():
             "runtime_provenance": runtime_provenance,
         }), 500
 
-    # Build compact response — exclude internal _buckets key from GPT output
-    compact = {k: v for k, v in result.items() if k != "_buckets"}
-    return jsonify(compact)
+    result["runtime_provenance"] = runtime_provenance
+    status_code = 202 if result.get("run_status") in ("ACCEPTED", "IN_PROGRESS") else 200
+    return jsonify(result), status_code
 
 
 @app.route("/wow/daily/manifest/<run_id>", methods=["GET"])

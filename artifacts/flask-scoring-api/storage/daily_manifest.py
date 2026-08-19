@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 can_execute = False
 MODULE_ID = "WOW-DAILY-MANIFEST-v1.0"
+_DB_CONNECT_TIMEOUT_SECONDS = 5
+_DB_STATEMENT_TIMEOUT_MS = 30_000
+_DB_LOCK_TIMEOUT_MS = 5_000
 
 # ---------------------------------------------------------------------------
 # DB connection helper (mirrors storage/results.py pattern)
@@ -39,7 +42,14 @@ def _get_conn():
     url = os.environ.get("DATABASE_URL", "")
     if not url:
         raise RuntimeError("DATABASE_URL not set")
-    return psycopg2.connect(url)
+    return psycopg2.connect(
+        url,
+        connect_timeout=_DB_CONNECT_TIMEOUT_SECONDS,
+        options=(
+            f"-c statement_timeout={_DB_STATEMENT_TIMEOUT_MS} "
+            f"-c lock_timeout={_DB_LOCK_TIMEOUT_MS}"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +73,13 @@ CREATE TABLE IF NOT EXISTS wow_daily_runs (
     total_discovered    INTEGER     NOT NULL DEFAULT 0,
     reconciliation      JSONB,
     session_id          TEXT,
+    idempotency_key     TEXT,
+    deadline_at         TIMESTAMPTZ,
+    progress_stage      TEXT        NOT NULL DEFAULT 'ACCEPTED',
+    progress_detail     TEXT,
+    progress_updated_at TIMESTAMPTZ,
+    failure_reason      TEXT,
+    failure_module      TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -103,6 +120,27 @@ def ensure_tables() -> bool:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(_SCHEMA_SQL)
+                cur.execute(
+                    """
+                    ALTER TABLE wow_daily_runs
+                        ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
+                        ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ,
+                        ADD COLUMN IF NOT EXISTS progress_stage TEXT
+                            NOT NULL DEFAULT 'ACCEPTED',
+                        ADD COLUMN IF NOT EXISTS progress_detail TEXT,
+                        ADD COLUMN IF NOT EXISTS progress_updated_at TIMESTAMPTZ,
+                        ADD COLUMN IF NOT EXISTS failure_reason TEXT,
+                        ADD COLUMN IF NOT EXISTS failure_module TEXT
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS
+                        uq_wow_daily_runs_idempotency_key
+                    ON wow_daily_runs (idempotency_key)
+                    WHERE idempotency_key IS NOT NULL
+                    """
+                )
         conn.close()
         return True
     except Exception as exc:
@@ -157,6 +195,212 @@ def create_run(
         return False
 
 
+def _decode_run_row(row: dict[str, Any]) -> dict[str, Any]:
+    for key in (
+        "requested_sports", "scanned_sports", "missing_sports",
+        "failed_modules", "runtime_provenance", "source_union_counts",
+        "reconciliation",
+    ):
+        if isinstance(row.get(key), str):
+            try:
+                row[key] = json.loads(row[key])
+            except Exception:
+                pass
+    return row
+
+
+def create_or_get_run(
+    *,
+    run_id: str,
+    idempotency_key: str | None,
+    run_date: str,
+    started_at: str,
+    deadline_at: str,
+    environment: str,
+    requested_sports: list[str] | None,
+    session_id: str | None = None,
+    runtime_provenance: dict | None = None,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Atomically create or reuse one canonical run identity."""
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO wow_daily_runs (
+                        run_id, run_date, started_at, environment,
+                        requested_sports, session_id, runtime_provenance,
+                        idempotency_key, deadline_at,
+                        run_status, progress_stage, progress_updated_at
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, 'ACCEPTED', 'ACCEPTED', NOW()
+                    )
+                    ON CONFLICT DO NOTHING
+                    RETURNING run_id
+                    """,
+                    (
+                        run_id,
+                        run_date,
+                        started_at,
+                        environment,
+                        json.dumps(requested_sports or []),
+                        session_id,
+                        json.dumps(runtime_provenance)
+                        if runtime_provenance else None,
+                        idempotency_key,
+                        deadline_at,
+                    ),
+                )
+                created = cur.fetchone() is not None
+                if idempotency_key:
+                    cur.execute(
+                        "SELECT * FROM wow_daily_runs "
+                        "WHERE idempotency_key = %s LIMIT 1",
+                        (idempotency_key,),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM wow_daily_runs "
+                        "WHERE run_id = %s LIMIT 1",
+                        (run_id,),
+                    )
+                cols = [d[0] for d in cur.description]
+                row = cur.fetchone()
+        return (
+            _decode_run_row(dict(zip(cols, row))) if row else None,
+            created,
+        )
+    finally:
+        conn.close()
+
+
+def claim_run(run_id: str) -> bool:
+    """Claim an accepted run exactly once across workers."""
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE wow_daily_runs
+                    SET run_status = 'IN_PROGRESS',
+                        progress_stage = 'STARTING',
+                        progress_detail = 'Worker claimed run',
+                        progress_updated_at = NOW()
+                    WHERE run_id = %s
+                      AND run_status = 'ACCEPTED'
+                      AND finished_at IS NULL
+                    """,
+                    (run_id,),
+                )
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def mark_progress(
+    *,
+    run_id: str,
+    stage: str,
+    detail: str | None = None,
+) -> bool:
+    """Persist lifecycle progress without changing scoring or row semantics."""
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE wow_daily_runs
+                    SET progress_stage = %s,
+                        progress_detail = %s,
+                        progress_updated_at = NOW()
+                    WHERE run_id = %s
+                      AND finished_at IS NULL
+                      AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
+                    """,
+                    (stage, detail, run_id),
+                )
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def terminalize_run(
+    *,
+    run_id: str,
+    finished_at: str,
+    run_status: str,
+    failure_reason: str | None = None,
+    failure_module: str | None = None,
+    reconciliation: dict | None = None,
+) -> bool:
+    """Close an accepted/in-progress run exactly once."""
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE wow_daily_runs
+                    SET finished_at = %s,
+                        run_status = %s,
+                        progress_stage = 'TERMINAL',
+                        progress_detail = %s,
+                        progress_updated_at = NOW(),
+                        failure_reason = %s,
+                        failure_module = %s,
+                        reconciliation = COALESCE(%s, reconciliation)
+                    WHERE run_id = %s
+                      AND finished_at IS NULL
+                      AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
+                    """,
+                    (
+                        finished_at,
+                        run_status,
+                        failure_reason or run_status,
+                        failure_reason,
+                        failure_module,
+                        json.dumps(reconciliation)
+                        if reconciliation is not None else None,
+                        run_id,
+                    ),
+                )
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def reap_expired_runs(*, now: str) -> int:
+    """Fail-closed stale accepted/running headers on the next lifecycle call."""
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE wow_daily_runs
+                    SET finished_at = %s,
+                        run_status = 'DEGRADED',
+                        progress_stage = 'TERMINAL',
+                        progress_detail = 'Deadline/orphan reaper',
+                        progress_updated_at = NOW(),
+                        failure_reason = 'WHOLE_RUN_DEADLINE_EXCEEDED',
+                        failure_module = 'daily_manifest.reap_expired_runs'
+                    WHERE finished_at IS NULL
+                      AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
+                      AND deadline_at IS NOT NULL
+                      AND deadline_at < %s
+                    """,
+                    (now, now),
+                )
+                return cur.rowcount
+    finally:
+        conn.close()
+
+
 def finalize_run(
     *,
     run_id: str,
@@ -184,8 +428,13 @@ def finalize_run(
                         failed_modules      = %s,
                         total_discovered    = %s,
                         source_union_counts = %s,
-                        reconciliation      = %s
+                        reconciliation      = %s,
+                        progress_stage      = 'TERMINAL',
+                        progress_detail     = %s,
+                        progress_updated_at = NOW()
                     WHERE run_id = %s
+                      AND finished_at IS NULL
+                      AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
                     """,
                     (
                         finished_at,
@@ -196,6 +445,7 @@ def finalize_run(
                         total_discovered,
                         json.dumps(source_union_counts),
                         json.dumps(reconciliation),
+                        run_status,
                         run_id,
                     ),
                 )

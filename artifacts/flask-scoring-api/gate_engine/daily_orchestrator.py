@@ -92,6 +92,20 @@ _TENNIS_SPECIALIST_REQUIRED_PAIRS = [
 ]
 
 
+class DailyRunDeadlineExceeded(RuntimeError):
+    """Raised at lifecycle boundaries when the canonical run deadline expires."""
+
+
+def _raise_if_deadline_exceeded(deadline_at: str | None) -> None:
+    if not deadline_at:
+        return
+    deadline = datetime.fromisoformat(deadline_at.replace("Z", "+00:00"))
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) >= deadline:
+        raise DailyRunDeadlineExceeded("WHOLE_RUN_DEADLINE_EXCEEDED")
+
+
 # ---------------------------------------------------------------------------
 # Side-orientation resolver (fail-closed replacement for _is_home_side)
 # ---------------------------------------------------------------------------
@@ -386,10 +400,12 @@ def _compact_card(card: dict[str, Any]) -> dict[str, Any]:
 
 def run_daily_orchestration(
     *,
+    run_id: str | None                    = None,
     sports: list[str] | None          = None,
     environment: str                   = "live",
     runtime_provenance: dict | None    = None,
     session_id: str | None             = None,
+    deadline_at: str | None             = None,
     persist: bool                      = True,
 ) -> dict[str, Any]:
     """
@@ -419,7 +435,7 @@ def run_daily_orchestration(
     from jobs.wow_daily_scan import run_scan as _run_scan
 
     # ---- Run identity -------------------------------------------------------
-    run_id   = str(uuid.uuid4())
+    run_id   = run_id or str(uuid.uuid4())
     run_date = date.today().isoformat()
     started_at = datetime.now(timezone.utc).isoformat()
 
@@ -432,7 +448,7 @@ def run_daily_orchestration(
     # ---- Bootstrap manifest table (once per process, fail-open) -------------
     if persist:
         try:
-            from storage.daily_manifest import ensure_tables, create_run
+            from storage.daily_manifest import ensure_tables, create_run, mark_progress
             ensure_tables()
             create_run(
                 run_id=run_id,
@@ -442,6 +458,11 @@ def run_daily_orchestration(
                 requested_sports=requested_sports,
                 session_id=session_id,
                 runtime_provenance=runtime_provenance,
+            )
+            mark_progress(
+                run_id=run_id,
+                stage="DISCOVERY",
+                detail="Preparing source union",
             )
         except Exception as exc:
             logger.warning("daily_manifest.create_run failed (non-fatal): %s", exc)
@@ -454,6 +475,17 @@ def run_daily_orchestration(
     missing_sports: list[str] = []
 
     for sport in requested_sports:
+        _raise_if_deadline_exceeded(deadline_at)
+        if persist:
+            try:
+                from storage.daily_manifest import mark_progress
+                mark_progress(
+                    run_id=run_id,
+                    stage="DISCOVERY",
+                    detail=f"Discovering {sport}",
+                )
+            except Exception as exc:
+                execution_notes.append(f"MANIFEST_PROGRESS_FAILED:{exc}")
         execution_notes.append(f"--- {sport}: union ---")
         raw_props, src_status = _union_props_for_sport(sport)
         source_status_all.update(src_status)
@@ -520,6 +552,17 @@ def run_daily_orchestration(
     # ---- Evaluation via existing gate-engine pipeline -----------------------
     # pass the canonical board; no truncation; don't persist legacy scan rows
     try:
+        _raise_if_deadline_exceeded(deadline_at)
+        if persist:
+            try:
+                from storage.daily_manifest import mark_progress
+                mark_progress(
+                    run_id=run_id,
+                    stage="SCORING",
+                    detail="Evaluating canonical board",
+                )
+            except Exception as exc:
+                execution_notes.append(f"MANIFEST_PROGRESS_FAILED:{exc}")
         scan_result = _run_scan(
             sports=scanned_sports or requested_sports,
             environment=environment,
@@ -577,6 +620,17 @@ def run_daily_orchestration(
             card["terminal_bucket"] = card.get("terminal_bucket") or card.get("classification", bucket_name)
 
     # ---- Reconciliation proof -----------------------------------------------
+    _raise_if_deadline_exceeded(deadline_at)
+    if persist:
+        try:
+            from storage.daily_manifest import mark_progress
+            mark_progress(
+                run_id=run_id,
+                stage="RECONCILIATION",
+                detail="Reconciling discovered selections to terminal rows",
+            )
+        except Exception as exc:
+            execution_notes.append(f"MANIFEST_PROGRESS_FAILED:{exc}")
     reconciliation = _build_reconciliation(discovered_ids, scan_result)
     if not reconciliation["reconciled"]:
         execution_notes.append(
@@ -596,21 +650,16 @@ def run_daily_orchestration(
 
     if persist:
         try:
-            from storage.daily_manifest import finalize_run, save_run_row
-            finalize_run(
+            from storage.daily_manifest import finalize_run, mark_progress, save_run_row
+            mark_progress(
                 run_id=run_id,
-                finished_at=finished_at,
-                run_status=run_status_inner,
-                scanned_sports=scanned_sports,
-                missing_sports=missing_sports,
-                failed_modules=failed_modules,
-                total_discovered=total_discovered,
-                source_union_counts=source_union_counts,
-                reconciliation=reconciliation,
+                stage="PERSISTING_ROWS",
+                detail="Persisting evaluated selections",
             )
             # Persist each evaluated row
             for bucket_name in _TERMINAL_BUCKETS:
                 for card in scan_result.get(bucket_name, []):
+                    _raise_if_deadline_exceeded(deadline_at)
                     sel_id = card.get("canonical_selection_id", "")
                     save_run_row(
                         run_id=run_id,
@@ -635,9 +684,34 @@ def run_daily_orchestration(
                         ),
                         full_row=card,
                     )
+            _raise_if_deadline_exceeded(deadline_at)
+            if not finalize_run(
+                run_id=run_id,
+                finished_at=finished_at,
+                run_status=run_status_inner,
+                scanned_sports=scanned_sports,
+                missing_sports=missing_sports,
+                failed_modules=failed_modules,
+                total_discovered=total_discovered,
+                source_union_counts=source_union_counts,
+                reconciliation=reconciliation,
+            ):
+                raise RuntimeError("MANIFEST_FINALIZE_FAILED")
         except Exception as exc:
             logger.error("daily_manifest persistence failed: %s", exc)
             execution_notes.append(f"MANIFEST_PERSIST_FAILED:{exc}")
+            try:
+                from storage.daily_manifest import terminalize_run
+                terminalize_run(
+                    run_id=run_id,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    run_status="DEGRADED",
+                    failure_reason=f"MANIFEST_PERSIST_FAILED:{exc}",
+                    failure_module="daily_orchestrator.persistence",
+                    reconciliation=reconciliation,
+                )
+            except Exception:
+                logger.exception("daily_manifest terminalization failed for %s", run_id)
 
     # ---- Build counts -------------------------------------------------------
     counts = {b: len(scan_result.get(b, [])) for b in _TERMINAL_BUCKETS}
