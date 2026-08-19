@@ -114,6 +114,15 @@ class TestDailyRunLifecycle(unittest.TestCase):
                 session_id=None,
             )
 
+    def test_acknowledgement_path_skips_schema_bootstrap_and_reaping(self):
+        with (
+            patch("storage.daily_manifest.ensure_tables") as ensure,
+            patch("storage.daily_manifest.reap_expired_runs") as reap,
+        ):
+            self._start("acknowledgement-only")
+        ensure.assert_not_called()
+        reap.assert_not_called()
+
     def test_worker_is_not_run_in_caller_thread(self):
         with patch.object(lifecycle, "_worker", side_effect=AssertionError("inline worker")):
             result = self._start()
@@ -186,11 +195,12 @@ class TestDailyRunLifecycle(unittest.TestCase):
         )
 
     def test_restart_reaper_delegates_expired_run_terminalization(self):
-        with patch(
-            "storage.daily_manifest.reap_expired_runs",
-            return_value=2,
-        ) as reap:
+        with (
+            patch("storage.daily_manifest.ensure_tables", return_value=True) as ensure,
+            patch("storage.daily_manifest.reap_expired_runs", return_value=2) as reap,
+        ):
             self.assertEqual(lifecycle.reap_expired_runs_once(), 2)
+        ensure.assert_called_once()
         self.assertIn("now", reap.call_args.kwargs)
 
 

@@ -46,7 +46,9 @@ def _safe_terminalize(**kwargs: Any) -> None:
 
 def reap_expired_runs_once() -> int:
     """Close deadline-expired headers after a worker or server restart."""
-    from storage.daily_manifest import reap_expired_runs
+    from storage.daily_manifest import ensure_tables, reap_expired_runs
+    if not ensure_tables():
+        raise RuntimeError("DAILY_MANIFEST_UNAVAILABLE")
     return reap_expired_runs(now=_now())
 
 
@@ -153,8 +155,6 @@ def start_run(
     from storage.daily_manifest import (
         claim_run,
         create_or_get_run,
-        ensure_tables,
-        reap_expired_runs,
     )
 
     if deadline_seconds <= 0:
@@ -162,11 +162,7 @@ def start_run(
     if not run_id and not idempotency_key:
         raise ValueError("idempotency_key or run_id is required")
 
-    if not ensure_tables():
-        raise RuntimeError("DAILY_MANIFEST_UNAVAILABLE")
-
     now = datetime.now(timezone.utc)
-    reap_expired_runs(now=now.isoformat())
     requested_run_id = run_id or str(uuid.uuid4())
     requested_deadline = datetime.fromtimestamp(
         time.time() + deadline_seconds,
