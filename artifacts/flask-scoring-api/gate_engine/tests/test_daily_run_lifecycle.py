@@ -39,6 +39,14 @@ class _NoopThread:
         return None
 
 
+class _CapturingProcess(_FakeProcess):
+    worker_kwargs = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        type(self).worker_kwargs = kwargs["kwargs"]
+
+
 class TestDailyRunLifecycle(unittest.TestCase):
     def setUp(self):
         _FakeProcess.started_count = 0
@@ -154,6 +162,40 @@ class TestDailyRunLifecycle(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0]["run_id"], results[1]["run_id"])
         self.assertEqual(_FakeProcess.started_count, 1)
+
+    def test_claimed_worker_uses_first_persisted_request_values(self):
+        stored_run = {
+            "run_id": "canonical-run",
+            "run_status": "ACCEPTED",
+            "progress_stage": "ACCEPTED",
+            "deadline_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+            "requested_sports": ["WNBA"],
+            "environment": "test",
+            "runtime_provenance": {"source": "first"},
+            "session_id": "first-session",
+        }
+        with (
+            patch("storage.daily_manifest.create_or_get_run", return_value=(stored_run, False)),
+            patch("storage.daily_manifest.claim_run", return_value=True),
+            patch.object(lifecycle.multiprocessing, "Process", _CapturingProcess),
+            patch.object(lifecycle.threading, "Thread", _NoopThread),
+        ):
+            lifecycle.start_run(
+                run_id=None,
+                idempotency_key="shared-key",
+                sports=["MLB"],
+                environment="live",
+                runtime_provenance={"source": "retry"},
+                session_id="retry-session",
+                deadline_seconds=30,
+            )
+        self.assertEqual(_CapturingProcess.worker_kwargs["sports"], ["WNBA"])
+        self.assertEqual(_CapturingProcess.worker_kwargs["environment"], "test")
+        self.assertEqual(
+            _CapturingProcess.worker_kwargs["runtime_provenance"],
+            {"source": "first"},
+        )
+        self.assertEqual(_CapturingProcess.worker_kwargs["session_id"], "first-session")
 
     def test_whole_run_timeout_terminalizes_hung_process(self):
         process = _FakeProcess()

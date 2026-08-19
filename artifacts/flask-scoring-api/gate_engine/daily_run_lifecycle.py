@@ -199,16 +199,20 @@ def start_run(
 
     canonical_run_id = run["run_id"]
     canonical_deadline = _as_iso(run.get("deadline_at") or requested_deadline)
+    canonical_sports = run.get("requested_sports") or None
+    canonical_environment = run.get("environment") or environment
+    canonical_runtime_provenance = run.get("runtime_provenance")
+    canonical_session_id = run.get("session_id")
     claimed = run.get("run_status") == "ACCEPTED" and claim_run(canonical_run_id)
     if claimed:
         process = multiprocessing.Process(
             target=_worker,
             kwargs={
                 "run_id": canonical_run_id,
-                "sports": sports,
-                "environment": environment,
-                "runtime_provenance": runtime_provenance,
-                "session_id": session_id,
+                "sports": canonical_sports,
+                "environment": canonical_environment,
+                "runtime_provenance": canonical_runtime_provenance,
+                "session_id": canonical_session_id,
                 "deadline_at": canonical_deadline,
             },
             daemon=True,
