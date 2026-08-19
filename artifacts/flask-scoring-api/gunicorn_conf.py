@@ -207,6 +207,23 @@ def post_fork(server, worker):
     except Exception as exc:
         server.log.warning(f"[post_fork] odds quota table bootstrap failed (non-fatal): {exc}")
 
+    # ── Canonical WOW Daily manifest reaper ───────────────────────────────────
+    # The reaper may have been started during --preload in the master process.
+    # Its thread does not survive fork, while its in-memory "started" flag does.
+    # Resetting first ensures each serving worker owns a real recovery loop for
+    # detached runner leases; it does not execute scoring work.
+    try:
+        import gate_engine.daily_run_lifecycle as _daily_lifecycle
+        _daily_lifecycle.reset_after_fork()
+        _daily_lifecycle.start_manifest_reaper()
+        server.log.info(
+            f"[post_fork] worker {worker.pid}: daily manifest recovery reaper started"
+        )
+    except Exception as exc:
+        server.log.warning(
+            f"[post_fork] daily manifest recovery reaper failed (non-fatal): {exc}"
+        )
+
     # ── Stage 2: reset settlement worker and start a real thread in this worker ─
     # Root cause: start_settlement_worker() ran in the master → set
     # _WORKER_STARTED=True → workers inherit the flag with NO real thread running.

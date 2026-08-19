@@ -7,11 +7,15 @@ idempotency, whole-run lifetime, and terminal manifest observability.
 from __future__ import annotations
 
 import logging
-import multiprocessing
+import os
+import signal
+import subprocess
+import sys
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -21,9 +25,8 @@ can_execute = False
 # Keep a hard bound while leaving enough time for that legitimate workload.
 DEFAULT_DEADLINE_SECONDS = 45 * 60
 REAPER_INTERVAL_SECONDS = 30
+RUNNER_HEARTBEAT_SECONDS = 10
 
-_processes: dict[str, multiprocessing.Process] = {}
-_processes_lock = threading.Lock()
 _reaper_started = False
 _reaper_lock = threading.Lock()
 
@@ -45,10 +48,18 @@ def _safe_terminalize(**kwargs: Any) -> None:
 
 
 def reap_expired_runs_once() -> int:
-    """Close deadline-expired headers after a worker or server restart."""
+    """Close expired headers and stop their detached executor process groups."""
     from storage.daily_manifest import reap_expired_runs
     ensure_manifest_ready()
-    return reap_expired_runs(now=_now())
+    reaped = reap_expired_runs(now=_now(), include_executor_records=True)
+    if isinstance(reaped, int):  # Compatibility for narrow mocked callers.
+        return reaped
+    for record in reaped:
+        _terminate_executor_process_group(
+            run_id=str(record["run_id"]),
+            executor_pid=record.get("executor_pid"),
+        )
+    return len(reaped)
 
 
 def ensure_manifest_ready() -> None:
@@ -81,78 +92,130 @@ def start_manifest_reaper() -> None:
         _reaper_started = True
 
 
-def _worker(
-    *,
-    run_id: str,
-    sports: list[str] | None,
-    environment: str,
-    runtime_provenance: dict | None,
-    session_id: str | None,
-    deadline_at: str,
-) -> None:
-    """Run independently from the request process/connection."""
-    try:
-        from storage.daily_manifest import mark_progress
-        mark_progress(
-            run_id=run_id,
-            stage="DISCOVERY",
-            detail="Canonical source union started",
-        )
-        from gate_engine.daily_orchestrator import run_daily_orchestration
-        run_daily_orchestration(
-            run_id=run_id,
-            sports=sports,
-            environment=environment,
-            runtime_provenance=runtime_provenance,
-            session_id=session_id,
-            deadline_at=deadline_at,
-            persist=True,
-        )
-    except Exception as exc:
-        logger.exception("canonical daily worker failed run=%s", run_id)
-        _safe_terminalize(
-            run_id=run_id,
-            finished_at=_now(),
-            run_status="DEGRADED",
-            failure_reason=str(exc),
-            failure_module="daily_run_lifecycle.worker",
-        )
+def reset_after_fork() -> None:
+    """Recreate reaper state in each Gunicorn worker after --preload forks."""
+    global _reaper_started, _reaper_lock
+    _reaper_started = False
+    _reaper_lock = threading.Lock()
 
 
-def _watch_deadline(
+def _is_daily_executor_pid(pid: int) -> bool:
+    """Avoid signaling a recycled PID that is not our detached executor."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as proc_cmdline:
+            return b"gate_engine.daily_run_executor" in proc_cmdline.read()
+    except OSError:
+        return False
+
+
+def _terminate_executor_process_group(
     *,
     run_id: str,
-    process: multiprocessing.Process,
-    deadline_at: str,
+    executor_pid: object,
 ) -> None:
-    """Hard-stop a hung child, then leave a terminal audit record."""
+    """Send TERM then bounded KILL to a reaped executor's isolated session."""
+    if not isinstance(executor_pid, int) or executor_pid <= 0:
+        logger.warning("reaped daily run has no executor pid run=%s", run_id)
+        return
+    if not _is_daily_executor_pid(executor_pid):
+        logger.info(
+            "daily executor already exited or pid no longer matches run=%s pid=%s",
+            run_id,
+            executor_pid,
+        )
+        return
     try:
-        deadline = datetime.fromisoformat(deadline_at.replace("Z", "+00:00"))
-        if deadline.tzinfo is None:
-            deadline = deadline.replace(tzinfo=timezone.utc)
-        remaining = max(0.0, (deadline - datetime.now(timezone.utc)).total_seconds())
-        process.join(timeout=remaining)
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=5)
+        os.killpg(executor_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        logger.exception(
+            "daily executor termination failed run=%s pid=%s",
+            run_id,
+            executor_pid,
+        )
+        return
+
+    def _force_kill_if_still_running() -> None:
+        time.sleep(5)
+        if not _is_daily_executor_pid(executor_pid):
+            return
+        try:
+            os.killpg(executor_pid, signal.SIGKILL)
+            logger.warning(
+                "daily executor force-killed after reaping run=%s pid=%s",
+                run_id,
+                executor_pid,
+            )
+        except ProcessLookupError:
+            return
+        except OSError:
+            logger.exception(
+                "daily executor force-kill failed run=%s pid=%s",
+                run_id,
+                executor_pid,
+            )
+
+    threading.Thread(
+        target=_force_kill_if_still_running,
+        daemon=True,
+        name=f"wow-daily-kill-{run_id[:8]}",
+    ).start()
+
+
+def _reap_executor_child(
+    process: subprocess.Popen,
+    *,
+    run_id: str,
+    execution_owner: str,
+) -> None:
+    """Reap a detached child and close an unexpected pre-reporting failure."""
+    try:
+        exit_code = process.wait()
+        logger.info(
+            "daily executor child reaped run=%s exit_code=%s",
+            run_id,
+            exit_code,
+        )
+        if exit_code != 0:
             _safe_terminalize(
                 run_id=run_id,
                 finished_at=_now(),
                 run_status="DEGRADED",
-                failure_reason="WHOLE_RUN_DEADLINE_EXCEEDED",
-                failure_module="daily_run_lifecycle.deadline_watch",
+                failure_reason=f"RUNNER_UNEXPECTED_EXIT_{exit_code}",
+                failure_module="daily_run_lifecycle._reap_executor_child",
+                execution_owner=execution_owner,
             )
-        elif process.exitcode not in (None, 0):
-            _safe_terminalize(
-                run_id=run_id,
-                finished_at=_now(),
-                run_status="DEGRADED",
-                failure_reason=f"WORKER_EXITED_UNEXPECTEDLY:{process.exitcode}",
-                failure_module="daily_run_lifecycle.deadline_watch",
-            )
-    finally:
-        with _processes_lock:
-            _processes.pop(run_id, None)
+    except Exception:
+        logger.exception("daily executor child reap failed run=%s", run_id)
+
+
+def _launch_executor(*, run_id: str, execution_owner: str) -> subprocess.Popen:
+    """
+    Launch a fresh interpreter in its own session.
+
+    The executor has no inherited Gunicorn locks, request context, or worker
+    stdio pipes. A serving-worker restart can therefore not strand HTTP reads;
+    if the executor itself is interrupted, its lease is closed by the reaper.
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "gate_engine.daily_run_executor",
+            "--run-id",
+            run_id,
+            "--execution-owner",
+            execution_owner,
+        ],
+        cwd=str(project_root),
+        close_fds=True,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def start_run(
@@ -169,6 +232,7 @@ def start_run(
     from storage.daily_manifest import (
         claim_run,
         create_or_get_run,
+        register_executor,
     )
 
     if deadline_seconds <= 0:
@@ -199,49 +263,54 @@ def start_run(
 
     canonical_run_id = run["run_id"]
     canonical_deadline = _as_iso(run.get("deadline_at") or requested_deadline)
-    canonical_sports = run.get("requested_sports") or None
-    canonical_environment = run.get("environment") or environment
-    canonical_runtime_provenance = run.get("runtime_provenance")
-    canonical_session_id = run.get("session_id")
-    claimed = run.get("run_status") == "ACCEPTED" and claim_run(canonical_run_id)
+    execution_owner = str(uuid.uuid4())
+    claimed = (
+        run.get("run_status") == "ACCEPTED"
+        and claim_run(canonical_run_id, execution_owner)
+    )
     if claimed:
-        process = multiprocessing.Process(
-            target=_worker,
-            kwargs={
-                "run_id": canonical_run_id,
-                "sports": canonical_sports,
-                "environment": canonical_environment,
-                "runtime_provenance": canonical_runtime_provenance,
-                "session_id": canonical_session_id,
-                "deadline_at": canonical_deadline,
-            },
-            daemon=True,
-            name=f"wow-daily-{canonical_run_id[:8]}",
-        )
         try:
-            process.start()
+            executor_process = _launch_executor(
+                run_id=canonical_run_id,
+                execution_owner=execution_owner,
+            )
+            threading.Thread(
+                target=_reap_executor_child,
+                args=(executor_process,),
+                kwargs={
+                    "run_id": canonical_run_id,
+                    "execution_owner": execution_owner,
+                },
+                daemon=True,
+                name=f"wow-daily-child-reap-{canonical_run_id[:8]}",
+            ).start()
+            if not register_executor(
+                run_id=canonical_run_id,
+                execution_owner=execution_owner,
+                executor_pid=executor_process.pid,
+            ):
+                _terminate_executor_process_group(
+                    run_id=canonical_run_id,
+                    executor_pid=executor_process.pid,
+                )
+                _safe_terminalize(
+                    run_id=canonical_run_id,
+                    finished_at=_now(),
+                    run_status="DEGRADED",
+                    failure_reason="RUNNER_PID_REGISTRATION_FAILED",
+                    failure_module="daily_run_lifecycle.start_run",
+                    execution_owner=execution_owner,
+                )
+                raise RuntimeError("DAILY_RUNNER_PID_REGISTRATION_FAILED")
         except Exception as exc:
             _safe_terminalize(
                 run_id=canonical_run_id,
                 finished_at=_now(),
                 run_status="DEGRADED",
-                failure_reason=f"WORKER_START_FAILED:{exc}",
+                failure_reason=f"RUNNER_LAUNCH_FAILED:{type(exc).__name__}",
                 failure_module="daily_run_lifecycle.start_run",
             )
             raise
-
-        with _processes_lock:
-            _processes[canonical_run_id] = process
-        threading.Thread(
-            target=_watch_deadline,
-            kwargs={
-                "run_id": canonical_run_id,
-                "process": process,
-                "deadline_at": canonical_deadline,
-            },
-            daemon=True,
-            name=f"wow-daily-watch-{canonical_run_id[:8]}",
-        ).start()
 
     current = dict(run)
     if claimed:

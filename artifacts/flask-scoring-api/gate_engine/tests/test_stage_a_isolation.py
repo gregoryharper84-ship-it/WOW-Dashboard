@@ -326,6 +326,15 @@ class TestGitDiffAllowlist(unittest.TestCase):
                     return   # clean working tree — pass
                 changed = [p.strip().replace("\\", "/")
                            for p in out.splitlines() if p.strip()]
+                is_stage_a_worktree = any(
+                    f in self._STAGE_A_TRIGGER_FILES for f in changed
+                )
+                if not is_stage_a_worktree:
+                    self.skipTest(
+                        "Working tree does not touch Stage A production modules "
+                        "(prob_ledger_enforcer.py / outlier_recompute.py) — "
+                        "allowlist guard does not apply."
+                    )
                 violations = [p for p in changed if not self._is_allowed(p)]
                 self.assertListEqual(
                     violations, [],

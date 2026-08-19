@@ -40,6 +40,7 @@ _ACK_LOCK_TIMEOUT_MS = 1_000
 _SCHEMA_ADVISORY_LOCK = 441_721_908
 _schema_ready = False
 _schema_lock = threading.Lock()
+RUNNER_LEASE_SECONDS = 90
 
 # ---------------------------------------------------------------------------
 # DB connection helper (mirrors storage/results.py pattern)
@@ -89,7 +90,7 @@ CREATE TABLE IF NOT EXISTS wow_daily_runs (
     failed_modules      JSONB       NOT NULL DEFAULT '[]',
     runtime_provenance  JSONB,
     source_union_counts JSONB,
-    total_discovered    INTEGER     NOT NULL DEFAULT 0,
+    total_discovered    INTEGER,
     reconciliation      JSONB,
     session_id          TEXT,
     idempotency_key     TEXT,
@@ -99,6 +100,10 @@ CREATE TABLE IF NOT EXISTS wow_daily_runs (
     progress_updated_at TIMESTAMPTZ,
     failure_reason      TEXT,
     failure_module      TEXT,
+    execution_owner     TEXT,
+    executor_pid        INTEGER,
+    lease_expires_at    TIMESTAMPTZ,
+    last_heartbeat_at   TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -163,7 +168,21 @@ def ensure_tables() -> bool:
                             ADD COLUMN IF NOT EXISTS progress_detail TEXT,
                             ADD COLUMN IF NOT EXISTS progress_updated_at TIMESTAMPTZ,
                             ADD COLUMN IF NOT EXISTS failure_reason TEXT,
-                            ADD COLUMN IF NOT EXISTS failure_module TEXT
+                            ADD COLUMN IF NOT EXISTS failure_module TEXT,
+                            ADD COLUMN IF NOT EXISTS execution_owner TEXT,
+                            ADD COLUMN IF NOT EXISTS executor_pid INTEGER,
+                            ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ,
+                            ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ
+                        """
+                    )
+                    # A run that is interrupted before discovery has no honest
+                    # candidate total. Preserve NULL as "not finalized" rather
+                    # than serializing a synthetic zero.
+                    cur.execute(
+                        """
+                        ALTER TABLE wow_daily_runs
+                            ALTER COLUMN total_discovered DROP NOT NULL,
+                            ALTER COLUMN total_discovered DROP DEFAULT
                         """
                     )
                     cur.execute(
@@ -310,24 +329,34 @@ def create_or_get_run(
         conn.close()
 
 
-def claim_run(run_id: str) -> bool:
-    """Claim an accepted run exactly once across workers."""
+def claim_run(
+    run_id: str,
+    execution_owner: str,
+    *,
+    lease_seconds: int = RUNNER_LEASE_SECONDS,
+) -> bool:
+    """Claim an accepted run exactly once with a durable runner lease."""
+    if lease_seconds <= 0:
+        raise ValueError("lease_seconds must be positive")
     conn = _get_conn(acknowledgement=True)
     try:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     UPDATE wow_daily_runs
                     SET run_status = 'IN_PROGRESS',
                         progress_stage = 'STARTING',
-                        progress_detail = 'Worker claimed run',
-                        progress_updated_at = NOW()
+                        progress_detail = 'Detached runner claimed run',
+                        progress_updated_at = NOW(),
+                        execution_owner = %s,
+                        last_heartbeat_at = NOW(),
+                        lease_expires_at = NOW() + INTERVAL '{int(lease_seconds)} seconds'
                     WHERE run_id = %s
                       AND run_status = 'ACCEPTED'
                       AND finished_at IS NULL
                     """,
-                    (run_id,),
+                    (execution_owner, run_id),
                 )
                 return cur.rowcount == 1
     finally:
@@ -339,14 +368,23 @@ def mark_progress(
     run_id: str,
     stage: str,
     detail: str | None = None,
+    execution_owner: str | None = None,
 ) -> bool:
     """Persist lifecycle progress without changing scoring or row semantics."""
     conn = _get_conn()
     try:
         with conn:
             with conn.cursor() as cur:
-                cur.execute(
+                owner_fence = ""
+                params: list[Any] = [stage, detail, run_id]
+                if execution_owner is not None:
+                    owner_fence = """
+                      AND execution_owner = %s
+                      AND lease_expires_at >= NOW()
                     """
+                    params.append(execution_owner)
+                cur.execute(
+                    f"""
                     UPDATE wow_daily_runs
                     SET progress_stage = %s,
                         progress_detail = %s,
@@ -354,8 +392,70 @@ def mark_progress(
                     WHERE run_id = %s
                       AND finished_at IS NULL
                       AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
+                    {owner_fence}
                     """,
-                    (stage, detail, run_id),
+                    tuple(params),
+                )
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def heartbeat_run(
+    *,
+    run_id: str,
+    execution_owner: str,
+    lease_seconds: int = RUNNER_LEASE_SECONDS,
+) -> bool:
+    """Renew one detached runner's lease without changing scoring state."""
+    if lease_seconds <= 0:
+        raise ValueError("lease_seconds must be positive")
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE wow_daily_runs
+                    SET last_heartbeat_at = NOW(),
+                        lease_expires_at = NOW() + INTERVAL '{int(lease_seconds)} seconds'
+                    WHERE run_id = %s
+                      AND execution_owner = %s
+                      AND run_status = 'IN_PROGRESS'
+                      AND finished_at IS NULL
+                      AND lease_expires_at >= NOW()
+                    """,
+                    (run_id, execution_owner),
+                )
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def register_executor(
+    *,
+    run_id: str,
+    execution_owner: str,
+    executor_pid: int,
+) -> bool:
+    """Persist the detached process group leader for restart-safe reaping."""
+    if executor_pid <= 0:
+        raise ValueError("executor_pid must be positive")
+    conn = _get_conn(acknowledgement=True)
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE wow_daily_runs
+                    SET executor_pid = %s
+                    WHERE run_id = %s
+                      AND execution_owner = %s
+                      AND run_status = 'IN_PROGRESS'
+                      AND finished_at IS NULL
+                      AND lease_expires_at >= NOW()
+                    """,
+                    (executor_pid, run_id, execution_owner),
                 )
                 return cur.rowcount == 1
     finally:
@@ -370,14 +470,31 @@ def terminalize_run(
     failure_reason: str | None = None,
     failure_module: str | None = None,
     reconciliation: dict | None = None,
+    execution_owner: str | None = None,
 ) -> bool:
     """Close an accepted/in-progress run exactly once."""
     conn = _get_conn()
     try:
         with conn:
             with conn.cursor() as cur:
-                cur.execute(
+                owner_fence = ""
+                params: list[Any] = [
+                    finished_at,
+                    run_status,
+                    failure_reason or run_status,
+                    failure_reason,
+                    failure_module,
+                    json.dumps(reconciliation) if reconciliation is not None else None,
+                    run_id,
+                ]
+                if execution_owner is not None:
+                    owner_fence = """
+                      AND execution_owner = %s
+                      AND lease_expires_at >= NOW()
                     """
+                    params.append(execution_owner)
+                cur.execute(
+                    f"""
                     UPDATE wow_daily_runs
                     SET finished_at = %s,
                         run_status = %s,
@@ -386,29 +503,26 @@ def terminalize_run(
                         progress_updated_at = NOW(),
                         failure_reason = %s,
                         failure_module = %s,
+                        lease_expires_at = NOW(),
                         reconciliation = COALESCE(%s, reconciliation)
                     WHERE run_id = %s
                       AND finished_at IS NULL
                       AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
+                    {owner_fence}
                     """,
-                    (
-                        finished_at,
-                        run_status,
-                        failure_reason or run_status,
-                        failure_reason,
-                        failure_module,
-                        json.dumps(reconciliation)
-                        if reconciliation is not None else None,
-                        run_id,
-                    ),
+                    tuple(params),
                 )
                 return cur.rowcount == 1
     finally:
         conn.close()
 
 
-def reap_expired_runs(*, now: str) -> int:
-    """Fail-closed stale accepted/running headers on the next lifecycle call."""
+def reap_expired_runs(
+    *,
+    now: str,
+    include_executor_records: bool = False,
+) -> int | list[dict[str, int | str | None]]:
+    """Terminalize deadline-expired or heartbeat-orphaned headers honestly."""
     conn = _get_conn()
     try:
         with conn:
@@ -419,18 +533,39 @@ def reap_expired_runs(*, now: str) -> int:
                     SET finished_at = %s,
                         run_status = 'DEGRADED',
                         progress_stage = 'TERMINAL',
-                        progress_detail = 'Deadline/orphan reaper',
+                        progress_detail = CASE
+                            WHEN deadline_at IS NOT NULL AND deadline_at < %s
+                                THEN 'Whole-run deadline exceeded'
+                            ELSE 'Detached runner heartbeat expired'
+                        END,
                         progress_updated_at = NOW(),
-                        failure_reason = 'WHOLE_RUN_DEADLINE_EXCEEDED',
-                        failure_module = 'daily_manifest.reap_expired_runs'
+                        failure_reason = CASE
+                            WHEN deadline_at IS NOT NULL AND deadline_at < %s
+                                THEN 'WHOLE_RUN_DEADLINE_EXCEEDED'
+                            ELSE 'RUNNER_HEARTBEAT_EXPIRED'
+                        END,
+                        failure_module = 'daily_manifest.reap_expired_runs',
+                        lease_expires_at = NOW()
                     WHERE finished_at IS NULL
                       AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
-                      AND deadline_at IS NOT NULL
-                      AND deadline_at < %s
+                      AND (
+                          (deadline_at IS NOT NULL AND deadline_at < %s)
+                          OR (
+                              run_status = 'IN_PROGRESS'
+                              AND lease_expires_at IS NOT NULL
+                              AND lease_expires_at < %s
+                          )
+                      )
+                    RETURNING run_id, executor_pid
                     """,
-                    (now, now),
+                    (now, now, now, now, now),
                 )
-                return cur.rowcount
+                if not include_executor_records:
+                    return cur.rowcount
+                return [
+                    {"run_id": run_id, "executor_pid": executor_pid}
+                    for run_id, executor_pid in cur.fetchall()
+                ]
     finally:
         conn.close()
 
@@ -446,14 +581,34 @@ def finalize_run(
     total_discovered: int,
     source_union_counts: dict,
     reconciliation: dict,
+    execution_owner: str | None = None,
 ) -> bool:
     """Update run header with final state. Called after all rows are written."""
     try:
         conn = _get_conn()
         with conn:
             with conn.cursor() as cur:
-                cur.execute(
+                owner_fence = ""
+                params: list[Any] = [
+                    finished_at,
+                    run_status,
+                    json.dumps(scanned_sports),
+                    json.dumps(missing_sports),
+                    json.dumps(failed_modules),
+                    total_discovered,
+                    json.dumps(source_union_counts),
+                    json.dumps(reconciliation),
+                    run_status,
+                    run_id,
+                ]
+                if execution_owner is not None:
+                    owner_fence = """
+                      AND execution_owner = %s
+                      AND lease_expires_at >= NOW()
                     """
+                    params.append(execution_owner)
+                cur.execute(
+                    f"""
                     UPDATE wow_daily_runs SET
                         finished_at         = %s,
                         run_status          = %s,
@@ -465,26 +620,18 @@ def finalize_run(
                         reconciliation      = %s,
                         progress_stage      = 'TERMINAL',
                         progress_detail     = %s,
-                        progress_updated_at = NOW()
+                        progress_updated_at = NOW(),
+                        lease_expires_at    = NOW()
                     WHERE run_id = %s
                       AND finished_at IS NULL
                       AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
+                    {owner_fence}
                     """,
-                    (
-                        finished_at,
-                        run_status,
-                        json.dumps(scanned_sports),
-                        json.dumps(missing_sports),
-                        json.dumps(failed_modules),
-                        total_discovered,
-                        json.dumps(source_union_counts),
-                        json.dumps(reconciliation),
-                        run_status,
-                        run_id,
-                    ),
+                    tuple(params),
                 )
+                updated = cur.rowcount == 1
         conn.close()
-        return True
+        return updated
     except Exception as exc:
         logger.error("daily_manifest.finalize_run failed for %s: %s", run_id, exc)
         return False
@@ -514,6 +661,7 @@ def save_run_row(
     side_resolution: str | None,
     reconciliation_status: str | None,
     full_row: dict,
+    execution_owner: str | None = None,
 ) -> bool:
     """
     Persist one evaluated selection row.  Idempotent on (run_id, canonical_selection_id).
@@ -523,6 +671,28 @@ def save_run_row(
         conn = _get_conn()
         with conn:
             with conn.cursor() as cur:
+                owner_fence = ""
+                header_params: list[Any] = [run_id]
+                if execution_owner is not None:
+                    owner_fence = """
+                      AND execution_owner = %s
+                      AND lease_expires_at >= NOW()
+                    """
+                    header_params.append(execution_owner)
+                cur.execute(
+                    f"""
+                    SELECT 1
+                    FROM wow_daily_runs
+                    WHERE run_id = %s
+                      AND finished_at IS NULL
+                      AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
+                    {owner_fence}
+                    FOR UPDATE
+                    """,
+                    tuple(header_params),
+                )
+                if cur.fetchone() is None:
+                    return False
                 cur.execute(
                     """
                     INSERT INTO wow_daily_run_rows (

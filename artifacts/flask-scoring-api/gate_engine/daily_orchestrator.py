@@ -407,6 +407,7 @@ def run_daily_orchestration(
     session_id: str | None             = None,
     deadline_at: str | None             = None,
     persist: bool                      = True,
+    execution_owner: str | None        = None,
 ) -> dict[str, Any]:
     """
     Canonical WOW Daily orchestration.
@@ -463,6 +464,7 @@ def run_daily_orchestration(
                 run_id=run_id,
                 stage="DISCOVERY",
                 detail="Preparing source union",
+                execution_owner=execution_owner,
             )
         except Exception as exc:
             logger.warning("daily_manifest.create_run failed (non-fatal): %s", exc)
@@ -483,6 +485,7 @@ def run_daily_orchestration(
                     run_id=run_id,
                     stage="DISCOVERY",
                     detail=f"Discovering {sport}",
+                    execution_owner=execution_owner,
                 )
             except Exception as exc:
                 execution_notes.append(f"MANIFEST_PROGRESS_FAILED:{exc}")
@@ -560,6 +563,7 @@ def run_daily_orchestration(
                     run_id=run_id,
                     stage="SCORING",
                     detail="Evaluating canonical board",
+                    execution_owner=execution_owner,
                 )
             except Exception as exc:
                 execution_notes.append(f"MANIFEST_PROGRESS_FAILED:{exc}")
@@ -628,6 +632,7 @@ def run_daily_orchestration(
                 run_id=run_id,
                 stage="RECONCILIATION",
                 detail="Reconciling discovered selections to terminal rows",
+                execution_owner=execution_owner,
             )
         except Exception as exc:
             execution_notes.append(f"MANIFEST_PROGRESS_FAILED:{exc}")
@@ -655,6 +660,7 @@ def run_daily_orchestration(
                 run_id=run_id,
                 stage="PERSISTING_ROWS",
                 detail="Persisting evaluated selections",
+                execution_owner=execution_owner,
             )
             # Persist each evaluated row
             for bucket_name in _TERMINAL_BUCKETS:
@@ -683,6 +689,7 @@ def run_daily_orchestration(
                             else "EXCESS"
                         ),
                         full_row=card,
+                        execution_owner=execution_owner,
                     ):
                         raise RuntimeError(
                             f"MANIFEST_ROW_PERSIST_FAILED:{sel_id}"
@@ -698,6 +705,7 @@ def run_daily_orchestration(
                 total_discovered=total_discovered,
                 source_union_counts=source_union_counts,
                 reconciliation=reconciliation,
+                execution_owner=execution_owner,
             ):
                 raise RuntimeError("MANIFEST_FINALIZE_FAILED")
         except Exception as exc:
@@ -712,6 +720,7 @@ def run_daily_orchestration(
                     failure_reason=f"MANIFEST_PERSIST_FAILED:{exc}",
                     failure_module="daily_orchestrator.persistence",
                     reconciliation=reconciliation,
+                    execution_owner=execution_owner,
                 )
             except Exception:
                 logger.exception("daily_manifest terminalization failed for %s", run_id)
