@@ -24,6 +24,11 @@ from gate_engine.moneyline.types import (
     IndependentModelContaminationError,
     can_execute,
 )
+from gate_engine.moneyline.orientation import (
+    OrientationResolution,
+    orientation_blocker,
+    resolve_participant_orientation,
+)
 
 can_execute: bool = False  # UNCONDITIONAL re-declaration
 
@@ -359,6 +364,7 @@ def _soccer_draw_adjusted(raw_home_prob: float, enrichment: dict[str, Any]) -> d
 def compute_independent_probability(
     row: dict[str, Any],
     clean_enrichment: dict[str, Any],
+    orientation: OrientationResolution | None = None,
 ) -> dict[str, Any]:
     """
     Compute an independent win probability using only non-market inputs.
@@ -386,8 +392,25 @@ def compute_independent_probability(
     # Hard boundary check
     check_independence_boundary(clean_enrichment)
 
-    sport    = (row.get("sport") or "").upper().strip()
-    is_home  = _is_home_side(row, clean_enrichment)
+    sport = (row.get("sport") or "").upper().strip()
+    orientation = orientation or resolve_participant_orientation(
+        row, clean_enrichment
+    )
+    if not orientation.resolved:
+        return {
+            "independent_probability": None,
+            "independent_probability_raw": None,
+            "submodel_probs": {},
+            "submodels_active": [],
+            "ensemble_weights_used": {},
+            "home_advantage_logit": 0.0,
+            "soccer_three_state": None,
+            "notes": [orientation_blocker(orientation)],
+            "orientation_resolution": orientation.to_dict(),
+            "data_contract_status": "DATA_CONTRACT_FAIL",
+            "can_execute": False,
+        }
+    is_home = orientation.is_home
     is_soccer = sport in ("SOCCER", "EPL", "MLS")
 
     submodel_probs:   dict[str, float] = {}
@@ -550,25 +573,15 @@ def compute_independent_probability(
     }
 
 
-def _is_home_side(row: dict[str, Any], enrichment: dict[str, Any]) -> bool:
+def _is_home_side(
+    row: dict[str, Any],
+    enrichment: dict[str, Any],
+) -> OrientationResolution:
     """
-    Determine whether the candidate row represents the home side.
+    Return the typed participant-orientation result.
 
-    Understands all home/away conventions used in the pipeline:
-      HOME:  "HOME", "TRUE", "1", "YES", "VS", "vs", "vs."   (home team notation)
-      AWAY:  "AWAY", "FALSE", "0", "NO", "@"                  (away team notation)
-
-    app.py emits home_away="vs" for home games and home_away="@" for away games
-    (see scoring endpoint lines that build the outright row from game objects).
+    The legacy helper returned bool and silently treated unresolved data as
+    HOME.  It is intentionally retained by name as a migration boundary, but
+    no longer collapses unresolved input or raises.
     """
-    home_flag = row.get("home_away") or row.get("is_home") or enrichment.get("home_away")
-    if home_flag is not None:
-        normalized = str(home_flag).strip().upper()
-        # Explicit away markers — anything not in this set is treated as home
-        _AWAY_MARKERS = {"AWAY", "FALSE", "0", "NO", "@"}
-        if normalized in _AWAY_MARKERS:
-            return False
-        # Explicit home markers (and catch-all for unrecognized values)
-        return True
-    # Default: assume home if side not specified
-    return True
+    return resolve_participant_orientation(row, enrichment)

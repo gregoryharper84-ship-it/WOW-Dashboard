@@ -1585,16 +1585,35 @@ def wow_daily_scan():
     run_status       = scan_result.get("run_status",       "COMPLETE")
     failed_modules   = scan_result.get("failed_modules",   [])
 
-    # Build compact response from what was just saved to the DB
+    # Build compact response through the single daily-summary selector.
+    # A committed canonical manifest wins; the just-written legacy rows are
+    # fallback-only when no canonical run exists for this date.
     try:
-        from storage.results import get_scan_summary, get_compact_scan_rows, get_scan_source_flags
+        from storage.daily_summary import get_effective_daily_summary
         from datetime import date as _date
         run_date = _date.today().isoformat()
 
-        summary_counts = get_scan_summary(run_date)
+        summary_selection = get_effective_daily_summary(
+            run_date,
+            limit=10 * 6,
+        )
+        summary_counts = summary_selection["summary_counts"]
         total_rows     = sum(summary_counts.values())
-        rows           = get_compact_scan_rows(run_date, limit=10 * 6)
-        flags          = get_scan_source_flags(run_date)
+        rows           = summary_selection["rows"]
+        flags          = summary_selection["source_flags"]
+        summary_source = summary_selection["selected_source"]
+        summary_run_id = summary_selection["run_id"]
+        selected_run   = summary_selection.get("run")
+
+        if selected_run is not None:
+            requested_sports = selected_run.get("requested_sports") or []
+            scanned_sports   = selected_run.get("scanned_sports") or []
+            missing_sports   = selected_run.get("missing_sports") or []
+            run_status       = selected_run.get("run_status", "COMPLETE")
+            failed_modules   = selected_run.get("failed_modules") or []
+            scan_valid       = bool(
+                (selected_run.get("reconciliation") or {}).get("reconciled")
+            )
 
         CAT_KEYS = {
             "market_verified":         "Market Verified Approved",
@@ -1610,10 +1629,20 @@ def wow_daily_scan():
         grouped = {k: [] for k in CAT_KEYS}
         for row in rows:
             cat_key = CAT_REVERSE.get(row.get("classification", ""))
+            if not cat_key:
+                normalized_category = (
+                    str(row.get("classification") or "")
+                    .strip().lower().replace(" ", "_")
+                )
+                if normalized_category in CAT_KEYS:
+                    cat_key = normalized_category
             if cat_key and len(grouped[cat_key]) < 10:
                 grouped[cat_key].append(_compact_prop(row))
 
-        counts = {k: summary_counts.get(cls_name, 0) for k, cls_name in CAT_KEYS.items()}
+        counts = {
+            k: summary_counts.get(cls_name, summary_counts.get(k, 0))
+            for k, cls_name in CAT_KEYS.items()
+        }
         # WOW-PATCH-2026-08-16-AUDIT fix (3): separate enforced approvals from
         # legacy rows.  Rows written before the ceiling-enforcement epoch
         # (classification="FINAL_APPROVED", pre-split label format) cannot be
@@ -1664,7 +1693,14 @@ def wow_daily_scan():
             }
 
         sports_scanned_db = [s for s in (flags.get("sports") or []) if s]
-        execution_notes = list(scan_result.get("execution_notes", []))
+        execution_notes = (
+            [] if selected_run is not None
+            else list(scan_result.get("execution_notes", []))
+        )
+        execution_notes.append(
+            f"Daily summary source: {summary_source}"
+            + (f" (run_id={summary_run_id})" if summary_run_id else "")
+        )
 
         # WOW-PATCH-2026-08-19 — provenance ceiling: a fallback or
         # missing-backend run can never present playable buckets as
@@ -1707,6 +1743,11 @@ def wow_daily_scan():
             "scanned_sports":           scanned_sports,
             "missing_sports":           missing_sports,
             "runtime_provenance":       runtime_provenance,
+            "summary_source":           summary_source,
+            "summary_run_id":           summary_run_id,
+            "summary_reconciliation":   (
+                selected_run.get("reconciliation") if selected_run else None
+            ),
             "source_access_status":     source_access_status,
             "execution_report":         execution_report,
             "counts":                   counts,
@@ -2145,7 +2186,7 @@ def scan_results():
     Optional filters: run_date, classification, sport, limit.
     """
     try:
-        from storage.results import get_scan_results, get_scan_summary
+        from storage.daily_summary import get_effective_daily_summary
     except Exception as e:
         return jsonify({"error": f"Storage import failed: {e}"}), 500
 
@@ -2164,16 +2205,23 @@ def scan_results():
         run_date = _date.today().isoformat()
 
     try:
-        summary = get_scan_summary(run_date)
-        if summary_only:
-            return jsonify({"run_date": run_date, "summary": summary})
-
-        rows = get_scan_results(
-            run_date=run_date,
-            classification=classification,
+        summary_selection = get_effective_daily_summary(
+            run_date,
+            category=classification,
             sport=sport,
             limit=limit,
+            compact=False,
         )
+        summary = summary_selection["summary_counts"]
+        if summary_only:
+            return jsonify({
+                "run_date": run_date,
+                "summary": summary,
+                "summary_source": summary_selection["selected_source"],
+                "summary_run_id": summary_selection["run_id"],
+            })
+
+        rows = summary_selection["rows"]
         # Serialize non-JSON-native types
         for r in rows:
             for k, v in r.items():
@@ -2186,6 +2234,9 @@ def scan_results():
             "run_date":  run_date,
             "count":     len(rows),
             "summary":   summary,
+            "summary_source": summary_selection["selected_source"],
+            "summary_run_id": summary_selection["run_id"],
+            "results_source": summary_selection["selected_source"],
             "filters":   {
                 "classification": classification,
                 "sport":          sport,
@@ -2295,9 +2346,7 @@ def scan_results_summary():
       status    — only return if scan matches this status (completed|pending)
     """
     try:
-        from storage.results import (
-            get_scan_summary, get_compact_scan_rows, get_scan_source_flags
-        )
+        from storage.daily_summary import get_effective_daily_summary
     except Exception as e:
         return jsonify({"ok": False, "error": f"Storage import failed: {e}"}), 500
 
@@ -2344,14 +2393,25 @@ def scan_results_summary():
     }
 
     try:
-        summary_counts = get_scan_summary(run_date)
+        fetch_limit = (limit * len(CAT_KEYS)) if not db_category else limit
+        summary_selection = get_effective_daily_summary(
+            run_date,
+            category=db_category,
+            limit=fetch_limit,
+        )
+        summary_counts = summary_selection["summary_counts"]
         total_rows     = sum(summary_counts.values())
-        scan_status    = "completed" if total_rows > 0 else "pending"
+        scan_status    = summary_selection["status"]
+        summary_source = summary_selection["selected_source"]
+        summary_run_id = summary_selection["run_id"]
+        selected_run   = summary_selection.get("run")
 
         # Early exit if caller requested a specific status that doesn't match
         if status_filter and status_filter != scan_status:
             return jsonify({
                 "ok": True, "status": scan_status, "run_date": run_date,
+                "summary_source": summary_source,
+                "summary_run_id": summary_run_id,
                 "message": f"Scan status is '{scan_status}', not '{status_filter}'",
                 "source_access_status": {},
                 "execution_report": _empty_report,
@@ -2363,20 +2423,29 @@ def scan_results_summary():
                 "playable_count":           0, "execution_notes": [],
             })
 
-        # Fetch compact rows — enough to fill every category up to limit
-        fetch_limit = (limit * len(CAT_KEYS)) if not db_category else limit
-        rows  = get_compact_scan_rows(run_date, category=db_category, limit=fetch_limit)
-        flags = get_scan_source_flags(run_date)
+        # Rows and flags come from the same selected store as the counts.
+        rows  = summary_selection["rows"]
+        flags = summary_selection["source_flags"]
 
         # Group rows by category key; already sorted wow_score DESC
         grouped = {k: [] for k in CAT_KEYS}
         for row in rows:
             cat_key = CAT_REVERSE.get(row.get("classification", ""))
+            if not cat_key:
+                normalized_category = (
+                    str(row.get("classification") or "")
+                    .strip().lower().replace(" ", "_")
+                )
+                if normalized_category in CAT_KEYS:
+                    cat_key = normalized_category
             if cat_key and len(grouped[cat_key]) < limit:
                 grouped[cat_key].append(_compact_prop(row))
 
         # Counts come from DB summary, not the sliced grouped lists
-        counts = {k: summary_counts.get(cls_name, 0) for k, cls_name in CAT_KEYS.items()}
+        counts = {
+            k: summary_counts.get(cls_name, summary_counts.get(k, 0))
+            for k, cls_name in CAT_KEYS.items()
+        }
 
         # Source access status
         def _avail(key):
@@ -2416,6 +2485,10 @@ def scan_results_summary():
         # Execution notes
         sports = [s for s in (flags.get("sports") or []) if s]
         execution_notes = []
+        execution_notes.append(
+            f"Daily summary source: {summary_source}"
+            + (f" (run_id={summary_run_id})" if summary_run_id else "")
+        )
         if sports:
             execution_notes.append(f"Sports scanned: {', '.join(sorted(sports))}")
         if total_rows > 0:
@@ -2430,6 +2503,11 @@ def scan_results_summary():
             "ok":                              True,
             "status":                          scan_status,
             "run_date":                        run_date,
+            "summary_source":                  summary_source,
+            "summary_run_id":                  summary_run_id,
+            "summary_reconciliation":          (
+                selected_run.get("reconciliation") if selected_run else None
+            ),
             "source_access_status":            source_access_status,
             "execution_report":                execution_report,
             "counts":                          counts,

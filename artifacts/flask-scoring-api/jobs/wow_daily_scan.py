@@ -37,7 +37,7 @@ from services.odds_api   import fetch_all_props, SPORT_KEYS
 from services.rundown    import fetch_backup_props
 from services.player_logs import get_player_log_stats
 from services.status     import get_injuries, get_player_injury_flag, get_mlb_probable_pitchers
-from storage.results     import save_scan_result, get_scan_summary
+from storage.results     import save_scan_result
 from jobs.market_math import (
     no_vig_pair, pp_cash_threshold, compute_threshold_hit_rate,
     compute_drift_grade, classify_market_cause,

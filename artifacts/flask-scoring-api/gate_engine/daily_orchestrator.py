@@ -106,27 +106,23 @@ def resolve_participant_side(row: dict[str, Any]) -> str:
     "AWAY"         — explicit away marker found
     "SIDE_UNKNOWN" — no reliable marker (fail-closed; never defaults to home)
 
-    This is intentionally a separate function from _is_home_side so that the
-    orchestrator can quarantine SIDE_UNKNOWN rows before they reach the model,
-    while the existing moneyline pipeline (which preserves its prior behaviour)
-    is left unchanged.
+    This compatibility wrapper delegates to the same typed resolver used by
+    direct moneyline callers, while preserving the canonical orchestrator's
+    established SIDE_UNKNOWN serialization.
     """
-    _AWAY_MARKERS = {"AWAY", "FALSE", "0", "NO", "@"}
-    _HOME_MARKERS = {"HOME", "TRUE", "1", "YES", "VS", "VS.", "H"}
+    from gate_engine.moneyline.orientation import (
+        ParticipantOrientation,
+        resolve_participant_orientation,
+    )
 
-    for field in ("home_away", "is_home", "participant_side", "side_marker"):
-        raw = row.get(field)
-        if raw is None:
-            continue
-        normalized = str(raw).strip().upper()
-        if normalized in _AWAY_MARKERS:
-            return "AWAY"
-        if normalized in _HOME_MARKERS:
-            return "HOME"
-        # Non-empty but unrecognised — still unknown (fail-closed)
-        return "SIDE_UNKNOWN"
-
-    # No marker field at all
+    enrichment = row.get("enrichment")
+    if not isinstance(enrichment, dict):
+        enrichment = {}
+    resolution = resolve_participant_orientation(row, enrichment)
+    if resolution.orientation == ParticipantOrientation.HOME:
+        return "HOME"
+    if resolution.orientation == ParticipantOrientation.AWAY:
+        return "AWAY"
     return "SIDE_UNKNOWN"
 
 

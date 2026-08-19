@@ -44,6 +44,10 @@ from gate_engine.moneyline.slate_integrity import (
     check_final_refresh,
 )
 from gate_engine.moneyline.sport_model import compute_independent_probability
+from gate_engine.moneyline.orientation import (
+    orientation_blocker,
+    resolve_participant_orientation,
+)
 from gate_engine.moneyline.game_state_sim import run_game_state_simulation
 from gate_engine.moneyline.failure_path import integrate_failure_paths
 from gate_engine.moneyline.model_disagreement import audit_model_disagreement
@@ -241,6 +245,25 @@ def run_moneyline_pipeline(
     result.can_approve_bets = False
     blockers: list[str]   = []
 
+    sport        = (row.get("sport") or "").upper().strip()
+    model_entry  = get_model_for_sport(sport)
+    model_status = model_entry.get("status", ModelStatus.UNAVAILABLE)
+    result.model_id     = model_entry.get("model_id")
+    result.model_status = model_status
+
+    # Orientation is a Layer-0 data contract.  Resolve it before market
+    # adaptation, model evaluation, inversion, calibration, or classification.
+    orientation = resolve_participant_orientation(row, enrichment)
+    result.slate_integrity = {
+        "participant_orientation": orientation.to_dict(),
+    }
+    if not orientation.resolved:
+        blockers.append(orientation_blocker(orientation))
+        result.blockers       = blockers
+        result.terminal_label = "DATA_CONTRACT_FAIL"
+        result.snapshot_hash  = result.build_snapshot_hash()
+        return result
+
     # -----------------------------------------------------------------------
     # Stage 0: Market snapshot handoff (WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT)
     #
@@ -277,17 +300,14 @@ def run_moneyline_pipeline(
             result.snapshot_hash  = result.build_snapshot_hash()
             return result
 
-    sport       = (row.get("sport") or "").upper().strip()
-    model_entry = get_model_for_sport(sport)
-    model_status = model_entry.get("status", ModelStatus.UNAVAILABLE)
-    result.model_id     = model_entry.get("model_id")
-    result.model_status = model_status
-
     # -----------------------------------------------------------------------
     # Stage 1: Slate integrity + event lock
     # -----------------------------------------------------------------------
     stale = check_stale_model(row, enrichment, prior_snapshot)
-    result.slate_integrity = stale
+    result.slate_integrity = {
+        **result.slate_integrity,
+        **stale,
+    }
     if stale.get("stale"):
         blockers.append(f"STALE_MODEL_INVALIDATED:{stale.get('reason')}")
         result.blockers      = blockers
@@ -354,9 +374,9 @@ def run_moneyline_pipeline(
     # This ensures all early-return paths below also carry the TR acquisition audit.
     result.teamrankings = tr_enr.to_dict()
 
-    # Determine candidate side once — used for inversion at stage 6
-    from gate_engine.moneyline.sport_model import _is_home_side
-    is_home = _is_home_side(row, clean_enr)
+    # Candidate side was resolved once at Layer 0 and is used for inversion at
+    # stage 6.  An unresolved value cannot reach this point.
+    is_home = bool(orientation.is_home)
 
     # Extract market_no_vig here so it is available for the fallback path.
     # Pass both candidate team and opponent for proper two-sided no-vig removal.
@@ -373,7 +393,9 @@ def run_moneyline_pipeline(
     # Outputs P(home team wins) by convention — see sport_model.py header.
     # -----------------------------------------------------------------------
     try:
-        sport_model_out = compute_independent_probability(row, clean_enr)
+        sport_model_out = compute_independent_probability(
+            row, clean_enr, orientation=orientation
+        )
     except IndependentModelContaminationError as exc:
         blockers.append(f"INDEPENDENT_MODEL_CONTAMINATION:{exc!s:.120}")
         result.blockers       = blockers

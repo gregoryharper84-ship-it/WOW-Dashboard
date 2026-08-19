@@ -35,6 +35,7 @@ def _mlb_outright_row(**overrides) -> dict:
         "market_type": "h2h",
         "event_id":    "mlb-2026-08-07-BOS-NYY",
         "slate_date":  "2026-08-07",
+        "home_away":   "HOME",
         "board_source": "DraftKings",
     }
     row.update(overrides)
@@ -49,6 +50,7 @@ def _wnba_outright_row(**overrides) -> dict:
         "market_type": "moneyline",
         "event_id":    "wnba-2026-08-07-LVA-NYL",
         "slate_date":  "2026-08-07",
+        "home_away":   "HOME",
     }
     row.update(overrides)
     return row
@@ -62,6 +64,7 @@ def _atp_outright_row(**overrides) -> dict:
         "market_type": "match_winner",
         "event_id":    "atp-2026-08-07-ALC-SIN",
         "slate_date":  "2026-08-07",
+        "home_away":   "HOME",
     }
     row.update(overrides)
     return row
@@ -75,6 +78,7 @@ def _mma_outright_row(**overrides) -> dict:
         "market_type": "bout_winner",
         "event_id":    "mma-2026-08-07-JON-STI",
         "slate_date":  "2026-08-07",
+        "home_away":   "HOME",
     }
     row.update(overrides)
     return row
@@ -830,6 +834,7 @@ class TestSportModelUnavailableNoOddsSubstitute:
             "market_type": "match_winner",
             "event_id":    "cricket-2026-IND-AUS",
             "slate_date":  "2026-08-07",
+            "home_away":   "HOME",
         }
         classify_row(row)
         # Provide rich sportsbook odds — these must not substitute for the model
@@ -847,6 +852,7 @@ class TestSportModelUnavailableNoOddsSubstitute:
             "market_type": "match_winner",
             "event_id":    "cricket-2026-IND-AUS",
             "slate_date":  "2026-08-07",
+            "home_away":   "HOME",
         }
         classify_row(row)
         result = score_outright_winner_row(row)

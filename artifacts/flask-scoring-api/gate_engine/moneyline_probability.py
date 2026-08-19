@@ -636,6 +636,21 @@ def score_outright_winner_row(
     model_entry = get_model_for_sport(sport)
     model_status = model_entry.get("status", ModelStatus.UNAVAILABLE)
 
+    # Direct-entry contract check.  The full pipeline repeats this check for
+    # callers that invoke it directly, but this boundary guarantees app/API
+    # callers receive a typed non-crashing failure envelope.
+    from gate_engine.moneyline.orientation import (
+        orientation_blocker,
+        resolve_participant_orientation,
+    )
+    orientation = resolve_participant_orientation(row, enrichment)
+    if not orientation.resolved:
+        blockers.append(orientation_blocker(orientation))
+        return _build_result(
+            terminal, blockers, None, row, model_entry, enrichment,
+            orientation_resolution=orientation.to_dict(),
+        )
+
     # Soccer 1X2 three-state check
     three_state_result: dict[str, Any] | None = None
     is_1x2 = model_entry.get("output_type") == "three_state"
@@ -643,7 +658,10 @@ def score_outright_winner_row(
         violations = validate_soccer_1x2_outcome(row)
         if violations:
             blockers.extend(violations)
-            return _build_result(terminal, blockers, None, row, model_entry, enrichment)
+            return _build_result(
+                terminal, blockers, None, row, model_entry, enrichment,
+                orientation_resolution=orientation.to_dict(),
+            )
 
     # Stale model check
     stale = check_stale_model(row, enrichment, prior_snapshot)
@@ -652,6 +670,7 @@ def score_outright_winner_row(
         return _build_result(
             "STALE_MODEL_INVALIDATED", blockers, None, row, model_entry, enrichment,
             stale_check=stale,
+            orientation_resolution=orientation.to_dict(),
         )
 
     # Model unavailability check — sportsbook odds cannot substitute
@@ -660,7 +679,10 @@ def score_outright_winner_row(
             f"NO_REGISTERED_MODEL:sport={sport} "
             "sportsbook_odds_cannot_substitute_for_sport_model"
         )
-        return _build_result(terminal, blockers, None, row, model_entry, enrichment)
+        return _build_result(
+            terminal, blockers, None, row, model_entry, enrichment,
+            orientation_resolution=orientation.to_dict(),
+        )
 
     # ---------------------------------------------------------------------------
     # Delegate to the full WOW v16 Moneyline Architecture pipeline.
@@ -730,6 +752,7 @@ def score_outright_winner_row(
     return _build_result(
         ml_result.terminal_label, ml_result.blockers, _snap, row, model_entry, enrichment,
         stale_check=stale,
+        orientation_resolution=orientation.to_dict(),
     )
 
 
@@ -741,6 +764,7 @@ def _build_result(
     model_entry: dict[str, Any],
     enrichment: dict[str, Any],
     stale_check: dict[str, Any] | None = None,
+    orientation_resolution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from gate_engine.market_family import build_route_fields
     return {
@@ -750,6 +774,7 @@ def _build_result(
         "model_id":              model_entry.get("model_id"),
         "model_status":          model_entry.get("status", ModelStatus.UNAVAILABLE),
         "stale_model_check":     stale_check,
+        "orientation_resolution": orientation_resolution,
         "route_compatibility":   build_route_fields(row),
         "can_execute":           False,
         "can_approve_bets":      False,

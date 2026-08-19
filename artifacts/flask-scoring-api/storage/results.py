@@ -139,7 +139,13 @@ def save_scan_result(result: dict) -> bool:
         return False
 
 
-def get_scan_results(run_date=None, classification=None, sport=None, limit=200):
+def get_scan_results(
+    run_date=None,
+    classification=None,
+    sport=None,
+    limit=200,
+    offset=0,
+):
     """Fetch scan results filtered by date, classification, sport."""
     try:
         conn = get_db_conn()
@@ -156,10 +162,11 @@ def get_scan_results(run_date=None, classification=None, sport=None, limit=200):
             {where}
             ORDER BY run_at DESC
             LIMIT %s
+            OFFSET %s
         """
         with conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(sql, params + [limit])
+                cur.execute(sql, params + [limit, offset])
                 rows = cur.fetchall()
         conn.close()
         return [dict(r) for r in rows]

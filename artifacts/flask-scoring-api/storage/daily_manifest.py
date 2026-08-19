@@ -377,3 +377,243 @@ def list_runs(run_date: str | None = None, limit: int = 10) -> list[dict]:
     except Exception as exc:
         logger.error("daily_manifest.list_runs failed: %s", exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Canonical daily-summary selection helpers
+# ---------------------------------------------------------------------------
+
+_COMMITTED_RUN_STATUSES = frozenset({"COMPLETE", "DEGRADED"})
+
+
+def _manifest_is_committed(run: dict[str, Any]) -> bool:
+    """
+    Return True only when the canonical run is safe to expose as a summary.
+
+    Header finalization happens before row persistence, so finished_at alone is
+    insufficient.  A committed manifest must also have a successful exact
+    reconciliation proof and the persisted row count must equal the discovered
+    count.
+    """
+    reconciliation = run.get("reconciliation")
+    if isinstance(reconciliation, str):
+        try:
+            reconciliation = json.loads(reconciliation)
+        except Exception:
+            reconciliation = None
+
+    try:
+        total_discovered = int(run.get("total_discovered", -1))
+        persisted_rows = int(run.get("persisted_row_count", -2))
+    except (TypeError, ValueError):
+        return False
+
+    return bool(
+        run.get("finished_at")
+        and run.get("run_status") in _COMMITTED_RUN_STATUSES
+        and isinstance(reconciliation, dict)
+        and reconciliation.get("reconciled") is True
+        and persisted_rows == total_discovered
+    )
+
+
+def get_latest_committed_run(run_date: str) -> dict | None:
+    """
+    Return the latest fully committed/reconciled canonical run for a date.
+
+    Database failures are intentionally allowed to propagate.  A query failure
+    is not proof that no canonical run exists, so silently falling back to the
+    legacy store would violate the single-source selection contract.
+    """
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT r.*,
+                       (
+                           SELECT COUNT(*)
+                           FROM wow_daily_run_rows rr
+                           WHERE rr.run_id = r.run_id
+                       ) AS persisted_row_count
+                FROM wow_daily_runs r
+                WHERE r.run_date = %s
+                  AND r.finished_at IS NOT NULL
+                  AND r.run_status IN ('COMPLETE', 'DEGRADED')
+                  AND COALESCE(
+                      (r.reconciliation->>'reconciled')::boolean,
+                      FALSE
+                  ) = TRUE
+                  AND (
+                      SELECT COUNT(*)
+                      FROM wow_daily_run_rows rr
+                      WHERE rr.run_id = r.run_id
+                  ) = r.total_discovered
+                ORDER BY r.finished_at DESC, r.started_at DESC
+                LIMIT 1
+                """,
+                (run_date,),
+            )
+            cols = [d[0] for d in cur.description]
+            candidates = [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+    for run in candidates:
+        for key in (
+            "requested_sports", "scanned_sports", "missing_sports",
+            "failed_modules", "runtime_provenance", "source_union_counts",
+            "reconciliation",
+        ):
+            if isinstance(run.get(key), str):
+                try:
+                    run[key] = json.loads(run[key])
+                except Exception:
+                    pass
+        if _manifest_is_committed(run):
+            return run
+    return None
+
+
+def get_run_summary_counts(run_id: str) -> dict[str, int]:
+    """Return count-by-classification for one canonical run."""
+    conn = _get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT classification, COUNT(*) AS cnt
+            FROM wow_daily_run_rows
+            WHERE run_id = %s
+            GROUP BY classification
+            ORDER BY cnt DESC
+            """,
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    conn.close()
+    return {
+        classification: int(count)
+        for classification, count in rows
+        if classification is not None
+    }
+
+
+def get_run_summary_rows(
+    run_id: str,
+    *,
+    category: str | None = None,
+    sport: str | None = None,
+    limit: int = 80,
+    offset: int = 0,
+) -> list[dict]:
+    """
+    Return canonical run rows in the legacy compact-row input shape.
+
+    full_row preserves the established scan summary fields; immutable manifest
+    columns overwrite identity/classification fields so the manifest remains
+    authoritative if the embedded row differs.
+    """
+    conn = _get_conn()
+    params: list[Any] = [run_id]
+    category_sql = ""
+    if category:
+        category_sql = "AND classification = %s"
+        params.append(category)
+    sport_sql = ""
+    if sport:
+        sport_sql = "AND sport = %s"
+        params.append(sport.upper())
+    params.extend((limit, offset))
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT sport, player, prop, side, line, game_date,
+                   terminal_bucket, classification, wow_score,
+                   final_approval_blocker, audit_valid, side_resolution,
+                   reconciliation_status, full_row
+            FROM wow_daily_run_rows
+            WHERE run_id = %s
+              {category_sql}
+              {sport_sql}
+            ORDER BY wow_score DESC NULLS LAST, sport, player, prop, side
+            LIMIT %s
+            OFFSET %s
+            """,
+            params,
+        )
+        cols = [d[0] for d in cur.description]
+        stored_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    conn.close()
+
+    output: list[dict] = []
+    manifest_fields = (
+        "sport", "player", "prop", "side", "line", "game_date",
+        "terminal_bucket", "classification", "wow_score",
+        "final_approval_blocker", "audit_valid", "side_resolution",
+        "reconciliation_status",
+    )
+    for stored in stored_rows:
+        full_row = stored.get("full_row")
+        if isinstance(full_row, str):
+            try:
+                full_row = json.loads(full_row)
+            except Exception:
+                full_row = {}
+        row = dict(full_row) if isinstance(full_row, dict) else {}
+        for field_name in manifest_fields:
+            row[field_name] = stored.get(field_name)
+        output.append(row)
+    return output
+
+
+def get_run_source_flags(run_id: str) -> dict[str, Any]:
+    """Aggregate legacy-compatible source/audit flags for a canonical run."""
+    conn = _get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(full_row->>'source_odds', '') LIKE '%%AVAILABLE%%'
+                ) AS odds_avail,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(full_row->>'source_odds', '') NOT IN ('NOT_CALLED', '')
+                ) AS odds_called,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(full_row->>'source_logs', '') LIKE '%%AVAILABLE%%'
+                ) AS logs_avail,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(full_row->>'source_logs', '') NOT IN ('NOT_CALLED', '')
+                ) AS logs_called,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(full_row->>'source_status', '') LIKE '%%AVAILABLE%%'
+                ) AS status_avail,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(full_row->>'source_status', '') NOT IN ('NOT_CALLED', '')
+                ) AS status_called,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(full_row->>'source_rundown', '') LIKE '%%AVAILABLE%%'
+                ) AS rundown_avail,
+                COUNT(*) FILTER (WHERE audit_valid = TRUE) AS audit_valid_count,
+                COUNT(*) FILTER (WHERE audit_valid = FALSE) AS audit_invalid_count,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(full_row->>'projection_status', '') = 'INTERNAL'
+                ) AS internal_proj_count,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(full_row->>'projection_status', '') = 'EXTERNAL'
+                ) AS external_proj_count,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(full_row->>'projection_status', '') = 'MISSING'
+                ) AS missing_proj_count,
+                ARRAY_AGG(DISTINCT sport) AS sports
+            FROM wow_daily_run_rows
+            WHERE run_id = %s
+            """,
+            (run_id,),
+        )
+        cols = [d[0] for d in cur.description]
+        stored = cur.fetchone()
+    conn.close()
+    return dict(zip(cols, stored)) if stored else {}

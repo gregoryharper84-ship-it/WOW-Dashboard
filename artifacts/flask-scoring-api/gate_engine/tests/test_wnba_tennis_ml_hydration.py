@@ -66,6 +66,7 @@ def _wnba_row(**overrides: Any) -> dict[str, Any]:
         "team":          "Las Vegas Aces",
         "opponent":      "New York Liberty",
         "side":          "home",
+        "home_away":     "HOME",
         "event_id":      "wnba-2026-08-17-lva-nyl",
         "event_date":    "2026-08-17",
     }
@@ -82,6 +83,7 @@ def _tennis_row(**overrides: Any) -> dict[str, Any]:
         "team":          "Jannik Sinner",
         "opponent":      "Carlos Alcaraz",
         "side":          "home",
+        "home_away":     "HOME",
         "event_id":      "atp-2026-08-17-sin-alc",
         "event_date":    "2026-08-17",
     }
