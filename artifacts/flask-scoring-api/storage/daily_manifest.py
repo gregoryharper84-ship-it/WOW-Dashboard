@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import logging
+import threading
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -33,6 +34,9 @@ MODULE_ID = "WOW-DAILY-MANIFEST-v1.0"
 _DB_CONNECT_TIMEOUT_SECONDS = 5
 _DB_STATEMENT_TIMEOUT_MS = 30_000
 _DB_LOCK_TIMEOUT_MS = 5_000
+_SCHEMA_ADVISORY_LOCK = 441_721_908
+_schema_ready = False
+_schema_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # DB connection helper (mirrors storage/results.py pattern)
@@ -114,38 +118,53 @@ CREATE INDEX IF NOT EXISTS idx_wow_daily_run_rows_sel_id ON wow_daily_run_rows(c
 
 
 def ensure_tables() -> bool:
-    """Create manifest tables if they don't exist. Returns True on success."""
-    try:
-        conn = _get_conn()
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(_SCHEMA_SQL)
-                cur.execute(
-                    """
-                    ALTER TABLE wow_daily_runs
-                        ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
-                        ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ,
-                        ADD COLUMN IF NOT EXISTS progress_stage TEXT
-                            NOT NULL DEFAULT 'ACCEPTED',
-                        ADD COLUMN IF NOT EXISTS progress_detail TEXT,
-                        ADD COLUMN IF NOT EXISTS progress_updated_at TIMESTAMPTZ,
-                        ADD COLUMN IF NOT EXISTS failure_reason TEXT,
-                        ADD COLUMN IF NOT EXISTS failure_module TEXT
-                    """
-                )
-                cur.execute(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS
-                        uq_wow_daily_runs_idempotency_key
-                    ON wow_daily_runs (idempotency_key)
-                    WHERE idempotency_key IS NOT NULL
-                    """
-                )
-        conn.close()
+    """Create manifest tables once per process with cross-worker DDL safety."""
+    global _schema_ready
+    if _schema_ready:
         return True
-    except Exception as exc:
-        logger.error("daily_manifest.ensure_tables failed: %s", exc)
-        return False
+
+    with _schema_lock:
+        if _schema_ready:
+            return True
+        try:
+            conn = _get_conn()
+            with conn:
+                with conn.cursor() as cur:
+                    # DDL is only a bootstrap concern. Serialize it across
+                    # gunicorn/process workers so duplicate POSTs never
+                    # deadlock before their idempotency record is read.
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (_SCHEMA_ADVISORY_LOCK,),
+                    )
+                    cur.execute(_SCHEMA_SQL)
+                    cur.execute(
+                        """
+                        ALTER TABLE wow_daily_runs
+                            ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
+                            ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ,
+                            ADD COLUMN IF NOT EXISTS progress_stage TEXT
+                                NOT NULL DEFAULT 'ACCEPTED',
+                            ADD COLUMN IF NOT EXISTS progress_detail TEXT,
+                            ADD COLUMN IF NOT EXISTS progress_updated_at TIMESTAMPTZ,
+                            ADD COLUMN IF NOT EXISTS failure_reason TEXT,
+                            ADD COLUMN IF NOT EXISTS failure_module TEXT
+                        """
+                    )
+                    cur.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS
+                            uq_wow_daily_runs_idempotency_key
+                        ON wow_daily_runs (idempotency_key)
+                        WHERE idempotency_key IS NOT NULL
+                        """
+                    )
+            conn.close()
+            _schema_ready = True
+            return True
+        except Exception as exc:
+            logger.error("daily_manifest.ensure_tables failed: %s", exc)
+            return False
 
 
 # ---------------------------------------------------------------------------

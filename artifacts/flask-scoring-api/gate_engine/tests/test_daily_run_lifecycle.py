@@ -189,6 +189,23 @@ class TestManifestTimeoutsAndReconciliation(unittest.TestCase):
         self.assertIn("statement_timeout=30000", kwargs["options"])
         self.assertIn("lock_timeout=5000", kwargs["options"])
 
+    def test_schema_bootstrap_is_cached_and_advisory_locked(self):
+        from storage import daily_manifest
+
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        with (
+            patch.object(daily_manifest, "_schema_ready", False),
+            patch.object(daily_manifest, "_get_conn", return_value=conn) as get_conn,
+        ):
+            self.assertTrue(daily_manifest.ensure_tables())
+            self.assertTrue(daily_manifest.ensure_tables())
+
+        get_conn.assert_called_once()
+        first_sql, first_params = cursor.execute.call_args_list[0].args
+        self.assertIn("pg_advisory_xact_lock", first_sql)
+        self.assertEqual(first_params, (daily_manifest._SCHEMA_ADVISORY_LOCK,))
+
     def test_existing_reconciliation_remains_exact(self):
         from gate_engine.daily_orchestrator import _build_reconciliation
         result = _build_reconciliation(
