@@ -142,6 +142,14 @@ def _watch_deadline(
                 failure_reason="WHOLE_RUN_DEADLINE_EXCEEDED",
                 failure_module="daily_run_lifecycle.deadline_watch",
             )
+        elif process.exitcode not in (None, 0):
+            _safe_terminalize(
+                run_id=run_id,
+                finished_at=_now(),
+                run_status="DEGRADED",
+                failure_reason=f"WORKER_EXITED_UNEXPECTEDLY:{process.exitcode}",
+                failure_module="daily_run_lifecycle.deadline_watch",
+            )
     finally:
         with _processes_lock:
             _processes.pop(run_id, None)

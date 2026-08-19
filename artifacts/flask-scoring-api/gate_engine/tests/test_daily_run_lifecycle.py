@@ -15,6 +15,7 @@ class _FakeProcess:
 
     def __init__(self, *args, **kwargs):
         self._alive = False
+        self.exitcode = 0
 
     def start(self):
         type(self).started_count += 1
@@ -168,6 +169,21 @@ class TestDailyRunLifecycle(unittest.TestCase):
         self.assertEqual(
             terminalize.call_args.kwargs["failure_reason"],
             "WHOLE_RUN_DEADLINE_EXCEEDED",
+        )
+
+    def test_early_abnormal_worker_exit_terminalizes_immediately(self):
+        process = _FakeProcess()
+        process.exitcode = 9
+        terminalize = MagicMock()
+        with patch("storage.daily_manifest.terminalize_run", terminalize):
+            lifecycle._watch_deadline(
+                run_id="run-exited",
+                process=process,
+                deadline_at=(datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+            )
+        self.assertEqual(
+            terminalize.call_args.kwargs["failure_reason"],
+            "WORKER_EXITED_UNEXPECTEDLY:9",
         )
 
     def test_worker_exception_is_guaranteed_terminal(self):
