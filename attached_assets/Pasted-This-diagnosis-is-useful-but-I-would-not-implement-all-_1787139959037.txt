@@ -1,0 +1,340 @@
+This diagnosis is useful, but I would **not implement all of its suggested workarounds as-is**. A few would get rows past hydration while weakening the actual WOW standard.
+
+The biggest change I would make is this:
+
+**The 1IP fix should happen now despite the development freeze.** The freeze was meant to stop feature creep while collecting 20 forward-tested rows. If the 1IP acquisition gap prevents any rows from reaching the logger, then the validation experiment cannot start. That is a **validation-blocking defect**, not new model development. 
+
+### What I would do now
+
+**1. Fix 1IP narrowly and immediately.** The diagnosis correctly identifies `first_inning_bf_distribution` as the blocker. But I would not hardcode `0.54 / 0.28 / 0.18` and then pretend that is equivalent to pitcher-specific evidence.
+
+Use a hierarchical fallback:
+
+```text
+pitcher-specific 1IP BF distribution
+        ↓ if thin/unavailable
+similar starter cohort / handedness prior
+        ↓
+current-season league starter 1IP BF distribution
+        ↓
+adjust with today's projected top-four batter event probabilities
+        ↓
+1IP event-tree
+        ↓
+P(MORE) / P(LESS)
+        ↓
+dynamic calibration with larger uncertainty
+```
+
+The 1IP specialist still remains controlling and must still generate the batter-by-batter event tree and both sides. 
+
+Every fallback prediction should carry something like:
+
+```text
+1ip_acquisition_tier=PITCHER_SPECIFIC | COHORT_SHRUNK | LEAGUE_PRIOR
+```
+
+and the calibration layer should widen uncertainty as the tier gets weaker.
+
+Most importantly, **log all three tiers separately** so the forward test can later tell us whether league-prior 1IP predictions actually work.
+
+### I would change the acceptance test
+
+Don't require:
+
+```text
+n=0 pitcher
+→ MODEL_QUALIFIED_HOLD
+```
+
+automatically.
+
+Require:
+
+```text
+n=0 pitcher
+→ fallback BF prior obtained
+→ top-four/event-tree inputs complete
+→ event-tree runs
+→ P(MORE)+P(LESS) valid
+→ calibration runs
+→ terminal label determined normally
+→ prediction logger records it if eligible
+```
+
+It may still reject. What matters is that it reaches the real model instead of dying because one pitcher-specific table was empty.
+
+---
+
+### 2. WNBA ML: fix acquisition, but do not use win percentage alone as a production workaround
+
+The diagnosis is right that the WNBA specialist lacks team-level acquisition. 
+
+But this:
+
+```text
+home_win_pct=.65
+away_win_pct=.45
+→ publish WOW probability
+```
+
+is too weak for an official WOW Daily result.
+
+Your controlling LLP skill requires WNBA win modeling to consider active roster, expected starters, minutes, usage/on-off effects, pace, matchup, rebounding, turnovers, shooting variance, etc. 
+
+So I would allow `home_win_pct/away_win_pct` only as a **backend smoke test**.
+
+Permanent WNBA ML hydration should produce:
+
+```text
+team record / ratings
+active roster
+expected starters
+minutes
+usage redistribution
+on/off impact
+pace
+offense/defense
+rebounding
+turnovers
+rest/travel
+injury state
+```
+
+Then feed the WNBA game-win model.
+
+**Priority: high, but after 1IP.**
+
+---
+
+### 3. Tennis: same principle
+
+The diagnosis correctly says the Tennis specialist already exists but isn't being hydrated. 
+
+Do not make a single manually supplied `surface_adjusted_form=.63` the permanent answer.
+
+Use that only to verify that the backend route itself works.
+
+Permanent acquisition should hydrate at least the specialist's real inputs:
+
+```text
+surface
+serve/hold performance
+return/break performance
+surface-adjusted rating/Elo
+recent workload
+injury/fitness
+format
+retirement settlement
+```
+
+Then the specialist produces the win probability.
+
+So:
+
+**specialist exists → wire data → no new specialist needed.**
+
+---
+
+### 4. MMA: do not use UFC ranking position as pseudo-Elo for production
+
+This is where I disagree most strongly with the suggested temporary workaround.
+
+Turning UFC rankings into Elo just to produce a non-null probability would violate the spirit of:
+
+```text
+CONTROLLING MODEL UNAVAILABLE
+→ MODEL_UNAVAILABLE
+```
+
+The diagnosis correctly identifies that MMA currently has **neither a real specialist nor acquisition path**. 
+
+Therefore the production answer should remain:
+
+```text
+MMA → MODEL_UNAVAILABLE
+```
+
+until an actual fight-win model exists.
+
+This is a legitimate future capability—not something I would rush during the validation freeze.
+
+---
+
+### 5. Soccer should receive the generic multi-outcome fix
+
+Claude's diagnosis here reinforces the architectural fix I recommended earlier.
+
+The soccer model itself already returns:
+
+```text
+P(HOME)
+P(DRAW)
+P(AWAY)
+```
+
+but the intake contract only accepts binary directions. 
+
+Don't make a one-off soccer hack.
+
+Create a canonical outcome-space adapter:
+
+```text
+BINARY
+HOME / AWAY
+
+TERNARY
+HOME / DRAW / AWAY
+
+FIELD
+outcome_1 ... outcome_n
+```
+
+Then moneyline-style markets consume the appropriate probability from that outcome object.
+
+That solves:
+
+* soccer;
+* MMA draw/no-contest states;
+* golf fields;
+* weather brackets;
+* any future three-or-more-outcome market.
+
+**This is the correct permanent fix**, but I would hold it until after the validation-blocking 1IP repair unless soccer is immediately mission-critical.
+
+---
+
+### 6. Kalshi can be fixed now without touching code
+
+This diagnosis is also important: the adapter apparently exists; authentication is missing. 
+
+So this does **not** require another Replit engineering project.
+
+Provision the Kalshi read credentials directly in Replit Secrets—**do not paste the private key into this chat**—then run the inventory health check.
+
+Expected healthy states are:
+
+```text
+INVENTORY_READY
+```
+
+or:
+
+```text
+INVENTORY_EMPTY
+```
+
+Either is better than:
+
+```text
+KALSHI_DATA_UNOBTAINABLE
+```
+
+If credentials work and it returns `INVENTORY_EMPTY`, then investigate stale/renamed series identifiers.
+
+Recovery Mode still remains binding; fixing inventory does not reactivate combos. 
+
+---
+
+### 7. MLB ML: do not “fix” zero survivors
+
+The diagnosis supports what we saw.
+
+Two cases need to stay distinct:
+
+```text
+NO_EDGE_VALUE
+```
+
+means the required price evidence wasn't available.
+
+That is a **data acquisition problem**.
+
+```text
+EDGE_BELOW_THRESHOLD
+```
+
+means the model ran and the market simply didn't offer enough verified edge.
+
+That is **correct rejection behavior**.
+
+One thing I would change from Claude's suggestion: **ESPN alone should not become “consensus no-vig.”** Your existing WOW evidence rules explicitly treat a single proxy/secondary source differently from actual consensus.
+
+Permanent resolver should be:
+
+```text
+Primary odds provider
+↓
+secondary independent odds source(s)
+↓
+two-sided exact-line consensus
+↓
+no-vig
+```
+
+ESPN can help with validation/classification, but should not silently masquerade as a multi-book consensus.
+
+---
+
+## So I would revise the engineering plan to this
+
+**Do now:**
+
+1. **1IP validation-unblocker**
+
+   * hierarchical BF fallback;
+   * no static unversioned constants;
+   * preserve event-tree control;
+   * uncertainty increases for fallback tiers;
+   * logger records acquisition tier;
+   * real-data acceptance test.
+
+2. **Kalshi credentials**
+
+   * secrets only;
+   * inventory health verification;
+   * no code unless credentials reveal a second defect.
+
+3. **Run one real 1IP forward prediction**
+
+   * prove it reaches event-tree → calibration → logger;
+   * then resume freeze.
+
+**Do not build right now:**
+
+* new MMA specialist;
+* new Tennis model;
+* new WNBA model;
+* giant cross-sport agent;
+* new approval gates;
+* new calibration thresholds.
+
+After the 1IP logger successfully records real predictions, the freeze resumes and the `20 verified settlements` experiment continues.
+
+### After the first validation checkpoint
+
+Then tackle the remaining architecture in this order:
+
+```text
+WNBA ML acquisition
+↓
+Tennis acquisition
+↓
+generic multi-outcome adapter / Soccer
+↓
+ML odds-resilience / consensus
+↓
+MMA specialist + acquisition
+↓
+remaining Kalshi inventory issues if any
+```
+
+The key distinction is:
+
+> **Do not use GPT-supplied enrichment to make unsupported lanes look operational.**
+
+Those manual fields are useful for **smoke-testing whether a model route works**, but WOW Daily should not publish a production probability unless the appropriate controlling specialist and its required evidence actually ran.
+
+That keeps the system aligned with V2.2: typed hydration answers whether data exists, the controlling specialist answers probability, and one cannot substitute for the other. 
+
+So I would classify the pasted diagnosis as **mostly correct on root causes, but too permissive in several proposed temporary workarounds**. The only code change I would authorize immediately is the narrow **1IP validation-unblocker**, because without it the experiment we froze development to run cannot even accumulate its first row.
