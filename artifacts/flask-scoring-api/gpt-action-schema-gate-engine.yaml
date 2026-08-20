@@ -2480,125 +2480,17 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  run_id:
-                    type: string
-                    description: Immutable UUID for this run. Use with /wow/daily/manifest/{run_id}.
-                  run_date:
-                    type: string
-                    description: ISO date (YYYY-MM-DD) of this run.
-                  run_status:
-                    type: string
-                    enum: [COMPLETE, DEGRADED, RECONCILIATION_WARNING, FAILED]
-                    description: >
-                      COMPLETE — all sports discovered and all selections reconciled.
-                      DEGRADED — one or more source fetches failed; playable buckets cleared.
-                      RECONCILIATION_WARNING — terminal bucket totals don't match discovered count.
-                      FAILED — run_scan raised an unhandled exception.
-                  counts:
-                    type: object
-                    description: Bucket counts including total_discovered and playable_count.
-                    properties:
-                      total_discovered:
-                        type: integer
-                      playable_count:
-                        type: integer
-                      total_final_approved:
-                        type: integer
-                      market_verified:
-                        type: integer
-                      final_approved_internal:
-                        type: integer
-                      model_qualified:
-                        type: integer
-                      watch:
-                        type: integer
-                      reject:
-                        type: integer
-                  playable_card:
-                    type: array
-                    description: Compact list of approved/qualified picks sized for GPT response limits.
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                          description: Canonical selection ID (SEL_<hex>).
-                        player:
-                          type: string
-                        sport:
-                          type: string
-                        prop:
-                          type: string
-                        side:
-                          type: string
-                        line:
-                          type: number
-                        score:
-                          type: number
-                          nullable: true
-                        bucket:
-                          type: string
-                        blocker:
-                          type: string
-                          nullable: true
-                        audit_valid:
-                          type: boolean
-                          nullable: true
-                  reconciliation:
-                    type: object
-                    description: Exact board reconciliation proof.
-                    properties:
-                      reconciled:
-                        type: boolean
-                      discovered_count:
-                        type: integer
-                      total_terminal:
-                        type: integer
-                      duplicate_ids:
-                        type: array
-                        items:
-                          type: string
-                      missing_ids:
-                        type: array
-                        items:
-                          type: string
-                      excess_ids:
-                        type: array
-                        items:
-                          type: string
-                  source_union:
-                    type: object
-                    description: Per-sport source availability status strings.
-                    additionalProperties:
-                      type: string
-                  missing_sports:
-                    type: array
-                    items:
-                      type: string
-                    description: Sports with zero discovered props.
-                  failed_modules:
-                    type: array
-                    items:
-                      type: string
-                    description: Acquisition errors recorded during this run.
-                  runtime_provenance:
-                    type: object
-                    nullable: true
-                    description: Server-authoritative provenance record (echoed back).
-                  engine:
-                    type: string
-                    description: Orchestrator engine version string.
-                  patch_id:
-                    type: string
-                    description: Patch identifier for this orchestration version.
+                $ref: '#/components/schemas/DailyRunAcknowledgement'
+        "202":
+          description: Canonical Daily run accepted or in progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyRunAcknowledgement'
         "401":
           description: Missing or invalid X-API-Key
         "409":
-          description: Idempotency key was reused with different date or timezone intent.
+          description: Runtime provenance was unverified, or idempotency key intent conflicted.
         "500":
           description: Orchestration failed (error field contains reason)
       security:
@@ -2684,7 +2576,54 @@ paths:
         - ApiKeyAuth: []
 
 components:
-  schemas: {}
+  schemas:
+    DailyRunAcknowledgement:
+      type: object
+      required:
+        - ok
+        - accepted
+        - run_id
+        - run_date
+        - timezone
+        - run_status
+        - progress_stage
+        - deadline_at
+        - reused
+        - can_execute
+        - runtime_provenance
+      properties:
+        ok:
+          type: boolean
+        accepted:
+          type: boolean
+          description: True when the canonical lifecycle acknowledged the request.
+        run_id:
+          type: string
+          description: Server-generated immutable run identifier.
+        run_date:
+          type: string
+          format: date
+        timezone:
+          type: string
+          description: IANA timezone persisted with the request intent.
+        run_status:
+          type: string
+          enum: [ACCEPTED, IN_PROGRESS, COMPLETE, DEGRADED, RECONCILIATION_WARNING, FAILED]
+        progress_stage:
+          type: string
+        deadline_at:
+          type: string
+          format: date-time
+        reused:
+          type: boolean
+          description: True when this response reuses the prior canonical run.
+        can_execute:
+          type: boolean
+          enum: [false]
+          description: Always false; WOW Daily is dry-run only.
+        runtime_provenance:
+          type: object
+          description: Server-authoritative runtime provenance record.
   securitySchemes:
     ApiKeyAuth:
       type: apiKey

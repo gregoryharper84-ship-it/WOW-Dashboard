@@ -19,6 +19,8 @@ def test_daily_http_contract_and_dynamic_openapi_in_isolated_process():
     script = r'''
 import os
 from unittest.mock import patch
+from pathlib import Path
+import yaml
 
 os.environ["SCORING_API_KEY"] = "daily-contract-key"
 import app as app_module
@@ -32,6 +34,27 @@ valid_body = {
 }
 
 assert client.post("/wow/daily/run", json=valid_body).status_code == 401
+
+with (
+    patch(
+        "gate_engine.runtime_provenance.build_route_provenance",
+        return_value={"can_execute": False},
+    ),
+    patch(
+        "gate_engine.runtime_provenance.provenance_blocker",
+        return_value="RUNTIME_PROVENANCE:BACKEND_NOT_VERIFIED:TEST",
+    ),
+    patch("gate_engine.daily_run_lifecycle.start_run") as start,
+):
+    rejected = client.post(
+        "/wow/daily/run",
+        json=valid_body,
+        headers={"X-API-Key": "daily-contract-key"},
+    )
+    assert rejected.status_code == 409
+    assert rejected.get_json()["error"] == "RUN_INVALID_RUNTIME_PROVENANCE"
+    assert rejected.get_json()["can_execute"] is False
+    assert start.call_count == 0
 
 with patch("gate_engine.daily_run_lifecycle.start_run") as start:
     missing = client.post(
@@ -54,6 +77,10 @@ with (
     patch(
         "gate_engine.runtime_provenance.build_route_provenance",
         return_value={"can_execute": False},
+    ),
+    patch(
+        "gate_engine.runtime_provenance.provenance_blocker",
+        return_value=None,
     ),
     patch(
         "gate_engine.daily_run_lifecycle.start_run",
@@ -84,6 +111,24 @@ body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
 assert operation["requestBody"]["required"] is True
 assert {"date", "timezone", "idempotency_key"} <= set(body_schema["required"])
 assert "run_id" not in body_schema["properties"]
+for status_code in ("200", "202"):
+    response_schema = operation["responses"][status_code]["content"]["application/json"]["schema"]
+    response_ref = response_schema["$ref"]
+    response_name = response_ref.rsplit("/", 1)[-1]
+    dynamic_response = schema["components"]["schemas"][response_name]
+    response_properties = dynamic_response["properties"]
+    assert {
+        "run_id", "run_date", "timezone", "run_status", "progress_stage",
+        "deadline_at", "reused", "can_execute", "runtime_provenance",
+    } <= set(response_properties)
+    action_schema = yaml.safe_load(
+        Path("gpt-action-schema-gate-engine.yaml").read_text()
+    )
+    action_response = action_schema["paths"]["/wow/daily/run"]["post"]["responses"][status_code]
+    action_ref = action_response["content"]["application/json"]["schema"]["$ref"]
+    static_response = action_schema["components"]["schemas"][action_ref.rsplit("/", 1)[-1]]
+    assert dynamic_response["required"] == static_response["required"]
+    assert set(response_properties) == set(static_response["properties"])
 '''
     completed = subprocess.run(
         [sys.executable, "-c", script],

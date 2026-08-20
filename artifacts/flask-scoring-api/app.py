@@ -1869,6 +1869,19 @@ def wow_daily_run():
         caller_context=data.get("runtime_context") or data,
     )
     _prov_blocker = provenance_blocker(runtime_provenance)
+    if _prov_blocker is not None:
+        return jsonify({
+            "ok": False,
+            "status": "rejected",
+            "error": "RUN_INVALID_RUNTIME_PROVENANCE",
+            "blocker": _prov_blocker,
+            "detail": (
+                "Canonical WOW Daily requires a fully verified, server-attested "
+                "runtime before a run can be created."
+            ),
+            "runtime_provenance": runtime_provenance,
+            "can_execute": False,
+        }), 409
 
     try:
         from gate_engine.daily_run_lifecycle import start_run
@@ -3026,11 +3039,34 @@ def openapi_schema():
                         },
                     },
                     "responses": {
-                        "202": {"description": "Canonical run accepted or in progress."},
-                        "200": {"description": "Existing idempotent run is terminal."},
+                        "202": {
+                            "description": "Canonical run accepted or in progress.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/DailyRunAcknowledgement"
+                                    }
+                                }
+                            },
+                        },
+                        "200": {
+                            "description": "Existing idempotent run is terminal.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/DailyRunAcknowledgement"
+                                    }
+                                }
+                            },
+                        },
                         "400": {"description": "Missing or invalid required JSON contract."},
                         "401": {"description": "Missing or invalid X-API-Key."},
-                        "409": {"description": "Idempotency key conflicts with prior date/timezone intent."},
+                        "409": {
+                            "description": (
+                                "Runtime provenance was not verified, or the idempotency "
+                                "key conflicts with its prior date/timezone intent."
+                            )
+                        },
                         "500": {"description": "Daily orchestration acknowledgement failed."},
                     },
                 }
@@ -3078,6 +3114,52 @@ def openapi_schema():
                 "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
             },
             "schemas": {
+                "DailyRunAcknowledgement": {
+                    "type": "object",
+                    "required": [
+                        "ok", "accepted", "run_id", "run_date", "timezone",
+                        "run_status", "progress_stage", "deadline_at", "reused",
+                        "can_execute", "runtime_provenance",
+                    ],
+                    "properties": {
+                        "ok": {"type": "boolean"},
+                        "accepted": {
+                            "type": "boolean",
+                            "description": "True when the canonical lifecycle acknowledged the request.",
+                        },
+                        "run_id": {
+                            "type": "string",
+                            "description": "Server-generated immutable run identifier.",
+                        },
+                        "run_date": {"type": "string", "format": "date"},
+                        "timezone": {
+                            "type": "string",
+                            "description": "IANA timezone persisted with the request intent.",
+                        },
+                        "run_status": {
+                            "type": "string",
+                            "enum": [
+                                "ACCEPTED", "IN_PROGRESS", "COMPLETE", "DEGRADED",
+                                "RECONCILIATION_WARNING", "FAILED",
+                            ],
+                        },
+                        "progress_stage": {"type": "string"},
+                        "deadline_at": {"type": "string", "format": "date-time"},
+                        "reused": {
+                            "type": "boolean",
+                            "description": "True when this response reuses the prior canonical run.",
+                        },
+                        "can_execute": {
+                            "type": "boolean",
+                            "enum": [False],
+                            "description": "Always false; WOW Daily is dry-run only.",
+                        },
+                        "runtime_provenance": {
+                            "type": "object",
+                            "description": "Server-authoritative runtime provenance record.",
+                        },
+                    },
+                },
                 "HealthResponse": {
                     "type": "object",
                     "properties": {

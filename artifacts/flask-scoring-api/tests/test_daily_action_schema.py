@@ -10,11 +10,19 @@ SCHEMA_PATH = Path(__file__).parents[1] / "gpt-action-schema-gate-engine.yaml"
 
 def _daily_operation():
     document = yaml.safe_load(SCHEMA_PATH.read_text())
-    return document["paths"]["/wow/daily/run"]["post"]
+    return document, document["paths"]["/wow/daily/run"]["post"]
+
+
+def _resolve_schema(document, schema):
+    ref = schema.get("$ref")
+    if not ref:
+        return schema
+    assert ref.startswith("#/components/schemas/")
+    return document["components"]["schemas"][ref.rsplit("/", 1)[-1]]
 
 
 def test_daily_action_requires_canonical_request_identity():
-    operation = _daily_operation()
+    _document, operation = _daily_operation()
     body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
 
     assert operation["requestBody"]["required"] is True
@@ -29,8 +37,25 @@ def test_daily_action_requires_canonical_request_identity():
 
 
 def test_daily_action_keeps_run_id_server_generated():
-    operation = _daily_operation()
+    document, operation = _daily_operation()
     body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    response_schema = _resolve_schema(
+        document,
+        operation["responses"]["200"]["content"]["application/json"]["schema"],
+    )
 
     assert "run_id" not in body_schema["properties"]
-    assert "run_id" in operation["responses"]["200"]["content"]["application/json"]["schema"]["properties"]
+    assert "run_id" in response_schema["properties"]
+
+
+def test_daily_action_documents_acknowledgement_for_both_success_statuses():
+    document, operation = _daily_operation()
+    for status_code in ("200", "202"):
+        response_schema = _resolve_schema(
+            document,
+            operation["responses"][status_code]["content"]["application/json"]["schema"],
+        )
+        assert {
+            "run_id", "run_date", "timezone", "run_status", "progress_stage",
+            "deadline_at", "reused", "can_execute", "runtime_provenance",
+        } <= set(response_schema["properties"])
