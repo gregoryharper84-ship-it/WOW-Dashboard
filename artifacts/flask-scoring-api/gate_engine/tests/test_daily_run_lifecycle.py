@@ -517,6 +517,47 @@ class TestManifestTimeoutsAndReconciliation(unittest.TestCase):
         self.assertIn("lease_expires_at >= NOW()", sql)
         self.assertEqual(params, (4242, "run-1", "owner-1"))
 
+    def test_discovery_checkpoint_persists_board_before_scoring(self):
+        from storage import daily_manifest
+
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 1
+        with patch.object(daily_manifest, "_get_conn", return_value=conn):
+            self.assertTrue(
+                daily_manifest.persist_discovery_checkpoint(
+                    run_id="run-1",
+                    scanned_sports=["NBA"],
+                    missing_sports=[],
+                    total_discovered=1,
+                    source_union_counts={"NBA": 1},
+                    discovery_checkpoint={"board": {"sports": {"NBA": []}}},
+                    reconciliation_baseline={"phase": "DISCOVERY_BASELINE"},
+                    execution_owner="owner-1",
+                )
+            )
+        sql, _params = cursor.execute.call_args.args
+        self.assertIn("discovery_checkpoint = %s", sql)
+        self.assertIn("progress_stage = 'DISCOVERY_PERSISTED'", sql)
+        self.assertIn("discovery_checkpoint IS NULL", sql)
+
+    def test_scoring_transition_requires_persisted_discovery_checkpoint(self):
+        from storage import daily_manifest
+
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 1
+        with patch.object(daily_manifest, "_get_conn", return_value=conn):
+            self.assertTrue(
+                daily_manifest.begin_scoring(
+                    run_id="run-1",
+                    execution_owner="owner-1",
+                )
+            )
+        sql, _params = cursor.execute.call_args.args
+        self.assertIn("progress_stage = 'SCORING'", sql)
+        self.assertIn("discovery_checkpoint IS NOT NULL", sql)
+
     def test_restart_reaper_marks_expired_runner_with_typed_failure(self):
         from storage import daily_manifest
 

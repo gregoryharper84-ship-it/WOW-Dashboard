@@ -407,8 +407,11 @@ class TestRunDailyOrchestration(unittest.TestCase):
             patch("jobs.wow_daily_scan.run_scan", return_value=scan_result),
             patch("storage.daily_manifest.ensure_tables", return_value=True),
             patch("storage.daily_manifest.create_run",    return_value=True),
+            patch("storage.daily_manifest.persist_discovery_checkpoint", return_value=True),
+            patch("storage.daily_manifest.begin_scoring", return_value=True),
             patch("storage.daily_manifest.finalize_run",  return_value=True),
             patch("storage.daily_manifest.save_run_row",  return_value=True),
+            patch.object(orch, "_run_scan_isolated", return_value=(scan_result, None)),
         ):
             return run_daily_orchestration(
                 sports=sports,
@@ -455,6 +458,8 @@ class TestRunDailyOrchestration(unittest.TestCase):
             patch("jobs.wow_daily_scan.run_scan", return_value=scan_result),
             patch("storage.daily_manifest.ensure_tables") as mock_ensure,
             patch("storage.daily_manifest.create_run")    as mock_create,
+            patch("storage.daily_manifest.persist_discovery_checkpoint") as mock_checkpoint,
+            patch("storage.daily_manifest.begin_scoring") as mock_begin_scoring,
             patch("storage.daily_manifest.finalize_run")  as mock_finalize,
             patch("storage.daily_manifest.save_run_row")  as mock_save,
         ):
@@ -465,6 +470,8 @@ class TestRunDailyOrchestration(unittest.TestCase):
             )
         mock_ensure.assert_not_called()
         mock_create.assert_not_called()
+        mock_checkpoint.assert_not_called()
+        mock_begin_scoring.assert_not_called()
         mock_finalize.assert_not_called()
         mock_save.assert_not_called()
 
@@ -479,8 +486,11 @@ class TestRunDailyOrchestration(unittest.TestCase):
             patch("jobs.wow_daily_scan.run_scan", return_value=scan_result),
             patch("storage.daily_manifest.ensure_tables", return_value=True),
             patch("storage.daily_manifest.create_run",    return_value=True),
+            patch("storage.daily_manifest.persist_discovery_checkpoint", return_value=True),
+            patch("storage.daily_manifest.begin_scoring", return_value=True),
             patch("storage.daily_manifest.finalize_run",  return_value=True),
             patch("storage.daily_manifest.save_run_row",  return_value=True),
+            patch.object(orch, "_run_scan_isolated", return_value=(scan_result, None)),
         ):
             result = run_daily_orchestration(
                 sports=sports, environment="test",
@@ -488,6 +498,259 @@ class TestRunDailyOrchestration(unittest.TestCase):
                 persist=True,
             )
         self.assertEqual(result["run_status"], "DEGRADED")
+
+
+# ---------------------------------------------------------------------------
+# Daily lifecycle reliability — persisted board / bounded fallback
+# ---------------------------------------------------------------------------
+class TestDailyLifecycleReliability(unittest.TestCase):
+    def _props(self, sport="NBA"):
+        return [
+            {"player": f"{sport} A", "prop": "points", "side": "MORE",
+             "line": 20.5, "sport": sport, "game_date": "2026-08-20"},
+        ]
+
+    def _scan_result(self, sport="NBA"):
+        result = _make_mock_scan_result({
+            "watch": [{
+                "player": f"{sport} A", "prop": "points", "side": "MORE",
+                "line": 20.5, "sport": sport, "game_date": "2026-08-20",
+                "classification": "Watch", "terminal_bucket": "watch",
+            }],
+        })
+        return result
+
+    def test_checkpoint_is_persisted_before_scoring_starts(self):
+        events = []
+        scan_result = self._scan_result()
+        with (
+            patch.object(
+                orch, "_union_props_for_sport",
+                return_value=(self._props(), {"NBA_odds": "AVAILABLE"}),
+            ),
+            patch(
+                "storage.daily_manifest.persist_discovery_checkpoint",
+                side_effect=lambda **_kw: events.append("checkpoint") or True,
+            ),
+            patch(
+                "storage.daily_manifest.begin_scoring",
+                side_effect=lambda **_kw: events.append("scoring") or True,
+            ),
+            patch("storage.daily_manifest.ensure_tables", return_value=True),
+            patch("storage.daily_manifest.create_run", return_value=True),
+            patch("storage.daily_manifest.finalize_run", return_value=True),
+            patch("storage.daily_manifest.save_run_row", return_value=True),
+            patch.object(orch, "_run_scan_isolated", return_value=(scan_result, None)),
+        ):
+            result = orch.run_daily_orchestration(
+                sports=["NBA"], environment="test", persist=True,
+            )
+        self.assertEqual(events, ["checkpoint", "scoring"])
+        self.assertEqual(result["counts"]["total_discovered"], 1)
+
+    def test_empty_discovery_finishes_reconciled_without_entering_scoring(self):
+        finalize = MagicMock(return_value=True)
+        with (
+            patch.object(
+                orch, "_union_props_for_sport",
+                return_value=([], {"NBA_odds": "NO_EVENTS"}),
+            ),
+            patch("storage.daily_manifest.ensure_tables", return_value=True),
+            patch("storage.daily_manifest.create_run", return_value=True),
+            patch("storage.daily_manifest.persist_discovery_checkpoint", return_value=True),
+            patch("storage.daily_manifest.begin_scoring") as begin_scoring,
+            patch("storage.daily_manifest.finalize_run", finalize),
+            patch.object(orch, "_run_scan_isolated") as scan,
+        ):
+            result = orch.run_daily_orchestration(
+                sports=["NBA"], environment="test", persist=True,
+            )
+        begin_scoring.assert_not_called()
+        scan.assert_not_called()
+        self.assertEqual(result["run_status"], "COMPLETE")
+        self.assertTrue(result["reconciliation"]["reconciled"])
+        self.assertEqual(finalize.call_args.kwargs["completion_detail"], "DISCOVERY_EMPTY_RECONCILED")
+
+    def test_failed_checkpoint_blocks_scoring_and_still_terminalizes(self):
+        finalize = MagicMock(return_value=True)
+        with (
+            patch.object(
+                orch, "_union_props_for_sport",
+                return_value=(self._props(), {"NBA_odds": "AVAILABLE"}),
+            ),
+            patch("storage.daily_manifest.ensure_tables", return_value=True),
+            patch("storage.daily_manifest.create_run", return_value=True),
+            patch("storage.daily_manifest.persist_discovery_checkpoint", return_value=False),
+            patch("storage.daily_manifest.begin_scoring") as begin_scoring,
+            patch("storage.daily_manifest.finalize_run", finalize),
+            patch.object(orch, "_run_scan_isolated") as scan,
+        ):
+            result = orch.run_daily_orchestration(
+                sports=["NBA"], environment="test", persist=True,
+            )
+        begin_scoring.assert_not_called()
+        scan.assert_not_called()
+        self.assertEqual(result["run_status"], "DEGRADED")
+        self.assertIn(
+            "daily_manifest:DISCOVERY_CHECKPOINT_UNAVAILABLE",
+            result["failed_modules"],
+        )
+        self.assertEqual(
+            finalize.call_args.kwargs["failure_reason"],
+            "DISCOVERY_CHECKPOINT_UNAVAILABLE",
+        )
+
+    def test_primary_timeout_uses_composed_fallback_and_records_it(self):
+        scan_result = self._scan_result()
+        fallback = {
+            "used": True,
+            "path": "LEGACY_COMPOSED_GATE_ENGINE",
+            "lane_failures": [],
+        }
+        finalize = MagicMock(return_value=True)
+        with (
+            patch.object(
+                orch, "_union_props_for_sport",
+                return_value=(self._props(), {"NBA_odds": "AVAILABLE"}),
+            ),
+            patch("storage.daily_manifest.ensure_tables", return_value=True),
+            patch("storage.daily_manifest.create_run", return_value=True),
+            patch("storage.daily_manifest.persist_discovery_checkpoint", return_value=True),
+            patch("storage.daily_manifest.begin_scoring", return_value=True),
+            patch("storage.daily_manifest.finalize_run", finalize),
+            patch("storage.daily_manifest.save_run_row", return_value=True),
+            patch.object(
+                orch, "_run_scan_isolated",
+                return_value=(None, "SCORING_STAGE_TIMEOUT"),
+            ),
+            patch.object(
+                orch, "_run_composed_fallback",
+                return_value=(scan_result, fallback),
+            ) as composed_fallback,
+        ):
+            result = orch.run_daily_orchestration(
+                sports=["NBA"], environment="test", persist=True,
+            )
+        composed_fallback.assert_called_once()
+        self.assertTrue(result["fallback"]["used"])
+        self.assertEqual(result["fallback"]["trigger"], "SCORING_STAGE_TIMEOUT")
+        self.assertTrue(
+            finalize.call_args.kwargs["orchestration_metadata"]["fallback"]["used"]
+        )
+        self.assertEqual(
+            finalize.call_args.kwargs["failure_reason"],
+            "PRIMARY_SCORER_SCORING_STAGE_TIMEOUT",
+        )
+
+    def test_fallback_preflight_failure_is_typed_on_terminal_manifest(self):
+        fallback = {
+            "used": True,
+            "path": "LEGACY_COMPOSED_GATE_ENGINE",
+            "lane_failures": [],
+            "reason": "FALLBACK_PREFLIGHT_UNAVAILABLE",
+        }
+        finalize = MagicMock(return_value=True)
+        with (
+            patch.object(
+                orch, "_union_props_for_sport",
+                return_value=(self._props(), {"NBA_odds": "AVAILABLE"}),
+            ),
+            patch("storage.daily_manifest.ensure_tables", return_value=True),
+            patch("storage.daily_manifest.create_run", return_value=True),
+            patch("storage.daily_manifest.persist_discovery_checkpoint", return_value=True),
+            patch("storage.daily_manifest.begin_scoring", return_value=True),
+            patch("storage.daily_manifest.finalize_run", finalize),
+            patch.object(
+                orch, "_run_scan_isolated",
+                return_value=(None, "SCORING_STAGE_TIMEOUT"),
+            ),
+            patch.object(
+                orch, "_run_composed_fallback",
+                return_value=(_make_mock_scan_result(), fallback),
+            ),
+        ):
+            result = orch.run_daily_orchestration(
+                sports=["NBA"], environment="test", persist=True,
+            )
+        self.assertEqual(result["run_status"], "DEGRADED")
+        self.assertEqual(
+            finalize.call_args.kwargs["failure_reason"],
+            "FALLBACK_PREFLIGHT_UNAVAILABLE",
+        )
+        self.assertEqual(
+            finalize.call_args.kwargs["failure_module"],
+            "daily_orchestrator.composed_fallback",
+        )
+
+    def test_composed_fallback_keeps_completed_lane_when_another_lane_fails(self):
+        nba_result = self._scan_result("NBA")
+        props_by_sport = {"NBA": self._props("NBA"), "WNBA": self._props("WNBA")}
+        with (
+            patch("gate_engine.governance.get_governance_status", return_value={}),
+            patch(
+                "gate_engine.llp_stage2_tables.get_stage2_schema_health",
+                return_value={"schema_ready": True},
+            ),
+            patch.object(
+                orch, "_run_scan_isolated",
+                side_effect=[
+                    (nba_result, None),
+                    (None, "SCORING_STAGE_TIMEOUT"),
+                ],
+            ),
+        ):
+            result, metadata = orch._run_composed_fallback(
+                props_by_sport=props_by_sport,
+                scanned_sports=["NBA", "WNBA"],
+                environment="test",
+                runtime_provenance=None,
+                deadline_at=None,
+            )
+        self.assertEqual(len(result["watch"]), 1)
+        self.assertIn("fallback:WNBA:SCORING_STAGE_TIMEOUT", result["failed_modules"])
+        self.assertEqual(metadata["lane_failures"], ["WNBA:SCORING_STAGE_TIMEOUT"])
+
+    def test_isolated_scanner_timeout_terminates_the_child(self):
+        class TimeoutQueue:
+            def get(self, timeout):
+                raise orch.Empty
+
+            def close(self):
+                return None
+
+        class TimeoutProcess:
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+
+            def start(self):
+                return None
+
+            def is_alive(self):
+                return not self.terminated and not self.killed
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+            def join(self, timeout=None):
+                return None
+
+        queue = TimeoutQueue()
+        process = TimeoutProcess()
+        context = MagicMock()
+        context.Queue.return_value = queue
+        context.Process.return_value = process
+        with patch.object(orch.multiprocessing, "get_context", return_value=context):
+            result, reason = orch._run_scan_isolated(
+                scan_kwargs={"sports": ["NBA"]},
+                timeout_seconds=0.01,
+            )
+        self.assertIsNone(result)
+        self.assertEqual(reason, "SCORING_STAGE_TIMEOUT")
+        self.assertTrue(process.terminated)
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +940,7 @@ class TestSoccerOutcomeInUnion(unittest.TestCase):
         with (
             patch.object(orch, "_union_props_for_sport", side_effect=mock_union),
             patch("jobs.wow_daily_scan.run_scan", return_value=scan_result),
+            patch.object(orch, "_run_scan_isolated", return_value=(scan_result, None)),
         ):
             from gate_engine.daily_orchestrator import run_daily_orchestration
             result = run_daily_orchestration(

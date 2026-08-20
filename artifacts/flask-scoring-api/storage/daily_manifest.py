@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS wow_daily_runs (
     source_union_counts JSONB,
     total_discovered    INTEGER,
     reconciliation      JSONB,
+    discovery_checkpoint JSONB,
+    orchestration_metadata JSONB,
     session_id          TEXT,
     idempotency_key     TEXT,
     deadline_at         TIMESTAMPTZ,
@@ -172,7 +174,9 @@ def ensure_tables() -> bool:
                             ADD COLUMN IF NOT EXISTS execution_owner TEXT,
                             ADD COLUMN IF NOT EXISTS executor_pid INTEGER,
                             ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ,
-                            ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ
+                            ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ,
+                            ADD COLUMN IF NOT EXISTS discovery_checkpoint JSONB,
+                            ADD COLUMN IF NOT EXISTS orchestration_metadata JSONB
                         """
                     )
                     # A run that is interrupted before discovery has no honest
@@ -252,7 +256,7 @@ def _decode_run_row(row: dict[str, Any]) -> dict[str, Any]:
     for key in (
         "requested_sports", "scanned_sports", "missing_sports",
         "failed_modules", "runtime_provenance", "source_union_counts",
-        "reconciliation",
+        "reconciliation", "discovery_checkpoint", "orchestration_metadata",
     ):
         if isinstance(row.get(key), str):
             try:
@@ -392,6 +396,106 @@ def mark_progress(
                     WHERE run_id = %s
                       AND finished_at IS NULL
                       AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
+                    {owner_fence}
+                    """,
+                    tuple(params),
+                )
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def persist_discovery_checkpoint(
+    *,
+    run_id: str,
+    scanned_sports: list[str],
+    missing_sports: list[str],
+    total_discovered: int,
+    source_union_counts: dict,
+    discovery_checkpoint: dict,
+    reconciliation_baseline: dict,
+    execution_owner: str | None = None,
+) -> bool:
+    """Durably record the canonical board before evaluation can begin.
+
+    The snapshot is intentionally immutable for the lifetime of a run.  It is
+    the observability boundary between source discovery and scoring: a stalled
+    scorer must never make a completed discovery look like an empty run.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                owner_fence = ""
+                params: list[Any] = [
+                    json.dumps(scanned_sports),
+                    json.dumps(missing_sports),
+                    total_discovered,
+                    json.dumps(source_union_counts),
+                    json.dumps(discovery_checkpoint, default=str),
+                    json.dumps(reconciliation_baseline, default=str),
+                    run_id,
+                ]
+                if execution_owner is not None:
+                    owner_fence = """
+                      AND execution_owner = %s
+                      AND lease_expires_at >= NOW()
+                    """
+                    params.append(execution_owner)
+                cur.execute(
+                    f"""
+                    UPDATE wow_daily_runs
+                    SET scanned_sports = %s,
+                        missing_sports = %s,
+                        total_discovered = %s,
+                        source_union_counts = %s,
+                        discovery_checkpoint = %s,
+                        reconciliation = %s,
+                        progress_stage = 'DISCOVERY_PERSISTED',
+                        progress_detail = 'Canonical board persisted before scoring',
+                        progress_updated_at = NOW()
+                    WHERE run_id = %s
+                      AND finished_at IS NULL
+                      AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
+                      AND discovery_checkpoint IS NULL
+                    {owner_fence}
+                    """,
+                    tuple(params),
+                )
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def begin_scoring(
+    *,
+    run_id: str,
+    detail: str = "Evaluating canonical board",
+    execution_owner: str | None = None,
+) -> bool:
+    """Enter SCORING only after an immutable canonical board is persisted."""
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                owner_fence = ""
+                params: list[Any] = [detail, run_id]
+                if execution_owner is not None:
+                    owner_fence = """
+                      AND execution_owner = %s
+                      AND lease_expires_at >= NOW()
+                    """
+                    params.append(execution_owner)
+                cur.execute(
+                    f"""
+                    UPDATE wow_daily_runs
+                    SET progress_stage = 'SCORING',
+                        progress_detail = %s,
+                        progress_updated_at = NOW()
+                    WHERE run_id = %s
+                      AND finished_at IS NULL
+                      AND run_status IN ('ACCEPTED', 'IN_PROGRESS')
+                      AND discovery_checkpoint IS NOT NULL
                     {owner_fence}
                     """,
                     tuple(params),
@@ -581,6 +685,10 @@ def finalize_run(
     total_discovered: int,
     source_union_counts: dict,
     reconciliation: dict,
+    failure_reason: str | None = None,
+    failure_module: str | None = None,
+    completion_detail: str | None = None,
+    orchestration_metadata: dict | None = None,
     execution_owner: str | None = None,
 ) -> bool:
     """Update run header with final state. Called after all rows are written."""
@@ -598,7 +706,13 @@ def finalize_run(
                     total_discovered,
                     json.dumps(source_union_counts),
                     json.dumps(reconciliation),
-                    run_status,
+                    completion_detail or run_status,
+                    failure_reason,
+                    failure_module,
+                    (
+                        json.dumps(orchestration_metadata, default=str)
+                        if orchestration_metadata is not None else None
+                    ),
                     run_id,
                 ]
                 if execution_owner is not None:
@@ -621,6 +735,9 @@ def finalize_run(
                         progress_stage      = 'TERMINAL',
                         progress_detail     = %s,
                         progress_updated_at = NOW(),
+                        failure_reason      = %s,
+                        failure_module      = %s,
+                        orchestration_metadata = COALESCE(%s, orchestration_metadata),
                         lease_expires_at    = NOW()
                     WHERE run_id = %s
                       AND finished_at IS NULL
@@ -749,7 +866,7 @@ def get_run(run_id: str) -> dict | None:
         result = dict(zip(cols, row))
         for k in ("requested_sports", "scanned_sports", "missing_sports",
                   "failed_modules", "runtime_provenance", "source_union_counts",
-                  "reconciliation"):
+                   "reconciliation", "discovery_checkpoint", "orchestration_metadata"):
             if isinstance(result.get(k), str):
                 try:
                     result[k] = json.loads(result[k])

@@ -1791,6 +1791,7 @@ def wow_daily_run():
 
     Accepted JSON params
     --------------------
+    idempotency_key : str               — unique key for a new run; reuse on retry
     sports          : list[str] | null  — sports to include (default: all)
     environment     : str               — "live" | "test" (default: "live")
     session_id      : str | null        — caller session for exposure idempotency

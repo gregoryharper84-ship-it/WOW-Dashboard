@@ -29,10 +29,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import multiprocessing
 import os
 import uuid
 from datetime import date, datetime, timezone
-from typing import Any
+from queue import Empty
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,13 @@ _TERMINAL_BUCKETS = (
     "data_insufficient",
     "no_play",
 )
+
+# A scoring worker runs outside the manifest executor's process so a blocked
+# source/client call cannot keep a healthy heartbeat renewing an empty SCORING
+# manifest forever.  The whole-run deadline remains the outer hard ceiling.
+DEFAULT_PRIMARY_SCORING_TIMEOUT_SECONDS = 20 * 60
+DEFAULT_FALLBACK_LANE_TIMEOUT_SECONDS = 5 * 60
+_SCORING_RESULT_DRAIN_SECONDS = 5
 
 # Soccer outcome normalisation map (display value → canonical)
 _SOCCER_OUTCOME_MAP = {
@@ -374,6 +383,282 @@ def _build_reconciliation(
     }
 
 
+def _discovery_reconciliation_baseline(discovered_ids: set[str]) -> dict[str, Any]:
+    """Describe a persisted board honestly before terminal outcomes exist."""
+    return {
+        "phase": "DISCOVERY_BASELINE",
+        "reconciled": None,
+        "snapshot_persisted": True,
+        "discovered_count": len(discovered_ids),
+        "total_terminal": 0,
+        "terminal_counts": {bucket: 0 for bucket in _TERMINAL_BUCKETS},
+        "duplicate_ids": [],
+        "missing_ids": sorted(discovered_ids),
+        "excess_ids": [],
+    }
+
+
+def _snapshot_canonical_board(props_by_sport: dict[str, list[dict]]) -> dict[str, Any]:
+    """Capture the exact discovered board without inventing terminal outcomes."""
+    return {
+        "snapshot_version": 1,
+        "sports": {
+            sport: [dict(prop) for prop in props]
+            for sport, props in props_by_sport.items()
+        },
+    }
+
+
+def _empty_scan_result(*, run_status: str = "COMPLETE") -> dict[str, Any]:
+    """Build an empty scanner result with every terminal bucket represented."""
+    result: dict[str, Any] = {bucket: [] for bucket in _TERMINAL_BUCKETS}
+    result.update({
+        "run_status": run_status,
+        "failed_modules": [],
+        "execution_notes": [],
+    })
+    return result
+
+
+def _scan_worker(
+    result_queue: Any,
+    scan_kwargs: dict[str, Any],
+) -> None:
+    """Run the established scanner in a killable child process."""
+    try:
+        from jobs.wow_daily_scan import run_scan
+        result_queue.put({"ok": True, "result": run_scan(**scan_kwargs)})
+    except BaseException as exc:
+        result_queue.put({
+            "ok": False,
+            "failure_reason": f"SCORING_WORKER_EXCEPTION:{type(exc).__name__}",
+        })
+
+
+def _run_scan_isolated(
+    *,
+    scan_kwargs: dict[str, Any],
+    timeout_seconds: float,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return one scanner result, or a typed reason after bounded isolation."""
+    if timeout_seconds <= 0:
+        return None, "SCORING_STAGE_TIMEOUT"
+    result_queue = None
+    process = None
+    try:
+        context = multiprocessing.get_context("spawn")
+        result_queue = context.Queue(maxsize=1)
+        process = context.Process(
+            target=_scan_worker,
+            args=(result_queue, scan_kwargs),
+            daemon=True,
+        )
+        process.start()
+        try:
+            payload = result_queue.get(timeout=timeout_seconds)
+        except Empty:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=_SCORING_RESULT_DRAIN_SECONDS)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=_SCORING_RESULT_DRAIN_SECONDS)
+            return None, "SCORING_STAGE_TIMEOUT"
+        process.join(timeout=_SCORING_RESULT_DRAIN_SECONDS)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=_SCORING_RESULT_DRAIN_SECONDS)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            return None, (
+                payload.get("failure_reason", "SCORING_WORKER_PROTOCOL_FAILURE")
+                if isinstance(payload, dict) else "SCORING_WORKER_PROTOCOL_FAILURE"
+            )
+        result = payload.get("result")
+        return (
+            result if isinstance(result, dict) else None,
+            None if isinstance(result, dict) else "SCORING_WORKER_INVALID_RESULT",
+        )
+    except Exception as exc:
+        logger.exception("daily isolated scanner failed to start")
+        return None, f"SCORING_WORKER_START_FAILED:{type(exc).__name__}"
+    finally:
+        if result_queue is not None:
+            try:
+                result_queue.close()
+            except Exception:
+                pass
+
+
+def _remaining_timeout(
+    *,
+    deadline_at: str | None,
+    default_seconds: float,
+    reserve_seconds: float = 15.0,
+) -> float:
+    """Keep inner work bounded without extending the manifest's hard deadline."""
+    if not deadline_at:
+        return default_seconds
+    deadline = datetime.fromisoformat(deadline_at.replace("Z", "+00:00"))
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    remaining = (deadline - datetime.now(timezone.utc)).total_seconds() - reserve_seconds
+    return max(0.0, min(default_seconds, remaining))
+
+
+def _merge_scan_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge independent lane results without changing their terminal buckets."""
+    merged = _empty_scan_result()
+    for result in results:
+        for bucket in _TERMINAL_BUCKETS:
+            merged[bucket].extend(result.get(bucket, []))
+        merged["failed_modules"].extend(result.get("failed_modules", []))
+        merged["execution_notes"].extend(result.get("execution_notes", []))
+        if result.get("run_status") not in (None, "COMPLETE"):
+            merged["run_status"] = result.get("run_status")
+    return merged
+
+
+def _build_card_lookups(
+    props_by_sport: dict[str, list[dict]],
+) -> tuple[dict[tuple, str], dict[str, str]]:
+    """Map legacy scanner output back to immutable canonical board identities."""
+    id_lookup: dict[tuple, str] = {}
+    side_resolution_lookup: dict[str, str] = {}
+    for sport, props_list in props_by_sport.items():
+        for prop in props_list:
+            key = (
+                sport.upper(),
+                (prop.get("player") or "").strip().lower(),
+                (prop.get("prop") or "").strip().lower(),
+                (prop.get("side") or "MORE").upper(),
+                round(float(prop.get("line") or 0) * 2) / 2,
+            )
+            selection_id = prop["canonical_selection_id"]
+            id_lookup[key] = selection_id
+            side_resolution_lookup[selection_id] = prop.get(
+                "_side_resolution", "SIDE_UNKNOWN"
+            )
+    return id_lookup, side_resolution_lookup
+
+
+def _stamp_canonical_ids(
+    scan_result: dict[str, Any],
+    *,
+    id_lookup: dict[tuple, str],
+    side_resolution_lookup: dict[str, str],
+) -> None:
+    """Stamp scanner output without altering classifications or bucket assignment."""
+    for bucket_name in _TERMINAL_BUCKETS:
+        for card in scan_result.get(bucket_name, []):
+            if "canonical_selection_id" not in card:
+                key = (
+                    (card.get("sport") or "").upper(),
+                    (card.get("player") or "").strip().lower(),
+                    (card.get("prop") or "").strip().lower(),
+                    (card.get("side") or "MORE").upper(),
+                    round(float(card.get("line") or 0) * 2) / 2,
+                )
+                card["canonical_selection_id"] = id_lookup.get(
+                    key, f"SEL_UNKNOWN_{key}"
+                )
+            selection_id = card.get("canonical_selection_id", "")
+            card["side_resolution"] = side_resolution_lookup.get(
+                selection_id, "SIDE_UNKNOWN"
+            )
+            card["terminal_bucket"] = (
+                card.get("terminal_bucket")
+                or card.get("classification", bucket_name)
+            )
+
+
+def _run_composed_fallback(
+    *,
+    props_by_sport: dict[str, list[dict]],
+    scanned_sports: list[str],
+    environment: str,
+    runtime_provenance: dict | None,
+    deadline_at: str | None,
+    on_lane_result: Callable[[str, dict[str, Any]], None] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Use the existing composed scorer one lane at a time after a stall.
+
+    This is a lifecycle-only fallback.  It performs health/governance/Stage 2
+    availability checks, then calls the established ``run_scan`` composition
+    in isolated children.  It never calls the public Flask action endpoint,
+    and it does not recreate or alter scoring/gate logic.
+    """
+    metadata: dict[str, Any] = {
+        "used": True,
+        "path": "LEGACY_COMPOSED_GATE_ENGINE",
+        "preflight": {},
+        "lane_failures": [],
+    }
+    try:
+        from gate_engine.pipeline import run_pipeline
+        from gate_engine.governance import get_governance_status
+        from gate_engine.llp_stage2_tables import get_stage2_schema_health
+
+        governance = get_governance_status()
+        stage2_health = get_stage2_schema_health()
+        metadata["preflight"] = {
+            "engine_available": callable(run_pipeline),
+            "governance_available": isinstance(governance, dict),
+            "stage2_schema_ready": bool(stage2_health.get("schema_ready")),
+        }
+        if not (
+            metadata["preflight"]["engine_available"]
+            and metadata["preflight"]["governance_available"]
+            and metadata["preflight"]["stage2_schema_ready"]
+        ):
+            metadata["reason"] = "FALLBACK_PREFLIGHT_UNAVAILABLE"
+            return _empty_scan_result(run_status="DEGRADED"), metadata
+    except Exception as exc:
+        metadata["reason"] = f"FALLBACK_PREFLIGHT_FAILED:{type(exc).__name__}"
+        return _empty_scan_result(run_status="DEGRADED"), metadata
+
+    lane_results: list[dict[str, Any]] = []
+    total_lanes = len(scanned_sports)
+    for lane_index, sport in enumerate(scanned_sports):
+        _raise_if_deadline_exceeded(deadline_at)
+        remaining = _remaining_timeout(
+            deadline_at=deadline_at,
+            default_seconds=DEFAULT_FALLBACK_LANE_TIMEOUT_SECONDS,
+        )
+        lane_timeout = (
+            remaining / max(1, total_lanes - lane_index)
+            if deadline_at else remaining
+        )
+        result, failure_reason = _run_scan_isolated(
+            scan_kwargs={
+                "sports": [sport],
+                "environment": environment,
+                "limit_per_sport": None,
+                "runtime_provenance": runtime_provenance,
+                "_props_by_sport": {sport: props_by_sport[sport]},
+                "_persist_results": False,
+            },
+            timeout_seconds=lane_timeout,
+        )
+        if result is None:
+            metadata["lane_failures"].append(f"{sport}:{failure_reason}")
+            continue
+        if on_lane_result is not None:
+            try:
+                on_lane_result(sport, result)
+            except Exception as exc:
+                metadata["lane_failures"].append(
+                    f"{sport}:PARTIAL_MANIFEST_PERSIST_FAILED:{type(exc).__name__}"
+                )
+        lane_results.append(result)
+
+    merged = _merge_scan_results(lane_results)
+    for lane_failure in metadata["lane_failures"]:
+        merged["failed_modules"].append(f"fallback:{lane_failure}")
+    if metadata.get("reason"):
+        merged["failed_modules"].append(f"fallback:{metadata['reason']}")
+    return merged, metadata
+
+
 # ---------------------------------------------------------------------------
 # Compact GPT output builder
 # ---------------------------------------------------------------------------
@@ -433,8 +718,6 @@ def run_daily_orchestration(
       execution_notes   — audit trail
       runtime_provenance — echoed back
     """
-    from jobs.wow_daily_scan import run_scan as _run_scan
-
     # ---- Run identity -------------------------------------------------------
     run_id   = run_id or str(uuid.uuid4())
     run_date = date.today().isoformat()
@@ -552,76 +835,188 @@ def run_daily_orchestration(
             if not tennis_ml_specialist_ready(enr):
                 p.setdefault("_specialist_readiness", "TENNIS_MATCH_WINNER_V1:PARTIAL_HYDRATION_NOT_READY")
 
-    # ---- Evaluation via existing gate-engine pipeline -----------------------
-    # pass the canonical board; no truncation; don't persist legacy scan rows
-    try:
-        _raise_if_deadline_exceeded(deadline_at)
+    # ---- Immutable discovery checkpoint ------------------------------------
+    # A completed union must survive even if the scorer never returns.  The
+    # baseline is deliberately not terminal reconciliation: it records every
+    # currently-unclassified ID without fabricating a scoring result.
+    discovery_baseline = _discovery_reconciliation_baseline(discovered_ids)
+    checkpoint_metadata = {
+        "requested_sports": requested_sports,
+        "scanned_sports": scanned_sports,
+        "missing_sports": missing_sports,
+        "source_status": source_status_all,
+        "board": _snapshot_canonical_board(props_by_sport),
+    }
+    checkpoint_persisted = not persist
+    if persist:
+        try:
+            from storage.daily_manifest import persist_discovery_checkpoint
+            checkpoint_persisted = persist_discovery_checkpoint(
+                run_id=run_id,
+                scanned_sports=scanned_sports,
+                missing_sports=missing_sports,
+                total_discovered=total_discovered,
+                source_union_counts=source_union_counts,
+                discovery_checkpoint=checkpoint_metadata,
+                reconciliation_baseline=discovery_baseline,
+                execution_owner=execution_owner,
+            )
+        except Exception as exc:
+            checkpoint_persisted = False
+            execution_notes.append(f"DISCOVERY_CHECKPOINT_FAILED:{type(exc).__name__}")
+
+    fallback_metadata: dict[str, Any] = {
+        "used": False,
+        "path": None,
+        "lane_failures": [],
+    }
+    terminal_failure_reasons: list[tuple[str, str]] = []
+    completion_detail: str | None = None
+    id_lookup, side_resolution_lookup = _build_card_lookups(props_by_sport)
+
+    def _persist_completed_fallback_lane(sport: str, lane_result: dict[str, Any]) -> None:
+        """Write a completed fallback lane before subsequent lanes are attempted."""
+        _stamp_canonical_ids(
+            lane_result,
+            id_lookup=id_lookup,
+            side_resolution_lookup=side_resolution_lookup,
+        )
+        if not persist:
+            return
+        from storage.daily_manifest import mark_progress, save_run_row
+
+        for bucket_name in _TERMINAL_BUCKETS:
+            for card in lane_result.get(bucket_name, []):
+                selection_id = card.get("canonical_selection_id", "")
+                if not save_run_row(
+                    run_id=run_id,
+                    canonical_selection_id=selection_id,
+                    market_version_id=card.get("market_version_id"),
+                    run_date=run_date,
+                    sport=card.get("sport", ""),
+                    player=card.get("player", ""),
+                    prop=card.get("prop", ""),
+                    side=card.get("side", ""),
+                    line=float(card.get("line") or 0),
+                    game_date=card.get("game_date"),
+                    terminal_bucket=card.get("terminal_bucket"),
+                    classification=card.get("classification"),
+                    wow_score=card.get("wow_score"),
+                    final_approval_blocker=card.get("final_approval_blocker"),
+                    audit_valid=card.get("audit_valid"),
+                    side_resolution=card.get("side_resolution"),
+                    reconciliation_status="OK",
+                    full_row=card,
+                    execution_owner=execution_owner,
+                ):
+                    raise RuntimeError(
+                        f"FALLBACK_LANE_ROW_PERSIST_FAILED:{sport}:{selection_id}"
+                    )
+        if not mark_progress(
+            run_id=run_id,
+            stage="SCORING",
+            detail=f"Fallback completed {sport}; preserving completed lane",
+            execution_owner=execution_owner,
+        ):
+            raise RuntimeError(f"FALLBACK_LANE_PROGRESS_PERSIST_FAILED:{sport}")
+    if not checkpoint_persisted:
+        failed_modules.append("daily_manifest:DISCOVERY_CHECKPOINT_UNAVAILABLE")
+        terminal_failure_reasons.append((
+            "DISCOVERY_CHECKPOINT_UNAVAILABLE",
+            "daily_orchestrator.discovery",
+        ))
+        scan_result = _empty_scan_result(run_status="DEGRADED")
+        execution_notes.append("SCORING_BLOCKED:DISCOVERY_CHECKPOINT_UNAVAILABLE")
+    elif not scanned_sports:
+        scan_result = _empty_scan_result()
+        completion_detail = "DISCOVERY_EMPTY_RECONCILED"
+        execution_notes.append("DISCOVERY_EMPTY_RECONCILED")
+    else:
+        scoring_started = True
         if persist:
             try:
-                from storage.daily_manifest import mark_progress
-                mark_progress(
+                from storage.daily_manifest import begin_scoring
+                scoring_started = begin_scoring(
                     run_id=run_id,
-                    stage="SCORING",
                     detail="Evaluating canonical board",
                     execution_owner=execution_owner,
                 )
-            except Exception as exc:
-                execution_notes.append(f"MANIFEST_PROGRESS_FAILED:{exc}")
-        scan_result = _run_scan(
-            sports=scanned_sports or requested_sports,
-            environment=environment,
-            limit_per_sport=None,       # no pre-score cap
-            runtime_provenance=runtime_provenance,
-            _props_by_sport=props_by_sport,
-            _persist_results=False,     # orchestrator owns persistence
-        )
-        failed_modules.extend(scan_result.get("failed_modules", []))
-    except Exception as exc:
-        logger.error("daily_orchestrator: run_scan failed: %s", exc)
-        failed_modules.append(f"run_scan:{exc}")
-        # Fail partial: return error, but still persist the run header
-        scan_result = {
-            "run_status":   "FAILED",
-            "failed_modules": [f"run_scan:{exc}"],
-            "execution_notes": [f"run_scan raised: {exc}"],
-        }
-        for b in _TERMINAL_BUCKETS:
-            scan_result.setdefault(b, [])
+            except Exception:
+                scoring_started = False
+        if not scoring_started:
+            failed_modules.append("daily_manifest:SCORING_WITHOUT_PERSISTED_BOARD_BLOCKED")
+            terminal_failure_reasons.append((
+                "SCORING_WITHOUT_PERSISTED_BOARD_BLOCKED",
+                "daily_orchestrator.scoring",
+            ))
+            scan_result = _empty_scan_result(run_status="DEGRADED")
+            execution_notes.append("SCORING_BLOCKED:DISCOVERY_CHECKPOINT_REQUIRED")
+        else:
+            # ---- Primary evaluation through the established composition ----
+            primary_timeout = _remaining_timeout(
+                deadline_at=deadline_at,
+                default_seconds=DEFAULT_PRIMARY_SCORING_TIMEOUT_SECONDS,
+            )
+            primary_result, primary_failure = _run_scan_isolated(
+                scan_kwargs={
+                    "sports": scanned_sports,
+                    "environment": environment,
+                    "limit_per_sport": None,
+                    "runtime_provenance": runtime_provenance,
+                    "_props_by_sport": props_by_sport,
+                    "_persist_results": False,
+                },
+                timeout_seconds=primary_timeout,
+            )
+            if primary_result is not None and any(
+                primary_result.get(bucket) for bucket in _TERMINAL_BUCKETS
+            ):
+                scan_result = primary_result
+            else:
+                fallback_metadata["trigger"] = (
+                    primary_failure or "PRIMARY_SCORER_RETURNED_NO_TERMINAL_ROWS"
+                )
+                fallback_trigger = fallback_metadata["trigger"]
+                terminal_failure_reasons.append((
+                    f"PRIMARY_SCORER_{fallback_trigger}",
+                    "daily_orchestrator.primary_scoring",
+                ))
+                scan_result, fallback_metadata = _run_composed_fallback(
+                    props_by_sport=props_by_sport,
+                    scanned_sports=scanned_sports,
+                    environment=environment,
+                    runtime_provenance=runtime_provenance,
+                    deadline_at=deadline_at,
+                    on_lane_result=_persist_completed_fallback_lane,
+                )
+                fallback_metadata["trigger"] = fallback_trigger
+                if fallback_metadata.get("reason"):
+                    terminal_failure_reasons.append((
+                        str(fallback_metadata["reason"]),
+                        "daily_orchestrator.composed_fallback",
+                    ))
+                elif fallback_metadata.get("lane_failures"):
+                    terminal_failure_reasons.append((
+                        "FALLBACK_LANE_FAILURES",
+                        "daily_orchestrator.composed_fallback",
+                    ))
+                if not fallback_metadata.get("lane_failures") and not any(
+                    scan_result.get(bucket) for bucket in _TERMINAL_BUCKETS
+                ):
+                    fallback_metadata["reason"] = (
+                        fallback_metadata.get("reason")
+                        or "FALLBACK_RETURNED_NO_TERMINAL_ROWS"
+                    )
+            failed_modules.extend(scan_result.get("failed_modules", []))
 
     # ---- Stamp canonical IDs onto every output card -------------------------
     # run_scan output cards don't carry canonical_selection_id yet; backfill
     # from the discovered board using (sport, player, prop, side, line) lookup.
-    _id_lookup: dict[tuple, str] = {}
-    for sport, props_list in props_by_sport.items():
-        for p in props_list:
-            key = (
-                sport.upper(),
-                (p.get("player") or "").strip().lower(),
-                (p.get("prop")   or "").strip().lower(),
-                (p.get("side")   or "MORE").upper(),
-                round(float(p.get("line") or 0) * 2) / 2,
-            )
-            _id_lookup[key] = p["canonical_selection_id"]
-
-    _side_res_lookup: dict[str, str] = {}
-    for sport, props_list in props_by_sport.items():
-        for p in props_list:
-            _side_res_lookup[p.get("canonical_selection_id", "")] = p.get("_side_resolution", "SIDE_UNKNOWN")
-
-    for bucket_name in _TERMINAL_BUCKETS:
-        for card in scan_result.get(bucket_name, []):
-            if "canonical_selection_id" not in card:
-                key = (
-                    (card.get("sport")  or "").upper(),
-                    (card.get("player") or "").strip().lower(),
-                    (card.get("prop")   or "").strip().lower(),
-                    (card.get("side")   or "MORE").upper(),
-                    round(float(card.get("line") or 0) * 2) / 2,
-                )
-                card["canonical_selection_id"] = _id_lookup.get(key, f"SEL_UNKNOWN_{key}")
-            sel_id = card.get("canonical_selection_id", "")
-            card["side_resolution"] = _side_res_lookup.get(sel_id, "SIDE_UNKNOWN")
-            card["terminal_bucket"] = card.get("terminal_bucket") or card.get("classification", bucket_name)
+    _stamp_canonical_ids(
+        scan_result,
+        id_lookup=id_lookup,
+        side_resolution_lookup=side_resolution_lookup,
+    )
 
     # ---- Reconciliation proof -----------------------------------------------
     _raise_if_deadline_exceeded(deadline_at)
@@ -650,8 +1045,15 @@ def run_daily_orchestration(
     run_status_inner = scan_result.get("run_status", "COMPLETE")
     if not reconciliation["reconciled"]:
         run_status_inner = "RECONCILIATION_WARNING"
-    if failed_modules:
+    if failed_modules or terminal_failure_reasons:
         run_status_inner = "DEGRADED"
+    failure_reason = None
+    failure_module = None
+    if terminal_failure_reasons:
+        failure_reason, failure_module = terminal_failure_reasons[-1]
+    elif failed_modules:
+        failure_reason = "SCORING_OR_RECONCILIATION_INCOMPLETE"
+        failure_module = "daily_orchestrator"
 
     if persist:
         try:
@@ -705,6 +1107,13 @@ def run_daily_orchestration(
                 total_discovered=total_discovered,
                 source_union_counts=source_union_counts,
                 reconciliation=reconciliation,
+                failure_reason=failure_reason,
+                failure_module=failure_module,
+                completion_detail=completion_detail,
+                orchestration_metadata={
+                    "discovery_checkpoint_persisted": checkpoint_persisted,
+                    "fallback": fallback_metadata,
+                },
                 execution_owner=execution_owner,
             ):
                 raise RuntimeError("MANIFEST_FINALIZE_FAILED")
@@ -764,6 +1173,7 @@ def run_daily_orchestration(
         "playable_card":       playable_compact,
         "reconciliation":      reconciliation,
         "source_union":        source_status_all,
+        "fallback":            fallback_metadata,
         "source_union_counts": source_union_counts,
         "runtime_provenance":  runtime_provenance,
         "execution_notes":     execution_notes,

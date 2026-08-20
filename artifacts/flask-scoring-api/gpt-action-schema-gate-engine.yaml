@@ -2425,7 +2425,18 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - idempotency_key
               properties:
+                idempotency_key:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: >
+                    Unique caller-generated key for this new Daily run.
+                    Reuse the exact same key only when retrying the same
+                    request; the server uses it to return the existing
+                    canonical run instead of creating a duplicate.
                 sports:
                   type: array
                   items:
