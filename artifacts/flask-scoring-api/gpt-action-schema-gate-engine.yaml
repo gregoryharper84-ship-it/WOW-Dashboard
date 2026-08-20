@@ -2400,8 +2400,9 @@ paths:
       description: >
         WOW-PATCH-2026-08-19-DAILY-CANONICAL-v1.0
 
-        Single authoritative daily run endpoint.  The caller submits only
-        high-level intent (which sports, environment).  Replit owns:
+        Single authoritative daily run endpoint. The caller supplies the
+        intended date, IANA timezone, and retry-safe idempotency key; Replit
+        generates the immutable run_id and owns:
           - Source union across all readable providers (Odds API + TheRundown)
           - Canonical selection identity assignment (stable, deterministic IDs)
           - Full-board preservation (no pre-score truncation)
@@ -2420,14 +2421,23 @@ paths:
 
         Requires X-API-Key header.
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
               required:
+                - date
+                - timezone
                 - idempotency_key
               properties:
+                date:
+                  type: string
+                  format: date
+                  description: Intended ISO run date (YYYY-MM-DD).
+                timezone:
+                  type: string
+                  description: IANA timezone describing the intended run date (for example, America/New_York).
                 idempotency_key:
                   type: string
                   minLength: 1
@@ -2437,6 +2447,7 @@ paths:
                     Reuse the exact same key only when retrying the same
                     request; the server uses it to return the existing
                     canonical run instead of creating a duplicate.
+                    Reuse it only with the same date and timezone.
                 sports:
                   type: array
                   items:
@@ -2465,7 +2476,7 @@ paths:
                     Caller context can only downgrade — never upgrade — verification.
       responses:
         "200":
-          description: Daily run completed (success or degraded)
+          description: Existing idempotent Daily run is terminal.
           content:
             application/json:
               schema:
@@ -2586,6 +2597,8 @@ paths:
                     description: Patch identifier for this orchestration version.
         "401":
           description: Missing or invalid X-API-Key
+        "409":
+          description: Idempotency key was reused with different date or timezone intent.
         "500":
           description: Orchestration failed (error field contains reason)
       security:

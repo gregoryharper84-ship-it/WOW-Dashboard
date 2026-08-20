@@ -14,7 +14,9 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+import hashlib
+import json
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -227,6 +229,8 @@ def start_run(
     runtime_provenance: dict | None,
     session_id: str | None,
     deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+    intended_date: str | None = None,
+    run_timezone: str = "UTC",
 ) -> dict[str, Any]:
     """Return one immutable run identity and start at most one worker."""
     from storage.daily_manifest import (
@@ -241,6 +245,21 @@ def start_run(
         raise ValueError("idempotency_key or run_id is required")
 
     now = datetime.now(timezone.utc)
+    try:
+        canonical_run_date = (
+            date.fromisoformat(intended_date)
+            if intended_date is not None
+            else now.date()
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("INVALID_INTENDED_DATE") from exc
+    request_identity = {
+        "date": canonical_run_date.isoformat(),
+        "timezone": run_timezone,
+    }
+    request_fingerprint = hashlib.sha256(
+        json.dumps(request_identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     requested_run_id = run_id or str(uuid.uuid4())
     requested_deadline = datetime.fromtimestamp(
         time.time() + deadline_seconds,
@@ -250,13 +269,15 @@ def start_run(
     run, created = create_or_get_run(
         run_id=requested_run_id,
         idempotency_key=idempotency_key,
-        run_date=now.date().isoformat(),
+        run_date=canonical_run_date.isoformat(),
         started_at=now.isoformat(),
         deadline_at=requested_deadline,
         environment=environment,
         requested_sports=sports,
         session_id=session_id,
         runtime_provenance=runtime_provenance,
+        run_timezone=run_timezone,
+        request_fingerprint=request_fingerprint,
     )
     if run is None:
         raise RuntimeError("DAILY_RUN_MANIFEST_UNAVAILABLE")
@@ -320,6 +341,8 @@ def start_run(
         "ok": True,
         "accepted": True,
         "run_id": canonical_run_id,
+        "run_date": canonical_run_date.isoformat(),
+        "timezone": run_timezone,
         "run_status": current.get("run_status", "IN_PROGRESS"),
         "progress_stage": current.get("progress_stage", "STARTING"),
         "deadline_at": _as_iso(current.get("deadline_at") or canonical_deadline),

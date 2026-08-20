@@ -26,7 +26,8 @@ import statistics
 import traceback
 import signal
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from functools import wraps
 _bt("imported stdlib")
 
@@ -1791,6 +1792,8 @@ def wow_daily_run():
 
     Accepted JSON params
     --------------------
+    date            : str               — intended ISO run date (required)
+    timezone        : str               — IANA timezone for date intent (required)
     idempotency_key : str               — unique key for a new run; reuse on retry
     sports          : list[str] | null  — sports to include (default: all)
     environment     : str               — "live" | "test" (default: "live")
@@ -1814,25 +1817,47 @@ def wow_daily_run():
     409  — provenance blocker (unverified run cannot produce playable output)
     500  — orchestration failed
     """
-    data = request.get_json(silent=True) or {}
+    if not request.is_json:
+        return jsonify({
+            "ok": False,
+            "error": "JSON_BODY_REQUIRED",
+        }), 400
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "ok": False,
+            "error": "JSON_OBJECT_REQUIRED",
+        }), 400
     sports_param  = data.get("sports") or None
     environment   = data.get("environment", "live")
     session_id    = data.get("session_id") or None
-    requested_run_id = data.get("run_id") or None
-    idempotency_key = (
-        request.headers.get("Idempotency-Key")
-        or data.get("idempotency_key")
-        or None
-    )
-    if idempotency_key is not None and not isinstance(idempotency_key, str):
-        return jsonify({"ok": False, "error": "idempotency_key must be a string"}), 400
-    if isinstance(idempotency_key, str) and len(idempotency_key) > 255:
-        return jsonify({"ok": False, "error": "idempotency_key exceeds 255 characters"}), 400
-    if not requested_run_id and not idempotency_key:
+    if "run_id" in data:
         return jsonify({
             "ok": False,
-            "error": "idempotency_key or run_id is required",
+            "error": "RUN_ID_SERVER_GENERATED",
         }), 400
+
+    intended_date = data.get("date")
+    if not isinstance(intended_date, str):
+        return jsonify({"ok": False, "error": "date must be an ISO date string"}), 400
+    try:
+        date.fromisoformat(intended_date)
+    except ValueError:
+        return jsonify({"ok": False, "error": "date must be an ISO date (YYYY-MM-DD)"}), 400
+
+    run_timezone = data.get("timezone")
+    if not isinstance(run_timezone, str) or not run_timezone.strip():
+        return jsonify({"ok": False, "error": "timezone must be an IANA timezone string"}), 400
+    try:
+        ZoneInfo(run_timezone)
+    except ZoneInfoNotFoundError:
+        return jsonify({"ok": False, "error": "timezone must be a valid IANA timezone"}), 400
+
+    idempotency_key = data.get("idempotency_key")
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        return jsonify({"ok": False, "error": "idempotency_key must be a non-empty string"}), 400
+    if len(idempotency_key) > 255:
+        return jsonify({"ok": False, "error": "idempotency_key exceeds 255 characters"}), 400
 
     # Server-authoritative runtime provenance (fail-closed, downgrade-only)
     from gate_engine.runtime_provenance import (
@@ -1848,13 +1873,26 @@ def wow_daily_run():
     try:
         from gate_engine.daily_run_lifecycle import start_run
         result = start_run(
-            run_id=requested_run_id,
+            run_id=None,
             idempotency_key=idempotency_key,
             sports=sports_param,
             environment=environment,
             runtime_provenance=runtime_provenance,
             session_id=session_id,
+            intended_date=intended_date,
+            run_timezone=run_timezone,
         )
+    except ValueError as exc:
+        error = str(exc)
+        status_code = (
+            409 if error.startswith("IDEMPOTENCY_KEY_") else 400
+        )
+        return jsonify({
+            "ok": False,
+            "status": "error",
+            "error": error,
+            "runtime_provenance": runtime_provenance,
+        }), status_code
     except Exception as exc:
         return jsonify({
             "ok":    False,
@@ -2935,6 +2973,66 @@ def openapi_schema():
                         "200": {"description": "Audit log returned"},
                         "401": {"description": "Missing or invalid X-API-Key"},
                     }
+                }
+            },
+            "/wow/daily/run": {
+                "post": {
+                    "operationId": "runWowDailyCanonical",
+                    "summary": "Start or safely retry a canonical WOW Daily run",
+                    "description": (
+                        "Requires JSON date, IANA timezone, and a caller-generated "
+                        "idempotency_key. The server generates run_id. Retrying the "
+                        "same date/timezone/key returns the original canonical run "
+                        "without launching a duplicate scorer."
+                    ),
+                    "security": [{"ApiKeyAuth": []}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["date", "timezone", "idempotency_key"],
+                                    "properties": {
+                                        "date": {
+                                            "type": "string",
+                                            "format": "date",
+                                            "description": "Intended run date (YYYY-MM-DD).",
+                                        },
+                                        "timezone": {
+                                            "type": "string",
+                                            "description": "IANA timezone, such as America/New_York.",
+                                        },
+                                        "idempotency_key": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 255,
+                                        },
+                                        "sports": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "nullable": True,
+                                        },
+                                        "environment": {
+                                            "type": "string",
+                                            "enum": ["live", "test"],
+                                            "default": "live",
+                                        },
+                                        "session_id": {"type": "string", "nullable": True},
+                                        "runtime_context": {"type": "object", "nullable": True},
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "202": {"description": "Canonical run accepted or in progress."},
+                        "200": {"description": "Existing idempotent run is terminal."},
+                        "400": {"description": "Missing or invalid required JSON contract."},
+                        "401": {"description": "Missing or invalid X-API-Key."},
+                        "409": {"description": "Idempotency key conflicts with prior date/timezone intent."},
+                        "500": {"description": "Daily orchestration acknowledgement failed."},
+                    },
                 }
             },
             "/leaderboard": {

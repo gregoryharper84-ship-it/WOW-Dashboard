@@ -101,6 +101,36 @@ class TestDailyRunLifecycle(unittest.TestCase):
         self.assertTrue(kwargs["start_new_session"])
         self.assertTrue(kwargs["close_fds"])
 
+    def test_manifest_identity_uses_intended_date_and_timezone(self):
+        captured = {}
+
+        def capture_create_or_get(**kwargs):
+            captured.update(kwargs)
+            return self._create_or_get(**kwargs)
+
+        with (
+            patch("storage.daily_manifest.create_or_get_run", side_effect=capture_create_or_get),
+            patch("storage.daily_manifest.claim_run", side_effect=self._claim),
+            patch("storage.daily_manifest.register_executor", return_value=True),
+            patch.object(lifecycle.subprocess, "Popen", _CapturingPopen),
+        ):
+            result = lifecycle.start_run(
+                run_id=None,
+                idempotency_key="date-aware-key",
+                sports=["NBA"],
+                environment="test",
+                runtime_provenance=None,
+                session_id=None,
+                intended_date="2026-08-20",
+                run_timezone="America/New_York",
+            )
+
+        self.assertEqual(captured["run_date"], "2026-08-20")
+        self.assertEqual(captured["run_timezone"], "America/New_York")
+        self.assertTrue(captured["request_fingerprint"])
+        self.assertEqual(result["run_date"], "2026-08-20")
+        self.assertEqual(result["timezone"], "America/New_York")
+
     def test_identity_is_required_before_manifest_work(self):
         with self.assertRaisesRegex(ValueError, "idempotency_key or run_id"):
             lifecycle.start_run(

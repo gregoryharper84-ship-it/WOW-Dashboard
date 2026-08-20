@@ -13,10 +13,14 @@ def _daily_operation():
     return document["paths"]["/wow/daily/run"]["post"]
 
 
-def test_daily_action_exposes_required_idempotency_key():
+def test_daily_action_requires_canonical_request_identity():
     operation = _daily_operation()
     body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
 
+    assert operation["requestBody"]["required"] is True
+    assert {"date", "timezone", "idempotency_key"} <= set(body_schema["required"])
+    assert body_schema["properties"]["date"]["format"] == "date"
+    assert body_schema["properties"]["timezone"]["type"] == "string"
     assert "idempotency_key" in body_schema["required"]
     field = body_schema["properties"]["idempotency_key"]
     assert field["type"] == "string"

@@ -4,7 +4,8 @@ WOW Runtime Provenance & Routing Governance v1.1
 WOW-PATCH-2026-08-19-RUNTIME-PROVENANCE
 
 Host abstraction preserved (WOW v16 Clean Core):
-  * WOW_BETTING_ENGINE (the Custom GPT) is the model host.
+  * WOW_CUSTOM_GPT, PROJECT_CHAT, and REPLIT_BACKEND are valid host
+    abstractions. A host name is not, by itself, a fallback reason.
   * Replit is only the capability backend — never the model layer.
   * nested_custom_gpt_required = False, replit_is_model_layer = False.
 
@@ -13,9 +14,9 @@ compute probabilities, does NOT assign or invent terminal labels beyond the
 existing MODEL_QUALIFIED_HOLD ceiling constant, and does NOT change any gate
 pass/fail logic.  It answers exactly one question, fail-closed:
 
-    "Was this run executed through the preferred production path
-     (WOW_BETTING_ENGINE host + all REQUIRED_FOR_CURRENT_RUN capabilities
-     verified through configured Replit production services/Actions)?"
+    "Was this run executed through a governed, authenticated production path
+    with all REQUIRED_FOR_CURRENT_RUN capabilities verified through configured
+    Replit production services/Actions?"
 
 v1.1 hardening (post code-review):
   1. ATTESTATION: every record built here carries an HMAC attestation over
@@ -51,10 +52,18 @@ EXECUTION_RULE: str = "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
 NESTED_CUSTOM_GPT_REQUIRED: bool = False
 REPLIT_IS_MODEL_LAYER: bool = False
 
-# Hosts
-PREFERRED_HOST: str = "WOW_BETTING_ENGINE"
+# Hosts. WOW_BETTING_ENGINE remains accepted as a legacy spelling, but no
+# server route is forced to emit it as the current canonical host abstraction.
+WOW_CUSTOM_GPT: str = "WOW_CUSTOM_GPT"
 PROJECT_CHAT: str = "PROJECT_CHAT"
-_KNOWN_HOSTS: frozenset[str] = frozenset({PREFERRED_HOST, PROJECT_CHAT})
+REPLIT_BACKEND: str = "REPLIT_BACKEND"
+_LEGACY_WOW_BETTING_ENGINE: str = "WOW_BETTING_ENGINE"
+PREFERRED_HOST: str = WOW_CUSTOM_GPT
+_GOVERNED_HOSTS: frozenset[str] = frozenset({
+    PREFERRED_HOST,
+    PROJECT_CHAT,
+    REPLIT_BACKEND,
+})
 
 # Backend verification statuses
 PRODUCTION_BACKEND_VERIFIED: str = "PRODUCTION_BACKEND_VERIFIED"
@@ -115,6 +124,7 @@ _ATTESTED_FIELDS: tuple[str, ...] = (
     "fallback_reason",
     "model_run_status",
     "lowest_ceiling",
+    "authenticated_action",
 )
 
 
@@ -133,6 +143,14 @@ def _normalise_capabilities(value: Any) -> list[str]:
     if not isinstance(value, (list, tuple, set, frozenset)):
         return []
     return sorted({str(cap).strip() for cap in value if str(cap).strip()})
+
+
+def _normalise_host(value: Any, *, default: str = PREFERRED_HOST) -> str:
+    """Return a supported host abstraction without promoting caller input."""
+    host = str(value or default).upper().strip()
+    if host == _LEGACY_WOW_BETTING_ENGINE:
+        return PREFERRED_HOST
+    return host if host in _GOVERNED_HOSTS else PROJECT_CHAT
 
 
 def _capability_verified(evidence: Any) -> bool:
@@ -183,21 +201,17 @@ def build_runtime_provenance(
     if isinstance(nested, dict):
         ctx = {**ctx, **nested}
 
-    requested_host = str(ctx.get("requested_host") or PREFERRED_HOST).upper().strip()
-    if requested_host not in _KNOWN_HOSTS:
-        requested_host = PROJECT_CHAT  # unknown host → treated as non-preferred
+    requested_host = _normalise_host(ctx.get("requested_host"))
 
     preferred_available = ctx.get("preferred_host_available") is not False
 
     supplied_actual = ctx.get("actual_host")
     if supplied_actual:
-        actual_host = str(supplied_actual).upper().strip()
-        if actual_host not in _KNOWN_HOSTS:
-            actual_host = PROJECT_CHAT
-    elif requested_host == PROJECT_CHAT or not preferred_available:
+        actual_host = _normalise_host(supplied_actual)
+    elif not preferred_available:
         actual_host = PROJECT_CHAT
     else:
-        actual_host = PREFERRED_HOST
+        actual_host = requested_host
 
     required = _normalise_capabilities(
         ctx.get("required_capabilities") or ctx.get("REQUIRED_FOR_CURRENT_RUN")
@@ -217,11 +231,14 @@ def build_runtime_provenance(
     # Without server-only attestation key material a verified record cannot
     # be distinguished from a forgery — fail closed to unverified.
     attestation_unavailable = _attestation_key() is None
+    authenticated_action = ctx.get("authenticated_action") is not False
 
-    on_preferred_path = actual_host == PREFERRED_HOST and preferred_available
+    # PROJECT_CHAT is a supported abstraction, but direct chat context alone
+    # is not a server-attested Action execution path.
+    on_governed_path = actual_host in {PREFERRED_HOST, REPLIT_BACKEND} and preferred_available
     production_probability_verified = bool(
-        on_preferred_path and not unavailable and not local_probability
-        and not attestation_unavailable
+        on_governed_path and authenticated_action and not unavailable
+        and not local_probability and not attestation_unavailable
     )
 
     # ── Fallback reason (recorded, never invented for verified runs) ────────
@@ -236,6 +253,8 @@ def build_runtime_provenance(
                 if not preferred_available
                 else "PROJECT_CHAT_REQUESTED_OR_SELECTED"
             )
+        elif not authenticated_action:
+            fallback_reason = "AUTHENTICATED_ACTION_REQUIRED"
         elif unavailable:
             fallback_reason = "REQUIRED_REPLIT_CAPABILITIES_UNVERIFIED"
         elif local_probability:
@@ -247,7 +266,7 @@ def build_runtime_provenance(
 
     # ── Execution path / statuses / ceiling ─────────────────────────────────
     if production_probability_verified:
-        execution_path = "WOW_BETTING_ENGINE->REPLIT_PRODUCTION_SERVICES_ACTIONS"
+        execution_path = f"{actual_host}->REPLIT_PRODUCTION_SERVICES_ACTIONS"
         model_run_status = PREFERRED_PRODUCTION_RUN
         backend_verification_status = PRODUCTION_BACKEND_VERIFIED
         lowest_ceiling = ctx.get("lowest_ceiling")  # passthrough; no upgrade implied
@@ -257,7 +276,7 @@ def build_runtime_provenance(
         backend_verification_status = BACKEND_NOT_VERIFIED
         lowest_ceiling = FALLBACK_CEILING
     else:
-        execution_path = "WOW_BETTING_ENGINE->REPLIT_CAPABILITY_VERIFICATION_INCOMPLETE"
+        execution_path = f"{actual_host}->REPLIT_CAPABILITY_VERIFICATION_INCOMPLETE"
         model_run_status = BACKEND_CAPABILITY_INCOMPLETE
         backend_verification_status = BACKEND_NOT_VERIFIED
         lowest_ceiling = FALLBACK_CEILING
@@ -281,6 +300,7 @@ def build_runtime_provenance(
         "fallback_reason": fallback_reason,
         "model_run_status": model_run_status,
         "lowest_ceiling": lowest_ceiling,
+        "authenticated_action": authenticated_action,
         # Host abstraction + governance invariants (unconditional)
         "nested_custom_gpt_required": NESTED_CUSTOM_GPT_REQUIRED,
         "replit_is_model_layer": REPLIT_IS_MODEL_LAYER,
@@ -299,6 +319,7 @@ def build_runtime_provenance(
 # never shrink the required set, assert host identity, or supply evidence.
 ROUTE_CAPABILITY_REGISTRY: dict[str, tuple[str, ...]] = {
     "wow_daily_scan": ("engine_health", "odds_gateway", "database"),
+    "wow_daily_canonical": ("engine_health", "odds_gateway", "database"),
     "wow_v16_run":    ("engine_health", "database"),
     "wow_cc_run":     ("engine_health", "database"),
 }
@@ -317,9 +338,9 @@ _DOWNGRADE_ONLY_CONTEXT_KEYS: frozenset[str] = frozenset({
 })
 
 
-# The only credential principal treated as the WOW_BETTING_ENGINE Custom-GPT
-# Action.  General API-key callers (e.g. SCORING_API) are never the preferred
-# host — they are a fallback/unverified host by construction.
+# The only credential principal authorized to attest a Custom GPT Action
+# request. General API-key callers are valid REPLIT_BACKEND callers but remain
+# unverified unless this server-owned action principal is present.
 PREFERRED_ACTION_PRINCIPAL: str = "GPT_ACTION"
 
 
@@ -337,11 +358,10 @@ def build_route_provenance(
     * Capability evidence comes exclusively from the in-process probe
       registry (gate_engine.runtime_capability_probe).
     * Host identity is derived from the authenticated credential PRINCIPAL
-      recorded by require_api_key (request-local state), not request JSON:
-      only the designated Custom-GPT Action credential
-      (PREFERRED_ACTION_PRINCIPAL) is the preferred host.  Unauthenticated
-      calls and general API-key principals can never be the preferred host.
-      A caller may still explicitly downgrade to PROJECT_CHAT /
+      recorded by require_api_key (request-local state), not request JSON.
+      Valid host abstractions do not independently verify a run: the
+      designated Custom-GPT Action credential remains required for production
+      verification. A caller may still explicitly downgrade with
       preferred_host_available=False.
     * An unregistered route fails closed (UNGOVERNED_ROUTE fallback).
     """
@@ -368,17 +388,29 @@ def build_route_provenance(
     ctx["required_capabilities"] = required
     ctx.pop("REQUIRED_FOR_CURRENT_RUN", None)
 
-    # Host identity from the authenticated credential principal, never JSON.
-    if action_principal != PREFERRED_ACTION_PRINCIPAL:
-        ctx["requested_host"] = PROJECT_CHAT
+    # Host identity and action authority are server-derived. A registered
+    # Action may explicitly downgrade itself to PROJECT_CHAT, but caller
+    # input can never elevate a non-action credential.
+    ctx["authenticated_action"] = action_principal == PREFERRED_ACTION_PRINCIPAL
+    if action_principal == PREFERRED_ACTION_PRINCIPAL:
+        requested_host = _normalise_host(ctx.get("requested_host"))
+        if requested_host == PROJECT_CHAT:
+            ctx["requested_host"] = PROJECT_CHAT
+            ctx["actual_host"] = PROJECT_CHAT
+        else:
+            ctx["requested_host"] = WOW_CUSTOM_GPT
+            ctx["actual_host"] = WOW_CUSTOM_GPT
+    elif action_principal:
+        ctx["requested_host"] = REPLIT_BACKEND
+        ctx["actual_host"] = REPLIT_BACKEND
         ctx.setdefault(
             "fallback_reason",
-            "UNAUTHENTICATED_ACTION" if not action_principal
-            else f"NON_ACTION_CREDENTIAL:{str(action_principal)[:40]}",
+            f"NON_ACTION_CREDENTIAL:{str(action_principal)[:40]}",
         )
-    elif str(ctx.get("requested_host") or "").upper().strip() != PROJECT_CHAT:
-        ctx["requested_host"] = PREFERRED_HOST
-    ctx.pop("actual_host", None)  # derived, never caller-asserted
+    else:
+        ctx["requested_host"] = PROJECT_CHAT
+        ctx["actual_host"] = PROJECT_CHAT
+        ctx.setdefault("fallback_reason", "UNAUTHENTICATED_ACTION")
 
     return build_runtime_provenance(
         ctx,
@@ -421,11 +453,12 @@ def provenance_blocker(provenance: dict[str, Any] | None) -> str | None:
         return f"{_BLOCKER_PREFIX}:ATTESTATION_INVALID"
 
     consistent = (
-        provenance.get("actual_host") == PREFERRED_HOST
+        provenance.get("actual_host") in _GOVERNED_HOSTS
         and provenance.get("backend_verification_status") == PRODUCTION_BACKEND_VERIFIED
         and provenance.get("model_run_status") == PREFERRED_PRODUCTION_RUN
         and not provenance.get("required_capabilities_unavailable")
         and provenance.get("fallback_run") is not True
+        and provenance.get("authenticated_action") is True
     )
     if not consistent:
         return f"{_BLOCKER_PREFIX}:RECORD_INCONSISTENT"

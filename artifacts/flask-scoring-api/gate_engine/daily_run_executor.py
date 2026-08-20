@@ -182,6 +182,7 @@ def execute_run(
             orchestrator = run_daily_orchestration
         orchestrator(
             run_id=run_id,
+            run_date=_as_iso(run.get("run_date")),
             sports=run.get("requested_sports") or None,
             environment=run.get("environment") or "production",
             runtime_provenance=run.get("runtime_provenance"),

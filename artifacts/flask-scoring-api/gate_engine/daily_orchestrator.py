@@ -686,6 +686,7 @@ def _compact_card(card: dict[str, Any]) -> dict[str, Any]:
 def run_daily_orchestration(
     *,
     run_id: str | None                    = None,
+    run_date: str | None                  = None,
     sports: list[str] | None          = None,
     environment: str                   = "live",
     runtime_provenance: dict | None    = None,
@@ -720,7 +721,7 @@ def run_daily_orchestration(
     """
     # ---- Run identity -------------------------------------------------------
     run_id   = run_id or str(uuid.uuid4())
-    run_date = date.today().isoformat()
+    run_date = run_date or date.today().isoformat()
     started_at = datetime.now(timezone.utc).isoformat()
 
     requested_sports = list(sports) if sports is not None else list(_ALL_SPORTS)

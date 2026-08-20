@@ -4,7 +4,7 @@ WOW Runtime Provenance & Routing Governance v1.0 — Regression Suite
 
 Covers:
   P01  Fully backend-verified WOW_BETTING_ENGINE run
-  P02  PROJECT_CHAT fallback is explicit BACKEND_NOT_VERIFIED / FALLBACK_RUN
+    P02  PROJECT_CHAT remains a supported abstraction but is not self-attested
   P03  Partial required-capability failure blocks production verification
   P04  Local/reconstructed probability can never be production verified
   P05  Caller-supplied booleans / forged records cannot elevate (fail-closed)
@@ -22,7 +22,7 @@ from gate_engine import runtime_provenance as rp
 from gate_engine.runtime_provenance import (
     BACKEND_NOT_VERIFIED, PRODUCTION_BACKEND_VERIFIED,
     FALLBACK_CEILING, FALLBACK_RUN, PREFERRED_PRODUCTION_RUN,
-    PREFERRED_HOST, PROJECT_CHAT,
+    PREFERRED_HOST, PROJECT_CHAT, REPLIT_BACKEND,
     build_runtime_provenance, enforce_no_upgrade,
     is_provenance_blocker, provenance_blocker,
 )
@@ -438,6 +438,15 @@ class TestP11_ServerAuthoritativeRouteProvenance(unittest.TestCase):
         self.assertEqual(prov["required_capabilities"],
                          sorted(rp.ROUTE_CAPABILITY_REGISTRY["wow_daily_scan"]))
 
+    def test_canonical_daily_route_is_governed(self):
+        prov = self._build(route="wow_daily_canonical", ctx={})
+        self.assertNotIn("UNGOVERNED_ROUTE", prov.get("fallback_reason") or "")
+        self.assertEqual(
+            prov["required_capabilities"],
+            sorted(rp.ROUTE_CAPABILITY_REGISTRY["wow_daily_canonical"]),
+        )
+        self.assertFalse(prov["can_execute"])
+
     def test_caller_cannot_shrink_required_capabilities(self):
         prov = self._build(ctx={"required_capabilities": []})
         self.assertEqual(prov["required_capabilities"],
@@ -475,7 +484,7 @@ class TestP11_ServerAuthoritativeRouteProvenance(unittest.TestCase):
         # A holder of the general SCORING_API_KEY authenticates, but is NOT
         # the designated Custom-GPT Action — must be fallback, never verified.
         prov = self._build(principal="SCORING_API", ctx={})
-        self.assertEqual(prov["actual_host"], PROJECT_CHAT)
+        self.assertEqual(prov["actual_host"], REPLIT_BACKEND)
         self.assertFalse(prov["production_probability_verified"])
         self.assertIn("NON_ACTION_CREDENTIAL", prov["fallback_reason"] or "")
         self.assertIsNotNone(provenance_blocker(prov))
@@ -484,7 +493,7 @@ class TestP11_ServerAuthoritativeRouteProvenance(unittest.TestCase):
         prov = self._build(principal="GPT_ACTION", ctx={})
         self.assertEqual(prov["actual_host"], PREFERRED_HOST)
         prov2 = self._build(principal="gpt_action", ctx={})  # exact match only
-        self.assertEqual(prov2["actual_host"], PROJECT_CHAT)
+        self.assertEqual(prov2["actual_host"], REPLIT_BACKEND)
 
     def test_ungoverned_route_fails_closed(self):
         prov = self._build(route="some_unregistered_route", ctx={})

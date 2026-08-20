@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS wow_daily_runs (
     orchestration_metadata JSONB,
     session_id          TEXT,
     idempotency_key     TEXT,
+    run_timezone        TEXT        NOT NULL DEFAULT 'UTC',
+    request_fingerprint TEXT,
     deadline_at         TIMESTAMPTZ,
     progress_stage      TEXT        NOT NULL DEFAULT 'ACCEPTED',
     progress_detail     TEXT,
@@ -164,6 +166,9 @@ def ensure_tables() -> bool:
                         """
                         ALTER TABLE wow_daily_runs
                             ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
+                            ADD COLUMN IF NOT EXISTS run_timezone TEXT
+                                NOT NULL DEFAULT 'UTC',
+                            ADD COLUMN IF NOT EXISTS request_fingerprint TEXT,
                             ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ,
                             ADD COLUMN IF NOT EXISTS progress_stage TEXT
                                 NOT NULL DEFAULT 'ACCEPTED',
@@ -266,6 +271,11 @@ def _decode_run_row(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _run_date_text(value: Any) -> str:
+    """Normalize DATE values returned by psycopg2 for identity comparison."""
+    return value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+
+
 def create_or_get_run(
     *,
     run_id: str,
@@ -277,6 +287,8 @@ def create_or_get_run(
     requested_sports: list[str] | None,
     session_id: str | None = None,
     runtime_provenance: dict | None = None,
+    run_timezone: str = "UTC",
+    request_fingerprint: str | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     """Atomically create or reuse one canonical run identity."""
     conn = _get_conn(acknowledgement=True)
@@ -288,11 +300,12 @@ def create_or_get_run(
                     INSERT INTO wow_daily_runs (
                         run_id, run_date, started_at, environment,
                         requested_sports, session_id, runtime_provenance,
-                        idempotency_key, deadline_at,
+                         idempotency_key, run_timezone, request_fingerprint,
+                         deadline_at,
                         run_status, progress_stage, progress_updated_at
                     ) VALUES (
                         %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, 'ACCEPTED', 'ACCEPTED', NOW()
+                        %s, %s, %s, %s, 'ACCEPTED', 'ACCEPTED', NOW()
                     )
                     ON CONFLICT DO NOTHING
                     RETURNING run_id
@@ -307,6 +320,8 @@ def create_or_get_run(
                         json.dumps(runtime_provenance)
                         if runtime_provenance else None,
                         idempotency_key,
+                        run_timezone,
+                        request_fingerprint,
                         deadline_at,
                     ),
                 )
@@ -325,8 +340,21 @@ def create_or_get_run(
                     )
                 cols = [d[0] for d in cur.description]
                 row = cur.fetchone()
+                result = _decode_run_row(dict(zip(cols, row))) if row else None
+                if result is not None and idempotency_key:
+                    existing_date = _run_date_text(result.get("run_date"))
+                    existing_timezone = str(result.get("run_timezone") or "UTC")
+                    existing_fingerprint = result.get("request_fingerprint")
+                    if existing_date != str(run_date) or existing_timezone != run_timezone:
+                        raise ValueError("IDEMPOTENCY_KEY_INTENT_MISMATCH")
+                    if (
+                        request_fingerprint
+                        and existing_fingerprint
+                        and existing_fingerprint != request_fingerprint
+                    ):
+                        raise ValueError("IDEMPOTENCY_KEY_REQUEST_MISMATCH")
         return (
-            _decode_run_row(dict(zip(cols, row))) if row else None,
+            result,
             created,
         )
     finally:
