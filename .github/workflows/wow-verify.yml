@@ -1,0 +1,185 @@
+# .github/workflows/wow-verify.yml
+#
+# WOW A.2 Migration Verification — VERIFICATION ONLY
+#   No deployment. No mutation. No Replit calls. No schedule.
+#   No production secrets. PostgreSQL is ephemeral and CI-local.
+#
+# Failure hierarchy:
+#   dependency install       = hard prerequisite; blocks all suites
+#   pip check conflict       = DEPENDENCY_VERSION_DRIFT; continue
+#   DB reachability failure  = CI_ENVIRONMENT_GAP; continue
+#   schema bootstrap failure = DATABASE_SCHEMA_BOOTSTRAP_GAP; continue  [A2-DB-001]
+#   collection failure       = attributable red; suites continue
+#   suite failure            = attributable red; remaining suites continue
+
+name: wow-verify
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - rescue/replit-emergency-20260820-1221
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: WOW test suites (5 surfaces)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        working-directory: artifacts/flask-scoring-api
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wow_ci
+          POSTGRES_PASSWORD: wow_ci
+          POSTGRES_DB: wow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U wow_ci -d wow_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      # Disposable CI-local credentials. NOT secrets. NOT production.
+      DATABASE_URL: postgresql://wow_ci:wow_ci@localhost:5432/wow_test
+      WOW_CI: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      # Deliberately absent: SCORING_API_KEY, GPT_ACTION_SECRET,
+      # ANTHROPIC_API_KEY, ODDS_API_*. Tests depending on these behave
+      # per their own semantics — no credentials are injected.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"          # Replit runs 3.11.14; runner pins minor
+          cache: pip
+          cache-dependency-path: artifacts/flask-scoring-api/requirements.txt
+
+      # HARD PREREQUISITE — actual installation failure blocks the suites.
+      - name: Install dependencies
+        id: deps
+        run: |
+          python -m pip --version
+          python -m pip install -r requirements.txt
+          python -m pip install pytest==9.1.1
+
+      # DIAGNOSTIC — resolution conflicts are evidence, not a reason to
+      # suppress the baseline. See A3-DEPS-003 (all bounds are `>=`).
+      - name: Check resolved dependency consistency
+        id: depcheck
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        continue-on-error: true
+        run: python -m pip check
+
+      # DIAGNOSTIC — non-gating.
+      - name: Record resolved environment
+        id: envdiag
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          python --version
+          python -m pytest --version
+
+          echo "--- resolved dependency versions ---"
+          python -m pip freeze
+
+          echo "--- PostgreSQL reachability ---"
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          with psycopg2.connect(os.environ["DATABASE_URL"]) as conn:
+              with conn.cursor() as cur:
+                  cur.execute("SHOW server_version")
+                  print(cur.fetchone()[0])
+          PY
+
+      # INFRASTRUCTURE BOOTSTRAP — non-gating. [A2-DB-001]
+      # wow_session_exposure is not self-initialized by its own tests.
+      # Initializer verified public, importable, idempotent.
+      - name: Initialize known CI database schema
+        id: dbschema
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          from gate_engine.pg_session_ledger import ensure_table_exists
+
+          ensure_table_exists()
+          print("wow_session_exposure schema initialized")
+          PY
+
+      - name: Collection baseline
+        id: collection
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: |
+          python -m pytest --collect-only -q \
+            gate_engine/tests \
+            kalshi_engine/tests \
+            services/tests \
+            tests \
+            validation/tests
+
+      - name: Suite 1/5 — gate_engine/tests
+        id: gate_engine
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: python -m pytest gate_engine/tests -q --tb=short
+
+      - name: Suite 2/5 — kalshi_engine/tests
+        id: kalshi_engine
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: python -m pytest kalshi_engine/tests -q --tb=short
+
+      - name: Suite 3/5 — services/tests
+        id: services
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: python -m pytest services/tests -q --tb=short
+
+      - name: Suite 4/5 — tests/
+        id: root_tests
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: python -m pytest tests -q --tb=short
+
+      - name: Suite 5/5 — validation/tests
+        id: validation
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: python -m pytest validation/tests -q --tb=short
+
+      - name: A2 baseline outcome summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## WOW A.2 Baseline"
+            echo ""
+            echo "| Stage | Outcome |"
+            echo "|---|---|"
+            echo "| Dependencies install | ${{ steps.deps.outcome }} |"
+            echo "| Dependency consistency | ${{ steps.depcheck.outcome }} |"
+            echo "| Environment / DB reachability | ${{ steps.envdiag.outcome }} |"
+            echo "| Known DB schema bootstrap | ${{ steps.dbschema.outcome }} |"
+            echo "| Collection | ${{ steps.collection.outcome }} |"
+            echo "| gate_engine/tests | ${{ steps.gate_engine.outcome }} |"
+            echo "| kalshi_engine/tests | ${{ steps.kalshi_engine.outcome }} |"
+            echo "| services/tests | ${{ steps.services.outcome }} |"
+            echo "| tests/ | ${{ steps.root_tests.outcome }} |"
+            echo "| validation/tests | ${{ steps.validation.outcome }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
