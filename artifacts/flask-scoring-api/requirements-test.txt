@@ -1,0 +1,5 @@
+-r requirements.txt
+
+pytest>=8.4,<9
+PyYAML>=6.0,<7
+scipy>=1.16,<2
