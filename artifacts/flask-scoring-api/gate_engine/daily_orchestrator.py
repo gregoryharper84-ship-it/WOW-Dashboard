@@ -1285,6 +1285,36 @@ def run_daily_orchestration(
             f"duplicates={len(reconciliation['duplicate_ids'])}"
         )
 
+    # ---- Full-board confidence completion ----------------------------------
+    # Optimization and board-wide count claims are forbidden until every
+    # model-eligible discovered row has a terminal confidence category.
+    from gate_engine.full_board_confidence import (
+        FULL_BOARD_RUN_INCOMPLETE,
+        audit_full_board_confidence,
+    )
+    confidence_rows = [
+        card
+        for bucket_name in _TERMINAL_BUCKETS
+        for card in scan_result.get(bucket_name, [])
+    ]
+    full_board_confidence = audit_full_board_confidence(
+        confidence_rows,
+        discovered_count=len(discovered_ids),
+        reconciliation_passed=bool(reconciliation.get("reconciled")),
+    )
+    if full_board_confidence["status"] == FULL_BOARD_RUN_INCOMPLETE:
+        failed_modules.append("full_board_confidence:FULL_BOARD_RUN_INCOMPLETE")
+        terminal_failure_reasons.append((
+            "FULL_BOARD_RUN_INCOMPLETE",
+            "daily_orchestrator.full_board_confidence",
+        ))
+        execution_notes.append(
+            "FULL_BOARD_RUN_INCOMPLETE:"
+            f"accounted={full_board_confidence['confidence_accounted_rows']}/"
+            f"{full_board_confidence['model_eligible_rows']}:"
+            "optimizer_and_promising_count_claim_blocked"
+        )
+
     # ---- Persist manifest rows ----------------------------------------------
     finished_at = datetime.now(timezone.utc).isoformat()
     run_status_inner = scan_result.get("run_status", "COMPLETE")
@@ -1422,6 +1452,9 @@ def run_daily_orchestration(
         "failed_modules":      failed_modules,
         "counts":              counts,
         "playable_card":       playable_compact,
+        "full_board_confidence": full_board_confidence,
+        "promising_count_claim_allowed": full_board_confidence["promising_count_claim_allowed"],
+        "optimizer_allowed":   full_board_confidence["optimizer_allowed"],
         "reconciliation":      reconciliation,
         "source_union":        source_status_all,
         "fallback":            fallback_metadata,

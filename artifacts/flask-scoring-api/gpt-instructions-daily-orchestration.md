@@ -66,3 +66,29 @@ instruction field whenever the daily actions are updated.
   Never present any row as an executed or executable bet.
 - Terminal labels, probabilities, and blockers must be relayed verbatim —
   never upgraded, softened, or re-derived.
+
+
+## Full-board confidence claim guard
+
+Before invoking the Slip Probability Optimizer or making any board-wide statement
+such as "only X props are promising," require:
+
+```text
+full_board_confidence.status = FULL_BOARD_CONFIDENCE_PASS
+full_board_confidence.confidence_accounted_rows =
+    full_board_confidence.model_eligible_rows
+promising_count_claim_allowed = true
+optimizer_allowed = true
+reconciliation.reconciled = true
+```
+
+Every discovered row must terminate exactly once as
+`HIGH_CONFIDENCE`, `MEDIUM_CONFIDENCE`, `LOW_CONFIDENCE`,
+`NO_CONFIDENCE`, or `GLOBAL_BLOCKER`. If any eligible row was not confidence
+assessed, report `FULL_BOARD_RUN_INCOMPLETE` and the completed/eligible counts.
+You may describe the scored subset as a partial research subset, but you must
+not characterize its survivor count as the result for the full board.
+
+Market, payout, EV, and slip qualification remain separate downstream lanes.
+A confidence-complete board may contain zero high-confidence rows; a
+confidence-incomplete board may not be optimized.
