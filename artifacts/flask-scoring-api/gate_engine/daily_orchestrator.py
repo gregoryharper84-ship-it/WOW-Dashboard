@@ -1304,10 +1304,13 @@ def run_daily_orchestration(
     )
     if full_board_confidence["status"] == FULL_BOARD_RUN_INCOMPLETE:
         failed_modules.append("full_board_confidence:FULL_BOARD_RUN_INCOMPLETE")
-        terminal_failure_reasons.append((
-            "FULL_BOARD_RUN_INCOMPLETE",
-            "daily_orchestrator.full_board_confidence",
-        ))
+        # Preserve the originating lifecycle/scoring failure as the primary
+        # terminal reason. Full-board incompleteness is a derived blocker.
+        if not terminal_failure_reasons:
+            terminal_failure_reasons.append((
+                "FULL_BOARD_RUN_INCOMPLETE",
+                "daily_orchestrator.full_board_confidence",
+            ))
         execution_notes.append(
             "FULL_BOARD_RUN_INCOMPLETE:"
             f"accounted={full_board_confidence['confidence_accounted_rows']}/"
