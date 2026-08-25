@@ -346,6 +346,116 @@ class TestReconciliation(unittest.TestCase):
         r = orch._build_reconciliation(set(), {b: [] for b in orch._TERMINAL_BUCKETS})
         self.assertTrue(r["reconciled"])
 
+    def test_containment_publishes_one_terminal_card_per_candidate(self):
+        discovered = {
+            "SEL_A": {"canonical_selection_id": "SEL_A", "player": "A"},
+            "SEL_B": {"canonical_selection_id": "SEL_B", "player": "B"},
+        }
+        scan = _make_mock_scan_result({
+            "market_verified": [
+                {"canonical_selection_id": "SEL_A", "model_probability": 0.61},
+            ],
+            "watch": [
+                {"canonical_selection_id": "SEL_A"},  # duplicate
+                {"canonical_selection_id": "SEL_UNKNOWN"},  # excess
+                {},  # ID-less
+            ],
+        })
+
+        contained, containment = orch._contain_candidate_outcomes(
+            scan, discovered_by_id=discovered,
+        )
+        published = [
+            card
+            for bucket in orch._TERMINAL_BUCKETS
+            for card in contained[bucket]
+        ]
+        self.assertEqual(
+            [card["canonical_selection_id"] for card in published],
+            ["SEL_A", "SEL_B"],
+        )
+        self.assertEqual(
+            contained["data_insufficient"][0]["terminal_label"],
+            "DATA_CONTRACT_FAIL",
+        )
+        self.assertEqual(containment["duplicate_ids"], ["SEL_A"])
+        self.assertEqual(containment["excess_ids"], ["SEL_UNKNOWN"])
+        self.assertEqual(containment["idless_card_count"], 1)
+        self.assertEqual(containment["missing_ids"], ["SEL_B"])
+        reconciliation = orch._build_reconciliation(
+            set(discovered), contained, containment=containment,
+        )
+        self.assertFalse(reconciliation["reconciled"])
+        self.assertEqual(reconciliation["total_terminal"], len(discovered))
+        duplicate = next(
+            card for card in contained["data_insufficient"]
+            if card["canonical_selection_id"] == "SEL_A"
+        )
+        self.assertEqual(duplicate["terminal_label"], "DATA_CONTRACT_FAIL")
+        self.assertFalse(duplicate["can_execute"])
+
+    def test_prerequisite_failure_scrubs_probability_and_authority_per_card(self):
+        discovered = {
+            "SEL_HEALTHY": {"canonical_selection_id": "SEL_HEALTHY"},
+            "SEL_FAILED": {"canonical_selection_id": "SEL_FAILED"},
+        }
+        scan = _make_mock_scan_result({
+            "market_verified": [{
+                "canonical_selection_id": "SEL_HEALTHY",
+                "model_probability": 0.63,
+                "calibrated_probability": 0.60,
+                "terminal_label": "FINAL_APPROVED",
+            }],
+            "final_approved_internal": [{
+                "canonical_selection_id": "SEL_FAILED",
+                "model_probability": 0.71,
+                "calibrated_probability": 0.69,
+                "no_vig_probability": 0.65,
+                "pure_edge": 0.04,
+                "adjusted_edge": 0.03,
+                "probability_snapshot": {"calibrated_probability": 0.69},
+                "authoritative_result": {"decision": "approved"},
+                "terminal_label": "FINAL_APPROVED",
+                "mandatory_prerequisites": {"data": "AVAILABLE", "calibration": "FAILED"},
+            }],
+        })
+
+        contained, containment = orch._contain_candidate_outcomes(
+            scan, discovered_by_id=discovered,
+        )
+        self.assertEqual(containment["prerequisite_failed_ids"], ["SEL_FAILED"])
+        self.assertEqual(contained["market_verified"][0]["model_probability"], 0.63)
+        failed = contained["data_insufficient"][0]
+        self.assertEqual(failed["canonical_selection_id"], "SEL_FAILED")
+        self.assertEqual(failed["terminal_label"], "DATA_CONTRACT_FAIL")
+        self.assertFalse(failed["probability_publishable"])
+        self.assertIsNone(failed["model_probability"])
+        self.assertIsNone(failed["calibrated_probability"])
+        self.assertIsNone(failed["no_vig_probability"])
+        self.assertIsNone(failed["pure_edge"])
+        self.assertIsNone(failed["adjusted_edge"])
+        self.assertIsNone(failed["probability_snapshot"])
+        self.assertIsNone(failed["authoritative_result"])
+        self.assertIn(
+            "MANDATORY_PREREQUISITE_FAILED:mandatory_prerequisites:calibration",
+            failed["blockers"],
+        )
+
+    def test_containment_forces_non_execution_on_every_published_card(self):
+        contained, _ = orch._contain_candidate_outcomes(
+            _make_mock_scan_result({
+                "market_verified": [{
+                    "canonical_selection_id": "SEL_A",
+                    "can_execute": True,
+                    "can_approve_bets": True,
+                }],
+            }),
+            discovered_by_id={"SEL_A": {"canonical_selection_id": "SEL_A"}},
+        )
+        card = contained["market_verified"][0]
+        self.assertFalse(card["can_execute"])
+        self.assertFalse(card["can_approve_bets"])
+
 
 # ---------------------------------------------------------------------------
 # Tests 18-21 — run_daily_orchestration (mocked)
@@ -682,6 +792,7 @@ class TestDailyLifecycleReliability(unittest.TestCase):
             patch("storage.daily_manifest.persist_discovery_checkpoint", return_value=False),
             patch("storage.daily_manifest.begin_scoring") as begin_scoring,
             patch("storage.daily_manifest.finalize_run", finalize),
+            patch("storage.daily_manifest.save_run_row", return_value=True),
             patch.object(orch, "_run_scan_isolated") as scan,
         ):
             result = orch.run_daily_orchestration(
@@ -759,6 +870,7 @@ class TestDailyLifecycleReliability(unittest.TestCase):
             patch("storage.daily_manifest.persist_discovery_checkpoint", return_value=True),
             patch("storage.daily_manifest.begin_scoring", return_value=True),
             patch("storage.daily_manifest.finalize_run", finalize),
+            patch("storage.daily_manifest.save_run_row", return_value=True),
             patch.object(
                 orch, "_run_scan_isolated",
                 return_value=(None, "SCORING_STAGE_TIMEOUT"),
@@ -808,6 +920,115 @@ class TestDailyLifecycleReliability(unittest.TestCase):
         self.assertEqual(len(result["watch"]), 1)
         self.assertIn("fallback:WNBA:SCORING_STAGE_TIMEOUT", result["failed_modules"])
         self.assertEqual(metadata["lane_failures"], ["WNBA:SCORING_STAGE_TIMEOUT"])
+
+    def test_fallback_persists_only_post_containment_rows(self):
+        """Raw fallback cards cannot reserve a manifest row before containment."""
+        raw_fallback = _make_mock_scan_result({
+            "final_approved_internal": [{
+                "player": "NBA A",
+                "sport": "NBA",
+                "prop": "points",
+                "side": "MORE",
+                "line": 20.5,
+                "classification": "Final Approved — Internal Projection",
+                "terminal_bucket": "final_approved_internal",
+                "terminal_label": "FINAL_APPROVED",
+                "model_probability": 0.71,
+                "calibrated_probability": 0.69,
+                "mandatory_prerequisites": {"calibration": "FAILED"},
+                "can_execute": True,
+                "can_approve_bets": True,
+            }],
+        })
+        save = MagicMock(return_value=True)
+        with (
+            patch.object(
+                orch, "_union_props_for_sport",
+                return_value=(self._props(), {"NBA_odds": "AVAILABLE"}),
+            ),
+            patch("storage.daily_manifest.ensure_tables", return_value=True),
+            patch("storage.daily_manifest.create_run", return_value=True),
+            patch("storage.daily_manifest.mark_progress", return_value=True),
+            patch("storage.daily_manifest.persist_discovery_checkpoint", return_value=True),
+            patch("storage.daily_manifest.begin_scoring", return_value=True),
+            patch("storage.daily_manifest.finalize_run", return_value=True),
+            patch("storage.daily_manifest.save_run_row", save),
+            patch(
+                "gate_engine.governance.get_governance_status",
+                return_value={},
+            ),
+            patch(
+                "gate_engine.llp_stage2_tables.get_stage2_schema_health",
+                return_value={"schema_ready": True},
+            ),
+            patch.object(
+                orch,
+                "_run_scan_isolated",
+                side_effect=[
+                    (None, "SCORING_STAGE_TIMEOUT"),
+                    (raw_fallback, None),
+                ],
+            ),
+        ):
+            result = orch.run_daily_orchestration(
+                sports=["NBA"], environment="test", persist=True,
+            )
+
+        self.assertEqual(save.call_count, 1)
+        persisted = save.call_args.kwargs["full_row"]
+        self.assertEqual(persisted["terminal_bucket"], "data_insufficient")
+        self.assertEqual(persisted["terminal_label"], "DATA_CONTRACT_FAIL")
+        self.assertIsNone(persisted["model_probability"])
+        self.assertIsNone(persisted["calibrated_probability"])
+        self.assertFalse(persisted["can_execute"])
+        self.assertFalse(persisted["can_approve_bets"])
+        self.assertEqual(result["counts"]["data_insufficient"], 1)
+
+    def test_duplicate_approval_never_reaches_playable_or_manifest_authority(self):
+        duplicate_result = _make_mock_scan_result({
+            "market_verified": [{
+                "player": "NBA A", "sport": "NBA", "prop": "points",
+                "side": "MORE", "line": 20.5,
+                "terminal_label": "FINAL_APPROVED",
+                "classification": "Market Verified Approved",
+                "terminal_bucket": "market_verified",
+            }],
+            "final_approved_internal": [{
+                "player": "NBA A", "sport": "NBA", "prop": "points",
+                "side": "MORE", "line": 20.5,
+                "terminal_label": "FINAL_APPROVED",
+                "classification": "Final Approved — Internal Projection",
+                "terminal_bucket": "final_approved_internal",
+            }],
+        })
+        save = MagicMock(return_value=True)
+        with (
+            patch.object(
+                orch, "_union_props_for_sport",
+                return_value=(self._props(), {"NBA_odds": "AVAILABLE"}),
+            ),
+            patch("storage.daily_manifest.ensure_tables", return_value=True),
+            patch("storage.daily_manifest.create_run", return_value=True),
+            patch("storage.daily_manifest.persist_discovery_checkpoint", return_value=True),
+            patch("storage.daily_manifest.begin_scoring", return_value=True),
+            patch("storage.daily_manifest.finalize_run", return_value=True),
+            patch("storage.daily_manifest.save_run_row", save),
+            patch.object(orch, "_run_scan_isolated", return_value=(duplicate_result, None)),
+        ):
+            result = orch.run_daily_orchestration(
+                sports=["NBA"], environment="test", persist=True,
+            )
+
+        self.assertEqual(result["playable_card"], [])
+        self.assertEqual(result["counts"]["data_insufficient"], 1)
+        self.assertFalse(result["reconciliation"]["reconciled"])
+        self.assertEqual(
+            result["reconciliation"]["containment"]["duplicate_ids"],
+            [save.call_args.kwargs["canonical_selection_id"]],
+        )
+        persisted = save.call_args.kwargs["full_row"]
+        self.assertEqual(persisted["terminal_label"], "DATA_CONTRACT_FAIL")
+        self.assertEqual(persisted["final_approval_blocker"], "DUPLICATE_TERMINAL_OUTCOME")
 
     def test_isolated_scanner_timeout_terminates_the_child(self):
         class TimeoutQueue:
