@@ -2414,20 +2414,21 @@ paths:
           - Immutable run-manifest persistence
           - Compact GPT output sized for response limits
 
-        ASYNCHRONOUS CALLER CONTRACT (mandatory): run_status ACCEPTED and
-        IN_PROGRESS are NON-TERMINAL acknowledgements, not results. Keep the
-        server-generated run_id and automatically poll getWowDailyManifest
-        for that SAME run until run_status is one of the terminal states:
-        COMPLETE, DEGRADED, RECONCILIATION_WARNING, or FAILED. Never wait for
-        another user message to continue polling, and never present a
-        zero-row non-terminal manifest as an empty-picks result.
+        ASYNCHRONOUS CALLER CONTRACT (mandatory): call this POST once per
+        intent, retain the server-generated run_id, and automatically poll
+        getWowDailyManifest for that SAME run until terminal=true. The
+        terminal boolean is authoritative; run_status ACCEPTED and IN_PROGRESS
+        are NON-TERMINAL acknowledgements, not results. Never wait for another
+        user message to continue polling, and never present a zero-row
+        non-terminal manifest as an empty-picks result.
 
         Optional scope=MONEYLINE_REMAINING_TODAY restricts the run to
         OUTRIGHT_WINNER / OUTRIGHT_WIN_PROBABILITY_ONLY research on events
         still remaining on the requested local date; the broader prop board
-        is never acquired or scored. Scope is immutable per idempotency key —
-        reusing a key with a different scope returns 409
-        IDEMPOTENCY_KEY_SCOPE_MISMATCH.
+        is never acquired or scored. Use this scope only when the user
+        explicitly asks for remaining-today outright winner research. Scope
+        is immutable per idempotency key — reusing a key with a different
+        scope returns 409 IDEMPOTENCY_KEY_SCOPE_MISMATCH.
 
         Use GET /wow/daily/manifest/{run_id} to poll the manifest for this
         run until it is terminal.
@@ -2532,14 +2533,14 @@ paths:
       summary: Poll the manifest for one canonical WOW Daily run until it is terminal.
       description: >
         Poll this endpoint with the SAME server-generated run_id until
-         terminal=true (run_status COMPLETE, DEGRADED, RECONCILIATION_WARNING,
-         or FAILED). row_count counts rows returned in this response (capped
-         at 500); total_discovered is the canonical discovered-selection
-         count. latest_detail is a deprecated response-only alias exactly
-         equal to progress_detail, and rows_committed is a deprecated
-         response-only alias exactly equal to total_discovered. A zero-row
-         manifest with terminal=false is an in-progress run — never present it
-         as an empty-picks result.
+        terminal=true. The terminal boolean is authoritative; do not infer
+        completion from row_count, total_discovered, or rows. row_count counts
+        rows returned in this response (capped at 500); total_discovered is
+        the canonical discovered-selection count. latest_detail is a
+        deprecated response-only alias exactly equal to progress_detail, and
+        rows_committed is a deprecated response-only alias exactly equal to
+        total_discovered. A zero-row manifest with terminal=false is an
+        in-progress run — never present it as an empty-picks result.
       parameters:
         - name: run_id
           in: path

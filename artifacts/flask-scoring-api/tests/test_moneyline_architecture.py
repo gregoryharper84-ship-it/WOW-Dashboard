@@ -1083,10 +1083,10 @@ class TestFailurePathIntegration:
         assert result.adjusted_win_prob == 0.60   # unchanged
 
 
-# ===========================================================================
+# ---------------------------------------------------------------------------
 # WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT
 # Endpoint → scorer handoff regression suite (verifier-required 8 cases)
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
 from datetime import datetime, timedelta, timezone as _tz
 

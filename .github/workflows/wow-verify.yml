@@ -4,7 +4,8 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [migration/phase4-transfer-20260825]
+    branches:
+      - rescue/replit-emergency-20260820-1221
   workflow_dispatch:
 
 permissions:
@@ -110,11 +111,10 @@ jobs:
             tests \
             -q --tb=short -rs
 
-  additive:
-    name: WOW additive suites (nonblocking)
+  additional-required:
+    name: WOW additional required regression
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     defaults:
       run:
         working-directory: artifacts/flask-scoring-api

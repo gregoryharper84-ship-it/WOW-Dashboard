@@ -70,14 +70,19 @@ def test_daily_action_documents_same_run_polling_and_scope_contract():
     assert scope["enum"] == ["FULL_BOARD", "MONEYLINE_REMAINING_TODAY"]
     assert scope["default"] == "FULL_BOARD"
     description = operation["description"].lower()
+    assert "call this post once per intent" in description
+    assert "terminal=true" in description
     assert "automatically poll" in description
     assert "non-terminal" in description
+    assert "explicitly asks for remaining-today outright winner research" in description
 
     manifest = document["paths"]["/wow/daily/manifest/{run_id}"]["get"]
     runs = document["paths"]["/wow/daily/runs"]["get"]
     assert manifest["operationId"] == "getWowDailyManifest"
     assert runs["operationId"] == "listWowDailyRuns"
     assert "terminal" in manifest["description"].lower()
+    assert "terminal boolean is authoritative" in manifest["description"].lower()
+    assert "do not infer completion" in manifest["description"].lower()
 
     manifest_response = manifest["responses"]["200"]["content"]["application/json"]["schema"]
     properties = manifest_response["properties"]

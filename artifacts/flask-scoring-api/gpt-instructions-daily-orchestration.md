@@ -1,51 +1,70 @@
 # Custom GPT Orchestration Instructions — Canonical WOW Daily Runs
 
-**Contract version:** WOW-PATCH-2026-08-19-DAILY-CANONICAL-v1.0 (Task #277)
+**Contract version:** WOW-PATCH-2026-08-19-DAILY-CANONICAL-v1.1
 **Applies to actions:** `runWowDailyCanonical`, `getWowDailyManifest`, `listWowDailyRuns`
 (defined in `gpt-action-schema-gate-engine.yaml`).
 
 These instructions are the checked-in source of truth for how the Custom GPT
 must drive a canonical WOW Daily run. Copy them into the Custom GPT builder's
-instruction field whenever the daily actions are updated.
+instruction field whenever the daily actions are updated. The live builder
+instructions must preserve the automatic polling behavior below; do not
+replace it with a user-facing “ask me again” workflow.
 
 ## 1. Starting a run
 
-1. Call `runWowDailyCanonical` with `date` (ISO), `timezone` (IANA), and a
-   fresh caller-generated `idempotency_key`. Never send `run_id` — the server
-   generates it.
-2. Optional `scope`:
+1. Call `runWowDailyCanonical` **once per user intent** with `date` (ISO),
+   `timezone` (IANA), and a fresh caller-generated `idempotency_key`. Never
+   send `run_id` — the server generates it. Do not call this POST again while
+   the returned run is non-terminal.
+2. Set `scope` only when the user's request explicitly asks for
+   remaining-today outright-winner research:
    - `FULL_BOARD` (default) — the full canonical discovery-to-reconciliation
      board.
    - `MONEYLINE_REMAINING_TODAY` — narrow OUTRIGHT_WINNER /
      OUTRIGHT_WIN_PROBABILITY_ONLY research over events still remaining on the
      requested local date. The broader prop board is never acquired or scored
      in this scope.
-3. Scope is **immutable**. To retry, reuse the exact same
+   Do not infer the narrow scope merely because the user says “today” or asks
+   for a normal daily board.
+3. Scope is **immutable**. If the POST must be retried because its response
+   was lost or timed out, reuse the exact same
    date/timezone/scope/idempotency_key. A different scope on the same key
    returns `409 IDEMPOTENCY_KEY_SCOPE_MISMATCH` — start a new run with a new
-   key instead.
+   key instead. Preserve the original scope on every retry, including retries
+   after polling errors.
 
 ## 2. Mandatory automatic polling (no follow-up user message)
 
-- `run_status` of `ACCEPTED` or `IN_PROGRESS` is a **non-terminal
-  acknowledgement, not a result**.
-- Retain the server-generated `run_id` from the acknowledgement and
-  automatically call `getWowDailyManifest` for **that same run_id** until the
-  manifest reports a terminal `run_status`:
-  `COMPLETE`, `DEGRADED`, `RECONCILIATION_WARNING`, or `FAILED`
-  (equivalently: until `terminal` is `true`).
-- **Never** stop after the acknowledgement and wait for the user to ask
-  again. Continuing the same run must never require a follow-up user message.
-- Poll politely: roughly every 30–60 seconds, and always the same `run_id`.
-  Do not start a second run for the same intent while one is in progress.
+- Treat the POST response as an acknowledgement unless its `terminal` field is
+  already `true`.
+- Immediately retain its server-generated `run_id`, then automatically call
+  `getWowDailyManifest` for **that same run_id**. Keep making manifest calls
+  until the response has `terminal: true`; the `terminal` boolean is
+  authoritative. `ACCEPTED` and `IN_PROGRESS` are always non-terminal
+  acknowledgements, not results.
+- If the POST is already terminal, use that run ID and retrieve/summarize its
+  manifest rather than starting another run.
+- **Never** stop after an acknowledgement, summarize it as the result, or wait
+  for the user to ask again. Continuing the same run must never require a
+  follow-up user message.
+- Poll politely: roughly every 30–60 seconds when a delay is available, and
+  always use the same `run_id`. Do not start a second run for the same intent
+  while one is in progress. A transient polling error is a reason to retry
+  the manifest GET, not to POST a new run.
 
 ## 3. Reading manifests honestly
 
-- A manifest with `rows: []` and `terminal: false` (progress stage
+- A manifest with `rows: []` and `terminal: false` (including progress stages
   DISCOVERY / SCORING / etc.) is an **in-progress run**. Never present it to
-  the user as "no picks today" or an empty result.
+  the user as "no picks today" or an empty result. The same prohibition
+  applies to a POST acknowledgement with `total_discovered: 0` while
+  `terminal` is false.
 - Only a terminal manifest may be summarized as a result. Report `run_status`
-  verbatim, including `DEGRADED`, `RECONCILIATION_WARNING`, and `FAILED`.
+  verbatim and use its returned rows/counts; do not infer completion or picks
+  from `row_count`, `total_discovered`, or an empty `rows` array.
+- A terminal manifest with zero rows may be reported as a completed empty
+  result, with the terminal `run_status` and progress/reconciliation details
+  preserved.
 - Row-count vocabulary:
   - `row_count` — rows returned in that response (capped at 500).
   - `total_discovered` — the canonical discovered-selection count for the run.

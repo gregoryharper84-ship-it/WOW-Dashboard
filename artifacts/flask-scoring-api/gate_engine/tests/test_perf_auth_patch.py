@@ -1,6 +1,6 @@
 """
 gate_engine/tests/test_perf_auth_patch.py
-==========================================
+------------------------------------------
 Tests for the WOW backend performance / auth patch.
 
 Covers (per spec):

@@ -3143,18 +3143,19 @@ def openapi_schema():
                     "summary": "Start or safely retry a canonical WOW Daily run",
                     "description": (
                         "Requires JSON date, IANA timezone, and a caller-generated "
-                        "idempotency_key. The server generates run_id. Retrying the "
-                        "same date/timezone/key returns the original canonical run "
-                        "without launching a duplicate scorer. ACCEPTED and "
-                        "IN_PROGRESS are NON-TERMINAL: keep the returned run_id and "
-                        "automatically poll getWowDailyManifest for that SAME run "
-                        "until run_status is COMPLETE, DEGRADED, "
-                        "RECONCILIATION_WARNING, or FAILED — never wait for another "
-                        "user message to continue. Optional scope="
-                        "MONEYLINE_REMAINING_TODAY restricts the run to "
-                        "OUTRIGHT_WINNER / OUTRIGHT_WIN_PROBABILITY_ONLY research "
-                        "on events still remaining today; scope is immutable per "
-                        "idempotency key."
+                        "idempotency_key. Call once per intent; the server "
+                        "generates run_id. Retrying the same date/timezone/key "
+                        "returns the original canonical run without launching a "
+                        "duplicate scorer. Retain the returned run_id and "
+                        "automatically poll getWowDailyManifest for that SAME "
+                        "run until terminal=true. The terminal boolean is "
+                        "authoritative; ACCEPTED and IN_PROGRESS are "
+                        "NON-TERMINAL acknowledgements, never results. Never "
+                        "wait for another user message to continue or treat a "
+                        "zero-row non-terminal manifest as empty. Optional "
+                        "scope=MONEYLINE_REMAINING_TODAY is only for an "
+                        "explicit request for remaining-today outright-winner "
+                        "research; scope is immutable per idempotency key."
                     ),
                     "security": [{"ApiKeyAuth": []}],
                     "requestBody": {
@@ -3253,15 +3254,16 @@ def openapi_schema():
                     "summary": "Poll the manifest for one canonical WOW Daily run",
                     "description": (
                         "Poll this endpoint with the SAME server-generated run_id "
-                        "until terminal=true (run_status COMPLETE, DEGRADED, "
-                        "RECONCILIATION_WARNING, or FAILED). row_count counts rows "
-                        "returned in this response (capped at 500); "
-                        "total_discovered is the canonical discovered-selection "
-                        "count. latest_detail is a deprecated response-only alias "
-                        "exactly equal to progress_detail, and rows_committed is "
-                        "a deprecated response-only alias exactly equal to "
-                        "total_discovered. A zero-row manifest with terminal=false "
-                        "is an in-progress run, never an empty-picks result."
+                        "until terminal=true. The terminal boolean is authoritative; "
+                        "do not infer completion from row_count, total_discovered, "
+                        "or rows. row_count counts rows returned in this response "
+                        "(capped at 500); total_discovered is the canonical "
+                        "discovered-selection count. latest_detail is a deprecated "
+                        "response-only alias exactly equal to progress_detail, and "
+                        "rows_committed is a deprecated response-only alias exactly "
+                        "equal to total_discovered. A zero-row manifest with "
+                        "terminal=false is an in-progress run, never an empty-picks "
+                        "result."
                     ),
                     "security": [{"ApiKeyAuth": []}],
                     "parameters": [
