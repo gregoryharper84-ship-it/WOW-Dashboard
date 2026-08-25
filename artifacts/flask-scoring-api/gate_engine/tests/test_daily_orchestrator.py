@@ -780,7 +780,7 @@ class TestDailyLifecycleReliability(unittest.TestCase):
         self.assertTrue(result["reconciliation"]["reconciled"])
         self.assertEqual(finalize.call_args.kwargs["completion_detail"], "DISCOVERY_EMPTY_RECONCILED")
 
-    def test_failed_checkpoint_blocks_scoring_and_still_terminalizes(self):
+    def test_failed_checkpoint_blocks_scoring_and_is_full_board_incomplete(self):
         finalize = MagicMock(return_value=True)
         with (
             patch.object(
@@ -807,10 +807,10 @@ class TestDailyLifecycleReliability(unittest.TestCase):
         )
         self.assertEqual(
             finalize.call_args.kwargs["failure_reason"],
-            "DISCOVERY_CHECKPOINT_UNAVAILABLE",
+            "FULL_BOARD_RUN_INCOMPLETE",
         )
 
-    def test_primary_timeout_uses_composed_fallback_and_records_it(self):
+    def test_primary_timeout_uses_composed_fallback_and_records_full_board_incomplete(self):
         scan_result = self._scan_result()
         fallback = {
             "used": True,
@@ -849,10 +849,10 @@ class TestDailyLifecycleReliability(unittest.TestCase):
         )
         self.assertEqual(
             finalize.call_args.kwargs["failure_reason"],
-            "PRIMARY_SCORER_SCORING_STAGE_TIMEOUT",
+            "FULL_BOARD_RUN_INCOMPLETE",
         )
 
-    def test_fallback_preflight_failure_is_typed_on_terminal_manifest(self):
+    def test_fallback_preflight_failure_is_full_board_incomplete_on_manifest(self):
         fallback = {
             "used": True,
             "path": "LEGACY_COMPOSED_GATE_ENGINE",
@@ -886,11 +886,11 @@ class TestDailyLifecycleReliability(unittest.TestCase):
         self.assertEqual(result["run_status"], "DEGRADED")
         self.assertEqual(
             finalize.call_args.kwargs["failure_reason"],
-            "FALLBACK_PREFLIGHT_UNAVAILABLE",
+            "FULL_BOARD_RUN_INCOMPLETE",
         )
         self.assertEqual(
             finalize.call_args.kwargs["failure_module"],
-            "daily_orchestrator.composed_fallback",
+            "daily_orchestrator.full_board_confidence",
         )
 
     def test_composed_fallback_keeps_completed_lane_when_another_lane_fails(self):
