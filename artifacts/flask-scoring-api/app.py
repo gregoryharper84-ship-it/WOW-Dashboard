@@ -4612,8 +4612,13 @@ def analyze_and_score():
                 "player_name": r.get("player_name_resolved") or r.get("player_name_raw") or "",
             }
             for r in norm_rows
+            # The pipeline is the sole 1IP event-tree evaluator. Repeating it
+            # here would create a second stochastic result after classification.
+            if (r.get("stat_key") or r.get("prop_type") or "").upper().replace(" ", "_")
+            != "1IP_PITCHES_THROWN"
         ]
-        hit_probs_list = _compute_hit_prob(all_norm_rows_for_prob, _prob_enrichment)
+        hit_probs_list = _compute_hit_prob(all_norm_rows_for_prob, _prob_enrichment) \
+            if all_norm_rows_for_prob else []
         hit_probs: dict[str, dict] = {h["leg_id"]: h for h in hit_probs_list}
     except Exception as _hp_exc:
         app.logger.warning("analyze_and_score: hit_probability batch failed: %s", _hp_exc)
@@ -4683,14 +4688,24 @@ def analyze_and_score():
                 pass
 
         hp = hit_probs.get(leg_id, {})
+        _canonical_ledger = pipe.get("model_probability_ledger")
+        _canonical_ledger = _canonical_ledger if isinstance(_canonical_ledger, dict) else {}
+        _canonical_raw = pipe.get("raw_model_probability")
+        if not isinstance(_canonical_raw, (int, float)):
+            _canonical_raw = _canonical_ledger.get("raw_probability")
+        _canonical_model_used = pipe.get("model_used")
+        _canonical_handoff = pipe.get("model_probability_handoff") or {}
         if is_unresolvable:
             _hp_prob  = None
             _hp_model = "no_data"
             _hp_note  = "insufficient data"
         else:
-            _hp_prob  = hp.get("hit_probability")
-            _hp_model = hp.get("model_used")
-            _hp_note  = hp.get("calibration_note")
+            # Pipeline-owned output wins over the response-only batch pass,
+            # preventing a second stochastic 1IP simulation from disagreeing
+            # with the ledger and classifier that already scored the row.
+            _hp_prob  = _canonical_raw if isinstance(_canonical_raw, (int, float)) else hp.get("hit_probability")
+            _hp_model = _canonical_model_used or hp.get("model_used")
+            _hp_note  = _canonical_handoff.get("calibration_note") or hp.get("calibration_note")
             if _hp_prob is None and not hp:
                 _hp_note = "insufficient data"
 
@@ -4710,14 +4725,31 @@ def analyze_and_score():
                           "calibration_version": None, "status": "UNKNOWN"}
             _prob_bounds = lambda p, n, s: (None, None)  # noqa: E731
 
-        _sample_size  = hp.get("sample_size") or 0
+        _sample_size  = _canonical_handoff.get("sample_size") or hp.get("sample_size") or 0
         _model_status = _reg_entry.get("status", "NO_REGISTERED_MODEL")
-        _lo, _hi      = _prob_bounds(_hp_prob, _sample_size, _model_status)
+        _handoff_provisional = pipe.get("calibration_status") == "PROVISIONAL"
+        _ledger_calibrated = _canonical_ledger.get("calibrated_probability")
+        _ledger_lower = _canonical_ledger.get("lower_bound")
+        _ledger_upper = _canonical_ledger.get("upper_bound")
+        _ledger_calibration_method = _canonical_ledger.get("calibration_method")
+        _has_ledger_calibration = (
+            isinstance(_ledger_calibrated, (int, float))
+            and isinstance(_ledger_lower, (int, float))
+            and isinstance(_ledger_upper, (int, float))
+            and bool(_ledger_calibration_method)
+        )
+        _lo, _hi = (
+            (_ledger_lower, _ledger_upper)
+            if _has_ledger_calibration
+            else ((None, None) if _handoff_provisional
+                  else _prob_bounds(_hp_prob, _sample_size, _model_status))
+        )
 
         # calibration_status: CALIBRATED only for ACTIVE models with a real
         # cohort calibration; PROVISIONAL for provisional models (no cohort
         # calibration yet); UNAVAILABLE when probability is null.
-        _cal_status = (
+        _cal_status = pipe.get("calibration_status") or _canonical_ledger.get("calibration_status") or (
+            "CALIBRATED"   if _has_ledger_calibration else
             "UNAVAILABLE"  if _hp_prob is None else
             "CALIBRATED"   if _model_status == "ACTIVE" else
             "PROVISIONAL"  if _model_status == "PROVISIONAL" else
@@ -4725,7 +4757,15 @@ def analyze_and_score():
         )
         # probability_publishable: true only for ACTIVE models with a result.
         # PROVISIONAL results are research-grade; never describe them as calibrated.
-        _prob_publishable    = (_model_status == "ACTIVE" and _hp_prob is not None)
+        _prob_publishable    = (
+            bool(pipe.get("probability_publishable"))
+            if "probability_publishable" in pipe
+            else (
+                bool(_canonical_ledger.get("probability_publishable"))
+                if "probability_publishable" in _canonical_ledger
+                else (_model_status == "ACTIVE" and _hp_prob is not None)
+            )
+        )
         _high_prob_qualified = (_prob_publishable and _hp_prob is not None and _hp_prob >= 0.65)
         _is_provisional      = _model_status == "PROVISIONAL"
 
@@ -4789,10 +4829,12 @@ def analyze_and_score():
             },
             "probability": {
                 "raw_probability":           _hp_prob,
-                # calibrated_probability is non-null only for ACTIVE models.
-                # PROVISIONAL results lack a real cohort calibration ledger.
-                # Never describe a PROVISIONAL output as "calibrated".
-                "calibrated_probability":    _hp_prob if _model_status == "ACTIVE" else None,
+                # The validated canonical ledger is authoritative when it
+                # supplies calibration; registry math remains fallback-only.
+                "calibrated_probability":    (
+                    _ledger_calibrated if _has_ledger_calibration
+                    else (_hp_prob if _model_status == "ACTIVE" and not _handoff_provisional else None)
+                ),
                 "calibrated_lower_bound":    _lo,
                 "upper_bound":               _hi,
                 "push_probability":          0.0,
@@ -23037,7 +23079,7 @@ def gate_engine_run():
     # -----------------------------------------------------------------------
     from gate_engine.prob_ledger import (  # lazy import — module already cached
         _validate_stage2_schema as _pl_validate_stage2,
-        REQUIRED_COMPONENTS     as _pl_required_components,
+        MODEL_REQUIRED_COMPONENTS as _pl_required_components,
         _check_influence_bounds as _pl_check_influence_bounds,
         _check_narrative_blocked as _pl_check_narrative_blocked,
     )
@@ -23073,7 +23115,11 @@ def gate_engine_run():
                 _s2_row_violations.append(f"missing_component:{_rc}")
 
         # 3. Component influence-bounds (canonical checker)
-        for _inf_v in _pl_check_influence_bounds(_components):
+        _model_components = [
+            component for component in _components
+            if (component.get("name") or "").lower() != "market_no_vig"
+        ]
+        for _inf_v in _pl_check_influence_bounds(_model_components):
             _s2_row_violations.append(f"influence_bounds:{_inf_v}")
 
         # 4. Narrative/blocked component guard (canonical checker)

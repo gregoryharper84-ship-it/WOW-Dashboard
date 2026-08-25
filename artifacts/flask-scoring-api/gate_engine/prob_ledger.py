@@ -325,6 +325,14 @@ def run(
 
     # 3. Check influence bounds
     influence_violations = _check_influence_bounds(components)
+    model_influence_violations = [
+        violation for violation in influence_violations
+        if not violation.startswith("market_no_vig:")
+    ]
+    market_influence_violations = [
+        violation for violation in influence_violations
+        if violation.startswith("market_no_vig:")
+    ]
 
     # 4. Shrinkage requirement
     shrinkage_required = (
@@ -390,7 +398,7 @@ def run(
         and not model_missing_components
         and not blocked_found
         and not shrinkage_required
-        and not influence_violations
+        and not model_influence_violations
     )
 
     market_lane_available = "market_no_vig" in component_names
@@ -412,7 +420,7 @@ def run(
                 _drifted = abs(float(_snap_line) - float(_row_line)) > _LINE_DRIFT_TOLERANCE
             except (TypeError, ValueError):
                 _drifted = True
-        if _drifted:
+        if _drifted or market_influence_violations:
             market_lane_available = False
             market_status = MARKET_STATUS_REHYDRATE_REQUIRED
     else:
@@ -446,6 +454,8 @@ def run(
         "missing_required":        missing_required,
         "blocked_found":           blocked_found,
         "influence_violations":    influence_violations,
+        "model_influence_violations": model_influence_violations,
+        "market_influence_violations": market_influence_violations,
         "shrinkage_required":      shrinkage_required,
         "has_confidence_interval": has_ci,
         "uncalibrated_penalty":    uncalibrated_penalty,

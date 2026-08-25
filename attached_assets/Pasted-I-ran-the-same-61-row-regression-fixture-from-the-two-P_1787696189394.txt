@@ -1,0 +1,207 @@
+I ran the **same 61-row regression fixture** from the two PrizePicks captures—32 pitcher-strikeout lines and 29 1st-inning-pitches lines.  
+
+**The regression does not pass yet.**
+
+| Regression check                 |                          Result |
+| -------------------------------- | ------------------------------: |
+| Governance handshake             |                        **PASS** |
+| Engine                           |                       **v16.5** |
+| Slip Probability Optimizer       |           **v3 invoked / PASS** |
+| 1IP production-hydration patch   |                      **ACTIVE** |
+| Input rows                       |                          **61** |
+| Row reconciliation               |                 **61/61, PASS** |
+| Model-completed rows             |                           **0** |
+| `DATA_CONTRACT_FAIL`             |                          **55** |
+| Cross-slip concentration rejects |                           **3** |
+| Market-adverse rejects           |                           **3** |
+| Final candidates                 |                           **0** |
+| Strict runtime disposition       | **RUN_PARTIAL_BACKEND_FAILURE** |
+
+So the new code is deployed in part, but the original architectural problem is **still present downstream**. The backend says `run_status=COMPLETE`, while simultaneously reporting `candidate_evaluation_completed=false`, `probability_publishable=false`, and `RUN_PARTIAL_BACKEND_FAILURE`. That should not be considered a successful full-board confidence run.
+
+### What is working now
+
+There are meaningful improvements. The backend found and reconciled all 61 rows, identified **58 unique theses**, correctly recognized the four Ethan Pecko strikeout thresholds as one duplicate family, and successfully invoked `wow.slip-probability-optimizer:v3`.
+
+Most importantly, **the new 1IP hydration patch is actually working**. I isolated Aaron Nola 1IP 15 and the backend successfully acquired a real first-inning ledger:
+
+```text
+1ip_acquisition_status = SAVANT_ACQUIRED
+starts = 10
+
+P(BF=3)   = 0.40
+P(BF=4)   = 0.40
+P(BF>=5)  = 0.20
+
+pitches/batter mean = 3.747
+pitches/batter std  = 0.924
+
+L10 1IP pitches:
+11, 19, 20, 18, 9, 9, 15, 15, 23, 8
+```
+
+That's a major difference from the old run where the 1IP rows simply lacked the required event-tree acquisition.
+
+### Where it still breaks
+
+I then ran Aaron Nola's strikeout and 1IP rows individually with the full diagnostic output. The failure is now very clear.
+
+For **Nola MORE 3.5 strikeouts**, the backend successfully retrieved the L10 strikeout ledger:
+
+```text
+8, 9, 8, 5, 4, 4, 6, 8, 7, 5
+L10 mean = 6.4
+L10 median = 6.5
+L10 hit rate at 3.5 = 100%
+```
+
+It even assigns:
+
+```text
+confidence_lane = HIGH
+```
+
+But simultaneously:
+
+```text
+raw_probability = null
+calibrated_probability = null
+lower_bound = null
+upper_bound = null
+
+candidate_evaluation_completed = false
+probability_publishable = false
+```
+
+So **`confidence_lane=HIGH` is currently being emitted before a probability model has actually completed**. That is another thing the regression should catch.
+
+The blockers show exactly why the probability engine never runs:
+
+```text
+failure_path_matrix:
+  PRIMARY_KILL_PATH missing
+  SECONDARY_KILL_PATH missing
+  BLACK_SWAN_PATH missing
+
+probability ledger missing:
+  raw_probability
+  calibrated_probability
+  lower_bound
+  upper_bound
+  model_timestamp
+  source_snapshot_id
+  calibration_method
+  role_usage
+  opponent_k_pct
+  handedness
+  park_factor
+  weather
+  starter_confirmed
+```
+
+The auto-enricher actually creates descriptive failure-path inputs, but then leaves:
+
+```text
+failure_path_matrix = NOT_COMPUTED_AT_AUTO_ENRICHMENT
+```
+
+That is the primary strikeout wiring failure.
+
+### The lane-separation bug also still exists
+
+The diagnostic is still requiring:
+
+```text
+market_no_vig
+```
+
+inside the probability-ledger completeness gate.
+
+For Nola the market gate correctly says:
+
+```text
+NO_MARKET_AVAILABLE
+MAX_LABEL = MODEL_QUALIFIED_HOLD
+```
+
+That part is fine.
+
+But then the missing no-vig market contributes to the probability-ledger failure, which prevents the confidence probability itself from being produced.
+
+That is **exactly what the fix was supposed to prevent**.
+
+The correct behavior is:
+
+```text
+market unavailable
+→ market/EV/slip lane capped
+
+NOT:
+
+market unavailable
+→ confidence probability unavailable
+```
+
+### The 1IP fix is only half-wired
+
+For the Nola 1IP test, Savant hydration succeeds, BF distribution succeeds, pitches-per-batter succeeds and L10 succeeds.
+
+But the backend never carries those hydrated inputs through to a finished event-tree probability:
+
+```text
+raw_probability = null
+calibrated_probability = null
+lower_bound = null
+upper_bound = null
+```
+
+It also reports `l10_distribution` as missing in the probability ledger **even though the same response contains the full 10-game 1IP ledger**.
+
+So this is now mostly an **adapter/mapping problem**, not an acquisition problem.
+
+There is another apparent bug in the outlier module. It returned:
+
+```text
+after_gap = 1.6%
+GAP_THRESHOLD = 20%
+condition persists because 1.6% >= 20%
+```
+
+That comparison is mathematically false and should be regression-tested.
+
+I also saw a possible identity-contamination issue in the Nola K enrichment: the submitted event was **PHI @ SEA**, but one enrichment field reported the opponent as **Miami Marlins**. That may be the opponent from his most recent game leaking into a field intended for the current matchup, so that needs inspection before using opponent adjustments.
+
+### What needs changing in Replit
+
+The remaining fix is now fairly surgical:
+
+1. **Complete the confidence model before market/EV/slip gates.** `market_no_vig` cannot be mandatory for confidence probability.
+2. **Build `failure_path_matrix` during MLB pitcher auto-enrichment** instead of leaving the three required pathways uncomputed.
+3. **Wire 1IP hydration into `simulate_1ip()` and the atomic probability ledger** so the acquired BF/PPA distributions generate `raw_probability`.
+4. **Map acquired L10 data into `l10_distribution`** rather than claiming it is missing after retrieval.
+5. **Do not let cross-slip exposure terminal-reject alternate board lines before confidence scoring.** Exposure belongs to the slip lane.
+6. **Do not publish HIGH/MEDIUM/LOW confidence as a completed confidence result when calibrated probability is null.**
+7. Fix the **1.6% ≥ 20% outlier comparison** and inspect the **current-opponent mapping**.
+
+The next build should pass this hard assertion:
+
+```text
+rows_in = 61
+
+for every model-eligible row:
+    candidate_evaluation_completed = true
+    raw_probability != null
+
+and either:
+    calibrated_probability + bounds exist
+or:
+    explicit calibration ceiling is preserved
+
+missing market/no-vig:
+    may block market/EV/slip
+    must NOT erase confidence probability
+
+unmodeled_model_eligible_rows = 0
+```
+
+So the verdict is: **the acquisition fixes are showing up, especially for 1IP, but the full-board confidence/optimizer fix is not complete yet. The break is now between hydration → specialist/failure-path model → probability ledger, not at board ingestion.**

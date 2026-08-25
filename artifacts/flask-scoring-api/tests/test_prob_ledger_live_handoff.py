@@ -589,3 +589,155 @@ def test_Q_unsupported_contract_version_rejected():
     assert mpl.get("contract_version") == "v1"
     # schema validation attached at ingress
     assert row.get("prob_ledger_schema_validation") is not None
+
+
+# ---------------------------------------------------------------------------
+# R / S / T — existing model output is handed to the canonical row ledger
+# ---------------------------------------------------------------------------
+
+def test_R_mlb_count_model_raw_result_is_recorded_without_calibration():
+    """The existing centralized count model supplies a raw result only; this
+    handoff must not create calibration, bounds, snapshot, or market facts."""
+    row = _mlb_row()
+    row["row_id"] = "handoff-k"
+    enr = _mlb_enr()
+    enr.pop("model_probability_ledger")
+
+    _pl_mod._handoff_existing_model_probability(row, enr)
+
+    assert row["candidate_evaluation_completed"] is True
+    assert 0.0 < row["raw_model_probability"] < 1.0
+    assert row["model_used"] == "poisson_l10"
+    assert row["calibration_status"] == "PROVISIONAL"
+    assert row["probability_publishable"] is False
+    assert enr["model_probability_ledger"]["raw_probability"] == row["raw_model_probability"]
+    for absent in ("calibrated_probability", "lower_bound", "upper_bound",
+                   "model_timestamp", "source_snapshot_id", "calibration_method",
+                   "market_no_vig"):
+        assert absent not in enr["model_probability_ledger"]
+
+
+def test_S_1ip_event_tree_raw_result_reaches_canonical_ledger():
+    """A valid acquired 1IP packet reaches the canonical output once, without
+    a second Poisson model or fabricated calibration."""
+    row = {
+        "row_id": "handoff-1ip",
+        "sport": "MLB",
+        "stat_key": "1IP_PITCHES_THROWN",
+        "line": 15.5,
+        "direction": "MORE",
+    }
+    enr = {
+        "first_inning_bf_distribution": {
+            "p_bf_3": 0.30, "p_bf_4": 0.40, "p_bf_gte5": 0.30,
+        },
+        "pitches_per_batter_distribution": {"mean": 4.2, "std": 1.1},
+    }
+
+    _pl_mod._handoff_existing_model_probability(row, enr)
+
+    assert row["candidate_evaluation_completed"] is True
+    assert 0.0 < row["raw_model_probability"] < 1.0
+    assert row["model_used"] == "1ip_monte_carlo_event_tree_v1"
+    assert row["gates"]["1ip_event_tree"]["selected_raw_probability"] == row["raw_model_probability"]
+    assert enr["model_probability_ledger"]["raw_probability"] == row["raw_model_probability"]
+    assert row["calibration_status"] == "PROVISIONAL"
+    assert row["probability_publishable"] is False
+    for absent in ("calibrated_probability", "lower_bound", "upper_bound",
+                   "model_timestamp", "source_snapshot_id", "calibration_method"):
+        assert absent not in enr["model_probability_ledger"]
+
+
+def test_T_1ip_missing_pitches_per_batter_is_explicit_and_unpublished():
+    row = {
+        "row_id": "handoff-1ip-missing-ppb",
+        "sport": "MLB",
+        "stat_key": "1IP_PITCHES_THROWN",
+        "line": 15.5,
+        "direction": "MORE",
+    }
+    enr = {
+        "first_inning_bf_distribution": {
+            "p_bf_3": 0.30, "p_bf_4": 0.40, "p_bf_gte5": 0.30,
+        },
+    }
+
+    _pl_mod._handoff_existing_model_probability(row, enr)
+
+    assert row["candidate_evaluation_completed"] is False
+    assert row["raw_model_probability"] is None
+    assert row["probability_publishable"] is False
+    assert row["model_probability_handoff"]["code"] == "1IP_EVENT_TREE_INPUT_INCOMPLETE"
+    assert row["model_probability_handoff"]["missing_fields"] == ["pitches_per_batter_distribution"]
+
+
+def test_U_route_preflight_model_components_do_not_require_market_component():
+    """The HTTP preflight must mirror the model/market lane separation that
+    the pipeline already enforces."""
+    import app as app_mod
+    from gate_engine.governance import get_governance_status
+
+    today = date.today().isoformat()
+    row = _mlb_row()
+    row["slate_date"] = today
+    enr = _mlb_enr()
+    enr["model_probability_ledger"]["components"] = [
+        {"name": "l10_distribution", "weight": 0.30, "value": enr["game_log"][:10]},
+        {"name": "role_usage", "weight": 0.15, "value": {"starter_confirmed": True}},
+    ]
+    os.environ.setdefault("SCORING_API_KEY", "test-scoring-key")
+    response = app_mod.app.test_client().post(
+        "/gate-engine/run",
+        json={
+            "rows": [row],
+            "enrichment": {"paul skenes:strikeouts": enr},
+            "target_date": today,
+            "record_entries": False,
+            "expected_governance_hash": get_governance_status()["governance_hash"],
+            "session_id": "test-session-model-only",
+            "research_run_id": "test-run-model-only",
+            "as_of": f"{today}T12:00:00+00:00",
+        },
+        headers={"X-API-Key": os.environ["SCORING_API_KEY"]},
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)[:800]
+    assert response.get_json().get("error_code") != "PROB_LEDGER_INCOMPLETE"
+
+
+def test_V_supplied_stage2_raw_remains_the_single_canonical_value():
+    """A complete caller ledger is authoritative; a local model must not
+    generate a competing raw value or erase the supplied calibration facts."""
+    row = _mlb_row()
+    row["row_id"] = "supplied-stage2"
+    enr = _mlb_enr(stage2=_stage2(raw=0.58, cal=0.56))
+
+    _pl_mod._handoff_existing_model_probability(row, enr)
+
+    assert row["candidate_evaluation_completed"] is True
+    assert row["raw_model_probability"] == 0.58
+    assert row["model_probability_ledger"]["raw_probability"] == 0.58
+    assert row["model_probability_handoff"]["status"] == "SUPPLIED_MODEL_RESULT_PRESERVED"
+    assert "calibration_status" not in row
+    assert "probability_publishable" not in row
+
+
+def test_W_invalid_market_weight_holds_only_market_lane():
+    """A malformed market influence is actionable market data, not a reason
+    to erase a complete sporting-model ledger."""
+    from gate_engine import prob_ledger
+
+    row = _wnba_row()
+    payload = _stage2()
+    payload["components"] = [
+        {"name": "l10_distribution", "weight": 0.30, "value": [8, 9, 10]},
+        {"name": "role_usage", "weight": 0.15, "value": {"starter": True}},
+        {"name": "market_no_vig", "weight": 0.80, "value": 0.55},
+    ]
+    result = prob_ledger.run(row, enrichment={"model_probability_ledger": payload})
+
+    assert result["model_probability_complete"] is True
+    assert result["market_lane_available"] is False
+    assert result["market_status"] == "REHYDRATE_REQUIRED"
+    assert result["model_influence_violations"] == []
+    assert result["market_influence_violations"]
