@@ -45,6 +45,13 @@ _ADVISORY_LOCK_KEY = 778597299  # chosen to not collide with LLP cron (778597203
 # Batch size: max records graded per tick
 _BATCH_SIZE = int(os.environ.get("SETTLEMENT_WORKER_BATCH_SIZE", "20"))
 
+# Retry / backoff (#194 hardening)
+# On consecutive DB-level errors the loop sleeps _BACKOFF_BASE_SEC * 2^n
+# (capped at _BACKOFF_MAX_SEC) before the next tick so transient outages
+# do not produce a tight error-flood. On any successful tick the counter resets.
+_BACKOFF_BASE_SEC = int(os.environ.get("SETTLEMENT_WORKER_BACKOFF_BASE_SEC", "5"))
+_BACKOFF_MAX_SEC  = int(os.environ.get("SETTLEMENT_WORKER_BACKOFF_MAX_SEC",  "120"))
+
 # ── Worker state ──────────────────────────────────────────────────────────────
 _WORKER_STARTED = False
 _WORKER_LOCK    = threading.Lock()
@@ -54,11 +61,15 @@ _WORKER_STATS: dict[str, Any] = {
     "props_graded":       0,
     "kalshi_graded":      0,
     "errors":             0,
+    "consecutive_errors": 0,      # reset to 0 on any successful tick (#194)
     "last_tick":          None,
     "last_success_tick":  None,   # updated only when at least one row was graded
+    "last_heartbeat":     None,   # updated at START of every loop iteration (#194)
     "last_error":         None,
     "enabled":            SETTLEMENT_WORKER_ENABLED,
     "interval_sec":       SETTLEMENT_WORKER_INTERVAL_SEC,
+    "backoff_base_sec":   _BACKOFF_BASE_SEC,
+    "backoff_max_sec":    _BACKOFF_MAX_SEC,
 }
 
 
@@ -432,14 +443,48 @@ def _settlement_worker_tick() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _settlement_worker_loop() -> None:
-    """Daemon loop: tick every SETTLEMENT_WORKER_INTERVAL_SEC seconds."""
+    """
+    Daemon loop with exponential backoff (#194 hardening).
+
+    Heartbeat: last_heartbeat is stamped at the START of every iteration,
+    before the tick runs, so the timestamp reflects liveness even when
+    ticks are slow or failing.
+
+    Backoff: consecutive DB-level errors extend the inter-tick sleep
+    exponentially (base * 2^n, capped at backoff_max_sec). The counter
+    resets on any tick that completes without incrementing the error count.
+    This prevents a tight error-flood during transient DB outages.
+
+    can_execute = False — no orders or market mutations in any code path.
+    """
     while True:
+        # Heartbeat — updated unconditionally, even before the tick runs.
+        _WORKER_STATS["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+
+        errors_before = _WORKER_STATS["errors"]
+
         try:
             _settlement_worker_tick()
         except Exception as e:
             _WORKER_STATS["last_error"] = f"loop: {e}"
             _WORKER_STATS["errors"]    += 1
-        time.sleep(SETTLEMENT_WORKER_INTERVAL_SEC)
+
+        errors_after = _WORKER_STATS["errors"]
+
+        if errors_after > errors_before:
+            # A new error occurred — apply exponential backoff.
+            _WORKER_STATS["consecutive_errors"] += 1
+            n = min(_WORKER_STATS["consecutive_errors"] - 1, 10)   # cap exponent
+            sleep_sec = min(
+                _BACKOFF_BASE_SEC * (2 ** n),
+                _BACKOFF_MAX_SEC,
+            )
+        else:
+            # Successful tick — reset backoff.
+            _WORKER_STATS["consecutive_errors"] = 0
+            sleep_sec = SETTLEMENT_WORKER_INTERVAL_SEC
+
+        time.sleep(sleep_sec)
 
 
 def start_settlement_worker() -> None:

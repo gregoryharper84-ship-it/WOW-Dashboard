@@ -38,6 +38,10 @@ PROP_STAT_MAP = {
     "player_blocks":                   ["blocks"],
     "player_points_rebounds_assists":  ["pointsReboundsAssists"],  # computed below
     "pitcher_strikeouts":              ["strikeouts", "strikeOuts"],
+    # Pitching outs: normalizer → "OUTS" → "pitcher_outs" Odds API market.
+    # MLB Stats API pitching gameLog field is "outs" (integer; 4.1 IP → 13 outs).
+    # ESPN core API does not carry this field; data comes from the MLB Stats API path.
+    "pitcher_outs":                    ["outs"],
     "batter_hits":                     ["hits"],
     "batter_home_runs":                ["homeRuns"],
     "batter_rbis":                     ["RBI", "rbi", "runsBattedIn"],

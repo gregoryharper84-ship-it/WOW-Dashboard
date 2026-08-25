@@ -31,6 +31,7 @@ _ROUTE_SPORTS_TEAM = [
     "wow.market-odds-intelligence",
     "wow.probability-ev-auditor",
     "wow.bankroll-risk-manager",
+    "wow.governed-red-team-reviewer",  # advisory downgrade-only; no-op when no review_packet
     "wow.qa-hallucination-auditor",
 ]
 _ROUTE_PLAYER_PROP = [
@@ -42,6 +43,12 @@ _ROUTE_PLAYER_PROP = [
     "wow.probability-ev-auditor",
     "wow.correlation-slip-auditor",
     "wow.bankroll-risk-manager",
+    "wow.governed-red-team-reviewer",  # advisory downgrade-only; no-op when no review_packet
+    "wow.qa-hallucination-auditor",
+]
+# Dedicated governance review route: used when market_type="governance_review"
+_ROUTE_GOVERNANCE_REVIEW = [
+    "wow.governed-red-team-reviewer",
     "wow.qa-hallucination-auditor",
 ]
 _ROUTE_KALSHI_SPORTS = [
@@ -141,6 +148,8 @@ class SkillOrchestrator:
             return "kalshi_weather", _ROUTE_KALSHI_WEATHER
         if market_type == "kalshi_sports":
             return "kalshi_sports", _ROUTE_KALSHI_SPORTS
+        if market_type == "governance_review":
+            return "governance_review", _ROUTE_GOVERNANCE_REVIEW
         if market_type in ("team_winner", "team_total", "team_spread"):
             return market_type, _ROUTE_SPORTS_TEAM
         return "player_prop", _ROUTE_PLAYER_PROP

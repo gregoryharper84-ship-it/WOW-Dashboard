@@ -44,6 +44,8 @@ except Exception as _e:
 # ---------------------------------------------------------------------------
 _LEDGER_DDL = [
     # PATCH-016: MLB directional pitcher ledger
+    # Schema-preservation restore: this table has active write paths in
+    # gate_engine/mlb_directional_firewall.py (log_pitcher_row, query_directional_ledger).
     """
     CREATE TABLE IF NOT EXISTS mlb_directional_pitcher_ledger (
         id                              BIGSERIAL PRIMARY KEY,
@@ -82,6 +84,20 @@ _LEDGER_DDL = [
     "CREATE INDEX IF NOT EXISTS mlb_dl_lane_idx        ON mlb_directional_pitcher_ledger(directional_lane)",
     "CREATE INDEX IF NOT EXISTS mlb_dl_event_date_idx  ON mlb_directional_pitcher_ledger(event_date DESC)",
     "CREATE INDEX IF NOT EXISTS mlb_dl_duplicate_idx   ON mlb_directional_pitcher_ledger(duplicate_group_id)",
+
+    # wow_odds_quota_state: cross-worker Odds API quota sync.
+    # Schema-preservation restore: active read/write paths in
+    # gate_engine/pg_odds_quota.py (persist_quota_update, fetch_quota_snapshot).
+    """
+    CREATE TABLE IF NOT EXISTS wow_odds_quota_state (
+        tier                TEXT PRIMARY KEY,
+        requests_remaining  INTEGER,
+        requests_used       INTEGER,
+        quota_warning       BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_by_pid      INTEGER
+    )
+    """,
 
     # PATCH-017: WNBA composite forward-test ledger
     """
@@ -148,8 +164,8 @@ try:
         _cur.close()
         _conn.close()
         print("pre_start: ledger tables created/verified OK "
-              "(mlb_directional_pitcher_ledger, wnba_composite_forward_test_ledger, "
-              "cross_ticket_exposure_log)", flush=True)
+              "(mlb_directional_pitcher_ledger, wow_odds_quota_state, "
+              "wnba_composite_forward_test_ledger, cross_ticket_exposure_log)", flush=True)
     else:
         print("pre_start: WARN: DATABASE_URL not set — skipping ledger table creation", flush=True)
 except Exception as _e:

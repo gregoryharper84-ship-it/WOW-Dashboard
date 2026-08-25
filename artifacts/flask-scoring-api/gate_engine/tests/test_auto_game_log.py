@@ -135,7 +135,7 @@ class TestMLBFetch:
         }
 
         with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp):
-            values, source = _fetch_mlb("592450", "H", "2026-08-03", 10)
+            values, source, _meta = _fetch_mlb("592450", "H", "2026-08-03", 10)
 
         assert len(values) == 10
         assert all(v == 2.0 for v in values)
@@ -154,7 +154,7 @@ class TestMLBFetch:
         mock_resp.json.return_value = {"stats": [{"splits": splits}]}
 
         with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp):
-            values, _ = _fetch_mlb("592450", "H", "2026-08-03", 5)
+            values, _, _meta = _fetch_mlb("592450", "H", "2026-08-03", 5)
 
         # Most recent first → last element of splits becomes values[0]
         assert values[0] == 4.0
@@ -169,7 +169,7 @@ class TestMLBFetch:
         }
 
         with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp):
-            values, _ = _fetch_mlb("592450", "H+R+RBI", "2026-08-03", 5)
+            values, _, _meta = _fetch_mlb("592450", "H+R+RBI", "2026-08-03", 5)
 
         assert all(v == 3.0 for v in values)
 
@@ -193,6 +193,130 @@ class TestMLBFetch:
         with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp):
             with pytest.raises(GameLogUnavailable, match="No MLB game log"):
                 _fetch_mlb("999", "H", "2026-08-03", 10)
+
+
+# ---------------------------------------------------------------------------
+# MLB pitching outs routing tests
+# ---------------------------------------------------------------------------
+
+def _mlb_pitching_splits(n=10, outs=15, strikeouts=5, ip="5.0"):
+    """Mock pitching split rows with the 'outs' field (integer recorded outs).
+
+    The MLB Stats API pitching gameLog uses 'outs' (integer) NOT 'recordedOuts'.
+    4.1 IP → outs=13, 5.0 IP → outs=15, 6.0 IP → outs=18.
+    """
+    return [
+        {"stat": {
+            "outs":        outs,
+            "strikeOuts":  strikeouts,
+            "inningsPitched": ip,
+            "hits":        6,
+            "earnedRuns":  2,
+            "baseOnBalls": 2,
+        }, "date": f"2026-08-{i+1:02d}"}
+        for i in range(n)
+    ]
+
+
+class TestMLBPitchingOuts:
+    """
+    Regression suite for WOW-PATCH-2026-08-06 pitching outs pipeline fix.
+
+    Before the fix:
+      - _MLB_STAT_FIELDS had no "OUTS" entry → GameLogUnavailable for every request.
+      - "OUTS" was absent from pitcher_keys → wrong split group queried.
+      - The field name was incorrectly set to "recordedOuts"; the actual MLB Stats
+        API field is "outs" (integer already in recorded-outs units).
+    """
+
+    def setup_method(self):
+        _clear_cache()
+
+    # ── Static registration checks ──────────────────────────────────────────
+
+    def test_outs_is_registered_in_mlb_stat_fields(self):
+        """'OUTS' must be in _MLB_STAT_FIELDS and map to the 'outs' API field."""
+        from gate_engine.auto_game_log import _MLB_STAT_FIELDS
+        assert "OUTS" in _MLB_STAT_FIELDS, (
+            "'OUTS' missing from _MLB_STAT_FIELDS — pitching outs fetch silently fails"
+        )
+        assert _MLB_STAT_FIELDS["OUTS"] == "outs", (
+            f"Expected 'outs' (MLB Stats API field) but got '{_MLB_STAT_FIELDS['OUTS']}'. "
+            "'recordedOuts' is absent from gameLog splits; the field is 'outs'."
+        )
+
+    def test_outs_routes_to_pitching_split_group(self):
+        """'OUTS' must be in pitcher_keys so the pitching split group is queried.
+
+        The hitting split has no 'outs' field; a wrong group → 0 qualifying rows.
+        """
+        from gate_engine.auto_game_log import _fetch_mlb
+        import inspect
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"stats": [{"splits": _mlb_pitching_splits(3, outs=15)}]}
+
+        with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp) as mock_get:
+            values, source, _ = _fetch_mlb("676083", "OUTS", "2026-08-06", 3)
+
+        # Verify the pitching split group was requested
+        call_kwargs = mock_get.call_args
+        url_or_kwargs = str(call_kwargs)
+        assert "pitching" in url_or_kwargs, (
+            "MLB Stats API call did not request 'pitching' group for OUTS stat_key"
+        )
+
+    def test_outs_returns_integer_values(self):
+        """_fetch_mlb with stat_key='OUTS' must return the 'outs' integer values."""
+        from gate_engine.auto_game_log import _fetch_mlb
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "stats": [{"splits": _mlb_pitching_splits(5, outs=15)}]
+        }
+
+        with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp):
+            values, source, _ = _fetch_mlb("676083", "OUTS", "2026-08-06", 5)
+
+        assert len(values) == 5
+        assert all(v == 15.0 for v in values)
+        assert "mlb" in source.lower()
+
+    def test_outs_varies_per_start(self):
+        """Values must be per-start, not accumulated — ordering is most-recent first."""
+        from gate_engine.auto_game_log import _fetch_mlb
+
+        # Oldest first in API response → should be reversed to most-recent first
+        splits = [
+            {"stat": {"outs": float(i * 3), "strikeOuts": i, "inningsPitched": f"{i}.0",
+                      "hits": 5, "earnedRuns": 1, "baseOnBalls": 1},
+             "date": f"2026-08-{i+1:02d}"}
+            for i in range(1, 6)  # 3, 6, 9, 12, 15
+        ]
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"stats": [{"splits": splits}]}
+
+        with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp):
+            values, _, _ = _fetch_mlb("676083", "OUTS", "2026-08-06", 5)
+
+        # Most recent first: split[-1]=15 should become values[0]
+        assert values[0] == 15.0
+        assert values[-1] == 3.0
+
+    def test_outs_zero_rows_raises_game_log_unavailable(self):
+        """Empty pitching split response must raise GameLogUnavailable, not return []."""
+        from gate_engine.auto_game_log import _fetch_mlb, GameLogUnavailable
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"stats": [{"splits": []}]}
+
+        with patch("gate_engine.auto_game_log.requests.get", return_value=mock_resp):
+            with pytest.raises(GameLogUnavailable):
+                _fetch_mlb("676083", "OUTS", "2026-08-06", 10)
 
 
 # ---------------------------------------------------------------------------

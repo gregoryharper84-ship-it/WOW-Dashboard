@@ -1,0 +1,231 @@
+Yes—this should be the next high-priority runtime patch. It fixes the core category error: **data acquisition failure must never be presented as model judgment**.
+
+One architectural correction: keep lifecycle state, data status, failure class, and terminal label separate. `INCOMPLETE_INPUT`, `DATA_PROVIDER_OUTAGE`, and `STALE_DATA` should be typed data statuses—not replacements for native WOW terminal labels.
+
+```mermaid
+stateDiagram-v2
+    [*] --> BOARD_EXTRACTED
+    BOARD_EXTRACTED --> DATA_HYDRATING
+    DATA_HYDRATING --> CONTRACT_COMPLETE: Required evidence valid
+    DATA_HYDRATING --> BLOCKED: Missing, stale, outage, conflict
+    CONTRACT_COMPLETE --> FOUR_GATES_CLEARED
+    FOUR_GATES_CLEARED --> MODEL_READY
+    FOUR_GATES_CLEARED --> BLOCKED: Gate failure
+    MODEL_READY --> SCORED: Atomic bundle committed
+    MODEL_READY --> BLOCKED: Calibration or write failure
+```
+
+## Required state dimensions
+
+```yaml
+lifecycle_state:
+  BOARD_EXTRACTED
+  DATA_HYDRATING
+  CONTRACT_COMPLETE
+  FOUR_GATES_CLEARED
+  MODEL_READY
+  SCORING_ATOMIC
+  SCORED
+  BLOCKED
+
+data_status:
+  COMPLETE
+  INCOMPLETE_INPUT
+  DATA_PROVIDER_OUTAGE
+  STALE_DATA
+  SOURCE_CONFLICT
+
+model_status:
+  NOT_STARTED
+  READY
+  RUNNING
+  COMPLETED
+  FAILED
+
+terminal_label:
+  native WOW label only
+
+failure_class:
+  INPUT_FAILURE
+  PROVIDER_FAILURE
+  FRESHNESS_FAILURE
+  CONFLICT_FAILURE
+  MODEL_FAILURE
+  NONE
+```
+
+Example:
+
+```yaml
+lifecycle_state: BLOCKED
+data_status: INCOMPLETE_INPUT
+model_status: NOT_STARTED
+terminal_label: DATA_CONTRACT_FAIL
+failure_class: INPUT_FAILURE
+```
+
+That row was not rejected by the model—the model never ran.
+
+## Four gates
+
+1. **Identity/status gate**
+
+   * Canonical player and event
+   * Correct slate
+   * Participant active
+   * Lineup/starter status checked
+
+2. **Role/opportunity gate**
+
+   * Minutes, workload, lineup slot or projected role
+   * Teammate/on-off context where applicable
+   * Role certainty and timestamp
+
+3. **Historical-ledger gate**
+
+   * Raw L5 and L10 values
+   * Exact-line hit rates, median and recent average
+   * Role-valid sample
+   * Whole-number push frequency
+
+4. **Market/settlement gate**
+
+   * Exact line and boundary
+   * Push/DNP/void rules
+   * Both market directions or an explicit unavailable status
+   * Market probability, no-vig where applicable, timestamp and TTL
+
+Only rows clearing all four may become `MODEL_READY`.
+
+## Build packet
+
+```yaml
+change_id: WOW-PATCH-2026-08-17-TYPED-HYDRATION-AND-MODEL-READINESS-V1
+
+objective: >
+  Prevent incomplete or stale prop rows from entering modeling, ranking,
+  direction selection, final cards, or exposure ledgers.
+
+precedence:
+  - WOW v16 Clean Core
+  - Active approved patches
+  - Universal Agent Core v1
+  - This patch
+
+required_behavior:
+  - Validate the extraction contract before lane selection.
+  - Automatically hydrate schedule, status, logs, role and market evidence.
+  - Preserve provider-specific retries, fallback provenance and timestamps.
+  - Never merge conflicting sources silently.
+  - Build MORE and LESS from one shared distribution before choosing direction.
+  - Preserve push probability at whole-number lines.
+  - Generate failure paths, calibration bounds and the evidence ledger atomically.
+  - Publish nothing when the atomic score bundle or immutable write fails.
+  - Select strongest lane only from MODEL_READY rows.
+  - Never write exposure for blocked or diagnostic-only rows.
+
+row_contract:
+  identity:
+    - row_id
+    - player
+    - platform
+    - sport
+    - league
+    - event_id
+    - event_date
+    - event_start
+    - prop
+    - side
+    - line
+    - boundary_operator
+    - source
+    - source_captured_at
+    - settlement_rules
+
+  status_and_role:
+    - lineupConfirmed
+    - participant_status
+    - status_checked_at
+    - role
+    - projected_minutes_or_workload
+    - role_checked_at
+    - role_source
+
+  historical_ledger:
+    - raw_l5
+    - raw_l10
+    - l5_hit_rate
+    - l10_hit_rate
+    - median
+    - recent_avg
+    - sample_window
+    - role_valid_sample
+    - push_rate
+
+  market:
+    - exact_market_identity
+    - market_probability_more
+    - market_probability_less
+    - market_probability_push
+    - market_checked_at
+    - market_ttl
+    - market_sources
+    - no_vig_status
+
+  model_bundle:
+    - probability_more
+    - probability_less
+    - probability_push
+    - failure_path_matrix
+    - unconditional_probability
+    - calibration_method
+    - calibrated_probability
+    - calibrated_lower_bound
+    - calibrated_upper_bound
+    - model_timestamp
+
+run_controller:
+  alert_contract_failure_rate: 0.05
+  hard_abort_when:
+    - contract_complete_count == 0
+    - all rows share a required-provider outage
+    - configured systemic hydration threshold is exceeded
+  partial_failure_behavior:
+    - Preserve complete rows.
+    - Isolate incomplete rows.
+    - Mark run DEGRADED.
+    - Never rank blocked rows.
+    - Prevent final-card publication when a mandatory shared dependency failed.
+
+reconciliation:
+  - rows_extracted = rows_hydrating + rows_blocked_before_hydration
+  - rows_hydrating = rows_contract_complete + rows_hydration_failed
+  - rows_contract_complete = rows_model_ready + rows_gate_blocked
+  - rows_model_ready = rows_scored + rows_model_failed
+  - Every row terminates exactly once.
+```
+
+## Mandatory tests
+
+Include the ten proposed tests plus:
+
+11. Unknown state transition is rejected.
+12. State cannot move backward after scoring.
+13. Retry is idempotent and does not duplicate exposure or predictions.
+14. One incomplete row does not contaminate complete rows.
+15. `contract_complete_count=0` aborts the lane.
+16. Exact row reconciliation failure returns `RUN_INVALID`.
+17. Atomic calibration/evidence-write failure publishes no probability.
+18. A fallback source records both failed and successful provider attempts.
+19. An expired TTL cannot be refreshed merely by reusing the old value.
+20. `MODEL_REJECTED` is impossible unless the row previously reached `MODEL_READY`.
+21. Blocked rows cannot appear in strongest-lane rankings.
+22. Blocked rows cannot enter slips or exposure ledgers.
+
+## Final invariant
+
+> No incomplete prop may be ranked, scored, called weak, direction-selected, money-qualified, or placed in a slip.
+
+This should be an isolated runtime patch after #251-R2—not folded into the documentation task. Require its own commit, full regression, controlled 13/13 provider-outage test, and fresh production regression before publication.
+
+`can_execute=false`

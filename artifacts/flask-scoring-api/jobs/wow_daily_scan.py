@@ -29,11 +29,12 @@ import os
 import json
 import re
 import statistics as _stats
+from collections import Counter
 from datetime import date, datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.odds_api   import fetch_all_props, SPORT_KEYS
+from services.odds_api   import fetch_all_props, get_h2h_odds, SPORT_KEYS
 from services.rundown    import fetch_backup_props
 from services.player_logs import get_player_log_stats
 from services.status     import get_injuries, get_player_injury_flag, get_mlb_probable_pitchers
@@ -41,6 +42,16 @@ from storage.results     import save_scan_result, get_scan_summary
 from jobs.market_math import (
     no_vig_pair, pp_cash_threshold, compute_threshold_hit_rate,
     compute_drift_grade, classify_market_cause,
+)
+from gate_engine.scan_integrity import (
+    MLB_1IP,
+    MLB_UPSET_DISCOVERY,
+    OUTRIGHT_WINNER,
+    PLAYER_PROP,
+    WNBA_PRA,
+    build_objective_separation,
+    build_scan_integrity_report,
+    correlate_board_delta,
 )
 
 import importlib.util
@@ -501,11 +512,284 @@ def assign_mutex_groups(cards):
             card["preferred_candidate"] = (card is best)
 
 
+def _prop_scan_family(sport, row):
+    raw = str(
+        row.get("stat_key") or row.get("prop_type") or row.get("prop") or ""
+    ).lower()
+    if sport == "MLB" and (
+        "1ip" in raw or "first_inning" in raw or "first inning" in raw
+    ):
+        return MLB_1IP
+    if sport == "WNBA" and (
+        "pra" in raw
+        or "points_rebounds_assists" in raw
+        or "points rebounds assists" in raw
+    ):
+        return WNBA_PRA
+    return PLAYER_PROP
+
+
+def _board_special_family_signals(board_rows):
+    signals = {}
+    for row in board_rows or []:
+        if not isinstance(row, dict):
+            continue
+        sport = str(row.get("sport") or "").strip().upper()
+        family = _prop_scan_family(sport, row)
+        if family in (MLB_1IP, WNBA_PRA):
+            signals.setdefault(sport, set()).add(family)
+    return signals
+
+
+def _moneyline_value(snapshot, primary, fallback):
+    value = snapshot.get(primary)
+    return value if value is not None else snapshot.get(fallback)
+
+
+def _mlb_moneyline_discovery(events, upstream_status, run_date, expected_active_events=0):
+    """
+    Normalize live MLB h2h events and score both sides with the existing
+    OUTRIGHT_WINNER specialist.  The market favorite and underdog are placed
+    in separate, disjoint scan lanes; no generic model or approval path exists.
+    """
+    from gate_engine.moneyline.market_snapshot import (
+        build_snapshot_from_odds_event,
+        consensus_no_vig,
+        snapshot_to_scorer_enrichment,
+        snapshot_two_sided_gap,
+    )
+    from gate_engine.moneyline.team_acquisition import acquire_team_data
+    from gate_engine.moneyline_probability import score_outright_winner_row
+
+    from gate_engine.moneyline.pregame import pregame_exclusion_reason
+
+    raw_events = [event for event in (events or []) if isinstance(event, dict)]
+    inventory_by_family = {
+        OUTRIGHT_WINNER: [],
+        MLB_UPSET_DISCOVERY: [],
+    }
+    evaluated_by_family = Counter()
+    terminal_by_family = Counter()
+    qualifiers_by_family = Counter()
+    provisional_by_family = Counter()
+    candidates_by_family = {
+        OUTRIGHT_WINNER: [],
+        MLB_UPSET_DISCOVERY: [],
+    }
+    normalization_failures = []
+
+    for event in raw_events:
+        pregame_failure = pregame_exclusion_reason(event)
+        if pregame_failure:
+            normalization_failures.append({
+                "event_id": str(event.get("id") or "").strip() or None,
+                "reason": pregame_failure,
+            })
+            continue
+        event_id = str(event.get("id") or "").strip()
+        home = str(event.get("home_team") or "").strip()
+        away = str(event.get("away_team") or "").strip()
+        if not event_id or not home or not away:
+            normalization_failures.append({
+                "event_id": event_id or None,
+                "reason": "H2H_EVENT_IDENTITY_INCOMPLETE",
+            })
+            continue
+
+        snapshot = build_snapshot_from_odds_event(event, "MLB", market_key="h2h")
+        missing_sides = snapshot_two_sided_gap(snapshot)
+        home_market = consensus_no_vig(snapshot, home)
+        away_market = consensus_no_vig(snapshot, away)
+        if missing_sides or home_market is None or away_market is None:
+            normalization_failures.append({
+                "event_id": event_id,
+                "reason": "H2H_TWO_SIDED_MARKET_UNAVAILABLE",
+                "missing_participants": missing_sides,
+            })
+            continue
+
+        # Ties are resolved deterministically so every usable event contributes
+        # exactly one winner lane row and one upset lane row.
+        favorite = home if home_market >= away_market else away
+        participants = (
+            (home, away, home_market),
+            (away, home, away_market),
+        )
+        for team, opponent, market_probability in participants:
+            family = OUTRIGHT_WINNER if team == favorite else MLB_UPSET_DISCOVERY
+            slate_date = str(event.get("commence_time") or run_date)[:10] or run_date
+            row = {
+                "row_id": f"daily-scan:MLB:{event_id}:{team}",
+                "sport": "MLB",
+                "team": team,
+                "opponent": opponent,
+                "market_type": "h2h",
+                "event_id": event_id,
+                "slate_date": slate_date,
+                "board_source": "odds_api_daily_scan",
+                "market_family": OUTRIGHT_WINNER,
+                "objective": "OUTRIGHT_WIN_PROBABILITY_ONLY",
+                "input_contract_version": "MONEYLINE_V1",
+                "scan_lane": family,
+                "market_role": "FAVORITE" if family == OUTRIGHT_WINNER else "UNDERDOG",
+                "market_probability": market_probability,
+                "commence_time": event.get("commence_time"),
+                "can_execute": False,
+            }
+            inventory_by_family[family].append(dict(row))
+
+            # The canonical snapshot adapter is the only raw-market handoff
+            # allowed into the specialist.  Preserve its normalized snapshot
+            # alongside the scorer-ready odds for audit visibility.
+            enrichment = snapshot_to_scorer_enrichment(snapshot)
+            enrichment["market_snapshot"] = snapshot.to_dict()
+            try:
+                team_data = acquire_team_data(row, "MLB")
+            except Exception as exc:
+                team_data = None
+                enrichment["team_acquisition_error"] = str(exc)
+            if team_data:
+                enrichment.update(team_data)
+
+            evaluated_by_family[family] += 1
+            try:
+                scored = score_outright_winner_row(row, enrichment=enrichment)
+            except Exception as exc:
+                scored = {
+                    "terminal_label": "DATA_CONTRACT_FAIL",
+                    "blockers": [f"MONEYLINE_SPECIALIST_EXCEPTION:{exc}"],
+                    "probability_snapshot": None,
+                    "model_id": None,
+                    "model_status": "UNAVAILABLE",
+                    "can_execute": False,
+                }
+            terminal_by_family[family] += 1
+
+            probability_snapshot = scored.get("probability_snapshot") or {}
+            layers = probability_snapshot.get("moneyline_architecture_layers") or {}
+            specialist_classification = layers.get("classification") or {}
+            lower_bound = _moneyline_value(
+                probability_snapshot,
+                "calibrated_probability_lower_bound",
+                "lower_bound",
+            )
+            candidate = {
+                **row,
+                "terminal_label": scored.get("terminal_label"),
+                "blockers": list(scored.get("blockers") or []),
+                "model_id": scored.get("model_id"),
+                "model_status": scored.get("model_status"),
+                "raw_probability": probability_snapshot.get("raw_probability"),
+                "calibrated_probability": probability_snapshot.get("calibrated_probability"),
+                "calibrated_probability_lower_bound": lower_bound,
+                "lower_bound": lower_bound,
+                "upper_bound": _moneyline_value(
+                    probability_snapshot,
+                    "calibrated_probability_upper_bound",
+                    "upper_bound",
+                ),
+                "pure_edge": probability_snapshot.get("net_edge"),
+                "probability_audit": probability_snapshot.get("probability_audit"),
+                "specialist_classification": specialist_classification,
+                "probability_snapshot": probability_snapshot or None,
+                "can_execute": False,
+                "can_approve_bets": False,
+            }
+            candidates_by_family[family].append(candidate)
+
+            audit = probability_snapshot.get("probability_audit") or {}
+            qualification_gate = specialist_classification.get("qualification_gate")
+            if (
+                lower_bound is not None
+                and audit.get("passed") is True
+                and qualification_gate != "TAIL_ONLY_REJECTED"
+            ):
+                qualifiers_by_family[family] += 1
+            if lower_bound is None:
+                provisional_by_family[family] += 1
+
+    upstream_upper = str(upstream_status or "").upper()
+    usable_events = sum(len(rows) for rows in inventory_by_family.values()) // 2
+    active_events = max(len(raw_events), int(expected_active_events or 0))
+    if "FAILED" in upstream_upper or "PARTIAL" in upstream_upper:
+        acquisition_status = str(upstream_status)
+    elif active_events > 0 and usable_events == 0:
+        acquisition_status = (
+            f"FAILED: 0/{active_events} MLB h2h events produced two-sided inventory"
+        )
+    elif usable_events < active_events:
+        acquisition_status = (
+            f"PARTIAL: {usable_events}/{active_events} MLB h2h events produced "
+            "two-sided inventory"
+        )
+    else:
+        acquisition_status = (
+            f"AVAILABLE: {usable_events}/{active_events} MLB h2h events produced "
+            "two-sided inventory"
+        )
+
+    source_by_family = {}
+    for family in (OUTRIGHT_WINNER, MLB_UPSET_DISCOVERY):
+        inventory_count = len(inventory_by_family[family])
+        completed_count = sum(
+            row.get("calibrated_probability_lower_bound") is not None
+            for row in candidates_by_family[family]
+        )
+        if inventory_count == 0:
+            scoring_status = "FAILED: no independently acquired h2h candidates"
+        elif completed_count == 0:
+            scoring_status = (
+                f"FAILED: 0/{inventory_count} h2h candidates produced a probability"
+            )
+        elif completed_count < inventory_count:
+            scoring_status = (
+                f"PARTIAL: {completed_count}/{inventory_count} h2h candidates "
+                "produced a probability"
+            )
+        else:
+            scoring_status = (
+                f"AVAILABLE: {completed_count}/{inventory_count} h2h candidates "
+                "produced a probability"
+            )
+        source_by_family[family] = {
+            "events": acquisition_status,
+            "props": scoring_status,
+            "backup": None,
+        }
+
+    return {
+        "active_events": active_events,
+        "upstream_status": upstream_status,
+        "acquisition_status": acquisition_status,
+        "inventory_by_family": inventory_by_family,
+        "evaluated_by_family": dict(evaluated_by_family),
+        "terminal_by_family": dict(terminal_by_family),
+        "qualifiers_by_family": dict(qualifiers_by_family),
+        "provisional_by_family": dict(provisional_by_family),
+        "source_by_family": source_by_family,
+        "candidates_by_family": candidates_by_family,
+        "normalization_failures": normalization_failures,
+        "can_execute": False,
+        "dry_run_only": True,
+    }
+
+
 # -------------------------------------------------------------------
 # Main scan function
 # -------------------------------------------------------------------
 
-def run_scan(sports=None, environment="live", limit_per_sport=50):
+def run_scan(
+    sports=None,
+    environment="live",
+    limit_per_sport=50,
+    runtime_provenance=None,
+    _props_by_sport=None,
+    _source_status_by_sport=None,
+    _persist_results=True,
+    board_rows=None,
+    previous_board_rows=None,
+    prior_evidence=None,
+):
     """
     Run the WOW daily scan.
 
@@ -513,6 +797,18 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
       requested_sports / scanned_sports / missing_sports / scan_valid
     """
     requested_sports = list(sports) if sports is not None else list(ALL_SPORTS)
+
+    # An unverified runtime can only downgrade classifications.  This is kept
+    # separate from coverage: integrity reports discovery completeness while
+    # provenance governs whether a completed score may remain in a playable
+    # presentation bucket.
+    _prov_blocker = None
+    if runtime_provenance is not None:
+        try:
+            from gate_engine.runtime_provenance import provenance_blocker
+            _prov_blocker = provenance_blocker(runtime_provenance)
+        except Exception:
+            _prov_blocker = "RUNTIME_PROVENANCE:BACKEND_NOT_VERIFIED:UNSPECIFIED"
 
     run_date = date.today().isoformat()
     run_at   = datetime.now(timezone.utc).isoformat()
@@ -529,6 +825,17 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
     execution_notes          = []
     scanned_sports           = []
     failed_modules           = []  # WOW-PATCH-2026-07-06 item 9 — DEGRADED_ENGINE_RUN
+    # Observational facts consumed after discovery by scan_integrity.  This
+    # never controls the classifier or changes a probability calculation.
+    sport_observations       = {}
+    board_special_signals    = _board_special_family_signals(board_rows)
+    moneyline_discovery      = {
+        "candidates": [],
+        "normalization_failures": [],
+        "source_status": None,
+        "can_execute": False,
+        "dry_run_only": True,
+    }
 
     for sport in requested_sports:
         execution_notes.append(f"--- {sport} ---")
@@ -540,19 +847,68 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
         # HTTP client) instead of being recorded and labeled. Catch and
         # record it as a failed module so the run can be marked
         # DEGRADED_ENGINE_RUN instead of silently erroring out mid-scan.
-        try:
-            props, odds_status = fetch_all_props(sport)
-        except Exception as exc:
-            failed_modules.append(f"{sport}:fetch_all_props:{exc}")
-            source_access[f"{sport}_odds"] = f"FAILED: {exc}"
-            props, odds_status = [], f"FAILED: {exc}"
+        if _props_by_sport is not None:
+            props = list(_props_by_sport.get(sport) or [])
+            injected_source_status = (
+                (_source_status_by_sport or {}).get(sport) or {}
+            )
+            primary_status = injected_source_status.get(
+                f"{sport}_odds",
+                "ORCHESTRATOR_CANONICAL_BOARD",
+            )
+            backup_status = injected_source_status.get(
+                f"{sport}_rundown",
+                "ORCHESTRATOR_CANONICAL_BOARD",
+            )
+            odds_status = {
+                "events": "ORCHESTRATOR_CANONICAL_BOARD",
+                "props": primary_status,
+                "coverage_props": primary_status,
+                "event_count": 0,
+            }
+            source_access[f"{sport}_odds"] = primary_status
+            source_access[f"{sport}_rundown"] = backup_status
+            for source_key, source_status in injected_source_status.items():
+                source_status_text = str(source_status).upper()
+                if (
+                    source_status_text.startswith(
+                        ("FAILED", "ERROR", "UNAVAILABLE", "PARTIAL")
+                    )
+                    or " FAILED" in source_status_text
+                    or " PARTIAL" in source_status_text
+                ):
+                    failed_modules.append(
+                        f"{sport}:orchestrator_source:{source_key}:{source_status}"
+                    )
+        else:
+            try:
+                props, odds_status = fetch_all_props(sport)
+            except Exception as exc:
+                failed_modules.append(f"{sport}:fetch_all_props:{exc}")
+                source_access[f"{sport}_odds"] = f"FAILED: {exc}"
+                props, odds_status = [], f"FAILED: {exc}"
 
         source_access[f"{sport}_odds"] = (
             odds_status.get("props", odds_status)
             if isinstance(odds_status, dict) else odds_status
         )
+        events_status = odds_status.get("events") if isinstance(odds_status, dict) else None
+        props_status = odds_status.get("props") if isinstance(odds_status, dict) else odds_status
+        coverage_props_status = (
+            odds_status.get("coverage_props", props_status)
+            if isinstance(odds_status, dict) else props_status
+        )
+        event_count = (
+            int(odds_status.get("event_count", 0) or 0)
+            if isinstance(odds_status, dict) else 0
+        )
+        evaluated_rows = 0
+        evaluated_by_family = Counter()
+        terminal_by_family = Counter()
+        qualifiers_by_family = Counter()
+        provisional_by_family = Counter()
 
-        if not props:
+        if not props and _props_by_sport is None:
             try:
                 rundown_props, rd_status = fetch_backup_props(sport)
             except Exception as exc:
@@ -568,9 +924,13 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 execution_notes.append(
                     f"{sport}: no props available from either source — MISSING"
                 )
-                continue
-        else:
+        elif _props_by_sport is None:
             source_access[f"{sport}_rundown"] = "NOT_CALLED: primary succeeded"
+        else:
+            source_access.setdefault(
+                f"{sport}_rundown",
+                "ORCHESTRATOR_CANONICAL_BOARD",
+            )
 
         # WOW-PATCH-2026-07-06 item 4 (scoped) — cross-book consensus, used
         # for board_consensus_delta / no_vig_probability, and a SOURCE_CONFLICT
@@ -578,12 +938,113 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
         # than 1.0. Full Layer-0 event reconciliation (team/opponent/game_id/
         # start_time identity matching across independent sources) is
         # deferred — see WOW-PATCH-2026-07-06 doc, "Deferred".
-        consensus_map = build_consensus_map(props)
+        consensus_map = build_consensus_map(props) if props else {}
 
-        props = dedup_props(props)
-        if len(props) > limit_per_sport:
+        props = dedup_props(props) if props else []
+        inventory_props = list(props)
+        if event_count <= 0 and inventory_props:
+            event_keys = {
+                (
+                    row.get("event_id"),
+                    row.get("home_team"),
+                    row.get("away_team"),
+                    row.get("game_date"),
+                )
+                for row in inventory_props
+            }
+            event_count = max(1, len(event_keys))
+        if (
+            _props_by_sport is None
+            and limit_per_sport is not None
+            and len(props) > limit_per_sport
+        ):
             props = props[:limit_per_sport]
         execution_notes.append(f"{sport}: {len(props)} unique props to evaluate")
+
+        moneyline = None
+        if sport == "MLB":
+            try:
+                h2h_events, h2h_status = get_h2h_odds(SPORT_KEYS["MLB"])
+            except Exception as exc:
+                failed_modules.append(f"MLB:get_h2h_odds:{exc}")
+                h2h_events, h2h_status = [], f"FAILED: {exc}"
+            source_access["MLB_h2h"] = h2h_status
+            moneyline = _mlb_moneyline_discovery(
+                h2h_events,
+                h2h_status,
+                run_date,
+                expected_active_events=event_count,
+            )
+            moneyline_discovery = {
+                "candidates": (
+                    moneyline["candidates_by_family"][OUTRIGHT_WINNER]
+                    + moneyline["candidates_by_family"][MLB_UPSET_DISCOVERY]
+                ),
+                "normalization_failures": moneyline["normalization_failures"],
+                "source_status": moneyline["acquisition_status"],
+                "event_count": moneyline["active_events"],
+                "can_execute": False,
+                "dry_run_only": True,
+            }
+            event_count = max(event_count, moneyline["active_events"])
+
+        if not props:
+            source_by_family = {}
+            required_special_families = set(board_special_signals.get(sport, set()))
+            if sport == "MLB" and event_count > 0:
+                required_special_families.add(MLB_1IP)
+            if sport == "WNBA" and event_count > 0:
+                required_special_families.add(WNBA_PRA)
+            for family in required_special_families:
+                source_by_family[family] = {
+                    "events": events_status,
+                    "props": (
+                        "FAILED: required active lane has no independent "
+                        "source inventory or evaluation"
+                    ),
+                    "backup": source_access.get(f"{sport}_rundown"),
+                }
+            if moneyline:
+                source_by_family.update(moneyline["source_by_family"])
+            sport_observations[sport] = {
+                "active_events": event_count,
+                "events_status": events_status,
+                # The aggregate status is diagnostic-only; legacy source_access
+                # above intentionally retains the last-event scoring status.
+                "props_status": coverage_props_status,
+                "backup_status": source_access.get(f"{sport}_rundown"),
+                "expected_families": sorted(required_special_families),
+                "inventory": [],
+                "inventory_by_family": (
+                    moneyline["inventory_by_family"] if moneyline else {}
+                ),
+                "active_events_by_family": (
+                    {
+                        OUTRIGHT_WINNER: moneyline["active_events"],
+                        MLB_UPSET_DISCOVERY: moneyline["active_events"],
+                    } if moneyline else {}
+                ),
+                "source_by_family": source_by_family,
+                "evaluated_rows": 0,
+                "evaluated_by_family": (
+                    moneyline["evaluated_by_family"] if moneyline else {}
+                ),
+                "terminal_outcomes": 0,
+                "terminal_by_family": (
+                    moneyline["terminal_by_family"] if moneyline else {}
+                ),
+                "qualifier_count": 0,
+                "qualifiers_by_family": (
+                    moneyline["qualifiers_by_family"] if moneyline else {}
+                ),
+                "provisional_refreshes": 0,
+                "provisional_by_family": (
+                    moneyline["provisional_by_family"] if moneyline else {}
+                ),
+            }
+            scanned_sports.append(sport)
+            continue
+
         scanned_sports.append(sport)
 
         try:
@@ -610,6 +1071,13 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
 
             if not player or not prop_key or line <= 0:
                 continue
+            evaluated_rows += 1
+            scan_family = _prop_scan_family(sport, p)
+            # A normalized prop belongs to exactly one coverage family.  This
+            # leaves the legacy scorer untouched while preventing special
+            # lanes from being counted again as generic player props.
+            evaluated_by_family[scan_family] += 1
+            terminal_by_family[scan_family] += 1
 
             # Game logs + raw rows
             log_stats, log_status = get_player_log_stats(
@@ -632,7 +1100,10 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                         "player": player, "sport": sport, "prop": prop_key,
                         "side": side, "line": line,
                         "reason": "not listed as probable pitcher",
+                        "scan_family": scan_family,
+                        "can_execute": False,
                     })
+                    provisional_by_family[scan_family] += 1
                     continue
 
             raw_l5               = log_stats.get("raw_l5",  [])
@@ -777,7 +1248,22 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
             ).startswith("score="):
                 final_approval_blocker = f"REJECT_NO_EDGE: {edge_math} (no verified positive edge vs. no-vig consensus)"
 
+            runtime_provenance_hold = False
+            if _prov_blocker is not None and classification in (
+                "Market Verified Approved",
+                "Final Approved — Internal Projection",
+                "Model Qualified — PrizePicks",
+            ):
+                final_approval_blocker = (
+                    (final_approval_blocker + "; " if final_approval_blocker else "")
+                    + _prov_blocker
+                )
+                classification = "Watch"
+                runtime_provenance_hold = True
+
             result_row = {
+                "runtime_provenance":  runtime_provenance,
+                "runtime_provenance_hold": runtime_provenance_hold,
                 "run_date":            run_date,
                 "sport":               sport,
                 "player":              player,
@@ -837,10 +1323,13 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 "terminal_bucket":        classification,
                 "threshold_hit_rate":     threshold_hit_rate,
                 "source_conflict":        source_conflict,
+                "scan_family":            scan_family,
+                "can_execute":            False,
                 "mutex_group_id":         None,       # filled in post-scan by assign_mutex_groups
                 "preferred_candidate":    None,
             }
-            save_scan_result(result_row)
+            if _persist_results:
+                save_scan_result(result_row)
 
             card = {
                 "player": player, "sport": sport, "prop": prop_key,
@@ -875,24 +1364,105 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
                 "terminal_bucket":       classification,
                 "threshold_hit_rate":    threshold_hit_rate,
                 "source_conflict":       source_conflict,
+                "scan_family":           scan_family,
+                "can_execute":           False,
             }
 
             if classification == "Market Verified Approved":
                 market_verified.append(card)
+                qualifiers_by_family[scan_family] += 1
             elif classification == "Final Approved — Internal Projection":
                 final_approved_internal.append(card)
+                qualifiers_by_family[scan_family] += 1
             elif classification == "Model Qualified — PrizePicks":
                 model_qualified.append(card)
+                qualifiers_by_family[scan_family] += 1
             elif classification == "Conditional":
                 conditional.append(card)
             elif classification == "Watch":
                 watch_list.append(card)
+                provisional_by_family[scan_family] += 1
             elif classification == "Data Insufficient":
                 data_insufficient.append({**card, "reason": log_status})
+                provisional_by_family[scan_family] += 1
             elif classification == "No Play":
                 no_play_list.append(card)
             else:
                 reject_list.append(card)
+        inventory_by_family = {
+            PLAYER_PROP: [
+                row for row in inventory_props
+                if _prop_scan_family(sport, row) == PLAYER_PROP
+            ],
+            MLB_1IP: [
+                row for row in inventory_props
+                if _prop_scan_family(sport, row) == MLB_1IP
+            ],
+            WNBA_PRA: [
+                row for row in inventory_props
+                if _prop_scan_family(sport, row) == WNBA_PRA
+            ],
+        }
+        source_by_family = {
+            PLAYER_PROP: {
+                "events": events_status,
+                # Preserve the complete event-level source observation for
+                # coverage without changing legacy scoring's `props` status.
+                "props": coverage_props_status,
+                "backup": source_access.get(f"{sport}_rundown"),
+            },
+        }
+        special_families = set(board_special_signals.get(sport, set()))
+        if sport == "MLB" and event_count > 0:
+            special_families.add(MLB_1IP)
+        if sport == "WNBA" and event_count > 0:
+            special_families.add(WNBA_PRA)
+        for family in special_families:
+            independently_observed = bool(inventory_by_family.get(family))
+            source_by_family[family] = {
+                "events": events_status,
+                "props": (
+                    coverage_props_status if independently_observed else
+                    "FAILED: board-signaled lane has no independent source "
+                    "inventory or evaluation"
+                ),
+                "backup": source_access.get(f"{sport}_rundown"),
+            }
+
+        active_events_by_family = {PLAYER_PROP: event_count}
+        for family in special_families:
+            active_events_by_family[family] = event_count
+        if moneyline:
+            inventory_by_family.update(moneyline["inventory_by_family"])
+            source_by_family.update(moneyline["source_by_family"])
+            active_events_by_family.update({
+                OUTRIGHT_WINNER: moneyline["active_events"],
+                MLB_UPSET_DISCOVERY: moneyline["active_events"],
+            })
+            evaluated_by_family.update(moneyline["evaluated_by_family"])
+            terminal_by_family.update(moneyline["terminal_by_family"])
+            qualifiers_by_family.update(moneyline["qualifiers_by_family"])
+            provisional_by_family.update(moneyline["provisional_by_family"])
+
+        sport_observations[sport] = {
+            "active_events": event_count,
+            "events_status": events_status,
+            "props_status": coverage_props_status,
+            "backup_status": source_access.get(f"{sport}_rundown"),
+            "expected_families": sorted(special_families),
+            "inventory": inventory_props,
+            "inventory_by_family": inventory_by_family,
+            "active_events_by_family": active_events_by_family,
+            "source_by_family": source_by_family,
+            "evaluated_rows": evaluated_by_family[PLAYER_PROP],
+            "evaluated_by_family": dict(evaluated_by_family),
+            "terminal_outcomes": terminal_by_family[PLAYER_PROP],
+            "terminal_by_family": dict(terminal_by_family),
+            "qualifier_count": qualifiers_by_family[PLAYER_PROP],
+            "qualifiers_by_family": dict(qualifiers_by_family),
+            "provisional_refreshes": provisional_by_family[PLAYER_PROP],
+            "provisional_by_family": dict(provisional_by_family),
+        }
 
     # ── PATCH-BINARY-EVENT-POSTSCAN-INVARIANT ────────────────────────────────
     # Final safety net, independent of classify_prop(): guarantee no output
@@ -929,16 +1499,33 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
         market_verified + final_approved_internal + model_qualified + conditional
     )
 
+    # Coverage is calculated from acquisition facts after all source and
+    # normalization paths have finished.  It is intentionally independent of
+    # row quality/classification and cannot promote a card.
+    integrity_report = build_scan_integrity_report(requested_sports, sport_observations)
+    reconciliation = integrity_report["reconciliation"]
+    if not reconciliation["integrity_valid"]:
+        execution_notes.append(
+            "RUN_INTEGRITY_FAILURE — "
+            f"unavailable sources: {', '.join(reconciliation['unavailable_source_lanes']) or 'none'}; "
+            f"lane mismatch: {', '.join(reconciliation['duplicate_or_mismatched_lanes']) or 'none'}"
+        )
+
     # ── WOW-PATCH-2026-07-06 item 9 — DEGRADED_ENGINE_RUN gate ──────────────
     # Any backend fetch failure recorded in failed_modules means this run
     # cannot be trusted as a full Final WOW check: playable buckets are
     # cleared (moved to watch_list with an explicit degraded marker) and the
     # run is labeled so callers never mistake a partial/degraded run for a
     # complete one.
-    run_status = "DEGRADED_ENGINE_RUN" if failed_modules else "COMPLETE"
-    if failed_modules:
+    run_status = (
+        "DEGRADED_ENGINE_RUN"
+        if failed_modules or not reconciliation["integrity_valid"]
+        else "COMPLETE"
+    )
+    if failed_modules or not reconciliation["integrity_valid"]:
         execution_notes.append(
-            f"DEGRADED_ENGINE_RUN — {len(failed_modules)} module(s) failed: "
+            f"DEGRADED_ENGINE_RUN — {len(failed_modules)} module(s) failed; "
+            f"integrity_valid={reconciliation['integrity_valid']}: "
             f"{'; '.join(failed_modules)}"
         )
         for _bucket_name, _bucket in (
@@ -982,16 +1569,34 @@ def run_scan(sports=None, environment="live", limit_per_sport=50):
         return out
 
     total_final = len(market_verified) + len(final_approved_internal)
+    board_correlation = correlate_board_delta(
+        board_rows, previous_board_rows, prior_evidence
+    )
+    all_candidate_rows = (
+        market_verified + final_approved_internal + model_qualified + conditional
+        + watch_list + reject_list + data_insufficient + no_play_list
+        + moneyline_discovery["candidates"]
+    )
+    ranking_separation = build_objective_separation(all_candidate_rows)
 
     return {
         "run_date":  run_date,
         "run_at":    run_at,
+        "runtime_provenance":       runtime_provenance,
         "run_status":               run_status,
+        "can_execute":              False,
+        "dry_run_only":             True,
         "failed_modules":           failed_modules,
         "requested_sports":         requested_sports,
         "scanned_sports":           scanned_sports,
         "missing_sports":           missing_sports,
         "scan_valid":               scan_valid,
+        "scan_integrity":           integrity_report,
+        "board_correlation":        board_correlation,
+        "ranking_separation":       ranking_separation,
+        # Probability-only h2h research stays visible independently of prop
+        # approval buckets and remains dry-run only.
+        "moneyline_discovery":      moneyline_discovery,
         "source_access_status":     _summarize_sources(source_access),
         "source_access_detail":     source_access,
         "market_verified":          market_verified,

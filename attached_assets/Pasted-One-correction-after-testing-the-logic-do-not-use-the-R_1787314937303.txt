@@ -1,0 +1,132 @@
+One correction after testing the logic: **do not use the Replit Agent-rendered copy I just sent.** Its response mangled several shell redirections and regex characters in transit. No commands were executed and no files were modified.
+
+Also, the proposed `$(NF-1)` TOC parser is actually less safe when the owner field is absent: it would return `public` instead of the table name. For these WOW identifiers, the original positional parse is safer because the table name remains field 6 whether or not an owner follows it.
+
+Use this exact block **directly in Replit Shell**:
+
+```bash
+set -euo pipefail
+umask 077
+cd /home/runner/workspace
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+DUMP="WOW-production-public-${STAMP}.dump"
+
+PRE="/tmp/wow-public-pre-${STAMP}.txt"
+POST="/tmp/wow-public-post-${STAMP}.txt"
+FROM_DUMP="/tmp/wow-public-dump-${STAMP}.txt"
+TOC="/tmp/wow-public-${STAMP}.toc"
+
+: "${DATABASE_URL:?DATABASE_URL is not set}"
+
+psql "$DATABASE_URL" -Atc \
+  "SELECT tablename
+   FROM pg_tables
+   WHERE schemaname='public'
+   ORDER BY tablename" > "$PRE"
+
+printf 'public_tables_before=%s\n' "$(wc -l < "$PRE")"
+
+pg_dump "$DATABASE_URL" \
+  --format=custom \
+  --no-owner \
+  --no-privileges \
+  --schema=public \
+  --file="$DUMP"
+
+test -s "$DUMP"
+
+pg_restore --list "$DUMP" > "$TOC"
+
+awk '$4=="TABLE" && $5=="public" {print $6}' "$TOC" \
+  | sort -u > "$FROM_DUMP"
+
+psql "$DATABASE_URL" -Atc \
+  "SELECT tablename
+   FROM pg_tables
+   WHERE schemaname='public'
+   ORDER BY tablename" > "$POST"
+
+SIZE_BYTES="$(stat -c '%s' "$DUMP")"
+SHA256="$(sha256sum "$DUMP" | awk '{print $1}')"
+TOC_COUNT="$(grep -Ec '^[0-9]+; ' "$TOC" || true)"
+PRE_COUNT="$(wc -l < "$PRE")"
+DUMP_TABLE_COUNT="$(wc -l < "$FROM_DUMP")"
+POST_COUNT="$(wc -l < "$POST")"
+
+if cmp -s "$PRE" "$FROM_DUMP"; then
+  DUMP_TABLE_SET_MATCH=true
+else
+  DUMP_TABLE_SET_MATCH=false
+fi
+
+if cmp -s "$PRE" "$POST"; then
+  SCHEMA_STABLE_DURING_DUMP=true
+else
+  SCHEMA_STABLE_DURING_DUMP=false
+fi
+
+printf '%s\n' \
+  "filename=$DUMP" \
+  "size_bytes=$SIZE_BYTES" \
+  "sha256=$SHA256" \
+  "toc_count=$TOC_COUNT" \
+  "public_tables_before=$PRE_COUNT" \
+  "public_tables_in_dump=$DUMP_TABLE_COUNT" \
+  "public_tables_after=$POST_COUNT" \
+  "dump_table_set_match=$DUMP_TABLE_SET_MATCH" \
+  "schema_stable_during_dump=$SCHEMA_STABLE_DURING_DUMP"
+
+if [ "$DUMP_TABLE_SET_MATCH" != true ]; then
+  echo "--- TABLE SET DIFFERENCE ---"
+  diff -u "$PRE" "$FROM_DUMP" || true
+fi
+
+if [ "$SCHEMA_STABLE_DURING_DUMP" != true ]; then
+  echo "--- SCHEMA CHANGED DURING DUMP ---"
+  diff -u "$PRE" "$POST" || true
+fi
+```
+
+Expected target:
+
+```text
+public_tables_before=82
+public_tables_in_dump=82
+public_tables_after=82
+dump_table_set_match=true
+schema_stable_during_dump=true
+```
+
+Then download **dump #2** while retaining dump #1. They are complementary:
+
+```text
+dump #1 = broader database snapshot
+dump #2 = explicitly reconciled portable WOW public-schema snapshot
+```
+
+On your Mac:
+
+```bash
+shasum -a 256 ~/Downloads/WOW-production-public-<actual-timestamp>.dump
+```
+
+Report:
+
+```text
+filename =
+size_bytes =
+sha256_replit =
+sha256_downloaded =
+sha_match =
+toc_count =
+public_tables_before =
+public_tables_in_dump =
+public_tables_after =
+dump_table_set_match =
+schema_stable_during_dump =
+off_platform_copy_verified =
+second_copy_verified =
+```
+
+And I’ve logged the three zero-row missing tables as a possible additional instance of `RUNTIME-RESTORE-001` lazy/runtime schema initialization, but we won’t investigate that until the portable dump is secured.

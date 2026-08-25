@@ -1,0 +1,24 @@
+Follow the latest WOW recommendation exactly.
+
+Freeze production scoring behavior now. Do not change live gates, model weights, endpoints, deployment, or add new experts. Preserve current production commit af96567.
+
+Build WOW Prediction Validation Harness v1 as isolated, inexpensive offline tooling. Start only with MLB 1IP pitch-count props.
+
+Required deliverable:
+1. Define versioned pregame prediction record schema containing immutable prediction timestamp, event/pitcher/opponent identity, exact line/direction, model probability, uncertainty, feature snapshot ID, model version, and data provenance. Prevent post-outcome leakage.
+2. Define separate outcome attachment schema/process that joins results only after prediction freeze.
+3. Implement chronological TRAIN / VALIDATION / TRUE_HOLDOUT splitting. Holdout must be immutable and excluded from tuning.
+4. Implement metrics: Brier score, log loss, calibration buckets with counts/observed rate/mean predicted probability, sample coverage, and line-specific slices.
+5. Implement three baselines:
+   A. pitcher season empirical distribution
+   B. pitcher L10 empirical distribution
+   C. simple statistical model using pitcher pitches/PA + BF probabilities + opponent pitches/PA
+6. Add WOW_LEAN_1IP adapter using existing model outputs without changing production.
+7. Implement feature ablation runner for failure-path modeling, L10 discernment, top-four detail, handedness, health/workload, catcher, weather, market prior, recent form, and matchup adjustments. Unsupported features must be reported unavailable, not fabricated.
+8. Emit machine-readable JSON and concise Markdown comparison reports.
+9. Predeclare evaluation rules in config before looking at holdout results: primary Brier, secondary log loss, calibration/coverage safeguards. Do not tune thresholds from holdout.
+10. Add deterministic fixtures and tests for leakage prevention, split integrity, metrics, baselines, ablation behavior, missing data, duplicate prediction IDs, and outcome attachment.
+11. Register a validation command/step. Run focused tests and existing full regression to prove no production regression.
+12. Commit, but DO NOT republish production. Report files, commit SHA, tests, example synthetic report, limitations, and whether enough historical data exists for a meaningful blind benchmark.
+
+After completing this bounded harness, answer: "What is the next highest-value step?" Prefer evidence collection/benchmarking over another production feature.

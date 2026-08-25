@@ -253,6 +253,19 @@ def build_run_acquisition_report(
         if r.get("acquisition_verdict") == VERDICT_RUN_INVALID_NOT_CALLED
     )
 
+    # Per-prop enrichment coverage (Task 186 — Step 9)
+    rows_with_game_log    = sum(1 for r in row_reports if r.get("fields_retrieved") and "game_log" in r.get("fields_retrieved", []))
+    rows_with_box_score   = sum(1 for r in row_reports if r.get("fields_retrieved") and "box_score_log" in r.get("fields_retrieved", []))
+    rows_acq_called       = sum(1 for r in row_reports if r.get("acquisition_verdict") != VERDICT_RUN_INVALID_NOT_CALLED)
+    rows_acq_not_called   = rows_invalid
+    # Merge conflicts: rows where a later acquisition attempt overwrote an earlier value
+    merge_conflicts = sum(
+        1 for r in row_reports
+        for fd in (r.get("field_detail") or {}).values()
+        if (fd.get("attempts_count") or len(fd.get("attempts", []))) > 1
+        and any(a.get("status") == "RECOVERED" for a in fd.get("attempts", []))
+    )
+
     return {
         "fields_missing_at_intake":   total_missing,
         "fields_retrieved":           total_retrieved,
@@ -266,6 +279,13 @@ def build_run_acquisition_report(
         "rows_acquisition_complete":  complete_rows,
         "rows_total":                 total_rows,
         "rows_run_invalid":           rows_invalid,
+        # Task-186 diagnostic fields
+        "rows_submitted":             total_rows,
+        "rows_with_game_log":         rows_with_game_log,
+        "rows_with_box_score_log":    rows_with_box_score,
+        "rows_acquisition_called":    rows_acq_called,
+        "rows_acquisition_not_called": rows_acq_not_called,
+        "merge_conflicts_detected":   merge_conflicts,
         "acquisition_completeness_verdict": (
             "COMPLETE" if complete_rows == total_rows else
             f"INCOMPLETE: {total_rows - complete_rows} of {total_rows} rows have NOT_CALLED pathways"

@@ -72,8 +72,8 @@ class SkillRegistry:
             if sid in seen_ids:
                 errors.append(f"Duplicate skill id: {sid!r}")
             seen_ids.add(sid)
-        if len(self._skills) != 21:
+        if len(self._skills) != 22:
             errors.append(
-                f"Registry must contain 21 skills; found {len(self._skills)}"
+                f"Registry must contain 22 skills; found {len(self._skills)}"
             )
         return errors

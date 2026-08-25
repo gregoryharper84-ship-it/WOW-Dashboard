@@ -77,13 +77,28 @@ def validate(enrichment: dict[str, Any]) -> tuple[bool, str | None, str | None]:
             errors.append(
                 f"game_log must be list[number], got {type(game_log).__name__}"
             )
-        elif game_log:
-            first = game_log[0]
-            if not isinstance(first, (int, float)):
-                first_type = type(first).__name__
+        else:
+            # Full-list validation: check every element, not just index 0.
+            # Survivability rule: if ≥5 valid numeric entries exist AND all
+            # failures are non-numeric, report mismatch but also note that
+            # numeric entries can still drive the L5/L10 ledger.
+            non_numeric_indices = [
+                i for i, v in enumerate(game_log)
+                if not isinstance(v, (int, float))
+            ]
+            if non_numeric_indices:
+                first_bad = non_numeric_indices[0]
+                first_bad_type = type(game_log[first_bad]).__name__
+                valid_numeric_count = len(game_log) - len(non_numeric_indices)
+                survivability = (
+                    f" ({valid_numeric_count} valid numeric entries survive for L5/L10)"
+                    if valid_numeric_count >= 5
+                    else ""
+                )
                 errors.append(
                     f"game_log must be list[number] (L5/L10 ledger input); "
-                    f"first element is {first_type} — "
+                    f"offending_index={first_bad}, expected=number, "
+                    f"actual={first_bad_type}{survivability} — "
                     f"if these are per-game stat dicts, use box_score_log instead"
                 )
 
@@ -93,13 +108,19 @@ def validate(enrichment: dict[str, Any]) -> tuple[bool, str | None, str | None]:
             errors.append(
                 f"box_score_log must be list[dict], got {type(box_score_log).__name__}"
             )
-        elif box_score_log:
-            first = box_score_log[0]
-            if not isinstance(first, dict):
-                first_type = type(first).__name__
+        else:
+            # Full-list validation: check every element.
+            non_dict_indices = [
+                i for i, v in enumerate(box_score_log)
+                if not isinstance(v, dict)
+            ]
+            if non_dict_indices:
+                first_bad = non_dict_indices[0]
+                first_bad_type = type(box_score_log[first_bad]).__name__
                 errors.append(
                     f"box_score_log must be list[dict] (WNBA opportunity engine input); "
-                    f"first element is {first_type} — "
+                    f"offending_index={first_bad}, expected=dict, "
+                    f"actual={first_bad_type} — "
                     f"if this is a flat numeric series, use game_log instead"
                 )
 

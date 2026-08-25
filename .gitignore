@@ -47,3 +47,11 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# WOW migration/recovery artifacts — never commit production database exports.
+# Keep migration SQL files trackable; these patterns target only dump/export names.
+/WOW-PHASE2-ROLLBACK-EXPORT-*/
+**/production-dump-*.sql
+**/production_dump_*.sql
+**/prod-dump-*.sql
+**/prod_dump_*.sql

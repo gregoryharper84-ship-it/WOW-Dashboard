@@ -1,0 +1,83 @@
+The fix is not to loosen the Gatekeeper. The fix is to make the WNBA and tennis ML lanes actually produce a valid independent sport-model probability before the row reaches ranking.
+
+The files spell out the missing inputs. For WNBA ML, the model needs the official injury report, starting lineup, minutes/usage state, rest/travel, pace, matchup, and blowout/foul-trouble scripts. For tennis, it needs surface-adjusted form, hold/break rates, serve/return matchup, fatigue/travel, injury/fitness status, recent workload, and match format. SKILL.md The Full-Model Gatekeeper then requires those hydrated inputs to pass objective readiness before the controlling specialist can produce a probability. wow-full-model-gatekeeper-SKILL-v2.1-typed-hydration.md
+
+So there are really three fixes:
+
+1. Add/complete sport-specific hydration for MONEYLINE_V1.
+    Right now MLB is apparently wired to auto-enrich enough non-market inputs, but WNBA and ATP/WTA are not. The backend should have separate hydration profiles such as WNBA_ML_V1 and TENNIS_MATCH_WINNER_V1, rather than falling through to a generic moneyline row with only team/opponent/event/market data.
+2. Attach an active independent probability model to each hydrated lane.
+    Hydration alone is insufficient. After the required fields are present, WNBA should route to an active WNBA/NBA game-win specialist, while ATP/WTA should route to an active tennis match-winner specialist. The cross-sport specification explicitly treats WNBA moneyline and tennis match winner as supported families, but only when an active specialist model is available. SKILL.md
+3. Make auto_enrich=true acquire those fields instead of failing immediately.
+    WOW’s own acquisition rules say public/API paths should be attempted first and NOT_CALLED cannot be the terminal state. wow-slip-probability-optimizer-SKILL-v3(1).md The proper flow is:
+    event discovery → official status/injury → team/player performance data → matchup inputs → specialist probability → calibration → market audit.
+    Only after those attempts fail should the row become DATA_UNOBTAINABLE or DATA_CONTRACT_FAIL. The core instructions also explicitly require auto-research to fill material gaps rather than asking the user to supply publicly available data. wow_custom_gpt_compact_patched_2026-07-19.md
+
+Concrete backend contract I would implement
+
+For WNBA ML, hydrate something like:
+
+sport = WNBA
+market_family = OUTRIGHT_WINNER
+hydration_profile = WNBA_ML_V1
+required_non_market:
+  injury_report
+  projected_or_confirmed_starters
+  expected_rotation
+  team_minutes_usage_state
+  offensive_rating
+  defensive_rating
+  pace
+  rest_days
+  travel_state
+  home_away
+  matchup_features
+  blowout_script_inputs
+  foul_trouble_rotation_risk
+specialist = WNBA_GAME_WIN_MODEL
+
+For ATP/WTA:
+
+sport = ATP | WTA
+market_family = OUTRIGHT_WINNER
+hydration_profile = TENNIS_MATCH_WINNER_V1
+required_non_market:
+  surface
+  surface_adjusted_form
+  hold_rate
+  break_rate
+  service_points_won
+  return_points_won
+  recent_opponent_quality
+  fatigue
+  travel
+  recent_match_load
+  injury_fitness_status
+  best_of_format
+  retirement_risk
+specialist = TENNIS_MATCH_WIN_MODEL
+
+Those fields align with the sport-specific requirements already present in the WOW source material. SKILL.md
+
+There is also one important thing not to do: don’t reuse the WNBA player-prop enrichment contract for WNBA moneylines. The existing game_log/box_score_log contract is explicitly scoped to WNBA player-prop rows, not team moneylines. WNBA_Enrichment_Key_Contract_2026-08-03.docx A moneyline lane needs team/game-state hydration, not a fake player row just to satisfy the gate.
+
+And I would change the error reporting. Instead of the vague:
+
+INDEPENDENT_PROBABILITY_UNAVAILABLE:
+insufficient_non_market_data
+
+the backend should return something like:
+
+hydration_profile: WNBA_ML_V1
+missing_fields:
+  - official_injury_report
+  - projected_starting_lineup
+  - pace
+  - team_efficiency_split
+specialist_status: NOT_READY
+eligible_for_model: false
+retryable: true
+
+That would make the failure actionable and matches the Gatekeeper’s typed-hydration design, which keeps DataStatus, ModelStatus, and eligibility separate. wow-full-model-gatekeeper-SKILL-v2.1-typed-hydration.md
+
+Bottom line: MLB works because its non-market enrichment + specialist probability path is wired. WNBA ML and tennis need the same architecture: sport-specific hydration → active specialist → independent probability → calibration → market audit. The Gatekeeper itself is doing the right thing by refusing to substitute sportsbook odds for the missing model.

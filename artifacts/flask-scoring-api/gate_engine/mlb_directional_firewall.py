@@ -318,61 +318,52 @@ def _safe_float(v: Any) -> float | None:
 # DB ledger (PATCH-016)
 # ---------------------------------------------------------------------------
 
-_DDL_PITCHER_LEDGER = """
-CREATE TABLE IF NOT EXISTS mlb_directional_pitcher_ledger (
-    id                              BIGSERIAL PRIMARY KEY,
-    pitcher                         TEXT,
-    event_id                        TEXT,
-    event_date                      DATE,
-    market_type                     TEXT,
-    directional_lane                TEXT,
-    line                            NUMERIC,
-    offer_type                      TEXT,
-    starter_confirmation            TEXT,
-    lineup_confirmation             TEXT,
-    health_regime                   TEXT,
-    predicted_innings               NUMERIC,
-    predicted_batters_faced         NUMERIC,
-    predicted_pitch_count           NUMERIC,
-    predicted_strikeouts            NUMERIC,
-    failure_path_score              NUMERIC,
-    short_outing_support_share      NUMERIC,
-    conditional_probability_given_normal_workload NUMERIC,
-    unconditional_probability       NUMERIC,
-    calibrated_lower_bound          NUMERIC,
-    actual_innings                  NUMERIC,
-    actual_batters_faced            NUMERIC,
-    actual_pitch_count              NUMERIC,
-    actual_strikeouts               NUMERIC,
-    settled_result                  TEXT,
-    observed_failure_category       TEXT,
-    process_pass_or_fail            TEXT,
-    duplicate_group_id              TEXT,
-    row_id                          TEXT,
-    logged_at                       TIMESTAMPTZ DEFAULT NOW()
-)
-"""
-
-_DDL_PITCHER_LEDGER_IDX = """
-CREATE INDEX IF NOT EXISTS mlb_dl_pitcher_idx     ON mlb_directional_pitcher_ledger(pitcher);
-CREATE INDEX IF NOT EXISTS mlb_dl_lane_idx        ON mlb_directional_pitcher_ledger(directional_lane);
-CREATE INDEX IF NOT EXISTS mlb_dl_event_date_idx  ON mlb_directional_pitcher_ledger(event_date DESC);
-CREATE INDEX IF NOT EXISTS mlb_dl_duplicate_idx   ON mlb_directional_pitcher_ledger(duplicate_group_id);
-"""
-
-
 def _ensure_pitcher_ledger() -> None:
+    """Create mlb_directional_pitcher_ledger if it doesn't exist. Safe to call repeatedly."""
+    _DDL = """
+    CREATE TABLE IF NOT EXISTS mlb_directional_pitcher_ledger (
+        id                              BIGSERIAL PRIMARY KEY,
+        pitcher                         TEXT,
+        event_id                        TEXT,
+        event_date                      DATE,
+        market_type                     TEXT,
+        directional_lane                TEXT,
+        line                            NUMERIC,
+        offer_type                      TEXT,
+        starter_confirmation            TEXT,
+        lineup_confirmation             TEXT,
+        health_regime                   TEXT,
+        predicted_innings               NUMERIC,
+        predicted_batters_faced         NUMERIC,
+        predicted_pitch_count           NUMERIC,
+        predicted_strikeouts            NUMERIC,
+        failure_path_score              NUMERIC,
+        short_outing_support_share      NUMERIC,
+        conditional_probability_given_normal_workload NUMERIC,
+        unconditional_probability       NUMERIC,
+        calibrated_lower_bound          NUMERIC,
+        actual_innings                  NUMERIC,
+        actual_batters_faced            NUMERIC,
+        actual_pitch_count              NUMERIC,
+        actual_strikeouts               NUMERIC,
+        settled_result                  TEXT,
+        observed_failure_category       TEXT,
+        process_pass_or_fail            TEXT,
+        duplicate_group_id              TEXT,
+        row_id                          TEXT,
+        logged_at                       TIMESTAMPTZ DEFAULT NOW()
+    )
+    """
     try:
         import psycopg2  # type: ignore
-        conn = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=5)
-        cur  = conn.cursor()
-        cur.execute(_DDL_PITCHER_LEDGER)
-        cur.execute(_DDL_PITCHER_LEDGER_IDX)
+        conn = psycopg2.connect(os.environ.get("DATABASE_URL", ""), connect_timeout=5)
+        cur = conn.cursor()
+        cur.execute(_DDL)
         conn.commit()
         cur.close()
         conn.close()
     except Exception:
-        pass
+        pass  # fail-open — schema creation must not block request handling
 
 
 _pitcher_ledger_ready = False

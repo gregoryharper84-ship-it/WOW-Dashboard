@@ -8,6 +8,7 @@ shape into the Odds API bookmakers/markets/outcomes shape so no downstream
 consumer needs changing.
 """
 import os
+import hashlib
 import requests
 from datetime import datetime, timezone
 
@@ -54,7 +55,7 @@ PLAYER_PROP_MARKETS = {
     "MLB":  [
         "batter_hits", "batter_home_runs", "batter_rbis",
         "batter_strikeouts", "batter_total_bases",
-        "pitcher_strikeouts", "pitcher_hits_allowed",
+        "pitcher_strikeouts", "pitcher_hits_allowed", "pitcher_outs",
         "pitcher_walks", "pitcher_earned_runs",
     ],
     "NFL":  [
@@ -79,42 +80,132 @@ def _resolve_key() -> str:
 
     Priority:
       1. ODDS_API_PAID_KEY  (higher quota)
-      2. ODDS_API_FREE_KEY  (fallback)
-      3. ODDS_API_KEY       (legacy / back-compat)
+      2. ODDS_API_KEY_100K  (high-quota existing key)
+      3. ODDS_API_FREE_KEY  (fallback)
+      4. ODDS_API_KEY       (legacy / back-compat)
 
     Returns empty string when none are configured.
+    Note: _get() now retries the full ladder on auth/quota failures, so
+    this function is used only for the no-key guard (returns empty when
+    none are configured at all).
     """
     return (
         os.environ.get("ODDS_API_PAID_KEY", "")
+        or os.environ.get("ODDS_API_KEY_100K", "")
         or os.environ.get("ODDS_API_FREE_KEY", "")
         or os.environ.get("ODDS_API_KEY", "")
     )
 
 
+def resolve_odds_api_key_with_source() -> "tuple[str, str]":
+    """Public helper — returns (api_key, source_env_var_name).
+
+    Priority: ODDS_API_PAID_KEY → ODDS_API_KEY_100K → ODDS_API_FREE_KEY → ODDS_API_KEY (legacy).
+
+    source_env_var_name values:
+      "ODDS_API_PAID_KEY"   — paid quota key in use
+      "ODDS_API_KEY_100K"   — high-quota key in use
+      "ODDS_API_FREE_KEY"   — free-tier key in use
+      "ODDS_API_KEY_LEGACY" — legacy/back-compat key in use
+      "NONE"                — no key configured; api_key is ""
+
+    Use this wherever the Odds API key is needed so all consumers share
+    the same priority ladder and a deactivated legacy key can never
+    override an available paid or free key.  Never log the returned
+    api_key value.
+    """
+    paid = os.environ.get("ODDS_API_PAID_KEY", "")
+    if paid:
+        return paid, "ODDS_API_PAID_KEY"
+    high = os.environ.get("ODDS_API_KEY_100K", "")
+    if high:
+        return high, "ODDS_API_KEY_100K"
+    free = os.environ.get("ODDS_API_FREE_KEY", "")
+    if free:
+        return free, "ODDS_API_FREE_KEY"
+    legacy = os.environ.get("ODDS_API_KEY", "")
+    if legacy:
+        return legacy, "ODDS_API_KEY_LEGACY"
+    return "", "NONE"
+
+
 def _get(path, params=None):
-    # Read key dynamically so a rotation takes effect without a process restart.
-    key = _resolve_key()
-    if not key:
+    """
+    Try all configured keys in priority order: PAID → 100K → FREE → LEGACY.
+
+    Failover logic
+    ---------------
+    Reactive:  falls back to the next key on auth (401), quota (422/429).
+    Proactive: before each HTTP attempt, checks the Postgres cross-worker
+               quota state (best-effort, fail-open). When a tier's
+               requests_remaining is recorded as exactly 0, skip its HTTP
+               call entirely and move to the next tier — saving a round-trip
+               that would consume quota on whichever key receives it.
+
+    Non-retriable HTTP errors (timeout, 5xx, etc.) stop immediately.
+
+    key_tier names used in pg_odds_quota:
+      'paid'   → ODDS_API_PAID_KEY
+      'high'   → ODDS_API_KEY_100K (100K-request key)
+      'free'   → ODDS_API_FREE_KEY
+      'legacy' → ODDS_API_KEY (back-compat)
+    """
+    # Build the per-key ladder with tier labels so the proactive quota check
+    # can look up the right tier name from the Postgres snapshot.
+    _key_ladder = [
+        (tier, key)
+        for tier, key in [
+            ("paid",   os.environ.get("ODDS_API_PAID_KEY", "")),
+            ("high",   os.environ.get("ODDS_API_KEY_100K", "")),
+            ("free",   os.environ.get("ODDS_API_FREE_KEY", "")),
+            ("legacy", os.environ.get("ODDS_API_KEY", "")),
+        ]
+        if key
+    ]
+    if not _key_ladder:
         return None, "NOT_CALLED: ODDS_API_KEY not set"
-    params = dict(params or {})   # copy — never mutate the caller's dict
-    params["apiKey"] = key
+
+    # Best-effort proactive quota snapshot from Postgres.
+    # Fail-open: any DB error leaves _quota_snapshot as {} and we proceed
+    # without proactive skipping (reactive fallback still works fine).
+    _quota_snapshot: dict = {}
     try:
-        r = requests.get(f"{BASE_URL}{path}", params=params, timeout=15)
+        from gate_engine.pg_odds_quota import fetch_quota_snapshot as _fqs
+        _quota_snapshot = _fqs() or {}
+    except Exception:
+        pass   # fail-open — quota tracking must never block the caller
+
+    params = dict(params or {})   # copy — never mutate the caller's dict
+    _last_msg = "FAILED: invalid ODDS_API_KEY"
+    for _tier, _key in _key_ladder:
+        # Proactive skip: if cross-worker quota store already shows this tier
+        # is exhausted (remaining == 0), skip the HTTP call and try the next.
+        _tier_state = _quota_snapshot.get(_tier, {})
+        _remaining  = _tier_state.get("requests_remaining")
+        if _remaining is not None and _remaining == 0:
+            _last_msg = f"proactive_skip:{_tier}:quota_exhausted"
+            continue
+
+        _p = {**params, "apiKey": _key}
+        try:
+            r = requests.get(f"{BASE_URL}{path}", params=_p, timeout=15)
+        except requests.exceptions.Timeout:
+            return None, "FAILED: timeout"
+        except Exception as e:
+            return None, f"FAILED: {e}"
         remaining = r.headers.get("x-requests-remaining", "?")
         if r.status_code == 200:
             return r.json(), f"AVAILABLE (remaining={remaining})"
-        elif r.status_code == 401:
-            return None, "FAILED: invalid ODDS_API_KEY"
+        elif r.status_code in (401, 429):
+            _last_msg = "FAILED: quota exhausted" if r.status_code == 429 else "FAILED: invalid ODDS_API_KEY"
+            continue   # try next key in ladder
         elif r.status_code == 422:
-            return None, f"FAILED: unprocessable ({r.text[:120]})"
-        elif r.status_code == 429:
-            return None, "FAILED: quota exhausted"
+            # Out-of-credits returns 422; treat as quota exhausted and try next key
+            _last_msg = f"FAILED: unprocessable ({r.text[:120]})"
+            continue
         else:
             return None, f"FAILED: HTTP {r.status_code}"
-    except requests.exceptions.Timeout:
-        return None, "FAILED: timeout"
-    except Exception as e:
-        return None, f"FAILED: {e}"
+    return None, _last_msg
 
 
 def _normalize_rundown_to_h2h_events(rundown_events):
@@ -191,7 +282,26 @@ def _normalize_rundown_to_h2h_events(rundown_events):
         if not bookmakers:
             continue
 
+        # TheRundown's normalized payload does not consistently expose an
+        # upstream event ID.  Moneyline discovery requires a stable event
+        # identity, so retain any provider ID first and otherwise derive an
+        # auditable deterministic source identity from immutable event facts.
+        provider_event_id = (
+            ev.get("id") or ev.get("event_id") or ev.get("eventId")
+            or ev.get("game_id") or ev.get("gameId")
+        )
+        if provider_event_id is None:
+            identity = "\x1f".join((
+                str(ev.get("event_date") or ""),
+                home_team,
+                away_team,
+            ))
+            provider_event_id = (
+                "rundown:"
+                + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+            )
         normalized.append({
+            "id":            str(provider_event_id),
             "home_team":     home_team,
             "away_team":     away_team,
             "commence_time": ev.get("event_date", ""),
@@ -330,25 +440,91 @@ def fetch_all_props(sport):
     """
     sport_key = SPORT_KEYS.get(sport)
     if not sport_key:
-        return [], {"events": "NOT_CALLED: unknown sport", "props": "NOT_CALLED"}
+        return [], {
+            "events": "NOT_CALLED: unknown sport",
+            "props": "NOT_CALLED",
+            "coverage_props": "NOT_CALLED: unknown sport",
+            "event_count": 0,
+            "event_prop_statuses": [],
+            "event_prop_failure_count": 0,
+        }
 
     events, ev_status = get_events(sport_key)
     if not events:
-        return [], {"events": ev_status, "props": "NOT_CALLED: no events"}
+        return [], {
+            "events": ev_status,
+            "props": "NOT_CALLED: no events",
+            "coverage_props": "NOT_CALLED: no events",
+            "event_count": 0,
+            "event_prop_statuses": [],
+            "event_prop_failure_count": 0,
+        }
 
     markets = PLAYER_PROP_MARKETS.get(sport, [])
     if not markets:
-        return [], {"events": ev_status, "props": "NOT_CALLED: no markets defined"}
+        return [], {
+            "events": ev_status,
+            "props": "NOT_CALLED: no markets defined",
+            "coverage_props": "NOT_CALLED: no markets defined",
+            "event_count": len(events),
+            "event_prop_statuses": [],
+            "event_prop_failure_count": 0,
+        }
 
     all_props = []
     prop_status = "NOT_RETRIEVED"
-    for event in events[:10]:
+    event_prop_statuses = []
+    # Coverage is mandatory for every current-slate event.  Do not silently
+    # truncate a large slate: per-event statuses below make any failed
+    # acquisition visible to daily-scan integrity.
+    for event in events:
         event_id = event.get("id")
         if not event_id:
+            event_prop_statuses.append({
+                "event_id": None,
+                "status": "FAILED: missing event_id",
+                "inventory_count": 0,
+            })
             continue
         data, p_status = get_player_props(sport_key, event_id, markets)
         prop_status = p_status
+        extracted = extract_props_from_event(data, sport) if data else []
+        event_prop_statuses.append({
+            "event_id": event_id,
+            "status": p_status,
+            "inventory_count": len(extracted),
+        })
         if data:
-            all_props.extend(extract_props_from_event(data, sport))
+            all_props.extend(extracted)
 
-    return all_props, {"events": ev_status, "props": prop_status}
+    attempted = event_prop_statuses
+    failed = [
+        item for item in attempted
+        if "FAILED" in str(item.get("status") or "").upper()
+        or "PARTIAL" in str(item.get("status") or "").upper()
+    ]
+    if failed and len(failed) < len(attempted):
+        coverage_props_status = (
+            f"PARTIAL: {len(failed)}/{len(attempted)} event prop fetches failed"
+        )
+    elif failed:
+        coverage_props_status = (
+            f"FAILED: {len(failed)}/{len(attempted)} event prop fetches failed"
+        )
+    elif attempted:
+        coverage_props_status = (
+            f"AVAILABLE: {len(attempted)}/{len(attempted)} event prop fetches completed"
+        )
+    else:
+        coverage_props_status = "FAILED: no event prop fetches attempted"
+
+    return all_props, {
+        "events": ev_status,
+        # Preserve the legacy last-event status used by existing scoring gates.
+        "props": prop_status,
+        # Integrity uses the complete per-event aggregate instead.
+        "coverage_props": coverage_props_status,
+        "event_count": len(events),
+        "event_prop_statuses": event_prop_statuses,
+        "event_prop_failure_count": len(failed),
+    }

@@ -151,6 +151,46 @@ _STAT_KEY_MAP: dict[str, dict[str, Any]] = {
         "innings pitched":      "IP",
         "ip":                   "IP",
         "pitching outs":        "OUTS",
+        # ── Plate Appearances aliases ────────────────────────────────────
+        # "Wade Meckler MORE 3.5 Plate Appearances" and variants must
+        # resolve to PA so the model registry (and downstream scoring)
+        # can handle them; without this alias every such prop returns
+        # UNKNOWN_PROP_TYPE and permanently DATA_CONTRACT_FAIL.
+        "plate appearances":    "PA",
+        "plate_appearances":    "PA",
+        "pa":                   "PA",
+        "plate apps":           "PA",
+        # ── WOW-PATCH-2026-08-06-PROP-TYPE-MAPPING-GAP ──────────────────
+        # Section 18.4 MLB 1st-Inning Pitches Thrown display-label aliases.
+        # All variants resolve to 1IP_PITCHES_THROWN so the route_registry
+        # (PROP_TYPE_REQUIRED_GATES) and the 1IP specialist routing (_1ip_patterns
+        # in app.py) both recognise the prop without DATA_CONTRACT_FAIL.
+        # Any label not in this table continues to return UNKNOWN_PROP_TYPE —
+        # no guessing is introduced.
+        "1st inn. pitches thrown":   "1IP_PITCHES_THROWN",
+        "1st inning pitches thrown": "1IP_PITCHES_THROWN",
+        "1st inning pitches":        "1IP_PITCHES_THROWN",
+        "1st inn pitches":           "1IP_PITCHES_THROWN",  # "1st Inn Pitches" (no period)
+        "first inning pitches thrown": "1IP_PITCHES_THROWN",
+        "first inning pitches":      "1IP_PITCHES_THROWN",
+        "first inning pitch count":  "1IP_PITCHES_THROWN",
+        "1st inning pitch count":    "1IP_PITCHES_THROWN",
+        "pitches thrown 1st inning": "1IP_PITCHES_THROWN",
+        "pitches thrown 1st":        "1IP_PITCHES_THROWN",
+        "1ip pitches thrown":        "1IP_PITCHES_THROWN",
+        "1ip pitches":               "1IP_PITCHES_THROWN",
+        # ── WOW-PATCH-2026-08-06-MLB-PLATE-APPEARANCES-COVERAGE ──────────
+        # Section 18.9 additional display-label aliases (non-duplicate).
+        # Core aliases ("plate appearances", "plate_appearances", "pa",
+        # "plate apps") already map to "PA" above (task #124).  Only add
+        # variants that are genuinely different display labels and route to
+        # MLB_PLATE_APPEARANCES for the Section 18.9 gate's internal use.
+        "plate appearance":              "MLB_PLATE_APPEARANCES",
+        "plate app":                     "MLB_PLATE_APPEARANCES",
+        "plate app.":                    "MLB_PLATE_APPEARANCES",
+        "total plate appearances":       "MLB_PLATE_APPEARANCES",
+        "total pa":                      "MLB_PLATE_APPEARANCES",
+        "mlb plate appearances":         "MLB_PLATE_APPEARANCES",
     },
     "NFL": {
         "passing yards":        "PASS_YDS",
@@ -200,6 +240,12 @@ _STAT_KEY_MAP: dict[str, dict[str, Any]] = {
         "fpts":                 "FANTASY_SCORE",
         "games won":            "GAMES_WON",
         "games":                "GAMES_WON",
+        # Total Games (match-level) — both players' games combined
+        "total games":          "TOTAL_GAMES",
+        "total_games":          "TOTAL_GAMES",
+        "match total games":    "TOTAL_GAMES",
+        "match games":          "TOTAL_GAMES",
+        "game total":           "TOTAL_GAMES",
         "aces":                 "ACES",
         "ace":                  "ACES",
         "double faults":        "DOUBLE_FAULTS",

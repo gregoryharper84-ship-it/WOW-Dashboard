@@ -544,3 +544,119 @@ class TestNoRegisteredModel:
         result = compute(leg, [])
         assert result.hit_probability is None
         assert result.model_used == MODEL_NO_DATA
+
+
+# ---------------------------------------------------------------------------
+# 1IP_PITCHES_THROWN: model registry + Poisson routing regressions
+# ---------------------------------------------------------------------------
+
+class Test1IPPitchesThrown:
+    """
+    Regressions for 1st-inning pitches thrown scoring.
+
+    The normalizer maps "1st Inn. Pitches Thrown" → prop_type="1IP_PITCHES_THROWN".
+    The model registry maps (MLB, 1IP_PITCHES_THROWN) → PROVISIONAL Poisson.
+    _STAT_COL_MAP maps 1IP_PITCHES_THROWN → "first_inning_pitches" so dict game
+    logs from the savant ledger coerce correctly via _coerce_game_log.
+    """
+
+    LEG = {
+        "sport":       "MLB",
+        "prop_type":   "1IP_PITCHES_THROWN",
+        "stat_key":    "1IP_PITCHES_THROWN",
+        "line_value":  15.5,
+        "side":        "MORE",
+        "player_name": "Brayan Bello",
+        "leg_id":      "bello_1ip",
+    }
+    SCALAR_LOG = [16.0, 18.0, 14.0, 17.0, 15.0, 19.0, 13.0, 16.0, 17.0, 14.0]
+    DICT_LOG   = [{"first_inning_pitches": v} for v in SCALAR_LOG]
+
+    # ── compute() with scalar log ────────────────────────────────────────────
+
+    def test_scalar_log_returns_event_tree_required(self):
+        """
+        After Task-186 repair: 1IP_PITCHES_THROWN always routes to the event-tree
+        firewall (MODEL_1IP_EVENT_TREE_REQUIRED), never to Poisson.
+        hit_probability=None until bf_distribution is supplied.
+        """
+        from gate_engine.hit_probability import MODEL_1IP_EVENT_TREE_REQUIRED
+        result = compute(self.LEG, self.SCALAR_LOG)
+        assert result.hit_probability is None, (
+            "1IP_PITCHES_THROWN must be blocked by the event-tree firewall; "
+            "Poisson is unconditionally excluded"
+        )
+        assert result.model_used == MODEL_1IP_EVENT_TREE_REQUIRED
+
+    def test_scalar_log_not_no_registered_model(self):
+        result = compute(self.LEG, self.SCALAR_LOG)
+        assert result.model_used != MODEL_NO_REGISTERED_MODEL
+
+    def test_scalar_log_firewall_blocked_note_present(self):
+        """
+        After Task-186 repair: calibration_note contains the firewall sentinel text.
+        Replaces the old probability-in-range assertion (no longer applicable).
+        """
+        from gate_engine.hit_probability import MODEL_1IP_EVENT_TREE_REQUIRED
+        result = compute(self.LEG, self.SCALAR_LOG)
+        assert result.model_used == MODEL_1IP_EVENT_TREE_REQUIRED
+        # Note must reference the firewall block
+        assert "1IP" in result.calibration_note.upper() or "EVENT_TREE" in result.calibration_note.upper()
+
+    # ── compute_batch() with dict log (GPT enrichment contract) ─────────────
+
+    def test_dict_log_coerces_and_fires_event_tree_firewall(self):
+        """
+        After Task-186 repair: dict game_log correctly coerced, but 1IP still
+        routes to EVENT_TREE_REQUIRED (not Poisson). hit_probability=None.
+        _coerce_game_log must still work (the coercion logic is intact).
+        """
+        from gate_engine.hit_probability import MODEL_1IP_EVENT_TREE_REQUIRED
+        results = compute_batch(
+            legs=[self.LEG],
+            enrichment={"bello_1ip": {"game_log": self.DICT_LOG}},
+        )
+        r = results[0]
+        # After coercion, the 1IP firewall fires — Poisson must not run
+        assert r["model_used"] != MODEL_POISSON, (
+            "mlb_1ip_pitches_poisson_v1 must never run for 1IP_PITCHES_THROWN"
+        )
+        assert r["model_used"] == MODEL_1IP_EVENT_TREE_REQUIRED
+        assert r["hit_probability"] is None
+
+    def test_dict_log_not_no_data(self):
+        """Dict log must not silently fall back to no_data."""
+        results = compute_batch(
+            legs=[self.LEG],
+            enrichment={"bello_1ip": {"game_log": self.DICT_LOG}},
+        )
+        assert results[0]["model_used"] != MODEL_NO_DATA
+
+    def test_dict_log_same_probability_as_scalar(self):
+        """Scalar and dict game logs over the same values must agree."""
+        scalar_result = compute(self.LEG, self.SCALAR_LOG)
+        batch_results = compute_batch(
+            legs=[self.LEG],
+            enrichment={"bello_1ip": {"game_log": self.DICT_LOG}},
+        )
+        assert scalar_result.hit_probability == pytest.approx(
+            batch_results[0]["hit_probability"], abs=1e-6
+        )
+
+    # ── No game_log supplied ─────────────────────────────────────────────────
+
+    def test_empty_log_returns_no_data(self):
+        result = compute(self.LEG, [])
+        assert result.model_used == MODEL_NO_DATA
+        assert result.hit_probability is None
+
+    # ── model_registry PROVISIONAL ceiling ──────────────────────────────────
+
+    def test_model_registry_provisional_status(self):
+        from gate_engine.model_registry import lookup
+        entry = lookup("MLB", "1IP_PITCHES_THROWN")
+        assert entry["status"] == "PROVISIONAL"
+        assert entry["model_id"] == "mlb_1ip_pitches_poisson_v1"
+        assert "game_log" in entry["minimum_inputs"]
+        assert "provisional_ceiling" in entry
+        assert entry["provisional_ceiling"]["money_grade_allowed"] is False

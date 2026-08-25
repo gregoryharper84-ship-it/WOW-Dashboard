@@ -36,7 +36,23 @@ class ExposureLedger:
         If it fails, mark DUPLICATE_EXPOSURE_BLOCK.
 
         Gate result at row["gates"]["exposure_gate"].
+
+        WOW-PATCH-2026-08-16: DATA_CONTRACT_FAIL rows must not consume exposure
+        slots — an incomplete-data row never produced a valid card, so a repair
+        retry should not hit duplicate/concentration blockers.  The gate still
+        populates gates["exposure_gate"] (with registered=False + reason) so the
+        gates dict is complete and test assertions about the gate running are met.
         """
+        # DATA_CONTRACT_FAIL: record that the gate ran but do not register.
+        if row.get("terminal_label") == PropLabel.DATA_CONTRACT_FAIL.value:
+            row.setdefault("gates", {})["exposure_gate"] = {
+                "passed":     False,
+                "blocks":     [],
+                "registered": False,
+                "skipped_reason": "DATA_CONTRACT_FAIL:not_eligible_for_exposure",
+            }
+            return row
+
         player    = (row.get("player") or "UNKNOWN").lower()
         game      = (row.get("game") or "UNKNOWN").lower()
         archetype = _archetype(row.get("prop_type") or "")

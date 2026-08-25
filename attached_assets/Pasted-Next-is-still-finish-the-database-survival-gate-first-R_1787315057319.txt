@@ -1,0 +1,60 @@
+Next is still **finish the database survival gate first**. Run 2 has already completed in the background, and importantly its **collection step passed**, so the PyYAML repair worked. The failures are now inside `gate_engine/tests` and `tests/`, while the other three suites passed. That means there are likely genuine application/test findings waiting for classification—but they can wait until the production data is safe.
+
+Do this in order:
+
+1. **Run the reconciled `public`-schema dump in Replit Shell** using the exact block from the prior message.
+2. Confirm:
+
+   ```text
+   public_tables_before = 82
+   public_tables_in_dump = 82
+   public_tables_after = 82
+   dump_table_set_match = true
+   schema_stable_during_dump = true
+   ```
+3. **Download dump #2 to your Mac** and compute:
+
+   ```bash
+   shasum -a 256 ~/Downloads/WOW-production-public-<timestamp>.dump
+   ```
+
+   It must exactly match the Replit-side SHA.
+4. Make a **second off-platform copy**.
+5. Delete the production dump files from the Replit workspace only after both copies are verified, then confirm the workspace Git state is clean/unaffected.
+
+Send me this block:
+
+```text
+filename =
+size_bytes =
+sha256_replit =
+sha256_downloaded =
+sha_match =
+toc_count =
+public_tables_before =
+public_tables_in_dump =
+public_tables_after =
+dump_table_set_match =
+schema_stable_during_dump =
+off_platform_copy_verified =
+second_copy_verified =
+```
+
+Once that passes, we close the immediate database-loss emergency and move to the next two items:
+
+```text
+P1 — SECRET / PROVIDER RECOVERABILITY
+Confirm every required credential can be regenerated or recovered outside Replit.
+Names only in our records; never secret values.
+
+P2 — RUN 2 CLASSIFICATION
+Run 2 = COMPLETED / FAILURE
+Collection = SUCCESS
+gate_engine/tests = FAILURE
+kalshi_engine/tests = PASS
+services/tests = PASS
+tests/ = FAILURE
+validation/tests = PASS
+```
+
+So the **very next action is the reconciled public-schema dump + Mac SHA verification**. After that, I’ll pull the Run 2 logs and classify the real failures.

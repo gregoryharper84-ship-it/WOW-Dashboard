@@ -1,0 +1,433 @@
+The important point is that **not everything in that output is a defect**. There are three different classes mixed together:
+
+**A. Correct fail-closed behavior** — e.g. started games getting `SLATE_PURGE`, MLB candidates genuinely having no market edge.
+**B. Backend integration defects** — 1IP handoff, soccer three-way contract.
+**C. Missing/unfinished capabilities** — WNBA ML independent model, Tennis/MMA specialists, Kalshi inventory connector.
+
+The V2.2 Gatekeeper already says hydration must be **lane-specific**, every row must reach the proper controlling specialist, and a missing capability should block only its lane rather than collapse the whole run.  So I would **not add more gates**. I would fix the plumbing between the existing gates/models.
+
+### Recommended permanent remediation
+
+| Lane/problem                        | What it actually is                                                   | Immediate fix                            | Permanent fix                                                                                                                                                                         |
+| ----------------------------------- | --------------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **10/27 1IP → `SLATE_PURGE`**       | Correct behavior, but a latency problem                               | Run WOW Daily earlier                    | Add **snapshot-first priority routing**: immediately persist all uploaded rows, resolve start times, and score earliest-starting rows first. Never relax the started-game purge.      |
+| **17/27 1IP → `MODEL_UNAVAILABLE`** | **Backend integration defect**                                        | None; keep returning `MODEL_UNAVAILABLE` | Wire `MLB_1IP_PITCH_COUNT → failure-path prior → top-four/event-tree simulation → P(MORE)/P(LESS) → dynamic calibration → probability ledger → TEST_ONLY logger` as one atomic route. |
+| **MLB ML 0 Pass-B survivors**       | Mostly **not a defect**                                               | Keep them rejected if model < no-vig     | Fix calibration evidence/ledger if needed, but never alter the model merely to manufacture edge.                                                                                      |
+| **MLB upset WATCH/rejects**         | Usually expected                                                      | Keep separate upset leaderboard          | Ensure lower-bound calibration is healthy; otherwise no change. An underdog should not qualify simply because WOW Daily requires an upset section.                                    |
+| **WNBA ML `MODEL_UNAVAILABLE`**     | Missing/incomplete **team-level probability hydration/model adapter** | Fail closed                              | Implement dedicated `WNBA_MONEYLINE` hydration + game-win adapter, not the WNBA player-prop schema.                                                                                   |
+| **Tennis ML `MODEL_UNAVAILABLE`**   | Missing/unwired sport specialist                                      | Fail closed                              | Implement and register deterministic Tennis match-win specialist and data adapter.                                                                                                    |
+| **MMA ML `MODEL_UNAVAILABLE`**      | Missing/unwired sport specialist                                      | Fail closed                              | Implement and register MMA fight-win specialist/data adapter.                                                                                                                         |
+| **Soccer `DATA_CONTRACT_FAIL`**     | **Schema/adapter defect**                                             | Preserve failure                         | Replace binary-only winner contract with generic multi-outcome probability object supporting HOME/DRAW/AWAY.                                                                          |
+| **Kalshi `DATA_UNOBTAINABLE`**      | Missing required inventory capability                                 | Report unavailable                       | Wire a real Kalshi inventory/contract/orderbook connector and health state returning `INVENTORY_READY`, `INVENTORY_EMPTY`, or failure explicitly.                                     |
+
+## 1IP is the highest-priority actual bug
+
+Your 1IP skill already defines exactly what the controlling model must produce:
+
+```text
+P(BF=3)
+P(BF=4)
+P(BF>=5)
+P(MORE | BF=3)
+P(MORE | BF>=4)
+P(MORE)
+P(LESS)
+fourth_batter_dependence_share
+projection distribution
+```
+
+and requires the dedicated event-tree model to remain controlling; the pitcher failure-path layer is only a prior. 
+
+What happened today was essentially:
+
+```text
+Screenshot
+→ row normalized                  PASS
+→ player/event resolved           PASS
+→ 1IP historical data acquired    PASS
+→ some BF / pitcher evidence      PASS
+→ controlling event-tree result   FAIL/MISSING
+→ calibrated probability          NEVER REACHED
+→ validation logger               NEVER REACHED
+```
+
+So **do not rebuild the 1IP model**.
+
+The permanent engineering repair is:
+
+```text
+MLB_1IP_PITCH_COUNT hydration
+        ↓
+starter + top-four + catcher
+        ↓
+failure-path prior
+        ↓
+1IP event-tree specialist
+        ↓
+25K+ simulation
+        ↓
+P(MORE) + P(LESS)
+        ↓
+unconditional probability
+        ↓
+dynamic calibration
+        ↓
+lower bound
+        ↓
+TEST_ONLY terminal resolver
+        ↓
+immutable validation logger
+```
+
+If any required event-tree field is missing:
+
+```text
+MODEL_UNAVAILABLE
+```
+
+But if the event tree completes, **the adapter must not lose those outputs before calibration**.
+
+Acceptance test I'd require:
+
+```text
+Real PrizePicks 1IP row
+→ real pitcher ID
+→ real top four
+→ P(BF=3/4/5+)
+→ P(MORE)
+→ P(LESS)
+→ calibrated_probability
+→ calibrated_lower_bound
+→ MODEL_QUALIFIED_HOLD or rejection
+→ prediction logger row written
+```
+
+No synthetic-only proof.
+
+---
+
+## The 10 `SLATE_PURGE` rows need a different fix
+
+Those are not model failures.
+
+WOW's slate integrity rules correctly remove an event once it starts. Removing that gate would contaminate the forward test. The proper fix is **latency-aware scheduling**.
+
+When you upload a screenshot at, say, 5:39 PM and some props start at 6:00 PM, WOW should immediately:
+
+```text
+UPLOAD
+↓
+extract every row
+↓
+freeze intake manifest
+↓
+resolve event start times
+↓
+sort by TIME_TO_START
+↓
+score imminent events first
+↓
+then perform broad cross-sport discovery
+```
+
+Today the workflow spent enough time doing other work that some initially valid rows crossed their start time.
+
+So the permanent rule should be:
+
+```text
+user-supplied rows have priority over discovered rows
+earliest event start has priority within supplied rows
+```
+
+That would materially improve the completeness patch without weakening slate integrity.
+
+---
+
+# WNBA ML needs a real WNBA game model
+
+The LLP skill says WNBA/NBA moneylines require team-level information including active roster, starters, projected minutes, usage/on-off impact, pace, offensive/defensive matchup, rebounding, turnovers, three-point variance, foul profile and late-game creation. Its required output is a **margin distribution and game-win probability**. 
+
+That's not the same thing as your WNBA player-prop enrichment.
+
+The permanent backend object should resemble:
+
+```text
+hydration_profile = WNBA_MONEYLINE
+
+active_roster
+expected_starters
+minutes_distribution
+usage_redistribution
+pace_projection
+offense_projection
+defense_projection
+rebound_edge
+turnover_edge
+3pt_variance
+late_game_creation
+rest_travel
+        ↓
+projected_margin
+margin_distribution
+raw_win_probability
+        ↓
+dynamic calibration
+        ↓
+calibrated_probability
+lower_bound
+```
+
+Then the generic LLP layer consumes that result.
+
+**Do not make the LLP generic market prior itself the WNBA model.**
+
+---
+
+# Tennis and MMA have the same architectural problem
+
+Your LLP specification says they are supported **through sport-specific modules**, not through generic moneyline reasoning. 
+
+For Tennis, the controlling adapter needs to return at minimum:
+
+```text
+serve_hold_projection
+return_break_projection
+straight_sets_probability
+match_win_probability
+retirement_rule_status
+```
+
+For MMA:
+
+```text
+decision_probability
+finish_probability
+fighter_A_win_probability
+fighter_B_win_probability
+draw_or_no_contest_probability
+```
+
+Until those actual models are registered and hydrated:
+
+```text
+MODEL_UNAVAILABLE
+```
+
+is correct.
+
+This is where I would resist building another huge AI agent. These can be **small deterministic specialist modules** fed by approved structured data.
+
+---
+
+# Soccer needs a shared outcome-space fix
+
+This is one place where I'd deliberately make a **generic infrastructure improvement**, rather than a soccer-only hack.
+
+Soccer is not binary:
+
+```text
+HOME
+DRAW
+AWAY
+```
+
+Your LLP contract expressly requires:
+
+```text
+home_win_probability
+draw_probability
+away_win_probability
+```
+
+
+
+And the existing market-normalization skill already knows how to correctly normalize a three-way market; it explicitly blocks a soccer market when the draw price is missing. 
+
+The backend should therefore stop assuming:
+
+```text
+candidate
+opponent
+P(candidate)
+P(opponent)
+```
+
+for every winner market.
+
+Instead introduce one canonical object:
+
+```text
+OUTCOME_SPACE
+
+type = BINARY | TERNARY | FIELD
+
+outcomes = [
+  {
+    outcome_id,
+    probability,
+    calibrated_probability,
+    lower_bound,
+    market_price,
+    no_vig_probability
+  }
+]
+```
+
+Then:
+
+```text
+MLB / Tennis → BINARY
+Soccer → TERNARY
+Golf field → FIELD
+MMA with material draw/NC → multi-state internally
+Weather brackets → FIELD
+```
+
+That one architectural fix eliminates an entire class of future bugs.
+
+---
+
+# Kalshi needs an actual inventory service, not another model
+
+The active Gatekeeper contract says Kalshi sports cannot proceed until the Kalshi health/inventory lane returns:
+
+```text
+INVENTORY_READY
+```
+
+and `INVENTORY_EMPTY` stops the lane. 
+
+The LLP skill says the same thing. 
+
+So this:
+
+```text
+Kalshi: DATA_UNOBTAINABLE
+```
+
+was not a probability failure.
+
+The missing component is:
+
+```text
+Kalshi inventory connector
+↓
+current open markets
+↓
+contract ticker/id
+↓
+exact settlement
+↓
+event mapping
+↓
+market state
+↓
+orderbook
+↓
+timestamps
+↓
+fees
+```
+
+with a deterministic health contract:
+
+```text
+INVENTORY_READY
+INVENTORY_EMPTY
+INVENTORY_PROVIDER_FAILURE
+INVENTORY_STALE
+```
+
+Only `INVENTORY_READY` allows contracts downstream.
+
+For weather, the existing Weather Expert already defines settlement stations and live-price freshness requirements. 
+
+And Recovery governance must stay untouched: combos remain disabled and only single-contract research is eligible. 
+
+---
+
+# The MLB ML situation is different
+
+This one I would **not “fix” simply because zero survived**.
+
+For example, the run said approximately:
+
+```text
+Dodgers model = 55.7%
+market no-vig ≈ 64.5%
+```
+
+That should reject.
+
+If we modify WOW until Dodgers becomes 65% just because the market says 65%, we destroy the independent model.
+
+However, one thing deserves engineering review:
+
+**the calibrated lower bounds were extremely wide**, often around 34–37% from point estimates around 50–56%.
+
+Dynamic Calibration requires real historical calibration metrics and candidate-specific uncertainty rather than a universal giant haircut. 
+
+We already observed earlier that your unified calibration ledger had no production rows. That means there is a legitimate question:
+
+> Are these enormous ML uncertainty bands driven by actual validated model error, or simply by an unpopulated calibration cohort?
+
+That should be audited.
+
+Permanent fix:
+
+```text
+every independent ML prediction
+→ immutable prediction ledger
+→ official outcome
+→ sport/model-family cohort
+→ Brier / log-loss / ECE
+→ calibration mapping
+→ dynamic lower bound
+```
+
+Your prediction schema already contains exactly the needed prediction/outcome and calibration metrics. 
+
+But **do not artificially tighten the bounds before collecting evidence.**
+
+---
+
+# I would make this one engineering project, not seven new patches
+
+This is important given the amount you've already spent on Replit.
+
+Call it something like:
+
+```text
+WOW DAILY — LANE READINESS & SPECIALIST ROUTING HARDENING
+```
+
+It should contain only these engineering deliverables:
+
+1. **Snapshot-first supplied-board intake + time-to-start priority queue.**
+2. **Repair the 1IP specialist-output → calibration → logger handoff.**
+3. **Wire dedicated WNBA moneyline hydration/model adapter.**
+4. **Wire Tennis and MMA controlling specialists or formally report `NO_MODEL_SUPPORT` until they exist.**
+5. **Introduce generic BINARY/TERNARY/FIELD outcome-space schema and migrate Soccer to it.**
+6. **Wire Kalshi inventory/contract/orderbook health capability.**
+7. **Repair/populate calibration ledgers and validate ML uncertainty bounds.**
+8. **One end-to-end acceptance suite proving each supported lane either produces a legitimate model output or an explicit precise blocker.**
+
+No new Gatekeeper stages.
+
+No new qualitative fallbacks.
+
+No loosening approval thresholds.
+
+No rewriting model probabilities.
+
+No giant new agent architecture.
+
+The underlying V2.2 architecture is already correct: **lane-specific hydration → exactly one controlling specialist → failure paths → calibration → objective separation → final ceiling.** 
+
+What's broken is that several lanes **don't yet have the backend capability required to fulfill that contract**.
+
+My priority order would be:
+
+**1IP integration → snapshot/start-time routing → WNBA ML → shared outcome-space/Soccer → calibration ledger → Tennis/MMA → Kalshi inventory.**
+
+That order gives you the biggest improvement to actual `WOW Daily` usefulness without going back into the endless “add another model/gate/agent” cycle.

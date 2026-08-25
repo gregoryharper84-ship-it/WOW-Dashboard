@@ -1,0 +1,23 @@
+The live WOW backend is **not currently publishing a valid hit probability for these 15 props**. I re-ran the slate under the fresh v16.5 governance hash, and the probability schema is incomplete on the rows where I inspected full detail. For example, Jack Perkins explicitly returned `final_model_prob=null`, `calibrated_probability` missing, and `rank_eligible=false`; Leila Lacan likewise had `calibrated_lower_bound=null` because the evidence packet was incomplete.
+
+| Prop                                      | Backend hit probability | Current backend label  |
+| ----------------------------------------- | ----------------------: | ---------------------- |
+| Wade Meckler MORE 3.5 Plate Appearances   |                 **N/A** | `DATA_CONTRACT_FAIL`   |
+| Randal Grichuk MORE 3.5 Plate Appearances |                 **N/A** | `DATA_CONTRACT_FAIL`   |
+| Daniel Lynch IV MORE 8.5 Pitching Outs    |                 **N/A** | `REJECT_DATA_QUALITY`  |
+| Leila Lacan MORE 1.5 Rebounds             |                 **N/A** | `MODEL_QUALIFIED_HOLD` |
+| Kelsey Plum MORE 1.5 Rebounds             |                 **N/A** | `MODEL_QUALIFIED_HOLD` |
+| Kahleah Copper MORE 2.5 Rebounds          |                 **N/A** | `MODEL_QUALIFIED_HOLD` |
+| Diamond Miller MORE 2.5 Rebounds          |                 **N/A** | `MODEL_QUALIFIED_HOLD` |
+| Sonia Citron MORE 2.5 Rebounds            |                 **N/A** | `MODEL_QUALIFIED_HOLD` |
+| Allisha Gray MORE 2.5 Rebounds            |                 **N/A** | `MODEL_QUALIFIED_HOLD` |
+| Keider Montero MORE 14.5 Pitching Outs    |                 **N/A** | `REJECT_DATA_QUALITY`  |
+| Naz Hillmon MORE 2.5 Rebounds             |                 **N/A** | `MODEL_QUALIFIED_HOLD` |
+| Jack Perkins MORE 14.5 Pitching Outs      |                 **N/A** | `REJECT_DATA_QUALITY`  |
+| Cecilia Zandalasini MORE 10.5 PRA         |                 **N/A** | `MODEL_QUALIFIED_HOLD` |
+| Michaela Onyenwere MORE 2.5 Rebounds      |                 **N/A** | `MODEL_QUALIFIED_HOLD` |
+| Tyler Phillips MORE 14.5 Pitching Outs    |                 **N/A** | `REJECT_DATA_QUALITY`  |
+
+The main issue is **not that the backend is down**. Its market and status APIs are responding. The problem is that required probability inputs are still incomplete: MLB rows are missing usable L5/L10 distributions and workload/failure-path components, while several WNBA rows are missing complete event/role/market packets. Under WOW governance, I cannot turn the earlier 78%, 76%, 75%, etc. estimates into “backend probabilities.”
+
+So at this moment the correct WOW answer is: **0 of 15 have a publishable backend hit probability.** `can_execute=false`, and the overall terminal disposition remains **`NO_PLAY`**.

@@ -1,0 +1,25 @@
+IMPLEMENT NOW in Build mode. The prior Gatekeeper V2 job never wrote files because the workspace was in Plan mode. Do not create another plan and do not merely verify WOW-FMCG-v1.0. Apply the prepared V2/v1.1 hardening patch to live code, then test it.
+
+Strict scope and acceptance requirements:
+1. Host abstraction: Full Model execution must not depend on locating a Replit app named "WOW Betting Engine" or invoking a nested Custom GPT. Replit remains only a capability-specific service.
+2. Add mandatory bidirectional MORE/LESS analysis enforcement.
+3. Enforce calibration-health precheck separately from candidate dynamic calibration.
+4. Require source timestamp/freshness grading.
+5. Require probability-component-ledger and shrinkage verdicts before qualification.
+6. Enforce strict probability bounds: only 0 < p < 1. Replace the old test that treats p=0.0 as valid; add explicit rejection tests for p=0.0 and p=1.0 plus valid interior-boundary cases.
+7. Keep correlation/dependency checks separate from directional and session-exposure controls.
+8. Enforce final refresh before immutable prediction snapshot write and before any final/money-qualified publication; final refresh cannot be a vacuous pass.
+9. Preserve row reconciliation.
+10. Replace split FMCG/Command Center ceiling logic with one canonical strict lowest-ceiling resolver used by every final-row path. No path may bypass it.
+11. Preserve native terminal labels and explicitly keep the proposed cross-sport selector non-binding.
+12. Preserve can_execute=false and dry-run-only governance.
+13. Do not weaken any existing FINAL_APPROVED, settlement, evidence, bankroll, exposure, or safety gate.
+14. Do not apply or mix in the unrelated pending auth task shown in the UI.
+
+Verification:
+- Add/upgrade Gatekeeper tests for every requirement above, including both pipeline and Command Center final-row paths.
+- Run targeted FMCG/Gatekeeper tests, then the relevant full regression suite.
+- If tests fail, fix only regressions caused by this patch.
+- Commit completed changes.
+- Report exact files changed, test commands/counts, new live version, commit hash, any remaining gaps, deployment steps, and rollback command.
+- Do not claim VERIFIED unless code is written and all required tests pass.

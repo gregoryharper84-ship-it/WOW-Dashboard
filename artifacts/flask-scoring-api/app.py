@@ -26,11 +26,12 @@ import statistics
 import traceback
 import signal
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from functools import wraps
 _bt("imported stdlib")
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, g
 from flask_cors import CORS
 _bt("imported flask + cors")
 
@@ -139,7 +140,192 @@ _bt("imported psycopg2")
 app = Flask(__name__)
 _APP_START_TIME = time.time()
 CORS(app, origins="*", allow_headers=["Content-Type", "Authorization", "X-API-Key"])
+from gate_engine.daily_run_lifecycle import (
+    ensure_manifest_ready,
+    start_manifest_reaper,
+)
+ensure_manifest_ready()
+start_manifest_reaper()
 _bt("flask app created — registering routes")
+
+BUILD_ID = "wow-repair-2026-08-10-acquisition-routing-identity"
+
+
+# ---------------------------------------------------------------------------
+# Transport adapters and request-normalization helpers
+# WOW plumbing patch — three defects: screenshot transport, string-to-dict
+# schema, and undefined-variable error handler masking the real exception.
+# ---------------------------------------------------------------------------
+
+class RequestValidationError(ValueError):
+    """Raised when an inbound request fails transport-layer validation."""
+
+
+class ContractError(ValueError):
+    """Raised when a request field has the wrong JSON type."""
+    def __init__(self, field: str, expected: str, actual):
+        self.field       = field
+        self.expected    = expected
+        self.actual_type = type(actual).__name__
+        super().__init__(
+            f"{field} must be {expected}; received {self.actual_type}"
+        )
+
+
+_ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
+_MAX_IMAGE_BYTES     = 12 * 1024 * 1024   # 12 MB
+
+
+def extract_image_bytes(req) -> tuple:
+    """
+    Normalise inbound image payload to (bytes, mime_type).
+
+    Supported transports (in priority order):
+      1. multipart/form-data with an ``image`` file field
+      2. JSON body with ``image_base64`` (plain or data-URL)
+
+    Raises RequestValidationError on any validation failure so the
+    caller can return a clean 400 without an unhandled exception.
+    """
+    import base64 as _b64
+    import binascii as _binascii
+
+    uploaded = req.files.get("image")
+    if uploaded is not None:
+        mime = uploaded.mimetype or "application/octet-stream"
+        if mime not in _ALLOWED_IMAGE_TYPES:
+            raise RequestValidationError(f"Unsupported image MIME type: {mime}")
+        content = uploaded.read(_MAX_IMAGE_BYTES + 1)
+        if not content:
+            raise RequestValidationError("Uploaded image is empty.")
+        if len(content) > _MAX_IMAGE_BYTES:
+            raise RequestValidationError("Uploaded image is too large (max 12 MB).")
+        return content, mime
+
+    payload = req.get_json(silent=True) or {}
+    encoded = payload.get("image_base64")
+    if not isinstance(encoded, str) or not encoded.strip():
+        raise RequestValidationError(
+            "Provide multipart field `image` or JSON field `image_base64`."
+        )
+    encoded  = encoded.strip()
+    mime     = payload.get("mime_type", "image/png")
+    if encoded.startswith("data:"):
+        try:
+            header, encoded = encoded.split(",", 1)
+            mime = header.split(";", 1)[0].removeprefix("data:")
+        except ValueError as exc:
+            raise RequestValidationError("Malformed Base64 image data URL.") from exc
+    if mime not in _ALLOWED_IMAGE_TYPES:
+        raise RequestValidationError(f"Unsupported image MIME type: {mime}")
+    try:
+        content = _b64.b64decode(encoded, validate=True)
+    except (_binascii.Error, ValueError) as exc:
+        raise RequestValidationError("image_base64 is not valid Base64.") from exc
+    if not content:
+        raise RequestValidationError("Decoded image is empty.")
+    if len(content) > _MAX_IMAGE_BYTES:
+        raise RequestValidationError("Decoded image is too large (max 12 MB).")
+    return content, mime
+
+
+_GATE_MAPPING_FIELDS = (
+    # Only the fields expected to be objects in raw board rows.
+    # "player", "candidate", "market", and "event" are string primitives in
+    # raw_rows (e.g. player="LeBron James") — exclude them to avoid
+    # ContractError on valid string values.
+    "role_status", "lineup_status", "settlement",
+    "matchup", "failure_path", "source_report",
+)
+_GATE_LIST_FIELDS = ("game_log", "box_score_log", "l5_ledger", "l10_ledger")
+
+
+def normalize_gate_request(row: dict) -> dict:
+    """
+    Validate and normalise a single raw_row before it enters the gate pipeline.
+
+    * Mapping fields (candidate, market, role_status, failure_path, …) must be
+      dicts.  A JSON-encoded object string is accepted and decoded.  A bare
+      status string like "RETRIEVED" raises ContractError.
+    * List fields (game_log, box_score_log, …) must be lists or None.
+
+    Raises ContractError on the first invalid field so the route can return a
+    structured 422 before any specialist module is reached.
+    """
+    import json as _json
+
+    if not isinstance(row, dict):
+        raise ContractError("row", "an object", row)
+
+    out = dict(row)
+
+    for field in _GATE_MAPPING_FIELDS:
+        value = row.get(field)
+        if value is None:
+            out[field] = {}
+            continue
+        if isinstance(value, dict):
+            continue   # already correct — keep as-is
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("{"):
+                try:
+                    parsed = _json.loads(stripped)
+                    if isinstance(parsed, dict):
+                        out[field] = parsed
+                        continue
+                except _json.JSONDecodeError:
+                    pass
+            # Bare status strings ("RETRIEVED", "PASS", …) are not objects.
+            raise ContractError(field, "an object", value)
+        raise ContractError(field, "an object", value)
+
+    for field in _GATE_LIST_FIELDS:
+        value = row.get(field)
+        if value is None:
+            out[field] = []
+            continue
+        if not isinstance(value, list):
+            raise ContractError(field, "an array", value)
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Request-id assignment and typed error handlers
+# ---------------------------------------------------------------------------
+
+@app.before_request
+def _assign_request_id():
+    from flask import g as _g
+    import uuid as _uuid
+    _g.request_id = request.headers.get("X-Request-ID", str(_uuid.uuid4()))
+
+
+@app.errorhandler(RequestValidationError)
+def _handle_request_validation_error(exc):
+    from flask import g as _g
+    return jsonify({
+        "terminal_status": "INPUT_FAILURE",
+        "error_code":      "REQUEST_VALIDATION_ERROR",
+        "message":         str(exc),
+        "request_id":      getattr(_g, "request_id", None),
+        "can_execute":     False,
+    }), 400
+
+
+@app.errorhandler(ContractError)
+def _handle_contract_error(exc):
+    from flask import g as _g
+    return jsonify({
+        "terminal_status": "DATA_CONTRACT_FAIL",
+        "error_code":      "REQUEST_SCHEMA_INVALID",
+        "field":           exc.field,
+        "expected":        exc.expected,
+        "actual_type":     exc.actual_type,
+        "request_id":      getattr(_g, "request_id", None),
+        "can_execute":     False,
+    }), 422
 
 
 @app.errorhandler(Exception)
@@ -149,29 +335,45 @@ def handle_unhandled_exception(e):
     # are all serialised as 500 with the scoring error envelope — confusing callers
     # and causing GPT Builder test sessions to hang on unexpected response shapes.
     from werkzeug.exceptions import HTTPException as _HTTPException
+    from flask import g as _g
     if isinstance(e, _HTTPException):
         return e
-    app.logger.exception("Unhandled server error")
-    return jsonify({
-        "ok": False,
-        "error": {
-            "type": type(e).__name__,
-            "message": str(e),
-            "trace": traceback.format_exc()[-2000:],
+    _request_id = getattr(_g, "request_id", None)
+    # Log full traceback server-side; never expose it in the API response.
+    app.logger.exception(
+        "Unhandled server error",
+        extra={
+            "request_id": _request_id,
+            "endpoint":   request.endpoint,
+            "method":     request.method,
+            "path":       request.path,
         },
+    )
+    return jsonify({
+        "terminal_status": "BACKEND_PIPELINE_FAILURE",
+        "decision":        "NO_DECISION",
+        "scoring_completed": False,
+        "props_scored":    0,
+        "ok":              False,
+        "error": {
+            "type":    type(e).__name__,
+            "message": "An unexpected backend error occurred.",
+        },
+        "request_id": _request_id,
+        "can_execute": False,
         "source_access_status": {
-            "market_odds": "Failed",
-            "board_source": "Not Retrieved",
-            "l5_l10_logs": "Not Retrieved",
+            "market_odds":    "Failed",
+            "board_source":   "Not Retrieved",
+            "l5_l10_logs":    "Not Retrieved",
             "status_lineups": "Not Retrieved",
         },
         "market_verified": [],
         "model_qualified": [],
-        "conditional": [],
-        "watch": [],
-        "reject": [],
+        "conditional":     [],
+        "watch":           [],
+        "reject":          [],
         "data_insufficient": [{
-            "route": request.path if request else "unknown",
+            "route":  request.path if request else "unknown",
             "reason": "Unhandled backend exception",
             "status": "FAILED",
         }],
@@ -239,7 +441,13 @@ def require_api_key(f):
         if request.method == "OPTIONS":
             return f(*args, **kwargs)
         expected_key = os.environ.get("SCORING_API_KEY", "")
-        if not expected_key:
+        # GPT_ACTION_SECRET is also accepted so the workspace agent can call
+        # data endpoints without requiring a separate secret.  The production
+        # SCORING_API_KEY path is completely unchanged — this only adds an
+        # alternative accepted credential; it does not remove or weaken the
+        # primary one.
+        alt_key = os.environ.get("GPT_ACTION_SECRET", "")
+        if not expected_key and not alt_key:
             return jsonify({"error": "Server misconfiguration: SCORING_API_KEY is not set"}), 500
         # Try X-API-Key header first, then fall back to Authorization: Bearer <key>
         provided_key = request.headers.get("X-API-Key", "").strip()
@@ -273,7 +481,21 @@ def require_api_key(f):
                     "key_present": False,
                 },
             }), 401
-        if not secrets_equal(provided_key, expected_key):
+        # WOW-PATCH-2026-08-19 — record WHICH credential authenticated, as a
+        # request-local principal.  GPT_ACTION_SECRET is the designated
+        # WOW_BETTING_ENGINE Custom-GPT Action credential; SCORING_API_KEY is
+        # the general scoring key.  Runtime provenance treats only the
+        # GPT_ACTION principal as the preferred host — a general API-key
+        # caller is a fallback/unverified host.
+        _auth_principal = None
+        if expected_key and secrets_equal(provided_key, expected_key):
+            _auth_principal = "SCORING_API"
+        elif alt_key and secrets_equal(provided_key, alt_key):
+            _auth_principal = "GPT_ACTION"
+        _key_valid = _auth_principal is not None
+        if _key_valid:
+            g.wow_auth_principal = _auth_principal
+        if not _key_valid:
             return jsonify({
                 "error": "Invalid API key",
                 "auth_debug": {
@@ -1294,6 +1516,46 @@ def wow_daily_scan():
     limit         = int(data.get("limit_per_sport", 50))
     async_mode    = bool(data.get("async", False))   # default False — return results directly
     include_exec  = data.get("include_execution_report", True)
+    # Optional board correlation enriches diagnostics only; it never limits
+    # the scan's independently acquired cross-sport discovery.
+    board_rows = data.get("board_rows") if isinstance(data.get("board_rows"), list) else None
+    previous_board_rows = (
+        data.get("previous_board_rows")
+        if isinstance(data.get("previous_board_rows"), list) else None
+    )
+    prior_evidence = (
+        data.get("prior_evidence")
+        if isinstance(data.get("prior_evidence"), dict) else None
+    )
+
+    # WOW-PATCH-2026-08-19 — runtime provenance (fail-closed, downgrade-only).
+    # Server-authoritative: required capabilities come from the route
+    # registry, evidence from in-process probes, and host identity from the
+    # authenticated action credential.  Caller context can only downgrade.
+    from gate_engine.runtime_provenance import (
+        build_route_provenance, provenance_blocker,
+    )
+    runtime_provenance = build_route_provenance(
+        "wow_daily_scan",
+        action_principal=g.get("wow_auth_principal"),
+        caller_context=data.get("runtime_context") or data,
+    )
+    _prov_blocker = provenance_blocker(runtime_provenance)
+
+    # Async runs cannot carry provenance enforcement through the polled
+    # summary endpoint — fail closed rather than expose unverified buckets.
+    if async_mode and _prov_blocker is not None:
+        return jsonify({
+            "ok": False,
+            "status": "rejected",
+            "error": "ASYNC_NOT_PERMITTED_FOR_UNVERIFIED_RUN",
+            "detail": (
+                "This run is not production-backend-verified "
+                f"({_prov_blocker}). Async mode would expose unenforced "
+                "buckets via /scan-results/summary — run synchronously."
+            ),
+            "runtime_provenance": runtime_provenance,
+        }), 409
 
     try:
         from services.status import get_injuries  # noqa: F401 — validate imports work
@@ -1306,7 +1568,12 @@ def wow_daily_scan():
     if async_mode:
         def _run():
             try:
-                run_scan(sports=sports_param, environment=environment, limit_per_sport=limit)
+                run_scan(sports=sports_param, environment=environment,
+                         limit_per_sport=limit,
+                         runtime_provenance=runtime_provenance,
+                         board_rows=board_rows,
+                         previous_board_rows=previous_board_rows,
+                         prior_evidence=prior_evidence)
             except Exception as ex:
                 print(f"[wow_daily_scan async] error: {ex}")
         t = threading.Thread(target=_run, daemon=True)
@@ -1314,16 +1581,24 @@ def wow_daily_scan():
         return jsonify({
             "ok":      True,
             "status":  "started",
+            "can_execute": False,
+            "dry_run_only": True,
             "message": "Scan running in background. Poll /scan-results/summary for results.",
             "sports":  sports_param,
             "environment": environment,
+            "runtime_provenance": runtime_provenance,
         })
 
     # -----------------------------------------------------------------------
     # Synchronous mode — run scan, then return compact summary from DB
     # -----------------------------------------------------------------------
     try:
-        scan_result = run_scan(sports=sports_param, environment=environment, limit_per_sport=limit)
+        scan_result = run_scan(sports=sports_param, environment=environment,
+                               limit_per_sport=limit,
+                               runtime_provenance=runtime_provenance,
+                               board_rows=board_rows,
+                               previous_board_rows=previous_board_rows,
+                               prior_evidence=prior_evidence)
     except Exception as e:
         return jsonify({"ok": False, "status": "error", "error": str(e)}), 500
 
@@ -1335,17 +1610,40 @@ def wow_daily_scan():
     # WOW-PATCH-2026-07-06 item 9 — DEGRADED_ENGINE_RUN gate
     run_status       = scan_result.get("run_status",       "COMPLETE")
     failed_modules   = scan_result.get("failed_modules",   [])
+    scan_integrity = scan_result.get("scan_integrity", {})
+    board_correlation = scan_result.get("board_correlation", {})
+    ranking_separation = scan_result.get("ranking_separation", {})
+    moneyline_discovery = scan_result.get("moneyline_discovery", {})
 
-    # Build compact response from what was just saved to the DB
+    # Build compact response through the single daily-summary selector.
+    # A committed canonical manifest wins; the just-written legacy rows are
+    # fallback-only when no canonical run exists for this date.
     try:
-        from storage.results import get_scan_summary, get_compact_scan_rows, get_scan_source_flags
+        from storage.daily_summary import get_effective_daily_summary
         from datetime import date as _date
         run_date = _date.today().isoformat()
 
-        summary_counts = get_scan_summary(run_date)
+        summary_selection = get_effective_daily_summary(
+            run_date,
+            limit=10 * 6,
+        )
+        summary_counts = summary_selection["summary_counts"]
         total_rows     = sum(summary_counts.values())
-        rows           = get_compact_scan_rows(run_date, limit=10 * 6)
-        flags          = get_scan_source_flags(run_date)
+        rows           = summary_selection["rows"]
+        flags          = summary_selection["source_flags"]
+        summary_source = summary_selection["selected_source"]
+        summary_run_id = summary_selection["run_id"]
+        selected_run   = summary_selection.get("run")
+
+        if selected_run is not None:
+            requested_sports = selected_run.get("requested_sports") or []
+            scanned_sports   = selected_run.get("scanned_sports") or []
+            missing_sports   = selected_run.get("missing_sports") or []
+            run_status       = selected_run.get("run_status", "COMPLETE")
+            failed_modules   = selected_run.get("failed_modules") or []
+            scan_valid       = bool(
+                (selected_run.get("reconciliation") or {}).get("reconciled")
+            )
 
         CAT_KEYS = {
             "market_verified":         "Market Verified Approved",
@@ -1361,12 +1659,32 @@ def wow_daily_scan():
         grouped = {k: [] for k in CAT_KEYS}
         for row in rows:
             cat_key = CAT_REVERSE.get(row.get("classification", ""))
+            if not cat_key:
+                normalized_category = (
+                    str(row.get("classification") or "")
+                    .strip().lower().replace(" ", "_")
+                )
+                if normalized_category in CAT_KEYS:
+                    cat_key = normalized_category
             if cat_key and len(grouped[cat_key]) < 10:
                 grouped[cat_key].append(_compact_prop(row))
 
-        counts = {k: summary_counts.get(cls_name, 0) for k, cls_name in CAT_KEYS.items()}
-        counts["total_final_approved"] = counts["market_verified"] + counts["final_approved_internal"]
-        counts["playable_count"]       = counts["total_final_approved"] + counts["model_qualified"]
+        counts = {
+            k: summary_counts.get(cls_name, summary_counts.get(k, 0))
+            for k, cls_name in CAT_KEYS.items()
+        }
+        # WOW-PATCH-2026-08-16-AUDIT fix (3): separate enforced approvals from
+        # legacy rows.  Rows written before the ceiling-enforcement epoch
+        # (classification="FINAL_APPROVED", pre-split label format) cannot be
+        # assumed genuinely approved under current ceiling rules.
+        # They are reported separately and excluded from total_final_approved.
+        _legacy_fa = summary_counts.get("FINAL_APPROVED", 0)
+        counts["legacy_unverified_final_approved"] = _legacy_fa
+        counts["total_final_approved"] = (
+            counts["market_verified"] + counts["final_approved_internal"]
+            # legacy_unverified rows are intentionally excluded
+        )
+        counts["playable_count"] = counts["total_final_approved"] + counts["model_qualified"]
 
         def _avail(key):
             return "AVAILABLE" if int(flags.get(key, 0) or 0) > 0 else "NOT_CALLED"
@@ -1405,7 +1723,39 @@ def wow_daily_scan():
             }
 
         sports_scanned_db = [s for s in (flags.get("sports") or []) if s]
-        execution_notes = list(scan_result.get("execution_notes", []))
+        execution_notes = (
+            [] if selected_run is not None
+            else list(scan_result.get("execution_notes", []))
+        )
+        execution_notes.append(
+            f"Daily summary source: {summary_source}"
+            + (f" (run_id={summary_run_id})" if summary_run_id else "")
+        )
+
+        # WOW-PATCH-2026-08-19 — provenance ceiling: a fallback or
+        # missing-backend run can never present playable buckets as
+        # production-verified.  Downgrade-only (mirrors DEGRADED_ENGINE_RUN):
+        # playable cards move to watch with an explicit blocker.
+        if _prov_blocker is not None:
+            for _bname in ("market_verified", "final_approved_internal", "model_qualified"):
+                for _card in grouped[_bname]:
+                    _held = dict(_card)
+                    _held["final_approval_blocker"] = _prov_blocker
+                    _held["runtime_provenance_hold"] = True
+                    _held["postscan_invariant_downgraded_from"] = _bname
+                    grouped["watch"].append(_held)
+                grouped[_bname] = []
+            counts["watch"] = counts.get("watch", 0) + counts.get("market_verified", 0) \
+                + counts.get("final_approved_internal", 0) + counts.get("model_qualified", 0)
+            counts["market_verified"] = 0
+            counts["final_approved_internal"] = 0
+            counts["model_qualified"] = 0
+            counts["total_final_approved"] = 0
+            counts["playable_count"] = 0
+            execution_notes.append(
+                f"RUNTIME PROVENANCE HOLD — {_prov_blocker}: playable buckets "
+                f"held to watch; run is not production-backend-verified"
+            )
         if not execution_notes:
             if sports_scanned_db:
                 execution_notes.append(f"Sports scanned: {', '.join(sorted(sports_scanned_db))}")
@@ -1415,6 +1765,8 @@ def wow_daily_scan():
         return jsonify({
             "ok":                       True,
             "status":                   "completed",
+            "can_execute":              False,
+            "dry_run_only":             True,
             "run_status":               run_status,
             "failed_modules":           failed_modules,
             "scan_valid":               scan_valid,
@@ -1422,6 +1774,21 @@ def wow_daily_scan():
             "requested_sports":         requested_sports,
             "scanned_sports":           scanned_sports,
             "missing_sports":           missing_sports,
+            "runtime_provenance":       runtime_provenance,
+            "summary_source":           summary_source,
+            "summary_run_id":           summary_run_id,
+            "summary_reconciliation":   (
+                selected_run.get("reconciliation") if selected_run else None
+            ),
+            "scan_integrity":           scan_integrity,
+            "coverage_matrix":          scan_integrity.get("coverage_matrix", []),
+            "reconciliation":           scan_integrity.get("reconciliation", {}),
+            "calibration_health_by_lane": scan_integrity.get(
+                "calibration_health_by_lane", {}
+            ),
+            "board_correlation":        board_correlation,
+            "ranking_separation":       ranking_separation,
+            "moneyline_discovery":      moneyline_discovery,
             "source_access_status":     source_access_status,
             "execution_report":         execution_report,
             "counts":                   counts,
@@ -1443,6 +1810,303 @@ def wow_daily_scan():
             "status": "error",
             "error":  f"Scan completed but summary failed: {e}",
         }), 500
+
+
+@app.route("/wow/daily/run", methods=["POST"])
+@require_api_key
+def wow_daily_run():
+    """
+    POST /wow/daily/run — Canonical WOW Daily orchestration endpoint.
+
+    WOW-PATCH-2026-08-19-DAILY-CANONICAL-v1.0 (Task #277)
+
+    This is the authoritative Custom GPT entry point for daily discovery and
+    scoring.  Replit owns the full orchestration pipeline; the caller submits
+    only high-level intent.
+
+    Accepted JSON params
+    --------------------
+    date            : str               — intended ISO run date (required)
+    timezone        : str               — IANA timezone for date intent (required)
+    idempotency_key : str               — unique key for a new run; reuse on retry
+    sports          : list[str] | null  — sports to include (default: all)
+    environment     : str               — "live" | "test" (default: "live")
+    session_id      : str | null        — caller session for exposure idempotency
+    runtime_context : dict | null       — forwarded to provenance builder
+    scope           : str               — "FULL_BOARD" (default) or
+                      "MONEYLINE_REMAINING_TODAY" (narrow OUTRIGHT_WINNER /
+                      OUTRIGHT_WIN_PROBABILITY_ONLY research over events still
+                      remaining on the requested local date; the broader prop
+                      board is never acquired or scored).  Scope is immutable:
+                      reusing an idempotency key with a different scope is a
+                      409 IDEMPOTENCY_KEY_SCOPE_MISMATCH conflict.
+
+    Asynchronous caller contract
+    ----------------------------
+    ACCEPTED and IN_PROGRESS acknowledgements are NON-TERMINAL: the caller
+    must retain the server-generated run_id and poll
+    GET /wow/daily/manifest/{run_id} for that same run until run_status is
+    one of COMPLETE, DEGRADED, RECONCILIATION_WARNING, or FAILED.  A zero-row
+    manifest with a non-terminal run_status is an in-progress run, never an
+    empty-picks result.
+
+    Response (202 while running; 200 if an idempotent run is already terminal)
+    --------------
+    {
+      run_id          : str   — immutable UUID for this run
+      run_date        : str   — ISO date
+       run_status      : str   — ACCEPTED | IN_PROGRESS | terminal status
+       progress_stage  : str   — persisted lifecycle milestone
+       deadline_at     : str   — server-authoritative whole-run deadline
+       reused          : bool  — same idempotency key reused one canonical run
+       scope           : str   — persisted immutable request scope
+       terminal        : bool  — whether run_status is already terminal
+    }
+
+    Error responses
+    ---------------
+    400  — missing/invalid params
+    409  — provenance blocker (unverified run cannot produce playable output)
+    500  — orchestration failed
+    """
+    if not request.is_json:
+        return jsonify({
+            "ok": False,
+            "error": "JSON_BODY_REQUIRED",
+        }), 400
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "ok": False,
+            "error": "JSON_OBJECT_REQUIRED",
+        }), 400
+    server_owned_daily_fields = {
+        "progress_stage",
+        "progress_detail",
+        "row_count",
+        "total_discovered",
+        "latest_detail",
+        "rows_committed",
+    }
+    supplied_server_owned_fields = sorted(
+        field for field in server_owned_daily_fields if field in data
+    )
+    if supplied_server_owned_fields:
+        return jsonify({
+            "ok": False,
+            "error": "DAILY_RESPONSE_FIELDS_SERVER_OWNED",
+            "fields": supplied_server_owned_fields,
+            "detail": (
+                "Daily progress and count fields are response-only and are "
+                "derived by the server."
+            ),
+        }), 400
+    sports_param  = data.get("sports") or None
+    environment   = data.get("environment", "live")
+    session_id    = data.get("session_id") or None
+    if "run_id" in data:
+        return jsonify({
+            "ok": False,
+            "error": "RUN_ID_SERVER_GENERATED",
+        }), 400
+
+    intended_date = data.get("date")
+    if not isinstance(intended_date, str):
+        return jsonify({"ok": False, "error": "date must be an ISO date string"}), 400
+    try:
+        date.fromisoformat(intended_date)
+    except ValueError:
+        return jsonify({"ok": False, "error": "date must be an ISO date (YYYY-MM-DD)"}), 400
+
+    run_timezone = data.get("timezone")
+    if not isinstance(run_timezone, str) or not run_timezone.strip():
+        return jsonify({"ok": False, "error": "timezone must be an IANA timezone string"}), 400
+    try:
+        ZoneInfo(run_timezone)
+    except ZoneInfoNotFoundError:
+        return jsonify({"ok": False, "error": "timezone must be a valid IANA timezone"}), 400
+
+    idempotency_key = data.get("idempotency_key")
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        return jsonify({"ok": False, "error": "idempotency_key must be a non-empty string"}), 400
+    if len(idempotency_key) > 255:
+        return jsonify({"ok": False, "error": "idempotency_key exceeds 255 characters"}), 400
+
+    from gate_engine.daily_run_lifecycle import DAILY_RUN_SCOPES
+    scope = data.get("scope", "FULL_BOARD")
+    if not isinstance(scope, str) or scope not in DAILY_RUN_SCOPES:
+        return jsonify({
+            "ok": False,
+            "error": "INVALID_DAILY_SCOPE",
+            "detail": f"scope must be one of {list(DAILY_RUN_SCOPES)}",
+        }), 400
+
+    # Server-authoritative runtime provenance (fail-closed, downgrade-only)
+    from gate_engine.runtime_provenance import (
+        build_route_provenance, provenance_blocker,
+    )
+    runtime_provenance = build_route_provenance(
+        "wow_daily_canonical",
+        action_principal=g.get("wow_auth_principal"),
+        caller_context=data.get("runtime_context") or data,
+    )
+    _prov_blocker = provenance_blocker(runtime_provenance)
+    if _prov_blocker is not None:
+        return jsonify({
+            "ok": False,
+            "status": "rejected",
+            "error": "RUN_INVALID_RUNTIME_PROVENANCE",
+            "blocker": _prov_blocker,
+            "detail": (
+                "Canonical WOW Daily requires a fully verified, server-attested "
+                "runtime before a run can be created."
+            ),
+            "runtime_provenance": runtime_provenance,
+            "can_execute": False,
+        }), 409
+
+    try:
+        from gate_engine.daily_run_lifecycle import start_run
+        result = start_run(
+            run_id=None,
+            idempotency_key=idempotency_key,
+            sports=sports_param,
+            environment=environment,
+            runtime_provenance=runtime_provenance,
+            session_id=session_id,
+            intended_date=intended_date,
+            run_timezone=run_timezone,
+            scope=scope,
+        )
+    except ValueError as exc:
+        error = str(exc)
+        status_code = (
+            409 if error.startswith("IDEMPOTENCY_KEY_") else 400
+        )
+        return jsonify({
+            "ok": False,
+            "status": "error",
+            "error": error,
+            "runtime_provenance": runtime_provenance,
+        }), status_code
+    except Exception as exc:
+        return jsonify({
+            "ok":    False,
+            "status": "error",
+            "error":  str(exc),
+            "runtime_provenance": runtime_provenance,
+        }), 500
+
+    result["runtime_provenance"] = runtime_provenance
+    from gate_engine.daily_orchestrator import operator_daily_status
+    raw_run_status = result.get("run_status")
+    result["raw_run_status"] = raw_run_status
+    result["run_status"] = operator_daily_status(
+        raw_run_status,
+        counts=result.get("counts"),
+        failure_reason=result.get("failure_reason"),
+        failure_module=result.get("failure_module"),
+        reconciliation=result.get("reconciliation"),
+    )
+    # Keep compatibility aliases response-only and exactly equal to their
+    # canonical counterparts.  The lifecycle owns the canonical values.
+    result["latest_detail"] = result.get("progress_detail")
+    result["rows_committed"] = result.get("total_discovered")
+    status_code = 202 if result.get("run_status") in ("ACCEPTED", "IN_PROGRESS") else 200
+    return jsonify(result), status_code
+
+
+@app.route("/wow/daily/manifest/<run_id>", methods=["GET"])
+@require_api_key
+def wow_daily_manifest(run_id):
+    """
+    GET /wow/daily/manifest/<run_id> — Manifest for a canonical daily run.
+
+    Public progress-detail and row-count contract
+    ---------------------------------------------
+    run_status      — ACCEPTED | IN_PROGRESS | COMPLETE | DEGRADED | NO_PLAY |
+                      ENGINE_ERROR | DATA_ERROR
+    terminal        — True only for one of the five terminal operator states;
+                      poll this same run_id until terminal is True.
+    progress_stage  — persisted lifecycle milestone (e.g. DISCOVERY, SCORING)
+    progress_detail — human-readable progress note for the current stage
+    row_count       — number of rows RETURNED in this response (capped at 500)
+    total_discovered— canonical count of discovered selections for the run
+                      (compatibility alias: run.total_discovered)
+    scope           — immutable persisted request scope
+
+    A zero-row response with terminal=False is an in-progress run, never an
+    empty-picks result.
+    """
+    try:
+        from gate_engine.daily_orchestrator import operator_daily_status
+        from storage.daily_manifest import get_run, get_run_rows
+        run = get_run(run_id)
+        if run is None:
+            return jsonify({"ok": False, "error": f"Run {run_id} not found"}), 404
+        run = dict(run)
+        raw_run_status = run.get("run_status")
+        run["raw_run_status"] = raw_run_status
+        run["run_status"] = operator_daily_status(
+            raw_run_status,
+            counts=run.get("counts"),
+            failure_reason=run.get("failure_reason"),
+            failure_module=run.get("failure_module"),
+            reconciliation=run.get("reconciliation"),
+        )
+        run["latest_detail"] = run.get("progress_detail")
+        run["rows_committed"] = run.get("total_discovered")
+        rows = get_run_rows(run_id, limit=500)
+        run_status = run.get("run_status")
+        return jsonify({
+            "ok":   True,
+            "run":  run,
+            "rows": rows,
+            "row_count": len(rows),
+            "run_status": run_status,
+            "terminal": run_status not in ("ACCEPTED", "IN_PROGRESS"),
+            "progress_stage": run.get("progress_stage"),
+            "progress_detail": run.get("progress_detail"),
+            "total_discovered": run.get("total_discovered"),
+            "latest_detail": run.get("progress_detail"),
+            "rows_committed": run.get("total_discovered"),
+            "scope": run.get("request_scope"),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/daily/runs", methods=["GET"])
+@require_api_key
+def wow_daily_runs_list():
+    """
+    GET /wow/daily/runs — List recent canonical daily runs.
+
+    Query params: date (ISO date, optional), limit (int, default 10)
+    """
+    try:
+        from gate_engine.daily_orchestrator import operator_daily_status
+        from storage.daily_manifest import list_runs
+        run_date = request.args.get("date") or None
+        limit    = int(request.args.get("limit", 10))
+        runs     = []
+        for run in list_runs(run_date=run_date, limit=limit):
+            record = dict(run)
+            raw_run_status = record.get("run_status")
+            record["raw_run_status"] = raw_run_status
+            record["run_status"] = operator_daily_status(
+                raw_run_status,
+                counts=record.get("counts"),
+                failure_reason=record.get("failure_reason"),
+                failure_module=record.get("failure_module"),
+                reconciliation=record.get("reconciliation"),
+            )
+            record["latest_detail"] = record.get("progress_detail")
+            record["rows_committed"] = record.get("total_discovered")
+            runs.append(record)
+        return jsonify({"ok": True, "runs": runs, "count": len(runs)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/final-lock", methods=["POST"])
@@ -1736,7 +2400,7 @@ def scan_results():
     Optional filters: run_date, classification, sport, limit.
     """
     try:
-        from storage.results import get_scan_results, get_scan_summary
+        from storage.daily_summary import get_effective_daily_summary
     except Exception as e:
         return jsonify({"error": f"Storage import failed: {e}"}), 500
 
@@ -1755,16 +2419,23 @@ def scan_results():
         run_date = _date.today().isoformat()
 
     try:
-        summary = get_scan_summary(run_date)
-        if summary_only:
-            return jsonify({"run_date": run_date, "summary": summary})
-
-        rows = get_scan_results(
-            run_date=run_date,
-            classification=classification,
+        summary_selection = get_effective_daily_summary(
+            run_date,
+            category=classification,
             sport=sport,
             limit=limit,
+            compact=False,
         )
+        summary = summary_selection["summary_counts"]
+        if summary_only:
+            return jsonify({
+                "run_date": run_date,
+                "summary": summary,
+                "summary_source": summary_selection["selected_source"],
+                "summary_run_id": summary_selection["run_id"],
+            })
+
+        rows = summary_selection["rows"]
         # Serialize non-JSON-native types
         for r in rows:
             for k, v in r.items():
@@ -1777,6 +2448,9 @@ def scan_results():
             "run_date":  run_date,
             "count":     len(rows),
             "summary":   summary,
+            "summary_source": summary_selection["selected_source"],
+            "summary_run_id": summary_selection["run_id"],
+            "results_source": summary_selection["selected_source"],
             "filters":   {
                 "classification": classification,
                 "sport":          sport,
@@ -1868,6 +2542,7 @@ def _compact_prop(row):
         "source_conflict":        bool(row.get("source_conflict")),
         "mutex_group_id":         row.get("mutex_group_id"),
         "preferred_candidate":    row.get("preferred_candidate"),
+        "can_execute":            False,
     }
 
 
@@ -1886,9 +2561,7 @@ def scan_results_summary():
       status    — only return if scan matches this status (completed|pending)
     """
     try:
-        from storage.results import (
-            get_scan_summary, get_compact_scan_rows, get_scan_source_flags
-        )
+        from storage.daily_summary import get_effective_daily_summary
     except Exception as e:
         return jsonify({"ok": False, "error": f"Storage import failed: {e}"}), 500
 
@@ -1935,14 +2608,25 @@ def scan_results_summary():
     }
 
     try:
-        summary_counts = get_scan_summary(run_date)
+        fetch_limit = (limit * len(CAT_KEYS)) if not db_category else limit
+        summary_selection = get_effective_daily_summary(
+            run_date,
+            category=db_category,
+            limit=fetch_limit,
+        )
+        summary_counts = summary_selection["summary_counts"]
         total_rows     = sum(summary_counts.values())
-        scan_status    = "completed" if total_rows > 0 else "pending"
+        scan_status    = summary_selection["status"]
+        summary_source = summary_selection["selected_source"]
+        summary_run_id = summary_selection["run_id"]
+        selected_run   = summary_selection.get("run")
 
         # Early exit if caller requested a specific status that doesn't match
         if status_filter and status_filter != scan_status:
             return jsonify({
                 "ok": True, "status": scan_status, "run_date": run_date,
+                "summary_source": summary_source,
+                "summary_run_id": summary_run_id,
                 "message": f"Scan status is '{scan_status}', not '{status_filter}'",
                 "source_access_status": {},
                 "execution_report": _empty_report,
@@ -1954,20 +2638,29 @@ def scan_results_summary():
                 "playable_count":           0, "execution_notes": [],
             })
 
-        # Fetch compact rows — enough to fill every category up to limit
-        fetch_limit = (limit * len(CAT_KEYS)) if not db_category else limit
-        rows  = get_compact_scan_rows(run_date, category=db_category, limit=fetch_limit)
-        flags = get_scan_source_flags(run_date)
+        # Rows and flags come from the same selected store as the counts.
+        rows  = summary_selection["rows"]
+        flags = summary_selection["source_flags"]
 
         # Group rows by category key; already sorted wow_score DESC
         grouped = {k: [] for k in CAT_KEYS}
         for row in rows:
             cat_key = CAT_REVERSE.get(row.get("classification", ""))
+            if not cat_key:
+                normalized_category = (
+                    str(row.get("classification") or "")
+                    .strip().lower().replace(" ", "_")
+                )
+                if normalized_category in CAT_KEYS:
+                    cat_key = normalized_category
             if cat_key and len(grouped[cat_key]) < limit:
                 grouped[cat_key].append(_compact_prop(row))
 
         # Counts come from DB summary, not the sliced grouped lists
-        counts = {k: summary_counts.get(cls_name, 0) for k, cls_name in CAT_KEYS.items()}
+        counts = {
+            k: summary_counts.get(cls_name, summary_counts.get(k, 0))
+            for k, cls_name in CAT_KEYS.items()
+        }
 
         # Source access status
         def _avail(key):
@@ -1990,7 +2683,9 @@ def scan_results_summary():
             "status_lineups_called":         int(flags.get("status_called",0) or 0) > 0,
             "internal_projection_called":    True,
             "external_projection_available": False,
+            # WOW-PATCH-2026-08-16-AUDIT fix (3): exclude legacy unverified rows.
             "final_approved_count":          counts.get("total_final_approved", counts["market_verified"] + counts["final_approved_internal"]),
+            "legacy_unverified_final_approved": summary_counts.get("FINAL_APPROVED", 0),
             "market_verified_count":         counts["market_verified"],
             "final_approved_internal_count": counts["final_approved_internal"],
             "model_qualified_count":         counts["model_qualified"],
@@ -2005,32 +2700,44 @@ def scan_results_summary():
         # Execution notes
         sports = [s for s in (flags.get("sports") or []) if s]
         execution_notes = []
+        execution_notes.append(
+            f"Daily summary source: {summary_source}"
+            + (f" (run_id={summary_run_id})" if summary_run_id else "")
+        )
         if sports:
             execution_notes.append(f"Sports scanned: {', '.join(sorted(sports))}")
         if total_rows > 0:
             execution_notes.append(f"Total props evaluated: {total_rows}")
 
+        # WOW-PATCH-2026-08-16-AUDIT fix (3): exclude pre-enforcement legacy rows.
+        counts["legacy_unverified_final_approved"] = summary_counts.get("FINAL_APPROVED", 0)
         counts["total_final_approved"] = counts["market_verified"] + counts["final_approved_internal"]
         counts["playable_count"]       = counts["total_final_approved"] + counts["model_qualified"]
 
         return jsonify({
-            "ok":                       True,
-            "status":                   scan_status,
-            "run_date":                 run_date,
-            "source_access_status":     source_access_status,
-            "execution_report":         execution_report,
-            "counts":                   counts,
-            "market_verified":          grouped["market_verified"],
-            "final_approved_internal":  grouped["final_approved_internal"],
-            "model_qualified":          grouped["model_qualified"],
-            "conditional":              grouped["conditional"],
-            "watch":                    grouped["watch"],
-            "reject":                   grouped["reject"],
-            "data_insufficient":        grouped["data_insufficient"],
-            "final_approved_picks":     grouped["market_verified"] + grouped["final_approved_internal"],
-            "playable_card":            grouped["market_verified"] + grouped["final_approved_internal"] + grouped["model_qualified"],
-            "playable_count":           counts["total_final_approved"] + counts["model_qualified"],
-            "execution_notes":          execution_notes,
+            "ok":                              True,
+            "status":                          scan_status,
+            "run_date":                        run_date,
+            "summary_source":                  summary_source,
+            "summary_run_id":                  summary_run_id,
+            "summary_reconciliation":          (
+                selected_run.get("reconciliation") if selected_run else None
+            ),
+            "source_access_status":            source_access_status,
+            "execution_report":                execution_report,
+            "counts":                          counts,
+            "legacy_unverified_final_approved": counts["legacy_unverified_final_approved"],
+            "market_verified":                 grouped["market_verified"],
+            "final_approved_internal":         grouped["final_approved_internal"],
+            "model_qualified":                 grouped["model_qualified"],
+            "conditional":                     grouped["conditional"],
+            "watch":                           grouped["watch"],
+            "reject":                          grouped["reject"],
+            "data_insufficient":               grouped["data_insufficient"],
+            "final_approved_picks":            grouped["market_verified"] + grouped["final_approved_internal"],
+            "playable_card":                   grouped["market_verified"] + grouped["final_approved_internal"] + grouped["model_qualified"],
+            "playable_count":                  counts["total_final_approved"] + counts["model_qualified"],
+            "execution_notes":                 execution_notes,
         })
     except Exception as e:
         return jsonify({"ok": False, "error": "Database unavailable", "detail": str(e)}), 503
@@ -2430,6 +3137,208 @@ def openapi_schema():
                     }
                 }
             },
+            "/wow/daily/run": {
+                "post": {
+                    "operationId": "runWowDailyCanonical",
+                    "summary": "Start or safely retry a canonical WOW Daily run",
+                    "description": (
+                        "Requires JSON date, IANA timezone, and a caller-generated "
+                        "idempotency_key. The server generates run_id. Retrying the "
+                        "same date/timezone/key returns the original canonical run "
+                        "without launching a duplicate scorer. ACCEPTED and "
+                        "IN_PROGRESS are NON-TERMINAL: keep the returned run_id and "
+                        "automatically poll getWowDailyManifest for that SAME run "
+                        "until run_status is COMPLETE, DEGRADED, "
+                        "RECONCILIATION_WARNING, or FAILED — never wait for another "
+                        "user message to continue. Optional scope="
+                        "MONEYLINE_REMAINING_TODAY restricts the run to "
+                        "OUTRIGHT_WINNER / OUTRIGHT_WIN_PROBABILITY_ONLY research "
+                        "on events still remaining today; scope is immutable per "
+                        "idempotency key."
+                    ),
+                    "security": [{"ApiKeyAuth": []}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["date", "timezone", "idempotency_key"],
+                                    "properties": {
+                                        "date": {
+                                            "type": "string",
+                                            "format": "date",
+                                            "description": "Intended run date (YYYY-MM-DD).",
+                                        },
+                                        "timezone": {
+                                            "type": "string",
+                                            "description": "IANA timezone, such as America/New_York.",
+                                        },
+                                        "idempotency_key": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 255,
+                                        },
+                                        "sports": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "nullable": True,
+                                        },
+                                        "environment": {
+                                            "type": "string",
+                                            "enum": ["live", "test"],
+                                            "default": "live",
+                                        },
+                                        "session_id": {"type": "string", "nullable": True},
+                                        "runtime_context": {"type": "object", "nullable": True},
+                                        "scope": {
+                                            "type": "string",
+                                            "enum": [
+                                                "FULL_BOARD",
+                                                "MONEYLINE_REMAINING_TODAY",
+                                            ],
+                                            "default": "FULL_BOARD",
+                                            "description": (
+                                                "Immutable request scope. "
+                                                "MONEYLINE_REMAINING_TODAY researches only "
+                                                "OUTRIGHT_WINNER / OUTRIGHT_WIN_PROBABILITY_ONLY "
+                                                "candidates for events remaining on the requested "
+                                                "local date; the broader prop board is never "
+                                                "acquired or scored."
+                                            ),
+                                        },
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "202": {
+                            "description": "Canonical run accepted or in progress.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/DailyRunAcknowledgement"
+                                    }
+                                }
+                            },
+                        },
+                        "200": {
+                            "description": "Existing idempotent run is terminal.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/DailyRunAcknowledgement"
+                                    }
+                                }
+                            },
+                        },
+                        "400": {"description": "Missing or invalid required JSON contract."},
+                        "401": {"description": "Missing or invalid X-API-Key."},
+                        "409": {
+                            "description": (
+                                "Runtime provenance was not verified, or the idempotency "
+                                "key conflicts with its prior date/timezone/scope intent "
+                                "(IDEMPOTENCY_KEY_INTENT_MISMATCH / "
+                                "IDEMPOTENCY_KEY_SCOPE_MISMATCH)."
+                            )
+                        },
+                        "500": {"description": "Daily orchestration acknowledgement failed."},
+                    },
+                }
+            },
+            "/wow/daily/manifest/{run_id}": {
+                "get": {
+                    "operationId": "getWowDailyManifest",
+                    "summary": "Poll the manifest for one canonical WOW Daily run",
+                    "description": (
+                        "Poll this endpoint with the SAME server-generated run_id "
+                        "until terminal=true (run_status COMPLETE, DEGRADED, "
+                        "RECONCILIATION_WARNING, or FAILED). row_count counts rows "
+                        "returned in this response (capped at 500); "
+                        "total_discovered is the canonical discovered-selection "
+                        "count. latest_detail is a deprecated response-only alias "
+                        "exactly equal to progress_detail, and rows_committed is "
+                        "a deprecated response-only alias exactly equal to "
+                        "total_discovered. A zero-row manifest with terminal=false "
+                        "is an in-progress run, never an empty-picks result."
+                    ),
+                    "security": [{"ApiKeyAuth": []}],
+                    "parameters": [
+                        {
+                            "name": "run_id",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Run manifest (terminal or in-progress).",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/DailyRunManifest"
+                                    }
+                                }
+                            },
+                        },
+                        "401": {"description": "Missing or invalid X-API-Key."},
+                        "404": {"description": "Run not found."},
+                        "500": {"description": "Manifest retrieval failed."},
+                    },
+                }
+            },
+            "/wow/daily/runs": {
+                "get": {
+                    "operationId": "listWowDailyRuns",
+                    "summary": "List recent canonical WOW Daily runs",
+                    "description": (
+                        "Lists recent canonical daily runs (headers only). Use "
+                        "getWowDailyManifest with a specific run_id to poll one "
+                        "run to its terminal state."
+                    ),
+                    "security": [{"ApiKeyAuth": []}],
+                    "parameters": [
+                        {
+                            "name": "date",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "string", "format": "date"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 10},
+                        },
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Recent runs returned.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "ok": {"type": "boolean"},
+                                            "runs": {
+                                                "type": "array",
+                                                "items": {
+                                                    "$ref": "#/components/schemas/DailyRunRecord"
+                                                },
+                                            },
+                                            "count": {"type": "integer"},
+                                        },
+                                    }
+                                }
+                            },
+                        },
+                        "401": {"description": "Missing or invalid X-API-Key."},
+                        "500": {"description": "Run list retrieval failed."},
+                    },
+                }
+            },
             "/leaderboard": {
                 "get": {
                     "operationId": "getLeaderboard",
@@ -2473,6 +3382,199 @@ def openapi_schema():
                 "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
             },
             "schemas": {
+                "DailyRunAcknowledgement": {
+                    "type": "object",
+                    "required": [
+                        "ok", "accepted", "run_id", "run_date", "timezone",
+                        "run_status", "progress_stage", "progress_detail",
+                        "total_discovered", "latest_detail", "rows_committed",
+                        "deadline_at", "reused", "scope", "terminal",
+                        "can_execute", "runtime_provenance",
+                    ],
+                    "properties": {
+                        "ok": {"type": "boolean"},
+                        "accepted": {
+                            "type": "boolean",
+                            "description": "True when the canonical lifecycle acknowledged the request.",
+                        },
+                        "run_id": {
+                            "type": "string",
+                            "description": "Server-generated immutable run identifier.",
+                        },
+                        "run_date": {"type": "string", "format": "date"},
+                        "timezone": {
+                            "type": "string",
+                            "description": "IANA timezone persisted with the request intent.",
+                        },
+                        "run_status": {
+                            "type": "string",
+                            "enum": [
+                                "ACCEPTED", "IN_PROGRESS", "COMPLETE", "DEGRADED",
+                                "RECONCILIATION_WARNING", "FAILED",
+                            ],
+                        },
+                        "progress_stage": {"type": "string"},
+                        "progress_detail": {
+                            "type": "string",
+                            "nullable": True,
+                            "description": "Canonical server-owned progress detail.",
+                        },
+                        "total_discovered": {
+                            "type": "integer",
+                            "nullable": True,
+                            "description": "Canonical server-owned discovered-selection count.",
+                        },
+                        "latest_detail": {
+                            "type": "string",
+                            "nullable": True,
+                            "deprecated": True,
+                            "description": (
+                                "Deprecated response-only alias exactly equal to "
+                                "progress_detail; never accepted in the start request."
+                            ),
+                        },
+                        "rows_committed": {
+                            "type": "integer",
+                            "nullable": True,
+                            "deprecated": True,
+                            "description": (
+                                "Deprecated response-only alias exactly equal to "
+                                "total_discovered; never accepted in the start request."
+                            ),
+                        },
+                        "deadline_at": {"type": "string", "format": "date-time"},
+                        "reused": {
+                            "type": "boolean",
+                            "description": "True when this response reuses the prior canonical run.",
+                        },
+                        "can_execute": {
+                            "type": "boolean",
+                            "enum": [False],
+                            "description": "Always false; WOW Daily is dry-run only.",
+                        },
+                        "runtime_provenance": {
+                            "type": "object",
+                            "description": "Server-authoritative runtime provenance record.",
+                        },
+                        "scope": {
+                            "type": "string",
+                            "enum": ["FULL_BOARD", "MONEYLINE_REMAINING_TODAY"],
+                            "description": "Immutable persisted request scope.",
+                        },
+                        "terminal": {
+                            "type": "boolean",
+                            "description": (
+                                "True only when run_status is COMPLETE, DEGRADED, "
+                                "RECONCILIATION_WARNING, or FAILED. When false, poll "
+                                "getWowDailyManifest with this run_id."
+                            ),
+                        },
+                    },
+                },
+                "DailyRunManifest": {
+                    "type": "object",
+                    "required": ["ok", "run", "rows", "row_count", "run_status", "terminal"],
+                    "properties": {
+                        "ok": {"type": "boolean"},
+                        "run": {
+                            "type": "object",
+                            "description": "Full persisted run header.",
+                        },
+                        "rows": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "Evaluated selection rows (capped at 500).",
+                        },
+                        "row_count": {
+                            "type": "integer",
+                            "description": "Number of rows returned in this response (max 500).",
+                        },
+                        "run_status": {
+                            "type": "string",
+                            "enum": [
+                                "ACCEPTED", "IN_PROGRESS", "COMPLETE", "DEGRADED",
+                                "RECONCILIATION_WARNING", "FAILED",
+                            ],
+                        },
+                        "terminal": {
+                            "type": "boolean",
+                            "description": (
+                                "True only for COMPLETE / DEGRADED / "
+                                "RECONCILIATION_WARNING / FAILED. Keep polling this "
+                                "same run until terminal is true."
+                            ),
+                        },
+                        "progress_stage": {"type": "string", "nullable": True},
+                        "progress_detail": {"type": "string", "nullable": True},
+                        "total_discovered": {
+                            "type": "integer",
+                            "nullable": True,
+                            "description": (
+                                "Canonical discovered-selection count for the run "
+                                "(documented row-count vocabulary; row_count is the "
+                                "returned-rows count only)."
+                            ),
+                        },
+                        "latest_detail": {
+                            "type": "string",
+                            "nullable": True,
+                            "deprecated": True,
+                            "description": (
+                                "Deprecated response-only alias exactly equal to "
+                                "progress_detail; never accepted in the start request."
+                            ),
+                        },
+                        "rows_committed": {
+                            "type": "integer",
+                            "nullable": True,
+                            "deprecated": True,
+                            "description": (
+                                "Deprecated response-only alias exactly equal to "
+                                "total_discovered; never accepted in the start request."
+                            ),
+                        },
+                        "scope": {
+                            "type": "string",
+                            "nullable": True,
+                            "description": "Immutable persisted request scope.",
+                        },
+                    },
+                },
+                "DailyRunRecord": {
+                    "type": "object",
+                    "description": (
+                        "Run-list record. Canonical progress_stage, progress_detail, "
+                        "and total_discovered are server-owned; deprecated aliases "
+                        "are exact response-only mappings."
+                    ),
+                    "properties": {
+                        "run_id": {"type": "string"},
+                        "run_date": {"type": "string", "format": "date"},
+                        "started_at": {"type": "string", "format": "date-time"},
+                        "finished_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": True,
+                        },
+                        "environment": {"type": "string"},
+                        "run_status": {"type": "string"},
+                        "progress_stage": {"type": "string", "nullable": True},
+                        "progress_detail": {"type": "string", "nullable": True},
+                        "total_discovered": {"type": "integer", "nullable": True},
+                        "latest_detail": {
+                            "type": "string",
+                            "nullable": True,
+                            "deprecated": True,
+                            "description": "Exactly equal to progress_detail.",
+                        },
+                        "rows_committed": {
+                            "type": "integer",
+                            "nullable": True,
+                            "deprecated": True,
+                            "description": "Exactly equal to total_discovered.",
+                        },
+                    },
+                },
                 "HealthResponse": {
                     "type": "object",
                     "properties": {
@@ -2690,6 +3792,11 @@ _API_PREFIXES = frozenset([
     "scan-results", "wow-daily-scan", "random-forest-score", "gpt-score",
     "request-log", "stats", "leaderboard", "health", "openapi", "openapi.json",
     "debug", "picks", "gpt-action-schema.json", "gpt-action-schema.yaml",
+    "gpt-action-schema-gate-engine.yaml",
+    "gpt-action-schema-kalshi.yaml",
+    "gpt-action-schema-odds-gateway.yaml",
+    "gpt-action-schema-vendors.yaml",
+    "gpt-action-schema-custom-services.yaml",
     "score", "scores",
 ])
 
@@ -2767,6 +3874,38 @@ def gpt_action_schema_yaml():
         os.path.basename(schema_path),
         mimetype="text/yaml"
     )
+
+
+def _serve_schema_yaml(filename: str):
+    """Return a schema YAML file with the correct content-type (text/yaml).
+    Never falls through to the SPA catch-all."""
+    schema_dir = os.path.dirname(os.path.abspath(__file__))
+    return send_from_directory(schema_dir, filename, mimetype="text/yaml")
+
+
+@app.route("/gpt-action-schema-gate-engine.yaml", methods=["GET"])
+def gpt_action_schema_gate_engine_yaml():
+    return _serve_schema_yaml("gpt-action-schema-gate-engine.yaml")
+
+
+@app.route("/gpt-action-schema-kalshi.yaml", methods=["GET"])
+def gpt_action_schema_kalshi_yaml():
+    return _serve_schema_yaml("gpt-action-schema-kalshi.yaml")
+
+
+@app.route("/gpt-action-schema-odds-gateway.yaml", methods=["GET"])
+def gpt_action_schema_odds_gateway_yaml():
+    return _serve_schema_yaml("gpt-action-schema-odds-gateway.yaml")
+
+
+@app.route("/gpt-action-schema-vendors.yaml", methods=["GET"])
+def gpt_action_schema_vendors_yaml():
+    return _serve_schema_yaml("gpt-action-schema-vendors.yaml")
+
+
+@app.route("/gpt-action-schema-custom-services.yaml", methods=["GET"])
+def gpt_action_schema_custom_services_yaml():
+    return _serve_schema_yaml("gpt-action-schema-custom-services.yaml")
 
 
 @app.route("/analyze-board", methods=["POST"])
@@ -2866,6 +4005,27 @@ def analyze_board():
         # Strip data URL prefix if caller included it
         if "," in image_base64:
             image_base64 = image_base64.split(",", 1)[1]
+
+        # FIX-G: Strip whitespace (spaces, newlines, tabs) that GPT or HTTP
+        # transport may inject into the base64 payload.  The stdlib decoder
+        # rejects any non-base64-alphabet bytes, so a single stray newline
+        # causes IMAGE_DECODE_ERROR even though the payload is valid.
+        image_base64 = "".join(image_base64.split())
+
+        # FIX-G: Validate the base64 is decodable before spending a round-trip
+        # to Anthropic.  Return IMAGE_DECODE_ERROR instead of a confusing 500.
+        try:
+            _b64_test = _base64.b64decode(image_base64[:64], validate=True)
+        except Exception as _b64_exc:
+            return jsonify({
+                "error": "IMAGE_DECODE_ERROR",
+                "message": (
+                    "The image_base64 payload could not be decoded. "
+                    "Strip any data:image/...;base64, prefix, remove all "
+                    "whitespace, and send raw base64 bytes only."
+                ),
+                "detail": str(_b64_exc)[:200],
+            }), 422
 
         # Auto-detect real media type from magic bytes — ignore what caller sent
         try:
@@ -3183,34 +4343,71 @@ def analyze_and_score():
     if _ant_err:
         return jsonify({"ok": False, "error": _ant_err}), 503
 
-    # Accept same image formats as /analyze-board
+    # Accept multipart/form-data (field `image`), base64 JSON, or URL.
+    # Priority: multipart → JSON base64/URL.
     image_b64  = None
     image_url  = None
     media_type = "image/jpeg"
 
-    raw_img = body.get("image") or body.get("image_base64") or body.get("screenshot")
-    if raw_img and isinstance(raw_img, str):
-        if raw_img.startswith("http"):
-            image_url = raw_img
-        else:
-            if "," in raw_img:
-                raw_img = raw_img.split(",", 1)[1]
-            image_b64 = raw_img
-            # Auto-detect media type
-            try:
-                hdr = _base64.b64decode(image_b64[:16])
-                if hdr[:8] == b'\x89PNG\r\n\x1a\n':
-                    media_type = "image/png"
-                elif hdr[:2] == b'\xff\xd8':
-                    media_type = "image/jpeg"
-                elif hdr[:4] == b'RIFF':
-                    media_type = "image/webp"
-            except Exception:
-                pass
+    if request.files.get("image"):
+        # ── Multipart transport adapter ──────────────────────────────────
+        # The GPT or any HTTP client can POST the screenshot bytes directly
+        # without base64-encoding.  extract_image_bytes validates MIME type,
+        # size, and emptiness then returns (bytes, mime_type).
+        try:
+            _mp_bytes, _mp_mime = extract_image_bytes(request)
+            image_b64  = _base64.b64encode(_mp_bytes).decode()
+            media_type = _mp_mime
+        except RequestValidationError as _rve:
+            return jsonify({
+                "ok":         False,
+                "error":      str(_rve),
+                "error_code": "REQUEST_VALIDATION_ERROR",
+                "can_execute": False,
+            }), 400
+    else:
+        # ── JSON transport (base64 string or remote URL) ─────────────────
+        raw_img = body.get("image") or body.get("image_base64") or body.get("screenshot")
+        if raw_img and isinstance(raw_img, str):
+            # Guard: reject local filesystem paths (/mnt/data/..., /tmp/..., etc.)
+            # These cannot be read by the server and produce confusing decode errors.
+            if raw_img.startswith("/") or raw_img.lower().startswith("file://"):
+                return jsonify({
+                    "ok":         False,
+                    "error": (
+                        "Local filesystem paths are not supported. "
+                        "Send the image as base64-encoded bytes in the `image_base64` field "
+                        "(optionally prefixed with 'data:image/jpeg;base64,'), or supply a "
+                        "public HTTPS URL in the `image` field."
+                    ),
+                    "error_code": "LOCAL_PATH_REJECTED",
+                    "can_execute": False,
+                }), 422
+            if raw_img.startswith("http"):
+                image_url = raw_img
+            else:
+                if "," in raw_img:
+                    raw_img = raw_img.split(",", 1)[1]
+                image_b64 = raw_img
+                # Auto-detect media type from first decoded bytes.
+                try:
+                    hdr = _base64.b64decode(image_b64[:16])
+                    if hdr[:8] == b'\x89PNG\r\n\x1a\n':
+                        media_type = "image/png"
+                    elif hdr[:2] == b'\xff\xd8':
+                        media_type = "image/jpeg"
+                    elif hdr[:4] == b'RIFF':
+                        media_type = "image/webp"
+                except Exception:
+                    pass
 
     if not image_b64 and not image_url:
-        return jsonify({"ok": False,
-                        "error": "image field is required (base64 or URL)"}), 422
+        return jsonify({
+            "ok":         False,
+            "error":      "image field is required (multipart `image`, `image_base64`, or URL)",
+            "error_code": "REQUEST_VALIDATION_ERROR",
+            "can_execute": False,
+        }), 422
 
     # Build Claude image block
     if image_b64:
@@ -3227,9 +4424,13 @@ def analyze_and_score():
         f"You are a sports prop extraction assistant. Analyze this {platform_display} "
         f"board screenshot and extract every visible player prop.\n\n"
         f"For each prop return a JSON array. Each element must have:\n"
-        f'- "player": full player name\n'
+        f'- "player": full player name as shown\n'
         f'- "sport": NBA|MLB|NFL|NHL|WNBA\n'
-        f'- "prop": stat category (points, rebounds, hits, strikeouts, etc.)\n'
+        f'- "prop": the EXACT prop type label shown on the card — copy it verbatim, '
+        f'do NOT simplify or omit. Common examples: "points", "rebounds", "hits", '
+        f'"strikeouts", "pitcher strikeouts", "1st Inn. Pitches Thrown", '
+        f'"Fantasy Score", "Total Bases", "Hitter Fantasy Score". '
+        f'For unusual or multi-word labels, copy every word exactly as printed.\n'
         f'- "side": "MORE" or "LESS"\n'
         f'- "line": numeric line value\n'
         f'- "platform": "{platform_display}"\n'
@@ -3287,8 +4488,12 @@ def analyze_and_score():
     }
 
     # ── Step B: Normalization ────────────────────────────────────────────
-    norm_rows = _normalize_legs(ocr_legs, target_date=target_date,
-                                platform_hint=platform_hint)
+    # _normalize_legs returns NormalizedRow Mapping objects (read-only).
+    # Convert to plain mutable dicts immediately so the gap-fill and
+    # enrichment steps below can assign fields without TypeError.
+    norm_rows = [dict(r) for r in _normalize_legs(
+        ocr_legs, target_date=target_date, platform_hint=platform_hint
+    )]
 
     # ── Step D (pre-pipeline): Claude gap-fill for unresolved rows ────────
     gap_reqs = []
@@ -3346,9 +4551,17 @@ def analyze_and_score():
     enrichment = {}
     source_status = {}
     if scored_rows:
-        # Build pipeline-format rows for auto_enrichment
+        # Build pipeline-format rows for auto_enrichment.
+        # Pass caller-supplied enrichment as base_enrichment so GPT-provided
+        # game_log / odds data merges into the auto-enrichment output rather
+        # than being discarded.  build_auto_enrichment only overwrites a field
+        # when the base_enrichment entry does NOT already have it, so caller
+        # data always wins.
         ae_rows = [_norm_to_pipeline_row(r) for r in scored_rows]
-        enrichment, source_status = _build_enrichment(ae_rows)
+        enrichment, source_status = _build_enrichment(
+            ae_rows,
+            base_enrichment=submitted_enrichment if submitted_enrichment else None,
+        )
 
     # ── Step E: Gate pipeline ────────────────────────────────────────────
     pipe_results: dict[str, dict] = {}  # leg_id → pipeline output for that row
@@ -3371,6 +4584,23 @@ def analyze_and_score():
             app.logger.exception("analyze_and_score: pipeline error: %s", exc)
 
     # ── Step F: Hit probability per leg ─────────────────────────────────
+    # build_auto_enrichment writes entries keyed by "player:prop_type" (the
+    # canonical write-key used by pipeline._get_enrichment).  compute_batch
+    # looks up by leg_id.  Build a secondary leg_id-indexed view of the
+    # enrichment dict so compute_batch can find game_log and no-vig data
+    # for each leg.  The player:prop entries remain in the dict for the
+    # gate pipeline; we only ADD leg_id aliases — no data is removed.
+    _prob_enrichment: dict = dict(enrichment)
+    for _sr in scored_rows:
+        _lid = _sr.get("leg_id") or ""
+        if not _lid or _lid in _prob_enrichment:
+            continue
+        _player = (_sr.get("player_name_resolved") or _sr.get("player_name_raw") or "").lower()
+        _prop   = (_sr.get("stat_key") or _sr.get("prop_type") or "").lower()
+        _pkey   = f"{_player}:{_prop}"
+        if _pkey in _prob_enrichment:
+            _prob_enrichment[_lid] = _prob_enrichment[_pkey]
+
     try:
         from gate_engine.hit_probability import compute_batch as _compute_hit_prob
         # Build leg dicts with all context for compute_batch
@@ -3381,7 +4611,7 @@ def analyze_and_score():
             }
             for r in norm_rows
         ]
-        hit_probs_list = _compute_hit_prob(all_norm_rows_for_prob, enrichment)
+        hit_probs_list = _compute_hit_prob(all_norm_rows_for_prob, _prob_enrichment)
         hit_probs: dict[str, dict] = {h["leg_id"]: h for h in hit_probs_list}
     except Exception as _hp_exc:
         app.logger.warning("analyze_and_score: hit_probability batch failed: %s", _hp_exc)
@@ -3730,8 +4960,9 @@ def _norm_to_pipeline_row(norm_row: dict) -> dict:
         "direction":    direction,
         "board_source": norm_row.get("platform") or "UNKNOWN",
         "start_time":   norm_row.get("game_time") or "",
-        "slate_date":   norm_row.get("game_time", "")[:10] or "",
-        "game":         f"{norm_row.get('team', '')} vs {norm_row.get('opponent', '')}",
+        "slate_date":   (norm_row.get("game_time") or "")[:10] or "",
+        "game":         (f"{norm_row.get('team', '')} vs {norm_row.get('opponent', '')}"
+                        if (norm_row.get('team') or norm_row.get('opponent')) else ""),
         "stat_key":     norm_row.get("stat_key") or "",
         "stat_formula": norm_row.get("stat_formula") or "",
         "line_modifier": norm_row.get("line_modifier") or "standard",
@@ -6547,9 +7778,10 @@ def tennis_stats_today():
 
     tour_filter = request.args.get("tour", "").strip().lower()  # atp | wta | "" = both
 
-    odds_key = os.environ.get("ODDS_API_KEY", "")
+    from services.odds_api import resolve_odds_api_key_with_source as _resolve_key_tennis
+    odds_key, _odds_key_src = _resolve_key_tennis()
     if not odds_key:
-        return jsonify({"ok": False, "error": "ODDS_API_KEY secret not configured"}), 500
+        return jsonify({"ok": False, "error": "No Odds API key configured (checked ODDS_API_PAID_KEY, ODDS_API_KEY_100K, ODDS_API_FREE_KEY, ODDS_API_KEY)"}), 500
 
     base = "https://api.the-odds-api.com/v4"
 
@@ -8354,16 +9586,84 @@ _PB_MLB_WORKFLOW_FIELDS = [
 
 def _pb_lookup_mlbam_id(first: str, last: str) -> int | None:
     """Map a name to an MLBAM ID via pybaseball's lookup table.
-    Returns None on failure (lookup table empty or name not found)."""
+
+    Checks the persistent DB identity cache first (survives worker/process
+    restarts).  Falls back to a live pybaseball.playerid_lookup() call and
+    writes the result back to the cache.  Returns None on failure (fail-closed).
+    Telemetry is recorded for every call.
+    """
+    import time as _t
+    _t0 = _t.monotonic()
+
+    # ── 1. Persistent DB cache ─────────────────────────────────────────────
+    cache_hit = False
+    try:
+        from gate_engine.mlb.player_identity_cache import (
+            lookup as _pic_lookup,
+            store  as _pic_store,
+        )
+        cached_id = _pic_lookup(first, last)
+        if cached_id is not None:
+            cache_hit = True
+            # Record cache-HIT telemetry
+            try:
+                from gate_engine.mlb.acquisition_telemetry import (
+                    record_event, AcquisitionEvent,
+                    IDENTITY_CACHE_HIT, MLB_DATA_ACQ_OK,
+                )
+                record_event(AcquisitionEvent(
+                    route="/wow/mlb/pitcher",
+                    dependency="player_identity_cache",
+                    cache_hit=True,
+                    elapsed_ms=(_t.monotonic() - _t0) * 1000,
+                    status_class=MLB_DATA_ACQ_OK,
+                ))
+            except Exception:
+                pass
+            return cached_id
+    except Exception:
+        _pic_store = None  # cache unavailable — fall through to live fetch
+
+    # ── 2. Live pybaseball fetch ───────────────────────────────────────────
     if not _ensure_pybaseball():
         return None
+    mlbam_id = None
     try:
+        print("Gathering Player Data")  # keep existing log marker
         df = _pb.playerid_lookup(last, first)
-        if df.empty:
-            return None
-        return int(df.iloc[0]["key_mlbam"])
+        if not df.empty:
+            mlbam_id = int(df.iloc[0]["key_mlbam"])
     except Exception:
-        return None
+        mlbam_id = None
+
+    elapsed_ms = (_t.monotonic() - _t0) * 1000
+
+    # ── 3. Write back to cache (non-fatal) ────────────────────────────────
+    if mlbam_id is not None:
+        try:
+            from gate_engine.mlb.player_identity_cache import store as _pic_store2
+            _pic_store2(first, last, mlbam_id)
+        except Exception:
+            pass
+
+    # ── 4. Record telemetry ───────────────────────────────────────────────
+    try:
+        from gate_engine.mlb.acquisition_telemetry import (
+            record_event, AcquisitionEvent,
+            IDENTITY_CACHE_MISS, MLB_DATA_ACQ_OK, MLB_DATA_ACQ_FAILED,
+        )
+        status = MLB_DATA_ACQ_OK if mlbam_id is not None else MLB_DATA_ACQ_FAILED
+        record_event(AcquisitionEvent(
+            route="/wow/mlb/pitcher",
+            dependency="player_identity_cache",
+            cache_hit=False,
+            elapsed_ms=elapsed_ms,
+            status_class=status,
+        ))
+    except Exception:
+        pass
+
+    return mlbam_id
 
 
 def _pb_statcast_ledgers(player_id: int, prop: str, direction: str,
@@ -8976,7 +10276,8 @@ def _get_cross_book_variance(player_name: str, odds_market: str,
     (median), min/max, and per-book variance.  Uses ODDS API — costs quota.
     Only called when the caller explicitly requests variance data."""
     import requests as _req, statistics as _stats
-    odds_key = os.environ.get("ODDS_API_KEY", "")
+    from services.odds_api import resolve_odds_api_key_with_source as _resolve_key_cbv
+    odds_key, _cbv_key_src = _resolve_key_cbv()
     if not odds_key:
         return {"error": "ODDS_API_KEY_MISSING"}
     base = "https://api.the-odds-api.com/v4"
@@ -10586,24 +11887,101 @@ def wow_mlb_pitcher():
     if line_move.get("opening_line") is not None:
         data_sources.append("line_movement")
 
+    # ── Acquisition telemetry block ───────────────────────────────────────
+    try:
+        from gate_engine.mlb.acquisition_telemetry import get_scan_summary
+        acquisition_status = get_scan_summary()
+    except Exception:
+        acquisition_status = {"backend_health": "OK", "mlb_data_acquisition": "OK"}
+
     return jsonify({
-        "ok":             True,
-        "player":         f"{first} {last}",
-        "prop":           prop,
-        "line":           line,
-        "side":           side,
-        "opponent":       opp,
-        "leash":          leash,
-        "savant":         savant,
-        "opponent_k_pct": opp_k,
-        "platoon_splits": platoon,
-        "line_movement":  line_move,
-        "efficiency":     efficiency,
-        "fantasy":        fantasy,
-        "gate_flags":     gate_flags,
-        "wow_verdict":    wow_verdict,
-        "data_sources":   data_sources,
+        "ok":                 True,
+        "player":             f"{first} {last}",
+        "prop":               prop,
+        "line":               line,
+        "side":               side,
+        "opponent":           opp,
+        "leash":              leash,
+        "savant":             savant,
+        "opponent_k_pct":     opp_k,
+        "platoon_splits":     platoon,
+        "line_movement":      line_move,
+        "efficiency":         efficiency,
+        "fantasy":            fantasy,
+        "gate_flags":         gate_flags,
+        "wow_verdict":        wow_verdict,
+        "data_sources":       data_sources,
+        "acquisition_status": acquisition_status,
     })
+
+
+@app.route("/wow/mlb/prewarm", methods=["POST"])
+@require_api_key
+def wow_mlb_prewarm():
+    """POST /wow/mlb/prewarm
+    Pre-warm pitcher identity + Statcast cache for a list of pitchers.
+
+    Submits fetches to the bounded ThreadPoolExecutor in the background so the
+    first synchronous /wow/mlb/pitcher call for each pitcher gets a cache hit.
+    Returns immediately (fire-and-forget).
+
+    Body:
+      { "pitchers": [{"first": str, "last": str}, ...] }
+
+    Response:
+      { "ok": true, "queued": N, "workers": M }
+    """
+    import os as _os
+    body     = request.get_json(silent=True) or {}
+    raw_list = body.get("pitchers", [])
+    if not isinstance(raw_list, list):
+        return jsonify({"ok": False, "error": "pitchers must be a list"}), 400
+
+    pairs: list[tuple[str, str]] = []
+    for item in raw_list:
+        if isinstance(item, dict):
+            f = (item.get("first") or "").strip()
+            l = (item.get("last")  or "").strip()
+            if f and l:
+                pairs.append((f, l))
+
+    if not pairs:
+        return jsonify({"ok": True, "queued": 0, "workers": 0,
+                        "note": "no valid pitchers supplied"}), 200
+
+    try:
+        from gate_engine.mlb.pitcher_prefetch import prewarm as _prewarm
+        _prewarm(pairs, _pb_lookup_mlbam_id, _get_pitcher_savant)
+        workers = int(_os.environ.get("WOW_PITCHER_FETCH_WORKERS", "4"))
+        return jsonify({
+            "ok":      True,
+            "queued":  len(pairs),
+            "workers": min(workers, 8),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+
+
+@app.route("/wow/mlb/acquisition-status", methods=["GET"])
+@require_api_key
+def wow_mlb_acquisition_status():
+    """GET /wow/mlb/acquisition-status
+    Returns current MLB data acquisition telemetry and status classification.
+
+    Status classes:
+      backend_health:        OK
+      mlb_data_acquisition:  OK | DEGRADED_LATENCY | DATA_ACQUISITION_PENDING | FETCH_FAILED
+      odds_internal_auth:    OK | AUTH_CONTRACT_FAIL
+      player_identity_cache: HIT | MISS | UNAVAILABLE
+
+    None of these statuses maps to NO_PLAY, model rejection, 504, or backend outage.
+    """
+    try:
+        from gate_engine.mlb.acquisition_telemetry import get_scan_summary
+        summary = get_scan_summary()
+        return jsonify({"ok": True, **summary})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
 
 
 # ── Cross-sport: line movement query ──────────────────────────────────────
@@ -11124,8 +12502,43 @@ def wow_health():
 
     results["cs2"] = "Manual Only — permanent"
 
+    # MLB 1IP ledger wiring (WOW-PATCH-2026-08-08-1IP-LEDGER-WIRING)
+    # Probe: attempt a real Savant CSV fetch for a known pitcher (Tarik Skubal,
+    # MLBAM 669373) to verify the wiring is live, not merely code-present.
+    # Reports "Ready" only after a successful data round-trip.
+    # lane_status=TEST_ONLY; can_execute=False unconditional.
+    try:
+        import datetime as _h_dt
+        from gate_engine.mlb.savant_1ip_ledger import build_1ip_ledger as _probe_1ip
+        _probe_season = str(_h_dt.date.today().year)
+        _probe_date   = _h_dt.date.today().isoformat()
+        _probe_result = _probe_1ip(
+            pitcher_id=669373,   # Tarik Skubal — known active 2026 starter
+            season=_probe_season,
+            board_date=_probe_date,
+            max_starts=1,
+        )
+        if _probe_result.get("error"):
+            results["mlb_1ip_ledger_wiring"] = (
+                f"Degraded — probe fetch error: {str(_probe_result['error'])[:80]}"
+            )
+        elif not _probe_result.get("ledger_rows"):
+            results["mlb_1ip_ledger_wiring"] = (
+                "Degraded — probe returned 0 ledger rows "
+                "(short history or Savant unavailable)"
+            )
+        else:
+            _n = len(_probe_result["ledger_rows"])
+            results["mlb_1ip_ledger_wiring"] = (
+                f"Ready — Savant ledger live ({_n} start(s) fetched; "
+                f"lane_status=TEST_ONLY; can_execute=False)"
+            )
+    except Exception as _e1ip:
+        results["mlb_1ip_ledger_wiring"] = f"Degraded — {str(_e1ip)[:80]}"
+
     overall = "UP" if all(v == "Available"
-                          for k, v in results.items() if k != "cs2") else "PARTIAL"
+                          for k, v in results.items()
+                          if k not in ("cs2", "mlb_1ip_ledger_wiring")) else "PARTIAL"
     return jsonify({"status": overall, "sports": results})
 
 
@@ -11145,14 +12558,14 @@ def wow_odds_health():
     from services import odds_api as _odds
     checked_at = datetime.now(timezone.utc).isoformat()
 
-    if not _odds.ODDS_API_KEY:
+    if not _odds._resolve_key():
         return jsonify({
             "source":         "api.the-odds-api.com",
             "endpoint":       "/v4/sports",
             "timestamp":      checked_at,
             "source_status":  "NOT_CALLED",
             "source_grade":   None,
-            "data_status":    "NOT_CALLED: ODDS_API_KEY not set",
+            "data_status":    "NOT_CALLED: no Odds API key configured",
             "sports_count":   0,
             "dry_run_only":   True,
             "can_execute":    False,
@@ -12410,6 +13823,35 @@ CREATE TABLE IF NOT EXISTS cm_settled_slips (
 );
 CREATE INDEX IF NOT EXISTS cm_settled_slips_slip_idx ON cm_settled_slips(slip_id);
 CREATE INDEX IF NOT EXISTS cm_settled_slips_date_idx ON cm_settled_slips(settled_at DESC);
+
+-- Kalshi Weather shadow queue tables (WOW-PATCH-2026-08-08-MULTI-AGENT-KALSHI-WX-SHADOW Step 12.5)
+-- Shadow-only: never touched by any production scoring, settlement, or LLP logic.
+CREATE TABLE IF NOT EXISTS kalshi_wx_shadow_snapshot_queue (
+    id                    SERIAL       PRIMARY KEY,
+    research_snapshot_id  TEXT         NOT NULL UNIQUE,
+    snapshot_json         JSONB        NOT NULL,
+    status                TEXT         NOT NULL DEFAULT 'PENDING',
+    inserted_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS kalshi_wx_shadow_results (
+    id                    SERIAL       PRIMARY KEY,
+    research_snapshot_id  TEXT,
+    agent_id              TEXT,
+    run_id                TEXT,
+    validated_output_json JSONB,
+    status                TEXT,
+    created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS kalshi_wx_shadow_deterministic_outcome (
+    id                     SERIAL       PRIMARY KEY,
+    research_snapshot_id   TEXT         NOT NULL,
+    terminal_label         TEXT,
+    price_gate_disposition TEXT,
+    can_execute            BOOLEAN,
+    recorded_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
 """
 
 # PATCH-014–020: Migration DDL — adds 24 new columns to cm_slips for existing tables.
@@ -12442,6 +13884,18 @@ ALTER TABLE cm_slips
     ADD COLUMN IF NOT EXISTS legs_enriched                JSONB;
 """
 
+_CM_SHADOW_RESULT_MIGRATE_DDL = """
+ALTER TABLE kalshi_wx_shadow_results
+    ADD COLUMN IF NOT EXISTS latency_ms          INTEGER,
+    ADD COLUMN IF NOT EXISTS model               TEXT,
+    ADD COLUMN IF NOT EXISTS input_tokens        INTEGER,
+    ADD COLUMN IF NOT EXISTS output_tokens       INTEGER,
+    ADD COLUMN IF NOT EXISTS estimated_cost_usd  NUMERIC;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_shadow_results_rsid_agent
+    ON kalshi_wx_shadow_results (research_snapshot_id, agent_id);
+"""
+
 def _cm_ensure_schema():
     """Idempotently create all CM tables and run column migrations. Safe to call repeatedly."""
     global _CM_SCHEMA_READY
@@ -12459,9 +13913,14 @@ def _cm_ensure_schema():
                         cur.execute(_CM_SLIP_MIGRATE_DDL)
                     except Exception as mig_err:
                         app.logger.warning(f"CM slip migration (non-fatal): {mig_err}")
+                    # Step 12.5B: add new columns + UNIQUE index to kalshi_wx_shadow_results
+                    try:
+                        cur.execute(_CM_SHADOW_RESULT_MIGRATE_DDL)
+                    except Exception as mig_err:
+                        app.logger.warning(f"Shadow result migration (non-fatal): {mig_err}")
                 conn.commit()
             _CM_SCHEMA_READY = True
-            app.logger.info("CM schema ready (PATCH-014–020 migrations applied)")
+            app.logger.info("CM schema ready (PATCH-014–020 + shadow result migrations applied)")
         except Exception as e:
             app.logger.error(f"CM schema bootstrap failed: {e}")
             raise
@@ -15939,7 +17398,8 @@ def _llp_fetch_odds(sport_key, regions="us", markets=None):
         return hit[1]
     # Back-compat: also keep the legacy sport_key-only cache key warm so
     # any other reader hitting it via sport_key alone gets the latest.
-    key = os.environ.get("ODDS_API_KEY", "")
+    from services.odds_api import resolve_odds_api_key_with_source as _resolve_key_llp
+    key, _llp_key_src = _resolve_key_llp()
     if not key: return None
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
     try:
@@ -16126,6 +17586,83 @@ def _llp_match_event(events, away, home):
         if _overlaps(a_forms, eh_forms) and _overlaps(h_forms, ea_forms):
             return e
     return None
+
+
+# ── Moneyline market-snapshot acquisition boundary ───────────────────────────
+# WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT
+# Raw matched Odds API events are normalized into MoneylineMarketSnapshot at
+# THIS boundary and preserved by event_id, so downstream scoring consumes the
+# snapshot directly instead of re-fetching/re-mapping through a second schema.
+_LLP_EVENT_SNAPSHOT_CACHE: dict = {}   # event_id -> snapshot dict
+_LLP_EVENT_SNAPSHOT_CACHE_MAX = 512
+
+
+def _llp_cache_event_snapshot(snap_dict) -> None:
+    """Store a snapshot dict by event_id (bounded FIFO eviction)."""
+    eid = (snap_dict or {}).get("event_id")
+    if not eid:
+        return
+    if len(_LLP_EVENT_SNAPSHOT_CACHE) >= _LLP_EVENT_SNAPSHOT_CACHE_MAX:
+        try:
+            _LLP_EVENT_SNAPSHOT_CACHE.pop(next(iter(_LLP_EVENT_SNAPSHOT_CACHE)))
+        except (StopIteration, KeyError):
+            pass
+    _LLP_EVENT_SNAPSHOT_CACHE[eid] = snap_dict
+
+
+def _ow_acquire_market_snapshot(row):
+    """Acquire the normalized MoneylineMarketSnapshot for an OUTRIGHT_WINNER row.
+
+    Resolution order:
+      1. Snapshot cache by the row's event_id (preserved from the board scan —
+         no re-fetch, no re-interpretation through `_llp_extract_market`).
+      2. Live fetch: `_llp_fetch_odds` (TTL-cached) → match the event by
+         event_id first, then by team-alias fuzzy match → normalize through
+         the single shared adapter `build_snapshot_from_odds_event`.
+
+    Returns a snapshot dict (MoneylineMarketSnapshot.to_dict()) or None when
+    no odds event can be found.  Never raises.
+    """
+    try:
+        from gate_engine.moneyline.market_snapshot import build_snapshot_from_odds_event
+
+        event_id = str(row.get("event_id") or "").strip()
+        if event_id and event_id in _LLP_EVENT_SNAPSHOT_CACHE:
+            _cached = _LLP_EVENT_SNAPSHOT_CACHE[event_id]
+            # Cache-key presence wins even for empty/malformed values: return
+            # a dict so the caller attaches it and the scorer's supplied-
+            # snapshot validation fails closed — never fall through to a
+            # fresh fetch for an event the cache already covered.
+            return _cached if isinstance(_cached, dict) else {}
+
+        sport = (row.get("sport") or "").upper().strip()
+        sport_key = _LLP_SPORT_MAP.get(sport.lower())
+        if not sport_key:
+            return None
+        events = _llp_fetch_odds(sport_key, markets="h2h")
+        if not events:
+            return None
+
+        event = None
+        if event_id:
+            event = next((e for e in events if str(e.get("id")) == event_id), None)
+        if event is None:
+            team = row.get("team") or row.get("player") or ""
+            opp  = row.get("opponent") or row.get("opponent_team") or ""
+            if team and opp:
+                event = _llp_match_event(events, opp, team)
+        if event is None:
+            return None
+
+        snap = build_snapshot_from_odds_event(
+            event, sport, market_key="h2h", aliases=_LLP_TEAM_ALIASES,
+        )
+        snap_dict = snap.to_dict()
+        _llp_cache_event_snapshot(snap_dict)
+        return snap_dict
+    except Exception as _snap_exc:
+        app.logger.warning("moneyline snapshot acquisition failed: %s", _snap_exc)
+        return None
 
 
 def _llp_extract_market(event, market_key, side, line=None):
@@ -16636,6 +18173,95 @@ from gate_engine.llp_odds_resolver import (
 _bt("llp_odds_resolver loaded")
 
 
+def _llp_resolve_market_from_snapshot(game, record, market, side,
+                                      board_date, sport_key, sport):
+    """Consume ``game["market_snapshot"]`` as THE market source for LLP
+    analysis — no live fetch, no re-extraction through `_llp_extract_market`.
+
+    WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT.
+
+    Returns (resolution, blocked):
+      * (OddsResolution, False) — snapshot consumed as the market source
+      * (None, True)            — snapshot handoff BREACHED: `record` is
+                                  stamped with MARKET_PIPELINE_CONTRACT_BREACH
+                                  and the caller must return it unscored
+      * (None, False)           — NO snapshot supplied (or non-h2h market):
+                                  caller uses the live resolver ladder
+
+    FAIL-CLOSED GUARANTEE: once an h2h snapshot is supplied, this function
+    never returns (None, False) — an unusable/misaligned/partial snapshot
+    blocks analysis rather than silently re-fetching different odds.
+    Never raises.
+    """
+    # Key PRESENCE (not truthiness) marks a supplied snapshot: an explicitly
+    # supplied empty/malformed snapshot fails closed below — never a silent
+    # fall-through to the live resolver.
+    if "market_snapshot" not in game or market != "h2h":
+        return None, False
+    _g_ms = game.get("market_snapshot")
+
+    def _block(reason):
+        record.setdefault("market_pipeline", {})
+        record["market_pipeline"]["status"] = "MARKET_PIPELINE_CONTRACT_BREACH"
+        record["market_pipeline"].setdefault("counters", {})
+        record["notes"].append(
+            f"market pipeline contract breach ({reason}): supplied snapshot "
+            "cannot feed the scorer — analysis blocked (no live re-fetch)")
+        record["failure_paths"] = ["MARKET_PIPELINE_CONTRACT_BREACH"]
+        record["contract_status"] = "EXTERNAL_MARKET_PENDING"
+        return None, True
+
+    try:
+        from gate_engine.moneyline.market_snapshot import (
+            MoneylineMarketSnapshot as _MLSnap,
+            snapshot_to_scorer_enrichment as _ml_to_scorer,
+            snapshot_to_odds_event as _ml_to_event,
+            select_market_from_snapshot as _ml_select,
+            snapshot_two_sided_gap as _ml_two_sided_gap,
+            MARKET_PIPELINE_CONTRACT_BREACH as _ML_BREACH,
+        )
+        snap = _MLSnap.from_dict(_g_ms) if isinstance(_g_ms, dict) else _g_ms
+        _ml_to_scorer(snap)   # stamps books_sent_to_scorer + breach status
+        record["market_pipeline"] = {
+            "event_id": snap.event_id,
+            "status":   snap.status,
+            "counters": dict(snap.counters),
+        }
+        if snap.status == _ML_BREACH:
+            return _block("zero books survived normalization")
+        # Shared two-sided-market validity check: BOTH participants must be
+        # quoted — regardless of which side is requested.  A one-sided
+        # snapshot must never be scored from the surviving side.
+        _missing = _ml_two_sided_gap(snap)
+        if _missing:
+            return _block(
+                f"one-sided snapshot: no quotes for {_missing}")
+        sel = _ml_select(snap, side)
+        if not sel:
+            # Side-specific alignment failure — fail closed, never re-fetch.
+            return _block(
+                f"requested side {side!r} unresolvable against snapshot "
+                f"participants {snap.home_team!r}/{snap.away_team!r}")
+        if sel.get("novig_prob") is None:
+            return _block(
+                f"no valid two-sided market for side {side!r} "
+                "(partial snapshot)")
+        event = _ml_to_event(snap)
+        resolution = _resolve_odds_source(
+            game=game, sport_key=sport_key, sport=sport,
+            fetch_odds_fn=lambda _sk, _ev=event: [_ev],
+            match_event_fn=lambda evs, _a, _h: evs[0] if evs else None,
+            extract_market_fn=lambda _e, m, _s, line=None, _sel=sel: (
+                _sel if m == "h2h" else None),
+            board_date=board_date,
+        )
+        return resolution, False
+    except Exception as exc:
+        # Fail closed: a supplied snapshot must never be silently replaced
+        # by a live re-fetch, even on unexpected errors.
+        return _block(f"snapshot consumption error: {str(exc)[:80]}")
+
+
 def _llp_analyze_one(game, default_sport, board_date):
     """Analyze a single game/market and return the per-game record."""
     sport_in = (game.get("sport") or default_sport or "").lower().strip()
@@ -16802,13 +18428,36 @@ def _llp_analyze_one(game, default_sport, board_date):
     #   →  3. PrizePicks two-way reconstruction  →  4. DATA_UNOBTAINABLE
     # Only step 4 causes an early return; steps 2-3 allow scoring to continue
     # at a capped label (LLP_SCOUT max, stake_tier=PASS, big_stake=BLOCKED).
-    _resolution = _resolve_odds_source(
-        game=game, sport_key=sport_key, sport=sport,
-        fetch_odds_fn=_llp_fetch_odds,
-        match_event_fn=_llp_match_event,
-        extract_market_fn=_llp_extract_market,
-        board_date=board_date,
+    # WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT: when the caller supplies
+    # a normalized market snapshot, it IS the market source — no live fetch,
+    # no re-extraction.  A snapshot handoff breach blocks analysis entirely.
+    _snap_resolution, _snap_blocked = _llp_resolve_market_from_snapshot(
+        game, record, market, side, board_date, sport_key, sport,
     )
+    if _snap_blocked:
+        return record
+    if _snap_resolution is not None:
+        _resolution = _snap_resolution
+    else:
+        # No snapshot supplied (or snapshot unusable for this side): live
+        # resolver path, matching the event by preserved event_id FIRST —
+        # the fuzzy team-name matcher is only a fallback.
+        _match_event_fn = _llp_match_event
+        _game_event_id = str(game.get("event_id") or "").strip()
+        if _game_event_id:
+            def _match_event_fn(events, away_n, home_n,
+                                _eid=_game_event_id, _fb=_llp_match_event):
+                ev = next((e for e in (events or [])
+                           if str(e.get("id")) == _eid), None)
+                return ev if ev is not None else _fb(events, away_n, home_n)
+
+        _resolution = _resolve_odds_source(
+            game=game, sport_key=sport_key, sport=sport,
+            fetch_odds_fn=_llp_fetch_odds,
+            match_event_fn=_match_event_fn,
+            extract_market_fn=_llp_extract_market,
+            board_date=board_date,
+        )
     if not _resolution.usable:
         record["notes"].append(
             "all odds sources exhausted: " +
@@ -17833,12 +19482,29 @@ def _llp_board_scan(sports, board_date):
             commence = event.get("commence_time")
             if not home or not away:
                 continue
+            # Preserve the raw matched event as a normalized snapshot keyed by
+            # event_id so promotion/scoring consumes THIS snapshot instead of
+            # re-fetching and re-interpreting through a second schema.
+            try:
+                from gate_engine.moneyline.market_snapshot import (
+                    build_snapshot_from_odds_event as _build_ml_snap,
+                )
+                _llp_cache_event_snapshot(
+                    _build_ml_snap(event, sport_up, market_key="h2h",
+                                   aliases=_LLP_TEAM_ALIASES).to_dict()
+                )
+            except Exception as _bs_snap_exc:
+                app.logger.warning(
+                    "board-scan snapshot normalization failed: %s", _bs_snap_exc)
             for side, opp in ((home, away), (away, home)):
                 m = _llp_extract_market(event, "h2h", side)
                 if not m or m.get("novig_prob") is None:
                     continue
                 ranked.append({
                     "sport": sport_up,
+                    # Odds API event id — carried end-to-end so downstream
+                    # dedup/joins never fall back to fuzzy team-name matching.
+                    "event_id": event.get("id"),
                     "home_team": home,
                     "away_team": away,
                     "side": side,
@@ -17965,9 +19631,63 @@ def _llp_board_scan_to_full_run(sports, board_date, top_n):
     postmortem_candidates = []
     for r in promoted:
         game = {"sport": r["sport"], "away": r["away_team"], "home": r["home_team"],
-                "market": "h2h", "side": r["side"]}
+                "market": "h2h", "side": r["side"],
+                # Preserved Odds API event identity — _llp_analyze_one matches
+                # by this id first (no fuzzy re-join for promoted rows).
+                "event_id": r.get("event_id")}
+
+        # WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT: consume the snapshot
+        # cached at board-scan time (by event_id) — the promotion path must not
+        # silently lose books between the scan and the full run.  On a handoff
+        # breach (books fetched but none survive normalization) scoring for
+        # this candidate is BLOCKED with an explicit terminal result.
+        _ml_pipeline_block = None
+        _ml_cache_key = str(r.get("event_id") or "")
+        # Key PRESENCE (not truthiness): a cached-but-empty snapshot must
+        # flow into the analyzer, whose supplied-snapshot validation fails
+        # closed — it must never be silently skipped and re-fetched.
+        if _ml_cache_key in _LLP_EVENT_SNAPSHOT_CACHE:
+            _ml_snap_dict = _LLP_EVENT_SNAPSHOT_CACHE.get(_ml_cache_key)
+            # Attach FIRST (presence semantics): even if parsing below fails,
+            # the analyzer receives the supplied snapshot and its fail-closed
+            # validation blocks — never a silent omission + live re-fetch.
+            game["market_snapshot"] = (
+                _ml_snap_dict if isinstance(_ml_snap_dict, dict) else {})
+            try:
+                from gate_engine.moneyline.market_snapshot import (
+                    MoneylineMarketSnapshot as _MLSnap,
+                    snapshot_to_scorer_enrichment as _ml_to_scorer,
+                    MARKET_PIPELINE_CONTRACT_BREACH as _ML_BREACH,
+                )
+                _snap_obj = _MLSnap.from_dict(_ml_snap_dict)
+                _ml_scorer_enr = _ml_to_scorer(_snap_obj)
+                _ml_pipeline_block = {
+                    "event_id": _snap_obj.event_id,
+                    "status":   _snap_obj.status,
+                    "counters": dict(_snap_obj.counters),
+                }
+                if _snap_obj.status == _ML_BREACH:
+                    full_run_results.append({
+                        "sport": r["sport"], "home_team": r["home_team"],
+                        "away_team": r["away_team"], "side": r["side"],
+                        "label": "LLP_SCOUT", "stake_units": 0,
+                        "message": ("Market pipeline contract breach: books "
+                                    "were fetched but none reached the scorer "
+                                    "— scoring blocked for this candidate."),
+                        "failure_tags": list(_LLP_BOARD_SCAN_FALLBACK_TAGS)
+                                        + [_ML_BREACH],
+                        "market_pipeline": _ml_pipeline_block,
+                    })
+                    continue
+                game["sportsbook_odds"] = _ml_scorer_enr["sportsbook_odds"]
+            except Exception:
+                app.logger.exception(
+                    "board-scan promotion snapshot handoff failed")
+
         try:
             rec = _llp_analyze_one(game, r["sport"].lower(), board_date)
+            if _ml_pipeline_block is not None:
+                rec["market_pipeline"] = _ml_pipeline_block
         except Exception as e:
             app.logger.exception("LLP board-scan full run failed")
             full_run_results.append({
@@ -18035,6 +19755,8 @@ def _llp_board_scan_to_full_run(sports, board_date, top_n):
             "label_ceiling_reason":      rec.get("label_ceiling_reason"),
             "board_source":              rec.get("board_source"),
             "board_timestamp":           rec.get("board_timestamp"),
+            # Market-snapshot handoff observability (counters/status/event_id)
+            "market_pipeline":           rec.get("market_pipeline"),
         }
         if label in (LLPLabel.SCOUT.value, LLPLabel.CUT.value, LLPLabel.REJECT.value):
             entry["message"] = _LLP_BOARD_SCAN_INCOMPLETE_MESSAGE if label == LLPLabel.SCOUT.value else None
@@ -20385,6 +22107,49 @@ def _run_startup_warmup():
         _ensure_ucl()
     except Exception:
         pass
+    # Cross-worker Odds API quota state (wow_odds_quota_state)
+    try:
+        from gate_engine.pg_odds_quota import ensure_table_exists as _ensure_odds_quota_table
+        _ensure_odds_quota_table()
+    except Exception:
+        pass
+    # WOW-PATCH-2026-08-15 — Pregame snapshot table (wow_pp_pregame_snapshots)
+    try:
+        from gate_engine.pp_pregame_snapshot import ensure_table_standalone as _ensure_pp_snap_table
+        _ensure_pp_snap_table()
+    except Exception:
+        pass
+    # MLB pitcher startup prewarm — fetch today's ESPN probable pitchers and
+    # submit identity + Statcast prefetch jobs to the bounded ThreadPoolExecutor.
+    # Fire-and-forget: returns immediately, jobs run in background workers.
+    # Fail-closed: any error is logged but never raised (non-fatal).
+    try:
+        from gate_engine.mlb.startup_prewarm import (
+            prewarm_today_pitchers as _sp_prewarm_today,
+        )
+        _sp_queued, _sp_errors = _sp_prewarm_today(
+            _pb_lookup_mlbam_id, _get_pitcher_savant
+        )
+        if _sp_errors:
+            import logging as _startup_log_mod
+            _startup_log_mod.getLogger("startup-prewarm").warning(
+                "[startup-prewarm] partial errors (%d): %s",
+                len(_sp_errors),
+                "; ".join(_sp_errors),
+            )
+    except Exception:
+        pass
+
+# WOW-PATCH-2026-08-16: Ensure the Odds API quota table exists SYNCHRONOUSLY
+# before any request can arrive.  The background warmup thread races with the
+# first incoming request; when it loses, fetch_quota_snapshot() hits a missing
+# table and marks degraded=True.  Calling synchronously here (at module load,
+# before the thread starts) guarantees the table is present on first request.
+try:
+    from gate_engine.pg_odds_quota import ensure_table_exists as _ensure_odds_quota_sync
+    _ensure_odds_quota_sync()
+except Exception:
+    pass  # No DATABASE_URL configured; fallback to process-memory is safe
 
 _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
 _bt("startup daemon spawned — app fully ready")
@@ -20460,6 +22225,161 @@ def wow_engine_health():
         "ok":      True,
         "service": "wow-engine",
         "status":  "alive",
+        "build_id":        BUILD_ID,
+        "engine_version":  "v16.5",
+        "capability_flags": {
+            "multipart_image_support":      True,
+            "gate_request_normalization":   True,
+            "structured_pipeline_failures": True,
+            "noaa_ncei_weather_fallback":   True,
+            "backend_failover_classifier":  True,
+        },
+        "source_status_endpoint": "/wow/engine/source-status",
+        "can_execute":     False,
+    }), 200
+
+
+@app.route("/wow/engine/source-status", methods=["GET"])
+def wow_engine_source_status():
+    """
+    GET /wow/engine/source-status
+
+    Concurrent reachability probe for all genuine API-backed data sources.
+    Runs each probe in a thread with a 3-second timeout so the total response
+    time is bounded by the slowest single source, not their sum.
+
+    Sources checked:
+      mlb_stats_api    — statsapi.mlb.com (no auth)
+      nhl_stats_api    — api-web.nhle.com (no auth)
+      balldontlie      — api.balldontlie.io (requires BALLDONTLIE_KEY secret)
+      nws              — api.weather.gov (no auth)
+      open_meteo       — api.open-meteo.com (no auth)
+      noaa_ncei_cdo    — ncei.noaa.gov CDO API (requires NOAA_CDO_TOKEN secret)
+      therundown       — api.the-rundown.io (requires THERUNDOWN_API_KEY; omitted if not set)
+
+    Not checked (no public API — handled by Claude web-search gap-fill):
+      Hockey-Reference, ESPN, Basketball-Reference, FBref, Sofascore,
+      WhoScored, DailyFaceoff, Natural Stat Trick.
+
+    Returns per-source: status (UP|DOWN|TOKEN_MISSING|NOT_CONFIGURED),
+    latency_ms, and http_status.
+    """
+    import os as _os, time as _time
+    import requests as _requests
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    _PROBE_TIMEOUT = 3   # seconds per probe
+
+    def _probe(name: str, url: str, headers: dict | None = None) -> dict:
+        t0 = _time.monotonic()
+        try:
+            r = _requests.get(url, headers=headers or {}, timeout=_PROBE_TIMEOUT,
+                              allow_redirects=True)
+            latency = round((_time.monotonic() - t0) * 1000)
+            if r.status_code < 400:
+                return {"source": name, "status": "UP",
+                        "http_status": r.status_code, "latency_ms": latency}
+            return {"source": name, "status": "DOWN",
+                    "http_status": r.status_code, "latency_ms": latency}
+        except Exception as exc:
+            latency = round((_time.monotonic() - t0) * 1000)
+            return {"source": name, "status": "DOWN",
+                    "http_status": None, "latency_ms": latency,
+                    "error": str(exc)[:120]}
+
+    # Build probe list
+    probes: list[tuple[str, str, dict]] = []
+
+    # MLB Stats API
+    probes.append(("mlb_stats_api",
+                   "https://statsapi.mlb.com/api/v1/sports",
+                   {"User-Agent": "WOW-v16-SourceProbe/1.0"}))
+
+    # NHL Stats API
+    probes.append(("nhl_stats_api",
+                   "https://api-web.nhle.com/v1/standings/now",
+                   {"User-Agent": "WOW-v16-SourceProbe/1.0"}))
+
+    # NWS
+    probes.append(("nws",
+                   "https://api.weather.gov/",
+                   {"User-Agent": _nws_user_agent(),
+                    "Accept":     "application/geo+json"}))
+
+    # Open-Meteo (lightweight current-temp probe)
+    probes.append(("open_meteo",
+                   "https://api.open-meteo.com/v1/forecast"
+                   "?latitude=41.78&longitude=-87.75&current=temperature_2m",
+                   {}))
+
+    results: list[dict] = []
+
+    # BallDontLie — requires API key
+    bdl_key = _os.environ.get("BALLDONTLIE_KEY") or _os.environ.get("balldontlie", "")
+    if bdl_key:
+        probes.append(("balldontlie",
+                       "https://api.balldontlie.io/v1/teams?per_page=1",
+                       {"Authorization": bdl_key}))
+    else:
+        results.append({"source": "balldontlie", "status": "TOKEN_MISSING",
+                        "http_status": None, "latency_ms": None,
+                        "note": "BALLDONTLIE_KEY / balldontlie env var not set"})
+
+    # NOAA/NCEI CDO — requires token
+    ncei_token = _os.environ.get("NOAA_CDO_TOKEN", "")
+    if ncei_token:
+        probes.append(("noaa_ncei_cdo",
+                       "https://www.ncei.noaa.gov/cdo-web/api/v2/datasets?limit=1",
+                       {"token": ncei_token}))
+    else:
+        results.append({"source": "noaa_ncei_cdo", "status": "TOKEN_MISSING",
+                        "http_status": None, "latency_ms": None,
+                        "note": "NOAA_CDO_TOKEN env var not set"})
+
+    # TheRundown — optional; omit if not configured
+    rundown_key = _os.environ.get("THERUNDOWN_API_KEY", "")
+    if rundown_key:
+        probes.append(("therundown",
+                       "https://api.the-rundown.io/sports",
+                       {"apikey": rundown_key}))
+    else:
+        results.append({"source": "therundown", "status": "NOT_CONFIGURED",
+                        "http_status": None, "latency_ms": None,
+                        "note": "THERUNDOWN_API_KEY env var not set — connector not active"})
+
+    # Run probes concurrently
+    with ThreadPoolExecutor(max_workers=len(probes)) as pool:
+        futures = {pool.submit(_probe, name, url, hdrs): name
+                   for name, url, hdrs in probes}
+        for fut in as_completed(futures):
+            try:
+                results.append(fut.result())
+            except Exception as exc:
+                results.append({"source": futures[fut], "status": "DOWN",
+                                 "error": str(exc)[:120]})
+
+    # Sort results by source name for consistent output
+    results.sort(key=lambda r: r["source"])
+
+    up_count   = sum(1 for r in results if r["status"] == "UP")
+    down_count = sum(1 for r in results if r["status"] == "DOWN")
+
+    return jsonify({
+        "ok":           True,
+        "sources":      results,
+        "summary": {
+            "total":    len(results),
+            "up":       up_count,
+            "down":     down_count,
+            "degraded": len(results) - up_count - down_count,
+        },
+        "probe_timeout_seconds": _PROBE_TIMEOUT,
+        "not_checked_note": (
+            "Hockey-Reference, ESPN, Basketball-Reference, FBref, Sofascore, "
+            "WhoScored, DailyFaceoff, and Natural Stat Trick have no public API "
+            "and are handled by Claude web-search gap-fill, not backend connectors."
+        ),
+        "can_execute": False,
     }), 200
 
 
@@ -20615,6 +22535,53 @@ def wow_stage2_health():
         "can_execute":       False,
         "execution_rule":    "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
     }), 200
+
+
+@app.route("/wow/stage2/repair", methods=["POST"])
+def wow_stage2_repair():
+    """
+    POST /wow/stage2/repair
+
+    WOW-PATCH-2026-08-16-REQ5 — On-demand Stage 2 schema repair.
+
+    Forces a re-run of ensure_all_tables() (idempotent DDL) and returns the
+    resulting schema_ready state.  Use when /wow/stage2/health reports
+    schema_ready=false after a failed startup or a DB connectivity hiccup.
+
+    Does NOT change any execution rules:
+      - can_execute always False
+      - DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS always enforced
+
+    Response:
+      { "ok": bool, "schema_ready": bool, "repaired": bool,
+        "last_error": str|null, "can_execute": false }
+    """
+    repaired   = False
+    last_error = None
+    try:
+        from gate_engine.llp_stage2_tables import (
+            ensure_all_tables       as _s2_ensure,
+            get_stage2_schema_health as _s2_health,
+            _TABLES_READY,
+        )
+        was_ready = _TABLES_READY
+        _s2_ensure()
+        schema_health = _s2_health()
+        repaired      = not was_ready and schema_health.get("schema_ready", False)
+        last_error    = schema_health.get("last_error")
+    except Exception as exc:
+        schema_health = {"schema_ready": False, "last_error": str(exc)}
+        last_error    = str(exc)
+
+    schema_ready = schema_health.get("schema_ready", False)
+    return jsonify({
+        "ok":          schema_ready,
+        "schema_ready": schema_ready,
+        "repaired":    repaired,
+        "last_error":  last_error,
+        "can_execute": False,
+        "execution_rule": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+    }), (200 if schema_ready else 503)
 
 
 @app.route("/wow/engine/ready", methods=["GET"])
@@ -20961,6 +22928,84 @@ def gate_engine_run():
     if not raw_rows or not isinstance(raw_rows, list):
         return jsonify({"error": "rows must be a non-empty list"}), 400
 
+    _rows_received = len(raw_rows)
+
+    # ── Schema normalization — no raw request reaches a specialist ──────────
+    # Validate that every row's mapping fields are objects and list fields are
+    # arrays.  A bare status string ("RETRIEVED") causes AttributeError inside
+    # the failure-path or role-status modules; return 422 before that happens.
+    _rows_normalized    = 0
+    _rows_rejected_schema = 0
+    try:
+        raw_rows = [normalize_gate_request(r) for r in raw_rows]
+        _rows_normalized      = len(raw_rows)
+        _rows_rejected_schema = _rows_received - _rows_normalized
+    except ContractError as exc:
+        _rows_rejected_schema = _rows_received - _rows_normalized
+        return jsonify({
+            "terminal_status":    "DATA_CONTRACT_FAIL",
+            "error_code":         "REQUEST_SCHEMA_INVALID",
+            "field":              exc.field,
+            "expected":           exc.expected,
+            "actual_type":        exc.actual_type,
+            "failed_stage":       "request_normalization",
+            "scoring_execution": {
+                "props_received":       _rows_received,
+                "props_extracted":      _rows_received,
+                "rows_normalized":      _rows_normalized,
+                "rows_rejected_schema": _rows_rejected_schema,
+                "rows_entering_pipeline": 0,
+                "rows_scored":          0,
+                "rows_qualified":       0,
+                "failed_stage":         "request_normalization",
+            },
+            "can_execute":        False,
+        }), 422
+
+    # ── WOW-PATCH-2026-08-07-OUTRIGHT-MONEYLINE-ROUTING ─────────────────────────
+    # Market-family classification runs BEFORE prop normalization.
+    # Every row is stamped with market_family, objective, controlling_skill_id,
+    # route_id, input_contract_version, and required_field_profile.
+    # OUTRIGHT_WINNER rows are intercepted here and scored by the LLP Moneyline
+    # Probability Expert; they never enter _ge_run_pipeline (the prop pipeline).
+    # A routing mismatch (OUTRIGHT_WINNER + PLAYER_PROP in same batch, or
+    # body contract=PLAYER_PROP with OUTRIGHT_WINNER rows) returns HTTP 409
+    # RUN_INVALID_ROUTE_CONFIGURATION — never NO_PLAY.
+    # ─────────────────────────────────────────────────────────────────────────
+    from gate_engine.market_family import (
+        classify_row                         as _mf_classify_row,
+        guard_route_config                   as _mf_guard,
+        partition_and_validate_outright_rows as _mf_partition_outright,
+        MarketFamily                         as _MarketFamily,
+    )
+    for _raw_row in raw_rows:
+        _mf_classify_row(_raw_row)
+
+    _body_input_contract = body.get("input_contract_version")
+    _route_guard_err = _mf_guard(raw_rows, body_input_contract=_body_input_contract)
+    if _route_guard_err:
+        return jsonify(_route_guard_err), 409
+
+    # WOW-PATCH-2026-08-07-BATCH-PARTITION-FIX — Fix #3: Batch Failure Isolation
+    # Partition OUTRIGHT_WINNER rows from player-prop rows before any pipeline
+    # runs.  Each lane is validated and scored independently.  A failure in the
+    # moneyline lane (contract violation, missing field) does NOT reject valid
+    # player-prop rows in the same request — it only fails that specific row.
+    _all_outright_rows = [
+        r for r in raw_rows if r.get("market_family") == _MarketFamily.OUTRIGHT_WINNER
+    ]
+    raw_rows = [
+        r for r in raw_rows if r.get("market_family") != _MarketFamily.OUTRIGHT_WINNER
+    ]
+    # Per-row MONEYLINE_V1 contract validation — valid rows go to the moneyline
+    # scorer; invalid rows get a per-row DATA_CONTRACT_FAIL entry in the response.
+    _ow_partition                = _mf_partition_outright(_all_outright_rows)
+    _outright_rows_for_moneyline = _ow_partition["valid"]
+    _outright_rows_invalid       = _ow_partition["invalid"]   # [{"row":…,"violations":[…]}]
+    # Keep a combined reference for invocation audit (must cover all market families)
+    _all_raw_rows_for_audit = _all_outright_rows + raw_rows
+    # ─────────────────────────────────────────────────────────────────────────
+
     target_date = None
     if body.get("target_date"):
         try:
@@ -21070,11 +23115,32 @@ def gate_engine_run():
                 normalized_rows, base_enrichment=enrichment,
             )
         except Exception as exc:
-            req.log.error("gate_engine_run auto_enrich error: %s", exc)
+            app.logger.error("gate_engine_run auto_enrich error: %s", exc)
             auto_enrichment_status = {"error": str(exc)}
 
-    # Wire session exposure ledger for cross-request persistence
-    _session_exposure_ledger = _get_session_ledger(_session_id)
+    # ── Unconditional game-log pre-fetch ──────────────────────────────────────
+    # fetch_missing_game_logs() runs regardless of the auto_enrich flag.
+    # build_auto_enrichment() above already fetched game logs when auto_enrich
+    # is True, so entries are skipped when game_log is already populated.
+    # When auto_enrich is False (the default for direct /gate-engine/run calls),
+    # this fills the gap so MLB Ks, PA, 1IP, WNBA, and Tennis props are not
+    # blocked by NO_GAME_LOG_PROVIDED at the data-contract gate.
+    try:
+        from gate_engine.auto_enrichment import (
+            fetch_missing_game_logs as _fmgl,
+        )
+        enrichment = _fmgl(raw_rows, enrichment, target_date=target_date)
+    except Exception as _fmgl_err:
+        app.logger.warning("fetch_missing_game_logs error: %s", _fmgl_err)
+
+    # Wire session exposure ledger for cross-request persistence.
+    # IMPORTANT: only create the ledger when this is a card-registration run
+    # (record_entries=True).  Scoring-only / QA runs must NOT write exposure
+    # rows — repeated rescans of the same props otherwise accumulate session
+    # counts and eventually trigger PLAYER_EXPOSURE / ARCHETYPE_EXPOSURE
+    # concentration blockers that have nothing to do with actual card submissions.
+    # Exposure is meaningful only when a card is proposed / open / submitted.
+    _session_exposure_ledger = _get_session_ledger(_session_id) if record_entries else None
 
     # PATCH-PORTFOLIO-001/002: Cross-Slip Exposure Governor
     # Stage 2A: DB-backed when DATABASE_URL is present (cross-request persistence).
@@ -21086,18 +23152,226 @@ def gate_engine_run():
         slate_date=target_date,   # None → PgPortfolioGovernor uses date.today()
     )
 
+    # WOW-PATCH-2026-08-16-REQ4: Refresh stale governance snapshot before scoring.
+    # /wow/engine/ready reports snapshot_is_fresh=false when the cached snapshot
+    # exceeds 300s.  get_or_refresh() is a no-op when already fresh (O(1)) and
+    # triggers a refresh only when stale, ensuring every pipeline call starts
+    # with an up-to-date governance view.
     try:
-        result = _ge_run_pipeline(
-            raw_rows=raw_rows,
-            target_date=target_date,
-            enrichment=enrichment,
-            record_entries=record_entries,
-            existing_ledger=_session_exposure_ledger,
-            portfolio_governor=_portfolio_gov,
+        _ge_get_snapshot().get_or_refresh()
+    except Exception as _snap_exc:
+        app.logger.warning("gate_engine_run: snapshot refresh failed: %s", _snap_exc)
+
+    # WOW-PATCH-2026-08-16-REQ1: Pre-scoring acquisition pre-check.
+    # Runs before the pipeline to verify game-log availability per prop row and
+    # attempt team-data acquisition for OUTRIGHT_WINNER rows.  Produces an
+    # explicit per-row acquisition_report surfaced in the response.
+    _acquisition_report: dict = {}
+    try:
+        from gate_engine.acquisition_orchestrator import run as _acq_run
+        _all_rows_for_acq = list(raw_rows) + list(_outright_rows_for_moneyline)
+        enrichment, _acquisition_report = _acq_run(
+            _all_rows_for_acq,
+            enrichment,
+            target_date=str(target_date) if target_date else None,
+            auto_enrich_attempted=auto_enrich,
         )
-    except Exception as exc:
-        req.log.error("gate_engine_run error: %s", exc)
-        return jsonify({"error": "Gate engine pipeline error", "detail": str(exc)}), 500
+    except Exception as _acq_exc:
+        app.logger.warning("gate_engine_run: acquisition pre-check failed: %s", _acq_exc)
+
+    # ── Player-prop gate pipeline (OUTRIGHT_WINNER rows are already separated) ─
+    if raw_rows:
+        try:
+            result = _ge_run_pipeline(
+                raw_rows=raw_rows,
+                target_date=target_date,
+                enrichment=enrichment,
+                record_entries=record_entries,
+                existing_ledger=_session_exposure_ledger,
+                portfolio_governor=_portfolio_gov,
+            )
+        except Exception as exc:
+            from flask import g as _g
+            app.logger.exception(
+                "gate_engine_run pipeline error",
+                extra={"request_id": getattr(_g, "request_id", None)},
+            )
+            return jsonify({
+                "terminal_status":   "BACKEND_PIPELINE_FAILURE",
+                "decision":          "NO_DECISION",
+                "scoring_completed": False,
+                "primary_failure":   type(exc).__name__,
+                "message":           "Gate engine pipeline error.",
+                "request_id":        getattr(_g, "request_id", None),
+                "can_execute":       False,
+                "scoring_execution": {
+                    "props_received":         _rows_received,
+                    "props_extracted":        _rows_received,
+                    "rows_normalized":        _rows_normalized,
+                    "rows_rejected_schema":   _rows_rejected_schema,
+                    "rows_entering_pipeline": _rows_normalized,
+                    "rows_scored":            0,
+                    "rows_qualified":         0,
+                    "failed_stage":           "pipeline_execution",
+                },
+            }), 500
+    else:
+        # All rows were OUTRIGHT_WINNER — prop pipeline is skipped
+        result = {
+            "prop_ledger":        [],
+            "data_status_ledger": [],
+            "terminal_labels":    [],
+            "final_card":         [],
+            "exposure_report":    {},
+            "clv_table":          [],
+            "summary":            {},
+        }
+
+    # ── LLP Moneyline Probability Expert — score OUTRIGHT_WINNER rows ─────────
+    # WOW-PATCH-2026-08-07-BATCH-PARTITION-FIX Fix #3: per-row failure isolation.
+    #
+    # Step A: Build per-row DATA_CONTRACT_FAIL entries for OUTRIGHT_WINNER rows
+    # that failed MONEYLINE_V1 contract validation.  These are emitted with
+    # failure_isolation="MONEYLINE_LANE_ONLY" so the caller can distinguish
+    # moneyline contract failures from prop-pipeline failures.  Player-prop rows
+    # in the same request are completely unaffected by anything in this block.
+    _ow_failure_results: list = []
+    for _inv in _outright_rows_invalid:
+        _inv_row        = _inv["row"]
+        _inv_violations = _inv["violations"]
+        _ow_failure_results.append({
+            "row_id":                 _inv_row.get("row_id"),
+            "sport":                  _inv_row.get("sport"),
+            "team":                   _inv_row.get("team") or _inv_row.get("player"),
+            "opponent":               _inv_row.get("opponent"),
+            "event_id":               _inv_row.get("event_id"),
+            "slate_date":             _inv_row.get("slate_date"),
+            "market_type":            _inv_row.get("market_type"),
+            "market_family":          "OUTRIGHT_WINNER",
+            "objective":              "OUTRIGHT_WIN_PROBABILITY_ONLY",
+            "controlling_skill":      "wow.llp-moneyline-probability-expert",
+            "input_contract_version": "MONEYLINE_V1",
+            "terminal_label":         "DATA_CONTRACT_FAIL",
+            "blockers": [
+                f"MONEYLINE_V1_CONTRACT_VIOLATION:{v}" for v in _inv_violations
+            ],
+            "contract_violations":    _inv_violations,
+            "failure_isolation":      "MONEYLINE_LANE_ONLY",
+            "model_id":               None,
+            "model_status":           None,
+            "probability_snapshot":   None,
+            "route_compatibility":    None,
+            "platform_appearances":   _inv_row.get("platform_appearances"),
+            "can_execute":            False,
+            "can_approve_bets":       False,
+        })
+
+    # Step B: Score valid OUTRIGHT_WINNER rows through the moneyline specialist.
+    # Runs after the prop pipeline so both result sets can be merged into a
+    # single unified response.  Event deduplication collapses same-game rows
+    # from multiple sportsbooks into one canonical scored entry while preserving
+    # platform-specific settlement metadata.
+    _ow_dedup_map: dict = {}
+    _ow_results:   list = []
+    if _outright_rows_for_moneyline:
+        from gate_engine.moneyline_probability import (
+            score_outright_winner_row as _score_moneyline,
+            deduplicate_events        as _dedup_events,
+        )
+        _ow_deduped, _ow_dedup_map = _dedup_events(_outright_rows_for_moneyline)
+        for _ow_row in _ow_deduped:
+            _ow_row_id = _ow_row.get("row_id") or ""
+            _ow_enr    = dict(enrichment.get(_ow_row_id) or {})
+
+            # WOW-PATCH-2026-08-16-REQ2: Acquire non-market team probability
+            # components before the independence gate.  Populates home_win_pct /
+            # away_win_pct / home_power / away_power from BallDontLie (NBA) or
+            # MLB Stats API (MLB) so sport_model.compute_independent_probability
+            # can produce a non-market ensemble instead of failing with
+            # INDEPENDENT_PROBABILITY_UNAVAILABLE:insufficient_non_market_data.
+            _ow_sport = (_ow_row.get("sport") or "").upper()
+            if _ow_sport in ("NBA", "MLB") and not any(
+                _ow_enr.get(k)
+                for k in ("home_win_pct", "away_win_pct", "home_power", "away_power")
+            ):
+                try:
+                    from gate_engine.moneyline.team_acquisition import acquire_team_data as _acq_team
+                    _team_data = _acq_team(_ow_row, _ow_sport)
+                    if _team_data:
+                        _ow_enr.update(_team_data)
+                        # Persist back into enrichment dict for response transparency
+                        enrichment[_ow_row_id] = _ow_enr
+                except Exception as _ta_exc:
+                    app.logger.debug(
+                        "moneyline team_acquisition failed for %s: %s", _ow_row_id, _ta_exc
+                    )
+
+            # WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT: acquire the
+            # normalized market snapshot at the odds boundary and attach it so
+            # run_moneyline_pipeline stage 0 consumes it directly (single
+            # adapter, per-stage counters, MARKET_PIPELINE_CONTRACT_BREACH
+            # invariant).  Caller-supplied snapshots are respected as-is.
+            # Key PRESENCE (not truthiness): an explicitly supplied snapshot
+            # — even {} — is respected as-is so the pipeline's fail-closed
+            # validation judges it; acquisition only fills a MISSING key.
+            if "market_snapshot" not in _ow_enr:
+                _ow_snap = _ow_acquire_market_snapshot(_ow_row)
+                # Presence semantics: attach whatever acquisition returned
+                # (including a cached empty snapshot) so pipeline stage 0's
+                # fail-closed validation judges it — only a true miss (None)
+                # leaves the key absent.
+                if _ow_snap is not None:
+                    _ow_enr["market_snapshot"] = _ow_snap
+                    enrichment[_ow_row_id] = _ow_enr
+
+            _ow_scored = _score_moneyline(_ow_row, enrichment=_ow_enr)
+            _ow_entry  = {
+                "row_id":               _ow_row.get("row_id"),
+                "sport":                _ow_row.get("sport"),
+                "team":                 _ow_row.get("team") or _ow_row.get("player"),
+                "opponent":             _ow_row.get("opponent"),
+                "event_id":             _ow_row.get("event_id"),
+                "slate_date":           _ow_row.get("slate_date"),
+                "market_type":          _ow_row.get("market_type"),
+                "market_family":        "OUTRIGHT_WINNER",
+                "objective":            "OUTRIGHT_WIN_PROBABILITY_ONLY",
+                "controlling_skill":    "wow.llp-moneyline-probability-expert",
+                "input_contract_version": "MONEYLINE_V1",
+                "terminal_label":       _ow_scored["terminal_label"],
+                "blockers":             _ow_scored["blockers"],
+                "model_id":             _ow_scored.get("model_id"),
+                "model_status":         _ow_scored.get("model_status"),
+                "probability_snapshot": _ow_scored.get("probability_snapshot"),
+                # The specialist object is deliberately separate from the
+                # compatibility terminal ceiling above: it contains no label,
+                # stake, approval, or execution authority and is the only
+                # representation a downstream research ranker may consume.
+                "specialist_probability": _ow_scored.get("specialist_probability"),
+                "route_compatibility":  _ow_scored.get("route_compatibility"),
+                "platform_appearances": _ow_row.get("platform_appearances"),
+                "can_execute":          False,
+                "can_approve_bets":     False,
+            }
+            _ow_results.append(_ow_entry)
+
+    # Step C: Merge all outright results (scored valid rows + per-row contract
+    # failures) into the unified response.  Every input candidate is accounted
+    # for — none are silently dropped.
+    if _ow_results or _ow_failure_results:
+        _all_ow_entries = _ow_results + _ow_failure_results
+        result["prop_ledger"]     = list(result.get("prop_ledger") or []) + _all_ow_entries
+        result["terminal_labels"] = list(result.get("terminal_labels") or []) + [
+            {
+                "row_id":              r["row_id"],
+                "label":               r["terminal_label"],
+                "blockers":            r["blockers"],
+                "route_compatibility": r.get("route_compatibility"),
+            }
+            for r in _all_ow_entries
+        ]
+        result["outright_winner_ledger"]           = _ow_results
+        result["outright_winner_contract_failures"] = _ow_failure_results
+        result["outright_event_dedup_map"]          = _ow_dedup_map
 
     # Detect session-ledger DB failure → fail closed at HTTP level.
     # Any row blocked by SESSION_LEDGER_UNAVAILABLE means we cannot confirm
@@ -21151,6 +23425,23 @@ def gate_engine_run():
     result["as_of"]           = _as_of
     result["exposure_key"]    = _session_id
 
+    # ── Route compatibility summary in governance handshake ──────────────────
+    # Explicit compatibility proof for each market family present in the run.
+    # A run must not begin unless route_id / market_family / objective /
+    # controlling_skill_id / input_contract_version / required_field_profile
+    # all agree (enforced by guard_route_config above; echoed here for audit).
+    _mf_families_seen = list({
+        r.get("market_family", "PLAYER_PROP") for r in _all_raw_rows_for_audit
+    })
+    result["route_compatibility_summary"] = {
+        "market_families_in_run":   _mf_families_seen,
+        "outright_winner_count":    len(_outright_rows_for_moneyline),
+        "player_prop_count":        len(raw_rows),
+        "outright_event_dedup_map": _ow_dedup_map,
+        "compatibility":            "PASS",   # guard_route_config already returned 409 on FAIL
+        "can_execute":              False,
+    }
+
     # ── Invocation audit ─────────────────────────────────────────────────────
     # Must be present in every 200 response regardless of terminal outcome.
     # The GPT treats a response without this block as incomplete runtime evidence
@@ -21160,7 +23451,12 @@ def gate_engine_run():
         resolve_lowest_ceiling    as _resolve_ceiling,
         MANIFEST_GOVERNANCE_HASH,
     )
-    _skills_req  = _det_req_skills(raw_rows)
+    # Use the full row set (prop + outright) so the audit correctly reflects
+    # which skills were required by the entire request.
+    _skills_req  = _det_req_skills(_all_raw_rows_for_audit)
+    # OUTRIGHT_WINNER rows always require the moneyline expert
+    if _outright_rows_for_moneyline:
+        _skills_req = _skills_req | {"wow.llp-moneyline-probability-expert"}
     _skills_inv  = [
         {"skill": sid,
          "version": sid.split(":")[-1] if ":" in sid else "v1",
@@ -21242,6 +23538,78 @@ def gate_engine_run():
         result["validation_status"]          = "VALID_RUNTIME_EVIDENCE"
         result["strict_runtime_disposition"] = "RUN_COMPLETE"
         result["terminal_disposition"]       = "PLAY" if _fc else "NO_PLAY"
+
+    # ── WOW-PATCH-2026-08-07-BACKEND-FAILOVER-RESEARCH ───────────────────────
+    # Attach a failure_classification block to every /gate-engine/run response.
+    # When ALL rows fail without completing candidate evaluation, upgrade the
+    # terminal_disposition from NO_PLAY → RUN_PARTIAL_BACKEND_FAILURE so the
+    # caller cannot confuse a technical data/acquisition gap with a scored
+    # rejection.  Governance failures remain a hard stop and do NOT produce
+    # RUN_PARTIAL_BACKEND_FAILURE — they keep the existing governance disposition.
+    from gate_engine.backend_failure_classifier import (
+        classify_run_failure           as _bfc_classify,
+        build_partial_failure_terminal as _bfc_partial_terminal,
+        validate_source_provenance     as _bfc_validate_provenance,
+    )
+    _bfc_result = _bfc_classify(
+        result,
+        governance_ok=_ev_complete,
+        strict_runtime_disposition=result.get("strict_runtime_disposition", ""),
+    )
+    result["failure_classification"] = _bfc_result
+
+    # Upgrade NO_PLAY → RUN_PARTIAL_BACKEND_FAILURE when rows failed without
+    # completing evaluation OR in a mixed batch (some rows evaluated but none
+    # qualified, and technical failures exist).  Governance failures are a hard
+    # stop and never produce RUN_PARTIAL_BACKEND_FAILURE.
+    _bfc_all_failed = (
+        result.get("terminal_disposition") == "NO_PLAY"
+        and _bfc_result["failure_type"] not in ("GOVERNANCE_FAIL", "NONE")
+        and bool(_bfc_result.get("affected_rows"))
+    )
+    if _bfc_all_failed:
+        result.update(_bfc_partial_terminal(_bfc_result))
+
+    # Validate caller-supplied source_provenance in enrichment entries.
+    # Violations are surfaced as warnings (non-blocking) so reconstruction
+    # metadata is never silently discarded.
+    _provenance_warnings: list[str] = []
+    for _ek, _ev in enrichment.items():
+        if isinstance(_ev, dict) and "source_provenance" in _ev:
+            _pv_violations = _bfc_validate_provenance(_ev["source_provenance"])
+            for _pv in _pv_violations:
+                _provenance_warnings.append(f"{_ek}: {_pv}")
+    if _provenance_warnings:
+        result["source_provenance_warnings"] = _provenance_warnings
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── Scoring execution counters ────────────────────────────────────────
+    # Included in every 200 response so callers can tell where rows were
+    # lost without digging through logs.  rows_qualified = rows in final_card
+    # (the only rows that passed all gates and could be approved).
+    _pl          = result.get("prop_ledger") or []
+    _final_card  = result.get("final_card") or []
+    _QUALIFYING_LABELS = {
+        "FINAL_APPROVED", "MODEL_QUALIFIED_HOLD", "CONDITIONAL",
+        "MONEY_QUALIFIED", "LLP_WATCH", "WATCH",
+    }
+    _rows_scored    = len(_pl)
+    _rows_qualified = len(_final_card) or sum(
+        1 for _r in _pl
+        if _r.get("terminal_label") in _QUALIFYING_LABELS
+    )
+    result["scoring_completed"] = True
+    result["scoring_execution"] = {
+        "props_received":         _rows_received,
+        "props_extracted":        _rows_received,
+        "rows_normalized":        _rows_normalized,
+        "rows_rejected_schema":   _rows_rejected_schema,
+        "rows_entering_pipeline": _rows_normalized,
+        "rows_scored":            _rows_scored,
+        "rows_qualified":         _rows_qualified,
+        "rows_rejected":          max(0, _rows_scored - _rows_qualified),
+        "failed_stage":           None,
+    }
 
     if response_mode == "slim":
         result = _slim_run_result(result)
@@ -22529,8 +24897,11 @@ def kalshi_settle_result():
     # ── NO-side calibration ledger settlement (non-fatal) ─────────────────────
     # When the caller passes no_side_calibration_id (returned by evaluate-contract
     # with side=NO), settle the corresponding no_side_calibration_ledger record.
+    # Task #52: if no_side_calibration_id is absent, surface a warning so the
+    # caller knows a NO-side record may be left orphaned/unsettled.
     _no_cal_settle_result: dict | None = None
     _no_cal_id = body.get("no_side_calibration_id")
+    _no_cal_orphan_warning: str | None = None
     if _no_cal_id:
         try:
             from kalshi_engine import no_side_calibration_ledger as _no_cal_sr
@@ -22543,6 +24914,17 @@ def kalshi_settle_result():
             )
         except Exception as _exc:
             _no_cal_settle_result = {"ok": False, "detail": str(_exc)}
+    else:
+        # Task #52: warn the caller that a NO-side calibration record may be
+        # orphaned.  The evaluate-contract endpoint (side=NO) returns a
+        # no_side_calibration_id when a NO-side paper-trade was logged.
+        # Callers should always pass that ID here to keep the ledger consistent.
+        _no_cal_orphan_warning = (
+            "no_side_calibration_id was not provided.  If evaluate-contract "
+            "returned a no_side_calibration_id for this ticker, that NO-side "
+            "record remains OPEN (orphaned) in no_side_calibration_ledger.  "
+            "Re-call settle-result with no_side_calibration_id to settle it."
+        )
 
     # Optional Claude post-trade review
     review = None
@@ -22565,6 +24947,7 @@ def kalshi_settle_result():
     return jsonify({
         **result,
         "no_side_calibration_settlement": _no_cal_settle_result,
+        "no_side_calibration_orphan_warning": _no_cal_orphan_warning,
         "post_trade_review": review,
         "can_approve_bets":  False,
     }), (201 if result.get("ok") else 400)
@@ -22902,9 +25285,11 @@ def kalshi_gpt_evaluate_weather(city):
         except Exception:
             date_str = _dt.date.today().isoformat()
 
-    # ── Step 1: NWS data ──────────────────────────────────────────────────────
+    # ── Step 1: Weather data (three-tier fallback) ───────────────────────────
+    # NWS CLI (observed settlement high) — NWS only; no substitute permitted.
+    # Forecast high (pre-settlement) — NWS → Open-Meteo → NOAA/NCEI.
     cli_result      = _fetch_nws_cli(city)
-    fc_result       = _fetch_nws_forecast_high(city, date_str)
+    fc_result       = _fetch_forecast_high_tiered(city, date_str)
 
     observed_high   = cli_result.get("observed_high")
     report_status   = cli_result.get("report_status", "ERROR")
@@ -23006,6 +25391,26 @@ def kalshi_gpt_evaluate_weather(city):
     # ── Step 8: Terminal label ─────────────────────────────────────────────────
     terminal_label = _weather_terminal_label_v2(weather_label, brackets_scored, price_gate)
 
+    # WOW-PATCH-2026-08-08: fail-closed guard.
+    # An unknown terminal label must never reach the API response.
+    # No silent remapping — surface the defect immediately.
+    if not _validate_wx_terminal_label(terminal_label):
+        app.logger.error(
+            "[KALSHI_WX_LABEL_VIOLATION] route=GET/kalshi/evaluate/weather "
+            "invalid terminal_label=%r city=%s date=%s",
+            terminal_label, city, date_str,
+        )
+        return jsonify({
+            "ok":          False,
+            "status":      "INTERNAL_LABEL_VIOLATION",
+            "detail":      (
+                f"terminal_label={terminal_label!r} is not in the registered "
+                "Kalshi Weather label set — this is a governance defect, not "
+                "a user error; report to maintainers"
+            ),
+            "can_execute": False,
+        }), 500
+
     return jsonify({
         "ok":                     True,
         "city":                   city,
@@ -23014,26 +25419,28 @@ def kalshi_gpt_evaluate_weather(city):
         "station_name":           station["name"],
         "date":                   date_str,
         "sigma_f":                sigma_f,
-        "forecast_high":          forecast_high,
-        "forecast_source":        forecast_source,
-        "observed_high":          observed_high,
-        "report_status":          report_status,
-        "revision_risk":          revision_risk,
-        "model_high":             model_high,
-        "scoring_mode":           scoring_mode,
-        "forecast_horizon_hours": round(horizon_hours, 1),
-        "weather_label":          weather_label,
-        "terminal_label":         terminal_label,
-        "brackets_scored":        brackets_scored,
-        "tickers_found":          mkt_result.get("tickers_found", []),
-        "price_source":           effective_price_src,
-        "price_age_minutes":      price_gate.get("price_age_minutes"),
-        "can_execute":            False,
-        "dry_run_only":           True,
-        "execution_rule":         "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
-        "note":                   "Brackets auto-built from live Kalshi market tickers. "
-                                  "For precise scoring, use POST /wow/kalshi/weather/evaluate "
-                                  "with explicit bracket labels.",
+        "forecast_high":              forecast_high,
+        "forecast_source":            forecast_source,
+        "weather_data_source_tier":   fc_result.get("weather_data_source_tier", "nws_primary"),
+        "forecast_tier_detail":       fc_result.get("tier_detail"),
+        "observed_high":              observed_high,
+        "report_status":              report_status,
+        "revision_risk":              revision_risk,
+        "model_high":                 model_high,
+        "scoring_mode":               scoring_mode,
+        "forecast_horizon_hours":     round(horizon_hours, 1),
+        "weather_label":              weather_label,
+        "terminal_label":             terminal_label,
+        "brackets_scored":            brackets_scored,
+        "tickers_found":              mkt_result.get("tickers_found", []),
+        "price_source":               effective_price_src,
+        "price_age_minutes":          price_gate.get("price_age_minutes"),
+        "can_execute":                False,
+        "dry_run_only":               True,
+        "execution_rule":             "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
+        "note":                       "Brackets auto-built from live Kalshi market tickers. "
+                                      "For precise scoring, use POST /wow/kalshi/weather/evaluate "
+                                      "with explicit bracket labels.",
     }), 200
 
 
@@ -23249,6 +25656,203 @@ def _fetch_nws_forecast_high(city: str, date_str: str) -> dict:
                 "error": "No daytime periods in NWS forecast"}
     except Exception as exc:
         return {"forecast_high": None, "forecast_source": "none", "error": str(exc)}
+
+
+# ── WOW-PATCH-2026-08-07-NOAA-NCEI-FALLBACK: Three-tier weather fetch ─────────
+#
+# Tier 1 (nws_primary):        NWS gridpoint forecast — authoritative for
+#                               pre-settlement probability; unchanged.
+# Tier 2 (open_meteo_fallback): Open-Meteo daily max — free, no auth, no key.
+# Tier 3 (noaa_ncei_fallback):  NOAA/NCEI GHCND TMAX — requires NOAA_CDO_TOKEN.
+#
+# NOTE: NWS CLI (observed_high) is NEVER substituted — it is the only valid
+# Kalshi contract settlement source.  The tiered fallback applies ONLY to the
+# pre-settlement forecast path.
+
+def _fetch_open_meteo_daily_high(city: str, date_str: str) -> dict:
+    """
+    Fetch the daily maximum temperature for a Kalshi city and date from Open-Meteo.
+    Uses the archive API for past dates, the standard forecast API for future dates.
+    Returns {"forecast_high": int|None, "forecast_source": str, ...}
+    """
+    import requests, datetime as _dt
+    station = _KALSHI_WEATHER_STATIONS.get(city)
+    if not station:
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": f"Unknown city: {city}"}
+
+    lat, lon = station["lat"], station["lon"]
+
+    try:
+        today  = _dt.date.today()
+        target = _dt.date.fromisoformat(date_str)
+
+        if target < today:
+            # Historical: use Open-Meteo archive API
+            url    = "https://archive-api.open-meteo.com/v1/archive"
+            params = {
+                "latitude":          lat,
+                "longitude":         lon,
+                "start_date":        date_str,
+                "end_date":          date_str,
+                "daily":             "temperature_2m_max",
+                "temperature_unit":  "fahrenheit",
+                "timezone":          "auto",
+            }
+        else:
+            # Forecast: standard Open-Meteo API
+            days_ahead = (target - today).days + 1
+            url    = "https://api.open-meteo.com/v1/forecast"
+            params = {
+                "latitude":          lat,
+                "longitude":         lon,
+                "daily":             "temperature_2m_max",
+                "temperature_unit":  "fahrenheit",
+                "timezone":          "auto",
+                "forecast_days":     min(max(days_ahead + 1, 2), 16),
+            }
+
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        data  = r.json()
+        daily = data.get("daily", {})
+        dates = daily.get("time", [])
+        highs = daily.get("temperature_2m_max", [])
+
+        for d, h in zip(dates, highs):
+            if d == date_str and h is not None:
+                return {
+                    "forecast_high":   round(h),
+                    "forecast_source": (
+                        "open_meteo_archive" if target < today else "open_meteo_forecast"
+                    ),
+                }
+
+        # Exact date not in response — return first available value
+        if highs and highs[0] is not None:
+            return {
+                "forecast_high":   round(highs[0]),
+                "forecast_source": "open_meteo_nearest",
+                "note":            f"nearest available date, not exact {date_str}",
+            }
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": "Open-Meteo returned no data for requested date"}
+    except Exception as exc:
+        return {"forecast_high": None, "forecast_source": "none", "error": str(exc)}
+
+
+def _fetch_noaa_ncei_daily_high(city: str, date_str: str) -> dict:
+    """
+    Fetch the daily maximum temperature for a Kalshi city and date from the
+    NOAA/NCEI CDO API (GHCND dataset, TMAX datatype).
+    Reuses _NCEI_CDO_STATION_IDS and _ncei_cdo_get helpers.
+    Returns {"forecast_high": int|None, "forecast_source": str, ...}
+    """
+    station_ghcnd = _NCEI_CDO_STATION_IDS.get(city)
+    if not station_ghcnd:
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": f"No NCEI GHCND station ID mapped for {city}"}
+
+    result = _ncei_cdo_get("data", {
+        "datasetid":  "GHCND",
+        "stationid":  station_ghcnd,
+        "datatypeid": "TMAX",
+        "startdate":  date_str,
+        "enddate":    date_str,
+        "units":      "standard",   # requests °F; may still return tenths-of-°C
+        "limit":      1,
+    })
+
+    if not result.get("ok"):
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": result.get("reason", "NCEI fetch failed"),
+                "source_status": result.get("source_status")}
+
+    records = (result.get("data") or {}).get("results") or []
+    if not records:
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": f"NCEI returned no TMAX records for {date_str}",
+                "source_status": "NO_DATA"}
+
+    tmax_raw = records[0].get("value")
+    if tmax_raw is None:
+        return {"forecast_high": None, "forecast_source": "none",
+                "error": "NCEI TMAX value is null"}
+
+    # Magnitude detection (same pattern as calibration route):
+    # units=standard should return °F but sometimes delivers tenths-of-°C
+    v = float(tmax_raw)
+    tmax_f = round((v / 10.0 * 9.0 / 5.0) + 32.0) if v > 150 else round(v)
+
+    return {
+        "forecast_high":   tmax_f,
+        "forecast_source": "noaa_ncei_ghcnd",
+        "ncei_station":    station_ghcnd,
+        "ncei_raw_value":  tmax_raw,
+    }
+
+
+def _fetch_forecast_high_tiered(city: str, date_str: str) -> dict:
+    """
+    Fetch the pre-settlement daily high temperature using a three-tier fallback:
+
+      Tier 1  nws_primary         — NWS gridpoint forecast
+      Tier 2  open_meteo_fallback  — Open-Meteo forecast / archive
+      Tier 3  noaa_ncei_fallback   — NOAA/NCEI GHCND TMAX
+
+    Returns all fields of the winning source's result plus:
+      weather_data_source_tier  str   — which tier was used
+      tier_detail               dict  — per-tier attempt summary (for audit)
+
+    The weather-settlement-auditor skill reads weather_data_source_tier to
+    determine which source populated the scoring model.
+    """
+    tier_detail: dict = {}
+
+    # ── Tier 1: NWS ────────────────────────────────────────────────────────
+    nws = _fetch_nws_forecast_high(city, date_str)
+    tier_detail["nws"] = {
+        "attempted":  True,
+        "ok":         nws.get("forecast_high") is not None,
+        "error":      nws.get("error"),
+    }
+    if nws.get("forecast_high") is not None:
+        return {**nws,
+                "weather_data_source_tier": "nws_primary",
+                "tier_detail": tier_detail}
+
+    # ── Tier 2: Open-Meteo ─────────────────────────────────────────────────
+    om = _fetch_open_meteo_daily_high(city, date_str)
+    tier_detail["open_meteo"] = {
+        "attempted":  True,
+        "ok":         om.get("forecast_high") is not None,
+        "error":      om.get("error"),
+    }
+    if om.get("forecast_high") is not None:
+        return {**om,
+                "weather_data_source_tier": "open_meteo_fallback",
+                "tier_detail": tier_detail}
+
+    # ── Tier 3: NOAA/NCEI ──────────────────────────────────────────────────
+    ncei = _fetch_noaa_ncei_daily_high(city, date_str)
+    tier_detail["noaa_ncei"] = {
+        "attempted":      True,
+        "ok":             ncei.get("forecast_high") is not None,
+        "error":          ncei.get("error"),
+        "source_status":  ncei.get("source_status"),
+    }
+    if ncei.get("forecast_high") is not None:
+        return {**ncei,
+                "weather_data_source_tier": "noaa_ncei_fallback",
+                "tier_detail": tier_detail}
+
+    # ── All tiers exhausted ────────────────────────────────────────────────
+    return {
+        "forecast_high":            None,
+        "forecast_source":          "none",
+        "weather_data_source_tier": "all_sources_failed",
+        "tier_detail":              tier_detail,
+    }
 
 
 # ── WEATHER PATCH-002: Gaussian bracket probability ───────────────────────────
@@ -23511,6 +26115,33 @@ def _open_meteo_forecast(lat: float, lon: float, timeout: int = 10) -> dict:
         return {"ok": False, "source_status": "FAILED", "reason": str(exc)}
 
 
+def _market_is_open(status: str | None) -> bool:
+    """WOW-PATCH-2026-08-09-KALSHI-WX-ACTIVE-STATUS-NORMALIZATION
+
+    Translate Kalshi's Market object ``status`` field to a boolean indicating
+    whether the market is in a state where orderbook/price-gate evaluation
+    should proceed.
+
+    Kalshi REST API market lifecycle statuses (OpenAPI spec):
+      initialized  — not yet at open_time; NOT open
+      inactive     — temporarily deactivated by exchange; NOT open
+      active       — live trading window; treated as OPEN  ← the fix
+      closed       — no longer accepting new orders; NOT open
+      determined   — result determined, awaiting settlement; NOT open
+      disputed     — resolution under review; NOT open
+      amended      — terms amended post-close; NOT open
+      finalized    — fully settled; NOT open
+
+    The outbound query filter ``status=open`` sent to the Kalshi API is
+    Kalshi's own filter vocabulary (maps to active markets server-side) and
+    is correct as-is; ONLY the returned Market object's status field is
+    interpreted here — not the query parameter.
+
+    Fail-closed: any unrecognized string, empty string, or None → False.
+    """
+    return status == "active"
+
+
 def _fetch_kalshi_nhigh_markets(series: str, date_str: str) -> dict:
     """Connector 4a: Fetch open NHIGH bracket markets for a series + date.
     Uses direct Kalshi public REST API (not kalshi_engine wrapper).
@@ -23540,7 +26171,14 @@ def _fetch_kalshi_nhigh_markets(series: str, date_str: str) -> dict:
     if not date_markets:
         date_markets = markets   # fall back to all returned if no date filter matches
 
-    any_open      = any((m.get("status") or "") == "open" for m in date_markets)
+    # WOW-PATCH-2026-08-09-KALSHI-WX-ACTIVE-STATUS-NORMALIZATION
+    # Use _market_is_open() to normalise Kalshi's returned status vocabulary.
+    # Kalshi returns status="active" for live markets; the old inline check
+    # compared against "open" (only a valid query-filter parameter, never a
+    # response field value), so any_open was permanently False and
+    # KALSHI_PLAYABLE_LIMIT_ONLY was structurally unreachable via the live
+    # price path.  _market_is_open() is fail-closed: unknown/None → False.
+    any_open      = any(_market_is_open(m.get("status")) for m in date_markets)
     market_status = "open" if any_open else ("closed" if date_markets else None)
     tickers_found = [m.get("ticker", "") for m in date_markets]
 
@@ -23757,15 +26395,46 @@ def _apply_weather_price_gate(
     return _block("Unknown price_source", "KALSHI_DATA_UNOBTAINABLE")
 
 
+# ── WOW-PATCH-2026-08-08-KALSHI-WX-TERMINAL-LABEL-FAIL-CLOSED ────────────────
+# Canonical registry of confirmed-reachable Kalshi Weather terminal labels.
+#
+# The authoritative frozenset definition lives in:
+#   gate_engine/kalshi_wx_terminal_labels.py
+# It is imported here (as a private alias) so that:
+#   (a) app.py's _validate_wx_terminal_label() continues to work unchanged, and
+#   (b) the shadow-pilot taxonomy registry (gate_engine/kalshi_wx_shadow_registry.py)
+#       can import the same object — one definition, no duplication.
+#
+# Do NOT add a label here until its code path in _weather_terminal_label_v2()
+# is confirmed reachable.  Intentionally excluded (docstring-only, unreachable):
+#   KALSHI_REJECT_THIN_BOOK
+#   KALSHI_REJECT_FEE_DRAG
+from gate_engine.kalshi_wx_terminal_labels import (
+    KALSHI_WX_TERMINAL_LABEL_REGISTRY as _KALSHI_WX_TERMINAL_LABEL_REGISTRY,
+    validate_wx_terminal_label as _validate_wx_terminal_label,  # single implementation
+)
+# WOW-PATCH-2026-08-16-AUDIT fix (gap 2): _validate_wx_terminal_label is now a
+# direct import alias of the exported module function — not a local duplicate.
+# app.py and the test suite use the same function object, so the production path
+# and the test path cannot diverge.  Do NOT re-define _validate_wx_terminal_label
+# as a local function below this line.
+
+
 def _weather_terminal_label_v2(
     weather_label: str, brackets_scored: list, price_gate: dict
 ) -> str:
     """Map internal WEATHER_* + PATCH-003 price gate to terminal KALSHI_* label.
 
-    Terminal label set (complete):
+    Terminal label set (confirmed-reachable):
       KALSHI_PLAYABLE_LIMIT_ONLY, KALSHI_WATCH, KALSHI_REJECT_NO_EDGE,
-      KALSHI_REJECT_BAD_RULES, KALSHI_REJECT_THIN_BOOK, KALSHI_REJECT_FEE_DRAG,
-      KALSHI_REJECT_UNCALIBRATED, KALSHI_DATA_UNOBTAINABLE
+      KALSHI_REJECT_BAD_RULES, KALSHI_DATA_UNOBTAINABLE
+
+    Intentionally excluded (no route handler assigns the corresponding
+    internal weather_label value, so these branches would be dead code):
+      KALSHI_REJECT_UNCALIBRATED — removed 2026-08-09; re-add only when a
+        calibration-check assigns weather_label="WEATHER_REJECT_UNCALIBRATED"
+        in both route handlers.
+      KALSHI_REJECT_THIN_BOOK, KALSHI_REJECT_FEE_DRAG — future price-gate work
     """
     # PATCH-003 gate override always wins (TF-WX-12, TF-WX-18)
     if price_gate.get("adjusted_terminal_label"):
@@ -23776,8 +26445,6 @@ def _weather_terminal_label_v2(
         return "KALSHI_DATA_UNOBTAINABLE"
     if weather_label == "WEATHER_REJECT_SETTLEMENT":
         return "KALSHI_REJECT_BAD_RULES"
-    if weather_label == "WEATHER_REJECT_UNCALIBRATED":
-        return "KALSHI_REJECT_UNCALIBRATED"
     if weather_label in ("WEATHER_SCOUT", "WEATHER_WATCH"):
         return "KALSHI_WATCH"   # TF-WX-18: WATCH/SCOUT blocks PLAYABLE
 
@@ -24436,9 +27103,11 @@ def wow_kalshi_weather_evaluate():
 
     station = _KALSHI_WEATHER_STATIONS[city]
 
-    # ── Step 1: NWS data ──────────────────────────────────────────────────────
+    # ── Step 1: Weather data (three-tier fallback) ───────────────────────────
+    # NWS CLI (observed settlement high) — NWS only; no substitute permitted.
+    # Forecast high (pre-settlement) — NWS → Open-Meteo → NOAA/NCEI.
     cli_result      = _fetch_nws_cli(city)
-    fc_result       = _fetch_nws_forecast_high(city, date_str)
+    fc_result       = _fetch_forecast_high_tiered(city, date_str)
 
     observed_high   = cli_result.get("observed_high")
     report_status   = cli_result.get("report_status", "ERROR")
@@ -24462,6 +27131,35 @@ def wow_kalshi_weather_evaluate():
 
     # ── Step 2: Forecast horizon (PATCH-002) ──────────────────────────────────
     horizon_hours = _compute_forecast_horizon_hours(date_str, station["tz"])
+
+    # ── Step 10D: Kalshi Weather shadow capture (flag-gated, inert when off) ──
+    # research_snapshot_id is generated here (not inside the capture module) so
+    # the exact same key is available at Step 10D-b after the terminal label is
+    # known, creating a durable link between the two shadow DB rows.
+    # _shadow_rsid is always assigned so Step 10D-b can reference it safely.
+    _shadow_rsid = None
+    if os.environ.get("KALSHI_WX_SHADOW_AGENT_ENABLED", "").strip().lower() == "true":
+        try:
+            import uuid as _shadow_uuid_mod
+            _shadow_rsid = f"wx-capture-{_shadow_uuid_mod.uuid4()}"
+            from gate_engine.kalshi_wx_shadow_capture import (  # noqa: PLC0415
+                maybe_fire_shadow_snapshot as _mfss,
+            )
+            _mfss(
+                research_snapshot_id=_shadow_rsid,
+                city=city,
+                station=station["station"],
+                market_date=date_str,
+                forecast_high=forecast_high,
+                weather_data_source_tier=(
+                    fc_result.get("weather_data_source_tier") or "unknown"
+                ),
+                sigma_f=sigma_f,
+                horizon_hours=horizon_hours,
+                tier_detail=fc_result.get("tier_detail") or {},
+            )
+        except Exception:
+            pass  # shadow failure must never affect the production route
 
     # ── Step 3: Live Kalshi prices (PATCH-003) ────────────────────────────────
     # Explicit price_source override → skip live fetch
@@ -24548,6 +27246,27 @@ def wow_kalshi_weather_evaluate():
     # ── Step 8: Terminal label ────────────────────────────────────────────────
     terminal_label = _weather_terminal_label_v2(weather_label, brackets_scored, price_gate)
 
+    # WOW-PATCH-2026-08-08: fail-closed guard.
+    # An unknown terminal label must never reach the calibration ledger or the
+    # API response.  Suppress the ledger write entirely and return a distinct
+    # governance-violation response.  No silent remapping to a valid label.
+    if not _validate_wx_terminal_label(terminal_label):
+        app.logger.error(
+            "[KALSHI_WX_LABEL_VIOLATION] route=POST/wow/kalshi/weather/evaluate "
+            "invalid terminal_label=%r city=%s date=%s scoring_mode=%s",
+            terminal_label, city, date_str, scoring_mode,
+        )
+        return jsonify({
+            "ok":          False,
+            "status":      "INTERNAL_LABEL_VIOLATION",
+            "detail":      (
+                f"terminal_label={terminal_label!r} is not in the registered "
+                "Kalshi Weather label set — this is a governance defect, not "
+                "a user error; report to maintainers"
+            ),
+            "can_execute": False,
+        }), 500
+
     # ── DST note ─────────────────────────────────────────────────────────────
     try:
         tz      = _zi.ZoneInfo(station["tz"])
@@ -24586,6 +27305,27 @@ def wow_kalshi_weather_evaluate():
             brackets_scored = brackets_scored,
         )
 
+    # ── Step 10D-b: Shadow deterministic outcome capture (flag-gated) ─────────
+    # Runs after terminal_label and price_gate are both finalized — i.e. after
+    # Step 8 and the WEATHER_SCOUT log write — so the outcome row is guaranteed
+    # to contain the real deterministic result, not a pre-computation estimate.
+    # Linked to the snapshot row via the same _shadow_rsid generated at Step 10D.
+    # _shadow_rsid is None when flag is off; the `and _shadow_rsid` check ensures
+    # we only write an outcome row when a matching snapshot row was also written.
+    if os.environ.get("KALSHI_WX_SHADOW_AGENT_ENABLED", "").strip().lower() == "true" and _shadow_rsid:
+        try:
+            from gate_engine.kalshi_wx_shadow_capture import (  # noqa: PLC0415
+                maybe_link_shadow_deterministic_outcome as _mlsdo,
+            )
+            _mlsdo(
+                research_snapshot_id=_shadow_rsid,
+                terminal_label=terminal_label,
+                price_gate_disposition=price_gate.get("trade_block_reason"),
+                can_execute=bool(price_gate.get("can_execute", False)),
+            )
+        except Exception:
+            pass  # shadow failure must never affect the production route
+
     return jsonify({
         # Identity
         "ok":                     True,
@@ -24598,10 +27338,12 @@ def wow_kalshi_weather_evaluate():
         "observed_high":          observed_high,
         "report_status":          report_status,
         "revision_risk":          revision_risk,
-        "forecast_high":          forecast_high,
-        "forecast_source":        forecast_source,
-        "model_high":             model_high,
-        "data_sources":           data_sources,
+        "forecast_high":             forecast_high,
+        "forecast_source":           forecast_source,
+        "weather_data_source_tier":  fc_result.get("weather_data_source_tier", "nws_primary"),
+        "forecast_tier_detail":      fc_result.get("tier_detail"),
+        "model_high":                model_high,
+        "data_sources":              data_sources,
         # PATCH-002 model
         "scoring_mode":           scoring_mode,
         "sigma_f":                sigma_f,               # TF-WX-16
@@ -32242,6 +34984,7 @@ def skills_run():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route('/wow/v16/run', methods=['POST'])
+@require_api_key
 def wow_v16_run():
     """
     POST /wow/v16/run
@@ -32288,6 +35031,23 @@ def wow_v16_run():
         context = request.get_json(force=True) or {}
         orch = SkillOrchestrator()
         result = orch.run(context)
+        # WOW-PATCH-2026-08-19 — runtime provenance (fail-closed, downgrade-only).
+        # Server-authoritative (route registry + in-process probes +
+        # authenticated action identity); caller context can only downgrade.
+        # verify_v16_result() enforces the ceiling for fallback / missing-
+        # backend runs.
+        from gate_engine.runtime_provenance import build_route_provenance
+        result['runtime_provenance'] = build_route_provenance(
+            'wow_v16_run',
+            action_principal=g.get('wow_auth_principal'),
+            caller_context=context.get('runtime_context') or context,
+        )
+        # WOW-PATCH-FMCG-v1.0 — Full Model Contract Gatekeeper (v16 path)
+        # Verify that any final_label == FINAL_APPROVED carries a valid Gatekeeper
+        # PASS from a skill that ran the full-model contract. Fail-closed:
+        # no valid pass → final_label downgraded to MODEL_QUALIFIED_HOLD.
+        from gate_engine import full_model_gatekeeper as _fmcg_v16
+        _fmcg_v16.verify_v16_result(result)
         result['can_execute'] = False
         result['execution_rule'] = 'DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS'
         reg = SkillRegistry.get()
@@ -32522,11 +35282,12 @@ _ODDS_QUOTA_STORE: dict = {
 }
 
 
-def _odds_quota_update(key_tier: str, remaining_str, used_str) -> bool:
+def _odds_quota_update(key_tier: str, remaining_str, used_str, cost_str=None) -> bool:
     """
-    Parse and store quota headers for key_tier ('paid' or 'free').
+    Parse and store quota headers for key_tier.
+    Valid key_tier values: 'paid', 'high' (ODDS_API_KEY_100K), 'free', 'legacy'.
     Returns True when remaining drops below _ODDS_QUOTA_THRESHOLD.
-    Thread-safe.
+    Thread-safe. cost_str is the x-requests-last header value (may be None).
     """
     import datetime as _dt
     try:
@@ -32539,12 +35300,18 @@ def _odds_quota_update(key_tier: str, remaining_str, used_str) -> bool:
     except (TypeError, ValueError):
         used = None
 
+    try:
+        cost = float(cost_str) if cost_str is not None else None
+    except (TypeError, ValueError):
+        cost = None
+
     warning = (remaining is not None) and (remaining < _ODDS_QUOTA_THRESHOLD)
 
     with _ODDS_QUOTA_LOCK:
         _ODDS_QUOTA_STORE[key_tier] = {
             "requests_remaining": remaining,
             "requests_used":      used,
+            "request_cost":       cost,
             "updated_at":         _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
             "quota_warning":      warning,
         }
@@ -32557,7 +35324,7 @@ def _odds_quota_update(key_tier: str, remaining_str, used_str) -> bool:
     if not os.environ.get("PYTEST_CURRENT_TEST"):
         try:
             from gate_engine.pg_odds_quota import persist_quota_update
-            persist_quota_update(key_tier, remaining, used, warning)
+            persist_quota_update(key_tier, remaining, used, warning, cost)
         except Exception:
             pass  # fail-open — quota tracking must never break the caller
     return warning
@@ -32569,7 +35336,7 @@ def _odds_quota_snapshot() -> dict:
         return {k: dict(v) for k, v in _ODDS_QUOTA_STORE.items()}
 
 
-def _odds_quota_snapshot_cross_worker() -> dict:
+def _odds_quota_snapshot_cross_worker() -> tuple:
     """
     Merge the local in-process snapshot with the Postgres cross-worker view
     so GET /wow/odds/quota-status reflects quota consumed by ANY gunicorn
@@ -32579,10 +35346,16 @@ def _odds_quota_snapshot_cross_worker() -> dict:
     Skipped under pytest — the empty-store assertion in
     TestQuotaStatusEndpoint::test_empty_store_returns_200 would become
     flaky if Postgres rows from a different test leaked in.
+
+    Returns (merged_snapshot: dict, data_source: str) where data_source is:
+      "postgres_cross_worker"  — at least one tier came from Postgres
+      "process_memory_fallback" — Postgres returned nothing; using local only
+      "empty"                  — no data in either source
+      "process_memory_pytest"  — running under pytest (Postgres bypassed)
     """
     local = _odds_quota_snapshot()
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        return local
+        return local, "process_memory_pytest"
     try:
         from gate_engine.pg_odds_quota import fetch_quota_snapshot
         remote = fetch_quota_snapshot()
@@ -32593,7 +35366,17 @@ def _odds_quota_snapshot_cross_worker() -> dict:
         local_row = local.get(tier)
         if local_row is None or remote_row.get("updated_at", "") > local_row.get("updated_at", ""):
             merged[tier] = remote_row
-    return merged
+    # Determine authoritative data source for the caller
+    has_postgres = any(
+        v.get("source") == "postgres_cross_worker" for v in merged.values()
+    )
+    if has_postgres:
+        data_source = "postgres_cross_worker"
+    elif merged:
+        data_source = "process_memory_fallback"
+    else:
+        data_source = "empty"
+    return merged, data_source
 
 
 def _verify_wow_action_key():
@@ -32619,19 +35402,39 @@ def _odds_api_request(path, params, prefer_paid=True):
     """
     import requests as _req
 
-    paid_key = os.environ.get("ODDS_API_PAID_KEY", "")
-    free_key  = os.environ.get("ODDS_API_FREE_KEY",  "")
+    paid_key = os.environ.get("ODDS_API_PAID_KEY",  "")
+    high_key = os.environ.get("ODDS_API_KEY_100K",  "")   # high-quota existing key
+    free_key  = os.environ.get("ODDS_API_FREE_KEY", "")
 
+    # key_ladder: paid first when prefer_paid=True, free first otherwise.
+    # ODDS_API_KEY_100K sits between paid and free so it is tried whenever
+    # the primary paid key is exhausted or invalid, before burning free quota.
     key_ladder = (
-        [("paid", paid_key), ("free", free_key)]
+        [("paid", paid_key), ("high", high_key), ("free", free_key)]
         if prefer_paid
-        else [("free", free_key), ("paid", paid_key)]
+        else [("free", free_key), ("high", high_key), ("paid", paid_key)]
     )
 
     errors = []
     for key_tier, key in key_ladder:
         if not key:
             errors.append({"key_tier": key_tier, "error": "key not configured"})
+            continue
+
+        # Proactive quota skip: if in-process quota store shows this tier is
+        # already exhausted (remaining == 0), skip the HTTP round-trip and try
+        # the next key immediately.  This saves a quota-costing network call
+        # and means the 100K key takes over as soon as the paid key hits zero —
+        # not just after the next 429 is received.
+        with _ODDS_QUOTA_LOCK:
+            _tier_quota = _ODDS_QUOTA_STORE.get(key_tier, {})
+        _remaining = _tier_quota.get("requests_remaining")
+        if _remaining is not None and _remaining == 0:
+            errors.append({
+                "key_tier": key_tier,
+                "error":    "proactive_skip:quota_exhausted_in_store",
+                "remaining": 0,
+            })
             continue
 
         try:
@@ -32647,7 +35450,8 @@ def _odds_api_request(path, params, prefer_paid=True):
         if resp.status_code == 200:
             remaining_str = resp.headers.get("x-requests-remaining")
             used_str      = resp.headers.get("x-requests-used")
-            warning = _odds_quota_update(key_tier, remaining_str, used_str)
+            cost_str      = resp.headers.get("x-requests-last")
+            warning = _odds_quota_update(key_tier, remaining_str, used_str, cost_str)
             return {
                 "source_key_tier":    key_tier,
                 "requests_remaining": remaining_str,
@@ -32671,18 +35475,16 @@ def _odds_api_request(path, params, prefer_paid=True):
 
 
 @app.route("/wow/odds/events", methods=["GET"])
+@require_api_key
 def wow_odds_events():
     """
     GET /wow/odds/events
     Query params: sport (required), commence_time_from, commence_time_to,
                   include_rotation_numbers (bool, default false)
     Low-cost event discovery — uses the free key by default.
-    Requires X-WOW-Action-Key header.
+    Requires X-API-Key header (SCORING_API_KEY).
+    Auth migrated from X-WOW-Action-Key to X-API-Key (intentional contract migration).
     """
-    ok, err = _verify_wow_action_key()
-    if not ok:
-        return err
-
     sport = request.args.get("sport", "").strip()
     if not sport:
         return jsonify({"error": "sport is required"}), 400
@@ -32706,18 +35508,16 @@ def wow_odds_events():
 
 
 @app.route("/wow/odds/event-markets", methods=["GET"])
+@require_api_key
 def wow_odds_event_markets():
     """
     GET /wow/odds/event-markets
     Query params: sport (required), event_id (required),
                   regions (default us), bookmakers (csv, optional)
     Returns available sportsbook market keys for one event — paid key by default.
-    Requires X-WOW-Action-Key header.
+    Requires X-API-Key header (SCORING_API_KEY).
+    Auth migrated from X-WOW-Action-Key to X-API-Key (intentional contract migration).
     """
-    ok, err = _verify_wow_action_key()
-    if not ok:
-        return err
-
     sport    = request.args.get("sport",    "").strip()
     event_id = request.args.get("event_id", "").strip()
     if not sport or not event_id:
@@ -32738,6 +35538,7 @@ def wow_odds_event_markets():
 
 
 @app.route("/wow/odds/event-odds", methods=["GET"])
+@require_api_key
 def wow_odds_event_odds():
     """
     GET /wow/odds/event-odds
@@ -32745,12 +35546,9 @@ def wow_odds_event_odds():
                   regions (default us), bookmakers (csv, optional),
                   odds_format (american|decimal, default american)
     Exact two-way pricing for selected markets — paid key by default.
-    Requires X-WOW-Action-Key header.
+    Requires X-API-Key header (SCORING_API_KEY).
+    Auth migrated from X-WOW-Action-Key to X-API-Key (intentional contract migration).
     """
-    ok, err = _verify_wow_action_key()
-    if not ok:
-        return err
-
     sport    = request.args.get("sport",    "").strip()
     event_id = request.args.get("event_id", "").strip()
     markets  = request.args.get("markets",  "").strip()
@@ -32776,29 +35574,31 @@ def wow_odds_event_odds():
 
 
 @app.route("/wow/odds/quota-status", methods=["GET"])
+@require_api_key
 def wow_odds_quota_status():
     """
     GET /wow/odds/quota-status
     Returns the last-known requests_remaining / requests_used for each key
     tier without making a chargeable Odds API call.  Values are updated after
     every successful /wow/odds/* call in this worker process.
-    Requires X-WOW-Action-Key header.
+    Requires X-API-Key header (SCORING_API_KEY).
+    Auth migrated from X-WOW-Action-Key to X-API-Key (intentional contract migration).
     """
-    ok, err = _verify_wow_action_key()
-    if not ok:
-        return err
-
-    snapshot = _odds_quota_snapshot_cross_worker()
+    snapshot, data_source = _odds_quota_snapshot_cross_worker()
     any_warning = any(v.get("quota_warning") for v in snapshot.values())
+    degraded = data_source == "process_memory_fallback"
 
     return jsonify({
         "quota_threshold":     _ODDS_QUOTA_THRESHOLD,
         "quota_warning":       any_warning,
         "tiers":               snapshot,
+        "data_source":         data_source,
+        "degraded":            degraded,
         "note": (
             "Values reflect the last successful Odds API call across all "
             "gunicorn workers (cross-worker state via Postgres). "
-            "Tiers are empty only when no calls have been made since startup."
+            "Tiers are empty only when no calls have been made since startup. "
+            "degraded=true means Postgres was unavailable; process memory used as fallback."
         ),
     }), 200
 
@@ -32922,6 +35722,1724 @@ def wow_normalize_legs():
         "rows": rows_out,
         "summary": summary,
     }), 200
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WOW Sports Intelligence Command Center — Phase 1
+# /wow/cc/*  routes
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cc_module():
+    """Lazy import of the command_center package (avoids module-level side effects)."""
+    from gate_engine import command_center as cc
+    return cc
+
+
+@app.route("/wow/cc/health", methods=["GET"])
+@require_api_key
+def wow_cc_health():
+    """
+    GET /wow/cc/health
+    Lightweight health check — verifies the CC module can be imported
+    and returns its governance constants.  No external I/O.
+    """
+    try:
+        cc = _cc_module()
+        return jsonify({
+            "ok": True,
+            "status": "COMMAND_CENTER_HEALTHY",
+            "can_execute":           cc.CAN_EXECUTE,
+            "dry_run_only":          cc.DRY_RUN_ONLY,
+            "kalshi_recovery_mode":  cc.KALSHI_RECOVERY_MODE,
+            "all_families":          sorted(cc.ALL_FAMILIES),
+            "ceiling_order_count":   len(cc.CEILING_ORDER),
+        }), 200
+    except Exception as exc:
+        app.logger.exception("CC health check failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/cc/intake", methods=["POST"])
+@require_api_key
+def wow_cc_intake():
+    """
+    POST /wow/cc/intake
+    Phase A — validate and route candidates.
+
+    Body (JSON):
+      {
+        "candidates":   [...],   // list of raw candidate dicts
+        "session_id":   "...",   // optional
+        "run_id":       "...",   // optional; generated if absent
+        "target_date":  "YYYY-MM-DD"
+      }
+
+    Returns: routing manifest — does NOT call any engine.
+    """
+    try:
+        body       = request.get_json(force=True) or {}
+        candidates = body.get("candidates") or []
+        session_id = body.get("session_id", "")
+        run_id     = body.get("run_id", "")
+        target_date = body.get("target_date", "")
+
+        if not isinstance(candidates, list):
+            return jsonify({
+                "ok": False,
+                "error": "CC_INTAKE_INVALID_REQUEST",
+                "detail": "'candidates' must be a list",
+            }), 400
+
+        cc = _cc_module()
+        manifest = cc.run_intake(
+            raw_candidates=candidates,
+            session_id=session_id,
+            run_id=run_id,
+            target_date=target_date,
+        )
+        return jsonify({"ok": True, **manifest}), 200
+
+    except Exception as exc:
+        app.logger.exception("CC intake error")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/cc/run", methods=["POST"])
+@require_api_key
+def wow_cc_run():
+    """
+    POST /wow/cc/run
+    Phase B — full orchestration.
+
+    Body (JSON):
+      {
+        "candidates":      [...],        // raw candidate dicts
+        "engine_results":  {             // optional; keyed by candidate_id
+          "<candidate_id>": { ... }
+        },
+        "session_id":      "...",
+        "run_id":          "...",
+        "target_date":     "YYYY-MM-DD",
+        "freshness_window_minutes": 30   // optional; default 30
+      }
+
+    Returns: full CC output envelope with per-candidate results + summary.
+    """
+    try:
+        body           = request.get_json(force=True) or {}
+        candidates     = body.get("candidates") or []
+        engine_results = body.get("engine_results") or None
+        session_id     = body.get("session_id", "")
+        run_id         = body.get("run_id", "")
+        target_date    = body.get("target_date", "")
+        freshness_window = int(body.get("freshness_window_minutes", 30))
+
+        if not isinstance(candidates, list):
+            return jsonify({
+                "ok": False,
+                "error": "CC_RUN_INVALID_REQUEST",
+                "detail": "'candidates' must be a list",
+            }), 400
+
+        # WOW-PATCH-2026-08-19 — server-authoritative runtime provenance
+        # propagated onto every CC envelope before gatekeeper verification.
+        from gate_engine.runtime_provenance import build_route_provenance
+        _cc_prov = build_route_provenance(
+            "wow_cc_run",
+            action_principal=g.get("wow_auth_principal"),
+            caller_context=body.get("runtime_context"),
+        )
+
+        cc = _cc_module()
+        result = cc.run_command_center(
+            raw_candidates=candidates,
+            engine_results=engine_results,
+            session_id=session_id,
+            run_id=run_id,
+            target_date=target_date,
+            freshness_window_minutes=freshness_window,
+            runtime_provenance=_cc_prov,
+        )
+        return jsonify({"ok": True, "runtime_provenance": _cc_prov, **result}), 200
+
+    except Exception as exc:
+        app.logger.exception("CC run error")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/cc/status/<run_id>", methods=["GET"])
+@require_api_key
+def wow_cc_status(run_id):
+    """
+    GET /wow/cc/status/<run_id>
+    Lightweight run-status endpoint.
+
+    Phase 1 is stateless — runs are not persisted.  Returns a diagnostic
+    payload confirming the run_id was received and the CC module is healthy.
+    Full run persistence (database-backed run log) is a Phase 2 concern.
+    """
+    try:
+        cc = _cc_module()
+        return jsonify({
+            "ok":       True,
+            "run_id":   run_id,
+            "status":   "STATELESS_PHASE1",
+            "note":     (
+                "Phase 1 CC runs are not persisted. "
+                "Re-submit the run via POST /wow/cc/run to retrieve results."
+            ),
+            "can_execute":          cc.CAN_EXECUTE,
+            "kalshi_recovery_mode": cc.KALSHI_RECOVERY_MODE,
+        }), 200
+    except Exception as exc:
+        app.logger.exception("CC status error")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/cc/reconcile", methods=["POST"])
+@require_api_key
+def wow_cc_reconcile():
+    """
+    POST /wow/cc/reconcile
+    Explicit row-level reconciliation call.
+
+    Body (JSON):
+      {
+        "rows": [...]    // list of already-processed CC candidate envelopes
+      }
+
+    Runs reconciliation rules R-01 through R-10 and returns pass/fail
+    per row + a batch summary.
+    """
+    try:
+        from gate_engine.command_center.reconciliation import reconcile_batch
+        body = request.get_json(force=True) or {}
+        rows = body.get("rows") or []
+        if not isinstance(rows, list):
+            return jsonify({
+                "ok": False,
+                "error": "CC_RECONCILE_INVALID_REQUEST",
+                "detail": "'rows' must be a list",
+            }), 400
+        report = reconcile_batch(rows)
+        return jsonify({"ok": True, "rows": rows, "reconciliation_report": report}), 200
+
+    except Exception as exc:
+        app.logger.exception("CC reconcile error")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Settled Slip Image Ingestion — Parse → Confirm two-step workflow
+# ---------------------------------------------------------------------------
+# Routes:
+#   POST /wow/settle-slip/parse-image  — Step 1: vision parse, NO ledger write
+#   POST /wow/settle-slip/confirm      — Step 2: human corrections + commit
+#   GET  /wow/settle-slip/drafts       — list pending drafts
+#
+# Design: PrizePicks slip screenshots are error-prone for vision models —
+# offer-type icons have historically been misclassified, and stake vs payout
+# ordering is ambiguous from position alone.  This path NEVER auto-writes to
+# cm_settled_slips from a single call.  A human must review the parsed draft
+# and explicitly POST /confirm before any financial record is committed.
+# ---------------------------------------------------------------------------
+
+_CM_SETTLEMENT_DRAFT_DDL = """
+CREATE TABLE IF NOT EXISTS cm_settlement_drafts (
+    draft_id        TEXT PRIMARY KEY,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    parsed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    image_filename  TEXT,
+    media_type      TEXT,
+    raw_claude_json JSONB,
+    draft_payload   JSONB NOT NULL,
+    needs_review    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    committed_at    TIMESTAMPTZ,
+    settled_id      TEXT
+);
+CREATE INDEX IF NOT EXISTS cm_settlement_drafts_status_idx
+    ON cm_settlement_drafts(status, parsed_at DESC);
+"""
+
+_draft_table_ready: bool = False
+
+
+def _ensure_draft_table() -> None:
+    """Create cm_settlement_drafts if it doesn't exist (lazy, once per process)."""
+    global _draft_table_ready
+    if _draft_table_ready:
+        return
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_CM_SETTLEMENT_DRAFT_DDL)
+            conn.commit()
+        _draft_table_ready = True
+    except Exception as _e:
+        app.logger.warning(f"cm_settlement_drafts DDL skipped: {_e}")
+
+
+# ---------------------------------------------------------------------------
+# Shared settlement-commit core
+# Used by /confirm to avoid duplicating the math in cm_settle_slip().
+# The existing cm_settle_slip() handler is intentionally left unmodified.
+# ---------------------------------------------------------------------------
+
+def _settle_slip_core(body: dict) -> "tuple[dict, str | None]":
+    """Write one settled-slip record using the same logic as POST /wow/settle-slip.
+
+    Accepts the same field set as that route.
+    Returns (result_dict, error_msg); on success error_msg is None.
+    Kept intentionally in sync with cm_settle_slip() — if that handler changes,
+    update this function too.
+    """
+    import hashlib as _hl
+
+    slip_id               = (body.get("slip_id") or "").strip()
+    entry_amount          = body.get("entry_amount")
+    gross_return          = body.get("gross_return")
+    platform_result_label = (body.get("platform_result_label") or "").strip()
+
+    if not slip_id:
+        return {}, "slip_id required"
+    if entry_amount is None or gross_return is None:
+        return {}, "entry_amount and gross_return required"
+
+    try:
+        entry_f  = float(entry_amount)
+        gross_f  = float(gross_return)
+        net_f    = round(gross_f - entry_f, 4)
+        positive_net       = net_f > 0
+        full_card_hit_bool = bool(body.get("full_card_hit", False))
+    except (TypeError, ValueError) as exc:
+        return {}, f"numeric parse error: {exc}"
+
+    legs_data     = body.get("legs") or []
+    process_label = body.get("process_label")
+    if not process_label:
+        entry_documented = False
+        try:
+            with _cm_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM cm_daily_exposure WHERE slip_id=%s LIMIT 1",
+                        (slip_id,)
+                    )
+                    if cur.fetchone():
+                        entry_documented = True
+                    else:
+                        cur.execute(
+                            "SELECT 1 FROM cm_slips WHERE slip_id=%s LIMIT 1",
+                            (slip_id,)
+                        )
+                        if cur.fetchone():
+                            entry_documented = True
+        except Exception:
+            entry_documented = False
+
+        if full_card_hit_bool and positive_net and entry_documented:
+            process_label = "PROCESS_PASS_WIN"
+        elif entry_documented:
+            process_label = "PROCESS_PASS_VARIANCE_LOSS"
+        else:
+            process_label = "UNRESOLVED"
+
+    settled_id = f"settled_{slip_id}_{_hl.md5(slip_id.encode()).hexdigest()[:6]}"
+
+    enriched_legs = []
+    for leg in legs_data:
+        l = dict(leg)
+        l.setdefault("duplicate_adjusted_weight", 1.0)
+        l.setdefault("failure_category", leg.get("observed_failure_category"))
+        enriched_legs.append(l)
+
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO cm_settled_slips (
+                          settled_id, slip_id, board_id, platform, slip_type,
+                          leg_count, entry_amount, gross_return, net_profit,
+                          platform_result_label, full_card_hit, positive_net_return,
+                          displayed_multiplier, predicted_joint_probability,
+                          joint_probability_lower_bound, actual_result,
+                          weakest_leg_id, critical_leg_index, slip_fragility_score,
+                          fragility_label, process_label, leg_details
+                       ) VALUES (
+                          %s,%s,%s,%s,%s,
+                          %s,%s,%s,%s,
+                          %s,%s,%s,
+                          %s,%s,
+                          %s,%s,
+                          %s,%s,%s,
+                          %s,%s,%s::jsonb
+                       )
+                       ON CONFLICT (settled_id) DO UPDATE SET
+                          gross_return          = EXCLUDED.gross_return,
+                          net_profit            = EXCLUDED.net_profit,
+                          platform_result_label = EXCLUDED.platform_result_label,
+                          full_card_hit         = EXCLUDED.full_card_hit,
+                          positive_net_return   = EXCLUDED.positive_net_return,
+                          process_label         = EXCLUDED.process_label,
+                          leg_details           = EXCLUDED.leg_details
+                    """,
+                    (
+                        settled_id,
+                        slip_id,
+                        body.get("board_id"),
+                        body.get("platform", "PrizePicks"),
+                        body.get("slip_type"),
+                        body.get("leg_count"),
+                        entry_f, gross_f, net_f,
+                        platform_result_label,
+                        full_card_hit_bool,
+                        positive_net,
+                        body.get("displayed_multiplier"),
+                        body.get("predicted_joint_probability"),
+                        body.get("joint_probability_lower_bound"),
+                        body.get("actual_result"),
+                        body.get("weakest_leg_id"),
+                        body.get("critical_leg_index"),
+                        body.get("slip_fragility_score"),
+                        body.get("fragility_label"),
+                        process_label,
+                        json.dumps(enriched_legs),
+                    ),
+                )
+                cur.execute(
+                    "UPDATE cm_daily_exposure SET status='settled' "
+                    "WHERE slip_id=%s AND status='active'",
+                    (slip_id,),
+                )
+            conn.commit()
+    except Exception as exc:
+        return {}, str(exc)
+
+    from gate_engine.wow_runtime_manifest import compute_settlement_calibration
+    calibration = compute_settlement_calibration(legs_data)
+
+    return {
+        "ok":                    True,
+        "settled_id":            settled_id,
+        "slip_id":               slip_id,
+        "entry_amount":          entry_f,
+        "gross_return":          gross_f,
+        "net_profit":            net_f,
+        "platform_result_label": platform_result_label,
+        "full_card_hit":         full_card_hit_bool,
+        "positive_net_return":   positive_net,
+        "process_label":         process_label,
+        "financial_exposure_rows":      calibration["financial_exposure_rows"],
+        "unique_calibration_rows":      calibration["unique_underlying_thesis_rows"],
+        "alternate_threshold_groups":   calibration["alternate_threshold_groups"],
+        "economic_note": (
+            "POSITIVE_NET_RETURN is the primary economic metric. "
+            "A platform green badge with negative net_profit is logged as "
+            "positive_net_return=false per PATCH-017. "
+            "unique_calibration_rows counts distinct player-event-stat-direction "
+            "theses; alternate thresholds on the same thesis count once."
+        ),
+        "can_execute": False,
+    }, None
+
+
+# ---------------------------------------------------------------------------
+# Claude vision helper
+# ---------------------------------------------------------------------------
+
+# Named constant — change here to update the model for all three routes.
+# Must be a vision-capable Claude model.
+_SLIP_VISION_MODEL = "claude-opus-4-7"
+
+_SLIP_VISION_PROMPT = """\
+You are analyzing a PrizePicks settled slip screenshot. Extract every visible \
+field and return ONLY a valid JSON object — no markdown, no code fences, no \
+explanation. Start your response with { and end with }.
+
+Required JSON structure:
+{
+  "platform": "prizepicks",
+  "pick_count_label": "<e.g. 4-Pick>",
+  "play_type": "<Flex Play or Power Play>",
+  "amount_top": <number or null>,
+  "amount_bottom": <number or null>,
+  "result_badge": "<exact badge text, e.g. Win, Lost, Push>",
+  "settlement_datetime": "<ISO or verbatim text as shown on the card>",
+  "legs": [
+    {
+      "player_name": "<full name>",
+      "sport_league_tag": "<MLB|NBA|WNBA|NFL|etc>",
+      "team_game_info": "<team or matchup text shown near the player>",
+      "stat_category": "<e.g. Pitcher Strikeouts>",
+      "side": "<MORE or LESS>",
+      "line": <number or null>,
+      "actual_stat": <number shown below the progress bar, or null if not visible>,
+      "leg_hit": <true if bar is fully green/filled, false if gray/partial/red numbers, null if unclear>,
+      "offer_type": "<standard|goblin|demon|special_other>",
+      "offer_type_description": "<short description if special_other, else null>"
+    }
+  ],
+  "parse_confidence": "<high|medium|low>",
+  "confidence_notes": ["<one entry per uncertain or unclear field>"]
+}
+
+CRITICAL RULES — follow these exactly:
+
+RULE 1 — offer_type (this has been misclassified historically; be strict):
+  "standard"      = no icon at all next to the line number
+  "goblin"        = icon is CLEARLY and unmistakably GREEN
+  "demon"         = icon is CLEARLY and unmistakably RED
+  "special_other" = ANY other icon: orange, pumpkin, lightning bolt, fire, star,
+                    or any color that is not unmistakably green or red.
+                    When in any doubt between goblin and demon → always use special_other.
+                    Always include offer_type_description when offer_type = "special_other".
+
+RULE 2 — amounts:
+  Do NOT decide which dollar amount is the entry/stake vs the payout/return.
+  amount_top    = the first dollar figure shown on the card (higher on screen).
+  amount_bottom = the second dollar figure shown on the card.
+  A human reviewer will determine which is entry and which is gross return.
+
+RULE 3 — leg_hit:
+  Fully filled green progress bar → true.
+  Gray, partially filled, or red-colored number indicators → false.
+  Cannot clearly determine → null (add a note to confidence_notes).
+
+RULE 4 — actual_stat:
+  The number shown below or inside the progress bar. If not visible → null.
+
+RULE 5 — confidence_notes:
+  List every field where you guessed, could not read clearly, or made any assumption.\
+"""
+
+
+def _call_claude_slip_vision(
+    image_base64: str,
+    media_type: str,
+) -> "tuple[dict, str | None]":
+    """Send a slip screenshot to Claude and return (parsed_dict, error_msg).
+
+    On success: error_msg is None.
+    On failure: parsed_dict is {} and error_msg is a human-readable explanation.
+    """
+    if not _ensure_anthropic():
+        return {}, (
+            "The 'anthropic' Python package is not installed — "
+            "contact the operator to install it via package management."
+        )
+
+    ant_kwargs, ant_err = _anthropic_client_kwargs(timeout=90, max_retries=0)
+    if ant_err:
+        return {}, (
+            f"{ant_err}. "
+            "To fix: add ANTHROPIC_API_KEY in Replit → Settings → Secrets, "
+            "or enable the Replit Anthropic AI Integration in the Integrations tab."
+        )
+
+    try:
+        client = _anthropic.Anthropic(**ant_kwargs)
+        response = client.messages.create(
+            model=_SLIP_VISION_MODEL,
+            max_tokens=2048,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type":       "base64",
+                            "media_type": media_type,
+                            "data":       image_base64,
+                        },
+                    },
+                    {"type": "text", "text": _SLIP_VISION_PROMPT},
+                ],
+            }],
+        )
+    except _anthropic.AuthenticationError:
+        return {}, (
+            "ANTHROPIC_API_KEY is invalid or expired — verify it in "
+            "Replit → Settings → Secrets."
+        )
+    except _anthropic.RateLimitError:
+        return {}, "Anthropic rate limit reached — retry in a moment."
+    except Exception as exc:
+        return {}, f"Claude API call failed: {exc}"
+
+    raw_text = (response.content[0].text if response.content else "").strip()
+
+    # Strip accidental markdown fences (model sometimes adds them despite instructions)
+    if raw_text.startswith("```"):
+        raw_text = "\n".join(
+            line for line in raw_text.splitlines()
+            if not line.startswith("```")
+        ).strip()
+
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        return {}, (
+            f"Claude returned non-JSON output ({exc}). "
+            f"Raw (first 400 chars): {raw_text[:400]!r}"
+        )
+
+    return parsed, None
+
+
+# ---------------------------------------------------------------------------
+# Draft construction from Claude output
+# ---------------------------------------------------------------------------
+
+def _build_draft_from_claude(
+    claude_data: dict,
+) -> "tuple[str, dict, list[str]]":
+    """Convert Claude-parsed slip data into (draft_id, draft_payload, needs_review).
+
+    draft_payload is shaped identically to the /wow/settle-slip body so
+    /confirm can call _settle_slip_core() directly after merging corrections.
+
+    entry_amount and gross_return are always null in the draft — the human
+    must supply them in the /confirm corrections object.
+    """
+    import uuid as _uuid
+
+    draft_id:     str       = f"draft_{_uuid.uuid4().hex[:12]}"
+    needs_review: list[str] = []
+
+    play_type     = claude_data.get("play_type") or ""
+    pick_label    = claude_data.get("pick_count_label") or ""
+    result_badge  = claude_data.get("result_badge") or ""
+    amount_top    = claude_data.get("amount_top")
+    amount_bottom = claude_data.get("amount_bottom")
+    settle_dt     = claude_data.get("settlement_datetime") or ""
+    confidence    = claude_data.get("parse_confidence", "unknown")
+    conf_notes    = claude_data.get("confidence_notes") or []
+
+    # Parse leg_count from pick_count_label ("4-Pick" → 4)
+    leg_count: "int | None" = None
+    try:
+        leg_count = int(str(pick_label).split("-")[0])
+    except (ValueError, AttributeError, IndexError):
+        needs_review.append("leg_count_not_parseable_from_label")
+
+    # Slip type
+    _pt = play_type.lower()
+    if "power" in _pt:
+        slip_type: "str | None" = "Power"
+    elif "flex" in _pt:
+        slip_type = "Flex"
+    else:
+        slip_type = play_type or None
+        if not slip_type:
+            needs_review.append("play_type_unclear")
+
+    # full_card_hit derived from individual leg outcomes
+    all_legs_raw = claude_data.get("legs") or []
+    leg_hits     = [leg.get("leg_hit") for leg in all_legs_raw]
+    if not leg_hits:
+        full_card_hit: "bool | None" = None
+        needs_review.append("full_card_hit_indeterminate_no_legs_parsed")
+    elif any(h is None for h in leg_hits):
+        full_card_hit = None
+        needs_review.append(
+            "full_card_hit_indeterminate_one_or_more_leg_outcomes_unclear"
+        )
+    else:
+        full_card_hit = all(bool(h) for h in leg_hits)
+
+    # Amounts — always flagged for human confirmation
+    needs_review.append(
+        "confirm_entry_amount_vs_gross_return: "
+        f"amount_top={amount_top} amount_bottom={amount_bottom} — "
+        "supply entry_amount and gross_return in the /confirm corrections payload"
+    )
+
+    # Parse confidence
+    if confidence != "high":
+        needs_review.append(
+            f"parse_confidence={confidence} (not high — review all fields carefully)"
+        )
+
+    # Claude's own uncertainty notes
+    for note in conf_notes:
+        if note:
+            needs_review.append(f"claude_note: {note}")
+
+    # Legs
+    draft_legs: list[dict] = []
+    for idx, raw_leg in enumerate(all_legs_raw):
+        offer_type = raw_leg.get("offer_type") or "standard"
+        offer_desc = raw_leg.get("offer_type_description")
+
+        if offer_type == "special_other":
+            needs_review.append(
+                f"leg_{idx}_ambiguous_offer_type: "
+                f"{offer_desc or 'no description provided by model'}"
+            )
+        if raw_leg.get("leg_hit") is None:
+            needs_review.append(f"leg_{idx}_outcome_unclear")
+        if raw_leg.get("actual_stat") is None:
+            needs_review.append(f"leg_{idx}_actual_stat_not_visible")
+
+        draft_legs.append({
+            "player":                    raw_leg.get("player_name"),
+            "sport":                     raw_leg.get("sport_league_tag"),
+            "team_game_info":            raw_leg.get("team_game_info"),
+            "stat_category":             raw_leg.get("stat_category"),
+            "side":                      (raw_leg.get("side") or "").upper() or None,
+            "line":                      raw_leg.get("line"),
+            "actual_stat":               raw_leg.get("actual_stat"),
+            "hit":                       raw_leg.get("leg_hit"),
+            "offer_type":                offer_type,
+            "offer_type_description":    offer_desc,
+            "duplicate_adjusted_weight": 1.0,
+            "failure_category":          None,
+        })
+
+    draft_payload: dict = {
+        "slip_id":               draft_id,
+        "platform":              "prizepicks",
+        "slip_type":             slip_type,
+        "leg_count":             leg_count if leg_count is not None else len(draft_legs),
+        # Always null — human must supply these two in /confirm
+        "entry_amount":          None,
+        "gross_return":          None,
+        # Raw positional amounts for human disambiguation
+        "amount_top":            amount_top,
+        "amount_bottom":         amount_bottom,
+        "platform_result_label": result_badge,
+        "full_card_hit":         full_card_hit,
+        "actual_result":         result_badge,
+        "settlement_datetime":   settle_dt,
+        "legs":                  draft_legs,
+        # Financial fields not extractable from image — human may add in /confirm
+        "displayed_multiplier":              None,
+        "predicted_joint_probability":       None,
+        "joint_probability_lower_bound":     None,
+        "weakest_leg_id":                    None,
+        "critical_leg_index":                None,
+        "slip_fragility_score":              None,
+        "fragility_label":                   None,
+    }
+
+    return draft_id, draft_payload, needs_review
+
+
+# ---------------------------------------------------------------------------
+# Route 1 — POST /wow/settle-slip/parse-image
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/settle-slip/parse-image", methods=["POST"])
+@require_api_key
+def settle_slip_parse_image():
+    """POST /wow/settle-slip/parse-image — Step 1: vision-parse a slip screenshot.
+
+    Does NOT write to cm_settled_slips.  Stores a pending draft in
+    cm_settlement_drafts and returns it for human review.
+
+    Request (any format accepted):
+      • multipart/form-data with image file in field "image", "file", or "screenshot"
+      • JSON body with base64-encoded image in any of:
+          image_b64, image_base64, imageBase64, image_data, imageData, data, image, screenshot
+      • Raw binary body with Content-Type: image/jpeg or image/png
+
+    Optional fields (form or JSON):
+      image_filename: TEXT  (stored for audit; not required)
+
+    Response:
+      draft_id           — use in POST /wow/settle-slip/confirm
+      draft_payload      — parsed slip in /wow/settle-slip body shape;
+                           entry_amount and gross_return will always be null
+      needs_review       — array of strings describing every field that requires
+                           human verification before commit
+      needs_review_count — integer count of needs_review items
+      raw_claude         — full structured Claude output (for audit/debugging)
+      vision_model       — Claude model used (for traceability)
+      next_step          — human-readable confirm instructions
+    """
+    import base64 as _b64
+
+    _ensure_draft_table()
+
+    if not _ensure_anthropic():
+        return jsonify({
+            "ok":    False,
+            "error": (
+                "The 'anthropic' Python package is not installed. "
+                "Contact the operator to install it via package management."
+            ),
+        }), 503
+
+    # ── Image acquisition (same strategy order as /wow/analyze) ──────────────
+    image_base64:   "str | None" = None
+    media_type:     str          = "image/jpeg"
+    image_filename: "str | None" = None
+
+    # Strategy 1: multipart file upload
+    _file = (
+        request.files.get("image")
+        or request.files.get("file")
+        or request.files.get("screenshot")
+        or (list(request.files.values())[0] if request.files else None)
+    )
+    if _file:
+        _file_bytes    = _file.read()
+        image_base64   = _b64.b64encode(_file_bytes).decode("utf-8")
+        image_filename = _file.filename or None
+        _mime = (_file.content_type or "").lower().split(";")[0].strip()
+        if _mime and _mime not in ("application/octet-stream", ""):
+            media_type = _mime
+
+    # Strategy 2: base64 in JSON or form
+    if not image_base64:
+        _body = request.get_json(silent=True) or {}
+        for _fk in ("image_b64", "image_base64", "imageBase64", "image_data",
+                    "imageData", "data", "image", "screenshot"):
+            _fv = _body.get(_fk) or request.form.get(_fk)
+            if _fv and isinstance(_fv, str) and len(_fv) > 100:
+                image_base64   = _fv
+                image_filename = (
+                    _body.get("image_filename")
+                    or request.form.get("image_filename")
+                    or image_filename
+                )
+                break
+
+    # Strategy 3: raw binary body (Content-Type: image/*)
+    if not image_base64:
+        _ct = (request.content_type or "").lower()
+        if _ct.startswith("image/"):
+            _raw = request.get_data()
+            if _raw:
+                image_base64 = _b64.b64encode(_raw).decode("utf-8")
+                media_type   = _ct.split(";")[0].strip()
+
+    if not image_base64:
+        return jsonify({
+            "ok":    False,
+            "error": "No image found in request — see debug for what arrived",
+            "debug": {
+                "content_type": request.content_type,
+                "files_keys":   list(request.files.keys()),
+                "form_keys":    list(request.form.keys()),
+                "json_keys":    list((request.get_json(silent=True) or {}).keys()),
+                "data_bytes":   len(request.get_data()),
+            },
+        }), 400
+
+    # ── Claude vision parse ───────────────────────────────────────────────────
+    claude_data, claude_err = _call_claude_slip_vision(image_base64, media_type)
+    if claude_err:
+        return jsonify({"ok": False, "error": claude_err}), 503
+
+    # ── Build draft payload ───────────────────────────────────────────────────
+    draft_id, draft_payload, needs_review = _build_draft_from_claude(claude_data)
+
+    # ── Persist draft (no cm_settled_slips touch) ─────────────────────────────
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO cm_settlement_drafts
+                           (draft_id, status, image_filename, media_type,
+                            raw_claude_json, draft_payload, needs_review)
+                       VALUES (%s, 'pending', %s, %s, %s::jsonb, %s::jsonb, %s::jsonb)
+                    """,
+                    (
+                        draft_id,
+                        image_filename,
+                        media_type,
+                        json.dumps(claude_data),
+                        json.dumps(draft_payload),
+                        json.dumps(needs_review),
+                    ),
+                )
+            conn.commit()
+    except Exception as exc:
+        app.logger.exception("settle_slip_parse_image DB error")
+        return jsonify({"ok": False, "error": f"Draft storage failed: {exc}"}), 500
+
+    return jsonify({
+        "ok":                True,
+        "draft_id":          draft_id,
+        "status":            "pending",
+        "draft_payload":     draft_payload,
+        "needs_review":      needs_review,
+        "needs_review_count": len(needs_review),
+        "raw_claude":        claude_data,
+        "vision_model":      _SLIP_VISION_MODEL,
+        "next_step": (
+            "1. Review draft_payload — check every item in needs_review. "
+            "2. Identify entry_amount and gross_return from amount_top / amount_bottom. "
+            "3. Correct any ambiguous offer_type icons (special_other → goblin or demon). "
+            "4. POST to /wow/settle-slip/confirm with draft_id and a corrections object "
+            "containing at minimum entry_amount and gross_return."
+        ),
+        "can_execute": False,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Route 2 — POST /wow/settle-slip/confirm
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/settle-slip/confirm", methods=["POST"])
+@require_api_key
+def settle_slip_confirm():
+    """POST /wow/settle-slip/confirm — Step 2: apply corrections and commit to ledger.
+
+    Body (JSON):
+      draft_id:    TEXT    (required — from /parse-image response)
+      corrections: OBJECT  (optional — any field to override before commit)
+                   MUST include at minimum:
+                     entry_amount: number  (the stake you wagered)
+                     gross_return: number  (total received back; 0 if lost)
+                   May also supply: slip_id, slip_type, platform_result_label,
+                   full_card_hit, legs, displayed_multiplier, or any other
+                   /wow/settle-slip field.
+
+    corrections is shallow-merged into the stored draft_payload.  After merge,
+    entry_amount and gross_return must both be non-null.  The commit then calls
+    _settle_slip_core() — the same logic as POST /wow/settle-slip — to write to
+    cm_settled_slips and update cm_daily_exposure.
+
+    A committed draft returns 409 on retry (double-submit guard).
+    Returns the fully committed settle-slip result (same shape as /wow/settle-slip).
+    """
+    _ensure_draft_table()
+
+    body        = request.get_json(silent=True) or {}
+    draft_id    = (body.get("draft_id") or "").strip()
+    corrections = body.get("corrections") or {}
+
+    if not draft_id:
+        return jsonify({"ok": False, "error": "draft_id required"}), 400
+
+    # ── Load draft ────────────────────────────────────────────────────────────
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT status, draft_payload, needs_review, settled_id
+                         FROM cm_settlement_drafts
+                        WHERE draft_id = %s
+                    """,
+                    (draft_id,),
+                )
+                _row = cur.fetchone()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"DB read error: {exc}"}), 500
+
+    if not _row:
+        return jsonify({
+            "ok":    False,
+            "error": f"draft_id '{draft_id}' not found",
+        }), 404
+
+    _draft_status, _draft_payload, _needs_review, _existing_settled_id = _row
+
+    if _draft_status == "committed":
+        return jsonify({
+            "ok":         False,
+            "error":      "This draft has already been committed — double-submit prevented.",
+            "settled_id": _existing_settled_id,
+            "draft_id":   draft_id,
+        }), 409
+
+    # ── Merge corrections into draft ──────────────────────────────────────────
+    merged = dict(_draft_payload or {})
+    if isinstance(corrections, dict):
+        merged.update(corrections)
+
+    # ── Validate required fields ──────────────────────────────────────────────
+    _missing = []
+    if not (merged.get("slip_id") or "").strip():
+        _missing.append("slip_id")
+    if merged.get("entry_amount") is None:
+        _missing.append(
+            "entry_amount — vision cannot determine this; supply in corrections "
+            "(draft has amount_top and amount_bottom to help you decide)"
+        )
+    if merged.get("gross_return") is None:
+        _missing.append(
+            "gross_return — vision cannot determine this; supply in corrections "
+            "(draft has amount_top and amount_bottom to help you decide)"
+        )
+
+    if _missing:
+        return jsonify({
+            "ok":      False,
+            "error":   "Required fields missing after applying corrections",
+            "missing": _missing,
+            "hint": (
+                "Include entry_amount and gross_return in the corrections object. "
+                "amount_top and amount_bottom from the draft show the two dollar "
+                "figures on the slip — one is the stake, one is the return."
+            ),
+        }), 400
+
+    # ── Commit to ledger via shared core ─────────────────────────────────────
+    _result, _err = _settle_slip_core(merged)
+    if _err:
+        _sc = 400 if any(kw in _err for kw in ("required", "parse error")) else 500
+        return jsonify({"ok": False, "error": _err}), _sc
+
+    _settled_id = _result.get("settled_id")
+
+    # ── Mark draft committed (best-effort — slip is already written) ──────────
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE cm_settlement_drafts
+                          SET status       = 'committed',
+                              committed_at = NOW(),
+                              settled_id   = %s
+                        WHERE draft_id = %s
+                    """,
+                    (_settled_id, draft_id),
+                )
+            conn.commit()
+    except Exception as exc:
+        # Non-fatal: the slip is already in cm_settled_slips; only the
+        # draft status stamp failed — log and continue.
+        app.logger.warning(
+            f"settle_slip_confirm: draft mark-committed failed "
+            f"(slip already written, this is non-fatal): {exc}"
+        )
+
+    return jsonify({**_result, "draft_id": draft_id, "committed": True}), 200
+
+
+# ---------------------------------------------------------------------------
+# Route 3 — GET /wow/settle-slip/drafts
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/settle-slip/drafts", methods=["GET"])
+@require_api_key
+def settle_slip_drafts():
+    """GET /wow/settle-slip/drafts — list settlement drafts (default: pending only).
+
+    Query params:
+      status: pending | committed | all  (default: pending)
+      limit:  1–200  (default: 50)
+
+    Returns each draft's metadata and needs_review flags so nothing sits
+    forgotten.  The full draft_payload is omitted from the list view to keep
+    responses compact.  To review or re-confirm a specific draft, POST to
+    /wow/settle-slip/confirm with the draft_id.
+    """
+    _ensure_draft_table()
+
+    status_filter = request.args.get("status", "pending")
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 50))))
+    except (ValueError, TypeError):
+        limit = 50
+
+    if status_filter not in ("pending", "committed", "all"):
+        return jsonify({
+            "ok":    False,
+            "error": "status must be one of: pending, committed, all",
+        }), 400
+
+    try:
+        with _cm_db() as conn:
+            with conn.cursor() as cur:
+                if status_filter == "all":
+                    cur.execute(
+                        """SELECT draft_id, status, parsed_at, image_filename,
+                                  needs_review, committed_at, settled_id
+                             FROM cm_settlement_drafts
+                            ORDER BY parsed_at DESC
+                            LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                else:
+                    cur.execute(
+                        """SELECT draft_id, status, parsed_at, image_filename,
+                                  needs_review, committed_at, settled_id
+                             FROM cm_settlement_drafts
+                            WHERE status = %s
+                            ORDER BY parsed_at DESC
+                            LIMIT %s
+                        """,
+                        (status_filter, limit),
+                    )
+                _rows = cur.fetchall()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    drafts = []
+    for (_d_id, _d_status, _d_parsed_at, _d_filename,
+         _d_review, _d_committed_at, _d_settled_id) in _rows:
+        drafts.append({
+            "draft_id":           _d_id,
+            "status":             _d_status,
+            "parsed_at":          _d_parsed_at.isoformat() if _d_parsed_at else None,
+            "image_filename":     _d_filename,
+            "needs_review":       _d_review or [],
+            "needs_review_count": len(_d_review or []),
+            "committed_at":       _d_committed_at.isoformat() if _d_committed_at else None,
+            "settled_id":         _d_settled_id,
+        })
+
+    return jsonify({
+        "ok":            True,
+        "status_filter": status_filter,
+        "count":         len(drafts),
+        "drafts":        drafts,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# WOW v16 — Multi-Sport Prop Probability & Ranking Engine API
+# Routes: /wow/rankings, /wow/predictions, /wow/source-health, /wow/backtest
+# ---------------------------------------------------------------------------
+
+def _ensure_ledger_tables(conn):
+    """Idempotent — create ledger tables if missing."""
+    from gate_engine.prediction_ledger import ensure_tables as _plt
+    from gate_engine.source_health_monitor import ensure_table as _sht
+    _plt(conn)
+    _sht(conn)
+
+
+# ---------------------------------------------------------------------------
+# Rankings — cross-sport prop ranking by calibrated lower bound
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/rankings", methods=["GET"])
+def wow_rankings():
+    """
+    GET /wow/rankings
+    Return cross-sport prop rankings from the prediction ledger.
+
+    Query params:
+      sport       — filter by sport (WNBA | TENNIS | MLB | ...)
+      since_date  — ISO date string (default: today)
+      top_n       — max per lane (default 10)
+      multi_leg   — multi-leg size (default 4)
+    """
+    from gate_engine.cross_sport_ranker import from_db, rank as _rank_rows
+    sport      = request.args.get("sport")
+    since_date = request.args.get("since_date")
+    top_n      = int(request.args.get("top_n", 10))
+    multi_leg  = int(request.args.get("multi_leg", 4))
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        result = from_db(conn, sport=sport, since_date=since_date, top_n=top_n, multi_leg_size=multi_leg)
+        conn.close()
+        return jsonify({"ok": True, **result.to_dict()}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/rankings/score", methods=["POST"])
+def wow_rankings_score():
+    """
+    POST /wow/rankings/score
+    Rank a submitted batch of pipeline-scored rows in-memory (no DB write).
+
+    Body: { "rows": [...pipeline row dicts...], "top_n": 10, "multi_leg": 4 }
+    """
+    from gate_engine.cross_sport_ranker import rank as _rank_rows
+    body      = request.get_json(force=True) or {}
+    rows      = body.get("rows") or []
+    top_n     = int(body.get("top_n", 10))
+    multi_leg = int(body.get("multi_leg", 4))
+
+    if not rows:
+        return jsonify({"ok": False, "error": "rows array is required"}), 400
+
+    try:
+        result = _rank_rows(rows, top_n=top_n, multi_leg_size=multi_leg)
+        return jsonify({"ok": True, **result.to_dict()}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Prediction ledger — immutable write-once records
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/predictions", methods=["GET"])
+def wow_predictions_list():
+    """
+    GET /wow/predictions
+    Return prediction history from the ledger.
+
+    Query params:
+      sport          — filter by sport
+      since_date     — ISO date (default: last 7 days)
+      terminal_label — filter by label
+      min_lb         — minimum calibrated lower bound (float)
+      limit          — max rows (default 100)
+    """
+    from gate_engine.prediction_ledger import read_predictions
+
+    sport   = request.args.get("sport")
+    since   = request.args.get("since_date")
+    label   = request.args.get("terminal_label")
+    min_lb  = request.args.get("min_lb", type=float)
+    limit   = request.args.get("limit", 100, type=int)
+
+    if not since:
+        from datetime import date, timedelta
+        since = (date.today() - timedelta(days=7)).isoformat()
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        rows = read_predictions(conn, sport=sport, since_date=since,
+                                terminal_label=label, min_lower_bound=min_lb, limit=limit)
+        conn.close()
+        return jsonify({"ok": True, "count": len(rows), "predictions": rows}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/predictions", methods=["POST"])
+def wow_predictions_write():
+    """
+    POST /wow/predictions
+    Write one prediction to the immutable ledger.
+
+    Body: pipeline row dict (or array of rows for batch write).
+    Returns: { prediction_id(s), ok }
+    """
+    from gate_engine.prediction_ledger import write_prediction
+
+    body = request.get_json(force=True) or {}
+    rows_input = body if isinstance(body, list) else body.get("rows") or [body]
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        ids = []
+        for row in rows_input:
+            pid = write_prediction(conn, row, pipeline_meta={"source": "api"})
+            ids.append(pid)
+        conn.close()
+        result = ids[0] if len(ids) == 1 else ids
+        return jsonify({"ok": True, "prediction_id": result, "n": len(ids)}), 201
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/predictions/<prediction_id>", methods=["GET"])
+def wow_prediction_get(prediction_id: str):
+    from gate_engine.prediction_ledger import read_prediction
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        row = read_prediction(conn, prediction_id)
+        conn.close()
+        if row is None:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        return jsonify({"ok": True, "prediction": row}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/predictions/<prediction_id>/settle", methods=["POST"])
+def wow_predictions_settle(prediction_id: str):
+    """
+    POST /wow/predictions/<id>/settle
+    Record a settlement outcome for a prediction.
+
+    Body: {
+      official_result: numeric stat total (or null),
+      result_label: "HIT" | "MISS" | "PUSH",
+      settlement_source: str,
+      closing_market_probability: float (optional),
+      observed_path: str (optional),
+      process_classification: str (optional)
+    }
+    """
+    from gate_engine.settlement_audit import write_outcome
+
+    body = request.get_json(force=True) or {}
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        outcome_id = write_outcome(conn, prediction_id, body)
+        conn.close()
+        return jsonify({"ok": True, "outcome_id": outcome_id}), 201
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/calibration/summary", methods=["GET"])
+def wow_calibration_summary():
+    """
+    GET /wow/calibration/summary
+    Return calibration health summary (Brier, CLV, LB reliability).
+
+    Query params: sport, days (default 30)
+    """
+    from gate_engine.prediction_ledger import calibration_summary
+    from gate_engine.settlement_audit import batch_compute_metrics
+
+    sport = request.args.get("sport")
+    days  = int(request.args.get("days", 30))
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        summary = calibration_summary(conn, sport=sport, days=days)
+        metrics = batch_compute_metrics(conn, days=days, sport=sport)
+        conn.close()
+        return jsonify({
+            "ok":      True,
+            "summary": summary,
+            "metrics": metrics,
+            "sport":   sport,
+            "days":    days,
+        }), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Source health
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/source-health", methods=["GET"])
+def wow_source_health():
+    """
+    GET /wow/source-health
+    Return aggregated source health summary for the dashboard.
+    Also probes the active internal health endpoints and records results.
+    """
+    from gate_engine.source_health_monitor import aggregate_health_summary, probe_from_health_response
+    import time as _time
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+
+        # Probe internal health endpoints to record current state
+        _health_probes = [
+            ("odds_api",       "/wow/odds/health"),
+            ("mlb_stats_api",  "/wow/mlb-stats/health"),
+            ("open_meteo",     "/wow/open-meteo/health"),
+            ("nba_api",        "/wow/nba-stats/health"),
+            ("balldontlie",    "/wow/balldontlie/health"),
+            ("prizepicks",     "/wow/prizepicks/board"),
+        ]
+
+        for src_id, path in _health_probes:
+            try:
+                _t0 = _time.monotonic()
+                with app.test_client() as _cli:
+                    resp = _cli.get(path)
+                    _lat = int((_time.monotonic() - _t0) * 1000)
+                    try:
+                        _data = resp.get_json() or {}
+                    except Exception:
+                        _data = {}
+                    probe_from_health_response(conn, src_id, _data, latency_ms=_lat)
+            except Exception:
+                pass  # best-effort probing
+
+        summary = aggregate_health_summary(conn)
+        conn.close()
+        return jsonify({"ok": True, **summary}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/source-health/probe", methods=["POST"])
+def wow_source_health_probe():
+    """
+    POST /wow/source-health/probe
+    Manually record a source probe result.
+
+    Body: { source_id, status, latency_ms, http_status, error_message }
+    """
+    from gate_engine.source_health_monitor import record_probe, STATUS_OK, STATUS_DEGRADED, STATUS_DOWN
+
+    body = request.get_json(force=True) or {}
+    source_id = body.get("source_id")
+    if not source_id:
+        return jsonify({"ok": False, "error": "source_id required"}), 400
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        record_probe(
+            conn,
+            source_id=source_id,
+            status=body.get("status", "UNKNOWN"),
+            latency_ms=body.get("latency_ms"),
+            http_status=body.get("http_status"),
+            error_message=body.get("error_message"),
+            response_meta=body.get("response_meta"),
+        )
+        conn.close()
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Backtesting
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/backtest/run", methods=["POST"])
+def wow_backtest_run():
+    """
+    POST /wow/backtest/run
+    Run a backtest against the prediction ledger.
+
+    Body: {
+      mode:  "CALIBRATION" | "CLB_RELIABILITY" | "SPORT_SLICE" | "LABEL_AUDIT",
+      days:  90,
+      sport: "WNBA" | "TENNIS" | "MLB" | null
+    }
+    """
+    from gate_engine.backtesting import run_backtest
+
+    body  = request.get_json(force=True) or {}
+    mode  = body.get("mode", "CALIBRATION")
+    days  = int(body.get("days", 90))
+    sport = body.get("sport")
+
+    try:
+        conn = get_db_conn()
+        _ensure_ledger_tables(conn)
+        result = run_backtest(conn, mode=mode, days=days, sport=sport)
+        conn.close()
+        return jsonify({"ok": True, **result}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/wow/backtest/modes", methods=["GET"])
+def wow_backtest_modes():
+    return jsonify({
+        "ok":   True,
+        "modes": [
+            {"id": "CALIBRATION",     "description": "Bin predictions by probability; measure actual hit rate per bin"},
+            {"id": "CLB_RELIABILITY", "description": "Verify lower-bound reliability across the CLB range"},
+            {"id": "SPORT_SLICE",     "description": "Per-sport Brier/hit-rate breakdown"},
+            {"id": "LABEL_AUDIT",     "description": "Per-terminal-label accuracy"},
+        ],
+        "can_execute": False,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# END — Multi-Sport Prop Probability & Ranking Engine API
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Learning Log — permanent postmortem ledger
+# ---------------------------------------------------------------------------
+# Durable, database-backed record of slip postmortems for calibration and
+# patch tracking.  Every entry is idempotent on entry_id — retries from the
+# GPT session never produce duplicate rows.
+#
+# Auth: same @require_api_key pattern as every other WOW endpoint.
+#   • GPT Actions send the key as X-API-Key header (ApiKeyAuth scheme).
+#   • All endpoints are behind SCORING_API_KEY — no anonymous access.
+#
+# Security note: GPT Action endpoints are authenticated via SCORING_API_KEY.
+# The key is stored as a Replit Secret and is never embedded in the schema
+# file.  The OpenAPI schema documents the ApiKeyAuth scheme; callers must
+# supply the key in the ChatGPT Action configuration.
+
+_LEARNING_LOG_VALID_RESULTS = frozenset({"WIN", "LOSS", "PUSH", "MIXED"})
+_LEARNING_LOG_LIMIT_MAX = 100
+
+
+def _ensure_learning_log_table(conn):
+    """CREATE TABLE IF NOT EXISTS — safe to call on every request."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS wow_learning_log (
+                entry_id              TEXT PRIMARY KEY,
+                created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                date                  TEXT NOT NULL,
+                slip_result           TEXT NOT NULL,
+                legs                  JSONB NOT NULL,
+                correlation_flag      BOOLEAN,
+                execution_discipline  TEXT,
+                root_cause            TEXT NOT NULL,
+                patch_recommendation  TEXT,
+                payload               JSONB
+            )
+        """)
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# WOW Validation — 1IP Prediction Logger endpoints
+# Read-only status/export + outcome attachment.
+# No secrets exposed; requires API key on all routes.
+# ---------------------------------------------------------------------------
+
+@app.route("/wow/validation/1ip/status", methods=["GET"])
+@require_api_key
+def validation_1ip_status():
+    """
+    operationId: getValidation1ipStatus
+    Return benchmark readiness status for the 1IP prediction logger.
+    Reports: n_logged, n_settled, n_verified_settled, n_hits,
+             benchmark_sample_count, ready (bool), threshold,
+             plus in-process counters (duplicates_prevented, write_failures).
+    No secrets, model probabilities, or PII exposed.
+    """
+    try:
+        from validation.benchmark_readiness import get_status
+        from validation.prediction_logger import get_in_process_counters
+        db_status   = get_status()
+        in_proc     = get_in_process_counters()
+        db_status["duplicates_prevented_in_process"] = in_proc.get("duplicates_prevented", 0)
+        db_status["write_failures_in_process"]       = in_proc.get("write_failures", 0)
+        db_status["logged_in_process"]               = in_proc.get("logged", 0)
+        db_status["skipped_in_process"]              = in_proc.get("skipped", 0)
+        # OBSERVE_ONLY declaration — surfaced explicitly so callers know the
+        # benchmark cannot modify predictions, probabilities, or model state.
+        validation_mode = os.environ.get("VALIDATION_MODE", "OBSERVE_ONLY")
+        db_status["validation_mode"]                 = validation_mode
+        db_status["model_changes_from_benchmark"]    = False
+        db_status["probability_changes_from_benchmark"] = False
+        db_status["terminal_label_changes_from_benchmark"] = False
+        return jsonify({"ok": True, "validation_status": db_status}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:120]}), 500
+
+
+@app.route("/wow/validation/1ip/export", methods=["GET"])
+@require_api_key
+def validation_1ip_export():
+    """
+    operationId: getValidation1ipExport
+    Export eligible frozen 1IP predictions for offline benchmark runs.
+    Query params:
+      limit        int  (default 100, max 500)
+      offset       int  (default 0)
+      settled_only bool (default false) — only return predictions with outcomes
+    Returns rows with: prediction_id, log_dedup_key, game_date, pitcher_name,
+    pitcher_mlbam_id, opponent, line, direction, model_probability,
+    model_uncertainty, feature_snapshot_id, model_version, frozen_at,
+    logged_at, and (if settled) actual_pitches, hit, outcome_source,
+    outcome_verified.
+    """
+    try:
+        limit        = min(int(request.args.get("limit", 100)), 500)
+        offset       = int(request.args.get("offset", 0))
+        settled_only = request.args.get("settled_only", "false").lower() in ("true", "1", "yes")
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid pagination params"}), 400
+
+    try:
+        from validation.benchmark_readiness import get_eligible_predictions
+        result = get_eligible_predictions(limit=limit, offset=offset,
+                                          settled_only=settled_only)
+        return jsonify({"ok": True, **result}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:120]}), 500
+
+
+@app.route("/wow/validation/1ip/outcome", methods=["POST"])
+@require_api_key
+def validation_1ip_outcome():
+    """
+    operationId: postValidation1ipOutcome
+    Attach a post-game outcome to a frozen 1IP prediction.
+
+    Body (JSON):
+      log_dedup_key    str   required — identifies the frozen prediction
+      actual_pitches   int   required — pitcher's actual first-inning pitch count
+      outcome_source   str   required — e.g. "baseball_savant", "stathead", "manual"
+      outcome_verified bool  optional (default false)
+      notes            str   optional
+      outcome_timestamp str  optional ISO-8601 UTC (defaults to now)
+
+    Errors:
+      400 if body missing required fields
+      404 PREDICTION_NOT_FOUND
+      409 CONFLICTING_OUTCOME | LEAKAGE_GUARD_FAILED
+      503 DB_UNAVAILABLE
+      500 unexpected error
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    log_dedup_key  = (body.get("log_dedup_key") or "").strip()
+    actual_pitches = body.get("actual_pitches")
+    outcome_source = (body.get("outcome_source") or "").strip()
+
+    if not log_dedup_key or actual_pitches is None or not outcome_source:
+        return jsonify({
+            "ok": False,
+            "error": "MISSING_REQUIRED_FIELDS",
+            "required": ["log_dedup_key", "actual_pitches", "outcome_source"],
+        }), 400
+
+    try:
+        actual_pitches = int(actual_pitches)
+        if actual_pitches < 0:
+            raise ValueError("actual_pitches must be >= 0")
+    except (TypeError, ValueError) as e:
+        return jsonify({"ok": False, "error": f"INVALID_ACTUAL_PITCHES:{e}"}), 400
+
+    try:
+        from validation.outcome_logger import attach_outcome, OutcomeLogError
+        result = attach_outcome(
+            log_dedup_key      = log_dedup_key,
+            actual_pitches     = actual_pitches,
+            outcome_source     = outcome_source,
+            outcome_verified   = bool(body.get("outcome_verified", False)),
+            notes              = str(body.get("notes") or "")[:500],
+            outcome_timestamp  = body.get("outcome_timestamp"),
+        )
+        action = result.get("action", "")
+        status = 200 if action in ("OUTCOME_ATTACHED", "ALREADY_SETTLED") else 207
+        return jsonify({"ok": True, **result}), status
+    except OutcomeLogError as oe:
+        code_to_http = {
+            "PREDICTION_NOT_FOUND":  404,
+            "CONFLICTING_OUTCOME":   409,
+            "LEAKAGE_GUARD_FAILED":  409,
+            "DB_UNAVAILABLE":        503,
+        }
+        http = code_to_http.get(oe.code, 500)
+        return jsonify({"ok": False, "error": oe.code, "detail": oe.detail}), http
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:120]}), 500
+
+
+@app.route("/learning-log", methods=["POST"])
+@require_api_key
+def learning_log_save():
+    """
+    operationId: saveLearningLog
+    Save a slip postmortem entry. Upserts on entry_id — retries are safe.
+    Returns {saved, entry_id, created} where created=false means the row
+    already existed and was not overwritten.
+    """
+    body = request.get_json(silent=True) or {}
+
+    entry_id    = (body.get("entry_id")    or "").strip()
+    date        = (body.get("date")        or "").strip()
+    slip_result = (body.get("slip_result") or "").strip().upper()
+    legs        = body.get("legs")
+    root_cause  = (body.get("root_cause")  or "").strip()
+
+    errors = []
+    if not entry_id:
+        errors.append("entry_id is required")
+    if not date:
+        errors.append("date is required")
+    if not slip_result:
+        errors.append("slip_result is required")
+    elif slip_result not in _LEARNING_LOG_VALID_RESULTS:
+        errors.append(
+            f"slip_result must be one of {sorted(_LEARNING_LOG_VALID_RESULTS)}"
+        )
+    if not isinstance(legs, list) or len(legs) == 0:
+        errors.append("legs must be a non-empty list")
+    if not root_cause:
+        errors.append("root_cause is required")
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
+
+    correlation_flag     = body.get("correlation_flag")
+    execution_discipline = (body.get("execution_discipline") or "").strip() or None
+    patch_recommendation = (body.get("patch_recommendation") or "").strip() or None
+    # Store entire original request payload for forensic replay.
+    payload_json = json.dumps(body)
+
+    try:
+        conn = get_db_conn()
+        _ensure_learning_log_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO wow_learning_log
+                    (entry_id, date, slip_result, legs, correlation_flag,
+                     execution_discipline, root_cause, patch_recommendation, payload)
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (entry_id) DO NOTHING
+                """,
+                (
+                    entry_id, date, slip_result, json.dumps(legs),
+                    correlation_flag, execution_discipline, root_cause,
+                    patch_recommendation, payload_json,
+                ),
+            )
+            inserted = cur.rowcount == 1
+        conn.commit()
+        conn.close()
+        return jsonify({"saved": True, "entry_id": entry_id, "created": inserted}), 200
+    except Exception as exc:
+        app.logger.exception("[learning-log POST] %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/learning-log", methods=["GET"])
+@require_api_key
+def learning_log_get():
+    """
+    operationId: getLearningLog
+    Retrieve learning-log entries.
+    • ?entry_id=<id>  → return the exact saved record (found=true/false).
+    • no entry_id     → return recent entries, newest-first, bounded by limit
+                        (default 50, max 100).
+    """
+    entry_id = (request.args.get("entry_id") or "").strip() or None
+    try:
+        limit = min(int(request.args.get("limit", 50)), _LEARNING_LOG_LIMIT_MAX)
+    except (TypeError, ValueError):
+        limit = 50
+
+    try:
+        conn = get_db_conn()
+        _ensure_learning_log_table(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if entry_id:
+                cur.execute(
+                    "SELECT * FROM wow_learning_log WHERE entry_id = %s",
+                    (entry_id,),
+                )
+                row = cur.fetchone()
+                conn.close()
+                if row is None:
+                    return jsonify({"found": False, "entry_id": entry_id}), 200
+                return app.response_class(
+                    json.dumps({"found": True, "record": dict(row)}, default=str),
+                    mimetype="application/json",
+                ), 200
+            else:
+                cur.execute(
+                    "SELECT * FROM wow_learning_log ORDER BY created_at DESC LIMIT %s",
+                    (limit,),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return app.response_class(
+            json.dumps(
+                {"found": True, "count": len(rows), "records": rows},
+                default=str,
+            ),
+            mimetype="application/json",
+        ), 200
+    except Exception as exc:
+        app.logger.exception("[learning-log GET] %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# END — Learning Log
+# ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":

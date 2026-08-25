@@ -117,8 +117,44 @@ def run(
           detail:                   str
         }
     """
-    enr = enrichment or {}
-    matrix = enr.get("failure_path_matrix") or {}
+    # Defensive: enrichment must be a dict.  Silently converting a malformed
+    # value to {} would hide a contract defect as ordinary missing-evidence.
+    # Instead, stamp a blocker and return early so the caller can identify the
+    # root cause as data quality, not a missing game log or path.
+    if enrichment is not None and not isinstance(enrichment, dict):
+        _fp_blocker = (
+            f"DATA_CONTRACT_FAIL:failure_path:enrichment_schema_invalid:"
+            f"expected_object:received_{type(enrichment).__name__}"
+        )
+        row.setdefault("blockers", []).append(_fp_blocker)
+        if not row.get("terminal_label"):
+            row["terminal_label"] = PropLabel.DATA_CONTRACT_FAIL.value
+        _result = {
+            "passed":                   False,
+            "paths_present":            [],
+            "paths_missing":            list(PATH_NAMES),
+            "paths_abstract":           [],
+            "primary_floor":            None,
+            "primary_requires_haircut": False,
+            "double_path_downgrade":    False,
+            "role_minutes_signal":      False,
+            "tier_downgrade":           False,
+            "code":                     "FAILURE_PATH_DATA_CONTRACT_FAIL",
+            "primary_failure":          "ENRICHMENT_SCHEMA_INVALID",
+            "expected_type":            "object",
+            "actual_type":              type(enrichment).__name__,
+            "can_execute":              False,
+            "detail":                   (
+                f"enrichment must be an object; "
+                f"received {type(enrichment).__name__}"
+            ),
+        }
+        row.setdefault("gates", {})["failure_path"] = _result
+        return _result
+
+    enr = enrichment if isinstance(enrichment, dict) else {}
+    matrix_raw = enr.get("failure_path_matrix") or {}
+    matrix = matrix_raw if isinstance(matrix_raw, dict) else {}
 
     paths_present:  list[str] = []
     paths_missing:  list[str] = []

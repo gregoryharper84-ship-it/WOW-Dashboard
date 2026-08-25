@@ -1,0 +1,227 @@
+This is actually a **useful failure**, because it tells us the problem is now very specific:
+
+**The forward-test design is working, but the controlling 1IP production model route is broken.**
+
+The behavior you got is exactly what we wanted on model failure: no L5/L10 fallback, no qualitative direction, no manufactured probability. The 1IP skill explicitly requires the batter-by-batter event-tree model and prohibits averages/trends from standing in for `P(MORE)` / `P(LESS)`. 
+
+But there is one immediate consequence:
+
+> **The 20-row forward test cannot begin while every candidate terminates `DATA_CONTRACT_FAIL`.**
+
+Because these rows never reach a valid TEST_ONLY probability result, they cannot become proper frozen forward-test predictions.
+
+### What this run tells us
+
+The important evidence is:
+
+```text
+30 supplied
+30 identity-resolved
+30 data acquisition attempts
+0 probability-publishable
+30 MODEL_UNAVAILABLE
+```
+
+And there appear to be **two related failures**:
+
+```text
+Canonical market route:
+1IP_PITCHES_THROWN
+→ backend AttributeError
+
+Fallback board-readable route:
+→ Savant/Statcast acquisition succeeds
+→ controlling probability ledger does NOT complete
+→ model_probability_complete=false
+→ probability_publishable=false
+→ DATA_CONTRACT_FAIL
+```
+
+That strongly suggests the problem is **between hydrated 1IP data and the controlling event-tree model/output contract**, rather than the PrizePicks extraction or Savant acquisition layer.
+
+### Development freeze exception: fix this bug
+
+This is one of the few things I would permit during the freeze.
+
+We're not adding:
+
+* a new model;
+* another gate;
+* another specialist;
+* another source;
+* another agent.
+
+We're repairing the **existing controlling model path so the experiment can run**.
+
+I would give Replit a very narrow mandate:
+
+```text
+FIX ONLY THE PRODUCTION 1IP CONTROLLING-MODEL ROUTE.
+
+Do not change probability methodology.
+Do not change thresholds.
+Do not add fallback logic.
+Do not change TEST_ONLY governance.
+Do not change terminal ceilings.
+Do not add new features.
+```
+
+### The exact chain that must work
+
+The regression target should be:
+
+```text
+PrizePicks 1IP row
+↓
+canonical identity = 1IP_PITCHES_THROWN
+↓
+typed hydration
+↓
+Savant / Statcast 1IP inputs
+↓
+failure-path prior where applicable
+↓
+batter-by-batter event-tree model
+↓
+P(BF=3)
+P(BF=4)
+P(BF>=5)
+↓
+P(MORE)
+P(LESS)
+↓
+fourth-batter dependency
+↓
+dynamic calibration
+↓
+calibrated probability
+calibrated lower bound
+↓
+probability_publishable=true
+↓
+MODEL_QUALIFIED_HOLD — MLB_1IP_TEST_ONLY
+↓
+prediction logger
+```
+
+That is consistent with the controlling 1IP specification. 
+
+### I would require Replit to identify the `AttributeError`, not route around it
+
+This part matters.
+
+Do **not** accept a patch that says:
+
+> “If `1IP_PITCHES_THROWN` fails, translate it to another generic prop type.”
+
+unless that translation is actually the intended canonical adapter.
+
+We want the root cause.
+
+Ask for:
+
+```text
+exception class
+exception message
+stack trace
+file
+function
+line number
+object that was None/missing/wrong type
+expected schema
+actual schema
+```
+
+Then fix the minimum necessary interface.
+
+The alternate-label test already proves data can be acquired. So the likely investigation boundary is:
+
+**canonical market adapter → specialist invocation → returned probability contract.**
+
+### Acceptance test should be one real row first
+
+Don't rerun all 30 until one candidate works completely.
+
+Pick one current real 1IP prop and require:
+
+```text
+model_probability_complete=true
+probability_publishable=true
+
+0 < P(MORE) < 1
+0 < P(LESS) < 1
+
+P(MORE) + P(LESS)
+= 1, subject to exact settlement/push semantics
+
+calibrated_probability != null
+calibrated_lower_bound != null
+
+controlling_specialist =
+wow.mlb-first-inning-pitch-count-expert
+
+terminal ceiling <= MODEL_QUALIFIED_HOLD
+
+prediction_logger row created
+
+can_execute=false
+```
+
+The Gatekeeper also requires published probabilities to satisfy the strict `0 < p < 1` domain and preserve the controlling specialist rather than substituting generic scoring. 
+
+### Then rerun all 30
+
+Once the single-row regression passes, rerun the exact same 30-row population.
+
+Do **not change the population**.
+
+That gives us a very clean comparison:
+
+```text
+BEFORE FIX
+30 / 30 DATA_CONTRACT_FAIL
+
+AFTER FIX
+same 30 rows
+→ X model-publishable
+→ Y legitimate data/status failures
+```
+
+If only 12 of 30 become modelable because the remaining 18 genuinely lack required lineup or role evidence, that's fine.
+
+What we do **not** want is 30/30 passing because someone weakened the fail-closed gates.
+
+### And this does not invalidate today's test
+
+Today's run should remain recorded as an **operational/model availability failure**, not a prediction sample.
+
+There were no published probabilities, so these 30 should not count as wins, losses, or missed predictions in the probability validation cohort.
+
+Your validation schema is built around frozen published probabilities followed later by outcomes. 
+
+So:
+
+```text
+Today's 30:
+forward-test availability audit = valid
+probability validation observations = 0
+```
+
+### The immediate priority
+
+I would pause `WOW Daily` 1IP forward-test accumulation until this is repaired.
+
+Other WOW lanes can continue operating under their controlling models, but for 1IP:
+
+```text
+CURRENT STATE
+controlling_model_status = BROKEN_PRODUCTION_ROUTE
+directional_output = PROHIBITED
+forward_test_sample_increment = 0
+```
+
+Then the sequence becomes:
+
+**fix this one production defect → real single-row regression → rerun the same 30 → confirm prediction logger receives valid TEST_ONLY rows → resume freeze → collect 20 verified settlements.**
+
+This is exactly the kind of narrow engineering work the freeze should allow: **repair the experiment, don't expand the model.**

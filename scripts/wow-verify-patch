@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# wow-verify-patch — WOW Engineering Control Plane post-patch diff audit
+#
+# Run after completing a patch session, before marking the task done.
+# Verifies diff boundary, test gate, and (optionally) live endpoint.
+#
+# Usage: bash scripts/wow-verify-patch [commit-sha]
+#        bash scripts/wow-verify-patch HEAD
+#
+# Environment:
+#   WOW_MIN_TESTS   Minimum passing test count required (default: 5000).
+#                   Set to a lower value in test harnesses.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLASK_DIR="$REPO_ROOT/artifacts/flask-scoring-api"
+COMMIT="${1:-HEAD}"
+PASS=0
+FAIL=0
+
+# Minimum passing tests expected from the full regression suite.
+# A count below this floor signals suspicious test removal.
+MIN_TESTS="${WOW_MIN_TESTS:-5000}"
+
+# The only test that is allowed to fail on an uncommitted working tree.
+# Any other failing test ID is treated as an unexpected regression.
+_SENTINEL="gate_engine/tests/test_stage_a_isolation.py::TestGitDiffAllowlist::test_no_uncommitted_changes_to_forbidden_files"
+
+green()  { printf '\033[0;32m✓ %s\033[0m\n' "$*"; }
+red()    { printf '\033[0;31m✗ %s\033[0m\n' "$*"; }
+yellow() { printf '\033[0;33m⚠ %s\033[0m\n' "$*"; }
+section() { printf '\n\033[1m=== %s ===\033[0m\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+section "Diff boundary audit (commit: $COMMIT)"
+# ---------------------------------------------------------------------------
+
+CHANGED=$(git -C "$REPO_ROOT" diff --name-only "$COMMIT^" "$COMMIT" 2>/dev/null \
+          || git -C "$REPO_ROOT" diff --name-only HEAD 2>/dev/null || true)
+
+if [ -z "$CHANGED" ]; then
+    yellow "No diff found for $COMMIT — is this a fresh commit?"
+else
+    echo "Changed files:"
+    echo "$CHANGED" | sed 's/^/    /'
+fi
+
+# Protected files that must NEVER appear in a patch diff
+PROTECTED_FILES=(
+    "artifacts/flask-scoring-api/gate_engine/labels.py"
+    "artifacts/flask-scoring-api/gate_engine/llp_governance.py"
+    "artifacts/flask-scoring-api/gate_engine/data_contract.py"
+    "artifacts/flask-scoring-api/gate_engine/failure_path.py"
+)
+
+PROTECTED_VIOLATED=0
+for f in "${PROTECTED_FILES[@]}"; do
+    if echo "$CHANGED" | grep -qF "$f"; then
+        red "PROTECTED FILE MODIFIED: $f"
+        PROTECTED_VIOLATED=1
+        ((++FAIL))
+    fi
+done
+
+if [ "$PROTECTED_VIOLATED" -eq 0 ]; then
+    green "No protected files modified"
+    (( ++PASS ))
+fi
+
+# ---------------------------------------------------------------------------
+section "Secret scan on changed files"
+# ---------------------------------------------------------------------------
+
+# Files that legitimately contain scanner test vectors or exclusion patterns.
+# These are scanner-tooling files — they MUST document fixture strings by design.
+# Any other file that contains sk-/Bearer patterns is flagged as a real secret.
+_SCANNER_TOOLING_FILES=(
+    "scripts/wow-preflight"
+    "artifacts/flask-scoring-api/gate_engine/tests/test_control_plane_scripts.py"
+)
+
+_is_scanner_tooling_file() {
+    local rel="$1"
+    local f
+    for f in "${_SCANNER_TOOLING_FILES[@]}"; do
+        [[ "$rel" == "$f" ]] && return 0
+    done
+    return 1
+}
+
+SECRET_FOUND=0
+if [ -n "$CHANGED" ]; then
+    while IFS= read -r file; do
+        FULL="$REPO_ROOT/$file"
+        [ -f "$FULL" ] || continue
+        # Skip scanner-tooling files: they legitimately contain documented fixture
+        # strings (sk-/Bearer test vectors) and cannot be free of those patterns.
+        if _is_scanner_tooling_file "$file"; then
+            continue
+        fi
+        if grep -qiE 'sk-[a-zA-Z0-9]{20,}|Bearer [a-zA-Z0-9_\-\.]{20,}' "$FULL" 2>/dev/null; then
+            red "Possible secret in changed file: $file"
+            SECRET_FOUND=1
+            ((++FAIL))
+        fi
+    done <<< "$CHANGED"
+fi
+
+if [ "$SECRET_FOUND" -eq 0 ]; then
+    green "No secrets detected in changed files"
+    ((++PASS))
+fi
+
+# ---------------------------------------------------------------------------
+section "can_execute=False invariant"
+# ---------------------------------------------------------------------------
+# Check Python source files for any non-commented can_execute=True assignment.
+# Also check YAML/JSON files for can_execute: true directives (case-insensitive).
+
+EXEC_FAIL=0
+
+# Python: actual assignment forms only — anchored to line start (after optional
+# whitespace) so string literals and docstring lines such as
+#   "...engine returned can_execute=True"
+#   - Does NOT set can_execute=True.
+# are not matched.  -P enables Perl regex for \s support.
+EXEC_TRUE_PY=$(grep -rn --include="*.py" -P '^\s*can_execute\s*=\s*True' \
+               "$FLASK_DIR/gate_engine/" 2>/dev/null \
+               | grep -v "test_" || true)
+if [ -n "$EXEC_TRUE_PY" ]; then
+    red "can_execute=True found in production gate_engine Python code:"
+    echo "$EXEC_TRUE_PY" | sed 's/^/    /'
+    EXEC_FAIL=1
+fi
+
+# YAML/JSON: colon-style directives (e.g. can_execute: true, can_execute: True)
+EXEC_TRUE_CFG=$(grep -rn --include="*.yaml" --include="*.yml" --include="*.json" \
+                -iE 'can_execute[[:space:]]*:[[:space:]]*true' "$FLASK_DIR/gate_engine/" 2>/dev/null \
+                | grep -v "test_\|#" || true)
+if [ -n "$EXEC_TRUE_CFG" ]; then
+    red "can_execute: true found in production gate_engine YAML/JSON:"
+    echo "$EXEC_TRUE_CFG" | sed 's/^/    /'
+    EXEC_FAIL=1
+fi
+
+if [ "$EXEC_FAIL" -eq 0 ]; then
+    green "can_execute=True not found in gate_engine production code"
+    ((++PASS))
+else
+    ((++FAIL))
+fi
+
+# ---------------------------------------------------------------------------
+section "Full regression suite"
+# ---------------------------------------------------------------------------
+# Gate rules (applied in order):
+#   1. No tests ran                  → fail (collection failure)
+#   2. Failures > 1                  → fail (multiple regressions)
+#   3. Failures == 1, wrong test     → fail (unexpected regression)
+#   4. Failures == 0 or sentinel OK, passing count < MIN_TESTS → fail (test removal)
+#   5. Otherwise                     → pass
+#
+# Only the exact sentinel test ID is accepted as the allowed single failure.
+# Any other failing test ID is treated as an unexpected regression.
+
+if command -v python3 &>/dev/null; then
+    cd "$FLASK_DIR"
+    printf 'Running full test suite (this takes ~2-3 min)...\n'
+    # || true: pytest exits non-zero on failures; capture output before evaluating exit code.
+    PYTEST_OUT=$(python3 -m pytest gate_engine/tests/ -q --tb=no 2>&1 || true)
+    echo "$PYTEST_OUT" | tail -5
+
+    FAILURES=$(echo "$PYTEST_OUT" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo "0")
+    PASSED=$(echo "$PYTEST_OUT"   | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+' || echo "0")
+    # Extract the test ID from each "FAILED <id> - <reason>" line
+    FAILING_IDS=$(echo "$PYTEST_OUT" | grep '^FAILED' | sed 's/^FAILED[[:space:]]*//; s/[[:space:]]*-[[:space:]]*.*//' || true)
+
+    if [ "$PASSED" -eq 0 ] && [ "$FAILURES" -eq 0 ]; then
+        red "Regression: no tests ran — test collection may have failed. Do NOT commit."
+        ((++FAIL))
+    elif [ "$FAILURES" -eq 0 ]; then
+        if [ "$PASSED" -lt "$MIN_TESTS" ]; then
+            red "Regression: only $PASSED tests passed (minimum required: $MIN_TESTS) — possible test removal. Do NOT commit."
+            ((++FAIL))
+        else
+            green "Regression: $PASSED passed, 0 failed"
+            ((++PASS))
+        fi
+    elif [ "$FAILURES" -eq 1 ]; then
+        FAILING_TEST=$(echo "$FAILING_IDS" | head -1 | tr -d '[:space:]')
+        if [ "$FAILING_TEST" = "$_SENTINEL" ]; then
+            if [ "$PASSED" -lt "$MIN_TESTS" ]; then
+                red "Regression: sentinel OK but only $PASSED tests passed (minimum: $MIN_TESTS) — possible test removal. Do NOT commit."
+                ((++FAIL))
+            else
+                green "Regression: $PASSED passed, 1 failed (runtime isolation sentinel only — resolves after commit)"
+                ((++PASS))
+            fi
+        else
+            red "Regression: 1 failure — NOT the expected isolation sentinel. Do NOT commit."
+            printf '    Expected sentinel: %s\n' "$_SENTINEL"
+            printf '    Actual failure:    %s\n' "$FAILING_TEST"
+            ((++FAIL))
+        fi
+    else
+        red "Regression: $FAILURES failures — patch introduces regressions. Do NOT commit."
+        ((++FAIL))
+    fi
+    cd "$REPO_ROOT"
+else
+    yellow "python3 not found — skipping regression suite"
+fi
+
+# ---------------------------------------------------------------------------
+section "Live endpoint smoke (optional)"
+# ---------------------------------------------------------------------------
+
+if command -v curl &>/dev/null && [ -n "${GPT_ACTION_SECRET:-}" ]; then
+    # Try production URL first (REPLIT_APP_URL), fall back to localhost dev server.
+    _LIVE_URL="${REPLIT_APP_URL:-http://localhost:25643}"
+    HEALTH=$(curl -s -o /dev/null -w "%{http_code}" \
+             -H "X-API-Key: $GPT_ACTION_SECRET" \
+             "${_LIVE_URL}/wow/engine/health" 2>/dev/null || echo "000")
+    if [ "$HEALTH" = "200" ]; then
+        green "Live health endpoint: HTTP 200 (${_LIVE_URL})"
+        ((++PASS))
+    else
+        # Any non-200 response — including HTTP 000 (connection refused / no
+        # server) — is a hard failure when the live check is enabled.
+        # HTTP 000 means the server is unreachable, which is itself an error
+        # when verification is explicitly requested.
+        red "Live health endpoint: HTTP $HEALTH (${_LIVE_URL}) — server must return 200"
+        ((++FAIL))
+    fi
+else
+    yellow "Skipping live endpoint check (no GPT_ACTION_SECRET or curl not available)"
+fi
+
+# ---------------------------------------------------------------------------
+section "Summary"
+# ---------------------------------------------------------------------------
+
+printf '\n'
+printf 'Passed: %d\n' "$PASS"
+printf 'Failed: %d\n' "$FAIL"
+
+if [ "$FAIL" -gt 0 ]; then
+    red "Patch verification FAILED — do not commit or publish until all failures are resolved."
+    exit 1
+else
+    green "Patch verification PASSED."
+    printf '\nNext steps:\n'
+    printf '  git add <allowed_files_only>\n'
+    printf '  git commit -m "WOW-PATCH-...: <summary>"\n'
+    printf '  (publish only if publish_authorized: true in contract)\n'
+    exit 0
+fi

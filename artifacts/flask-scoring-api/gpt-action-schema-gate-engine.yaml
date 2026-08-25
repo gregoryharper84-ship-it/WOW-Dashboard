@@ -253,60 +253,201 @@ paths:
                     actual current date — do not use a future or past date.
                 rows:
                   type: array
-                  description: Non-empty array of prop rows to score
+                  description: >
+                    Non-empty array of rows to score. Supports two row contracts:
+
+                    PLAYER_PROP — standard player prop (MORE/LESS threshold).
+                      Required: player, sport, prop_type, line, direction,
+                                slate_date, board_source, game.
+
+                    MONEYLINE_V1 — outright winner / game winner / h2h moneyline.
+                      Required: sport, team, opponent, market_type, event_id,
+                                slate_date, board_source.
+                      PROHIBITED (causes DATA_CONTRACT_FAIL if present):
+                                line, direction, prop_type, player, game.
+
+                    Auto-detection: set market_type to any outright key
+                    ("h2h", "moneyline", "ml", "match_winner", "game_winner",
+                    "outright_winner", "1x2", etc.) and the engine routes the
+                    row to the WOW Moneyline Probability Expert automatically.
+
+                    Mixed batches (PLAYER_PROP + MONEYLINE_V1 in the same
+                    request) are allowed — each lane is scored independently.
+                    MONEYLINE_V1 results appear in outright_winner_ledger;
+                    PLAYER_PROP results appear in prop_ledger.
                   items:
-                    type: object
-                    required:
-                      - player
-                      - sport
-                      - prop_type
-                      - line
-                      - direction
-                      - slate_date
-                      - board_source
-                      - game
-                    properties:
-                      player:
-                        type: string
-                        description: Full player name, e.g. "LeBron James"
-                      sport:
-                        type: string
+                    anyOf:
+                      - title: PlayerPropRow
                         description: >
-                          Sport identifier: NBA, MLB, WNBA, NHL, NFL,
-                          NCAAF, NCAAB, Soccer, Tennis, Golf, MMA
-                      prop_type:
-                        type: string
+                          Standard player prop row (MORE/LESS threshold).
+                          Required: player, sport, prop_type, line, direction,
+                          slate_date, board_source, game.
+                        type: object
+                        required:
+                          - player
+                          - sport
+                          - prop_type
+                          - line
+                          - direction
+                          - slate_date
+                          - board_source
+                          - game
+                        properties:
+                          player:
+                            type: string
+                            description: Full player name, e.g. "LeBron James"
+                          sport:
+                            type: string
+                            description: >
+                              Sport identifier: NBA, MLB, WNBA, NHL, NFL,
+                              NCAAF, NCAAB, Soccer, Tennis, Golf, MMA
+                          prop_type:
+                            type: string
+                            description: >
+                              Stat category, e.g. "Points", "Rebounds",
+                              "Pitcher Strikeouts", "Plate Appearances"
+                          line:
+                            type: number
+                            description: The prop line value, e.g. 27.5
+                          direction:
+                            type: string
+                            enum: [MORE, LESS]
+                            description: Pick direction — MORE (over) or LESS (under)
+                          slate_date:
+                            type: string
+                            format: date
+                            description: Game date YYYY-MM-DD
+                          board_source:
+                            type: string
+                            description: >
+                              Originating board, e.g. "PrizePicks", "Underdog",
+                              "DraftKings", "FanDuel"
+                          game:
+                            type: string
+                            description: Matchup string, e.g. "LAL vs GSW"
+                          player_id:
+                            type: integer
+                            description: >
+                              MLBAM / NBA / ESPN numeric player ID (optional but
+                              strongly recommended — enables automatic game-log
+                              fetch when game_log is absent from enrichment).
+                          stat_key:
+                            type: string
+                            description: >
+                              Canonical stat key if known, e.g. "K", "PA",
+                              "1IP_PITCHES_THROWN". Derived from prop_type when omitted.
+                          team:
+                            type: string
+                            description: Player's team abbreviation (optional hint)
+                          opponent:
+                            type: string
+                            description: Opposing team abbreviation (optional hint)
+                          market_line:
+                            type: number
+                            description: Sportsbook line for market comparison (optional)
+                          row_id:
+                            type: string
+                            description: >
+                              Caller-supplied stable row ID. If omitted the engine
+                              generates one. Supply to join enrichment keys across calls.
+
+                      - title: MoneylineV1Row
                         description: >
-                          Prop category, e.g. "Points", "Rebounds",
-                          "Pitcher Strikeouts", "Passing Yards"
-                      line:
-                        type: number
-                        description: The prop line value, e.g. 27.5
-                      direction:
-                        type: string
-                        enum: [MORE, LESS]
-                        description: Pick direction — MORE (over) or LESS (under)
-                      slate_date:
-                        type: string
-                        format: date
-                        description: Game date YYYY-MM-DD
-                      board_source:
-                        type: string
-                        description: >
-                          Originating board, e.g. "PrizePicks", "Underdog",
-                          "DraftKings", "FanDuel"
-                      game:
-                        type: string
-                        description: Game matchup string, e.g. "LAL vs GSW"
-                      market_line:
-                        type: number
-                        description: Sportsbook line for market comparison (optional)
-                      row_id:
-                        type: string
-                        description: >
-                          Caller-supplied stable row ID (optional). If omitted,
-                          the engine generates one. Supply this when you need
-                          to match enrichment keys to rows across calls.
+                          Outright winner / game-winner / h2h moneyline row
+                          (MONEYLINE_V1 contract).
+                          Required: sport, team, opponent, market_type,
+                          event_id, slate_date, board_source.
+                          DO NOT include: line, direction, prop_type, player, game.
+                          Scored by the WOW Moneyline Probability Expert;
+                          result appears in outright_winner_ledger.
+                        type: object
+                        required:
+                          - sport
+                          - team
+                          - opponent
+                          - market_type
+                          - event_id
+                          - slate_date
+                          - board_source
+                        properties:
+                          sport:
+                            type: string
+                            description: >
+                              Sport identifier: MLB, NBA, WNBA, NFL, NHL,
+                              ATP, WTA, TENNIS, MMA, UFC, SOCCER, EPL, MLS
+                          team:
+                            type: string
+                            description: >
+                              Full name of the team/participant being evaluated
+                              for a win, e.g. "Los Angeles Dodgers", "Boston Celtics".
+                              This is the side whose win probability is computed.
+                          opponent:
+                            type: string
+                            description: >
+                              Full name of the opposing team/participant,
+                              e.g. "San Francisco Giants".
+                          market_type:
+                            type: string
+                            description: >
+                              Canonical outright-market key. Use one of:
+                              "h2h", "moneyline", "ml", "match_winner",
+                              "game_winner", "outright_winner", "1x2",
+                              "bout_winner", "fight_winner".
+                              This field is what triggers MONEYLINE_V1 routing.
+                          event_id:
+                            type: string
+                            description: >
+                              Unique event identifier. May be platform-supplied
+                              (e.g. "mlb-2026-08-10-lad-sfg") or synthesised as
+                              "{sport}-{slate_date}-{team_abbr}-{opponent_abbr}".
+                              Used for dedup across sportsbooks.
+                          slate_date:
+                            type: string
+                            format: date
+                            description: Game date YYYY-MM-DD
+                          board_source:
+                            type: string
+                            description: >
+                              Originating book, e.g. "DraftKings", "FanDuel",
+                              "BetMGM", "Caesars"
+                          game_time:
+                            type: string
+                            description: >
+                              Game start time ISO-8601 or display string (optional),
+                              e.g. "2026-08-10T19:10:00Z". Used for freshness checks.
+                          home_team:
+                            type: string
+                            description: >
+                              Full name of the home team (optional — strongly
+                              recommended for MLB/WNBA/ATP/WTA).  When both
+                              home_team and away_team are supplied, the engine
+                              derives participant orientation automatically by
+                              comparing team against these names (exact,
+                              case-insensitive).  Omitting both requires the
+                              caller to set home_away explicitly.
+                          away_team:
+                            type: string
+                            description: >
+                              Full name of the away team (optional — strongly
+                              recommended; required for automatic orientation
+                              derivation when home_away is not set).
+                          home_away:
+                            type: string
+                            description: >
+                              Explicit participant-side marker for the team
+                              being evaluated.  Use "HOME" or "AWAY".
+                              Accepted synonyms — HOME: "home", "vs", "vs.",
+                              "H", "1", "yes", "true".  AWAY: "away", "@",
+                              "0", "no", "false".
+                              When home_team + away_team are both supplied,
+                              this field is optional (the engine derives it).
+                              When only one name is available, set this field
+                              explicitly to avoid PARTICIPANT_ORIENTATION_UNRESOLVED.
+                          row_id:
+                            type: string
+                            description: >
+                              Caller-supplied stable row ID. If omitted the engine
+                              generates one. Use to join enrichment keys.
                 target_date:
                   type: string
                   format: date
@@ -325,7 +466,72 @@ paths:
                         type: array
                         items:
                           type: number
-                        description: Last-N game log values for this stat
+                        description: >
+                          Last-N per-game values for the specific stat being scored.
+                          MUST be plain numbers — one value per game, most recent first.
+                          Do NOT mix stat types: if scoring WNBA Rebounds supply raw
+                          rebound totals only (not PRA). For PRA supply the per-game
+                          sum PTS+REB+AST. For H+R+RBI supply per-game H+R+RBI.
+                          For Hitter Fantasy Score supply the per-game computed FS total.
+                          Minimum recommended: 5 games; 10 preferred.
+                          Fewer than 3 qualifying (non-DNP) games triggers ROLE_HOLD.
+                      box_score_log:
+                        type: array
+                        description: >
+                          WNBA only — full box-score rows as dicts, one per game.
+                          CANNOT substitute for game_log (different contract layers):
+                          game_log is the numeric stat series; box_score_log is the
+                          role/usage evidence packet consumed by the WNBA composite gate.
+
+                          Required keys per dict (missing or wrong types cause
+                          WNBA_ENRICHMENT_TYPE_MISMATCH):
+                            MIN   — float, minutes played
+                            PTS   — float, points scored
+                            REB   — float, total rebounds
+                            AST   — float, assists
+                            FGA   — float, field goal attempts
+                            USG%  — float, usage rate as decimal (0.28) or percent (28.0);
+                                    also accepted as "USG", "usg_pct", "usage"
+
+                          Optional but recommended: STL, BLK, TOV, FGM, FG3M, FG3A,
+                          FTA, FTM, OREB, DREB, game_date, opponent, outcome.
+
+                          Example: {"MIN":34.0,"PTS":18.0,"REB":7.0,"AST":3.0,
+                                    "FGA":14.0,"USG%":0.28,"STL":1.0,"BLK":0.0}
+                        items:
+                          type: object
+                          additionalProperties: true
+                          properties:
+                            MIN:  { type: number }
+                            PTS:  { type: number }
+                            REB:  { type: number }
+                            AST:  { type: number }
+                            FGA:  { type: number }
+                            "USG%": { type: number, description: "Usage rate — decimal (0.28) or percent (28.0)" }
+                      role_status:
+                        type: string
+                        enum: [STARTER, RESERVE, SPOT_STARTER, DNP_RISK, DNP, INACTIVE, UNKNOWN]
+                        description: >
+                          Player's confirmed role for this game. Required for WNBA props
+                          — absence triggers LINEUP_UNCONFIRMED hold.
+                          STARTER/RESERVE: confirmed. DNP_RISK: listed but uncertain.
+                          DNP: did not play — exclude this game from game_log and box_score_log.
+                          Source: official injury report, beat reporter, or ESPN API.
+                      role_timestamp:
+                        type: string
+                        format: date-time
+                        description: >
+                          ISO-8601 UTC timestamp when role_status was confirmed,
+                          e.g. "2026-08-10T18:30:00Z". Role data older than 4 hours
+                          before tip-off is treated as STALE → capped at DNP_RISK.
+                          Supply within 2 hours of tip for STARTER/RESERVE to reach
+                          full confidence.
+                      projected_minutes:
+                        type: number
+                        description: >
+                          Expected minutes for this game (WNBA optional, required for
+                          2PA/3PA/FGA attempt-rate props to escape MODEL_QUALIFIED_HOLD).
+                          When absent, model uses role_status + L10 minute average.
                       season_log:
                         type: array
                         items:
@@ -482,6 +688,242 @@ paths:
                             type: string
                             nullable: true
                             description: Baseline used for shrinkage, e.g. "season", "role_split", "market".
+                      teamrankings:
+                        type: object
+                        description: >
+                          TeamRankings secondary enrichment for OUTRIGHT_WINNER / moneyline rows.
+                          WOW-PATCH-2026-08-08-TEAMRANKINGS-SECONDARY-ENRICHMENT.
+
+                          TeamRankings has no authorized public API. The GPT operator must read
+                          TeamRankings.com directly and supply this object. Absence is safe:
+                          source_status becomes DATA_UNOBTAINABLE and the base model runs unchanged.
+
+                          Supported sports: NBA, WNBA, MLB, NFL, NCAAF, NCAAB.
+                          Default weight: 7.5% of sport model ensemble. Hard ceiling: 10%.
+                          Zero weight when: STALE | DATA_UNOBTAINABLE | PROXY_ONLY | SOURCE_CONFLICT
+                          or when matchup_win_prob_home is absent.
+
+                          FRESHNESS: freshness_age_hours > 4.0 (or computed from retrieved_at) triggers
+                          STALE and zero weight regardless of other fields. Retrieve within 4 h of game time.
+
+                          display_odds is stored for audit transparency only. It is NEVER fed to the sport
+                          model, NEVER passed to extract_no_vig_probability(), and NEVER copied to
+                          sportsbook_odds. The backend always sets display_odds_excluded_from_model=true.
+                        properties:
+                          source_status:
+                            type: string
+                            enum: [RETRIEVED, PROXY_ONLY, DATA_UNOBTAINABLE, SOURCE_CONFLICT, STALE, NOT_ATTEMPTED, UNSUPPORTED_SPORT]
+                            description: >
+                              Top-level acquisition status. RETRIEVED = operator read TR directly, data
+                              is fresh. PROXY_ONLY = reconstructed/inferred, zero weight.
+                              DATA_UNOBTAINABLE = not available, base model unchanged. STALE = age > 4 h.
+                          source_url:
+                            type: string
+                            description: TeamRankings page URL where the operator read the data.
+                          retrieved_at:
+                            type: string
+                            format: date-time
+                            description: ISO 8601 UTC timestamp when the operator retrieved the data.
+                          matchup_win_prob_home:
+                            type: number
+                            description: >
+                              TR direct matchup win-probability for the home team (0.01–0.99).
+                              This is the ONLY TR field that contributes to the probability model.
+                              Raw predictive ratings cannot be converted — matchup_win_prob_home is
+                              required for non-zero TR weight.
+                          home:
+                            type: object
+                            description: TeamRankings record for the home team. All fields optional.
+                            properties:
+                              team_name: { type: string }
+                              league: { type: string }
+                              sport: { type: string }
+                              predictive_rating: { type: number }
+                              predictive_rank: { type: integer }
+                              home_rating: { type: number }
+                              home_rank: { type: integer }
+                              away_rating: { type: number }
+                              away_rank: { type: integer }
+                              neutral_rating: { type: number }
+                              strength_of_schedule:
+                                type: number
+                                description: Season SOS. Also accepted as sos.
+                              future_strength_of_schedule:
+                                type: number
+                                description: Remaining SOS. Also accepted as future_sos.
+                              last_5_rating:
+                                type: number
+                                description: Also accepted as l5_rating.
+                              last_10_rating:
+                                type: number
+                                description: Also accepted as l10_rating.
+                              consistency_rating: { type: number }
+                              vs_top_25_pct: { type: number }
+                              vs_bottom_25_pct: { type: number }
+                              projected_win_pct: { type: number }
+                              projected_playoff_prob: { type: number }
+                              display_odds:
+                                type: integer
+                                description: American moneyline from TR. MARKET CONTEXT ONLY — never fed to sport model, never copied to sportsbook_odds.
+                              source_url: { type: string }
+                              retrieved_at: { type: string }
+                              freshness_age_hours: { type: number }
+                              source_status: { type: string }
+                              acquisition_notes:
+                                type: array
+                                items: { type: string }
+                          away:
+                            type: object
+                            description: TeamRankings record for the away team. Same fields as home.
+                            properties:
+                              team_name: { type: string }
+                              league: { type: string }
+                              sport: { type: string }
+                              predictive_rating: { type: number }
+                              predictive_rank: { type: integer }
+                              home_rating: { type: number }
+                              home_rank: { type: integer }
+                              away_rating: { type: number }
+                              away_rank: { type: integer }
+                              neutral_rating: { type: number }
+                              strength_of_schedule: { type: number }
+                              future_strength_of_schedule: { type: number }
+                              last_5_rating: { type: number }
+                              last_10_rating: { type: number }
+                              consistency_rating: { type: number }
+                              vs_top_25_pct: { type: number }
+                              vs_bottom_25_pct: { type: number }
+                              projected_win_pct: { type: number }
+                              projected_playoff_prob: { type: number }
+                              display_odds:
+                                type: integer
+                                description: American moneyline from TR. MARKET CONTEXT ONLY — never fed to sport model, never copied to sportsbook_odds.
+                              source_url: { type: string }
+                              retrieved_at: { type: string }
+                              freshness_age_hours: { type: number }
+                              source_status: { type: string }
+                              acquisition_notes:
+                                type: array
+                                items: { type: string }
+                      moneyline:
+                        type: object
+                        description: >
+                          Moneyline-specific enrichment for MONEYLINE_V1 rows.
+                          Keyed like any enrichment entry — by row_id or
+                          "team:market_type" (lower-case). Provides odds context,
+                          starting lineup, head-to-head history, and weather for
+                          the calibration and net-edge layers.
+
+                          Absence of any sub-field is safe — that layer degrades
+                          gracefully rather than blocking scoring.
+                        properties:
+                          odds_american_home:
+                            type: integer
+                            description: >
+                              American moneyline for the home team (negative = favourite),
+                              e.g. -145 or +130. Used for no-vig calculation;
+                              combined with odds_american_away to derive market_no_vig.
+                          odds_american_away:
+                            type: integer
+                            description: >
+                              American moneyline for the away team, e.g. +125 or -115.
+                          odds_source:
+                            type: string
+                            description: Bookmaker name, e.g. "DraftKings", "FanDuel", "BetMGM"
+                          odds_retrieved_at:
+                            type: string
+                            format: date-time
+                            description: ISO-8601 UTC timestamp when odds were read
+                          starting_pitcher_home:
+                            type: string
+                            description: >
+                              Confirmed starting pitcher for the home team (MLB only),
+                              e.g. "Shohei Ohtani". Absence triggers pitcher-uncertainty
+                              widening in the MLB model.
+                          starting_pitcher_away:
+                            type: string
+                            description: Confirmed starting pitcher for the away team (MLB only)
+                          pitchers_confirmed:
+                            type: boolean
+                            description: >
+                              True when both starters are officially confirmed for today.
+                              False or absent applies an uncertainty penalty to the model output.
+                          head_to_head_record:
+                            type: object
+                            description: >
+                              Recent head-to-head record between the two teams.
+                              Used as a secondary calibration signal — never the
+                              primary input.
+                            properties:
+                              last_n_games:
+                                type: integer
+                                description: >
+                                  Number of recent matchups covered, e.g. 10.
+                                  Recommend ≥5 for meaningful signal; fewer
+                                  games produce higher uncertainty widening.
+                              team_wins:
+                                type: integer
+                                description: Wins for the evaluated team in the last_n_games window
+                              opponent_wins:
+                                type: integer
+                              pushes:
+                                type: integer
+                                description: Ties / no-decisions (optional)
+                              season:
+                                type: string
+                                description: Season or date range, e.g. "2026" or "last_30_days"
+                          rest_days_team:
+                            type: integer
+                            description: Days of rest for the evaluated team (0 = back-to-back)
+                          rest_days_opponent:
+                            type: integer
+                            description: Days of rest for the opponent
+                          home_field:
+                            type: string
+                            enum: [HOME, AWAY, NEUTRAL]
+                            description: >
+                              Whether the evaluated team (team field) is home, away,
+                              or at a neutral site. Derived from home_team when omitted.
+                          injuries_team:
+                            type: array
+                            items:
+                              type: string
+                            description: >
+                              Key injured players for the evaluated team,
+                              e.g. ["Trea Turner - IL60", "Freddie Freeman - DTD"].
+                              Drives injury-uncertainty widening in the model.
+                          injuries_opponent:
+                            type: array
+                            items:
+                              type: string
+                            description: Key injured players for the opponent
+                          weather:
+                            type: object
+                            description: >
+                              Weather context for outdoor games (MLB, NFL).
+                              Indoor / dome games: omit or set roof_closed=true.
+                            properties:
+                              condition:
+                                type: string
+                                description: >
+                                  e.g. "Clear", "Partly Cloudy", "Rain", "Snow", "Wind"
+                              wind_mph:
+                                type: number
+                                description: Wind speed in mph at game time
+                              wind_direction:
+                                type: string
+                                description: e.g. "Out to CF", "In from RF", "SW"
+                              temperature_f:
+                                type: number
+                                description: Temperature in Fahrenheit at first pitch
+                              roof_closed:
+                                type: boolean
+                                description: >
+                                  True for retractable-roof stadiums when closed.
+                                  Causes weather to be ignored by the model.
+                              precipitation_pct:
+                                type: number
+                                description: Probability of precipitation 0–100
                 record_entries:
                   type: boolean
                   description: >
@@ -534,18 +976,45 @@ paths:
                     Omit unless you want strict version matching.
             example:
               expected_governance_hash: "2a74d11e20ee24526de6db9401f39b4a9228c0f46948d07cea72dc4a21111908"
-              session_id: "session-2026-07-17-A"
-              research_run_id: "rr-2026-07-17-001"
-              as_of: "2026-07-17"
+              session_id: "session-2026-08-10-A"
+              research_run_id: "rr-2026-08-10-001"
+              as_of: "2026-08-10"
               rows:
                 - player: "LeBron James"
                   sport: "NBA"
                   prop_type: "Points"
                   line: 27.5
                   direction: "MORE"
-                  slate_date: "2026-07-17"
+                  slate_date: "2026-08-10"
                   board_source: "PrizePicks"
                   game: "LAL vs GSW"
+                - sport: "MLB"
+                  team: "Los Angeles Dodgers"
+                  opponent: "San Francisco Giants"
+                  market_type: "h2h"
+                  event_id: "mlb-2026-08-10-lad-sfg"
+                  slate_date: "2026-08-10"
+                  board_source: "DraftKings"
+                  home_team: "Los Angeles Dodgers"
+                  row_id: "ml-lad-sfg-001"
+              enrichment:
+                ml-lad-sfg-001:
+                  moneyline:
+                    odds_american_home: -155
+                    odds_american_away: +130
+                    odds_source: "DraftKings"
+                    odds_retrieved_at: "2026-08-10T18:00:00Z"
+                    starting_pitcher_home: "Shohei Ohtani"
+                    starting_pitcher_away: "Logan Webb"
+                    pitchers_confirmed: true
+                    home_field: "HOME"
+                    rest_days_team: 1
+                    rest_days_opponent: 2
+                    head_to_head_record:
+                      last_n_games: 10
+                      team_wins: 6
+                      opponent_wins: 4
+                      season: "2026"
       responses:
         "200":
           description: >
@@ -632,6 +1101,139 @@ paths:
                     type: object
                     nullable: true
                     additionalProperties: true
+                  outright_winner_ledger:
+                    type: array
+                    description: >
+                      Scored OUTRIGHT_WINNER / moneyline rows. Each entry exposes the full
+                      WOW v16 Moneyline Architecture four-output contract. Runs after the
+                      prop pipeline; can_execute=False unconditional on every entry.
+                    items:
+                      type: object
+                      properties:
+                        row_id:
+                          type: string
+                        sport:
+                          type: string
+                        team:
+                          type: string
+                        opponent:
+                          type: string
+                        terminal_label:
+                          type: string
+                          description: >
+                            MODEL_QUALIFIED_HOLD (PROVISIONAL model), MONEY_QUALIFIED (ACTIVE + CLB>=0.55),
+                            REJECT_TAIL_ONLY_UPSET, STALE_MODEL_INVALIDATED, DATA_CONTRACT_FAIL
+                        probability_snapshot:
+                          type: object
+                          description: Immutable probability snapshot with four clean outputs.
+                          properties:
+                            independent_probability:
+                              type: number
+                              nullable: true
+                              description: >
+                                Sport-model probability (Elo, H2H, power ratings ONLY).
+                                Zero sportsbook-price input. Cannot be substituted by odds.
+                            calibrated_probability:
+                              type: number
+                              nullable: true
+                              description: >
+                                Bounded-shrinkage blend of independent + market no-vig.
+                                Market enters HERE only (never upstream). Weight capped at 50%.
+                            calibrated_probability_lower_bound:
+                              type: number
+                              nullable: true
+                              description: >
+                                Conservative floor accounting for sport volatility, sample size,
+                                lineup certainty, model disagreement, source conflict, freshness.
+                                USE THIS for candidate ranking — not raw probability.
+                            calibrated_probability_upper_bound:
+                              type: number
+                              nullable: true
+                            net_edge:
+                              type: number
+                              nullable: true
+                              description: calibrated_probability minus market_no_vig. Downstream only.
+                            snapshot_hash:
+                              type: string
+                              nullable: true
+                            moneyline_architecture_layers:
+                              type: object
+                              description: >
+                                Layer-by-layer observability from the 12-stage pipeline.
+                                Keys: sport_model, simulation, failure_path, disagreement_audit,
+                                calibration, classification, market_comparison, final_refresh,
+                                slate_integrity.
+                              properties:
+                                sport_model:
+                                  type: object
+                                  description: Independent model (Elo/H2H/power). submodel_probs shows per-submodel point estimates.
+                                simulation:
+                                  type: object
+                                  description: >
+                                    Monte Carlo regime simulation. adjusted_prob is post-simulation independent probability.
+                                    regime_distribution maps regime names to frequencies (0-1).
+                                disagreement_audit:
+                                  type: object
+                                  description: >
+                                    Cross-submodel disagreement. LOW=1x, MODERATE=1.15x, HIGH=1.35x uncertainty widening.
+                                  properties:
+                                    disagreement_grade:
+                                      type: string
+                                      enum: [LOW, MODERATE, HIGH]
+                                    uncertainty_widening_factor:
+                                      type: number
+                                calibration:
+                                  type: object
+                                  description: >
+                                    Dynamic calibration. market_weight <= 50%. Reports dynamic_uncertainty
+                                    and all eight uncertainty components.
+                                  properties:
+                                    dynamic_uncertainty:
+                                      type: number
+                                    model_weight:
+                                      type: number
+                                    market_weight:
+                                      type: number
+                                    market_dependent_flag:
+                                      type: boolean
+                                classification:
+                                  type: object
+                                  description: >
+                                    Lane (FAVORITE/UNDERDOG) determined by CLB only.
+                                    Upset taxonomy: STRUCTURAL, VARIANCE_ASSISTED, TAIL_ONLY.
+                                    TAIL_ONLY cannot qualify (REJECT_TAIL_ONLY_UPSET).
+                                  properties:
+                                    lane:
+                                      type: string
+                                      enum: [FAVORITE, UNDERDOG]
+                                    upset_profile_type:
+                                      type: string
+                                    qualification_gate:
+                                      type: string
+                                market_comparison:
+                                  type: object
+                                  description: Exact no-vig comparison (stage 11, downstream only).
+                        can_execute:
+                          type: boolean
+                          description: Always false
+                        can_approve_bets:
+                          type: boolean
+                          description: Always false
+                  outright_winner_contract_failures:
+                    type: array
+                    description: OUTRIGHT_WINNER rows that failed data-contract validation before scoring
+                    items:
+                      type: object
+                      additionalProperties: true
+                  outright_event_dedup_map:
+                    type: object
+                    description: >
+                      dedup_key to list of original_row_ids. Same game submitted from multiple sportsbooks
+                      is scored once; all source appearances preserved in platform_appearances.
+                    additionalProperties:
+                      type: array
+                      items:
+                        type: string
         "400":
           description: Missing or invalid rows array
           content:
@@ -721,24 +1323,7 @@ paths:
       x-openai-isConsequential: false
       summary: Stage 2 pipeline readiness — schema status and settlement worker stats
       description: >
-        Returns Stage 2 data-pipeline health without any external I/O. Use to
-        verify that all seven Stage 2 DB tables are initialised (schema_ready)
-        and to inspect settlement-worker activity (last_success_tick, errors).
-
-        Public endpoint — no API key required. Safe to call at any time.
-
-        Key fields:
-          schema_ready          — true once all 7 Stage 2 tables are created
-          settlement_worker     — background grading daemon status
-            .started            — thread has been launched
-            .enabled            — SETTLEMENT_WORKER_DISABLED not set
-            .ticks              — total polling cycles completed
-            .props_graded       — cumulative prop-settlement rows graded
-            .kalshi_graded      — cumulative Kalshi rows graded
-            .last_tick          — ISO-8601 UTC timestamp of most recent tick
-            .last_success_tick  — ISO-8601 UTC timestamp of last tick that graded ≥1 row
-            .last_error         — last error string, or null
-          can_execute           — always false (DRY_RUN_ONLY)
+        Returns Stage 2 readiness without external I/O, including schema_ready and settlement-worker status, tick counts, grading totals, timestamps, and last error. Public; no API key. can_execute is always false.
       responses:
         "200":
           description: Stage 2 health snapshot
@@ -789,15 +1374,7 @@ paths:
       x-openai-isConsequential: false
       summary: Normalize raw OCR leg data into canonical rows the gate pipeline can score
       description: >
-        Converts extracted leg data (from a slip screenshot or manual entry) into
-        canonical NormalizedRow dicts by running a 9-step resolution pipeline:
-        text normalisation → roster lookup → exact/fuzzy name match → team
-        disambiguation → schedule lookup → stat key mapping → confidence stamping.
-
-        Call this before /gate-engine/run when you have OCR-extracted or manually
-        typed leg data that hasn't been canonicalized yet.
-
-        Requires X-API-Key.
+        Converts OCR or manually entered legs into canonical rows using roster, name, team, schedule, stat-key, and confidence resolution. Call before /gate-engine/run for noncanonical input. Requires X-API-Key.
       requestBody:
         required: true
         content:
@@ -932,28 +1509,7 @@ paths:
       x-openai-isConsequential: false
       summary: Full slip pipeline — Vision extraction → normalize → enrich → gate engine → hit probability
       description: >
-        One-call endpoint that runs the complete screenshot-to-scored-slip pipeline:
-
-          Step A  Vision extraction   — Claude reads the slip image and extracts all legs
-          Step B  Normalization       — player names, stat keys, teams resolved via roster lookup
-          Step C  Auto enrichment     — Odds API market lines, ESPN injury status, game logs fetched
-          Step D  Claude gap-fill     — unresolved players or missing data resolved via LLM search
-          Step E  Gate pipeline       — full 22-gate WOW engine run per leg
-          Step F  Hit probability     — MLB binomial formula / NBA–WNBA Poisson / Claude for others
-          Step G  Explanation         — plain-English rationale per leg
-          Step H  Expert review       — autonomous downgrade-only audit pass; any downgraded leg
-                                        gets EXPERT_REVIEW_DOWNGRADE added to its flags and its
-                                        terminal_label replaced; result in response.expert_audit
-
-        Hard rule: hit_probability is null when no game log is available — the model never
-        fabricates a value.
-
-        Hard rule: expert review (Step H) is downgrade-only — it can make a verdict more
-        conservative but never reinstate a killed leg or raise a confidence tier. Every slip's
-        audit result is written to the slip_expert_review_log table; use GET /wow/slip-review-log
-        to pull entries for batch postmortem.
-
-        Requires X-API-Key.
+        Runs the full slip pipeline: vision extraction, normalization, enrichment, gap filling, gate scoring, hit probability, explanation, and downgrade-only expert review. Missing game logs yield null probability. Requires X-API-Key.
       requestBody:
         required: true
         content:
@@ -1310,14 +1866,7 @@ paths:
       x-openai-isConsequential: false
       summary: Retrieve expert-review audit log for batch postmortem
       description: >
-        Returns audit log entries written by the autonomous expert-review pass
-        (Step H) that runs after every /analyze-and-score call.
-
-        Use this for periodic batch postmortem — compare pipeline verdicts against
-        audit verdicts, review DOWNGRADED legs, and check EXPLANATION_OVERCONFIDENT /
-        EXPLANATION_INCOMPLETE flags across a session.
-
-        Requires X-API-Key.
+        Returns expert-review audit entries from /analyze-and-score for batch postmortems. Filter by slip, verdict, limit, or offset to review downgraded legs and explanation flags. Requires X-API-Key.
       parameters:
         - name: slip_id
           in: query
@@ -1427,8 +1976,813 @@ paths:
       security:
         - ApiKeyAuth: []
 
+  /wow/odds/events:
+    get:
+      operationId: getOddsApiEvents
+      x-openai-isConsequential: false
+      summary: Get upcoming or live events for a sport
+      description: >
+        Low-cost event discovery call. Uses the free key by default.
+        Returns a list of events with IDs needed for subsequent market and odds calls.
+        Auth: X-API-Key (SCORING_API_KEY). Migrated from X-WOW-Action-Key 2026-08-14.
+      parameters:
+        - name: sport
+          in: query
+          required: true
+          description: >
+            Odds API sport key, e.g. baseball_mlb, basketball_nba,
+            americanfootball_nfl, basketball_wnba
+          schema:
+            type: string
+        - name: commence_time_from
+          in: query
+          required: false
+          description: ISO 8601 datetime — only return events starting at or after this time
+          schema:
+            type: string
+        - name: commence_time_to
+          in: query
+          required: false
+          description: ISO 8601 datetime — only return events starting at or before this time
+          schema:
+            type: string
+        - name: include_rotation_numbers
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Event list and quota metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_key_tier:
+                    type: string
+                    enum: [free, paid]
+                  requests_remaining:
+                    type: string
+                  requests_used:
+                    type: string
+                  request_cost:
+                    type: string
+                  quota_warning:
+                    type: boolean
+                    description: >
+                      True when requests_remaining for this key tier has dropped
+                      below the server-side threshold (default 50). Stop non-essential
+                      calls immediately.
+                  quota_threshold:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        "400":
+          description: Missing required parameter
+        "401":
+          description: Missing or invalid X-API-Key
+        "502":
+          description: Both Odds API key paths failed
+      security:
+        - ApiKeyAuth: []
+
+  /wow/odds/event-markets:
+    get:
+      operationId: getOddsApiEventMarkets
+      x-openai-isConsequential: false
+      summary: Get available sportsbook market keys for one event
+      description: >
+        Returns the list of market keys available for a specific event
+        (e.g. h2h, spreads, totals, player_pass_tds). Use the market
+        keys returned here as input to getOddsApiEventOdds.
+        Uses the paid key by default.
+        Auth: X-API-Key (SCORING_API_KEY). Migrated from X-WOW-Action-Key 2026-08-14.
+      parameters:
+        - name: sport
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: event_id
+          in: query
+          required: true
+          description: Event ID from getOddsApiEvents
+          schema:
+            type: string
+        - name: regions
+          in: query
+          required: false
+          schema:
+            type: string
+            default: us
+        - name: bookmakers
+          in: query
+          required: false
+          description: Comma-separated bookmaker keys to filter results
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Available market keys for the event
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_key_tier:
+                    type: string
+                  quota_warning:
+                    type: boolean
+                  data:
+                    type: object
+                    additionalProperties: true
+        "400":
+          description: Missing required parameter
+        "401":
+          description: Missing or invalid X-API-Key
+        "502":
+          description: Both Odds API key paths failed
+      security:
+        - ApiKeyAuth: []
+
+  /wow/odds/event-odds:
+    get:
+      operationId: getOddsApiEventOdds
+      x-openai-isConsequential: false
+      summary: Get exact two-way pricing for selected markets
+      description: >
+        Exact two-way pricing for selected markets on a specific event.
+        Uses the paid key by default.
+        Auth: X-API-Key (SCORING_API_KEY). Migrated from X-WOW-Action-Key 2026-08-14.
+      parameters:
+        - name: sport
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: event_id
+          in: query
+          required: true
+          description: Event ID from getOddsApiEvents
+          schema:
+            type: string
+        - name: markets
+          in: query
+          required: true
+          description: Comma-separated market keys, e.g. h2h,spreads,totals
+          schema:
+            type: string
+        - name: regions
+          in: query
+          required: false
+          schema:
+            type: string
+            default: us
+        - name: bookmakers
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: odds_format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [american, decimal]
+            default: american
+      responses:
+        "200":
+          description: Odds for the selected markets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_key_tier:
+                    type: string
+                  quota_warning:
+                    type: boolean
+                  data:
+                    type: object
+                    additionalProperties: true
+        "400":
+          description: Missing required parameter
+        "401":
+          description: Missing or invalid X-API-Key
+        "502":
+          description: Both Odds API key paths failed
+      security:
+        - ApiKeyAuth: []
+
+  /wow/odds/quota-status:
+    get:
+      operationId: getOddsApiQuotaStatus
+      x-openai-isConsequential: false
+      summary: Check current Odds API quota without making a chargeable call
+      description: >
+        Returns cached requests_remaining and requests_used for paid and free Odds API keys without a chargeable request. Use before market calls to confirm quota headroom. Requires X-API-Key.
+      responses:
+        "200":
+          description: Current quota snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  quota_threshold:
+                    type: integer
+                    description: Remaining-count floor below which quota_warning fires
+                  quota_warning:
+                    type: boolean
+                    description: True when any key tier is below quota_threshold
+                  tiers:
+                    type: object
+                    description: >
+                      One key per tier ("paid", "free"). Each value contains
+                      requests_remaining (int), requests_used (int),
+                      updated_at (ISO-8601 UTC), quota_warning (bool).
+                    additionalProperties:
+                      type: object
+                      properties:
+                        requests_remaining:
+                          type: integer
+                        requests_used:
+                          type: integer
+                        updated_at:
+                          type: string
+                        quota_warning:
+                          type: boolean
+                  note:
+                    type: string
+        "401":
+          description: Missing or invalid X-API-Key
+      security:
+        - ApiKeyAuth: []
+
+  /wow/validation/1ip/status:
+    get:
+      operationId: getValidation1ipStatus
+      x-openai-isConsequential: false
+      summary: 1IP prediction logger benchmark readiness — counts and OBSERVE_ONLY flags
+      description: "Returns benchmark readiness for the 1IP pitches-thrown prediction logger: n_logged, n_settled, n_verified_settled, n_hits, and ready (true when n_verified_settled >= 20). Read-only, OBSERVE_ONLY -- never modifies WOW predictions or model state. Requires X-API-Key."
+      responses:
+        "200":
+          description: Benchmark readiness status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  validation_status:
+                    type: object
+                    properties:
+                      ready:
+                        type: boolean
+                        description: True when n_verified_settled >= threshold
+                      threshold:
+                        type: integer
+                        description: Minimum verified outcomes required (default 20)
+                      n_logged:
+                        type: integer
+                        description: Total frozen predictions recorded
+                      n_settled:
+                        type: integer
+                        description: Predictions with any attached outcome (verified or not)
+                      n_verified_settled:
+                        type: integer
+                        description: Outcomes confirmed via Baseball Savant CSV
+                      benchmark_sample_count:
+                        type: integer
+                        description: Same as n_verified_settled — the milestone-eligible count
+                      n_hits:
+                        type: integer
+                        description: Settled outcomes where the prediction was correct
+                      validation_mode:
+                        type: string
+                        description: Always OBSERVE_ONLY in current deployment
+                      model_changes_from_benchmark:
+                        type: boolean
+                      probability_changes_from_benchmark:
+                        type: boolean
+                      terminal_label_changes_from_benchmark:
+                        type: boolean
+                      db_available:
+                        type: boolean
+                      error:
+                        type: string
+                        nullable: true
+        "401":
+          description: Missing or invalid X-API-Key
+        "500":
+          description: Unexpected server error
+      security:
+        - ApiKeyAuth: []
+
+  /wow/validation/1ip/export:
+    get:
+      operationId: getValidation1ipExport
+      x-openai-isConsequential: false
+      summary: Export frozen 1IP predictions for offline benchmark evaluation
+      description: "Returns paginated frozen 1IP predictions, optionally joined with outcomes. Use settled_only=true for benchmark-eligible rows. READ-ONLY -- never modifies predictions, probabilities, or model state. Requires X-API-Key."
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 500
+          description: Max rows to return (capped at 500)
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: Pagination offset
+        - name: settled_only
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: >
+            When true, only return predictions that have an attached outcome
+            (joined from wow_validation_outcome_log)
+      responses:
+        "200":
+          description: Paginated prediction export
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        prediction_id:
+                          type: string
+                        log_dedup_key:
+                          type: string
+                        game_date:
+                          type: string
+                        pitcher_name:
+                          type: string
+                        pitcher_mlbam_id:
+                          type: integer
+                        opponent:
+                          type: string
+                          nullable: true
+                        line:
+                          type: number
+                        direction:
+                          type: string
+                          enum: [LESS, MORE]
+                        model_probability:
+                          type: number
+                          nullable: true
+                        model_uncertainty:
+                          type: number
+                          nullable: true
+                        feature_snapshot_id:
+                          type: string
+                        model_version:
+                          type: string
+                        frozen_at:
+                          type: string
+                        logged_at:
+                          type: string
+                        actual_pitches:
+                          type: integer
+                          nullable: true
+                        hit:
+                          type: boolean
+                          nullable: true
+                        outcome_source:
+                          type: string
+                          nullable: true
+                        outcome_verified:
+                          type: boolean
+                          nullable: true
+                  total_available:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+                  error:
+                    type: string
+                    nullable: true
+        "400":
+          description: Invalid pagination parameters
+        "401":
+          description: Missing or invalid X-API-Key
+        "500":
+          description: Unexpected server error
+      security:
+        - ApiKeyAuth: []
+
+  /wow/daily/run:
+    post:
+      operationId: runWowDailyCanonical
+      x-openai-isConsequential: false
+      summary: >
+        Canonical WOW Daily orchestration — submit high-level intent, Replit owns
+        the full discovery-to-reconciliation pipeline.
+      description: >
+        WOW-PATCH-2026-08-19-DAILY-CANONICAL-v1.0
+
+        Single authoritative daily run endpoint. The caller supplies the
+        intended date, IANA timezone, and retry-safe idempotency key; Replit
+        generates the immutable run_id and owns:
+          - Source union across all readable providers (Odds API + TheRundown)
+          - Canonical selection identity assignment (stable, deterministic IDs)
+          - Full-board preservation (no pre-score truncation)
+          - Participant-side resolution (fail-closed — no silent home default)
+          - Specialist readiness contracts (WNBA_ML_V1, TENNIS_MATCH_WINNER_V1)
+          - Soccer 1X2 outcome normalisation (HOME / DRAW / AWAY, server-side)
+          - Evaluation via the full WOW gate-engine pipeline
+          - Exact reconciliation proof (discovered = sum of all terminal buckets)
+          - Immutable run-manifest persistence
+          - Compact GPT output sized for response limits
+
+        ASYNCHRONOUS CALLER CONTRACT (mandatory): run_status ACCEPTED and
+        IN_PROGRESS are NON-TERMINAL acknowledgements, not results. Keep the
+        server-generated run_id and automatically poll getWowDailyManifest
+        for that SAME run until run_status is one of the terminal states:
+        COMPLETE, DEGRADED, RECONCILIATION_WARNING, or FAILED. Never wait for
+        another user message to continue polling, and never present a
+        zero-row non-terminal manifest as an empty-picks result.
+
+        Optional scope=MONEYLINE_REMAINING_TODAY restricts the run to
+        OUTRIGHT_WINNER / OUTRIGHT_WIN_PROBABILITY_ONLY research on events
+        still remaining on the requested local date; the broader prop board
+        is never acquired or scored. Scope is immutable per idempotency key —
+        reusing a key with a different scope returns 409
+        IDEMPOTENCY_KEY_SCOPE_MISMATCH.
+
+        Use GET /wow/daily/manifest/{run_id} to poll the manifest for this
+        run until it is terminal.
+
+        Use GET /wow/daily/runs to list recent runs by date.
+
+        Requires X-API-Key header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - date
+                - timezone
+                - idempotency_key
+              properties:
+                date:
+                  type: string
+                  format: date
+                  description: Intended ISO run date (YYYY-MM-DD).
+                timezone:
+                  type: string
+                  description: IANA timezone describing the intended run date (for example, America/New_York).
+                idempotency_key:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: >
+                    Unique caller-generated key for this new Daily run.
+                    Reuse the exact same key only when retrying the same
+                    request; the server uses it to return the existing
+                    canonical run instead of creating a duplicate.
+                    Reuse it only with the same date, timezone, and scope.
+                sports:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                  description: >
+                    Sports to include in this run.
+                    Default: all supported sports
+                    (NBA, WNBA, MLB, NFL, NHL, NCAAB, NCAAF, Soccer, Tennis).
+                  example: ["NBA", "MLB"]
+                environment:
+                  type: string
+                  enum: [live, test]
+                  default: live
+                  description: Scoring environment.
+                session_id:
+                  type: string
+                  nullable: true
+                  description: >
+                    Optional caller session ID for exposure idempotency tracking.
+                runtime_context:
+                  type: object
+                  nullable: true
+                  description: >
+                    Optional runtime context forwarded to the provenance builder.
+                    Caller context can only downgrade — never upgrade — verification.
+                scope:
+                  type: string
+                  enum: [FULL_BOARD, MONEYLINE_REMAINING_TODAY]
+                  default: FULL_BOARD
+                  description: >
+                    Immutable request scope. MONEYLINE_REMAINING_TODAY researches
+                    only OUTRIGHT_WINNER / OUTRIGHT_WIN_PROBABILITY_ONLY
+                    candidates for events remaining on the requested local date
+                    (relative to the request instant); the broader prop board is
+                    never acquired or scored. Scope cannot be changed by
+                    retrying the same idempotency key.
+      responses:
+        "200":
+          description: Existing idempotent Daily run is terminal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyRunAcknowledgement'
+        "202":
+          description: Canonical Daily run accepted or in progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyRunAcknowledgement'
+        "401":
+          description: Missing or invalid X-API-Key
+        "409":
+          description: >
+            Runtime provenance was unverified, or the idempotency key
+            conflicted with its prior date/timezone/scope intent
+            (IDEMPOTENCY_KEY_INTENT_MISMATCH / IDEMPOTENCY_KEY_SCOPE_MISMATCH).
+        "500":
+          description: Orchestration failed (error field contains reason)
+      security:
+        - ApiKeyAuth: []
+
+  /wow/daily/manifest/{run_id}:
+    get:
+      operationId: getWowDailyManifest
+      x-openai-isConsequential: false
+      summary: Poll the manifest for one canonical WOW Daily run until it is terminal.
+      description: >
+        Poll this endpoint with the SAME server-generated run_id until
+         terminal=true (run_status COMPLETE, DEGRADED, RECONCILIATION_WARNING,
+         or FAILED). row_count counts rows returned in this response (capped
+         at 500); total_discovered is the canonical discovered-selection
+         count. latest_detail is a deprecated response-only alias exactly
+         equal to progress_detail, and rows_committed is a deprecated
+         response-only alias exactly equal to total_discovered. A zero-row
+         manifest with terminal=false is an in-progress run — never present it
+         as an empty-picks result.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The run_id returned by runWowDailyCanonical.
+      responses:
+        "200":
+          description: Run manifest with header and all evaluated selection rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  run:
+                    type: object
+                    description: Run header record.
+                  rows:
+                    type: array
+                    description: All evaluated selection rows (up to 500).
+                    items:
+                      type: object
+                  row_count:
+                    type: integer
+                    description: Number of rows returned in this response (max 500).
+                  run_status:
+                    type: string
+                    enum: [ACCEPTED, IN_PROGRESS, COMPLETE, DEGRADED, RECONCILIATION_WARNING, FAILED]
+                  terminal:
+                    type: boolean
+                    description: >
+                      True only for COMPLETE / DEGRADED / RECONCILIATION_WARNING /
+                      FAILED. Keep polling this same run until terminal is true.
+                  progress_stage:
+                    type: string
+                    nullable: true
+                  progress_detail:
+                    type: string
+                    nullable: true
+                    description: Canonical server-owned progress detail.
+                  total_discovered:
+                    type: integer
+                    nullable: true
+                    description: >
+                      Canonical discovered-selection count for the run
+                      (row_count is the returned-rows count only).
+                  latest_detail:
+                    type: string
+                    nullable: true
+                    deprecated: true
+                    description: >
+                      Deprecated response-only alias exactly equal to
+                      progress_detail; never accepted in the start request.
+                  rows_committed:
+                    type: integer
+                    nullable: true
+                    deprecated: true
+                    description: >
+                      Deprecated response-only alias exactly equal to
+                      total_discovered; never accepted in the start request.
+                  scope:
+                    type: string
+                    nullable: true
+                    description: Immutable persisted request scope.
+        "404":
+          description: Run ID not found
+        "401":
+          description: Missing or invalid X-API-Key
+      security:
+        - ApiKeyAuth: []
+
+  /wow/daily/runs:
+    get:
+      operationId: listWowDailyRuns
+      x-openai-isConsequential: false
+      summary: List recent canonical daily runs, optionally filtered by date.
+      parameters:
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+          description: ISO date (YYYY-MM-DD) to filter runs. Defaults to all recent runs.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+          description: Maximum number of runs to return.
+      responses:
+        "200":
+          description: List of run headers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  runs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DailyRunRecord'
+                  count:
+                    type: integer
+        "401":
+          description: Missing or invalid X-API-Key
+      security:
+        - ApiKeyAuth: []
+
 components:
-  schemas: {}
+  schemas:
+    DailyRunAcknowledgement:
+      type: object
+      required:
+        - ok
+        - accepted
+        - run_id
+        - run_date
+        - timezone
+        - run_status
+        - progress_stage
+        - progress_detail
+        - total_discovered
+        - latest_detail
+        - rows_committed
+        - deadline_at
+        - reused
+        - scope
+        - terminal
+        - can_execute
+        - runtime_provenance
+      properties:
+        ok:
+          type: boolean
+        accepted:
+          type: boolean
+          description: True when the canonical lifecycle acknowledged the request.
+        run_id:
+          type: string
+          description: Server-generated immutable run identifier.
+        run_date:
+          type: string
+          format: date
+        timezone:
+          type: string
+          description: IANA timezone persisted with the request intent.
+        run_status:
+          type: string
+          enum: [ACCEPTED, IN_PROGRESS, COMPLETE, DEGRADED, RECONCILIATION_WARNING, FAILED]
+        progress_stage:
+          type: string
+        progress_detail:
+          type: string
+          nullable: true
+          description: Canonical server-owned progress detail.
+        total_discovered:
+          type: integer
+          nullable: true
+          description: Canonical server-owned discovered-selection count.
+        latest_detail:
+          type: string
+          nullable: true
+          deprecated: true
+          description: >
+            Deprecated response-only alias exactly equal to progress_detail.
+            This is server-owned and never accepted in the start request.
+        rows_committed:
+          type: integer
+          nullable: true
+          deprecated: true
+          description: >
+            Deprecated response-only alias exactly equal to total_discovered.
+            This is server-owned and never accepted in the start request.
+        deadline_at:
+          type: string
+          format: date-time
+        reused:
+          type: boolean
+          description: True when this response reuses the prior canonical run.
+        can_execute:
+          type: boolean
+          enum: [false]
+          description: Always false; WOW Daily is dry-run only.
+        runtime_provenance:
+          type: object
+          description: Server-authoritative runtime provenance record.
+        scope:
+          type: string
+          enum: [FULL_BOARD, MONEYLINE_REMAINING_TODAY]
+          description: Immutable persisted request scope.
+        terminal:
+          type: boolean
+          description: >
+            True only when run_status is COMPLETE, DEGRADED,
+            RECONCILIATION_WARNING, or FAILED. When false, poll
+            getWowDailyManifest with this run_id.
+    DailyRunRecord:
+      type: object
+      description: >
+        Run-list record. Canonical progress_stage, progress_detail, and
+        total_discovered are server-owned. Deprecated aliases are exact
+        response-only mappings.
+      properties:
+        run_id:
+          type: string
+        run_date:
+          type: string
+          format: date
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        environment:
+          type: string
+        run_status:
+          type: string
+        progress_stage:
+          type: string
+          nullable: true
+        progress_detail:
+          type: string
+          nullable: true
+        total_discovered:
+          type: integer
+          nullable: true
+        latest_detail:
+          type: string
+          nullable: true
+          deprecated: true
+          description: Deprecated response-only alias exactly equal to progress_detail.
+        rows_committed:
+          type: integer
+          nullable: true
+          deprecated: true
+          description: Deprecated response-only alias exactly equal to total_discovered.
   securitySchemes:
     ApiKeyAuth:
       type: apiKey
@@ -1438,4 +2792,5 @@ components:
         Pass your SCORING_API_KEY value in the X-API-Key header.
         /wow/engine/health, /wow/governance/status, and /wow/stage2/health
         are public and do not require this key. /gate-engine/run, /normalize-legs,
-        /analyze-and-score, and /wow/slip-review-log require it.
+        /analyze-and-score, /wow/slip-review-log, /wow/odds/*, and /wow/daily/*
+        require it.

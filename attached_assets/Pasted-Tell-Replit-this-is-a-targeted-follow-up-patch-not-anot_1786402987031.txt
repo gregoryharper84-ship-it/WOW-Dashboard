@@ -1,0 +1,371 @@
+Tell Replit this is a targeted follow-up patch, not another broad refactor. Paste this:
+
+The latest deployment improved probability-bound validation, but the core acquisition/identity plumbing is still broken. I need a narrow corrective patch focused on the exact failures reproduced in production.
+Do NOT loosen governance, probability thresholds, model requirements, or can_execute=false. Do NOT add generic probability fallbacks.
+CURRENT LIVE BUILD
+wow-repair-2026-08-10-acquisition-routing-identity
+CURRENT REPRODUCED FAILURES
+1. WNBA canonical identity is still lost downstream.
+Example:
+Angel Reese
+WNBA
+Rebounds
+MORE 12.5
+game input = "ATL vs TOR"
+The engine successfully constructs:
+_event_id = "WNBA:2026-08-10:ATL@TOR"
+But the WNBA evidence/scoreboard adapter later receives:
+game_str = " vs "
+team = null
+opponent = null
+This prevents event verification.
+2. WNBA enrichment merge is still internally inconsistent.
+The same row reports:
+role_status.projected_minutes = FALLBACK_RETRIEVED
+while also listing:
+role_status.projected_minutes
+inside fields_unresolved.
+That is impossible.
+3. WNBA market acquisition and downstream market join disagree.
+For Angel Reese 12.5 rebounds, acquisition found an exact 12.5 consensus line across multiple books, but downstream market validation still reports NO_MARKET_FOUND.
+4. MLB historical-log acquisition is still not running.
+Example:
+Jameson Taillon
+Pitcher Strikeouts
+MORE 4.0
+Still returns:
+L10:NO_GAME_LOG_PROVIDED
+Acquisition trace shows:
+direct_game_log_feed = NOT_CALLED
+season_log_reconstruction = NOT_CALLED
+This same failure is blocking:
+- Pitcher Strikeouts
+- Pitching Outs
+- Plate Appearances
+- 1st Inning Pitches Thrown
+5. 1IP still never reaches its dedicated first-inning model because acquisition dies before specialist routing.
+6. /analyze-and-score image transport still throws invalid base64 from the GPT integration.
+I need the following exact fixes.
+==================================================
+A. FIX CANONICAL IDENTITY PROPAGATION
+==================================================
+Create one canonical resolved identity object and pass it unchanged into every acquisition adapter.
+Required fields:
+row_id
+player
+player_id if known
+sport
+team
+opponent
+event_id
+game
+slate_date
+event_start_time if known
+canonical_prop_type
+line
+direction
+board_source
+Rules:
+- If team/opponent/event_id are already resolved, downstream adapters may not rebuild them from raw OCR text.
+- A non-null canonical value may not be overwritten by null or empty string.
+- The WNBA scoreboard/evidence adapter must accept the canonical identity directly.
+- Never construct:
+  " vs "
+  "@"
+  or other blank matchup strings.
+Add a hard assertion before WNBA event lookup:
+team != null
+opponent != null
+event_id != null
+If canonical identity exists upstream but is missing downstream, classify:
+pipeline_state = IDENTITY_HANDOFF_ERROR
+Do not classify this as a model rejection.
+Regression test:
+Input:
+Angel Reese
+ATL vs TOR
+2026-08-10
+Expected downstream adapter values:
+team = ATL
+opponent = TOR
+event_id = WNBA:2026-08-10:ATL@TOR
+The value " vs " must never appear.
+==================================================
+B. FIX WNBA ENRICHMENT MERGE CONSISTENCY
+==================================================
+The WNBA enrichment packet must have one authoritative merged state.
+After all acquisition adapters finish:
+resolved_fields INTERSECT unresolved_fields must equal empty set.
+Specifically fix projected_minutes so it cannot simultaneously be:
+FALLBACK_RETRIEVED
+and
+unresolved.
+Implement post-merge validation:
+for every field:
+if value exists and retrieval status is RETRIEVED/FALLBACK_RETRIEVED/RECONSTRUCTED,
+remove it from unresolved_fields.
+If a source returned a field but it fails validation, mark:
+INVALID_VALUE
+rather than both retrieved and unresolved.
+Add a merge audit:
+field
+source
+source_status
+raw_value
+normalized_value
+consumer
+final_status
+Regression assertion:
+role_status.projected_minutes cannot appear in both resolved and unresolved collections.
+==================================================
+C. FIX WNBA EXACT-LINE MARKET JOIN
+==================================================
+The acquisition layer currently finds the exact line, but the downstream market gate loses it.
+Unify market matching around a canonical market key:
+sport
+event_id
+player_id/player
+canonical_prop_type
+line
+direction
+market_type
+Do not re-match by free-text player/game strings after acquisition.
+For Angel Reese Rebounds 12.5:
+If the acquisition packet has sportsbook lines for 12.5 rebounds,
+the downstream market gate must receive that packet.
+Do not allow:
+acquisition.market_status = RETRIEVED
+and
+market_validation = NO_MARKET_FOUND
+for the same exact canonical key unless there is a documented conflict.
+If the exact line is unavailable but nearby lines exist, report:
+EXACT_LINE_NOT_FOUND
+If the source returned contradictory lines, report:
+SOURCE_CONFLICT
+Do not report generic NO_MARKET_FOUND when market evidence already exists upstream.
+Add a regression test proving the 12.5 rebound market packet survives to the market comparison consumer.
+==================================================
+D. ACTUALLY IMPLEMENT MLB HISTORICAL LOG ACQUISITION
+==================================================
+The most important defect is that required historical sources are still marked NOT_CALLED.
+For supported MLB prop types, auto_enrich=true must actually invoke the relevant historical adapter before the L5/L10 gate.
+At minimum:
+PITCHER STRIKEOUTS
+fetch exact game-by-game strikeouts plus required workload fields.
+PITCHING OUTS
+fetch innings/outs history and convert baseball innings correctly:
+6.0 = 18 outs
+6.1 = 19 outs
+6.2 = 20 outs
+PLATE APPEARANCES
+fetch game-by-game PA history and lineup/order data if a registered specialist model exists.
+1ST INNING PITCHES THROWN
+fetch actual first-inning pitch-count history and the inputs required by the dedicated event-tree model.
+No required source route may finish as NOT_CALLED.
+The acquisition sequence should be:
+canonical identity
+→ primary historical provider
+→ fallback provider
+→ reconstruction if supported
+→ validation
+→ specialist-specific enrichment
+→ L5/L10 gate
+→ model
+For every attempted source return:
+adapter
+provider
+request identifier
+status
+rows returned
+freshness
+transformation
+last_error
+retryable
+timestamp
+Allowed terminal acquisition states:
+RETRIEVED
+FALLBACK_RETRIEVED
+RECONSTRUCTED
+PROXY_ONLY
+DATA_UNOBTAINABLE
+SOURCE_CONFLICT
+FAILED
+NOT_CALLED is not valid for a required route.
+==================================================
+E. FIX PROP-SPECIFIC MLB ROUTING
+==================================================
+Do not send all MLB categories through a generic game_log consumer.
+Create/verify explicit registry routes:
+MLB + Pitcher Strikeouts
+→ MLB pitcher strikeout specialist
+MLB + Pitching Outs
+→ MLB pitching-outs/workload specialist
+MLB + Plate Appearances
+→ registered PA specialist
+or explicit MODEL_UNSUPPORTED if none exists
+MLB + 1st Inning Pitches Thrown
+→ dedicated 1IP event-tree specialist only
+The 1IP model must not use full-game pitch-count averages as its substitute model.
+For 1IP, once acquisition succeeds, verify the specialist receives enough data to produce:
+P(BF=3)
+P(BF=4)
+P(BF>=5)
+P(MORE | BF=3)
+P(MORE | BF>=4)
+P(MORE)
+P(LESS)
+simulation_count
+Maintain TEST_ONLY governance and final_card_eligible=false.
+==================================================
+F. PRESERVE THE PROBABILITY-SCHEMA FIX
+==================================================
+The latest patch correctly fixed the impossible WNBA bound.
+Keep the hard invariant:
+0 <= lower_bound
+<= calibrated_probability
+<= upper_bound
+<= 1
+Do not remove or weaken this validator.
+Any failure must remain:
+MODEL_ERROR / probability_publishable=false / rank_eligible=false
+==================================================
+G. FIX /analyze-and-score IMAGE TRANSPORT
+==================================================
+The GPT integration still receives:
+invalid base64 data
+Support a real uploaded file/image path through multipart/form-data where available.
+If base64 is used:
+- read raw image bytes
+- base64 encode exactly once
+- use correct MIME
+- validate decode locally before calling vision
+- reject malformed input with IMAGE_DECODE_ERROR
+- never pass a local filename string as though it were base64 content
+Add fixture tests for:
+multipart PNG
+data:image/png;base64,...
+raw base64 if supported
+Expected:
+vision extraction is actually reached.
+==================================================
+H. BATCH AGGREGATION
+==================================================
+Do not let a mixed technical-failure batch summarize as clean NO_PLAY.
+Return reconciled counters:
+rows_in
+rows_normalized
+rows_identity_verified
+rows_acquisition_complete
+rows_model_completed
+rows_model_error
+rows_source_failed
+rows_unsupported
+rows_governance_hold
+rows_rank_eligible
+rows_scored_reject
+rows_scored_qualified
+If rows_model_completed < rows that should have been evaluated because of technical failures:
+batch_state =
+SCORING_INCOMPLETE
+or
+RUN_PARTIAL_BACKEND_FAILURE
+Only use clean NO_PLAY when the relevant rows were actually scored successfully and none qualified.
+==================================================
+I. REQUIRED REGRESSION TESTS
+==================================================
+Run these exact tests.
+1. ANGEL REESE IDENTITY
+Input:
+Angel Reese
+WNBA
+Rebounds
+MORE 12.5
+ATL vs TOR
+2026-08-10
+Assert:
+team = ATL
+opponent = TOR
+event_id populated
+no " vs " blank string
+event lookup receives canonical identity
+2. ANGEL REESE MERGE
+Assert:
+projected_minutes cannot be both retrieved and unresolved.
+3. ANGEL REESE MARKET
+Mock/provide exact 12.5 sportsbook rebound market.
+Assert:
+upstream RETRIEVED market reaches downstream consumer.
+No false NO_MARKET_FOUND.
+4. JAMESON TAILLON STRIKEOUTS
+Input:
+Jameson Taillon
+Pitcher Strikeouts
+MORE 4.0
+Assert:
+historical K adapter is CALLED.
+direct_game_log_feed must not be NOT_CALLED.
+L5/L10 receives a game log when provider fixture data exists.
+5. PITCHING OUTS
+Assert:
+6.1 IP = 19 outs
+6.2 IP = 20 outs.
+6. PLATE APPEARANCES
+Input:
+Vladimir Guerrero Jr.
+PA MORE 4.5
+Assert:
+PA-specific adapter runs.
+If no registered model exists, return MODEL_UNSUPPORTED explicitly instead of generic DATA_CONTRACT_FAIL.
+7. 1IP
+Input:
+Jameson Taillon
+1st Inning Pitches MORE 16.5
+Assert:
+first-inning acquisition runs.
+dedicated 1IP specialist is invoked when fixture inputs are sufficient.
+TEST_ONLY ceiling remains unchanged.
+8. IMAGE PIPELINE
+Send fixture PNG through multipart and base64.
+Assert:
+vision extraction is reached.
+9. BATCH AGGREGATION
+Create:
+18 technically failed rows
+1 scored reject
+1 scored qualified/hold
+Assert:
+batch cannot return clean NO_PLAY.
+==================================================
+J. DEFINITION OF DONE
+==================================================
+Do not say this is fixed just because tests compile.
+I need proof that:
+- WNBA canonical identity reaches the scoreboard/evidence adapter.
+- No downstream " vs " blank matchup occurs.
+- WNBA resolved/unresolved fields are mutually exclusive.
+- Exact-line market evidence survives the join.
+- MLB historical acquisition adapters are actually CALLED.
+- Required MLB sources no longer finish as NOT_CALLED.
+- PA either gets its real specialist route or explicit unsupported classification.
+- 1IP reaches its dedicated model when fixture data is sufficient.
+- probability-bound invariant still passes.
+- mixed technical batches are not summarized as clean NO_PLAY.
+- image fixture reaches vision extraction.
+- can_execute=false remains unchanged.
+- governance ceilings remain unchanged.
+- no generic probability fallback was added.
+REPORT BACK WITH:
+1. exact files changed
+2. functions/classes changed
+3. adapter registry changes
+4. tests added
+5. test commands
+6. pass/fail results
+7. before/after JSON for Angel Reese Rebounds 12.5
+8. before/after JSON for Jameson Taillon Ks 4.0
+9. before/after JSON for a 1IP fixture row
+10. image fixture test output
+11. sample mixed-batch aggregation output
+12. confirmation can_execute=false remains invariant
+
+The key is to make Replit address four actual plumbing defects, not rework the model again: WNBA identity handoff, WNBA merge/market handoff, MLB historical acquisition being NOT_CALLED, and the image transport path. The probability validator itself appears to be working now, so tell Replit explicitly not to touch that except to preserve it.

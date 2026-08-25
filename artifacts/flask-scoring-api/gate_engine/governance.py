@@ -539,6 +539,43 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
         ),
     },
     {
+        "patch_id":    "WOW-PATCH-2026-08-07-OUTRIGHT-MONEYLINE-ROUTING",
+        "version":     "1.0",
+        "effective_at": "2026-08-07",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  102,
+        "can_execute": False,
+        "description": (
+            "Outright Moneyline Routing (2026-08-07): "
+            "Adds first-class, immutable market-family classification (OUTRIGHT_WINNER / "
+            "PLAYER_PROP / COMBO_PROP) that runs BEFORE generic prop normalization. "
+            "OUTRIGHT_WINNER rows are intercepted before _ge_run_pipeline and scored by "
+            "the LLP Moneyline Probability Expert (wow.llp-moneyline-probability-expert). "
+            "Objective: OUTRIGHT_WIN_PROBABILITY_ONLY. "
+            "Input contract: MONEYLINE_V1 — requires: sport, team, opponent, market_type, "
+            "event_id, slate_date; prohibits: line, direction, prop_type, stat_key, game_log, "
+            "player_role. "
+            "Hard compatibility guard before pipeline: OUTRIGHT_WINNER + PLAYER_PROP batch "
+            "→ HTTP 409 RUN_INVALID_ROUTE_CONFIGURATION with primary_blocker= "
+            "MONEYLINE_ROUTED_TO_PROP_CONTRACT; candidate_evaluation_completed=false. "
+            "Routing bugs must never resolve to NO_PLAY. "
+            "Soccer 1X2 three-state (home/draw/away) preserved — binary conversion prohibited. "
+            "Event deduplication: same event from N sportsbook sources → one canonical model "
+            "with platform_appearances metadata. "
+            "Sportsbook odds used as prior/sanity only — cannot substitute for sport model. "
+            "STALE_MODEL_INVALIDATED: material starter/lineup change mandates rerun. "
+            "Route compatibility fields added to every scored row and the governance handshake: "
+            "route_id, market_family, objective, controlling_skill_id, "
+            "input_contract_version, required_field_profile, compatibility. "
+            "Sport models: MLB/NBA/WNBA/ATP/WTA/TENNIS/MMA/UFC=ACTIVE; "
+            "NFL/NHL/SOCCER/EPL/MLS=PROVISIONAL. "
+            "Modules: gate_engine/market_family.py, gate_engine/moneyline_probability.py. "
+            "Regression suite: gate_engine/tests/test_moneyline_routing.py (87 tests). "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
         "patch_id":    "WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH",
         "version":     "1.0",
         "effective_at": "2026-08-01",
@@ -579,6 +616,218 @@ _PATCH_REGISTRY: list[dict[str, Any]] = [
             "wow.llp-final-refresh-governor. "
             "Updated skill: wow.llp-moneyline-probability-expert. "
             "can_execute=False unconditional."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-15-PP-PROMOTION-AND-SAME-GAME-FRAGILITY",
+        "version":     "1.0",
+        "effective_at": "2026-08-15",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  104,
+        "can_execute": False,
+        "description": (
+            "PrizePicks Paid-Card Promotion Gate & Same-Game Fragility (2026-08-15). "
+            "HIGH_PROBABILITY != QUALIFIED_PAID_CARD. "
+            "PP Promotion Gate: calibrated lower bound must clear break-even + safety_buffer "
+            "(POWER=0.556+0.020, FLEX=0.500+0.020); two-way no-vig market check; "
+            "recency-shock LOO (|full_hit_rate - loo_hit_rate| >= 0.030 blocks qualification). "
+            "Gate is price-aware; probability leaderboard remains price-independent. "
+            "Same-game fragility: Power cards with exactly 2 legs from the same event "
+            "require a valid joint dependence model (joint_model_present=True); "
+            "3+ same-event Power legs are already hard-rejected by MAX_SAME_EVENT_LEGS=2. "
+            "Weakest-leg elimination binding: rejected leg surviving final card construction "
+            "is fatal (FATAL_REJECTED_LEG_IN_CARD). "
+            "Pregame snapshot: immutable, written after final refresh passes, before "
+            "card publication; write failure blocks FINAL_APPROVED/MONEY_QUALIFIED but "
+            "preserves research output. "
+            "Final refresh binding: material lineup/participant/market/price/settlement/"
+            "weather/source changes force rerun (not warning); rows cap at "
+            "MARKET_VERIFIED_HOLD until re-scored. "
+            "Postmortem classifications: variance/price/market/structure/outlier/"
+            "weakest-leg/refresh/data-gap/missing-pregame-evidence. "
+            "Modules: pp_promotion_gate.py, pp_pregame_snapshot.py, pp_final_refresh.py. "
+            "New labels: REJECT_PP_PROMOTION_GATE, REJECT_SAME_EVENT_NO_JOINT_MODEL, "
+            "REJECT_RECENCY_SHOCK, FATAL_REJECTED_LEG_IN_CARD, PREGAME_SNAPSHOT_BLOCK, "
+            "FINAL_REFRESH_REQUIRED. "
+            "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-07-BACKEND-FAILOVER-RESEARCH",
+        "version":     "1.0",
+        "effective_at": "2026-08-07",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  103,
+        "can_execute": False,
+        "description": (
+            "Backend Failover Research (2026-08-07): "
+            "Adds a formal BACKEND_FAILOVER_RESEARCH classification tier to every "
+            "/gate-engine/run response. "
+            "7-type failure hierarchy (tier 1=most severe): "
+            "GOVERNANCE_FAIL (hard stop), MODEL_RUNTIME_FAIL (slim_mode_retry), "
+            "RESPONSE_SIZE_FAIL (slim_mode_retry), MODEL_ROUTE_FAIL (reroute_specialist), "
+            "DATA_CONTRACT_FAIL (web_reconstruction), SOURCE_ACQUISITION_FAIL (web_reconstruction), "
+            "INPUT_FAILURE (normalize_and_retry). "
+            "Every response includes a failure_classification block: "
+            "{failure_type, tier, retry_policy, is_hard_stop, "
+            "candidate_evaluation_completed, probability_publishable, "
+            "reconstruction_recommended, affected_rows, can_execute}. "
+            "Factual guard: when ALL rows fail without completing candidate evaluation, "
+            "terminal_disposition is upgraded from NO_PLAY to RUN_PARTIAL_BACKEND_FAILURE "
+            "so the caller cannot confuse a technical gap with a scored rejection. "
+            "candidate_evaluation_completed=False and probability_publishable=False "
+            "are enforced unconditionally when any all-failed condition is detected. "
+            "Enrichment contract extended: source_provenance (list of {field, source, "
+            "source_type} dicts) is now a validated optional field; role_timestamp is "
+            "documented as an accepted per-row enrichment scalar alongside role_status. "
+            "Governance failure overrides all other failure types and produces "
+            "RUN_INVALID_GOVERNANCE instead of RUN_PARTIAL_BACKEND_FAILURE. "
+            "Module: gate_engine/backend_failure_classifier.py. "
+            "Regression suite: gate_engine/tests/test_backend_failure_classifier.py. "
+            "can_execute=False unconditional."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-17-TYPED-HYDRATION-AND-MODEL-READINESS-V1",
+        "version":     "1.2",
+        "effective_at": "2026-08-17",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  105,
+        "can_execute": False,
+        "description": (
+            "Typed Hydration & Model Readiness V1.1 (2026-08-17): "
+            "Player-prop scope only (NBA/WNBA/MLB/NFL/NHL PrizePicks props). "
+            "Moneylines, tennis, Kalshi weather, event-level markets are out of scope. "
+            "Prevents incomplete or stale prop rows from entering modeling, ranking, "
+            "direction selection, final cards, or exposure ledgers. "
+            "Architectural correction: lifecycle_state / data_status / model_status / "
+            "failure_class are separate typed dimensions; terminal_label remains a "
+            "native WOW label. INCOMPLETE_INPUT, DATA_PROVIDER_OUTAGE, and STALE_DATA "
+            "are typed data_status values — NOT replacements for native WOW terminal labels. "
+            "Lifecycle states: BOARD_EXTRACTED / DATA_HYDRATING / CONTRACT_COMPLETE / "
+            "FOUR_GATES_CLEARED / MODEL_READY / SCORING_ATOMIC / SCORED / BLOCKED. "
+            "DataStatus values: COMPLETE / INCOMPLETE_INPUT / DATA_PROVIDER_OUTAGE / "
+            "STALE_DATA / SOURCE_CONFLICT. "
+            "Four data-presence gates (not analytical gates — no probability/threshold logic): "
+            "(1) Identity/Status — canonical identity, correct slate, active participant, "
+            "lineup/starter checked. "
+            "(2) Role/Opportunity — minutes, workload, lineup slot, role certainty, timestamp. "
+            "(3) Historical-Ledger — raw L5/L10, hit rates, median, recent avg, sample window, "
+            "role-valid sample, push rate. "
+            "(4) Market/Settlement — 3-way outcome (MarketGateOutcome): "
+            "AVAILABLE (all market data present, all lanes open), "
+            "UNAVAILABLE (market data absent/outage — confidence/model lane survives, "
+            "market-edge and money lanes blocked, ceiling lowered to MODEL_QUALIFIED_HOLD max), "
+            "BLOCKING (SOURCE_CONFLICT or expired TTL — row fully blocked). "
+            "Consistent with Full Model Gatekeeper contract: absent market evidence lowers "
+            "the ceiling, does not prevent the probability model from running. "
+            "Expired TTL cannot be refreshed by reusing the old value. "
+            "RunController hard-abort conditions: (1) contract_complete_count == 0, "
+            "(2) all rows share a required-provider outage, "
+            "(3) systemic hydration threshold exceeded. "
+            "Alert-only at failure_rate > 0.05. "
+            "Partial failure: preserve complete rows, isolate blocked rows, mark run DEGRADED. "
+            "Exact row reconciliation: "
+            "rows_extracted = rows_hydrating + rows_blocked_before_hydration; "
+            "rows_hydrating = rows_contract_complete + rows_hydration_failed; "
+            "rows_contract_complete = rows_model_ready + rows_gate_blocked; "
+            "rows_model_ready = rows_scored + rows_model_failed; "
+            "every row terminates exactly once. Reconciliation failure → RUN_INVALID. "
+            "New labels: RUN_INVALID_HYDRATION_RECONCILIATION, HYDRATION_ABORT. "
+            "Module: gate_engine/typed_hydration.py. "
+            "Regression suite: gate_engine/tests/test_typed_hydration.py (27 tests). "
+            "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-17-WNBA-TENNIS-ML-LANES",
+        "version":     "1.0",
+        "effective_at": "2026-08-17",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  106,
+        "can_execute": False,
+        "description": (
+            "WNBA and Tennis Moneyline Specialist Lanes (2026-08-17): "
+            "Root cause: WNBA and ATP/WTA OUTRIGHT_WINNER rows bypassed acquisition "
+            "because _MONEYLINE_TEAM_SUPPORTED contained only {NBA, MLB}; every WNBA "
+            "and tennis moneyline row reached the sport_model with all submodels empty "
+            "and returned INDEPENDENT_PROBABILITY_UNAVAILABLE:insufficient_non_market_data. "
+            "Fix 1 — team_acquisition.py: acquire_team_data() now dispatches sport-specifically: "
+            "WNBA → _acquire_wnba_ml() (WNBA_ML_V1 profile; BDL WNBA standings + row-derived); "
+            "ATP/WTA/TENNIS → _acquire_tennis_match() (TENNIS_MATCH_WINNER_V1; row-derived + ESPN). "
+            "HARD CONSTRAINT: _acquire_wnba_ml() never reads game_log / box_score_log — "
+            "those keys belong to the WNBA_Enrichment_Key_Contract (player-prop scope only). "
+            "Fix 2 — acquisition_orchestrator.py: _check_moneyline_acquisition() is a sport-specific "
+            "dispatcher (not a single frozenset). Separate functions: _check_nba_mlb_moneyline, "
+            "_check_wnba_ml_acquisition, _check_tennis_match_acquisition. "
+            "New frozensets: _WNBA_ML_SUPPORTED={WNBA}, _TENNIS_ML_SUPPORTED={ATP,WTA,TENNIS}. "
+            "NOT_CALLED is never a terminal acquisition state. "
+            "Fix 3 — sport_model.py: WNBA specialist (_wnba_ml_specialist) activates for sport=WNBA; "
+            "uses Bradley-Terry on win_pct + optional efficiency-rating logistic; "
+            "never reads game_log/box_score_log. "
+            "Tennis specialist (_tennis_match_winner_specialist) activates for ATP/WTA/TENNIS; "
+            "priority: surface_adjusted_form → Elo differential → hold/break rate → H2H win rate. "
+            "Fix 4 — pipeline.py: vague INDEPENDENT_PROBABILITY_UNAVAILABLE:insufficient_non_market_data "
+            "replaced by typed hydration failure object: "
+            "{'hydration_profile', 'missing_fields[]', 'specialist_status', 'eligible_for_model', 'retryable'}. "
+            "hydration_profile derived from enrichment['hydration_profile'] (stamped by acquisition) "
+            "or inferred from sport. "
+            "Partial acquisition guard: partial data (some fields present, some missing) "
+            "never silently falls back to market-implied probability as the independent model output. "
+            "Regression suite: gate_engine/tests/test_wnba_tennis_ml_hydration.py (6 tests). "
+            "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
+        ),
+    },
+    {
+        "patch_id":    "WOW-PATCH-2026-08-17-1IP-PRODUCTION-HYDRATION",
+        "version":     "1.0",
+        "effective_at": "2026-08-17",
+        "expires_at":  None,
+        "status":      "ACTIVE",
+        "precedence":  107,
+        "can_execute": False,
+        "description": (
+            "1IP Pitcher Prop Production Hydration (2026-08-17): "
+            "Root cause: acquisition_orchestrator dispatched MLB 1IP_PITCHES_THROWN rows "
+            "through _check_prop_game_log (MLB Stats API game_log — IP counts), never "
+            "calling savant_1ip_ledger.build_1ip_ledger. "
+            "first_inning_bf_distribution was always absent from enrichment; "
+            "pipeline gate (pipeline.py:783-806) unconditionally rejected rows with "
+            "DATA_CONTRACT_FAIL:missing_field:first_inning_bf_distribution. "
+            "ip1_event_tree.simulate_1ip() was complete but hit_probability.py "
+            "short-circuited it as TEST_ONLY (hit_probability=None). "
+            "Key mismatch: savant_1ip_ledger._bf_distribution returned 'p_bf_5plus' "
+            "but simulate_1ip() consumed 'p_bf_gte5' — silent zero inputs. "
+            "Fix 1 — savant_1ip_ledger.py: _bf_distribution now emits both 'p_bf_5plus' "
+            "(legacy) and 'p_bf_gte5' (alias for simulate_1ip); "
+            "new compute_pitches_per_batter_dist() derives ppb mean/std from ledger rows "
+            "(3+ starts required; otherwise genre-calibrated defaults mean=4.2 std=1.1). "
+            "Fix 2 — acquisition_orchestrator.py: new _check_1ip_acquisition() fetches "
+            "Savant first-inning ledger for every 1IP_PITCHES_THROWN row; "
+            "populates first_inning_bf_distribution + pitches_per_batter_distribution + "
+            "savant_1ip_ledger summary in enrichment[row_id]; "
+            "_check_prop_game_log detects 1IP rows and routes to this function early "
+            "(before generic game_log fetch). "
+            "Typed breach contract on failure: PROBABILITY_PIPELINE_CONTRACT_BREACH dict "
+            "with missing_fields, stage, acquisition_sources_tried, retryable=True. "
+            "Fix 3 — hit_probability.py: 1IP firewall promoted from TEST_ONLY sentinel "
+            "to production probability generator; when bf_dist present, calls "
+            "simulate_1ip() and returns side-specific hit_probability (raw_less/raw_more); "
+            "degenerate output (outside 0.01-0.99) fails closed to None. "
+            "Missing BF dist now emits PROBABILITY_PIPELINE_CONTRACT_BREACH note "
+            "with typed missing_fields instead of vague MODEL_1IP_EVENT_TREE_REQUIRED. "
+            "Fix 4 — pipeline.py: gate detail message updated to reflect backend "
+            "acquisition attempt (Savant → pybaseball) not GPT-only supply. "
+            "Source hierarchy: Savant CSV (inning=1 server-side) → pybaseball fallback → "
+            "GPT-supplied first_inning_bf_distribution → PROBABILITY_PIPELINE_CONTRACT_BREACH. "
+            "Ceiling: MODEL_QUALIFIED_HOLD (unconditional; can_execute=False; "
+            "market/model readiness remain separate). "
+            "Regression suite: gate_engine/tests/test_1ip_production_hydration.py (7 tests). "
+            "can_execute=False unconditional. DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS."
         ),
     },
 ]

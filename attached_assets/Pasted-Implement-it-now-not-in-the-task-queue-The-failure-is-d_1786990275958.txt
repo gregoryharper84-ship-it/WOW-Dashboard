@@ -1,0 +1,46 @@
+Implement it now, not in the task queue. The failure is deterministic, the root cause is identified, and the change is tightly bounded.
+
+Keep the implementation scope exactly as you described:
+
+* acquisition_orchestrator.py: enable WNBA + tennis acquisition and add dedicated moneyline/match hydration functions.
+* sport_model.py: add WNBA and tennis independent non-market probability branches.
+* pipeline.py: emit the typed hydration failure object instead of the generic insufficient_non_market_data.
+* Do not touch or reuse the WNBA player-prop game_log / box_score_log enrichment path.
+* Add the five regression cases you listed, plus one useful guard: partial acquisition must never silently fall back to market-implied probability as the independent model probability.
+
+For acceptance, I’d require these outcomes:
+
+WNBA complete hydration
+→ acquisition attempted
+→ specialist READY
+→ independent probability produced
+→ no DATA_CONTRACT_FAIL
+Tennis complete hydration
+→ acquisition attempted
+→ specialist READY
+→ independent probability produced
+→ no DATA_CONTRACT_FAIL
+Missing required field
+→ structured hydration failure
+→ exact missing_fields[]
+→ specialist_status=NOT_READY
+→ eligible_for_model=false
+→ retryable=true
+Provider/acquisition failure
+→ acquisition status explicitly recorded
+→ never NOT_CALLED terminal
+→ no fabricated/default probability
+WNBA ML
+→ zero interaction with player-prop game_log/box_score_log contract
+
+One thing I would not do mechanically is just add WNBA, ATP, and WTA to the existing frozenset and force them through the same acquisition function. The support registry can expand, but the dispatch should remain sport-specific:
+
+NBA/MLB → existing team-data acquisition
+WNBA    → WNBA_ML_V1 acquisition
+ATP/WTA → TENNIS_MATCH_WINNER_V1 acquisition
+
+That prevents today’s omission from turning into tomorrow’s schema collision.
+
+After the tests pass, the important validation is a real August 17 replay of the exact WNBA and Cincinnati rows that previously returned INDEPENDENT_PROBABILITY_UNAVAILABLE. Success is not merely “tests green”; those same rows should progress from acquisition → specialist model → independent probability → calibration/market gates while preserving can_execute=false.
+
+So: implement now, run the focused regression suite, then replay the failed slate.

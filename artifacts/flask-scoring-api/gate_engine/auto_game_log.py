@@ -49,7 +49,8 @@ def _cache_get(key: str) -> Optional[dict]:
 
 
 def _cache_set(key: str, values: list, source: str, games_fetched: int,
-               tour_level: Optional[str] = None) -> dict:
+               tour_level: Optional[str] = None,
+               meta: Optional[dict] = None) -> dict:
     result: dict = {
         "ts":            time.time(),
         "values":        values,
@@ -58,6 +59,8 @@ def _cache_set(key: str, values: list, source: str, games_fetched: int,
     }
     if tour_level is not None:
         result["tour_level"] = tour_level
+    if meta:
+        result["meta"] = meta   # game-level metadata (game_date, opponent) from MLB splits
     _CACHE[key] = result
     return result
 
@@ -65,6 +68,39 @@ def _cache_set(key: str, values: list, source: str, games_fetched: int,
 # ---------------------------------------------------------------------------
 # Public exception
 # ---------------------------------------------------------------------------
+
+def ip_str_to_outs(ip_str: "str | float | int") -> int:
+    """Convert a baseball innings-pitched string (or float) to a whole-outs count.
+
+    Baseball IP notation uses a fractional part of .1 or .2 (never .3) to mean
+    one or two additional outs beyond whole innings:
+        6.0 → 18 outs   (6 full innings)
+        6.1 → 19 outs   (6 innings + 1 out)
+        6.2 → 20 outs   (6 innings + 2 outs)
+        4.1 → 13 outs
+        0.1 →  1 out
+
+    This function is the canonical IP → outs converter for WOW.  The MLB Stats
+    API game-log splits already return an integer ``outs`` field, so this helper
+    is used when parsing the ``inningsPitched`` string representation (e.g. from
+    reconstruction sources or user-supplied data) rather than the API integer.
+
+    Raises ValueError for inputs that cannot be parsed.
+    """
+    s = str(ip_str).strip()
+    if "." in s:
+        whole_part, frac_part = s.split(".", 1)
+        whole_innings = int(whole_part)
+        extra_outs    = int(frac_part[0]) if frac_part else 0   # only first digit matters
+        if extra_outs not in (0, 1, 2):
+            raise ValueError(
+                f"ip_str_to_outs: invalid fractional part '{frac_part}' in '{ip_str}'. "
+                "Baseball IP notation only uses .0, .1, .2"
+            )
+        return whole_innings * 3 + extra_outs
+    else:
+        return int(s) * 3
+
 
 class GameLogUnavailable(Exception):
     """Raised when a game log cannot be fetched for this player/sport/stat."""
@@ -94,17 +130,35 @@ _NBA_STAT_COLS: dict[str, str | list] = {
 }
 
 # MLB: stat_key → statsapi gameLog split stat field name
+#
+# FIX-1: Added "K" → "strikeOuts".
+# normalizer.py maps "pitcher strikeouts"/"strikeouts"/"k" → stat_key "K".
+# "SO" was already present as an alias; both now point to the same MLB field.
+# Prior to this fix, _MLB_STAT_FIELDS.get("K") returned None, which caused
+# _fetch_mlb to raise GameLogUnavailable before any HTTP request was made.
 _MLB_STAT_FIELDS: dict[str, str] = {
     "H":          "hits",
-    "H_allowed":  "hits",        # pitcher hits allowed — use pitching group
-    "SO":         "strikeOuts",
+    "H_allowed":  "hits",        # pitcher hits allowed — use pitching split group
+    "K":          "strikeOuts",  # normalizer.py primary key for pitcher strikeouts
+    "SO":         "strikeOuts",  # legacy/alternate key; same MLB field
+    # Pitching outs (recorded outs) — normalizer.py maps "pitching outs" → "OUTS".
+    # MLB Stats API pitching split field: "outs" (integer; 4.1 IP → outs=13, 6.0 IP → outs=18).
+    # NOT "recordedOuts" — that field is absent from gameLog splits.
+    # "inningsPitched" is also available ("4.1") but "outs" is already the integer
+    # count we need, removing the fractional-IP parsing step.
+    "OUTS":       "outs",
     "TB":         "totalBases",
     "R":          "runs",
     "RBI":        "rbi",
     "BB":         "baseOnBalls",
     "ER":         "earnedRuns",
+    # Plate appearances — batter stat; MLB Stats API hitting split field.
+    # normalizer.py maps "plate appearances"/"pa"/"plate_appearances" → stat_key "PA".
+    # "PLATE_APPEARANCES" alias registered for belt-and-suspenders lookups.
+    "PA":               "plateAppearances",
+    "PLATE_APPEARANCES": "plateAppearances",
     # combo
-    "H+R+RBI":    None,          # handled specially
+    "H+R+RBI":    None,          # handled specially in _fetch_mlb
 }
 
 # WNBA / BallDontLie: stat_key → BDL stat field
@@ -167,6 +221,10 @@ def fetch_game_log(
         }
         if "tour_level" in cached:
             hit["tour_level"] = cached["tour_level"]
+        # Re-expose cached metadata (game_date, opponent) so build_auto_enrichment
+        # can use them even on repeated calls within the cache TTL.
+        if "meta" in cached:
+            hit.update(cached["meta"])
         return hit
 
     sport_upper = sport.upper()
@@ -201,7 +259,18 @@ def fetch_game_log(
     elif sport_upper == "WNBA":
         values, source = _fetch_wnba(player_id, stat_key, date_str, n_games)
     elif sport_upper == "MLB":
-        values, source = _fetch_mlb(player_id, stat_key, date_str, n_games)
+        if stat_key_upper == "1IP_PITCHES_THROWN":
+            # ── 1st-Inning Pitches Thrown: routed to Baseball Savant ledger ──
+            # MLB Stats API has no per-inning pitch counts, so _fetch_mlb would
+            # raise GameLogUnavailable for this stat_key.  savant_1ip_ledger
+            # is the sole correct source; route here before _fetch_mlb is
+            # ever called.  Identity: canonical MLBAM player_id (same integer
+            # already used by every other MLB pitcher route).  No name-lookup
+            # fallback — fail closed if player_id is absent or non-castable.
+            values, source = _fetch_1ip(player_id, date_str, n_games)
+            _game_meta = {}   # Savant path does not supply game_date/opponent metadata
+        else:
+            values, source, _game_meta = _fetch_mlb(player_id, stat_key, date_str, n_games)
     elif sport_upper == "NFL":
         values, source = _fetch_nfl(player_id, stat_key, date_str, n_games)
     elif sport_upper == "TENNIS":
@@ -216,7 +285,11 @@ def fetch_game_log(
             f"NHL requires manual supply or Claude gap-fill."
         )
 
-    _cache_set(cache_key, values, source, len(values), tour_level=tour_level)
+    # Collect game-level metadata returned only by MLB path (other sports return empty dict)
+    _game_meta: dict = locals().get("_game_meta") or {}
+
+    _cache_set(cache_key, values, source, len(values),
+               tour_level=tour_level, meta=_game_meta or None)
     result = {
         "values":        values,
         "source":        source,
@@ -228,6 +301,11 @@ def fetch_game_log(
     }
     if tour_level is not None:
         result["tour_level"] = tour_level
+    # Merge MLB split metadata (game_date, opponent) into the result so
+    # build_auto_enrichment can populate those contract fields without a
+    # second API call.
+    if _game_meta:
+        result.update(_game_meta)
     return result
 
 
@@ -387,12 +465,25 @@ def _fetch_wnba(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[l
 # MLB fetch
 # ---------------------------------------------------------------------------
 
-def _fetch_mlb(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[list, str]:
+def _fetch_mlb(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[list, str, dict]:
+    """
+    Returns (values, source_label, game_metadata).
+
+    game_metadata contains at most:
+      {"game_date": "YYYY-MM-DD", "opponent": "Team Name"}
+    extracted from the most-recent split.  Missing fields are omitted
+    (not set to None) so callers can safely do `if meta.get("game_date")`.
+    """
     date = datetime.date.fromisoformat(date_str)
     season = date.year
 
-    # Determine stat group from stat_key
-    pitcher_keys = {"H_allowed", "ER", "BB"}
+    # FIX-1: "K" and "SO" are pitcher strikeout stat keys → use the pitching
+    # split group.  Prior code only listed H_allowed/ER/BB as pitcher keys,
+    # so "K" / "SO" incorrectly queried the hitting split (which has no
+    # strikeOuts field), producing 0 qualifying rows.
+    # "OUTS" added: normalizer.py maps "pitching outs" → stat_key "OUTS";
+    # recordedOuts lives in the pitching split group, not the hitting split.
+    pitcher_keys = {"H_allowed", "ER", "BB", "K", "SO", "OUTS"}
     group = "pitching" if stat_key in pitcher_keys else "hitting"
 
     field = _MLB_STAT_FIELDS.get(stat_key)
@@ -454,7 +545,106 @@ def _fetch_mlb(player_id: str, stat_key: str, date_str: str, n: int) -> tuple[li
             f"MLB game log returned 0 qualifying rows for player_id={player_id}"
         )
 
-    return values, "statsapi.mlb.com (MLB Stats API)"
+    # Extract game-level metadata from the most-recent split (index 0 after
+    # reversal).  These fields are used by build_auto_enrichment to populate
+    # the `opponent` and `game_date` enrichment contract fields without needing
+    # a second API call.  Keys are omitted (not set to None) when absent so
+    # callers can safely do `if meta.get("game_date")`.
+    _meta: dict = {}
+    if splits:
+        _recent_split = splits[0]
+        _split_date = (_recent_split.get("date") or "").strip()
+        if _split_date:
+            _meta["game_date"] = _split_date
+        _opp_name = (_recent_split.get("opponent") or {}).get("name", "").strip()
+        if _opp_name:
+            _meta["opponent"] = _opp_name
+
+    return values, "statsapi.mlb.com (MLB Stats API)", _meta
+
+
+# ---------------------------------------------------------------------------
+# 1IP_PITCHES_THROWN fetch — Baseball Savant ledger (savant_1ip_ledger.py)
+# ---------------------------------------------------------------------------
+
+def _fetch_1ip(player_id: str, date_str: str, n: int) -> tuple[list, str]:
+    """
+    Fetch first-inning pitch counts from Baseball Savant via
+    gate_engine.mlb.savant_1ip_ledger.build_1ip_ledger().
+
+    Identity contract
+    -----------------
+    player_id is the canonical MLBAM integer string already set by the
+    normalizer from the MLB Stats API roster (/sports/1/players).  This is
+    the same ID space used by every other MLB pitcher route (K, SO, OUTS, etc.)
+    and by Baseball Savant's pitchers_lookup[] parameter.  No name-to-ID
+    fallback is added here — if player_id is absent or cannot be cast to an
+    integer that is an identity/data-contract failure and this function raises
+    GameLogUnavailable so the caller surfaces it honestly.
+
+    Returns
+    -------
+    (values, source)
+      values : list[float] — first_inning_pitches per start, most-recent first
+      source : str         — provenance label from the ledger
+    """
+    try:
+        pitcher_id = int(player_id)
+    except (TypeError, ValueError):
+        raise GameLogUnavailable(
+            f"1IP_PITCHES_THROWN: player_id '{player_id}' cannot be cast to "
+            "MLBAM integer — identity failure; no name-lookup fallback added"
+        )
+
+    # Lazy import keeps module-level load cost zero and avoids circular imports
+    from gate_engine.mlb.savant_1ip_ledger import build_1ip_ledger as _build_1ip
+
+    date = datetime.date.fromisoformat(date_str)
+    season = str(date.year)
+
+    result = _build_1ip(
+        pitcher_id=pitcher_id,
+        season=season,
+        board_date=date_str,
+        max_starts=n,
+    )
+
+    if result.get("error"):
+        raise GameLogUnavailable(
+            f"1IP Savant ledger failed for pitcher_id={pitcher_id} "
+            f"season={season}: {result['error']}"
+        )
+
+    ledger_rows = result.get("ledger_rows") or []
+    if not ledger_rows:
+        # Distinguishable from a broken fetch: error is None but no rows were found.
+        # This means the pitcher has no verified first-inning Statcast starts this
+        # season — a short-history pitcher, not a network failure.
+        raise GameLogUnavailable(
+            f"1IP Savant ledger: 0 verified starts for pitcher_id={pitcher_id} "
+            f"season={season} (short history or season not yet started)"
+        )
+
+    # build_1ip_ledger returns ledger_rows already sorted most-recent-first.
+    # Extract the canonical `first_inning_pitches` integer per start.
+    values: list[float] = [
+        float(r["first_inning_pitches"])
+        for r in ledger_rows
+        if r.get("first_inning_pitches") is not None
+    ]
+
+    if not values:
+        raise GameLogUnavailable(
+            f"1IP Savant ledger has {len(ledger_rows)} row(s) but none contain "
+            f"first_inning_pitches for pitcher_id={pitcher_id}"
+        )
+
+    source = result.get("source") or "Baseball Savant (Statcast pitch-level data)"
+    logger.debug(
+        "auto_game_log._fetch_1ip: pitcher_id=%s season=%s starts=%d values=%s",
+        pitcher_id, season, len(values), values[:3],
+    )
+    return values, source
 
 
 # ---------------------------------------------------------------------------
@@ -745,3 +935,100 @@ def _fetch_tennis(player_id: str, stat_key: str, date_str: str, n: int) -> tuple
         raise GameLogUnavailable(f"Tennis game log: {exc}") from exc
     except Exception as exc:
         raise GameLogUnavailable(f"Tennis game log unexpected error: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# BallDontLie rich player package — TRUSTED_STRUCTURED_STATS (A- grade)
+# ---------------------------------------------------------------------------
+
+def fetch_bdl_player_package(
+    player_id:   str,
+    sport:       str,
+    stat_key:    str,
+    season:      int | None = None,
+    n_games:     int        = 10,
+    target_date: str | None = None,
+) -> dict:
+    """
+    Fetch a comprehensive BallDontLie player package (TRUSTED_STRUCTURED_STATS).
+
+    Returns a dict containing:
+      "game_log"      : list[float]          — WOW canonical, most recent first
+      "box_score_log" : list[dict]           — WOW canonical, most recent first
+      "minutes_stats" : dict                 — mean/variance/cv/role_stability
+      "acquisition_status": str              — BDLStatus constant
+      "provenance"    : dict                 — full BDLProvenance
+      "notes"         : list[str]
+      "source"        : "api.balldontlie.io"
+      "source_grade"  : "A-"
+      "source_type"   : "balldontlie_api"
+
+    Raises GameLogUnavailable when credentials are absent or the sport
+    is unsupported. Never raises on HTTP failures — returns acquisition_status.
+
+    Source grade A- (TRUSTED_STRUCTURED_STATS): direct API with timestamp,
+    below official league feeds, above B-grade stat-site reconstruction.
+
+    can_execute=False unconditional in the BDL layer.
+    """
+    sport_upper = sport.upper().strip()
+
+    if sport_upper in ("NBA", "WNBA"):
+        try:
+            from gate_engine.balldontlie.nba_wnba import fetch_player_package
+        except ImportError as exc:
+            raise GameLogUnavailable(
+                f"BDL NBA/WNBA module unavailable: {exc}"
+            ) from exc
+
+        package = fetch_player_package(
+            player_id   = player_id,
+            sport       = sport_upper,
+            season      = season,
+            n_games     = n_games,
+            target_date = target_date,
+        )
+
+    elif sport_upper == "MLB":
+        # Route MLB to pitcher vs batter based on stat_key
+        _PITCHER_KEYS = {"IP", "OUTS", "K", "BB", "BF", "PC", "PITCHER_OUTS",
+                         "FANTASY_SCORE_PIT"}
+        try:
+            if stat_key.upper() in _PITCHER_KEYS:
+                from gate_engine.balldontlie.mlb import fetch_pitcher_package
+                package = fetch_pitcher_package(
+                    player_id   = player_id,
+                    season      = season,
+                    n_games     = n_games,
+                    target_date = target_date,
+                )
+            else:
+                from gate_engine.balldontlie.mlb import fetch_batter_package
+                package = fetch_batter_package(
+                    player_id   = player_id,
+                    season      = season,
+                    n_games     = n_games,
+                    target_date = target_date,
+                )
+        except ImportError as exc:
+            raise GameLogUnavailable(
+                f"BDL MLB module unavailable: {exc}"
+            ) from exc
+
+    else:
+        raise GameLogUnavailable(
+            f"BDL package not supported for sport={sport_upper}. "
+            f"Supported: NBA, WNBA, MLB."
+        )
+
+    return {
+        "game_log":         package.wow_game_log(stat_key, n_games),
+        "box_score_log":    package.wow_box_score_log(n_games),
+        "minutes_stats":    package.minutes_stats(),
+        "acquisition_status": package.acquisition_status,
+        "provenance":       package.provenance.to_dict(),
+        "notes":            package.notes,
+        "source":           "api.balldontlie.io",
+        "source_grade":     "A-",
+        "source_type":      "balldontlie_api",
+    }

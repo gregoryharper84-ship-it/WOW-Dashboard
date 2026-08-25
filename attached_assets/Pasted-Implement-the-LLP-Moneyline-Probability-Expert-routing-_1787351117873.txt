@@ -1,0 +1,24 @@
+Implement the LLP Moneyline Probability Expert routing policy centrally in Replit.
+
+Authority and routing:
+- wow.llp-moneyline-probability-expert is a shadow-only specialist that creates outright win-probability objects for a single team-market event.
+- LLP Team Betting routes those objects to the LLP runner/gatekeeper, which alone owns no-vig, price edge, EV, exposure, session caps, stake/structure, and the six LLP terminal labels.
+- WOW Betting may consume, rank, or compare only already-scored probability objects for research. WOW may not recompute or override probability, blockers, uncertainty, displayed_tier, calibration status, or execution authority.
+
+Enforce centrally:
+- can_execute=false on every specialist probability object and all downstream representations.
+- Reject/strip writes for terminal_label, final_label, llp_label, approved, playable, stake, and execute at the specialist and feeder boundaries.
+- The specialist may not emit LLP_APPROVED, LLP_PLAYABLE, LLP_WATCH, LLP_SCOUT, LLP_REJECT, or LLP_CUT.
+- displayed_tier must remain WATCH_ONLY_UNTIL_CALIBRATED unless a valid calibration ledger proves graduation.
+- Require sport_specific_weight_profile before a sport may enter production ranking or leave shadow status.
+- Require a calibration ledger before tier graduation.
+- Preserve probability, blockers, uncertainty, displayed_tier, and lowest-ceiling semantics through LLP and WOW handoffs.
+- Ranking/aggregation must not upgrade tiers, erase blockers, or convert outputs into execution advice.
+- Keep dry-run/no-live-trading invariants intact.
+
+Before editing:
+1. Inspect the current schema, validators, specialist handoff, LLP runner/gatekeeper route, WOW consumer route, and calibration ledger.
+2. Provide a bounded implementation plan listing exact files and tests.
+3. Preserve existing probability/calibration formulas and LLP terminal-label taxonomy.
+4. Do not publish or deploy.
+5. Then implement and run focused tests plus relevant regression tests. Report changed files, test results, remaining blockers, and rollback path.

@@ -1,0 +1,63 @@
+I rescanned the same 223-prop board against the live backend.
+
+The Replit fixes are not live yet on the endpoint I’m hitting. The backend is still reporting build wow-patch-outright-moneyline-routing-2026-08-07, and the same defects reproduced.
+
+Category	Props rescanned	Current backend result
+WNBA PRA	36	36 DATA_CONTRACT_FAIL
+WNBA Rebounds	39	39 MODEL_QUALIFIED_HOLD
+MLB Pitcher Ks	20	19 DATA_CONTRACT_FAIL + Trevor Rogers REJECT_MARKET_ADVERSE_THRESHOLD
+MLB Pitching Outs	20	20 REJECT_DATA_QUALITY
+MLB Plate Appearances	80	80 DATA_CONTRACT_FAIL
+Tennis Total Games	8	8 DATA_CONTRACT_FAIL
+MLB 1IP Pitches	20	20 DATA_CONTRACT_FAIL
+
+So across all 223:
+
+163 DATA_CONTRACT_FAIL
+39 MODEL_QUALIFIED_HOLD
+20 REJECT_DATA_QUALITY
+1 genuine market rejection
+
+The strongest evidence that the repair hasn’t deployed is the Angel Reese 12.5 rebounds diagnostic. The backend still:
+
+* correctly fetches her ESPN game log,
+* then loses the normalized team/opponent identity,
+* calls the WNBA scoreboard using game_str=' vs ',
+* leaves team=null and opponent=null,
+* simultaneously reports role_status.projected_minutes as retrieved and unresolved,
+* and returns calibrated_probability = 20.14% with calibrated_lower_bound = 22.52%.
+
+That last output still violates:
+
+lower_bound <= calibrated_probability
+
+So the calibration/schema bug is still present. I am not ranking that probability.
+
+The MLB acquisition problem is also unchanged. Pitcher Ks, pitching outs, PA and 1IP are still hitting L10:NO_GAME_LOG_PROVIDED. Plate appearances went 80/80 DATA_CONTRACT_FAIL again. The 1IP board went 20/20 DATA_CONTRACT_FAIL again instead of reaching the dedicated event-tree model.
+
+Tennis also still has no dedicated acquisition route on this deployed build. The backend explicitly says tennis market/status acquisition is NOT_CALLED, and Learner Tien was classified as SOURCE_ACQUISITION_FAIL with candidate_evaluation_completed=false.
+
+There is one improvement in reporting: some all-failed batches now correctly surface RUN_PARTIAL_BACKEND_FAILURE instead of pretending they were clean model NO_PLAYs. That part of the Aug. 7 failover patch is functioning. But mixed batches can still collapse into NO_PLAY.
+
+The settlement system is still unfinished too: the worker is running, but last_success_tick=null and props_graded=0. So the calibration ledger is still empty.
+
+Current pick status
+
+I cannot publish a legitimate best-prop list from this rescan yet. Not because the board was shown to be bad, but because the same scoring infrastructure defects remain deployed.
+
+The only genuine model/market rejection remains:
+
+Trevor Rogers — MORE 5.5 Pitcher Strikeouts — REJECT_MARKET_ADVERSE_THRESHOLD
+
+The WNBA rebound group remains the closest lane to usable research output, but its probability integrity failure prevents me from ranking those 39 legs.
+
+What you should do now
+
+Go into Replit and verify that the Agent actually deployed the changes from the prompt I gave you—not just edited/tested the code. After deployment, the fastest validation is to check four things before we rerun all 223:
+
+1. Angel Reese must enter scoring with ATL/TOR populated—not game_str=' vs '.
+2. Her probability output must satisfy lower_bound <= point_probability <= upper_bound.
+3. Jameson Taillon Ks must show a K-specific historical-log acquisition attempt instead of NO_GAME_LOG_PROVIDED.
+4. The health/build identifier should reflect the new repair deployment rather than the Aug. 7 build.
+
+Once Replit deploys that version, tell me “rescan again” and I can immediately rerun the board.

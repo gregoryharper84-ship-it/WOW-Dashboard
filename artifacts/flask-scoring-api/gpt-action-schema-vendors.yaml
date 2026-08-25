@@ -261,13 +261,10 @@ paths:
       x-openai-isConsequential: false
       summary: Normalized PrizePicks player-prop board
       description: >
-        Proxied and normalized PrizePicks public board.  No PrizePicks API
-        key required — the board is publicly accessible.  The proxy normalizes
-        the response to WOW's internal prop format (player, stat_type, line,
-        direction, sport) and stamps source + fetched_at.
-
-        Use for prop-line discovery and cross-book line comparison.
-        Combine with getOddsApiEventOdds for no-vig consensus pricing.
+        Proxied and normalized PrizePicks public board. No API key required. Normalizes
+        to WOW prop format (player, stat_type, line, direction, sport) and stamps source
+        + fetched_at. Use for prop discovery and cross-book line comparison. Combine with
+        getOddsApiEventOdds for no-vig pricing.
       security:
         - ApiKeyAuth: []
       parameters:
