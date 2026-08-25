@@ -163,9 +163,13 @@ def test_auth_failed_returns_structured_status():
     from gate_engine.balldontlie.types import BDLStatus, BDLResponse
 
     mock_resp = BDLResponse(status=BDLStatus.AUTH_FAILED, endpoint="/wnba/v1/stats")
-    with patch("gate_engine.balldontlie.client._get", return_value=mock_resp), \
-         patch("gate_engine.balldontlie.client.credentials_available", return_value=True), \
-         patch("gate_engine.balldontlie.client.detect_tier", return_value="FREE"):
+    # Patch at nba_wnba module level — it imported _get/credentials_available/
+    # detect_tier by name at load time, so we must patch the names in that
+    # namespace (patching gate_engine.balldontlie.client.* here is a no-op:
+    # nba_wnba's own references stay bound to the real functions).
+    with patch("gate_engine.balldontlie.nba_wnba._get", return_value=mock_resp), \
+         patch("gate_engine.balldontlie.nba_wnba.credentials_available", return_value=True), \
+         patch("gate_engine.balldontlie.nba_wnba.detect_tier", return_value="FREE"):
         from gate_engine.balldontlie.nba_wnba import fetch_player_package
         pkg = fetch_player_package("123", "NBA", season=2026)
         assert pkg.acquisition_status == BDLStatus.AUTH_FAILED

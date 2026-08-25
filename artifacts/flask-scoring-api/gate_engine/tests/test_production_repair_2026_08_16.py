@@ -543,10 +543,14 @@ class TestSnapshotAutoRefresh(unittest.TestCase):
 
     def test_get_or_refresh_calls_refresh_when_stale(self):
         from gate_engine.governance_resilience import GovernanceSnapshot
-        import threading
+        import threading, time
         snap = GovernanceSnapshot.__new__(GovernanceSnapshot)
         snap._snapshot   = {"ok": True}
-        snap._fetched_at = 0.0         # very old → stale
+        # time.monotonic() has no fixed epoch (e.g. seconds since process/
+        # runner boot) — 0.0 is only "very old" if that happens to be large
+        # already. Use an explicit far-past offset so staleness is always
+        # deterministic, regardless of how long the CI runner has been up.
+        snap._fetched_at = time.monotonic() - 100_000.0
         snap._lock       = threading.Lock()
 
         with patch.object(snap, "refresh") as mock_refresh:

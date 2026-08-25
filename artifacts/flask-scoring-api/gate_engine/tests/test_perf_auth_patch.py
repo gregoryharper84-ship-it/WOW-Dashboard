@@ -442,7 +442,12 @@ class TestInternalClientAuth(unittest.TestCase):
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"ok": True}
 
-        with patch.dict(os.environ, {"SCORING_API_KEY": fake_key}):
+        # action_get() still guards on GPT_ACTION_SECRET presence before
+        # delegating to scoring_get() (see internal_client.py) — must be set
+        # here or the call short-circuits to AUTH_CONTRACT_FAIL without ever
+        # invoking requests.get.
+        with patch.dict(os.environ, {"SCORING_API_KEY": fake_key,
+                                      "GPT_ACTION_SECRET": "test-gpt-action-secret"}):
             with patch("requests.get", return_value=mock_resp) as mock_get:
                 body, status, err = ic.action_get("/wow/odds/events", {"sport": "baseball_mlb"})
 
@@ -462,7 +467,10 @@ class TestInternalClientAuth(unittest.TestCase):
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"ok": True}
 
-        with patch.dict(os.environ, {"SCORING_API_KEY": "REDACTED_IN_TEST"}):
+        # See test_action_get_sends_wow_action_key_header: GPT_ACTION_SECRET
+        # must also be set or action_get() never reaches requests.get.
+        with patch.dict(os.environ, {"SCORING_API_KEY": "REDACTED_IN_TEST",
+                                      "GPT_ACTION_SECRET": "test-gpt-action-secret"}):
             with patch("requests.get", return_value=mock_resp) as mock_get:
                 ic.action_get("/wow/odds/events")
 

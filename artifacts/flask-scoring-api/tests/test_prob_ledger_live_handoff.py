@@ -366,7 +366,12 @@ def test_J_full_route_54_rows():
         "research_run_id": "test-run-261",
         "as_of": f"{today}T12:00:00+00:00",
     }
-    headers = {"X-API-Key": os.environ.get("GPT_ACTION_SECRET", "")}
+    # /gate-engine/run is behind @require_api_key, which checks X-API-Key
+    # against SCORING_API_KEY — not GPT_ACTION_SECRET (a different credential
+    # for a different auth surface). The wrong env var here always sent an
+    # empty/mismatched header and the route correctly 401'd.
+    os.environ.setdefault("SCORING_API_KEY", "test-scoring-key")
+    headers = {"X-API-Key": os.environ.get("SCORING_API_KEY", "")}
     resp = client.post("/gate-engine/run", json=body, headers=headers)
     assert resp.status_code == 200, resp.get_data(as_text=True)[:800]
     data = resp.get_json()

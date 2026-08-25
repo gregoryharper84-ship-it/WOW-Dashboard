@@ -417,8 +417,13 @@ class TestOddsInternalClientMigration(unittest.TestCase):
             captured["headers"] = headers
             return {"ok": True}, 200, None
 
+        # action_get() still guards on GPT_ACTION_SECRET presence before
+        # delegating to scoring_get() (see internal_client.py) — must be set
+        # here or the call short-circuits to AUTH_CONTRACT_FAIL and _do_get
+        # (and therefore fake_do_get) is never invoked.
         with patch.object(ic, "_do_get", side_effect=fake_do_get):
-            with patch.dict(os.environ, {"SCORING_API_KEY": "test-key-abc"}):
+            with patch.dict(os.environ, {"SCORING_API_KEY": "test-key-abc",
+                                          "GPT_ACTION_SECRET": "test-gpt-action-secret"}):
                 ic.action_get("/wow/odds/events", {"sport": "baseball_mlb"})
 
         self.assertIn("X-API-Key", captured.get("headers", {}),
