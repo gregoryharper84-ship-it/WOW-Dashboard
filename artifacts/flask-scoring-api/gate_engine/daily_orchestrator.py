@@ -403,6 +403,8 @@ def _source_coverage_failures(
 def _build_reconciliation(
     discovered_ids: set[str],
     scan_result: dict[str, Any],
+    *,
+    containment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Prove that every discovered selection appears in exactly one terminal bucket.
@@ -420,20 +422,29 @@ def _build_reconciliation(
     """
     terminal_ids: dict[str, str] = {}  # sel_id → bucket
     duplicate_ids: list[str]     = []
+    idless_card_count = 0
 
     for bucket_name in _TERMINAL_BUCKETS:
         for card in scan_result.get(bucket_name, []):
             sel_id = card.get("canonical_selection_id")
             if not sel_id:
+                idless_card_count += 1
                 continue
             if sel_id in terminal_ids:
                 duplicate_ids.append(sel_id)
             else:
                 terminal_ids[sel_id] = bucket_name
 
-    terminal_counts = {}
-    for bucket_name in _TERMINAL_BUCKETS:
-        terminal_counts[bucket_name] = len(scan_result.get(bucket_name, []))
+    # Count canonical identities, never raw cards.  Raw card counts can hide a
+    # duplicate or ID-less output while appearing to balance the board.
+    terminal_counts = {
+        bucket_name: sum(
+            1
+            for selection_id, assigned_bucket in terminal_ids.items()
+            if assigned_bucket == bucket_name
+        )
+        for bucket_name in _TERMINAL_BUCKETS
+    }
 
     total_terminal  = sum(terminal_counts.values())
     terminal_id_set = set(terminal_ids.keys())
@@ -445,7 +456,21 @@ def _build_reconciliation(
         len(missing_ids)   == 0
         and len(excess_ids)   == 0
         and len(duplicate_ids) == 0
+        and idless_card_count == 0
     )
+    if containment:
+        # Containment retains a one-to-one terminal board for safe observability,
+        # but an invalid raw scanner result is never an authoritative run.
+        reconciled = reconciled and not any(
+            containment.get(key)
+            for key in (
+                "duplicate_ids",
+                "missing_ids",
+                "excess_ids",
+                "idless_card_count",
+                "prerequisite_failed_ids",
+            )
+        )
 
     return {
         "reconciled":      reconciled,
@@ -455,6 +480,8 @@ def _build_reconciliation(
         "duplicate_ids":   duplicate_ids,
         "missing_ids":     missing_ids,
         "excess_ids":      excess_ids,
+        "idless_card_count": idless_card_count,
+        "containment": dict(containment or {}),
     }
 
 
@@ -669,7 +696,34 @@ def _stamp_canonical_ids(
                 or card.get("classification", bucket_name)
             )
 
+def _failed_mandatory_prerequisites(card: dict[str, Any]) -> list[str]:
+    """Return explicit mandatory-prerequisite failures without scoring a card.
 
+    This is a final publication guard, not a new model gate.  It only consumes
+    contracts already emitted by acquisition/model/calibration lanes and treats
+    an explicit unavailable/failed prerequisite as non-publishable.
+    """
+    failures: list[str] = []
+    for key in _BOOLEAN_PREREQUISITE_KEYS:
+        if key in card and card.get(key) is False:
+            failures.append(key)
+    for key in _STATUS_PREREQUISITE_KEYS:
+        value = str(card.get(key) or "").strip().upper()
+        if value in _PREREQUISITE_FAILURE_VALUES:
+            failures.append(f"{key}:{value}")
+    for key in _EXPLICIT_PREREQUISITE_KEYS:
+        value = card.get(key)
+        if isinstance(value, dict):
+            for name, status in value.items():
+                if status is False or str(status or "").strip().upper() in _PREREQUISITE_FAILURE_VALUES:
+                    failures.append(f"{key}:{name}")
+        elif isinstance(value, (list, tuple, set)):
+            failures.extend(f"{key}:{item}" for item in value if item)
+        elif value is False or str(value or "").strip().upper() in _PREREQUISITE_FAILURE_VALUES:
+            failures.append(key)
+    if card.get("probability_publishable") is False:
+        failures.append("probability_publishable:false")
+    return list(dict.fromkeys(failures))
 def _purge_non_pregame_moneyline_cards(
     scan_result: dict[str, Any],
 ) -> list[str]:
@@ -1052,48 +1106,20 @@ def run_daily_orchestration(
     completion_detail: str | None = None
     id_lookup, side_resolution_lookup = _build_card_lookups(props_by_sport)
 
-    def _persist_completed_fallback_lane(sport: str, lane_result: dict[str, Any]) -> None:
-        """Write a completed fallback lane before subsequent lanes are attempted."""
-        _stamp_canonical_ids(
-            lane_result,
-            id_lookup=id_lookup,
-            side_resolution_lookup=side_resolution_lookup,
-        )
+    def _record_completed_fallback_lane(sport: str, _lane_result: dict[str, Any]) -> None:
+        """Record progress without persisting uncontained fallback output.
+
+        Fallback rows are persisted only after the shared terminal containment
+        boundary below. This prevents a partial lane from reserving an unsafe
+        raw row that an ON CONFLICT manifest insert could never replace.
+        """
         if not persist:
             return
-        from storage.daily_manifest import mark_progress, save_run_row
-
-        for bucket_name in _TERMINAL_BUCKETS:
-            for card in lane_result.get(bucket_name, []):
-                selection_id = card.get("canonical_selection_id", "")
-                if not save_run_row(
-                    run_id=run_id,
-                    canonical_selection_id=selection_id,
-                    market_version_id=card.get("market_version_id"),
-                    run_date=run_date,
-                    sport=card.get("sport", ""),
-                    player=card.get("player", ""),
-                    prop=card.get("prop", ""),
-                    side=card.get("side", ""),
-                    line=float(card.get("line") or 0),
-                    game_date=card.get("game_date"),
-                    terminal_bucket=card.get("terminal_bucket"),
-                    classification=card.get("classification"),
-                    wow_score=card.get("wow_score"),
-                    final_approval_blocker=card.get("final_approval_blocker"),
-                    audit_valid=card.get("audit_valid"),
-                    side_resolution=card.get("side_resolution"),
-                    reconciliation_status="OK",
-                    full_row=card,
-                    execution_owner=execution_owner,
-                ):
-                    raise RuntimeError(
-                        f"FALLBACK_LANE_ROW_PERSIST_FAILED:{sport}:{selection_id}"
-                    )
+        from storage.daily_manifest import mark_progress
         if not mark_progress(
             run_id=run_id,
             stage="SCORING",
-            detail=f"Fallback completed {sport}; preserving completed lane",
+            detail=f"Fallback completed {sport}; awaiting final containment",
             execution_owner=execution_owner,
         ):
             raise RuntimeError(f"FALLBACK_LANE_PROGRESS_PERSIST_FAILED:{sport}")
@@ -1209,7 +1235,7 @@ def run_daily_orchestration(
                     environment=environment,
                     runtime_provenance=runtime_provenance,
                     deadline_at=deadline_at,
-                    on_lane_result=_persist_completed_fallback_lane,
+                    on_lane_result=_record_completed_fallback_lane,
                 )
                 fallback_metadata["trigger"] = fallback_trigger
                 if fallback_metadata.get("reason"):
@@ -1249,6 +1275,20 @@ def run_daily_orchestration(
             f"FINAL_PREGAME_PURGE:{len(final_refresh_excluded_ids)} moneyline row(s)"
         )
 
+    # A scanner/fallback lane may be partial or malformed without invalidating
+    # unrelated lanes. Contain its output per discovered candidate before any
+    # card can be persisted or exposed in the compact board.
+    discovered_by_id = {
+        prop["canonical_selection_id"]: prop
+        for props in props_by_sport.values()
+        for prop in props
+        if prop.get("canonical_selection_id") in discovered_ids
+    }
+    scan_result, containment = _contain_candidate_outcomes(
+        scan_result,
+        discovered_by_id=discovered_by_id,
+    )
+
     # ---- Reconciliation proof -----------------------------------------------
     _raise_if_deadline_exceeded(deadline_at)
     if persist:
@@ -1263,7 +1303,11 @@ def run_daily_orchestration(
         except Exception as exc:
             execution_notes.append(f"MANIFEST_PROGRESS_FAILED:{exc}")
     reconciliation = _apply_source_coverage_reconciliation(
-        _build_reconciliation(discovered_ids, scan_result),
+        _build_reconciliation(
+            discovered_ids,
+            scan_result,
+            containment=containment,
+        ),
         [
             failure
             for sport in requested_sports
@@ -1283,6 +1327,11 @@ def run_daily_orchestration(
             f"missing={len(reconciliation['missing_ids'])} "
             f"excess={len(reconciliation['excess_ids'])} "
             f"duplicates={len(reconciliation['duplicate_ids'])}"
+        )
+    if containment["prerequisite_failed_ids"]:
+        execution_notes.append(
+            "MANDATORY_PREREQUISITES_CONTAINED:"
+            f"{len(containment['prerequisite_failed_ids'])}"
         )
 
     # ---- Full-board confidence completion ----------------------------------
@@ -1469,3 +1518,130 @@ def run_daily_orchestration(
         # Full bucket lists for manifest consumers; not included in compact GPT view
         "_buckets": {b: scan_result.get(b, []) for b in _TERMINAL_BUCKETS},
     }
+
+def _contain_candidate_outcomes(
+    scan_result: dict[str, Any],
+    *,
+    discovered_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Produce one safe terminal card per discovered candidate.
+
+    Scanner output is untrusted at this boundary: duplicates, unknown IDs, and
+    missing rows are recorded for reconciliation, while the returned terminal
+    board remains exactly one-to-one.  A prerequisite failure is contained in
+    ``data_insufficient`` with all probability/authority fields removed.
+    """
+    contained = _empty_scan_result(run_status=scan_result.get("run_status", "COMPLETE"))
+    contained["failed_modules"] = list(scan_result.get("failed_modules", []))
+    contained["execution_notes"] = list(scan_result.get("execution_notes", []))
+    seen_ids: set[str] = set()
+    containment: dict[str, Any] = {
+        "duplicate_ids": [],
+        "missing_ids": [],
+        "excess_ids": [],
+        "idless_card_count": 0,
+        "prerequisite_failed_ids": [],
+    }
+    raw_id_counts: dict[str, int] = {}
+    for bucket_name in _TERMINAL_BUCKETS:
+        for raw_card in scan_result.get(bucket_name, []):
+            if not isinstance(raw_card, dict):
+                continue
+            selection_id = raw_card.get("canonical_selection_id")
+            if selection_id in discovered_by_id:
+                raw_id_counts[selection_id] = raw_id_counts.get(selection_id, 0) + 1
+    duplicate_selection_ids = {
+        selection_id
+        for selection_id, count in raw_id_counts.items()
+        if count > 1
+    }
+    containment["duplicate_ids"] = sorted(duplicate_selection_ids)
+
+    for bucket_name in _TERMINAL_BUCKETS:
+        for raw_card in scan_result.get(bucket_name, []):
+            card = dict(raw_card) if isinstance(raw_card, dict) else {}
+            selection_id = card.get("canonical_selection_id")
+            if not selection_id:
+                containment["idless_card_count"] += 1
+                continue
+            if selection_id not in discovered_by_id:
+                containment["excess_ids"].append(selection_id)
+                continue
+            if selection_id in duplicate_selection_ids:
+                continue
+            if selection_id in seen_ids:
+                # Defensive only: the count pre-pass above should already have
+                # classified this case as a duplicate.
+                containment["duplicate_ids"].append(selection_id)
+                continue
+
+            seen_ids.add(selection_id)
+            prerequisite_failures = _failed_mandatory_prerequisites(card)
+            if prerequisite_failures:
+                containment["prerequisite_failed_ids"].append(selection_id)
+                for field in _PROBABILITY_PUBLICATION_FIELDS:
+                    card[field] = None
+                card.update({
+                    "terminal_bucket": "data_insufficient",
+                    "classification": "Data Insufficient",
+                    "terminal_label": "DATA_CONTRACT_FAIL",
+                    "final_approval_blocker": "MANDATORY_PREREQUISITE_FAILED",
+                    "probability_publishable": False,
+                    "authoritative_result": None,
+                    "can_execute": False,
+                    "can_approve_bets": False,
+                })
+                blockers = list(card.get("blockers") or [])
+                card["blockers"] = list(dict.fromkeys(
+                    blockers + [
+                        f"MANDATORY_PREREQUISITE_FAILED:{failure}"
+                        for failure in prerequisite_failures
+                    ]
+                ))
+                contained["data_insufficient"].append(card)
+            else:
+                card["terminal_bucket"] = bucket_name
+                # No scanner return value may change this module's
+                # unconditional non-execution/non-approval contract.
+                card["can_execute"] = False
+                card["can_approve_bets"] = False
+                contained[bucket_name].append(card)
+
+    for selection_id, discovered_card in discovered_by_id.items():
+        if selection_id in duplicate_selection_ids:
+            contained["data_insufficient"].append({
+                **dict(discovered_card),
+                **{field: None for field in _PROBABILITY_PUBLICATION_FIELDS},
+                "canonical_selection_id": selection_id,
+                "terminal_bucket": "data_insufficient",
+                "classification": "Data Insufficient",
+                "terminal_label": "DATA_CONTRACT_FAIL",
+                "final_approval_blocker": "DUPLICATE_TERMINAL_OUTCOME",
+                "probability_publishable": False,
+                "authoritative_result": None,
+                "blockers": ["DUPLICATE_TERMINAL_OUTCOME"],
+                "can_execute": False,
+                "can_approve_bets": False,
+            })
+            continue
+        if selection_id in seen_ids:
+            continue
+        containment["missing_ids"].append(selection_id)
+        contained["data_insufficient"].append({
+            **dict(discovered_card),
+            **{field: None for field in _PROBABILITY_PUBLICATION_FIELDS},
+            "canonical_selection_id": selection_id,
+            "terminal_bucket": "data_insufficient",
+            "classification": "Data Insufficient",
+            "terminal_label": "DATA_CONTRACT_FAIL",
+            "final_approval_blocker": "TERMINAL_OUTCOME_MISSING",
+            "probability_publishable": False,
+            "authoritative_result": None,
+            "blockers": ["TERMINAL_OUTCOME_MISSING"],
+            "can_execute": False,
+            "can_approve_bets": False,
+        })
+    for key, value in containment.items():
+        if isinstance(value, list):
+            containment[key] = list(dict.fromkeys(value))
+    return contained, containment

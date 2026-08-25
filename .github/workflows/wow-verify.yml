@@ -41,6 +41,7 @@ jobs:
       DATABASE_URL: postgresql://wow_ci:wow_ci@localhost:5432/wow_test
       WOW_CI: "1"
       PYTHONDONTWRITEBYTECODE: "1"
+      SCORING_API_KEY: "wow-ci-scoring-key-not-live"
       MIN_REQUIRED_COLLECTION: "5572"
       # CI-local, non-functional placeholders. Neither value is a live
       # credential: ANTHROPIC_API_KEY only needs to be non-empty so the
@@ -136,6 +137,11 @@ jobs:
       DATABASE_URL: postgresql://wow_ci:wow_ci@localhost:5432/wow_test
       WOW_CI: "1"
       PYTHONDONTWRITEBYTECODE: "1"
+      # These are deliberately non-live placeholders. Tests must mock external
+      # calls and separately exercise absent-credential fail-closed behavior.
+      ANTHROPIC_API_KEY: "wow-ci-placeholder-not-live"
+      SESSION_SECRET: "wow-ci-attestation-secret-not-live"
+      SCORING_API_KEY: "wow-ci-scoring-key-not-live"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

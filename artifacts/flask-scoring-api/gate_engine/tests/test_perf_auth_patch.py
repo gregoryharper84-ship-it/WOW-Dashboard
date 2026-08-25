@@ -432,7 +432,7 @@ class TestInternalClientAuth(unittest.TestCase):
 
     # ── action_get ────────────────────────────────────────────────────────────
 
-    def test_action_get_sends_wow_action_key_header(self):
+    def test_action_get_delegates_with_only_canonical_scoring_key(self):
         """action_get() now delegates to scoring_get() and sends X-API-Key (migrated 2026-08-14).
         X-WOW-Action-Key is no longer used for /wow/odds/* routes.
         """
@@ -442,12 +442,7 @@ class TestInternalClientAuth(unittest.TestCase):
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"ok": True}
 
-        # action_get() still guards on GPT_ACTION_SECRET presence before
-        # delegating to scoring_get() (see internal_client.py) — must be set
-        # here or the call short-circuits to AUTH_CONTRACT_FAIL without ever
-        # invoking requests.get.
-        with patch.dict(os.environ, {"SCORING_API_KEY": fake_key,
-                                      "GPT_ACTION_SECRET": "test-gpt-action-secret"}):
+        with patch.dict(os.environ, {"SCORING_API_KEY": fake_key}, clear=True):
             with patch("requests.get", return_value=mock_resp) as mock_get:
                 body, status, err = ic.action_get("/wow/odds/events", {"sport": "baseball_mlb"})
 
@@ -467,10 +462,7 @@ class TestInternalClientAuth(unittest.TestCase):
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"ok": True}
 
-        # See test_action_get_sends_wow_action_key_header: GPT_ACTION_SECRET
-        # must also be set or action_get() never reaches requests.get.
-        with patch.dict(os.environ, {"SCORING_API_KEY": "REDACTED_IN_TEST",
-                                      "GPT_ACTION_SECRET": "test-gpt-action-secret"}):
+        with patch.dict(os.environ, {"SCORING_API_KEY": "REDACTED_IN_TEST"}, clear=True):
             with patch("requests.get", return_value=mock_resp) as mock_get:
                 ic.action_get("/wow/odds/events")
 
@@ -478,13 +470,16 @@ class TestInternalClientAuth(unittest.TestCase):
         # Only assert the KEY NAME is present — not the value
         self.assertIn("X-API-Key", call_headers)
 
-    def test_action_get_returns_auth_contract_fail_when_secret_missing(self):
-        """action_get() with no GPT_ACTION_SECRET must return AUTH_CONTRACT_FAIL."""
+    def test_action_get_returns_auth_contract_fail_when_scoring_key_missing(self):
+        """The alias must never issue a request when its canonical key is absent."""
         ic = self.ic
-        with patch.dict(os.environ, {"GPT_ACTION_SECRET": ""}, clear=False):
-            body, status, err = ic.action_get("/wow/odds/events")
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("requests.get") as mock_get:
+                body, status, err = ic.action_get("/wow/odds/events")
         self.assertEqual(err, ic.AUTH_CONTRACT_FAIL)
         self.assertIsNone(body)
+        self.assertEqual(status, 0)
+        mock_get.assert_not_called()
 
     def test_action_get_maps_401_to_auth_contract_fail(self):
         """A 401 response from the server maps to AUTH_CONTRACT_FAIL."""
@@ -492,7 +487,7 @@ class TestInternalClientAuth(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.status_code = 401
 
-        with patch.dict(os.environ, {"GPT_ACTION_SECRET": "some-secret"}):
+        with patch.dict(os.environ, {"SCORING_API_KEY": "some-key"}, clear=True):
             with patch("requests.get", return_value=mock_resp):
                 body, status, err = ic.action_get("/wow/odds/events")
 
@@ -541,7 +536,7 @@ class TestInternalClientAuth(unittest.TestCase):
     def test_fetch_failure_maps_to_fetch_failed(self):
         """A network error maps to FETCH_FAILED, not AUTH_CONTRACT_FAIL."""
         ic = self.ic
-        with patch.dict(os.environ, {"GPT_ACTION_SECRET": "some-secret"}):
+        with patch.dict(os.environ, {"SCORING_API_KEY": "some-key"}, clear=True):
             with patch("requests.get", side_effect=ConnectionError("refused")):
                 body, status, err = ic.action_get("/wow/odds/events")
 
@@ -550,14 +545,14 @@ class TestInternalClientAuth(unittest.TestCase):
 
     # ── Correct key => 200 / wrong key => 401 contract ───────────────────────
 
-    def test_action_get_correct_secret_reaches_server(self):
-        """With the correct secret, action_get() forwards the call and gets 200."""
+    def test_action_get_canonical_key_reaches_server(self):
+        """With its canonical API key, action_get() forwards the call and gets 200."""
         ic = self.ic
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"events": []}
 
-        with patch.dict(os.environ, {"GPT_ACTION_SECRET": "correct-secret"}):
+        with patch.dict(os.environ, {"SCORING_API_KEY": "correct-key"}, clear=True):
             with patch("requests.get", return_value=mock_resp) as mock_get:
                 body, status, err = ic.action_get("/wow/odds/events")
 
@@ -565,19 +560,30 @@ class TestInternalClientAuth(unittest.TestCase):
         self.assertIsNone(err)
         mock_get.assert_called_once()
 
-    def test_action_get_wrong_secret_returns_401(self):
-        """Server 401 with a wrong secret is surfaced as AUTH_CONTRACT_FAIL."""
+    def test_action_get_wrong_canonical_key_returns_401(self):
+        """Server 401 with a wrong canonical key is AUTH_CONTRACT_FAIL."""
         ic = self.ic
         mock_resp = MagicMock()
         mock_resp.status_code = 401  # server rejects the wrong key
 
-        with patch.dict(os.environ, {"GPT_ACTION_SECRET": "wrong-secret"}):
+        with patch.dict(os.environ, {"SCORING_API_KEY": "wrong-key"}, clear=True):
             with patch("requests.get", return_value=mock_resp):
                 body, status, err = ic.action_get("/wow/odds/events")
 
         self.assertEqual(err, ic.AUTH_CONTRACT_FAIL)
         self.assertEqual(status, 401)
         self.assertIsNone(body)
+
+    def test_action_get_never_uses_gpt_action_secret_as_a_fallback(self):
+        """A legacy secret alone must not result in an unauthenticated request."""
+        ic = self.ic
+        with patch.dict(os.environ, {"GPT_ACTION_SECRET": "legacy-only"}, clear=True):
+            with patch("requests.get") as mock_get:
+                body, status, err = ic.action_get("/wow/odds/events")
+        self.assertIsNone(body)
+        self.assertEqual(status, 0)
+        self.assertEqual(err, ic.AUTH_CONTRACT_FAIL)
+        mock_get.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
