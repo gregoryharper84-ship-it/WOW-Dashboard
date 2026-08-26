@@ -1,0 +1,44 @@
+name: moneyline-hardening
+
+on:
+  push:
+    branches:
+      - fix/moneyline-governance-hardening-20260825
+  pull_request:
+    paths:
+      - "artifacts/flask-scoring-api/gate_engine/moneyline/**"
+      - "artifacts/flask-scoring-api/gate_engine/tests/test_moneyline_probability_governance.py"
+      - "artifacts/flask-scoring-api/tests/test_moneyline_architecture.py"
+
+permissions:
+  contents: read
+
+jobs:
+  focused-moneyline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/flask-scoring-api
+    env:
+      WOW_CI: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      ANTHROPIC_API_KEY: "wow-ci-placeholder-not-live"
+      SESSION_SECRET: "wow-ci-attestation-secret-not-live"
+      SCORING_API_KEY: "wow-ci-scoring-key-not-live"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/flask-scoring-api/requirements.txt
+      - run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pytest==9.1.1 PyYAML==6.0.3
+      - name: Compile changed moneyline modules
+        run: |
+          python -m py_compile             gate_engine/moneyline/probability_claim_auditor.py             gate_engine/moneyline/event_decision_governor.py             gate_engine/moneyline/pipeline.py             gate_engine/moneyline/slate_integrity.py             gate_engine/moneyline/types.py
+      - name: Run focused moneyline governance
+        run: |
+          python -m pytest             gate_engine/tests/test_moneyline_probability_governance.py             tests/test_moneyline_architecture.py             gate_engine/tests/test_moneyline_routing.py             gate_engine/tests/test_moneyline_routing_policy.py             gate_engine/tests/test_daily_moneyline_scope.py             -q --tb=short -rs
