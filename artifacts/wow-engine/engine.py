@@ -115,7 +115,7 @@ def score_prop_end_to_end(
         row = PredictionRow(
             event_id=event_id, event_start_time=event_start_time, sport=sport,
             market_type="engine", stat_type=stat_type, line=line, direction=direction,
-            source_snapshot_id=source_snapshot_id,
+            source_snapshot_id=source_snapshot_id, model_timestamp=scored_at,
             data_gaps=data_gaps, **extra,
         )
         return EndToEndResult(row=determine_publishability(row), error="; ".join(data_gaps))
@@ -255,7 +255,7 @@ def score_prop_end_to_end(
     row = PredictionRow(
         event_id=event_id, event_start_time=event_start_time, sport=sport,
         market_type="engine", stat_type=stat_type, line=line, direction=direction,
-        source_snapshot_id=source_snapshot_id,
+        source_snapshot_id=source_snapshot_id, model_timestamp=scored_at,
         regime_model_version="REGIME_MODEL_V1_DIRICHLET_MULTINOMIAL",
         regime_probabilities_json={r.value: p for r, p in sim.regime_probabilities.items()},
         regime_probability_sum=sum(sim.regime_probabilities.values()),

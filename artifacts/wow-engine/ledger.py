@@ -48,6 +48,15 @@ class PredictionRow:
     direction: str
     source_snapshot_id: str
 
+    # The scoring run's "as of" time (engine.py's `scored_at`) -- when
+    # this candidate was actually scored, distinct from event_start_time
+    # (the game's start) and created_at (the DB row-insert time). Also
+    # the candidate_as_of value used for market freshness and, for
+    # Phase B/C rows, PREDICTIVE_BOUNDS_V1's historical-row eligibility
+    # filter -- recording it here makes that filter's input auditable
+    # after the fact, not just enforced at scoring time.
+    model_timestamp: Optional[str] = None
+
     player: Optional[str] = None
     team: Optional[str] = None
     opponent: Optional[str] = None

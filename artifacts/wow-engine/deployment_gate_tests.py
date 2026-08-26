@@ -677,6 +677,7 @@ def test_gate_11_end_to_end_positive_path_produces_publishable_probability():
     # method to report -- these must stay None, not leak stale values.
     assert row.calibration_version is None
     assert row.bounds_method_version is None
+    assert row.model_timestamp == "2026-08-26T00:00:02Z"
 
 
 def test_gate_11b_missing_regime_data_fails_end_to_end_cleanly():
@@ -816,6 +817,7 @@ def test_gate_11de_phase_b_real_positive_path_produces_publishable_probability()
     assert row.calibration_training_n == 300
     assert row.calibration_parent_cohort == "MLB_SP_RH_2026"
     assert row.bounds_method_version == PREDICTIVE_BOUNDS_METHOD_VERSION
+    assert row.model_timestamp == "2026-08-27T00:00:00Z"
 
 
 def test_gate_11e_phase_c_eligibility_requests_isotonic_not_platt():

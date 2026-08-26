@@ -6,6 +6,10 @@ create table if not exists wow_predictions (
     created_at              timestamptz not null default now(),
     event_id                text not null,
     event_start_time        timestamptz not null,
+    -- The scoring run's "as of" time (engine.py's scored_at) -- distinct
+    -- from event_start_time (game start) and created_at (row-insert
+    -- time). See PredictionRow.model_timestamp in ledger.py.
+    model_timestamp         timestamptz,
 
     player                  text,
     team                    text,
