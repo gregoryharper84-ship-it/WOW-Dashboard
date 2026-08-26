@@ -446,4 +446,32 @@ def score_scoped_moneyline_rows(
         card["terminal_bucket"] = _bucket_for_terminal_label(card["terminal_label"])
         result[card["terminal_bucket"]].append(card)
 
+    # Mandatory event-level mutual exclusion.  The two discovery lanes may
+    # evaluate both sides, but only one side or no side may survive as the
+    # event selection.  Re-bucket any side whose local MONEY_QUALIFIED label is
+    # capped by the governor.
+    from gate_engine.moneyline.event_decision_governor import govern_event_cards
+    _bucket_names = (
+        "model_scored", "market_verified", "final_approved_internal",
+        "no_play", "data_insufficient",
+    )
+    _scored_cards = [
+        card
+        for name in _bucket_names
+        for card in result[name]
+        if card.get("market_family") == "OUTRIGHT_WINNER"
+    ]
+    govern_event_cards(_scored_cards)
+    for name in _bucket_names:
+        retained = []
+        for card in result[name]:
+            if card.get("event_decision"):
+                destination = _bucket_for_terminal_label(card.get("terminal_label"))
+                card["terminal_bucket"] = destination
+                if destination != name:
+                    result[destination].append(card)
+                    continue
+            retained.append(card)
+        result[name] = retained
+
     return result
