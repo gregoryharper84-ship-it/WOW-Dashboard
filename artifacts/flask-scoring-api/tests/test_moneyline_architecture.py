@@ -637,21 +637,16 @@ class TestAwaySideInversion:
             "so downstream consumers know inversion was applied at pipeline stage 6"
         )
 
-    def test_mlb_away_row_without_sp_data_still_scores(self):
-        """
-        MLB away row with no starting pitcher data must not DATA_CONTRACT_FAIL.
-        Participant lock should not hard-block on absent SP names — only on
-        explicitly scratched/out pitchers.
-        """
+    def test_mlb_missing_starters_fails_closed(self):
+        """MLB moneyline qualification requires both named starting pitchers."""
         from gate_engine.moneyline.pipeline import run_moneyline_pipeline
         row = _base_row(sport="MLB", home_away="AWAY")
         enr = _base_enr(home_win_pct=0.55, away_win_pct=0.45)
-        # No starting_pitcher_home/away in enrichment — must not block
         result = run_moneyline_pipeline(row, enr, n_sims=200, seed=0)
-        assert "PARTICIPANT_LOCK_FAILED:starting_pitcher" not in " ".join(result.blockers), (
-            "Missing SP data must not cause PARTICIPANT_LOCK_FAILED — "
-            "only explicitly scratched/out pitchers should block"
-        )
+        joined = " ".join(result.blockers)
+        assert result.terminal_label == "DATA_CONTRACT_FAIL"
+        assert "starting_pitcher_home=MISSING" in joined
+        assert "starting_pitcher_away=MISSING" in joined
 
     def test_mlb_scratched_pitcher_does_block(self):
         """MLB row with sp_home_status=SCRATCHED must produce PARTICIPANT_LOCK_FAILED."""
