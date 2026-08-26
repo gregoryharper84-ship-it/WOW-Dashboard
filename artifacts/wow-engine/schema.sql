@@ -200,7 +200,17 @@ comment on table wow_manual_estimates is 'Section 8A Manual Estimate Lane tracki
 create table if not exists wow_calibrators (
     calibrator_id        uuid primary key default gen_random_uuid(),
     created_at            timestamptz not null default now(),
+    -- Distinct from created_at (row-insert time): the moment the fit
+    -- itself completed. In this implementation the two happen back to
+    -- back, but the reviewer's persisted-record requirements name both
+    -- separately, so both are recorded rather than conflated.
+    fitted_at              timestamptz not null default now(),
 
+    -- "phase" alongside calibration_method: the method string can gain a
+    -- new version (e.g. PLATT_TIME_SPLIT_V2) without the phase changing,
+    -- so callers that only care "is this a Phase B or Phase C row" don't
+    -- have to parse the method string.
+    phase                  text not null check (phase in ('PHASE_B','PHASE_C')),
     calibration_method    text not null check (calibration_method in ('PLATT_TIME_SPLIT_V1','ISOTONIC_V1')),
     calibration_version   text not null,
     parent_cohort         text not null,
@@ -219,9 +229,21 @@ create table if not exists wow_calibrators (
     isotonic_artifact_b64    text,
     fold_train_audit_json     jsonb,
 
+    -- Version of the per-candidate predictive-bounds method (8B.4
+    -- PREDICTIVE_BOUNDS_V1 amendment) this calibrator is eligible to be
+    -- scored under. Recorded per-calibrator so a future bounds-method
+    -- revision can be told apart from calibrators fit before it existed.
+    bounds_method_version    text,
+
     promoted                boolean not null default false,
     active                   boolean not null default false,
 
+    check (
+        (phase = 'PHASE_B') = (calibration_method = 'PLATT_TIME_SPLIT_V1')
+    ),
+    check (
+        (phase = 'PHASE_C') = (calibration_method = 'ISOTONIC_V1')
+    ),
     check (
         (calibration_method = 'PLATT_TIME_SPLIT_V1' and platt_a is not null and platt_b is not null and isotonic_artifact_b64 is null)
         or
@@ -233,4 +255,4 @@ create unique index if not exists uq_wow_calibrators_one_active_per_cohort_metho
     on wow_calibrators (parent_cohort, calibration_method)
     where active;
 
-comment on table wow_calibrators is 'Persisted Phase B/C calibrator artifacts (8B.4). At most one active row per (parent_cohort, calibration_method) -- enforced by the partial unique index -- so score_prop_end_to_end always loads an unambiguous calibrator.';
+comment on table wow_calibrators is 'Persisted Phase B/C calibrator artifacts (8B.4 + ratified PREDICTIVE_BOUNDS_V1 amendment). At most one active row per (parent_cohort, calibration_method) -- enforced by the partial unique index -- so score_prop_end_to_end always loads an unambiguous calibrator.';

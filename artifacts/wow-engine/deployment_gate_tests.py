@@ -22,13 +22,14 @@ from regime_model import (
     classify_historical_start, StartObservation, ExitReason,
 )
 from simulation import (
-    simulate_prop_probability, RegimeConditionalParams, MissingRegimeDataError,
-    MIN_SIMULATION_DRAWS,
+    simulate_prop_probability, bootstrap_candidate_raw_probability_sampler,
+    RegimeConditionalParams, MissingRegimeDataError, MIN_SIMULATION_DRAWS,
 )
 from market import MarketQuote, resolve_market_prior, blend_market_prior
 from calibration import (
     phase_a_shrinkage, MissingResamplerError, phase_b_platt, phase_c_isotonic_eligible,
-    phase_c_fit_isotonic, PredictiveBoundsNotRatifiedError,
+    phase_c_fit_isotonic, compute_predictive_bounds, ModelCalibrationUnavailableError,
+    HistoricalCalibrationRow, PREDICTIVE_BOUNDS_METHOD_VERSION,
 )
 from ledger import PredictionRow, determine_publishability
 from calibrator_store import (
@@ -37,6 +38,12 @@ from calibrator_store import (
 from engine import score_prop_end_to_end
 import api
 from fastapi.testclient import TestClient
+
+
+def _sequential_timestamps(n: int, start="2026-01-01T00:00:00Z", step_minutes: int = 1) -> list[str]:
+    from datetime import datetime, timedelta
+    base = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    return [(base + timedelta(minutes=i * step_minutes)).isoformat() for i in range(n)]
 
 
 def _uniform_cohort():
@@ -351,8 +358,9 @@ def test_gate_09_platt_rejects_too_few_folds():
     raw = rng.uniform(0.3, 0.7, size=250)
     y = (rng.uniform(0, 1, size=250) < raw).astype(int)
     folds = np.arange(250) % 3
+    timestamps = _sequential_timestamps(250)
     with pytest.raises(ValueError):
-        phase_b_platt(raw, y, folds)
+        phase_b_platt(raw, y, folds, timestamps)
 
 
 def test_gate_09b_platt_walk_forward_no_future_leakage():
@@ -361,8 +369,9 @@ def test_gate_09b_platt_walk_forward_no_future_leakage():
     raw = rng.uniform(0.3, 0.7, size=n)
     y = (rng.uniform(0, 1, size=n) < raw).astype(int)
     folds = np.sort(rng.integers(0, 6, size=n))
+    timestamps = _sequential_timestamps(n)
 
-    outcome = phase_b_platt(raw, y, folds)
+    outcome = phase_b_platt(raw, y, folds, timestamps)
 
     for test_fold, train_folds in outcome.fold_train_audit.items():
         assert all(tf < test_fold for tf in train_folds), (
@@ -380,6 +389,32 @@ def test_gate_09c_isotonic_eligibility_empty_list_bug_fixed():
     assert phase_c_isotonic_eligible(500, [30, 29, 30]) is False
 
 
+def test_gate_09cb_fold_ids_alone_are_not_trusted_for_chronology():
+    # Step 3d review constraint: "the walk-forward code should not merely
+    # trust numeric fold IDs. It should enforce something like
+    # max(train_timestamp) < min(validation_timestamp) for every
+    # validation fold." Build fold IDs that *look* time-ordered (0..5,
+    # monotonically non-decreasing by row) but pair them with timestamps
+    # where one late-fold row is actually earlier than an early-fold row
+    # -- phase_b_platt must catch this instead of trusting the fold ID.
+    rng = np.random.default_rng(0)
+    n = 300
+    raw = rng.uniform(0.3, 0.7, size=n)
+    y = (rng.uniform(0, 1, size=n) < raw).astype(int)
+    folds = np.sort(rng.integers(0, 6, size=n))
+    timestamps = _sequential_timestamps(n)
+    # Corrupt one row deep in a late fold to have an out-of-order (early)
+    # timestamp, without changing its fold assignment.
+    late_fold_positions = np.where(folds == folds.max())[0]
+    timestamps[late_fold_positions[0]] = "2020-01-01T00:00:00Z"
+
+    with pytest.raises(ValueError, match="chronological"):
+        phase_b_platt(raw, y, folds, timestamps)
+
+    with pytest.raises(ValueError, match="chronological"):
+        phase_c_fit_isotonic(raw, y, folds, timestamps)
+
+
 def test_gate_09d_platt_coefficients_apply_does_not_crash():
     # Step 3d review: PlattCoefficients.apply() called math.log() but
     # calibration.py never imported math, so any real scoring call through
@@ -391,7 +426,8 @@ def test_gate_09d_platt_coefficients_apply_does_not_crash():
     raw = rng.uniform(0.3, 0.7, size=n)
     y = (rng.uniform(0, 1, size=n) < raw).astype(int)
     folds = np.sort(rng.integers(0, 6, size=n))
-    outcome = phase_b_platt(raw, y, folds)
+    timestamps = _sequential_timestamps(n)
+    outcome = phase_b_platt(raw, y, folds, timestamps)
 
     scored = outcome.coefficients.apply(0.62)
     assert 0.0 < scored < 1.0
@@ -414,7 +450,8 @@ def test_gate_09e_platt_coefficients_reconstructed_from_persisted_record():
     raw = rng.uniform(0.3, 0.7, size=n)
     y = (rng.uniform(0, 1, size=n) < raw).astype(int)
     folds = np.sort(rng.integers(0, 6, size=n))
-    outcome = phase_b_platt(raw, y, folds)
+    timestamps = _sequential_timestamps(n)
+    outcome = phase_b_platt(raw, y, folds, timestamps)
 
     record = {"platt_a": outcome.coefficients.a, "platt_b": outcome.coefficients.b}
     reconstructed = platt_coefficients_from_record(record)
@@ -430,13 +467,126 @@ def test_gate_09f_isotonic_model_serialization_roundtrips():
     raw = rng.uniform(0.3, 0.7, size=n)
     y = (rng.uniform(0, 1, size=n) < raw).astype(int)
     folds = np.sort(rng.integers(0, 6, size=n))
-    fit = phase_c_fit_isotonic(raw, y, folds)
+    timestamps = _sequential_timestamps(n)
+    fit = phase_c_fit_isotonic(raw, y, folds, timestamps)
 
     artifact_b64 = _serialize_isotonic_model(fit.model)
     restored = _deserialize_isotonic_model(artifact_b64)
 
     probe = np.array([0.2, 0.4, 0.6, 0.8])
     assert np.array_equal(restored.predict(probe), fit.model.predict(probe))
+
+
+# --- Gate 9g-j: ratified Phase B/C predictive bounds [PREDICTIVE_BOUNDS_V1]
+# The Step 3d re-review ratified a narrow amendment specifying HOW Phase
+# B/C candidates get calibrated_probability_lower_bound/upper_bound
+# (calibration.compute_predictive_bounds): resample the historical
+# calibration cohort strictly before candidate_as_of, refit the active
+# calibrator per bootstrap realization, score a candidate raw-probability
+# realization from the sport-specific simulation/bootstrap path, and take
+# q10/q90 of the resulting calibrated-probability distribution (widened
+# to include the full-data point estimate).
+
+def _synthetic_historical_rows(n=80, start="2026-01-01T00:00:00Z", step_minutes=60, seed=1):
+    rng = np.random.default_rng(seed)
+    raw = rng.uniform(0.3, 0.7, size=n)
+    y = (rng.uniform(0, 1, size=n) < raw).astype(int)
+    timestamps = _sequential_timestamps(n, start=start, step_minutes=step_minutes)
+    return [
+        HistoricalCalibrationRow(raw_probability=float(r), outcome=int(o), timestamp=t)
+        for r, o, t in zip(raw, y, timestamps)
+    ]
+
+
+def test_gate_09g0_bootstrap_candidate_sampler_matches_point_estimate_on_average():
+    # simulation.bootstrap_candidate_raw_probability_sampler() is the
+    # "sport-specific simulation/bootstrap path" compute_predictive_bounds()
+    # draws candidate raw-probability realizations from. Its mean over
+    # many draws should converge to the same weighted point estimate
+    # simulate_prop_probability() itself computes.
+    probs = dirichlet_multinomial_regime_probabilities(_uniform_cohort(), _sample_pitcher())
+    params = _toy_conditional_params()
+    sim = simulate_prop_probability(probs, params, line=4.5, direction="MORE", seed=42, draws=MIN_SIMULATION_DRAWS)
+
+    sampler = bootstrap_candidate_raw_probability_sampler(sim.regime_probabilities, sim.hits_by_regime)
+    rng = np.random.default_rng(0)
+    draws = [sampler(rng) for _ in range(500)]
+
+    assert all(0.0 <= d <= 1.0 for d in draws)
+    assert abs(np.mean(draws) - sim.p_prop_unconditional) < 0.01
+
+
+def test_gate_09g_predictive_bounds_positive_path():
+    rows = _synthetic_historical_rows()
+
+    def sampler(rng):
+        return float(rng.uniform(0.4, 0.6))
+
+    bounds = compute_predictive_bounds(
+        method="PLATT_TIME_SPLIT_V1",
+        historical_rows=rows,
+        candidate_as_of="2026-08-27T00:00:00Z",
+        candidate_raw_probability_sampler=sampler,
+        full_data_calibrated_probability=0.55,
+        rng_seed=7,
+    )
+    assert bounds.bounds_method_version == PREDICTIVE_BOUNDS_METHOD_VERSION
+    assert bounds.realizations_used >= 2000
+    assert 0 < bounds.lower_bound <= bounds.calibrated_probability <= bounds.upper_bound < 1
+    assert bounds.calibrated_probability == 0.55
+
+
+def test_gate_09h_predictive_bounds_requires_2000_realizations():
+    rows = _synthetic_historical_rows()
+    with pytest.raises(ValueError):
+        compute_predictive_bounds(
+            method="PLATT_TIME_SPLIT_V1", historical_rows=rows,
+            candidate_as_of="2026-08-27T00:00:00Z",
+            candidate_raw_probability_sampler=lambda rng: 0.5,
+            full_data_calibrated_probability=0.5, rng_seed=1,
+            bootstrap_realizations=500,
+        )
+
+
+def test_gate_09i_predictive_bounds_blocks_on_missing_as_of_and_future_dated_cohort():
+    rows = _synthetic_historical_rows()
+
+    with pytest.raises(ModelCalibrationUnavailableError, match="candidate_as_of"):
+        compute_predictive_bounds(
+            method="PLATT_TIME_SPLIT_V1", historical_rows=rows, candidate_as_of=None,
+            candidate_raw_probability_sampler=lambda rng: 0.5,
+            full_data_calibrated_probability=0.5, rng_seed=1,
+        )
+
+    # Every historical row postdates candidate_as_of -- none are eligible.
+    with pytest.raises(ModelCalibrationUnavailableError, match="no historical calibration rows"):
+        compute_predictive_bounds(
+            method="PLATT_TIME_SPLIT_V1", historical_rows=rows,
+            candidate_as_of="2020-01-01T00:00:00Z",
+            candidate_raw_probability_sampler=lambda rng: 0.5,
+            full_data_calibrated_probability=0.5, rng_seed=1,
+        )
+
+
+def test_gate_09j_predictive_bounds_blocks_on_excessive_fit_failure_rate():
+    rows = _synthetic_historical_rows()
+
+    def flaky_sampler(rng):
+        # ~8% of realizations produce a non-finite candidate draw --
+        # above the 5% default tolerance, but with enough total
+        # realizations requested (5000) that >= 2000 still succeed, so
+        # this exercises the failure-RATE check specifically, distinct
+        # from the too-few-valid-realizations check in the test above.
+        return float("nan") if rng.uniform() < 0.08 else 0.5
+
+    with pytest.raises(ModelCalibrationUnavailableError, match="failure rate"):
+        compute_predictive_bounds(
+            method="PLATT_TIME_SPLIT_V1", historical_rows=rows,
+            candidate_as_of="2026-08-27T00:00:00Z",
+            candidate_raw_probability_sampler=flaky_sampler,
+            full_data_calibrated_probability=0.5, rng_seed=1,
+            bootstrap_realizations=5000,
+        )
 
 
 # --- Gate 10: Luzardo/Boyd smoke test ------------------------------------
@@ -570,12 +720,20 @@ def test_gate_11c_phase_b_eligible_cohort_without_calibrator_falls_back_to_phase
     assert "no calibrator has been promoted" in result.calibration_ladder_note
 
 
-def test_gate_11d_phase_b_calibrator_found_blocks_on_unratified_bounds():
+def _fake_platt_record(parent_cohort="MLB_SP_RH_2026", a=0.0, b=1.0):
+    return {
+        "parent_cohort": parent_cohort, "calibration_method": "PLATT_TIME_SPLIT_V1",
+        "platt_a": a, "platt_b": b,
+    }
+
+
+def test_gate_11d_phase_b_calibrator_found_but_no_historical_rows_blocks():
+    # Ratified PREDICTIVE_BOUNDS_V1 still blocks -- but now for a real,
+    # named reason (no eligible historical calibration cohort to bootstrap
+    # from), not because the bounds method itself was unspecified.
     cohort = _uniform_cohort()
     pitcher = _sample_pitcher()
     params = _synthetic_fitted_params()
-
-    fake_record = {"platt_a": 0.1, "platt_b": 1.2}
 
     result = score_prop_end_to_end(
         event_id="e1", event_start_time="2026-08-27T00:00:00Z", sport="MLB",
@@ -583,13 +741,69 @@ def test_gate_11d_phase_b_calibrator_found_blocks_on_unratified_bounds():
         cohort=cohort, pitcher=pitcher, regime_params=params,
         resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
         settled_n_in_cohort=250, parent_cohort="MLB_SP_RH_2026",
-        load_calibrator_fn=lambda cohort_key, method: fake_record if method == "PLATT_TIME_SPLIT_V1" else None,
+        scored_at="2026-08-27T00:00:00Z",
+        load_calibrator_fn=lambda cohort_key, method: _fake_platt_record() if method == "PLATT_TIME_SPLIT_V1" else None,
+        load_historical_rows_fn=lambda cohort_key, method: [],  # nothing settled for this cohort yet
     )
     assert result.error is not None
-    assert "PredictiveBoundsNotRatifiedError" in result.error or "predictive-bounds" in result.error
+    assert "MODEL_CALIBRATION_UNAVAILABLE" in result.error
     assert result.row.probability_publishable is False
     assert result.row.independent_model_probability is not None
     assert result.row.calibrated_probability is None
+
+
+def test_gate_11dd_phase_b_calibrator_cohort_mismatch_blocks():
+    cohort = _uniform_cohort()
+    pitcher = _sample_pitcher()
+    params = _synthetic_fitted_params()
+
+    # A calibrator record whose own parent_cohort doesn't match what was
+    # requested -- e.g. a caller bug in load_calibrator_fn returning the
+    # wrong cohort's active calibrator.
+    mismatched_record = _fake_platt_record(parent_cohort="WNBA_STARTER_2026")
+
+    result = score_prop_end_to_end(
+        event_id="e1", event_start_time="2026-08-27T00:00:00Z", sport="MLB",
+        stat_type="strikeouts", line=4.5, direction="MORE", source_snapshot_id="snap-b-mismatch",
+        cohort=cohort, pitcher=pitcher, regime_params=params,
+        resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
+        settled_n_in_cohort=250, parent_cohort="MLB_SP_RH_2026", scored_at="2026-08-27T00:00:00Z",
+        load_calibrator_fn=lambda cohort_key, method: mismatched_record if method == "PLATT_TIME_SPLIT_V1" else None,
+    )
+    assert result.error is not None
+    assert "MODEL_CALIBRATION_UNAVAILABLE" in result.error
+    assert "does not match" in result.error
+    assert result.row.probability_publishable is False
+
+
+def test_gate_11de_phase_b_real_positive_path_produces_publishable_probability():
+    # The main positive-path proof for the ratified PREDICTIVE_BOUNDS_V1
+    # amendment: a real calibrator + a real historical calibration cohort
+    # + a real scoring time together produce a genuinely publishable
+    # Phase B row -- not just a failure path correctly blocking.
+    cohort = _uniform_cohort()
+    pitcher = _sample_pitcher()
+    params = _synthetic_fitted_params()
+    historical_rows = _synthetic_historical_rows()
+
+    result = score_prop_end_to_end(
+        event_id="e1", event_start_time="2026-08-28T00:00:00Z", sport="MLB",
+        stat_type="strikeouts", line=4.5, direction="MORE", source_snapshot_id="snap-b-positive",
+        cohort=cohort, pitcher=pitcher, regime_params=params,
+        resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
+        settled_n_in_cohort=250, parent_cohort="MLB_SP_RH_2026",
+        scored_at="2026-08-27T00:00:00Z", money_lane_status="RESOLVED",
+        load_calibrator_fn=lambda cohort_key, method: _fake_platt_record() if method == "PLATT_TIME_SPLIT_V1" else None,
+        load_historical_rows_fn=lambda cohort_key, method: historical_rows,
+    )
+
+    assert result.error is None
+    row = result.row
+    assert row.probability_publishable is True
+    assert row.calibration_status == "PLATT_TIME_SPLIT_V1"
+    assert row.independent_model_probability is not None
+    assert row.calibrated_probability is not None
+    assert 0 < row.calibrated_probability_lower_bound <= row.calibrated_probability <= row.calibrated_probability_upper_bound < 1
 
 
 def test_gate_11e_phase_c_eligibility_requests_isotonic_not_platt():

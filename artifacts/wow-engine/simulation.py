@@ -17,6 +17,7 @@ the "manually invented coefficient" problem the patch exists to avoid.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 import numpy as np
 
 from regime_model import PrimaryRegime
@@ -42,6 +43,13 @@ class SimulationResult:
     p_prop_unconditional: float
     simulation_seed: int
     simulation_draws: int
+    # Raw boolean hit draws per regime, underlying p_prop_given_regime.
+    # Not part of the published ledger row -- exposed so the ratified
+    # PREDICTIVE_BOUNDS_V1 amendment (calibration.compute_predictive_bounds)
+    # can bootstrap a candidate raw-probability realization from the
+    # actual simulation, via bootstrap_candidate_raw_probability_sampler()
+    # below, instead of needing a second simulation pass.
+    hits_by_regime: dict[PrimaryRegime, np.ndarray]
 
 
 def simulate_prop_probability(
@@ -73,6 +81,7 @@ def simulate_prop_probability(
     rng = np.random.default_rng(seed)
 
     p_prop_given_regime: dict[PrimaryRegime, float] = {}
+    hits_by_regime: dict[PrimaryRegime, np.ndarray] = {}
     weighted_sum = 0.0
 
     for regime, p_r in regime_probs.items():
@@ -89,6 +98,7 @@ def simulate_prop_probability(
 
         p_given_regime = float(np.mean(hits))
         p_prop_given_regime[regime] = p_given_regime
+        hits_by_regime[regime] = hits
         weighted_sum += p_r * p_given_regime
 
     primary = max(regime_probs, key=regime_probs.get) if regime_probs else None
@@ -100,7 +110,29 @@ def simulate_prop_probability(
         p_prop_unconditional=weighted_sum,
         simulation_seed=seed,
         simulation_draws=draws,
+        hits_by_regime=hits_by_regime,
     )
+
+
+def bootstrap_candidate_raw_probability_sampler(
+    regime_probabilities: dict[PrimaryRegime, float],
+    hits_by_regime: dict[PrimaryRegime, np.ndarray],
+) -> Callable[[np.random.Generator], float]:
+    """Returns a callable `rng -> float` that draws one bootstrap
+    realization of THIS candidate's own raw (pre-calibration) probability
+    -- resampling each regime's simulated hit draws with replacement and
+    recombining with the same P(prop) = Sum[P(regime) x P(prop|regime)]
+    weighting used for the point estimate. This is "the candidate raw-
+    probability realization from the sport-specific simulation/bootstrap
+    path" the ratified PREDICTIVE_BOUNDS_V1 amendment calls for."""
+    def _sample(rng: np.random.Generator) -> float:
+        total = 0.0
+        for regime, p_r in regime_probabilities.items():
+            hits = hits_by_regime[regime]
+            resampled = rng.choice(hits, size=len(hits), replace=True)
+            total += p_r * float(np.mean(resampled))
+        return total
+    return _sample
 
 
 class MissingRegimeDataError(Exception):

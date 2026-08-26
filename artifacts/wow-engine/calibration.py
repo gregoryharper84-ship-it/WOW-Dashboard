@@ -1,6 +1,7 @@
 """
 calibration.py
 WOW-PATCH-2026-08-26-FREE-HOST-PROBABILITY-ENGINE v2, Section 8B.4
++ ratified PREDICTIVE_BOUNDS_V1 amendment (Step 3d re-review, 2026-08-26)
 
 Three-stage calibration ladder:
     N < 200   -> Phase A: conservative empirical-Bayes shrinkage
@@ -12,11 +13,18 @@ Phase A output is explicitly NOT evidence of proven calibration:
 MONEY_QUALIFIED / FINAL_APPROVED are prohibited while
 calibration_status == PRECALIBRATION_SHRINKAGE, regardless of how
 strong the underlying confidence lane looks.
+
+Phase B/C per-candidate predictive bounds (PREDICTIVE_BOUNDS_V1) were
+ratified as a narrow amendment after the Step 3d review found the
+original implementation had no bounds method for these phases at all
+(see PredictiveBoundsNotRatifiedError's history in git log — replaced by
+compute_predictive_bounds() below now that a method is ratified).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from datetime import datetime
+from typing import Callable, Optional, Sequence
 import math
 import numpy as np
 
@@ -25,6 +33,14 @@ PHASE_C_MIN_N = 500
 PHASE_C_MIN_PER_REGION = 30
 
 SHRINKAGE_K = 25.0  # lambda = n_eff / (n_eff + 25)
+
+PREDICTIVE_BOUNDS_METHOD_VERSION = "PREDICTIVE_BOUNDS_V1"
+MIN_BOUNDS_BOOTSTRAP_REALIZATIONS = 2000
+DEFAULT_MAX_FIT_FAILURE_RATE = 0.05
+
+
+def _parse_ts(ts: str) -> datetime:
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
 class CalibrationStatus:
@@ -42,22 +58,36 @@ class MissingResamplerError(Exception):
     pass
 
 
-class PredictiveBoundsNotRatifiedError(Exception):
-    """Raised when a caller asks for a per-candidate Phase B/C published
-    probability. WOW-PATCH-2026-08-26 v2 Section 8B.4 ratifies a bounds
-    method for Phase A (10th/90th percentile bootstrap of the shrinkage
-    transform) and cohort-level fit metrics (Brier/log loss/ECE/bias) for
-    Phase B/C promotion, but specifies no per-candidate predictive-bounds
-    method for Phase B/C itself. `PlattCoefficients.apply()` /
-    `IsotonicRegression.predict()` give a point estimate only.
-
-    Inventing a bounds method here would repeat, at the calibration layer,
-    the same unauthorized-scoring-shortcut problem this patch exists to
-    avoid (see the patch's ORIGIN note and its "METHODOLOGY DECISIONS
-    REQUIRED — ChatGPT, not Claude, to specify" section). This blocks
-    publication instead of fabricating an interval; a governed Phase B/C
-    row requires a ratified bounds method to be specified upstream first."""
+class ModelCalibrationUnavailableError(Exception):
+    """Raised when a Phase B/C per-candidate predictive-bounds computation
+    (compute_predictive_bounds, PREDICTIVE_BOUNDS_V1) cannot produce a
+    governed result, per any of the ratified failure conditions: fewer
+    than MIN_BOUNDS_BOOTSTRAP_REALIZATIONS valid realizations, a
+    calibrator fit-failure rate above tolerance, non-finite or
+    order-violating bounds, no eligible historical calibration rows
+    before candidate_as_of, or a cohort/method mismatch on the active
+    calibrator record. Blocks publication — callers must record
+    MODEL_CALIBRATION_UNAVAILABLE, never substitute a partial or
+    fabricated interval."""
     pass
+
+
+@dataclass
+class HistoricalCalibrationRow:
+    """One verified, settled row from the calibrator's training cohort —
+    the input to compute_predictive_bounds()'s bootstrap resampling."""
+    raw_probability: float
+    outcome: int
+    timestamp: str  # ISO 8601
+
+
+@dataclass
+class PredictiveBounds:
+    lower_bound: float
+    calibrated_probability: float
+    upper_bound: float
+    realizations_used: int
+    bounds_method_version: str
 
 
 @dataclass
@@ -156,6 +186,7 @@ def phase_b_platt(
     raw_probs: Sequence[float],
     outcomes: Sequence[int],
     fold_assignments: Sequence[int],
+    timestamps: Sequence[str],
     baseline_metrics: Optional[PlattFitMetrics] = None,
 ) -> PlattFitOutcome:
     """
@@ -167,6 +198,14 @@ def phase_b_platt(
     and is excluded from out-of-fold evaluation, so >=6 distinct folds
     are required to get >=5 evaluable OOF folds.
 
+    `timestamps` (ISO 8601, same length/order as raw_probs/outcomes) are
+    required and cross-checked against every fold split: fold IDs alone
+    are a caller's *claim* about chronology, not proof of it. For every
+    validation fold f, max(train_timestamp) must be strictly before
+    min(validation_timestamp) — a fold split whose IDs look time-ordered
+    but whose actual timestamps aren't raises ValueError instead of
+    silently leaking future data into training.
+
     Returns a PlattFitOutcome; result is None if N < 200, if fewer than
     6 folds are present, or if promotion criteria against a supplied
     baseline are not met. `fold_train_audit` is returned so callers/tests
@@ -175,6 +214,8 @@ def phase_b_platt(
     n = len(raw_probs)
     if n < PHASE_B_MIN_N:
         raise ValueError(f"Phase B requires >= {PHASE_B_MIN_N} verified settled rows; got {n}")
+    if len(timestamps) != n:
+        raise ValueError("timestamps must be the same length as raw_probs/outcomes")
 
     folds = np.asarray(fold_assignments)
     unique_folds = sorted(set(folds.tolist()))
@@ -188,6 +229,7 @@ def phase_b_platt(
 
     raw = np.asarray(raw_probs, dtype=float)
     y = np.asarray(outcomes, dtype=float)
+    ts = np.array([_parse_ts(t) for t in timestamps])
 
     oof_pred = np.full_like(raw, np.nan)
     fold_train_audit: dict[int, list[int]] = {}
@@ -196,6 +238,7 @@ def phase_b_platt(
         train_folds = [tf for tf in unique_folds if tf < f]
         train_mask = np.isin(folds, train_folds)
         test_mask = folds == f
+        _assert_fold_chronology(f, ts[train_mask], ts[test_mask])
         a, b = _fit_platt_1d(raw[train_mask], y[train_mask])
         logit_raw = _safe_logit(raw[test_mask])
         oof_pred[test_mask] = _sigmoid(a + b * logit_raw)
@@ -216,7 +259,11 @@ def phase_b_platt(
     result = CalibrationResult(
         calibration_status=CalibrationStatus.PLATT_TIME_SPLIT_V1,
         calibration_method="PLATT_TIME_SPLIT_V1",
-        calibrated_probability=float("nan"),  # per-candidate: coefficients.apply(raw_probability)
+        # Cohort-level fit outcome only -- NOT a per-candidate published
+        # result. Per-candidate calibrated_probability + bounds come from
+        # compute_predictive_bounds() (PREDICTIVE_BOUNDS_V1), using these
+        # `coefficients` as the full-data fitted calibrator.
+        calibrated_probability=float("nan"),
         lower_bound=float("nan"),
         upper_bound=float("nan"),
         money_qualified_allowed=True,
@@ -246,9 +293,11 @@ def phase_c_fit_isotonic(
     raw_probs: Sequence[float],
     outcomes: Sequence[int],
     fold_assignments: Sequence[int],
+    timestamps: Sequence[str],
 ) -> IsotonicFitOutcome:
     """Real isotonic regression fit/scored with the same walk-forward
-    discipline as Phase B (no future-fold leakage)."""
+    discipline as Phase B (no future-fold leakage), including the same
+    timestamp-verified chronology check -- see phase_b_platt's docstring."""
     from sklearn.isotonic import IsotonicRegression
 
     raw = np.asarray(raw_probs, dtype=float)
@@ -257,12 +306,16 @@ def phase_c_fit_isotonic(
     unique_folds = sorted(set(folds.tolist()))
     if unique_folds != list(range(len(unique_folds))) or len(unique_folds) < 6:
         raise ValueError("Phase C requires the same >=6 contiguous time-ordered folds as Phase B")
+    if len(timestamps) != len(raw_probs):
+        raise ValueError("timestamps must be the same length as raw_probs/outcomes")
+    ts = np.array([_parse_ts(t) for t in timestamps])
 
     oof_pred = np.full_like(raw, np.nan)
     for f in unique_folds[1:]:
         train_folds = [tf for tf in unique_folds if tf < f]
         train_mask = np.isin(folds, train_folds)
         test_mask = folds == f
+        _assert_fold_chronology(f, ts[train_mask], ts[test_mask])
         iso = IsotonicRegression(out_of_bounds="clip", y_min=1e-9, y_max=1 - 1e-9)
         iso.fit(raw[train_mask], y[train_mask])
         oof_pred[test_mask] = iso.predict(raw[test_mask])
@@ -285,6 +338,139 @@ def phase_c_promote(isotonic_metrics: PlattFitMetrics, platt_metrics: PlattFitMe
     )
 
 
+def compute_predictive_bounds(
+    *,
+    method: str,  # CalibrationStatus.PLATT_TIME_SPLIT_V1 | ISOTONIC_V1
+    historical_rows: Sequence[HistoricalCalibrationRow],
+    candidate_as_of: Optional[str],
+    candidate_raw_probability_sampler: Callable[[np.random.Generator], float],
+    full_data_calibrated_probability: float,
+    rng_seed: int,
+    bootstrap_realizations: int = MIN_BOUNDS_BOOTSTRAP_REALIZATIONS,
+    max_fit_failure_rate: float = DEFAULT_MAX_FIT_FAILURE_RATE,
+) -> PredictiveBounds:
+    """
+    Ratified PREDICTIVE_BOUNDS_V1 (WOW-PATCH-2026-08-26 v2, narrow
+    amendment, Step 3d re-review 2026-08-26). For every publishable Phase
+    B/C candidate:
+
+    1. Use only historical calibration rows with timestamp < candidate_as_of.
+    2. Generate >= 2,000 bootstrap realizations.
+    3. Per realization: resample the eligible historical cohort (with
+       replacement), re-sort the resample chronologically, refit the
+       active calibrator (Platt or isotonic) on it, draw a candidate
+       raw-probability realization from the sport-specific
+       simulation/bootstrap path, and apply the refit calibrator to it.
+    4. The full-data fitted calibrator (supplied by the caller as
+       `full_data_calibrated_probability`) is the published point estimate.
+    5. q10/q90 = 10th/90th percentile of the bootstrap calibrated-
+       probability distribution.
+    6. lower_bound = min(q10, calibrated_probability); upper_bound =
+       max(q90, calibrated_probability) -- widened to guarantee
+       lower <= calibrated_probability <= upper.
+
+    Any of the ratified failure conditions (too few valid realizations,
+    a future-dated row reaching the resample, an excessive calibrator
+    fit-failure rate, non-finite/order-violating bounds, no eligible
+    historical rows) raises ModelCalibrationUnavailableError -- callers
+    must record MODEL_CALIBRATION_UNAVAILABLE and block publication,
+    never substitute a partial interval.
+    """
+    if bootstrap_realizations < MIN_BOUNDS_BOOTSTRAP_REALIZATIONS:
+        raise ValueError(
+            f"Predictive bounds require >= {MIN_BOUNDS_BOOTSTRAP_REALIZATIONS} "
+            f"bootstrap realizations; got {bootstrap_realizations}"
+        )
+    if candidate_as_of is None:
+        raise ModelCalibrationUnavailableError(
+            "candidate_as_of (scoring time) is required to select eligible "
+            "historical calibration rows and cannot be omitted"
+        )
+
+    as_of_dt = _parse_ts(candidate_as_of)
+    # Step 1: filter to strictly-past rows. Every realization resamples
+    # only from `eligible`, so no future-dated row can structurally reach
+    # a refit -- this is what "no future-dated calibration row used"
+    # (a named failure condition) is enforced by construction, not by a
+    # post-hoc check.
+    eligible = [r for r in historical_rows if _parse_ts(r.timestamp) < as_of_dt]
+    if not eligible:
+        raise ModelCalibrationUnavailableError(
+            f"no historical calibration rows with timestamp before "
+            f"candidate_as_of={candidate_as_of!r}"
+        )
+
+    rng = np.random.default_rng(rng_seed)
+    n = len(eligible)
+    calibrated_realizations: list[float] = []
+    fit_failures = 0
+
+    for _ in range(bootstrap_realizations):
+        idx = rng.integers(0, n, size=n)
+        # Step 3b: reconstruct chronological order in the resample before
+        # refitting.
+        resampled = sorted((eligible[i] for i in idx), key=lambda r: r.timestamp)
+        raw = np.array([r.raw_probability for r in resampled])
+        y = np.array([r.outcome for r in resampled])
+
+        try:
+            if method == CalibrationStatus.PLATT_TIME_SPLIT_V1:
+                a, b = _fit_platt_1d(raw, y)
+                candidate_raw = candidate_raw_probability_sampler(rng)
+                calibrated = PlattCoefficients(a=a, b=b).apply(candidate_raw)
+            elif method == CalibrationStatus.ISOTONIC_V1:
+                from sklearn.isotonic import IsotonicRegression
+                model = IsotonicRegression(out_of_bounds="clip", y_min=1e-9, y_max=1 - 1e-9)
+                model.fit(raw, y)
+                candidate_raw = candidate_raw_probability_sampler(rng)
+                calibrated = float(model.predict([candidate_raw])[0])
+            else:
+                raise ValueError(f"unrecognized calibration method: {method!r}")
+        except Exception:
+            fit_failures += 1
+            continue
+
+        if not math.isfinite(calibrated):
+            fit_failures += 1
+            continue
+        calibrated_realizations.append(calibrated)
+
+    realizations_used = len(calibrated_realizations)
+    fit_failure_rate = fit_failures / bootstrap_realizations
+
+    if realizations_used < MIN_BOUNDS_BOOTSTRAP_REALIZATIONS:
+        raise ModelCalibrationUnavailableError(
+            f"only {realizations_used} valid bootstrap realizations produced "
+            f"(< {MIN_BOUNDS_BOOTSTRAP_REALIZATIONS} required)"
+        )
+    if fit_failure_rate > max_fit_failure_rate:
+        raise ModelCalibrationUnavailableError(
+            f"calibrator fit failure rate {fit_failure_rate:.2%} exceeds "
+            f"tolerance {max_fit_failure_rate:.2%}"
+        )
+
+    q10 = float(np.percentile(calibrated_realizations, 10))
+    q90 = float(np.percentile(calibrated_realizations, 90))
+    lower_bound = min(q10, full_data_calibrated_probability)
+    upper_bound = max(q90, full_data_calibrated_probability)
+
+    if not (math.isfinite(lower_bound) and math.isfinite(upper_bound)):
+        raise ModelCalibrationUnavailableError("non-finite predictive bounds")
+    if not (0 < lower_bound <= full_data_calibrated_probability <= upper_bound < 1):
+        raise ModelCalibrationUnavailableError(
+            f"bounds ordering violated: 0 < {lower_bound} <= "
+            f"{full_data_calibrated_probability} <= {upper_bound} < 1"
+        )
+
+    return PredictiveBounds(
+        lower_bound=lower_bound,
+        calibrated_probability=full_data_calibrated_probability,
+        upper_bound=upper_bound,
+        realizations_used=realizations_used,
+        bounds_method_version=PREDICTIVE_BOUNDS_METHOD_VERSION,
+    )
+
+
 # --- internal helpers -------------------------------------------------
 
 def _safe_logit(p: np.ndarray) -> np.ndarray:
@@ -294,6 +480,22 @@ def _safe_logit(p: np.ndarray) -> np.ndarray:
 
 def _sigmoid(x):
     return 1 / (1 + np.exp(-x))
+
+
+def _assert_fold_chronology(fold: int, train_ts: np.ndarray, test_ts: np.ndarray) -> None:
+    """Step 3d review constraint: fold IDs alone are a claim about
+    chronology, not proof. Verify it directly against timestamps for
+    every split with both train and test rows."""
+    if train_ts.size == 0 or test_ts.size == 0:
+        return
+    max_train_ts = train_ts.max()
+    min_test_ts = test_ts.min()
+    if not (max_train_ts < min_test_ts):
+        raise ValueError(
+            f"fold {fold}: max(train_timestamp)={max_train_ts.isoformat()} is not "
+            f"strictly before min(validation_timestamp)={min_test_ts.isoformat()} -- "
+            f"fold_assignments do not match actual chronological order"
+        )
 
 
 def _fit_platt_1d(raw: np.ndarray, y: np.ndarray) -> tuple[float, float]:

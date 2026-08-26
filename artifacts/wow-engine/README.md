@@ -13,10 +13,54 @@ of that patch's deployment order.
 - **Second pass (20/20 tests passing)** fixed all 7 review findings and
   added an 11th deployment gate (a real end-to-end positive-path test),
   which the review also recommended.
-- **Current pass (Step 3d re-review, 37/37 tests passing)** fixes the 7
+- **Third pass (Step 3d re-review, 37/37 tests passing)** fixed the 7
   new findings from ChatGPT's re-review of the 20/20 pass — see "Fixed
-  per Step 3d review" below. Still `UNAVAILABLE` — see "What's NOT done"
-  below.
+  per Step 3d review" below.
+- **Current pass (PREDICTIVE_BOUNDS_V1 amendment, 45/45 tests passing)**
+  implements the narrow analytical amendment ChatGPT ratified after the
+  Step 3d pass — a real per-candidate Phase B/C predictive-bounds method
+  — plus the two implementation constraints that came with it
+  (timestamp-verified walk-forward chronology; expanded persisted-
+  calibrator record). See "Fixed per PREDICTIVE_BOUNDS_V1 amendment"
+  below. Still `UNAVAILABLE` — see "What's NOT done" below.
+
+## Fixed per PREDICTIVE_BOUNDS_V1 amendment (37 → 45 tests)
+
+ChatGPT's Step 3d re-review found the fixes below directionally correct
+but identified one remaining governance gap (item 4's Phase B/C bounds
+question) and ratified a narrow analytical amendment to close it, plus
+two implementation constraints:
+
+1. **Phase B/C predictive bounds, ratified and implemented.**
+   `calibration.compute_predictive_bounds()` (`PREDICTIVE_BOUNDS_V1`):
+   for a publishable Phase B/C candidate, filter the cohort's historical
+   calibration rows to strictly before `candidate_as_of`, run >= 2,000
+   bootstrap realizations (each: resample the eligible cohort, re-sort
+   chronologically, refit the active calibrator, draw a candidate raw-
+   probability realization via `simulation.bootstrap_candidate_raw_probability_sampler()`,
+   apply the refit calibrator), then take q10/q90 of the resulting
+   distribution widened to include the full-data point estimate. Every
+   named failure condition (too few valid realizations, an excessive
+   calibrator fit-failure rate, non-finite/order-violating bounds, no
+   eligible historical rows, a cohort/method mismatch on the loaded
+   calibrator) raises `ModelCalibrationUnavailableError` and blocks
+   publication — see `test_gate_09g`–`09j`. `engine.py`'s routing now
+   actually produces a publishable Phase B row end-to-end
+   (`test_gate_11de`), not just a failure path that correctly blocks
+   (`test_gate_11d`, `test_gate_11dd`).
+2. **Walk-forward chronology is now timestamp-verified, not just
+   fold-ID-trusted.** `phase_b_platt()`/`phase_c_fit_isotonic()` take a
+   required `timestamps` argument and assert
+   `max(train_timestamp) < min(validation_timestamp)` for every
+   validation fold, raising `ValueError` if fold IDs claim an ordering
+   the actual timestamps contradict (`test_gate_09cb`).
+3. **Persisted calibrator record expanded.** `wow_calibrators` (schema.sql)
+   gained `phase`, `fitted_at`, and `bounds_method_version` columns —
+   the reviewer's full persisted-record checklist (cohort key, phase,
+   calibration version, fitted-at time, training start/end, `n`, method,
+   parameters/artifact reference, bounds-method version) is now
+   represented explicitly rather than left to infer from
+   `calibration_method`.
 
 ## Fixed per Step 3d review
 
@@ -50,22 +94,24 @@ of that patch's deployment order.
    `calibrator_store.py` (save/load, isotonic-model serialization).
    Separately, Phase B/C per-candidate publication returned
    `calibrated_probability`/bounds as `nan` with no documented reason —
-   WOW has a ratified bounds method for Phase A (bootstrap percentile)
-   but none yet for Phase B/C. Replaced the silent `nan` with
-   `PredictiveBoundsNotRatifiedError`, a named, tested, fail-closed gap
-   (see "What's NOT done" — this is a real open methodology question for
-   WOW governance, not an implementation bug to paper over).
+   WOW had a ratified bounds method for Phase A (bootstrap percentile)
+   but none yet for Phase B/C. This pass initially replaced the silent
+   `nan` with `PredictiveBoundsNotRatifiedError`, a named, tested,
+   fail-closed gap; **the Step 3d re-review then ratified a bounds method
+   for Phase B/C too, and this repo now implements it** — see "Fixed per
+   PREDICTIVE_BOUNDS_V1 amendment" above.
 5. **The orchestrator only ever ran Phase A.**
    `score_prop_end_to_end()` ignored `settled_n_in_cohort` entirely.
    It now routes: `< 200` → Phase A; `>= 200` → look up the active
    persisted calibrator for `parent_cohort` (isotonic if `>= 500`, else
    Platt) via `calibrator_store.load_active_calibrator` — falls back to
    Phase A with a recorded, non-blocking `calibration_ladder_note` if
-   none has been promoted yet for that cohort, or blocks on
-   `PredictiveBoundsNotRatifiedError` (finding 4) if one has. It also now
-   calls `regime_model.apply_current_game_signal()` when a
-   `CurrentGameSignal` is supplied, and blocks publication on a material
-   contradiction (e.g. `confirmed_opener`). See `test_gate_11c`–`11g`.
+   none has been promoted yet for that cohort, or scores it via
+   `compute_predictive_bounds()` (finding 4 / PREDICTIVE_BOUNDS_V1) if
+   one has, publishable or blocked on its own merits. It also now calls
+   `regime_model.apply_current_game_signal()` when a `CurrentGameSignal`
+   is supplied, and blocks publication on a material contradiction (e.g.
+   `confirmed_opener`). See `test_gate_11c`–`11g`, `test_gate_11d`–`11de`.
 6. **Gate 11 never called the actual endpoint.** The positive-path test
    called `engine.py::score_prop_end_to_end()` directly, never
    `/score-prop` — which still 501'd unconditionally even once capability
@@ -134,12 +180,15 @@ probability actually comes out the other end — both from a direct engine
 call and from the actual HTTP endpoint — from fitted (here:
 clearly-labeled synthetic) inputs.
 
-## What's real and tested (37/37 passing — `pytest deployment_gate_tests.py -v`)
+## What's real and tested (45/45 passing — `pytest deployment_gate_tests.py -v`)
 
 Gates 2, 3, 4, 5, 6, 7, 9, 10, 11 all have passing tests against the real
-ratified logic — not stubs — including the Step 3d fixes: calibrator
-persistence round-trips (`test_gate_09e/f`), calibration-ladder routing
-and current-game-signal wiring (`test_gate_11c`–`11g`), and the actual
+ratified logic — not stubs — including: calibrator persistence
+round-trips (`test_gate_09e/f`), the ratified Phase B/C predictive-bounds
+method (`test_gate_09g`–`09j`), timestamp-verified walk-forward chronology
+(`test_gate_09cb`), calibration-ladder routing including a genuine
+publishable Phase B positive path (`test_gate_11c`–`11de`),
+current-game-signal wiring (`test_gate_11f/g`), and the actual
 `/score-prop` HTTP path (`test_gate_11h`–`11k`).
 
 ## What's NOT done — required before the gate can flip
@@ -148,7 +197,10 @@ and current-game-signal wiring (`test_gate_11c`–`11g`), and the actual
   DELETE trigger, and now `wow_calibrators`) need a live Supabase
   instance — untestable in this sandbox. Run `schema.sql` against a real
   project and verify both triggers block post-event-start writes and
-  deletes.
+  deletes, and that `load_historical_calibration_rows()`'s two-query
+  fetch (predictions, then a matching outcomes lookup) behaves as
+  expected against real data — it's been reasoned through and unit-adjacent
+  tested for shape, but never run against a live join.
 - **Per-sport fitted parameters.** Gate 11's synthetic fixtures prove the
   *pipeline* works correctly; they are explicitly not real historical
   distributions. Real cohort regime counts and per-regime stat-rate
@@ -157,18 +209,6 @@ and current-game-signal wiring (`test_gate_11c`–`11g`), and the actual
   `api.set_fitted_params_provider()`. `api.py`'s `/score-prop` still
   correctly returns 501 in production for this reason — no provider is
   registered by default.
-- **Phase B/C per-candidate predictive bounds are methodologically
-  unspecified.** WOW-PATCH-2026-08-26 v2 Section 8B.4 ratifies a bounds
-  method for Phase A only (bootstrap 10th/90th percentile of the
-  shrinkage transform) and cohort-level fit metrics (Brier/log
-  loss/ECE/bias) for Phase B/C promotion — it specifies no per-candidate
-  predictive-interval method for Phase B/C itself. `calibration.py`'s
-  `PredictiveBoundsNotRatifiedError` blocks publication rather than
-  inventing one (see the patch's own "METHODOLOGY DECISIONS REQUIRED —
-  ChatGPT, not Claude, to specify" section). **This needs a WOW
-  governance decision, the same way the original four v1 methodology
-  gaps did**, before Phase B/C can ever produce a publishable row —
-  it is not implementable from this repo alone.
 - **kappa marginal-likelihood optimization** currently falls back to the
   patch's default (12); the "prefer optimized" path needs a real
   historical dataset to fit against.
