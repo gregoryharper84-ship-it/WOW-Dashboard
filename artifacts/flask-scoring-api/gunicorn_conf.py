@@ -171,6 +171,31 @@ def post_fork(server, worker):
     except Exception as exc:
         server.log.warning(f"[post_fork] lock re-init failed (non-fatal): {exc}")
 
+    # ── Runtime source attestation ───────────────────────────────────────────
+    # Build-time provenance is generated before the deployment artifact is
+    # packaged. Production workers only read that immutable artifact; they do
+    # not depend on runtime .git metadata being present.
+    try:
+        import app as flask_app
+        from gate_engine.runtime_attestation import install_flask_attestation
+
+        _build_info = install_flask_attestation(flask_app.app)
+        if _build_info.get("build_attested") and _build_info.get("source_sha"):
+            flask_app.BUILD_ID = f"git-{_build_info['source_sha'][:12]}"
+            server.log.info(
+                f"[post_fork] worker {worker.pid}: source attested "
+                f"sha={_build_info['source_sha']} ref={_build_info.get('source_ref')}"
+            )
+        else:
+            server.log.warning(
+                f"[post_fork] worker {worker.pid}: source attestation unavailable; "
+                f"release certification remains fail-closed"
+            )
+    except Exception as exc:
+        server.log.warning(
+            f"[post_fork] runtime source attestation failed (non-fatal): {exc}"
+        )
+
     # ── Stage 2: re-initialize tables module state and run ensure_all_tables ─
     # Root cause: the master's warmup-thread sets _TABLES_READY=True and then
     # workers are forked. Either the flag is False (thread didn't finish in time)
@@ -332,10 +357,10 @@ def post_fork(server, worker):
     # which requires a valid cached snapshot to verify; without one the endpoint
     # returns 409 GOVERNANCE_UNAVAILABLE and FINAL_APPROVED cannot be reached.
     #
-    # Fix: each worker synchronously refreshes the snapshot immediately after
-    # fork (but BEFORE serving any request) with a short timeout to bound startup
-    # latency.  Exceptions are swallowed — the worker still starts and the degraded
-    # path (MODEL_QUALIFIED_HOLD ceiling) handles the first request gracefully.
+    # Each worker synchronously refreshes the snapshot immediately after fork
+    # (but BEFORE serving any request) with a short timeout to bound startup
+    # latency. Exceptions are swallowed — the worker still starts and the
+    # degraded path remains fail-closed.
     try:
         import threading as _gov_threading
         _gov_warmed = [False]
@@ -343,8 +368,8 @@ def post_fork(server, worker):
 
         def _gov_warmup():
             try:
-                from gate_engine.governance_resilience import GovernanceSnapshot
-                GovernanceSnapshot.instance().refresh()
+                from gate_engine.governance_resilience import get_snapshot_singleton
+                get_snapshot_singleton().refresh()
                 _gov_warmed[0] = True
             except Exception as _e:
                 _gov_exc[0] = _e
