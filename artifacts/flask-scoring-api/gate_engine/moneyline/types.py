@@ -137,6 +137,8 @@ class MoneylineResult:
     classification:       dict[str, Any] = field(default_factory=dict)
     market_comparison:    dict[str, Any] = field(default_factory=dict)
     final_refresh:        dict[str, Any] = field(default_factory=dict)
+    probability_claim_audit: dict[str, Any] = field(default_factory=dict)
+    event_decision:       dict[str, Any] = field(default_factory=dict)
     slate_integrity:      dict[str, Any] = field(default_factory=dict)
     # TeamRankings secondary enrichment layer (WOW-PATCH-2026-08-08-TEAMRANKINGS)
     teamrankings:         dict[str, Any] = field(default_factory=dict)
@@ -192,6 +194,8 @@ class MoneylineResult:
             "classification":                 self.classification,
             "market_comparison":              self.market_comparison,
             "final_refresh":                  self.final_refresh,
+            "probability_claim_audit":        self.probability_claim_audit,
+            "event_decision":                 self.event_decision,
             "slate_integrity":                self.slate_integrity,
             "teamrankings":                   self.teamrankings,
             "external_analyst_intelligence":  self.external_analyst_intelligence,
