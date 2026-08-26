@@ -48,6 +48,9 @@ Thumbs.db
 .cache/
 .local/
 
+# Build-time release provenance is generated inside the deployment build.
+/artifacts/flask-scoring-api/runtime_build_info.json
+
 # WOW migration/recovery artifacts — never commit production database exports.
 # Keep migration SQL files trackable; these patterns target only dump/export names.
 /WOW-PHASE2-ROLLBACK-EXPORT-*/
