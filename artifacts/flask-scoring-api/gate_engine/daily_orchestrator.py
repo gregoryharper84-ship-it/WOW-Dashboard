@@ -112,6 +112,66 @@ _TERMINAL_BUCKETS = (
     "no_play",
 )
 
+# Daily containment only consumes explicitly emitted prerequisite contracts; it
+# does not infer a new model, calibration, or taxonomy decision. A declared
+# prerequisite with an unavailable or missing status cannot publish a
+# probability or an authoritative result.
+_BOOLEAN_PREREQUISITE_KEYS = (
+    "data_prerequisite_met",
+    "model_prerequisite_met",
+    "calibration_prerequisite_met",
+    "required_data_available",
+    "required_model_available",
+    "required_calibration_available",
+)
+_STATUS_PREREQUISITE_KEYS = (
+    "data_status",
+    "model_status",
+    "calibration_status",
+    "source_snapshot_status",
+)
+_EXPLICIT_PREREQUISITE_KEYS = (
+    "mandatory_prerequisites",
+    "required_prerequisites",
+    "prerequisite_status",
+)
+_PREREQUISITE_FAILURE_VALUES = frozenset({
+    "",
+    "FAILED",
+    "UNAVAILABLE",
+    "MISSING",
+    "ERROR",
+    "INVALID",
+    "INCOMPLETE",
+    "NOT_READY",
+    "STALE",
+    "REJECTED",
+    "DATA_CONTRACT_FAIL",
+})
+_PROBABILITY_PUBLICATION_FIELDS = (
+    "model_probability",
+    "raw_probability",
+    "independent_probability",
+    "calibrated_probability",
+    "opposite_probability",
+    "probability",
+    "probability_lower_bound",
+    "probability_upper_bound",
+    "lower_bound",
+    "upper_bound",
+    "no_vig_probability",
+    "market_probability",
+    "threshold_hit_rate",
+    "pure_edge",
+    "adjusted_edge",
+    "edge_math",
+    "probability_snapshot",
+    "probability_audit",
+    "model_probability_ledger",
+    "model_outputs",
+    "calibration",
+)
+
 # A scoring worker runs outside the manifest executor's process so a blocked
 # source/client call cannot keep a healthy heartbeat renewing an empty SCORING
 # manifest forever.  The whole-run deadline remains the outer hard ceiling.
@@ -708,10 +768,14 @@ def _failed_mandatory_prerequisites(card: dict[str, Any]) -> list[str]:
         if key in card and card.get(key) is False:
             failures.append(key)
     for key in _STATUS_PREREQUISITE_KEYS:
+        if key not in card:
+            continue
         value = str(card.get(key) or "").strip().upper()
         if value in _PREREQUISITE_FAILURE_VALUES:
             failures.append(f"{key}:{value}")
     for key in _EXPLICIT_PREREQUISITE_KEYS:
+        if key not in card:
+            continue
         value = card.get(key)
         if isinstance(value, dict):
             for name, status in value.items():
