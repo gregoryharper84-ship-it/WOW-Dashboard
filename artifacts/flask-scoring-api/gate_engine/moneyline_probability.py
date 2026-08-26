@@ -680,7 +680,7 @@ def score_outright_winner_row(
             "sportsbook_odds_cannot_substitute_for_sport_model"
         )
         return _build_result(
-            terminal, blockers, None, row, model_entry, enrichment,
+            "MODEL_UNAVAILABLE", blockers, None, row, model_entry, enrichment,
             orientation_resolution=orientation.to_dict(),
         )
 
@@ -741,6 +741,8 @@ def score_outright_winner_row(
         "classification":     ml_result.classification,
         "market_comparison":  ml_result.market_comparison,
         "final_refresh":      ml_result.final_refresh,
+        "probability_claim_audit": ml_result.probability_claim_audit,
+        "event_decision":     ml_result.event_decision,
         "slate_integrity":    ml_result.slate_integrity,
     }
     # Only overwrite the compatibility snapshot hash when the pipeline produced
