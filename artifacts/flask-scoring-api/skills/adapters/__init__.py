@@ -20,6 +20,7 @@ from .promo_optimizer   import PromoOptimizerAdapter
 from .dfs_analyst       import DfsAnalystAdapter
 from .sports_psychology import SportsPsychologyAdapter
 from .referee_umpire    import RefereeUmpireAdapter
+from .red_team_reviewer import RedTeamReviewerAdapter
 
 ADAPTER_MAP: dict = {
     "wow.sports-research-analyst":    SportsResearchAdapter,
@@ -43,4 +44,5 @@ ADAPTER_MAP: dict = {
     "wow.dfs-analyst":                DfsAnalystAdapter,
     "wow.sports-psychology-context":  SportsPsychologyAdapter,
     "wow.referee-umpire-tendency":    RefereeUmpireAdapter,
+    "wow.governed-red-team-reviewer": RedTeamReviewerAdapter,
 }

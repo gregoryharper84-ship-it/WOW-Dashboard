@@ -116,6 +116,31 @@ _REGISTRY: dict = {
     ("MLB", "BB"):  _prov("mlb_binary_bernoulli_v1", ["game_log"]),
     ("MLB", "R"):   _prov("mlb_binary_bernoulli_v1", ["game_log"]),
     ("MLB", "TB"):  _prov("mlb_binary_bernoulli_v1", ["game_log"]),
+
+    # ── MLB: at-bats, batting average, on-base percentage (#126) ─────────────
+    # Prop lines for these stats are game-level counts/rates, not season averages.
+    # AB: counting stat → Poisson λ=game-log mean is a reasonable first-pass model.
+    # AVG/OBP: game-level binary (did the batter reach base / get a hit ≥1x?).
+    # All PROVISIONAL — not back-tested against settled results.
+    ("MLB", "AB"):                  _prov("mlb_counting_poisson_v1", ["game_log"],
+                                          "At-bats per game; Poisson λ=game-log mean; PROVISIONAL"),
+    ("MLB", "AT_BATS"):             _prov("mlb_counting_poisson_v1", ["game_log"],
+                                          "Alias for AB; at-bats per game"),
+    ("MLB", "AVG"):                 _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "Batting average game prop: P(≥1 hit); "
+                                          "game-level Bernoulli hit rate from game log; "
+                                          "distinct from season AVG; PROVISIONAL"),
+    ("MLB", "BA"):                  _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "Alias for AVG/batting average game hit rate"),
+    ("MLB", "BATTING_AVERAGE"):     _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "Alias for AVG; batting average game prop"),
+    ("MLB", "OBP"):                 _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "On-base percentage game prop: P(reached base ≥1x); "
+                                          "Bernoulli hit+walk rate from game log; PROVISIONAL"),
+    ("MLB", "ON_BASE_PCT"):         _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "Alias for OBP"),
+    ("MLB", "ON_BASE_PERCENTAGE"):  _prov("mlb_binary_bernoulli_v1", ["game_log"],
+                                          "Alias for OBP"),
     ("MLB", "1B"):  _prov("mlb_binary_bernoulli_v1", ["game_log"]),
     ("MLB", "2B"):  _prov("mlb_binary_bernoulli_v1", ["game_log"]),
     ("MLB", "3B"):  _prov("mlb_binary_bernoulli_v1", ["game_log"]),
@@ -128,6 +153,47 @@ _REGISTRY: dict = {
     ("MLB", "IP"):          _prov("mlb_counting_poisson_v1", ["game_log"]),
     ("MLB", "INNINGS"):     _prov("mlb_counting_poisson_v1", ["game_log"]),
     ("MLB", "OUTS"):        _prov("mlb_counting_poisson_v1", ["game_log"]),
+
+    # ── MLB: plate appearances (Poisson counting) ────────────────────
+    # PA is a per-game counting stat well-modelled by Poisson λ=game-log mean.
+    # PROVISIONAL until back-tested against settled results.
+    ("MLB", "PA"):                _prov("mlb_counting_poisson_v1", ["game_log"],
+                                        "Poisson λ=game-log mean plate appearances per game; PROVISIONAL"),
+    ("MLB", "PLATE_APPEARANCES"): _prov("mlb_counting_poisson_v1", ["game_log"],
+                                        "Alias for PA; Poisson λ=game-log mean; PROVISIONAL"),
+
+    # ── MLB: 1st-inning pitches thrown (Poisson) ─────────────────────────
+    # Poisson λ = game-log mean of 1st-inning pitch counts.
+    # Ceiling modifications from the first-inning efficiency deterioration
+    # score (gate_engine/mlb/first_inning_efficiency.py, Section 18.4) are
+    # applied as a post-probability ceiling overlay — they do not change the
+    # base model here.  PROVISIONAL until back-tested against settled results.
+    ("MLB", "1IP_PITCHES_THROWN"): _prov(
+        "mlb_1ip_pitches_poisson_v1",
+        ["game_log"],
+        "Poisson λ=game-log mean 1st-inning pitch count; "
+        "efficiency ceiling from first_inning_efficiency.py Section 18.4; "
+        "PROVISIONAL — not yet back-tested against settled results",
+    ),
+
+    # ── MLB: Plate Appearances (Section 18.9) ─────────────────────────────
+    # Discrete PA opportunity/volume distribution model.
+    # Gating and routing performed by gate_engine/mlb/plate_appearances_gate.py.
+    # The numeric distribution (P(PA=3/4/5/≥6)) is supplied as pre-computed
+    # enrichment; full distribution computation inside the gate engine is a
+    # planned future enhancement.  PROVISIONAL until back-tested against
+    # settled PA results.
+    ("MLB", "MLB_PLATE_APPEARANCES"): _prov(
+        "mlb_pa_opportunity_v1",
+        ["game_log"],
+        "Discrete PA opportunity/volume distribution; gating via "
+        "mlb/plate_appearances_gate.py (Section 18.9); numeric distribution "
+        "supplied as pre-computed enrichment; PROVISIONAL — not back-tested",
+    ),
+    # NOTE: ("MLB", "PA") and ("MLB", "PLATE_APPEARANCES") canonical entries are
+    # defined above (task #124) with mlb_counting_poisson_v1.  Do not add
+    # duplicate keys here — Python dicts use the last definition, which would
+    # silently override the task #124 entries.
 
     # ── NBA: counting stats (Poisson λ = game-log mean) ──────────────────
     # PROVISIONAL: ignores minutes distribution, role changes, opponent context
@@ -254,6 +320,22 @@ _REGISTRY: dict = {
         "formula=W×6+QS×4+K×3+Outs×1+ER×−3; verify against settled results"
     ),
 
+    # ── MLB: H+R+RBI composite (Hits + Runs + RBI per game) ──────────────────
+    # PROVISIONAL: Gaussian fit over L10 composite series.
+    # Proprietary/thin market — no exact Odds API sportsbook line exists.
+    # Distribution reconstructed from official H, R, RBI game logs via MLB
+    # Stats API (statsapi.mlb.com).  The auto_game_log fetch_game_log()
+    # handles "H+R+RBI" via the combo path (hits+runs+rbi per split).
+    # Thin-market uncertainty haircut applies; MONEY_GRADE blocked until
+    # validated against settled results in the postmortem ledger.
+    # Normalizer maps "Hits + Runs + RBIs" / "H+R+RBI" → stat_key "H+R+RBI".
+    ("MLB",  "H+R+RBI"): _prov(
+        "mlb_hrr_gaussian_v1", ["game_log"],
+        "UNVALIDATED: Hits+Runs+RBI composite per game; Gaussian fit over L10 series; "
+        "thin market (no Odds API coverage); reconstruct from MLB Stats API splits; "
+        "use thin-market uncertainty haircut; verify against settled results"
+    ),
+
     # ── Tennis: match stats (Gaussian fit over historical match distribution) ─
     # PROVISIONAL: Gaussian λ=match-log mean, σ=match-log std.
     # Coverage limited to ATP/WTA main-draw; ITF/Challenger → NO_REGISTERED_MODEL.
@@ -271,6 +353,14 @@ _REGISTRY: dict = {
     ("TENNIS", "FPTS"):          _prov("tennis_fantasy_gaussian_v1", ["game_log"]),
     ("TENNIS", "GAMES_WON"):     _prov("tennis_gaussian_v1", ["game_log"], "Gaussian; games won per match"),
     ("TENNIS", "GAMES"):         _prov("tennis_gaussian_v1", ["game_log"]),
+    # Total Games: exact Markov chain simulation via tennis_total_games_gate.
+    # Requires surface/tour context; falls back to historical Gaussian distribution.
+    # Three-outcome model (More+Exact+Less=1) for integer lines.
+    # Ceiling: MODEL_QUALIFIED_HOLD (PROVISIONAL until settled postmortem validates).
+    ("TENNIS", "TOTAL_GAMES"):   _prov(
+        "tennis_total_games_markov_v1", ["enrichment"],
+        "Markov chain match simulation; surface-adjusted serve baselines; three-outcome contract"
+    ),
     ("TENNIS", "ACES"):          _prov("tennis_counting_poisson_v1", ["game_log"], "Poisson; aces per match"),
     ("TENNIS", "DOUBLE_FAULTS"): _prov("tennis_counting_poisson_v1", ["game_log"], "Poisson; double faults per match"),
     ("TENNIS", "DF"):            _prov("tennis_counting_poisson_v1", ["game_log"]),

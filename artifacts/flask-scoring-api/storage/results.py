@@ -139,7 +139,13 @@ def save_scan_result(result: dict) -> bool:
         return False
 
 
-def get_scan_results(run_date=None, classification=None, sport=None, limit=200):
+def get_scan_results(
+    run_date=None,
+    classification=None,
+    sport=None,
+    limit=200,
+    offset=0,
+):
     """Fetch scan results filtered by date, classification, sport."""
     try:
         conn = get_db_conn()
@@ -156,13 +162,17 @@ def get_scan_results(run_date=None, classification=None, sport=None, limit=200):
             {where}
             ORDER BY run_at DESC
             LIMIT %s
+            OFFSET %s
         """
         with conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(sql, params + [limit])
+                cur.execute(sql, params + [limit, offset])
                 rows = cur.fetchall()
         conn.close()
-        return [dict(r) for r in rows]
+        # Scan results are analytical records only.  Stamp the execution
+        # invariant at the repository boundary so direct consumers cannot
+        # reinterpret a legacy database row as executable.
+        return [{**dict(r), "can_execute": False} for r in rows]
     except Exception as e:
         print(f"[storage] get_scan_results failed: {e}")
         return []
@@ -232,7 +242,10 @@ def get_compact_scan_rows(run_date, category=None, limit=80):
         with conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(sql, params + [limit])
-                rows = [dict(r) for r in cur.fetchall()]
+                rows = [
+                    {**dict(row), "can_execute": False}
+                    for row in cur.fetchall()
+                ]
         conn.close()
         return rows
     except Exception as e:

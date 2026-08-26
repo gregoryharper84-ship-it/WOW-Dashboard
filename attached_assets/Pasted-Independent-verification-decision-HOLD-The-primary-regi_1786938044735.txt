@@ -1,0 +1,84 @@
+Independent verification decision: **HOLD**. The primary registration is directionally correct, but the four-commit chain does not yet preserve the accepted #249/#250 controls.
+
+### Blocking findings
+
+1. **Canonical hash mismatch**
+
+   The supplied authoritative source hashes locally as:
+
+   ```text
+   b79118e2d2167c047a5f28bf210345aa98e6f75e25f8cd8aec1ae8b48f604e48
+   ```
+
+   The registry reports:
+
+   ```text
+   2c5daad002222a070fe61c47c22e1a755361e3969139e7d80b94cad17f588e5f
+   ```
+
+   This must be reconciled. If the canonical document was transformed, retain both:
+
+   * `raw_source_sha256`
+   * `canonical_sha256`
+   * An exact transformation record
+
+   An immutable source copy cannot silently change bytes.
+
+2. **Authority dimensions appear conflated**
+
+   Preserve separate fields:
+
+   ```yaml
+   declared_status: EMERGENCY_ACTIVE
+   project_authority_status: BINDING_ACTIVE
+   ```
+
+   Setting `project_authority_status: EMERGENCY_ACTIVE` merges lifecycle status with project authority unless that is explicitly the registry’s approved schema.
+
+3. **Blanket exclusion of test files from secret scanning is unsafe**
+
+   Commit `39328be` allows real secrets placed in tests to bypass detection. Test files must remain scanned. Exclude only explicit synthetic fixtures or narrowly allowlisted fake values.
+
+4. **HTTP `000` cannot become a warning when live verification is requested**
+
+   Required behavior:
+
+   * Live check not requested: `NOT_RUN`
+   * Live check requested and HTTP `000`: nonzero failure
+   * Live check requested and endpoint unhealthy: nonzero failure
+
+5. **#250 was materially changed after acceptance**
+
+   Because preflight and verification scripts changed, the complete controlled-failure suite must be rerun. It must still reject:
+
+   * Staged, unstaged, and untracked changes
+   * Missing protected files
+   * Out-of-bound files
+   * Realistic secret fixtures with redacted output
+   * Python, JSON, and YAML `can_execute=true` variants
+   * HTTP `000` during enabled live verification
+   * Regression/sentinel/test-count failures
+
+6. **Overall scope was larger than #251**
+
+   `1a59025` is documentation-only, but the surrounding commits change governance tooling. Those changes require their own diff boundary and acceptance; they cannot inherit #251’s zero-behavior classification.
+
+### Required correction
+
+```text
+1. Reconcile raw-source and canonical hashes.
+2. Separate declared_status from project_authority_status.
+3. Remove the blanket test-file secret-scan exclusion.
+4. Restore fail-closed HTTP 000 behavior for enabled live checks.
+5. Prove untracked-file and can_execute variant detection still fail closed.
+6. Rerun the complete #250 controlled-failure matrix.
+7. Report exact sentinel identity, not only its count.
+8. Return separate diff boundaries for:
+   a. #251 authority registration;
+   b. control-plane script corrections.
+
+publish_authorized=false
+can_execute=false
+```
+
+No runtime rollback is required. Fix forward from the current clean state, then resubmit #251 and the modified control-plane scripts for separate acceptance.

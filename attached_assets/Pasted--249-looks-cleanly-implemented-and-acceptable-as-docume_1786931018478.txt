@@ -1,0 +1,99 @@
+#249 looks **cleanly implemented and acceptable as documentation/authority-registry work**, with one important boundary: it does **not** yet resolve the runtime authority gaps it records.
+
+The strongest evidence is the combination of a clean working tree, zero runtime/schema/endpoint changes, 25/25 dedicated registry tests, and the full suite at **5,275 passed / 0 unexpected failures**. The separation between `declared_status` and `project_authority_status` is also the right design choice; it prevents code that happens to behave as active from silently becoming formally authoritative.
+
+I would record the return packet as:
+
+```text
+WOW-#249
+CODE_ACCEPTANCE=PASS
+
+commit=e9d2afb
+scope=DOCUMENTATION_AND_AUTHORITY_REGISTRY_ONLY
+runtime_behavior_changed=false
+
+contract_registry=PASS
+canonical_contract_copies=PASS
+sha256_integrity=PASS
+unsafe_promotion_prevention=PASS
+authority_status_separation=PASS
+
+dedicated_tests=25/25 PASS
+full_suite=5275 PASS
+unexpected_failures=0
+
+can_execute=false
+publish_authorized=false
+```
+
+The three unresolved items are correctly **preserved rather than papered over**:
+
+```text
+UNRESOLVED-001
+MLB PATCHES 010–013 active in runtime but absent from formal _PATCH_REGISTRY authority.
+
+UNRESOLVED-002
+KALSHI_RECOVERY_MODE="ACTIVE" exists operationally without a formally registered
+EMERGENCY_ACTIVE governance patch.
+
+UNRESOLVED-003
+PATCH-014/015 numbering collision remains unresolved.
+```
+
+That means #249 has successfully created the **control plane needed to see the authority problem**, but it has not yet fixed the authority problem itself. That is a good stopping boundary for this ticket because the packet explicitly says `runtime_files_changed: 0`.
+
+There are two additional things I would preserve exactly as implemented. First, `OUTRIGHT_WIN_PROBABILITY_ONLY` belongs in `lane`, not in the authority-status enum. Second, the cross-sport high-probability selector must remain **PROPOSED** and cannot become active merely because it now has a canonical copy in the registry. That aligns with the active project contract, where that selector remains non-binding. 
+
+## What should happen next
+
+The next ticket should be an **authority reconciliation / activation ticket**, not another registry-build ticket.
+
+Its job should be to resolve the three `UNRESOLVED-*` entries individually and fail closed:
+
+```text
+1. Resolve authority for MLB PATCHES 010–013.
+   - Locate/verify their actual approved governance source.
+   - Register them formally if authority is established.
+   - Otherwise demote runtime assumptions rather than invent authority.
+
+2. Resolve Kalshi Recovery authority.
+   - Canonicalize/register the existing emergency Recovery patch.
+   - Make runtime KALSHI_RECOVERY_MODE derive from governed authority rather than
+     an unexplained hardcoded constant.
+   - Preserve Recovery Mode while reconciliation occurs; do not weaken it.
+
+3. Resolve PATCH-014/015 collision.
+   - Assign immutable canonical IDs without rewriting historical meaning.
+   - Add aliases/migration metadata if old IDs already exist in logs or tests.
+
+4. Add enforcement tests proving:
+   authority registry classification
+   → runtime gate authority
+   → terminal ceiling
+   remain consistent.
+
+5. Keep:
+   can_execute=false
+   publish_authorized=false
+```
+
+For the Kalshi item specifically, we **do have an actual emergency patch document in the active project materials**: `WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE`, which explicitly declares `EMERGENCY_ACTIVE`.  So `UNRESOLVED-002` looks very solvable: the backend registry simply needs that canonical authority incorporated correctly rather than continuing to rely on the hardcoded constant alone.
+
+Similarly, the MLB 010–013 patch pack explicitly marks those four patches `ACTIVE`, while the overall lane remains research-only and capped.  That should help resolve `UNRESOLVED-001`, but the backend should still verify the project's authority chain rather than infer promotion just from the document text.
+
+So my disposition is:
+
+```text
+#249 ACCEPTED
+No rework required on e9d2afb.
+
+NEXT:
+authority reconciliation / formal registration
+
+Priority:
+UNRESOLVED-002
+→ UNRESOLVED-001
+→ UNRESOLVED-003
+```
+
+I would **not** merge the two new Aug. 16 patches we created earlier into #249 retroactively. They should enter the registry through the next governed contract-ingestion change, preserving #249's clean documentation-only boundary.

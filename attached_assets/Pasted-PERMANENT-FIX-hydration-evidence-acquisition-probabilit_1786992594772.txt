@@ -1,0 +1,36 @@
+PERMANENT FIX: hydration/evidence acquisition -> probability-ledger -> live scorer handoff for MLB pitcher props and WNBA player props.
+
+Observed production reproduction:
+- 54 directional evaluations (15 MLB K x2, 6 WNBA REB x2, 6 MLB Outs x2)
+- 0 rank_eligible, 0 validated_probability_rows
+- WNBA acquisition retrieves ESPN game logs and scheduled-event evidence, yet downstream audit reports missing L5/L10, role/usage, and market no-vig
+- MLB rows fail PROB_LEDGER completeness, unconditional failure-path probability, outlier review, and sometimes market-line drift
+- Provisional probabilities exist but cannot be published because rank_eligible=false
+
+This is not a request to loosen Gatekeeper, fabricate probabilities, reuse L10 as true probability, or weaken can_execute=false. Diagnose exact live boundary and implement one canonical contract.
+
+Required work:
+1. Trace real Flask/API flow from acquisition response through typed hydration, specialist scorer, probability ledger, outlier/failure-path enforcers, registry audit, and GPT response for MLB K, MLB Outs, WNBA REB. Identify every field rename/drop/type mismatch and every offline-only enforcer.
+2. Define one versioned canonical EvidenceBundle/ProbabilityLedger input schema per row with stable row_id/event_id, sport, market, player/team identity, line, direction, source timestamps, provenance, TTL, raw evidence, normalized evidence, acquisition status, required-field status, and explicit missing_fields.
+3. Add sport/market adapters only at ingestion boundaries. WNBA player props must normalize game_log as numeric sequence and box_score_log as dictionaries per WNBA enrichment contract; map ESPN records into canonical L5/L10, role/minutes/usage/opportunity evidence without silently dropping retrieved data. MLB pitcher props must map starts, pitch count/workload, opponent/lineup, handedness, park/weather, starter confirmation, and failure-path inputs.
+4. Live scoring must call canonical probability-ledger completion, outlier review/recompute, and unconditional MLB pitcher failure-path model before rank eligibility. Remove offline-only/dead-path divergence. No scorer may reconstruct a second incompatible schema.
+5. Separate model readiness from market readiness. Missing market no-vig may cap money/edge status but must not erase completed sporting probability. Line drift must produce typed STALE_MARKET/REHYDRATE_REQUIRED, never generic ledger incompleteness.
+6. Fail closed with typed diagnostics: stage, contract_version, row_id, received_fields, normalized_fields, missing_fields, invalid_fields, acquisition_attempted, provider_status, specialist_status, ledger_status, outlier_status, failure_path_status, market_status, rank_eligible, retryable. Never return vague PROB_LEDGER incomplete when evidence was fetched.
+7. Add stage counters and reconciliation: rows_discovered -> rows_acquired -> rows_hydrated -> rows_model_ready -> ledgers_complete -> outlier_review_complete -> failure_path_complete -> probabilities_validated -> rank_eligible. Hard invariant: no silent row loss/duplication; count mismatch raises PROBABILITY_PIPELINE_CONTRACT_BREACH.
+8. Preserve existing governance, terminal ceilings, immutable writes, probability-domain validation, and can_execute=false.
+
+Mandatory regression/integration tests using actual endpoint-shaped fixtures:
+A. WNBA ESPN response -> normalized game_log/box_score_log -> L5/L10 + role evidence -> complete ledger -> rank_eligible when all required inputs exist.
+B. Same WNBA row missing role evidence -> typed exact missing_fields, not generic failure.
+C. MLB K full fixture -> unconditional failure-path probability + outlier review -> complete ledger -> rank_eligible.
+D. MLB Outs full fixture -> same.
+E. Market no-vig absent with complete sporting model -> probability remains validated; money/edge lane held.
+F. Stale/drifted line -> REHYDRATE_REQUIRED, old-line probability never attached to new line.
+G. Provider returns evidence but adapter drops/renames a required field -> PROBABILITY_PIPELINE_CONTRACT_BREACH.
+H. Every discovered directional row reconciles exactly once end-to-end.
+I. Both MORE and LESS directions tested; probabilities valid and complementary where contract requires.
+J. Full Flask route/API response through live run controller and GPT-facing response, not isolated unit mocks only.
+K. Regression proving offline ledger/outlier enforcers are invoked on live scoring path.
+L. Re-run the exact 54-evaluation slate fixture; expected nonzero rank eligibility for fully hydrated rows, exact typed blockers for remaining rows.
+
+Before edits: inspect recent commits 048d508, 9d0ec1b, cccc129 and do not regress their contracts. Deliver root-cause map, changed files, commit SHA, focused test results, full regression, wow-verify-patch, production replay counts, and deploy only after all pass. Keep task separate from current Odds API failover work.

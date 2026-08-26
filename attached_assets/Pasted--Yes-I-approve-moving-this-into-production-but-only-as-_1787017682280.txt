@@ -1,0 +1,111 @@
+**Yes — I approve moving this into production, but only as a measurement/observability deployment.** This is exactly the kind of production change that earns its keep because it generates evidence rather than adding prediction complexity.
+
+The boundary should be strict: **production prediction behavior must remain unchanged.** No new Gatekeeper stages, no altered prop probabilities, no additional rejection criteria, no new model approvals, and no new Replit enrichment loops. The logger observes what WOW already predicts; outcome ingestion later attaches results; the validation harness evaluates them.
+
+I would approve the four items with these conditions:
+
+1. **Deploy prediction logger — APPROVED.** It should record the immutable pregame prediction and relevant model metadata without changing the prediction. Failed logging must not cause the conversational layer to invent or substitute a prediction. Existing WOW requirements around immutable prediction records are consistent with this direction. 
+
+2. **Apply production DB migration — APPROVED, provided it is additive/backward-compatible.** No destructive column changes, no rewriting historical prediction values, and no migration of old predictions into fabricated probabilities. Existing production behavior should work even if the new validation tables are empty.
+
+3. **Automated outcome ingestion — APPROVED.** Make it idempotent, preserve the original prediction permanently, and attach the outcome separately. The prediction/outcome schema already reflects the right separation between `prediction_fields` and `outcome_fields`.  Stat corrections or postponed games should update the **outcome record**, never the original pregame forecast.
+
+4. **Daily ~9 AM UTC job — APPROVED.** That is about 4 AM Central during daylight-saving time, which is reasonable for capturing most prior-day U.S. sports. I would have ingestion re-check unresolved/recent rows rather than assuming one daily pass makes every result final.
+
+There is **one important qualification** around `VALIDATION_BENCHMARK_THRESHOLD`.
+
+### Do not let that threshold become a production prediction gate yet
+
+Right now we are trying to learn whether the models work. We should not use an unvalidated benchmark to suppress predictions, change probabilities, promote candidates, or trigger automatic model modifications.
+
+For this first production phase:
+
+```text
+VALIDATION_MODE = OBSERVE_ONLY
+
+prediction_generation_change = false
+probability_adjustment = false
+terminal_label_change = false
+model_auto_disable = false
+model_auto_promote = false
+```
+
+If `VALIDATION_BENCHMARK_THRESHOLD` must contain a numeric value for the software to operate, use the **predeclared threshold from the offline validation specification/harness**, not a number chosen after looking at production outcomes. If no such threshold was formally established, configure it so that it produces an evaluation flag/report only and cannot affect candidate publication.
+
+That protects us from creating a new version of the exact problem we're trying to escape: seeing a few outcomes and immediately changing the model.
+
+### What production should now do
+
+The loop should be extremely boring:
+
+```text
+WOW produces prediction
+        ↓
+logger freezes prediction
+        ↓
+game happens
+        ↓
+outcome ingestion attaches result
+        ↓
+validation harness scores prediction
+        ↓
+dashboard/report accumulates evidence
+```
+
+**Nothing feeds automatically back into the model yet.**
+
+That's critical.
+
+After enough settled predictions accumulate, we compare:
+
+```text
+WOW model
+vs
+season baseline
+vs
+L10 baseline
+vs
+simple statistical baseline
+```
+
+using Brier score, log loss, calibration, probability-bucket reliability, sample size, and lane/line breakdowns—the exact measurement direction captured in the validation schema. 
+
+### I would also put a cost circuit breaker on this deployment
+
+Because the whole point is getting away from roughly $2,000/month development churn, the logger and ingestion system should be deliberately cheap.
+
+No LLM/agent call should be necessary to ingest a settled result. No Full Model rerun should be necessary. No 25,000-run simulation should happen during outcome ingestion. No web research agent should wake up just to grade a prediction if an authoritative deterministic result source exists.
+
+The production evaluator should be almost entirely:
+
+```text
+database
++ deterministic API/result ingestion
++ deterministic scoring calculations
+```
+
+That lets us accumulate hundreds or thousands of observations cheaply.
+
+## Deployment decision
+
+```text
+WOW VALIDATION PRODUCTION DEPLOYMENT
+
+Validation harness:        APPROVED
+Prediction logger:         APPROVED
+Outcome ingestion:         APPROVED
+Additive DB migration:     APPROVED
+Daily ingestion schedule:  APPROVED
+
+Benchmark evaluation:      APPROVED — OBSERVATION ONLY
+Automatic model changes:   NOT APPROVED
+Automatic probability changes: NOT APPROVED
+New prediction gates:      NOT APPROVED
+New specialists/agents:    FROZEN
+Production model logic:    UNCHANGED
+
+can_execute=false
+DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
+```
+
+So **yes, proceed with deploying/configuring the measurement infrastructure**. This is the first production change in a while that I think directly advances the problem we actually need to solve: determining objectively whether WOW's predictive complexity is earning its cost.

@@ -1,0 +1,108 @@
+Yes — this reconciliation is now the cleaner and safer baseline. I would adopt it **with three small adjustments** before handing anything back to Replit.
+
+First, the 1IP repair should be treated as a **validation-unblocking defect fix**, not as reopening general development. That means the only authorized code change right now should be narrowly scoped to getting real 1IP rows through:
+
+```text
+real board row
+→ exact event/starter identity
+→ typed 1IP hydration
+→ acquisition tier
+→ failure-path prior
+→ top-four event tree
+→ P(MORE) / P(LESS)
+→ dynamic calibration
+→ lower bound
+→ TEST_ONLY ceiling
+→ immutable validation logger
+```
+
+The acquisition tier should be explicitly persisted as something like `PITCHER_SPECIFIC`, `COHORT_SHRUNK`, or `LEAGUE_PRIOR`, and calibration should receive that tier as an uncertainty input. The league/cohort fallback cannot become a fake pitcher-specific distribution. The existing 1IP skill still requires the event tree to remain controlling. 
+
+Second, I would slightly change the order of the “after checkpoint” work. **Snapshot-first / time-to-start prioritization should happen very early**, but only after we prove the 1IP logger works once. The 10 `SLATE_PURGE` rows were correct rejections, but the workflow lost useful pregame candidates because modeling took too long. The permanent behavior should therefore become:
+
+```text
+USER-SUPPLIED BOARD
+→ freeze intake manifest
+→ resolve event times
+→ sort by time-to-start
+→ process imminent supplied rows first
+→ then broader discovery
+```
+
+The slate gate itself must remain strict: once an event starts, the row is removed. 
+
+Third, the calibration work should be broader than only “MLB uncertainty audit.” The immutable prediction/outcome schema already anticipates Brier, log loss, ECE, calibration bias and lower-bound reliability.  Once predictions accumulate, calibration should be reviewed by **model family + sport + market + acquisition tier**, not one giant global cohort.
+
+So I would lock the development plan as:
+
+```text
+NOW
+
+1. 1IP validation-unblocking repair
+2. One REAL end-to-end 1IP proof
+3. Confirm prediction logger receives it
+4. Re-freeze prediction development
+5. Add Kalshi read credentials
+6. Verify Kalshi inventory state
+```
+
+Then:
+
+```text
+FORWARD TEST
+
+collect n_verified_settled >= 20
+→ blind WOW vs baseline report
+→ no model changes from individual outcomes
+```
+
+Then resume infrastructure work in this order:
+
+```text
+1. Snapshot-first / start-time priority
+2. WNBA ML acquisition + team-model hydration
+3. Generic BINARY / TERNARY / FIELD outcome contract
+4. Soccer migration
+5. Calibration-ledger cohort audit
+6. Tennis acquisition into existing specialist
+7. MMA specialist + approved acquisition
+8. Any remaining Kalshi inventory/catalog fixes
+```
+
+### One thing I would explicitly prohibit
+
+I would add this to the implementation packet:
+
+```text
+TEMPORARY MANUAL ENRICHMENT
+may be used for route/smoke testing only.
+
+It may not be used as evidence that a WOW Daily production lane is operational.
+```
+
+That covers:
+
+* manual WNBA win percentages;
+* manually supplied Tennis `surface_adjusted_form`;
+* pseudo-Elo for MMA;
+* manually entered sportsbook prices.
+
+Those are useful for proving *“does the function execute when its contract is satisfied?”* but not for publishing model probabilities.
+
+### How each lane should behave until fixed
+
+| Lane                               | Current required WOW Daily behavior                                       |
+| ---------------------------------- | ------------------------------------------------------------------------- |
+| MLB 1IP                            | `MODEL_UNAVAILABLE` until event-tree completes; repair now                |
+| WNBA ML                            | `MODEL_UNAVAILABLE` until approved team-level hydration exists            |
+| Tennis                             | `MODEL_UNAVAILABLE` until existing specialist receives real approved data |
+| MMA                                | `MODEL_UNAVAILABLE` until specialist + acquisition exist                  |
+| Soccer                             | `DATA_CONTRACT_FAIL` until multi-outcome adapter fixed                    |
+| Kalshi                             | `KALSHI_DATA_UNOBTAINABLE` until inventory/auth works                     |
+| MLB ML with `NO_EDGE_VALUE`        | data acquisition blocker                                                  |
+| MLB ML with `EDGE_BELOW_THRESHOLD` | legitimate rejection; do not “fix”                                        |
+| Started events                     | `SLATE_PURGE`; never override                                             |
+
+The V2.2 Gatekeeper already gives us the governing philosophy for all of this: lane-specific typed hydration, exactly one controlling specialist, probability/market objective separation, and precise lane failures instead of generic fallback reasoning. 
+
+So I would **not create seven patches** from this. Create one narrow 1IP validation-unblocker now, provision Kalshi credentials separately, then resume the freeze. The rest becomes the prioritized post-validation engineering backlog.

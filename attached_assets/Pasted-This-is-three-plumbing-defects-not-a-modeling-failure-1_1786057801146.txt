@@ -1,0 +1,681 @@
+This is **three plumbing defects**, not a modeling failure:
+
+1. `/analyze-and-score` does not accept the screenshot transport format.
+2. `/gate-engine/run` passes a string into a module expecting a dictionary.
+3. The global error handler references an undefined variable, hiding the original exception.
+
+The permanent, quick fix is to add **one normalized request adapter** before either workflow reaches WOW scoring.
+
+## 1. Fix screenshot ingestion
+
+Do not send a local filesystem path such as:
+
+```text
+/mnt/data/rendered-board.png
+```
+
+The Replit server cannot access another runtime’s local path. Make `/analyze-and-score` accept multipart uploads, Base64, or a remotely accessible URL.
+
+### Flask implementation
+
+```python
+import base64
+import binascii
+from typing import Optional
+
+from flask import Request
+
+
+ALLOWED_IMAGE_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+}
+
+MAX_IMAGE_BYTES = 12 * 1024 * 1024
+
+
+class RequestValidationError(ValueError):
+    pass
+
+
+def extract_image_bytes(req: Request) -> tuple[bytes, str]:
+    """
+    Supported formats:
+    1. multipart/form-data with an `image` file
+    2. JSON with `image_base64`
+    3. JSON with a Base64 data URL
+    """
+
+    uploaded = req.files.get("image")
+    if uploaded is not None:
+        mime_type = uploaded.mimetype or "application/octet-stream"
+
+        if mime_type not in ALLOWED_IMAGE_TYPES:
+            raise RequestValidationError(
+                f"Unsupported image MIME type: {mime_type}"
+            )
+
+        content = uploaded.read(MAX_IMAGE_BYTES + 1)
+
+        if not content:
+            raise RequestValidationError("Uploaded image is empty.")
+
+        if len(content) > MAX_IMAGE_BYTES:
+            raise RequestValidationError("Uploaded image is too large.")
+
+        return content, mime_type
+
+    payload = req.get_json(silent=True) or {}
+    encoded = payload.get("image_base64")
+
+    if not isinstance(encoded, str) or not encoded.strip():
+        raise RequestValidationError(
+            "Provide multipart field `image` or JSON field `image_base64`."
+        )
+
+    encoded = encoded.strip()
+    mime_type = payload.get("mime_type", "image/png")
+
+    if encoded.startswith("data:"):
+        try:
+            header, encoded = encoded.split(",", 1)
+            mime_type = header.split(";", 1)[0].removeprefix("data:")
+        except ValueError as exc:
+            raise RequestValidationError(
+                "Malformed Base64 image data URL."
+            ) from exc
+
+    if mime_type not in ALLOWED_IMAGE_TYPES:
+        raise RequestValidationError(
+            f"Unsupported image MIME type: {mime_type}"
+        )
+
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RequestValidationError(
+            "image_base64 is not valid Base64."
+        ) from exc
+
+    if not content:
+        raise RequestValidationError("Decoded image is empty.")
+
+    if len(content) > MAX_IMAGE_BYTES:
+        raise RequestValidationError("Decoded image is too large.")
+
+    return content, mime_type
+```
+
+Use it before extraction:
+
+```python
+@app.post("/analyze-and-score")
+def analyze_and_score():
+    image_bytes, mime_type = extract_image_bytes(request)
+
+    extracted_props = extract_props_from_image(
+        image_bytes=image_bytes,
+        mime_type=mime_type,
+    )
+
+    return run_scoring_pipeline(extracted_props)
+```
+
+### Correct client request
+
+```python
+import requests
+
+with open("rendered-board.png", "rb") as image_file:
+    response = requests.post(
+        f"{BASE_URL}/analyze-and-score",
+        files={
+            "image": (
+                "rendered-board.png",
+                image_file,
+                "image/png",
+            )
+        },
+        timeout=120,
+    )
+
+response.raise_for_status()
+```
+
+**Do not send the local pathname as the image payload. Send the actual bytes.**
+
+---
+
+## 2. Stop strings from reaching the MLB failure-path module
+
+The exception:
+
+```text
+AttributeError: 'str' object has no attribute 'get'
+```
+
+means code is doing something like:
+
+```python
+value.get("field")
+```
+
+when `value` is actually:
+
+```python
+"RETRIEVED"
+```
+
+or a JSON-encoded string instead of an object.
+
+The MLB failure-path model expects structured inputs such as exact market identity, participant data, workload, matchup and settlement information.  The universal failure-path framework likewise defines structured regime and conditional-probability inputs rather than free-form strings. 
+
+### Add a boundary validator
+
+```python
+import json
+from typing import Any
+
+
+class ContractError(ValueError):
+    def __init__(self, field: str, expected: str, actual: Any):
+        self.field = field
+        self.expected = expected
+        self.actual_type = type(actual).__name__
+
+        super().__init__(
+            f"{field} must be {expected}; received {self.actual_type}"
+        )
+
+
+def require_mapping(
+    value: Any,
+    *,
+    field: str,
+    allow_json_string: bool = True,
+) -> dict:
+    if value is None:
+        return {}
+
+    if isinstance(value, dict):
+        return value
+
+    if allow_json_string and isinstance(value, str):
+        stripped = value.strip()
+
+        if stripped.startswith("{"):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ContractError(
+                    field,
+                    "an object or valid JSON object string",
+                    value,
+                ) from exc
+
+            if isinstance(parsed, dict):
+                return parsed
+
+    raise ContractError(field, "an object", value)
+```
+
+Then normalize every specialist input before invocation:
+
+```python
+def normalize_gate_request(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ContractError("request_body", "an object", payload)
+
+    normalized = dict(payload)
+
+    mapping_fields = (
+        "candidate",
+        "market",
+        "event",
+        "player",
+        "role_status",
+        "lineup_status",
+        "settlement",
+        "matchup",
+        "failure_path",
+        "source_report",
+    )
+
+    for field in mapping_fields:
+        normalized[field] = require_mapping(
+            payload.get(field),
+            field=field,
+        )
+
+    for list_field in (
+        "game_log",
+        "box_score_log",
+        "l5_ledger",
+        "l10_ledger",
+    ):
+        value = payload.get(list_field, [])
+
+        if value is None:
+            value = []
+
+        if not isinstance(value, list):
+            raise ContractError(list_field, "an array", value)
+
+        normalized[list_field] = value
+
+    return normalized
+```
+
+Route:
+
+```python
+@app.post("/gate-engine/run")
+def gate_engine_run():
+    raw_payload = request.get_json(silent=True)
+
+    if raw_payload is None:
+        return {
+            "terminal_status": "INPUT_FAILURE",
+            "error_code": "INVALID_OR_MISSING_JSON",
+            "can_execute": False,
+        }, 400
+
+    try:
+        payload = normalize_gate_request(raw_payload)
+    except ContractError as exc:
+        return {
+            "terminal_status": "DATA_CONTRACT_FAIL",
+            "error_code": "REQUEST_SCHEMA_INVALID",
+            "field": exc.field,
+            "expected": exc.expected,
+            "actual_type": exc.actual_type,
+            "can_execute": False,
+        }, 422
+
+    return gate_engine.run(payload)
+```
+
+## 3. Make the MLB module defensive
+
+Even after validating at the route, the specialist should fail clearly instead of crashing.
+
+Bad:
+
+```python
+status = failure_path.get("status")
+```
+
+Better:
+
+```python
+def run_mlb_failure_path(candidate: dict) -> dict:
+    failure_path = candidate.get("failure_path")
+
+    if not isinstance(failure_path, dict):
+        return {
+            "status": "REJECT_DATA_QUALITY",
+            "primary_failure": "FAILURE_PATH_SCHEMA_INVALID",
+            "expected_type": "object",
+            "received_type": type(failure_path).__name__,
+            "can_execute": False,
+        }
+
+    role_status = candidate.get("role_status")
+
+    if not isinstance(role_status, dict):
+        return {
+            "status": "REJECT_DATA_QUALITY",
+            "primary_failure": "ROLE_STATUS_SCHEMA_INVALID",
+            "expected_type": "object",
+            "received_type": type(role_status).__name__,
+            "can_execute": False,
+        }
+
+    # Continue normal specialist modeling.
+```
+
+Do **not** replace malformed data with fabricated defaults. The failure-path skill correctly requires rejection when the regime distribution or required evidence is unavailable. 
+
+---
+
+## 4. Fix the broken error handler
+
+This secondary exception:
+
+```text
+NameError: name 'req' is not defined
+```
+
+is masking the first error.
+
+Replace every use of an undeclared `req` variable with Flask’s `request`, or preferably avoid reading the body again inside the exception handler.
+
+```python
+import uuid
+
+from flask import current_app, g, jsonify, request
+
+
+@app.before_request
+def assign_request_id():
+    g.request_id = request.headers.get(
+        "X-Request-ID",
+        str(uuid.uuid4()),
+    )
+
+
+@app.errorhandler(RequestValidationError)
+def handle_request_validation_error(exc):
+    return jsonify({
+        "terminal_status": "INPUT_FAILURE",
+        "error_code": "REQUEST_VALIDATION_ERROR",
+        "message": str(exc),
+        "request_id": getattr(g, "request_id", None),
+        "can_execute": False,
+    }), 400
+
+
+@app.errorhandler(ContractError)
+def handle_contract_error(exc):
+    return jsonify({
+        "terminal_status": "DATA_CONTRACT_FAIL",
+        "error_code": "REQUEST_SCHEMA_INVALID",
+        "field": exc.field,
+        "expected": exc.expected,
+        "actual_type": exc.actual_type,
+        "request_id": getattr(g, "request_id", None),
+        "can_execute": False,
+    }), 422
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc):
+    request_id = getattr(g, "request_id", None)
+
+    current_app.logger.exception(
+        "Unhandled backend exception",
+        extra={
+            "request_id": request_id,
+            "endpoint": request.endpoint,
+            "method": request.method,
+            "path": request.path,
+        },
+    )
+
+    return jsonify({
+        "terminal_status": "BACKEND_PIPELINE_FAILURE",
+        "error_code": type(exc).__name__,
+        "message": "An unexpected backend error occurred.",
+        "request_id": request_id,
+        "can_execute": False,
+    }), 500
+```
+
+Do not expose stack traces in the API response, but keep the complete traceback in server logs.
+
+---
+
+## 5. Add schema validation before every specialist
+
+The cleanest permanent architecture is:
+
+```text
+HTTP request
+→ transport adapter
+→ canonical request schema
+→ validation
+→ evidence acquisition
+→ specialist routing
+→ calibration
+→ final refresh
+→ response
+```
+
+Not:
+
+```text
+HTTP request
+→ raw user payload
+→ specialist module
+```
+
+Use Pydantic if available:
+
+```python
+from typing import Any
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class GateCandidate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    candidate_id: str
+    sport: str
+    market: dict[str, Any]
+    event: dict[str, Any]
+    player: dict[str, Any] = Field(default_factory=dict)
+    role_status: dict[str, Any] = Field(default_factory=dict)
+    lineup_status: dict[str, Any] = Field(default_factory=dict)
+    settlement: dict[str, Any] = Field(default_factory=dict)
+    matchup: dict[str, Any] = Field(default_factory=dict)
+    failure_path: dict[str, Any] = Field(default_factory=dict)
+
+    game_log: list[dict[str, Any]] = Field(default_factory=list)
+    box_score_log: list[dict[str, Any]] = Field(default_factory=list)
+    l5_ledger: list[dict[str, Any]] = Field(default_factory=list)
+    l10_ledger: list[dict[str, Any]] = Field(default_factory=list)
+```
+
+```python
+candidate = GateCandidate.model_validate(raw_candidate)
+validated_payload = candidate.model_dump()
+```
+
+This turns the current runtime crash into a specific `422 REQUEST_SCHEMA_INVALID`.
+
+---
+
+## 6. Add these regression tests
+
+```python
+def test_analyze_score_accepts_multipart_image(client):
+    response = client.post(
+        "/analyze-and-score",
+        data={
+            "image": (
+                io.BytesIO(b"\x89PNG\r\n\x1a\n..."),
+                "board.png",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code != 415
+
+
+def test_local_path_string_is_rejected_cleanly(client):
+    response = client.post(
+        "/analyze-and-score",
+        json={"image_path": "/mnt/data/board.png"},
+    )
+
+    assert response.status_code == 400
+    assert response.json["error_code"] == "REQUEST_VALIDATION_ERROR"
+
+
+def test_failure_path_string_returns_422(client):
+    response = client.post(
+        "/gate-engine/run",
+        json={
+            "candidate_id": "test-1",
+            "sport": "MLB",
+            "candidate": {},
+            "market": {},
+            "event": {},
+            "failure_path": "RETRIEVED",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json["field"] == "failure_path"
+
+
+def test_json_object_string_can_be_normalized(client):
+    response = client.post(
+        "/gate-engine/run",
+        json={
+            "candidate_id": "test-2",
+            "sport": "MLB",
+            "candidate": {},
+            "market": {},
+            "event": {},
+            "failure_path": '{"status":"RETRIEVED"}',
+        },
+    )
+
+    assert response.status_code != 500
+
+
+def test_error_handler_never_raises_name_error(client, monkeypatch):
+    monkeypatch.setattr(
+        gate_engine,
+        "run",
+        lambda _: (_ for _ in ()).throw(RuntimeError("forced")),
+    )
+
+    response = client.post(
+        "/gate-engine/run",
+        json={
+            "candidate_id": "test-3",
+            "sport": "MLB",
+            "candidate": {},
+            "market": {},
+            "event": {},
+            "failure_path": {},
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json["error_code"] == "RuntimeError"
+    assert "request_id" in response.json
+```
+
+Also add a complete smoke test:
+
+```text
+image upload
+→ prop extraction
+→ canonical candidates
+→ gate-engine validation
+→ source acquisition attempted
+→ specialist invoked
+→ calibration invoked
+→ final refresh
+→ structured terminal result
+```
+
+The final-refresh stage should report how many rows entered, survived or were removed instead of allowing an upstream crash to masquerade as a valid `NO_PLAY`. 
+
+## Correct result semantics
+
+Keep these separate:
+
+```text
+NO_PLAY
+```
+
+means the pipeline completed and no candidate qualified.
+
+```text
+BACKEND_PIPELINE_FAILURE
+```
+
+means scoring did not complete.
+
+Your current run should return:
+
+```json
+{
+  "terminal_status": "BACKEND_PIPELINE_FAILURE",
+  "decision": "NO_DECISION",
+  "scoring_completed": false,
+  "props_scored": 0,
+  "primary_failure": "MLB_FAILURE_PATH_INPUT_SCHEMA_INVALID",
+  "secondary_failure": "GLOBAL_ERROR_HANDLER_BROKEN",
+  "can_execute": false
+}
+```
+
+It should **not** use ordinary `NO_PLAY` as the sole terminal label, because that falsely implies every row completed the model gates.
+
+## Paste this into Replit
+
+```text
+Permanently repair the WOW request pipeline without weakening any WOW v16
+governance or qualification requirements.
+
+There are three confirmed defects:
+
+1. /analyze-and-score rejects locally rendered screenshot payloads.
+2. /gate-engine/run passes a string into the MLB failure-path module, which
+   then calls .get() and crashes.
+3. The global exception handler references undefined variable `req`, causing
+   NameError and masking the original failure.
+
+Implement the following:
+
+A. Add a transport adapter to /analyze-and-score that accepts:
+   - multipart/form-data field `image`;
+   - JSON image_base64, including data URLs.
+   Validate MIME type, empty content and maximum size. Do not accept another
+   runtime's local path as if it were image content.
+
+B. Add one canonical request-normalization and schema-validation layer before
+   gate_engine.run or any specialist. Validate that candidate, market, event,
+   player, role_status, lineup_status, settlement, matchup, failure_path and
+   source_report are objects. Validate game_log, box_score_log, l5_ledger and
+   l10_ledger as arrays. A malformed field must return HTTP 422 with field,
+   expected type and actual type; it must never reach a specialist.
+
+C. Allow a JSON object string to be decoded only when it parses into an
+   object. Do not convert arbitrary status strings into fabricated evidence.
+
+D. Make the MLB failure-path module defensive. If any required structure is
+   not an object, return REJECT_DATA_QUALITY with a specific schema failure
+   rather than throwing AttributeError.
+
+E. Replace the broken error handler. Do not reference `req`. Use Flask request
+   and g.request_id safely, log the full exception server-side, and return a
+   structured BACKEND_PIPELINE_FAILURE response with can_execute=false.
+
+F. Separate terminal semantics:
+   - NO_PLAY only when scoring completed and no row qualified.
+   - BACKEND_PIPELINE_FAILURE / NO_DECISION when scoring did not complete.
+   Include scoring_completed, props_extracted, props_scored, failed_stage,
+   primary_failure and request_id.
+
+G. Add regression tests for:
+   multipart image upload;
+   Base64 upload;
+   local-path rejection;
+   failure_path supplied as a string;
+   valid JSON object string;
+   malformed candidate fields;
+   specialist exception;
+   error-handler exception safety;
+   complete image-to-terminal-result smoke test.
+
+H. Preserve engine v16.5, governance hash verification, all active WNBA/MLB
+   patches, can_execute=false and DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS.
+
+Definition of done:
+- A valid multipart screenshot reaches extraction.
+- No raw request reaches a specialist before schema validation.
+- No `.get()` is called on a string.
+- The exception handler can never raise NameError.
+- Pipeline failures are distinguishable from completed NO_PLAY outcomes.
+- One end-to-end test returns a structured result even when zero props qualify.
+```
+
+This fixes the root issue once: **all input formats become canonical before any sport model runs**, and backend defects can no longer be mistaken for modeled rejection.

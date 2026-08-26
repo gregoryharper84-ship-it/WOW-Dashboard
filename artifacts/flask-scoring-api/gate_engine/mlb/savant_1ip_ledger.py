@@ -457,18 +457,73 @@ def _resolve_opponent(grp: Any, has_teams: bool, has_topbot: bool) -> str:
 # ---------------------------------------------------------------------------
 
 def _bf_distribution(bf_list: list[int]) -> dict[str, Any]:
-    """P(BF=3), P(BF=4), P(BF>=5) from ledger rows."""
+    """P(BF=3), P(BF=4), P(BF>=5) from ledger rows.
+
+    Returns both 'p_bf_5plus' (legacy key) and 'p_bf_gte5' (alias expected
+    by ip1_event_tree.simulate_1ip) so both consumers work without an adapter.
+    """
     valid = [b for b in bf_list if b is not None]
     n = len(valid)
     if n == 0:
         return {"n": 0, "p_bf_3": None, "p_bf_4": None,
-                "p_bf_5plus": None, "note": "BF data unavailable"}
+                "p_bf_5plus": None, "p_bf_gte5": None,
+                "note": "BF data unavailable"}
+    p5plus = round(sum(1 for b in valid if b >= 5) / n, 4)
     return {
         "n":          n,
         "p_bf_3":     round(sum(1 for b in valid if b == 3) / n, 4),
         "p_bf_4":     round(sum(1 for b in valid if b == 4) / n, 4),
-        "p_bf_5plus": round(sum(1 for b in valid if b >= 5) / n, 4),
+        "p_bf_5plus": p5plus,
+        "p_bf_gte5":  p5plus,   # alias expected by ip1_event_tree.simulate_1ip()
         "note":       f"Based on {n} starts with verified BF data",
+    }
+
+
+def compute_pitches_per_batter_dist(ledger_rows: list[dict]) -> dict[str, Any]:
+    """
+    Derive pitches-per-batter distribution from ledger rows.
+
+    For each start with both pitch count and BF present, compute
+    pitches_per_batter = first_inning_pitches / first_inning_batters_faced.
+    Returns {'mean': float, 'std': float, 'n': int} for ip1_event_tree.
+
+    Falls back to genre-calibrated defaults (mean=4.2, std=1.1) when fewer
+    than 3 valid starts exist — never fabricates individual pitch counts.
+    """
+    _DEFAULT_MEAN = 4.2
+    _DEFAULT_STD  = 1.1
+
+    ratios: list[float] = []
+    for r in (ledger_rows or []):
+        pitches = r.get("first_inning_pitches")
+        bf      = r.get("first_inning_batters_faced")
+        if (pitches is not None and bf is not None
+                and isinstance(pitches, (int, float))
+                and isinstance(bf, (int, float))
+                and bf > 0):
+            ratios.append(float(pitches) / float(bf))
+
+    if len(ratios) < 3:
+        return {
+            "mean": _DEFAULT_MEAN,
+            "std":  _DEFAULT_STD,
+            "n":    len(ratios),
+            "note": (
+                f"Insufficient starts ({len(ratios)}) for pitcher-specific "
+                f"pitches-per-batter; using genre defaults "
+                f"(mean={_DEFAULT_MEAN}, std={_DEFAULT_STD})"
+            ),
+        }
+
+    mean_val = sum(ratios) / len(ratios)
+    variance = sum((r - mean_val) ** 2 for r in ratios) / (len(ratios) - 1)
+    std_val  = variance ** 0.5
+
+    return {
+        "mean": round(mean_val, 3),
+        "std":  round(std_val, 3),
+        "n":    len(ratios),
+        "note": f"Derived from {len(ratios)} verified starts",
     }
 
 

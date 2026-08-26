@@ -1,0 +1,214 @@
+This is a **solid permanent plumbing repair**. The three original failure modes are now separated correctly:
+
+* image transport is normalized before extraction;
+* malformed specialist inputs are rejected before pipeline execution;
+* unexpected exceptions produce `BACKEND_PIPELINE_FAILURE / NO_DECISION` instead of a false `NO_PLAY`.
+
+## Review verdict
+
+**Status: CODE FIX COMPLETE — END-TO-END PRODUCTION PROOF STILL REQUIRED**
+
+The architecture now matches the intended flow:
+
+```text
+request transport
+→ request normalization
+→ schema validation
+→ extraction/enrichment
+→ specialist pipeline
+→ scoring result
+→ terminal response
+```
+
+That is the right permanent design.
+
+## One documentation correction
+
+The summary says:
+
+```text
+9 new regression tests
+```
+
+but the table lists **11 tests**.
+
+Update it to:
+
+```text
+11 new regression tests in TestPipelinePlumbing
+```
+
+unless two of those tests already existed and were only modified.
+
+## What still needs to be proven
+
+The unit and route tests prove the defects are guarded, but they do not yet prove the complete live workflow works. Run these four final checks.
+
+### 1. Real multipart screenshot smoke test
+
+Submit one actual PrizePicks screenshot through `/analyze-and-score`.
+
+Required proof:
+
+```text
+HTTP status != 400/415/422/500
+transport=multipart
+image_bytes_received > 0
+extraction_attempted=true
+props_extracted > 0
+gate_engine_called=true
+request_id present
+```
+
+The test should use actual image bytes, not a mocked extraction return.
+
+### 2. Valid MLB row specialist test
+
+Send a correctly structured MLB candidate containing:
+
+```json
+{
+  "failure_path": {
+    "scenario": "normal_effective_outing"
+  },
+  "role_status": {},
+  "lineup_status": {},
+  "settlement": {},
+  "matchup": {},
+  "source_report": {},
+  "game_log": [],
+  "box_score_log": [],
+  "l5_ledger": [],
+  "l10_ledger": []
+}
+```
+
+Required proof:
+
+```text
+normalize_gate_request=PASS
+failure_path specialist reached
+AttributeError absent
+scoring_completed=true or structured data-quality rejection
+```
+
+A missing-data rejection is acceptable. A crash is not.
+
+### 3. Forced pipeline exception test
+
+Force `run_pipeline()` to throw a known exception.
+
+Expected response:
+
+```json
+{
+  "terminal_status": "BACKEND_PIPELINE_FAILURE",
+  "decision": "NO_DECISION",
+  "scoring_completed": false,
+  "primary_failure": "ForcedTestException",
+  "request_id": "<non-empty>",
+  "can_execute": false
+}
+```
+
+Also verify the server log contains the original traceback and does **not** contain:
+
+```text
+NameError: name 'req' is not defined
+```
+
+### 4. Completed zero-qualification test
+
+Run a valid request where the pipeline completes but every row fails qualification.
+
+Expected response:
+
+```json
+{
+  "terminal_status": "NO_PLAY",
+  "decision": "NO_PLAY",
+  "scoring_completed": true,
+  "props_scored": "<greater than zero>",
+  "qualified_rows": 0,
+  "can_execute": false
+}
+```
+
+This is the key proof that `NO_PLAY` and infrastructure failure are now genuinely distinct.
+
+## Add response counters
+
+The structured failure response should include enough counters to locate where execution stopped:
+
+```json
+{
+  "props_received": 0,
+  "props_extracted": 0,
+  "rows_normalized": 0,
+  "rows_rejected_schema": 0,
+  "rows_entering_pipeline": 0,
+  "rows_scored": 0,
+  "rows_qualified": 0,
+  "failed_stage": "request_normalization"
+}
+```
+
+For a successful completed run:
+
+```json
+{
+  "scoring_completed": true,
+  "rows_received": 18,
+  "rows_normalized": 18,
+  "rows_scored": 18,
+  "rows_qualified": 3,
+  "rows_rejected": 15
+}
+```
+
+Without these counters, future failures may still require digging through logs.
+
+## Important hardening detail
+
+This line is safe against crashes:
+
+```python
+enrichment if isinstance(enrichment, dict) else {}
+```
+
+But it could silently convert malformed upstream data into an empty object. Make sure it also emits a blocker:
+
+```python
+if not isinstance(enrichment, dict):
+    return {
+        "status": "REJECT_DATA_QUALITY",
+        "primary_failure": "ENRICHMENT_SCHEMA_INVALID",
+        "expected_type": "object",
+        "actual_type": type(enrichment).__name__,
+        "can_execute": False,
+    }
+```
+
+Otherwise a contract defect could become an ordinary “missing evidence” result rather than being identified as malformed data.
+
+## Final acceptance standard
+
+Mark this repair fully shipped only after the production-like smoke run shows:
+
+```text
+multipart screenshot accepted
+actual extraction attempted
+all extracted rows normalized
+malformed rows rejected with 422
+valid rows reach specialists
+no .get() call on strings
+no error-handler secondary exception
+pipeline failures return NO_DECISION
+completed empty qualification returns NO_PLAY
+request_id traces response to server logs
+can_execute=false
+```
+
+**Current disposition: `PATCH_IMPLEMENTED_PENDING_E2E_VERIFICATION`.**
+
+Once those four checks pass, this can be marked **`SHIPPED`**, and the next failure—if any—will be a real acquisition, model or qualification issue rather than request-pipeline plumbing.

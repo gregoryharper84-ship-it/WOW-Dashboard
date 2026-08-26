@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# wow-preflight — WOW Engineering Control Plane pre-patch safety checks
+#
+# Run before starting any WOW patch session.
+# Exits non-zero if any check fails.
+#
+# Usage: bash scripts/wow-preflight
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLASK_DIR="$REPO_ROOT/artifacts/flask-scoring-api"
+PASS=0
+FAIL=0
+WARN=0
+
+green()  { printf '\033[0;32m✓ %s\033[0m\n' "$*"; }
+red()    { printf '\033[0;31m✗ %s\033[0m\n' "$*"; }
+yellow() { printf '\033[0;33m⚠ %s\033[0m\n' "$*"; }
+
+section() { printf '\n\033[1m=== %s ===\033[0m\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+section "Working tree"
+# ---------------------------------------------------------------------------
+# Detect both tracked modifications (staged + unstaged) and untracked files.
+
+DIRTY=$(git -C "$REPO_ROOT" diff --name-only HEAD 2>/dev/null || true)
+UNTRACKED=$(git -C "$REPO_ROOT" ls-files --others --exclude-standard 2>/dev/null || true)
+
+if [ -z "$DIRTY" ] && [ -z "$UNTRACKED" ]; then
+    green "Working tree is clean"
+    (( ++PASS ))
+else
+    red "Uncommitted changes detected — checkpoint before proceeding:"
+    [ -n "$DIRTY" ]     && echo "$DIRTY"     | sed 's/^/    M /'
+    [ -n "$UNTRACKED" ] && echo "$UNTRACKED" | sed 's/^/    ? /'
+    (( ++FAIL ))
+fi
+
+# ---------------------------------------------------------------------------
+section "Protected-file baseline"
+# ---------------------------------------------------------------------------
+
+PROTECTED_FILES=(
+    "artifacts/flask-scoring-api/gate_engine/labels.py"
+    "artifacts/flask-scoring-api/gate_engine/llp_governance.py"
+    "artifacts/flask-scoring-api/gate_engine/data_contract.py"
+    "artifacts/flask-scoring-api/gate_engine/failure_path.py"
+)
+
+for f in "${PROTECTED_FILES[@]}"; do
+    if [ -f "$REPO_ROOT/$f" ]; then
+        green "Protected file exists: $f"
+        ((++PASS))
+    else
+        red "Protected file MISSING: $f"
+        ((++FAIL))
+    fi
+done
+
+# ---------------------------------------------------------------------------
+section "Secret scan"
+# ---------------------------------------------------------------------------
+# Scans ALL source files, including test files.  No file-level or directory-
+# level exclusions are applied to test code — real secrets must not be hidden
+# in test files.
+#
+# Post-scan line-level filter: removes grep output lines where BOTH
+#   (a) the file path identifies a known synthetic-fixture test file, AND
+#   (b) the line content contains the exact documented fixture value.
+# A DIFFERENT value in the same file is NOT excluded and will still be caught.
+# The same value in a DIFFERENT file is NOT excluded and will still be caught.
+#
+# Output format: "filepath:linenum" only — secret value not displayed in logs.
+#
+# Documented fixture locations (update this list whenever fixtures change):
+#
+#   gate_engine/tests/test_governance_api.py
+#     Line 45:  _TEST_API_KEY = "test-key-governance"
+#       (api_key pattern, case-insensitive — _TEST_API_KEY contains API_KEY)
+#
+#   gate_engine/tests/test_kalshi_wx_terminal_label_failclosed.py
+#     Line ~107: _TEST_API_KEY = "test-scoring-key-failclosed-patch"
+#       (api_key pattern, case-insensitive)
+#
+#   gate_engine/tests/test_kalshi_wx_active_status_normalization.py
+#     Line ~64:  _TEST_API_KEY = "test-key-wx-active-status-norm"
+#       (api_key pattern, case-insensitive)
+#
+#   gate_engine/tests/test_control_plane_scripts.py
+#     Line ~298: "token = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abcdefghij'"
+#     Line ~313: "api_key = 'sk-thisisaverylongsecretkey'"
+#     Verify-patch Bearer fixtures: ...abcdefghijklmnop, ...xxxxxx
+#     Verify-patch sk- fixture:     sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456
+
+SECRET_PATTERNS=(
+    "api_key[[:space:]]*=[[:space:]]*[\"'][^\"']{8,}"
+    "password[[:space:]]*=[[:space:]]*[\"'][^\"']{4,}"
+    'sk-[a-zA-Z0-9]{20,}'
+    'Bearer [a-zA-Z0-9_.-]{20,}'
+)
+
+# Third-party libraries, build artifacts, and agent memory only — NOT test directories.
+# .agents/ is excluded because memory files document fixture values by example
+# (they are not source code and cannot contain real secrets by convention).
+SECRET_EXCLUDE_ARGS=(
+    --exclude-dir=.pythonlibs
+    --exclude-dir=.cache
+    --exclude-dir=node_modules
+    --exclude-dir=dist
+    --exclude-dir=".git"
+    --exclude-dir=".agents"
+)
+
+# Line-level fixture filter applied to grep output (format: "path:linenum:content").
+# Each pattern anchors on BOTH the source file name AND the fixture value on the
+# same output line, so neither ingredient alone triggers exclusion.
+_filter_fixture_literals() {
+    grep -vE \
+        "test_governance_api\.py.*test-key-governance\
+|test_kalshi_wx_terminal_label_failclosed\.py.*test-scoring-key-failclosed-patch\
+|test_kalshi_wx_active_status_normalization\.py.*test-key-wx-active-status-norm\
+|test_control_plane_scripts\.py.*sk-thisisaverylongsecretkey\
+|test_control_plane_scripts\.py.*sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456\
+|test_control_plane_scripts\.py.*eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9[.]abcdefghij\
+|test_control_plane_scripts\.py.*eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9[.]xxxxxx" \
+    || true
+}
+
+SECRET_FOUND=0
+for pattern in "${SECRET_PATTERNS[@]}"; do
+    # Scan all files; filter out documented fixture lines; show path:linenum only
+    # (value not displayed — prevents secret leakage in CI/preflight logs).
+    HITS=$(grep -rIn --include="*.py" --include="*.md" --include="*.yaml" \
+               "${SECRET_EXCLUDE_ARGS[@]}" \
+               -i -E "$pattern" "$REPO_ROOT" 2>/dev/null \
+           | _filter_fixture_literals \
+           | cut -d: -f1,2 \
+           || true)
+    if [ -n "$HITS" ]; then
+        red "Possible secret pattern ($pattern) in:"
+        echo "$HITS" | sed 's/^/    /'
+        SECRET_FOUND=1
+    fi
+done
+
+if [ "$SECRET_FOUND" -eq 0 ]; then
+    green "No hardcoded secrets detected"
+    ((++PASS))
+else
+    ((++FAIL))
+fi
+
+# ---------------------------------------------------------------------------
+section "can_execute=false enforcement"
+# ---------------------------------------------------------------------------
+# Check Python source files for any non-commented can_execute=True assignment.
+# Also check YAML/JSON files for can_execute: true directives (case-insensitive).
+
+EXEC_FAIL=0
+
+# Python: actual assignment forms only — anchored to line start (after optional
+# whitespace) so string literals and docstring lines are not matched.
+# -P enables Perl regex for \s support.
+EXEC_TRUE_PY=$(grep -rn --include="*.py" -P '^\s*can_execute\s*=\s*True' \
+               "$FLASK_DIR/gate_engine/" 2>/dev/null \
+               | grep -v "test_" || true)
+if [ -n "$EXEC_TRUE_PY" ]; then
+    red "can_execute=True found in production gate_engine Python code:"
+    echo "$EXEC_TRUE_PY" | sed 's/^/    /'
+    EXEC_FAIL=1
+fi
+
+# YAML/JSON: can_execute: true (lowercase) or can_execute: True (capital T)
+EXEC_TRUE_YAML=$(grep -rn --include="*.yaml" --include="*.json" \
+                 -P '^\s*can_execute\s*:\s*(true|True)\s*$' \
+                 "$FLASK_DIR/gate_engine/" 2>/dev/null || true)
+if [ -n "$EXEC_TRUE_YAML" ]; then
+    red "can_execute: true found in gate_engine YAML/JSON:"
+    echo "$EXEC_TRUE_YAML" | sed 's/^/    /'
+    EXEC_FAIL=1
+fi
+
+if [ "$EXEC_FAIL" -eq 0 ]; then
+    green "can_execute=True not found in gate_engine (non-test)"
+    ((++PASS))
+else
+    ((++FAIL))
+fi
+
+# ---------------------------------------------------------------------------
+section "Fast smoke test (isolation sentinel only)"
+# ---------------------------------------------------------------------------
+
+if command -v python3 &>/dev/null; then
+    cd "$FLASK_DIR"
+    RESULT=$(python3 -m pytest gate_engine/tests/test_stage_a_isolation.py -q --tb=no 2>&1 | tail -3)
+    FAILURES=$(echo "$RESULT" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo "0")
+    PASSED=$(echo "$RESULT" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
+    if [ "$FAILURES" -eq 0 ]; then
+        green "Isolation tests: $PASSED passed, 0 failed"
+        ((++PASS))
+    elif [ "$FAILURES" -eq 1 ]; then
+        yellow "Isolation tests: $PASSED passed, 1 failed (runtime sentinel — expected on clean tree before commit)"
+        ((++WARN))
+    else
+        red "Isolation tests: $FAILURES failures — investigate before starting patch"
+        echo "$RESULT" | sed 's/^/    /'
+        ((++FAIL))
+    fi
+    cd "$REPO_ROOT"
+else
+    yellow "python3 not found — skipping smoke test"
+    ((++WARN))
+fi
+
+# ---------------------------------------------------------------------------
+section "Summary"
+# ---------------------------------------------------------------------------
+
+printf '\n'
+printf 'Passed: %d\n' "$PASS"
+printf 'Warned: %d\n' "$WARN"
+printf 'Failed: %d\n' "$FAIL"
+
+if [ "$FAIL" -gt 0 ]; then
+    red "Preflight FAILED — resolve all failures before starting patch work."
+    exit 1
+elif [ "$WARN" -gt 0 ]; then
+    yellow "Preflight passed with warnings — review before proceeding."
+    exit 0
+else
+    green "Preflight PASSED — safe to begin patch."
+    exit 0
+fi

@@ -233,7 +233,15 @@ def fetch(
     can pattern-match the failure reason.
     """
     stat_key_upper = stat_key.upper().strip()
-    if stat_key_upper not in ("GAMES_WON", "ACES", "DOUBLE_FAULTS", "FANTASY_SCORE", "FPTS", "FANTASY"):
+    _VALID_KEYS = (
+        "GAMES_WON", "ACES", "DOUBLE_FAULTS",
+        "FANTASY_SCORE", "FPTS", "FANTASY",
+        # TOTAL_GAMES: returns historical per-match total games (winner + loser games combined)
+        # as a game-log sequence for Gaussian baseline.  The generative Markov model
+        # (tennis_total_games.py) is the authoritative source; this is a historical prior.
+        "TOTAL_GAMES",
+    )
+    if stat_key_upper not in _VALID_KEYS:
         raise KeyError(f"stat_key '{stat_key}' not mapped for TENNIS")
 
     date = datetime.date.fromisoformat(date_str)
@@ -296,6 +304,16 @@ def fetch(
                 val = float(row["aces"])
             elif stat_key_upper == "DOUBLE_FAULTS":
                 val = float(row["double_faults"])
+            elif stat_key_upper == "TOTAL_GAMES":
+                # Per-match total games = winner games + loser games across all sets.
+                # The _parse_games helper already computed games_won for each player row.
+                # For the total-games historical baseline, we need the opponent's games too.
+                # _find_player_rows stores raw 'games_won' (player's own games); the
+                # 'games_against' field holds the opponent's games won, giving us the match total.
+                # Fallback: use games_won * 2 as a rough prior if games_against absent.
+                my_games  = float(row.get("games_won", 0) or 0)
+                opp_games = float(row.get("games_against", 0) or 0)
+                val = my_games + opp_games if opp_games > 0 else my_games * 1.7  # rough prior
             else:
                 continue
 

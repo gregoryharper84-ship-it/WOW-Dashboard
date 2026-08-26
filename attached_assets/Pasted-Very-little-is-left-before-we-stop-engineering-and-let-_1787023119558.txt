@@ -1,0 +1,80 @@
+Very little is left before we stop engineering and **let the system collect evidence**.
+
+The important catch in your report is that the DB migration is applied in dev but **production receives it on the next Publish**. So I would not call the measurement loop fully production-proven until that publish and one end-to-end smoke test complete.
+
+I would finish these in this order:
+
+1. **Publish the current build and verify the production migration.** Confirm both `wow_validation_prediction_log` and `wow_validation_outcome_log` actually exist in production, the status endpoint responds correctly, and normal WOW prediction behavior remains unchanged.
+
+2. **#267 — APPROVE and do immediately.** Trigger one real production ingestion run. We need proof of the complete chain:
+   `real frozen prediction → Savant fetch → matched outcome → verified DB write`.
+   This is much more valuable than another unit/regression test at this point.
+
+3. **#268 — APPROVE and treat as required before benchmark readiness.** `ready=true` should count only genuinely verified outcomes. An unverified fallback should never help satisfy the 20-row validation milestone. That protects the experiment itself from contaminated labels.
+
+4. **#269 — APPROVE, but it is convenience rather than model work.** Adding read-only validation endpoints to the GPT action schema is useful because I can then inspect `n_logged`, `n_settled`, verification state, and benchmark readiness without asking Replit to investigate each time. Keep them strictly read-only.
+
+5. **Then stop building.** Once the production proof passes, the next milestone is simply:
+   `20 verified settled predictions`.
+   The prediction/outcome architecture you built is already designed for immutable prediction records plus separately attached outcomes and scoring metrics such as Brier, log loss, ECE, calibration bias, and lower-bound reliability. 
+
+At 20 verified settlements, run the **first checkpoint**, but I would treat 20 as *early diagnostic evidence*, not enough evidence to redesign the whole engine. It should answer whether something is obviously broken and whether the pipeline works. I would continue collecting toward larger cohorts before making major architecture decisions.
+
+The first report should compare:
+
+```text
+WOW 1IP
+vs
+Season empirical baseline
+vs
+L10 empirical baseline
+vs
+Simple statistical baseline
+```
+
+with:
+
+```text
+Brier score
+Log loss
+ECE / calibration
+Probability-bucket hit rates
+Sample size
+Performance by line
+MORE vs LESS performance
+```
+
+Then the key decision tree becomes very simple:
+
+```text
+WOW clearly beats simple baselines
+→ begin ablation
+→ identify components providing lift
+
+WOW ≈ simple baselines
+→ simplify aggressively
+
+WOW loses to simple baselines
+→ do not rebuild sophisticated 1IP
+→ investigate whether the lane is worth modeling at all
+```
+
+And there is **one governance rule I would lock now without additional Replit development**:
+
+```text
+CONTROLLING PROBABILITY MODEL UNAVAILABLE
+→ MODEL_UNAVAILABLE
+→ NO DIRECTIONAL PICK
+```
+
+No L10 fallback, no conversational intuition, no qualitative substitute.
+
+### So the remaining engineering backlog should be tiny
+
+**Required now:** production publish/verification, #267, #268.
+
+**Useful:** #269.
+
+**After that:** **freeze again.** No Lean Core build, new specialist, new Gatekeeper patch, feature engineering, or Replit agent work until the validation data tells us what deserves to survive.
+
+The next major deliverable should not be another commit. It should be the **first real WOW-vs-baseline validation report.**

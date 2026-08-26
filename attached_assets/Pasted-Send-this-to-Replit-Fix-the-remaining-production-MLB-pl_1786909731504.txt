@@ -1,0 +1,69 @@
+Send this to Replit:
+
+> Fix the remaining production MLB player-prop acquisition defect. Do not change governance thresholds or weaken fail-closed behavior.
+>
+> Verified live failing case:
+>
+> - Player: Jeremy Peña
+> - MLB player ID resolves successfully: `665161`
+> - Prop: `MORE 0.5 Hits`
+> - Event: `48a5944d0473c78bfacde374ade3a3bf`
+> - `auto_enrich=true`
+> - No caller-supplied `player_id`, `game_log`, or `season_log`
+> - `direct_game_log_feed=NOT_CALLED`
+> - `season_log_reconstruction=NOT_CALLED`
+> - `games_available=0`
+> - `L10:NO_GAME_LOG_PROVIDED`
+> - Terminal: `DATA_CONTRACT_FAIL`
+>
+> Required implementation:
+>
+> 1. Trace the actual `/gate-engine/run` production path after player ID resolution. Instrument it temporarily if necessary. Prove which acquisition function is—or is not—called.
+> 2. Wire historical-log acquisition into the actual normalized-row scoring path, before `l5_l10_ledger.run()`. Do not implement it only in an unused module-level helper.
+> 3. After `player_id=665161` resolves, call the MLB Stats API game-log provider directly.
+> 4. Fetch at least ten completed pre-slate games, excluding the current/future event.
+> 5. Convert MLB game records into the exact `game_log` structure expected by `l5_l10_ledger`, including the canonical Hits stat key used by the normalized row.
+> 6. Pass the fetched row-level enrichment directly to downstream gates. Avoid:
+>
+>    - `enrichment = enrichment or {}` when an empty dictionary was supplied.
+>    - Writing under a pre-normalization key that differs from the generated `row_id`.
+>    - Mutating the batch-level enrichment object before market-join audit reconciliation.
+>
+> 7. Set truthful acquisition diagnostics:
+>
+>    - `direct_game_log_feed=FETCHED` when the direct provider succeeds.
+>    - `season_log_reconstruction=RECONSTRUCTED` only when reconstruction actually runs.
+>    - Never report `NOT_CALLED` merely because the caller omitted a log when `auto_enrich=true`.
+>
+> 8. If direct acquisition fails, actually invoke the supported season-log reconstruction fallback and report its attempted status and precise failure reason.
+> 9. Preserve fail-closed behavior only after both acquisition paths have genuinely been attempted.
+>
+> Required tests:
+>
+> - Integration test through the same function used by `/gate-engine/run`, not only an orchestrator unit test.
+> - Start with `enrichment={}` and no player ID/log.
+> - Resolve accented `Jeremy Peña` to `665161`.
+> - Mock a realistic MLB Stats API response containing 10+ completed games.
+> - Assert the exact row-level enrichment used by the pipeline contains `game_log`.
+> - Assert `l5_l10_ledger` returns `games_available >= 10`.
+> - Assert neither feed remains `NOT_CALLED`.
+> - Assert `L10:NO_GAME_LOG_PROVIDED` is absent.
+> - Retain the market-join reconciliation tests unchanged.
+>
+> Before deployment:
+>
+> - Run the targeted acquisition, pipeline, market-join-audit, and L5/L10 tests.
+> - Run the complete test suite.
+> - Commit and publish.
+>
+> Production acceptance test:
+>
+> Rerun the exact real Peña prop with fresh session/run IDs and no supplied player ID or logs. Do not mark resolved until:
+>
+> - `player_id=665161`
+> - `games_available > 0`
+> - A feed reports `FETCHED` or `RECONSTRUCTED`
+> - `L10:NO_GAME_LOG_PROVIDED` is gone
+> - `candidate_evaluation_completed=true`
+>
+> Report the commit, deployment confirmation, provider URL/path invoked, returned game count, final acquisition diagnostics, and terminal result.

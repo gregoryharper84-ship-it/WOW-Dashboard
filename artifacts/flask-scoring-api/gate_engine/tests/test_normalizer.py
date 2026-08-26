@@ -280,6 +280,82 @@ class TestStatKeyMappingDictAPI:
         result = _map_stat_key("passing yards", "NFL")
         assert result["stat_key"] == "PASS_YDS"
 
+    # WOW-PATCH-2026-08-06-PROP-TYPE-MAPPING-GAP — dict-API coverage
+    def test_mlb_1st_inn_pitches_thrown_primary_label(self):
+        """Exact display label from real PrizePicks board → 1IP_PITCHES_THROWN."""
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("1st Inn. Pitches Thrown", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+        assert result["stat_formula"] is None
+        assert "UNKNOWN_PROP_TYPE" not in result["flags"]
+
+    def test_mlb_1st_inning_pitches_thrown_variant(self):
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("1st Inning Pitches Thrown", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+
+    def test_mlb_1st_inning_pitches_short(self):
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("1st Inning Pitches", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+
+    def test_mlb_first_inning_pitches_thrown(self):
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("First Inning Pitches Thrown", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+
+    def test_mlb_first_inning_pitches(self):
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("First Inning Pitches", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+
+    def test_mlb_first_inning_pitch_count(self):
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("First Inning Pitch Count", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+
+    def test_mlb_1st_inning_pitch_count(self):
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("1st Inning Pitch Count", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+
+    def test_mlb_pitches_thrown_1st_inning(self):
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("Pitches Thrown 1st Inning", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+
+    def test_mlb_pitches_thrown_1st(self):
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("Pitches Thrown 1st", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+
+    def test_mlb_1ip_pitches_abbreviated(self):
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("1IP Pitches", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+
+    def test_1ip_case_insensitive(self):
+        """Mapping must be case-insensitive (normalizer lowercases input)."""
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("1ST INN. PITCHES THROWN", "MLB")
+        assert result["stat_key"] == "1IP_PITCHES_THROWN"
+
+    def test_negative_unmapped_label_still_fails_honest(self):
+        """Unmapped label must NOT resolve — no guessing."""
+        from gate_engine.normalizer import _map_stat_key
+        result = _map_stat_key("Mystery Combo Stat XYZ", "MLB")
+        assert result["stat_key"] is None
+        assert "UNKNOWN_PROP_TYPE" in result["flags"]
+
+    def test_existing_mlb_mappings_unchanged(self):
+        """Confirm pre-existing MLB mappings are unaffected by the alias addition."""
+        from gate_engine.normalizer import _map_stat_key
+        assert _map_stat_key("hits",             "MLB")["stat_key"] == "H"
+        assert _map_stat_key("pitcher strikeouts","MLB")["stat_key"] == "K"
+        assert _map_stat_key("innings pitched",  "MLB")["stat_key"] == "IP"
+        assert _map_stat_key("pitching outs",    "MLB")["stat_key"] == "OUTS"
+        assert _map_stat_key("home runs",        "MLB")["stat_key"] == "HR"
+
 
 # ===========================================================================
 # Section G: Line sanity check  (Dict-API)

@@ -15,8 +15,25 @@ _KEEPALIVE_INTERVAL_S = 600   # 10 minutes  (< 15-min autoscale threshold)
 _KEEPALIVE_INITIAL_DELAY_S = 90  # let gunicorn fully stabilise before first ping
 
 
+_KEEPALIVE_MAX_CONSECUTIVE_FAILURES = 5   # log WARNING after this many in a row
+
+
 def _keepalive_loop(prod_url: str, worker_pid: int, log) -> None:
+    """
+    Ping /wow/engine/health every _KEEPALIVE_INTERVAL_S seconds.
+
+    Logging policy (#66 fix):
+      - SUCCESS: silent (no log).  Routine pings have no diagnostic value and
+        clutter deployment logs.
+      - FAILURE: log.warning on every failure.  After
+        _KEEPALIVE_MAX_CONSECUTIVE_FAILURES consecutive failures, escalate to
+        log.error so an unhealthy server is visible rather than masked (#65 fix).
+
+    The keepalive loop NEVER stops — if the server recovers, pings resume.
+    The consecutive-failure counter resets on the next success.
+    """
     time.sleep(_KEEPALIVE_INITIAL_DELAY_S)
+    consecutive_failures = 0
     while True:
         try:
             import urllib.request
@@ -24,10 +41,74 @@ def _keepalive_loop(prod_url: str, worker_pid: int, log) -> None:
                 f"{prod_url}/wow/engine/health", timeout=10
             ) as resp:
                 status = resp.status
+            if status == 200:
+                consecutive_failures = 0   # reset on success; no log (policy #66)
+            else:
+                consecutive_failures += 1
+                _log_keepalive_failure(log, worker_pid, f"HTTP {status}", consecutive_failures)
         except Exception as exc:
-            status = f"ERR({exc})"
-        log.info(f"[keepalive] worker {worker_pid}: pinged health → {status}")
+            consecutive_failures += 1
+            _log_keepalive_failure(log, worker_pid, str(exc), consecutive_failures)
         time.sleep(_KEEPALIVE_INTERVAL_S)
+
+
+# ── Daily 1IP outcome ingestion ───────────────────────────────────────────────
+# OBSERVE_ONLY: ingestion attaches Baseball Savant pitch counts to frozen
+# predictions. No model, gate, label, ceiling, or scoring path is modified.
+# Worker 1 runs a daemon thread that fires daily at 09:00 UTC (after US
+# west-coast late games have settled) and calls ingest_outcomes(dry_run=False).
+# Fail-open: any exception is logged; the loop continues uninterrupted.
+
+_INGEST_TARGET_HOUR_UTC = 9    # 09:00 UTC
+_INGEST_MAX_ROWS        = 100  # per daily pass
+
+
+def _seconds_until_next_9am_utc() -> float:
+    from datetime import datetime, timezone, timedelta
+    now      = datetime.now(timezone.utc)
+    today_9  = now.replace(hour=_INGEST_TARGET_HOUR_UTC, minute=0, second=0, microsecond=0)
+    target   = today_9 if now < today_9 else (today_9 + timedelta(days=1))
+    return max((target - now).total_seconds(), 0.0)
+
+
+def _daily_ingest_loop(worker_pid: int, log) -> None:
+    """
+    Sleep until 09:00 UTC, run ingest_outcomes(), repeat every 24 h.
+
+    OBSERVE_ONLY invariant: ingest_outcomes() never modifies labels,
+    probabilities, model state, or scoring decisions.
+    """
+    while True:
+        wait_s = _seconds_until_next_9am_utc()
+        time.sleep(wait_s)
+        try:
+            from validation.outcome_ingestion import ingest_outcomes
+            result = ingest_outcomes(dry_run=False, max_rows=_INGEST_MAX_ROWS)
+            log.info(
+                f"[1ip-ingest] worker {worker_pid}: daily run complete — "
+                f"n_attached={result.n_attached} "
+                f"rows_processed={result.rows_processed} "
+                f"summary={dict(result.summary)}"
+            )
+        except Exception as exc:
+            log.warning(
+                f"[1ip-ingest] worker {worker_pid}: daily ingest failed (non-fatal): {exc}"
+            )
+        time.sleep(60)   # brief pause before computing next target
+
+
+def _log_keepalive_failure(log, worker_pid: int, detail: str, consecutive: int) -> None:
+    msg = (
+        f"[keepalive] worker {worker_pid}: health check failed "
+        f"(consecutive={consecutive}): {detail}"
+    )
+    if consecutive >= _KEEPALIVE_MAX_CONSECUTIVE_FAILURES:
+        log.error(
+            msg + f" — server appears persistently unhealthy "
+            f"(≥{_KEEPALIVE_MAX_CONSECUTIVE_FAILURES} consecutive failures)"
+        )
+    else:
+        log.warning(msg)
 
 
 def post_fork(server, worker):
@@ -126,6 +207,23 @@ def post_fork(server, worker):
     except Exception as exc:
         server.log.warning(f"[post_fork] odds quota table bootstrap failed (non-fatal): {exc}")
 
+    # ── Canonical WOW Daily manifest reaper ───────────────────────────────────
+    # The reaper may have been started during --preload in the master process.
+    # Its thread does not survive fork, while its in-memory "started" flag does.
+    # Resetting first ensures each serving worker owns a real recovery loop for
+    # detached runner leases; it does not execute scoring work.
+    try:
+        import gate_engine.daily_run_lifecycle as _daily_lifecycle
+        _daily_lifecycle.reset_after_fork()
+        _daily_lifecycle.start_manifest_reaper()
+        server.log.info(
+            f"[post_fork] worker {worker.pid}: daily manifest recovery reaper started"
+        )
+    except Exception as exc:
+        server.log.warning(
+            f"[post_fork] daily manifest recovery reaper failed (non-fatal): {exc}"
+        )
+
     # ── Stage 2: reset settlement worker and start a real thread in this worker ─
     # Root cause: start_settlement_worker() ran in the master → set
     # _WORKER_STARTED=True → workers inherit the flag with NO real thread running.
@@ -175,3 +273,97 @@ def post_fork(server, worker):
             )
     except Exception as exc:
         server.log.warning(f"[post_fork] keep-alive start failed (non-fatal): {exc}")
+
+    # ── Daily 1IP outcome ingestion (worker 1 / production only) ──────────────
+    # OBSERVE_ONLY — ingest_outcomes() never modifies labels, probabilities,
+    # model state, or scoring decisions.  Fail-open; any error is logged and
+    # the loop continues.
+    try:
+        _ingest_prod_url = os.environ.get("REPLIT_APP_URL", "").rstrip("/")
+        if _ingest_prod_url and worker.age == 1:
+            threading.Thread(
+                target=_daily_ingest_loop,
+                args=(worker.pid, server.log),
+                daemon=True,
+                name="1ip-daily-ingest",
+            ).start()
+            server.log.info(
+                f"[post_fork] worker {worker.pid}: daily 1IP outcome ingestion scheduled "
+                f"(target=09:00 UTC, max_rows={_INGEST_MAX_ROWS}, OBSERVE_ONLY)"
+            )
+    except Exception as exc:
+        server.log.warning(f"[post_fork] 1IP ingest scheduler start failed (non-fatal): {exc}")
+
+    # ── Pitcher prefetch executor reset ───────────────────────────────────────
+    # Each worker must own its own ThreadPoolExecutor. With --preload the master
+    # process imports pitcher_prefetch before forking, so _executor may already
+    # be set. Resetting it here ensures each worker creates a fresh executor on
+    # first use and does not share state with sibling workers.
+    try:
+        from gate_engine.mlb import pitcher_prefetch as _ppf
+        _ppf._executor = None
+        _ppf._executor_lock = threading.Lock()
+        _ppf._inflight = {}
+        _ppf._inflight_lock = threading.Lock()
+        server.log.info(
+            f"[post_fork] worker {worker.pid}: pitcher_prefetch executor reset"
+        )
+    except Exception as exc:
+        server.log.warning(
+            f"[post_fork] pitcher_prefetch reset failed (non-fatal): {exc}"
+        )
+
+    # ── Player identity cache schema-ready reset ──────────────────────────────
+    # Force each worker to verify/create the DB schema on its first lookup.
+    try:
+        from gate_engine.mlb import player_identity_cache as _pic
+        _pic.reset_schema_ready()
+        server.log.info(
+            f"[post_fork] worker {worker.pid}: player_identity_cache schema_ready reset"
+        )
+    except Exception as exc:
+        server.log.warning(
+            f"[post_fork] player_identity_cache reset failed (non-fatal): {exc}"
+        )
+
+    # ── Governance snapshot pre-warm (#69 fix) ────────────────────────────────
+    # On a fresh deploy the GovernanceSnapshot LKG cache is empty in every new
+    # worker.  The first request to /gate-engine/run passes expected_governance_hash,
+    # which requires a valid cached snapshot to verify; without one the endpoint
+    # returns 409 GOVERNANCE_UNAVAILABLE and FINAL_APPROVED cannot be reached.
+    #
+    # Fix: each worker synchronously refreshes the snapshot immediately after
+    # fork (but BEFORE serving any request) with a short timeout to bound startup
+    # latency.  Exceptions are swallowed — the worker still starts and the degraded
+    # path (MODEL_QUALIFIED_HOLD ceiling) handles the first request gracefully.
+    try:
+        import threading as _gov_threading
+        _gov_warmed = [False]
+        _gov_exc    = [None]
+
+        def _gov_warmup():
+            try:
+                from gate_engine.governance_resilience import GovernanceSnapshot
+                GovernanceSnapshot.instance().refresh()
+                _gov_warmed[0] = True
+            except Exception as _e:
+                _gov_exc[0] = _e
+
+        _gov_t = _gov_threading.Thread(target=_gov_warmup, daemon=True)
+        _gov_t.start()
+        _gov_t.join(timeout=5.0)   # 5-second bound; never blocks restart
+
+        if _gov_warmed[0]:
+            server.log.info(
+                f"[post_fork] worker {worker.pid}: governance snapshot pre-warmed successfully"
+            )
+        else:
+            server.log.warning(
+                f"[post_fork] worker {worker.pid}: governance snapshot pre-warm "
+                f"incomplete (timeout or error: {_gov_exc[0]}) — "
+                f"first request may hit degraded path"
+            )
+    except Exception as exc:
+        server.log.warning(
+            f"[post_fork] governance snapshot pre-warm failed (non-fatal): {exc}"
+        )

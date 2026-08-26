@@ -1,0 +1,107 @@
+{
+  "phase": "B4",
+  "title": "WNBA/NBA Props Lane Adapter",
+  "patch_id": "WOW-PATCH-2026-08-11-UNIVERSAL-AGENT-CORE-V1-B4",
+  "status": "MACHINE_AUDITABLE_CLOSURE_PASS",
+  "closure_type": "EVIDENCE_BASED_PASS",
+  "git_commit_sha": "eb5079e",
+  "git_branch": "main",
+  "git_dirty": false,
+  "started_at": "2026-08-16T14:35:47Z",
+  "completed_at": "2026-08-16T14:35:47Z",
+  "test_commands": [
+    "python3 -B -m pytest gate_engine/tests/test_b4_full_pipeline_integration.py gate_engine/tests/test_b4_pipeline_state_wired.py gate_engine/tests/test_wnba_props_adapter.py -q --no-header -p no:cacheprovider",
+    "python3 -B -m pytest gate_engine/tests/ -q --no-header -p no:cacheprovider --tb=line"
+  ],
+  "test_results": {
+    "b4_focused": {
+      "passed": 237,
+      "failed": 0,
+      "skipped": 0,
+      "subtests_passed": 18,
+      "duration_seconds": 0.43
+    },
+    "full_regression": {
+      "passed": 4783,
+      "failed": 0,
+      "skipped": 11,
+      "warnings": 60,
+      "subtests_passed": 460,
+      "duration_seconds": 113.32
+    }
+  },
+  "test_files": [
+    "gate_engine/tests/test_b4_full_pipeline_integration.py",
+    "gate_engine/tests/test_b4_pipeline_state_wired.py",
+    "gate_engine/tests/test_wnba_props_adapter.py"
+  ],
+  "implementation_files": [
+    "gate_engine/universal_agent/lanes/wnba_props/__init__.py",
+    "gate_engine/universal_agent/lanes/wnba_props/adapter.py",
+    "gate_engine/universal_agent/lanes/wnba_props/field_map.py",
+    "gate_engine/universal_agent/lanes/wnba_props/role_inputs.py",
+    "gate_engine/universal_agent/lanes/wnba_props/validation.py",
+    "gate_engine/universal_agent/lanes/wnba_props/game_script/conditional_hit_prob.py",
+    "gate_engine/universal_agent/lanes/wnba_props/game_script/game_environment.py",
+    "gate_engine/universal_agent/lanes/wnba_props/game_script/minutes_distribution.py",
+    "gate_engine/universal_agent/lanes/wnba_props/game_script/player_state.py",
+    "gate_engine/universal_agent/lanes/wnba_props/game_script/script_fragility.py",
+    "gate_engine/universal_agent/lanes/wnba_props/game_script/shadow_gate.py",
+    "gate_engine/universal_agent/lanes/wnba_props/game_script/unconditional_aggregator.py",
+    "gate_engine/universal_agent/lanes/wnba_props/pipeline_gateway.py",
+    "gate_engine/universal_agent/pipeline_state.py",
+    "gate_engine/universal_agent/model_validation/"
+  ],
+  "authority_invariant_results": {
+    "can_execute_false_all_modules": "PASS",
+    "advisory_only_true_all_payloads": "PASS",
+    "no_forbidden_governance_keys_in_role_payloads": "PASS",
+    "packet_frozen_immutable": "PASS",
+    "no_app_import_in_adapter": "PASS",
+    "no_live_llm_api_network_calls": "PASS",
+    "no_production_routing_changes": "PASS"
+  },
+  "row_reconciliation": {
+    "adapts_wnba_props_rows": "PASS",
+    "adapts_nba_props_rows": "PASS",
+    "row_wins_on_enrichment_collision": "PASS",
+    "six_role_payloads_always_present": "PASS",
+    "acquisition_error_returns_technical_failure": "PASS",
+    "game_script_error_classified_as_technical_failure": "PASS",
+    "legitimate_none_game_script_not_misclassified": "PASS"
+  },
+  "representative_fixtures": {
+    "wnba_complete": {
+      "event_id": "wnba-evt-001",
+      "sport": "wnba",
+      "stat_key": "player_points",
+      "adapter_status": "COMPLETE",
+      "role_payload_count": 6,
+      "lane": "WNBA_PROPS"
+    },
+    "nba_degraded": {
+      "event_id": "nba-evt-002",
+      "sport": "nba",
+      "stat_key": "player_assists",
+      "adapter_status": "DEGRADED",
+      "role_payload_count": 6,
+      "lane": "WNBA_PROPS"
+    },
+    "acquisition_error": {
+      "event_id": "wnba-evt-003",
+      "adapter_status": "TECHNICAL_FAILURE",
+      "failure_code": "ACQUISITION_PROVIDER_ERROR",
+      "role_payload_count": 0
+    }
+  },
+  "b3c_carry_forward": {
+    "b0_recursive_governance_hardening": {
+      "place_bet_in_forbidden_keys": true,
+      "settlement_in_forbidden_keys": true,
+      "nested_detection_tested": true,
+      "test": "test_every_forbidden_key_rejected_when_nested iterates all FORBIDDEN_GOVERNANCE_KEYS including place_bet and settlement"
+    }
+  },
+  "next_phase": "B5_MLB_PROPS_ADAPTER",
+  "notes": "B4 was implemented and conversationally approved prior to this closure record. This closure captures the machine-auditable evidence for an already-passing implementation."
+}

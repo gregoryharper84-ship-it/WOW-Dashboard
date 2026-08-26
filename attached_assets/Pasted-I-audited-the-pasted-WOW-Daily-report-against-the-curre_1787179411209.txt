@@ -1,0 +1,334 @@
+I audited the pasted WOW Daily report against the current web evidence, the active WOW v16/V2.2 files, and—most importantly—the **actual Create App production state**. The report is directionally responsible in withholding fake probabilities, but several of its factual and runtime conclusions need correction. 
+
+## Bottom line
+
+The biggest finding is **not about the picks. It is about the backend state.**
+
+The pasted report says the production backend was healthy and that the remaining problem was merely getting the completed Daily result back across the Replit-Agent boundary. 
+
+That is **not correct**.
+
+My new read-only inspection of the actual `Create App` production run found:
+
+| Production field            | Verified state                         |
+| --------------------------- | -------------------------------------- |
+| Run ID                      | `5a22d927-d20f-4367-93d6-924119d8a364` |
+| Session ID                  | `replit-agent-20260819222144`          |
+| Run status                  | **`IN_PROGRESS`**                      |
+| Stage                       | **`SCORING`**                          |
+| Progress                    | `Evaluating canonical board`           |
+| Last progress update        | `2026-08-19 22:28:40 UTC`              |
+| Finished at                 | `null`                                 |
+| Manifest rows               | **0**                                  |
+| Rows discovered             | **0**                                  |
+| `scanned_sports`            | **empty**                              |
+| `source_union_counts`       | **null**                               |
+| Raw probabilities persisted | **none**                               |
+| Calibrated probabilities    | **none**                               |
+| Lower bounds                | **none**                               |
+| Terminal labels             | **none**                               |
+| Reconciliation              | **null**                               |
+| Row-level immutable writes  | **none represented**                   |
+| Validation-log result       | **none represented**                   |
+
+At the same time, the production health surfaces themselves are healthy: engine `ok=true`, engine version `v16.5`, governance `ACTIVE`, Stage 2 `schema_ready=true`, the settlement worker is alive, and no Stage 2 errors are reported.
+
+So the accurate diagnosis is:
+
+> **The platform is healthy, but this specific WOW Daily run is stalled/nonterminal inside the canonical-board/SCORING boundary. It has not generated the production result yet.**
+
+That is materially different from “the result exists but ChatGPT can't retrieve it.”
+
+### Why that matters technically
+
+The manifest is already at `SCORING`, yet it has `rows_discovered=0`, an empty `rows` array and empty `scanned_sports`. That is suspicious.
+
+It suggests one of two things: either the lifecycle manager advances to `SCORING` before canonical-board rows/counters are persisted, or the canonical-board evaluator is stuck while the manifest has already been advanced. I cannot prove which from the observable data, but **this is now the engineering area to investigate**. It is not an Odds API outage, Stage 2 outage, governance outage, or Replit deployment outage.
+
+This fits the host-abstraction contract: backend capability trouble should be isolated to its gate rather than declaring the entire WOW model unavailable.  And V2.2 requires exact row lifecycle/reconciliation rather than allowing a scoring stage to silently produce no rows. 
+
+---
+
+# The second major problem: the Mystics analysis used stale data
+
+This is the most significant candidate-level problem I found.
+
+The pasted report says:
+
+> Washington 17-12, Toronto 10-21
+> Washington -190 / Toronto +160
+> no-vig Washington ≈63%
+
+The **season-series statement is correct**: Washington leads Toronto 3-0. But the records and odds source are stale. ([RealGM Basketball][1])
+
+### Current records
+
+A current-day VegasInsider matchup page shows:
+
+| Team       | Pasted report | Current page |
+| ---------- | ------------: | -----------: |
+| Washington |         17-12 |    **20-14** |
+| Toronto    |         10-21 |    **10-24** |
+
+([VegasInsider][2])
+
+So the RealGM preview used by the report had stopped updating its record/stat data several games earlier.
+
+### The -190 / +160 line is even more problematic
+
+I traced that exact pair back to the cited RealGM Wiretap page.
+
+That article was published **July 16, 2026**, more than a month before tonight's August 19 game. It did indeed print:
+
+`WAS -190 / TOR +160`
+
+but that cannot be used as a fresh August 19 market snapshot. ([RealGM Basketball][3])
+
+A page crawled today instead shows an opening moneyline of approximately:
+
+**Toronto +310 / Washington -395**
+
+and its current displayed market is substantially more Washington-heavy, with prices across listed sources ranging well beyond that opening level. ([VegasInsider][2])
+
+Therefore:
+
+**The arithmetic on -190/+160 was fine. The input was not current.**
+
+Under the Exact-Line/Payout/No-Vig Auditor, timestamp/freshness is part of exact market identity. A month-old price cannot become today's no-vig benchmark. 
+
+### Correct WOW treatment
+
+Mystics ML can absolutely remain a **high-priority discovery candidate**. The fundamental current situation is arguably stronger than the pasted report suggested.
+
+But this should be:
+
+`RESEARCH_INTEREST → LLP MODEL REQUIRED`
+
+not:
+
+`current market benchmark ≈63%`
+
+And because current player availability also needs a clean game-day lock—one current preview reports Washington healthy, Nyara Sabally out and recent uncertainty involving Julie Allemand/Maria Conde—the LLP role/status gate still has work to do. ([Bullets Forever][4])
+
+**Revised research view: Mystics remain very interesting, but the pasted price analysis should be discarded completely.**
+
+---
+
+# Chase Burns MORE 5.5 Ks: much more fragile than the report conveyed
+
+The exact proposition itself checks out. A current August 19 article lists:
+
+**Chase Burns Over 5.5 strikeouts at -143 at Caesars.**
+
+It also reports the 2.47 ERA and 1.092 WHIP used in the pasted analysis. ([Talksport][5])
+
+The Cardinals/Reds starters and both lineups are also supported, with Matthew Liberatore opposite Burns. ([Red Reporter][6])
+
+But deeper research uncovers precisely the kind of failure-path evidence WOW is supposed to catch.
+
+Burns had already reached **124 innings**, exceeding his previous professional high. His fastball velocity had begun declining, and another recent analysis notes that only three of his previous seven starts reached six innings and three were below 90 pitches. His recent seven-start performance also deteriorated from his earlier dominant baseline. ([Red Reporter][7])
+
+That matters enormously for a strikeout MORE.
+
+The MLB Pitcher Failure-Path Expert explicitly requires the model to convert:
+
+`P(K prop | normal workload)`
+
+into an **unconditional** probability after early hook, inefficiency, workload management, command deterioration and other regimes. 
+
+So the correct interpretation is not:
+
+> Burns has a great K profile → Over 5.5 is strong.
+
+It is:
+
+> Burns has a strong strikeout engine **but now has a material late-season workload/velocity failure path that the controlling model must price explicitly.**
+
+I would therefore **downgrade Burns relative to how the pasted report framed him until that mixture model runs**.
+
+There is another immediate issue: first pitch was scheduled for **5:40 PM CT**, and the current clock reached 5:40 PM while I was performing this audit. ([Viva El Birdos][8])
+
+The Final Refresh Governor says a started event must be removed from pregame consideration. 
+
+Thus Burns and Reds ML **cannot now remain on a pregame final card without a fresh official event-status check confirming the game has not begun**.
+
+---
+
+# Mystics vs. Lynx as the top WNBA winner candidates
+
+The Lynx evidence in the pasted report is substantially better than the Mystics price evidence.
+
+The official matchup page confirms Minnesota won both 2026 meetings:
+
+**87-84** and **81-75**. ([NBA.com][9])
+
+And current reporting confirms Golden State is **0-8 all-time against Minnesota**, including the 2025 playoff sweep and the two losses this season. ([Swish Appeal][10])
+
+But Golden State is not remotely a weak opponent. Current reporting puts the Valkyries at **25-9, second in the WNBA**, while Minnesota entered this stretch with the league's best record. ([Reuters][11])
+
+That changes how I would describe this matchup.
+
+**Lynx ML is a legitimate high-level modeling candidate. Golden State upset is a legitimate modeling candidate too. Neither side should be characterized as obvious from H2H alone.**
+
+Minnesota also has a materially different roster context from much of its early-season data because Napheesa Collier returned from offseason ankle surgery in late July. She initially returned under a minutes restriction, so V2.2 should make current-role/opportunity data—not stale season aggregates—the basis for today's model. ([Reuters][12])
+
+This is exactly why the LLP expert requires current participant status and calibrated probability rather than an H2H heuristic. 
+
+**Revised read: Lynx stays near the top of the WNBA research queue, but GSV is a much more serious failure path than the original wording implies.**
+
+---
+
+# Ohtani MORE 2.5 total bases: the factual case is real
+
+This candidate survived my factual audit reasonably well.
+
+Today's published prop analysis lists:
+
+**Shohei Ohtani Over 2.5 Total Bases +106 at FanDuel.**
+
+It also lists Kyle Freeland at **6.27 ERA, 1.442 WHIP and 4.65 FIP**. ([Talksport][5])
+
+Ohtani has indeed gone nuclear during the series. Reuters reports three homers in the first two games, including another 448-foot home run Tuesday night. ([Reuters][13])
+
+And today's Dodgers-Rockies game is scheduled for 8:40 PM ET with Kyle Freeland opposite Roki Sasaki. ([Baseball Reference][14])
+
+So this is a **real candidate rather than a bad discovery artifact**.
+
+But the pasted report correctly stopped short of edge verification. I still do not have a verified same-settlement **Under 2.5** counterpart and timestamp sufficient to form the required two-way no-vig market. A single published `+106` Over price is not enough for the market-economics stage. 
+
+Also, 2.5 TB is structurally a much tougher threshold than “get on base.” Walks contribute zero total bases. Singles alone require three hits. That should be explicitly modeled, not inferred from his home-run heater.
+
+**Revised read: strong research candidate; no WOW probability or market edge can yet be claimed.**
+
+---
+
+# Dodgers ML: the research thesis is legitimate but incomplete
+
+Los Angeles did win the first two games in Colorado, 11-5 and 7-6. ([Reuters][13])
+
+And Freeland's current profile is clearly a weakness.
+
+But the pasted report doesn't really model the opposing starting-pitcher side. Roki Sasaki is currently listed for Los Angeles. ([Fox Sports 1350 AM][15])
+
+For the MLB moneyline module, that starter input is not optional; the LLP skill requires starter quality, lineups, bullpen condition, park/weather, defense and the run distribution. 
+
+So “Dodgers have taken the first two and Ohtani is hot” is discovery evidence, not an independent win probability.
+
+**Revised read: keep Dodgers in Pass-A research; do not call it a modeled No. 3 winner until the actual MLB game-win specialist produces the distribution.**
+
+---
+
+# Reds ML: more questionable than Dodgers
+
+The starter advantage is legitimate.
+
+Burns is listed at 14-2 in the current series preview, while Liberatore brings the 5.07 ERA cited above. ([Viva El Birdos][16])
+
+But the report correctly noticed Cincinnati's offensive problem—and deeper research makes that problem difficult to dismiss. The current Reds article goes so far as to describe Cincinnati as having a **league-worst offense** during the present slump. ([Red Reporter][6])
+
+Combine that with Burns' workload/velocity questions and I would place Reds ML **below Dodgers ML** even before the full model.
+
+And as noted above, its 5:40 PM CT start has now reached the final-refresh boundary.
+
+---
+
+# The all-sports coverage is incomplete
+
+This is another major WOW Daily compliance problem.
+
+The pasted “Pass A” contains MLB and WNBA only. It does not provide a sport-by-sport coverage/reconciliation ledger showing that all other supported lanes were scanned and either produced candidates or terminated cleanly. 
+
+There is definitely other supported activity today. For example, both the ATP Masters 1000 and WTA 1000 Cincinnati Open are running **August 13-23**, including August 19. ([Women's Tennis Association][17])
+
+So under the active WOW Daily requirement, tennis should at minimum appear as:
+
+`scanned → qualified / held / rejected / model unavailable`
+
+The Parallel Discovery Router also requires every discovered row to terminate through a controlling specialist or explicit unsupported label and requires reconciliation. 
+
+The production manifest makes this deficiency even clearer: `scanned_sports=[]` and `rows_discovered=0`.
+
+Therefore this was **not a complete all-sports WOW Daily Pass A**. It was a manually reconstructed partial research queue while production remained stalled.
+
+---
+
+# Governance audit of the report itself
+
+Several things were done correctly.
+
+Withholding invented WOW probabilities was absolutely right. V2.2 requires controlling-model output plus dynamic calibration before a probability/lower bound may be published.  The Dynamic Calibration Expert further prohibits simply renaming a point estimate a lower bound. 
+
+`FINAL_APPROVED = 0` was also correct, and remains correct now.
+
+Failure paths were at least mentioned, which is better than ignoring them—but WOW requires those risks to **alter the unconditional probability**, not merely appear in narrative form. 
+
+Where I would change the report is its label discipline. Labels such as `ML_WINNER_PRIORITY_1`, `MODEL_RESULT_PENDING`, and `HIGHER_FAILURE_PATH` are useful prose tags, but should not look like native terminal results. Without specialist scoring, these rows should live at the discovery ceiling such as `RESEARCH_INTEREST`; the LLP native labels only become meaningful once calibrated probability/lower-bound gates run.
+
+---
+
+# My corrected current hierarchy
+
+This is **research priority**, not a production WOW probability leaderboard:
+
+| Current research order | Candidate              | My audit                                                                                                                    |
+| ---------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **1**                  | **Mystics ML**         | Strong current favorite profile, but throw away the stale -190/+160 market analysis; current line is dramatically different |
+| **2**                  | **Lynx ML**            | Excellent H2H + top team, but GSV 25-9 is a genuine elite-level opponent                                                    |
+| **3**                  | **Dodgers ML**         | Strong matchup environment; requires Sasaki/Freeland + bullpen/run-distribution model                                       |
+| **4**                  | **Ohtani MORE 2.5 TB** | Exact prop supported; excellent current form; still high threshold and missing two-way market audit                         |
+| **5**                  | **Burns MORE 5.5 K**   | Exact line supported, but workload and velocity flags materially increase failure-path risk; now at start-time boundary     |
+| **6**                  | **Reds ML**            | Burns advantage offset by terrible offense and Burns workload concerns; start-time boundary reached                         |
+
+The **Golden State upset remains a legitimate `UPSET_WATCH`**, and I would actually take it more seriously than the pasted version did because Golden State's 25-9 profile makes this far closer to a contender-versus-contender matchup than a typical favorite/underdog event. ([Reuters][11])
+
+Toronto, by contrast, remains a poor upset candidate given its current 10-24 record and Washington's 3-0 season sweep, though the exact probability must come from the LLP model rather than those facts alone. ([VegasInsider][2])
+
+## What I would fix in the backend next
+
+The priority should **not** be adding another model or another specialist. The model stack is already deep enough.
+
+The current defect is the orchestration/lifecycle boundary:
+
+1. Instrument the `Evaluating canonical board` operation with sub-stage timestamps and per-sport counters.
+2. Persist `rows_discovered`, `scanned_sports`, `source_union_counts`, model-ready count and blocked count **before** entering `SCORING`.
+3. Add a watchdog for a manifest that remains `IN_PROGRESS/SCORING` without progress-heartbeat movement.
+4. If canonical-board evaluation fails or times out, force a native terminal failure state rather than leaving the run indefinitely nonterminal.
+5. Ensure the run can distinguish `DISCOVERY_EMPTY`, `CANONICALIZATION_STALLED`, `SCORING_EXECUTOR_TIMEOUT`, `MODEL_SERVICE_WAIT`, and `LIFECYCLE_CALLBACK_LOST`.
+6. Preserve whatever sports complete successfully instead of allowing one stalled lane to prevent all row persistence.
+
+That is the strongest technical finding from this research. **The immediate WOW problem is no longer “the model needs more intelligence.” It is that the production Daily orchestration can enter SCORING with zero persisted rows and fail to terminalize.** Until that is fixed, adding more analytical layers risks increasing complexity without improving the reliability of the output.
+
+So my final audit is:
+
+**PRODUCTION SERVICE:** healthy
+**AUG-19 DAILY RUN:** `IN_PROGRESS / SCORING_STALLED_OR_WAITING`
+**RESULT-RETRIEVAL-ONLY THEORY:** **rejected**
+**PRODUCTION ROW MANIFEST:** empty
+**ALL-SPORTS COVERAGE:** not demonstrated
+**MYSTICS OLD -190/+160 ANALYSIS:** **invalid for current market**
+**BURNS >5.5K:** materially higher failure-path concern than reported
+**OHTANI >2.5 TB:** factually legitimate research candidate
+**LYNX ML:** legitimate but against an elite GSV opponent
+**FINAL_APPROVED:** **0**
+**can_execute:** `false`
+**DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS:** `true`
+
+The most useful next move is to fix the **canonical-board → SCORING → terminal-manifest lifecycle**, rather than build another predictive layer.
+
+[1]: https://basketball.realgm.com/wnba/preview/2026-08-19/Toronto-at-Washington/158685?utm_source=chatgpt.com "Aug 19, 2026 - Toronto Tempo at Washington Mystics - RealGM WNBA Game Preview"
+[2]: https://www.vegasinsider.com/wnba/matchups/mystics-vs-tempo/ "Tempo vs Mystics Odds, Betting Trends, and Line Movements - 08/19/2026"
+[3]: https://basketball.realgm.com/wiretap/286720/Toronto-Tempo-vs-Washington-Mystics-Live-Stream-Watch-WNBA-Season-2026-on-Fubo?utm_source=chatgpt.com "Toronto Tempo vs Washington Mystics Live Stream Watch WNBA Season 2026 on Fubo - RealGM Wiretap"
+[4]: https://www.bulletsforever.com/mystics/72392/washington-mystics-toronto-tempo-wnba-game-preview?utm_source=chatgpt.com "Mystics vs. Tempo preview: Washington hosts Toronto on Wednesday night"
+[5]: https://talksport.com/us/4522712/mlb-prop-bets-august-19-2026/?utm_source=chatgpt.com "Best betting promos and sportsbooks for MLB prop bets [August 19, 2026]"
+[6]: https://www.redreporter.com/cincinnati-reds-discussion/52105/chase-burns-st-louis-cardinals-starter?utm_source=chatgpt.com "The Reds get to try to score a run again tonight against the Cardinals"
+[7]: https://www.redreporter.com/cincinnati-reds-analysis/52052/chase-burns-innings-limit-fantasy-starting-pitchers?utm_source=chatgpt.com "As Reds ace Chase Burns inches closer to his innings limit..."
+[8]: https://www.vivaelbirdos.com/st-louis-cardinals-discussion/74556/st-louis-cardinals-vs-cincinnati-reds-game-discussion-wednesday?utm_source=chatgpt.com "St. Louis Cardinals vs Cincinnati Reds Game Discussion Wednesday"
+[9]: https://www.nba.com/game/min-vs-gsv-1022600268?utm_source=chatgpt.com "Minnesota Lynx vs Golden State Valkyries Aug 19, 2026 Game Summary | NBA.com"
+[10]: https://www.swishappeal.com/wnba/84974/games-watch-gsv-valkyries-min-lynx-playoffs-matchups-winless-losses-championship-natalie-nakase-olivia-miles-naphessa-collier-all-star-game?utm_source=chatgpt.com "WNBA gameday discussion: By finally beating the Minnesota Lynx, the Golden State Valkyries can burnish their championship credentials"
+[11]: https://www.reuters.com/sports/san-francisco-host-2027-wnba-all-star-game--flm-2026-08-18/?utm_source=chatgpt.com "San Francisco to host 2027 WNBA All-Star Game"
+[12]: https://www.reuters.com/sports/lynx-coach-napheesa-collier-minutes-restriction-debut--flm-2026-07-22/?utm_source=chatgpt.com "Lynx coach: Napheesa Collier on minutes restriction in debut"
+[13]: https://www.reuters.com/sports/baseball/shohei-ohtani-homers-again-dodgers-hold-off-rockies-denver--flm-2026-08-19/?utm_source=chatgpt.com "Shohei Ohtani homers again, Dodgers hold off Rockies"
+[14]: https://www.baseball-reference.com/previews/2026/COL202608190.shtml?utm_source=chatgpt.com "Colorado Rockies vs. Los Angeles Dodgers, at Coors Field, August 19, 2026 Matchups, Preview | Baseball-Reference.com"
+[15]: https://foxsportsabq.iheart.com/content/2026-08-17-buy-tickets-for-dodgers-vs-rockies-on-aug-17/?utm_source=chatgpt.com "Buy Tickets for Dodgers vs. Rockies on Aug. 17 | Fox Sports 1350 AM"
+[16]: https://www.vivaelbirdos.com/st-louis-cardinals-analysis/74487/st-louis-cardinals-vs-cincinnati-reds-series-preview?utm_source=chatgpt.com "St. Louis Cardinals vs Cincinnati Reds Series Preview"
+[17]: https://www.wtatennis.com/tournaments/1017/cincinnati/2026?utm_source=chatgpt.com "Cincinnati Open 2026 Overview | WTA Official"

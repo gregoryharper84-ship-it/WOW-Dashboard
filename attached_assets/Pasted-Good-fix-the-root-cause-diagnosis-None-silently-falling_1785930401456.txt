@@ -1,0 +1,19 @@
+Good fix — the root-cause diagnosis (None silently falling through to MODEL_QUALIFIED_HOLD instead of being distinguished from a legitimate 0.65-floor pass) is exactly the kind of ambiguity that makes postmortems unreliable, and 13 new tests on a module that had zero coverage is a real improvement regardless of this specific bug.
+
+A few things I want to flag before treating this as fully closed, per my QA role on this project:
+
+**Governance gap — no ChatGPT sign-off visible**
+Per the active governance rules, patch origination/approval authority sits with ChatGPT; Claude (or Claude Code) implements but doesn't self-approve rule changes. Nothing in this report shows the Rule 0 change was reviewed by ChatGPT before it went to production — it looks like diagnosis → code → tests → commit → deploy happened in one continuous pass. That may be fine if ChatGPT already signed off elsewhere, but if not, this shipped outside the approval chain the spec requires. Worth confirming either way.
+
+**Spec/doc mismatch I can't resolve from here**
+The `WOW-MASTER-SPEC.md` in my project files is headered **v15.3.0 / Framework v2.1.0**, but this project's active spec is stated as **v16 Clean Core / Framework v2.2.0**. I don't have the actual v16 Section 18.3 (Pitching Outs Rules) language to confirm Rule 0 doesn't conflict with something already in the current spec — only the outdated v15.3 copy. If the master spec doc hasn't been synced to v16 in this project's files, that's a separate issue worth fixing; if it has, I'd need the current version to actually validate this patch instead of taking the "no conflicts" outcome on faith.
+
+**Patch doc status**
+`WOW-PATCH-2026-08-04-OUTS-MORE-MISSING-SURVIVAL-DATA.md` shows status **ACTIVE**, which isn't one of the template's defined states (Proposed / Approved—analytical only / Approved—pending dashboard build / Deployed / Rejected). Minor, but worth normalizing to **Deployed** and logging to the `WOW-SHARED-NOTES.md` patch queue (Deployment Order Step 7) so it doesn't get missed in a later audit.
+
+**Postmortem linkage**
+Since this traces back to the Jared Jones miss, this should get a formal row in `WOW-RESULTS-LOG.md` with `Patch Needed: Yes` and this fix cited as the `Future Rule` — otherwise the calibration ledger won't show why that leg's outcome is now explainable rather than unexplained variance.
+
+None of this says undo the deploy — the fix and tests look sound on their own terms. It's the paperwork around it (ChatGPT approval, spec sync, status normalization, postmortem row) that's incomplete.
+
+On next candidates: between #54 (stale milestone count across workers) and #52 (orphaned NO-side calibration records), the cross-worker staleness bug is the one I'd prioritize — it can silently corrupt live-facing state on every affected read, where orphaned records mostly just pollute the ledger until cleaned up. But it's your call — want me to spec out either one as a formal patch template entry first?

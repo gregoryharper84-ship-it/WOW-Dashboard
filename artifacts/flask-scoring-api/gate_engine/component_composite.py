@@ -38,11 +38,39 @@ STAT_FAMILY_ALIASES: dict[str, str] = {
     "steals": "steals", "stl": "steals",
     # blocks
     "blocks": "blocks", "blk": "blocks",
-    # composites
-    "pra": "pra", "pts+reb+ast": "pra", "pts_reb_ast": "pra",
-    "p+r": "p+r", "pts+reb": "p+r", "pts_reb": "p+r", "points+rebounds": "p+r",
-    "p+a": "p+a", "pts+ast": "p+a", "pts_ast": "p+a", "points+assists": "p+a",
-    "r+a": "r+a", "reb+ast": "r+a", "reb_ast": "r+a", "rebounds+assists": "r+a",
+    # PRA composites — all display labels a GPT or normalizer might send
+    "pra":                     "pra",
+    "pts+reb+ast":             "pra",
+    "pts_reb_ast":             "pra",
+    "p+r+a":                   "pra",   # alternative plus-notation
+    "pr+a":                    "pra",
+    "pts+reb+assists":         "pra",
+    "pts+rebounds+ast":        "pra",
+    "pts+rebounds+assists":    "pra",
+    "points+rebounds+assists": "pra",
+    "points+reb+ast":          "pra",
+    # P+R composites
+    "p+r":              "p+r",
+    "pts+reb":          "p+r",
+    "pts_reb":          "p+r",
+    "points+rebounds":  "p+r",
+    "pts+rebounds":     "p+r",
+    "points+reb":       "p+r",
+    # P+A composites
+    "p+a":             "p+a",
+    "pts+ast":         "p+a",
+    "pts_ast":         "p+a",
+    "points+assists":  "p+a",
+    "pts+assists":     "p+a",
+    "points+ast":      "p+a",
+    # R+A composites
+    "r+a":              "r+a",
+    "reb+ast":          "r+a",
+    "reb_ast":          "r+a",
+    "rebounds+assists": "r+a",
+    "reb+assists":      "r+a",
+    "rebounds+ast":     "r+a",
+    # Fantasy score
     "fantasy_score": "fantasy_score", "fantasy": "fantasy_score",
 }
 

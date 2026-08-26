@@ -1,0 +1,66 @@
+Yes. The best permanent workaround is a formal failover lane, not an ad hoc “search the web and keep going.”
+
+Your own WOW files already point to the right architecture: evidence acquisition should proceed from live tools/APIs → official sources → trusted stats → sportsbook/odds/projections → reputable web → reconstruction → labeled proxy, and only after those paths fail should the row become DATA_UNOBTAINABLE. WOW_v16_COMPACT_PERMANENT_REPLACEMENT_2026-07-22.md The Clean Core also explicitly says to auto-research every material gap before grading, while preserving source freshness and conflicts. wow_custom_gpt_compact_patched_2026-07-19.md
+
+I’d implement a BACKEND_FAILOVER_RESEARCH path with these rules:
+
+1. Classify the failure first. Distinguish:
+    * INPUT_FAILURE — bad screenshot/format
+    * DATA_CONTRACT_FAIL — backend schema mismatch
+    * SOURCE_ACQUISITION_FAIL — provider returned nothing
+    * MODEL_ROUTE_FAIL — wrong specialist/contract
+    * MODEL_RUNTIME_FAIL — backend/model exception
+    * RESPONSE_SIZE_FAIL — payload too large
+    * GOVERNANCE_FAIL — stop completely
+2. If governance is healthy but acquisition/contract fails, switch to web reconstruction. Search only the fields the backend says are missing: status, role, lineup, minutes, game logs, box scores, market, settlement, etc. Prefer official/first-party sources, then trusted structured providers. This is already consistent with WOW’s evidence hierarchy. wow_custom_gpt_compact_patched_2026-07-19.md
+3. Build a canonical enrichment packet. For WNBA, for example, reconstruct exactly:
+    * game_log
+    * box_score_log
+    * role_status
+    * role_timestamp
+    Your WNBA contract explicitly separates game_log from box_score_log and defines the required fields for each. WNBA_Enrichment_Key_Contract_2026-08-03.docx
+4. Resubmit the enriched row to the backend. This is the missing capability today. The scoring endpoint should accept something like:
+
+enrichment: {
+  game_log: [...],
+  box_score_log: [...],
+  role_status: "STARTER",
+  role_timestamp: "...",
+  source_provenance: [...]
+}
+
+5. If backend rescore still fails, do not invent a “true probability.” Instead return a separate reconstruction lane:
+    * RECONSTRUCTED_EVIDENCE_COMPLETE
+    * BACKEND_PROBABILITY_UNAVAILABLE
+    * max_ceiling = MODEL_QUALIFIED_HOLD or lower, depending on the controlling rule
+    That preserves the key WOW rule that a downstream workaround cannot erase an upstream blocker. wow-control-plane-orchestrator-SKILL.md
+6. Never let a backend outage become NO_PLAY unless the candidate was actually modeled and rejected. A technical failure should produce something explicit like:
+
+RUN_PARTIAL_BACKEND_FAILURE
+candidate_evaluation_completed=false
+probability_publishable=false
+
+7. Add retry policy by failure type.
+    * screenshot/base64 failure → normalize manually and retry
+    * response-too-large → slim mode
+    * source API empty → web reconstruction
+    * wrong route → reroute specialist
+    * stale/missing status → official web refresh
+    * governance mismatch → hard stop
+    * model unavailable → fail closed
+8. Log source provenance for every reconstructed field. Your framework requires source/status tracking, and reconstructed or proxy data should never silently masquerade as native backend data. WOW_v16_COMPACT_PERMANENT_REPLACEMENT_2026-07-22.md
+
+The clean architecture would be:
+
+backend attempt
+→ classify failure
+→ governance check
+→ targeted web/official reconstruction
+→ canonical enrichment packet
+→ backend resubmit
+→ if backend succeeds: publish backend output
+→ if backend still fails: reconstructed evidence only, no fabricated probability
+
+For your current WNBA issue, the highest-value backend change is specifically to add caller-supplied enrichment to runWowGateEngineV2. That would let the web-recovered game_log, box_score_log, role, and timestamps actually enter the opportunity and L5/L10 gates instead of remaining outside the model.
+
+That would solve this class of failure much more reliably than repeated auto-enrichment retries.

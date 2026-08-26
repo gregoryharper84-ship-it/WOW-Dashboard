@@ -1,0 +1,38 @@
+Yes. The fix is mostly pipeline/data-contract work, not changing the model thresholds.
+
+The live backend is healthy on v16.5, and the important separation patch is already ACTIVE: WOW-PATCH-2026-07-15-PROP-CONFIDENCE-AND-MARKET-LABEL-SEPARATION. That means a missing exact sportsbook comparison should not automatically kill the hit-confidence lane. Missing market evidence can cap the market/money lanes while a sufficiently complete reconstructed probability can still be published for research. The current MLB rows are failing earlier than they should because the proprietary-stat reconstruction is incomplete.
+
+Here’s the concrete fix:
+
+1. MLB Hitter Fantasy Score / H+R+RBI: build the historical distribution ourselves from verified game logs instead of waiting for an exact sportsbook market. For H+R+RBI, reconstruct each game’s value from official H + R + RBI, then create the exact-line L5/L10/season ledger. For Hitter Fantasy Score, reconstruct each game’s score from the verified PrizePicks scoring definition plus official box-score components. Then run both MORE and LESS, apply the thin-market haircut, and keep the sportsbook comparison in a separate market-sanity lane. Your rules explicitly say Fantasy Score and H+R+RBI are proprietary/thin markets and need documented reconstruction, validation, and a haircut—not automatic abandonment. 
+2. Do not require an exact sportsbook Fantasy Score/H+R+RBI market just to publish hit probability. The exact market is needed for a verified market-edge/no-vig claim, but the active confidence/market separation architecture allows research confidence to survive when the exact comparison market is unavailable. We still need exact PrizePicks line, settlement identity, historical distribution, reconstruction, uncertainty, and calibration. The optimizer requires the exact board line, role/status, exact-line historical ledger, reconstruction, and market sanity when comparable. wow-slip-probability-optimizer-SKILL-v3(1).md The exact-line auditor separately says an adjacent or mismatched market cannot be called an exact no-vig comparison. WOW-Exact-Line-Payout-Push-No-Vig-Edge-Auditor.md
+3. WNBA needs the correct enrichment packet. This is the clearest current data-contract issue. Every WNBA prop should receive both:
+    * game_log: plain numeric values for the specific stat being scored.
+    * box_score_log: dictionaries containing at least MIN, PTS, REB, AST, FGA, and a valid usage key such as USG%.
+    Also supply role_status and a fresh ISO-8601 role_timestamp. Those two log fields cannot be interchanged. The contract says fewer than 3 qualifying non-DNP games triggers a role hold, while the caller guidance asks for at least 5 when possible. WNBA_Enrichment_Key_Contract_2026-08-03.docx
+
+For example, Flau’jae Points should conceptually reach the backend as:
+
+game_log:
+[recent PTS values...]
+box_score_log:
+[
+  {MIN, PTS, REB, AST, FGA, USG%},
+  ...
+]
+role_status: STARTER
+role_timestamp: fresh timestamp
+
+For Aneesah rebounds, game_log should be her raw rebound totals. For Vandersloot PRA, it should be each game’s PTS+REB+AST. For Rhyne Howard 2PA, we need a reliable source for actual 2-point attempts and a projected-minutes/attempt-rate pathway; WNBA attempt props specifically require minutes, attempts/minute, usage/role, and game script. wow_custom_gpt_compact_patched_2026-07-19.md
+
+The event/status side also needs to be explicitly injected: official game ID, opponent, start time, event status, active/inactive status, expected role, projected minutes, and source timestamps. The optimizer’s acquisition contract requires event status, role/lineup, logs, market, projection, settlement and news paths to be attempted before scoring. wow-slip-probability-optimizer-SKILL-v3(1).md
+
+There is also a separate image-ingestion bug. The backend health check now advertises multipart_image_support=true, but the JIT /analyze-and-score adapter was sending a local /mnt/data/... path where the endpoint expected actual image bytes/base64 or a reachable URL. When I sent base64 manually, the vision service still rejected the image. The permanent fix is for the adapter to read the image bytes, normalize/recompress if needed, and send a valid MIME-bearing upload such as data:image/jpeg;base64,..., or use the backend’s multipart route directly. That failure is an integration problem, not a reason to reject the props.
+
+One more thing I would fix: research rescans should not count as cross-slip exposure. We saw repeated analysis of the same Flau’jae row eventually produce a concentration blocker. With record_entries=false, scoring-only reruns should not behave like submitted/proposed tickets. Exposure should be written only when a card is actually registered as proposed/open/submitted. Otherwise repeated QA scans can poison the session ledger.
+
+So the target architecture is:
+
+screenshot → normalize → auto-research → MLB proprietary reconstruction / WNBA enrichment → confidence model → market sanity separately → calibration → slip construction → exposure only on actual card registration.
+
+If those fixes are applied, the engine can legitimately answer “these two legs qualify” or “still no play” based on completed models instead of returning DATA_CONTRACT_FAIL for most of the board.

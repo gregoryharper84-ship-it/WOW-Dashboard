@@ -300,7 +300,7 @@ CREATE TABLE IF NOT EXISTS llp_source_snapshots (
     snapshot_id             TEXT NOT NULL UNIQUE,
     -- Source metadata
     source_name             TEXT NOT NULL,   -- e.g. "odds_api", "espn", "prizepicks"
-    source_type             TEXT,            -- live / official / reconstructed / proxy
+    source_type             TEXT,            -- normalized 8-value enum (PATCH-2026-08-14)
     fetch_timestamp         TIMESTAMPTZ NOT NULL,
     sport                   TEXT,
     market                  TEXT,
@@ -309,6 +309,24 @@ CREATE TABLE IF NOT EXISTS llp_source_snapshots (
     -- Quality
     data_complete           BOOLEAN DEFAULT TRUE,
     missing_fields          TEXT[],
+    -- Provenance fields added by WOW-PATCH-2026-08-14-SOURCE-PROVENANCE-FRESHNESS-AUDITOR-v2
+    -- (also applied to existing tables via schema_migration.run_provenance_migration)
+    fact_type               TEXT,
+    fact_value_hash         TEXT,
+    source_grade            TEXT,
+    published_at            TIMESTAMPTZ,
+    observed_at             TIMESTAMPTZ,
+    effective_at            TIMESTAMPTZ,
+    valid_until             TIMESTAMPTZ,
+    freshness_policy_id     TEXT,
+    freshness_basis         TEXT,
+    freshness_status        TEXT,
+    materiality             TEXT,
+    supports_checkpoint     TEXT[],
+    conflicts_with          TEXT[],
+    conflict_status         TEXT,
+    reconstruction_status   TEXT,
+    max_supportable_ceiling TEXT,
     -- Safety
     can_execute             BOOLEAN NOT NULL DEFAULT FALSE,
     execution_rule          TEXT    NOT NULL DEFAULT 'DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS'
@@ -317,6 +335,13 @@ CREATE INDEX IF NOT EXISTS llp_source_snapshots_snapshot_id_idx
     ON llp_source_snapshots (snapshot_id);
 CREATE INDEX IF NOT EXISTS llp_source_snapshots_source_name_idx
     ON llp_source_snapshots (source_name, fetch_timestamp DESC);
+CREATE INDEX IF NOT EXISTS llp_source_snapshots_freshness_status_idx
+    ON llp_source_snapshots (freshness_status);
+CREATE INDEX IF NOT EXISTS llp_source_snapshots_conflict_status_idx
+    ON llp_source_snapshots (conflict_status);
+CREATE INDEX IF NOT EXISTS llp_source_snapshots_max_ceiling_idx
+    ON llp_source_snapshots (max_supportable_ceiling)
+    WHERE max_supportable_ceiling IS NOT NULL;
 """
 
 # FK from llp_event_candidates.source_snapshot_id → llp_source_snapshots.snapshot_id
@@ -446,6 +471,22 @@ def ensure_all_tables() -> None:
             return
         try:
             conn = _get_conn()
+
+            # WOW-PATCH-2026-08-16: Run provenance column migration FIRST so that
+            # columns like freshness_status exist on any pre-existing tables BEFORE
+            # we try to CREATE INDEX ... ON llp_source_snapshots (freshness_status).
+            # Without this ordering the index DDL crashes on existing deployments
+            # that have the table but are missing the later-added columns.
+            # ADD COLUMN IF NOT EXISTS is idempotent — safe to call before table
+            # creation too (fails silently when the table doesn't exist yet).
+            try:
+                from gate_engine.source_provenance.schema_migration import (
+                    run_provenance_migration,
+                )
+                run_provenance_migration(conn)
+            except Exception:
+                pass  # Best-effort; main DDL continues regardless
+
             cur  = conn.cursor()
             for ddl in [
                 _DDL_LLP_SOURCE_SNAPSHOTS,
@@ -599,12 +640,222 @@ def log_calibration_entry_pg(entry: dict[str, Any]) -> bool:
                 entry.get("postmortem_note"),
             ),
         )
-        conn.commit()
+        # WOW-PATCH-2026-08-16-AUDIT fix (2): transactional provenance enforcement.
+        # The snapshot INSERT runs in the SAME transaction as the calibration INSERT
+        # via SAVEPOINT.  If the snapshot write fails we ROLLBACK TO SAVEPOINT and
+        # downgrade the label atomically in the same commit — no separate-connection
+        # best-effort downgrade; a FINAL_APPROVED/MONEY_QUALIFIED record can NEVER
+        # survive if its required provenance write failed.
+        _snap_id = entry.get("source_snapshot_id")
+        if _snap_id:
+            try:
+                from datetime import datetime, timezone as _tz
+                from gate_engine.source_provenance import (
+                    auditSourceProvenance as _asp,
+                    build_evidence_from_dict as _befd,
+                )
+                _ev_data = {
+                    "evidence_id":     _snap_id,
+                    "snapshot_id":     _snap_id,
+                    "fact_type":       entry.get("market") or "player_line",
+                    "source_name":     entry.get("book") or entry.get("source") or "llp_calibration",
+                    "source_type":     entry.get("source_type") or "odds_aggregator",
+                    "fetch_timestamp": entry.get("model_timestamp") or datetime.now(tz=_tz.utc).isoformat(),
+                    "sport":           entry.get("sport"),
+                    "market":          entry.get("market"),
+                    "fact_value":      entry.get("odds") or entry.get("line"),
+                    "materiality":     "HIGH",
+                    "raw_payload":     {k: entry.get(k) for k in (
+                        "event_key", "run_id", "side", "odds", "line", "book",
+                        "model_probability", "calibrated_probability", "stake", "final_label",
+                    )},
+                }
+                _ev = _befd(_ev_data)
+                _asp(_ev, "llp_calibration")   # pure-Python audit pass; no DB/network
+                cur.execute("SAVEPOINT llp_prov_sp")
+                cur.execute(
+                    """
+                    INSERT INTO llp_source_snapshots (
+                        snapshot_id, source_name, source_type, fetch_timestamp,
+                        sport, market, raw_payload,
+                        fact_type, fact_value_hash, source_grade,
+                        freshness_policy_id, freshness_basis, freshness_status,
+                        materiality, conflict_status, reconstruction_status,
+                        max_supportable_ceiling
+                    ) VALUES (%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s)
+                    ON CONFLICT (snapshot_id) DO UPDATE SET
+                        freshness_status        = EXCLUDED.freshness_status,
+                        freshness_policy_id     = EXCLUDED.freshness_policy_id,
+                        freshness_basis         = EXCLUDED.freshness_basis,
+                        max_supportable_ceiling = EXCLUDED.max_supportable_ceiling,
+                        conflict_status         = EXCLUDED.conflict_status
+                    """,
+                    (
+                        _snap_id,
+                        _ev.source,
+                        _ev.source_type.value,
+                        _ev.retrieved_at or _ev_data["fetch_timestamp"],
+                        _ev.sport,
+                        _ev.market,
+                        None,
+                        _ev.fact_type,
+                        _ev.fact_value_hash,
+                        _ev.source_grade,
+                        _ev.freshness_policy_id,
+                        _ev.freshness_basis.value if _ev.freshness_basis else None,
+                        _ev.freshness_status.value,
+                        _ev.materiality.value,
+                        _ev.conflict_status.value,
+                        _ev.reconstruction_status.value,
+                        _ev.max_supportable_ceiling,
+                    ),
+                )
+                cur.execute("RELEASE SAVEPOINT llp_prov_sp")
+            except Exception as _snap_exc:
+                import logging as _sp_log
+                _sp_log.getLogger("llp_stage2_tables").warning(
+                    "[provenance_fail_closed] snapshot INSERT failed for %r: %s — "
+                    "rolling back provenance; downgrading label if FINAL_APPROVED/MONEY_QUALIFIED",
+                    _snap_id, _snap_exc,
+                )
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT llp_prov_sp")
+                except Exception:
+                    pass
+                # Downgrade in the SAME transaction — atomic with the calibration INSERT.
+                # A FINAL_APPROVED or MONEY_QUALIFIED record must never survive without
+                # verified provenance.
+                if entry.get("final_label") in ("FINAL_APPROVED", "MONEY_QUALIFIED"):
+                    cur.execute(
+                        """
+                        UPDATE llp_calibration_ledger
+                        SET    final_label = 'MODEL_QUALIFIED_HOLD'
+                        WHERE  event_key = %s AND run_id = %s
+                          AND  final_label IN ('FINAL_APPROVED', 'MONEY_QUALIFIED')
+                          AND  settled_at IS NULL
+                        """,
+                        (entry.get("event_key"), entry.get("run_id")),
+                    )
+        conn.commit()   # single atomic commit: calibration + snapshot (or label downgrade)
         cur.close()
         conn.close()
         return True
     except Exception:
         return False
+
+
+def _audit_calibration_entry_provenance(conn: Any, entry: dict[str, Any]) -> dict:
+    """
+    Build a StructuredEvidence from a calibration entry and run auditSourceProvenance.
+
+    If the entry has a source_snapshot_id, also INSERT (or UPDATE) the
+    corresponding row in llp_source_snapshots so the table receives live data.
+    This is a best-effort call — exceptions are silently suppressed by the caller.
+
+    LLP ingestion call site:
+        checkpoint = "llp_calibration"
+        fact_type  = entry["market"] (or "player_line" fallback)
+    """
+    from datetime import datetime, timezone
+    from gate_engine.source_provenance import (
+        auditSourceProvenance,
+        build_evidence_from_dict,
+    )
+
+    snapshot_id = entry.get("source_snapshot_id")
+    fact_type   = entry.get("market") or "player_line"
+
+    evidence_data = {
+        "evidence_id":     snapshot_id or f"llp_cal_{entry.get('event_key', 'unknown')}",
+        "snapshot_id":     snapshot_id,
+        "fact_type":       fact_type,
+        "source_name":     entry.get("book") or entry.get("source") or "llp_calibration",
+        "source_type":     entry.get("source_type") or "odds_aggregator",
+        "fetch_timestamp": entry.get("model_timestamp") or datetime.now(tz=timezone.utc).isoformat(),
+        "sport":           entry.get("sport"),
+        "market":          entry.get("market"),
+        "fact_value":      entry.get("odds") or entry.get("line"),
+        "materiality":     "HIGH",
+        "raw_payload":     {
+            k: entry.get(k) for k in (
+                "event_key", "run_id", "side", "odds", "line", "book",
+                "model_probability", "calibrated_probability", "stake", "final_label",
+            )
+        },
+    }
+    evidence = build_evidence_from_dict(evidence_data)
+    result   = auditSourceProvenance(evidence, "llp_calibration")
+
+    # If source_snapshot_id is set, persist the snapshot row so
+    # llp_source_snapshots receives real data (previously always empty).
+    if snapshot_id:
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO llp_source_snapshots (
+                    snapshot_id, source_name, source_type, fetch_timestamp,
+                    sport, market, raw_payload,
+                    fact_type, fact_value_hash, source_grade,
+                    freshness_policy_id, freshness_basis, freshness_status,
+                    materiality, conflict_status, reconstruction_status,
+                    max_supportable_ceiling
+                ) VALUES (
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s
+                )
+                ON CONFLICT (snapshot_id) DO UPDATE SET
+                    freshness_status        = EXCLUDED.freshness_status,
+                    freshness_policy_id     = EXCLUDED.freshness_policy_id,
+                    freshness_basis         = EXCLUDED.freshness_basis,
+                    max_supportable_ceiling = EXCLUDED.max_supportable_ceiling,
+                    conflict_status         = EXCLUDED.conflict_status
+                """,
+                (
+                    snapshot_id,
+                    evidence.source,
+                    evidence.source_type.value,
+                    evidence.retrieved_at or evidence_data["fetch_timestamp"],
+                    evidence.sport,
+                    evidence.market,
+                    None,   # raw_payload omitted from snapshots for size
+                    evidence.fact_type,
+                    evidence.fact_value_hash,
+                    evidence.source_grade,
+                    evidence.freshness_policy_id,
+                    evidence.freshness_basis.value if evidence.freshness_basis else None,
+                    evidence.freshness_status.value,
+                    evidence.materiality.value,
+                    evidence.conflict_status.value,
+                    evidence.reconstruction_status.value,
+                    evidence.max_supportable_ceiling,
+                ),
+            )
+            conn.commit()
+            cur.close()
+            # Snapshot write succeeded — return structured result so caller can
+            # act on provenance write status (fix d).
+            return {"write_ok": True, "snapshot_id": snapshot_id, "ceiling_lowered": False}
+        except Exception as _snap_exc:
+            # Snapshot write failure is non-fatal — never blocks the caller.
+            # Task #72: log the failure so silently orphaned records are visible.
+            # Return write_ok=False so the caller can lower the ceiling.
+            import logging as _snap_log_mod
+            _snap_log_mod.getLogger("llp_stage2_tables").warning(
+                "[source_snapshot] INSERT failed for snapshot_id=%r: %s — "
+                "calibration_entry_provenance persisted but llp_source_snapshots "
+                "record is missing; run reconciliation if this repeats.",
+                snapshot_id,
+                _snap_exc,
+            )
+            return {"write_ok": False, "snapshot_id": snapshot_id, "ceiling_lowered": False,
+                    "error": str(_snap_exc)}
+    # No snapshot_id present — provenance still ran, write not attempted.
+    return {"write_ok": True, "snapshot_id": None, "ceiling_lowered": False}
 
 
 def get_stage2_schema_health() -> dict[str, Any]:
@@ -617,7 +868,13 @@ def get_stage2_schema_health() -> dict[str, Any]:
     for the post_fork hook thread to complete.
     """
     if not _TABLES_READY:
-        ensure_all_tables()    # no-op when tables already exist; sets _TABLES_READY
+        try:
+            ensure_all_tables()    # no-op when tables already exist; sets _TABLES_READY
+        except Exception as _exc:
+            # WOW-PATCH-2026-08-16: ensure_all_tables normally catches internally;
+            # wrap here as a second defensive layer so health checks never raise.
+            global _TABLES_LAST_ERROR
+            _TABLES_LAST_ERROR = f"ensure_all_tables raised: {_exc!s}"
     return {
         "schema_ready":   _TABLES_READY,
         "last_error":     _TABLES_LAST_ERROR,

@@ -68,6 +68,10 @@ MODEL_ERROR              = "error"
 MODEL_NO_REGISTERED_MODEL    = "no_registered_model"     # unsupported sport/prop — fail closed
 MODEL_FS_UNVERIFIED          = "fs_formula_unverified"   # formula not yet verified in registry
 MODEL_FS_GAUSSIAN_PROVISIONAL = "gaussian_fs_provisional" # verified formula, Gaussian + PROVISIONAL flags
+# 1IP_PITCHES_THROWN firewall: Poisson (mlb_1ip_pitches_poisson_v1) is unconditionally
+# excluded.  The event-tree model is GPT-supplied; backend surfaces this status until
+# the full posterior simulation is implemented natively.
+MODEL_1IP_EVENT_TREE_REQUIRED = "1ip_event_tree_required"
 
 _POISSON_IDEAL_SAMPLE = 10    # < this → calibration warning
 
@@ -166,9 +170,20 @@ _COUNTING_STAT_KEYWORDS = {
 }
 
 # MLB counting stats for which Poisson works (strikeouts, total bases, etc.)
+# 1IP_PITCHES_THROWN is included — the model registry entry is
+# mlb_1ip_pitches_poisson_v1 (PROVISIONAL).  A scalar game_log (from the
+# Baseball Savant ledger) routes to Poisson; dict game_logs are coerced via
+# _STAT_COL_MAP ("1IP_PITCHES_THROWN" → "first_inning_pitches").
+# "ip" is a substring of "1ip_pitches_thrown" so the entry is listed explicitly
+# to make the intent clear; _is_counting_stat also has a direct equality guard.
 _MLB_COUNTING_STATS = {
     "so", "k", "strikeouts", "tb", "total_bases",
     "outs", "ip", "innings",
+    # Plate appearances: per-game counting stat (3–5 PA/game); Poisson λ=game-log mean.
+    # PA is a batter stat — normalizer maps "plate appearances"/"pa" → "PA".
+    "pa", "plate_appearances",
+    # 1st-inning pitches thrown: routed from Baseball Savant ledger.
+    "1ip_pitches_thrown",
 }
 
 # NFL counting stats eligible for Poisson model (yards, receptions, etc.)
@@ -190,7 +205,9 @@ _NFL_TD_STATS = {"td", "pass_td", "rush_td", "rec_td", "anytime_td",
                  "passing_tds", "rushing_tds", "receiving_tds"}
 
 # Tennis stats that use Gaussian (match-level continuous distributions)
-_TENNIS_GAUSSIAN_STATS = {"fantasy_score", "fpts", "fantasy", "games_won", "games"}
+# total_games: historical Gaussian baseline; definitive model is tennis_total_games_gate
+_TENNIS_GAUSSIAN_STATS = {"fantasy_score", "fpts", "fantasy", "games_won", "games",
+                           "total_games", "total_game"}
 # Tennis stats where Poisson still fits (discrete counts: aces, DFs)
 _TENNIS_POISSON_STATS  = {"aces", "ace", "double_faults", "df", "double_fault"}
 
@@ -262,6 +279,13 @@ def _is_counting_stat(sport: str, stat_key: str) -> bool:
             return True
 
     if sport_u == "MLB":
+        # 1IP_PITCHES_THROWN is explicitly EXCLUDED from Poisson routing.
+        # The event-tree simulator (gate_engine/mlb/ip1_event_tree.py) is the
+        # registered model for this stat key.  Returning False here prevents
+        # _is_counting_stat from routing it to Poisson via the "ip" substring
+        # match in _MLB_COUNTING_STATS.
+        if sk_low == "1ip_pitches_thrown":
+            return False
         if any(kw in sk_low for kw in _MLB_COUNTING_STATS):
             return True
 
@@ -573,14 +597,131 @@ def _finalize(result: "HitProbResult") -> "HitProbResult":
       opposite_raw_probability = 1 − hit_probability  (complementary event)
 
     The FS Tier 1d path builds these fields manually and does NOT call _finalize.
+
+    After filling extended fields, runs validate_probability_output() (Task 186 — Step 3).
+    If violations are found the result is replaced with a MODEL_ERROR sentinel so
+    invalid probability values never propagate to consumers.
     """
     raw = result.hit_probability
     opp = (round(1.0 - raw, 4) if raw is not None else None)
-    return result._replace(
+    populated = result._replace(
         raw_model_probability    = raw,
         calibrated_probability   = raw,
         calibrated_lower_bound   = None,
         opposite_raw_probability = opp,
+    )
+    # Probability-schema contract enforcement (fail-closed)
+    violations = validate_probability_output(populated)
+    if violations:
+        logger.warning(
+            "_finalize: probability-schema violation → MODEL_ERROR: %s",
+            "; ".join(violations),
+        )
+        return make_model_error_result(
+            violations   = violations,
+            no_vig_prob  = result.market_calibration,
+            sample_size  = result.sample_size,
+        )
+    return populated
+
+
+# ---------------------------------------------------------------------------
+# Probability-schema contract validator (Task 186 — Step 3)
+# ---------------------------------------------------------------------------
+
+#: Registered calibration_status values recognised by the backend.
+#: Any value outside this set is a schema violation.
+_REGISTERED_CALIBRATION_STATUSES: frozenset[str] = frozenset({
+    "ACTIVE",
+    "PROVISIONAL",
+    "NO_REGISTERED_MODEL",
+    "UNCALIBRATED",
+    "DEGRADED",
+    "MODEL_ERROR",
+    "UNVERIFIED",
+})
+
+#: Tolerance for raw + opposite sum check
+_RAW_OPP_TOLERANCE = 0.001
+
+
+def validate_probability_output(result: "HitProbResult") -> list[str]:
+    """
+    Validate a HitProbResult against the backend probability-schema contract.
+
+    Enforced invariants
+    -------------------
+    1. calibrated_probability ∈ [0, 1] or None.
+    2. raw_model_probability + opposite_raw_probability ≈ 1.0 (±0.001)
+       when both are non-None.
+    3. calibration_status (in result.calibration_note) is a registered value
+       when explicitly stated (best-effort string scan).
+    4. probability_publishable is not validated here — it lives on the row dict,
+       not on HitProbResult.
+
+    Returns
+    -------
+    list[str]
+        Violation strings.  Empty list = valid.  Never raises.
+    """
+    violations: list[str] = []
+
+    # Invariant 1: calibrated_probability range
+    cal = result.calibrated_probability
+    if cal is not None:
+        if not isinstance(cal, (int, float)):
+            violations.append(
+                f"calibrated_probability is not numeric: type={type(cal).__name__}"
+            )
+        elif not (0.0 <= float(cal) <= 1.0):
+            violations.append(
+                f"calibrated_probability out of [0,1]: {cal}"
+            )
+
+    # Invariant 2: raw + opposite sum
+    raw = result.raw_model_probability
+    opp = result.opposite_raw_probability
+    if raw is not None and opp is not None:
+        try:
+            total = float(raw) + float(opp)
+            if abs(total - 1.0) > _RAW_OPP_TOLERANCE:
+                violations.append(
+                    f"raw_model_probability({raw}) + opposite_raw_probability({opp}) = "
+                    f"{total:.4f}, expected ≈1.0 (±{_RAW_OPP_TOLERANCE})"
+                )
+        except (TypeError, ValueError):
+            violations.append(
+                "raw_model_probability or opposite_raw_probability is not numeric"
+            )
+
+    return violations
+
+
+def make_model_error_result(
+    violations: list[str],
+    no_vig_prob: "Optional[float]" = None,
+    sample_size: int = 0,
+) -> "HitProbResult":
+    """
+    Build a MODEL_ERROR sentinel HitProbResult for probability-schema violations.
+
+    Used as the fail-closed output when validate_probability_output() detects
+    a contract breach.  Never returns a numeric hit_probability.
+    """
+    note = "MODEL_ERROR: probability-schema violations — " + "; ".join(violations)
+    return HitProbResult(
+        hit_probability          = None,
+        model_used               = MODEL_ERROR,
+        calibration_note         = note,
+        lambda_used              = None,
+        sample_size              = sample_size,
+        market_calibration       = no_vig_prob,
+        raw_model_probability    = None,
+        calibrated_probability   = None,
+        calibrated_lower_bound   = None,
+        opposite_raw_probability = None,
+        formula_registry_version = None,
+        formula_registry_hash    = None,
     )
 
 
@@ -614,6 +755,134 @@ def compute(
         return _finalize(HitProbResult(None, MODEL_NO_DATA,
                                        "No game log available — cannot compute probability",
                                        None, 0, no_vig_prob))
+
+    # ── 1IP_PITCHES_THROWN firewall ──────────────────────────────────────────
+    # Runs BEFORE any counting-stat or Poisson tier.
+    # mlb_1ip_pitches_poisson_v1 is unconditionally excluded for this stat key.
+    #
+    # WOW-PATCH-2026-08-17-1IP-PRODUCTION-HYDRATION:
+    #   - No BF dist   → PROBABILITY_PIPELINE_CONTRACT_BREACH (typed missing_fields)
+    #   - BF dist present → run ip1_event_tree.simulate_1ip(); return hit_probability
+    #     (MODEL_QUALIFIED_HOLD ceiling enforced by caller; can_execute=False)
+    if sport == "MLB" and stat_key.upper().replace(" ", "_") == "1IP_PITCHES_THROWN":
+        enr_here = enrichment or {}
+        bf_dist  = enr_here.get("first_inning_bf_distribution")
+        # Reject only when bf_dist is absent OR when the Savant ledger explicitly
+        # reported n=0 (no verified starts).  A GPT/test-supplied dict that omits
+        # "n" but carries probability values is treated as valid input.
+        # WOW-PATCH-2026-08-18-1IP-ROUTE-FIX (part B): guard non-dict bf_dist.
+        # If bf_dist is truthy but not a dict (e.g. a list or stray int from a
+        # malformed Savant parse), the prior code fell through to simulate_1ip()
+        # where bf_distribution.get("p_bf_3") raises AttributeError.  Treat any
+        # non-dict value the same as None — typed breach, never a crash.
+        _bf_n_explicit = bf_dist.get("n") if isinstance(bf_dist, dict) else None
+        if bf_dist is None or not isinstance(bf_dist, dict) or (_bf_n_explicit is not None and _bf_n_explicit == 0):
+            # Typed breach contract — acquisition either failed or was never attempted.
+            _breach_note = (
+                "PROBABILITY_PIPELINE_CONTRACT_BREACH: "
+                "DATA_CONTRACT_FAIL:missing_field:first_inning_bf_distribution; "
+                "missing_fields=['first_inning_bf_distribution']; "
+                "stage=1IP_SAVANT_LEDGER_ACQUISITION; "
+                "mlb_1ip_pitches_poisson_v1 blocked — Poisson excluded for 1IP; "
+                "can_execute=False; retryable=True"
+            )
+            return _finalize(HitProbResult(
+                hit_probability    = None,
+                model_used         = MODEL_1IP_EVENT_TREE_REQUIRED,
+                calibration_note   = _breach_note,
+                lambda_used        = None,
+                sample_size        = len(game_log),
+                market_calibration = no_vig_prob,
+            ))
+
+        # BF dist present — run the Monte Carlo event-tree simulator.
+        # ceiling = MODEL_QUALIFIED_HOLD (enforced by pipeline; can_execute=False).
+        ppb_dist = enr_here.get("pitches_per_batter_distribution") or {"mean": 4.2, "std": 1.1}
+        _acq_status = enr_here.get("1ip_acquisition_status", "UNKNOWN")
+        try:
+            from gate_engine.mlb.ip1_event_tree import simulate_1ip
+            sim = simulate_1ip(
+                bf_distribution         = bf_dist,
+                pitches_per_batter_dist = ppb_dist,
+                line_value              = line,
+                side                    = side,
+                n_trials                = 25000,
+            )
+            raw_prob = sim.get("raw_less") if side == "LESS" else sim.get("raw_more")
+            # Fail closed on degenerate simulation output.
+            if raw_prob is None or not (0.01 <= float(raw_prob) <= 0.99):
+                raw_prob = None
+            calibration_note = (
+                f"1IP_EVENT_TREE:model=1ip_monte_carlo_event_tree_v1;"
+                f"n_trials={sim.get('n_trials', 25000)};"
+                f"mean_pitches={sim.get('mean_pitches')};"
+                f"raw_more={sim.get('raw_more')};raw_less={sim.get('raw_less')};"
+                f"bf_n={bf_dist.get('n')};ppb_mean={ppb_dist.get('mean')};"
+                f"acq_status={_acq_status};"
+                f"ceiling=MODEL_QUALIFIED_HOLD;can_execute=False"
+            )
+        except Exception as _sim_exc:
+            raw_prob = None
+            calibration_note = (
+                f"1IP_EVENT_TREE_ERROR:{_sim_exc!s:.120};"
+                f"ceiling=MODEL_QUALIFIED_HOLD;can_execute=False"
+            )
+        return _finalize(HitProbResult(
+            hit_probability    = raw_prob,
+            model_used         = "1ip_monte_carlo_event_tree_v1",
+            calibration_note   = calibration_note,
+            lambda_used        = None,
+            sample_size        = len(game_log),
+            market_calibration = no_vig_prob,
+        ))
+
+    # ── MLB Plate Appearances routing guard ─────────────────────────────────
+    # PA requires a DEDICATED specialist model (not the generic counting Poisson
+    # mlb_counting_poisson_v1 which is also used by SO, K, OUTS, etc.).
+    # Policy: only allow fall-through when the registry returns a model_id that
+    # is explicitly a PA specialist (i.e. NOT the generic mlb_counting_poisson_v1).
+    # Any exception or absence of a dedicated specialist → MODEL_QUALIFIED_HOLD
+    # (fail-closed — Poisson must never silently become the PA fallback).
+    _MLB_PA_GENERIC_POISSON_IDS = frozenset({
+        "mlb_counting_poisson_v1",
+        "mlb_1ip_pitches_poisson_v1",
+    })
+    if sport == "MLB" and stat_key.upper() in ("PA", "PLATE_APPEARANCES"):
+        _pa_block_reason: str | None = None
+        try:
+            from gate_engine.model_registry import lookup as _mr_lookup
+            _pa_entry = _mr_lookup("MLB", "PA")
+            # Support both MagicMock (attr) and dict-style (key) registry entries
+            _pa_status   = getattr(_pa_entry, "status",   None) or _pa_entry.get("status",   "NO_REGISTERED_MODEL")
+            _pa_model_id = getattr(_pa_entry, "model_id", None) or _pa_entry.get("model_id", "")
+            if _pa_status == "NO_REGISTERED_MODEL":
+                _pa_block_reason = "no specialist registered for MLB PA"
+            elif str(_pa_model_id) in _MLB_PA_GENERIC_POISSON_IDS:
+                _pa_block_reason = (
+                    f"registry entry for MLB PA uses generic model "
+                    f"'{_pa_model_id}' (not a dedicated PA specialist); "
+                    "register a dedicated PA specialist to enable Poisson scoring"
+                )
+            # else: ACTIVE or PROVISIONAL with a dedicated PA model_id → allow fall-through
+        except Exception as _pa_exc:
+            _pa_block_reason = (
+                f"model_registry unavailable ({str(_pa_exc)[:60]}); "
+                "fail-closed — Poisson excluded for PA on registry error"
+            )
+            logger.warning("MLB PA guard: registry error → fail-closed: %s", _pa_exc)
+
+        if _pa_block_reason is not None:
+            return _finalize(HitProbResult(
+                hit_probability  = None,
+                model_used       = MODEL_NO_REGISTERED_MODEL,
+                calibration_note = (
+                    f"MLB PA: {_pa_block_reason} — "
+                    "MODEL_QUALIFIED_HOLD ceiling; NO_REGISTERED_MODEL blocker"
+                ),
+                lambda_used      = None,
+                sample_size      = len(game_log),
+                market_calibration = no_vig_prob,
+            ))
 
     # Tier 1a: MLB H/HITS — binomial PA formula from hit_probability_model.py
     if _is_mlb_hits_prop(sport, stat_key, line):
@@ -854,6 +1123,11 @@ _STAT_COL_MAP = {
     "SB": "SB",
     "SO": "SO", "K": "SO", "STRIKEOUTS": "SO",
     "BB": "BB",
+    # 1st-inning pitches thrown: canonical DB / savant ledger field name is
+    # "first_inning_pitches" (see gate_engine/mlb/savant_1ip_ledger.py).
+    # Without this mapping _coerce_game_log would look for "1IP_PITCHES_THROWN"
+    # as the dict key and find nothing, returning an empty list → no_data.
+    "1IP_PITCHES_THROWN": "first_inning_pitches",
 }
 
 

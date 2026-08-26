@@ -53,13 +53,9 @@ paths:
       summary: "[NOT_YET_DEPLOYED] Resolve a player name to cross-book IDs"
       description: >
         NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
-
-        Planned behavior when deployed:
-          Given a player name and optional sport/team hint, returns the
-          canonical player record with IDs across all active data sources
-          (Sportradar UUID, SportsDataIO ID, ESPN athlete_id, MLB Stats API
-          person_id, PrizePicks player_id).  Normalizes name variants and
-          handles traded players with a canonical_team field.
+        When deployed: resolves a player name to canonical IDs across all active data
+        sources (Sportradar, SportsDataIO, ESPN, MLB Stats API, PrizePicks). Normalizes
+        name variants and handles traded players with a canonical_team field.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -142,18 +138,9 @@ paths:
       summary: "[NOT_YET_DEPLOYED] Calibrated probability for a prop outcome"
       description: >
         NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
-
-        Planned behavior when deployed:
-          Accepts a structured prop context (player, stat_type, line, direction,
-          opponent, venue, days_rest, recent_game_log) and returns:
-            - model_probability: P(outcome) from the calibrated model
-            - confidence_interval: [lower, upper] at 80%
-            - calibration_tier: CALIBRATED | PROVISIONAL | INSUFFICIENT_DATA
-            - model_version: version tag of the trained model used
-            - last_trained: ISO date of the model's training cutoff
-
-        This service is separate from the gate-engine probability gate so it
-        can be swapped or updated without redeploying gate-engine.
+        When deployed: accepts a structured prop context and returns model_probability,
+        confidence_interval (80%), calibration_tier, model_version, and last_trained.
+        Separate from gate-engine so it can be updated independently.
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -246,12 +233,9 @@ paths:
       summary: "[NOT_YET_DEPLOYED] Query settled calibration records"
       description: >
         NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
-
-        Planned behavior when deployed:
-          Returns settled prop records with predicted probability, actual
-          outcome (HIT/MISS), and per-record Brier contribution.  Filterable
-          by sport, date range, stat_type, and calibration_tier.
-          Designed for long-run calibration reporting and model feedback.
+        When deployed: returns settled prop records with predicted probability, outcome
+        (HIT/MISS), and per-record Brier contribution. Filterable by sport, date range,
+        stat_type, and calibration_tier.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -350,14 +334,9 @@ paths:
       summary: "[NOT_YET_DEPLOYED] Breaking news for a player"
       description: >
         NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
-
-        Planned behavior when deployed:
-          Returns structured news items for a player: injury reports, lineup
-          status changes, coach quotes on role/minutes, and trade news.
-          Each item carries a published_at timestamp and an impact_label
-          (INJURY_OUT | INJURY_QUESTIONABLE | ROLE_CHANGE | LINEUP_SCRATCH |
-          POSITIVE_NOTE | NEUTRAL) so the gate-engine can consume the signal
-          without parsing free text.
+        When deployed: returns structured news items for a player with impact_label
+        (INJURY_OUT, INJURY_QUESTIONABLE, ROLE_CHANGE, LINEUP_SCRATCH, POSITIVE_NOTE,
+        NEUTRAL) so gate-engine can consume without parsing free text.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -407,12 +386,9 @@ paths:
       summary: "[NOT_YET_DEPLOYED] All impact news for a sport slate"
       description: >
         NOT_YET_DEPLOYED — returns deployment_status: NOT_YET_DEPLOYED.
-
-        Planned behavior when deployed:
-          Returns all high-impact news items for a full sport slate on a given
-          date — injuries, lineup scratches, role changes — aggregated across
-          all players on that day's schedule.  Use before a scoring session to
-          identify which props are most affected by day-of information.
+        When deployed: returns all high-impact news (injuries, lineup scratches, role
+        changes) for a full sport slate on a given date. Use before a scoring session
+        to identify which props are most affected by day-of information.
       security:
         - ApiKeyAuth: []
       parameters:

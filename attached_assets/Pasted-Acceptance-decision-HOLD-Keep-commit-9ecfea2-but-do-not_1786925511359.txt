@@ -1,0 +1,84 @@
+Acceptance decision: **HOLD**. Keep commit `9ecfea2`, but do not declare closeout complete. The report itself documents several binding failures even though 5,223 tests pass.
+
+### Remaining failures
+
+1. **Row reconciliation is incorrect.**
+   Clean Core requires:
+
+   ```text
+   rows_in = rows_completed + rows_held + rows_rejected
+   ```
+
+   The implementation uses `>=` and permits “other,” conditional, and unlabeled rows. Every row must terminate exactly once; `rows_other` must equal zero.
+
+2. **Provenance failure is not fail-closed.**
+   A best-effort downgrade on a separate connection can fail while leaving `FINAL_APPROVED` stored. Logging a warning does not satisfy the invariant. The downgrade must occur transactionally, or the final label must be capped before the primary write.
+
+3. **Legacy `FINAL_APPROVED` counting remains unresolved.**
+   Rows created before the new enforcement cannot be assumed “genuinely approved.” They are less trustworthy, not more. Unregraded legacy rows must be excluded from canonical approval counts or reported separately as `legacy_unverified_final_approved`.
+
+4. **The actual Kalshi rejection behavior is still untested.**
+   The only test calling the validator is skipped. Runtime inspection of frozensets is useful but does not prove that an attempted forbidden label is rejected by the pipeline.
+
+5. **Probability-ledger enforcement only mentions `FINAL_APPROVED`.**
+   An incomplete ledger must also cap `MONEY_QUALIFIED` or any equivalent money/final label.
+
+6. **Unknown models apparently pass through.**
+   `NO_REGISTERED_MODEL` must independently cap the row unless another tested upstream gate already does so. Missing model coverage cannot pass without restriction.
+
+7. **Global enforcement status is overstated.**
+   While items 1–6 remain, `backend_global_ceiling_enforcement_status` cannot truthfully report every component as `ACTIVE_FAIL_CLOSED`.
+
+8. **No production smoke evidence was provided.**
+   The report lacks the requested fresh multi-worker governance-prewarm, quota-consistency, and endpoint reconciliation results.
+
+### Corrective closeout packet
+
+```text
+Fix forward from commit 9ecfea2 in one isolated closeout commit.
+
+1. Enforce exact row reconciliation:
+   rows_in == rows_completed + rows_held + rows_rejected
+   rows_other == 0
+   Every conditional, unlabeled, or unknown row must be converted to the
+   appropriate native HOLD/WATCH/REJECT/DATA_UNOBTAINABLE terminal bucket.
+
+2. Make required calibration-provenance failure transactionally fail-closed.
+   A FINAL_APPROVED/MONEY_QUALIFIED record must never survive if the required
+   provenance write fails. No best-effort downgrade is sufficient.
+
+3. Separate summary counts:
+   total_final_approved = only canonically revalidated approvals
+   legacy_unverified_final_approved = unregraded legacy rows
+   Never assume historical classification=FINAL_APPROVED is valid.
+
+4. Add a true end-to-end behavioral test that injects
+   KALSHI_REJECT_UNCALIBRATED and proves the public validation/pipeline path
+   rejects it. This critical test may not be skipped.
+
+5. Make probability-ledger violations cap both FINAL_APPROVED and
+   MONEY_QUALIFIED.
+
+6. Prove NO_REGISTERED_MODEL is fail-closed through an integration test.
+   If no existing gate caps it, implement the cap.
+
+7. Report global enforcement as PARTIAL_OR_PENDING until every component
+   passes. Promote to ACTIVE_FAIL_CLOSED only after the new tests pass.
+
+8. Run the complete suite and a fresh multi-worker production smoke using
+   new session/run IDs.
+
+9. Return exact changed files, commit SHA, raw test counts, skips, warnings,
+   endpoint statuses, row-reconciliation output, and clean git status.
+
+publish_authorized=false
+can_execute=false
+DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
+```
+
+Also, #249 and #250 are already defined; they are not live GPT scoring tasks:
+
+* **#249:** populate and classify `docs/wow/contracts/`.
+* **#250:** validate `wow-preflight` and `wow-verify-patch` with controlled failures.
+
+After this corrective commit passes: **#249 → independent verification → #250 → independent verification → UAC final closeout**.

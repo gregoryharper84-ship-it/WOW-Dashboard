@@ -162,8 +162,9 @@ class TestQuotaStatusEndpoint:
         import app as mod
         self.mod = mod
         self.client = mod.app.test_client()
-        self.secret = mod.os.environ.get("GPT_ACTION_SECRET", "test-secret-fallback")
-        mod.os.environ.setdefault("GPT_ACTION_SECRET", "test-secret-fallback")
+        # Auth migrated to X-API-Key / SCORING_API_KEY (2026-08-14)
+        mod.os.environ.setdefault("SCORING_API_KEY", "test-scoring-key-fallback")
+        self._api_key = mod.os.environ.get("SCORING_API_KEY", "test-scoring-key-fallback")
         # Reset store
         with mod._ODDS_QUOTA_LOCK:
             mod._ODDS_QUOTA_STORE.clear()
@@ -172,7 +173,8 @@ class TestQuotaStatusEndpoint:
             mod._ODDS_QUOTA_STORE.clear()
 
     def _headers(self):
-        return {"X-WOW-Action-Key": self.mod.os.environ.get("GPT_ACTION_SECRET", "test-secret-fallback")}
+        # Routes now use @require_api_key (X-API-Key / SCORING_API_KEY)
+        return {"X-API-Key": self._api_key}
 
     def test_requires_auth(self):
         resp = self.client.get("/wow/odds/quota-status")

@@ -1,0 +1,143 @@
+Yes—this would materially accelerate the WOW/Replit build, but I would package it as a dedicated **WOW Replit Engineering Control Plane**, separate from the betting-model runtime.
+
+The most important correction: don’t treat Replit Agent as an unquestioned “elite engineer.” Treat it as a high-velocity implementation agent whose work must satisfy explicit scope, evidence, tests, and rollback rules.
+
+## What to adopt
+
+| Capability                     | Recommendation      | WOW application                                                                  |
+| ------------------------------ | ------------------- | -------------------------------------------------------------------------------- |
+| Sequential roadmap planning    | Adopt now           | Break Universal Agent Core and future patches into isolated build packets        |
+| Constraint/context engineering | Critical            | Declare allowed files, protected files, invariants, and out-of-scope work        |
+| Modular architecture           | Critical            | Keep routes, services, schemas, gates, adapters, and tests separated             |
+| Schema design                  | Critical            | Require migrations, compatibility analysis, rollback plans, and constraint tests |
+| Environment variables          | Critical            | No credentials in prompts, source, logs, fixtures, or skill files                |
+| Checkpoints and Git            | Critical            | Checkpoint before risky work; isolated commit after verified work                |
+| Diff review                    | Critical            | Reject unrelated refactors and undocumented behavior changes                     |
+| Replit Agent Skills            | Adopt selectively   | Use one engineering-governance skill; load domain skills only when applicable    |
+| Connectors/authentication      | Capability-specific | Add only when a defined backend capability requires them                         |
+| Visual prompting               | Low priority        | Useful for dashboards/admin UI, not model/backend work                           |
+| Payments                       | Defer               | Not part of the current WOW engine requirement                                   |
+
+Replit’s official guidance supports specific plans, constrained context, testing, and checkpoints. It also warns that too many broad skills can confuse Agent and recommends targeted skills backed by deterministic scripts. [Build with Agent](https://docs.replit.com/learn/build-with-agent), [Agent Skills](https://docs.replit.com/learn/agent-skills)
+
+## Where everything should live
+
+```text
+/replit.md
+/.agents/skills/wow-replit-patch-governor/SKILL.md
+/docs/wow/architecture/
+/docs/wow/contracts/
+/docs/wow/runbooks/
+/scripts/wow-preflight
+/scripts/wow-verify-patch
+/tests/contracts/
+/tests/regression/
+```
+
+### `replit.md` — short, always-on rules
+
+This should contain only universal project rules:
+
+* Replit is the backend/service layer, not the WOW Betting Engine identity.
+* `can_execute=false`.
+* No wagering, trading, routing, modification, or cancellation.
+* Preserve native WOW terminal labels.
+* Missing evidence fails closed.
+* No downstream gate may erase an upstream blocker.
+* No secrets in code, prompts, logs, tests, or documentation.
+* No unrelated refactors.
+* Every change requires tests, diff evidence, and exact changed-file reporting.
+* Database changes require an explicit migration and rollback strategy.
+* Production publication requires readiness, regression, and post-publish smoke verification.
+
+Replit automatically uses root-level `replit.md` for project architecture and coding conventions, so it is appropriate for these truly universal rules. [Replit `replit.md`](https://docs.replit.com/features/project-setup/replit-dot-md)
+
+### `wow-replit-patch-governor` — the main development skill
+
+Use one focused engineering skill that forces this sequence:
+
+1. Inspect current code and tests.
+2. Produce a bounded implementation contract.
+3. Identify allowed and protected files.
+4. Record API/schema/runtime effects.
+5. Create a checkpoint.
+6. Implement the smallest complete change.
+7. Run targeted tests.
+8. Run mandatory regression tests.
+9. Audit the diff boundary.
+10. Report raw evidence.
+11. Commit independently.
+12. Publish only when the task expressly includes publication.
+13. Verify production using fresh session/run IDs.
+
+This skill should govern **how Replit modifies WOW**. It should not contain probability formulas, sport logic, or candidate-selection rules.
+
+## Treatment of the attached WOW skills
+
+I checked the supplied files. They should not all be dumped directly into `/.agents/skills/`.
+
+Important findings:
+
+* They are primarily runtime/model contracts, not coding-agent governance.
+* Several already contain strong acceptance tests and fail-closed rules that should become executable tests.
+* The MLB first-inning skill explicitly remains `TEST_ONLY`; installation must not accidentally promote it.
+* The MLB failure-path patch pack contains `ACTIVE` patches that need precedence preservation.
+* The raw Markdown files generally do not begin with the YAML `name` and `description` frontmatter required for native Replit skills.
+* Loading every specialist skill simultaneously would increase trigger conflicts and context noise.
+
+Replit expects each skill to be a directory containing a properly formatted `SKILL.md`, usually under `/.agents/skills/`. [Replit Agent Skills format](https://docs.replit.com/features/agent/skills)
+
+The correct approach is:
+
+```text
+/.agents/skills/wow-implement-exact-line-auditor/
+/.agents/skills/wow-implement-calibration-gate/
+/.agents/skills/wow-implement-mlb-failure-path/
+/.agents/skills/wow-verify-final-refresh/
+```
+
+Each wrapper should be concise and link to the corresponding authoritative document under `/docs/wow/contracts/`. Activate only the skill relevant to the current patch.
+
+## Required build-packet contract
+
+Every future Replit assignment should contain:
+
+```yaml
+change_id:
+objective:
+current_problem:
+binding_authority:
+allowed_files:
+protected_files:
+schema_changes:
+api_contract_changes:
+non_negotiable_invariants:
+acceptance_tests:
+mandatory_regressions:
+fresh_production_verification:
+rollback_condition:
+publish_authorized:
+can_execute: false
+```
+
+This is the piece most likely to solve the multi-day build problem. Instead of “finish Universal Agent Core,” Replit receives isolated packets such as:
+
+* UAC-B4.1: schema and contracts only
+* UAC-B4.2: service implementation
+* UAC-B4.3: route wiring
+* UAC-B4.4: ceiling propagation
+* UAC-B4.5: regression and production verification
+
+Each packet ends with an independently reviewable commit.
+
+## Checkpoint warning
+
+Use both Replit checkpoints and Git commits. Checkpoints are excellent for Agent recovery, while Git commits are better for durable, isolated change history. Also, Replit production database restoration is separate from ordinary code rollback, so database migrations need their own recovery plan. [Version control](https://docs.replit.com/learn/projects-and-artifacts/version-control), [development and production databases](https://docs.replit.com/features/data-and-storage/development-and-production)
+
+My recommendation is to add this as an isolated, governance-only patch before the next feature packet:
+
+```text
+WOW-PATCH-2026-08-16-REPLIT-ENGINEERING-CONTROL-PLANE-V1
+```
+
+It should introduce instructions, build contracts, verification scripts, and diff controls without changing model probabilities, endpoints, schemas, terminal decisions, or production behavior.

@@ -1,0 +1,76 @@
+Problem is not missing odds. It’s a broken handoff between odds endpoint and moneyline scorer.
+
+Likely failure points:
+
+- Endpoint and scorer use different event IDs.
+- Scorer expects different response fields/schema.
+- Moneyline market key is mapped incorrectly.
+- Freshness/book filters discard every normalized line.
+- Endpoint writes to one store while scorer reads another.
+- Odds are fetched but never attached to scoring request.
+
+Immediate fix:
+
+1. Capture one endpoint response.
+2. Validate it against scorer’s expected schema.
+3. Log counts through pipeline:
+
+```text
+books_fetched
+books_normalized
+books_event_matched
+books_market_matched
+books_fresh
+books_sent_to_scorer
+```
+
+4. Compare canonical `event_id`, teams, start time, market type, bookmaker, price, and timestamp.
+5. Repair adapter/join.
+6. Backfill market snapshots.
+7. Rerun six games.
+
+Permanent fix: one shared contract.
+
+```ts
+type MoneylineQuote = {
+  eventId: string
+  bookmaker: string
+  participantId: string
+  side: "HOME" | "AWAY"
+  americanOdds: number
+  observedAt: string
+}
+
+type MoneylineMarketSnapshot = {
+  eventId: string
+  quotes: MoneylineQuote[]
+  consensusNoVig: {
+    home: number
+    away: number
+  }
+}
+```
+
+Both endpoint and scorer must import same versioned schema—no duplicate mapping logic.
+
+Add hard invariant:
+
+```text
+if endpoint_books > 0 && scorer_books === 0:
+    status = MARKET_PIPELINE_CONTRACT_BREACH
+    alert = true
+    scoring = blocked
+```
+
+Required regression tests:
+
+- 10-book fixture reaches scorer as 10 books.
+- Team aliases resolve to canonical participant IDs.
+- Reversed home/away ordering remains correct.
+- Stale quotes are rejected with explicit counts.
+- Unsupported markets cannot masquerade as moneylines.
+- Zero normalized books after successful fetch fails CI.
+- Consensus no-vig output matches known fixture.
+- Production smoke test verifies endpoint → scorer daily.
+
+Most important architectural change: scorer should consume endpoint’s normalized `MoneylineMarketSnapshot` directly. It should not independently refetch, reinterpret, or rejoin same market data. This removes mismatch permanently.

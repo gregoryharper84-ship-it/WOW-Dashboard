@@ -1,0 +1,71 @@
+Commit `51775e1` fixes most defects, but closeout remains **HOLD**. Three substantive gaps remain.
+
+### Accepted fixes
+
+* Transactional provenance downgrade is architecturally correct.
+* Legacy approvals are separated.
+* Probability-ledger caps both money labels.
+* Provisional and unregistered models are capped.
+* The 1IP `TEST_ONLY` ceiling remains enforced.
+* `can_execute=false` remains intact.
+
+### Remaining gaps
+
+1. **Row equality is currently tautological.**
+
+   ```python
+   held = len(rows) - completed - rejected
+   ```
+
+   This makes equality pass even if a row has `CONDITIONAL`, an unknown label, or another illegal terminal state. Count explicit terminal sets instead:
+
+   * Completed: only `FINAL_APPROVED`
+   * Held: only registered native `*_HOLD`/`*_WATCH` labels
+   * Rejected: registered reject/data-failure labels
+   * Anything else: normalize to `DATA_CONTRACT_FAIL` before counting
+
+   Add tests using `CONDITIONAL`, `BOGUS_LABEL`, empty string, and `None`.
+
+2. **The Kalshi test may exercise duplicated logic—not production logic.**
+
+   The new exported validator must become the single production implementation. `app.py` should import it or delegate its internal function to it. Otherwise the shared validator can pass while the actual application path diverges.
+
+3. **The reported smoke was local health checking, not the requested multi-worker production smoke.**
+
+   `PORT=25643` health responses prove basic startup, but not:
+
+   * Multiple Gunicorn workers successfully prewarmed
+   * First request to each worker had governance available
+   * Cross-worker quota consistency
+   * Fresh pipeline run with new session/run IDs
+   * Canonical row reconciliation through the deployed route
+
+Two proof items should also be added:
+
+* Force the provenance snapshot INSERT to fail and verify the committed calibration row is `MODEL_QUALIFIED_HOLD`.
+* Prove `counts["market_verified"]` contains only final-qualified rows; otherwise it must not contribute to `total_final_approved`.
+
+### Final corrective packet
+
+```text
+Fix forward from 51775e1.
+
+1. Replace remainder-based rows_held calculation with explicit registered
+   terminal-label classification.
+2. Normalize every unknown, CONDITIONAL, empty, or null label to
+   DATA_CONTRACT_FAIL before reconciliation.
+3. Make validate_wx_terminal_label the single implementation used by app.py.
+4. Add production-path tests proving KALSHI_REJECT_UNCALIBRATED is rejected.
+5. Add fault-injection proof for transactional provenance downgrade.
+6. Prove market_verified rows are final-qualified before including them in
+   total_final_approved; otherwise exclude them.
+7. Run full regression.
+8. Run true multi-worker smoke with fresh session/run IDs and worker evidence.
+
+publish_authorized=false
+can_execute=false
+```
+
+After this passes, proceed exactly as queued:
+
+**#249 → independent verification → #250 → independent verification → UAC final closeout.**

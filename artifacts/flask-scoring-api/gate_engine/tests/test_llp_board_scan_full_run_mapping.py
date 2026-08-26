@@ -51,7 +51,8 @@ _llp_requested_label_from_analysis = _ns["_llp_requested_label_from_analysis"]
 _llp_governance_candidate_from_analysis = _ns["_llp_governance_candidate_from_analysis"]
 
 
-def _load_board_scan_to_full_run(stub_board_scan, stub_analyze_one, stub_log_postmortem):
+def _load_board_scan_to_full_run(stub_board_scan, stub_analyze_one, stub_log_postmortem,
+                                 snapshot_cache=None):
     """Extract the real `_llp_board_scan_to_full_run` orchestrator out of app.py
     (same technique as `_load_functions` above) so this test exercises the
     actual production control flow — not a reimplementation of it — while
@@ -68,6 +69,11 @@ def _load_board_scan_to_full_run(stub_board_scan, stub_analyze_one, stub_log_pos
         "_llp_board_scan": stub_board_scan,
         "_llp_analyze_one": stub_analyze_one,
         "_llp_log_postmortem": stub_log_postmortem,
+        "_LLP_EVENT_SNAPSHOT_CACHE": snapshot_cache if snapshot_cache is not None else {},
+        "app": type("A", (), {"logger": type("L", (), {
+            "exception": staticmethod(lambda *a, **k: None),
+            "warning":   staticmethod(lambda *a, **k: None),
+        })()})(),
         "_llp_requested_label_from_analysis": _llp_requested_label_from_analysis,
         "_llp_governance_candidate_from_analysis": _llp_governance_candidate_from_analysis,
     }
@@ -346,3 +352,420 @@ class TestBannedAndConditionalNeverInFinalOutput:
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# WOW-PATCH-2026-08-17-MONEYLINE-MARKET-SNAPSHOT
+# Event-ID propagation: `_llp_board_scan` must carry the Odds API event `id`
+# on every ranked row so downstream dedup/joins never fall back to fuzzy
+# team-name matching (root cause 1 of the moneyline zero-book handoff).
+# ---------------------------------------------------------------------------
+
+def _load_board_scan(stub_fetch_odds, stub_extract_market):
+    src = open(APP_PY).read()
+    tree = ast.parse(src)
+    lines = src.splitlines(keepends=True)
+    class _Log:
+        def warning(self, *a, **k):
+            pass
+
+    ns = {
+        "_LLP_SPORT_MAP": {"wnba": "basketball_wnba"},
+        "_llp_fetch_odds": stub_fetch_odds,
+        "_llp_extract_market": stub_extract_market,
+        "_LLP_TEAM_ALIASES": {},
+        "_llp_cache_event_snapshot": lambda snap: None,
+        "app": type("A", (), {"logger": _Log()})(),
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_llp_board_scan":
+            snippet = "".join(lines[node.lineno - 1:node.end_lineno])
+            exec(compile(snippet, "<app.py:_llp_board_scan>", "exec"), ns)
+            return ns["_llp_board_scan"]
+    raise AssertionError("Could not locate _llp_board_scan in app.py")
+
+
+def test_board_scan_propagates_odds_api_event_id():
+    events = [{
+        "id": "evt-odds-api-777",
+        "home_team": "Minnesota Lynx",
+        "away_team": "New York Liberty",
+        "commence_time": "2026-08-17T23:00:00Z",
+    }]
+
+    def stub_fetch(sport_key, regions="us", markets=None):
+        assert sport_key == "basketball_wnba"
+        return events
+
+    def stub_extract(event, market_key, side, line=None):
+        return {"book": "draftkings", "american": -130, "novig_prob": 0.55}
+
+    board_scan = _load_board_scan(stub_fetch, stub_extract)
+    ranked, source_status = board_scan(["WNBA"], "2026-08-17")
+
+    assert source_status == {"WNBA": "ok"}
+    assert len(ranked) == 2  # both sides of the one event
+    for row in ranked:
+        assert row["event_id"] == "evt-odds-api-777"
+        assert row["home_team"] == "Minnesota Lynx"
+        assert row["away_team"] == "New York Liberty"
+
+
+# ---------------------------------------------------------------------------
+# Board scan → full run: cached snapshot / event identity must reach the
+# promotion's actual scoring path, and a handoff breach must block scoring.
+# ---------------------------------------------------------------------------
+
+from gate_engine.moneyline.market_snapshot import (
+    build_snapshot_from_odds_event as _build_ml_snap,
+    MARKET_PIPELINE_CONTRACT_BREACH as _ML_BREACH,
+)
+
+
+def _raw_odds_event(n_books=3, corrupt=False):
+    from datetime import datetime, timezone
+    # Use a timestamp ~30 minutes ago so the freshness check always passes
+    # regardless of when the test suite runs.  The hardcoded 2026-08-17 date
+    # became stale after that calendar day, causing books_fresh=0 and
+    # cascading MARKET_PIPELINE_CONTRACT_BREACH across all snapshot tests.
+    fresh_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    outcomes = [
+        {"name": "Home Team", "price": -150},
+        {"name": "Away Team", "price": +130},
+    ]
+    if corrupt:
+        outcomes = [{"name": "???", "price": -150}, {"name": "???", "price": 130}]
+    return {
+        "id": "evt-fullrun-1",
+        "home_team": "Home Team",
+        "away_team": "Away Team",
+        "commence_time": "2026-08-17T23:00:00Z",
+        "bookmakers": [
+            {"key": f"book{i}", "markets": [{
+                "key": "h2h",
+                "last_update": fresh_ts,
+                "outcomes": [dict(o) for o in outcomes],
+            }]}
+            for i in range(n_books)
+        ],
+    }
+
+
+def _scan_ranked_row():
+    return {
+        "sport": "NBA", "event_id": "evt-fullrun-1",
+        "home_team": "Home Team", "away_team": "Away Team",
+        "side": "Home Team", "opponent": "Away Team",
+        "book": "book0", "american_odds": -150,
+        "no_vig_implied_probability": 0.58,
+        "commence_time": "2026-08-17T23:00:00Z",
+    }
+
+
+def test_full_run_passes_cached_snapshot_and_event_id_to_analysis():
+    snap = _build_ml_snap(_raw_odds_event(3), "NBA")
+    cache = {"evt-fullrun-1": snap.to_dict()}
+    seen_games = []
+
+    def stub_scan(sports, board_date):
+        return [_scan_ranked_row()], {"NBA": "ok"}
+
+    def stub_analyze(game, default_sport, board_date):
+        seen_games.append(game)
+        return _rec()
+
+    fn = _load_board_scan_to_full_run(stub_scan, stub_analyze, lambda *a, **k: None,
+                                      snapshot_cache=cache)
+    out = fn(["NBA"], "2026-08-17", 1)
+
+    assert len(seen_games) == 1
+    game = seen_games[0]
+    # Event identity preserved into the actual scoring path
+    assert game["event_id"] == "evt-fullrun-1"
+    # Cached snapshot handed to analysis — no re-fetch/re-interpretation
+    assert game["market_snapshot"]["event_id"] == "evt-fullrun-1"
+    books = game["sportsbook_odds"]
+    assert len(books) == 6  # 3 books × 2 sides, scorer-flat shape
+    assert all({"team", "odds", "bookmaker"} <= set(b) for b in books)
+    # Handoff observability surfaces on the full-run result record
+    res = out["full_run"]["results"][0]
+    assert res.get("market_pipeline", {}).get("counters", {}) \
+              .get("books_sent_to_scorer") == 3
+
+
+def test_full_run_blocks_scoring_on_snapshot_breach():
+    snap = _build_ml_snap(_raw_odds_event(3, corrupt=True), "NBA")
+    cache = {"evt-fullrun-1": snap.to_dict()}
+    analyze_calls = []
+
+    def stub_scan(sports, board_date):
+        return [_scan_ranked_row()], {"NBA": "ok"}
+
+    def stub_analyze(game, default_sport, board_date):
+        analyze_calls.append(game)
+        return _rec()
+
+    fn = _load_board_scan_to_full_run(stub_scan, stub_analyze, lambda *a, **k: None,
+                                      snapshot_cache=cache)
+    out = fn(["NBA"], "2026-08-17", 1)
+
+    # Scoring was BLOCKED — the analyzer never ran for the breached candidate
+    assert analyze_calls == []
+    res = out["full_run"]["results"][0]
+    assert _ML_BREACH in res["failure_tags"]
+    assert res["label"] == "LLP_SCOUT"
+    assert res["stake_units"] == 0
+    assert res["market_pipeline"]["status"] == _ML_BREACH
+    assert res["market_pipeline"]["counters"]["books_fetched"] == 3
+    assert res["market_pipeline"]["counters"]["books_sent_to_scorer"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Real-resolver snapshot consumption: `_llp_resolve_market_from_snapshot`
+# extracted from app.py and run against the REAL gate_engine odds resolver.
+# A supplied valid snapshot must be consumed with NO live fetch; a breached
+# snapshot must block analysis on the real path.
+# ---------------------------------------------------------------------------
+
+from gate_engine.llp_odds_resolver import resolve_odds_source as _real_resolver
+
+
+def _load_snapshot_resolver(fetch_sentinel):
+    class _Log:
+        def exception(self, *a, **k):
+            raise AssertionError(f"unexpected exception path: {a}")
+
+    src = open(APP_PY).read()
+    tree = ast.parse(src)
+    lines = src.splitlines(keepends=True)
+    ns = {
+        "_resolve_odds_source": _real_resolver,
+        # Sentinel: the snapshot path must NEVER touch the live fetcher
+        "_llp_fetch_odds": fetch_sentinel,
+        "app": type("A", (), {"logger": _Log()})(),
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) \
+                and node.name == "_llp_resolve_market_from_snapshot":
+            snippet = "".join(lines[node.lineno - 1:node.end_lineno])
+            exec(compile(snippet, "<app.py:_llp_resolve_market_from_snapshot>",
+                         "exec"), ns)
+            return ns["_llp_resolve_market_from_snapshot"]
+    raise AssertionError("_llp_resolve_market_from_snapshot not found in app.py")
+
+
+def _fresh_record():
+    return {"notes": [], "failure_paths": [], "contract_status": None}
+
+
+def test_snapshot_is_the_market_source_no_live_fetch():
+    def _fetch_sentinel(*a, **k):
+        raise AssertionError("live fetch invoked despite valid snapshot")
+
+    fn = _load_snapshot_resolver(_fetch_sentinel)
+    snap = _build_ml_snap(_raw_odds_event(3), "NBA")
+    record = _fresh_record()
+    game = {"away": "Away Team", "home": "Home Team", "market": "h2h",
+            "side": "Home Team", "market_snapshot": snap.to_dict()}
+    resolution, blocked = fn(game, record, "h2h", "Home Team",
+                             "2026-08-17", "basketball_nba", "nba")
+    assert blocked is False
+    assert resolution is not None and resolution.usable
+    # Real resolver classified it as a live sportsbook source
+    assert resolution.odds_source_quality is not None
+    assert resolution.sportsbook_no_vig_available is True
+    sel = resolution.sel
+    assert sel["american"] == -150
+    assert sel["novig_prob"] is not None and 0.5 < sel["novig_prob"] < 0.65
+    # Event reconstructed by the shared adapter keeps the identity + books
+    assert resolution.event["id"] == "evt-fullrun-1"
+    assert len(resolution.event["bookmakers"]) == 3
+    # Handoff counters stamped on the real analysis record
+    assert record["market_pipeline"]["counters"]["books_sent_to_scorer"] == 3
+    assert record["market_pipeline"]["status"] == "OK"
+
+
+def test_snapshot_breach_blocks_real_analysis_path():
+    fn = _load_snapshot_resolver(lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("live fetch invoked on breach path")))
+    snap = _build_ml_snap(_raw_odds_event(3, corrupt=True), "NBA")
+    record = _fresh_record()
+    game = {"away": "Away Team", "home": "Home Team", "market": "h2h",
+            "side": "Home Team", "market_snapshot": snap.to_dict()}
+    resolution, blocked = fn(game, record, "h2h", "Home Team",
+                             "2026-08-17", "basketball_nba", "nba")
+    assert blocked is True
+    assert resolution is None
+    assert record["failure_paths"] == [_ML_BREACH]
+    assert record["market_pipeline"]["status"] == _ML_BREACH
+    assert record["market_pipeline"]["counters"]["books_sent_to_scorer"] == 0
+
+
+def test_no_snapshot_falls_back_to_live_resolver():
+    fn = _load_snapshot_resolver(lambda *a, **k: None)
+    record = _fresh_record()
+    resolution, blocked = fn({"market": "h2h", "side": "Home Team"}, record,
+                             "h2h", "Home Team", "2026-08-17",
+                             "basketball_nba", "nba")
+    assert resolution is None and blocked is False
+    assert "market_pipeline" not in record
+
+
+def test_analyze_one_skips_live_resolver_when_snapshot_resolves():
+    """Structural guard: in _llp_analyze_one the live `_resolve_odds_source`
+    call (with _llp_fetch_odds) only executes on the fallback branch."""
+    src = open(APP_PY).read()
+    i = src.index("_llp_resolve_market_from_snapshot(\n        game, record")
+    tail = src[i:i + 1600]
+    assert "if _snap_blocked:" in tail and "return record" in tail
+    assert "_resolution = _snap_resolution" in tail
+    # The live-fetch resolver call sits inside the else branch after this hook
+    j = tail.index("_resolution = _snap_resolution")
+    assert "else:" in tail[j:]
+    assert "fetch_odds_fn=_llp_fetch_odds" in tail[j:]
+
+
+def test_partial_snapshot_blocks_analysis_and_never_fetches():
+    """A supplied snapshot whose quotes cover only ONE side (partial handoff)
+    must fail closed — the analyzer may not silently re-fetch live odds."""
+    def _fetch_sentinel(*a, **k):
+        raise AssertionError("live fetch invoked despite supplied snapshot")
+
+    fn = _load_snapshot_resolver(_fetch_sentinel)
+    snap = _build_ml_snap(_raw_odds_event(3), "NBA")
+    # Strip the requested side's quotes → one-sided market, no two-sided no-vig
+    snap.books = [q for q in snap.books if q.team != "Home Team"]
+    record = _fresh_record()
+    game = {"away": "Away Team", "home": "Home Team", "market": "h2h",
+            "side": "Home Team", "market_snapshot": snap.to_dict()}
+    resolution, blocked = fn(game, record, "h2h", "Home Team",
+                             "2026-08-17", "basketball_nba", "nba")
+    assert blocked is True and resolution is None
+    assert record["failure_paths"] == ["MARKET_PIPELINE_CONTRACT_BREACH"]
+    assert record["market_pipeline"]["status"] == "MARKET_PIPELINE_CONTRACT_BREACH"
+
+
+def test_unresolvable_side_blocks_analysis_and_never_fetches():
+    def _fetch_sentinel(*a, **k):
+        raise AssertionError("live fetch invoked despite supplied snapshot")
+
+    fn = _load_snapshot_resolver(_fetch_sentinel)
+    snap = _build_ml_snap(_raw_odds_event(3), "NBA")
+    record = _fresh_record()
+    game = {"away": "Away Team", "home": "Home Team", "market": "h2h",
+            "side": "Unrelated Club", "market_snapshot": snap.to_dict()}
+    resolution, blocked = fn(game, record, "h2h", "Unrelated Club",
+                             "2026-08-17", "basketball_nba", "nba")
+    assert blocked is True and resolution is None
+    assert record["failure_paths"] == ["MARKET_PIPELINE_CONTRACT_BREACH"]
+    assert any("unresolvable" in n for n in record["notes"])
+
+
+def test_opponent_stripped_snapshot_blocks_even_when_requested_side_survives():
+    """One-sided snapshot with the REQUESTED side retained must still fail
+    closed — the analyzer may not score the surviving side's vigged price."""
+    def _fetch_sentinel(*a, **k):
+        raise AssertionError("live fetch invoked despite supplied snapshot")
+
+    fn = _load_snapshot_resolver(_fetch_sentinel)
+    snap = _build_ml_snap(_raw_odds_event(3), "NBA")
+    # Strip the OPPONENT's quotes; requested side "Home Team" keeps all quotes
+    snap.books = [q for q in snap.books if q.team == "Home Team"]
+    record = _fresh_record()
+    game = {"away": "Away Team", "home": "Home Team", "market": "h2h",
+            "side": "Home Team", "market_snapshot": snap.to_dict()}
+    resolution, blocked = fn(game, record, "h2h", "Home Team",
+                             "2026-08-17", "basketball_nba", "nba")
+    assert blocked is True and resolution is None
+    assert record["failure_paths"] == ["MARKET_PIPELINE_CONTRACT_BREACH"]
+    assert any("one-sided" in n for n in record["notes"])
+
+
+def test_full_run_blocks_opponent_stripped_snapshot_no_analysis():
+    """Board scan → full run: a cached snapshot missing the opponent's quotes
+    must block the candidate at analysis time (real snapshot consumption via
+    the analyzer helper), never score the surviving side."""
+    snap = _build_ml_snap(_raw_odds_event(3), "NBA")
+    snap.books = [q for q in snap.books if q.team == "Home Team"]
+    cache = {"evt-fullrun-1": snap.to_dict()}
+
+    resolver = _load_snapshot_resolver(
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("live fetch invoked")))
+
+    def stub_scan(sports, board_date):
+        return [_scan_ranked_row()], {"NBA": "ok"}
+
+    def stub_analyze(game, default_sport, board_date):
+        # Mimic the real analyzer's snapshot consumption contract
+        record = {"notes": [], "failure_paths": [], "contract_status": None,
+                  **_rec()}
+        _res, _blocked = resolver(game, record, "h2h", game["side"],
+                                  board_date, "basketball_nba", "nba")
+        assert _blocked is True, "analyzer must block one-sided snapshot"
+        return record
+
+    fn = _load_board_scan_to_full_run(stub_scan, stub_analyze, lambda *a, **k: None,
+                                      snapshot_cache=cache)
+    out = fn(["NBA"], "2026-08-17", 1)
+    res = out["full_run"]["results"][0]
+    assert "MARKET_PIPELINE_CONTRACT_BREACH" in (res.get("failure_paths") or [])
+
+
+def test_supplied_empty_snapshot_blocks_analyzer_and_never_fetches():
+    """game['market_snapshot'] = {} — key presence, not truthiness, marks a
+    supplied snapshot; an empty one must fail closed with no live fetch."""
+    def _fetch_sentinel(*a, **k):
+        raise AssertionError("live fetch invoked despite supplied snapshot")
+
+    fn = _load_snapshot_resolver(_fetch_sentinel)
+    record = _fresh_record()
+    game = {"away": "Away Team", "home": "Home Team", "market": "h2h",
+            "side": "Home Team", "market_snapshot": {}}
+    resolution, blocked = fn(game, record, "h2h", "Home Team",
+                             "2026-08-17", "basketball_nba", "nba")
+    assert blocked is True and resolution is None
+    assert record["failure_paths"] == ["MARKET_PIPELINE_CONTRACT_BREACH"]
+
+
+def test_full_run_cached_empty_snapshot_reaches_analyzer_not_refetched():
+    """Board-scan promotion: a cached empty snapshot dict must still be
+    handed to the analyzer (presence semantics) so its supplied-snapshot
+    validation blocks — never silently skipped."""
+    cache = {"evt-fullrun-1": {}}
+    seen_games = []
+
+    def stub_scan(sports, board_date):
+        return [_scan_ranked_row()], {"NBA": "ok"}
+
+    def stub_analyze(game, default_sport, board_date):
+        seen_games.append(game)
+        return _rec()
+
+    fn = _load_board_scan_to_full_run(stub_scan, stub_analyze, lambda *a, **k: None,
+                                      snapshot_cache=cache)
+    fn(["NBA"], "2026-08-17", 1)
+    assert len(seen_games) == 1
+    assert seen_games[0].get("market_snapshot") == {}
+
+
+@pytest.mark.parametrize("cached_value", [None, "garbage", ["x"]])
+def test_full_run_malformed_cached_snapshot_attached_not_refetched(cached_value):
+    """Malformed cache values must still be handed to the analyzer as a
+    supplied (sanitized-empty) snapshot — never silently omitted so the
+    analyzer re-fetches live odds."""
+    cache = {"evt-fullrun-1": cached_value}
+    seen_games = []
+
+    def stub_scan(sports, board_date):
+        return [_scan_ranked_row()], {"NBA": "ok"}
+
+    def stub_analyze(game, default_sport, board_date):
+        seen_games.append(game)
+        return _rec()
+
+    fn = _load_board_scan_to_full_run(stub_scan, stub_analyze, lambda *a, **k: None,
+                                      snapshot_cache=cache)
+    fn(["NBA"], "2026-08-17", 1)
+    assert len(seen_games) == 1
+    assert seen_games[0].get("market_snapshot") == {}

@@ -1,0 +1,23 @@
+{
+  "conveyor": "UAC_FAST_TRACK",
+  "version": "V1",
+  "timestamp": "2026-08-17T05:01:59.845386Z",
+  "lanes": {
+    "B3A_MLB_MONEYLINE": "CLOSED",
+    "B4_WNBA_PROPS": "CLOSED",
+    "B5_MLB_PROPS": "CLOSED",
+    "B6_TENNIS_PROPS": "CLOSED",
+    "B7_GENERIC_MONEYLINE": "CLOSED",
+    "B8_SHADOW_VALIDATION": "CLOSED",
+    "B9_READINESS_RULING": "COMPLETE"
+  },
+  "authority_invariants": {
+    "can_execute": false,
+    "PRODUCTION_AUTHORITY": false,
+    "dry_run_only": true,
+    "advisory_only": true,
+    "no_market_orders": true
+  },
+  "ruling": "UAC_V1_COMPLETE_PENDING_ARCHITECTURAL_AUTHORITY_ACCEPTANCE",
+  "note": "This ruling does not authorize production traffic. PRODUCTION_AUTHORITY=False and can_execute=False are unconditional. ChatGPT architectural authority must accept this ruling before UAC V1 is production-authorized."
+}

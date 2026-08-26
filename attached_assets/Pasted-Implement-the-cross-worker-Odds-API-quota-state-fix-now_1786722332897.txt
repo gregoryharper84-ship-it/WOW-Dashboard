@@ -1,0 +1,15 @@
+Implement the cross-worker Odds API quota-state fix now. Keep scope strictly limited to quota persistence/reporting; do not change scoring, auth, routing, key selection, or unrelated code.
+
+Problem reproduced in production: Gunicorn worker A makes /wow/odds/events and learns quota headers, but worker B handles /wow/odds/quota-status and returns nulls because quota state is process-local.
+
+Required implementation:
+1. Inspect existing quota persistence code/schema first. Reuse the existing shared Postgres quota table and migrations if present; do not create a duplicate table.
+2. After every successful upstream Odds API response, atomically UPSERT the latest quota snapshot by key tier (paid/free): requests_remaining, requests_used, request_cost when available, quota_warning, and updated_at. Never store API-key values or fragments.
+3. Make GET /wow/odds/quota-status read authoritative state from Postgres so every Gunicorn worker returns the same snapshot. Process memory may be a fallback only when Postgres is unavailable, and the response must clearly identify degraded/fallback state.
+4. Preserve current endpoint response shape and HTTP/auth behavior. Keep quota-status non-chargeable.
+5. Use safe connection/transaction handling and deterministic integer/null parsing for missing provider headers. Newer snapshots must not be overwritten by stale concurrent writes.
+6. Add regression tests that simulate separate worker/module instances: worker A writes after an Odds call; worker B reads identical values. Also test atomic update/newer-wins behavior, both paid/free tiers, DB-unavailable fallback, no secret persistence, and quota-status making zero upstream Odds API calls.
+7. Run targeted quota tests, then the full gate_engine test suite. Fix only regressions caused by this change.
+8. Commit the change and report: files changed, test counts, commit hash, deployment steps, and rollback command.
+
+Acceptance test after deploy: call events once, then call quota-status repeatedly across workers; every 200 response must show the same non-null tier values and quota_warning.

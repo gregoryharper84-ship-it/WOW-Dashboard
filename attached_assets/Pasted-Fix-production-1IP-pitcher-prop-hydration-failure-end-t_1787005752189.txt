@@ -1,0 +1,23 @@
+Fix production 1IP pitcher-prop hydration failure end-to-end.
+
+Observed live GPT run on Aug 17, 2026:
+- Exact PrizePicks screenshot lines were parsed correctly.
+- Sánchez 14.5, Imanaga 15.5, McLean 15.5, and Wacha 15.5 reached backend.
+- Run returned RUN_PARTIAL_BACKEND_FAILURE.
+- Every row failed confidence contract because event-tree components were not hydrated.
+- Required missing fields: P(BF=3), P(BF=4), P(BF>=5), line-specific first-inning pitch-count distribution, calibrated MORE/LESS hit probability, and fourth-batter dependency.
+- Lane remained TEST_ONLY / MODEL_QUALIFIED_HOLD.
+
+Implement permanent fix:
+1. Reproduce through exact live GPT/action request path, not only direct unit calls.
+2. Trace acquisition -> typed hydration -> probability ledger -> 1IP scorer and identify exact loss/rename/default point.
+3. Populate event-tree probabilities and pitch-count distribution from structured inputs. Preserve exact event_id, pitcher identity, opponent, line, direction, timestamp, and source snapshot through every stage.
+4. Use source hierarchy: primary structured source -> 100K Odds API/alternate structured source -> validated deep-web fallback. Web fallback must record URLs/retrieval time, enforce identity and freshness, widen uncertainty, and remain can_execute=false unless execution-grade contract is complete. Never invent missing inputs.
+5. If required hydration disappears, return explicit PROBABILITY_PIPELINE_CONTRACT_BREACH (or existing equivalent) with typed missing_fields and stage counters; never silently emit generic HOLD.
+6. Ensure market readiness and model readiness remain separate.
+7. Add regression/integration tests for Sánchez 14.5 LESS, Imanaga 15.5 LESS, McLean 15.5 MORE, Wacha 15.5 LESS, plus stale/mismatched screenshot, missing BF distribution, and web-fallback cases.
+8. Run focused tests, full regression suite, wow-verify-patch, and one real GPT/action smoke test proving a complete 1IP row reaches line-specific probability and intended ceiling.
+9. Commit changes with clear message and republish production only after all checks pass.
+10. Report root cause, files changed, commit SHA, test counts, live smoke evidence, deployment result, and remaining limitations.
+
+Do not weaken gates or fabricate probabilities to make rows qualify.

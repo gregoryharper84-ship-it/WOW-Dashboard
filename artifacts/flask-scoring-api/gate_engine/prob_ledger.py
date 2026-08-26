@@ -77,6 +77,19 @@ SHRINKAGE_THRESHOLD = 0.60   # model_prob ≥ 60% requires documented shrinkage
 UNCALIBRATED_EXTRA_HAIRCUT = 0.03   # +3% uncertainty buffer
 UNCALIBRATED_KELLY_CAP = 0.25       # quarter-Kelly max
 
+# WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — market/model lane separation.
+# Model-side components: the sporting probability model is complete without
+# market_no_vig; market readiness is an independent lane.
+MODEL_REQUIRED_COMPONENTS = {"l10_distribution", "role_usage"}
+
+# Typed market statuses (module-level constants — never in labels.py).
+MARKET_STATUS_STALE_MARKET       = "STALE_MARKET"
+MARKET_STATUS_REHYDRATE_REQUIRED = "REHYDRATE_REQUIRED"
+MARKET_STATUS_AVAILABLE          = "MARKET_AVAILABLE"
+
+# Line-drift tolerance: an old-line probability must never attach to a new line.
+_LINE_DRIFT_TOLERANCE = 1e-9
+
 # ---------------------------------------------------------------------------
 # Stage 2 probability schema — required fields (Item 3)
 # ---------------------------------------------------------------------------
@@ -312,6 +325,14 @@ def run(
 
     # 3. Check influence bounds
     influence_violations = _check_influence_bounds(components)
+    model_influence_violations = [
+        violation for violation in influence_violations
+        if not violation.startswith("market_no_vig:")
+    ]
+    market_influence_violations = [
+        violation for violation in influence_violations
+        if violation.startswith("market_no_vig:")
+    ]
 
     # 4. Shrinkage requirement
     shrinkage_required = (
@@ -360,8 +381,52 @@ def run(
         for sv in schema_result["violations"]:
             violations.append(f"stage2_schema:{sv}")
 
-    passed        = len(violations) == 0
-    rank_eligible = schema_result["rank_eligible"] and passed
+    passed = len(violations) == 0
+
+    # ── WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF ─────────────────────────────
+    # Split rank_eligible into two independent sub-flags:
+    #   model_probability_complete — 7 Stage-2 fields + l10_distribution +
+    #     role_usage valid.  NOT affected by market_no_vig.
+    #   market_lane_available — market_no_vig populated, valid, and not stale.
+    # rank_eligible = model_probability_complete (sporting entry); an absent /
+    # stale market gates only the money/edge lane via a typed market_status.
+    model_missing_components = [
+        c for c in MODEL_REQUIRED_COMPONENTS if c not in component_names
+    ]
+    model_probability_complete = (
+        schema_result["complete"]
+        and not model_missing_components
+        and not blocked_found
+        and not shrinkage_required
+        and not model_influence_violations
+    )
+
+    market_lane_available = "market_no_vig" in component_names
+    market_status = MARKET_STATUS_AVAILABLE
+    if market_lane_available:
+        # Stale/drifted line check: the market snapshot's line must match the
+        # row's current line — an old-line probability never attaches to a
+        # new line (REHYDRATE_REQUIRED rejects the stale snapshot).
+        _mkt_comp = next(
+            (c for c in components
+             if (c.get("name") or "").lower() == "market_no_vig"),
+            {},
+        )
+        _snap_line = _mkt_comp.get("snapshot_line")
+        _row_line  = row.get("line")
+        _drifted = bool(ledger_payload.get("market_line_drifted"))
+        if not _drifted and _snap_line is not None and _row_line is not None:
+            try:
+                _drifted = abs(float(_snap_line) - float(_row_line)) > _LINE_DRIFT_TOLERANCE
+            except (TypeError, ValueError):
+                _drifted = True
+        if _drifted or market_influence_violations:
+            market_lane_available = False
+            market_status = MARKET_STATUS_REHYDRATE_REQUIRED
+    else:
+        market_status = MARKET_STATUS_STALE_MARKET
+
+    rank_eligible = model_probability_complete
 
     code = "PROB_LEDGER_OK" if passed else "PROB_LEDGER_FAIL"
     if blocked_found:
@@ -372,6 +437,12 @@ def run(
     result: dict[str, Any] = {
         "passed":                  passed,
         "rank_eligible":           rank_eligible,
+        # WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — lane separation
+        "model_probability_complete": model_probability_complete,
+        "market_lane_available":      market_lane_available,
+        "market_status":              market_status,
+        "model_missing_components":   model_missing_components,
+        "contract_version":           ledger_payload.get("contract_version"),
         "probability_schema":      schema_result,
         "calibration_status":      effective_status,
         "final_model_prob":        final_model_prob,
@@ -383,6 +454,8 @@ def run(
         "missing_required":        missing_required,
         "blocked_found":           blocked_found,
         "influence_violations":    influence_violations,
+        "model_influence_violations": model_influence_violations,
+        "market_influence_violations": market_influence_violations,
         "shrinkage_required":      shrinkage_required,
         "has_confidence_interval": has_ci,
         "uncalibrated_penalty":    uncalibrated_penalty,
@@ -397,6 +470,14 @@ def run(
     row.setdefault("gates", {})["prob_ledger"] = result
     # rank_eligible is surfaced directly on the row for downstream gates
     row["rank_eligible"] = rank_eligible
+    row["model_probability_complete"] = model_probability_complete
+    row["market_lane_available"]      = market_lane_available
+    row["market_status"]              = market_status
+    row.setdefault("blockers", [])
+    if not market_lane_available:
+        _mkt_blocker = f"MARKET_LANE:{market_status}:money_edge_lane_held"
+        if _mkt_blocker not in row["blockers"]:
+            row["blockers"].append(_mkt_blocker)
     for v in violations:
         row["blockers"].append(f"PROB_LEDGER:{v}")
 

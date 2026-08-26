@@ -1,0 +1,926 @@
+# WOW Contract & Authority Registry
+# Version: 1.0.0
+# Generated: 2026-08-17
+#
+# This file is DOCUMENTATION ONLY.
+# No runtime code, schema, endpoint, probability, or terminal behavior
+# is changed by this file.
+#
+# can_execute: false
+# publish_authorized: false
+# DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
+#
+# Schema:
+#   declared_status    — status as declared in source code / skill governance block
+#   project_authority_status — this registry's authority classification
+#   lane               — execution lane / ceiling specificity
+#   canonical_path     — path relative to REPO_ROOT (workspace root)
+#   sha256             — SHA-256 of the canonical file (null = not available/unresolved)
+#   source_filename    — originating ZIP or source file name
+#
+# Promotion rules (enforced by test_contract_registry.py):
+#   TEST_ONLY          → project_authority_status must stay TEST_ONLY
+#   RESEARCH_ONLY      → project_authority_status must stay RESEARCH_ONLY
+#   PROBABILITY_ONLY   → project_authority_status must stay PROBABILITY_ONLY or UNRESOLVED_AUTHORITY
+#   PROPOSED           → project_authority_status must stay PROPOSED or UNRESOLVED_AUTHORITY
+#   GOVERNANCE_DOCUMENT → project_authority_status must stay GOVERNANCE_DOCUMENT
+#   ACTIVE             → project_authority_status may be ACTIVE or UNRESOLVED_AUTHORITY
+#   EMERGENCY_ACTIVE   → project_authority_status may be EMERGENCY_ACTIVE or UNRESOLVED_AUTHORITY
+#   UNRESOLVED_AUTHORITY → project_authority_status must stay UNRESOLVED_AUTHORITY
+
+registry_metadata:
+  registry_version: "1.0.0"
+  generated_at: "2026-08-17"
+  can_execute: false
+  publish_authorized: false
+  governance_hash_at_generation: "c37a3c1f"
+  source_zips:
+    - filename: "WOW-v16-Skills-Pack_1783803767126.zip"
+      sha256: "90f1f211bfed99f5ec1649856292fba02b173781aaa54e742ccef52baed2acc9"
+      description: "WOW v16 Clean Core Skills Pack — primary skill definitions (21 skills)"
+    - filename: "WOW-2026-07-30-WNBA-MLB-Patch-Pack_1785421082163.zip"
+      sha256: "f524c1099edba6bff67cf8e0b70c81182b1f5671fcf6de1b8f5316788d5c26ae"
+      description: "WNBA/MLB patch pack — failure-path expert, slip optimizer, WNBA composite"
+    - filename: "LLP_v16_Upgrade_2026-08-01_1785628653866.zip"
+      sha256: "df532e49d61d4a8ffef03fb3350b9887d2ee3ab2ce66e830b8eae6ec84919ab1"
+      description: "LLP v16 upgrade — dynamic calibration, moneyline probability, slate integrity, final refresh"
+  unresolved_authority_items:
+    - id: "UNRESOLVED-001"
+      description: >
+        MLB inline patches PATCH-010 through PATCH-013 are implemented in app.py and
+        active in production, but are not registered in gate_engine/governance.py
+        _PATCH_REGISTRY. Their formal governance authority, precedence order relative
+        to registered patches, and lane classification are unresolved until they are
+        either formally registered or superseded by a documented patch.
+    # UNRESOLVED-002 resolved by WOW-#251: canonical document created at
+    # docs/wow/contracts/canonical/WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE.md
+    # project_authority_status promoted from UNRESOLVED_AUTHORITY to EMERGENCY_ACTIVE.
+    - id: "UNRESOLVED-003"
+      description: >
+        PATCH-014 / PATCH-015 numbering collision: The original WOW v16.1 Slip
+        Consistency patch series used PATCH-014 through PATCH-020 as internal
+        identifiers. The 2026-07-30 governance patch
+        (WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE)
+        also references PATCH-014 (cross-ticket) and PATCH-015/016 (MLB directional).
+        The canonical authority for PATCH-014 and PATCH-015 is the 07-30 governance
+        entry, but the original slip series numbering creates an ambiguous collision
+        that has not been formally resolved in a patch supersession record.
+
+# ── SKILL CONTRACTS ───────────────────────────────────────────────────────────
+#
+# Ordered: TEST_ONLY / RESEARCH_ONLY / PROBABILITY_ONLY skills first (highest risk of
+# mis-promotion), then ACTIVE governance, then PROPOSED / UNRESOLVED.
+
+contracts:
+
+  # ── HIGH-RISK: TEST_ONLY ──────────────────────────────────────────────────
+
+  - canonical_contract_id: "WOW-MLB-FIRST-INNING-PITCH-COUNT-EXPERT-SKILL-V3"
+    source_filename: "WOW-2026-07-30-WNBA-MLB-Patch-Pack_1785421082163.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-mlb-first-inning-pitch-count-expert-SKILL-v3.md"
+    sha256: "1e20e8c5bc178abdfdc9de34b6e86548373386c093d5acdb18709b7f34771392"
+    version: "v3"
+    declared_status: "TEST_ONLY"
+    project_authority_status: "TEST_ONLY"
+    lane: "TEST_ONLY"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-30"
+    can_execute: false
+    notes: >
+      TEST_ONLY status is declared unconditionally in the skill governance block.
+      No output may exceed MODEL_QUALIFIED_HOLD until an explicit lane-upgrade
+      patch changes the test_only status. Skill: wow.mlb-first-inning-pitch-count-expert.
+      Scope: MLB 1st Inning Pitches Thrown props only. Promotion to ACTIVE is
+      FORBIDDEN without a formal governance patch.
+
+  # ── HIGH-RISK: RESEARCH_ONLY ──────────────────────────────────────────────
+
+  - canonical_contract_id: "WOW-MLB-PITCHER-FAILURE-PATH-EXPERT-SKILL-V2"
+    source_filename: "WOW-2026-07-30-WNBA-MLB-Patch-Pack_1785421082163.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-mlb-pitcher-failure-path-expert-SKILL-v2.md"
+    sha256: "d0e664ab17a66ea9ea04b4c7121b926719dc3ee1709563900523ae7581d6b6c3"
+    version: "v2"
+    declared_status: "RESEARCH_ONLY"
+    project_authority_status: "RESEARCH_ONLY"
+    lane: "RESEARCH_ONLY"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-30"
+    can_execute: false
+    notes: >
+      research_only status declared in skill governance block. Not an execution or
+      staking tool. Models early hooks, command collapse, pitch inefficiency, health/
+      workload regimes, and bullpen pressure. Output is supplemental research only;
+      no terminal label may be upgraded based on this skill alone. Skill:
+      wow.mlb-pitcher-failure-path-expert. Promotion to ACTIVE is FORBIDDEN without
+      a formal governance patch.
+
+  - canonical_contract_id: "WOW-WNBA-COMPOSITE-PROP-EXPERT-SKILL"
+    source_filename: "WOW-2026-07-30-WNBA-MLB-Patch-Pack_1785421082163.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-wnba-composite-prop-expert-SKILL.md"
+    sha256: "012fec42881ef49302344dff99f5e824e7323ff6b6aa84cd295d54505291eb39"
+    version: "v1"
+    declared_status: "RESEARCH_ONLY"
+    project_authority_status: "RESEARCH_ONLY"
+    lane: "RESEARCH_ONLY_FORWARD_TEST"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-30"
+    can_execute: false
+    notes: >
+      research_only status: lane_status=RESEARCH_ONLY_FORWARD_TEST declared in skill
+      governance block. Forward-test gate: 20-unique-player-game minimum. Output is
+      research-grade only; ceiling is MODEL_QUALIFIED_HOLD via Replit engine. Skill:
+      wow.wnba-composite-prop-expert. Promotion to ACTIVE is FORBIDDEN without a
+      formal governance patch.
+
+  - canonical_contract_id: "WOW-L10-LEDGER-SKILL"
+    source_filename: "WOW-v16-Skills-Pack_1783803767126.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-l10-ledger-SKILL.md"
+    sha256: "1c0e22de7da25eb305f399454104f4772fc3b323f1a3c72bb5c2b551e0d6c333"
+    version: "v1"
+    declared_status: "RESEARCH_ONLY"
+    project_authority_status: "RESEARCH_ONLY"
+    lane: "RESEARCH_ONLY_FORWARD_TEST"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-11"
+    can_execute: false
+    notes: >
+      research_only status: lane_status=RESEARCH_ONLY_FORWARD_TEST. Builds L5/L10
+      game-log ledgers; source-grounded per row. No row without a verified source.
+      Skill: wow.l10-ledger. Output is research supporting evidence — not a scoring
+      basis in isolation.
+
+  # ── HIGH-RISK: PROBABILITY_ONLY ──────────────────────────────────────────
+
+  - canonical_contract_id: "WOW-LLP-MONEYLINE-PROBABILITY-EXPERT-SKILL"
+    source_filename: "LLP_v16_Upgrade_2026-08-01_1785628653866.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-llp-moneyline-probability-expert-SKILL.md"
+    sha256: "2f1ea98faa1c408ed8742abe34fe2363235f958e69c8d9a0accfedbb80be34a5"
+    version: "v1"
+    declared_status: "PROBABILITY_ONLY"
+    project_authority_status: "PROBABILITY_ONLY"
+    lane: "OUTRIGHT_WIN_PROBABILITY_ONLY"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      OUTRIGHT_WIN_PROBABILITY_ONLY lane. Ranks calibrated win probabilities —
+      not edge, payout, or stake. Requires WOW-PATCH-2026-08-07-OUTRIGHT-MONEYLINE-ROUTING
+      enforcement for backend routing. OUTRIGHT_WINNER rows must route through this
+      skill; mixed-batch with non-OUTRIGHT rows returns 409 RUN_INVALID_ROUTE_CONFIGURATION.
+      Skill: wow.llp-moneyline-probability-expert. Promotion to ACTIVE or
+      EMERGENCY_ACTIVE is FORBIDDEN.
+
+  - canonical_contract_id: "WOW-SLIP-PROBABILITY-OPTIMIZER-SKILL-V3"
+    source_filename: "WOW-2026-07-30-WNBA-MLB-Patch-Pack_1785421082163.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-slip-probability-optimizer-SKILL-v3.md"
+    sha256: "95bb70fd414fcd6fa5eb8a3c9219cfbbeaa1433562d1b66aca9e483847ee69c4"
+    version: "v3"
+    declared_status: "PROBABILITY_ONLY"
+    project_authority_status: "PROBABILITY_ONLY"
+    lane: "PROBABILITY_ONLY"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-30"
+    can_execute: false
+    notes: >
+      lane_status=PROBABILITY_ONLY. Converts third-party slip screenshots to
+      probability-only model-qualified review. Cannot call any result FINAL_APPROVED,
+      MONEY_QUALIFIED, executable, or stake-ready. money_label_allowed=false,
+      final_approval_allowed=false, stake=0. Platforms: PrizePicks, Kalshi.
+      Skill: wow.slip-probability-optimizer. Promotion to ACTIVE or EMERGENCY_ACTIVE
+      is FORBIDDEN.
+
+  - canonical_contract_id: "WOW-MLB-MONEYLINE-ENRICHMENT-CONTRACT-SKILL"
+    source_filename: "WOW-v16-Skills-Pack_1783803767126.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-mlb-moneyline-enrichment-contract-SKILL.md"
+    sha256: "017e406233f59aa01ed8290b45ad7742a31249ddccb24afdb2e40fd32449048f"
+    version: "v1"
+    declared_status: "PROBABILITY_ONLY"
+    project_authority_status: "PROBABILITY_ONLY"
+    lane: "PROBABILITY_ONLY"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-11"
+    can_execute: false
+    notes: >
+      MLB game-win expert enrichment contract. Defines the 14-component structured
+      evidence packet required before any MLB moneyline probability may be published.
+      A row missing any component is capped at MODEL_QUALIFIED_HOLD. can_execute=false.
+      Narrative evidence alone does not satisfy this contract. Skill:
+      wow.mlb-moneyline-enrichment-contract. Promotion to ACTIVE or EMERGENCY_ACTIVE
+      is FORBIDDEN.
+
+  # ── LLP GOVERNOR SKILLS (lane-specific, can_execute=false) ───────────────
+
+  - canonical_contract_id: "WOW-LLP-DYNAMIC-CALIBRATION-EXPERT-SKILL"
+    source_filename: "LLP_v16_Upgrade_2026-08-01_1785628653866.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-llp-dynamic-calibration-expert-SKILL.md"
+    sha256: "9b4a9a5b2994780f535bbd053e55a3f83eb7d1dd37390b069eda34ac790f60d5"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "PROBABILITY_CALIBRATION"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      lane_status=PROBABILITY_CALIBRATION. Converts raw win probability to candidate-
+      specific calibrated distribution with evidence-based uncertainty. Skill:
+      wow.llp-dynamic-calibration-expert.
+
+  - canonical_contract_id: "WOW-LLP-FAILURE-PATH-EXPERT-SKILL"
+    source_filename: "LLP_v16_Upgrade_2026-08-01_1785628653866.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-llp-failure-path-expert-SKILL.md"
+    sha256: "1fce88c9c12057cd6ec65a0a686d825daca8c0630a15e4c57630231efe4754e7"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "OUTRIGHT_FAILURE_PATH_MODEL"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      lane_status=OUTRIGHT_FAILURE_PATH_MODEL. Quantifies failure paths for favorites
+      and underdogs using P(win)=Σ P(regime_i)×P(win|regime_i). LLP-specific.
+      Skill: wow.llp-failure-path-expert.
+
+  - canonical_contract_id: "WOW-LLP-SLATE-INTEGRITY-EXPERT-SKILL"
+    source_filename: "LLP_v16_Upgrade_2026-08-01_1785628653866.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-llp-slate-integrity-expert-SKILL.md"
+    sha256: "345abfb08c3889b80b22f289f4aa45ddbb13937fafd194e61c93f86086b5ffa9"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "IDENTITY_AND_STATUS_GATE"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      lane_status=IDENTITY_AND_STATUS_GATE. Verifies every LLP candidate belongs to
+      the correct current slate before probability modeling begins. Skill:
+      wow.llp-slate-integrity-expert.
+
+  - canonical_contract_id: "WOW-LLP-MARKET-NORMALIZATION-EXPERT-SKILL"
+    source_filename: "LLP_v16_Upgrade_2026-08-01_1785628653866.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-llp-market-normalization-expert-SKILL.md"
+    sha256: "834289c2208c94a95f698cdc18a2ffeb01dc1243cb5f105a66b260f2b9f93e97"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "MARKET_NORMALIZATION"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      lane_status=MARKET_NORMALIZATION. maximum_ceiling=MARKET_VERIFIED_HOLD.
+      Normalizes outright-winner markets; calculates reproducible two-way or
+      three-way no-vig probabilities. Skill: wow.llp-market-normalization-expert.
+
+  - canonical_contract_id: "WOW-LLP-FINAL-REFRESH-GOVERNOR-SKILL"
+    source_filename: "LLP_v16_Upgrade_2026-08-01_1785628653866.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-llp-final-refresh-governor-SKILL.md"
+    sha256: "534cb10f6e60b9aa0c1f00275b5a85712a14b023104d40bd82d31c141f260939"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "FINAL_FRESHNESS_GATE"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      lane_status=FINAL_FRESHNESS_GATE. Mandatory recheck before any LLP candidate
+      is displayed. Skill: wow.llp-final-refresh-governor.
+
+  - canonical_contract_id: "WOW-CROSS-TICKET-EXPOSURE-GOVERNOR-SKILL"
+    source_filename: "WOW-2026-07-30-WNBA-MLB-Patch-Pack_1785421082163.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-cross-ticket-exposure-governor-SKILL.md"
+    sha256: "62c0b7ec1c946c09b10eab2452a164ee63b2fbfeb98c1802061b461377d50e46"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-30"
+    can_execute: false
+    notes: >
+      Mandatory when more than one card is proposed in the same slate. Guards
+      structural fragility across proposed cards (player/pitcher/role/game-script/
+      threshold thesis duplication). Skill: wow.cross-ticket-exposure-governor.
+
+  - canonical_contract_id: "WOW-WNBA-OPPORTUNITY-SCENARIO-EXPOSURE-GOVERNOR-SKILL"
+    source_filename: "WOW-v16-Skills-Pack_1783803767126.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-wnba-opportunity-scenario-and-exposure-governor-SKILL.md"
+    sha256: "a462edb1509a28a22ab7a612d6cbc59ac5a31a8e68f536fd277c0070e56c3cef"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-11"
+    can_execute: false
+    notes: >
+      Required for all WNBA rows. Maximum standalone ceiling: MODEL_QUALIFIED_HOLD.
+      All ceiling upgrades require Replit engine evidence. Skill:
+      wow.wnba-opportunity-scenario-and-exposure-governor:v1.
+
+  - canonical_contract_id: "WOW-GOVERNED-RED-TEAM-REVIEWER-SKILL"
+    source_filename: "WOW-v16-Skills-Pack_1783803767126.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-governed-red-team-reviewer-SKILL.md"
+    sha256: "306111ad127dcf7f9e48d32182b4acdcca789bd9b6ef395e6642e0fba2e9e5a7"
+    version: "1.0.0"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-08-16"
+    can_execute: false
+    notes: >
+      Skill #22 in the registry (wow.governed-red-team-reviewer v1.0.0).
+      Downgrade-only autonomous audit pass across 13 dimensions. Advisory/downgrade
+      only; cannot upgrade terminal labels. AT-26 through AT-37. 171 tests pass.
+
+  # ── ACTIVE GOVERNANCE PATCHES (registered in _PATCH_REGISTRY) ────────────
+
+  - canonical_contract_id: "WOW-CORE-V16"
+    source_filename: "WOW-v16-Skills-Pack_1783803767126.zip"
+    canonical_path: null
+    sha256: null
+    version: "v16"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 0
+    supersedes: []
+    effective_date: "2026-07-11"
+    can_execute: false
+    notes: >
+      WOW v16 Clean Core baseline. Patch ID: WOW-CORE-v16. Foundation patch;
+      all subsequent patches extend this baseline.
+
+  - canonical_contract_id: "WOW-PATCH-2026-06-27-SHARP-ANCHOR"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 10
+    supersedes: []
+    effective_date: "2026-06-27"
+    can_execute: false
+    notes: >
+      Sharp anchor enforcement. Patch ID: WOW-PATCH-2026-06-27-SHARP-ANCHOR.
+      Registered in governance.py _PATCH_REGISTRY.
+
+  - canonical_contract_id: "WOW-PATCH-2026-07-07-JS-STYLE"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 20
+    supersedes: []
+    effective_date: "2026-07-07"
+    can_execute: false
+    notes: >
+      JS-style enforcement. Patch ID: WOW-PATCH-2026-07-07-JS-STYLE. Registered
+      in governance.py _PATCH_REGISTRY.
+
+  - canonical_contract_id: "WOW-PATCH-2026-07-10-COMBO-SETTLEMENT"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 30
+    supersedes: []
+    effective_date: "2026-07-10"
+    can_execute: false
+    notes: >
+      Combo/COMBO_PROP settlement mechanics. Routes PLAYER_PROP and COMBO_PROP before
+      generic prop normalization. Patch ID: WOW-PATCH-2026-07-10-COMBO-SETTLEMENT.
+      Registered in governance.py _PATCH_REGISTRY.
+
+  - canonical_contract_id: "WOW-PATCH-MANDATORY-RECONSTRUCTION-V1"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 40
+    supersedes: []
+    effective_date: "2026-07-11"
+    can_execute: false
+    notes: >
+      Mandatory reconstruction enforcement. Patch ID: WOW-PATCH-MANDATORY-RECONSTRUCTION-v1.0.
+      Registered in governance.py _PATCH_REGISTRY.
+
+  - canonical_contract_id: "WOW-PATCH-2026-07-15-PROP-CALIBRATION-SLIP-GOVERNANCE"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 50
+    supersedes: []
+    effective_date: "2026-07-15"
+    can_execute: false
+    notes: >
+      Prop calibration, exposure, and slip governance. Patch ID:
+      WOW-PATCH-2026-07-15-PROP-CALIBRATION-EXPOSURE-AND-SLIP-GOVERNANCE.
+      Registered in governance.py _PATCH_REGISTRY.
+
+  - canonical_contract_id: "WOW-PATCH-2026-07-15-LLP-DATA-ACQUISITION-RESILIENCE"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 60
+    supersedes: []
+    effective_date: "2026-07-15"
+    can_execute: false
+    notes: >
+      LLP data acquisition resilience (market alias resolution, UTC normalization,
+      ambiguous alias rejection, doubleheader detection, 2-book no-vig consensus,
+      source ceilings, contract-stage reporting). ENGINE v16.3. Patch ID:
+      WOW-PATCH-2026-07-15-LLP-DATA-ACQUISITION-RESILIENCE.
+
+  - canonical_contract_id: "WOW-PATCH-2026-07-15-PROP-CONFIDENCE-MARKET-LABEL"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 70
+    supersedes: []
+    effective_date: "2026-07-15"
+    can_execute: false
+    notes: >
+      Prop confidence and market label separation (4 analysis modes, payout scope,
+      governance degradation, 4 market labels, strict 2-sided no-vig, provisional
+      audit). ENGINE v16.4. Patch ID:
+      WOW-PATCH-2026-07-15-PROP-CONFIDENCE-AND-MARKET-LABEL-SEPARATION.
+
+  - canonical_contract_id: "WOW-PATCH-2026-07-15-GOVERNANCE-RESILIENCE-ERROR-CONTRACT"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 80
+    supersedes: []
+    effective_date: "2026-07-15"
+    can_execute: false
+    notes: >
+      Governance resilience and structured error contract (UNAVAILABLE≠MISMATCH,
+      GovernanceSnapshot 5-min LKG cache, RunGovernancePin 1000-entry). ENGINE v16.5.
+      Patch ID: WOW-PATCH-2026-07-15-GOVERNANCE-RESILIENCE-AND-ERROR-CONTRACT.
+
+  - canonical_contract_id: "WOW-PATCH-2026-07-30-WNBA-MLB-GOVERNANCE"
+    source_filename: "WOW-2026-07-30-WNBA-MLB-Patch-Pack_1785421082163.zip"
+    canonical_path: "docs/wow/contracts/canonical/WOW-PATCH-2026-07-30-WNBA-MLB-GOVERNANCE.md"
+    sha256: "90ee8151bedd8c21b1494b56ff32d906a9517891d2d12c8a08435187a7d6df23"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 85
+    supersedes: []
+    effective_date: "2026-07-30"
+    can_execute: false
+    notes: >
+      WNBA composite forward-test gate (PATCH-017): MODEL_QUALIFIED_HOLD ceiling.
+      MLB directional firewall (PATCH-015/016): K LESS→WATCH_ONLY unconditional.
+      Cross-ticket exposure governor (PATCH-014): exact duplicate rejection.
+      See UNRESOLVED-003 for PATCH-014/015 numbering collision. Patch ID:
+      WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE.
+      References UNRESOLVED-003.
+
+  - canonical_contract_id: "WOW-PATCH-WNBA-001-OPPORTUNITY-STABILITY-GATE"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 90
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      WNBA opportunity stability gate. Patch ID: WOW-PATCH-WNBA-001-OPPORTUNITY-STABILITY-GATE.
+      Registered in governance.py _PATCH_REGISTRY.
+
+  - canonical_contract_id: "WOW-PATCH-PORTFOLIO-001-CROSS-SLIP-EXPOSURE-GOVERNOR"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 91
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      Cross-slip exposure governor. Patch ID: WOW-PATCH-PORTFOLIO-001-CROSS-SLIP-EXPOSURE-GOVERNOR.
+      Registered in governance.py _PATCH_REGISTRY.
+
+  - canonical_contract_id: "WOW-PATCH-PORTFOLIO-002-CROSS-SLIP-PERSISTENT-GOVERNANCE"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 92
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      Cross-slip persistent governance. Patch ID: WOW-PATCH-PORTFOLIO-002-CROSS-SLIP-PERSISTENT-GOVERNANCE.
+      Registered in governance.py _PATCH_REGISTRY.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 93
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      Cross-slip duplicate guard (tier ledger). Exposure source precedence: session
+      ledger > open unsettled rows > historical. Patch ID:
+      WOW-PATCH-2026-08-01-CROSS-SLIP-DUPLICATE-GUARD.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 94
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      1IP efficiency gap enforcement (7-metric score). ERA-delta quality shift applied
+      to fp_result.adjusted_win_prob. Patch ID: WOW-PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 95
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      Pitch count directional asymmetry enforcement (DFS). Patch ID:
+      WOW-PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY"
+    source_filename: "LLP_v16_Upgrade_2026-08-01_1785628653866.zip"
+    canonical_path: "docs/wow/contracts/canonical/WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY.md"
+    sha256: "807c234e19d40556696bf4a357a1eca1f6e76cde99e3fe9ad2410f27eda6b719"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 96
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      LLP slate integrity, dynamic calibration, and final refresh. Status ≤15 min;
+      weather ≤30 min; any failure removes row. Patch ID:
+      WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-01-LINEMAKERS-SELF-AUDIT"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 97
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      Linemakers presentation and self-audit (scan_audit.py, unified_calibration_ledger.py).
+      Gate 0 in sports_gate adds 1 verdict. Patch ID:
+      WOW-PATCH-2026-08-01-LINEMAKERS-PRESENTATION-AND-SELF-AUDIT.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-01-MULTI-WINDOW-PROP-PERSISTENCE"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 98
+    supersedes: []
+    effective_date: "2026-08-01"
+    can_execute: false
+    notes: >
+      Multi-window prop persistence and distribution audit (prop_persistence.py,
+      same_player_mutex.py, 4 distribution models). Patch ID:
+      WOW-PATCH-2026-08-01-MULTI-WINDOW-PROP-PERSISTENCE-AND-DISTRIBUTION-AUDIT.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-02-LLP-MATCHUP-EV-INTEGRITY"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 99
+    supersedes: []
+    effective_date: "2026-08-02"
+    can_execute: false
+    notes: >
+      LLP matchup/EV/pipeline integrity (patch #20). Patch ID:
+      WOW-PATCH-2026-08-02-LLP-MATCHUP-EV-INTEGRITY.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-02-LLP-SLIP-CONSTRUCTION-INTEGRITY"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 100
+    supersedes: []
+    effective_date: "2026-08-02"
+    can_execute: false
+    notes: >
+      LLP slip construction integrity (patch #21). 5 new failure tags. Patch ID:
+      WOW-PATCH-2026-08-02-LLP-SLIP-CONSTRUCTION-INTEGRITY.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 101
+    supersedes: []
+    effective_date: "2026-08-02"
+    can_execute: false
+    notes: >
+      Mandatory route completion (route_registry.py; qualifying labels post-classifier).
+      gate_execution_summary in every run output. Patch ID:
+      WOW-PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-07-OUTRIGHT-MONEYLINE-ROUTING"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 102
+    supersedes: []
+    effective_date: "2026-08-07"
+    can_execute: false
+    notes: >
+      OUTRIGHT_WINNER routing: OUTRIGHT_WIN_PROBABILITY_ONLY; mixed batch returns
+      409 RUN_INVALID_ROUTE_CONFIGURATION. Patch ID:
+      WOW-PATCH-2026-08-07-OUTRIGHT-MONEYLINE-ROUTING.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-07-BACKEND-FAILOVER-RESEARCH"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 103
+    supersedes: []
+    effective_date: "2026-08-07"
+    can_execute: false
+    notes: >
+      Backend failover research mode. Documented accepted per-row enrichment scalar
+      alongside role_status. Patch ID: WOW-PATCH-2026-08-07-BACKEND-FAILOVER-RESEARCH.
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-15-PP-PROMOTION-SAME-GAME-FRAGILITY"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 104
+    supersedes: []
+    effective_date: "2026-08-15"
+    can_execute: false
+    notes: >
+      PP promotion gate and same-game fragility enforcement (REJECT_PP_PROMOTION_GATE,
+      REJECT_SAME_EVENT_NO_JOINT_MODEL). Patch ID:
+      WOW-PATCH-2026-08-15-PP-PROMOTION-AND-SAME-GAME-FRAGILITY.
+
+  # ── ACTIVE GOVERNANCE PATCHES (skill-doc only, not in _PATCH_REGISTRY) ────
+
+  - canonical_contract_id: "WOW-PATCH-2026-08-06-COMMAND-CENTER-PHASE1"
+    source_filename: null
+    canonical_path: "docs/wow/contracts/canonical/WOW-PATCH-2026-08-06-COMMAND-CENTER-PHASE1.md"
+    sha256: "44b0f345e138092810a9cf70d0582fd34ab1ccbd62b1d11bb72f8685df489bc4"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-08-06"
+    can_execute: false
+    notes: >
+      Command Center Phase 1 (8 modules; routes /wow/cc/health,intake,run,status,reconcile;
+      3 unconditional invariants: can_execute=False, dry_run_only, KALSHI_RECOVERY_MODE=ACTIVE).
+      Patch document exists in skills/ but patch ID is NOT registered in
+      governance.py _PATCH_REGISTRY. This entry documents the skill-level governance
+      document only.
+
+  - canonical_contract_id: "WOW-PATCH-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR"
+    source_filename: null
+    canonical_path: "docs/wow/contracts/canonical/WOW-PATCH-2026-08-05-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR.md"
+    sha256: "c8be073a878597663f1875d2d7fec550ac686f6041fa437a4e408a079c10797e"
+    version: "v1"
+    declared_status: "PROPOSED"
+    project_authority_status: "PROPOSED"
+    lane: "ANALYTICAL_SHADOW_MODE"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-08-05"
+    can_execute: false
+    notes: >
+      STATUS: ANALYTICAL SHADOW MODE. ChatGPT Step 3 approved with required revisions
+      (2026-08-05). Calibration milestones for can_execute qualification have not been
+      reached; no output is actionable until milestones are confirmed via a new patch.
+      wow-high-hit-engine is absent from the active skill stack. Skill:
+      wow-cross-sport-high-probability-selector. Patch document: WOW-PATCH-2026-08-05.
+      PROPOSED — must not be promoted to ACTIVE without formal governance patch and
+      calibration milestone confirmation.
+
+  - canonical_contract_id: "WOW-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR-SKILL"
+    source_filename: "WOW-v16-Skills-Pack_1783803767126.zip"
+    canonical_path: "docs/wow/contracts/canonical/wow-cross-sport-high-probability-selector-SKILL.md"
+    sha256: "d685a6d8b66de23dfcc64db445d2ba3e19e89651af419a9a0376bc8ffedeecd8"
+    version: "v1"
+    declared_status: "PROPOSED"
+    project_authority_status: "PROPOSED"
+    lane: "ANALYTICAL_SHADOW_MODE"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-08-05"
+    can_execute: false
+    notes: >
+      Skill document for wow-cross-sport-high-probability-selector. ANALYTICAL SHADOW
+      MODE — calibration milestones not reached; can_execute=False unconditional.
+      See WOW-PATCH-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR for patch authority.
+      PROPOSED — must not be promoted to ACTIVE.
+
+  # ── AUTHORITY RECORDS: SLIP CONSISTENCY COMBINED ENFORCEMENT ─────────────
+
+  - canonical_contract_id: "WOW-PATCH-2026-07-23-SLIP-CONSISTENCY"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-23"
+    can_execute: false
+    notes: >
+      Combined authority record for the WOW v16.1 Slip Consistency patch series
+      (internal identifiers PATCH-014 through PATCH-020). These patches enforce
+      11 engine flags for slip exposure, duplicate guarding, persistent governance,
+      and cross-slip portfolio control. The individual enforcement points are now
+      registered separately in governance.py under:
+      WOW-PATCH-PORTFOLIO-001-CROSS-SLIP-EXPOSURE-GOVERNOR (precedence 91),
+      WOW-PATCH-PORTFOLIO-002-CROSS-SLIP-PERSISTENT-GOVERNANCE (precedence 92), and
+      WOW-PATCH-2026-07-15-PROP-CALIBRATION-EXPOSURE-AND-SLIP-GOVERNANCE (precedence 50).
+      This combined authority record is retained for historical traceability.
+
+  # ── AUTHORITY RECORDS: UNRESOLVED ────────────────────────────────────────
+
+  - canonical_contract_id: "WOW-MLB-PITCHER-FAILURE-PATH-PATCHES-010-013"
+    source_filename: null
+    canonical_path: null
+    sha256: null
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "UNRESOLVED_AUTHORITY"
+    lane: "RESEARCH_ONLY"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-30"
+    can_execute: false
+    notes: >
+      UNRESOLVED-001. MLB inline patches PATCH-010 (Market Data Contract Registry),
+      PATCH-011 (WNBA Ingestion Scheduler), PATCH-012 (Candidate Triage Score),
+      PATCH-013A (Role-State Ledgers), and PATCH-013B (Pick Lifecycle State Machine)
+      are implemented in app.py and active in production, but are NOT registered in
+      gate_engine/governance.py _PATCH_REGISTRY. Their formal governance authority and
+      precedence order relative to registered patches are unresolved. Underlying lane
+      is RESEARCH_ONLY — no terminal label upgrade may be based on these patches alone
+      until they are formally registered. Project authority is UNRESOLVED pending
+      formal registration. References UNRESOLVED-001.
+
+  - canonical_contract_id: "WOW-KALSHI-RECOVERY-COMBO-GOVERNANCE"
+    source_filename: "WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE.md"
+    canonical_path: "docs/wow/contracts/canonical/WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE.md"
+    # sha256 = canonical_sha256 (on-disk authoritative, used by existing tests)
+    sha256: "2c5daad002222a070fe61c47c22e1a755361e3969139e7d80b94cad17f588e5f"
+    # Dual-hash reconciliation (see transformation_record below)
+    canonical_sha256: "2c5daad002222a070fe61c47c22e1a755361e3969139e7d80b94cad17f588e5f"
+    raw_source_sha256: "b79118e2d2167c047a5f28bf210345aa98e6f75e25f8cd8aec1ae8b48f604e48"
+    transformation_record: >
+      External verifier independently hashed the document content as described
+      in the WOW-#251 return packet and obtained b79118e2...  The on-disk
+      canonical file (committed at 1a59025) hashes as 2c5daad0... and is the
+      authoritative source.  Exhaustive byte-level transformation tests (CRLF,
+      strip/append trailing newline, per-line rstrip, combinations) confirm that
+      b79118e2... is not derivable from the on-disk canonical by any deterministic
+      transformation — it represents the document as transcribed through the
+      communication channel, whose exact bytes are unavailable.  No semantic
+      transformation was applied; the document was authored directly.
+      canonical_sha256 is the binding value.  Full analysis in raw_source_provenance_path.
+    raw_source_status: "CHANNEL_TRANSCRIPTION_BYTES_UNAVAILABLE"
+    raw_source_provenance_path: "docs/wow/contracts/raw_source/WOW-PATCH-2026-07-21-KALSHI-RECOVERY-provenance.md"
+    documented_authority_changed: true
+    version: "v1"
+    declared_status: "EMERGENCY_ACTIVE"
+    project_authority_status: "BINDING_ACTIVE"
+    lane: "KALSHI_PORTFOLIO_GOVERNANCE"
+    precedence: null
+    supersedes: []
+    effective_date: "2026-07-21"
+    can_execute: false
+    notes: >
+      Resolved UNRESOLVED-002 (WOW-#251). KALSHI_RECOVERY_MODE = "ACTIVE" is a
+      hardcoded module-level constant in gate_engine/command_center/cc_labels.py
+      and gate_engine/command_center/__init__.py — unconditional, cannot be
+      disabled at runtime. Enforces: singles-only research, no combos
+      (combos_allowed=false, maximum_combo_underlying_markets=1), no capital
+      allocation, recovery_exit_minimum_reconciled_singles=20. Recovery exit
+      does not reactivate combos. No downstream pass may erase the Kalshi
+      portfolio blocker. Registration does not newly activate any behavior —
+      authority was already EMERGENCY_ACTIVE; this document formalizes it.
+      Combined with WOW-PATCH-2026-07-10-COMBO-SETTLEMENT for combo-market
+      settlement mechanics.

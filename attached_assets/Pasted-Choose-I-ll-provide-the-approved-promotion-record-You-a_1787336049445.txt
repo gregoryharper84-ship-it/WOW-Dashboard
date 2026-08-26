@@ -1,0 +1,66 @@
+Choose **“I’ll provide the approved promotion record.”**
+
+You already have the required authority. The issue is not that 1IP lacks an approved promotion decision; it is that the **backend authoritative registry has not yet been given/synchronized with that explicit patch record**.
+
+Use this exact authority:
+
+```text
+patch_id=WOW-PATCH-2026-08-21-MLB-1IP-FULL-MODEL-ELIGIBILITY
+status=ACTIVE_PROJECT_CONTRACT
+patch_priority=CRITICAL
+framework=WOW_v16_CLEAN_CORE
+activation_date=2026-08-21
+
+lane=MLB_1IP_PITCH_COUNT
+previous_lane_status=TEST_ONLY
+lane_status=FULL_MODEL_GOVERNED
+full_model_eligible=true
+
+MLB_1IP_TEST_ONLY=false
+MLB_1IP_FULL_MODEL_ELIGIBLE=true
+
+controlling_specialist=wow.mlb-first-inning-pitch-count-expert
+supporting_failure_path_specialist=wow.mlb-pitcher-failure-path-expert
+
+standalone_specialist_ceiling=MODEL_QUALIFIED_HOLD
+full_model_terminal_ceiling=strictest_applicable_upstream_native_ceiling
+
+can_execute=false
+DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
+```
+
+That is directly supported by the active patch. The patch explicitly says it is an `ACTIVE_PROJECT_CONTRACT`, promotes 1IP from `TEST_ONLY` to `FULL_MODEL_GOVERNED`, and supersedes the old TEST_ONLY-only restrictions. 
+
+The important supersession language is:
+
+> the patch supersedes `lane_status=TEST_ONLY`, `MLB_1IP_TEST_ONLY`, `test_only_legs_removed`, and any rule blocking card eligibility solely because the lane is 1IP. 
+
+But do **not** tell the backend this means unrestricted approval. The same authority also preserves the entire downstream Full Model chain—calibration, settlement, payout, correlation, duplicate exposure, weakest-leg, final refresh, immutable write, reconciliation, and strict terminal ceiling. 
+
+So in the UI:
+
+**Select:** `I’ll provide the approved promotion record`
+
+Then provide/upload:
+
+`WOW-PATCH-2026-08-21-MLB-1IP-FULL-MODEL-ELIGIBILITY.md`
+
+The correct implementation behavior after registry ingestion should be:
+
+```text
+authoritative_registry:
+  MLB_1IP_TEST_ONLY=false
+  MLB_1IP_FULL_MODEL_ELIGIBLE=true
+  lane_status=FULL_MODEL_GOVERNED
+
+old_TEST_ONLY_authority:
+  SUPERSEDED_FOR_1IP_ELIGIBILITY_ONLY
+
+analytical_1IP_requirements:
+  REMAIN_BINDING
+
+backend_implementation:
+  PENDING_REGRESSION_VERIFICATION
+```
+
+I would **not** choose “Keep 1IP TEST_ONLY.” That would knowingly preserve a backend state that conflicts with the active project contract. And I would not stop the task; this is a registry-authority synchronization issue with a valid explicit promotion record already available.

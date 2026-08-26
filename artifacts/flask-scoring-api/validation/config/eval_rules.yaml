@@ -1,0 +1,102 @@
+# WOW Prediction Validation Harness v1 — Pre-declared Evaluation Rules
+#
+# IMPORTANT: These rules MUST be declared before any holdout set is examined.
+# Changing thresholds after looking at holdout results is post-hoc tuning and
+# invalidates the blind benchmark. This file is version-controlled; any change
+# must be committed with a documented rationale BEFORE holdout evaluation runs.
+#
+# Frozen production commit: af96567
+
+harness_version: "1.0.0"
+declared_at: "2026-08-17"           # date rules were locked
+declared_before_holdout: true       # attestation — do not set false
+
+# ---------------------------------------------------------------------------
+# Primary metric
+# ---------------------------------------------------------------------------
+primary_metric: brier_score
+primary_threshold:
+  description: >
+    A Brier score below 0.25 is the pass gate.  For a coin-flip prop
+    (p=0.5), the Brier score of a constant-0.5 predictor is 0.25.
+    Any model must beat this to demonstrate genuine predictive signal.
+  warn_above: 0.25
+  fail_above: 0.30
+  lower_is_better: true
+
+# ---------------------------------------------------------------------------
+# Secondary metric
+# ---------------------------------------------------------------------------
+secondary_metric: log_loss
+secondary_threshold:
+  description: >
+    Log loss below 0.693 (ln(2) — equivalent to random coin flip) is required.
+    Scores above this indicate the model is miscalibrated worse than chance.
+  warn_above: 0.693
+  fail_above: 0.750
+  lower_is_better: true
+
+# ---------------------------------------------------------------------------
+# Calibration safeguards
+# ---------------------------------------------------------------------------
+calibration:
+  min_bins: 5
+  bin_method: uniform_width         # edges: 0.0, 0.2, 0.4, 0.6, 0.8, 1.0
+  max_calibration_error: 0.15       # ECE (expected calibration error) threshold
+  min_bin_count: 3                  # bins with fewer predictions are flagged SPARSE
+
+# ---------------------------------------------------------------------------
+# Coverage safeguards
+# ---------------------------------------------------------------------------
+coverage:
+  min_predictions_total: 10        # fewer → report INSUFFICIENT_SAMPLE
+  min_predictions_per_line_slice: 5 # fewer per slice → slice flagged SPARSE
+  holdout_min_size: 10             # holdout smaller than this → HOLDOUT_TOO_SMALL
+
+# ---------------------------------------------------------------------------
+# Split configuration
+# ---------------------------------------------------------------------------
+split:
+  method: chronological
+  train_fraction: 0.60
+  validation_fraction: 0.20
+  holdout_fraction: 0.20           # immutable; never used for tuning
+  sort_key: game_date              # ISO date string, ascending
+
+# ---------------------------------------------------------------------------
+# Baseline acceptance gates
+# ---------------------------------------------------------------------------
+baselines:
+  # Model must beat all baselines on primary metric to be considered useful
+  must_beat_all: true
+  baseline_ids:
+    - season_empirical             # Baseline A
+    - l10_empirical                # Baseline B
+    - stat_model_pitches_bf        # Baseline C
+
+# ---------------------------------------------------------------------------
+# Feature ablation reporting
+# ---------------------------------------------------------------------------
+ablation:
+  report_unavailable_features: true
+  never_fabricate: true            # unavailable → "UNAVAILABLE", never imputed
+  features:
+    - failure_path
+    - l10_discernment
+    - top_four_detail
+    - handedness
+    - health_workload
+    - catcher
+    - weather
+    - market_prior
+    - recent_form
+    - matchup_adjustment
+
+# ---------------------------------------------------------------------------
+# Leakage prevention rules
+# ---------------------------------------------------------------------------
+leakage_prevention:
+  outcome_timestamp_must_be_after_prediction: true
+  feature_snapshot_must_be_frozen_before_game: true
+  holdout_excluded_from_tuning: true
+  prediction_id_must_be_unique: true

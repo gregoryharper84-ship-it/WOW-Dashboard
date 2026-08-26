@@ -58,6 +58,12 @@ WOW_RUNTIME_MANIFEST: dict[str, Any] = {
         "WOW-PATCH-2026-08-02-MANDATORY-ROUTE-COMPLETION",
         # LLP v16 upgrade
         "WOW-PATCH-2026-08-01-LLP-SLATE-INTEGRITY-DYNAMIC-CALIBRATION-AND-FINAL-REFRESH",
+        # TeamRankings secondary enrichment (moneyline + reusable adapter)
+        "WOW-PATCH-2026-08-08-TEAMRANKINGS-SECONDARY-ENRICHMENT",
+        # External Analyst Intelligence layer (StumpTheSpread + reusable framework)
+        "WOW-PATCH-2026-08-08-EXTERNAL-ANALYST-INTELLIGENCE",
+        # BallDontLie formal TRUSTED_STRUCTURED_STATS acquisition layer
+        "WOW-PATCH-2026-08-08-BALLDONTLIE-TRUSTED-STATS",
     ],
     "skills": {
         "slip_optimizer": {

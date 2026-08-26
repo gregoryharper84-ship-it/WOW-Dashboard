@@ -9,7 +9,14 @@ import KalshiPage from "@/pages/kalshi";
 import RequestLogPage from "@/pages/request-log";
 import LeaderboardPage from "@/pages/leaderboard";
 import PropsIntakePage from "@/pages/props-intake";
-import { Lock, Sparkles, TrendingUp, ScrollText, Trophy, Database } from "lucide-react";
+import RankingsPage from "@/pages/rankings";
+import HistoryPage from "@/pages/history";
+import SourceHealthPage from "@/pages/source-health";
+import BacktestingPage from "@/pages/backtesting";
+import {
+  Lock, Sparkles, TrendingUp, ScrollText, Trophy, Database,
+  BarChart2, Clock, Activity, FlaskConical,
+} from "lucide-react";
 
 const queryClient = new QueryClient();
 
@@ -17,12 +24,16 @@ function IconRail() {
   const [loc] = useLocation();
 
   const navItems = [
-    { href: "/",        label: "Final Lock",  icon: Lock,       match: (l: string) => l === "/" },
-    { href: "/props",   label: "Props Intake",icon: Database,   match: (l: string) => l.startsWith("/props") },
-    { href: "/analyze", label: "Prompt",      icon: Sparkles,   match: (l: string) => l.startsWith("/analyze") },
-    { href: "/kalshi",  label: "Kalshi",      icon: TrendingUp, match: (l: string) => l.startsWith("/kalshi") },
-    { href: "/logs",    label: "Request Log", icon: ScrollText, match: (l: string) => l.startsWith("/logs") },
-    { href: "/leaderboard", label: "Leaderboard", icon: Trophy, match: (l: string) => l.startsWith("/leaderboard") },
+    { href: "/",           label: "Final Lock",    icon: Lock,          match: (l: string) => l === "/" },
+    { href: "/rankings",   label: "Rankings",      icon: BarChart2,     match: (l: string) => l.startsWith("/rankings") },
+    { href: "/history",    label: "Predictions",   icon: Clock,         match: (l: string) => l.startsWith("/history") },
+    { href: "/backtest",   label: "Backtesting",   icon: FlaskConical,  match: (l: string) => l.startsWith("/backtest") },
+    { href: "/health",     label: "Source Health", icon: Activity,      match: (l: string) => l.startsWith("/health") },
+    { href: "/props",      label: "Props Intake",  icon: Database,      match: (l: string) => l.startsWith("/props") },
+    { href: "/analyze",    label: "Prompt",        icon: Sparkles,      match: (l: string) => l.startsWith("/analyze") },
+    { href: "/kalshi",     label: "Kalshi",        icon: TrendingUp,    match: (l: string) => l.startsWith("/kalshi") },
+    { href: "/logs",       label: "Request Log",   icon: ScrollText,    match: (l: string) => l.startsWith("/logs") },
+    { href: "/leaderboard",label: "Leaderboard",   icon: Trophy,        match: (l: string) => l.startsWith("/leaderboard") },
   ];
 
   return (
@@ -57,6 +68,10 @@ function Router() {
       <div className="pl-14">
         <Switch>
           <Route path="/"            component={FinalLockDashboard} />
+          <Route path="/rankings"    component={RankingsPage} />
+          <Route path="/history"     component={HistoryPage} />
+          <Route path="/backtest"    component={BacktestingPage} />
+          <Route path="/health"      component={SourceHealthPage} />
           <Route path="/props"       component={PropsIntakePage} />
           <Route path="/analyze"     component={PromptPage} />
           <Route path="/kalshi"      component={KalshiPage} />
