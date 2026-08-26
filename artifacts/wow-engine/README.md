@@ -191,16 +191,42 @@ publishable Phase B positive path (`test_gate_11c`–`11de`),
 current-game-signal wiring (`test_gate_11f/g`), and the actual
 `/score-prop` HTTP path (`test_gate_11h`–`11k`).
 
+## Batch 3: live validation
+
+`scripts/live_gate_validation.py` runs the full live-Supabase sequence
+(calibrator persistence, `load_historical_calibration_rows()`, a real
+`compute_predictive_bounds()` run from Supabase-loaded rows, the actual
+`/score-prop` HTTP handler via a local `uvicorn` server hit with real
+HTTP against real Supabase persistence, a read-back comparison, and a
+negative-path regression) in one shot. It needs `SUPABASE_URL` and
+`SUPABASE_SERVICE_KEY` as environment secrets (never chat text) and
+`schema.sql` already applied via a direct Postgres connection — see the
+script's own docstring for the exact prerequisites and usage. It cannot
+be run or verified from this sandbox; its HTTP/uvicorn mechanics were
+smoke-tested offline against a stubbed persistence layer (real sockets,
+real `/score-prop` call, real 200 + publishable response), but the
+Supabase-specific sections (2, 3, 4, 7, 8) are unexercised until a real
+project exists.
+
+Preparing this script surfaced two real gaps, now fixed: `PredictionRow`
+had `calibration_version`/`calibration_training_n`/`calibration_parent_cohort`
+fields that `engine.py` never populated for Phase B/C rows, and
+`model_timestamp` (the scoring run's `scored_at`, distinct from
+`event_start_time`/`created_at`) didn't exist on the ledger at all. Both
+are now wired through and covered by `test_gate_11`/`test_gate_11de`.
+
 ## What's NOT done — required before the gate can flip
 
 - **Gates 1 and 8** (schema migration, DB immutability including the new
-  DELETE trigger, and now `wow_calibrators`) need a live Supabase
-  instance — untestable in this sandbox. Run `schema.sql` against a real
-  project and verify both triggers block post-event-start writes and
-  deletes, and that `load_historical_calibration_rows()`'s two-query
-  fetch (predictions, then a matching outcomes lookup) behaves as
-  expected against real data — it's been reasoned through and unit-adjacent
-  tested for shape, but never run against a live join.
+  DELETE trigger, and now `wow_calibrators`) — the DDL/constraints/
+  triggers/calibrator-artifact round-trip all passed against an
+  ephemeral local PostgreSQL 16 instance with zero schema changes
+  needed (see git log for the local-Postgres-stopgap commits). That is
+  **not** the same as live Supabase: it doesn't exercise `supabase-py`/
+  PostgREST, service-role permissions, or `calibrator_store.py`'s and
+  `load_historical_calibration_rows()`'s actual query code paths —
+  those still need a live Supabase instance, which `scripts/live_gate_validation.py`
+  is ready to run the moment one exists.
 - **Per-sport fitted parameters.** Gate 11's synthetic fixtures prove the
   *pipeline* works correctly; they are explicitly not real historical
   distributions. Real cohort regime counts and per-regime stat-rate
