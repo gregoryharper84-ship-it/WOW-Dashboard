@@ -982,7 +982,7 @@ class TestSoccerThreeState:
         row = _base_row(sport="CRICKET")   # not in model registry
         enr = {"sportsbook_odds": [{"team": "Team A", "odds": -145}]}
         result = run_moneyline_pipeline(row, enr, n_sims=100, seed=0)
-        assert result.terminal_label == "DATA_CONTRACT_FAIL"
+        assert result.terminal_label == "MODEL_UNAVAILABLE"
         assert any("NO_REGISTERED_MODEL" in b for b in result.blockers)
 
 
