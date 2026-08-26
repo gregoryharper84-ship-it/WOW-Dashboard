@@ -48,6 +48,12 @@ Thumbs.db
 .cache/
 .local/
 
+# Python (artifacts/wow-engine and other Python services)
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
 # Build-time release provenance is generated inside the deployment build.
 /artifacts/flask-scoring-api/runtime_build_info.json
 

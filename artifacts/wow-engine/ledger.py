@@ -14,6 +14,14 @@ from typing import Optional
 import os
 import uuid
 
+from calibration import CalibrationStatus
+
+_RECOGNIZED_CALIBRATION_STATUSES = {
+    CalibrationStatus.PRECALIBRATION_SHRINKAGE,
+    CalibrationStatus.PLATT_TIME_SPLIT_V1,
+    CalibrationStatus.ISOTONIC_V1,
+}
+
 try:
     from supabase import create_client, Client  # type: ignore
 except ImportError:  # pragma: no cover - allows import without the dep for testing
@@ -99,6 +107,10 @@ def determine_publishability(row: PredictionRow) -> PredictionRow:
     """
     gaps = list(row.data_gaps)
 
+    if row.raw_model_probability is None or not (0 < row.raw_model_probability < 1):
+        gaps.append("raw_model_probability missing or out of (0,1) bounds")
+    if not row.source_snapshot_id:
+        gaps.append("source_snapshot_id missing or empty")
     if row.regime_probability_sum is None or abs(row.regime_probability_sum - 1.0) > 1e-6:
         gaps.append("regime_probability_sum invalid or missing")
     if row.simulation_draws is None or row.simulation_draws < 50_000:
@@ -109,6 +121,8 @@ def determine_publishability(row: PredictionRow) -> PredictionRow:
         lb, ub = row.calibrated_probability_lower_bound, row.calibrated_probability_upper_bound
         if lb is None or ub is None or not (0 < lb <= row.calibrated_probability <= ub < 1):
             gaps.append("calibrated_probability bounds invalid")
+        if row.calibration_status not in _RECOGNIZED_CALIBRATION_STATUSES:
+            gaps.append(f"calibration_status not recognized: {row.calibration_status!r}")
 
     row.data_gaps = gaps
     row.probability_publishable = (len(gaps) == 0)

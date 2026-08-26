@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Sequence
+import math
 import numpy as np
 
 PHASE_B_MIN_N = 200
@@ -38,6 +39,24 @@ class MissingResamplerError(Exception):
     percentile bounds from >=2,000 real bootstrap realizations — a
     fabricated symmetric interval is not an acceptable substitute and
     must block publication instead."""
+    pass
+
+
+class PredictiveBoundsNotRatifiedError(Exception):
+    """Raised when a caller asks for a per-candidate Phase B/C published
+    probability. WOW-PATCH-2026-08-26 v2 Section 8B.4 ratifies a bounds
+    method for Phase A (10th/90th percentile bootstrap of the shrinkage
+    transform) and cohort-level fit metrics (Brier/log loss/ECE/bias) for
+    Phase B/C promotion, but specifies no per-candidate predictive-bounds
+    method for Phase B/C itself. `PlattCoefficients.apply()` /
+    `IsotonicRegression.predict()` give a point estimate only.
+
+    Inventing a bounds method here would repeat, at the calibration layer,
+    the same unauthorized-scoring-shortcut problem this patch exists to
+    avoid (see the patch's ORIGIN note and its "METHODOLOGY DECISIONS
+    REQUIRED — ChatGPT, not Claude, to specify" section). This blocks
+    publication instead of fabricating an interval; a governed Phase B/C
+    row requires a ratified bounds method to be specified upstream first."""
     pass
 
 

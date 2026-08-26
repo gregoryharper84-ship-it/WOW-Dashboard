@@ -187,3 +187,50 @@ create table if not exists wow_manual_estimates (
 
 comment on table wow_predictions is 'Governed WOW probability ledger. Immutable after event_start_time. Never pooled with wow_manual_estimates (Section 8A.6).';
 comment on table wow_manual_estimates is 'Section 8A Manual Estimate Lane tracking. Structurally isolated from wow_predictions/wow_outcomes calibration data.';
+
+-- Persisted Phase B (Platt) / Phase C (isotonic) calibrator artifacts
+-- (8B.4). wow_predictions.calibration_status/method/version/training_n
+-- record which calibrator PRODUCED a given row; this table is the
+-- calibrator itself -- fitted coefficients / model artifact, fit cohort,
+-- training window, and fit metrics -- so it survives a service restart
+-- instead of living only in the in-memory PlattFitOutcome that produced
+-- it. A fit is never mutated in place: promoting a new candidate inserts
+-- a new row and deactivates the previous one for that (cohort, method)
+-- pair, preserving fit history for audit.
+create table if not exists wow_calibrators (
+    calibrator_id        uuid primary key default gen_random_uuid(),
+    created_at            timestamptz not null default now(),
+
+    calibration_method    text not null check (calibration_method in ('PLATT_TIME_SPLIT_V1','ISOTONIC_V1')),
+    calibration_version   text not null,
+    parent_cohort         text not null,
+
+    training_n            integer not null check (training_n > 0),
+    fit_start              timestamptz,
+    fit_end                 timestamptz,
+    fit_metrics_json         jsonb not null,   -- brier / log_loss / ece / calibration_bias
+
+    -- Phase B (Platt): the two fitted scalar coefficients.
+    platt_a                numeric,
+    platt_b                 numeric,
+
+    -- Phase C (isotonic): serialized fitted model artifact (base64), plus
+    -- the walk-forward audit trail proving no future-fold leakage.
+    isotonic_artifact_b64    text,
+    fold_train_audit_json     jsonb,
+
+    promoted                boolean not null default false,
+    active                   boolean not null default false,
+
+    check (
+        (calibration_method = 'PLATT_TIME_SPLIT_V1' and platt_a is not null and platt_b is not null and isotonic_artifact_b64 is null)
+        or
+        (calibration_method = 'ISOTONIC_V1' and isotonic_artifact_b64 is not null and platt_a is null and platt_b is null)
+    )
+);
+
+create unique index if not exists uq_wow_calibrators_one_active_per_cohort_method
+    on wow_calibrators (parent_cohort, calibration_method)
+    where active;
+
+comment on table wow_calibrators is 'Persisted Phase B/C calibrator artifacts (8B.4). At most one active row per (parent_cohort, calibration_method) -- enforced by the partial unique index -- so score_prop_end_to_end always loads an unambiguous calibrator.';
