@@ -89,14 +89,19 @@ def check_participant_status(
             f"PARTICIPANT_LOCK_FAILED:primary_participant_status={player_status}"
         )
 
-    # MLB: only block if a pitcher is explicitly marked scratched/out — not when absent.
-    # Missing SP data means the model falls back to team-level data, which is fine.
-    # The stale-model check (check_stale_model) already handles pitcher changes.
+    # MLB outright probabilities require both starters to be named and at least
+    # strongly projected. Team-level fallbacks may remain discovery evidence but
+    # cannot pass the controlling moneyline participant lock.
     sport = (row.get("sport") or "").upper()
     if sport == "MLB":
         for side, status_key in [("home", "sp_home_status"), ("away", "sp_away_status")]:
+            pitcher = enrichment.get(f"starting_pitcher_{side}")
             sp_status = (enrichment.get(status_key) or "").upper()
-            if sp_status in ("SCRATCHED", "OUT"):
+            if not pitcher:
+                blockers.append(
+                    f"PARTICIPANT_LOCK_FAILED:starting_pitcher_{side}=MISSING"
+                )
+            elif sp_status in ("SCRATCHED", "OUT", "UNRESOLVED"):
                 blockers.append(
                     f"PARTICIPANT_LOCK_FAILED:sp_{side}_status={sp_status}"
                 )
