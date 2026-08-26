@@ -128,16 +128,20 @@ _STATUS_PREREQUISITE_KEYS = (
     "data_status",
     "model_status",
     "calibration_status",
+    "hydration_status",
     "source_snapshot_status",
 )
 _EXPLICIT_PREREQUISITE_KEYS = (
     "mandatory_prerequisites",
     "required_prerequisites",
+    "prerequisites",
     "prerequisite_status",
+    "prerequisite_failures",
 )
 _PREREQUISITE_FAILURE_VALUES = frozenset({
     "",
     "FAILED",
+    "FAIL",
     "UNAVAILABLE",
     "MISSING",
     "ERROR",
@@ -146,6 +150,8 @@ _PREREQUISITE_FAILURE_VALUES = frozenset({
     "NOT_READY",
     "STALE",
     "REJECTED",
+    "UNSATISFIED",
+    "BLOCKED",
     "DATA_CONTRACT_FAIL",
 })
 _PROBABILITY_PUBLICATION_FIELDS = (
@@ -153,6 +159,8 @@ _PROBABILITY_PUBLICATION_FIELDS = (
     "raw_probability",
     "independent_probability",
     "calibrated_probability",
+    "calibrated_probability_lower_bound",
+    "calibrated_probability_upper_bound",
     "opposite_probability",
     "probability",
     "probability_lower_bound",
