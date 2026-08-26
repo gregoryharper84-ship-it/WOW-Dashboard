@@ -50,6 +50,11 @@ create table if not exists wow_predictions (
     calibration_parent_cohort text,
     calibration_fit_start    timestamptz,
     calibration_fit_end      timestamptz,
+    -- Version of the per-candidate predictive-bounds method (8B.4
+    -- PREDICTIVE_BOUNDS_V1 amendment) that produced this row's bounds.
+    -- Only Phase B/C rows populate this -- Phase A's bounds method is
+    -- already fully identified by calibration_method itself.
+    bounds_method_version    text,
 
     calibrated_probability            numeric,
     calibrated_probability_lower_bound numeric,

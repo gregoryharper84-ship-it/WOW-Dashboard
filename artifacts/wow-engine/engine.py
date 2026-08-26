@@ -152,6 +152,8 @@ def score_prop_end_to_end(
     # blend/row-construction code below runs exactly once either way.
     calibration_ladder_note: str | None = None
     calibration_status = calibration_method = None
+    calibration_version = calibration_training_n = calibration_parent_cohort = None
+    bounds_method_version = None
     pre_blend_probability = lower_bound = upper_bound = None
 
     if settled_n_in_cohort >= PHASE_B_MIN_N and parent_cohort:
@@ -199,12 +201,19 @@ def score_prop_end_to_end(
                     independent_model_probability=point_estimate,
                     calibration_status=method,
                     calibration_method=method,
+                    calibration_version=record.get("calibration_version"),
+                    calibration_training_n=record.get("training_n"),
+                    calibration_parent_cohort=parent_cohort,
                 )
                 result.signal_actions, result.signal_notes = signal_actions, signal_notes
                 return result
 
             calibration_status = method
             calibration_method = method
+            calibration_version = record.get("calibration_version")
+            calibration_training_n = record.get("training_n")
+            calibration_parent_cohort = parent_cohort
+            bounds_method_version = bounds.bounds_method_version
             pre_blend_probability = bounds.calibrated_probability
             lower_bound = bounds.lower_bound
             upper_bound = bounds.upper_bound
@@ -266,6 +275,10 @@ def score_prop_end_to_end(
         reference_market_price=market_prior.reference_market_price,
         calibration_status=calibration_status,
         calibration_method=calibration_method,
+        calibration_version=calibration_version,
+        calibration_training_n=calibration_training_n,
+        calibration_parent_cohort=calibration_parent_cohort,
+        bounds_method_version=bounds_method_version,
         calibrated_probability=blend.calibrated_probability,
         calibrated_probability_lower_bound=lower_bound,
         calibrated_probability_upper_bound=upper_bound,

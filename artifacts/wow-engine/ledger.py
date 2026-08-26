@@ -79,6 +79,7 @@ class PredictionRow:
     calibration_version: Optional[str] = None
     calibration_training_n: Optional[int] = None
     calibration_parent_cohort: Optional[str] = None
+    bounds_method_version: Optional[str] = None
 
     calibrated_probability: Optional[float] = None
     calibrated_probability_lower_bound: Optional[float] = None

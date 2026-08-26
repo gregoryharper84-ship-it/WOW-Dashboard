@@ -673,6 +673,10 @@ def test_gate_11_end_to_end_positive_path_produces_publishable_probability():
     assert row.market_prior_weight == 0.0
     assert row.market_prior_probability is not None
     assert "PROHIBITED_PRECALIBRATION" in row.probability_ceiling
+    # Phase A has no persisted-calibrator identity or Phase B/C bounds
+    # method to report -- these must stay None, not leak stale values.
+    assert row.calibration_version is None
+    assert row.bounds_method_version is None
 
 
 def test_gate_11b_missing_regime_data_fails_end_to_end_cleanly():
@@ -720,10 +724,11 @@ def test_gate_11c_phase_b_eligible_cohort_without_calibrator_falls_back_to_phase
     assert "no calibrator has been promoted" in result.calibration_ladder_note
 
 
-def _fake_platt_record(parent_cohort="MLB_SP_RH_2026", a=0.0, b=1.0):
+def _fake_platt_record(parent_cohort="MLB_SP_RH_2026", a=0.0, b=1.0, calibration_version="v1", training_n=300):
     return {
         "parent_cohort": parent_cohort, "calibration_method": "PLATT_TIME_SPLIT_V1",
         "platt_a": a, "platt_b": b,
+        "calibration_version": calibration_version, "training_n": training_n,
     }
 
 
@@ -804,6 +809,13 @@ def test_gate_11de_phase_b_real_positive_path_produces_publishable_probability()
     assert row.independent_model_probability is not None
     assert row.calibrated_probability is not None
     assert 0 < row.calibrated_probability_lower_bound <= row.calibrated_probability <= row.calibrated_probability_upper_bound < 1
+    # Step 3d live-validation prep: these were silently left None even for
+    # a real Phase B row until this fix -- required for the live endpoint
+    # gate's output checklist (calibration_version, bounds_method_version, etc).
+    assert row.calibration_version == "v1"
+    assert row.calibration_training_n == 300
+    assert row.calibration_parent_cohort == "MLB_SP_RH_2026"
+    assert row.bounds_method_version == PREDICTIVE_BOUNDS_METHOD_VERSION
 
 
 def test_gate_11e_phase_c_eligibility_requests_isotonic_not_platt():
