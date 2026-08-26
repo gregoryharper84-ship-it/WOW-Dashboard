@@ -62,6 +62,7 @@ from gate_engine.moneyline.external_analyst.orchestrator import (
     run_external_analyst_intelligence,
 )
 from gate_engine.moneyline.mlb_starter_change import analyze_mlb_starter_change
+from gate_engine.moneyline.probability_claim_auditor import audit_probability_claim
 
 # Import existing helpers (preserved without behavior change)
 from gate_engine.moneyline_probability import (
@@ -241,7 +242,9 @@ def _assign_terminal_label(
             if "PARTICIPANT_LOCK_FAILED" in b:
                 return "DATA_CONTRACT_FAIL"
             if "NO_REGISTERED_MODEL" in b:
-                return "DATA_CONTRACT_FAIL"
+                return "MODEL_UNAVAILABLE"
+            if "PROBABILITY_CLAIM_AUDIT" in b:
+                return "MODEL_UNAVAILABLE"
         return "DATA_CONTRACT_FAIL"
 
     # Market-derived fallback: publishable observability, never qualifying
@@ -392,7 +395,7 @@ def run_moneyline_pipeline(
             "sportsbook_odds_cannot_substitute_for_sport_model"
         )
         result.blockers       = blockers
-        result.terminal_label = "DATA_CONTRACT_FAIL"
+        result.terminal_label = "MODEL_UNAVAILABLE"
         return result
 
     # -----------------------------------------------------------------------
@@ -580,6 +583,23 @@ def run_moneyline_pipeline(
         simulation_regimes=sim_result.regime_distribution,
     )
     result.failure_path = fp_result.to_dict()
+    # A real sport simulation already integrates numerical game-state failure
+    # regimes.  When no separate caller-supplied failure matrix exists, expose
+    # that controlling simulation evidence instead of treating failure paths as
+    # narratively not applicable.
+    if fp_result.status == "NOT_APPLICABLE":
+        if sim_result.simulation_ran and sim_result.regime_distribution:
+            result.failure_path.update({
+                "status": "SIMULATION_INTEGRATED",
+                "failure_regimes": dict(sim_result.regime_distribution),
+                "largest_failure_path": max(
+                    sim_result.regime_distribution,
+                    key=sim_result.regime_distribution.get,
+                ),
+                "note": "numerical regimes inherited from controlling sport simulation",
+            })
+        else:
+            blockers.append("FAILURE_PATH_REQUIRED:NUMERICAL_REGIMES_UNAVAILABLE")
 
     # -----------------------------------------------------------------------
     # Stage 5.5: MLB Starter-Change analysis (WOW-PATCH-2026-08-08-MLB-SP-SCRATCH)
@@ -942,6 +962,55 @@ def run_moneyline_pipeline(
                 result.three_state_1x2 = compute_1x2_three_state(p_h, p_d, p_a)
         except ValueError as exc:
             blockers.append(f"SOCCER_1X2_PROBABILITY_ERROR:{exc}")
+
+    # -----------------------------------------------------------------------
+    # Stage 12.5: Probability Claim Auditor
+    # -----------------------------------------------------------------------
+    # Build a deterministic composite source-snapshot identifier when the
+    # acquisition layer did not supply one.  This preserves traceability without
+    # allowing prose or market price to masquerade as model evidence.
+    _source_snapshot_id = enrichment.get("source_snapshot_id")
+    if not _source_snapshot_id:
+        _source_snapshot_id = hashlib.sha256(
+            json.dumps(clean_enr, sort_keys=True, default=str).encode()
+        ).hexdigest()
+    _outcome_probabilities = None
+    if result.three_state_1x2:
+        _outcome_probabilities = [
+            result.three_state_1x2.get("p_home"),
+            result.three_state_1x2.get("p_draw"),
+            result.three_state_1x2.get("p_away"),
+        ]
+    elif not is_soccer:
+        _outcome_probabilities = [
+            result.outputs.calibrated_probability,
+            1.0 - result.outputs.calibrated_probability,
+        ]
+    _claim_audit = audit_probability_claim(
+        raw_probability=result.outputs.independent_probability,
+        independent_probability=result.outputs.independent_probability,
+        market_prior_probability=market_no_vig,
+        market_prior_weight=cal_result.market_weight,
+        calibrated_probability=result.outputs.calibrated_probability,
+        lower_bound=result.outputs.calibrated_probability_lower_bound,
+        upper_bound=result.outputs.calibrated_probability_upper_bound,
+        model_status=model_status,
+        model_timestamp=datetime.now(timezone.utc).isoformat(),
+        latest_material_update_timestamp=enrichment.get(
+            "latest_material_update_timestamp"
+        ),
+        source_snapshot_id=_source_snapshot_id,
+        source_coverage_status=enrichment.get(
+            "source_coverage_status", "COMPLETE"
+        ),
+        outcome_probabilities=_outcome_probabilities,
+    )
+    result.probability_claim_audit = _claim_audit.to_dict()
+    if not _claim_audit.rank_eligible:
+        blockers.append(
+            f"PROBABILITY_CLAIM_AUDIT:{_claim_audit.audit_result}:"
+            f"{','.join(_claim_audit.blockers)}"
+        )
 
     # -----------------------------------------------------------------------
     # Terminal label
