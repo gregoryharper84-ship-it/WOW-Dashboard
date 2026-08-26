@@ -80,3 +80,61 @@ def decide_event(
     if not participant:
         return EventDecision("NO_PICK_DATA_CONFLICT", None, 0, "SELECTED_PARTICIPANT_MISSING", diagnostics)
     return EventDecision(decision, str(participant), 1, diagnostics=diagnostics)
+
+def govern_event_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach one event decision and cap every non-selected qualifying side."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for card in cards:
+        event_key = str(card.get("event_id") or card.get("event_key") or "")
+        grouped.setdefault(event_key, []).append(card)
+
+    for event_key, event_cards in grouped.items():
+        favorite = None
+        underdog = None
+        candidate_by_identity: dict[int, dict[str, Any]] = {}
+        for card in event_cards:
+            snapshot = card.get("probability_snapshot") or {}
+            layers = snapshot.get("moneyline_architecture_layers") or {}
+            classification = layers.get("classification") or {}
+            claim = layers.get("probability_claim_audit") or {}
+            lane = classification.get("lane")
+            candidate = {
+                "event_key": event_key,
+                "participant": card.get("team") or card.get("player"),
+                "calibrated_probability": snapshot.get("calibrated_probability"),
+                "calibrated_probability_lower_bound": snapshot.get(
+                    "calibrated_probability_lower_bound"
+                ),
+                "probability_audit_status": claim.get("audit_result"),
+                "model_valid_after_latest_material_update":
+                    card.get("terminal_label") != "STALE_MODEL_INVALIDATED",
+                "hard_blocker": (
+                    (card.get("blockers") or [None])[0]
+                    if card.get("terminal_label") in {
+                        "DATA_CONTRACT_FAIL", "MODEL_UNAVAILABLE",
+                        "STALE_MODEL_INVALIDATED",
+                    }
+                    else None
+                ),
+            }
+            candidate_by_identity[id(card)] = candidate
+            if lane == "FAVORITE":
+                favorite = candidate
+            elif lane == "UNDERDOG":
+                underdog = candidate
+
+        decision = decide_event(favorite, underdog).to_dict()
+        for card in event_cards:
+            candidate = candidate_by_identity.get(id(card), {})
+            selected = (
+                decision["selected_participant_count"] == 1
+                and candidate.get("participant") == decision["selected_participant"]
+            )
+            card["event_decision"] = decision
+            card["event_selected"] = selected
+            if not selected and card.get("terminal_label") == "MONEY_QUALIFIED":
+                card["terminal_label"] = "MODEL_QUALIFIED_HOLD"
+                card.setdefault("blockers", []).append(
+                    f"EVENT_DECISION_GOVERNOR:{decision['event_decision']}"
+                )
+    return cards
