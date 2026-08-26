@@ -6,6 +6,7 @@ Every input row appears in the output — no drops, no fake-fills.
 from __future__ import annotations
 
 from datetime import date
+import math
 from typing import Any
 
 from . import board_intake, slate_validation, status_role
@@ -734,9 +735,12 @@ def run_pipeline(
         # failure_path consume the enrichment.  Adapters populate data only;
         # no label authority; can_execute=False in every module.
         # -------------------------------------------------------------------
+        _handoff_existing_model_probability(row, enr)
         _pla_breach = _apply_prob_ledger_adapter(row, enr)
         if _pla_breach:
             _pl_contract_breaches.append(_pla_breach)
+        if isinstance(enr.get("model_probability_ledger"), dict):
+            row["model_probability_ledger"] = dict(enr["model_probability_ledger"])
         _pl_counter.increment("rows_acquired")
 
         # -------------------------------------------------------------------
@@ -764,22 +768,22 @@ def run_pipeline(
         # -------------------------------------------------------------------
         _1ip_stat_bypass = (row.get("stat_key") or row.get("prop_type") or "").upper()
         if _1ip_stat_bypass == "1IP_PITCHES_THROWN":
-            _bf_present = bool(enr.get("first_inning_bf_distribution"))
-            row["model_probability_complete"] = _bf_present
-            row["rank_eligible"]              = _bf_present
+            _event_tree_ready = bool(row.get("candidate_evaluation_completed"))
+            row["model_probability_complete"] = _event_tree_ready
+            row["rank_eligible"]              = _event_tree_ready
             row["market_lane_available"]      = False
             row["market_status"]              = "STALE_MARKET"
             row.setdefault("gates", {})["prob_ledger"] = {
-                "passed":                     _bf_present,
-                "rank_eligible":              _bf_present,
-                "model_probability_complete": _bf_present,
+                "passed":                     _event_tree_ready,
+                "rank_eligible":              _event_tree_ready,
+                "model_probability_complete": _event_tree_ready,
                 "market_lane_available":      False,
                 "market_status":              "STALE_MARKET",
-                "code":   "1IP_EVENT_TREE_BYPASS" if _bf_present else "1IP_BF_DIST_MISSING",
+                "code":   "1IP_EVENT_TREE_HANDOFF" if _event_tree_ready else "1IP_EVENT_TREE_INPUT_INCOMPLETE",
                 "detail": (
-                    "1IP_PITCHES_THROWN: prob_ledger bypassed — Monte Carlo event-tree "
-                    "is the controlling model; l10_distribution/role_usage do not apply; "
-                    "failure_path_inputs undefined for single-path event-tree lane; "
+                    "1IP_PITCHES_THROWN: the established Monte Carlo event-tree is "
+                    "the controlling model. Raw output is recorded without fabricated "
+                    "calibration, bounds, timestamps, source snapshots, or market data; "
                     "can_execute=False; ceiling=MODEL_QUALIFIED_HOLD."
                 ),
             }
@@ -2365,6 +2369,279 @@ class ProbabilityPipelineCounter:
         return breaches
 
 
+_MLB_HANDOFF_STAT_KEYS = frozenset({
+    "K",
+    "SO",
+    "STRIKEOUT",
+    "STRIKEOUTS",
+    "PITCHER_STRIKEOUTS",
+    "OUTS",
+    "PITCHING_OUTS",
+    "PITCHER_OUTS",
+})
+_1IP_HANDOFF_STAT_KEY = "1IP_PITCHES_THROWN"
+
+
+def _canonical_handoff_stat_key(row: dict) -> str:
+    """Return a conservative normalized stat key for existing model handoffs."""
+    return str(row.get("stat_key") or row.get("prop_type") or "").upper().replace(" ", "_")
+
+
+def _finite_number(value: Any, *, positive: bool = False) -> float | None:
+    """Convert a real numeric input without treating missing or non-finite data as zero."""
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric) or (positive and numeric <= 0.0):
+        return None
+    return numeric
+
+
+def _copy_probability_handoff(
+    row: dict,
+    enr: dict,
+    *,
+    raw_probability: float,
+    model_used: str,
+    detail: dict[str, Any],
+) -> None:
+    """
+    Record an already-computed model result without inventing calibration,
+    bounds, timestamps, source snapshots, or market probability.
+    """
+    supplied = enr.get("model_probability_ledger")
+    ledger = dict(supplied) if isinstance(supplied, dict) else {}
+    ledger["raw_probability"] = raw_probability
+    enr["model_probability_ledger"] = ledger
+
+    row["raw_model_probability"] = raw_probability
+    row["model_used"] = model_used
+    row["candidate_evaluation_completed"] = True
+    # A raw result does not prove cohort calibration. Keep publication and
+    # final authority suppressed until the existing Stage-2 contract receives
+    # genuine calibration metadata.
+    row["calibration_status"] = "PROVISIONAL"
+    row["probability_publishable"] = False
+    row["model_probability_handoff"] = {
+        "status": "RAW_MODEL_RESULT_RECORDED",
+        "raw_probability": raw_probability,
+        "model_used": model_used,
+        "calibration_status": "PROVISIONAL",
+        "probability_publishable": False,
+        "can_execute": False,
+        **detail,
+    }
+    row["model_probability_ledger"] = dict(ledger)
+
+
+def _adopt_supplied_model_probability(row: dict, enr: dict) -> bool:
+    """
+    Preserve a caller-supplied model result when it already has a real raw
+    probability.  The generic model must not create a competing raw value
+    beside an existing Stage-2/calibrated ledger.
+    """
+    ledger = enr.get("model_probability_ledger")
+    if not isinstance(ledger, dict):
+        return False
+    raw_probability = _finite_number(ledger.get("raw_probability"))
+    if raw_probability is None:
+        return False
+
+    row["raw_model_probability"] = raw_probability
+    row["candidate_evaluation_completed"] = True
+    row["model_probability_ledger"] = dict(ledger)
+    row["model_probability_handoff"] = {
+        "status": "SUPPLIED_MODEL_RESULT_PRESERVED",
+        "raw_probability": raw_probability,
+        "can_execute": False,
+    }
+    # Preserve genuine calibration facts.  When only a raw probability is
+    # supplied, make the missing calibration explicit rather than publishing it.
+    if not (
+        _finite_number(ledger.get("calibrated_probability")) is not None
+        and ledger.get("calibration_method")
+    ):
+        row["calibration_status"] = "PROVISIONAL"
+        row["probability_publishable"] = False
+    return True
+
+
+def _record_incomplete_probability_handoff(
+    row: dict,
+    *,
+    code: str,
+    missing_fields: list[str],
+    detail: str,
+) -> None:
+    """Expose incomplete model input without manufacturing a probability."""
+    row["candidate_evaluation_completed"] = False
+    row["raw_model_probability"] = None
+    row["calibration_status"] = "UNAVAILABLE"
+    row["probability_publishable"] = False
+    row["model_probability_handoff"] = {
+        "status": "INCOMPLETE",
+        "code": code,
+        "missing_fields": missing_fields,
+        "detail": detail,
+        "can_execute": False,
+    }
+
+
+def _handoff_existing_model_probability(row: dict, enr: dict) -> None:
+    """
+    Bridge outputs from the established models into the canonical row ledger.
+
+    This function does not implement or alter probability mathematics. MLB
+    K/Outs call the existing public model; 1IP calls the existing event tree.
+    Neither path receives market probability or fabricated calibration facts.
+    """
+    stat_key = _canonical_handoff_stat_key(row)
+    side = str(row.get("direction") or row.get("side") or "").upper()
+    line_value = _finite_number(row.get("line_value", row.get("line")), positive=True)
+
+    if _adopt_supplied_model_probability(row, enr):
+        return
+
+    if stat_key == _1IP_HANDOFF_STAT_KEY:
+        bf_distribution = enr.get("first_inning_bf_distribution")
+        ppb_distribution = enr.get("pitches_per_batter_distribution")
+        missing: list[str] = []
+        if not isinstance(bf_distribution, dict):
+            missing.append("first_inning_bf_distribution")
+        if not isinstance(ppb_distribution, dict):
+            missing.append("pitches_per_batter_distribution")
+        if line_value is None:
+            missing.append("line_value")
+        if side not in {"MORE", "OVER", "LESS", "UNDER"}:
+            missing.append("direction")
+
+        if not missing:
+            bf_values = [
+                _finite_number(bf_distribution.get(key))
+                for key in ("p_bf_3", "p_bf_4", "p_bf_gte5")
+            ]
+            if any(value is None or value < 0.0 for value in bf_values) or sum(bf_values) <= 0.0:
+                missing.append("first_inning_bf_distribution")
+            mean = _finite_number(ppb_distribution.get("mean"), positive=True)
+            std = _finite_number(ppb_distribution.get("std"))
+            if mean is None or std is None or std < 0.0:
+                missing.append("pitches_per_batter_distribution")
+
+        if missing:
+            _record_incomplete_probability_handoff(
+                row,
+                code="1IP_EVENT_TREE_INPUT_INCOMPLETE",
+                missing_fields=sorted(set(missing)),
+                detail="1IP event-tree probability was not called because required acquired inputs are incomplete.",
+            )
+            return
+
+        from .mlb.ip1_event_tree import simulate_1ip
+
+        result = simulate_1ip(
+            bf_distribution=bf_distribution,
+            pitches_per_batter_dist=ppb_distribution,
+            line_value=line_value,
+            side=side,
+        )
+        raw_probability = result["raw_more"] if side in {"MORE", "OVER"} else result["raw_less"]
+        _copy_probability_handoff(
+            row,
+            enr,
+            raw_probability=raw_probability,
+            model_used=result["model_used"],
+            detail={
+                "event_tree": dict(result),
+                "selected_direction": side,
+            },
+        )
+        row.setdefault("gates", {})["1ip_event_tree"] = {
+            **dict(result),
+            "selected_direction": side,
+            "selected_raw_probability": raw_probability,
+            "calibration_status": "PROVISIONAL",
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+        return
+
+    if stat_key not in _MLB_HANDOFF_STAT_KEYS:
+        return
+
+    game_log = enr.get("game_log")
+    if not isinstance(game_log, list) or not game_log:
+        _record_incomplete_probability_handoff(
+            row,
+            code="MODEL_GAME_LOG_INCOMPLETE",
+            missing_fields=["game_log"],
+            detail="Existing MLB count-stat model was not called without a real game log.",
+        )
+        return
+    if line_value is None or side not in {"MORE", "OVER", "LESS", "UNDER"}:
+        _record_incomplete_probability_handoff(
+            row,
+            code="MODEL_INPUT_INCOMPLETE",
+            missing_fields=[
+                field for field, invalid in (
+                    ("line_value", line_value is None),
+                    ("direction", side not in {"MORE", "OVER", "LESS", "UNDER"}),
+                ) if invalid
+            ],
+            detail="Existing MLB count-stat model was not called with invalid contract inputs.",
+        )
+        return
+
+    # Use the centralized, established model; pipeline must not duplicate its
+    # formula or contaminate the model lane with sportsbook/no-vig inputs.
+    from .hit_probability import compute as _compute_hit_probability
+
+    leg = {
+        "sport": "MLB",
+        "stat_key": stat_key,
+        "prop_type": row.get("prop_type") or stat_key,
+        "line_value": line_value,
+        "line": line_value,
+        "side": side,
+        "direction": side,
+        "player_name": row.get("player") or row.get("player_name") or "",
+    }
+    try:
+        result = _compute_hit_probability(leg, game_log, enrichment=enr)
+    except Exception as exc:
+        _record_incomplete_probability_handoff(
+            row,
+            code="MODEL_EVALUATION_ERROR",
+            missing_fields=["raw_model_probability"],
+            detail=f"Existing MLB count-stat model could not complete: {type(exc).__name__}.",
+        )
+        return
+    raw_probability = _finite_number(getattr(result, "raw_model_probability", None))
+    if raw_probability is None:
+        raw_probability = _finite_number(getattr(result, "hit_probability", None))
+    if raw_probability is None:
+        _record_incomplete_probability_handoff(
+            row,
+            code="MODEL_RESULT_UNAVAILABLE",
+            missing_fields=["raw_model_probability"],
+            detail="Existing MLB count-stat model returned no usable probability.",
+        )
+        return
+
+    _copy_probability_handoff(
+        row,
+        enr,
+        raw_probability=raw_probability,
+        model_used=str(getattr(result, "model_used", "unknown")),
+        detail={
+            "sample_size": getattr(result, "sample_size", None),
+            "calibration_note": getattr(result, "calibration_note", None),
+        },
+    )
+
+
 def _apply_prob_ledger_adapter(row: dict, enr: dict) -> "str | None":
     """
     WOW-PATCH-2026-08-17-PROB-LEDGER-HANDOFF — Steps 3–5.
@@ -2517,6 +2794,14 @@ def _finalize_prob_ledger_row(row: dict) -> None:
     if not row.get("_pl_hydrated") or row.get("_pl_finalized"):
         return
     enr = row.get("_enr") or {}
+    if _canonical_handoff_stat_key(row) == _1IP_HANDOFF_STAT_KEY:
+        # This lane already called its sole valid model above. Re-running the
+        # generic pitcher ledger would replace its event-tree handoff with
+        # inapplicable L10/role requirements.
+        if isinstance(enr.get("model_probability_ledger"), dict):
+            row["model_probability_ledger"] = dict(enr["model_probability_ledger"])
+        row["_pl_finalized"] = True
+        return
 
     # (1) per-row outlier recompute — live scoring path, not post-report
     _blockers = row.get("blockers") or []
@@ -2543,6 +2828,8 @@ def _finalize_prob_ledger_row(row: dict) -> None:
                 and (b.startswith("PROB_LEDGER:") or b.startswith("MARKET_LANE:")))
     ]
     prob_ledger.run(row, enrichment=enr)
+    if isinstance(enr.get("model_probability_ledger"), dict):
+        row["model_probability_ledger"] = dict(enr["model_probability_ledger"])
     row["_pl_finalized"] = True
 
 
