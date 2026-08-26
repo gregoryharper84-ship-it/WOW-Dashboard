@@ -40,5 +40,10 @@ jobs:
         run: |
           python -m py_compile             gate_engine/moneyline/probability_claim_auditor.py             gate_engine/moneyline/event_decision_governor.py             gate_engine/moneyline/pipeline.py             gate_engine/moneyline/slate_integrity.py             gate_engine/moneyline/types.py
       - name: Run focused moneyline governance
-        run: |
-          python -m pytest             gate_engine/tests/test_moneyline_probability_governance.py             tests/test_moneyline_architecture.py             gate_engine/tests/test_moneyline_routing.py             gate_engine/tests/test_moneyline_routing_policy.py             gate_engine/tests/test_daily_moneyline_scope.py             -q --tb=short -rs
+        run: python -m pytest gate_engine/tests/test_moneyline_probability_governance.py tests/test_moneyline_architecture.py gate_engine/tests/test_moneyline_routing.py gate_engine/tests/test_moneyline_routing_policy.py gate_engine/tests/test_daily_moneyline_scope.py -q --tb=short -rs --junitxml=moneyline-junit.xml
+      - name: Upload focused pytest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: moneyline-pytest-report
+          path: artifacts/flask-scoring-api/moneyline-junit.xml
