@@ -14,3 +14,9 @@ Terminal outcome containment is the sole publication boundary: raw primary and f
 **Why:** Manifest row inserts are immutable per run/selection. Persisting a raw fallback card first means a later scrubbed or duplicate-contained row cannot replace it, allowing stale probabilities or approval states to survive.
 
 **How to apply:** At finalization, emit exactly one non-executable terminal row per discovered ID. Replace duplicate, missing, unknown, ID-less, or mandatory-prerequisite-failed output with a non-authoritative data-contract row, clear probability/edge/model/calibration publication fields, and mark reconciliation non-authoritative even though the contained board is count-complete.
+
+Prerequisite containment must distinguish an omitted optional field from an explicitly declared missing prerequisite.
+
+**Why:** Treating every absent status/container as an empty failed value converts ordinary scanner cards into data-contract failures and makes a healthy board unreconcilable.
+
+**How to apply:** Evaluate only prerequisite keys present on the emitted card. A present key with an empty, unavailable, or failed value is fail-closed; a key omitted by the producing lane is not evidence of a required-prerequisite failure.
