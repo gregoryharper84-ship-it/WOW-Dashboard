@@ -1,3 +1,4 @@
+# Canonical production acceptance gate for the cleaned MLB V2 tree.
 name: MLB V2 wow-engine acceptance
 
 on:
