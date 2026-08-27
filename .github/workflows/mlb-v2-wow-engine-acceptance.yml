@@ -1,0 +1,150 @@
+name: MLB V2 wow-engine acceptance
+
+on:
+  push:
+    branches:
+      - main
+      - feature/mlb-v2-governed-probability-20260827
+    paths:
+      - "artifacts/wow-engine/api.py"
+      - "artifacts/wow-engine/requirements.txt"
+      - "artifacts/wow-engine/mlb_v2_*.py"
+      - "artifacts/wow-engine/mlb_v2_artifacts/**"
+      - "artifacts/wow-engine/tests/test_mlb_v2_incremental.py"
+      - "artifacts/wow-engine/deployment_gate_tests.py"
+      - ".github/workflows/mlb-v2-wow-engine-acceptance.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "artifacts/wow-engine/api.py"
+      - "artifacts/wow-engine/requirements.txt"
+      - "artifacts/wow-engine/mlb_v2_*.py"
+      - "artifacts/wow-engine/mlb_v2_artifacts/**"
+      - "artifacts/wow-engine/tests/test_mlb_v2_incremental.py"
+      - "artifacts/wow-engine/deployment_gate_tests.py"
+      - ".github/workflows/mlb-v2-wow-engine-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install production dependencies
+        working-directory: artifacts/wow-engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile production MLB V2 modules
+        working-directory: artifacts/wow-engine
+        run: |
+          python -m py_compile \
+            api.py \
+            mlb_v2_features.py \
+            mlb_v2_runtime.py \
+            mlb_v2_hydrator.py \
+            mlb_v2_incremental.py
+
+      - name: Existing 11-point wow-engine deployment gate
+        working-directory: artifacts/wow-engine
+        run: pytest -q deployment_gate_tests.py
+
+      - name: MLB V2 transactional state safety gate
+        working-directory: artifacts/wow-engine
+        run: pytest -q tests/test_mlb_v2_incremental.py
+
+      - name: Canonical artifact and probability invariants
+        working-directory: artifacts/wow-engine
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import date
+          from pathlib import Path
+
+          import mlb_v2_runtime as rt
+
+          artifact_dir = Path('mlb_v2_artifacts')
+          manifest = json.loads((artifact_dir / 'mlb_v2_manifest.json').read_text())
+          schema = json.loads((artifact_dir / 'mlb_v2_feature_schema.json').read_text())
+
+          assert manifest['model_id'] == 'mlb-moneyline-v2-rolling-2026'
+          assert manifest['schema_version'] == 'MLB_PREGAME_V2_20260827'
+          assert manifest['feature_count'] == 41
+          assert manifest['governance']['probability_capability'] == 'AVAILABLE'
+          assert manifest['governance']['probability_publishable'] is True
+          assert manifest['governance']['can_execute'] is False
+          assert manifest['governance']['can_approve_bets'] is False
+          assert manifest['publication_contract']['market_weight_in_published_point_probability'] == 0.0
+          assert manifest['validation']['artifact_hardening']['reload_prediction_max_abs_diff'] == 0.0
+          assert manifest['validation']['fresh_2026']['date_block_bootstrap_p_gt_0'] >= 0.99
+          ci = manifest['validation']['fresh_2026']['date_block_bootstrap_ci95_brier_gain_vs_home_054']
+          assert ci[0] > 0 and ci[1] > 0
+          assert manifest['feature_build_audit']['same_calendar_date_outcome_leakage'] is False
+
+          build_date = date.fromisoformat(manifest['build']['build_date'])
+          health = rt.artifact_health(build_date)
+          assert health['healthy'] is True, health
+          assert health['probability_capability'] == 'AVAILABLE', health
+          assert health['model_id'] == manifest['model_id']
+          assert health['can_execute'] is False
+
+          support = schema['feature_support']
+          assert len(support) == 41
+          mean_vector = [float(row['mean']) for row in support]
+          scored = rt.score_home_probability(mean_vector, as_of=build_date)
+          assert scored['ok'] is True, scored
+          assert scored['probability_publishable'] is True
+          assert scored['model_id'] == manifest['model_id']
+          assert scored['native_calibrated'] is True
+          assert scored['point_estimate_locked'] is True
+          assert scored['market_weight_in_point_probability'] == 0.0
+          assert 0.0 < scored['home_probability'] < 1.0
+          assert 0.0 < scored['away_probability'] < 1.0
+          assert abs(scored['home_probability'] + scored['away_probability'] - 1.0) < 1e-12
+          assert scored['home_probability_lower_bound'] <= scored['home_probability'] <= scored['home_probability_upper_bound']
+          assert scored['can_execute'] is False
+          assert scored['can_approve_bets'] is False
+
+          bad = rt.score_home_probability([0.0] * 40, as_of=build_date)
+          assert bad['probability_publishable'] is False
+          assert 'home_probability' not in bad
+          print('MLB_V2_CANONICAL_ARTIFACT_GATE=PASS')
+          PY
+
+      - name: FastAPI governance and auth separation
+        working-directory: artifacts/wow-engine
+        run: |
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          import api
+
+          # Prop capability remains independently fail-closed.
+          assert api.GOVERNED_PROBABILITY_CAPABILITY == 'UNAVAILABLE'
+          gov = api.governance()
+          assert gov['governed_probability_capability'] == 'UNAVAILABLE'
+          event = gov['event_probability_capabilities']['MLB_OUTRIGHT_WINNER']
+          assert event['model_id'] == 'mlb-moneyline-v2-rolling-2026'
+          assert event['can_execute'] is False
+          assert event['can_approve_bets'] is False
+
+          # Protected event scoring must never admit a caller without the app credential.
+          client = TestClient(api.app)
+          response = client.post('/score-event', json={})
+          assert response.status_code == 401
+
+          source = open('api.py', encoding='utf-8').read()
+          assert 'GOVERNED_EVENT_MODEL_AVAILABLE' in source
+          assert 'GOVERNED_EVENT_MODEL_UNAVAILABLE' in source
+          assert 'market_weight_in_point_probability' in source
+          assert 'used_in_point_probability' in source
+          print('MLB_V2_FASTAPI_GOVERNANCE_GATE=PASS')
+          PY
