@@ -20,6 +20,7 @@ from typing import Any
 import requests
 
 from mlb_v2_features import FEATURE_NAMES, build_feature_vector, starter_summary, team_summary
+from mlb_v2_incremental import advance_state_to_target
 
 can_execute: bool = False
 can_approve_bets: bool = False
@@ -207,13 +208,44 @@ def hydrate_mlb_v2_enrichment(row: dict[str, Any], enrichment: dict[str, Any] | 
         return enrichment
 
     blockers: list[str] = []
+    refresh_meta: dict[str, Any] = {
+        "status": "NOT_NEEDED",
+        "from_cutoff": str(state.get("cutoff_exclusive") or ""),
+        "to_cutoff": target.isoformat(),
+        "days_advanced": 0,
+        "games_added": 0,
+        "source": "BUNDLED_OR_ALREADY_ADVANCED_STATE",
+    }
+    cutoff = str(state.get("cutoff_exclusive") or "")
+    # If this Render process is carrying an older bundled cutoff, catch it up
+    # transactionally from official final MLB results strictly before target.
+    # The state lock serializes refreshes across concurrent scoring requests.
+    if cutoff and cutoff < target.isoformat():
+        try:
+            with _state_lock:
+                refresh_meta = advance_state_to_target(state, target)
+        except Exception as exc:
+            enrichment["mlb_v2_hydration"] = {
+                "status": "NOT_READY",
+                "blockers": [f"MLB_V2_INCREMENTAL_REFRESH_FAILED:{type(exc).__name__}:{exc}"],
+                "state_refresh": refresh_meta,
+                "strict_prior_date_only": True,
+                "same_day_results_used": False,
+                "can_execute": False,
+            }
+            return enrichment
     cutoff = str(state.get("cutoff_exclusive") or "")
     if cutoff != target.isoformat():
         blockers.append(f"MLB_V2_STATE_STALE:cutoff_exclusive={cutoff}:target={target.isoformat()}")
     if not bool(state.get("strict_prior_date_only")):
         blockers.append("MLB_V2_STATE_LEAKAGE_ATTESTATION_MISSING")
     if blockers:
-        enrichment["mlb_v2_hydration"] = {"status": "NOT_READY", "blockers": blockers, "can_execute": False}
+        enrichment["mlb_v2_hydration"] = {
+            "status": "NOT_READY",
+            "blockers": blockers,
+            "state_refresh": refresh_meta,
+            "can_execute": False,
+        }
         return enrichment
 
     try:
@@ -273,6 +305,7 @@ def hydrate_mlb_v2_enrichment(row: dict[str, Any], enrichment: dict[str, Any] | 
         "strict_prior_date_only": True,
         "same_day_results_used": False,
         "state_results_through": state.get("results_through"),
+        "state_refresh": refresh_meta,
         "can_execute": False,
     }
     enrichment["hydration_profile"] = "MLB_MONEYLINE_V2_ROLLING"

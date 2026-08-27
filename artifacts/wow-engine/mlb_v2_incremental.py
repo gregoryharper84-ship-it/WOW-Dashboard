@@ -383,7 +383,7 @@ def advance_state_to_target(
         scheduled = _schedule_day(day_cursor)
         finals = _validate_day_terminal(day_cursor, scheduled)
         skipped_no_result += len(scheduled) - len(finals)
-        parsed = _fetch_day_rows(finals)
+        parsed = _fetch_day_rows(finals) if finals else []
         total_games += _apply_day(clone, day_cursor, parsed)
         if parsed:
             clone["results_through"] = day_cursor.isoformat()
