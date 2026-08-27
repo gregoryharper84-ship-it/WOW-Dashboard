@@ -1,0 +1,176 @@
+openapi: 3.1.0
+info:
+  title: WOW Governed Probability Engine Action
+  version: 1.0.0
+  description: >-
+    Custom GPT Action contract for the external governed WOW probability backend.
+    This API is analytical only. It never places, routes, modifies, or cancels a
+    wager. can_execute remains false. The score endpoint must not be called unless
+    /governance reports governed_probability_capability=AVAILABLE.
+servers:
+  - url: https://REPLACE_WITH_RENDER_SERVICE_HOST
+    description: Replace with the exact HTTPS Render service origin after Step 5 deployment.
+paths:
+  /health:
+    get:
+      operationId: getWowProbabilityHealth
+      summary: Check backend host health
+      description: Public, read-only host and provider health check.
+      responses:
+        '200':
+          description: Backend health state.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /governance:
+    get:
+      operationId: getWowProbabilityGovernance
+      summary: Read governed probability capability state
+      description: >-
+        Public and read-only. Call this before scoreWowProp. If
+        governed_probability_capability is not AVAILABLE, do not call scoreWowProp;
+        use the governed manual/fallback lane instead.
+      responses:
+        '200':
+          description: Current governance and deployment-gate state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  governed_probability_capability:
+                    type: string
+                    enum: [UNAVAILABLE, AVAILABLE]
+                  governed_probability_status:
+                    type: string
+                  patch_id:
+                    type: string
+                  patch_revision:
+                    type: string
+                  note:
+                    type: string
+                additionalProperties: true
+  /score-prop:
+    post:
+      operationId: scoreWowProp
+      summary: Score one prop through the governed probability pipeline
+      description: >-
+        Authenticated analytical scoring only. Never call when /governance reports
+        governed_probability_capability=UNAVAILABLE. A 409 is a governed hold, not
+        permission to retry through a qualitative or invented-probability fallback.
+        This operation does not place or authorize a wager.
+      security:
+        - actionBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScorePropRequest'
+      responses:
+        '200':
+          description: Complete publishable governed probability row persisted by the backend.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing, malformed, or incorrect Action credential.
+        '409':
+          description: Governed probability capability is unavailable; fail closed.
+        '422':
+          description: Candidate failed publication requirements; probability remains non-publishable.
+        '501':
+          description: Real fitted sport/stat parameters are not registered.
+  /settle:
+    post:
+      operationId: settleWowPrediction
+      summary: Attach an official result to an existing governed prediction
+      description: >-
+        Authenticated outcome-recording operation for an already-created prediction.
+        It does not place, route, modify, or cancel a wager and must only be used
+        with a verified official result.
+      security:
+        - actionBearer: []
+      parameters:
+        - name: prediction_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Existing WOW prediction identifier.
+        - name: official_result
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Verified official result label.
+        - name: actual_stat
+          in: query
+          required: true
+          schema:
+            type: number
+          description: Verified realized value for the scored statistic.
+        - name: hit
+          in: query
+          required: true
+          schema:
+            type: boolean
+          description: Whether the frozen prediction side hit under its settlement rules.
+      responses:
+        '200':
+          description: Outcome row recorded successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing, malformed, or incorrect Action credential.
+components:
+  securitySchemes:
+    actionBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: WOW_ACTION_API_KEY
+  schemas:
+    ScorePropRequest:
+      type: object
+      required:
+        - event_id
+        - event_start_time
+        - sport
+        - stat_type
+        - line
+        - direction
+        - source_snapshot_id
+      properties:
+        event_id:
+          type: string
+        event_start_time:
+          type: string
+          format: date-time
+          description: Exact event start time with timezone.
+        sport:
+          type: string
+        player:
+          type: [string, 'null']
+        stat_type:
+          type: string
+        line:
+          type: number
+        direction:
+          type: string
+          description: Exact governed candidate direction, such as MORE or LESS.
+        source_snapshot_id:
+          type: string
+          description: Immutable identifier for the evidence snapshot used by the model.
+        seed:
+          type: integer
+          default: 0
+        money_lane_status:
+          type: string
+          default: PAYOUT_UNRESOLVED
