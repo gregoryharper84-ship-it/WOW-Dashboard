@@ -1,0 +1,64 @@
+name: MLB V2 governed acceptance
+
+on:
+  push:
+    branches: [feature/mlb-v2-governed-probability-20260827]
+    paths:
+      - "artifacts/flask-scoring-api/gate_engine/mlb_v2_*"
+      - "artifacts/flask-scoring-api/gate_engine/moneyline/**"
+      - "artifacts/flask-scoring-api/gate_engine/moneyline_probability.py"
+      - "artifacts/flask-scoring-api/app.py"
+      - "artifacts/flask-scoring-api/requirements.txt"
+      - "artifacts/flask-scoring-api/tests/test_mlb_v2_governed_probability.py"
+      - ".github/workflows/mlb-v2-governed-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SCORING_API_KEY: test-key
+      API_KEY: test-key
+      DATABASE_URL: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend + test dependencies
+        working-directory: artifacts/flask-scoring-api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: MLB V2 governed acceptance tests
+        working-directory: artifacts/flask-scoring-api
+        run: pytest -q tests/test_mlb_v2_governed_probability.py
+      - name: Existing moneyline architecture regressions
+        working-directory: artifacts/flask-scoring-api
+        run: pytest -q tests/test_moneyline_architecture.py
+      - name: Gate-engine moneyline regressions
+        working-directory: artifacts/flask-scoring-api
+        run: |
+          pytest -q gate_engine/tests/test_moneyline_probability.py gate_engine/tests/test_moneyline_new_layers.py
+      - name: Governance static assertions
+        working-directory: artifacts/flask-scoring-api
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          files = [
+              Path('gate_engine/mlb_v2_runtime.py'),
+              Path('gate_engine/mlb_v2_hydrator.py'),
+              Path('gate_engine/moneyline/pipeline.py'),
+              Path('app.py'),
+          ]
+          text='\n'.join(p.read_text() for p in files)
+          assert 'mlb-moneyline-v2-rolling-2026' in Path('gate_engine/moneyline_probability.py').read_text()
+          assert 'MLB_V2_NATIVE_PLATT_POINT_LOCK' in text
+          assert 'market_weight_in_point_probability' in text
+          assert '/wow/score-event' in Path('app.py').read_text()
+          print('MLB_V2_GOVERNANCE_STATIC=PASS')
+          PY
