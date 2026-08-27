@@ -43,6 +43,7 @@ fixtures this script uses, which are clearly labeled as such throughout).
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 import threading
@@ -180,6 +181,83 @@ def categorize_cleanup_row(event_id: str, delete_succeeded: bool) -> str:
     if delete_succeeded:
         return "deleted"
     return "neg3_locked" if event_id.endswith("_neg3") else "unexpected_locked"
+
+
+def compare_persisted_response_fields(
+    row: dict,
+    body: dict,
+    *,
+    numeric_fields=(),
+    identity_fields=(),
+    timestamp_fields=(),
+    boolean_fields=(),
+    numeric_tolerance: float = 1e-9,
+) -> list[str]:
+    """Pure (no I/O) typed comparator between a persisted Supabase row and
+    the /score-prop endpoint's JSON response (Step-5 review
+    STEP5-VALIDATOR-FIX-06). Run 96c2aee5's Section 5-7 crashed forcing
+    every required field except probability_publishable through float(),
+    including calibration_method (a string) -- this replaces that with an
+    explicit comparison per field type instead of one mixed-type
+    comparator:
+
+        numeric_fields    -- math.isclose() with a tight tolerance
+        identity_fields   -- exact string equality
+        timestamp_fields  -- parsed timezone-aware instants (calibration._parse_ts),
+                             so "...Z" and "...+00:00" compare equal
+        boolean_fields    -- exact boolean equality (not truthy/falsy coercion)
+
+    A field missing (None) on either side is itself reported as a
+    mismatch -- values are never coerced to a sentinel like -1/-2 to
+    force a comparison through.
+
+    Returns a list of "field: detail" mismatch strings; empty means every
+    named field agreed.
+    """
+    from calibration import _parse_ts
+
+    mismatches: list[str] = []
+
+    def _missing(field: str, row_v, body_v) -> bool:
+        if row_v is None or body_v is None:
+            mismatches.append(f"{field}: missing (row={row_v!r}, body={body_v!r})")
+            return True
+        return False
+
+    for f in numeric_fields:
+        row_v, body_v = row.get(f), body.get(f)
+        if _missing(f, row_v, body_v):
+            continue
+        if not math.isclose(float(row_v), float(body_v), rel_tol=numeric_tolerance, abs_tol=numeric_tolerance):
+            mismatches.append(f"{f}: {row_v!r} != {body_v!r}")
+
+    for f in identity_fields:
+        row_v, body_v = row.get(f), body.get(f)
+        if _missing(f, row_v, body_v):
+            continue
+        if str(row_v) != str(body_v):
+            mismatches.append(f"{f}: {row_v!r} != {body_v!r}")
+
+    for f in timestamp_fields:
+        row_v, body_v = row.get(f), body.get(f)
+        if _missing(f, row_v, body_v):
+            continue
+        try:
+            row_dt, body_dt = _parse_ts(row_v), _parse_ts(body_v)
+        except ValueError as e:
+            mismatches.append(f"{f}: unparseable timestamp -- {e}")
+            continue
+        if row_dt != body_dt:
+            mismatches.append(f"{f}: {row_v!r} != {body_v!r}")
+
+    for f in boolean_fields:
+        row_v, body_v = row.get(f), body.get(f)
+        if _missing(f, row_v, body_v):
+            continue
+        if not (isinstance(row_v, bool) and isinstance(body_v, bool) and row_v == body_v):
+            mismatches.append(f"{f}: {row_v!r} != {body_v!r}")
+
+    return mismatches
 
 
 def run_or_record_failure(step_name: str, fn, *args, **kwargs):
@@ -516,12 +594,24 @@ def section_5_7_real_endpoint():
         check("persisted row is readable back from Supabase", len(stored) == 1)
         if stored:
             row = stored[0]
-            mismatches = [
-                f for f in required_fields
-                if f != "probability_publishable" and float(row.get(f) or -1) != float(body.get(f) or -2)
-            ]
-            check("persisted row matches endpoint response for numeric fields", not mismatches, str(mismatches))
-            check("persisted row's probability_publishable matches", row.get("probability_publishable") == body.get("probability_publishable"))
+            # Step-5 review STEP5-VALIDATOR-FIX-06: typed per-field
+            # comparison, not float() forced across mixed types.
+            typed_mismatches = compare_persisted_response_fields(
+                row, body,
+                numeric_fields=[
+                    "raw_model_probability", "calibrated_probability",
+                    "calibrated_probability_lower_bound", "calibrated_probability_upper_bound",
+                ],
+                identity_fields=["calibration_method", "source_snapshot_id"],
+                timestamp_fields=["model_timestamp"],
+            )
+            check("persisted row matches endpoint response for numeric/identity/timestamp fields",
+                  not typed_mismatches, str(typed_mismatches))
+
+            bool_mismatches = compare_persisted_response_fields(
+                row, body, boolean_fields=["probability_publishable"],
+            )
+            check("persisted row's probability_publishable matches", not bool_mismatches, str(bool_mismatches))
 
         return prediction_id
     finally:

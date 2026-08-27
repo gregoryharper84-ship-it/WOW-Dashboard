@@ -163,6 +163,115 @@ def test_neg3_remains_intentionally_past_and_permanent():
 
 
 # ---------------------------------------------------------------------
+# STEP5-VALIDATOR-FIX-06: typed persistence/readback comparison, not
+# float() forced across mixed types (run 96c2aee5's Section 5-7 crash).
+# ---------------------------------------------------------------------
+
+NUMERIC_FIELDS = [
+    "raw_model_probability", "calibrated_probability",
+    "calibrated_probability_lower_bound", "calibrated_probability_upper_bound",
+]
+IDENTITY_FIELDS = ["calibration_method", "source_snapshot_id"]
+TIMESTAMP_FIELDS = ["model_timestamp"]
+BOOLEAN_FIELDS = ["probability_publishable"]
+
+
+def test_equal_numeric_fields_pass():
+    row = {"raw_model_probability": 0.55, "calibrated_probability": 0.6}
+    body = {"raw_model_probability": 0.55, "calibrated_probability": 0.6}
+    mismatches = lgv.compare_persisted_response_fields(
+        row, body, numeric_fields=["raw_model_probability", "calibrated_probability"],
+    )
+    assert mismatches == []
+
+
+def test_materially_different_numeric_field_fails():
+    row = {"calibrated_probability": 0.6}
+    body = {"calibrated_probability": 0.7}
+    mismatches = lgv.compare_persisted_response_fields(
+        row, body, numeric_fields=["calibrated_probability"],
+    )
+    assert len(mismatches) == 1
+    assert "calibrated_probability" in mismatches[0]
+
+
+def test_calibration_method_string_equality_passes():
+    row = {"calibration_method": "CONSERVATIVE_EMPIRICAL_BAYES_SHRINKAGE_V1"}
+    body = {"calibration_method": "CONSERVATIVE_EMPIRICAL_BAYES_SHRINKAGE_V1"}
+    mismatches = lgv.compare_persisted_response_fields(row, body, identity_fields=["calibration_method"])
+    assert mismatches == []
+
+
+def test_source_snapshot_id_equality_passes():
+    sid = "a5df4ec5-33c2-4397-b734-1bfe8620c9f4"
+    row = {"source_snapshot_id": sid}
+    body = {"source_snapshot_id": sid}
+    mismatches = lgv.compare_persisted_response_fields(row, body, identity_fields=["source_snapshot_id"])
+    assert mismatches == []
+
+
+def test_different_identity_value_fails():
+    row = {"calibration_method": "CONSERVATIVE_EMPIRICAL_BAYES_SHRINKAGE_V1"}
+    body = {"calibration_method": "SOMETHING_ELSE_V2"}
+    mismatches = lgv.compare_persisted_response_fields(row, body, identity_fields=["calibration_method"])
+    assert len(mismatches) == 1
+
+
+def test_z_and_offset_model_timestamp_representations_compare_equal():
+    row = {"model_timestamp": "2026-08-27T03:15:10.108030+00:00"}
+    body = {"model_timestamp": "2026-08-27T03:15:10.108030Z"}
+    mismatches = lgv.compare_persisted_response_fields(row, body, timestamp_fields=["model_timestamp"])
+    assert mismatches == []
+
+
+def test_different_model_timestamp_instant_fails():
+    row = {"model_timestamp": "2026-08-27T03:15:10Z"}
+    body = {"model_timestamp": "2026-08-27T03:15:11Z"}
+    mismatches = lgv.compare_persisted_response_fields(row, body, timestamp_fields=["model_timestamp"])
+    assert len(mismatches) == 1
+
+
+def test_probability_publishable_boolean_equality_passes():
+    row = {"probability_publishable": True}
+    body = {"probability_publishable": True}
+    mismatches = lgv.compare_persisted_response_fields(row, body, boolean_fields=["probability_publishable"])
+    assert mismatches == []
+
+
+def test_probability_publishable_boolean_mismatch_fails():
+    row = {"probability_publishable": True}
+    body = {"probability_publishable": False}
+    mismatches = lgv.compare_persisted_response_fields(row, body, boolean_fields=["probability_publishable"])
+    assert len(mismatches) == 1
+
+
+def test_missing_field_is_reported_not_coerced_to_sentinel():
+    row = {"calibrated_probability": None}
+    body = {"calibrated_probability": 0.6}
+    mismatches = lgv.compare_persisted_response_fields(row, body, numeric_fields=["calibrated_probability"])
+    assert len(mismatches) == 1
+    assert "missing" in mismatches[0]
+
+
+def test_no_string_field_is_passed_through_float():
+    # calibration_method is exactly the value that crashed run 96c2aee5
+    # when float() was applied to it -- as an identity field it must
+    # never reach float() at all.
+    row = {"calibration_method": "CONSERVATIVE_EMPIRICAL_BAYES_SHRINKAGE_V1"}
+    body = {"calibration_method": "CONSERVATIVE_EMPIRICAL_BAYES_SHRINKAGE_V1"}
+    # Should not raise ValueError -- would, if this field were run through
+    # numeric_fields instead of identity_fields.
+    mismatches = lgv.compare_persisted_response_fields(row, body, identity_fields=["calibration_method"])
+    assert mismatches == []
+
+
+def test_section_5_7_no_longer_calls_bare_float_across_required_fields():
+    source = inspect.getsource(lgv.section_5_7_real_endpoint)
+    assert "compare_persisted_response_fields" in source
+    assert "float(row.get" not in source
+
+
+# ---------------------------------------------------------------------
 # STEP5-VALIDATOR-FIX-04: a governed section failure must not crash main()
 # ---------------------------------------------------------------------
 
