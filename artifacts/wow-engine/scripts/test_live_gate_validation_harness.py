@@ -10,6 +10,7 @@ that does not require a live project.
 """
 from __future__ import annotations
 
+import inspect
 from datetime import datetime, timezone
 
 import pytest
@@ -116,6 +117,49 @@ def test_categorize_cleanup_row_expected_neg3():
 
 def test_categorize_cleanup_row_unexpected_locked():
     assert lgv.categorize_cleanup_row("LIVE_GATE_abc123_past_0001", False) == "unexpected_locked"
+
+
+# ---------------------------------------------------------------------
+# STEP5-HARNESS-BLOCKER-05: endpoint/neg1/neg2 fixtures are run-relative,
+# not hardcoded to a calendar date -- only neg3 stays intentionally past.
+# ---------------------------------------------------------------------
+
+def test_future_event_timestamp_is_after_current_run_time():
+    from calibration import _parse_ts
+    before_call = datetime.now(timezone.utc)
+    ts = lgv.future_event_timestamp()
+    assert _parse_ts(ts) > before_call
+
+
+def test_future_event_timestamp_shares_anchor_with_section3_fixture():
+    # build_section3_fixture()'s first normal row and future_event_timestamp()
+    # both resolve to future_anchor() called moments apart -- proof they
+    # share one anchor rather than drifting independently, which is the
+    # whole point of STEP5-HARNESS-BLOCKER-05.
+    from calibration import _parse_ts
+    fixture = lgv.build_section3_fixture(n_normal=1)
+    first_row_ts = _parse_ts(fixture["rows"][0]["event_start_time"])
+    endpoint_ts = _parse_ts(lgv.future_event_timestamp())
+    assert abs((endpoint_ts - first_row_ts).total_seconds()) < 5
+
+
+def test_endpoint_and_neg_fixtures_no_longer_hardcode_a_calendar_date():
+    source = inspect.getsource(lgv.section_5_7_real_endpoint) + inspect.getsource(lgv.section_8_negative_paths)
+    # The literal that stranded run fcec80e3's Section-3 rows and that
+    # STEP5-HARNESS-BLOCKER-05 flagged as still present in Section 5-7 and
+    # neg1/neg2 -- must not reappear anywhere in these functions.
+    assert "2026-08-28" not in source
+
+
+def test_neg1_and_neg2_use_future_event_timestamp():
+    source = inspect.getsource(lgv.section_8_negative_paths)
+    assert source.count("future_event_timestamp()") >= 2  # neg1 and neg2
+
+
+def test_neg3_remains_intentionally_past_and_permanent():
+    source = inspect.getsource(lgv.section_8_negative_paths)
+    assert "2020-01-01T00:00:00Z" in source
+    assert "already in the past" in source
 
 
 # ---------------------------------------------------------------------

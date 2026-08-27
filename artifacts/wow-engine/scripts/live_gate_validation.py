@@ -83,6 +83,31 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Step-5 review STEP5-HARNESS-BLOCKER-05: every ordinary validator-created
+# row -- Section 3/4's historical cohort, the Section 5-7 /score-prop
+# endpoint fixture, and Section 8's neg1/neg2 -- must stay outside the DB's
+# post-start immutability trigger no matter when this script is run. A
+# single shared anchor is the point: any of these paths hardcoding its own
+# calendar date (as run fcec80e3's Section 3 fixture did, and as Section
+# 5-7/neg1/neg2 still did after that first repair) is exactly the drift
+# this is meant to prevent. Only Section 8's neg3 is deliberately exempt.
+FUTURE_ANCHOR_DAYS = 3650  # ~10 years
+
+
+def future_anchor() -> datetime:
+    """The one shared 'safely future' instant every ordinary validator
+    fixture is built relative to."""
+    return datetime.now(timezone.utc) + timedelta(days=FUTURE_ANCHOR_DAYS)
+
+
+def future_event_timestamp(offset_days: float = 0) -> str:
+    """ISO 8601 timestamp for an ordinary validator-created row's
+    event_start_time -- safely in the future (future_anchor(), optionally
+    offset) so it can never age into the DB's post-start immutability
+    trigger. Not for neg3, which is deliberately past/permanent."""
+    return _iso(future_anchor() + timedelta(days=offset_days))
+
+
 def build_section3_fixture(n_normal: int = SECTION4_TRAINING_N, seed: int = 2027) -> dict:
     """Pure (no I/O) fixture builder for Sections 3-4's historical-
     calibration cohort. No network calls, no wall-clock side effects
@@ -108,7 +133,7 @@ def build_section3_fixture(n_normal: int = SECTION4_TRAINING_N, seed: int = 2027
     """
     import numpy as np
 
-    anchor = datetime.now(timezone.utc) + timedelta(days=3650)
+    anchor = future_anchor()
     candidate_as_of = anchor + timedelta(days=60)
 
     rng = np.random.default_rng(seed)
@@ -459,7 +484,7 @@ def section_5_7_real_endpoint():
         # request field -- /score-prop always generates it server-side now.
         resp = httpx.post(f"{base}/score-prop", json={
             "event_id": f"LIVE_GATE_{RUN_ID}_endpoint",
-            "event_start_time": "2026-08-28T00:00:00Z",
+            "event_start_time": future_event_timestamp(),
             "sport": "MLB", "stat_type": "strikeouts", "line": 4.5, "direction": "MORE",
             "source_snapshot_id": source_snapshot_id,
             "money_lane_status": "RESOLVED",
@@ -515,7 +540,7 @@ def section_8_negative_paths():
     # Missing source_snapshot_id -> NOT NULL rejected by the live store.
     try:
         client.table("wow_predictions").insert({
-            "event_id": f"LIVE_GATE_{RUN_ID}_neg1", "event_start_time": "2026-08-28T00:00:00Z",
+            "event_id": f"LIVE_GATE_{RUN_ID}_neg1", "event_start_time": future_event_timestamp(),
             "sport": "MLB", "market_type": "engine", "stat_type": "strikeouts",
             "line": 4.5, "direction": "MORE", "source_snapshot_id": None,
         }).execute()
@@ -529,7 +554,7 @@ def section_8_negative_paths():
     # constraint, so confirm PostgREST surfaces it correctly.
     try:
         client.table("wow_predictions").insert({
-            "event_id": f"LIVE_GATE_{RUN_ID}_neg2", "event_start_time": "2026-08-28T00:00:00Z",
+            "event_id": f"LIVE_GATE_{RUN_ID}_neg2", "event_start_time": future_event_timestamp(),
             "sport": "MLB", "market_type": "engine", "stat_type": "strikeouts",
             "line": 4.5, "direction": "MORE", "source_snapshot_id": str(uuid.uuid4()),
             "calibration_status": "BOGUS_STATUS_NOT_IN_ANY_ENUM",
