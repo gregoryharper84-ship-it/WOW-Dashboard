@@ -1,0 +1,58 @@
+name: MLB V1 reproduction research
+
+on:
+  push:
+    branches:
+      - research/mlb-v1-repro-20260827
+    paths:
+      - "research/mlb-v1-repro/**"
+      - ".github/workflows/mlb-v1-repro-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout research branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install isolated validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scikit-learn joblib
+
+      - name: Reconstruct V1 and run V1.1 validation
+        run: |
+          python research/mlb-v1-repro/mlb_v1_reproduce_and_v11.py \
+            --out research/mlb-v1-repro-out \
+            --bootstraps 10000
+
+      - name: Print reconstruction and V1.1 summaries
+        if: always()
+        run: |
+          echo '--- reconstruction status ---'
+          cat research/mlb-v1-repro-out/reconstruction_status.json || true
+          echo '--- V1.1 metrics ---'
+          cat research/mlb-v1-repro-out/v1_1/mlb_baseline_v1_1_results.json || true
+
+      - name: Upload research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlb-v1-repro-v11-research
+          path: |
+            research/mlb-v1-repro-out/v1_reconstruction_report.json
+            research/mlb-v1-repro-out/reconstruction_status.json
+            research/mlb-v1-repro-out/features_2025_reconstructed.jsonl
+            research/mlb-v1-repro-out/v1_1/**
+          if-no-files-found: warn
+          retention-days: 7
