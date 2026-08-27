@@ -1,0 +1,93 @@
+name: MLB V2 pregame research validation
+
+on:
+  push:
+    branches:
+      - research/mlb-v2-pregame-20260827
+    paths:
+      - "research/mlb-v2-pregame/**"
+      - ".github/workflows/mlb-v2-pregame-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout isolated research branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install isolated research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scikit-learn joblib
+
+      - name: Run MLB V2 pregame validation
+        run: |
+          python research/mlb-v2-pregame/run_mlb_v2_pregame.py \
+            --out research/mlb-v2-pregame-out \
+            --bootstraps 10000
+
+      - name: Print decision evidence
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('research/mlb-v2-pregame-out/mlb_v2_results.json')
+          if not p.exists():
+              raise SystemExit('RESULT_FILE_MISSING')
+          d=json.loads(p.read_text())
+          print(json.dumps({
+              'selected': d['selected'],
+              'test_metrics': d['test_metrics'],
+              'paired_bootstrap_brier': d['paired_bootstrap_brier'],
+              'research_evidence_gate': d['research_evidence_gate'],
+              'feature_audit': d['feature_audit'],
+              'split_counts': d['split_counts'],
+              'split_date_ranges': d['split_date_ranges'],
+              'governance': d['governance'],
+          }, indent=2))
+          PY
+
+      - name: Assert governance remains fail-closed
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('research/mlb-v2-pregame-out/mlb_v2_results.json')
+          if not p.exists():
+              raise SystemExit('RESULT_FILE_MISSING')
+          g=json.loads(p.read_text())['governance']
+          assert g['PROMOTED'] is False
+          assert g['ACTIVE'] is False
+          assert g['probability_publishable'] is False
+          assert g['governed_probability_capability'] == 'UNAVAILABLE'
+          assert g['can_execute'] is False
+          print('GOVERNANCE_FAIL_CLOSED=PASS')
+          PY
+
+      - name: Upload research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlb-v2-pregame-research
+          path: |
+            research/mlb-v2-pregame-out/mlb_v2_results.json
+            research/mlb-v2-pregame-out/mlb_v2_feature_schema.json
+            research/mlb-v2-pregame-out/mlb_v2_features.jsonl
+            research/mlb-v2-pregame-out/mlb_v2_test_predictions.csv
+            research/mlb-v2-pregame-out/selected_base_model.joblib
+            research/mlb-v2-pregame-out/selected_calibrator.joblib
+            research/mlb-v2-pregame-out/governance.json
+          if-no-files-found: warn
+          retention-days: 7
