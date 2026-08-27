@@ -51,7 +51,7 @@ from datetime import date, datetime, timezone
 from typing import Callable, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from regime_model import PrimaryRegime, CohortCounts, PitcherCounts
 from simulation import RegimeConditionalParams, MIN_SIMULATION_DRAWS
@@ -185,6 +185,8 @@ class EventMarketPrior(BaseModel):
     It is context/prior evidence only. The event route never promotes it
     into a model probability when the fitted MLB model is unavailable.
     """
+    model_config = ConfigDict(extra="forbid")
+
     home_probability: float
     away_probability: float
     timestamp: str
@@ -199,6 +201,8 @@ class ScoreEventRequest(BaseModel):
     absent so clients cannot inject a probability and have it re-labeled
     as governed model output.
     """
+    model_config = ConfigDict(extra="forbid")
+
     research_run_id: str
     requested_slate_date: str
     requested_timezone: str
@@ -276,7 +280,7 @@ def _score_event_contract_errors(req: ScoreEventRequest) -> list[str]:
         errors.append("scan_stage must be PREGAME")
     if req.league != "MLB":
         errors.append("league must be MLB for /score-event v1")
-    if req.home_team.strip() and req.home_team.strip() == req.away_team.strip():
+    if req.home_team.strip() and req.home_team.strip().casefold() == req.away_team.strip().casefold():
         errors.append("home_team and away_team must differ")
 
     try:

@@ -37,7 +37,8 @@ create table if not exists wow_event_predictions (
     model_timestamp timestamptz,
     model_valid_after_latest_update boolean not null default false,
 
-    controlling_specialist text not null default 'wow.mlb-game-win-probability-expert',
+    controlling_specialist text not null default 'wow.mlb-game-win-probability-expert'
+        check (controlling_specialist = 'wow.mlb-game-win-probability-expert'),
     model_version text,
     model_artifact_id text,
     model_inputs_hash text,

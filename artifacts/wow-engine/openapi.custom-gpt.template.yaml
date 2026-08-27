@@ -211,6 +211,7 @@ components:
           default: PAYOUT_UNRESOLVED
     EventMarketPrior:
       type: object
+      additionalProperties: false
       required:
         - home_probability
         - away_probability
@@ -236,6 +237,7 @@ components:
         not permission to synthesize a model probability when the fitted MLB model is unavailable.
     ScoreEventRequest:
       type: object
+      additionalProperties: false
       required:
         - research_run_id
         - requested_slate_date
