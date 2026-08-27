@@ -1,0 +1,75 @@
+name: MLB V2 daily pregame state refresh
+
+on:
+  schedule:
+    # 09:00 UTC = 04:00 CDT / 03:00 CST. State uses the America/Chicago date
+    # and includes results strictly before that date.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mlb-v2-daily-state-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Resolve Central scoring date
+        id: date
+        run: echo "build_date=$(TZ=America/Chicago date +%F)" >> "$GITHUB_OUTPUT"
+      - name: Install locked artifact dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scikit-learn==1.9.0 joblib requests
+      - name: Extract validated reference code
+        run: |
+          mkdir -p /tmp/mlb_v2_reference
+          git fetch origin research/mlb-v2-pregame-20260827 research/mlb-v2-2026-confirmation-20260827 research/mlb-v2-live-hydrator-20260827
+          git show origin/research/mlb-v2-pregame-20260827:research/mlb-v2-pregame/run_mlb_v2_pregame.py > /tmp/mlb_v2_reference/run_mlb_v2_pregame.py
+          git show origin/research/mlb-v2-2026-confirmation-20260827:research/mlb-v2-pregame/confirm_mlb_v2_2026.py > /tmp/mlb_v2_reference/confirm_mlb_v2_2026.py
+          git show origin/research/mlb-v2-live-hydrator-20260827:research/mlb-v2-pregame/live_hydrator_smoke.py > /tmp/mlb_v2_reference/live_hydrator_smoke.py
+          python -m py_compile /tmp/mlb_v2_reference/*.py
+      - name: Rebuild locked model artifact + current strict-pregame state
+        working-directory: artifacts/flask-scoring-api
+        run: |
+          rm -rf gate_engine/mlb_v2_artifacts
+          python tools/build_mlb_v2_production_artifacts.py \
+            --reference-dir /tmp/mlb_v2_reference \
+            --out gate_engine/mlb_v2_artifacts \
+            --build-date "${{ steps.date.outputs.build_date }}"
+      - name: Verify state cutoff and execution lock
+        working-directory: artifacts/flask-scoring-api
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads(Path('gate_engine/mlb_v2_artifacts/mlb_v2_manifest.json').read_text())
+          expected='${{ steps.date.outputs.build_date }}'
+          assert d['state']['cutoff_exclusive']==expected
+          assert d['governance']['probability_capability']=='AVAILABLE'
+          assert d['governance']['can_execute'] is False
+          assert d['governance']['can_approve_bets'] is False
+          print('MLB_V2_DAILY_STATE_REFRESH=PASS', expected, d['state'])
+          PY
+      - name: Commit refreshed state/artifact manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts/flask-scoring-api/gate_engine/mlb_v2_artifacts
+          if git diff --cached --quiet; then
+            echo 'MLB V2 state/artifacts unchanged'
+          else
+            git commit -m "Refresh MLB V2 pregame state ${{ steps.date.outputs.build_date }}"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
