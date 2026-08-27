@@ -1,0 +1,24 @@
+name: MLB V2 production pipeline inspection
+on:
+  push:
+    branches: [feature/mlb-v2-governed-probability-20260827]
+    paths: [.github/workflows/mlb-v2-production-inspect-pipeline.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect sport model and pipeline contracts
+        run: |
+          echo '=== sport_model compute body ==='
+          grep -n "def compute_independent_probability" artifacts/flask-scoring-api/gate_engine/moneyline/sport_model.py
+          sed -n '280,560p' artifacts/flask-scoring-api/gate_engine/moneyline/sport_model.py
+          echo '=== pipeline sport model call and outputs ==='
+          grep -nE 'compute_independent_probability|independent_probability|calibrated_probability_lower_bound|dynamic_calib|calibration' artifacts/flask-scoring-api/gate_engine/moneyline/pipeline.py | head -n 180
+          echo '=== pipeline relevant body ==='
+          sed -n '300,850p' artifacts/flask-scoring-api/gate_engine/moneyline/pipeline.py
+          echo '=== types ==='
+          grep -nE 'class Moneyline|class Probability|independent_probability|calibrated_probability' artifacts/flask-scoring-api/gate_engine/moneyline/types.py | head -n 150
