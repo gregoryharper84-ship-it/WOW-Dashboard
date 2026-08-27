@@ -1,0 +1,22 @@
+name: MLB V2 score-event branch inspection
+on:
+  push:
+    branches: [feature/mlb-v2-governed-probability-20260827]
+    paths: [.github/workflows/mlb-v2-score-event-branch-inspect.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inspect prior score-event branch
+        run: |
+          git fetch origin feature/wow-score-event-mlb-v1-20260827
+          git show origin/feature/wow-score-event-mlb-v1-20260827:artifacts/flask-scoring-api/app.py > /tmp/score_event_app.py
+          grep -nE 'score-event|score_event|GOVERNED_EVENT_MODEL_UNAVAILABLE|MLB_FITTED_MODEL_ARTIFACT_UNAVAILABLE|MLB_EVENT_CALIBRATOR_UNAVAILABLE|mlb-game-win-probability-expert' /tmp/score_event_app.py | head -n 200
+          echo '=== branch diff names ==='
+          git diff --name-status origin/main...origin/feature/wow-score-event-mlb-v1-20260827 | head -n 200
