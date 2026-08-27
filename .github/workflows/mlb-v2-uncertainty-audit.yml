@@ -1,0 +1,35 @@
+name: MLB V2 2026 uncertainty audit
+on:
+  push:
+    branches: [research/mlb-v2-uncertainty-audit-20260827]
+    paths:
+      - 'research/mlb-v2-pregame/**'
+      - '.github/workflows/mlb-v2-uncertainty-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: |
+          python -m pip install --upgrade pip
+          pip install numpy scikit-learn joblib
+      - name: Regenerate locked 2026 confirmation predictions
+        working-directory: research/mlb-v2-pregame
+        run: |
+          python confirm_mlb_v2_2026.py \
+            --out ../../uncertainty_out/confirmation \
+            --bootstraps 500 \
+            --workers 20
+      - name: Run date-block and monthly stability audit
+        run: python research/mlb-v2-pregame/audit_2026_uncertainty.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlb-v2-uncertainty-audit
+          path: uncertainty_out/uncertainty_audit.json
+          retention-days: 7
