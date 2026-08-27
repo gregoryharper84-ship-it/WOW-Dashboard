@@ -36,6 +36,13 @@ jobs:
           python - <<'PY'
           import json
           from datetime import date
+          import gate_engine.daily_run_lifecycle as lifecycle
+
+          # Isolate this route/network smoke from the unrelated DB-backed daily
+          # manifest boot prerequisite. Production startup remains unchanged and
+          # continues to fail closed when that database is unavailable.
+          lifecycle.ensure_manifest_ready = lambda: None
+
           import app as app_module
           from gate_engine.mlb_v2_hydrator import _schedule
 
@@ -69,7 +76,7 @@ jobs:
           assert success['probability_publishable'] is True
           assert 0 < success['probability'] < 1
           assert success['probability_lower_bound'] <= success['probability'] <= success['probability_upper_bound']
-          assert success['home_probability'] + success['away_probability'] == 1.0
+          assert abs((success['home_probability'] + success['away_probability']) - 1.0) < 1e-9
           assert success['market_weight_in_point_probability'] == 0.0
           assert success['hydration']['strict_prior_date_only'] is True
           assert success['hydration']['same_day_results_used'] is False
