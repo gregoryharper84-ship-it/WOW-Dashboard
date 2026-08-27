@@ -74,12 +74,21 @@ def test_score_event_rejects_wrong_auth(client, valid_payload):
     assert "wrong-key" not in response.text
 
 
-def test_score_event_valid_mlb_contract_fails_closed_409(client, valid_payload, monkeypatch):
+def test_score_event_future_season_contract_fails_closed_on_artifact_scope(client, valid_payload, monkeypatch):
+    """A structurally valid 2099 request must fail closed because V2 is scoped to 2026.
+
+    This test previously asserted the pre-V2 placeholder blockers
+    MLB_FITTED_MODEL_ARTIFACT_UNAVAILABLE / MLB_EVENT_CALIBRATOR_UNAVAILABLE.
+    Once the real 2026 artifact exists, the correct fail-closed reason for this
+    intentionally far-future fixture is artifact expiry/season mismatch.  The
+    invariant that matters is unchanged: 409, no probability, no persistence,
+    and no execution authority.
+    """
     persist_calls = []
 
     def unexpected_persist(*args, **kwargs):
         persist_calls.append((args, kwargs))
-        raise AssertionError("/score-event v1 must not persist while the fitted MLB model is unavailable")
+        raise AssertionError("/score-event must not persist an out-of-scope MLB event")
 
     monkeypatch.setattr(api, "_persist_fn", unexpected_persist)
 
@@ -100,11 +109,21 @@ def test_score_event_valid_mlb_contract_fails_closed_409(client, valid_payload, 
     assert detail["probability_publishable"] is False
     assert detail["fallback"] == "SECTION_8A_MANUAL_ESTIMATE_LANE"
     assert detail["can_execute"] is False
-    assert "MLB_FITTED_MODEL_ARTIFACT_UNAVAILABLE" in detail["blockers"]
-    assert "MLB_EVENT_CALIBRATOR_UNAVAILABLE" in detail["blockers"]
+    blockers = detail["blockers"]
+    assert any(item.startswith("MLB_V2_ARTIFACT_EXPIRED:") for item in blockers)
+    assert any(item.startswith("MLB_V2_ARTIFACT_SEASON_MISMATCH:") for item in blockers)
     assert persist_calls == []
 
     forbidden_probability_keys = {
+        "probability",
+        "home_probability",
+        "away_probability",
+        "probability_lower_bound",
+        "probability_upper_bound",
+        "home_probability_lower_bound",
+        "home_probability_upper_bound",
+        "away_probability_lower_bound",
+        "away_probability_upper_bound",
         "raw_probability",
         "raw_model_probability",
         "raw_home_probability",
