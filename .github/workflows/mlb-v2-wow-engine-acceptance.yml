@@ -85,9 +85,10 @@ jobs:
           assert manifest['governance']['can_execute'] is False
           assert manifest['governance']['can_approve_bets'] is False
           assert manifest['publication_contract']['market_weight_in_published_point_probability'] == 0.0
-          assert manifest['validation']['artifact_hardening']['reload_prediction_max_abs_diff'] == 0.0
-          assert manifest['validation']['fresh_2026']['date_block_bootstrap_p_gt_0'] >= 0.99
-          ci = manifest['validation']['fresh_2026']['date_block_bootstrap_ci95_brier_gain_vs_home_054']
+          evidence = manifest['locked_evidence']
+          assert evidence['artifact_hardening']['reload_prediction_max_abs_diff'] == 0.0
+          assert evidence['fresh_2026']['date_block_bootstrap_p_gt_0'] >= 0.99
+          ci = evidence['fresh_2026']['date_block_bootstrap_ci95_brier_gain_vs_home_054']
           assert ci[0] > 0 and ci[1] > 0
           assert manifest['feature_build_audit']['same_calendar_date_outcome_leakage'] is False
 
