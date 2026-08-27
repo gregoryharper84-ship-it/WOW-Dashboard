@@ -49,11 +49,21 @@ import threading
 import time
 import traceback
 import uuid
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 RUN_ID = uuid.uuid4().hex[:8]
 PORT = 8811
+
+# Section 2's Platt v1/v2 training_n and Section 3/4's normal-fixture row
+# count are kept in agreement deliberately (Step-5 review STEP5-VALIDATOR-
+# FIX-02): the live Phase B/C bounds gate needs a statistically
+# nondegenerate historical cohort, not the 3-row fixture that produced a
+# saturated bootstrap Platt fit and a spurious ModelCalibrationUnavailableError
+# on run fcec80e3.
+SECTION2_V1_TRAINING_N = 200  # PHASE_B_MIN_N boundary
+SECTION4_TRAINING_N = 250  # normal (non-late_settle/no_settlement) fixture rows
 
 RESULTS: list[tuple[str, bool, str]] = []  # (name, passed, detail)
 
@@ -67,6 +77,102 @@ def check(name: str, condition: bool, detail: str = "") -> bool:
 
 def section(title: str) -> None:
     print(f"\n=== {title} ===")
+
+
+def _iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_section3_fixture(n_normal: int = SECTION4_TRAINING_N, seed: int = 2027) -> dict:
+    """Pure (no I/O) fixture builder for Sections 3-4's historical-
+    calibration cohort. No network calls, no wall-clock side effects
+    beyond reading the current instant once as a future-safe anchor --
+    testable in isolation.
+
+    Step-5 review STEP5-VALIDATOR-FIX-02/03: every 'normal' row's
+    event_start_time is anchored 10 years past the moment this function
+    runs (not a hardcoded calendar date), so ordinary fixture rows never
+    age into the DB's post-start immutability trigger and remain
+    deletable by cleanup() regardless of when this script is run. Only
+    Section 8's neg3 row is deliberately backdated and permanent.
+
+    Chronology (all instants relative to `anchor`):
+        anchor  <  normal event starts/settlements (~n_normal hours)
+                <  no_settlement event start (day 20)
+                <  late_settle event start (day 40)
+                <  candidate_as_of (day 60)
+                <  late_settle settlement (day 90)
+    so late_settle is excluded only by the as-of filter (its event_start
+    alone would look eligible) and no_settlement is excluded by the
+    loader itself (no settlement_timestamp at all).
+    """
+    import numpy as np
+
+    anchor = datetime.now(timezone.utc) + timedelta(days=3650)
+    candidate_as_of = anchor + timedelta(days=60)
+
+    rng = np.random.default_rng(seed)
+    raw = rng.uniform(0.3, 0.7, size=n_normal)
+    hits = (rng.uniform(0, 1, size=n_normal) < raw).astype(bool)
+
+    rows = []
+    for i in range(n_normal):
+        event_start = anchor + timedelta(hours=i)
+        settlement = event_start + timedelta(hours=3)
+        rows.append({
+            "suffix": f"past_{i:04d}",
+            "raw_probability": float(raw[i]),
+            "hit": bool(hits[i]),
+            "event_start_time": _iso(event_start),
+            "settlement_timestamp": _iso(settlement),
+        })
+
+    rows.append({
+        "suffix": "late_settle",
+        "raw_probability": 0.51,
+        "hit": True,
+        "event_start_time": _iso(anchor + timedelta(days=40)),
+        "settlement_timestamp": _iso(anchor + timedelta(days=90)),
+    })
+    rows.append({
+        "suffix": "no_settlement",
+        "raw_probability": 0.58,
+        "hit": True,
+        "event_start_time": _iso(anchor + timedelta(days=20)),
+        "settlement_timestamp": None,
+    })
+
+    return {"candidate_as_of": _iso(candidate_as_of), "rows": rows}
+
+
+def categorize_cleanup_row(event_id: str, delete_succeeded: bool) -> str:
+    """Pure classification of one cleanup-pass delete attempt (Step-5
+    review STEP5-VALIDATOR-FIX-03/cleanup-reconciliation). 'neg3_locked'
+    is the single expected permanent artifact per run -- Section 8's own
+    post-start immutability regression row. Any other row that fails to
+    delete is an unexpected locked row and must be surfaced, not assumed
+    benign."""
+    if delete_succeeded:
+        return "deleted"
+    return "neg3_locked" if event_id.endswith("_neg3") else "unexpected_locked"
+
+
+def run_or_record_failure(step_name: str, fn, *args, **kwargs):
+    """Runs one section function; an unanticipated exception becomes one
+    explicit failed check (Step-5 review STEP5-VALIDATOR-FIX-04) instead
+    of aborting main() and skipping every independent section after it.
+    A section's own already-governed failures (e.g. Section 4's
+    ModelCalibrationUnavailableError) are expected to be caught and
+    recorded by the section itself; this is the outer safety net for
+    everything else."""
+    try:
+        return fn(*args, **kwargs)
+    except SystemExit:
+        raise
+    except Exception as e:
+        check(f"{step_name} completed without an unexpected exception", False, f"{type(e).__name__}: {e}")
+        traceback.print_exc()
+        return None
 
 
 def require_env() -> None:
@@ -117,17 +223,19 @@ def section_2_calibrator_persistence():
     metrics = PlattFitMetrics(brier=0.18, log_loss=0.55, ece=0.03, calibration_bias=-0.01)
 
     coeffs_v1 = PlattCoefficients(a=0.1, b=1.1)
-    save_platt_calibrator(coeffs_v1, metrics, parent_cohort=cohort, calibration_version="v1", training_n=250, activate=True)
+    save_platt_calibrator(coeffs_v1, metrics, parent_cohort=cohort, calibration_version="v1", training_n=SECTION2_V1_TRAINING_N, activate=True)
 
     loaded_v1 = load_active_calibrator(cohort, CalibrationStatus.PLATT_TIME_SPLIT_V1)
     check("Platt v1 loads back as active", loaded_v1 is not None and loaded_v1.get("active") is True)
     check("Platt v1 fields round-trip", loaded_v1 is not None and loaded_v1["platt_a"] == 0.1 and loaded_v1["platt_b"] == 1.1
-          and loaded_v1["calibration_version"] == "v1" and loaded_v1["training_n"] == 250
+          and loaded_v1["calibration_version"] == "v1" and loaded_v1["training_n"] == SECTION2_V1_TRAINING_N
           and loaded_v1.get("phase") == "PHASE_B" and loaded_v1.get("bounds_method_version") is not None)
 
     # Promote a new Platt calibrator for the SAME cohort -- must deactivate v1.
+    # training_n intentionally agrees with Section 3/4's live historical
+    # cohort size (SECTION4_TRAINING_N) -- see STEP5-VALIDATOR-FIX-02.
     coeffs_v2 = PlattCoefficients(a=0.2, b=1.2)
-    save_platt_calibrator(coeffs_v2, metrics, parent_cohort=cohort, calibration_version="v2", training_n=400, activate=True)
+    save_platt_calibrator(coeffs_v2, metrics, parent_cohort=cohort, calibration_version="v2", training_n=SECTION4_TRAINING_N, activate=True)
     loaded_v2 = load_active_calibrator(cohort, CalibrationStatus.PLATT_TIME_SPLIT_V1)
     check("promoting v2 makes it the active calibrator", loaded_v2 is not None and loaded_v2["calibration_version"] == "v2")
 
@@ -161,72 +269,81 @@ def section_2_calibrator_persistence():
 def section_3_historical_rows(platt_cohort: str):
     section("3. Live historical-calibration acquisition gate")
     from calibrator_store import load_historical_calibration_rows
+    from calibration import _parse_ts
     client = _client()
 
     method = "PLATT_TIME_SPLIT_V1"
-    # Step 3d BLOCKER-01 fix: these rows simulate the NATURAL lifecycle --
-    # real Phase A observations for this cohort, not pre-tagged as already
-    # PLATT rows. The original version of this fixture seeded every row
-    # with calibration_method=method directly, which is exactly what made
-    # the original bug invisible: it required a historical row to already
-    # carry the Phase B/C method being trained, so a cohort's first real
-    # Phase B candidate could never bootstrap from prior Phase A rows.
-    rows_spec = [
-        # (event_id_suffix, raw_prob, hit, event_start_time, settlement_timestamp)
-        ("past1", 0.55, True, "2026-01-01T00:00:00Z", "2026-01-01T03:00:00Z"),
-        ("past2", 0.62, False, "2026-02-01T00:00:00Z", "2026-02-01T03:00:00Z"),
-        ("past3", 0.48, True, "2026-03-01T00:00:00Z", "2026-03-01T03:00:00Z"),
-        # Event started before candidate_as_of but SETTLED after it -- must
-        # be excluded once as-of filtered, even though event_start_time
-        # alone would look eligible.
-        ("late_settle", 0.51, True, "2026-08-01T00:00:00Z", "2026-12-01T00:00:00Z"),
-        # No recorded settlement availability at all -- must fail closed
-        # (excluded by the loader itself, not just by the as-of filter).
-        ("no_settlement", 0.58, True, "2026-06-01T00:00:00Z", None),
-    ]
-    candidate_as_of = "2026-08-27T00:00:00Z"
+    # Step 3d BLOCKER-01 fix (unchanged by this review): these rows
+    # simulate the NATURAL lifecycle -- real Phase A observations for
+    # this cohort, not pre-tagged as already PLATT rows. calibration_method
+    # is deliberately NOT the Phase B/C method being trained, exactly like
+    # real production rows would be before this cohort's first calibrator
+    # was ever promoted.
+    #
+    # Step-5 review STEP5-VALIDATOR-FIX-02/03: fixture size and chronology
+    # come from build_section3_fixture() (pure, unit-tested) --
+    # SECTION4_TRAINING_N normal rows (statistically nondegenerate for
+    # Section 4's bootstrap refit) all anchored years in the future so
+    # they remain deletable by cleanup(), plus the same late_settle /
+    # no_settlement edge cases as before.
+    fixture = build_section3_fixture()
+    candidate_as_of = fixture["candidate_as_of"]
+    n_normal = len(fixture["rows"]) - 2  # exclude late_settle, no_settlement
 
     prediction_ids = {}
-    for suffix, raw_prob, hit, event_start, settlement_ts in rows_spec:
+    prediction_rows = []
+    outcome_rows = []
+    for row in fixture["rows"]:
         pred_id = str(uuid.uuid4())
-        prediction_ids[suffix] = pred_id
-        client.table("wow_predictions").insert({
+        prediction_ids[row["suffix"]] = pred_id
+        prediction_rows.append({
             "prediction_id": pred_id,
-            "event_id": f"LIVE_GATE_{RUN_ID}_{suffix}",
-            "event_start_time": event_start,
+            "event_id": f"LIVE_GATE_{RUN_ID}_{row['suffix']}",
+            "event_start_time": row["event_start_time"],
             "sport": "MLB", "market_type": "engine", "stat_type": "strikeouts",
             "line": 4.5, "direction": "MORE",
             "source_snapshot_id": str(uuid.uuid4()),
-            "raw_model_probability": raw_prob,
+            "raw_model_probability": row["raw_probability"],
             "calibration_parent_cohort": platt_cohort,
-            # Deliberately NOT the Phase B/C method -- these are Phase A
-            # observations, exactly like real production rows would be
-            # before this cohort's first calibrator was ever promoted.
             "calibration_method": "CONSERVATIVE_EMPIRICAL_BAYES_SHRINKAGE_V1",
             "probability_publishable": False,
-        }).execute()
-        outcome_payload = {"prediction_id": pred_id, "hit": hit, "official_result": "settled"}
-        if settlement_ts is not None:
-            outcome_payload["settlement_timestamp"] = settlement_ts
-        client.table("wow_outcomes").insert(outcome_payload).execute()
+        })
+        outcome_payload = {"prediction_id": pred_id, "hit": row["hit"], "official_result": "settled"}
+        if row["settlement_timestamp"] is not None:
+            outcome_payload["settlement_timestamp"] = row["settlement_timestamp"]
+        outcome_rows.append(outcome_payload)
+
+    # Bulk insert -- one network round trip per table instead of one per
+    # fixture row (SECTION4_TRAINING_N + 2 rows).
+    client.table("wow_predictions").insert(prediction_rows).execute()
+    client.table("wow_outcomes").insert(outcome_rows).execute()
 
     loaded = load_historical_calibration_rows(platt_cohort, method)
     check("load_historical_calibration_rows finds Phase A rows by cohort alone "
           "(no pre-existing PLATT-tagged row required), excluding only the "
           "missing-settlement row",
-          len(loaded) == 4, f"got {len(loaded)}, expected 4 (no_settlement excluded)")
+          len(loaded) == n_normal + 1, f"got {len(loaded)}, expected {n_normal + 1} (no_settlement excluded)")
 
-    timestamps = {r.timestamp for r in loaded}
+    # Step-5 review STEP5-VALIDATOR-FIX-01: compare parsed instants, not
+    # raw strings -- PostgREST may echo a Z-suffixed timestamptz back as
+    # an equivalent +00:00 offset, which made this check a false negative
+    # on run fcec80e3 even though the loader was already correct.
+    late_settle = next(r for r in fixture["rows"] if r["suffix"] == "late_settle")
+    no_settlement = next(r for r in fixture["rows"] if r["suffix"] == "no_settlement")
+    returned_instants = {_parse_ts(r.timestamp) for r in loaded}
     check("returned timestamps are settlement_timestamp, not event_start_time",
-          "2026-12-01T00:00:00Z" in timestamps and "2026-06-01T00:00:00Z" not in timestamps)
+          _parse_ts(late_settle["settlement_timestamp"]) in returned_instants
+          and _parse_ts(no_settlement["event_start_time"]) not in returned_instants)
 
     # The as_of filtering itself is calibration.compute_predictive_bounds()'s
     # job (already unit-tested locally) -- verify it live here too, using
-    # rows that actually came from Supabase this time.
-    eligible = [r for r in loaded if r.timestamp < candidate_as_of]
+    # rows that actually came from Supabase this time, with the same
+    # timezone-aware datetime comparison the governed calibration logic uses.
+    as_of_dt = _parse_ts(candidate_as_of)
+    eligible = [r for r in loaded if _parse_ts(r.timestamp) < as_of_dt]
     check("late-settling row excluded once filtered by candidate_as_of, "
           "even though its event started earlier",
-          len(eligible) == 3, f"got {len(eligible)} eligible of {len(loaded)} total")
+          len(eligible) == n_normal, f"got {len(eligible)} eligible of {len(loaded)} total")
 
     return {"prediction_ids": list(prediction_ids.values()), "candidate_as_of": candidate_as_of}
 
@@ -238,7 +355,7 @@ def section_3_historical_rows(platt_cohort: str):
 def section_4_live_bounds(platt_cohort: str, candidate_as_of: str):
     section("4. Live Phase B/C bounds gate")
     from calibrator_store import load_historical_calibration_rows, platt_coefficients_from_record, load_active_calibrator
-    from calibration import compute_predictive_bounds, CalibrationStatus
+    from calibration import compute_predictive_bounds, CalibrationStatus, ModelCalibrationUnavailableError
 
     method = CalibrationStatus.PLATT_TIME_SPLIT_V1
     record = load_active_calibrator(platt_cohort, method)
@@ -249,11 +366,22 @@ def section_4_live_bounds(platt_cohort: str, candidate_as_of: str):
         return float(rng.uniform(0.4, 0.6))
 
     point_estimate = coefficients.apply(0.55)
-    bounds = compute_predictive_bounds(
-        method=method, historical_rows=rows, candidate_as_of=candidate_as_of,
-        candidate_raw_probability_sampler=sampler,
-        full_data_calibrated_probability=point_estimate, rng_seed=7,
-    )
+    # Step-5 review STEP5-VALIDATOR-FIX-04: ModelCalibrationUnavailableError
+    # is a GOVERNED, expected failure mode of compute_predictive_bounds()
+    # (do not weaken/clip/catch-and-retry inside the engine itself -- see
+    # calibration.py). The validator's job is to record it as an explicit
+    # failed gate and let Sections 5-8 still run, not to let it crash
+    # main() and abort every independent section after it (run fcec80e3).
+    try:
+        bounds = compute_predictive_bounds(
+            method=method, historical_rows=rows, candidate_as_of=candidate_as_of,
+            candidate_raw_probability_sampler=sampler,
+            full_data_calibrated_probability=point_estimate, rng_seed=7,
+        )
+    except ModelCalibrationUnavailableError as e:
+        check(f"Phase B/C predictive bounds computed from {len(rows)} eligible historical rows",
+              False, f"ModelCalibrationUnavailableError: {e}")
+        return
     check(">= 2000 valid realizations", bounds.realizations_used >= 2000, str(bounds.realizations_used))
     check("0 < lower_bound <= calibrated_probability <= upper_bound < 1",
           0 < bounds.lower_bound <= bounds.calibrated_probability <= bounds.upper_bound < 1,
@@ -453,10 +581,16 @@ def _client():
 
 
 def cleanup():
-    section("Cleanup (best-effort)")
+    section("Cleanup (best-effort) + reconciliation")
     client = _client()
+    # Step-5 review cleanup-reconciliation: distinguish the single expected
+    # permanent neg3 artifact from any genuinely unexpected locked row,
+    # scoped strictly to THIS run's RUN_ID -- a prior failed run's own
+    # stranded rows (e.g. fcec80e3) are never touched or counted here.
+    neg3_remaining = 0
+    unexpected_locked = 0
     try:
-        preds = client.table("wow_predictions").select("prediction_id").like("event_id", f"LIVE_GATE_{RUN_ID}_%").execute().data
+        preds = client.table("wow_predictions").select("prediction_id, event_id").like("event_id", f"LIVE_GATE_{RUN_ID}_%").execute().data or []
         for p in preds:
             try:
                 client.table("wow_outcomes").delete().eq("prediction_id", p["prediction_id"]).execute()
@@ -465,9 +599,31 @@ def cleanup():
             try:
                 client.table("wow_predictions").delete().eq("prediction_id", p["prediction_id"]).execute()
             except Exception as e:
-                print(f"  (left in place, likely the locked neg3 row -- expected: {e})")
+                category = categorize_cleanup_row(p["event_id"], False)
+                if category == "neg3_locked":
+                    print(f"  (left in place, expected: neg3 immutability regression row -- {e})")
+                    neg3_remaining += 1
+                else:
+                    print(f"  UNEXPECTED locked row (not neg3): {p['event_id']} {p['prediction_id']} -- {e}")
+                    unexpected_locked += 1
+
         client.table("wow_calibrators").delete().like("parent_cohort", f"LIVE_GATE_{RUN_ID}_%").execute()
         print(f"cleanup attempted for run {RUN_ID}")
+
+        remaining = client.table("wow_predictions").select("prediction_id, event_id").like("event_id", f"LIVE_GATE_{RUN_ID}_%").execute().data or []
+        ordinary_remaining = [r for r in remaining if not r["event_id"].endswith("_neg3")]
+        remaining_ids = [r["prediction_id"] for r in remaining]
+        outcomes_remaining = (
+            client.table("wow_outcomes").select("prediction_id").in_("prediction_id", remaining_ids).execute().data
+            if remaining_ids else []
+        )
+        calibrators_remaining = client.table("wow_calibrators").select("parent_cohort").like("parent_cohort", f"LIVE_GATE_{RUN_ID}_%").execute().data or []
+
+        check("cleanup: ordinary (non-neg3) predictions remaining == 0", len(ordinary_remaining) == 0, str(len(ordinary_remaining)))
+        check("cleanup: outcomes remaining == 0", len(outcomes_remaining or []) == 0, str(len(outcomes_remaining or [])))
+        check("cleanup: calibrators remaining == 0", len(calibrators_remaining) == 0, str(len(calibrators_remaining)))
+        check("cleanup: current-run neg3 remaining == exactly 1", neg3_remaining == 1, str(neg3_remaining))
+        check("cleanup: unexpected current-run locked rows == 0", unexpected_locked == 0, str(unexpected_locked))
     except Exception as e:
         print(f"cleanup encountered an error (non-fatal): {e}")
 
@@ -478,11 +634,15 @@ def main():
 
     try:
         section_0_connectivity()
-        cohorts = section_2_calibrator_persistence()
-        hist = section_3_historical_rows(cohorts["platt_cohort"])
-        section_4_live_bounds(cohorts["platt_cohort"], hist["candidate_as_of"])
-        section_5_7_real_endpoint()
-        section_8_negative_paths()
+        cohorts = run_or_record_failure("Section 2 (calibrator persistence)", section_2_calibrator_persistence)
+        hist = (
+            run_or_record_failure("Section 3 (historical acquisition)", section_3_historical_rows, cohorts["platt_cohort"])
+            if cohorts is not None else None
+        )
+        if hist is not None:
+            run_or_record_failure("Section 4 (predictive bounds)", section_4_live_bounds, cohorts["platt_cohort"], hist["candidate_as_of"])
+        run_or_record_failure("Section 5-7 (score-prop endpoint)", section_5_7_real_endpoint)
+        run_or_record_failure("Section 8 (negative paths)", section_8_negative_paths)
     except SystemExit:
         raise
     except Exception:
