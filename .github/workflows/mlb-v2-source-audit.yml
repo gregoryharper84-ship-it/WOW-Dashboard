@@ -1,0 +1,24 @@
+name: MLB V2 2026 source completeness audit
+on:
+  push:
+    branches: [research/mlb-v2-source-audit-20260827]
+    paths:
+      - 'research/mlb-v2-pregame/audit_2026_source_completeness.py'
+      - '.github/workflows/mlb-v2-source-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python research/mlb-v2-pregame/audit_2026_source_completeness.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlb-v2-source-audit
+          path: source_audit_out/source_audit.json
+          retention-days: 7
