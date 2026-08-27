@@ -1,0 +1,237 @@
+"""
+api.py
+WOW-PATCH-2026-08-26-FREE-HOST-PROBABILITY-ENGINE v2
+
+FastAPI service exposing the endpoints named in the patch's host-registry
+section (8B.5), for deployment on Render (compute_provider=RENDER) with
+Supabase as database_provider.
+
+This is a skeleton: it wires the ratified engine modules together and
+enforces the governance gates, but per-sport conditional distribution
+parameters (regime_model cohort counts, simulation stat samplers) must
+be supplied from real fitted data before this can score live props —
+consistent with 8B.1's prohibition on invented distribution shapes.
+
+Step 3d review fix: previously /score-prop unconditionally 501'd even
+once GOVERNED_PROBABILITY_CAPABILITY reached AVAILABLE, so Gate 11's
+positive-path test (engine.py::score_prop_end_to_end, called directly)
+could never actually prove the deployed endpoint works — "gates 1-10
+could theoretically all pass while the scoring endpoint still returns
+nothing usable." The handler below now actually calls the engine through
+an injectable fitted-params provider seam: production ships with no
+provider registered (so still correctly 501s — real per-sport data isn't
+wired in), but a test can register a clearly-labeled synthetic/staging
+provider via set_fitted_params_provider() and hit this real HTTP route
+with FastAPI's TestClient to prove the endpoint-to-ledger path works,
+without claiming real production distributions exist.
+
+PRE_PRODUCTION_BLOCKER_API_AUTH -- RESOLVED: /score-prop and /settle
+now require Authorization: Bearer <WOW_ACTION_API_KEY> (see
+_require_action_api_key below). This is application-layer auth only --
+a caller (e.g. a Custom GPT Action) proves it holds WOW_ACTION_API_KEY;
+it never sees the Supabase service-role credential, which stays backend-
+only and is never part of this app's request/response schema. /health
+and /governance stay public -- they expose state, not a privileged
+database mutation path.
+"""
+from __future__ import annotations
+
+import os
+import secrets
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Callable, Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException
+from pydantic import BaseModel
+
+from regime_model import PrimaryRegime, CohortCounts, PitcherCounts
+from simulation import RegimeConditionalParams, MIN_SIMULATION_DRAWS
+from engine import score_prop_end_to_end
+from ledger import insert_prediction
+
+app = FastAPI(title="WOW External Governed Backend", version="1.0.0")
+
+DEPLOYMENT_GATE_COUNT = 11  # see deployment_gate_tests.py; Gate 11 (real
+                            # end-to-end positive path) was added per
+                            # ChatGPT's 2026-08-26 code review.
+
+GOVERNED_PROBABILITY_CAPABILITY = "UNAVAILABLE"  # flips to AVAILABLE only after
+                                                  # all 11 deployment gate items
+                                                  # pass against a live host —
+                                                  # do not hardcode true here.
+
+
+@dataclass
+class FittedParamsBundle:
+    """Real (or, in a test, clearly-labeled synthetic/staging) fitted
+    inputs for one (sport, stat_type). Per 8B.1, this module never
+    invents these itself — see set_fitted_params_provider()."""
+    cohort: CohortCounts
+    pitcher: PitcherCounts
+    regime_params: dict[PrimaryRegime, RegimeConditionalParams]
+    resample_fn: Callable
+    n_eff: float
+    parent_cohort: Optional[str] = None
+    settled_n_in_cohort: int = 0
+
+
+FittedParamsProvider = Callable[[str, str], Optional[FittedParamsBundle]]
+
+
+def _no_fitted_params(sport: str, stat_type: str) -> Optional[FittedParamsBundle]:
+    return None
+
+
+_fitted_params_provider: FittedParamsProvider = _no_fitted_params
+_persist_fn: Callable[..., dict] = insert_prediction
+
+
+def set_fitted_params_provider(provider: FittedParamsProvider) -> None:
+    """Test/staging seam. No provider is registered by default — leave
+    unset in production until real per-sport historical fits are ready
+    (see README "Per-sport fitted parameters")."""
+    global _fitted_params_provider
+    _fitted_params_provider = provider
+
+
+def set_persist_fn(fn: Callable[..., dict]) -> None:
+    """Test seam so /score-prop can be exercised without a live Supabase
+    instance (gates 1/8 remain untestable in this sandbox — see README)."""
+    global _persist_fn
+    _persist_fn = fn
+
+
+def _require_action_api_key(authorization: Optional[str] = Header(default=None)) -> None:
+    """FastAPI dependency guarding every route that can mutate the
+    service-role-backed store (/score-prop, /settle). Callers (a Custom
+    GPT Action, or any other client) authenticate with
+    ``Authorization: Bearer <WOW_ACTION_API_KEY>`` -- an application-layer
+    credential distinct from, and never exchanged for, the Supabase
+    service-role key, which stays backend-only.
+
+    Fails closed: if WOW_ACTION_API_KEY is not configured in this
+    deployment's environment, every protected request is rejected with
+    401 rather than silently admitted. The supplied token is compared
+    with a constant-time comparison (secrets.compare_digest) and is
+    never logged, echoed, or included in any response."""
+    configured_key = os.environ.get("WOW_ACTION_API_KEY")
+    if not configured_key:
+        raise HTTPException(status_code=401, detail="This deployment is not configured for authenticated access.")
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or malformed Authorization header.")
+
+    supplied_key = authorization[len("Bearer "):]
+    if not secrets.compare_digest(supplied_key, configured_key):
+        raise HTTPException(status_code=401, detail="Invalid credential.")
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "host_type": "EXTERNAL_GOVERNED_BACKEND",
+        "compute_provider": "RENDER",
+        "database_provider": "SUPABASE",
+        "batch_provider": "COLAB",
+        "deployment_tier": "FREE",
+    }
+
+
+@app.get("/governance")
+def governance():
+    return {
+        "governed_probability_capability": GOVERNED_PROBABILITY_CAPABILITY,
+        "governed_probability_status": "NOT_PRODUCED" if GOVERNED_PROBABILITY_CAPABILITY == "UNAVAILABLE" else "PRODUCED",
+        "patch_id": "WOW-PATCH-2026-08-26-FREE-HOST-PROBABILITY-ENGINE",
+        "patch_revision": "v2",
+        "note": f"governed_probability_capability stays UNAVAILABLE until all "
+                f"{DEPLOYMENT_GATE_COUNT} deployment gate items pass against this live "
+                f"deployment. Section 8A Manual Estimate Lane is the correct fallback "
+                f"until then.",
+    }
+
+
+class ScorePropRequest(BaseModel):
+    event_id: str
+    event_start_time: str
+    sport: str
+    player: Optional[str] = None
+    stat_type: str
+    line: float
+    direction: str
+    source_snapshot_id: str
+    seed: int = 0
+    money_lane_status: str = "PAYOUT_UNRESOLVED"
+    # Step 3d BLOCKER-02 fix: scored_at is deliberately NOT a request field.
+    # An ordinary caller must not be able to supply or backdate the
+    # governed scoring timestamp -- /score-prop always uses the server
+    # clock (see below). Deterministic validation/backtesting callers use
+    # the separate, controlled path: calling engine.score_prop_end_to_end()
+    # directly with an explicit scored_at (see deployment_gate_tests.py).
+
+
+@app.post("/score-prop", dependencies=[Depends(_require_action_api_key)])
+def score_prop(req: ScorePropRequest):
+    if GOVERNED_PROBABILITY_CAPABILITY != "AVAILABLE":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "governed_probability_capability": "UNAVAILABLE",
+                "governed_probability_status": "NOT_PRODUCED",
+                "message": f"This deployment has not cleared the {DEPLOYMENT_GATE_COUNT}-point "
+                           f"deployment gate. Use Section 8A Manual Estimate Lane instead.",
+            },
+        )
+
+    # Real scoring requires fitted cohort/regime/simulation params supplied
+    # from actual historical data — not invented here, per 8B.1's
+    # prohibition on invented distribution shapes.
+    bundle = _fitted_params_provider(req.sport, req.stat_type)
+    if bundle is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Per-sport fitted parameters not yet wired in this deployment.",
+        )
+
+    # Server-generated UTC scoring time -- see ScorePropRequest note above.
+    scored_at = datetime.now(timezone.utc).isoformat()
+
+    result = score_prop_end_to_end(
+        event_id=req.event_id, event_start_time=req.event_start_time, sport=req.sport,
+        stat_type=req.stat_type, line=req.line, direction=req.direction,
+        source_snapshot_id=req.source_snapshot_id,
+        cohort=bundle.cohort, pitcher=bundle.pitcher, regime_params=bundle.regime_params,
+        resample_fn=bundle.resample_fn, n_eff=bundle.n_eff, seed=req.seed,
+        candidate_direction=req.direction, scored_at=scored_at,
+        parent_cohort=bundle.parent_cohort, settled_n_in_cohort=bundle.settled_n_in_cohort,
+        money_lane_status=req.money_lane_status, draws=MIN_SIMULATION_DRAWS,
+    )
+
+    if not result.row.probability_publishable:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "probability_publishable": False,
+                "data_gaps": result.row.data_gaps,
+                "error": result.error,
+            },
+        )
+
+    return _persist_fn(result.row)
+
+
+@app.post("/settle", dependencies=[Depends(_require_action_api_key)])
+def settle(prediction_id: str, official_result: str, actual_stat: float, hit: bool):
+    # Step 3d BLOCKER-01 corollary: without a recorded settlement_timestamp,
+    # calibrator_store.load_historical_calibration_rows() fails this row
+    # closed (excludes it) rather than risk using event_start_time as a
+    # stand-in availability marker. Server-generated, for the same reason
+    # /score-prop's scored_at is -- an ordinary caller must not backdate
+    # when a result became knowable.
+    from ledger import record_outcome
+    return record_outcome(
+        prediction_id, official_result=official_result, actual_stat=actual_stat, hit=hit,
+        settlement_timestamp=datetime.now(timezone.utc).isoformat(),
+    )
