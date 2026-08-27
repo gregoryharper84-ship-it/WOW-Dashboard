@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +19,22 @@ def _mean_feature_vector() -> list[float]:
     support = schema["feature_support"]
     assert [s["name"] for s in support] == FEATURE_NAMES
     return [float(s["mean"]) for s in support]
+
+
+def _import_app_without_manifest_boot(monkeypatch):
+    """Isolate route behavior from the unrelated DB-backed boot readiness gate.
+
+    Production app startup remains fail-closed when the daily manifest database is
+    unavailable. These endpoint unit tests stub only that boot prerequisite before
+    importing app.py so they can exercise the route contract itself.
+    """
+    import gate_engine.daily_run_lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "ensure_manifest_ready", lambda: None)
+    sys.modules.pop("app", None)
+    import app as app_module
+
+    return app_module
 
 
 def test_artifact_health_available_for_2026_and_execution_locked():
@@ -153,7 +170,8 @@ def test_score_event_success_contract(monkeypatch):
 
     import gate_engine.mlb_v2_hydrator as hydrator
     import gate_engine.mlb_v2_runtime as rt
-    import app as app_module
+
+    app_module = _import_app_without_manifest_boot(monkeypatch)
 
     monkeypatch.setattr(rt, "artifact_health", lambda *a, **k: {
         "healthy": True, "probability_capability": "AVAILABLE", "blockers": [], "can_execute": False
@@ -213,7 +231,8 @@ def test_score_event_failure_returns_no_probability_fields(monkeypatch):
     monkeypatch.setenv("API_KEY", "test-key")
 
     import gate_engine.mlb_v2_runtime as rt
-    import app as app_module
+
+    app_module = _import_app_without_manifest_boot(monkeypatch)
 
     monkeypatch.setattr(rt, "artifact_health", lambda *a, **k: {
         "healthy": False,
