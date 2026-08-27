@@ -1,0 +1,40 @@
+name: MLB V2 live pregame hydrator smoke
+on:
+  push:
+    branches: [research/mlb-v2-live-hydrator-20260827]
+    paths:
+      - 'research/mlb-v2-pregame/live_hydrator_smoke.py'
+      - '.github/workflows/mlb-v2-live-hydrator-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  hydrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: |
+          python -m pip install --upgrade pip
+          pip install numpy scikit-learn joblib
+      - name: Build today's strict-pregame feature rows
+        working-directory: research/mlb-v2-pregame
+        run: python live_hydrator_smoke.py
+      - name: Assert fail-closed governance
+        working-directory: research/mlb-v2-pregame
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('live_hydrator_out/live_hydrator_smoke.json'))
+          assert d['strict_prior_date_only'] is True
+          assert d['same_day_results_used'] is False
+          g=d['governance']; assert g['can_execute'] is False and g['probability_publishable'] is False
+          print('LIVE_HYDRATOR_FIREWALL=PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlb-v2-live-hydrator-smoke
+          path: research/mlb-v2-pregame/live_hydrator_out/live_hydrator_smoke.json
+          retention-days: 7
