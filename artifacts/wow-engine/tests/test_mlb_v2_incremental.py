@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import copy
+import sys
 from datetime import date
+from pathlib import Path
 
 import pytest
 
+# The repository-level pytest root is above artifacts/wow-engine; add the service
+# root explicitly so these tests exercise the same local-module import layout used
+# by uvicorn from Render's configured rootDir.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import mlb_v2_incremental as inc
 
 
