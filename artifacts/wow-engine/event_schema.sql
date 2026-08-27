@@ -257,7 +257,8 @@ begin
     end if;
     return NEW;
 end;
-$$ language plpgsql;
+$$ language plpgsql
+set search_path = '';
 
 drop trigger if exists trg_wow_block_event_prediction_post_start_edit on wow_event_predictions;
 create trigger trg_wow_block_event_prediction_post_start_edit
@@ -275,7 +276,8 @@ begin
     end if;
     return OLD;
 end;
-$$ language plpgsql;
+$$ language plpgsql
+set search_path = '';
 
 drop trigger if exists trg_wow_block_event_prediction_post_start_delete on wow_event_predictions;
 create trigger trg_wow_block_event_prediction_post_start_delete
