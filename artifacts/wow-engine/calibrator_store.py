@@ -24,6 +24,7 @@ import uuid
 from calibration import (
     PlattCoefficients, PlattFitMetrics, CalibrationStatus,
     HistoricalCalibrationRow, PREDICTIVE_BOUNDS_METHOD_VERSION,
+    PHASE_B_MIN_N, PHASE_C_MIN_N,
 )
 from ledger import get_client
 
@@ -31,6 +32,25 @@ _PHASE_BY_METHOD = {
     CalibrationStatus.PLATT_TIME_SPLIT_V1: "PHASE_B",
     CalibrationStatus.ISOTONIC_V1: "PHASE_C",
 }
+
+
+def _validate_training_n(training_n, minimum: int, phase_label: str) -> None:
+    """3D-BLOCKER-03: a persisted calibrator's own training_n must satisfy
+    the ratified phase minimum. A caller-supplied cohort count elsewhere
+    (settled_n_in_cohort, at the engine's routing layer) cannot substitute
+    for the calibrator artifact's own evidence provenance. Rejects
+    non-integers -- including bool (technically an int subclass in Python)
+    and float, deliberately not canonicalized to int -- as well as any
+    integer below the minimum."""
+    if isinstance(training_n, bool) or not isinstance(training_n, int):
+        raise ValueError(
+            f"{phase_label} training_n must be a real integer evidence count, "
+            f"got {training_n!r} ({type(training_n).__name__})"
+        )
+    if training_n < minimum:
+        raise ValueError(
+            f"{phase_label} training_n={training_n} is below the ratified minimum of {minimum}"
+        )
 
 
 def _serialize_isotonic_model(model) -> str:
@@ -67,6 +87,7 @@ def save_platt_calibrator(
     fold_train_audit: Optional[dict] = None,
     activate: bool = True,
 ) -> dict:
+    _validate_training_n(training_n, PHASE_B_MIN_N, "Platt (Phase B)")
     client = get_client()
     payload = {
         "calibrator_id": str(uuid.uuid4()),
@@ -97,6 +118,7 @@ def save_isotonic_calibrator(
     training_n: int,
     activate: bool = True,
 ) -> dict:
+    _validate_training_n(training_n, PHASE_C_MIN_N, "Isotonic (Phase C)")
     client = get_client()
     payload = {
         "calibrator_id": str(uuid.uuid4()),

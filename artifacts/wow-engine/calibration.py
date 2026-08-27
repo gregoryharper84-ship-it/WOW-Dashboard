@@ -40,7 +40,16 @@ DEFAULT_MAX_FIT_FAILURE_RATE = 0.05
 
 
 def _parse_ts(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    """Parses an ISO 8601 timestamp and requires it to be timezone-aware --
+    a governed timestamp represents an absolute instant, not an ambiguous
+    local wall-clock value. Raises ValueError (a controlled, deterministic
+    validation failure) for a naive or malformed timestamp, rather than
+    letting it silently produce ambiguous chronology or crash later with
+    an uncaught naive-vs-aware TypeError when compared against an aware one."""
+    parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    if parsed.utcoffset() is None:
+        raise ValueError(f"timestamp {ts!r} is timezone-naive; a governed timestamp must be timezone-aware")
+    return parsed
 
 
 class CalibrationStatus:
@@ -387,13 +396,29 @@ def compute_predictive_bounds(
             "historical calibration rows and cannot be omitted"
         )
 
-    as_of_dt = _parse_ts(candidate_as_of)
+    try:
+        as_of_dt = _parse_ts(candidate_as_of)
+    except ValueError as e:
+        raise ModelCalibrationUnavailableError(
+            f"candidate_as_of={candidate_as_of!r} is not a valid timezone-aware "
+            f"ISO 8601 timestamp: {e}"
+        )
+
     # Step 1: filter to strictly-past rows. Every realization resamples
     # only from `eligible`, so no future-dated row can structurally reach
     # a refit -- this is what "no future-dated calibration row used"
     # (a named failure condition) is enforced by construction, not by a
-    # post-hoc check.
-    eligible = [r for r in historical_rows if _parse_ts(r.timestamp) < as_of_dt]
+    # post-hoc check. A row whose own timestamp is naive/malformed is
+    # excluded (fails closed) rather than raising and aborting every other
+    # otherwise-valid row's eligibility.
+    eligible = []
+    for r in historical_rows:
+        try:
+            r_ts = _parse_ts(r.timestamp)
+        except ValueError:
+            continue
+        if r_ts < as_of_dt:
+            eligible.append(r)
     if not eligible:
         raise ModelCalibrationUnavailableError(
             f"no historical calibration rows with timestamp before "

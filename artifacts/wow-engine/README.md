@@ -23,13 +23,69 @@ of that patch's deployment order.
   (timestamp-verified walk-forward chronology; expanded persisted-
   calibrator record). See "Fixed per PREDICTIVE_BOUNDS_V1 amendment"
   below.
-- **Current pass (Step 3d re-review of `cb9060b`, CHANGES_REQUIRED,
-  53/53 tests passing)** fixes the two implementation blockers ChatGPT's
-  Step 3d re-review found in the live-validation-prep commit — see "Fixed
-  per Step 3d CHANGES_REQUIRED review" below. Still `UNAVAILABLE` — see
-  "What's NOT done" below. Per that review's own instructions, this pass
-  does not run `scripts/live_gate_validation.py` and does not close
-  Step 4/5 — the fixed commit goes back to ChatGPT for Step 3d re-review.
+- **Step 3d CHANGES_REQUIRED pass 1 (53/53 tests passing)** fixed
+  3D-BLOCKER-01 and 3D-BLOCKER-02, the two implementation blockers
+  ChatGPT's Step 3d re-review found in `cb9060b` — see "Fixed per Step 3d
+  CHANGES_REQUIRED review" below.
+- **Current pass (Step 3d CHANGES_REQUIRED pass 2, 70/70 tests passing)**
+  fixes 3D-BLOCKER-03 (calibrator training evidence could bypass phase
+  minimums) plus a separate timezone-awareness tightening ChatGPT
+  identified in the same review round — see "Fixed per 3D-BLOCKER-03 and
+  timezone-awareness tightening" below. Still `UNAVAILABLE` — see "What's
+  NOT done" below. Per that review's own instructions, this pass does not
+  run `scripts/live_gate_validation.py` and does not close Step 4/5 — the
+  fixed commit goes back to ChatGPT for Step 3d re-review.
+
+## Fixed per 3D-BLOCKER-03 and timezone-awareness tightening (70 tests)
+
+ChatGPT's Step 3d re-review of the BLOCKER-01/02 fix found that while
+`phase_b_platt()`/`phase_c_fit_isotonic()` already reject fitting on too
+few observations, nothing enforced the same `PHASE_B_MIN_N`/
+`PHASE_C_MIN_N` invariant on the PERSISTED calibrator artifact's own
+`training_n` — at either the write boundary
+(`save_platt_calibrator`/`save_isotonic_calibrator` accepted any positive
+value) or the read/use boundary (`score_prop_end_to_end` only checked the
+loaded record's cohort/method, never its `training_n`). The prior pass's
+own `test_3d_blocker_01c` demonstrated exactly this bypass: a
+`training_n=20` Platt calibrator, treated as valid Phase B evidence.
+
+**3D-BLOCKER-03 fix**: `save_platt_calibrator`/`save_isotonic_calibrator`
+now reject a `training_n` below `PHASE_B_MIN_N`/`PHASE_C_MIN_N`
+respectively, or one that isn't a real integer (missing, bool, float,
+string — no float→int canonicalization). `score_prop_end_to_end`
+independently re-validates the loaded active calibrator's `training_n`
+before using it — required even with the write-side check in place, since
+Supabase may already hold a bad historical row, another write path could
+bypass the saver, or a test/custom loader could return a malformed
+record; failure surfaces as `MODEL_CALIBRATION_UNAVAILABLE` /
+`probability_publishable=False` in the row's `error`/`data_gaps`, never a
+silent fallback. `test_3d_blocker_01c` no longer manufactures a valid
+Phase B result from under-evidenced training data — see the comment in
+that test for why its cheap 20-row cohort-lifecycle fixture and its
+calibrator's own `training_n` (now `200`, at the boundary) are
+deliberately decoupled numbers, not an inconsistency. See
+`test_3d_blocker_03_1` through `_7`.
+
+**Timezone-awareness tightening** (a separate, smaller Step 3d finding,
+not itself BLOCKER-03): `ledger.py::_valid_iso_timestamp()` and
+`calibration.py::_parse_ts()` both accepted a timezone-naive ISO 8601
+string (e.g. `"2026-08-27T00:00:00"`, no `Z`/offset) as valid — parsing
+success alone doesn't mean the value represents an unambiguous absolute
+instant. Both now additionally require `utcoffset() is not None`.
+`compute_predictive_bounds()` converts a naive/malformed `candidate_as_of`
+into the standard `ModelCalibrationUnavailableError` (never an uncaught
+`TypeError` from a later naive-vs-aware comparison), and excludes
+(fails closed on) any individual historical row whose own timestamp is
+naive/malformed rather than aborting the whole run. `phase_b_platt`/
+`phase_c_fit_isotonic` already raised `ValueError` for malformed
+timestamp input; a naive timestamp now falls under that same existing
+contract. See `test_timezone_*`.
+
+Recorded but explicitly not fixed here (unrelated to either finding, per
+review scope): `PRE_PRODUCTION_BLOCKER_API_AUTH` remains open.
+
+No schema changes were required for this pass either — `training_n` was
+already `integer` in `schema.sql`.
 
 ## Fixed per Step 3d CHANGES_REQUIRED review (53 tests, cb9060b → this commit)
 
@@ -252,14 +308,17 @@ probability actually comes out the other end — both from a direct engine
 call and from the actual HTTP endpoint — from fitted (here:
 clearly-labeled synthetic) inputs.
 
-## What's real and tested (53/53 passing — `pytest deployment_gate_tests.py -v`)
+## What's real and tested (70/70 passing — `pytest deployment_gate_tests.py -v`)
 
 Gates 2, 3, 4, 5, 6, 7, 9, 10, 11 all have passing tests against the real
 ratified logic — not stubs — including: calibrator persistence
 round-trips (`test_gate_09e/f`), the ratified Phase B/C predictive-bounds
 method (`test_gate_09g`–`09j`), timestamp-verified walk-forward chronology
 (`test_gate_09cb`), calibration-ladder routing including a genuine
-publishable Phase B positive path (`test_gate_11c`–`11de`), the corrected
+publishable Phase B positive path (`test_gate_11c`–`11de`), calibrator
+training-evidence phase minimums enforced at both write and read
+boundaries (`test_3d_blocker_03_1`–`_7`), timezone-aware governed
+timestamps (`test_timezone_*`), the corrected
 historical-calibration cohort lifecycle and mandatory scoring timestamp
 (`test_3d_blocker_01a`–`02e`),
 current-game-signal wiring (`test_gate_11f/g`), and the actual

@@ -25,13 +25,19 @@ _RECOGNIZED_CALIBRATION_STATUSES = {
 
 
 def _valid_iso_timestamp(ts) -> bool:
+    """A governed timestamp must represent an absolute instant, not an
+    ambiguous local wall-clock value -- parsing success alone is not
+    enough. "2026-08-27T00:00:00" parses as a valid but timezone-naive
+    datetime; utcoffset() is None for a naive datetime and a (possibly
+    zero) timedelta for an aware one, so it's the correct discriminator."""
     if not isinstance(ts, str) or not ts:
         return False
     try:
-        datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return True
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
         return False
+    return parsed.utcoffset() is not None
+
 
 try:
     from supabase import create_client, Client  # type: ignore

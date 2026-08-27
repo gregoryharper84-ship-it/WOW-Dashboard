@@ -30,11 +30,13 @@ from calibration import (
     phase_a_shrinkage, MissingResamplerError, phase_b_platt, phase_c_isotonic_eligible,
     phase_c_fit_isotonic, compute_predictive_bounds, ModelCalibrationUnavailableError,
     HistoricalCalibrationRow, PREDICTIVE_BOUNDS_METHOD_VERSION,
+    PHASE_B_MIN_N, PHASE_C_MIN_N, PlattCoefficients, PlattFitMetrics,
 )
 from ledger import PredictionRow, determine_publishability
 import ledger
 from calibrator_store import (
     _serialize_isotonic_model, _deserialize_isotonic_model, platt_coefficients_from_record,
+    save_platt_calibrator, save_isotonic_calibrator,
 )
 import calibrator_store
 from engine import score_prop_end_to_end
@@ -1158,6 +1160,18 @@ def test_3d_blocker_01c_natural_phase_a_to_phase_b_lifecycle_without_synthetic_r
     # Phase B lifecycle, using the REAL calibrator_store loader functions
     # (not injected fakes) for the final call, proves the cohort bootstrap
     # without ever synthetically retagging a historical row.
+    #
+    # This test is deliberately about the QUERY/cohort-lookup lifecycle,
+    # not a claim that N=200 real historical rows exist in the fixture --
+    # 20 is enough to prove the loader/bootstrap mechanics. The saved
+    # calibrator's training_n (its own fit-time evidence count, a 3D-
+    # BLOCKER-03 persistence-boundary field) is a SEPARATE number from how
+    # many historical rows this fixture happens to seed for the bootstrap
+    # step below -- a real calibrator's training_n reflects the window it
+    # was actually fit over, which need not match what a later bootstrap
+    # run finds still loadable for a given cohort. The N=200/500 threshold
+    # itself (rejected below it, accepted at it) is covered by the
+    # dedicated 3D-BLOCKER-03 boundary tests, not by this lifecycle test.
     from calibrator_store import (
         load_active_calibrator, load_historical_calibration_rows, save_platt_calibrator,
     )
@@ -1194,7 +1208,7 @@ def test_3d_blocker_01c_natural_phase_a_to_phase_b_lifecycle_without_synthetic_r
     save_platt_calibrator(
         PlattCoefficients(a=0.1, b=1.1),
         PlattFitMetrics(brier=0.2, log_loss=0.6, ece=0.02, calibration_bias=0.0),
-        parent_cohort=cohort, calibration_version="v1", training_n=20, activate=True,
+        parent_cohort=cohort, calibration_version="v1", training_n=200, activate=True,
     )
 
     # No historical row above was ever tagged with the Platt method --
@@ -1306,3 +1320,244 @@ def test_3d_blocker_02e_score_prop_endpoint_persists_server_generated_timestamp(
     assert body["model_timestamp"] is not None
     assert len(persisted_rows) == 1
     assert persisted_rows[0].model_timestamp == body["model_timestamp"]
+
+
+# --- 3D-BLOCKER-03: calibrator training evidence can bypass phase minimums
+# ChatGPT's Step 3d re-review found that while phase_b_platt()/
+# phase_c_fit_isotonic() already reject fitting on too few observations,
+# nothing enforced the same PHASE_B_MIN_N/PHASE_C_MIN_N invariant on the
+# PERSISTED calibrator artifact's own training_n -- at either the write
+# boundary (save_platt_calibrator/save_isotonic_calibrator accepted any
+# positive value) or the read/use boundary (score_prop_end_to_end only
+# checked the loaded record's cohort/method, never its training_n). The
+# original test_3d_blocker_01c demonstrated exactly this bypass: a
+# training_n=20 Platt calibrator, treated as valid Phase B evidence.
+
+_METRICS = PlattFitMetrics(brier=0.2, log_loss=0.6, ece=0.02, calibration_bias=0.0)
+
+
+def _fake_isotonic_record(parent_cohort="MLB_SP_RH_2026", calibration_version="v1", training_n=600, artifact_b64=None):
+    return {
+        "parent_cohort": parent_cohort, "calibration_method": "ISOTONIC_V1",
+        "calibration_version": calibration_version, "training_n": training_n,
+        "isotonic_artifact_b64": artifact_b64,
+    }
+
+
+def _fit_toy_isotonic_model():
+    from sklearn.isotonic import IsotonicRegression
+    rng = np.random.default_rng(0)
+    raw = rng.uniform(0.3, 0.7, size=50)
+    y = (rng.uniform(0, 1, size=50) < raw).astype(int)
+    model = IsotonicRegression(out_of_bounds="clip", y_min=1e-9, y_max=1 - 1e-9)
+    model.fit(raw, y)
+    return model
+
+
+# Requirement 1
+def test_3d_blocker_03_1_platt_persistence_rejects_below_minimum():
+    with pytest.raises(ValueError, match="training_n"):
+        save_platt_calibrator(
+            PlattCoefficients(a=0.1, b=1.1), _METRICS,
+            parent_cohort="c", calibration_version="v1", training_n=PHASE_B_MIN_N - 1, activate=False,
+        )
+
+
+# Requirement 2 -- validation runs before the model is even touched, so no
+# real fitted isotonic model is needed to prove the rejection.
+def test_3d_blocker_03_2_isotonic_persistence_rejects_below_minimum():
+    with pytest.raises(ValueError, match="training_n"):
+        save_isotonic_calibrator(
+            model=None, metrics=_METRICS,
+            parent_cohort="c", calibration_version="v1", training_n=PHASE_C_MIN_N - 1, activate=False,
+        )
+
+
+# Requirement 3
+def test_3d_blocker_03_3_runtime_rejects_underevidenced_platt_artifact():
+    underevidenced = _fake_platt_record(training_n=PHASE_B_MIN_N - 1)
+    result = score_prop_end_to_end(
+        event_id="e1", event_start_time="2026-08-27T00:00:00Z", sport="MLB",
+        stat_type="strikeouts", line=4.5, direction="MORE", source_snapshot_id="snap-under-platt",
+        cohort=_uniform_cohort(), pitcher=_sample_pitcher(), regime_params=_synthetic_fitted_params(),
+        resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
+        settled_n_in_cohort=PHASE_B_MIN_N, parent_cohort="MLB_SP_RH_2026", scored_at="2026-08-27T00:00:00Z",
+        load_calibrator_fn=lambda cohort_key, method: underevidenced if method == "PLATT_TIME_SPLIT_V1" else None,
+    )
+    assert result.error is not None
+    assert "MODEL_CALIBRATION_UNAVAILABLE" in result.error
+    assert "training_n" in result.error
+    assert result.row.probability_publishable is False
+
+
+# Requirement 4
+def test_3d_blocker_03_4_runtime_rejects_underevidenced_isotonic_artifact():
+    underevidenced = _fake_isotonic_record(training_n=PHASE_C_MIN_N - 1)
+    result = score_prop_end_to_end(
+        event_id="e1", event_start_time="2026-08-27T00:00:00Z", sport="MLB",
+        stat_type="strikeouts", line=4.5, direction="MORE", source_snapshot_id="snap-under-iso",
+        cohort=_uniform_cohort(), pitcher=_sample_pitcher(), regime_params=_synthetic_fitted_params(),
+        resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
+        settled_n_in_cohort=PHASE_C_MIN_N, parent_cohort="MLB_SP_RH_2026", scored_at="2026-08-27T00:00:00Z",
+        load_calibrator_fn=lambda cohort_key, method: underevidenced if method == "ISOTONIC_V1" else None,
+    )
+    assert result.error is not None
+    assert "MODEL_CALIBRATION_UNAVAILABLE" in result.error
+    assert "training_n" in result.error
+    assert result.row.probability_publishable is False
+
+
+# Requirement 5 -- missing/malformed training_n rejected at the persistence
+# boundary. 200.0 is deliberately rejected, not canonicalized to int: this
+# implementation defines no float->int coercion rule.
+@pytest.mark.parametrize("bad_value", [None, "200", 200.0, True])
+def test_3d_blocker_03_5_malformed_training_n_rejected(bad_value):
+    with pytest.raises(ValueError):
+        save_platt_calibrator(
+            PlattCoefficients(a=0.1, b=1.1), _METRICS,
+            parent_cohort="c", calibration_version="v1", training_n=bad_value, activate=False,
+        )
+
+
+# Requirement 6 -- Platt boundary: training_n == PHASE_B_MIN_N proceeds,
+# at both the persistence and consumption boundaries.
+def test_3d_blocker_03_6_platt_boundary_at_exactly_minimum_accepted(monkeypatch):
+    client = _FakeSupabaseClient()
+    monkeypatch.setattr(calibrator_store, "get_client", lambda: client)
+
+    saved = save_platt_calibrator(
+        PlattCoefficients(a=0.1, b=1.1), _METRICS,
+        parent_cohort="c", calibration_version="v1", training_n=PHASE_B_MIN_N, activate=True,
+    )
+    assert saved["training_n"] == PHASE_B_MIN_N
+
+    boundary_record = _fake_platt_record(training_n=PHASE_B_MIN_N)
+    historical_rows = _synthetic_historical_rows()
+    result = score_prop_end_to_end(
+        event_id="e1", event_start_time="2026-08-28T00:00:00Z", sport="MLB",
+        stat_type="strikeouts", line=4.5, direction="MORE", source_snapshot_id="snap-boundary-platt",
+        cohort=_uniform_cohort(), pitcher=_sample_pitcher(), regime_params=_synthetic_fitted_params(),
+        resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
+        settled_n_in_cohort=250, parent_cohort="MLB_SP_RH_2026",
+        scored_at="2026-08-27T00:00:00Z", money_lane_status="RESOLVED",
+        load_calibrator_fn=lambda cohort_key, method: boundary_record if method == "PLATT_TIME_SPLIT_V1" else None,
+        load_historical_rows_fn=lambda cohort_key, method: historical_rows,
+    )
+    assert result.error is None, result.error
+    assert result.row.probability_publishable is True
+
+
+# Requirement 7 -- Isotonic boundary: training_n == PHASE_C_MIN_N proceeds,
+# at both the persistence and consumption boundaries.
+def test_3d_blocker_03_7_isotonic_boundary_at_exactly_minimum_accepted(monkeypatch):
+    client = _FakeSupabaseClient()
+    monkeypatch.setattr(calibrator_store, "get_client", lambda: client)
+    model = _fit_toy_isotonic_model()
+
+    saved = save_isotonic_calibrator(
+        model, _METRICS, parent_cohort="c", calibration_version="v1",
+        training_n=PHASE_C_MIN_N, activate=True,
+    )
+    assert saved["training_n"] == PHASE_C_MIN_N
+
+    boundary_record = _fake_isotonic_record(training_n=PHASE_C_MIN_N, artifact_b64=_serialize_isotonic_model(model))
+    historical_rows = _synthetic_historical_rows()
+    result = score_prop_end_to_end(
+        event_id="e1", event_start_time="2026-08-28T00:00:00Z", sport="MLB",
+        stat_type="strikeouts", line=4.5, direction="MORE", source_snapshot_id="snap-boundary-iso",
+        cohort=_uniform_cohort(), pitcher=_sample_pitcher(), regime_params=_synthetic_fitted_params(),
+        resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
+        settled_n_in_cohort=600, parent_cohort="MLB_SP_RH_2026",
+        scored_at="2026-08-27T00:00:00Z", money_lane_status="RESOLVED",
+        load_calibrator_fn=lambda cohort_key, method: boundary_record if method == "ISOTONIC_V1" else None,
+        load_historical_rows_fn=lambda cohort_key, method: historical_rows,
+    )
+    assert result.error is None, result.error
+    assert result.row.probability_publishable is True
+
+
+# --- Timezone-awareness tightening (separate Step 3d correction) --------
+# A governed timestamp must represent an absolute instant, not an
+# ambiguous local wall-clock value. Python's datetime.fromisoformat()
+# happily parses "2026-08-27T00:00:00" (no Z/offset) as a valid but
+# timezone-naive datetime -- parsing success alone was insufficient.
+
+def test_timezone_valid_iso_timestamp_examples():
+    from ledger import _valid_iso_timestamp
+    for good in ("2026-08-27T00:00:00Z", "2026-08-27T00:00:00+00:00", "2026-08-26T19:00:00-05:00"):
+        assert _valid_iso_timestamp(good) is True, good
+    for bad in ("2026-08-27T00:00:00", "2026-08-27", "not-a-timestamp", "", None):
+        assert _valid_iso_timestamp(bad) is False, bad
+
+
+def test_timezone_parse_ts_requires_aware_examples():
+    from calibration import _parse_ts
+    for good in ("2026-08-27T00:00:00Z", "2026-08-27T00:00:00+00:00", "2026-08-26T19:00:00-05:00"):
+        parsed = _parse_ts(good)
+        assert parsed.utcoffset() is not None
+    for bad in ("2026-08-27T00:00:00", "2026-08-27", "not-a-timestamp"):
+        with pytest.raises(ValueError):
+            _parse_ts(bad)
+
+
+def test_timezone_naive_candidate_as_of_rejected_cleanly():
+    # Aware vs aware -> valid comparison is already exercised by every
+    # other test_gate_09g*/11de test using "Z"-suffixed timestamps; this
+    # section covers the naive/malformed side specifically.
+    rows = _synthetic_historical_rows()
+    with pytest.raises(ModelCalibrationUnavailableError, match="timezone-aware"):
+        compute_predictive_bounds(
+            method="PLATT_TIME_SPLIT_V1", historical_rows=rows,
+            candidate_as_of="2026-08-27T00:00:00",  # naive -- no Z/offset
+            candidate_raw_probability_sampler=lambda rng: 0.5,
+            full_data_calibrated_probability=0.5, rng_seed=1,
+        )
+
+
+def test_timezone_naive_historical_row_excluded_not_whole_run_blocked():
+    rows = _synthetic_historical_rows()  # all aware, all genuinely eligible
+    naive_row = HistoricalCalibrationRow(raw_probability=0.6, outcome=1, timestamp="2020-01-01T00:00:00")
+    bounds = compute_predictive_bounds(
+        method="PLATT_TIME_SPLIT_V1", historical_rows=rows + [naive_row],
+        candidate_as_of="2026-08-27T00:00:00Z",
+        candidate_raw_probability_sampler=lambda rng: float(rng.uniform(0.4, 0.6)),
+        full_data_calibrated_probability=0.55, rng_seed=7,
+    )
+    # The naive row is excluded (fails closed), not a crash and not treated
+    # as eligible -- the run still succeeds on the remaining valid rows.
+    assert bounds.realizations_used >= 2000
+
+
+def test_timezone_all_naive_historical_rows_fails_closed():
+    naive_rows = [HistoricalCalibrationRow(raw_probability=0.5, outcome=1, timestamp="2020-01-01T00:00:00")]
+    with pytest.raises(ModelCalibrationUnavailableError, match="no historical calibration rows"):
+        compute_predictive_bounds(
+            method="PLATT_TIME_SPLIT_V1", historical_rows=naive_rows,
+            candidate_as_of="2026-08-27T00:00:00Z",
+            candidate_raw_probability_sampler=lambda rng: 0.5,
+            full_data_calibrated_probability=0.5, rng_seed=1,
+        )
+
+
+def test_timezone_mixed_naive_aware_produces_controlled_failure_not_typeerror():
+    rows = _synthetic_historical_rows()
+    with pytest.raises(ModelCalibrationUnavailableError):
+        compute_predictive_bounds(
+            method="PLATT_TIME_SPLIT_V1", historical_rows=rows,
+            candidate_as_of="2026-08-27T00:00:00",  # naive against otherwise-aware rows
+            candidate_raw_probability_sampler=lambda rng: 0.5,
+            full_data_calibrated_probability=0.5, rng_seed=1,
+        )
+
+
+def test_timezone_phase_b_platt_rejects_naive_timestamp_cleanly():
+    # Same naive/aware ambiguity, inspected in the walk-forward path too.
+    rng = np.random.default_rng(0)
+    n = 300
+    raw = rng.uniform(0.3, 0.7, size=n)
+    y = (rng.uniform(0, 1, size=n) < raw).astype(int)
+    folds = np.sort(rng.integers(0, 6, size=n))
+    timestamps = _sequential_timestamps(n)
+    timestamps[0] = "2026-01-01T00:00:00"  # naive -- no Z/offset
+    with pytest.raises(ValueError):
+        phase_b_platt(raw, y, folds, timestamps)

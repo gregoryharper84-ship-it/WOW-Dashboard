@@ -180,6 +180,33 @@ def score_prop_end_to_end(
                 result.signal_actions, result.signal_notes = signal_actions, signal_notes
                 return result
 
+            # 3D-BLOCKER-03: the loaded artifact's OWN persisted training_n
+            # must independently satisfy the phase minimum -- required even
+            # though save_platt_calibrator/save_isotonic_calibrator now
+            # reject an under-evidenced training_n at write time, because
+            # Supabase may already hold a bad historical row, another write
+            # path could bypass the saver, or (as here) a test/custom
+            # load_calibrator_fn could return a malformed record. Runtime
+            # settled_n_in_cohort is a routing input, not evidence the
+            # artifact itself was fit from -- it cannot substitute here.
+            min_training_n = PHASE_C_MIN_N if method == CalibrationStatus.ISOTONIC_V1 else PHASE_B_MIN_N
+            record_training_n = record.get("training_n")
+            if (
+                isinstance(record_training_n, bool)
+                or not isinstance(record_training_n, int)
+                or record_training_n < min_training_n
+            ):
+                result = _blocked(
+                    [f"calibration_failed: MODEL_CALIBRATION_UNAVAILABLE: active calibrator "
+                     f"record's training_n ({record_training_n!r}) does not satisfy the "
+                     f"{method} minimum of {min_training_n}"],
+                    regime_probability_sum=sum(sim.regime_probabilities.values()),
+                    simulation_draws=sim.simulation_draws, simulation_seed=sim.simulation_seed,
+                    raw_model_probability=sim.p_prop_unconditional,
+                )
+                result.signal_actions, result.signal_notes = signal_actions, signal_notes
+                return result
+
             if method == CalibrationStatus.ISOTONIC_V1:
                 model = isotonic_model_from_record(record)
                 point_estimate = float(model.predict([sim.p_prop_unconditional])[0])
