@@ -13,29 +13,49 @@ permissions:
   contents: read
 
 jobs:
+  sklearn-version-fingerprint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        sklearn: ["1.5.2", "1.6.1", "1.7.2", "1.8.0", "1.9.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned sklearn
+        run: |
+          python -m pip install --upgrade pip
+          pip install "scikit-learn==${{ matrix.sklearn }}" joblib
+      - name: Reproduce V1 fingerprint
+        run: |
+          python research/mlb-v1-repro/mlb_v1_reproduce_and_v11.py \
+            --out "research/mlb-v1-version-${{ matrix.sklearn }}" \
+            --bootstraps 50
+          echo "SKLEARN_VERSION=${{ matrix.sklearn }}"
+          cat "research/mlb-v1-version-${{ matrix.sklearn }}/reconstruction_status.json"
+
   reproduce-and-validate:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - name: Checkout research branch
         uses: actions/checkout@v4
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install isolated validation dependencies
         run: |
           python -m pip install --upgrade pip
           pip install numpy scikit-learn joblib
-
       - name: Reconstruct V1 and run V1.1 validation
         run: |
           python research/mlb-v1-repro/mlb_v1_reproduce_and_v11.py \
             --out research/mlb-v1-repro-out \
             --bootstraps 10000
-
       - name: Print reconstruction and V1.1 summaries
         if: always()
         run: |
@@ -43,7 +63,6 @@ jobs:
           cat research/mlb-v1-repro-out/reconstruction_status.json || true
           echo '--- V1.1 metrics ---'
           cat research/mlb-v1-repro-out/v1_1/mlb_baseline_v1_1_results.json || true
-
       - name: Upload research evidence
         if: always()
         uses: actions/upload-artifact@v4
