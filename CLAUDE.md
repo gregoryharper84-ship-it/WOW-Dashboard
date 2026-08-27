@@ -1,5 +1,86 @@
 # WOW Dashboard — Claude Code Engineering Contract
 
+## 0. Governance ruling — checkpoint-ancestry supersession (2026-08-27)
+
+This ruling reconciles a real contradiction this contract previously contained
+between its original rescue→main ancestry requirement (Section 3, as
+originally written) and the later, separately approved sanitized clean-origin
+reconstruction strategy actually used for the Phase 3/4 migration. It does
+not authorize, and was not used to justify, any history rewrite, force-push,
+or rebase of `main`, and none was performed.
+
+Verified evidence (this repository, full unshallowed clone):
+
+```text
+merge-base(origin/main, origin/rescue/replit-emergency-20260820-1221)
+  = 47d5e4f488af6f18645498321ffca4dcc2a8e9b0  (2026-08-05)
+
+e0ffb040cd7376ade1b7f1861ab99b13de37a72c (preserved Replit checkpoint,
+  2026-08-20) IS an ancestor of origin/rescue/replit-emergency-20260820-1221
+  -- confirmed: git merge-base --is-ancestor ... exit 0
+
+e0ffb040... is NOT reachable from 47d5e4f... -- the checkpoint postdates
+  the main/rescue fork point by 15 days, so it was never possible for it
+  to be an ancestor of a `main` built from that fork point
+
+origin/rescue/replit-emergency-20260820-1221 is exactly 3 commits ahead of
+  e0ffb040..., one of which (b330713, "docs: add Claude Code engineering
+  contract") is this file's own origin -- this contract was authored
+  directly on the rescue branch, on top of the checkpoint, which is why
+  its original ancestry requirement made sense at the time it was written
+
+commit 8c750e9 ("Merge Phase 4 sanitized migration and Task #305 repair"),
+  in origin/main's history, has parents 47d5e4f... (old clean main) and
+  bee7838... (Phase 4 sanitized transfer branch, confirmed present on
+  origin/migration/phase4-transfer-20260825) -- confirming `main` was
+  built by reconstructing the migration content from clean main, not by
+  merging the rescue branch's history
+```
+
+Ruling:
+
+```text
+MIGRATION_ANCESTRY_RULING = SUPERSEDED_BY_SANITIZED_RECONSTRUCTION
+
+main_must_descend_from_e0ffb040 = false
+
+checkpoint_preservation_requirement = true
+checkpoint_preservation_location =
+  origin/rescue/replit-emergency-20260820-1221
+  + verified rollback bundle
+
+sanitized_main_authority =
+  clean-origin reconstruction
+  + reviewed migration PR
+  + exact-head CI
+  + PR-only merge
+  + preserved rescue/checkpoint lineage
+
+history_rewrite_required = false
+force_push_required = false
+```
+
+Effective immediately, the required invariant is checkpoint **preservation**
+(the checkpoint remains intact and reachable on the rescue branch and in the
+verified rollback bundle), not checkpoint **ancestry of `main`**. A failed
+`git merge-base --is-ancestor e0ffb040... main` must not be read as
+repository corruption or history loss, and must not be "repaired" by
+merging, grafting, rebasing, reparenting, or force-pushing `main`. Section
+3's original ancestry language is retained below for its historical record
+and because it still correctly governs the rescue branch itself; it no
+longer governs `main`.
+
+Sections 1 and 4 below still describe the original rescue→main A.2 workflow
+and its "A.2 = ACTIVE" state. That describes a plan superseded by the
+sanitized clean-origin reconstruction actually executed (Phase 3/4 — see
+`origin/migration/phase4-transfer-20260825` and its merge into `main` at
+commit `8c750e9`). Treat those sections' specific migration-phase claims as
+known-stale pending a fuller reconciliation; GitHub `main`'s canonical
+status is not blocked on completing the original A.2 rescue→main merge
+described there, since that specific mechanism was not the one used.
+
+---
+
 ## 1. Authority and purpose
 
 This repository contains the backend implementation for WOW v16 Clean Core.
@@ -24,6 +105,10 @@ ChatGPT / WOW governance
 → deployment/runtime backend
 
 GitHub `main` becomes canonical only after the active A.2 migration is successfully completed.
+
+> See Section 0: the rescue→main ancestry mechanism this sentence originally
+> assumed was superseded by the sanitized clean-origin reconstruction
+> strategy actually used for Phase 3/4.
 
 ---
 
@@ -111,6 +196,13 @@ must return exit code `0`.
 
 Do not require current HEAD to equal the preservation checkpoint.
 
+> Superseded for `main` by the Section 0 ruling (2026-08-27): this invariant
+> still governs `origin/rescue/replit-emergency-20260820-1221` itself
+> (verified ancestor, confirmed exit 0) but no longer governs GitHub `main`,
+> which was built via sanitized clean-origin reconstruction rather than a
+> rescue→main merge. Do not attempt to satisfy this invariant against `main`
+> by merging, grafting, rebasing, reparenting, or force-pushing.
+
 ---
 
 ## 4. Migration state
@@ -122,6 +214,15 @@ A.1 = COMPLETE
 A.2 = ACTIVE
 A.3 = PENDING
 ```
+
+> Superseded in part by the Section 0 ruling (2026-08-27): the rescue→main
+> merge mechanism described in "A.2 purpose" items 4-8 below was not the
+> mechanism actually used to make GitHub `main` canonical — `main` was built
+> via sanitized clean-origin reconstruction (Phase 3/4 migration, merged at
+> commit `8c750e9`). Treat this section's specific mechanism and
+> active-phase claim as known-stale pending a fuller reconciliation of the
+> migration-phase model; see Section 0 for what is currently ruled and
+> verified.
 
 A.1 closed with one knowingly accepted evidence exception:
 
