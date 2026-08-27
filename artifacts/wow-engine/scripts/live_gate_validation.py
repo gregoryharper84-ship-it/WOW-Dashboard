@@ -532,6 +532,14 @@ def _start_uvicorn(iso_cohort: str) -> None:
     # this is the whole point of sections 5-7: real Supabase persistence,
     # not a stub.
 
+    # PRE_PRODUCTION_BLOCKER_API_AUTH fix: /score-prop now requires
+    # Authorization: Bearer <WOW_ACTION_API_KEY>. This local loopback
+    # server sets its own per-run key so section_5_7_real_endpoint's real
+    # HTTP call can authenticate -- this is a local test credential, not
+    # the deployment's real WOW_ACTION_API_KEY, and is never persisted or
+    # logged beyond this process's own environment.
+    os.environ["WOW_ACTION_API_KEY"] = f"LIVE_GATE_{RUN_ID}_local_action_key"
+
     import uvicorn
     config = uvicorn.Config(api.app, host="127.0.0.1", port=PORT, log_level="warning")
     server = uvicorn.Server(config)
@@ -560,13 +568,15 @@ def section_5_7_real_endpoint():
         source_snapshot_id = str(uuid.uuid4())
         # Step 3d BLOCKER-02 fix: scored_at is no longer a client-settable
         # request field -- /score-prop always generates it server-side now.
+        # PRE_PRODUCTION_BLOCKER_API_AUTH fix: authenticate with the local
+        # loopback key _start_uvicorn set on this process's environment.
         resp = httpx.post(f"{base}/score-prop", json={
             "event_id": f"LIVE_GATE_{RUN_ID}_endpoint",
             "event_start_time": future_event_timestamp(),
             "sport": "MLB", "stat_type": "strikeouts", "line": 4.5, "direction": "MORE",
             "source_snapshot_id": source_snapshot_id,
             "money_lane_status": "RESOLVED",
-        }, timeout=30)
+        }, headers={"Authorization": f"Bearer {os.environ['WOW_ACTION_API_KEY']}"}, timeout=30)
 
         check("POST /score-prop returns 200 over real HTTP", resp.status_code == 200, f"got {resp.status_code}: {resp.text[:300]}")
         if resp.status_code != 200:

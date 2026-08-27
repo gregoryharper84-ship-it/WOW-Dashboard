@@ -12,6 +12,8 @@ comments marked [REVIEW FIX] for what changed and why.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 
@@ -904,13 +906,23 @@ def test_gate_11g_current_game_signal_widens_uncertainty_without_blocking():
 
 client = TestClient(api.app)
 
+# PRE_PRODUCTION_BLOCKER_API_AUTH: /score-prop and /settle now require
+# Authorization: Bearer <WOW_ACTION_API_KEY>. Every existing endpoint test
+# below authenticates with this fixed local test key so it keeps
+# exercising the governed route behavior (409/501/200/422) underneath the
+# auth layer, exactly as before -- see the dedicated auth test section
+# further down for the 401/200 auth-boundary coverage itself.
+TEST_WOW_ACTION_API_KEY = "gate-test-wow-action-api-key"
+os.environ["WOW_ACTION_API_KEY"] = TEST_WOW_ACTION_API_KEY
+AUTH_HEADERS = {"Authorization": f"Bearer {TEST_WOW_ACTION_API_KEY}"}
+
 
 def test_gate_11h_score_prop_endpoint_409s_while_capability_unavailable():
     resp = client.post("/score-prop", json={
         "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
         "stat_type": "strikeouts", "line": 4.5, "direction": "OVER",
         "source_snapshot_id": "snap1",
-    })
+    }, headers=AUTH_HEADERS)
     assert resp.status_code == 409
     assert resp.json()["detail"]["governed_probability_capability"] == "UNAVAILABLE"
 
@@ -921,7 +933,7 @@ def test_gate_11i_score_prop_endpoint_501s_without_fitted_provider(monkeypatch):
         "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
         "stat_type": "strikeouts", "line": 4.5, "direction": "OVER",
         "source_snapshot_id": "snap1",
-    })
+    }, headers=AUTH_HEADERS)
     assert resp.status_code == 501
 
 
@@ -947,7 +959,7 @@ def test_gate_11j_score_prop_endpoint_produces_persisted_publishable_result(monk
         "event_id": "synthetic_evt", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
         "stat_type": "strikeouts", "line": 4.5, "direction": "MORE",
         "source_snapshot_id": "snap-endpoint", "money_lane_status": "RESOLVED",
-    })
+    }, headers=AUTH_HEADERS)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -973,10 +985,120 @@ def test_gate_11k_score_prop_endpoint_returns_422_for_unpublishable_result(monke
         "event_id": "broken_evt", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
         "stat_type": "strikeouts", "line": 4.5, "direction": "MORE",
         "source_snapshot_id": "snap-broken",
-    })
+    }, headers=AUTH_HEADERS)
     assert resp.status_code == 422
     assert "simulation_failed" in resp.json()["detail"]["error"]
     assert resp.json()["detail"]["probability_publishable"] is False
+
+
+# ---------------------------------------------------------------------
+# PRE_PRODUCTION_BLOCKER_API_AUTH: /score-prop and /settle require
+# Authorization: Bearer <WOW_ACTION_API_KEY>; /health and /governance stay
+# public. Application-layer auth only -- the Supabase service-role
+# credential never appears in this app's request/response schema.
+# ---------------------------------------------------------------------
+
+_SETTLE_PARAMS = {
+    "prediction_id": "auth-test-pred-1", "official_result": "settled",
+    "actual_stat": 5.0, "hit": True,
+}
+
+
+def test_auth_score_prop_without_authorization_header_returns_401():
+    resp = client.post("/score-prop", json={
+        "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
+        "stat_type": "strikeouts", "line": 4.5, "direction": "OVER",
+        "source_snapshot_id": "snap1",
+    })
+    assert resp.status_code == 401
+
+
+def test_auth_score_prop_wrong_bearer_token_returns_401():
+    resp = client.post("/score-prop", json={
+        "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
+        "stat_type": "strikeouts", "line": 4.5, "direction": "OVER",
+        "source_snapshot_id": "snap1",
+    }, headers={"Authorization": "Bearer not-the-real-key"})
+    assert resp.status_code == 401
+
+
+def test_auth_score_prop_correct_auth_reaches_normal_governed_route():
+    # capability is UNAVAILABLE by default in this module -- correct auth
+    # must still reach the ordinary 409 governed-route response, not a 401.
+    resp = client.post("/score-prop", json={
+        "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
+        "stat_type": "strikeouts", "line": 4.5, "direction": "OVER",
+        "source_snapshot_id": "snap1",
+    }, headers=AUTH_HEADERS)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["governed_probability_capability"] == "UNAVAILABLE"
+
+
+def test_auth_settle_without_authorization_header_returns_401():
+    resp = client.post("/settle", params=_SETTLE_PARAMS)
+    assert resp.status_code == 401
+
+
+def test_auth_settle_wrong_bearer_token_returns_401():
+    resp = client.post("/settle", params=_SETTLE_PARAMS, headers={"Authorization": "Bearer not-the-real-key"})
+    assert resp.status_code == 401
+
+
+def test_auth_settle_correct_auth_reaches_handler(monkeypatch):
+    calls = []
+
+    def _fake_record_outcome(prediction_id, **outcome_fields):
+        calls.append((prediction_id, outcome_fields))
+        return {"prediction_id": prediction_id, **outcome_fields}
+    monkeypatch.setattr(ledger, "record_outcome", _fake_record_outcome)
+
+    resp = client.post("/settle", params=_SETTLE_PARAMS, headers=AUTH_HEADERS)
+    assert resp.status_code == 200
+    assert len(calls) == 1
+    assert calls[0][0] == "auth-test-pred-1"
+
+
+def test_auth_health_requires_no_authorization():
+    resp = client.get("/health")
+    assert resp.status_code == 200
+
+
+def test_auth_governance_requires_no_authorization():
+    resp = client.get("/governance")
+    assert resp.status_code == 200
+
+
+def test_auth_missing_wow_action_api_key_fails_closed_not_open(monkeypatch):
+    # Even a request that would otherwise carry a plausible-looking
+    # Authorization header must be rejected -- not silently admitted --
+    # if this deployment never configured WOW_ACTION_API_KEY at all.
+    monkeypatch.delenv("WOW_ACTION_API_KEY", raising=False)
+    resp = client.post("/score-prop", json={
+        "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
+        "stat_type": "strikeouts", "line": 4.5, "direction": "OVER",
+        "source_snapshot_id": "snap1",
+    }, headers=AUTH_HEADERS)
+    assert resp.status_code == 401
+
+
+def test_auth_credential_never_appears_in_any_response_body():
+    responses = [
+        client.get("/health"),
+        client.get("/governance"),
+        client.post("/score-prop", json={
+            "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
+            "stat_type": "strikeouts", "line": 4.5, "direction": "OVER",
+            "source_snapshot_id": "snap1",
+        }),  # no auth -- 401 path
+        client.post("/score-prop", json={
+            "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
+            "stat_type": "strikeouts", "line": 4.5, "direction": "OVER",
+            "source_snapshot_id": "snap1",
+        }, headers=AUTH_HEADERS),  # correct auth -- 409 governed-route path
+        client.post("/settle", params=_SETTLE_PARAMS, headers={"Authorization": "Bearer not-the-real-key"}),
+    ]
+    for resp in responses:
+        assert TEST_WOW_ACTION_API_KEY not in resp.text
 
 
 # --- 3D-BLOCKER-01/02: Step 3d re-review of cb9060b, CHANGES_REQUIRED ----
@@ -1312,7 +1434,7 @@ def test_3d_blocker_02e_score_prop_endpoint_persists_server_generated_timestamp(
         "stat_type": "strikeouts", "line": 4.5, "direction": "MORE",
         "source_snapshot_id": "snap-timestamp", "money_lane_status": "RESOLVED",
         "scored_at": "2020-01-01T00:00:00Z",  # attempted backdate -- must be ignored (unknown field)
-    })
+    }, headers=AUTH_HEADERS)
 
     assert resp.status_code == 200
     body = resp.json()

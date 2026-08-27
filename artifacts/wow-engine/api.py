@@ -25,19 +25,24 @@ provider via set_fitted_params_provider() and hit this real HTTP route
 with FastAPI's TestClient to prove the endpoint-to-ledger path works,
 without claiming real production distributions exist.
 
-PRE_PRODUCTION_BLOCKER_API_AUTH (recorded per Step 3d re-review, not fixed
-here — out of scope for the two blockers this pass addresses): /settle
-reaches the service-role-backed outcome writer with no API authentication
-gate at all. Harmless for the validator's 127.0.0.1-only local server, but
-this must be resolved before this service is exposed publicly on Render.
+PRE_PRODUCTION_BLOCKER_API_AUTH -- RESOLVED: /score-prop and /settle
+now require Authorization: Bearer <WOW_ACTION_API_KEY> (see
+_require_action_api_key below). This is application-layer auth only --
+a caller (e.g. a Custom GPT Action) proves it holds WOW_ACTION_API_KEY;
+it never sees the Supabase service-role credential, which stays backend-
+only and is never part of this app's request/response schema. /health
+and /governance stay public -- they expose state, not a privileged
+database mutation path.
 """
 from __future__ import annotations
 
+import os
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from regime_model import PrimaryRegime, CohortCounts, PitcherCounts
@@ -97,6 +102,31 @@ def set_persist_fn(fn: Callable[..., dict]) -> None:
     _persist_fn = fn
 
 
+def _require_action_api_key(authorization: Optional[str] = Header(default=None)) -> None:
+    """FastAPI dependency guarding every route that can mutate the
+    service-role-backed store (/score-prop, /settle). Callers (a Custom
+    GPT Action, or any other client) authenticate with
+    ``Authorization: Bearer <WOW_ACTION_API_KEY>`` -- an application-layer
+    credential distinct from, and never exchanged for, the Supabase
+    service-role key, which stays backend-only.
+
+    Fails closed: if WOW_ACTION_API_KEY is not configured in this
+    deployment's environment, every protected request is rejected with
+    401 rather than silently admitted. The supplied token is compared
+    with a constant-time comparison (secrets.compare_digest) and is
+    never logged, echoed, or included in any response."""
+    configured_key = os.environ.get("WOW_ACTION_API_KEY")
+    if not configured_key:
+        raise HTTPException(status_code=401, detail="This deployment is not configured for authenticated access.")
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or malformed Authorization header.")
+
+    supplied_key = authorization[len("Bearer "):]
+    if not secrets.compare_digest(supplied_key, configured_key):
+        raise HTTPException(status_code=401, detail="Invalid credential.")
+
+
 @app.get("/health")
 def health():
     return {
@@ -142,7 +172,7 @@ class ScorePropRequest(BaseModel):
     # directly with an explicit scored_at (see deployment_gate_tests.py).
 
 
-@app.post("/score-prop")
+@app.post("/score-prop", dependencies=[Depends(_require_action_api_key)])
 def score_prop(req: ScorePropRequest):
     if GOVERNED_PROBABILITY_CAPABILITY != "AVAILABLE":
         raise HTTPException(
@@ -192,7 +222,7 @@ def score_prop(req: ScorePropRequest):
     return _persist_fn(result.row)
 
 
-@app.post("/settle")
+@app.post("/settle", dependencies=[Depends(_require_action_api_key)])
 def settle(prediction_id: str, official_result: str, actual_stat: float, hit: bool):
     # Step 3d BLOCKER-01 corollary: without a recorded settlement_timestamp,
     # calibrator_store.load_historical_calibration_rows() fails this row
