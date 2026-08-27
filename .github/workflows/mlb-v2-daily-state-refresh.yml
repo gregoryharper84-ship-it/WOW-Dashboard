@@ -52,7 +52,7 @@ jobs:
         working-directory: artifacts/flask-scoring-api
         run: |
           python - <<'PY'
-          import json, os
+          import json
           from pathlib import Path
           d=json.loads(Path('gate_engine/mlb_v2_artifacts/mlb_v2_manifest.json').read_text())
           expected='${{ steps.date.outputs.build_date }}'
@@ -62,11 +62,30 @@ jobs:
           assert d['governance']['can_approve_bets'] is False
           print('MLB_V2_DAILY_STATE_REFRESH=PASS', expected, d['state'])
           PY
-      - name: Commit refreshed state/artifact manifest
+      - name: Sync byte-identical artifact checkpoint into live wow-engine source
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/wow-engine/mlb_v2_artifacts
+          mkdir -p artifacts/wow-engine/mlb_v2_artifacts
+          cp -a artifacts/flask-scoring-api/gate_engine/mlb_v2_artifacts/. artifacts/wow-engine/mlb_v2_artifacts/
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          src=Path('artifacts/flask-scoring-api/gate_engine/mlb_v2_artifacts')
+          dst=Path('artifacts/wow-engine/mlb_v2_artifacts')
+          for sp in sorted(p for p in src.iterdir() if p.is_file()):
+              dp=dst/sp.name
+              assert dp.exists(), sp.name
+              hs=hashlib.sha256(sp.read_bytes()).hexdigest()
+              hd=hashlib.sha256(dp.read_bytes()).hexdigest()
+              assert hs==hd, sp.name
+          print('MLB_V2_DAILY_WOW_ENGINE_ARTIFACT_IDENTITY=PASS')
+          PY
+      - name: Commit refreshed reference + Render checkpoints
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add artifacts/flask-scoring-api/gate_engine/mlb_v2_artifacts
+          git add artifacts/flask-scoring-api/gate_engine/mlb_v2_artifacts artifacts/wow-engine/mlb_v2_artifacts
           if git diff --cached --quiet; then
             echo 'MLB V2 state/artifacts unchanged'
           else
