@@ -32,9 +32,11 @@ from calibration import (
     HistoricalCalibrationRow, PREDICTIVE_BOUNDS_METHOD_VERSION,
 )
 from ledger import PredictionRow, determine_publishability
+import ledger
 from calibrator_store import (
     _serialize_isotonic_model, _deserialize_isotonic_model, platt_coefficients_from_record,
 )
+import calibrator_store
 from engine import score_prop_end_to_end
 import api
 from fastapi.testclient import TestClient
@@ -277,7 +279,7 @@ def test_gate_07_missing_payout_blocks_money_lane_only():
     row = PredictionRow(
         event_id="e1", event_start_time="2026-08-27T00:00:00Z", sport="MLB",
         market_type="PrizePicks_Goblin", stat_type="strikeouts", line=4.5, direction="MORE",
-        source_snapshot_id="snap1",
+        source_snapshot_id="snap1", model_timestamp="2026-08-26T00:00:00Z",
         raw_model_probability=0.62,
         regime_probability_sum=1.0, simulation_draws=MIN_SIMULATION_DRAWS,
         calibrated_probability=0.7, calibrated_probability_lower_bound=0.6,
@@ -296,7 +298,7 @@ def test_gate_07b_resolved_money_lane_reaches_clean_ceiling():
     row = PredictionRow(
         event_id="e1", event_start_time="2026-08-27T00:00:00Z", sport="MLB",
         market_type="PrizePicks_Goblin", stat_type="strikeouts", line=4.5, direction="MORE",
-        source_snapshot_id="snap1",
+        source_snapshot_id="snap1", model_timestamp="2026-08-26T00:00:00Z",
         raw_model_probability=0.62,
         regime_probability_sum=1.0, simulation_draws=MIN_SIMULATION_DRAWS,
         calibrated_probability=0.7, calibrated_probability_lower_bound=0.6,
@@ -714,7 +716,7 @@ def test_gate_11c_phase_b_eligible_cohort_without_calibrator_falls_back_to_phase
         cohort=cohort, pitcher=pitcher, regime_params=params,
         resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
         settled_n_in_cohort=250, parent_cohort="MLB_SP_RH_2026",
-        money_lane_status="RESOLVED",
+        scored_at="2026-08-27T00:00:00Z", money_lane_status="RESOLVED",
         load_calibrator_fn=lambda cohort_key, method: None,  # nothing promoted yet
     )
     assert result.error is None
@@ -837,7 +839,7 @@ def test_gate_11e_phase_c_eligibility_requests_isotonic_not_platt():
         cohort=cohort, pitcher=pitcher, regime_params=params,
         resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
         settled_n_in_cohort=600, parent_cohort="MLB_SP_RH_2026",
-        money_lane_status="RESOLVED",
+        scored_at="2026-08-27T00:00:00Z", money_lane_status="RESOLVED",
         load_calibrator_fn=_spy_loader,
     )
     assert requested_methods == ["ISOTONIC_V1"]
@@ -875,7 +877,7 @@ def test_gate_11g_current_game_signal_widens_uncertainty_without_blocking():
         cohort=cohort, pitcher=pitcher, regime_params=params,
         resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
         current_game_signal=CurrentGameSignal(injury_flag=True),
-        money_lane_status="RESOLVED",
+        scored_at="2026-08-27T00:00:00Z", money_lane_status="RESOLVED",
     )
     assert result.error is None
     assert result.row.probability_publishable is True
@@ -973,3 +975,334 @@ def test_gate_11k_score_prop_endpoint_returns_422_for_unpublishable_result(monke
     assert resp.status_code == 422
     assert "simulation_failed" in resp.json()["detail"]["error"]
     assert resp.json()["detail"]["probability_publishable"] is False
+
+
+# --- 3D-BLOCKER-01/02: Step 3d re-review of cb9060b, CHANGES_REQUIRED ----
+# ChatGPT's Step 3d re-review found two real implementation blockers the
+# static schema/validator review did not surface -- both invisible to any
+# test that injects a fake load_historical_rows_fn/load_calibrator_fn,
+# since the actual defects lived inside calibrator_store.py's real
+# Supabase query construction:
+#
+# 3D-BLOCKER-01: load_historical_calibration_rows() required a historical
+# prediction to already carry the target Phase B/C calibration_method, so
+# a cohort's Phase A observations could never become that cohort's first
+# Phase B training data. It also used event_start_time as the "was this
+# available" timestamp instead of the outcome's settlement_timestamp,
+# which could leak a not-yet-settled result into calibration for a
+# candidate scored before that result was actually known.
+#
+# 3D-BLOCKER-02: model_timestamp/scored_at was optional, and
+# determine_publishability() never checked for it -- a governed
+# probability could publish with no auditable scoring timestamp.
+#
+# _FakeSupabaseClient below is a minimal in-memory double for the
+# supabase-py chain calibrator_store.py/ledger.py actually call
+# (.table().select().eq().in_().insert().update().limit().execute()), so
+# these tests exercise the REAL load_historical_calibration_rows() query
+# logic -- not an injected substitute -- without a live Supabase project
+# (Gates 1/8 still need that; see README).
+
+from types import SimpleNamespace
+
+
+class _FakeTable:
+    def __init__(self, rows: list[dict]):
+        self._rows = rows  # same list object as the backing table -- inserts/updates persist into it
+        self._filtered = list(rows)
+        self._cols: list[str] | None = None
+        self._pending_update: dict | None = None
+
+    def select(self, cols: str):
+        self._cols = None if cols.strip() == "*" else [c.strip() for c in cols.split(",")]
+        return self
+
+    def eq(self, col: str, val):
+        self._filtered = [r for r in self._filtered if r.get(col) == val]
+        return self
+
+    def in_(self, col: str, vals):
+        vals = set(vals)
+        self._filtered = [r for r in self._filtered if r.get(col) in vals]
+        return self
+
+    def limit(self, n: int):
+        self._filtered = self._filtered[:n]
+        return self
+
+    def insert(self, payload: dict):
+        self._rows.append(dict(payload))
+        self._filtered = [payload]
+        return self
+
+    def update(self, payload: dict):
+        self._pending_update = payload
+        return self
+
+    def execute(self):
+        if self._pending_update is not None:
+            for r in self._filtered:
+                r.update(self._pending_update)
+            return SimpleNamespace(data=list(self._filtered))
+        if self._cols is None:
+            data = list(self._filtered)
+        else:
+            data = [{c: r.get(c) for c in self._cols} for r in self._filtered]
+        return SimpleNamespace(data=data)
+
+
+class _FakeSupabaseClient:
+    """In-memory double for the subset of the supabase-py client
+    calibrator_store.py/ledger.py actually call. Backed by plain dict
+    tables so tests can seed exact historical-row fixtures and assert on
+    the real query/filter logic, not a mock's recorded calls."""
+
+    def __init__(self):
+        self.tables: dict[str, list[dict]] = {
+            "wow_predictions": [],
+            "wow_outcomes": [],
+            "wow_calibrators": [],
+        }
+
+    def table(self, name: str) -> _FakeTable:
+        return _FakeTable(self.tables[name])
+
+
+def _seed_prediction(client: _FakeSupabaseClient, prediction_id: str, **fields):
+    row = {"prediction_id": prediction_id, "raw_model_probability": None,
+           "calibration_parent_cohort": None, "calibration_method": None}
+    row.update(fields)
+    client.tables["wow_predictions"].append(row)
+
+
+def _seed_outcome(client: _FakeSupabaseClient, prediction_id: str, hit, settlement_timestamp=None):
+    client.tables["wow_outcomes"].append({
+        "prediction_id": prediction_id, "hit": hit,
+        "settlement_timestamp": settlement_timestamp,
+    })
+
+
+def test_3d_blocker_01a_phase_a_rows_supply_first_phase_b_historical_evidence(monkeypatch):
+    # Requirements 1 & 2: Phase A rows belonging to a cohort can supply
+    # historical evidence for the first Phase B candidate after a Platt
+    # calibrator is promoted -- and no prior PLATT-tagged prediction is
+    # required to produce that result. None of the seeded rows below
+    # carry the Phase B method.
+    from calibrator_store import load_historical_calibration_rows
+
+    client = _FakeSupabaseClient()
+    cohort = "MLB_SP_RH_2026"
+    for i in range(3):
+        pred_id = f"pred-{i}"
+        _seed_prediction(
+            client, pred_id,
+            raw_model_probability=0.5 + i * 0.01,
+            calibration_parent_cohort=cohort,
+            calibration_method="CONSERVATIVE_EMPIRICAL_BAYES_SHRINKAGE_V1",  # Phase A, not Platt
+        )
+        _seed_outcome(client, pred_id, hit=(i % 2 == 0), settlement_timestamp=f"2026-0{i + 1}-01T00:00:00Z")
+
+    monkeypatch.setattr(calibrator_store, "get_client", lambda: client)
+
+    assert not any(r["calibration_method"] == "PLATT_TIME_SPLIT_V1" for r in client.tables["wow_predictions"])
+    rows = load_historical_calibration_rows(cohort, "PLATT_TIME_SPLIT_V1")
+
+    assert len(rows) == 3
+    assert {r.outcome for r in rows} == {0, 1}
+
+
+def test_3d_blocker_01b_late_settlement_and_missing_settlement_excluded(monkeypatch):
+    # Requirements 3 & 4: a row that started before candidate_as_of but
+    # settled after it must be excluded once as-of filtered (not just
+    # because event_start_time alone would look eligible); a row with no
+    # recorded settlement availability at all must fail closed.
+    from calibrator_store import load_historical_calibration_rows
+
+    client = _FakeSupabaseClient()
+    cohort = "MLB_SP_RH_2026"
+    candidate_as_of = "2026-08-27T00:00:00Z"
+
+    _seed_prediction(client, "late-settle", raw_model_probability=0.55,
+                      calibration_parent_cohort=cohort, calibration_method="PLATT_TIME_SPLIT_V1",
+                      event_start_time="2026-08-01T00:00:00Z")
+    _seed_outcome(client, "late-settle", hit=True, settlement_timestamp="2026-12-01T00:00:00Z")
+
+    _seed_prediction(client, "no-settlement", raw_model_probability=0.60,
+                      calibration_parent_cohort=cohort, calibration_method="PLATT_TIME_SPLIT_V1",
+                      event_start_time="2026-06-01T00:00:00Z")
+    _seed_outcome(client, "no-settlement", hit=True, settlement_timestamp=None)
+
+    _seed_prediction(client, "clean", raw_model_probability=0.58,
+                      calibration_parent_cohort=cohort, calibration_method="PLATT_TIME_SPLIT_V1",
+                      event_start_time="2026-01-01T00:00:00Z")
+    _seed_outcome(client, "clean", hit=False, settlement_timestamp="2026-01-01T03:00:00Z")
+
+    monkeypatch.setattr(calibrator_store, "get_client", lambda: client)
+    rows = load_historical_calibration_rows(cohort, "PLATT_TIME_SPLIT_V1")
+
+    # no-settlement excluded by the loader itself (fail closed); late-settle
+    # IS returned (it does have settlement data) but carries its real
+    # settlement timestamp, not its earlier event_start_time.
+    assert len(rows) == 2
+    timestamps = {r.timestamp for r in rows}
+    assert "2026-12-01T00:00:00Z" in timestamps
+    assert "2026-08-01T00:00:00Z" not in timestamps
+    assert "2026-06-01T00:00:00Z" not in timestamps
+
+    eligible = [r for r in rows if r.timestamp < candidate_as_of]
+    assert len(eligible) == 1  # only "clean" survives the as-of filter
+
+
+def test_3d_blocker_01c_natural_phase_a_to_phase_b_lifecycle_without_synthetic_retagging(monkeypatch):
+    # Requirement 5: the full natural Phase A -> promoted Platt -> first
+    # Phase B lifecycle, using the REAL calibrator_store loader functions
+    # (not injected fakes) for the final call, proves the cohort bootstrap
+    # without ever synthetically retagging a historical row.
+    from calibrator_store import (
+        load_active_calibrator, load_historical_calibration_rows, save_platt_calibrator,
+    )
+    from calibration import PlattCoefficients, PlattFitMetrics
+
+    client = _FakeSupabaseClient()
+    monkeypatch.setattr(calibrator_store, "get_client", lambda: client)
+    monkeypatch.setattr(ledger, "get_client", lambda: client)
+
+    cohort = "MLB_SP_RH_2026"
+    fitted = dict(cohort=_uniform_cohort(), pitcher=_sample_pitcher(), regime_params=_synthetic_fitted_params())
+
+    for i in range(20):
+        ts = f"2026-0{(i % 6) + 1}-0{(i % 9) + 1}T00:00:00Z"
+        result = score_prop_end_to_end(
+            event_id=f"hist-{i}", event_start_time=ts, sport="MLB", stat_type="strikeouts",
+            line=4.5, direction="MORE", source_snapshot_id=f"snap-hist-{i}",
+            resample_fn=_synthetic_resampler, n_eff=16, seed=i, candidate_direction="OVER",
+            scored_at=ts, settled_n_in_cohort=0, parent_cohort=cohort,
+            money_lane_status="RESOLVED", **fitted,
+        )
+        assert result.row.probability_publishable is True
+        assert result.row.calibration_status == "PRECALIBRATION_SHRINKAGE"
+        # The fix under test: even a Phase A row now carries its cohort
+        # identity, so it can later become Phase B training evidence.
+        assert result.row.calibration_parent_cohort == cohort
+
+        persisted = ledger.insert_prediction(result.row)
+        ledger.record_outcome(
+            persisted["prediction_id"], hit=(i % 2 == 0), official_result="settled",
+            settlement_timestamp=ts,
+        )
+
+    save_platt_calibrator(
+        PlattCoefficients(a=0.1, b=1.1),
+        PlattFitMetrics(brier=0.2, log_loss=0.6, ece=0.02, calibration_bias=0.0),
+        parent_cohort=cohort, calibration_version="v1", training_n=20, activate=True,
+    )
+
+    # No historical row above was ever tagged with the Platt method --
+    # confirm that before proving the real loader finds them anyway.
+    assert not any(
+        r["calibration_method"] == "PLATT_TIME_SPLIT_V1" for r in client.tables["wow_predictions"]
+    )
+
+    result = score_prop_end_to_end(
+        event_id="first-phase-b", event_start_time="2026-08-28T00:00:00Z", sport="MLB",
+        stat_type="strikeouts", line=4.5, direction="MORE", source_snapshot_id="snap-first-phase-b",
+        resample_fn=_synthetic_resampler, n_eff=16, seed=99, candidate_direction="OVER",
+        scored_at="2026-08-27T00:00:00Z", settled_n_in_cohort=200, parent_cohort=cohort,
+        money_lane_status="RESOLVED",
+        load_calibrator_fn=load_active_calibrator,
+        load_historical_rows_fn=load_historical_calibration_rows,
+        **fitted,
+    )
+
+    assert result.error is None, result.error
+    row = result.row
+    assert row.probability_publishable is True
+    assert row.calibration_status == "PLATT_TIME_SPLIT_V1"
+    assert row.calibrated_probability is not None
+    assert 0 < row.calibrated_probability_lower_bound <= row.calibrated_probability <= row.calibrated_probability_upper_bound < 1
+
+
+def test_3d_blocker_02_missing_model_timestamp_blocks_publication():
+    row = PredictionRow(
+        event_id="e1", event_start_time="2026-08-27T00:00:00Z", sport="MLB",
+        market_type="engine", stat_type="strikeouts", line=4.5, direction="MORE",
+        source_snapshot_id="snap1", model_timestamp=None,
+        raw_model_probability=0.62,
+        regime_probability_sum=1.0, simulation_draws=MIN_SIMULATION_DRAWS,
+        calibrated_probability=0.7, calibrated_probability_lower_bound=0.6,
+        calibrated_probability_upper_bound=0.8,
+        calibration_status="PLATT_TIME_SPLIT_V1",
+    )
+    row = determine_publishability(row)
+    assert row.probability_publishable is False
+    assert any("model_timestamp" in g for g in row.data_gaps)
+
+
+def test_3d_blocker_02b_invalid_model_timestamp_blocks_publication():
+    row = PredictionRow(
+        event_id="e1", event_start_time="2026-08-27T00:00:00Z", sport="MLB",
+        market_type="engine", stat_type="strikeouts", line=4.5, direction="MORE",
+        source_snapshot_id="snap1", model_timestamp="not-a-timestamp",
+        raw_model_probability=0.62,
+        regime_probability_sum=1.0, simulation_draws=MIN_SIMULATION_DRAWS,
+        calibrated_probability=0.7, calibrated_probability_lower_bound=0.6,
+        calibrated_probability_upper_bound=0.8,
+        calibration_status="PLATT_TIME_SPLIT_V1",
+    )
+    row = determine_publishability(row)
+    assert row.probability_publishable is False
+    assert any("model_timestamp" in g for g in row.data_gaps)
+
+
+def test_3d_blocker_02c_valid_model_timestamp_does_not_block_publication():
+    row = PredictionRow(
+        event_id="e1", event_start_time="2026-08-27T00:00:00Z", sport="MLB",
+        market_type="engine", stat_type="strikeouts", line=4.5, direction="MORE",
+        source_snapshot_id="snap1", model_timestamp="2026-08-26T00:00:00Z",
+        raw_model_probability=0.62,
+        regime_probability_sum=1.0, simulation_draws=MIN_SIMULATION_DRAWS,
+        calibrated_probability=0.7, calibrated_probability_lower_bound=0.6,
+        calibrated_probability_upper_bound=0.8,
+        calibration_status="PLATT_TIME_SPLIT_V1",
+    )
+    row = determine_publishability(row)
+    assert row.probability_publishable is True
+    assert not any("model_timestamp" in g for g in row.data_gaps)
+
+
+def test_3d_blocker_02d_score_prop_request_cannot_set_scored_at():
+    # Ordinary HTTP callers must not be able to supply/backdate the
+    # governed scoring timestamp -- it is not a field on the request model.
+    assert "scored_at" not in api.ScorePropRequest.model_fields
+
+
+def test_3d_blocker_02e_score_prop_endpoint_persists_server_generated_timestamp(monkeypatch):
+    monkeypatch.setattr(api, "GOVERNED_PROBABILITY_CAPABILITY", "AVAILABLE")
+
+    def _staging_provider(sport, stat_type):
+        return api.FittedParamsBundle(
+            cohort=_uniform_cohort(), pitcher=_sample_pitcher(),
+            regime_params=_synthetic_fitted_params(), resample_fn=_synthetic_resampler, n_eff=16,
+        )
+    monkeypatch.setattr(api, "_fitted_params_provider", _staging_provider)
+
+    persisted_rows = []
+
+    def _fake_persist(row):
+        persisted_rows.append(row)
+        return {"prediction_id": "fake-uuid", **{k: v for k, v in vars(row).items()}}
+    monkeypatch.setattr(api, "_persist_fn", _fake_persist)
+
+    resp = client.post("/score-prop", json={
+        "event_id": "synthetic_evt", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
+        "stat_type": "strikeouts", "line": 4.5, "direction": "MORE",
+        "source_snapshot_id": "snap-timestamp", "money_lane_status": "RESOLVED",
+        "scored_at": "2020-01-01T00:00:00Z",  # attempted backdate -- must be ignored (unknown field)
+    })
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["model_timestamp"] != "2020-01-01T00:00:00Z"
+    assert body["model_timestamp"] is not None
+    assert len(persisted_rows) == 1
+    assert persisted_rows[0].model_timestamp == body["model_timestamp"]

@@ -152,7 +152,15 @@ def score_prop_end_to_end(
     # blend/row-construction code below runs exactly once either way.
     calibration_ladder_note: str | None = None
     calibration_status = calibration_method = None
-    calibration_version = calibration_training_n = calibration_parent_cohort = None
+    calibration_version = calibration_training_n = None
+    # Step 3d BLOCKER-01 fix: persisted regardless of which calibration
+    # phase actually produces this row, so a Phase A observation can later
+    # become verified training/calibration evidence for this same cohort's
+    # first real Phase B/C candidate (see
+    # calibrator_store.load_historical_calibration_rows). Previously this
+    # was only set inside the "calibrator found" branch below, so Phase A
+    # and not-yet-promoted rows never carried their own cohort identity.
+    calibration_parent_cohort = parent_cohort
     bounds_method_version = None
     pre_blend_probability = lower_bound = upper_bound = None
 
@@ -212,7 +220,6 @@ def score_prop_end_to_end(
             calibration_method = method
             calibration_version = record.get("calibration_version")
             calibration_training_n = record.get("training_n")
-            calibration_parent_cohort = parent_cohort
             bounds_method_version = bounds.bounds_method_version
             pre_blend_probability = bounds.calibrated_probability
             lower_bound = bounds.lower_bound

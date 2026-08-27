@@ -16,13 +16,85 @@ of that patch's deployment order.
 - **Third pass (Step 3d re-review, 37/37 tests passing)** fixed the 7
   new findings from ChatGPT's re-review of the 20/20 pass — see "Fixed
   per Step 3d review" below.
-- **Current pass (PREDICTIVE_BOUNDS_V1 amendment, 45/45 tests passing)**
+- **PREDICTIVE_BOUNDS_V1 amendment pass (45/45 tests passing)**
   implements the narrow analytical amendment ChatGPT ratified after the
   Step 3d pass — a real per-candidate Phase B/C predictive-bounds method
   — plus the two implementation constraints that came with it
   (timestamp-verified walk-forward chronology; expanded persisted-
   calibrator record). See "Fixed per PREDICTIVE_BOUNDS_V1 amendment"
-  below. Still `UNAVAILABLE` — see "What's NOT done" below.
+  below.
+- **Current pass (Step 3d re-review of `cb9060b`, CHANGES_REQUIRED,
+  53/53 tests passing)** fixes the two implementation blockers ChatGPT's
+  Step 3d re-review found in the live-validation-prep commit — see "Fixed
+  per Step 3d CHANGES_REQUIRED review" below. Still `UNAVAILABLE` — see
+  "What's NOT done" below. Per that review's own instructions, this pass
+  does not run `scripts/live_gate_validation.py` and does not close
+  Step 4/5 — the fixed commit goes back to ChatGPT for Step 3d re-review.
+
+## Fixed per Step 3d CHANGES_REQUIRED review (53 tests, cb9060b → this commit)
+
+ChatGPT's Step 3d re-review of `cb9060b` found two real implementation
+blockers, both invisible to the existing test suite because every test
+that reaches the calibration ladder injects a fake
+`load_historical_rows_fn`/`load_calibrator_fn` — the actual defects lived
+inside `calibrator_store.py`'s real Supabase query construction, which no
+existing test exercised without a live project.
+
+1. **3D-BLOCKER-01 — historical calibration cohort lifecycle / look-ahead
+   leakage.** `calibrator_store.load_historical_calibration_rows()`
+   required a historical prediction to already carry the target Phase
+   B/C `calibration_method`, so a cohort's Phase A observations (the ones
+   that got it to N>=200 in the first place) could never become that
+   cohort's first Phase B training data — the natural production
+   lifecycle could never actually bootstrap. It also used
+   `event_start_time` as the "was this available" timestamp instead of
+   the outcome's `settlement_timestamp`, which could leak a not-yet-
+   settled result into calibration for a candidate scored before that
+   result was actually known.
+
+   Fixed: membership is now by `calibration_parent_cohort` alone, not by
+   `calibration_method`; `engine.py` now persists `calibration_parent_cohort`
+   on every row regardless of which calibration phase produced it (not
+   only once a Phase B/C calibrator was already found and used); the
+   loader now returns each row's `settlement_timestamp` and excludes any
+   outcome missing one (fails closed rather than assuming availability).
+   `/settle` now always records a server-generated `settlement_timestamp`
+   — without it, the corrected loader would find zero eligible rows in
+   practice, reproducing the same symptom under a different cause.
+   `scripts/live_gate_validation.py`'s historical-row fixture no longer
+   seeds every row as already-PLATT — it seeds real Phase A rows plus a
+   late-settling row and a missing-settlement row, and exercises the
+   fixed loader against a live project. See `test_3d_blocker_01a/b/c`.
+
+2. **3D-BLOCKER-02 — mandatory model/scoring timestamp.**
+   `ScorePropRequest.scored_at` and `PredictionRow.model_timestamp` were
+   both optional, and `determine_publishability()` never checked for one
+   — a governed probability could publish with no auditable scoring
+   timestamp. Several existing tests relied on this (Phase A/fallback
+   paths that omitted `scored_at` and still expected
+   `probability_publishable=True`).
+
+   Fixed: `determine_publishability()` now fails closed when
+   `model_timestamp` is missing or not a valid ISO 8601 timestamp.
+   `scored_at` is no longer a field on `ScorePropRequest` at all —
+   ordinary HTTP callers cannot supply or backdate it; `/score-prop` now
+   always generates it from the server clock. The engine-level
+   `score_prop_end_to_end(scored_at=...)` parameter remains the separate,
+   controlled path for deterministic validation/backtesting callers (see
+   `deployment_gate_tests.py`, which calls the engine directly). The five
+   existing tests that omitted a timestamp and expected a publishable
+   result were updated to supply one — that gap in their fixtures is
+   exactly what this blocker closes. See `test_3d_blocker_02*`.
+
+Recorded but explicitly not touched by this pass, per the review's own
+scope instruction: **PRE_PRODUCTION_BLOCKER_API_AUTH** — `/settle` has no
+API authentication layer before it reaches the service-role-backed
+outcome writer. Harmless for the validator's `127.0.0.1`-only server;
+must be resolved before this service is exposed publicly on Render.
+
+No schema changes were required — `wow_predictions.calibration_parent_cohort`
+and `wow_outcomes.settlement_timestamp` already existed in `schema.sql`;
+this pass only changed how they're written and queried.
 
 ## Fixed per PREDICTIVE_BOUNDS_V1 amendment (37 → 45 tests)
 
@@ -180,14 +252,16 @@ probability actually comes out the other end — both from a direct engine
 call and from the actual HTTP endpoint — from fitted (here:
 clearly-labeled synthetic) inputs.
 
-## What's real and tested (45/45 passing — `pytest deployment_gate_tests.py -v`)
+## What's real and tested (53/53 passing — `pytest deployment_gate_tests.py -v`)
 
 Gates 2, 3, 4, 5, 6, 7, 9, 10, 11 all have passing tests against the real
 ratified logic — not stubs — including: calibrator persistence
 round-trips (`test_gate_09e/f`), the ratified Phase B/C predictive-bounds
 method (`test_gate_09g`–`09j`), timestamp-verified walk-forward chronology
 (`test_gate_09cb`), calibration-ladder routing including a genuine
-publishable Phase B positive path (`test_gate_11c`–`11de`),
+publishable Phase B positive path (`test_gate_11c`–`11de`), the corrected
+historical-calibration cohort lifecycle and mandatory scoring timestamp
+(`test_3d_blocker_01a`–`02e`),
 current-game-signal wiring (`test_gate_11f/g`), and the actual
 `/score-prop` HTTP path (`test_gate_11h`–`11k`).
 

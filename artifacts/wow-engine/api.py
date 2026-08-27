@@ -24,10 +24,17 @@ wired in), but a test can register a clearly-labeled synthetic/staging
 provider via set_fitted_params_provider() and hit this real HTTP route
 with FastAPI's TestClient to prove the endpoint-to-ledger path works,
 without claiming real production distributions exist.
+
+PRE_PRODUCTION_BLOCKER_API_AUTH (recorded per Step 3d re-review, not fixed
+here — out of scope for the two blockers this pass addresses): /settle
+reaches the service-role-backed outcome writer with no API authentication
+gate at all. Harmless for the validator's 127.0.0.1-only local server, but
+this must be resolved before this service is exposed publicly on Render.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -126,8 +133,13 @@ class ScorePropRequest(BaseModel):
     direction: str
     source_snapshot_id: str
     seed: int = 0
-    scored_at: Optional[str] = None
     money_lane_status: str = "PAYOUT_UNRESOLVED"
+    # Step 3d BLOCKER-02 fix: scored_at is deliberately NOT a request field.
+    # An ordinary caller must not be able to supply or backdate the
+    # governed scoring timestamp -- /score-prop always uses the server
+    # clock (see below). Deterministic validation/backtesting callers use
+    # the separate, controlled path: calling engine.score_prop_end_to_end()
+    # directly with an explicit scored_at (see deployment_gate_tests.py).
 
 
 @app.post("/score-prop")
@@ -153,13 +165,16 @@ def score_prop(req: ScorePropRequest):
             detail="Per-sport fitted parameters not yet wired in this deployment.",
         )
 
+    # Server-generated UTC scoring time -- see ScorePropRequest note above.
+    scored_at = datetime.now(timezone.utc).isoformat()
+
     result = score_prop_end_to_end(
         event_id=req.event_id, event_start_time=req.event_start_time, sport=req.sport,
         stat_type=req.stat_type, line=req.line, direction=req.direction,
         source_snapshot_id=req.source_snapshot_id,
         cohort=bundle.cohort, pitcher=bundle.pitcher, regime_params=bundle.regime_params,
         resample_fn=bundle.resample_fn, n_eff=bundle.n_eff, seed=req.seed,
-        candidate_direction=req.direction, scored_at=req.scored_at,
+        candidate_direction=req.direction, scored_at=scored_at,
         parent_cohort=bundle.parent_cohort, settled_n_in_cohort=bundle.settled_n_in_cohort,
         money_lane_status=req.money_lane_status, draws=MIN_SIMULATION_DRAWS,
     )
@@ -179,5 +194,14 @@ def score_prop(req: ScorePropRequest):
 
 @app.post("/settle")
 def settle(prediction_id: str, official_result: str, actual_stat: float, hit: bool):
+    # Step 3d BLOCKER-01 corollary: without a recorded settlement_timestamp,
+    # calibrator_store.load_historical_calibration_rows() fails this row
+    # closed (excludes it) rather than risk using event_start_time as a
+    # stand-in availability marker. Server-generated, for the same reason
+    # /score-prop's scored_at is -- an ordinary caller must not backdate
+    # when a result became knowable.
     from ledger import record_outcome
-    return record_outcome(prediction_id, official_result=official_result, actual_stat=actual_stat, hit=hit)
+    return record_outcome(
+        prediction_id, official_result=official_result, actual_stat=actual_stat, hit=hit,
+        settlement_timestamp=datetime.now(timezone.utc).isoformat(),
+    )

@@ -164,47 +164,68 @@ def section_3_historical_rows(platt_cohort: str):
     client = _client()
 
     method = "PLATT_TIME_SPLIT_V1"
+    # Step 3d BLOCKER-01 fix: these rows simulate the NATURAL lifecycle --
+    # real Phase A observations for this cohort, not pre-tagged as already
+    # PLATT rows. The original version of this fixture seeded every row
+    # with calibration_method=method directly, which is exactly what made
+    # the original bug invisible: it required a historical row to already
+    # carry the Phase B/C method being trained, so a cohort's first real
+    # Phase B candidate could never bootstrap from prior Phase A rows.
     rows_spec = [
-        # (event_id_suffix, raw_prob, hit, event_start_time)  -- all clearly in the past
-        ("past1", 0.55, True, "2026-01-01T00:00:00Z"),
-        ("past2", 0.62, False, "2026-02-01T00:00:00Z"),
-        ("past3", 0.48, True, "2026-03-01T00:00:00Z"),
-        ("future1", 0.51, True, "2026-12-01T00:00:00Z"),  # after candidate_as_of below
+        # (event_id_suffix, raw_prob, hit, event_start_time, settlement_timestamp)
+        ("past1", 0.55, True, "2026-01-01T00:00:00Z", "2026-01-01T03:00:00Z"),
+        ("past2", 0.62, False, "2026-02-01T00:00:00Z", "2026-02-01T03:00:00Z"),
+        ("past3", 0.48, True, "2026-03-01T00:00:00Z", "2026-03-01T03:00:00Z"),
+        # Event started before candidate_as_of but SETTLED after it -- must
+        # be excluded once as-of filtered, even though event_start_time
+        # alone would look eligible.
+        ("late_settle", 0.51, True, "2026-08-01T00:00:00Z", "2026-12-01T00:00:00Z"),
+        # No recorded settlement availability at all -- must fail closed
+        # (excluded by the loader itself, not just by the as-of filter).
+        ("no_settlement", 0.58, True, "2026-06-01T00:00:00Z", None),
     ]
     candidate_as_of = "2026-08-27T00:00:00Z"
 
     prediction_ids = {}
-    for suffix, raw_prob, hit, ts in rows_spec:
+    for suffix, raw_prob, hit, event_start, settlement_ts in rows_spec:
         pred_id = str(uuid.uuid4())
         prediction_ids[suffix] = pred_id
         client.table("wow_predictions").insert({
             "prediction_id": pred_id,
             "event_id": f"LIVE_GATE_{RUN_ID}_{suffix}",
-            "event_start_time": ts,
+            "event_start_time": event_start,
             "sport": "MLB", "market_type": "engine", "stat_type": "strikeouts",
             "line": 4.5, "direction": "MORE",
             "source_snapshot_id": str(uuid.uuid4()),
             "raw_model_probability": raw_prob,
             "calibration_parent_cohort": platt_cohort,
-            "calibration_method": method,
+            # Deliberately NOT the Phase B/C method -- these are Phase A
+            # observations, exactly like real production rows would be
+            # before this cohort's first calibrator was ever promoted.
+            "calibration_method": "CONSERVATIVE_EMPIRICAL_BAYES_SHRINKAGE_V1",
             "probability_publishable": False,
         }).execute()
-        client.table("wow_outcomes").insert({
-            "prediction_id": pred_id, "hit": hit, "official_result": "settled",
-        }).execute()
+        outcome_payload = {"prediction_id": pred_id, "hit": hit, "official_result": "settled"}
+        if settlement_ts is not None:
+            outcome_payload["settlement_timestamp"] = settlement_ts
+        client.table("wow_outcomes").insert(outcome_payload).execute()
 
     loaded = load_historical_calibration_rows(platt_cohort, method)
-    check("load_historical_calibration_rows returns all 4 seeded rows (unfiltered by design -- see docstring)",
-          len(loaded) == 4, f"got {len(loaded)}")
+    check("load_historical_calibration_rows finds Phase A rows by cohort alone "
+          "(no pre-existing PLATT-tagged row required), excluding only the "
+          "missing-settlement row",
+          len(loaded) == 4, f"got {len(loaded)}, expected 4 (no_settlement excluded)")
 
-    timestamps = sorted(r.timestamp for r in loaded)
-    check("timestamps preserved/reconstructable in chronological order", timestamps == sorted(timestamps))
+    timestamps = {r.timestamp for r in loaded}
+    check("returned timestamps are settlement_timestamp, not event_start_time",
+          "2026-12-01T00:00:00Z" in timestamps and "2026-06-01T00:00:00Z" not in timestamps)
 
     # The as_of filtering itself is calibration.compute_predictive_bounds()'s
     # job (already unit-tested locally) -- verify it live here too, using
     # rows that actually came from Supabase this time.
     eligible = [r for r in loaded if r.timestamp < candidate_as_of]
-    check("future-dated row excluded when filtered by candidate_as_of",
+    check("late-settling row excluded once filtered by candidate_as_of, "
+          "even though its event started earlier",
           len(eligible) == 3, f"got {len(eligible)} eligible of {len(loaded)} total")
 
     return {"prediction_ids": list(prediction_ids.values()), "candidate_as_of": candidate_as_of}
@@ -306,12 +327,13 @@ def section_5_7_real_endpoint():
             return None
 
         source_snapshot_id = str(uuid.uuid4())
+        # Step 3d BLOCKER-02 fix: scored_at is no longer a client-settable
+        # request field -- /score-prop always generates it server-side now.
         resp = httpx.post(f"{base}/score-prop", json={
             "event_id": f"LIVE_GATE_{RUN_ID}_endpoint",
             "event_start_time": "2026-08-28T00:00:00Z",
             "sport": "MLB", "stat_type": "strikeouts", "line": 4.5, "direction": "MORE",
             "source_snapshot_id": source_snapshot_id,
-            "scored_at": "2026-08-27T00:00:00Z",
             "money_lane_status": "RESOLVED",
         }, timeout=30)
 

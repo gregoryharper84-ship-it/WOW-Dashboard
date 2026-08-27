@@ -142,6 +142,24 @@ def load_historical_calibration_rows(
     for this cohort -- the historical calibration cohort input to
     calibration.compute_predictive_bounds() (PREDICTIVE_BOUNDS_V1).
 
+    Step 3d BLOCKER-01 fix: membership is by cohort identity
+    (calibration_parent_cohort) alone. It is NOT filtered by
+    calibration_method -- the original version required a historical
+    prediction to already carry the very Phase B/C method being trained,
+    which meant a cohort's Phase A observations (the ones that got it to
+    N>=200 in the first place) could never become that cohort's first
+    Phase B training data. `calibration_method` is kept as a parameter for
+    interface stability and caller documentation but no longer filters
+    row membership.
+
+    The returned timestamp is each outcome's settlement_timestamp -- NOT
+    event_start_time. A game can start before a candidate's
+    candidate_as_of and still settle after it; using event_start_time as
+    the "was this available" marker would let that result leak into
+    calibration before it was actually knowable. A row whose outcome has
+    no recorded settlement_timestamp is excluded (fails closed) rather
+    than assumed available.
+
     Joins wow_predictions to wow_outcomes with two plain queries and a
     Python-side merge, rather than a single Supabase embedded-resource
     query -- the embedded-select syntax can't be verified against a live
@@ -152,9 +170,8 @@ def load_historical_calibration_rows(
     client = get_client()
     predictions = (
         client.table("wow_predictions")
-        .select("prediction_id, raw_model_probability, event_start_time")
+        .select("prediction_id, raw_model_probability")
         .eq("calibration_parent_cohort", parent_cohort)
-        .eq("calibration_method", calibration_method)
         .execute()
     ).data or []
     if not predictions:
@@ -163,20 +180,25 @@ def load_historical_calibration_rows(
     prediction_ids = [p["prediction_id"] for p in predictions]
     outcomes = (
         client.table("wow_outcomes")
-        .select("prediction_id, hit")
+        .select("prediction_id, hit, settlement_timestamp")
         .in_("prediction_id", prediction_ids)
         .execute()
     ).data or []
-    hit_by_prediction = {o["prediction_id"]: o["hit"] for o in outcomes if o["hit"] is not None}
+    settled_by_prediction = {
+        o["prediction_id"]: (o["hit"], o["settlement_timestamp"])
+        for o in outcomes
+        if o["hit"] is not None and o.get("settlement_timestamp") is not None
+    }
 
     rows: list[HistoricalCalibrationRow] = []
     for p in predictions:
-        hit = hit_by_prediction.get(p["prediction_id"])
-        if hit is None or p["raw_model_probability"] is None:
+        settled = settled_by_prediction.get(p["prediction_id"])
+        if settled is None or p["raw_model_probability"] is None:
             continue
+        hit, settlement_timestamp = settled
         rows.append(HistoricalCalibrationRow(
             raw_probability=p["raw_model_probability"],
             outcome=int(bool(hit)),
-            timestamp=p["event_start_time"],
+            timestamp=settlement_timestamp,
         ))
     return rows

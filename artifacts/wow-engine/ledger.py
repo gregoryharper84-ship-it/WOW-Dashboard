@@ -10,6 +10,7 @@ component sets probability_publishable = false with no silent repair.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict, field
+from datetime import datetime
 from typing import Optional
 import os
 import uuid
@@ -21,6 +22,16 @@ _RECOGNIZED_CALIBRATION_STATUSES = {
     CalibrationStatus.PLATT_TIME_SPLIT_V1,
     CalibrationStatus.ISOTONIC_V1,
 }
+
+
+def _valid_iso_timestamp(ts) -> bool:
+    if not isinstance(ts, str) or not ts:
+        return False
+    try:
+        datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        return False
 
 try:
     from supabase import create_client, Client  # type: ignore
@@ -121,6 +132,11 @@ def determine_publishability(row: PredictionRow) -> PredictionRow:
         gaps.append("raw_model_probability missing or out of (0,1) bounds")
     if not row.source_snapshot_id:
         gaps.append("source_snapshot_id missing or empty")
+    if not _valid_iso_timestamp(row.model_timestamp):
+        # Step 3d BLOCKER-02: a governed probability must have an auditable
+        # scoring timestamp. This was previously optional, and tests proved
+        # rows without one still came back probability_publishable=True.
+        gaps.append("model_timestamp missing or not a valid ISO 8601 timestamp (no auditable scoring time)")
     if row.regime_probability_sum is None or abs(row.regime_probability_sum - 1.0) > 1e-6:
         gaps.append("regime_probability_sum invalid or missing")
     if row.simulation_draws is None or row.simulation_draws < 50_000:
