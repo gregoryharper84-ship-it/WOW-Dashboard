@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: wow-governed-probability-engine
+    runtime: python
+    plan: free
+    rootDir: artifacts/wow-engine
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: WOW_ACTION_API_KEY
+        sync: false
