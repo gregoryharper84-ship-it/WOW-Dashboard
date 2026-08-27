@@ -1,0 +1,241 @@
+{
+  "model_id": "mlb-moneyline-v2-rolling-2026",
+  "schema_version": "MLB_PREGAME_V2_20260827",
+  "feature_count": 41,
+  "feature_names": [
+    "elo_diff_100",
+    "season_win_pct_diff",
+    "season_run_diff_pg_diff",
+    "t10_win_pct_diff",
+    "t10_runs_pg_diff",
+    "t10_runs_allowed_pg_diff",
+    "t10_run_diff_pg_diff",
+    "t10_hits_pg_diff",
+    "t10_hr_pg_diff",
+    "t10_bb_pg_diff",
+    "t10_so_pg_diff",
+    "t10_tb_pg_diff",
+    "t20_run_diff_pg_diff",
+    "venue_split_win_pct_diff",
+    "venue_split_run_diff_pg_diff",
+    "rest_days_diff",
+    "games_last7_diff",
+    "bp_season_era_diff",
+    "bp_season_k9_diff",
+    "bp_season_bb9_diff",
+    "bp_l10_era_diff",
+    "bp_l10_k9_diff",
+    "bp_l10_bb9_diff",
+    "bp_last3_pitches_diff",
+    "bp_last3_outs_diff",
+    "bp_last3_relief_appearances_diff",
+    "starter_l5_era_diff",
+    "starter_l5_k9_diff",
+    "starter_l5_bb9_diff",
+    "starter_l5_hr9_diff",
+    "starter_l5_whip_diff",
+    "starter_l5_outs_per_start_diff",
+    "starter_l5_pitches_per_start_diff",
+    "starter_season_era_diff",
+    "starter_season_k9_diff",
+    "starter_season_bb9_diff",
+    "starter_rest_days_diff",
+    "starter_missing_home",
+    "starter_missing_away",
+    "starter_log_prior_starts_home",
+    "starter_log_prior_starts_away"
+  ],
+  "architecture": {
+    "base": "HistGradientBoostingClassifier",
+    "learning_rate": 0.05,
+    "max_iter": 250,
+    "max_depth": 3,
+    "min_samples_leaf": 30,
+    "l2_regularization": 1.0,
+    "random_state": 20260827,
+    "calibrator": "Platt LogisticRegression C=1.0"
+  },
+  "fit_contract": {
+    "base_train_end": "2025-06-30",
+    "calibration_start": "2025-07-01",
+    "calibration_end": "2025-11-01",
+    "2026_used_for_fitting": false,
+    "refit_policy": "ANNUAL_PRESEASON_OR_EARLIER_IF_DRIFT_GATE_FAILS"
+  },
+  "publication_contract": {
+    "status": "APPROVED_FOR_PROBABILITY_PUBLICATION_ONLY",
+    "valid_for_season": 2026,
+    "expires_at": "2027-03-01",
+    "can_execute": false,
+    "can_approve_bets": false,
+    "market_weight_in_published_point_probability": 0.0,
+    "requires_current_pregame_state": true,
+    "requires_probable_starter_identity": true,
+    "hard_ood_feature_limit": 2,
+    "soft_ood_watch_limit": 8
+  },
+  "calibration_bins": [
+    {
+      "predicted_min": 0.42741782972550985,
+      "predicted_max": 0.4981614151238378,
+      "predicted_mean": 0.48276006767710217,
+      "n": 152,
+      "observed_rate": 0.4276315789473684,
+      "observed_wilson95_lower": 0.3517189844862888,
+      "observed_wilson95_upper": 0.5071120336757424
+    },
+    {
+      "predicted_min": 0.4982413265531037,
+      "predicted_max": 0.5139383648142515,
+      "predicted_mean": 0.5063247647776828,
+      "n": 152,
+      "observed_rate": 0.5460526315789473,
+      "observed_wilson95_lower": 0.46674019289559576,
+      "observed_wilson95_upper": 0.6230946137285661
+    },
+    {
+      "predicted_min": 0.5139919066308909,
+      "predicted_max": 0.5262745105732418,
+      "predicted_mean": 0.5207124409165638,
+      "n": 152,
+      "observed_rate": 0.5197368421052632,
+      "observed_wilson95_lower": 0.44080733037432107,
+      "observed_wilson95_upper": 0.597693301036034
+    },
+    {
+      "predicted_min": 0.5263081520697593,
+      "predicted_max": 0.5384031499733185,
+      "predicted_mean": 0.5321291608101102,
+      "n": 151,
+      "observed_rate": 0.543046357615894,
+      "observed_wilson95_lower": 0.4635077789604275,
+      "observed_wilson95_upper": 0.6204489871799378
+    },
+    {
+      "predicted_min": 0.5384432535602157,
+      "predicted_max": 0.5504087993113784,
+      "predicted_mean": 0.5441727824191936,
+      "n": 151,
+      "observed_rate": 0.5496688741721855,
+      "observed_wilson95_lower": 0.47006070550833,
+      "observed_wilson95_upper": 0.6268124861920917
+    },
+    {
+      "predicted_min": 0.5504624749606096,
+      "predicted_max": 0.5645209832870378,
+      "predicted_mean": 0.5576930655418573,
+      "n": 151,
+      "observed_rate": 0.5231788079470199,
+      "observed_wilson95_lower": 0.44393056650664015,
+      "observed_wilson95_upper": 0.6012769229535567
+    },
+    {
+      "predicted_min": 0.5645306430639324,
+      "predicted_max": 0.5784156287356786,
+      "predicted_mean": 0.5712336252090624,
+      "n": 151,
+      "observed_rate": 0.543046357615894,
+      "observed_wilson95_lower": 0.4635077789604275,
+      "observed_wilson95_upper": 0.6204489871799378
+    },
+    {
+      "predicted_min": 0.5785623432703026,
+      "predicted_max": 0.6435252241096951,
+      "predicted_mean": 0.5993894174384627,
+      "n": 151,
+      "observed_rate": 0.6622516556291391,
+      "observed_wilson95_lower": 0.5836236861551637,
+      "observed_wilson95_upper": 0.7328287400662136
+    }
+  ],
+  "calibration_probability_range": {
+    "min": 0.42741782972550985,
+    "max": 0.6435252241096951,
+    "q005": 0.4577540628818688,
+    "q995": 0.6326700640109835
+  },
+  "locked_evidence": {
+    "v1_status": "REJECTED_NEGATIVE_RESULT",
+    "frozen_2024_transport_status": "REJECTED",
+    "rolling_architecture_status": "VALIDATED_FOR_PROBABILITY_PUBLICATION",
+    "locked_2025": {
+      "n": 2467,
+      "brier": 0.24671053452457342,
+      "naive_brier": 0.2484302315599825,
+      "log_loss": 0.6865262623892878,
+      "roc_auc": 0.5633118065904952
+    },
+    "fresh_2026": {
+      "n": 1992,
+      "brier": 0.2475643820311264,
+      "home_054_brier": 0.24935100401606416,
+      "brier_gain_vs_home_054": 0.0017866219849377585,
+      "log_loss": 0.6882474454703497,
+      "roc_auc": 0.5485195372542675,
+      "date_block_bootstrap_ci95_brier_gain_vs_home_054": [
+        0.00034453392625214617,
+        0.003201340973381048
+      ],
+      "date_block_bootstrap_p_gt_0": 0.9934,
+      "positive_months": 5,
+      "months_tested": 6
+    },
+    "source_completeness_2026": {
+      "schedule_final_rows": 2034,
+      "unique_final_game_pks": 2010,
+      "duplicate_schedule_rows": 24,
+      "expected_team_rows_unique_games": 4020,
+      "boxscore_failures": 0,
+      "missing_sides": 0,
+      "complete_after_gamepk_dedupe": true
+    },
+    "artifact_hardening": {
+      "reload_prediction_max_abs_diff": 0.0,
+      "status": "PASS"
+    },
+    "live_hydrator_smoke": {
+      "preview_games": 5,
+      "features_ready": 5,
+      "probable_starter_coverage_both": 5,
+      "same_day_results_used": false,
+      "status": "PASS"
+    }
+  },
+  "feature_build_audit": {
+    "rows": 9242,
+    "excluded_insufficient_team_history": 179,
+    "rows_with_at_least_one_missing_prior_starter_history": 719,
+    "date_range": [
+      "2023-04-10",
+      "2026-08-27"
+    ],
+    "same_calendar_date_outcome_leakage": false,
+    "date_batching_rule": "ALL_FEATURES_FOR_DATE_FROZEN_BEFORE_ANY_DATE_RESULT_UPDATE"
+  },
+  "state": {
+    "cutoff_exclusive": "2026-08-27",
+    "results_through": "2026-08-26"
+  },
+  "build": {
+    "created_at_utc": "2026-08-27T22:07:01.227703+00:00",
+    "build_date": "2026-08-27",
+    "reference_code": {
+      "run_mlb_v2_pregame": "research/mlb-v2-pregame-20260827",
+      "confirm_mlb_v2_2026": "research/mlb-v2-2026-confirmation-20260827",
+      "live_hydrator": "research/mlb-v2-live-hydrator-20260827"
+    }
+  },
+  "artifact_hashes": {
+    "mlb_v2_base_model.joblib": "fd648fe4315e25226284b95903a814dc634425cac4af2f7b8ef43efe00091544",
+    "mlb_v2_platt_calibrator.joblib": "8c93d06bdadbe56b6ee5b90d81894ee5412fc4150f2bf9109e96ce80f69b4724",
+    "mlb_v2_pregame_state.json.gz": "84b3253d8dd32324d227ff6e0a74fea3b0e3167f8724703e71b465d84daa7d7c",
+    "mlb_v2_feature_schema.json": "8ed6fdcafc0ac5bcfc1ed53a96ff205711fe3aee437fb5587bfa9bf048d17721"
+  },
+  "governance": {
+    "probability_capability": "AVAILABLE",
+    "probability_status": "PRODUCED_WHEN_LIVE_GATES_PASS",
+    "probability_publishable": true,
+    "can_execute": false,
+    "can_approve_bets": false
+  }
+}
