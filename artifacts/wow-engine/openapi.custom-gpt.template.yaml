@@ -1,15 +1,16 @@
 openapi: 3.1.0
 info:
   title: WOW Governed Probability Engine Action
-  version: 1.0.0
+  version: 1.1.0
   description: >-
     Custom GPT Action contract for the external governed WOW probability backend.
     This API is analytical only. It never places, routes, modifies, or cancels a
-    wager. can_execute remains false. The score endpoint must not be called unless
-    /governance reports governed_probability_capability=AVAILABLE.
+    wager. can_execute remains false. Read /governance before governed scoring.
+    A fail-closed 409 must never be bypassed with a qualitative, manual, market-only,
+    or wrong-contract scoring route.
 servers:
   - url: https://REPLACE_WITH_RENDER_SERVICE_HOST
-    description: Replace with the exact HTTPS Render service origin after Step 5 deployment.
+    description: Replace with the exact HTTPS Render service origin after deployment.
 paths:
   /health:
     get:
@@ -29,9 +30,9 @@ paths:
       operationId: getWowProbabilityGovernance
       summary: Read governed probability capability state
       description: >-
-        Public and read-only. Call this before scoreWowProp. If
-        governed_probability_capability is not AVAILABLE, do not call scoreWowProp;
-        use the governed manual/fallback lane instead.
+        Public and read-only. Call this before governed scoring. If
+        governed_probability_capability is not AVAILABLE, preserve the returned
+        ceiling/fallback state. Do not invent a governed probability.
       responses:
         '200':
           description: Current governance and deployment-gate state.
@@ -55,12 +56,12 @@ paths:
   /score-prop:
     post:
       operationId: scoreWowProp
-      summary: Score one prop through the governed probability pipeline
+      summary: Score one supported prop through the governed probability pipeline
       description: >-
-        Authenticated analytical scoring only. Never call when /governance reports
-        governed_probability_capability=UNAVAILABLE. A 409 is a governed hold, not
-        permission to retry through a qualitative or invented-probability fallback.
-        This operation does not place or authorize a wager.
+        Authenticated analytical prop scoring only. Never use this operation for
+        team/event moneylines. A 409 is a governed hold, not permission to retry
+        through a qualitative or invented-probability fallback. This operation
+        does not place or authorize a wager.
       security:
         - actionBearer: []
       requestBody:
@@ -71,7 +72,7 @@ paths:
               $ref: '#/components/schemas/ScorePropRequest'
       responses:
         '200':
-          description: Complete publishable governed probability row persisted by the backend.
+          description: Complete publishable governed prop probability row persisted by the backend.
           content:
             application/json:
               schema:
@@ -80,19 +81,53 @@ paths:
         '401':
           description: Missing, malformed, or incorrect Action credential.
         '409':
-          description: Governed probability capability is unavailable; fail closed.
+          description: Governed prop probability capability is unavailable; fail closed.
         '422':
           description: Candidate failed publication requirements; probability remains non-publishable.
         '501':
           description: Real fitted sport/stat parameters are not registered.
+  /score-event:
+    post:
+      operationId: scoreWowEvent
+      summary: Validate one MLB full-game outright-winner event through the governed event lane
+      description: >-
+        Authenticated analytical event scoring contract. V1 supports MLB full-game
+        OUTRIGHT_WINNER with settlement including extra innings. Until a real fitted
+        MLB game-win model artifact and eligible event calibrator are wired, a valid
+        request intentionally returns 409 GOVERNED_EVENT_MODEL_UNAVAILABLE with no
+        numeric probability and no persistence. Never retry an event moneyline through
+        /score-prop and never treat market-only or manual estimates as governed model output.
+      security:
+        - actionBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScoreEventRequest'
+      responses:
+        '409':
+          description: >-
+            Valid MLB event contract, but fitted governed MLB event model/calibrator
+            is unavailable. This is the expected fail-closed V1 response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing, malformed, or incorrect Action credential.
+        '422':
+          description: Event identity, market family, settlement, slate, or evidence contract is invalid.
   /settle:
     post:
       operationId: settleWowPrediction
-      summary: Attach an official result to an existing governed prediction
+      summary: Attach an official result to an existing governed prop prediction
       description: >-
-        Authenticated outcome-recording operation for an already-created prediction.
-        It does not place, route, modify, or cancel a wager and must only be used
-        with a verified official result.
+        Authenticated outcome-recording operation for an already-created prop
+        prediction. It does not place, route, modify, or cancel a wager and must
+        only be used with a verified official result. Event settlement uses a
+        separate event-outcome contract in a future certified phase.
       security:
         - actionBearer: []
       parameters:
@@ -101,7 +136,7 @@ paths:
           required: true
           schema:
             type: string
-          description: Existing WOW prediction identifier.
+          description: Existing WOW prop prediction identifier.
         - name: official_result
           in: query
           required: true
@@ -119,7 +154,7 @@ paths:
           required: true
           schema:
             type: boolean
-          description: Whether the frozen prediction side hit under its settlement rules.
+          description: Whether the frozen prop prediction side hit under its settlement rules.
       responses:
         '200':
           description: Outcome row recorded successfully.
@@ -174,3 +209,110 @@ components:
         money_lane_status:
           type: string
           default: PAYOUT_UNRESOLVED
+    EventMarketPrior:
+      type: object
+      required:
+        - home_probability
+        - away_probability
+        - timestamp
+      properties:
+        home_probability:
+          type: number
+          exclusiveMinimum: 0
+          exclusiveMaximum: 1
+        away_probability:
+          type: number
+          exclusiveMinimum: 0
+          exclusiveMaximum: 1
+        timestamp:
+          type: string
+          format: date-time
+        quality:
+          type: [string, 'null']
+        source:
+          type: [string, 'null']
+      description: >-
+        Optional current two-way no-vig market prior. This is context/prior evidence,
+        not permission to synthesize a model probability when the fitted MLB model is unavailable.
+    ScoreEventRequest:
+      type: object
+      required:
+        - research_run_id
+        - requested_slate_date
+        - requested_timezone
+        - scan_stage
+        - event_key
+        - official_event_id
+        - event_start_time_utc
+        - sport
+        - league
+        - market_family
+        - settlement_basis
+        - home_team
+        - away_team
+        - venue
+        - home_starting_pitcher
+        - away_starting_pitcher
+        - home_starter_status
+        - away_starter_status
+        - home_lineup_status
+        - away_lineup_status
+        - source_snapshot_id
+      properties:
+        research_run_id:
+          type: string
+        requested_slate_date:
+          type: string
+          format: date
+        requested_timezone:
+          type: string
+        scan_stage:
+          type: string
+          enum: [PREGAME]
+        event_key:
+          type: string
+        official_event_id:
+          type: string
+        event_start_time_utc:
+          type: string
+          format: date-time
+        sport:
+          type: string
+          enum: [MLB]
+        league:
+          type: string
+          enum: [MLB]
+        market_family:
+          type: string
+          enum: [OUTRIGHT_WINNER]
+        settlement_basis:
+          type: string
+          enum: [FULL_GAME_INCLUDING_EXTRA_INNINGS]
+        home_team:
+          type: string
+        away_team:
+          type: string
+        venue:
+          type: string
+        home_starting_pitcher:
+          type: string
+        away_starting_pitcher:
+          type: string
+        home_starter_status:
+          type: string
+        away_starter_status:
+          type: string
+        home_lineup_status:
+          type: string
+        away_lineup_status:
+          type: string
+        latest_material_update_timestamp:
+          type: [string, 'null']
+          format: date-time
+        source_snapshot_id:
+          type: string
+          format: uuid
+        market_prior:
+          anyOf:
+            - $ref: '#/components/schemas/EventMarketPrior'
+            - type: 'null'
