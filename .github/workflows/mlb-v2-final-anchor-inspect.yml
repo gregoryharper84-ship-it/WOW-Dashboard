@@ -1,0 +1,33 @@
+name: MLB V2 final anchor inspection
+on:
+  push:
+    branches: [feature/mlb-v2-governed-probability-20260827]
+    paths: [.github/workflows/mlb-v2-final-anchor-inspect.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Print patch anchors
+        run: |
+          echo '=== MLB registry ==='
+          grep -n '"MLB"' artifacts/flask-scoring-api/gate_engine/moneyline_probability.py | head -n 5
+          sed -n '40,115p' artifacts/flask-scoring-api/gate_engine/moneyline_probability.py
+          echo '=== sport_model imports + return tail ==='
+          sed -n '1,70p' artifacts/flask-scoring-api/gate_engine/moneyline/sport_model.py
+          sed -n '360,570p' artifacts/flask-scoring-api/gate_engine/moneyline/sport_model.py
+          echo '=== pipeline imports ==='
+          sed -n '1,75p' artifacts/flask-scoring-api/gate_engine/moneyline/pipeline.py
+          echo '=== pipeline stage 3-6 ==='
+          sed -n '430,735p' artifacts/flask-scoring-api/gate_engine/moneyline/pipeline.py
+          echo '=== pipeline stage 8-10 ==='
+          sed -n '800,925p' artifacts/flask-scoring-api/gate_engine/moneyline/pipeline.py
+          echo '=== app Step B anchors ==='
+          sed -n '23255,23425p' artifacts/flask-scoring-api/app.py
+          echo '=== auth / wow route patterns ==='
+          grep -nE 'X-API-Key|X-API-KEY|api.key|require.*key|@app\.route\("/wow|@app\.post\("/wow|@app\.get\("/wow' artifacts/flask-scoring-api/app.py | head -n 240
+          echo '=== app final 100 lines ==='
+          tail -n 100 artifacts/flask-scoring-api/app.py
