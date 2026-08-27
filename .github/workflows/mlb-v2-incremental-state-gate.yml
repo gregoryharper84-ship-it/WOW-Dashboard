@@ -1,0 +1,70 @@
+name: MLB V2 incremental state gate
+
+on:
+  push:
+    branches: [feature/mlb-v2-governed-probability-20260827]
+    paths:
+      - "artifacts/wow-engine/mlb_v2_incremental.py"
+      - "artifacts/wow-engine/tests/test_mlb_v2_incremental.py"
+      - "artifacts/wow-engine/tools/apply_mlb_v2_incremental_hydrator_patch.py"
+      - ".github/workflows/mlb-v2-incremental-state-gate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/mlb-v2-governed-probability-20260827
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Apply exact hydrator patch
+        run: python artifacts/wow-engine/tools/apply_mlb_v2_incremental_hydrator_patch.py
+      - name: Compile
+        run: |
+          python -m py_compile \
+            artifacts/wow-engine/mlb_v2_incremental.py \
+            artifacts/wow-engine/mlb_v2_hydrator.py
+      - name: Install wow-engine dependencies
+        working-directory: artifacts/wow-engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Incremental transactional safety tests
+        working-directory: artifacts/wow-engine
+        run: pytest -q tests/test_mlb_v2_incremental.py
+      - name: Existing wow-engine deployment gates
+        working-directory: artifacts/wow-engine
+        run: pytest -q deployment_gate_tests.py
+      - name: Hydrator governance assertions
+        working-directory: artifacts/wow-engine
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('mlb_v2_hydrator.py').read_text()
+          assert 'advance_state_to_target(state, target)' in t
+          assert 'MLB_V2_INCREMENTAL_REFRESH_FAILED' in t
+          assert 'state_refresh' in t
+          assert 'same_day_results_used' in t
+          assert 'can_execute: bool = False' in t
+          print('MLB_V2_INCREMENTAL_HYDRATOR_STATIC=PASS')
+          PY
+      - name: Commit gated hydrator integration
+        run: |
+          set -euo pipefail
+          git config user.name "gregoryharper84-ship-it"
+          git config user.email "gregory.harper84@gmail.com"
+          git add artifacts/wow-engine/mlb_v2_hydrator.py
+          if git diff --cached --quiet; then
+            echo 'No hydrator patch to commit'
+          else
+            git commit -m "Make MLB V2 state self-refreshing and fail-closed"
+            git push origin HEAD:feature/mlb-v2-governed-probability-20260827
+          fi
