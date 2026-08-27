@@ -44,7 +44,7 @@ jobs:
       - name: Run governed probability backend tests
         run: python -m pytest -q
 
-      - name: Validate Render and Custom GPT Action contracts
+      - name: Validate Render, event schema, and Custom GPT Action contracts
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -69,18 +69,30 @@ jobs:
           assert set(secret_vars) == {"SUPABASE_URL", "SUPABASE_SERVICE_KEY", "WOW_ACTION_API_KEY"}
           assert all(item.get("sync") is False for item in secret_vars.values())
 
+          event_schema = Path("event_schema.sql").read_text()
+          assert "create table if not exists wow_event_predictions" in event_schema.lower()
+          assert "create table if not exists wow_event_outcomes" in event_schema.lower()
+          assert "check (can_execute = false)" in event_schema
+          assert "simulation_count >= 50000" in event_schema
+          assert "alter table wow_event_predictions enable row level security" in event_schema.lower()
+          assert "alter table wow_event_outcomes enable row level security" in event_schema.lower()
+          assert "direction in ('MORE','LESS')" not in event_schema
+
           action = yaml.safe_load(Path("openapi.custom-gpt.template.yaml").read_text())
           validate_spec(action)
           operations = {
               action["paths"]["/health"]["get"]["operationId"],
               action["paths"]["/governance"]["get"]["operationId"],
               action["paths"]["/score-prop"]["post"]["operationId"],
+              action["paths"]["/score-event"]["post"]["operationId"],
               action["paths"]["/settle"]["post"]["operationId"],
           }
-          assert len(operations) == 4
+          assert len(operations) == 5
           assert action["components"]["securitySchemes"]["actionBearer"]["scheme"] == "bearer"
           assert action["paths"]["/score-prop"]["post"]["security"] == [{"actionBearer": []}]
+          assert action["paths"]["/score-event"]["post"]["security"] == [{"actionBearer": []}]
           assert action["paths"]["/settle"]["post"]["security"] == [{"actionBearer": []}]
+          assert action["paths"]["/score-event"]["post"]["operationId"] == "scoreWowEvent"
           assert "REPLACE_WITH_RENDER_SERVICE_HOST" in action["servers"][0]["url"]
           print("release contracts valid")
           PY

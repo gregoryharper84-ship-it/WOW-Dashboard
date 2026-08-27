@@ -25,21 +25,29 @@ provider via set_fitted_params_provider() and hit this real HTTP route
 with FastAPI's TestClient to prove the endpoint-to-ledger path works,
 without claiming real production distributions exist.
 
-PRE_PRODUCTION_BLOCKER_API_AUTH -- RESOLVED: /score-prop and /settle
-now require Authorization: Bearer <WOW_ACTION_API_KEY> (see
-_require_action_api_key below). This is application-layer auth only --
+PRE_PRODUCTION_BLOCKER_API_AUTH -- RESOLVED: /score-prop, /score-event,
+and /settle require Authorization: Bearer <WOW_ACTION_API_KEY> (see
+_require_action_api_key below). This is application-layer auth only —
 a caller (e.g. a Custom GPT Action) proves it holds WOW_ACTION_API_KEY;
 it never sees the Supabase service-role credential, which stays backend-
 only and is never part of this app's request/response schema. /health
-and /governance stay public -- they expose state, not a privileged
+and /governance stay public — they expose state, not a privileged
 database mutation path.
+
+/score-event MLB v1 is deliberately fail-closed. It validates an
+authenticated full-game MLB outright-winner event contract, but until
+the real fitted MLB game-win artifact and eligible event calibrator are
+wired, it returns HTTP 409 with no numeric probability and performs no
+persistence. It must never route team/event ML through /score-prop or
+launder market-implied/manual estimates into governed model output.
 """
 from __future__ import annotations
 
 import os
 import secrets
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Callable, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -50,7 +58,7 @@ from simulation import RegimeConditionalParams, MIN_SIMULATION_DRAWS
 from engine import score_prop_end_to_end
 from ledger import insert_prediction
 
-app = FastAPI(title="WOW External Governed Backend", version="1.0.0")
+app = FastAPI(title="WOW External Governed Backend", version="1.1.0")
 
 DEPLOYMENT_GATE_COUNT = 11  # see deployment_gate_tests.py; Gate 11 (real
                             # end-to-end positive path) was added per
@@ -104,17 +112,16 @@ def set_persist_fn(fn: Callable[..., dict]) -> None:
 
 def _require_action_api_key(authorization: Optional[str] = Header(default=None)) -> None:
     """FastAPI dependency guarding every route that can mutate the
-    service-role-backed store (/score-prop, /settle). Callers (a Custom
-    GPT Action, or any other client) authenticate with
-    ``Authorization: Bearer <WOW_ACTION_API_KEY>`` -- an application-layer
-    credential distinct from, and never exchanged for, the Supabase
-    service-role key, which stays backend-only.
+    service-role-backed store (/score-prop, /score-event, /settle).
+    Callers authenticate with ``Authorization: Bearer <WOW_ACTION_API_KEY>``
+    — an application-layer credential distinct from, and never exchanged
+    for, the Supabase service-role key, which stays backend-only.
 
     Fails closed: if WOW_ACTION_API_KEY is not configured in this
     deployment's environment, every protected request is rejected with
     401 rather than silently admitted. The supplied token is compared
-    with a constant-time comparison (secrets.compare_digest) and is
-    never logged, echoed, or included in any response."""
+    with a constant-time comparison and is never logged or echoed.
+    """
     configured_key = os.environ.get("WOW_ACTION_API_KEY")
     if not configured_key:
         raise HTTPException(status_code=401, detail="This deployment is not configured for authenticated access.")
@@ -172,6 +179,139 @@ class ScorePropRequest(BaseModel):
     # directly with an explicit scored_at (see deployment_gate_tests.py).
 
 
+class EventMarketPrior(BaseModel):
+    """Optional current two-way no-vig MLB market prior.
+
+    It is context/prior evidence only. The event route never promotes it
+    into a model probability when the fitted MLB model is unavailable.
+    """
+    home_probability: float
+    away_probability: float
+    timestamp: str
+    quality: Optional[str] = None
+    source: Optional[str] = None
+
+
+class ScoreEventRequest(BaseModel):
+    """MLB full-game outright-winner identity/evidence contract.
+
+    Backend-owned model/calibration/publication fields are intentionally
+    absent so clients cannot inject a probability and have it re-labeled
+    as governed model output.
+    """
+    research_run_id: str
+    requested_slate_date: str
+    requested_timezone: str
+    scan_stage: str
+
+    event_key: str
+    official_event_id: str
+    event_start_time_utc: str
+
+    sport: str
+    league: str
+    market_family: str
+    settlement_basis: str
+
+    home_team: str
+    away_team: str
+    venue: str
+
+    home_starting_pitcher: str
+    away_starting_pitcher: str
+    home_starter_status: str
+    away_starter_status: str
+    home_lineup_status: str
+    away_lineup_status: str
+
+    latest_material_update_timestamp: Optional[str] = None
+    source_snapshot_id: str
+    market_prior: Optional[EventMarketPrior] = None
+
+
+def _parse_aware_timestamp(value: str) -> Optional[datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
+def _score_event_contract_errors(req: ScoreEventRequest) -> list[str]:
+    """Validate the v1 event contract without scoring or persistence."""
+    errors: list[str] = []
+
+    required_text = {
+        "research_run_id": req.research_run_id,
+        "requested_timezone": req.requested_timezone,
+        "event_key": req.event_key,
+        "official_event_id": req.official_event_id,
+        "league": req.league,
+        "home_team": req.home_team,
+        "away_team": req.away_team,
+        "venue": req.venue,
+        "home_starting_pitcher": req.home_starting_pitcher,
+        "away_starting_pitcher": req.away_starting_pitcher,
+        "home_starter_status": req.home_starter_status,
+        "away_starter_status": req.away_starter_status,
+        "home_lineup_status": req.home_lineup_status,
+        "away_lineup_status": req.away_lineup_status,
+        "source_snapshot_id": req.source_snapshot_id,
+    }
+    for field_name, value in required_text.items():
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"{field_name} missing or empty")
+
+    if req.sport != "MLB":
+        errors.append("sport must be MLB for /score-event v1")
+    if req.market_family != "OUTRIGHT_WINNER":
+        errors.append("market_family must be OUTRIGHT_WINNER")
+    if req.settlement_basis != "FULL_GAME_INCLUDING_EXTRA_INNINGS":
+        errors.append("settlement_basis must be FULL_GAME_INCLUDING_EXTRA_INNINGS")
+    if req.scan_stage != "PREGAME":
+        errors.append("scan_stage must be PREGAME")
+    if req.league != "MLB":
+        errors.append("league must be MLB for /score-event v1")
+    if req.home_team.strip() and req.home_team.strip() == req.away_team.strip():
+        errors.append("home_team and away_team must differ")
+
+    try:
+        date.fromisoformat(req.requested_slate_date)
+    except (TypeError, ValueError):
+        errors.append("requested_slate_date must be YYYY-MM-DD")
+
+    event_start = _parse_aware_timestamp(req.event_start_time_utc)
+    if event_start is None:
+        errors.append("event_start_time_utc must be an ISO 8601 timestamp with timezone")
+    elif event_start.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+        errors.append("event has already started; /score-event v1 is pregame only")
+
+    if req.latest_material_update_timestamp is not None:
+        if _parse_aware_timestamp(req.latest_material_update_timestamp) is None:
+            errors.append("latest_material_update_timestamp must be an ISO 8601 timestamp with timezone")
+
+    try:
+        uuid.UUID(req.source_snapshot_id)
+    except (ValueError, TypeError, AttributeError):
+        errors.append("source_snapshot_id must be a UUID")
+
+    if req.market_prior is not None:
+        hp = req.market_prior.home_probability
+        ap = req.market_prior.away_probability
+        if not (0 < hp < 1) or not (0 < ap < 1):
+            errors.append("market_prior probabilities must each satisfy 0<p<1")
+        elif abs((hp + ap) - 1.0) > 1e-6:
+            errors.append("market_prior home+away probabilities must normalize to 1")
+        if _parse_aware_timestamp(req.market_prior.timestamp) is None:
+            errors.append("market_prior.timestamp must be an ISO 8601 timestamp with timezone")
+
+    return errors
+
+
 @app.post("/score-prop", dependencies=[Depends(_require_action_api_key)])
 def score_prop(req: ScorePropRequest):
     if GOVERNED_PROBABILITY_CAPABILITY != "AVAILABLE":
@@ -220,6 +360,47 @@ def score_prop(req: ScorePropRequest):
         )
 
     return _persist_fn(result.row)
+
+
+@app.post("/score-event", dependencies=[Depends(_require_action_api_key)])
+def score_event(req: ScoreEventRequest):
+    """Validate one MLB full-game ML event, then fail closed until fitted.
+
+    V1 intentionally has no scoring/persistence positive path. This route
+    proves identity/auth/routing separation without turning an absent
+    model artifact into an invented probability.
+    """
+    errors = _score_event_contract_errors(req)
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "EVENT_CONTRACT_INVALID",
+                "probability_publishable": False,
+                "errors": errors,
+                "can_execute": False,
+            },
+        )
+
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "ok": False,
+            "code": "GOVERNED_EVENT_MODEL_UNAVAILABLE",
+            "sport": "MLB",
+            "market_family": "OUTRIGHT_WINNER",
+            "controlling_specialist": "wow.mlb-game-win-probability-expert",
+            "governed_probability_capability": "UNAVAILABLE",
+            "governed_probability_status": "NOT_PRODUCED",
+            "probability_publishable": False,
+            "fallback": "SECTION_8A_MANUAL_ESTIMATE_LANE",
+            "blockers": [
+                "MLB_FITTED_MODEL_ARTIFACT_UNAVAILABLE",
+                "MLB_EVENT_CALIBRATOR_UNAVAILABLE",
+            ],
+            "can_execute": False,
+        },
+    )
 
 
 @app.post("/settle", dependencies=[Depends(_require_action_api_key)])
