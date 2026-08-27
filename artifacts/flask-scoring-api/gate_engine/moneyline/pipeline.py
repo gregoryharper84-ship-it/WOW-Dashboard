@@ -459,6 +459,11 @@ def run_moneyline_pipeline(
 
     result.sport_model   = sport_model_out
     independent_prob_raw = sport_model_out.get("independent_probability")   # P(home wins)
+    _mlb_v2_native = (
+        sport == "MLB"
+        and sport_model_out.get("native_calibrated") is True
+        and sport_model_out.get("point_estimate_locked") is True
+    )
 
     if independent_prob_raw is None:
         # -----------------------------------------------------------------------
@@ -568,7 +573,12 @@ def run_moneyline_pipeline(
     sim_result = run_game_state_simulation(row, clean_enr, independent_prob_raw,
                                            n_sims=n_sims, seed=seed)
     result.simulation = sim_result.to_dict()
-    independent_prob_post_sim = sim_result.adjusted_prob   # P(home wins)
+    if _mlb_v2_native:
+        independent_prob_post_sim = float(independent_prob_raw)
+        result.simulation["point_estimate_applied"] = False
+        result.simulation["point_estimate_lock_reason"] = "MLB_V2_NATIVE_PLATT_ALREADY_VALIDATED"
+    else:
+        independent_prob_post_sim = sim_result.adjusted_prob   # P(home wins)
 
     # -----------------------------------------------------------------------
     # Stage 5: Failure-path distributional integration — home-team perspective
@@ -580,6 +590,14 @@ def run_moneyline_pipeline(
         simulation_regimes=sim_result.regime_distribution,
     )
     result.failure_path = fp_result.to_dict()
+    if _mlb_v2_native:
+        # Failure-path simulation remains an uncertainty/diagnostic layer. The
+        # live V2 vector already encodes the current pregame state, so it may not
+        # overwrite the validated Platt point estimate.
+        fp_result.adjusted_win_prob = float(independent_prob_post_sim)
+        result.failure_path = fp_result.to_dict()
+        result.failure_path["point_estimate_applied"] = False
+        result.failure_path["point_estimate_lock_reason"] = "MLB_V2_NATIVE_PLATT_ALREADY_VALIDATED"
 
     # -----------------------------------------------------------------------
     # Stage 5.5: MLB Starter-Change analysis (WOW-PATCH-2026-08-08-MLB-SP-SCRATCH)
@@ -615,7 +633,7 @@ def run_moneyline_pipeline(
     # Stages 3–5 all operate in home-team perspective; stage 6 reads
     # fp_result.adjusted_win_prob as independent_prob_home.  We adjust that
     # value in-place so stage 6 naturally inherits the shifted probability.
-    if _sc_result.probability_adjustment != 0.0:
+    if _sc_result.probability_adjustment != 0.0 and not _mlb_v2_native:
         _before_adj = fp_result.adjusted_win_prob
         fp_result.adjusted_win_prob = max(
             0.01, min(0.99, fp_result.adjusted_win_prob + _sc_result.probability_adjustment)
@@ -627,6 +645,12 @@ def run_moneyline_pipeline(
             "adjustment": round(_sc_result.probability_adjustment, 4),
             "after":      round(fp_result.adjusted_win_prob, 4),
             "note":       "quality_delta_only:not_a_fixed_scratch_penalty",
+        }
+    elif _sc_result.probability_adjustment != 0.0 and _mlb_v2_native:
+        result.starter_change["probability_adjustment_applied"] = {
+            "suppressed": True,
+            "proposed_adjustment": round(_sc_result.probability_adjustment, 4),
+            "note": "MLB_V2_CURRENT_STARTER_ALREADY_IN_FEATURE_VECTOR:no_double_count",
         }
 
     # Inject uncertainty expansion into enrichment so calibration (stage 8) can
@@ -838,9 +862,33 @@ def run_moneyline_pipeline(
         enrichment=enrichment,        # FULL enrichment for sample size / lineup / freshness
         quorum_result=None,           # future: from opportunity_acquisition
         disagreement_audit=dis_audit,
-        market_no_vig=market_no_vig,
-        market_inputs=market_inputs,
+        market_no_vig=(None if _mlb_v2_native else market_no_vig),
+        market_inputs=({} if _mlb_v2_native else market_inputs),
     )
+    if _mlb_v2_native:
+        # MLB V2 already includes an independently-fitted Platt calibrator. Keep
+        # the validated point estimate immutable and use the legacy calibration
+        # layer only for uncertainty accounting. Market comparison remains Stage 11.
+        cal_result.calibrated_probability = float(independent_prob_final)
+        cal_result.model_weight = 1.0
+        cal_result.market_weight = 0.0
+        cal_result.market_no_vig_used = None
+        cal_result.market_dependent_flag = False
+        cal_result.net_edge = (
+            float(independent_prob_final) - float(market_no_vig)
+            if market_no_vig is not None else None
+        )
+        _home_lo = sport_model_out.get("model_native_home_lower_bound")
+        _home_hi = sport_model_out.get("model_native_home_upper_bound")
+        if _home_lo is not None and _home_hi is not None:
+            if is_home:
+                _emp_lo, _emp_hi = float(_home_lo), float(_home_hi)
+            else:
+                _emp_lo, _emp_hi = 1.0 - float(_home_hi), 1.0 - float(_home_lo)
+            cal_result.calibrated_lower_bound = min(cal_result.calibrated_lower_bound, _emp_lo)
+            cal_result.calibrated_upper_bound = max(cal_result.calibrated_upper_bound, _emp_hi)
+        cal_result.calibration_notes.append("MLB_V2_NATIVE_PLATT_POINT_LOCK:market_weight=0")
+        cal_result.calibration_notes.append("MLB_V2_BOUND=conservative_union_dynamic_and_empirical_calibration_interval")
     result.calibration = cal_result.to_dict()
 
     # -----------------------------------------------------------------------

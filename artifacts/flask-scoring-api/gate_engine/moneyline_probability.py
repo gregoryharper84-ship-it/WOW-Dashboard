@@ -54,11 +54,14 @@ class ModelStatus:
 
 _SPORT_MODEL_REGISTRY: dict[str, dict[str, Any]] = {
     "MLB": {
-        "model_id":    "mlb-moneyline-logit-v1",
+        "model_id":    "mlb-moneyline-v2-rolling-2026",
         "status":      ModelStatus.ACTIVE,
         "output_type": "binary",          # home_win | away_win
-        "features":    ["run_line_spread", "starting_pitcher_era", "bullpen_era",
-                        "home_away_flag", "season_win_pct", "last_10_win_pct"],
+        "features":    ["mlb_v2_feature_vector:MLB_PREGAME_V2_20260827:41"],
+        "probability_capability": "AVAILABLE",
+        "probability_publication": "GOVERNED_V2_ROLLING",
+        "can_execute": False,
+        "can_approve_bets": False,
     },
     "NBA": {
         "model_id":    "nba-moneyline-logit-v1",

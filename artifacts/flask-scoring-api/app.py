@@ -23338,7 +23338,22 @@ def gate_engine_run():
             # can produce a non-market ensemble instead of failing with
             # INDEPENDENT_PROBABILITY_UNAVAILABLE:insufficient_non_market_data.
             _ow_sport = (_ow_row.get("sport") or "").upper()
-            if _ow_sport in ("NBA", "MLB") and not any(
+            if _ow_sport == "MLB" and not isinstance(_ow_enr.get("mlb_v2_feature_vector"), list):
+                try:
+                    from gate_engine.mlb_v2_hydrator import hydrate_mlb_v2_enrichment as _hydrate_mlb_v2
+                    _ow_enr = _hydrate_mlb_v2(_ow_row, _ow_enr)
+                    enrichment[_ow_row_id] = _ow_enr
+                except Exception as _mlb_v2_exc:
+                    _ow_enr["mlb_v2_hydration"] = {
+                        "status": "NOT_READY",
+                        "blockers": [f"MLB_V2_HYDRATION_ERROR:{type(_mlb_v2_exc).__name__}"],
+                        "can_execute": False,
+                    }
+                    enrichment[_ow_row_id] = _ow_enr
+
+            # NBA retains the legacy generic team-data path. MLB V2 deliberately
+            # bypasses it because its 41-feature vector is the sole Stage-3 model.
+            if _ow_sport == "NBA" and not any(
                 _ow_enr.get(k)
                 for k in ("home_win_pct", "away_win_pct", "home_power", "away_power")
             ):
@@ -37488,6 +37503,148 @@ def learning_log_get():
 # ---------------------------------------------------------------------------
 # END — Learning Log
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# MLB V2 governed event probability — probability publication only
+# ---------------------------------------------------------------------------
+@app.route("/wow/score-event", methods=["POST"])
+@require_api_key
+def wow_score_event():
+    """Produce a governed MLB event probability without granting bet execution."""
+    body = request.get_json(silent=True) or {}
+    sport = str(body.get("sport") or "").upper().strip()
+    market_family = str(body.get("market_family") or body.get("market") or "OUTRIGHT_WINNER").upper().strip()
+    specialist = "wow.mlb-game-win-probability-expert"
+
+    if sport != "MLB" or market_family not in {"OUTRIGHT_WINNER", "MONEYLINE", "ML"}:
+        return jsonify({
+            "ok": False,
+            "code": "GOVERNED_EVENT_MODEL_UNSUPPORTED",
+            "sport": sport,
+            "market_family": market_family,
+            "controlling_specialist": specialist if sport == "MLB" else None,
+            "probability_publishable": False,
+            "can_execute": False,
+            "can_approve_bets": False,
+        }), 400
+
+    from gate_engine.mlb_v2_hydrator import canonical_team, hydrate_mlb_v2_enrichment
+    from gate_engine.mlb_v2_runtime import artifact_health, score_home_probability
+
+    health = artifact_health()
+    if not health.get("healthy"):
+        return jsonify({
+            "ok": False,
+            "code": "GOVERNED_EVENT_MODEL_UNAVAILABLE",
+            "sport": "MLB",
+            "market_family": "OUTRIGHT_WINNER",
+            "controlling_specialist": specialist,
+            "governed_probability_capability": "UNAVAILABLE",
+            "governed_probability_status": "NOT_PRODUCED",
+            "probability_publishable": False,
+            "fallback": "SECTION_8A_MANUAL_ESTIMATE_LANE",
+            "blockers": health.get("blockers") or ["MLB_V2_ARTIFACT_UNAVAILABLE"],
+            "can_execute": False,
+            "can_approve_bets": False,
+        }), 409
+
+    enrichment = hydrate_mlb_v2_enrichment(body, {})
+    hyd = enrichment.get("mlb_v2_hydration") or {}
+    features = enrichment.get("mlb_v2_feature_vector")
+    if hyd.get("status") != "FEATURES_READY" or not isinstance(features, list):
+        return jsonify({
+            "ok": False,
+            "code": "GOVERNED_EVENT_MODEL_UNAVAILABLE",
+            "sport": "MLB",
+            "market_family": "OUTRIGHT_WINNER",
+            "controlling_specialist": specialist,
+            "governed_probability_capability": "AVAILABLE",
+            "governed_probability_status": "NOT_PRODUCED",
+            "probability_publishable": False,
+            "fallback": "SECTION_8A_MANUAL_ESTIMATE_LANE",
+            "blockers": hyd.get("blockers") or ["MLB_V2_LIVE_FEATURES_UNAVAILABLE"],
+            "hydration": hyd,
+            "can_execute": False,
+            "can_approve_bets": False,
+        }), 409
+
+    from datetime import date as _date
+    game_date = _date.fromisoformat(str(hyd.get("game_date")))
+    scored = score_home_probability(features, as_of=game_date)
+    if not scored.get("ok") or not scored.get("probability_publishable"):
+        return jsonify({
+            "ok": False,
+            "code": "GOVERNED_EVENT_MODEL_UNAVAILABLE",
+            "sport": "MLB",
+            "market_family": "OUTRIGHT_WINNER",
+            "controlling_specialist": specialist,
+            "governed_probability_capability": "AVAILABLE",
+            "governed_probability_status": "NOT_PRODUCED",
+            "probability_publishable": False,
+            "fallback": "SECTION_8A_MANUAL_ESTIMATE_LANE",
+            "blockers": scored.get("blockers") or ["MLB_V2_RUNTIME_GATE_FAILED"],
+            "hydration": hyd,
+            "drift": scored.get("drift"),
+            "can_execute": False,
+            "can_approve_bets": False,
+        }), 409
+
+    candidate = canonical_team(body.get("team") or body.get("participant") or body.get("player"))
+    home_team = hyd.get("home_team")
+    away_team = hyd.get("away_team")
+    if candidate == home_team:
+        candidate_side = "HOME"
+        p = float(scored["home_probability"])
+        lo = float(scored["home_probability_lower_bound"])
+        hi = float(scored["home_probability_upper_bound"])
+    elif candidate == away_team:
+        candidate_side = "AWAY"
+        p = float(scored["away_probability"])
+        lo = 1.0 - float(scored["home_probability_upper_bound"])
+        hi = 1.0 - float(scored["home_probability_lower_bound"])
+    else:
+        return jsonify({
+            "ok": False,
+            "code": "GOVERNED_EVENT_MODEL_INPUT_UNAVAILABLE",
+            "sport": "MLB",
+            "market_family": "OUTRIGHT_WINNER",
+            "controlling_specialist": specialist,
+            "probability_publishable": False,
+            "blockers": ["MLB_V2_CANDIDATE_TEAM_UNRESOLVED"],
+            "hydration": hyd,
+            "can_execute": False,
+            "can_approve_bets": False,
+        }), 409
+
+    return jsonify({
+        "ok": True,
+        "code": "GOVERNED_EVENT_MODEL_AVAILABLE",
+        "sport": "MLB",
+        "market_family": "OUTRIGHT_WINNER",
+        "controlling_specialist": specialist,
+        "governed_probability_capability": "AVAILABLE",
+        "governed_probability_status": "PRODUCED",
+        "probability_publishable": True,
+        "model_id": scored.get("model_id"),
+        "schema_version": scored.get("schema_version"),
+        "candidate_team": candidate,
+        "candidate_side": candidate_side,
+        "probability": round(p, 6),
+        "probability_lower_bound": round(max(0.01, lo), 6),
+        "probability_upper_bound": round(min(0.99, hi), 6),
+        "home_probability": round(float(scored["home_probability"]), 6),
+        "away_probability": round(float(scored["away_probability"]), 6),
+        "native_calibrated": True,
+        "market_weight_in_point_probability": 0.0,
+        "empirical_interval": scored.get("empirical_interval"),
+        "drift": scored.get("drift"),
+        "hydration": hyd,
+        "fallback": None,
+        "blockers": [],
+        "can_execute": False,
+        "can_approve_bets": False,
+    }), 200
 
 
 if __name__ == "__main__":

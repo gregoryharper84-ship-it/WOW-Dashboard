@@ -17,6 +17,7 @@ can_execute=False unconditional.
 from __future__ import annotations
 
 import math
+from datetime import date
 from typing import Any
 
 from gate_engine.moneyline.types import (
@@ -357,6 +358,80 @@ def _soccer_draw_adjusted(raw_home_prob: float, enrichment: dict[str, Any]) -> d
     }
 
 
+def _mlb_v2_as_of_date(row: dict[str, Any], enrichment: dict[str, Any]) -> date:
+    """Resolve the game date for artifact validity without reading market data."""
+    for source in (row, enrichment):
+        for key in ("game_date", "event_date", "slate_date", "date", "start_time", "commence_time"):
+            value = source.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return date.fromisoformat(str(value)[:10])
+            except ValueError:
+                continue
+    return date.today()
+
+
+def _mlb_v2_independent_probability(
+    row: dict[str, Any], clean_enrichment: dict[str, Any], orientation: OrientationResolution
+) -> dict[str, Any]:
+    """Use the validated rolling V2 + Platt artifact as MLB's sole Stage-3 model."""
+    from gate_engine.mlb_v2_runtime import score_home_probability
+
+    features = clean_enrichment.get("mlb_v2_feature_vector")
+    scored = score_home_probability(features, as_of=_mlb_v2_as_of_date(row, clean_enrichment))
+    if not scored.get("ok") or not scored.get("probability_publishable"):
+        blockers = list(scored.get("blockers") or ["MLB_V2_PROBABILITY_UNAVAILABLE"])
+        return {
+            "independent_probability": None,
+            "independent_probability_raw": None,
+            "home_probability": None,
+            "away_probability": None,
+            "submodel_probs": {},
+            "submodels_active": [],
+            "ensemble_weights_used": {},
+            "home_advantage_logit": 0.0,
+            "soccer_three_state": None,
+            "notes": [f"MLB_V2_NOT_READY:{b}" for b in blockers],
+            "data_contract_status": "DATA_CONTRACT_FAIL",
+            "model_id": scored.get("model_id") or "mlb-moneyline-v2-rolling-2026",
+            "native_calibrated": True,
+            "point_estimate_locked": True,
+            "probability_publishable": False,
+            "drift": scored.get("drift"),
+            "can_execute": False,
+        }
+    p_home = float(scored["home_probability"])
+    p_away = float(scored["away_probability"])
+    return {
+        "independent_probability": p_home,
+        "independent_probability_raw": float(scored["raw_pre_platt_home_probability"]),
+        "home_probability": p_home,
+        "away_probability": p_away,
+        "submodel_probs": {"mlb_v2_rolling": p_home},
+        "submodels_active": ["mlb_v2_rolling"],
+        "ensemble_weights_used": {"mlb_v2_rolling": 1.0},
+        "home_advantage_logit": 0.0,
+        "soccer_three_state": None,
+        "notes": [
+            "MLB_V2_ROLLING_ACTIVE:market_free_stage3",
+            "MLB_V2_POINT_NATIVE_PLATT:downstream_market_weight=0",
+            f"probability_perspective=HOME_WIN is_home={orientation.is_home}",
+        ],
+        "model_id": scored["model_id"],
+        "schema_version": scored["schema_version"],
+        "native_calibrated": True,
+        "point_estimate_locked": True,
+        "probability_publishable": True,
+        "model_native_home_lower_bound": float(scored["home_probability_lower_bound"]),
+        "model_native_home_upper_bound": float(scored["home_probability_upper_bound"]),
+        "empirical_interval": scored.get("empirical_interval"),
+        "drift": scored.get("drift"),
+        "market_weight_in_point_probability": 0.0,
+        "can_execute": False,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -416,6 +491,11 @@ def compute_independent_probability(
         }
     is_home = orientation.is_home
     is_soccer = sport in ("SOCCER", "EPL", "MLS")
+
+    # MLB V2 is the validated, market-free independent model. Do not blend it
+    # with the legacy H2H/Elo/power heuristic ensemble.
+    if sport == "MLB":
+        return _mlb_v2_independent_probability(row, clean_enrichment, orientation)
 
     submodel_probs:   dict[str, float] = {}
     active_submodels: list[str]        = []
