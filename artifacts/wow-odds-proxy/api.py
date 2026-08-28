@@ -31,7 +31,15 @@ QUOTA_HEADERS = ("x-requests-remaining", "x-requests-used", "x-requests-last")
 
 SportPath = Path(..., pattern=r"^[A-Za-z0-9_]+$", min_length=1, max_length=100)
 EventPath = Path(..., pattern=r"^[A-Za-z0-9_-]+$", min_length=1, max_length=128)
-CsvQuery = Query(None, pattern=r"^[A-Za-z0-9_.:-]+(?:,[A-Za-z0-9_.:-]+)*$", max_length=4096)
+
+
+def _csv_query():
+    """Return a fresh FastAPI Query object so parameter aliases cannot bleed."""
+    return Query(
+        None,
+        pattern=r"^[A-Za-z0-9_.:-]+(?:,[A-Za-z0-9_.:-]+)*$",
+        max_length=4096,
+    )
 
 
 def _require_proxy_action_key(authorization: Optional[str] = Header(default=None)) -> None:
@@ -100,7 +108,6 @@ def _safe_upstream_message(response: httpx.Response) -> Optional[str]:
     for field in ("message", "error", "detail"):
         value = payload.get(field)
         if isinstance(value, str):
-            # Defensive redaction if a vendor ever echoes a credential in an error.
             vendor_key = os.environ.get("ODDS_API_KEY")
             if vendor_key:
                 value = value.replace(vendor_key, "[REDACTED]")
@@ -204,8 +211,8 @@ def get_events(
 def get_event_markets(
     sport: str = SportPath,
     event_id: str = EventPath,
-    regions: Optional[str] = CsvQuery,
-    bookmakers: Optional[str] = CsvQuery,
+    regions: Optional[str] = _csv_query(),
+    bookmakers: Optional[str] = _csv_query(),
     date_format: Literal["iso", "unix"] = Query("iso", alias="dateFormat"),
 ):
     _require_regions_or_bookmakers(regions, bookmakers)
@@ -225,8 +232,8 @@ def get_event_odds(
         pattern=r"^[A-Za-z0-9_]+(?:,[A-Za-z0-9_]+)*$",
         max_length=4096,
     ),
-    regions: Optional[str] = CsvQuery,
-    bookmakers: Optional[str] = CsvQuery,
+    regions: Optional[str] = _csv_query(),
+    bookmakers: Optional[str] = _csv_query(),
     date_format: Literal["iso", "unix"] = Query("iso", alias="dateFormat"),
     odds_format: Literal["decimal", "american"] = Query("american", alias="oddsFormat"),
     include_links: Optional[bool] = Query(None, alias="includeLinks"),
