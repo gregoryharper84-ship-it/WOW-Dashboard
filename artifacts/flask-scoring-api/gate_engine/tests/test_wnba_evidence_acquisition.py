@@ -417,7 +417,16 @@ def test_packet_reconstructed_via_game_log_alt_key():
         },
     }
 
-    result = evidence_run(row, enr)
+    # PRE_EXISTING_CI_BLOCKER root-cause fix (2026-08-28): market_comparison
+    # and news_contradiction_check are absent from this fixture, so the
+    # fallback router makes a real outbound HTTP call (ESPN athlete-news
+    # search) trying to fill them -- non-deterministic across environments
+    # depending on live network reachability. Force it to a deterministic
+    # unreachable outcome, matching the mocking pattern already used for
+    # external adapters elsewhere in this file (tests 10-19 below).
+    from unittest.mock import patch as _patch
+    with _patch("requests.get", side_effect=ConnectionError("live network disabled for regression tests")):
+        result = evidence_run(row, enr)
 
     # Must not be rejected — game_log is consumed by build_packet (BUG-001 fix)
     assert result["packet_status"] in (
@@ -761,7 +770,12 @@ def test_packet_partial_hold_does_not_block_row():
         # market_comparison and news_contradiction_check deliberately absent
     }
 
-    result = evidence_run(row, enr)
+    # PRE_EXISTING_CI_BLOCKER root-cause fix (2026-08-28): see the identical
+    # note in test_packet_reconstructed_via_game_log_alt_key above -- these
+    # fields being absent triggers a real outbound HTTP call otherwise.
+    from unittest.mock import patch as _patch
+    with _patch("requests.get", side_effect=ConnectionError("live network disabled for regression tests")):
+        result = evidence_run(row, enr)
 
     # Must not be hard-rejected (critical fields all present)
     assert result["packet_status"] != PacketStatus.PACKET_INCOMPLETE_REJECTED, (

@@ -548,13 +548,24 @@ class TestLowestCeilingPropagation:
                 },
             }
         }
-        result = run_pipeline(
-            raw_rows=rows,
-            target_date=date.today(),
-            enrichment=enrichment,
-            skip_health_gate=True,
-            skip_settlement_check=True,
-        )
+        # PRE_EXISTING_CI_BLOCKER root-cause fix (2026-08-28): this WNBA row's
+        # enrichment omits market_comparison/news_contradiction_check, so
+        # gate_engine.wnba.evidence_acquisition's fallback router makes a
+        # real outbound HTTP call (ESPN athlete-news search) trying to fill
+        # them -- non-deterministic across environments depending on live
+        # network reachability (observed: reliably green with no network
+        # reachable, reliably red on a CI runner with real internet access).
+        # Force it to a deterministic unreachable outcome, matching the
+        # mocking pattern in gate_engine/tests/test_wnba_evidence_acquisition.py.
+        from unittest.mock import patch as _patch
+        with _patch("requests.get", side_effect=ConnectionError("live network disabled for regression tests")):
+            result = run_pipeline(
+                raw_rows=rows,
+                target_date=date.today(),
+                enrichment=enrichment,
+                skip_health_gate=True,
+                skip_settlement_check=True,
+            )
         prop = result["prop_ledger"][0]
         lbl = prop.get("terminal_label")
         # Must be a REJECT — must NOT be FINAL_APPROVED or MONEY_QUALIFIED
