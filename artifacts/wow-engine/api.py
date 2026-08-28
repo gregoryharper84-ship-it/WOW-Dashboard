@@ -56,7 +56,7 @@ from pydantic import BaseModel, ConfigDict
 from regime_model import PrimaryRegime, CohortCounts, PitcherCounts
 from simulation import RegimeConditionalParams, MIN_SIMULATION_DRAWS
 from engine import score_prop_end_to_end
-from ledger import insert_prediction
+from ledger import insert_prediction, get_client
 
 app = FastAPI(title="WOW External Governed Backend", version="1.1.0")
 
@@ -64,10 +64,95 @@ DEPLOYMENT_GATE_COUNT = 11  # see deployment_gate_tests.py; Gate 11 (real
                             # end-to-end positive path) was added per
                             # ChatGPT's 2026-08-26 code review.
 
-GOVERNED_PROBABILITY_CAPABILITY = "UNAVAILABLE"  # flips to AVAILABLE only after
-                                                  # all 11 deployment gate items
-                                                  # pass against a live host —
-                                                  # do not hardcode true here.
+GOVERNED_PROBABILITY_CAPABILITY = "UNAVAILABLE"  # Legacy constant, retained only
+                                                  # for the /governance note text
+                                                  # below. Runtime gating no longer
+                                                  # trusts a hardcoded module flag
+                                                  # an engineer could accidentally
+                                                  # leave flipped -- it derives its
+                                                  # answer from the live G01-G11
+                                                  # ledger (wow_governed_deployment_
+                                                  # state() in Supabase) via
+                                                  # _governed_capability_provider
+                                                  # below.
+
+
+def _query_deployment_gate_state() -> Optional[dict]:
+    """Live read of the G01-G11 deployment-gate ledger via the
+    wow_governed_deployment_state() Supabase RPC. Returns None -- never an
+    optimistic default -- if Supabase is unreachable/unconfigured; callers
+    must treat that as UNAVAILABLE (missing required evidence fails closed,
+    per the project's governance invariants)."""
+    try:
+        client = get_client()
+        result = client.rpc("wow_governed_deployment_state", {}).execute()
+        return result.data
+    except Exception:
+        return None
+
+
+def _query_calibration_health() -> Optional[dict]:
+    """Live read of the most recently assessed MLB V2D Calibration Health
+    row, so /governance can report it honestly instead of omitting it."""
+    try:
+        client = get_client()
+        result = (
+            client.table("wow_mlb_v2d_calibration_health")
+            .select("*")
+            .order("assessed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+    except Exception:
+        return None
+
+
+def _default_governed_capability_provider() -> str:
+    gate_state = _query_deployment_gate_state()
+    if not gate_state:
+        return "UNAVAILABLE"
+    return gate_state.get("governed_probability_capability", "UNAVAILABLE")
+
+
+GovernedCapabilityProvider = Callable[[], str]
+_governed_capability_provider: GovernedCapabilityProvider = _default_governed_capability_provider
+
+
+def set_governed_capability_provider(provider: GovernedCapabilityProvider) -> None:
+    """Test/staging seam, mirroring set_fitted_params_provider/set_persist_fn
+    below. Production leaves this unset, so every request queries the live
+    gate ledger fresh -- gate status can only ever go stale in the direction
+    of UNAVAILABLE (an unreachable ledger), never the reverse."""
+    global _governed_capability_provider
+    _governed_capability_provider = provider
+
+
+def _default_controlling_specialist_provider(sport: str, prop_type: str) -> Optional[dict]:
+    """Live read of the wow_controlling_specialist() Supabase RPC -- the
+    single source of truth for which specialist governs a (sport, prop_type)
+    pair, including the MLB first-inning-pitch-count routing invariant
+    (wow.mlb-first-inning-pitch-count-expert, >=25,000 event-tree
+    simulations). Returns None if unreachable; callers must fail closed
+    rather than assume a default/generic specialist."""
+    try:
+        client = get_client()
+        result = client.rpc(
+            "wow_controlling_specialist", {"p_sport": sport, "p_prop_type": prop_type}
+        ).execute()
+        return result.data
+    except Exception:
+        return None
+
+
+ControllingSpecialistProvider = Callable[[str, str], Optional[dict]]
+_controlling_specialist_provider: ControllingSpecialistProvider = _default_controlling_specialist_provider
+
+
+def set_controlling_specialist_provider(provider: ControllingSpecialistProvider) -> None:
+    """Test/staging seam, mirroring the other _xxx_provider seams here."""
+    global _controlling_specialist_provider
+    _controlling_specialist_provider = provider
 
 
 @dataclass
@@ -148,9 +233,30 @@ def health():
 
 @app.get("/governance")
 def governance():
+    """Reports the actual currently-evidenced governed state -- never an
+    optimistic default. Both the deployment-gate ledger and Calibration
+    Health are read live on every call; an unreachable gate ledger reports
+    UNAVAILABLE/NOT_PRODUCED rather than silently omitting the field or
+    assuming a prior good state."""
+    gate_state = _query_deployment_gate_state()
+    calibration_health = _query_calibration_health()
+
+    if gate_state:
+        capability = gate_state.get("governed_probability_capability", "UNAVAILABLE")
+        governed_status = gate_state.get("governed_probability_status", "NOT_PRODUCED")
+        deployment_gates = gate_state.get("deployment_gates", [])
+    else:
+        capability = "UNAVAILABLE"
+        governed_status = "NOT_PRODUCED"
+        deployment_gates = "GATE_LEDGER_UNREACHABLE"
+
     return {
-        "governed_probability_capability": GOVERNED_PROBABILITY_CAPABILITY,
-        "governed_probability_status": "NOT_PRODUCED" if GOVERNED_PROBABILITY_CAPABILITY == "UNAVAILABLE" else "PRODUCED",
+        "governed_probability_capability": capability,
+        "governed_probability_status": governed_status,
+        "probability_publishable": False,
+        "can_execute": False,
+        "deployment_gates": deployment_gates,
+        "calibration_health": calibration_health,
         "patch_id": "WOW-PATCH-2026-08-26-FREE-HOST-PROBABILITY-ENGINE",
         "patch_revision": "v2",
         "note": f"governed_probability_capability stays UNAVAILABLE until all "
@@ -318,7 +424,7 @@ def _score_event_contract_errors(req: ScoreEventRequest) -> list[str]:
 
 @app.post("/score-prop", dependencies=[Depends(_require_action_api_key)])
 def score_prop(req: ScorePropRequest):
-    if GOVERNED_PROBABILITY_CAPABILITY != "AVAILABLE":
+    if _governed_capability_provider() != "AVAILABLE":
         raise HTTPException(
             status_code=409,
             detail={
@@ -328,6 +434,38 @@ def score_prop(req: ScorePropRequest):
                            f"deployment gate. Use Section 8A Manual Estimate Lane instead.",
             },
         )
+
+    # Specialist routing (R3 / MLB 1IP invariant): determine the
+    # controlling specialist for this (sport, stat_type) from the governed
+    # routing ledger before scoring anything. A prop with no routed
+    # specialist must never be scored by generic reasoning, trends, or
+    # market intuition -- it is refused, not silently downgraded.
+    specialist = _controlling_specialist_provider(req.sport, req.stat_type)
+    if specialist is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SPECIALIST_ROUTING_UNAVAILABLE",
+                "message": "Could not reach the controlling-specialist routing ledger.",
+            },
+        )
+    if specialist.get("controlling_specialist") == "MODEL_UNAVAILABLE":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_UNAVAILABLE",
+                "probability_publishable": False,
+                "sport": specialist.get("sport"),
+                "canonical_prop_type": specialist.get("canonical_prop_type"),
+                "message": "No controlling specialist is routed for this (sport, prop_type). "
+                           "Refusing to substitute generic reasoning, trends, or market "
+                           "intuition for a governed model.",
+            },
+        )
+    # The routed specialist may require more simulations than the generic
+    # 8B.2 floor (e.g. the MLB 1IP contract's 25,000-simulation minimum) --
+    # never fewer than MIN_SIMULATION_DRAWS, which stays the absolute floor.
+    draws = max(MIN_SIMULATION_DRAWS, specialist.get("min_event_tree_simulations") or 0)
 
     # Real scoring requires fitted cohort/regime/simulation params supplied
     # from actual historical data — not invented here, per 8B.1's
@@ -350,7 +488,7 @@ def score_prop(req: ScorePropRequest):
         resample_fn=bundle.resample_fn, n_eff=bundle.n_eff, seed=req.seed,
         candidate_direction=req.direction, scored_at=scored_at,
         parent_cohort=bundle.parent_cohort, settled_n_in_cohort=bundle.settled_n_in_cohort,
-        money_lane_status=req.money_lane_status, draws=MIN_SIMULATION_DRAWS,
+        money_lane_status=req.money_lane_status, draws=draws,
     )
 
     if not result.row.probability_publishable:

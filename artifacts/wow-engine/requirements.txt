@@ -6,3 +6,4 @@ supabase>=2.4
 pydantic>=2.6
 pytest>=8.0
 httpx>=0.27  # required by fastapi.testclient.TestClient (Gate 11 endpoint tests)
+openapi-spec-validator>=0.7  # required by test_score_event_governance.py::test_33_openapi_validates_with_unique_operations

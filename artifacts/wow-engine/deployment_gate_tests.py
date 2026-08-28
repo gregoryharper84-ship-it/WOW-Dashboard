@@ -927,8 +927,20 @@ def test_gate_11h_score_prop_endpoint_409s_while_capability_unavailable():
     assert resp.json()["detail"]["governed_probability_capability"] == "UNAVAILABLE"
 
 
+def _valid_specialist_provider(sport, stat_type):
+    """Shared fake for tests that need /score-prop to clear specialist
+    routing without reaching live Supabase -- mirrors the real
+    wow_controlling_specialist() routing for 'strikeouts'."""
+    return {
+        "sport": sport, "canonical_prop_type": stat_type.upper(),
+        "controlling_specialist": "wow.mlb-pitcher-failure-path-expert",
+        "supporting_specialists": [], "min_event_tree_simulations": None,
+    }
+
+
 def test_gate_11i_score_prop_endpoint_501s_without_fitted_provider(monkeypatch):
-    monkeypatch.setattr(api, "GOVERNED_PROBABILITY_CAPABILITY", "AVAILABLE")
+    monkeypatch.setattr(api, "_governed_capability_provider", lambda: "AVAILABLE")
+    monkeypatch.setattr(api, "_controlling_specialist_provider", _valid_specialist_provider)
     resp = client.post("/score-prop", json={
         "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
         "stat_type": "strikeouts", "line": 4.5, "direction": "OVER",
@@ -938,7 +950,8 @@ def test_gate_11i_score_prop_endpoint_501s_without_fitted_provider(monkeypatch):
 
 
 def test_gate_11j_score_prop_endpoint_produces_persisted_publishable_result(monkeypatch):
-    monkeypatch.setattr(api, "GOVERNED_PROBABILITY_CAPABILITY", "AVAILABLE")
+    monkeypatch.setattr(api, "_governed_capability_provider", lambda: "AVAILABLE")
+    monkeypatch.setattr(api, "_controlling_specialist_provider", _valid_specialist_provider)
 
     def _staging_provider(sport, stat_type):
         return api.FittedParamsBundle(
@@ -970,7 +983,8 @@ def test_gate_11j_score_prop_endpoint_produces_persisted_publishable_result(monk
 
 
 def test_gate_11k_score_prop_endpoint_returns_422_for_unpublishable_result(monkeypatch):
-    monkeypatch.setattr(api, "GOVERNED_PROBABILITY_CAPABILITY", "AVAILABLE")
+    monkeypatch.setattr(api, "_governed_capability_provider", lambda: "AVAILABLE")
+    monkeypatch.setattr(api, "_controlling_specialist_provider", _valid_specialist_provider)
 
     def _broken_provider(sport, stat_type):
         params = _synthetic_fitted_params()
@@ -989,6 +1003,133 @@ def test_gate_11k_score_prop_endpoint_returns_422_for_unpublishable_result(monke
     assert resp.status_code == 422
     assert "simulation_failed" in resp.json()["detail"]["error"]
     assert resp.json()["detail"]["probability_publishable"] is False
+
+
+# --- Governed capability now derives from the live G01-G11 ledger, not a
+# hardcoded module constant (Probability Contract & Specialist Routing
+# completion, 2026-08-28). GOVERNED_PROBABILITY_CAPABILITY itself is left
+# untouched by these tests to prove the module constant is no longer what
+# gates the route -- only _governed_capability_provider is.
+
+def test_governance_reports_unavailable_when_gate_ledger_unreachable(monkeypatch):
+    monkeypatch.setattr(api, "_query_deployment_gate_state", lambda: None)
+    monkeypatch.setattr(api, "_query_calibration_health", lambda: None)
+    resp = client.get("/governance")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["governed_probability_capability"] == "UNAVAILABLE"
+    assert body["governed_probability_status"] == "NOT_PRODUCED"
+    assert body["can_execute"] is False
+    assert body["deployment_gates"] == "GATE_LEDGER_UNREACHABLE"
+
+
+def test_governance_relays_live_gate_state_when_reachable(monkeypatch):
+    fake_gates = {
+        "governed_probability_capability": "UNAVAILABLE",
+        "governed_probability_status": "NOT_PRODUCED",
+        "deployment_gates": [
+            {"id": "G01", "status": "FAIL", "reason": "NOT_EVALUATED_AFTER_PROBABILITY_CONTRACT_REPAIR"}
+        ],
+        "can_execute": False,
+    }
+    monkeypatch.setattr(api, "_query_deployment_gate_state", lambda: fake_gates)
+    monkeypatch.setattr(api, "_query_calibration_health", lambda: {"forward_shadow_status": "PREDICTIONS_AVAILABLE"})
+    resp = client.get("/governance")
+    body = resp.json()
+    assert body["deployment_gates"] == fake_gates["deployment_gates"]
+    assert body["calibration_health"] == {"forward_shadow_status": "PREDICTIONS_AVAILABLE"}
+
+
+def test_governance_never_independently_upgrades_capability(monkeypatch):
+    # /governance must faithfully relay the live gate state either way --
+    # it must never second-guess a reachable ledger by re-blocking it, nor
+    # invent optimism the ledger doesn't itself report.
+    fake_gates = {
+        "governed_probability_capability": "AVAILABLE",
+        "governed_probability_status": "READY_FOR_PRODUCTION_GATE_REVIEW",
+        "deployment_gates": [{"id": f"G{i:02d}", "status": "PASS"} for i in range(1, 12)],
+        "can_execute": False,
+    }
+    monkeypatch.setattr(api, "_query_deployment_gate_state", lambda: fake_gates)
+    monkeypatch.setattr(api, "_query_calibration_health", lambda: None)
+    resp = client.get("/governance")
+    body = resp.json()
+    assert body["governed_probability_capability"] == "AVAILABLE"
+    assert body["can_execute"] is False  # permanent execution invariant
+
+
+# --- Specialist routing (R3 / MLB 1IP invariant) wired into /score-prop.
+
+def test_score_prop_blocks_when_specialist_routing_unreachable(monkeypatch):
+    monkeypatch.setattr(api, "_governed_capability_provider", lambda: "AVAILABLE")
+    monkeypatch.setattr(api, "_controlling_specialist_provider", lambda sport, stat_type: None)
+    resp = client.post("/score-prop", json={
+        "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
+        "stat_type": "strikeouts", "line": 4.5, "direction": "OVER",
+        "source_snapshot_id": "snap1",
+    }, headers=AUTH_HEADERS)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "SPECIALIST_ROUTING_UNAVAILABLE"
+
+
+def test_score_prop_blocks_model_unavailable_specialist(monkeypatch):
+    monkeypatch.setattr(api, "_governed_capability_provider", lambda: "AVAILABLE")
+    monkeypatch.setattr(
+        api, "_controlling_specialist_provider",
+        lambda sport, stat_type: {
+            "sport": sport, "canonical_prop_type": stat_type.upper(),
+            "controlling_specialist": "MODEL_UNAVAILABLE",
+        },
+    )
+    resp = client.post("/score-prop", json={
+        "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
+        "stat_type": "some_unrouted_prop", "line": 4.5, "direction": "OVER",
+        "source_snapshot_id": "snap1",
+    }, headers=AUTH_HEADERS)
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "MODEL_UNAVAILABLE"
+
+
+def test_score_prop_1ip_specialist_routing_raises_simulation_floor(monkeypatch):
+    # Preserves the dedicated MLB 1IP architecture (controlling_specialist
+    # = wow.mlb-first-inning-pitch-count-expert, >=25,000 event-tree
+    # simulations) -- proves the routed floor actually reaches the engine's
+    # `draws` argument, not just that routing returns the right label.
+    monkeypatch.setattr(api, "_governed_capability_provider", lambda: "AVAILABLE")
+    monkeypatch.setattr(
+        api, "_controlling_specialist_provider",
+        lambda sport, stat_type: {
+            "sport": sport, "canonical_prop_type": stat_type.upper(),
+            "controlling_specialist": "wow.mlb-first-inning-pitch-count-expert",
+            "supporting_specialists": ["wow.mlb-pitcher-failure-path-expert"],
+            "min_event_tree_simulations": 25000,
+        },
+    )
+
+    seen = {}
+    real_score_prop_end_to_end = api.score_prop_end_to_end
+
+    def _spy(*args, **kwargs):
+        seen["draws"] = kwargs.get("draws")
+        return real_score_prop_end_to_end(*args, **kwargs)
+    monkeypatch.setattr(api, "score_prop_end_to_end", _spy)
+
+    def _staging_provider(sport, stat_type):
+        return api.FittedParamsBundle(
+            cohort=_uniform_cohort(), pitcher=_sample_pitcher(),
+            regime_params=_synthetic_fitted_params(), resample_fn=_synthetic_resampler,
+            n_eff=16,
+        )
+    monkeypatch.setattr(api, "_fitted_params_provider", _staging_provider)
+    monkeypatch.setattr(api, "_persist_fn", lambda row: {"prediction_id": "fake-uuid", **vars(row)})
+
+    resp = client.post("/score-prop", json={
+        "event_id": "e1", "event_start_time": "2026-08-27T00:00:00Z", "sport": "MLB",
+        "stat_type": "1st_inning_pitches_thrown", "line": 4.5, "direction": "MORE",
+        "source_snapshot_id": "snap1", "money_lane_status": "RESOLVED",
+    }, headers=AUTH_HEADERS)
+    assert resp.status_code == 200
+    assert seen["draws"] >= 25000
 
 
 # ---------------------------------------------------------------------
@@ -1413,7 +1554,8 @@ def test_3d_blocker_02d_score_prop_request_cannot_set_scored_at():
 
 
 def test_3d_blocker_02e_score_prop_endpoint_persists_server_generated_timestamp(monkeypatch):
-    monkeypatch.setattr(api, "GOVERNED_PROBABILITY_CAPABILITY", "AVAILABLE")
+    monkeypatch.setattr(api, "_governed_capability_provider", lambda: "AVAILABLE")
+    monkeypatch.setattr(api, "_controlling_specialist_provider", _valid_specialist_provider)
 
     def _staging_provider(sport, stat_type):
         return api.FittedParamsBundle(
