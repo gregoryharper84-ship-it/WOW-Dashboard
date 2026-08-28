@@ -21,7 +21,7 @@ from .wnba import opportunity_engine as _opp_engine
 from .wnba import generative_model as _gen
 from .wnba import full_model_evidence_gate as _evidence
 
-can_execute = False  # UNCONDITIONAL — never set True
+can_execute = False
 
 _CEILING = PropLabel.MODEL_QUALIFIED_HOLD.value
 
@@ -43,7 +43,6 @@ _PROBABILITY_FIELDS = (
 
 
 def _clear_publishable_probability(row: dict[str, Any]) -> None:
-    """Prevent stale/upstream probability fields leaking through a blocked WNBA row."""
     for key in _PROBABILITY_FIELDS:
         row.pop(key, None)
     row["probability_publication_allowed"] = False
@@ -83,6 +82,147 @@ def _settlement_packet(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _as_number(value: Any) -> float | None:
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        out = float(value)
+        return out
+    except (TypeError, ValueError):
+        return None
+
+
+def _canonical_stat(row: dict[str, Any]) -> str:
+    raw = str(
+        row.get("stat_key") or row.get("stat_type") or row.get("prop_type")
+        or row.get("prop") or ""
+    ).upper().strip().replace(" ", "_")
+    return _gen._STAT_KEY_ALIASES.get(raw, raw)
+
+
+def _component_value(item: dict[str, Any], aliases: tuple[str, ...]) -> float | None:
+    for key in aliases:
+        if key in item:
+            parsed = _as_number(item.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _exact_value_from_structured_row(item: dict[str, Any], canonical: str) -> float | None:
+    """Normalize a provider-neutral exact-stat row without inventing a category."""
+    # services/player_logs.py commonly emits an exact-query `stat` field.  Because
+    # the provider request is already scoped to the candidate market, that value
+    # is the safest first choice.
+    direct = _as_number(item.get("stat"))
+    if direct is not None:
+        return direct
+
+    pts = _component_value(item, ("points", "PTS", "pts"))
+    reb = _component_value(item, ("rebounds", "REB", "reb", "TRB"))
+    ast = _component_value(item, ("assists", "AST", "ast"))
+    stl = _component_value(item, ("steals", "STL", "stl"))
+    blk = _component_value(item, ("blocks", "BLK", "blk"))
+    tov = _component_value(item, ("turnovers", "TOV", "tov", "TO"))
+    threepm = _component_value(item, ("three_pointers_made", "3PM", "FG3M", "3pm"))
+
+    if canonical in {"PTS", "POINTS"}:
+        return pts
+    if canonical in {"REB", "REBOUNDS"}:
+        return reb
+    if canonical in {"AST", "ASSISTS"}:
+        return ast
+    if canonical in {"STL", "STEALS"}:
+        return stl
+    if canonical in {"BLK", "BLOCKS"}:
+        return blk
+    if canonical in {"TOV", "TO"}:
+        return tov
+    if canonical in {"3PM", "FG3M"}:
+        return threepm
+    if canonical in {"PRA", "PTS+REB+AST"} and None not in (pts, reb, ast):
+        return float(pts + reb + ast)
+    if canonical == "PTS+REB" and None not in (pts, reb):
+        return float(pts + reb)
+    if canonical == "PTS+AST" and None not in (pts, ast):
+        return float(pts + ast)
+    if canonical == "REB+AST" and None not in (reb, ast):
+        return float(reb + ast)
+    return None
+
+
+def _normalize_exact_game_log(
+    row: dict[str, Any], enrichment: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """
+    Enforce the pre-model `game_log=list[number]` contract.
+
+    Legacy provider-neutral structured exact-stat rows are normalized into a NEW
+    numeric object.  `box_score_log` is never overwritten or backfilled from this
+    normalization, so contextual history remains a separate contract.
+    """
+    out = dict(enrichment)
+    raw = out.get("game_log")
+    if not isinstance(raw, list):
+        return out, []
+    if not raw or not any(isinstance(v, dict) for v in raw):
+        return out, []
+    if any(not isinstance(v, dict) for v in raw):
+        return out, ["WNBA_ACQUISITION:GAME_LOG_MIXED_TYPES"]
+
+    canonical = _canonical_stat(row)
+    values: list[float] = []
+    dropped = 0
+    for item in raw:
+        value = _exact_value_from_structured_row(item, canonical)
+        if value is None:
+            dropped += 1
+        else:
+            values.append(value)
+
+    out["game_log_structured_source"] = raw
+    out["game_log"] = values
+    out["game_log_normalization_audit"] = {
+        "source_type": "list[dict]",
+        "target_type": "list[number]",
+        "canonical_stat": canonical,
+        "rows_in": len(raw),
+        "values_out": len(values),
+        "rows_unresolved": dropped,
+        "box_score_log_untouched": True,
+    }
+    blockers: list[str] = []
+    if dropped:
+        blockers.append(
+            f"WNBA_ACQUISITION:EXACT_GAME_LOG_NORMALIZATION_PARTIAL:{dropped}_ROWS_UNRESOLVED"
+        )
+    return out, blockers
+
+
+def _evidence_row(row: dict[str, Any], enrichment: dict[str, Any]) -> dict[str, Any]:
+    """Flatten already-observed role fields for evidence inspection only."""
+    evidence_row = dict(row)
+    role = row.get("role_status")
+    if isinstance(role, dict):
+        evidence_row["role_status"] = (
+            role.get("usage_role") or role.get("role") or role.get("role_state")
+        )
+        evidence_row["role_timestamp"] = (
+            role.get("role_timestamp") or enrichment.get("role_timestamp")
+        )
+        evidence_row["starter_flag"] = (
+            role.get("starter_flag")
+            if role.get("starter_flag") is not None
+            else role.get("expected_start")
+        )
+        evidence_row["status"] = (
+            role.get("active_status") or role.get("status") or row.get("status")
+        )
+        if enrichment.get("projected_minutes") is None and role.get("projected_minutes") is not None:
+            enrichment["projected_minutes"] = role.get("projected_minutes")
+    return evidence_row
+
+
 def _unsupported_result(canonical: str, packet: dict[str, Any]) -> dict[str, Any]:
     blocker = (
         "WNBA_2PM_CONTROLLING_MODEL_UNSUPPORTED"
@@ -104,8 +244,6 @@ def _model_completed(result: dict[str, Any]) -> bool:
     status = str(result.get("model_status") or "").upper()
     if any(token in status for token in ("ERROR", "FAILED", "UNAVAILABLE", "NOT_STARTED")):
         return False
-    # The existing WNBA model may omit model_status on successful legacy paths.
-    # Presence of calibrated output is sufficient evidence that it actually ran.
     return any(
         result.get(key) is not None
         for key in ("cal_selected", "cal_lower_bound", "raw_selected", "p_more", "p_over")
@@ -113,7 +251,6 @@ def _model_completed(result: dict[str, Any]) -> bool:
 
 
 def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
-    """Gate entry point. Mutates ``row`` in-place; always can_execute=False."""
     row["can_execute"] = False
 
     if not _opp_engine.is_wnba_row(row):
@@ -130,13 +267,24 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
         for key, value in per_row.items():
             effective_enr.setdefault(key, value)
 
-    # Binding evidence-packet completeness check BEFORE model invocation.
-    packet = _evidence.build(row, effective_enr)
+    # Normalize legacy exact-stat rows to the binding numeric game_log contract.
+    # Contextual box_score_log remains a distinct object and is never synthesized here.
+    effective_enr, normalization_blockers = _normalize_exact_game_log(row, effective_enr)
+    _append_blockers(row, normalization_blockers)
+    evidence_row = _evidence_row(row, effective_enr)
+
+    packet = _evidence.build(evidence_row, effective_enr)
     packet["settlement"] = _settlement_packet(row)
+    packet["exact_game_log_normalization"] = effective_enr.get("game_log_normalization_audit")
     row["gates"]["wnba_full_model_evidence"] = packet
 
+    if normalization_blockers:
+        packet.setdefault("model_blockers", []).extend(normalization_blockers)
+        packet["model_input_ready"] = False
+        packet["probability_publication_allowed"] = False
+
     if not packet.get("model_input_ready"):
-        blockers = list(packet.get("model_blockers") or [])
+        blockers = list(dict.fromkeys(packet.get("model_blockers") or []))
         blockers.insert(0, "RUN_INVALID_ACQUISITION_INCOMPLETE")
         _append_blockers(row, blockers)
         _clear_publishable_probability(row)
@@ -154,12 +302,7 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
         row["can_execute"] = False
         return
 
-    # Stat support is a controlling-model capability gate, not a qualitative fallback.
-    raw = str(
-        row.get("stat_key") or row.get("stat_type") or row.get("prop_type")
-        or row.get("prop") or ""
-    ).upper().strip().replace(" ", "_")
-    canonical = _gen._STAT_KEY_ALIASES.get(raw, raw)
+    canonical = _canonical_stat(row)
     if canonical not in _gen.SUPPORTED_STAT_KEYS:
         result = _unsupported_result(canonical, packet)
         row["gates"]["wnba_generative"] = result
@@ -169,7 +312,6 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
         row["can_execute"] = False
         return
 
-    # Pass ESS/discernment forward without ever substituting raw L10 hit rate.
     role_valid = packet.get("role_valid_sample") or {}
     effective_enr["effective_sample_size"] = role_valid.get("effective_sample_size")
     effective_enr["role_valid_games"] = role_valid.get("role_valid_games")
@@ -199,9 +341,6 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
 
     _append_blockers(row, list(result.get("blockers") or []))
 
-    # Publish model probability whenever the model genuinely completed, even if
-    # the candidate itself is later rejected for low probability. Evidence/model
-    # completeness, not outcome attractiveness, controls publication.
     if result["probability_publication_allowed"]:
         cal = result.get("cal_selected")
         if cal is not None:
@@ -214,7 +353,6 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
     else:
         _clear_publishable_probability(row)
 
-    # Apply PROVISIONAL ceiling — downstream gates may add a stricter ceiling.
     cur = row.get("terminal_label") or ""
     if cur in _ABOVE_CEILING:
         row["terminal_label"] = _CEILING
