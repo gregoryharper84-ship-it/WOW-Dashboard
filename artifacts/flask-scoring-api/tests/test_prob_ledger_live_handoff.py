@@ -20,6 +20,30 @@ TODAY = date(2026, 8, 17)
 SLATE = "2026-08-17"
 
 
+@pytest.fixture(autouse=True)
+def _no_live_network(monkeypatch):
+    """PRE_EXISTING_CI_BLOCKER root-cause fix (2026-08-28).
+
+    WNBA rows in this file omit market_comparison/news_contradiction_check,
+    so gate_engine.wnba.evidence_acquisition's fallback router makes a real
+    outbound HTTP call (ESPN athlete-news search) to try to fill them --
+    there is no test-mode gate in production code that prevents this.
+    Whether that live call succeeds and what it returns depends on real-time
+    network reachability and ESPN's live content, which made these fixture-
+    driven regression tests silently non-deterministic across environments
+    (observed: reliably green with no network reachable, reliably red on a
+    CI runner with real internet access -- confirmed via a control run
+    against clean main, see PR history). Forcing the HTTP boundary itself to
+    a deterministic "unreachable" outcome makes every assertion here exercise
+    only the fixture data, matching the file's own intent (fixed historical
+    fixtures), and matches the existing mocking pattern already used for
+    external adapters in gate_engine/tests/test_wnba_evidence_acquisition.py.
+    """
+    def _no_network(*args, **kwargs):
+        raise ConnectionError("live network disabled for regression tests")
+    monkeypatch.setattr("requests.get", _no_network)
+
+
 def _now_iso():
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
