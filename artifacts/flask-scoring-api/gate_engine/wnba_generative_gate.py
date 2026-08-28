@@ -6,8 +6,9 @@ Binding rule: no WNBA probability may be published until the visible Full Model
 evidence packet proves exact-stat L10, contextual box-score L10, fresh role/status,
 role-valid ESS, and opportunity/matchup/game-script readiness.
 
-Market comparison remains a separate objective: missing exact market evidence may
-cap market/money lanes without erasing an otherwise complete sporting model.
+Market comparison and settlement/money evidence remain separate objectives: missing
+exact market evidence may cap market/money lanes without erasing an otherwise complete
+sporting model.
 
 can_execute=False is unconditional.
 """
@@ -24,7 +25,6 @@ can_execute = False  # UNCONDITIONAL — never set True
 
 _CEILING = PropLabel.MODEL_QUALIFIED_HOLD.value
 
-# Labels that are above the PROVISIONAL ceiling and must be capped
 _ABOVE_CEILING = frozenset({
     PropLabel.FINAL_APPROVED.value,
     PropLabel.MONEY_QUALIFIED.value,
@@ -57,6 +57,32 @@ def _append_blockers(row: dict[str, Any], blockers: list[str]) -> None:
             existing.add(blocker)
 
 
+def _settlement_packet(row: dict[str, Any]) -> dict[str, Any]:
+    gates = row.get("gates") or {}
+    settlement = (
+        gates.get("settlement")
+        or gates.get("settlement_audit")
+        or gates.get("exact_line_settlement")
+        or {}
+    )
+    status = (
+        settlement.get("status")
+        or settlement.get("gate_label")
+        or settlement.get("label")
+        or settlement.get("code")
+        or "UNAVAILABLE"
+    ) if isinstance(settlement, dict) else "UNAVAILABLE"
+    normalized = str(status).upper()
+    verified = normalized in {
+        "PASS", "VERIFIED", "SETTLEMENT_VERIFIED", "EXACT_SETTLEMENT_VERIFIED"
+    }
+    return {
+        "status": "VERIFIED" if verified else "UNAVAILABLE",
+        "detail": settlement if isinstance(settlement, dict) else {},
+        "blocks_model_probability": False,
+    }
+
+
 def _unsupported_result(canonical: str, packet: dict[str, Any]) -> dict[str, Any]:
     blocker = (
         "WNBA_2PM_CONTROLLING_MODEL_UNSUPPORTED"
@@ -74,6 +100,18 @@ def _unsupported_result(canonical: str, packet: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _model_completed(result: dict[str, Any]) -> bool:
+    status = str(result.get("model_status") or "").upper()
+    if any(token in status for token in ("ERROR", "FAILED", "UNAVAILABLE", "NOT_STARTED")):
+        return False
+    # The existing WNBA model may omit model_status on successful legacy paths.
+    # Presence of calibrated output is sufficient evidence that it actually ran.
+    return any(
+        result.get(key) is not None
+        for key in ("cal_selected", "cal_lower_bound", "raw_selected", "p_more", "p_over")
+    ) or status in {"PASS", "COMPLETE", "COMPLETED", "SCORED"}
+
+
 def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
     """Gate entry point. Mutates ``row`` in-place; always can_execute=False."""
     row["can_execute"] = False
@@ -84,7 +122,6 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
     row.setdefault("gates", {})
     row.setdefault("blockers", [])
 
-    # Resolve enrichment: prefer pipeline-supplied enr, then fill absent keys from row.
     effective_enr: dict[str, Any] = {}
     if enr:
         effective_enr.update(enr)
@@ -95,6 +132,7 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
 
     # Binding evidence-packet completeness check BEFORE model invocation.
     packet = _evidence.build(row, effective_enr)
+    packet["settlement"] = _settlement_packet(row)
     row["gates"]["wnba_full_model_evidence"] = packet
 
     if not packet.get("model_input_ready"):
@@ -118,7 +156,8 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
 
     # Stat support is a controlling-model capability gate, not a qualitative fallback.
     raw = str(
-        row.get("stat_key") or row.get("prop_type") or row.get("prop") or ""
+        row.get("stat_key") or row.get("stat_type") or row.get("prop_type")
+        or row.get("prop") or ""
     ).upper().strip().replace(" ", "_")
     canonical = _gen._STAT_KEY_ALIASES.get(raw, raw)
     if canonical not in _gen.SUPPORTED_STAT_KEYS:
@@ -130,13 +169,12 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
         row["can_execute"] = False
         return
 
-    # Pass ESS and discernment evidence downstream. Existing model code may consume
-    # these fields now or later; they remain visible regardless and cannot be faked.
+    # Pass ESS/discernment forward without ever substituting raw L10 hit rate.
     role_valid = packet.get("role_valid_sample") or {}
     effective_enr["effective_sample_size"] = role_valid.get("effective_sample_size")
     effective_enr["role_valid_games"] = role_valid.get("role_valid_games")
     effective_enr["l10_discernment_status"] = role_valid.get("status")
-    effective_enr["weighted_comparable_l10_prior"] = None  # never substitute raw hit rate
+    effective_enr["weighted_comparable_l10_prior"] = None
 
     try:
         result = _gen.score(row, effective_enr)
@@ -150,19 +188,20 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
             "final_label": "REJECT",
         }
 
-    # Evidence packet is part of the returned model contract, not hidden internals.
+    completed = _model_completed(result)
     result["evidence_packet"] = _evidence.attach_model_output(packet, result)
     result["probability_publication_allowed"] = bool(
-        packet.get("model_input_ready") and result.get("final_label") != "REJECT"
+        packet.get("model_input_ready") and completed
     )
     result["can_execute"] = False
     row["gates"]["wnba_full_model_evidence"] = result["evidence_packet"]
     row["gates"]["wnba_generative"] = result
 
-    # Propagate blockers (deduplicate).
     _append_blockers(row, list(result.get("blockers") or []))
 
-    # Update calibrated probability fields only when publication is explicitly allowed.
+    # Publish model probability whenever the model genuinely completed, even if
+    # the candidate itself is later rejected for low probability. Evidence/model
+    # completeness, not outcome attractiveness, controls publication.
     if result["probability_publication_allowed"]:
         cal = result.get("cal_selected")
         if cal is not None:
@@ -175,7 +214,7 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
     else:
         _clear_publishable_probability(row)
 
-    # Apply PROVISIONAL ceiling — wnba_composite_gate may add a stricter ceiling.
+    # Apply PROVISIONAL ceiling — downstream gates may add a stricter ceiling.
     cur = row.get("terminal_label") or ""
     if cur in _ABOVE_CEILING:
         row["terminal_label"] = _CEILING
@@ -187,10 +226,12 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
     if final_lbl == "REJECT":
         if not row.get("terminal_label"):
             row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
-        _append_blockers(
-            row,
-            [f"WNBA_GENERATIVE:REJECT:lb={result.get('cal_lower_bound', 0.0) or 0.0:.3f}"],
-        )
+        lb_value = result.get("cal_lower_bound")
+        try:
+            lb_text = f"{float(lb_value):.3f}" if lb_value is not None else "n/a"
+        except (TypeError, ValueError):
+            lb_text = "n/a"
+        _append_blockers(row, [f"WNBA_GENERATIVE:REJECT:lb={lb_text}"])
     elif final_lbl in ("HOLD", "WATCH") and not row.get("terminal_label"):
         row["terminal_label"] = _CEILING
 
