@@ -24,6 +24,7 @@ from .wnba import full_model_evidence_gate as _evidence
 can_execute = False
 
 _CEILING = PropLabel.MODEL_QUALIFIED_HOLD.value
+_MIN_STRICT_ROLE_MATCH_GAMES = 4
 
 _ABOVE_CEILING = frozenset({
     PropLabel.FINAL_APPROVED.value,
@@ -86,8 +87,7 @@ def _as_number(value: Any) -> float | None:
     try:
         if value is None or isinstance(value, bool):
             return None
-        out = float(value)
-        return out
+        return float(value)
     except (TypeError, ValueError):
         return None
 
@@ -111,9 +111,6 @@ def _component_value(item: dict[str, Any], aliases: tuple[str, ...]) -> float | 
 
 def _exact_value_from_structured_row(item: dict[str, Any], canonical: str) -> float | None:
     """Normalize a provider-neutral exact-stat row without inventing a category."""
-    # services/player_logs.py commonly emits an exact-query `stat` field.  Because
-    # the provider request is already scoped to the candidate market, that value
-    # is the safest first choice.
     direct = _as_number(item.get("stat"))
     if direct is not None:
         return direct
@@ -158,7 +155,7 @@ def _normalize_exact_game_log(
     Enforce the pre-model `game_log=list[number]` contract.
 
     Legacy provider-neutral structured exact-stat rows are normalized into a NEW
-    numeric object.  `box_score_log` is never overwritten or backfilled from this
+    numeric object. `box_score_log` is never overwritten or backfilled from this
     normalization, so contextual history remains a separate contract.
     """
     out = dict(enrichment)
@@ -223,6 +220,36 @@ def _evidence_row(row: dict[str, Any], enrichment: dict[str, Any]) -> dict[str, 
     return evidence_row
 
 
+def _enforce_strict_role_match(packet: dict[str, Any]) -> None:
+    """Require multiple role/opportunity signals before a history row earns full-role credit."""
+    role_valid = packet.get("role_valid_sample") or {}
+    rows = role_valid.get("rows") if isinstance(role_valid, dict) else []
+    strict_matches = 0
+    for hist in rows or []:
+        if hist.get("comparability_class") != "ROLE_MATCH":
+            continue
+        reasons = hist.get("reason") or []
+        matched_dimensions = [
+            reason for reason in reasons
+            if reason in {"starter_match", "role_match", "minutes_band_match"}
+        ]
+        if len(matched_dimensions) >= 2:
+            strict_matches += 1
+
+    role_valid["strict_role_match_games"] = strict_matches
+    role_valid["strict_role_match_floor"] = _MIN_STRICT_ROLE_MATCH_GAMES
+    if strict_matches < _MIN_STRICT_ROLE_MATCH_GAMES:
+        role_valid["status"] = "BLOCKED"
+        blocker = (
+            "WNBA_EVIDENCE:STRICT_ROLE_MATCH_SAMPLE_BLOCKED:"
+            f"n={strict_matches}<{_MIN_STRICT_ROLE_MATCH_GAMES}"
+        )
+        packet.setdefault("model_blockers", []).append(blocker)
+        packet["model_input_ready"] = False
+        packet["probability_publication_allowed"] = False
+        packet["terminal_ceiling"] = "REJECT_DATA_QUALITY"
+
+
 def _unsupported_result(canonical: str, packet: dict[str, Any]) -> dict[str, Any]:
     blocker = (
         "WNBA_2PM_CONTROLLING_MODEL_UNSUPPORTED"
@@ -267,8 +294,6 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
         for key, value in per_row.items():
             effective_enr.setdefault(key, value)
 
-    # Normalize legacy exact-stat rows to the binding numeric game_log contract.
-    # Contextual box_score_log remains a distinct object and is never synthesized here.
     effective_enr, normalization_blockers = _normalize_exact_game_log(row, effective_enr)
     _append_blockers(row, normalization_blockers)
     evidence_row = _evidence_row(row, effective_enr)
@@ -276,6 +301,7 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
     packet = _evidence.build(evidence_row, effective_enr)
     packet["settlement"] = _settlement_packet(row)
     packet["exact_game_log_normalization"] = effective_enr.get("game_log_normalization_audit")
+    _enforce_strict_role_match(packet)
     row["gates"]["wnba_full_model_evidence"] = packet
 
     if normalization_blockers:
@@ -314,7 +340,7 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
 
     role_valid = packet.get("role_valid_sample") or {}
     effective_enr["effective_sample_size"] = role_valid.get("effective_sample_size")
-    effective_enr["role_valid_games"] = role_valid.get("role_valid_games")
+    effective_enr["role_valid_games"] = role_valid.get("strict_role_match_games")
     effective_enr["l10_discernment_status"] = role_valid.get("status")
     effective_enr["weighted_comparable_l10_prior"] = None
 
