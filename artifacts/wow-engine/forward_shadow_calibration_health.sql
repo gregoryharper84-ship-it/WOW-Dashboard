@@ -1,12 +1,16 @@
 -- WOW MLB V2D forward-shadow -> Calibration Health synchronization
 -- Probability Contract & Specialist Routing completion, 2026-08-28
 --
--- NOT YET APPLIED to any Supabase project. Drafted and read-only-validated
--- (the eligibility/count subqueries below were run directly against
--- wow-engine-validation as plain SELECTs before this file was written --
--- see the completion report) but the DDL/function bodies themselves have
--- not been executed against any database. Apply only after review, ideally
--- against a Supabase branch first.
+-- APPLIED to the wow-engine-validation Supabase project (2026-08-28) as
+-- migration wow_forward_shadow_calibration_health_sync_20260828. Verified
+-- live: wow_mlb_v2d_assess_calibration_health() correctly recomputed
+-- forward_shadow_status=PREDICTIONS_AVAILABLE, forward_shadow_n=30,
+-- eligible_shadow_n=6, graded_shadow_n=0, pending_shadow_n=6,
+-- timestamped_pregame_provenance_status=AVAILABLE (replacing the stale
+-- NOT_STARTED/0/UNAVAILABLE row), and wow_mlb_forward_grade_shadow_event()
+-- correctly returns BLOCKED/EVENT_NOT_YET_STARTED (no write) against a
+-- real still-pregame shadow event. This file is kept in git as the
+-- source-controlled record of that migration, not as a pending draft.
 --
 -- Repairs the exact stale-ledger gap: wow_mlb_v2d_calibration_health
 -- currently reports forward_shadow_status=NOT_STARTED / forward_shadow_n=0
