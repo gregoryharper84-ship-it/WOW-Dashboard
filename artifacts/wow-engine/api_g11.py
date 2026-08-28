@@ -1,35 +1,43 @@
 """Production wrapper for the WOW governed backend G11 MLB event path.
 
-Keeps the existing api.py app and routes intact except for POST /score-event.
-That route is replaced with a fail-closed bridge to the real frozen MLB
-fitted-model scorer in Supabase. Held probabilities are never returned while
-publication gates remain blocked. can_execute remains false.
+Builds a separate FastAPI app from the existing api.py routes, replacing only
+POST /score-event with a fail-closed bridge to the real frozen MLB fitted-model
+scorer in Supabase. Importing this module never mutates base_api.app, so the
+legacy API contract tests remain isolated. Held probabilities are never
+returned while publication gates remain blocked. can_execute remains false.
 """
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
 import api as base_api
 
-app = base_api.app
 ScoreEventRequest = base_api.ScoreEventRequest
 _require_action_api_key = base_api._require_action_api_key
 _score_event_contract_errors = base_api._score_event_contract_errors
 get_client = base_api.get_client
 
-# Replace only the legacy hardcoded POST /score-event route. Preserve every
-# other route and middleware from api.py.
-app.router.routes = [
+# Build a production wrapper without mutating base_api.app. Disable new docs
+# routes here and copy the existing base routes (including its docs/openapi
+# routes) except the legacy hardcoded POST /score-event handler.
+app = FastAPI(
+    title=base_api.app.title,
+    version=base_api.app.version,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+app.router.routes.extend(
     route
-    for route in app.router.routes
+    for route in base_api.app.router.routes
     if not (
         getattr(route, "path", None) == "/score-event"
         and "POST" in (getattr(route, "methods", set()) or set())
     )
-]
+)
+app.exception_handlers.update(base_api.app.exception_handlers)
 
 _NUMERIC_PROBABILITY_FIELDS = {
     "raw_home_probability",
@@ -150,9 +158,9 @@ def score_event(req: ScoreEventRequest):
             detail=payload,
         )
 
-    # This is intentionally a successful model-path response, not a betting
-    # approval and not a publishable probability. Calibration/lineup/final
-    # publication gates remain visible in blockers and must clear separately.
+    # Successful model-path proof is not a betting approval and not a
+    # publishable probability. Calibration/lineup/final-publication gates
+    # remain visible in blockers and must clear independently.
     return {
         "ok": True,
         **payload,
