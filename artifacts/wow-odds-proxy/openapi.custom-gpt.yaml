@@ -1,0 +1,209 @@
+openapi: 3.1.0
+info:
+  title: WOW Secure Odds Acquisition Proxy
+  version: 1.0.0
+  description: >-
+    Read-only credential proxy for The Odds API v4. The upstream vendor
+    credential remains server-side. This API provides acquisition evidence only;
+    it never places, routes, modifies, cancels, or approves wagers. can_execute=false.
+servers:
+  - url: https://REPLACE_WITH_RENDER_ODDS_PROXY_HOST
+paths:
+  /odds-api/health:
+    get:
+      operationId: getWowOddsProxyHealth
+      summary: Check the secure Odds acquisition proxy
+      responses:
+        '200':
+          description: Proxy configuration/health state without secret values.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties: {}
+  /odds-api/v4/sports/{sport}/events:
+    get:
+      operationId: getOddsProxyEvents
+      summary: Get current events for one Odds API sport key
+      description: >-
+        Read-only event discovery. The vendor credential is injected server-side.
+        This endpoint returns event identity/status timing evidence, not a model probability.
+      security:
+        - oddsProxyBearer: []
+      parameters:
+        - $ref: '#/components/parameters/Sport'
+        - name: dateFormat
+          in: query
+          schema:
+            type: string
+            enum: [iso, unix]
+            default: iso
+        - name: eventIds
+          in: query
+          schema:
+            type: string
+        - name: commenceTimeFrom
+          in: query
+          schema:
+            type: string
+        - name: commenceTimeTo
+          in: query
+          schema:
+            type: string
+        - name: includeRotationNumbers
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Odds API events response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                  properties: {}
+        '401':
+          description: Missing or invalid proxy Bearer credential.
+        '503':
+          description: Proxy or upstream vendor credential is not configured.
+  /odds-api/v4/sports/{sport}/events/{event_id}/markets:
+    get:
+      operationId: getOddsProxyEventMarkets
+      summary: Get currently available market keys for one event
+      description: >-
+        Read-only market inventory acquisition. Provide regions or bookmakers.
+      security:
+        - oddsProxyBearer: []
+      parameters:
+        - $ref: '#/components/parameters/Sport'
+        - $ref: '#/components/parameters/EventId'
+        - name: regions
+          in: query
+          schema:
+            type: string
+        - name: bookmakers
+          in: query
+          schema:
+            type: string
+        - name: dateFormat
+          in: query
+          schema:
+            type: string
+            enum: [iso, unix]
+            default: iso
+      responses:
+        '200':
+          description: Available event market keys by bookmaker.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties: {}
+        '401':
+          description: Missing or invalid proxy Bearer credential.
+        '422':
+          description: regions/bookmakers or another request field is invalid.
+        '503':
+          description: Proxy or upstream vendor credential is not configured.
+  /odds-api/v4/sports/{sport}/events/{event_id}/odds:
+    get:
+      operationId: getOddsProxyEventOdds
+      summary: Get exact current odds for selected markets on one event
+      description: >-
+        Read-only odds acquisition for a single event. Use exact market identity,
+        timestamp/freshness, opposing prices, settlement rules, and no-vig handling
+        in the downstream WOW market lane. This endpoint itself does not calculate
+        model probability or authorize wagering.
+      security:
+        - oddsProxyBearer: []
+      parameters:
+        - $ref: '#/components/parameters/Sport'
+        - $ref: '#/components/parameters/EventId'
+        - name: markets
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: regions
+          in: query
+          schema:
+            type: string
+        - name: bookmakers
+          in: query
+          schema:
+            type: string
+        - name: dateFormat
+          in: query
+          schema:
+            type: string
+            enum: [iso, unix]
+            default: iso
+        - name: oddsFormat
+          in: query
+          schema:
+            type: string
+            enum: [decimal, american]
+            default: american
+        - name: includeLinks
+          in: query
+          schema:
+            type: boolean
+        - name: includeSids
+          in: query
+          schema:
+            type: boolean
+        - name: includeBetLimits
+          in: query
+          schema:
+            type: boolean
+        - name: includeRotationNumbers
+          in: query
+          schema:
+            type: boolean
+        - name: includeMultipliers
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Exact event odds response from The Odds API.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties: {}
+        '401':
+          description: Missing or invalid proxy Bearer credential.
+        '422':
+          description: Required market/region/bookmaker or request field is invalid.
+        '429':
+          description: Upstream Odds API rate/quota limit reached.
+        '503':
+          description: Proxy or upstream vendor credential is not configured.
+components:
+  securitySchemes:
+    oddsProxyBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: WOW_ODDS_PROXY_ACTION_KEY
+  parameters:
+    Sport:
+      name: sport
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The Odds API sport key, for example baseball_mlb or basketball_wnba.
+    EventId:
+      name: event_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Exact Odds API event id returned by getOddsProxyEvents.
