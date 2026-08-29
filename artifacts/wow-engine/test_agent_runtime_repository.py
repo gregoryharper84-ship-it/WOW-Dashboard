@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from agent_runtime import repository
 from agent_runtime.registry import WORKERS
 from agent_runtime.state_machine import IllegalTransitionError
@@ -333,3 +335,37 @@ def test_enqueue_job_same_idempotency_key_returns_existing_job():
     assert created2 is False
     assert first["job_id"] == second["job_id"]
     assert len(client._store["wow_agent_jobs"]) == 1
+
+
+def _running_job_with_heartbeat_age(client, *, heartbeat_age_seconds: float) -> dict:
+    run_row, _ = repository.create_run(
+        client, idempotency_key="k1", request_hash="h1", run_type="FULL_MODEL",
+        requested_as_of="2026-08-29T00:00:00Z", user_timezone="America/Chicago",
+        governance_version="TEST_V1",
+    )
+    job, _ = repository.enqueue_job(
+        client, run_id=run_row["run_id"], candidate_id=None, worker_id="wow.parallel-discovery-router",
+        worker_version="1.0.0", idempotency_key="k", required=True, input_hash="h",
+    )
+    stale_heartbeat = (datetime.now(timezone.utc) - timedelta(seconds=heartbeat_age_seconds)).isoformat()
+    stored = next(row for row in client._store["wow_agent_jobs"] if row["job_id"] == job["job_id"])
+    stored["status"] = "RUNNING"
+    stored["heartbeat_at"] = stale_heartbeat
+    return stored
+
+
+def test_claim_job_reclaims_a_running_job_whose_lease_expired():
+    client = _client()
+    job = _running_job_with_heartbeat_age(client, heartbeat_age_seconds=181)  # older than the default 180s lease
+    claimed = repository.claim_job(client, job["job_id"])
+    assert claimed is True
+    refreshed = repository.get_job(client, job["job_id"])
+    assert refreshed["status"] == "RUNNING"
+    assert refreshed["attempt"] == 1
+
+
+def test_claim_job_refuses_a_running_job_whose_lease_has_not_expired():
+    client = _client()
+    job = _running_job_with_heartbeat_age(client, heartbeat_age_seconds=5)  # well inside the default 180s lease
+    claimed = repository.claim_job(client, job["job_id"])
+    assert claimed is False
