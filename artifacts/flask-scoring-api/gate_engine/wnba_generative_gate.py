@@ -222,16 +222,6 @@ def _evidence_row(row: dict[str, Any], enrichment: dict[str, Any]) -> dict[str, 
 
 def _enforce_strict_role_match(packet: dict[str, Any]) -> None:
     """Require multiple role/opportunity signals before a history row earns full-role credit."""
-    if canonical in special_unsupported:
-        result = _unsupported_result(canonical, packet)
-        row["gates"]["wnba_generative"] = result
-        _append_blockers(row, list(result["blockers"]))
-        _clear_publishable_probability(row)
-        if not row.get("terminal_label"):
-            row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
-        row["can_execute"] = False
-        return
-
     role_valid = packet.get("role_valid_sample") or {}
     rows = role_valid.get("rows") if isinstance(role_valid, dict) else []
     strict_matches = 0
@@ -350,6 +340,16 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
             "final_label": "REJECT",
             "evidence_packet": packet,
         }
+        row["can_execute"] = False
+        return
+
+    if canonical in special_unsupported:
+        result = _unsupported_result(canonical, packet)
+        row["gates"]["wnba_generative"] = result
+        _append_blockers(row, list(result["blockers"]))
+        _clear_publishable_probability(row)
+        if not row.get("terminal_label"):
+            row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
         row["can_execute"] = False
         return
 
