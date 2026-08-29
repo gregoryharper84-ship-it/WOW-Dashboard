@@ -8,7 +8,11 @@ from fastapi.testclient import TestClient
 import api_prod
 
 
-TEST_KEY = "test-prop-runtime-action-key"
+# Keep the same suite-wide governed-backend test credential used by the
+# pre-existing G11 event tests. api._require_action_api_key reads the process
+# environment at request time, so competing module-level values make otherwise
+# independent tests fail based on pytest collection/import order.
+TEST_KEY = "test-g11-action-key"
 os.environ["WOW_ACTION_API_KEY"] = TEST_KEY
 AUTH = {"Authorization": f"Bearer {TEST_KEY}"}
 client = TestClient(api_prod.app)
@@ -140,7 +144,7 @@ def test_prop_lane_unavailable_still_proves_supabase_hydration_before_model_bloc
     assert fake.rpc_calls[0][0] == "wow_prop_evidence_snapshot"
 
 
-def test_incomplete_prop_evidence_terminates_as_acquisition_incomplete(monkeypatch):
+def test_incomplete_prop_evidence_terminates_before_specialist_or_probability(monkeypatch):
     fake = _FakeClient(
         prop_status="UNAVAILABLE",
         evidence={
@@ -152,8 +156,13 @@ def test_incomplete_prop_evidence_terminates_as_acquisition_incomplete(monkeypat
             "can_execute": False,
         },
     )
+    specialist_calls = []
     monkeypatch.setattr(api_prod, "get_client", lambda: fake)
-    monkeypatch.setattr(api_prod.base_api, "_controlling_specialist_provider", lambda _sport, _stat: _specialist())
+    monkeypatch.setattr(
+        api_prod.base_api,
+        "_controlling_specialist_provider",
+        lambda sport, stat: specialist_calls.append((sport, stat)) or _specialist(),
+    )
 
     response = client.post("/score-prop", json=_request_payload(), headers=AUTH)
     assert response.status_code == 422
@@ -162,6 +171,7 @@ def test_incomplete_prop_evidence_terminates_as_acquisition_incomplete(monkeypat
     assert detail["failure_class"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
     assert detail["probability_publishable"] is False
     assert detail["can_execute"] is False
+    assert specialist_calls == []
 
 
 def test_available_prop_lane_without_real_fitted_provider_still_fails_closed(monkeypatch):
