@@ -1,0 +1,49 @@
+{
+  "calibrator_version": "MLB_PITCHER_SO_CAL_V1",
+  "dataset_manifest": {
+    "extraction_filter": "p_gs > 0 and season_phase = 'R' (pitcher rows); b_pa > 0 and season_phase = 'R' grouped by team/game (batting rows)",
+    "pitcher_starts_csv": "mlb_pitcher_starts_2024_2025_regular_season.csv",
+    "pitcher_starts_rows": 9718,
+    "pitcher_starts_sha256": "69ace2efbc157394a4d420a6d6f50cdb50f7e2b33a4c5d5a5aabe25064731428",
+    "research_only": true,
+    "source": "supabase:wow-engine-validation:iczfhsmjrrafhvcpmqhr:wow_mlb_retrosplits_rows",
+    "team_batting_csv": "mlb_team_batting_by_game_2024_2025_regular_season.csv",
+    "team_batting_sha256": "0cb6b1e1e5f36a79edea078478147c9978497be315b9e96eee5ce89c6a84bf6d"
+  },
+  "feature_schema_version": "PROP_FEATURES_V1",
+  "feature_transform_version": "MLB_PITCHER_SO_TRANSFORM_V1",
+  "fitted_constants": {
+    "dispersion_r": 54.579053984283796,
+    "league_k_per_pa": 0.22406187223906224,
+    "league_shortened_rate": 0.270216083760303,
+    "league_so_per_out": 0.3100216723249023,
+    "outs_normal_scale": 17.77991452991453,
+    "outs_short_scale": 10.712283594394064
+  },
+  "max_support_k": 20,
+  "min_prior_starts": 1,
+  "model_artifact_version": "MLB_PITCHER_SO_FAILURE_PATH_NB_V1_2026_08_29",
+  "model_family": "MLB_PITCHER_SO_FAILURE_PATH_NB_V1",
+  "opponent_factor_clip": [
+    0.75,
+    1.3
+  ],
+  "shortened_outs_threshold": 15,
+  "shrinkage_k_rate": 8.0,
+  "shrinkage_k_regime": 8.0,
+  "specialist_version": "wow.mlb-pitcher-failure-path-expert@1",
+  "sport": "MLB",
+  "stat_type": "PITCHER_STRIKEOUTS",
+  "supported_line_max": 12.5,
+  "supported_line_min": 0.5,
+  "training_code_sha": "afe69a70052ec7b083bea1901ebf9c04433d0abb7d0a484d66c612433921e136",
+  "training_dataset_hash": "e415512d7ee81bf99d2989838b11e3403f3440a8726f995f091b30ebdd1e71fd",
+  "training_rows": 4489,
+  "validation_metrics": {
+    "baseline_mean_brier_at_model_implied_line": 0.25852042208528286,
+    "baseline_mean_nll": 2.289494009896432,
+    "model_mean_brier_at_model_implied_line": 0.24213481939472495,
+    "model_mean_nll": 2.228049325431009,
+    "test_rows": 1918
+  }
+}

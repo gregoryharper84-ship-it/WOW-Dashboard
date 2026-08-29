@@ -1,0 +1,35 @@
+{
+  "baseline_constants": {
+    "mu": 4.9102249944308305,
+    "r": 20.09184747408205
+  },
+  "baseline_mean_brier_at_model_implied_line": 0.25852042208528286,
+  "baseline_mean_nll": 2.289494009896432,
+  "calibration_date_range": [
+    "2025-03-18",
+    "2025-07-13"
+  ],
+  "calibration_rows": 2801,
+  "fitted_constants": {
+    "dispersion_r": 54.579053984283796,
+    "league_k_per_pa": 0.22406187223906224,
+    "league_shortened_rate": 0.270216083760303,
+    "league_so_per_out": 0.3100216723249023,
+    "outs_normal_scale": 17.77991452991453,
+    "outs_short_scale": 10.712283594394064
+  },
+  "model_beats_baseline_brier": true,
+  "model_beats_baseline_nll": true,
+  "model_mean_brier_at_model_implied_line": 0.24213481939472495,
+  "model_mean_nll": 2.228049325431009,
+  "test_date_range": [
+    "2025-07-18",
+    "2025-09-28"
+  ],
+  "test_rows": 1918,
+  "train_date_range": [
+    "2024-03-28",
+    "2024-09-30"
+  ],
+  "train_rows": 4489
+}
