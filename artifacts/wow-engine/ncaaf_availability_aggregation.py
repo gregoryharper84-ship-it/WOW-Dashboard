@@ -1,8 +1,8 @@
-"""Convert raw official availability observations into narrowly governed model-ready evidence.
+"""Governed derivation of model-ready NCAAF availability evidence.
 
-Raw PLAYER_AVAILABILITY_REPORT rows never become QB/skill features merely by existing.
-The caller must prove team role/depth-chart identity and, for numeric certainty or skill
-availability, every contributing probability must be source-defined by the official policy.
+Raw official-conference reports remain immutable source observations. Derived QB and
+skill evidence is attributed to the reviewed WOW aggregation provider and carries
+raw source identities/hashes in its payload. No probability is invented.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Any, Mapping, Sequence
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
+DERIVED_PROVIDER = "WOW_NCAAF_AVAILABILITY_AGGREGATOR_V1"
 
 
 class NCAAvailabilityAggregationUnavailable(RuntimeError):
@@ -43,13 +44,20 @@ def _raw_for(rows: Sequence[Mapping[str, Any]], *, team: str, player: str) -> Ma
         if str(row.get("evidence_kind") or "").upper() != "PLAYER_AVAILABILITY_REPORT":
             continue
         payload = row.get("payload")
-        if not isinstance(payload, Mapping):
-            continue
-        if str(payload.get("team") or "") == team and str(row.get("player") or "") == player:
+        if isinstance(payload, Mapping) and str(payload.get("team") or "") == team and str(row.get("player") or "") == player:
             matches.append(row)
     if not matches:
         raise NCAAvailabilityAggregationUnavailable("NCAAF_STARTER_AVAILABILITY_NOT_PROVEN", f"No explicit raw availability row for {team} starter {player}")
     return max(matches, key=lambda r: _ts(r.get("evidence_timestamp"), "evidence_timestamp"))
+
+
+def _source_ref(raw: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "raw_provider": raw.get("source_provider"),
+        "raw_record_id": raw.get("source_record_id"),
+        "raw_source_uri": raw.get("source_uri"),
+        "raw_evidence_sha256": raw.get("payload_sha256"),
+    }
 
 
 def build_qb_evidence(*, official_event_id: str, event_start_time: str, scope: str, team: str,
@@ -70,14 +78,14 @@ def build_qb_evidence(*, official_event_id: str, event_start_time: str, scope: s
     if not isinstance(payload, Mapping):
         raise NCAAvailabilityAggregationUnavailable("NCAAF_AVAILABILITY_PAYLOAD_INVALID", "raw payload must be an object")
     status = str(payload.get("status") or "").upper()
-    evidence_ts = str(raw.get("evidence_timestamp"))
+    source_ref = _source_ref(raw)
     base_payload = {
         "starter_qb": starter_qb,
         "status": status,
         "depth_chart_source": depth_chart_source,
         "depth_chart_as_of": role_ts.isoformat(),
-        "raw_evidence_sha256": raw.get("payload_sha256"),
         "source_defined_play_probability": payload.get("source_defined_play_probability"),
+        **source_ref,
     }
     common = {
         "official_event_id": official_event_id,
@@ -85,11 +93,11 @@ def build_qb_evidence(*, official_event_id: str, event_start_time: str, scope: s
         "scope": scope,
         "team": team,
         "player": starter_qb,
-        "source_provider": str(raw.get("source_provider")),
+        "source_provider": DERIVED_PROVIDER,
         "source_record_id": raw.get("source_record_id"),
         "source_uri": raw.get("source_uri"),
-        "evidence_timestamp": evidence_ts,
-        "provenance_grade": str(raw.get("provenance_grade") or "UNVERIFIED"),
+        "evidence_timestamp": str(raw.get("evidence_timestamp")),
+        "provenance_grade": "B",
         "blocker_codes": [],
         "can_execute": False,
     }
@@ -103,7 +111,7 @@ def build_qb_evidence(*, official_event_id: str, event_start_time: str, scope: s
             "value": float(probability),
             "starter_qb": starter_qb,
             "derivation": "OFFICIAL_CONFERENCE_POLICY_SOURCE_DEFINED",
-            "raw_evidence_sha256": raw.get("payload_sha256"),
+            **source_ref,
         }
         certainty = {**common, "evidence_kind": "QB_CERTAINTY", "payload": certainty_payload}
         certainty["payload_sha256"] = _hash({"kind": "QB_CERTAINTY", **certainty_payload, "official_event_id": official_event_id, "scope": scope})
@@ -123,7 +131,7 @@ def build_skill_availability(*, official_event_id: str, event_start_time: str, s
     components = []
     latest_ts: datetime | None = None
     weighted = 0.0
-    providers = set()
+    raw_providers = set()
     for player, weight in player_weights.items():
         raw = _raw_for(raw_rows, team=team, player=player)
         payload = raw.get("payload")
@@ -137,12 +145,12 @@ def build_skill_availability(*, official_event_id: str, event_start_time: str, s
         if ts >= kickoff:
             raise NCAAvailabilityAggregationUnavailable("NCAAF_AVAILABILITY_NOT_PREGAME", "Raw availability must be strictly pregame")
         latest_ts = ts if latest_ts is None or ts > latest_ts else latest_ts
-        providers.add(str(raw.get("source_provider")))
+        raw_providers.add(str(raw.get("source_provider")))
         weighted += float(weight) * p
-        components.append({"player": player, "weight": float(weight), "play_probability": p, "raw_evidence_sha256": raw.get("payload_sha256")})
-    if len(providers) != 1:
-        raise NCAAvailabilityAggregationUnavailable("NCAAF_SKILL_PROVIDER_MIXED", "A single governed provider is required per aggregation")
-    payload = {"value": weighted, "derivation": "EXPLICIT_WEIGHTED_SOURCE_DEFINED_PLAY_PROBABILITY", "components": components}
+        components.append({"player": player, "weight": float(weight), "play_probability": p, **_source_ref(raw)})
+    if len(raw_providers) != 1:
+        raise NCAAvailabilityAggregationUnavailable("NCAAF_SKILL_PROVIDER_MIXED", "A single governed raw provider is required per aggregation")
+    payload = {"value": weighted, "derivation": "EXPLICIT_WEIGHTED_SOURCE_DEFINED_PLAY_PROBABILITY", "raw_provider": next(iter(raw_providers)), "components": components}
     return {
         "official_event_id": official_event_id,
         "event_start_time": kickoff.isoformat(),
@@ -150,11 +158,11 @@ def build_skill_availability(*, official_event_id: str, event_start_time: str, s
         "scope": scope,
         "team": team,
         "player": None,
-        "source_provider": next(iter(providers)),
+        "source_provider": DERIVED_PROVIDER,
         "source_record_id": None,
         "source_uri": None,
         "evidence_timestamp": latest_ts.isoformat() if latest_ts else None,
-        "provenance_grade": "A",
+        "provenance_grade": "B",
         "payload": payload,
         "payload_sha256": _hash({"kind": "SKILL_AVAILABILITY", **payload, "official_event_id": official_event_id, "scope": scope}),
         "blocker_codes": [],
