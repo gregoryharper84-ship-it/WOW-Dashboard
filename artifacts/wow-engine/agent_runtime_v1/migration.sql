@@ -48,6 +48,7 @@ create table if not exists wow.run_candidates (
   settlement_operator text,
   controlling_worker_id text,
   evidence_snapshot_id uuid,
+  candidate_payload jsonb not null default '{}'::jsonb,
   terminal_label text,
   terminal_ceiling text check (terminal_ceiling is null or terminal_ceiling in (
     'FINAL_APPROVED','FINAL_REFRESH_HOLD','STRUCTURE_VERIFIED_HOLD','MARKET_VERIFIED_HOLD',
@@ -57,6 +58,7 @@ create table if not exists wow.run_candidates (
   created_at timestamptz not null default now(),
   unique (run_id, canonical_key)
 );
+alter table wow.run_candidates add column if not exists candidate_payload jsonb not null default '{}'::jsonb;
 
 create table if not exists wow.worker_registry (
   worker_id text not null,
@@ -191,6 +193,25 @@ create table if not exists wow.audit_events (
   detail_redacted jsonb not null,
   created_at timestamptz not null default now()
 );
+
+insert into wow.worker_registry(worker_id,worker_version,contract_version,implementation_type,authority_ceiling,configuration,enabled)
+values
+ ('wow.parallel-discovery-router','1.0.0','wow.agent-output.v1','RESEARCH_AGENT','RESEARCH_INTEREST','{"required_predecessors":[]}'::jsonb,true),
+ ('wow.slate-integrity-expert','1.0.0','wow.agent-output.v1','DETERMINISTIC','IDENTITY_VERIFIED','{"required_predecessors":["wow.parallel-discovery-router"]}'::jsonb,true),
+ ('wow.evidence-hydration','1.0.0','wow.agent-output.v1','DETERMINISTIC','EVIDENCE_VERIFIED','{"required_predecessors":["wow.slate-integrity-expert"]}'::jsonb,true),
+ ('wow.controlling-model','1.0.0','wow.agent-output.v1','FITTED_MODEL','MODEL_QUALIFIED_HOLD','{"required_predecessors":["wow.evidence-hydration"],"provider":"SERVER_OWNED_ONLY"}'::jsonb,true),
+ ('wow.failure-path-framework','1.0.0','wow.agent-output.v1','DETERMINISTIC','MODEL_QUALIFIED_HOLD','{"required_predecessors":["wow.controlling-model"]}'::jsonb,true),
+ ('wow.dynamic-calibration-expert','1.0.0','wow.agent-output.v1','DETERMINISTIC','MODEL_QUALIFIED_HOLD','{"required_predecessors":["wow.failure-path-framework"]}'::jsonb,true),
+ ('wow.exact-line-market-auditor','1.0.0','wow.agent-output.v1','DETERMINISTIC','MARKET_VERIFIED_HOLD','{"required_predecessors":["wow.dynamic-calibration-expert"]}'::jsonb,true),
+ ('wow.structure-exposure-governor','1.0.0','wow.agent-output.v1','DETERMINISTIC','STRUCTURE_VERIFIED_HOLD','{"required_predecessors":["wow.exact-line-market-auditor"]}'::jsonb,true),
+ ('wow.final-refresh-governor','1.0.0','wow.agent-output.v1','DETERMINISTIC','FINAL_REFRESH_HOLD','{"required_predecessors":["wow.structure-exposure-governor"]}'::jsonb,true),
+ ('wow.terminal-ceiling-reducer','1.0.0','wow.agent-output.v1','DETERMINISTIC','FINAL_APPROVED','{"required_predecessors":["wow.final-refresh-governor"]}'::jsonb,true)
+on conflict (worker_id,worker_version) do update
+set contract_version=excluded.contract_version,
+    implementation_type=excluded.implementation_type,
+    authority_ceiling=excluded.authority_ceiling,
+    configuration=excluded.configuration,
+    enabled=excluded.enabled;
 
 create index if not exists ix_wow_runs_status_created on wow.runs(status, created_at desc);
 create index if not exists ix_wow_candidates_run_terminal on wow.run_candidates(run_id, terminal_label);
