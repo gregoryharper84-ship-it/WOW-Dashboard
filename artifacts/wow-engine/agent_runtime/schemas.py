@@ -82,11 +82,12 @@ class WorkerJobEnvelope(BaseModel):
     candidate_id: Optional[str] = None
     worker_id: str
     worker_version: str
-    required: bool
+    required: bool = True
     evidence_snapshot_id: Optional[str] = None
     as_of: str
     input_hash: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    can_execute: bool = False
 
 
 class WorkerOutputEnvelope(BaseModel):
@@ -107,4 +108,6 @@ class WorkerOutputEnvelope(BaseModel):
     evidence_snapshot_id: Optional[str] = None
     output: dict[str, Any] = Field(default_factory=dict)
     output_hash: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
     can_execute: bool = False
