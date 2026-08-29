@@ -1,20 +1,30 @@
 """Market-lane compatibility layer for the governed WOW production API.
 
 Builds on api_prod and replaces only POST /score-prop so exact two-way market
-quotes can traverse the existing engine. Missing/invalid market evidence is a
-MARKET HOLD, never a reason to erase an otherwise publishable sporting-model
-probability. can_execute remains false unconditionally.
+quotes can traverse the existing engine. Generic player props are scored only
+through WOW_PROP_FITTED_MODEL_V1's certified, direction-free discrete PMF
+contract. Missing/invalid market evidence is a MARKET HOLD, never a reason to
+erase an otherwise publishable sporting-model probability. can_execute remains
+false unconditionally.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Any, Optional
+import uuid
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 import api_prod as prod
 from market import MarketQuote
+from prop_discrete_engine import PropCalibrationUnavailable, score_discrete_prop_end_to_end
+from prop_distribution_contract import PropDistributionContractError, PropInferenceRequest
+from prop_fitted_provider import PropFittedProviderUnavailable
+
+
+PROP_FEATURE_SCHEMA_VERSION = "PROP_FEATURES_V1"
 
 
 class MarketQuoteInput(BaseModel):
@@ -89,6 +99,147 @@ def _money_lane(row: Any) -> dict[str, Any]:
     }
 
 
+def _aware_event_start(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROP_EVENT_START_INVALID",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        ) from exc
+    if parsed.utcoffset() is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROP_EVENT_START_INVALID",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
+    return parsed
+
+
+def _prop_period(stat_type: str) -> str:
+    upper = str(stat_type or "").upper()
+    return "FIRST_INNING" if "1IP" in upper or "FIRST_INNING" in upper else "FULL_GAME"
+
+
+def _server_owned_inference_request(req: ScorePropRequest, evidence: dict[str, Any], scored_at: str) -> PropInferenceRequest:
+    """Build the provider identity without caller-controlled model metadata.
+
+    Exact player/event/stat identity has already been locked by the Supabase
+    evidence RPC. ``player_id`` is a deterministic internal key over sport and
+    the exact evidence player name; no external-ID claim is made.
+    """
+    event_start = _aware_event_start(req.event_start_time)
+    player = str(evidence.get("player") or req.player or "").strip()
+    normalized_player = " ".join(player.casefold().split())
+    player_id = "wow-name:" + sha256(f"{req.sport.upper()}|{normalized_player}".encode("utf-8")).hexdigest()
+    period = _prop_period(req.stat_type)
+    settlement_basis = "FIRST_INNING_PLAYER_STAT" if period == "FIRST_INNING" else "FULL_GAME_PLAYER_STAT"
+    canonical_market = "|".join(
+        (
+            req.sport.upper(),
+            req.event_id,
+            normalized_player,
+            req.stat_type.upper(),
+            period,
+            format(float(req.line), ".12g"),
+            settlement_basis,
+        )
+    )
+    market_identity_id = "wow-market:" + sha256(canonical_market.encode("utf-8")).hexdigest()
+    return PropInferenceRequest(
+        event_id=req.event_id,
+        player_id=player_id,
+        sport=req.sport,
+        league_season=str(event_start.year),
+        stat_type=req.stat_type,
+        evidence_snapshot_id=req.source_snapshot_id,
+        market_identity_id=market_identity_id,
+        as_of_timestamp=scored_at,
+        request_id=str(uuid.uuid4()),
+        feature_schema_version=PROP_FEATURE_SCHEMA_VERSION,
+    )
+
+
+def _model_features(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Expose only hydrated evidence to the reviewed model-family adapter."""
+    return {
+        "game_log": evidence.get("game_log"),
+        "box_score_log": evidence.get("box_score_log"),
+        "role_status": evidence.get("role_status"),
+        "role_timestamp": evidence.get("role_timestamp"),
+        "opportunity_ledger": evidence.get("opportunity_ledger"),
+        "source_timestamps": evidence.get("source_timestamps") or {},
+        "evidence_version": evidence.get("evidence_version"),
+        "rate_provenance": evidence.get("rate_provenance"),
+        "captured_at": evidence.get("captured_at"),
+    }
+
+
+def _discrete_model_evidence(result: Any) -> dict[str, Any]:
+    row = result.row
+    artifact = result.inference.artifact
+    coverage = result.inference.distribution.coverage
+    return {
+        "provider_identity": getattr(row, "model_provider_identity", None),
+        "model_family": getattr(row, "model_family", None),
+        "model_artifact_version": getattr(row, "model_artifact_version", None),
+        "model_artifact_checksum": getattr(row, "model_artifact_checksum", None),
+        "bundle_fingerprint": getattr(row, "model_bundle_fingerprint", None),
+        "model_lifecycle_state": getattr(row, "model_artifact_lifecycle_state", None),
+        "feature_schema_version": getattr(row, "feature_schema_version", None),
+        "feature_transform_version": getattr(row, "feature_transform_version", None),
+        "specialist_version": getattr(row, "specialist_version", None),
+        "certification_id": getattr(row, "certification_id", None),
+        "distribution_type": getattr(row, "distribution_type", None),
+        "probability_more": getattr(row, "probability_more", None),
+        "probability_less": getattr(row, "probability_less", None),
+        "push_probability": getattr(row, "push_probability", None),
+        "coverage": {
+            "in_distribution": coverage.in_distribution,
+            "ood_score": coverage.ood_score,
+            "coverage_failures": list(coverage.coverage_failures),
+        },
+        "training_rows": artifact.training_rows,
+        "effective_sample_size": getattr(row, "effective_sample_size", None),
+        "calibration_status": getattr(row, "calibration_status", None),
+        "calibration_method": getattr(row, "calibration_method", None),
+        "calibration_version": getattr(row, "calibration_version", None),
+        "bounds_method_version": getattr(row, "bounds_method_version", None),
+        "calibrated_probability_lower_bound": getattr(row, "calibrated_probability_lower_bound", None),
+        "calibrated_probability_upper_bound": getattr(row, "calibrated_probability_upper_bound", None),
+        "model_timestamp": getattr(row, "model_timestamp", None),
+        "probability_publishable": bool(getattr(row, "probability_publishable", False)),
+        "can_execute": False,
+    }
+
+
+def _raise_model_path_error(exc: Exception) -> None:
+    code = getattr(exc, "code", None) or "PROP_DISCRETE_MODEL_UNAVAILABLE"
+    status_code = 409 if code in {
+        "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+        "PROP_MODEL_REGISTRY_UNAVAILABLE",
+        "PROP_MODEL_FAMILY_ADAPTER_UNAVAILABLE",
+        "PROP_CALIBRATOR_ADAPTER_UNAVAILABLE",
+    } else 422
+    raise HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": str(exc),
+            "model_path": "WOW_PROP_FITTED_MODEL_V1->RAW_DISCRETE_DISTRIBUTION->CALIBRATION->PERSISTENCE",
+            "probability_publishable": False,
+            "can_execute": False,
+        },
+    ) from exc
+
+
 @app.post(
     "/score-prop",
     dependencies=[Depends(prod._require_action_api_key)],
@@ -157,50 +308,31 @@ def score_prop(
                     "governed_model": "BLOCKED",
                     "prediction_ledger_write": "NOT_ATTEMPTED",
                 },
-                "probability_publishable": False,
-                "can_execute": False,
-            },
-        )
-
-    bundle = prod.base_api._fitted_params_provider(req.sport, req.stat_type)
-    if bundle is None:
-        raise HTTPException(
-            status_code=501,
-            detail={
-                "code": "PROP_FITTED_PROVIDER_UNAVAILABLE",
-                "message": "Real fitted per-sport parameters are not wired for this governed prop lane.",
-                "evidence_hydration": "PASS",
-                "controlling_specialist": specialist.get("controlling_specialist"),
+                "model_path": "WOW_PROP_FITTED_MODEL_V1->RAW_DISCRETE_DISTRIBUTION->CALIBRATION->PERSISTENCE",
                 "probability_publishable": False,
                 "can_execute": False,
             },
         )
 
     scored_at = datetime.now(timezone.utc).isoformat()
-    draws = max(prod.base_api.MIN_SIMULATION_DRAWS, specialist.get("min_event_tree_simulations") or 0)
-    result = prod.base_api.score_prop_end_to_end(
-        event_id=req.event_id,
-        event_start_time=req.event_start_time,
-        sport=req.sport,
-        stat_type=req.stat_type,
-        line=req.line,
-        direction=req.direction,
-        source_snapshot_id=req.source_snapshot_id,
-        cohort=bundle.cohort,
-        pitcher=bundle.pitcher,
-        regime_params=bundle.regime_params,
-        resample_fn=bundle.resample_fn,
-        n_eff=bundle.n_eff,
-        seed=req.seed,
-        candidate_direction=req.direction,
-        market_side_a=_to_market_quote(req.market_side_a),
-        market_side_b=_to_market_quote(req.market_side_b),
-        scored_at=scored_at,
-        parent_cohort=bundle.parent_cohort,
-        settled_n_in_cohort=bundle.settled_n_in_cohort,
-        money_lane_status=req.money_lane_status,
-        draws=draws,
-    )
+    inference_request = _server_owned_inference_request(req, evidence, scored_at)
+    try:
+        result = score_discrete_prop_end_to_end(
+            client=prod.get_client(),
+            request=inference_request,
+            event_start_time=req.event_start_time,
+            player=str(evidence.get("player") or req.player),
+            line=req.line,
+            direction=req.direction,
+            source_snapshot_id=req.source_snapshot_id,
+            features=_model_features(evidence),
+            seed=req.seed,
+            money_lane_status=req.money_lane_status,
+            market_side_a=_to_market_quote(req.market_side_a),
+            market_side_b=_to_market_quote(req.market_side_b),
+        )
+    except (PropFittedProviderUnavailable, PropDistributionContractError, PropCalibrationUnavailable) as exc:
+        _raise_model_path_error(exc)
 
     if not result.row.probability_publishable:
         raise HTTPException(
@@ -208,7 +340,7 @@ def score_prop(
             detail={
                 "code": "PROP_MODEL_NOT_PUBLISHABLE",
                 "data_gaps": result.row.data_gaps,
-                "error": result.error,
+                "model_evidence": _discrete_model_evidence(result),
                 "probability_publishable": False,
                 "can_execute": False,
             },
@@ -231,7 +363,7 @@ def score_prop(
         "ok": True,
         "prediction": persisted,
         "acquisition_evidence": prod._visible_acquisition_evidence(evidence, req.line),
-        "model_evidence": prod._visible_model_evidence(result.row),
+        "model_evidence": _discrete_model_evidence(result),
         "evidence": evidence,
         "objective_lanes": {
             "MODEL": {
@@ -251,6 +383,7 @@ def score_prop(
             "governed_model": "PASS",
             "prediction_ledger_write": "PASS",
         },
+        "model_path": "WOW_PROP_FITTED_MODEL_V1->RAW_DISCRETE_DISTRIBUTION->CALIBRATION->PERSISTENCE",
         "probability_publishable": True,
         "can_execute": False,
     }
