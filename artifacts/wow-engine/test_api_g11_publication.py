@@ -8,7 +8,10 @@ from fastapi.testclient import TestClient
 import api_g11
 
 
-TEST_KEY = "test-g11-publication-key"
+# Keep one suite-wide G11 test credential. api._require_action_api_key reads the
+# process environment at request time, so competing module-level values would
+# make otherwise-independent tests fail based on collection/import order.
+TEST_KEY = "test-g11-action-key"
 os.environ["WOW_ACTION_API_KEY"] = TEST_KEY
 AUTH = {"Authorization": f"Bearer {TEST_KEY}"}
 client = TestClient(api_g11.app)
