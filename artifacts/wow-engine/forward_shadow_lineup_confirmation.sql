@@ -1,13 +1,16 @@
 -- WOW MLB forward-shadow official lineup confirmation — 2026-08-28
 --
 -- Adds timestamped official batting-order provenance to the research-only
--- forward-shadow lane. A lineup is CONFIRMED only when the official MLB
--- boxscore exposes exactly nine unique batting-order player IDs for both teams
--- while the event is still pregame. Repeated identical confirmations are
--- idempotent; a material batting-order change creates a new immutable lineup
--- snapshot and re-scores through the existing frozen model path.
+-- forward-shadow lane. A lineup is CONFIRMED only when the official MLB live
+-- feed exposes exactly nine unique batting-order player IDs for both teams,
+-- the response is received strictly before the scheduled event start, and the
+-- official feed proves no real gameplay has begun. Pregame Game Advisory /
+-- warmup events are tolerated; any recorded pitch or completed non-advisory
+-- play blocks confirmation.
 --
--- This does not make any probability publishable and never enables execution.
+-- Repeated identical confirmations are idempotent. A material batting-order
+-- change creates a new immutable lineup snapshot and re-scores through the
+-- existing frozen model path. This never publishes probability or execution.
 
 create table if not exists public.wow_mlb_forward_lineup_snapshots (
   lineup_snapshot_id uuid primary key default gen_random_uuid(),
@@ -20,6 +23,11 @@ create table if not exists public.wow_mlb_forward_lineup_snapshots (
   home_batting_order integer[] not null check (cardinality(home_batting_order)=9),
   away_batting_order integer[] not null check (cardinality(away_batting_order)=9),
   lineup_identity_sha256 text not null check (length(lineup_identity_sha256)=64),
+  official_abstract_state text,
+  official_detailed_state text,
+  official_pitch_events_at_capture integer not null check (official_pitch_events_at_capture>=0),
+  official_completed_plays_at_capture integer not null check (official_completed_plays_at_capture>=0),
+  strict_pregame_provenance boolean not null default true check (strict_pregame_provenance=true),
   source_url text not null,
   http_status integer not null check (http_status=200),
   raw_body text not null,
@@ -92,6 +100,10 @@ declare
   v_away_team_id integer;
   v_home_order integer[] := '{}';
   v_away_order integer[] := '{}';
+  v_abstract_state text;
+  v_detailed_state text;
+  v_pitch_n integer := 0;
+  v_completed_play_n integer := 0;
   v_identity jsonb;
   v_identity_sha text;
   v_raw_sha text;
@@ -116,7 +128,7 @@ begin
     );
   end if;
 
-  v_url := format('https://statsapi.mlb.com/api/v1/game/%s/boxscore',e.official_event_id);
+  v_url := format('https://statsapi.mlb.com/api/v1.1/game/%s/feed/live',e.official_event_id);
   r := extensions.http_get(v_url::varchar);
   if r.status <> 200 then
     return jsonb_build_object(
@@ -136,8 +148,35 @@ begin
     );
   end if;
 
-  v_home_team_id := nullif(v_body#>>'{teams,home,team,id}','')::integer;
-  v_away_team_id := nullif(v_body#>>'{teams,away,team,id}','')::integer;
+  v_abstract_state := v_body#>>'{gameData,status,abstractGameState}';
+  v_detailed_state := v_body#>>'{gameData,status,detailedState}';
+
+  select count(*) into v_pitch_n
+  from jsonb_array_elements(coalesce(v_body#>'{liveData,plays,allPlays}','[]'::jsonb)) p
+  cross join lateral jsonb_array_elements(coalesce(p#>'{playEvents}','[]'::jsonb)) pe
+  where coalesce(nullif(pe->>'isPitch','')::boolean,false);
+
+  select count(*) into v_completed_play_n
+  from jsonb_array_elements(coalesce(v_body#>'{liveData,plays,allPlays}','[]'::jsonb)) p
+  where coalesce(nullif(p#>>'{about,isComplete}','')::boolean,false)
+    and coalesce(p#>>'{result,event}','') <> 'Game Advisory';
+
+  if v_pitch_n > 0
+     or v_completed_play_n > 0
+     or coalesce(v_abstract_state,'')='Final'
+     or coalesce(v_detailed_state,'') in ('In Progress','Game Over','Final') then
+    return jsonb_build_object(
+      'status','BLOCKED','reason','OFFICIAL_GAMEPLAY_ALREADY_STARTED',
+      'official_abstract_state',v_abstract_state,
+      'official_detailed_state',v_detailed_state,
+      'pitch_events',v_pitch_n,'completed_plays',v_completed_play_n,
+      'shadow_event_id',p_shadow_event_id,
+      'probability_publishable',false,'can_execute',false
+    );
+  end if;
+
+  v_home_team_id := nullif(v_body#>>'{gameData,teams,home,id}','')::integer;
+  v_away_team_id := nullif(v_body#>>'{gameData,teams,away,id}','')::integer;
   if v_home_team_id is distinct from e.home_team_id
      or v_away_team_id is distinct from e.away_team_id then
     return jsonb_build_object(
@@ -149,12 +188,12 @@ begin
 
   select coalesce(array_agg(value::integer order by ord),'{}'::integer[])
   into v_home_order
-  from jsonb_array_elements_text(coalesce(v_body#>'{teams,home,battingOrder}','[]'::jsonb))
+  from jsonb_array_elements_text(coalesce(v_body#>'{liveData,boxscore,teams,home,battingOrder}','[]'::jsonb))
        with ordinality as x(value,ord);
 
   select coalesce(array_agg(value::integer order by ord),'{}'::integer[])
   into v_away_order
-  from jsonb_array_elements_text(coalesce(v_body#>'{teams,away,battingOrder}','[]'::jsonb))
+  from jsonb_array_elements_text(coalesce(v_body#>'{liveData,boxscore,teams,away,battingOrder}','[]'::jsonb))
        with ordinality as x(value,ord);
 
   if cardinality(v_home_order) <> 9
@@ -215,11 +254,14 @@ begin
   insert into public.wow_mlb_forward_lineup_snapshots(
     shadow_event_id,official_event_id,captured_at,home_team_id,away_team_id,
     home_batting_order,away_batting_order,lineup_identity_sha256,
+    official_abstract_state,official_detailed_state,
+    official_pitch_events_at_capture,official_completed_plays_at_capture,strict_pregame_provenance,
     source_url,http_status,raw_body,raw_sha256,
     lineup_status,research_only,probability_publishable,can_execute
   ) values (
     p_shadow_event_id,e.official_event_id,v_capture_at,v_home_team_id,v_away_team_id,
     v_home_order,v_away_order,v_identity_sha,
+    v_abstract_state,v_detailed_state,v_pitch_n,v_completed_play_n,true,
     v_url,r.status,r.content,v_raw_sha,
     'CONFIRMED',true,false,false
   ) returning lineup_snapshot_id into v_lineup_snapshot_id;
@@ -243,6 +285,9 @@ begin
     'lineup_identity_sha256',v_identity_sha,
     'home_batting_order_n',cardinality(v_home_order),
     'away_batting_order_n',cardinality(v_away_order),
+    'official_abstract_state',v_abstract_state,
+    'official_detailed_state',v_detailed_state,
+    'pitch_events',v_pitch_n,'completed_plays',v_completed_play_n,
     'score_status',v_score_status,
     'score_snapshot_id',v_score_snapshot_id,
     'probability_publishable',false,'can_execute',false
