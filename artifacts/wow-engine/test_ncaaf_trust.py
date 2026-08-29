@@ -10,6 +10,7 @@ def test_ncaaf_sql_governance_contract():
     assert "create table if not exists wow_ncaaf_predictions" in lowered
     assert "create table if not exists wow_ncaaf_outcomes" in lowered
     assert "create or replace view wow_ncaaf_calibration_ledger" in lowered
+    assert "with (security_invoker = true)" in lowered
     assert "check (can_execute = false)" in sql
     assert "ncaaf_qb_status" not in lowered  # evidence column is starting_qb_status, not a shadow status field
     assert "ncaaf_test_only" in lowered
@@ -25,6 +26,7 @@ def test_ncaaf_trust_review_metrics_contract():
     sql = Path("ncaaf_trust_metrics.sql").read_text()
     lowered = sql.lower()
     assert "create or replace view wow_ncaaf_trust_review_metrics" in lowered
+    assert "with (security_invoker = true)" in lowered
     assert "settled_candidates" in lowered
     assert "ncaaf_moneyline_bucket_candidates" in lowered
     assert "clv_positive_rate" in lowered
