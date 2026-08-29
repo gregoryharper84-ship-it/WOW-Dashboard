@@ -1,9 +1,16 @@
 import os
 import sys
 
+# Process-start requirements are limited to service identity/auth and database
+# connectivity. Market data is a separate objective lane: a missing odds key
+# must produce MARKET HOLD/UNAVAILABLE at the market boundary, not prevent the
+# sporting-model service from starting.
 REQUIRED_ENV_VARS = [
     "DATABASE_URL",
     "SCORING_API_KEY",
+]
+
+OPTIONAL_MARKET_ENV_VARS = [
     "ODDS_API_KEY",
 ]
 
@@ -13,6 +20,14 @@ if missing:
     for var in missing:
         print(f"FATAL: missing env var: {var}", file=sys.stderr)
     sys.exit(1)
+
+missing_market = [var for var in OPTIONAL_MARKET_ENV_VARS if not os.environ.get(var)]
+if missing_market:
+    print(
+        "pre_start: WARN: market credentials unavailable; market lane must fail closed/HOLD: "
+        + ", ".join(missing_market),
+        flush=True,
+    )
 
 print("pre_start: all required env vars present, starting gunicorn", flush=True)
 
