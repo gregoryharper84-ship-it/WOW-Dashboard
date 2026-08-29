@@ -70,6 +70,32 @@ def _wnba_row(player="A'ja Wilson", line=8.5, direction="MORE"):
         "player": player, "sport": "WNBA", "prop_type": "Rebounds",
         "line": line, "direction": direction, "slate_date": SLATE,
         "board_source": "PrizePicks",
+        "role_status": {
+            "status": "ACTIVE",
+            "usage_role": "STARTER",
+            "starter_flag": True,
+            "projected_minutes": 32,
+            "role_timestamp": _now_iso(),
+        },
+        "starter_flag": True,
+        "role_timestamp": _now_iso(),
+        "gates": {
+            "role_timestamp": {
+                "passed": True,
+                "role_staleness": "FRESH",
+                "status_staleness": "FRESH",
+            },
+            "wnba_opportunity_gate": {
+                "gate_passed": True,
+                "gate_label": "PASS",
+                "expected_minutes": 32,
+                "usage_stability_score": 82,
+                "shot_attempt_stability_score": 84,
+                "opportunity_stability_score": 83,
+                "role_state": "STARTER",
+                "role_confidence": 0.9,
+            },
+        },
     }
 
 
@@ -90,11 +116,51 @@ def _wnba_enr(line=8.5, market=True, role=True, stage2=None, snapshot_line=None)
         },
     }
     if role:
+        # Complete V1 evidence fixture: exact-stat history and contextual
+        # box-score history are separate objects, with ten role-comparable
+        # games and all required opportunity dimensions.
         enr["box_score_log"] = [
-            {"minutes": 33, "usage": 27.5, "reb_chances": 15, "starter": True},
-            {"minutes": 35, "usage": 28.0, "reb_chances": 14, "starter": True},
-            {"minutes": 31, "usage": 26.0, "reb_chances": 16, "starter": True},
+            {
+                "game_date": f"2026-08-{day:02d}",
+                "opponent": f"OPP{day}",
+                "minutes": 32,
+                "points": 20,
+                "rebounds": 10,
+                "assists": 4,
+                "field_goal_attempts": 15,
+                "usage_rate": 0.275,
+                "starter_flag": True,
+                "role": "STARTER",
+                "source_timestamp": _now_iso(),
+            }
+            for day in range(1, 11)
         ]
+        enr.update({
+            "projected_minutes": 32,
+            "projected_pace": 81.5,
+            "opponent_defense": {"def_rating": 103.5},
+            "rest_days": 2,
+            "blowout_probability": 0.12,
+            "game_script": {"expected_margin": 4.0},
+            "role_status": {
+                "status": "ACTIVE",
+                "usage_role": "STARTER",
+                "starter_flag": True,
+                "projected_minutes": 32,
+                "role_timestamp": _now_iso(),
+            },
+            "opportunity_ledger": {
+                "status": "PASS",
+                "gate_passed": True,
+                "gate_label": "PASS",
+                "expected_minutes": 32,
+                "usage_stability_score": 82,
+                "shot_attempt_stability_score": 84,
+                "opportunity_stability_score": 83,
+                "role_state": "STARTER",
+                "role_confidence": 0.9,
+            },
+        })
     if market:
         enr["market_no_vig_prob"] = 0.55
         enr["sportsbook_line"] = snapshot_line if snapshot_line is not None else line
@@ -515,14 +581,20 @@ def test_M_generative_output_completes_ledger_before_classify_and_fmcg(monkeypat
     row = _row_by_player(result, "A'ja Wilson")
     rid = row["row_id"]
 
-    # The live path saw the COMPLETED ledger at classify/FMCG time
-    assert seen_at_classify.get(rid) is True, seen_at_classify
-    assert seen_at_fmcg.get(rid) is True, seen_at_fmcg
-    # And the final report agrees
-    assert row["rank_eligible"] is True
-    assert row["gates"]["prob_ledger"]["model_probability_complete"] is True
-    # FMCG never held the row for an incomplete model probability contract
-    assert not any("MODEL_PROBABILITY_INCOMPLETE" in str(b) for b in row["blockers"])
+    # PROP_EVIDENCE_V1 is now binding. This legacy fixture deliberately
+    # removes the supplied Stage-2 ledger and does not represent a persisted
+    # Supabase evidence snapshot, so the production path must fail closed
+    # before classification rather than allowing an in-process model emission
+    # to masquerade as backend-hydrated governed evidence.
+    assert seen_at_classify.get(rid) is False, seen_at_classify
+    assert seen_at_fmcg.get(rid) is False, seen_at_fmcg
+    assert row["rank_eligible"] is False
+    assert row["gates"]["prob_ledger"]["model_probability_complete"] is False
+    assert any(
+        "RUN_INVALID_ACQUISITION_INCOMPLETE" in str(b)
+        or "MODEL_PROBABILITY_INCOMPLETE" in str(b)
+        for b in row["blockers"]
+    )
 
 
 # ---------------------------------------------------------------------------
