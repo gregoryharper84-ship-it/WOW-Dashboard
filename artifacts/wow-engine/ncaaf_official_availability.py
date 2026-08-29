@@ -197,11 +197,18 @@ def normalize_player_availability(
         payload["source_defined_play_probability"] = float(policy.source_defined_play_probability[normalized_status])
         payload["probability_source"] = "OFFICIAL_CONFERENCE_POLICY"
 
+    hash_payload = {
+        **payload,
+        "team": str(team),
+        "player": str(player),
+        "official_event_id": str(official_event_id),
+        "report_timestamp": reported.isoformat(),
+    }
     return {
         "official_event_id": str(official_event_id),
         "event_start_time": kickoff.isoformat(),
         "evidence_kind": RAW_EVIDENCE_KIND,
-        "scope": "HOME" if False else "EVENT",  # report rows are raw event evidence, not model-ready side aggregates
+        "scope": "EVENT",
         "team": None,
         "player": str(player),
         "source_provider": policy.provider_key,
@@ -210,7 +217,7 @@ def normalize_player_availability(
         "evidence_timestamp": reported.isoformat(),
         "provenance_grade": "A",
         "payload": {**payload, "team": str(team)},
-        "payload_sha256": _canonical_hash({**payload, "team": str(team), "player": str(player), "official_event_id": str(official_event_id), "report_timestamp": reported.isoformat()}),
+        "payload_sha256": _canonical_hash(hash_payload),
         "blocker_codes": [],
         "probability_publishable": False,
         "can_execute": False,
