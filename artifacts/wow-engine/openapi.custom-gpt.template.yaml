@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WOW Governed Probability Engine Action
-  version: 1.1.0
+  version: 1.2.0
   description: >-
     Custom GPT Action contract for the external governed WOW probability backend.
     This API is analytical only. It never places, routes, modifies, or cancels a
@@ -31,11 +31,12 @@ paths:
       summary: Read governed probability capability state
       description: >-
         Public and read-only. Call this before governed scoring. If
-        governed_probability_capability is not AVAILABLE, preserve the returned
-        ceiling/fallback state. Do not invent a governed probability.
+        governed_probability_capability is not AVAILABLE or probability_publishable
+        is not true, preserve the returned hold state. Do not invent a governed
+        probability.
       responses:
         '200':
-          description: Current governance and deployment-gate state.
+          description: Current deployment, calibration, runtime-capability, ratification, and publication state.
           content:
             application/json:
               schema:
@@ -46,6 +47,31 @@ paths:
                     enum: [UNAVAILABLE, AVAILABLE]
                   governed_probability_status:
                     type: string
+                  deployment_contract_status:
+                    type: string
+                  calibration_health_status:
+                    type: string
+                  calibration_health_assessed_at:
+                    type: [string, 'null']
+                    format: date-time
+                  runtime_capability_status:
+                    type: string
+                  runtime_capability_updated_at:
+                    type: [string, 'null']
+                    format: date-time
+                  ratification_status:
+                    type: string
+                  ratification_id:
+                    type: [string, 'null']
+                  ratification_created_at:
+                    type: [string, 'null']
+                    format: date-time
+                  production_feature_ready:
+                    type: boolean
+                  probability_publishable:
+                    type: boolean
+                  can_execute:
+                    type: boolean
                   patch_id:
                     type: string
                   patch_revision:
@@ -89,14 +115,16 @@ paths:
   /score-event:
     post:
       operationId: scoreWowEvent
-      summary: Validate one MLB full-game outright-winner event through the governed event lane
+      summary: Score one MLB full-game outright-winner event through the governed event lane
       description: >-
-        Authenticated analytical event scoring contract. V1 supports MLB full-game
-        OUTRIGHT_WINNER with settlement including extra innings. Until a real fitted
-        MLB game-win model artifact and eligible event calibrator are wired, a valid
-        request intentionally returns 409 GOVERNED_EVENT_MODEL_UNAVAILABLE with no
-        numeric probability and no persistence. Never retry an event moneyline through
-        /score-prop and never treat market-only or manual estimates as governed model output.
+        Authenticated analytical MLB event contract. A 200 response has two governed
+        modes. REAL_FITTED_MODEL_PATH_PROVEN is a held fitted-model proof and contains
+        no numeric probability fields. GOVERNED_PROBABILITY_PUBLISHED may contain
+        numeric event probabilities only after all live deployment, calibration,
+        runtime-capability, ratification, latest-material-snapshot, official-lineup,
+        and post-lineup-score gates pass. Both modes keep can_execute=false. A 409 is
+        a fail-closed event/model/evidence hold and must not be bypassed through
+        /score-prop or a manual/market-only estimate labeled as governed output.
       security:
         - actionBearer: []
       requestBody:
@@ -106,10 +134,11 @@ paths:
             schema:
               $ref: '#/components/schemas/ScoreEventRequest'
       responses:
-        '409':
+        '200':
           description: >-
-            Valid MLB event contract, but fitted governed MLB event model/calibrator
-            is unavailable. This is the expected fail-closed V1 response.
+            Governed held-model proof or separately ratified publishable MLB event
+            probability. Inspect code, probability_fields_withheld,
+            probability_publishable, and can_execute before using the response.
           content:
             application/json:
               schema:
@@ -117,8 +146,22 @@ paths:
                 additionalProperties: true
         '401':
           description: Missing, malformed, or incorrect Action credential.
+        '409':
+          description: >-
+            Event identity, model evidence, material freshness, lineup freshness,
+            calibration, runtime capability, or ratification is held/blocked.
+            No fail-open alternate route is permitted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
         '422':
-          description: Event identity, market family, settlement, slate, or evidence contract is invalid.
+          description: Event identity, market family, settlement, slate, or request contract is invalid.
+        '500':
+          description: Backend blocked a held-probability leak or an invalid publishable numeric contract.
+        '503':
+          description: Governed event bridge is unavailable or returned an invalid backend payload.
   /settle:
     post:
       operationId: settleWowPrediction
