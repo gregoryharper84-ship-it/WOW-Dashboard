@@ -67,5 +67,9 @@ select
     false as can_execute
 from aggregate;
 
+-- Internal calibration evidence only; no browser/Data API consumer is needed.
+revoke all privileges on table wow_ncaaf_trust_review_metrics
+  from anon, authenticated;
+
 comment on view wow_ncaaf_trust_review_metrics is
-  'Forward NCAAF calibration/trust metrics. SECURITY INVOKER. ROI is hypothetical unit-risk research ROI, not executed-account ROI. can_execute=false.';
+  'Forward NCAAF calibration/trust metrics. SECURITY INVOKER. Internal service-role evidence. ROI is hypothetical unit-risk research ROI, not executed-account ROI. can_execute=false.';
