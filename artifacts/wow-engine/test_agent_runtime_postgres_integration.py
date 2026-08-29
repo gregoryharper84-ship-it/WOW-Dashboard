@@ -161,6 +161,17 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
 
     from fastapi.testclient import TestClient
     import api_ncaaf_acceptance as prod
+    import ledger
+
+    # Diagnostic: the production /health/ready handler swallows this exact
+    # call's exception (bare except Exception -> "unreachable"), so on a
+    # failure here we would otherwise never see why. Surface it directly.
+    try:
+        probe_client = ledger.get_client()
+        probe_client.table("wow_agent_runs").select("run_id").limit(1).execute()
+        print("DIAGNOSTIC: direct wow_agent_runs probe via ledger.get_client() succeeded")
+    except Exception as exc:  # noqa: BLE001
+        print(f"DIAGNOSTIC: direct wow_agent_runs probe failed: {type(exc).__name__}: {exc!r}")
 
     client = TestClient(prod.app)
     ready = None
