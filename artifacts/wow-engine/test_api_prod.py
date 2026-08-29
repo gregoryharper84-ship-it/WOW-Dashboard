@@ -140,6 +140,19 @@ def test_prop_lane_unavailable_still_proves_supabase_hydration_before_model_bloc
     assert detail["backend_traversal"]["supabase_evidence"] == "PASS"
     assert detail["backend_traversal"]["governed_model"] == "BLOCKED"
     assert detail["backend_traversal"]["prediction_ledger_write"] == "NOT_ATTEMPTED"
+    visible = detail["acquisition_evidence"]
+    assert visible["l10_n"] == 10
+    assert visible["l5_n"] == 5
+    assert visible["l10_values"] == [10, 12, 11, 9, 14, 8, 13, 12, 10, 15]
+    assert visible["exact_line_results"] == {
+        "line": 10.5,
+        "more_n": 6,
+        "less_n": 4,
+        "push_n": 0,
+    }
+    assert visible["role_status"]["role"] == "STARTER"
+    assert visible["opportunity_ledger"]["status"] == "PASS"
+    assert visible["probability_fields_withheld"] is True
     assert detail["probability_publishable"] is False
     assert fake.rpc_calls[0][0] == "wow_prop_evidence_snapshot"
 
@@ -207,3 +220,32 @@ def test_governance_reports_lane_split(monkeypatch):
     assert body["lane_capabilities"]["PROP_PROBABILITY"]["status"] == "UNAVAILABLE"
     assert body["routing_contract"]["LLP_TEAM_BETTING_MODEL"].startswith("/score-event")
     assert body["can_execute"] is False
+
+
+def test_visible_model_evidence_contains_ess_bounds_and_provenance_without_execution():
+    row = SimpleNamespace(
+        effective_sample_size=87.5,
+        simulation_draws=50000,
+        regime_model_version="WNBA_ASSISTS_V1",
+        calibration_status="PLATT_TIME_SPLIT_V1",
+        calibration_version="CAL_V1",
+        bounds_method_version="PREDICTIVE_BOUNDS_V1",
+        calibrated_probability_lower_bound=0.51,
+        calibrated_probability_upper_bound=0.64,
+        model_timestamp="2026-08-29T01:00:00+00:00",
+        probability_publishable=True,
+    )
+    visible = api_prod._visible_model_evidence(row)
+    assert visible == {
+        "effective_sample_size": 87.5,
+        "simulation_draws": 50000,
+        "regime_model_version": "WNBA_ASSISTS_V1",
+        "calibration_status": "PLATT_TIME_SPLIT_V1",
+        "calibration_version": "CAL_V1",
+        "bounds_method_version": "PREDICTIVE_BOUNDS_V1",
+        "calibrated_probability_lower_bound": 0.51,
+        "calibrated_probability_upper_bound": 0.64,
+        "model_timestamp": "2026-08-29T01:00:00+00:00",
+        "probability_publishable": True,
+        "can_execute": False,
+    }
