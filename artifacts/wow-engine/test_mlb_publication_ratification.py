@@ -70,7 +70,8 @@ def test_publish_bridge_requires_publishable_state_before_and_after_external_ref
     assert "v_lineup_refresh_ok boolean := false" in sql
     assert sql.count("v_gate:=public.wow_governed_deployment_state()") >= 2
     assert "v_publishable := v_publication_attempt and v_lineup_refresh_ok" in sql
-    assert "a mid-request promotion also does not publish" in sql
+    assert "v_publication_attempt := coalesce(v_gate->>'governed_probability_capability','unavailable')='available' and coalesce((v_gate->>'probability_publishable')::boolean,false)" in sql
+    assert "and coalesce(v_gate->>'governed_probability_capability','unavailable')='available' and coalesce((v_gate->>'probability_publishable')::boolean,false)" in sql
 
 
 def test_publish_bridge_binds_second_gate_read_to_same_calibration_assessment():
