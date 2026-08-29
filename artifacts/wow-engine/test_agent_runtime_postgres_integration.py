@@ -40,13 +40,14 @@ def _pg_dsn() -> str:
 
 
 def _apply_schema() -> None:
-    """Mirrors the real Supabase role model closely enough for the real
-    supabase-py PostgREST client to work against a plain Postgres+PostgREST
-    pair in CI: service_role needs BYPASSRLS (Supabase grants this on every
-    real project) plus ordinary table/sequence GRANTs, since RLS-with-no-
-    policies only blocks the *policy* check — a role still needs the base
-    privilege grant to touch a table at all, and a freshly created table has
-    none by default."""
+    """Mirror the Supabase/PostgREST role model closely enough for CI.
+
+    PostgREST connects as ``wow_agent_ci`` and switches to the JWT ``role``
+    claim for each request.  The connection role therefore needs membership
+    in the API roles in addition to the service role needing BYPASSRLS and
+    base object privileges.  Missing that membership makes an otherwise
+    healthy PostgREST instance fail every authenticated table request.
+    """
     schema_sql = Path("agent_runtime_schema.sql").read_text()
     with psycopg.connect(_pg_dsn(), autocommit=True) as conn, conn.cursor() as cur:
         for role in ("anon", "authenticated", "service_role"):
@@ -55,25 +56,29 @@ def _apply_schema() -> None:
                 f"then create role {role} nologin; end if; end $$;"
             )
         cur.execute("alter role service_role bypassrls")
+        # The PostgREST authenticator/connection role must be allowed to SET ROLE
+        # to the JWT role. This is how a real Supabase PostgREST deployment is
+        # wired and was the missing piece in the first CI attempt.
+        cur.execute("grant anon to wow_agent_ci")
+        cur.execute("grant authenticated to wow_agent_ci")
+        cur.execute("grant service_role to wow_agent_ci")
         cur.execute(schema_sql)
         cur.execute("grant usage on schema public to service_role")
         cur.execute("grant all on all tables in schema public to service_role")
         cur.execute("grant all on all sequences in schema public to service_role")
+        cur.execute("grant execute on all functions in schema public to service_role")
         cur.execute("alter default privileges in schema public grant all on tables to service_role")
         cur.execute("alter default privileges in schema public grant all on sequences to service_role")
-        # The postgrest service container boots (and caches its schema) before
-        # this DDL runs over a side-channel psycopg connection, so it never
-        # sees the new tables until told to reload (PostgREST v12's default
-        # db-channel-enabled=true LISTEN/NOTIFY schema-cache-reload channel).
+        cur.execute("alter default privileges in schema public grant execute on functions to service_role")
+        # PostgREST boots before this DDL runs, so reload its schema cache after
+        # the roles, objects, grants, and RPC are all present.
         cur.execute("notify pgrst, 'reload schema'")
 
 
 def test_schema_applies_cleanly_to_real_postgres():
-    """Running the migration twice must be idempotent (every statement uses
-    IF NOT EXISTS / CREATE OR REPLACE / ON CONFLICT), and the seeded worker
-    registry must land exactly as agent_runtime/registry.py expects."""
+    """Migration is valid/idempotent and registry matches the code contract."""
     _apply_schema()
-    _apply_schema()  # idempotency check
+    _apply_schema()
 
     with psycopg.connect(_pg_dsn()) as conn, conn.cursor() as cur:
         cur.execute("select worker_id, authority_ceiling from public.wow_agent_worker_registry where enabled = true order by worker_id")
@@ -87,8 +92,7 @@ def test_schema_applies_cleanly_to_real_postgres():
 
 
 def test_wow_agent_complete_job_rpc_is_atomic_and_rejects_duplicates():
-    """Exercises the plpgsql function directly against real Postgres — the
-    one piece of this schema a fake client can never actually validate."""
+    """Exercise the real plpgsql atomic completion primitive."""
     _apply_schema()
     run_id = "11111111-1111-1111-1111-111111111111"
     job_id = "22222222-2222-2222-2222-222222222222"
@@ -107,7 +111,6 @@ def test_wow_agent_complete_job_rpc_is_atomic_and_rejects_duplicates():
             "values (%s, %s, 'wow.parallel-discovery-router', '1.0.0', 'jk', 'RUNNING', true, 'ih')",
             (job_id, run_id),
         )
-
         cur.execute(
             "select public.wow_agent_complete_job(%s, %s, null, 'wow.parallel-discovery-router', "
             "'1.0.0', 'wow.agent-output.v1', null, '{}'::jsonb, 'oh', 'SUCCEEDED', "
@@ -115,7 +118,6 @@ def test_wow_agent_complete_job_rpc_is_atomic_and_rejects_duplicates():
             (job_id, run_id),
         )
         first_applied = cur.fetchone()[0]
-
         cur.execute(
             "select public.wow_agent_complete_job(%s, %s, null, 'wow.parallel-discovery-router', "
             "'1.0.0', 'wow.agent-output.v1', null, '{\"different\":true}'::jsonb, 'oh2', 'SUCCEEDED', "
@@ -123,7 +125,6 @@ def test_wow_agent_complete_job_rpc_is_atomic_and_rejects_duplicates():
             (job_id, run_id),
         )
         duplicate_applied = cur.fetchone()[0]
-
         cur.execute("select status, output_hash from public.wow_agent_jobs where job_id = %s", (job_id,))
         status, output_hash = cur.fetchone()
         cur.execute("select count(*) from public.wow_agent_job_outputs where job_id = %s", (job_id,))
@@ -132,7 +133,7 @@ def test_wow_agent_complete_job_rpc_is_atomic_and_rejects_duplicates():
     assert first_applied is True
     assert duplicate_applied is False
     assert status == "SUCCEEDED"
-    assert output_hash == "oh"  # the duplicate's payload never applied
+    assert output_hash == "oh"
     assert output_count == 1
 
 
@@ -153,9 +154,7 @@ def _candidate() -> dict:
 
 
 def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
-    """Real HTTP -> real PostgREST-backed repository -> real Celery worker
-    subprocess (started by the CI workflow, not this test) -> real Redis ->
-    coordinator -> terminal reducer -> reconciliation, polled to completion."""
+    """Real HTTP -> PostgREST -> Redis/Celery -> reducer/reconciliation E2E."""
     _apply_schema()
     monkeypatch.setenv("WOW_ACTION_API_KEY", "ci-agent-runtime-key")
 
@@ -163,15 +162,8 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     import api_ncaaf_acceptance as prod
     import ledger
 
-    # Diagnostic: the production /health/ready handler swallows this exact
-    # call's exception (bare except Exception -> "unreachable"), so on a
-    # failure here we would otherwise never see why. Surface it directly.
-    try:
-        probe_client = ledger.get_client()
-        probe_client.table("wow_agent_runs").select("run_id").limit(1).execute()
-        print("DIAGNOSTIC: direct wow_agent_runs probe via ledger.get_client() succeeded")
-    except Exception as exc:  # noqa: BLE001
-        print(f"DIAGNOSTIC: direct wow_agent_runs probe failed: {type(exc).__name__}: {exc!r}")
+    probe_client = ledger.get_client()
+    probe_client.table("wow_agent_runs").select("run_id").limit(1).execute()
 
     client = TestClient(prod.app)
     ready = None
@@ -179,7 +171,7 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
         ready = client.get("/health/ready")
         if ready.status_code == 200:
             break
-        time.sleep(0.2)  # tolerate NOTIFY pgrst schema-cache-reload propagation
+        time.sleep(0.2)
     assert ready.status_code == 200, ready.text
     assert ready.json()["worker_registry"] == "ok"
     assert ready.json()["queue"] == "ok"
