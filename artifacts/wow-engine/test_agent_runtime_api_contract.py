@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-import os
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -9,11 +8,11 @@ from agent_runtime_v1.contracts import RunCreateRequest
 from agent_runtime_v1.store import MemoryStore
 
 TEST_KEY="agent-runtime-test-key"
-os.environ["WOW_ACTION_API_KEY"]=TEST_KEY
 AUTH={"Authorization":f"Bearer {TEST_KEY}"}
 
 
 def _client(monkeypatch):
+    monkeypatch.setenv("WOW_ACTION_API_KEY",TEST_KEY)
     store=MemoryStore()
     monkeypatch.setattr(runtime_api,"get_store",lambda:store)
     app=FastAPI(); app.include_router(runtime_api.router)
