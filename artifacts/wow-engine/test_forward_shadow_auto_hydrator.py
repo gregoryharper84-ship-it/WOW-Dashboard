@@ -15,6 +15,16 @@ def test_auto_hydrator_selects_only_freshest_still_pregame_snapshot():
     assert "where snapshot_id=v_snapshot_id" in sql
 
 
+def test_auto_hydrator_freezes_required_2026_schedule_context():
+    sql = _sql()
+    assert "unsupported_frozen_feature_season" in sql
+    assert "mlb_schedule_season_to_date" in sql
+    assert "gameType=R".lower() in sql
+    assert "wow_mlb_forward_cache_url" in sql
+    assert "wow_mlb_forward_materialize_schedule" in sql
+    assert "schedule_context_ready" in sql
+
+
 def test_auto_hydrator_reuses_existing_governed_feature_and_model_paths():
     sql = _sql()
     assert "wow_mlb_capture_recent_bullpen_workload" in sql
@@ -36,9 +46,9 @@ def test_auto_hydrator_remains_fail_closed():
     assert "governed_probability_capability','available" not in sql
 
 
-def test_auto_hydrator_is_scheduled_every_fifteen_minutes():
+def test_auto_hydrator_is_staggered_every_fifteen_minutes():
     sql = _sql()
     assert "select cron.schedule(" in sql
     assert "'wow-mlb-forward-shadow-auto-hydrate'" in sql
-    assert "'*/15 * * * *'" in sql
+    assert "'5,20,35,50 * * * *'" in sql
     assert "select public.wow_mlb_forward_auto_hydrate_pregame();" in sql
