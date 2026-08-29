@@ -36,6 +36,10 @@ create table if not exists public.wow_agent_runs (
     rows_held integer not null default 0,
     rows_rejected integer not null default 0,
     reconciliation_status text not null default 'NOT_EVALUATED',
+    -- The full validated request body, for audit/replay. Adopted from PR #33
+    -- (feature/wow-agent-runtime-v1) during the convergence pass — Phase 1
+    -- didn't persist this.
+    request_payload jsonb not null default '{}'::jsonb,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
     completed_at timestamptz,
@@ -86,12 +90,18 @@ create table if not exists public.wow_agent_run_candidates (
     -- since a single FK can't target either table conditionally.
     evidence_snapshot_id uuid,
     evidence_snapshot_kind text,
+    -- Inter-stage scratch data (evidence payload before sealing, capability
+    -- lookup result, calibration inputs, etc.) that the coordinator reads back
+    -- when queuing the next stage's job. Adopted from PR #33 during the
+    -- convergence pass — Phase 1 had no coordinator yet and so no need for it.
+    candidate_payload jsonb not null default '{}'::jsonb,
     terminal_label text,
     terminal_ceiling text,
     blockers jsonb not null default '[]'::jsonb,
     can_execute boolean not null default false,
     created_at timestamptz not null default now(),
     constraint wow_agent_run_candidates_blockers_array check (jsonb_typeof(blockers) = 'array'),
+    constraint wow_agent_run_candidates_payload_object check (jsonb_typeof(candidate_payload) = 'object'),
     constraint wow_agent_run_candidates_evidence_kind check (
         evidence_snapshot_kind is null or evidence_snapshot_kind in ('PROP','EVENT')
     ),
@@ -139,6 +149,44 @@ create table if not exists public.wow_agent_worker_registry (
 );
 
 alter table public.wow_agent_worker_registry enable row level security;
+
+-- Seed the ten canonical WOW Agent Runtime V1 workers (packet section 6),
+-- mirroring agent_runtime/registry.py's WORKERS dict exactly — the two must
+-- match, or /health/ready fails closed (repository.registry_matches()).
+-- Adopted from PR #33's migration.sql seed during the convergence pass.
+insert into public.wow_agent_worker_registry
+    (worker_id, worker_version, contract_version, implementation_type, authority_ceiling,
+     required_predecessors, timeout_seconds, max_retries, artifact_required, configuration, enabled)
+values
+    ('wow.parallel-discovery-router', '1.0.0', 'wow.agent-output.v1', 'RESEARCH_AGENT', 'RESEARCH_INTEREST',
+     '{}', 30, 2, false, '{}'::jsonb, true),
+    ('wow.slate-integrity-expert', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'IDENTITY_VERIFIED',
+     '{wow.parallel-discovery-router}', 20, 1, false, '{}'::jsonb, true),
+    ('wow.evidence-hydration', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'EVIDENCE_VERIFIED',
+     '{wow.slate-integrity-expert}', 45, 2, false, '{}'::jsonb, true),
+    ('wow.controlling-model', '1.0.0', 'wow.agent-output.v1', 'FITTED_MODEL', 'MODEL_QUALIFIED_HOLD',
+     '{wow.evidence-hydration}', 60, 1, true, '{}'::jsonb, true),
+    ('wow.failure-path-framework', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'MODEL_QUALIFIED_HOLD',
+     '{wow.controlling-model}', 30, 1, false, '{}'::jsonb, true),
+    ('wow.dynamic-calibration-expert', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'MODEL_QUALIFIED_HOLD',
+     '{wow.failure-path-framework}', 30, 1, true, '{}'::jsonb, true),
+    ('wow.exact-line-market-auditor', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'MARKET_VERIFIED_HOLD',
+     '{wow.dynamic-calibration-expert}', 30, 2, false, '{}'::jsonb, true),
+    ('wow.structure-exposure-governor', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'STRUCTURE_VERIFIED_HOLD',
+     '{wow.exact-line-market-auditor}', 20, 1, false, '{}'::jsonb, true),
+    ('wow.final-refresh-governor', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'FINAL_REFRESH_HOLD',
+     '{wow.structure-exposure-governor}', 30, 2, false, '{}'::jsonb, true),
+    ('wow.terminal-ceiling-reducer', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'FINAL_APPROVED',
+     '{wow.final-refresh-governor}', 15, 0, false, '{}'::jsonb, true)
+on conflict (worker_id, worker_version) do update
+set contract_version = excluded.contract_version,
+    implementation_type = excluded.implementation_type,
+    authority_ceiling = excluded.authority_ceiling,
+    required_predecessors = excluded.required_predecessors,
+    timeout_seconds = excluded.timeout_seconds,
+    max_retries = excluded.max_retries,
+    artifact_required = excluded.artifact_required,
+    enabled = excluded.enabled;
 
 -- ── Job / queue state ───────────────────────────────────────────────────────
 
@@ -206,6 +254,37 @@ alter table public.wow_agent_job_outputs enable row level security;
 create index if not exists wow_agent_job_outputs_lookup_idx
     on public.wow_agent_job_outputs (run_id, candidate_id, worker_id);
 
+-- ── Terminal decisions ──────────────────────────────────────────────────────
+-- A separate, append-only, immutable ledger — not just the terminal_label/
+-- terminal_ceiling columns embedded on wow_agent_run_candidates above, which
+-- a later UPDATE could in principle overwrite. Adopted from PR #33 during the
+-- convergence pass: it matches how wow_predictions/wow_event_predictions are
+-- already immutable ledgers elsewhere in this schema, which the embedded-
+-- column-only design in Phase 1 was not as clearly consistent with.
+
+create table if not exists public.wow_agent_terminal_decisions (
+    decision_id uuid primary key default gen_random_uuid(),
+    run_id uuid not null references public.wow_agent_runs(run_id),
+    candidate_id uuid not null references public.wow_agent_run_candidates(candidate_id),
+    final_terminal_ceiling text not null,
+    terminal_label text not null,
+    controlling_worker_id text,
+    probability_publishable boolean not null default false,
+    blockers jsonb not null default '[]'::jsonb,
+    reducer_version text not null,
+    decision_hash text not null,
+    can_execute boolean not null default false,
+    created_at timestamptz not null default now(),
+    constraint wow_agent_terminal_decisions_blockers_array check (jsonb_typeof(blockers) = 'array'),
+    constraint wow_agent_terminal_decisions_never_execute check (can_execute = false),
+    constraint wow_agent_terminal_decisions_one_per_candidate unique (candidate_id)
+);
+
+alter table public.wow_agent_terminal_decisions enable row level security;
+
+create index if not exists wow_agent_terminal_decisions_run_idx
+    on public.wow_agent_terminal_decisions (run_id);
+
 -- ── Audit log ────────────────────────────────────────────────────────────────
 
 create table if not exists public.wow_agent_audit_events (
@@ -226,10 +305,102 @@ alter table public.wow_agent_audit_events enable row level security;
 create index if not exists wow_agent_audit_events_run_idx
     on public.wow_agent_audit_events (run_id, created_at);
 
--- Compare-and-set job transitions (packet section 5) are performed directly
--- from agent_runtime/repository.py via PostgREST: an UPDATE ... WHERE job_id
--- = :id AND status = :expected, with the updated row(s) selected back. Exactly
--- one row in the response means the transition was ours; zero means a
--- duplicate/racing worker already moved the job past the expected state. No
--- separate RPC is needed for this — see CasTransitionResult in
--- agent_runtime/repository.py.
+-- Compare-and-set job transitions (packet section 5) that touch only
+-- wow_agent_jobs or wow_agent_runs are performed directly from
+-- agent_runtime/repository.py via PostgREST: an UPDATE ... WHERE id = :id
+-- AND status = :expected, with the updated row(s) selected back. Exactly one
+-- row in the response means the transition was ours; zero means a
+-- duplicate/racing worker already moved it past the expected state. See
+-- CasTransitionResult in agent_runtime/repository.py.
+
+-- ── Atomic job completion ────────────────────────────────────────────────────
+-- Recording a job output and transitioning the job to a terminal status is
+-- two writes across two tables — a single PostgREST call can't make that
+-- atomic. Adopted from PR #33's job_store.py::complete() (there written
+-- against a raw psycopg connection) during the convergence pass, as a single
+-- Postgres function instead: it closes the same crash-between-writes gap
+-- without adding a second database-access pattern (psycopg + SUPABASE_DB_URL)
+-- alongside the PostgREST client every other module in this service uses.
+--
+-- Returns true if this call actually completed the job; false if the job was
+-- already terminal (duplicate delivery — a no-op, not an error). Locks the
+-- job row for the duration of the check so two concurrent deliveries of the
+-- same terminal output can't both believe they were first.
+
+create or replace function public.wow_agent_complete_job(
+    p_job_id uuid,
+    p_run_id uuid,
+    p_candidate_id uuid,
+    p_worker_id text,
+    p_worker_version text,
+    p_contract_version text,
+    p_evidence_snapshot_id uuid,
+    p_output jsonb,
+    p_output_hash text,
+    p_status text,
+    p_ceiling text,
+    p_blockers jsonb,
+    p_error_code text
+) returns boolean
+language plpgsql
+volatile
+security invoker
+set search_path = public
+as $$
+declare
+    v_current_status text;
+    v_inserted_count integer;
+begin
+    select status into v_current_status
+    from public.wow_agent_jobs
+    where job_id = p_job_id
+    for update;
+
+    if not found then
+        raise exception 'JOB_NOT_FOUND: %', p_job_id;
+    end if;
+
+    if v_current_status in (
+        'SUCCEEDED','BLOCKED','REJECTED','TIMED_OUT','DEAD_LETTERED','CANCELED'
+    ) then
+        return false;
+    end if;
+
+    insert into public.wow_agent_job_outputs (
+        job_id, run_id, candidate_id, worker_id, worker_version,
+        evidence_snapshot_id, contract_version, output, output_hash
+    )
+    values (
+        p_job_id, p_run_id, p_candidate_id, p_worker_id, p_worker_version,
+        p_evidence_snapshot_id, p_contract_version, p_output, p_output_hash
+    )
+    on conflict (job_id) do nothing;
+
+    get diagnostics v_inserted_count = row_count;
+    if v_inserted_count = 0 then
+        -- Another call already inserted the output between our lock and now
+        -- (shouldn't happen given the row lock above, but fail closed rather
+        -- than silently double-transition).
+        return false;
+    end if;
+
+    update public.wow_agent_jobs
+    set status = p_status,
+        output_hash = p_output_hash,
+        ceiling = p_ceiling,
+        blockers = coalesce(p_blockers, '[]'::jsonb),
+        completed_at = now(),
+        heartbeat_at = now(),
+        error_code = p_error_code
+    where job_id = p_job_id
+      and status in ('RUNNING','RETRY_PENDING');
+
+    if not found then
+        raise exception 'JOB_STATE_COMPARE_AND_SET_FAILED: %', p_job_id;
+    end if;
+
+    return true;
+end;
+$$;
+
+revoke all on function public.wow_agent_complete_job from anon, authenticated;
