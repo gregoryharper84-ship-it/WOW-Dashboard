@@ -199,7 +199,7 @@ def _normalize_exact_game_log(
 def _evidence_row(row: dict[str, Any], enrichment: dict[str, Any]) -> dict[str, Any]:
     """Flatten already-observed role fields for evidence inspection only."""
     evidence_row = dict(row)
-    role = row.get("role_status")
+    role = row.get("role_status") or enrichment.get("role_status")
     if isinstance(role, dict):
         evidence_row["role_status"] = (
             role.get("usage_role") or role.get("role") or role.get("role_state")
