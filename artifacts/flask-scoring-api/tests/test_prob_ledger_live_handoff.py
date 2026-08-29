@@ -581,14 +581,20 @@ def test_M_generative_output_completes_ledger_before_classify_and_fmcg(monkeypat
     row = _row_by_player(result, "A'ja Wilson")
     rid = row["row_id"]
 
-    # The live path saw the COMPLETED ledger at classify/FMCG time
-    assert seen_at_classify.get(rid) is True, seen_at_classify
-    assert seen_at_fmcg.get(rid) is True, seen_at_fmcg
-    # And the final report agrees
-    assert row["rank_eligible"] is True
-    assert row["gates"]["prob_ledger"]["model_probability_complete"] is True
-    # FMCG never held the row for an incomplete model probability contract
-    assert not any("MODEL_PROBABILITY_INCOMPLETE" in str(b) for b in row["blockers"])
+    # PROP_EVIDENCE_V1 is now binding. This legacy fixture deliberately
+    # removes the supplied Stage-2 ledger and does not represent a persisted
+    # Supabase evidence snapshot, so the production path must fail closed
+    # before classification rather than allowing an in-process model emission
+    # to masquerade as backend-hydrated governed evidence.
+    assert seen_at_classify.get(rid) is False, seen_at_classify
+    assert seen_at_fmcg.get(rid) is False, seen_at_fmcg
+    assert row["rank_eligible"] is False
+    assert row["gates"]["prob_ledger"]["model_probability_complete"] is False
+    assert any(
+        "RUN_INVALID_ACQUISITION_INCOMPLETE" in str(b)
+        or "MODEL_PROBABILITY_INCOMPLETE" in str(b)
+        for b in row["blockers"]
+    )
 
 
 # ---------------------------------------------------------------------------
