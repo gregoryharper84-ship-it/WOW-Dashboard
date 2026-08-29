@@ -70,6 +70,32 @@ def _wnba_row(player="A'ja Wilson", line=8.5, direction="MORE"):
         "player": player, "sport": "WNBA", "prop_type": "Rebounds",
         "line": line, "direction": direction, "slate_date": SLATE,
         "board_source": "PrizePicks",
+        "role_status": {
+            "status": "ACTIVE",
+            "usage_role": "STARTER",
+            "starter_flag": True,
+            "projected_minutes": 32,
+            "role_timestamp": _now_iso(),
+        },
+        "starter_flag": True,
+        "role_timestamp": _now_iso(),
+        "gates": {
+            "role_timestamp": {
+                "passed": True,
+                "role_staleness": "FRESH",
+                "status_staleness": "FRESH",
+            },
+            "wnba_opportunity_gate": {
+                "gate_passed": True,
+                "gate_label": "PASS",
+                "expected_minutes": 32,
+                "usage_stability_score": 82,
+                "shot_attempt_stability_score": 84,
+                "opportunity_stability_score": 83,
+                "role_state": "STARTER",
+                "role_confidence": 0.9,
+            },
+        },
     }
 
 
