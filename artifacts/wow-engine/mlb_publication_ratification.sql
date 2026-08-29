@@ -44,6 +44,15 @@ declare
   v_gate_pass_n integer := 0;
   v_runtime_status text;
 begin
+  -- Serialize publication decisions per spec. Conflicting RATIFIED/REVOKED
+  -- inserts cannot race to create an ambiguous "latest" decision.
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      'wow_mlb_publication_ratification:' || new.spec_id::text,
+      0
+    )
+  );
+
   -- Server-own both the decision timestamp and evidence digest so callers
   -- cannot backdate a ratification or supply a hash unrelated to the evidence.
   new.created_at := clock_timestamp();
@@ -168,6 +177,7 @@ latest_ratification as (
 ),
 state as (
   select
+    s.spec_id as active_spec_id,
     g.deployment_gates,
     (g.gate_count=11 and g.pass_count=11) as deployment_contract_pass,
     coalesce(h.calibration_health_status,'UNAVAILABLE') as calibration_health_status,
@@ -181,7 +191,8 @@ state as (
     coalesce(lr.probability_publishable,false) as ratification_probability_publishable,
     coalesce(s.legacy_frozen_spec_production_feature_ready,false) as legacy_frozen_spec_production_feature_ready,
     (
-      g.gate_count=11 and g.pass_count=11
+      s.spec_id is not null
+      and g.gate_count=11 and g.pass_count=11
       and coalesce(h.calibration_health_status,'UNAVAILABLE')='PASS'
       and coalesce(rc.capability_status,'UNAVAILABLE')='AVAILABLE'
       and coalesce(lr.decision,'NOT_RATIFIED')='RATIFIED'
@@ -196,6 +207,7 @@ state as (
   left join latest_ratification lr on true
 )
 select jsonb_build_object(
+  'active_spec_id',active_spec_id,
   'governed_probability_capability',case when publishable then 'AVAILABLE' else 'UNAVAILABLE' end,
   'governed_probability_status',case when publishable then 'READY_FOR_PRODUCTION_GATE_REVIEW' else 'NOT_PRODUCED' end,
   'deployment_contract_status',case when deployment_contract_pass then 'PASS' else 'FAIL' end,
