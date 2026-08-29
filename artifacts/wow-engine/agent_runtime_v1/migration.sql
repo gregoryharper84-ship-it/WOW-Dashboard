@@ -11,7 +11,12 @@ create table if not exists wow.runs (
   run_type text not null,
   requested_as_of timestamptz not null,
   user_timezone text not null,
-  status text not null,
+  status text not null check (status in (
+    'CREATED','VALIDATING_REQUEST','DISCOVERY_QUEUED','DISCOVERY_RUNNING','ROUTING',
+    'EVIDENCE_QUEUED','EVIDENCE_RUNNING','MODELING_QUEUED','MODELING_RUNNING',
+    'AUDIT_QUEUED','AUDIT_RUNNING','FINAL_REFRESH','RECONCILING','COMPLETED',
+    'COMPLETED_WITH_BLOCKERS','FAILED','CANCELED'
+  )),
   stage text not null,
   can_execute boolean not null default false check (can_execute = false),
   dry_run_only boolean not null default true check (dry_run_only = true),
@@ -44,7 +49,10 @@ create table if not exists wow.run_candidates (
   controlling_worker_id text,
   evidence_snapshot_id uuid,
   terminal_label text,
-  terminal_ceiling text,
+  terminal_ceiling text check (terminal_ceiling is null or terminal_ceiling in (
+    'FINAL_APPROVED','FINAL_REFRESH_HOLD','STRUCTURE_VERIFIED_HOLD','MARKET_VERIFIED_HOLD',
+    'MODEL_QUALIFIED_HOLD','EVIDENCE_VERIFIED','IDENTITY_VERIFIED','RESEARCH_INTEREST'
+  )),
   blockers jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
   unique (run_id, canonical_key)
@@ -55,7 +63,10 @@ create table if not exists wow.worker_registry (
   worker_version text not null,
   contract_version text not null,
   implementation_type text not null check (implementation_type in ('DETERMINISTIC','FITTED_MODEL','RESEARCH_AGENT')),
-  authority_ceiling text not null,
+  authority_ceiling text not null check (authority_ceiling in (
+    'FINAL_APPROVED','FINAL_REFRESH_HOLD','STRUCTURE_VERIFIED_HOLD','MARKET_VERIFIED_HOLD',
+    'MODEL_QUALIFIED_HOLD','EVIDENCE_VERIFIED','IDENTITY_VERIFIED','RESEARCH_INTEREST'
+  )),
   configuration jsonb not null,
   enabled boolean not null default false,
   created_at timestamptz not null default now(),
@@ -69,12 +80,17 @@ create table if not exists wow.agent_jobs (
   worker_id text not null,
   worker_version text not null,
   idempotency_key text not null unique,
-  status text not null,
+  status text not null check (status in (
+    'QUEUED','RUNNING','SUCCEEDED','BLOCKED','REJECTED','TIMED_OUT','RETRY_PENDING','DEAD_LETTERED','CANCELED'
+  )),
   attempt integer not null default 0 check (attempt >= 0),
   required boolean not null,
   input_hash text not null,
   output_hash text,
-  ceiling text,
+  ceiling text check (ceiling is null or ceiling in (
+    'FINAL_APPROVED','FINAL_REFRESH_HOLD','STRUCTURE_VERIFIED_HOLD','MARKET_VERIFIED_HOLD',
+    'MODEL_QUALIFIED_HOLD','EVIDENCE_VERIFIED','IDENTITY_VERIFIED','RESEARCH_INTEREST'
+  )),
   blockers jsonb not null default '[]'::jsonb,
   queued_at timestamptz not null default now(),
   started_at timestamptz,
@@ -152,7 +168,10 @@ create table if not exists wow.terminal_decisions (
   decision_id uuid primary key,
   run_id uuid not null references wow.runs(run_id),
   candidate_id uuid not null unique references wow.run_candidates(candidate_id),
-  final_terminal_ceiling text not null,
+  final_terminal_ceiling text not null check (final_terminal_ceiling in (
+    'FINAL_APPROVED','FINAL_REFRESH_HOLD','STRUCTURE_VERIFIED_HOLD','MARKET_VERIFIED_HOLD',
+    'MODEL_QUALIFIED_HOLD','EVIDENCE_VERIFIED','IDENTITY_VERIFIED','RESEARCH_INTEREST'
+  )),
   terminal_label text not null,
   controlling_worker_id text,
   probability_publishable boolean not null default false,
