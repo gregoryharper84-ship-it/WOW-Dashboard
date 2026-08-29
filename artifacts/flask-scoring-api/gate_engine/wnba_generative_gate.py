@@ -222,6 +222,16 @@ def _evidence_row(row: dict[str, Any], enrichment: dict[str, Any]) -> dict[str, 
 
 def _enforce_strict_role_match(packet: dict[str, Any]) -> None:
     """Require multiple role/opportunity signals before a history row earns full-role credit."""
+    if canonical in special_unsupported:
+        result = _unsupported_result(canonical, packet)
+        row["gates"]["wnba_generative"] = result
+        _append_blockers(row, list(result["blockers"]))
+        _clear_publishable_probability(row)
+        if not row.get("terminal_label"):
+            row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
+        row["can_execute"] = False
+        return
+
     role_valid = packet.get("role_valid_sample") or {}
     rows = role_valid.get("rows") if isinstance(role_valid, dict) else []
     strict_matches = 0
@@ -288,7 +298,10 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
     # be routed elsewhere; they must not be relabeled as acquisition failures
     # by a model that does not control them.
     canonical = _canonical_stat(row)
-    if canonical not in _gen.SUPPORTED_STAT_KEYS:
+    special_unsupported = {
+        "2PM", "2PTM", "TWO_POINTERS_MADE", "TWO_POINT_FIELD_GOALS_MADE"
+    }
+    if canonical not in _gen.SUPPORTED_STAT_KEYS and canonical not in special_unsupported:
         return
 
     row.setdefault("gates", {})
