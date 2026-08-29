@@ -8,6 +8,7 @@ create table if not exists public.wow_prop_fitted_model_artifacts (
     provider_identity text not null default 'WOW_PROP_FITTED_MODEL_V1',
     model_family text not null,
     model_artifact_version text not null,
+    calibrator_version text not null,
     sport text not null,
     stat_type text not null,
     feature_schema_version text not null,
@@ -34,11 +35,8 @@ create table if not exists public.wow_prop_fitted_model_artifacts (
     constraint wow_prop_fitted_training_rows check (training_rows > 0),
     constraint wow_prop_fitted_payload_object check (jsonb_typeof(artifact_payload) = 'object'),
     constraint wow_prop_fitted_metrics_object check (jsonb_typeof(validation_metrics) = 'object'),
-    constraint wow_prop_fitted_never_execute check (can_execute = false),
-    constraint wow_prop_fitted_publishability_state check (
-        probability_publishable = false
-        or (lifecycle_state in ('PROSPECTIVE_CERTIFIED','CHAMPION') and promoted and active)
-    )
+    constraint wow_prop_fitted_never_publish check (probability_publishable = false),
+    constraint wow_prop_fitted_never_execute check (can_execute = false)
 );
 
 -- Exactly one active artifact can govern a sport/stat/schema tuple.
@@ -99,6 +97,7 @@ begin
         'provider_identity', v_row.provider_identity,
         'model_family', v_row.model_family,
         'model_artifact_version', v_row.model_artifact_version,
+        'calibrator_version', v_row.calibrator_version,
         'sport', v_row.sport,
         'stat_type', v_row.stat_type,
         'feature_schema_version', v_row.feature_schema_version,
