@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pytest
 
 from calibration import CalibrationStatus
@@ -138,7 +136,7 @@ def test_discrete_prop_path_publishes_without_fake_pitcher_simulation_fields():
     assert row.raw_model_probability == pytest.approx(row.probability_more)
     assert row.calibrated_probability_lower_bound == pytest.approx(0.54)
     assert row.market_prior_weight == 0.0
-    assert row.can_execute if hasattr(row, "can_execute") else False is False
+    assert not hasattr(row, "can_execute")
 
 
 def test_missing_calibration_adapter_abstains_without_legacy_fallback():
