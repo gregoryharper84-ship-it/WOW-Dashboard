@@ -52,6 +52,15 @@ def test_publish_bridge_requires_latest_material_snapshot_and_current_lineup_ref
     assert "s.model_timestamp<e.lineup_confirmed_at" in sql
 
 
+def test_publish_bridge_requires_publishable_state_before_and_after_external_refresh():
+    sql = _sql(BRIDGE_SQL)
+    assert "v_publication_attempt boolean := false" in sql
+    assert "v_lineup_refresh_ok boolean := false" in sql
+    assert sql.count("v_gate:=public.wow_governed_deployment_state()") >= 2
+    assert "v_publishable := v_publication_attempt and v_lineup_refresh_ok" in sql
+    assert "a mid-request promotion also does not publish" in sql
+
+
 def test_publish_bridge_separates_score_time_and_current_blockers():
     sql = _sql(BRIDGE_SQL)
     assert "v_score_time_blockers:=coalesce(s.blockers,'{}')" in sql
