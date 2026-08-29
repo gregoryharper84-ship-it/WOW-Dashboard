@@ -42,6 +42,18 @@ def test_ratification_is_append_only_and_governance_requires_all_latches():
     assert "'can_execute',false" in sql
 
 
+def test_publish_bridge_refreshes_material_identity_and_hydrates_new_snapshot_before_identity_check():
+    sql = _sql(BRIDGE_SQL)
+    capture = "v_capture_refresh:=public.wow_mlb_capture_forward_shadow_schedule( v_active_spec_id,p_requested_slate_date )"
+    hydrate = "v_hydrate_refresh:=public.wow_mlb_forward_auto_hydrate_pregame()"
+    latest = "order by e0.snapshot_timestamp desc,e0.shadow_event_id desc"
+    assert capture in sql
+    assert hydrate in sql
+    assert sql.index(capture) < sql.index(latest)
+    assert "source_snapshot_stale" in sql
+    assert "material_identity_refresh_blocked" in sql
+
+
 def test_publish_bridge_requires_latest_material_snapshot_and_current_lineup_refresh():
     sql = _sql(BRIDGE_SQL)
     assert "order by e0.snapshot_timestamp desc,e0.shadow_event_id desc" in sql
@@ -59,6 +71,13 @@ def test_publish_bridge_requires_publishable_state_before_and_after_external_ref
     assert sql.count("v_gate:=public.wow_governed_deployment_state()") >= 2
     assert "v_publishable := v_publication_attempt and v_lineup_refresh_ok" in sql
     assert "a mid-request promotion also does not publish" in sql
+
+
+def test_publish_bridge_binds_second_gate_read_to_same_calibration_assessment():
+    sql = _sql(BRIDGE_SQL)
+    assert "v_gate_health_assessed_at:=nullif(v_gate->>'calibration_health_assessed_at','')::timestamptz" in sql
+    assert "h.assessed_at is not distinct from v_gate_health_assessed_at" in sql
+    assert "calibration_health_state_changed_during_request" in sql
 
 
 def test_publish_bridge_separates_score_time_and_current_blockers():
