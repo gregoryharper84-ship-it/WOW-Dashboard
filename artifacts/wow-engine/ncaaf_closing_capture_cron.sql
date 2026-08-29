@@ -21,7 +21,7 @@ create extension if not exists pg_cron with schema pg_catalog;
 create or replace function public.wow_ncaaf_trigger_closing_capture()
 returns jsonb
 language plpgsql
-security definer
+security invoker
 set search_path to ''
 as $function$
 declare
@@ -81,6 +81,11 @@ begin
 end;
 $function$;
 
+-- Restrict direct invocation. pg_cron runs the command under the scheduling
+-- role; callers should not receive implicit PUBLIC execute on an internal
+-- maintenance function.
+revoke all on function public.wow_ncaaf_trigger_closing_capture() from public;
+
 -- Job names are stable; scheduling the same name replaces its definition.
 select cron.schedule(
   'wow-ncaaf-closing-line-capture',
@@ -89,4 +94,4 @@ select cron.schedule(
 );
 
 comment on function public.wow_ncaaf_trigger_closing_capture() is
-  'Research-only NCAAF closing-line cron dispatch. No trading or execution authority.';
+  'Research-only NCAAF closing-line cron dispatch. SECURITY INVOKER; no trading or execution authority.';
