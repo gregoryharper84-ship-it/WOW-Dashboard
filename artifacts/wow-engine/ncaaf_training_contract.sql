@@ -80,14 +80,47 @@ create table if not exists public.wow_ncaaf_training_features (
     can_execute boolean not null default false,
 
     constraint wow_ncaaf_feature_manifest_object check (jsonb_typeof(feature_source_manifest) = 'object'),
-    constraint wow_ncaaf_feature_pregame_only check (feature_as_of < (select event_start_time from public.wow_ncaaf_training_games g where g.training_game_id = training_game_id)),
     constraint wow_ncaaf_feature_qb_certainty_home check (home_qb_certainty is null or home_qb_certainty between 0 and 1),
     constraint wow_ncaaf_feature_qb_certainty_away check (away_qb_certainty is null or away_qb_certainty between 0 and 1),
-    constraint wow_ncaaf_feature_market_home check (market_home_no_vig is null or market_home_no_vig > 0 and market_home_no_vig < 1),
-    constraint wow_ncaaf_feature_market_away check (market_away_no_vig is null or market_away_no_vig > 0 and market_away_no_vig < 1),
+    constraint wow_ncaaf_feature_market_home check (market_home_no_vig is null or (market_home_no_vig > 0 and market_home_no_vig < 1)),
+    constraint wow_ncaaf_feature_market_away check (market_away_no_vig is null or (market_away_no_vig > 0 and market_away_no_vig < 1)),
     constraint wow_ncaaf_training_features_never_execute check (can_execute = false),
     unique (training_game_id, feature_schema_version, feature_as_of)
 );
+
+create or replace function public.wow_ncaaf_assert_feature_pregame()
+returns trigger
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+    v_start timestamptz;
+begin
+    select event_start_time into v_start
+      from public.wow_ncaaf_training_games
+     where training_game_id = NEW.training_game_id;
+
+    if v_start is null then
+        raise exception 'NCAAF training game % not found', NEW.training_game_id;
+    end if;
+    if NEW.feature_as_of >= v_start then
+        raise exception 'NCAAF feature snapshot must be strictly pregame: feature_as_of %, kickoff %', NEW.feature_as_of, v_start;
+    end if;
+    if NEW.market_timestamp is not null and NEW.market_timestamp >= v_start then
+        raise exception 'NCAAF market snapshot used for training must be strictly pregame: market_timestamp %, kickoff %', NEW.market_timestamp, v_start;
+    end if;
+    return NEW;
+end;
+$$;
+
+revoke all on function public.wow_ncaaf_assert_feature_pregame() from public, anon, authenticated;
+grant execute on function public.wow_ncaaf_assert_feature_pregame() to service_role;
+
+drop trigger if exists trg_wow_ncaaf_assert_feature_pregame on public.wow_ncaaf_training_features;
+create trigger trg_wow_ncaaf_assert_feature_pregame
+    before insert or update on public.wow_ncaaf_training_features
+    for each row execute function public.wow_ncaaf_assert_feature_pregame();
 
 alter table public.wow_ncaaf_training_games enable row level security;
 alter table public.wow_ncaaf_training_features enable row level security;
@@ -97,4 +130,4 @@ grant all on table public.wow_ncaaf_training_games to service_role;
 grant all on table public.wow_ncaaf_training_features to service_role;
 
 comment on table public.wow_ncaaf_training_features is
-  'Pregame-only NCAAF feature snapshots for fitted-model training. feature_as_of must precede kickoff; no execution authority.';
+  'Pregame-only NCAAF feature snapshots for fitted-model training. Trigger-enforced chronology; no execution authority.';
