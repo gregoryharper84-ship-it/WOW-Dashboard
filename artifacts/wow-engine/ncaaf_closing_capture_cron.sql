@@ -81,10 +81,10 @@ begin
 end;
 $function$;
 
--- Restrict direct invocation. pg_cron runs the command under the scheduling
--- role; callers should not receive implicit PUBLIC execute on an internal
--- maintenance function.
-revoke all on function public.wow_ncaaf_trigger_closing_capture() from public;
+-- Internal maintenance only. Do not expose this RPC through Data API roles.
+-- pg_cron executes the scheduled SQL as its scheduling database role.
+revoke all privileges on function public.wow_ncaaf_trigger_closing_capture()
+  from public, anon, authenticated, service_role;
 
 -- Job names are stable; scheduling the same name replaces its definition.
 select cron.schedule(
@@ -94,4 +94,4 @@ select cron.schedule(
 );
 
 comment on function public.wow_ncaaf_trigger_closing_capture() is
-  'Research-only NCAAF closing-line cron dispatch. SECURITY INVOKER; no trading or execution authority.';
+  'Research-only NCAAF closing-line cron dispatch. SECURITY INVOKER; not Data API callable; no trading or execution authority.';
