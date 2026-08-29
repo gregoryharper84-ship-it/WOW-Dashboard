@@ -1,7 +1,7 @@
 -- WOW MLB governed probability publication ratification ledger — 2026-08-28
 --
 -- Publication is a separate governance decision from model fitting, deployment,
--- and forward-shadow Calibration Health. This migration adds an immutable
+-- and forward-shadow Calibration Health. This migration adds an immutable,
 -- append-only decision ledger and hardens wow_governed_deployment_state() so no
 -- single flag can make the capability AVAILABLE.
 --
@@ -31,6 +31,73 @@ alter table public.wow_mlb_publication_ratification enable row level security;
 
 create index if not exists idx_wow_mlb_publication_ratification_spec_time
   on public.wow_mlb_publication_ratification(spec_id,created_at desc);
+
+create or replace function public.wow_mlb_publication_ratification_validate_insert()
+returns trigger
+language plpgsql
+set search_path to ''
+as $function$
+declare
+  v_health_assessed_at timestamptz;
+  v_health_status text;
+  v_gate_n integer := 0;
+  v_gate_pass_n integer := 0;
+  v_runtime_status text;
+begin
+  -- Server-own both the decision timestamp and evidence digest so callers
+  -- cannot backdate a ratification or supply a hash unrelated to the evidence.
+  new.created_at := clock_timestamp();
+  new.evidence_sha256 := encode(
+    extensions.digest(convert_to(new.evidence::text,'UTF8'),'sha256'),
+    'hex'
+  );
+  new.can_execute := false;
+
+  if new.decision='RATIFIED' then
+    if jsonb_typeof(new.evidence) is distinct from 'object'
+       or new.evidence='{}'::jsonb then
+      raise exception 'ratification evidence must be a non-empty JSON object';
+    end if;
+
+    select h.assessed_at,h.calibration_health_status
+    into v_health_assessed_at,v_health_status
+    from public.wow_mlb_v2d_calibration_health h
+    where h.spec_id=new.spec_id
+    order by h.assessed_at desc
+    limit 1;
+
+    if v_health_assessed_at is null
+       or v_health_status<>'PASS'
+       or new.calibration_health_assessed_at is distinct from v_health_assessed_at then
+      raise exception 'ratification requires the exact latest PASS calibration health assessment';
+    end if;
+
+    select count(*),count(*) filter (where status='PASS')
+    into v_gate_n,v_gate_pass_n
+    from public.wow_governed_deployment_gates;
+    if v_gate_n<>11 or v_gate_pass_n<>11 then
+      raise exception 'ratification requires all 11 deployment gates PASS';
+    end if;
+
+    select capability_status
+    into v_runtime_status
+    from public.wow_runtime_capabilities
+    where capability_key='MLB_EVENT_PROBABILITY'
+    limit 1;
+    if coalesce(v_runtime_status,'UNAVAILABLE')<>'AVAILABLE' then
+      raise exception 'ratification requires MLB_EVENT_PROBABILITY runtime capability AVAILABLE';
+    end if;
+  end if;
+
+  return new;
+end;
+$function$;
+
+drop trigger if exists trg_wow_mlb_publication_ratification_validate_insert
+  on public.wow_mlb_publication_ratification;
+create trigger trg_wow_mlb_publication_ratification_validate_insert
+  before insert on public.wow_mlb_publication_ratification
+  for each row execute function public.wow_mlb_publication_ratification_validate_insert();
 
 create or replace function public.wow_mlb_publication_ratification_immutable()
 returns trigger
