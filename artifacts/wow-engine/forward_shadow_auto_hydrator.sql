@@ -7,6 +7,10 @@
 -- remain delayed/blocked. This migration never authorizes probability
 -- publication or execution and does not alter the separate production-readiness
 -- ratification latch.
+--
+-- The currently frozen forward feature builder is explicitly 2026-specific
+-- (its schedule-source subject is "2026"). This orchestrator therefore blocks
+-- any other season instead of silently generalizing the feature contract.
 
 create or replace function public.wow_mlb_forward_auto_hydrate_pregame()
 returns jsonb
@@ -16,6 +20,10 @@ as $function$
 declare
   v_snapshot_id uuid;
   v_slate_date date;
+  v_schedule_subject text := '2026';
+  v_schedule_url text;
+  v_schedule_aux_id uuid;
+  v_schedule_materialization jsonb;
   v_expected_teams integer := 0;
   v_workload_pass integer := 0;
   v_workload jsonb;
@@ -50,6 +58,49 @@ begin
       'probability_publishable',false,
       'can_execute',false
     );
+  end if;
+
+  if extract(year from v_slate_date)::integer <> 2026 then
+    return jsonb_build_object(
+      'status','BLOCKED',
+      'reason','UNSUPPORTED_FROZEN_FEATURE_SEASON',
+      'slate_date',v_slate_date,
+      'supported_season',2026,
+      'probability_publishable',false,
+      'can_execute',false
+    );
+  end if;
+
+  -- The 38-feature builder needs a timestamped regular-season schedule
+  -- context for prior team/park history. Freeze it under this shadow snapshot
+  -- before any event features are built. materialize_schedule admits Final
+  -- games only and schedule_context further restricts to dates before the
+  -- target event date.
+  if not exists (
+    select 1
+    from public.wow_mlb_forward_aux_snapshots
+    where shadow_snapshot_id=v_snapshot_id
+      and source_kind='MLB_SCHEDULE_SEASON_TO_DATE'
+      and subject_id=v_schedule_subject
+  ) then
+    v_schedule_url := format(
+      'https://statsapi.mlb.com/api/v1/schedule?sportId=1&season=%s&gameType=R&hydrate=team,venue,linescore',
+      v_schedule_subject
+    );
+    v_schedule_aux_id := public.wow_mlb_forward_cache_url(
+      v_snapshot_id,
+      'MLB_SCHEDULE_SEASON_TO_DATE',
+      v_schedule_subject,
+      v_schedule_url
+    );
+  end if;
+
+  if not exists (
+    select 1
+    from public.wow_mlb_forward_schedule_games
+    where shadow_snapshot_id=v_snapshot_id
+  ) then
+    v_schedule_materialization := public.wow_mlb_forward_materialize_schedule(v_snapshot_id);
   end if;
 
   select count(distinct team_id)
@@ -163,6 +214,11 @@ begin
     'status','COMPLETE',
     'shadow_snapshot_id',v_snapshot_id,
     'slate_date',v_slate_date,
+    'schedule_context_ready',exists(
+      select 1
+      from public.wow_mlb_forward_schedule_games
+      where shadow_snapshot_id=v_snapshot_id
+    ),
     'expected_teams',v_expected_teams,
     'workload_pass_teams',(
       select count(*)
@@ -184,6 +240,6 @@ $function$;
 
 select cron.schedule(
   'wow-mlb-forward-shadow-auto-hydrate',
-  '*/15 * * * *',
+  '5,20,35,50 * * * *',
   $$select public.wow_mlb_forward_auto_hydrate_pregame();$$
 );
