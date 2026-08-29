@@ -15,14 +15,17 @@ def test_auto_hydrator_selects_only_freshest_still_pregame_snapshot():
     assert "where snapshot_id=v_snapshot_id" in sql
 
 
-def test_auto_hydrator_freezes_required_2026_schedule_context():
+def test_auto_hydrator_freezes_required_2026_prior_day_schedule_context():
     sql = _sql()
     assert "unsupported_frozen_feature_season" in sql
     assert "mlb_schedule_season_to_date" in sql
-    assert "gameType=R".lower() in sql
+    assert "startdate=03/25/2026" in sql
+    assert "enddate=%s" in sql
+    assert "to_char(v_slate_date - 1, 'mm/dd/yyyy')" in sql
     assert "wow_mlb_forward_cache_url" in sql
     assert "wow_mlb_forward_materialize_schedule" in sql
     assert "schedule_context_ready" in sql
+    assert "gametype=r" not in sql
 
 
 def test_auto_hydrator_reuses_existing_governed_feature_and_model_paths():
