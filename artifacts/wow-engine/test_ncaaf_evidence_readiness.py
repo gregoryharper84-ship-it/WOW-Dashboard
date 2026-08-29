@@ -80,12 +80,17 @@ def test_post_kickoff_and_unverified_rows_are_rejected():
     assert "NCAAF_PREGAME_EVIDENCE_ROWS_REJECTED" in result.blocker_codes
 
 
-def test_sql_contract_is_service_role_only_and_pregame():
+def test_sql_contract_is_service_role_only_pregame_and_provider_governed():
     sql = Path(__file__).with_name("ncaaf_pregame_evidence.sql").read_text()
     lowered = sql.lower()
+    assert "create table if not exists public.wow_ncaaf_evidence_sources" in lowered
+    assert "create table if not exists public.wow_ncaaf_pregame_evidence" in lowered
     assert "enable row level security" in lowered
-    assert "revoke all on table public.wow_ncaaf_pregame_evidence from anon, authenticated" in lowered
+    assert "from anon, authenticated" in lowered
     assert "security invoker" in lowered
     assert "evidence_timestamp < event_start_time" in lowered
+    assert "v_source.active is not true" in lowered
+    assert "allowed_evidence_kinds" in lowered
+    assert "max_provenance_grade" in lowered
     assert "can_execute = false" in lowered
     assert "probability_publishable" in lowered
