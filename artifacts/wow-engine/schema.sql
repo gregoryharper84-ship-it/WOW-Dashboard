@@ -175,6 +175,13 @@ create table if not exists wow_outcomes (
     created_at                timestamptz not null default now()
 );
 
+-- One governed prediction has exactly one terminal outcome row. The HTTP
+-- boundary performs a friendly duplicate check, but this unique index is the
+-- authoritative concurrency guard: two simultaneous settlement requests
+-- cannot both commit for the same prediction_id.
+create unique index if not exists uq_wow_outcomes_prediction_id
+    on wow_outcomes(prediction_id);
+
 -- Separate, structurally isolated manual-estimate tracking (Section 8A.6)
 -- NEVER pooled with wow_predictions / wow_outcomes above.
 create table if not exists wow_manual_estimates (
@@ -258,10 +265,3 @@ create table if not exists wow_calibrators (
         or
         (calibration_method = 'ISOTONIC_V1' and isotonic_artifact_b64 is not null and platt_a is null and platt_b is null)
     )
-);
-
-create unique index if not exists uq_wow_calibrators_one_active_per_cohort_method
-    on wow_calibrators (parent_cohort, calibration_method)
-    where active;
-
-comment on table wow_calibrators is 'Persisted Phase B/C calibrator artifacts (8B.4 + ratified PREDICTIVE_BOUNDS_V1 amendment). At most one active row per (parent_cohort, calibration_method) -- enforced by the partial unique index -- so score_prop_end_to_end always loads an unambiguous calibrator.';

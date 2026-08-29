@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WOW Governed Probability Engine Action
-  version: 1.2.0
+  version: 1.2.1
   description: >-
     Custom GPT Action contract for the external governed WOW probability backend.
     This API is analytical only. It never places, routes, modifies, or cancels a
@@ -164,13 +164,15 @@ paths:
           description: Governed event bridge is unavailable or returned an invalid backend payload.
   /settle:
     post:
-      operationId: settleWowPrediction
+      operationId: settleWowProp
       summary: Attach an official result to an existing governed prop prediction
       description: >-
         Authenticated outcome-recording operation for an already-created prop
-        prediction. It does not place, route, modify, or cancel a wager and must
-        only be used with a verified official result. Event settlement uses a
-        separate event-outcome contract in a future certified phase.
+        prediction. The caller supplies only the verified official result label and
+        realized statistic. The backend loads the frozen prediction direction and
+        line and derives hit/push itself; caller-supplied settlement math is never
+        authoritative. This operation does not place, route, modify, or cancel a
+        wager. Event settlement uses a separate event-outcome contract.
       security:
         - actionBearer: []
       parameters:
@@ -179,28 +181,23 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
           description: Existing WOW prop prediction identifier.
         - name: official_result
           in: query
           required: true
           schema:
             type: string
-          description: Verified official result label.
+          description: Verified official result label or source identity.
         - name: actual_stat
           in: query
           required: true
           schema:
             type: number
-          description: Verified realized value for the scored statistic.
-        - name: hit
-          in: query
-          required: true
-          schema:
-            type: boolean
-          description: Whether the frozen prop prediction side hit under its settlement rules.
+          description: Verified realized value for the scored statistic. Hit and push are derived by the backend.
       responses:
         '200':
-          description: Outcome row recorded successfully.
+          description: Outcome row recorded with backend-derived MORE/LESS hit and push state.
           content:
             application/json:
               schema:
@@ -208,6 +205,14 @@ paths:
                 additionalProperties: true
         '401':
           description: Missing, malformed, or incorrect Action credential.
+        '404':
+          description: Frozen governed prediction was not found.
+        '409':
+          description: Prediction direction is invalid or the prediction has already been settled.
+        '422':
+          description: Prediction identifier or realized statistic is invalid.
+        '503':
+          description: Prediction or outcome ledger is unavailable.
 components:
   securitySchemes:
     actionBearer:

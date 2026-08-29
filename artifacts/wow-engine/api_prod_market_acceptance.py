@@ -1,13 +1,16 @@
 """Startup-only live acceptance wrapper for the governed prop API.
 
-This module reuses ``api_prod_market.app`` unchanged and adds one background
-self-acceptance probe. The probe authenticates through the real /score-prop
-boundary with the existing WOW_ACTION_API_KEY, submits symmetric whole-number
-MORE/LESS requests against a deliberately nonexistent evidence snapshot, and
-requires the endpoint to fail closed before specialist/model invocation.
+This module reuses ``api_prod_market.app`` and adds two narrow production
+controls:
 
-It never logs credentials or response bodies, never writes a prediction, never
-publishes a probability, and never changes ``can_execute=false``.
+1. a startup self-acceptance probe that authenticates through the real
+   /score-prop boundary and proves acquisition fail-closed behavior without
+   emitting a probability; and
+2. a settlement boundary that derives MORE/LESS hit and push truth from the
+   frozen ``wow_predictions`` row instead of trusting caller-supplied outcome
+   math.
+
+Neither control can enable execution. ``can_execute`` remains false.
 """
 from __future__ import annotations
 
@@ -16,16 +19,209 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
+from fastapi import Depends, HTTPException
 
 import api_prod_market as market_api
+from ledger import record_outcome
 
 app = market_api.app
 
 _logger = logging.getLogger("wow.prop.acceptance")
 _background_tasks: set[asyncio.Task] = set()
+
+
+# The inherited legacy /settle route accepted a caller-provided hit boolean.
+# Production must not trust settlement math supplied by the caller. Remove that
+# route from this production wrapper and replace it below with a boundary that
+# derives hit/push from the immutable prediction direction and line.
+app.router.routes[:] = [
+    route
+    for route in app.router.routes
+    if not (
+        getattr(route, "path", None) == "/settle"
+        and "POST" in (getattr(route, "methods", set()) or set())
+    )
+]
+
+
+def _as_decimal(value: Any, field: str) -> Decimal:
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROP_SETTLEMENT_VALUE_INVALID",
+                "field": field,
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        ) from exc
+    if not parsed.is_finite():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROP_SETTLEMENT_VALUE_INVALID",
+                "field": field,
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
+    return parsed
+
+
+def _derive_prop_settlement(direction: str, line: Any, actual_stat: Any) -> dict[str, Any]:
+    side = str(direction or "").strip().upper()
+    if side not in {"MORE", "LESS"}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PROP_SETTLEMENT_DIRECTION_INVALID",
+                "direction": side or None,
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
+
+    frozen_line = _as_decimal(line, "line")
+    actual = _as_decimal(actual_stat, "actual_stat")
+    push = actual == frozen_line
+    if push:
+        hit = None
+    elif side == "MORE":
+        hit = actual > frozen_line
+    else:
+        hit = actual < frozen_line
+
+    return {
+        "direction": side,
+        "line": float(frozen_line),
+        "actual_stat": float(actual),
+        "hit": hit,
+        "push": push,
+    }
+
+
+def _load_prediction_for_settlement(prediction_id: str) -> dict[str, Any]:
+    try:
+        uuid.UUID(str(prediction_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROP_PREDICTION_ID_INVALID",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        ) from exc
+
+    try:
+        result = (
+            market_api.prod.get_client()
+            .table("wow_predictions")
+            .select("prediction_id,event_id,event_start_time,sport,stat_type,line,direction,source_snapshot_id")
+            .eq("prediction_id", str(prediction_id))
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "PROP_PREDICTION_LEDGER_UNAVAILABLE",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        ) from exc
+
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "PROP_PREDICTION_NOT_FOUND",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
+    return dict(rows[0])
+
+
+def _assert_not_already_settled(prediction_id: str) -> None:
+    try:
+        result = (
+            market_api.prod.get_client()
+            .table("wow_outcomes")
+            .select("outcome_id,prediction_id")
+            .eq("prediction_id", str(prediction_id))
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "PROP_OUTCOME_LEDGER_UNAVAILABLE",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        ) from exc
+
+    if result.data:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PROP_PREDICTION_ALREADY_SETTLED",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
+
+
+@app.post(
+    "/settle",
+    dependencies=[Depends(market_api.prod._require_action_api_key)],
+    operation_id="settleWowProp",
+)
+def settle_prop(prediction_id: str, official_result: str, actual_stat: float):
+    """Settle one governed prop from frozen prediction identity and actual stat.
+
+    The caller supplies only the official realized statistic and its source
+    label. Direction, line, hit and push are backend-owned derivations.
+    """
+    prediction = _load_prediction_for_settlement(prediction_id)
+    _assert_not_already_settled(prediction_id)
+    derived = _derive_prop_settlement(
+        prediction.get("direction"), prediction.get("line"), actual_stat
+    )
+    settlement_timestamp = datetime.now(timezone.utc).isoformat()
+    persisted = record_outcome(
+        prediction_id,
+        official_result=official_result,
+        actual_stat=derived["actual_stat"],
+        hit=derived["hit"],
+        push=derived["push"],
+        settlement_timestamp=settlement_timestamp,
+    )
+    return {
+        "ok": True,
+        "prediction_id": prediction_id,
+        "event_id": prediction.get("event_id"),
+        "sport": prediction.get("sport"),
+        "stat_type": prediction.get("stat_type"),
+        "direction": derived["direction"],
+        "line": derived["line"],
+        "actual_stat": derived["actual_stat"],
+        "hit": derived["hit"],
+        "push": derived["push"],
+        "settlement_math": "PROVEN_BACKEND_DERIVED",
+        "outcome": persisted,
+        "can_execute": False,
+    }
 
 
 def _probe_payload(direction: str) -> dict[str, Any]:
