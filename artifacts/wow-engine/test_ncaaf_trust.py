@@ -19,3 +19,17 @@ def test_ncaaf_sql_governance_contract():
     assert "log_loss" in lowered
     assert "alter table wow_ncaaf_predictions enable row level security" in lowered
     assert "alter table wow_ncaaf_outcomes enable row level security" in lowered
+
+
+def test_ncaaf_trust_review_metrics_contract():
+    sql = Path("ncaaf_trust_metrics.sql").read_text()
+    lowered = sql.lower()
+    assert "create or replace view wow_ncaaf_trust_review_metrics" in lowered
+    assert "settled_candidates" in lowered
+    assert "ncaaf_moneyline_bucket_candidates" in lowered
+    assert "clv_positive_rate" in lowered
+    assert "hypothetical_unit_risk_roi" in lowered
+    assert "selection_price_american" in lowered
+    assert "when not o.won then -1.0" in lowered
+    assert "false as can_execute" in lowered
+    assert "not executed-account roi" in lowered
