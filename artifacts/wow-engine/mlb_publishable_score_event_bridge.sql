@@ -3,9 +3,9 @@
 -- Held mode preserves the existing G11 proof behavior: fitted-model evidence is
 -- produced, but numeric probabilities stay withheld. Publishable mode is only
 -- reachable when wow_governed_deployment_state() says publication is ratified.
--- Even then this function re-checks the latest material event snapshot, performs
--- an official lineup refresh at request time, requires a post-lineup score, and
--- keeps can_execute=false.
+-- A publishable attempt refreshes official material identity, hydrates any new
+-- material snapshot, refreshes official lineups, and re-reads governance after
+-- external work. can_execute remains false in every path.
 
 create or replace function public.wow_mlb_score_event_bridge(
   p_official_event_id text,
@@ -26,7 +26,10 @@ declare
   s public.wow_mlb_forward_score_snapshots%rowtype;
   h public.wow_mlb_v2d_calibration_health%rowtype;
   l public.wow_mlb_forward_lineup_snapshots%rowtype;
+  v_active_spec_id uuid;
   v_gate jsonb;
+  v_capture_refresh jsonb;
+  v_hydrate_refresh jsonb;
   v_score_result jsonb;
   v_lineup_refresh jsonb;
   v_identity_errors text[] := '{}';
@@ -36,6 +39,7 @@ declare
   v_publication_attempt boolean := false;
   v_lineup_refresh_ok boolean := false;
   v_publishable boolean := false;
+  v_gate_health_assessed_at timestamptz;
 begin
   if p_official_event_id is null or btrim(p_official_event_id)='' then
     return jsonb_build_object(
@@ -54,6 +58,44 @@ begin
       'status','BLOCKED','code','SLATE_DATE_MISSING',
       'scoring_evidence_produced',false,'probability_publishable',false,'can_execute',false
     );
+  end if;
+
+  -- Only an already-ratified request performs synchronous external final-refresh
+  -- work. A mid-request promotion is intentionally insufficient for publishing.
+  v_gate:=public.wow_governed_deployment_state();
+  v_publication_attempt :=
+    coalesce(v_gate->>'governed_probability_capability','UNAVAILABLE')='AVAILABLE'
+    and coalesce((v_gate->>'probability_publishable')::boolean,false);
+
+  if v_publication_attempt then
+    select fs.spec_id into v_active_spec_id
+    from public.wow_mlb_v2d_frozen_spec fs
+    where fs.status='RESEARCH_FROZEN'
+    order by fs.created_at desc
+    limit 1;
+
+    if v_active_spec_id is null then
+      return jsonb_build_object(
+        'status','BLOCKED','code','ACTIVE_FROZEN_SPEC_UNAVAILABLE',
+        'scoring_evidence_produced',false,'probability_publishable',false,'can_execute',false
+      );
+    end if;
+
+    v_capture_refresh:=public.wow_mlb_capture_forward_shadow_schedule(
+      v_active_spec_id,p_requested_slate_date
+    );
+    if coalesce(v_capture_refresh->>'status','')='CAPTURED_MATERIAL_CHANGE' then
+      -- Prime the newly-created snapshot immediately. The caller still fails
+      -- stale-snapshot identity below and must resubmit using the new snapshot.
+      v_hydrate_refresh:=public.wow_mlb_forward_auto_hydrate_pregame();
+    elsif coalesce(v_capture_refresh->>'status','')<>'UNCHANGED_PREGAME_IDENTITY' then
+      return jsonb_build_object(
+        'status','BLOCKED','code','MATERIAL_IDENTITY_REFRESH_BLOCKED',
+        'refresh_status',v_capture_refresh->>'status',
+        'refresh_reason',v_capture_refresh->>'reason',
+        'scoring_evidence_produced',false,'probability_publishable',false,'can_execute',false
+      );
+    end if;
   end if;
 
   -- Always select the latest material pregame snapshot. A caller cannot pin the
@@ -101,6 +143,8 @@ begin
       'status','BLOCKED','code','EVENT_IDENTITY_MISMATCH',
       'identity_errors',to_jsonb(v_identity_errors),
       'server_snapshot_id',e.snapshot_id,'server_snapshot_timestamp',e.snapshot_timestamp,
+      'material_refresh_status',v_capture_refresh->>'status',
+      'hydration_refresh_status',v_hydrate_refresh->>'status',
       'scoring_evidence_produced',false,'probability_publishable',false,'can_execute',false
     );
   end if;
@@ -113,11 +157,6 @@ begin
       'scoring_evidence_produced',false,'probability_publishable',false,'can_execute',false
     );
   end if;
-
-  v_gate:=public.wow_governed_deployment_state();
-  v_publication_attempt :=
-    coalesce(v_gate->>'governed_probability_capability','UNAVAILABLE')='AVAILABLE'
-    and coalesce((v_gate->>'probability_publishable')::boolean,false);
 
   -- Publication mode performs a synchronous official-lineup final refresh.
   -- If the batting order changed, the lineup function creates immutable
@@ -135,7 +174,6 @@ begin
       );
     end if;
 
-    -- Re-read event state after the refresh/rescore transaction.
     select e1.* into e
     from public.wow_mlb_forward_shadow_events e1
     where e1.shadow_event_id=e.shadow_event_id;
@@ -193,14 +231,16 @@ begin
   order by assessed_at desc
   limit 1;
 
-  -- Re-read the multi-latch gate after the external lineup fetch/rescore. A
+  -- Re-read the multi-latch gate after all external refresh/rescore work. A
   -- revocation, health change, runtime-capability change, or new ratification
   -- during the request must fail closed. A mid-request promotion also does not
   -- publish because v_publication_attempt must already have been true.
   v_gate:=public.wow_governed_deployment_state();
+  v_gate_health_assessed_at:=nullif(v_gate->>'calibration_health_assessed_at','')::timestamptz;
   v_publishable :=
     v_publication_attempt
     and v_lineup_refresh_ok
+    and h.assessed_at is not distinct from v_gate_health_assessed_at
     and coalesce(v_gate->>'governed_probability_capability','UNAVAILABLE')='AVAILABLE'
     and coalesce((v_gate->>'probability_publishable')::boolean,false);
 
@@ -213,6 +253,9 @@ begin
     v_current_blockers:=array_append(v_current_blockers,'CALIBRATION_HEALTH_UNAVAILABLE');
   elsif h.calibration_health_status <> 'PASS' then
     v_current_blockers:=array_cat(v_current_blockers,coalesce(h.blockers,'{}'));
+  end if;
+  if h.assessed_at is distinct from v_gate_health_assessed_at then
+    v_current_blockers:=array_append(v_current_blockers,'CALIBRATION_HEALTH_STATE_CHANGED_DURING_REQUEST');
   end if;
   if coalesce(v_gate->>'deployment_contract_status','FAIL')<>'PASS' then
     v_current_blockers:=array_append(v_current_blockers,'DEPLOYMENT_CONTRACT_NOT_PASS');
@@ -276,6 +319,9 @@ begin
       'calibration_health_status',h.calibration_health_status,
       'ratification_status',v_gate->>'ratification_status',
       'ratification_id',v_gate->>'ratification_id',
+      'material_refresh_status',v_capture_refresh->>'status',
+      'hydration_refresh_status',v_hydrate_refresh->>'status',
+      'lineup_refresh_status',v_lineup_refresh->>'status',
       'current_publication_blockers','[]'::jsonb,
       'score_time_blockers',to_jsonb(v_score_time_blockers),
       'raw_home_probability',s.raw_home_probability,
@@ -315,6 +361,9 @@ begin
     'calibration_health_status',coalesce(h.calibration_health_status,'UNAVAILABLE'),
     'governed_probability_capability',coalesce(v_gate->>'governed_probability_capability','UNAVAILABLE'),
     'ratification_status',coalesce(v_gate->>'ratification_status','NOT_RATIFIED'),
+    'material_refresh_status',v_capture_refresh->>'status',
+    'hydration_refresh_status',v_hydrate_refresh->>'status',
+    'lineup_refresh_status',v_lineup_refresh->>'status',
     'current_publication_blockers',to_jsonb(v_current_blockers),
     'score_time_blockers',to_jsonb(v_score_time_blockers),
     'scoring_evidence_produced',true,
