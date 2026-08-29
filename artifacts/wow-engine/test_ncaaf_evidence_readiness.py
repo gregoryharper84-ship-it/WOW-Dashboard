@@ -85,6 +85,8 @@ def test_sql_contract_is_service_role_only_pregame_and_provider_governed():
     lowered = sql.lower()
     assert "create table if not exists public.wow_ncaaf_evidence_sources" in lowered
     assert "create table if not exists public.wow_ncaaf_pregame_evidence" in lowered
+    assert "create index if not exists idx_wow_ncaaf_pregame_evidence_source_provider" in lowered
+    assert "on public.wow_ncaaf_pregame_evidence (source_provider)" in lowered
     assert "enable row level security" in lowered
     assert "from anon, authenticated" in lowered
     assert "security invoker" in lowered
