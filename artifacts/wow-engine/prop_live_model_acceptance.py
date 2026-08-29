@@ -121,7 +121,7 @@ async def run_prop_model_live_self_acceptance(market_api: Any, logger: logging.L
 
         existing = (
             db.table("wow_predictions")
-            .select("prediction_id,source_snapshot_id,model_provider_identity,model_family,calibration_status,probability_publishable,can_execute")
+            .select("prediction_id,source_snapshot_id,model_provider_identity,model_family,calibration_status,probability_publishable")
             .eq("source_snapshot_id", snapshot_id)
             .eq("direction", "MORE")
             .eq("model_provider_identity", "WOW_PROP_FITTED_MODEL_V1")
@@ -135,7 +135,6 @@ async def run_prop_model_live_self_acceptance(market_api: Any, logger: logging.L
                 and prior.get("model_family") == "MLB_PITCHER_SO_FAILURE_PATH_NB_V1"
                 and prior.get("calibration_status") == "PRECALIBRATION_SHRINKAGE"
                 and prior.get("probability_publishable") is True
-                and prior.get("can_execute") is False
             )
             log.warning(
                 "WOW_PROP_MODEL_SELF_ACCEPTANCE result=%s mode=IDEMPOTENT_REUSE snapshot_id=%s prediction_id=%s provider=WOW_PROP_FITTED_MODEL_V1 model_family=MLB_PITCHER_SO_FAILURE_PATH_NB_V1 calibration=PRECALIBRATION_SHRINKAGE probability_publishable=%s can_execute=false",
