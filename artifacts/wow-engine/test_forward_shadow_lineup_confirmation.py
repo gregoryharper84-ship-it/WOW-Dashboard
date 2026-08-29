@@ -48,7 +48,7 @@ def test_lineup_timestamp_is_post_fetch_and_must_remain_pregame():
 def test_confirmation_blocks_actual_gameplay_even_before_scheduled_time():
     sql = _sql()
     assert "livedata,plays,allplays" in sql
-    assert "isPitch".lower() in sql
+    assert "ispitch" in sql
     assert "about,iscomplete" in sql
     assert "game advisory" in sql
     assert "v_pitch_n > 0" in sql
@@ -78,8 +78,9 @@ def test_confirmation_updates_current_state_and_rescores_without_publishing():
     assert "can_execute=true" not in sql
 
 
-def test_lineup_poll_is_staggered_after_hydration():
+def test_lineup_poll_runs_every_five_minutes_offset_after_hydration():
     sql = _sql()
     assert "'wow-mlb-forward-shadow-auto-lineup'" in sql
-    assert "'8,23,38,53 * * * *'" in sql
+    assert "'1,6,11,16,21,26,31,36,41,46,51,56 * * * *'" in sql
     assert "select public.wow_mlb_forward_auto_confirm_lineups();" in sql
+    assert "skip non-pass events" in sql
