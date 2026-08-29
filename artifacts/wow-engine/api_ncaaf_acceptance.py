@@ -7,6 +7,7 @@ behavior is inherited unchanged.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from fastapi import Depends, HTTPException
@@ -17,10 +18,12 @@ from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_closing_capture import run_from_environment
 from ncaaf_raw_availability_runtime import install_raw_availability_routes
 from ncaaf_training_materializer import materialize_training_games
+from prop_live_model_acceptance import run_prop_model_live_self_acceptance
 
 app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
 _logger = logging.getLogger("wow.ncaaf.readiness")
+_background_tasks: set[asyncio.Task] = set()
 
 
 def _db_client():
@@ -146,6 +149,18 @@ async def log_ncaaf_startup_readiness():
             "WOW_NCAAF_READINESS assessment=UNAVAILABLE error_type=%s probability_publishable=false can_execute=false",
             type(exc).__name__,
         )
+
+
+@app.on_event("startup")
+async def schedule_prop_model_live_self_acceptance():
+    """Optionally prove the real fitted prop path using one governed snapshot."""
+    if not os.getenv("WOW_PROP_MODEL_SELF_ACCEPTANCE_SNAPSHOT_ID"):
+        return
+    task = asyncio.create_task(
+        run_prop_model_live_self_acceptance(base.market_api, _logger)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 @app.post(
