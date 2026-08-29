@@ -86,7 +86,7 @@ jobs:
           wait "$WORKER_PID" 2>/dev/null || true
           trap - EXIT
 
-      - name: Validate Render, event schema, and Custom GPT Action contracts
+      - name: Validate Render, security, event schema, and Custom GPT Action contracts
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -166,6 +166,23 @@ jobs:
           assert "alter table wow_event_predictions enable row level security" in event_schema.lower()
           assert "alter table wow_event_outcomes enable row level security" in event_schema.lower()
           assert "direction in ('MORE','LESS')" not in event_schema
+
+          rls = Path("security_migrations/20260829_prop_evidence_rls_hardening.sql").read_text().lower()
+          assert "alter table public.wow_prop_evidence_snapshots enable row level security" in rls
+          assert "revoke all privileges on table public.wow_prop_evidence_snapshots from anon, authenticated" in rls
+          assert "revoke execute on function public.wow_prop_evidence_snapshot(uuid,text,text,text,text,numeric) from anon, authenticated" in rls
+          assert "create policy" not in rls
+
+          promotion = Path("security_migrations/20260829_mlb_v2d_governed_promotion_rpcs.sql").read_text().lower()
+          assert "calibration_health_status<>'pass'" in promotion
+          assert "forward_shadow_status<>'sufficient_for_review'" in promotion
+          assert "coalesce(h.pending_shadow_n,0)<>0" in promotion
+          assert "v_gate_n<>11 or v_gate_pass_n<>11" in promotion
+          assert "probability_publishable',false" in promotion
+          assert "revoke all on function public.wow_mlb_promote_runtime_capability_if_eligible(uuid) from public,anon,authenticated" in promotion
+          assert "revoke all on function public.wow_mlb_ratify_publication_if_eligible(uuid,jsonb) from public,anon,authenticated" in promotion
+          assert "grant execute on function public.wow_mlb_promote_runtime_capability_if_eligible(uuid) to service_role" in promotion
+          assert "grant execute on function public.wow_mlb_ratify_publication_if_eligible(uuid,jsonb) to service_role" in promotion
 
           action = yaml.safe_load(Path("openapi.custom-gpt.template.yaml").read_text())
           validate_spec(action)
