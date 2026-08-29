@@ -1,8 +1,7 @@
 from __future__ import annotations
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
-from .contracts import RunStatus, WorkerEnvelope, canonical_hash
+from .contracts import WorkerEnvelope, canonical_hash
 from .job_store import JobRepository
 from .registry import worker_spec
 from .durable_runner import execute_durable
@@ -18,5 +17,11 @@ class Orchestrator:
         job,created=self.jobs.create_job(run_id=run_id,candidate_id=candidate_id,worker_id=worker_id,worker_version=spec.worker_version,required=required,input_hash=input_hash)
         if created:
             env=WorkerEnvelope(run_id=run_id,job_id=str(job["job_id"]),candidate_id=candidate_id,worker_id=worker_id,worker_version=spec.worker_version,required=required,evidence_snapshot_id=evidence_snapshot_id,as_of=as_of,input_hash=input_hash,payload=payload,can_execute=False)
-            execute_durable.apply_async(args=[env.model_dump(mode="json")],task_id=str(job["job_id"]),queue="wow-agent")
+            execute_durable.apply_async(
+                args=[env.model_dump(mode="json")],
+                task_id=str(job["job_id"]),
+                queue="wow-agent",
+                soft_time_limit=spec.timeout_seconds,
+                time_limit=spec.timeout_seconds+5,
+            )
         return {**job,"created":created,"can_execute":False}
