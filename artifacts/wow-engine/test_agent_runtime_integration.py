@@ -2,12 +2,24 @@
 actual production app composition (api_prod.app), with a fake Supabase
 client injected — same pattern as the existing test_api_prod.py suite.
 
+Since the convergence pass with PR #33 (feature/wow-agent-runtime-v1),
+POST /wow/runs starts real orchestration, and conftest.py runs Celery
+eagerly (in-process, no real broker) for this whole test suite — so a run
+created through the API can already be terminal by the time the response
+comes back, unlike a real async deployment. Tests that need to observe or
+act on a *nonterminal* run construct it directly via
+agent_runtime.repository.create_run(), bypassing the API's orchestration
+side effect, rather than through POST /wow/runs.
+
 test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation
 is Phase 1's exit criterion from the packet (section 22): a synchronous
 fake-worker fixture completes with balanced reconciliation, proven through
 the real run ledger, state machine, idempotency, reducer, and reconciliation
 code — surfaced through the real polling endpoint, not just unit-tested in
-isolation.
+isolation. It builds the run directly through the repository for the same
+reason as above: this test manually drives fake jobs job-by-job and needs
+the run to stay exactly where it puts it, not race ahead through real
+orchestration.
 """
 from __future__ import annotations
 
@@ -18,6 +30,7 @@ import api_prod
 from agent_runtime import idempotency, repository
 from agent_runtime.reconciliation import reconcile_from_ceilings
 from agent_runtime.reducer import RequiredJobResult, reduce_candidate
+from agent_runtime.registry import WORKERS
 from agent_runtime_test_support import FakeSupabaseClient
 
 client = TestClient(api_prod.app)
@@ -28,8 +41,30 @@ _RUN_PAYLOAD = {
     "user_timezone": "America/Chicago",
     "lanes": ["PLAYER_PROPS"],
     "sports": ["MLB"],
-    "discovery_enabled": True,
+    "discovery_enabled": False,
+    "candidate_inputs": [],
 }
+
+
+def _seed_registry(fake: FakeSupabaseClient) -> None:
+    for spec in WORKERS.values():
+        fake.table("wow_agent_worker_registry").insert({
+            "worker_id": spec.worker_id, "worker_version": spec.worker_version,
+            "contract_version": spec.contract_version, "implementation_type": spec.implementation_type,
+            "authority_ceiling": spec.authority_ceiling, "enabled": True,
+        }).execute()
+
+
+def _created_run(fake: FakeSupabaseClient, idempotency_key: str = "k1") -> dict:
+    """Build a run directly through the repository, bypassing POST
+    /wow/runs's orchestration side effect, so it stays exactly at CREATED
+    for tests that need a controllable nonterminal fixture."""
+    row, _ = repository.create_run(
+        fake, idempotency_key=idempotency_key, request_hash="h1", run_type="FULL_MODEL",
+        requested_as_of="2026-08-29T00:00:00Z", user_timezone="America/Chicago",
+        governance_version="TEST_V1",
+    )
+    return row
 
 
 def test_health_live_has_no_dependencies():
@@ -38,14 +73,22 @@ def test_health_live_has_no_dependencies():
     assert response.json() == {"status": "ok", "can_execute": False}
 
 
-def test_health_ready_reports_database_reachable(monkeypatch):
+def test_health_ready_all_dependencies_ok(monkeypatch):
     fake = FakeSupabaseClient()
+    _seed_registry(fake)
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+    monkeypatch.setenv("REDIS_URL", "redis://fake-for-test/0")
+
+    class _FakePing:
+        def ping(self):
+            return True
+
+    monkeypatch.setattr("redis.Redis.from_url", lambda *a, **k: _FakePing())
+
     response = client.get("/health/ready")
     assert response.status_code == 200
     body = response.json()
-    assert body["database"] == "ok"
-    assert body["can_execute"] is False
+    assert body == {"status": "ok", "database": "ok", "queue": "ok", "worker_registry": "ok", "can_execute": False}
 
 
 def test_health_ready_fails_closed_when_database_unreachable(monkeypatch):
@@ -56,6 +99,17 @@ def test_health_ready_fails_closed_when_database_unreachable(monkeypatch):
     response = client.get("/health/ready")
     assert response.status_code == 503
     assert response.json()["detail"]["database"] == "unreachable"
+
+
+def test_health_ready_fails_closed_when_registry_mismatched(monkeypatch):
+    fake = FakeSupabaseClient()  # registry table left empty on purpose
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+    monkeypatch.setenv("REDIS_URL", "redis://fake-for-test/0")
+    monkeypatch.setattr("redis.Redis.from_url", lambda *a, **k: type("P", (), {"ping": lambda self: True})())
+
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json()["detail"]["worker_registry"] == "mismatch_or_unreachable"
 
 
 def test_create_run_rejects_can_execute_true(monkeypatch):
@@ -76,12 +130,24 @@ def test_create_run_requires_idempotency_key_header(monkeypatch):
 
 
 def test_create_run_happy_path_returns_202_and_pollable_run_id(monkeypatch):
-    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
+    fake = FakeSupabaseClient()
+    # POST /wow/runs starts real orchestration, whose Celery task fetches its
+    # own client via ledger.get_client() (correct in production — same real
+    # Supabase project either way) rather than reusing the route handler's —
+    # both must resolve to the same fake instance here, or the eager task
+    # sees an empty/unconfigured client and the request 503s.
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+    monkeypatch.setattr("ledger.get_client", lambda: fake)
     response = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-happy-1"})
     assert response.status_code == 202
     body = response.json()
-    assert body["status"] == "CREATED"
-    assert body["terminal"] is False
+    # With discovery disabled and no candidates, eager-mode orchestration
+    # (conftest.py) runs the whole pipeline synchronously within this
+    # request and the run reconciles to COMPLETED before the response comes
+    # back — a real async deployment would typically still show CREATED or
+    # an early in-progress state here instead.
+    assert body["status"] == "COMPLETED"
+    assert body["terminal"] is True
     assert body["reused"] is False
     assert body["can_execute"] is False
     assert body["poll_url"] == f"/wow/runs/{body['run_id']}/manifest"
@@ -90,6 +156,7 @@ def test_create_run_happy_path_returns_202_and_pollable_run_id(monkeypatch):
 def test_repeated_create_run_same_key_and_body_is_idempotent(monkeypatch):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+    monkeypatch.setattr("ledger.get_client", lambda: fake)
     first = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-dup-1"})
     second = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-dup-1"})
     assert first.json()["run_id"] == second.json()["run_id"]
@@ -106,7 +173,7 @@ def test_get_run_not_found_is_404(monkeypatch):
 def test_nonterminal_manifest_is_never_reported_as_zero_picks_means_no_play(monkeypatch):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
-    created = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-nonterminal-1"}).json()
+    created = _created_run(fake, "run-nonterminal-1")
 
     manifest = client.get(f"/wow/runs/{created['run_id']}/manifest")
     assert manifest.status_code == 200
@@ -119,7 +186,7 @@ def test_nonterminal_manifest_is_never_reported_as_zero_picks_means_no_play(monk
 def test_cancel_run_transitions_to_canceled(monkeypatch):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
-    created = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-cancel-1"}).json()
+    created = _created_run(fake, "run-cancel-1")
 
     cancel = client.post(f"/wow/runs/{created['run_id']}/cancel")
     assert cancel.status_code == 200
@@ -133,7 +200,7 @@ def test_cancel_run_transitions_to_canceled(monkeypatch):
 def test_cancel_already_terminal_run_is_a_no_op(monkeypatch):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
-    created = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-cancel-2"}).json()
+    created = _created_run(fake, "run-cancel-2")
     client.post(f"/wow/runs/{created['run_id']}/cancel")
 
     second_cancel = client.post(f"/wow/runs/{created['run_id']}/cancel")
@@ -165,18 +232,18 @@ def test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation(
     worker (claim -> execute -> record output -> finish), reduced through
     the real deterministic reducer, reconciled through the real
     rows_in = completed + held + rejected invariant, and read back through
-    the real GET /wow/runs/{id}/manifest endpoint.
+    the real GET /wow/runs/{id}/manifest endpoint. The run is built directly
+    through the repository (see module docstring) so this test keeps manual
+    control instead of racing against real eager-mode orchestration.
     """
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
 
-    created = client.post(
-        "/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-fixture-1"},
-    ).json()
+    created = _created_run(fake, "run-fixture-1")
     run_id = created["run_id"]
 
     scenarios = [
-        ("MLB:G1:PITCHER_KS", "wow.mlb-strikeout-expert", "VERIFIED", "SUCCEEDED"),
+        ("MLB:G1:PITCHER_KS", "wow.mlb-strikeout-expert", "FINAL_APPROVED", "SUCCEEDED"),
         ("MLB:G2:PITCHER_KS", "wow.mlb-strikeout-expert", "MODEL_UNAVAILABLE", "BLOCKED"),
         ("MLB:G3:PITCHER_KS", "wow.mlb-strikeout-expert", "MODEL_QUALIFIED_HOLD", "SUCCEEDED"),
     ]
@@ -186,7 +253,7 @@ def test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation(
             fake, run_id=run_id, canonical_key=canonical_key, sport="MLB",
             participant="Test Pitcher", market_family="PLAYER_PROPS", period="FULL_GAME",
         )
-        job = repository.enqueue_job(
+        job, _ = repository.enqueue_job(
             fake, run_id=run_id, candidate_id=candidate["candidate_id"],
             worker_id=worker_id, worker_version="1.0.0",
             idempotency_key=f"job-{canonical_key}", required=True,

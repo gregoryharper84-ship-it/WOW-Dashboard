@@ -8,23 +8,24 @@ each override (/score-event, /governance, /score-prop), so anything
 registered here propagates through both wrapper layers automatically without
 either wrapper file changing.
 
-Phase 1 provides the durable run ledger, idempotent creation, and polling
-contract only. No real discovery/evidence/model worker exists yet (Phases
-2-4), so a run created here has no path to a real terminal decision from
-production request handling alone — it can reach CREATED, FAILED (contract
-error), or CANCELED (administrative), never COMPLETED. The synchronous
-fake-worker path proving the ledger + state machine + reducer +
-reconciliation work end-to-end together lives in
-test_agent_runtime_integration.py, not in this module.
+POST /wow/runs starts real orchestration (Orchestrator.start_run) as of the
+convergence pass with PR #33 (feature/wow-agent-runtime-v1): discovery
+through the terminal reducer runs via the Celery worker
+(agent_runtime/durable_runner.py) for any candidate whose lane isn't wired
+to a real fitted model yet, terminalizing as MODEL_UNAVAILABLE rather than
+inventing a probability — see agent_runtime/coordinator.py and
+runner.py::_run_controlling_model.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from fastapi import Header, HTTPException
 
 from api import app, get_client
 from agent_runtime import idempotency, repository, schemas
+from agent_runtime.orchestrator import Orchestrator
 from agent_runtime.state_machine import RUN_TERMINAL_STATES
 
 GOVERNANCE_VERSION = "WOW-AGENT-RUNTIME-V1-PHASE1"
@@ -48,23 +49,43 @@ def health_live() -> dict[str, Any]:
 
 @app.get("/health/ready")
 def health_ready() -> dict[str, Any]:
-    """Database usable. Queue and worker-registry checks are added in Phase 2
-    once a queue exists — reporting them ready today would be a fabricated
-    positive, so this deliberately covers database reachability only."""
+    """Database, queue, and code<->DB worker-registry parity — packet
+    section 9. All three fail closed: an unreachable dependency or a
+    registry mismatch means not ready, never a partial or optimistic pass."""
+    client = None
     try:
-        get_client().table("wow_agent_runs").select("run_id").limit(1).execute()
+        client = get_client()
+        client.table("wow_agent_runs").select("run_id").limit(1).execute()
         database_ok = True
     except Exception:
         database_ok = False
 
+    registry_ok = False
+    if database_ok and client is not None:
+        try:
+            registry_ok = repository.registry_matches(client)
+        except Exception:
+            registry_ok = False
+
+    queue_ok = False
+    try:
+        import redis
+
+        redis_url = os.environ.get("REDIS_URL")
+        if redis_url:
+            queue_ok = bool(redis.Redis.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1).ping())
+    except Exception:
+        queue_ok = False
+
+    ready = database_ok and queue_ok and registry_ok
     body = {
-        "status": "ok" if database_ok else "not_ready",
+        "status": "ok" if ready else "not_ready",
         "database": "ok" if database_ok else "unreachable",
-        "queue": "NOT_YET_IMPLEMENTED_PHASE_2",
-        "worker_registry": "NOT_YET_IMPLEMENTED_PHASE_2",
+        "queue": "ok" if queue_ok else "unreachable",
+        "worker_registry": "ok" if registry_ok else "mismatch_or_unreachable",
         "can_execute": False,
     }
-    if not database_ok:
+    if not ready:
         raise HTTPException(status_code=503, detail=body)
     return body
 
@@ -104,6 +125,22 @@ def create_run(
             client, event_type="RUN_CREATED", actor="wow.agent-runtime-api",
             run_id=run_row["run_id"],
         )
+        try:
+            started = Orchestrator(client).start_run(
+                run=run_row,
+                request={field: getattr(req, field) for field in _REQUEST_HASH_FIELDS},
+            )
+            run_row = started["run"]
+        except Exception as exc:
+            latest = repository.get_run(client, str(run_row["run_id"])) or run_row
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "AGENT_RUNTIME_START_FAILED", "run_id": str(run_row["run_id"]),
+                    "status": latest.get("status"), "error": type(exc).__name__,
+                    "probability_publishable": False, "can_execute": False,
+                },
+            ) from exc
 
     status = run_row["status"]
     return {
