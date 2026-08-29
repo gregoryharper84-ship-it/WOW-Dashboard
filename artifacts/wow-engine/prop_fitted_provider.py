@@ -39,6 +39,20 @@ class ResolvedArtifact:
     bundle: CertifiedBundle
 
 
+@dataclass(frozen=True)
+class CertifiedInference:
+    """One raw inference plus the immutable artifact that produced it.
+
+    Returning the artifact alongside the PMF lets the downstream calibration
+    and persistence layers bind their work to the exact certified bundle
+    without asking Supabase a second time or trusting caller-supplied version
+    fields.
+    """
+
+    artifact: ResolvedArtifact
+    distribution: RawDiscreteDistribution
+
+
 Adapter = Callable[[ResolvedArtifact, PropInferenceRequest, Mapping[str, Any]], RawDiscreteDistribution]
 _ADAPTERS: dict[str, Adapter] = {}
 
@@ -159,18 +173,17 @@ def resolve_certified_artifact(
     )
 
 
-def infer_distribution(
+def infer_certified_distribution(
     client: Any,
     *,
     request: PropInferenceRequest,
     line: float,
     features: Mapping[str, Any],
-) -> RawDiscreteDistribution:
-    """Resolve the certified bundle and dispatch to its reviewed adapter.
+) -> CertifiedInference:
+    """Resolve one certified bundle and return its raw PMF with provenance.
 
-    Absence of a certified artifact or an adapter is a hard abstention. The
-    caller must not substitute L5/L10 frequency, market implied probability,
-    an LLM estimate, or another model family.
+    Absence of a certified artifact or reviewed adapter is a hard abstention.
+    The provider never calibrates, publishes, persists, or executes.
     """
     artifact = resolve_certified_artifact(
         client,
@@ -196,4 +209,20 @@ def infer_distribution(
             "PROP_MODEL_ADAPTER_INVALID_OUTPUT",
             "model-family adapter must return RawDiscreteDistribution",
         )
-    return distribution
+    return CertifiedInference(artifact=artifact, distribution=distribution)
+
+
+def infer_distribution(
+    client: Any,
+    *,
+    request: PropInferenceRequest,
+    line: float,
+    features: Mapping[str, Any],
+) -> RawDiscreteDistribution:
+    """Compatibility wrapper returning only the raw provider distribution."""
+    return infer_certified_distribution(
+        client,
+        request=request,
+        line=line,
+        features=features,
+    ).distribution

@@ -1,12 +1,16 @@
-"""Production WOW governed backend.
+"""Production WOW governed backend compatibility layer.
 
-This wrapper preserves the proven MLB event bridge from api_g11 and replaces
-POST /score-prop plus GET /governance with lane-scoped, fail-closed contracts.
+This wrapper preserves the proven MLB event bridge from api_g11 and provides
+lane-scoped governance/acquisition contracts used by api_prod_market.
 
 Player props are a WOW Betting Engine lane, not an LLP Team Betting lane.
-A publishable prop must traverse:
+The production prop scorer is owned by api_prod_market and traverses:
   WOW_BETTING_ENGINE -> Render -> Supabase evidence -> controlling specialist
-  -> governed model -> Supabase wow_predictions ledger -> Render -> WOW.
+  -> WOW_PROP_FITTED_MODEL_V1 -> calibration -> wow_predictions.
+
+The direct api_prod /score-prop route intentionally fails closed after the
+capability/evidence/specialist gates. It can never fall back to the legacy
+pitcher-shaped FittedParamsBundle scorer if this module is started directly.
 
 No live wager execution is possible here; can_execute is always false.
 """
@@ -165,7 +169,7 @@ def _visible_acquisition_evidence(evidence: dict[str, Any], line: float) -> dict
 
 
 def _visible_model_evidence(row: Any) -> dict[str, Any]:
-    """Project the governed row fields required for user-response E2E proof."""
+    """Project the legacy event/model fields still used by compatibility tests."""
     return {
         "effective_sample_size": getattr(row, "effective_sample_size", None),
         "simulation_draws": getattr(row, "simulation_draws", None),
@@ -239,8 +243,8 @@ def governance():
         },
         "routing_contract": {
             "LLP_TEAM_BETTING_MODEL": "/score-event only for governed team/event outright-winner lanes",
-            "WOW_BETTING_ENGINE_PLAYER_PROPS": "/score-prop",
-            "prop_required_path": "WOW_BETTING_ENGINE->RENDER->SUPABASE_EVIDENCE->CONTROLLING_SPECIALIST->GOVERNED_MODEL->WOW_PREDICTIONS",
+            "WOW_BETTING_ENGINE_PLAYER_PROPS": "/score-prop via api_prod_market",
+            "prop_required_path": "WOW_BETTING_ENGINE->RENDER->SUPABASE_EVIDENCE->CONTROLLING_SPECIALIST->WOW_PROP_FITTED_MODEL_V1->CALIBRATION->WOW_PREDICTIONS",
         },
     }
 
@@ -254,18 +258,17 @@ def score_prop(
     req: ScorePropRequest,
     x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
 ):
-    """Governed player-prop boundary.
+    """Compatibility prop boundary that cannot invoke the legacy scorer.
 
-    Acquisition is evaluated before specialist/model invocation. Incomplete
-    model evidence therefore cannot trigger the specialist or emit a numeric
-    probability. Market/payout evidence remains a separate downstream lane.
+    The route keeps governance, acquisition, and specialist gates intact so a
+    direct launch still fails with the most specific upstream blocker. If those
+    gates pass and the capability is AVAILABLE, it stops rather than touching
+    the retired pitcher-shaped scoring path. The serving production wrapper
+    api_prod_market owns the certified discrete-PMF runtime.
     """
     model_identity = _reject_llp_prop_identity(x_wow_model_identity)
     lane = _runtime_capability(PROP_CAPABILITY_KEY)
 
-    # Mandatory acquisition gate comes first. This preserves the WOW rule that
-    # incomplete exact-stat/box-score/role/opportunity evidence cannot even
-    # invoke the controlling specialist, much less produce a probability.
     evidence = _prop_evidence(req)
     if evidence.get("ok") is not True or evidence.get("code") != "PROP_EVIDENCE_READY":
         detail = dict(evidence)
@@ -321,88 +324,29 @@ def score_prop(
                     "governed_model": "BLOCKED",
                     "prediction_ledger_write": "NOT_ATTEMPTED",
                 },
+                "model_path": "WOW_PROP_FITTED_MODEL_V1->RAW_DISCRETE_DISTRIBUTION->CALIBRATION->PERSISTENCE",
                 "probability_publishable": False,
                 "can_execute": False,
             },
         )
 
-    bundle = base_api._fitted_params_provider(req.sport, req.stat_type)
-    if bundle is None:
-        raise HTTPException(
-            status_code=501,
-            detail={
-                "code": "PROP_FITTED_PROVIDER_UNAVAILABLE",
-                "message": "Real fitted per-sport parameters are not wired for this governed prop lane.",
-                "evidence_hydration": "PASS",
-                "controlling_specialist": specialist.get("controlling_specialist"),
-                "probability_publishable": False,
-                "can_execute": False,
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "PROP_DISCRETE_RUNTIME_ENTRYPOINT_REQUIRED",
+            "message": "Legacy api_prod prop scoring is retired. The governed production prop runtime is api_prod_market.",
+            "evidence_hydration": "PASS",
+            "controlling_specialist": specialist.get("controlling_specialist"),
+            "backend_traversal": {
+                "requester_model": model_identity,
+                "supabase_capability": "PASS",
+                "supabase_evidence": "PASS",
+                "controlling_specialist": "PASS",
+                "legacy_fitted_params_path": "DISABLED",
+                "prediction_ledger_write": "NOT_ATTEMPTED",
             },
-        )
-
-    from datetime import datetime, timezone
-    scored_at = datetime.now(timezone.utc).isoformat()
-    draws = max(base_api.MIN_SIMULATION_DRAWS, specialist.get("min_event_tree_simulations") or 0)
-    result = base_api.score_prop_end_to_end(
-        event_id=req.event_id,
-        event_start_time=req.event_start_time,
-        sport=req.sport,
-        stat_type=req.stat_type,
-        line=req.line,
-        direction=req.direction,
-        source_snapshot_id=req.source_snapshot_id,
-        cohort=bundle.cohort,
-        pitcher=bundle.pitcher,
-        regime_params=bundle.regime_params,
-        resample_fn=bundle.resample_fn,
-        n_eff=bundle.n_eff,
-        seed=req.seed,
-        candidate_direction=req.direction,
-        scored_at=scored_at,
-        parent_cohort=bundle.parent_cohort,
-        settled_n_in_cohort=bundle.settled_n_in_cohort,
-        money_lane_status=req.money_lane_status,
-        draws=draws,
-    )
-
-    if not result.row.probability_publishable:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "PROP_MODEL_NOT_PUBLISHABLE",
-                "data_gaps": result.row.data_gaps,
-                "error": result.error,
-                "probability_publishable": False,
-                "can_execute": False,
-            },
-        )
-
-    persisted = base_api._persist_fn(result.row)
-    if not isinstance(persisted, dict) or not persisted.get("prediction_id"):
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "code": "PROP_PREDICTION_LEDGER_WRITE_UNPROVEN",
-                "probability_publishable": False,
-                "can_execute": False,
-            },
-        )
-
-    return {
-        "ok": True,
-        "prediction": persisted,
-        "acquisition_evidence": _visible_acquisition_evidence(evidence, req.line),
-        "model_evidence": _visible_model_evidence(result.row),
-        "evidence": evidence,
-        "backend_traversal": {
-            "requester_model": model_identity,
-            "render": "PASS",
-            "supabase_capability": "PASS",
-            "supabase_evidence": "PASS",
-            "controlling_specialist": "PASS",
-            "governed_model": "PASS",
-            "prediction_ledger_write": "PASS",
+            "model_path": "WOW_PROP_FITTED_MODEL_V1->RAW_DISCRETE_DISTRIBUTION->CALIBRATION->PERSISTENCE",
+            "probability_publishable": False,
+            "can_execute": False,
         },
-        "probability_publishable": True,
-        "can_execute": False,
-    }
+    )
