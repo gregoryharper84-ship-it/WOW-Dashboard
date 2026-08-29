@@ -23,3 +23,5 @@ services:
         sync: false
       - key: WOW_NCAAF_MARKET_FEED_TOKEN
         sync: false
+      - key: CFBD_API_KEY
+        sync: false
