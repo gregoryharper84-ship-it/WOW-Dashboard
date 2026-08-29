@@ -132,6 +132,55 @@ def _prop_evidence(req: ScorePropRequest) -> dict[str, Any]:
     return payload
 
 
+def _visible_acquisition_evidence(evidence: dict[str, Any], line: float) -> dict[str, Any]:
+    """Return auditable non-probability acquisition evidence to the caller."""
+    raw_log = evidence.get("game_log")
+    values = list(raw_log[:10]) if isinstance(raw_log, list) else []
+    l5 = values[:5]
+    more = sum(1 for value in values if isinstance(value, (int, float)) and value > line)
+    less = sum(1 for value in values if isinstance(value, (int, float)) and value < line)
+    pushes = sum(1 for value in values if isinstance(value, (int, float)) and value == line)
+    return {
+        "evidence_snapshot_id": evidence.get("source_snapshot_id"),
+        "hydration_status": evidence.get("hydration_status"),
+        "l10_values": values,
+        "l5_values": l5,
+        "l10_n": len(values),
+        "l5_n": len(l5),
+        "exact_line_results": {
+            "line": line,
+            "more_n": more,
+            "less_n": less,
+            "push_n": pushes,
+        },
+        "role_status": evidence.get("role_status"),
+        "role_timestamp": evidence.get("role_timestamp"),
+        "opportunity_ledger": evidence.get("opportunity_ledger"),
+        "source_timestamps": evidence.get("source_timestamps") or {},
+        "evidence_version": evidence.get("evidence_version"),
+        "rate_provenance": evidence.get("rate_provenance"),
+        "probability_fields_withheld": True,
+        "can_execute": False,
+    }
+
+
+def _visible_model_evidence(row: Any) -> dict[str, Any]:
+    """Project the governed row fields required for user-response E2E proof."""
+    return {
+        "effective_sample_size": getattr(row, "effective_sample_size", None),
+        "simulation_draws": getattr(row, "simulation_draws", None),
+        "regime_model_version": getattr(row, "regime_model_version", None),
+        "calibration_status": getattr(row, "calibration_status", None),
+        "calibration_version": getattr(row, "calibration_version", None),
+        "bounds_method_version": getattr(row, "bounds_method_version", None),
+        "calibrated_probability_lower_bound": getattr(row, "calibrated_probability_lower_bound", None),
+        "calibrated_probability_upper_bound": getattr(row, "calibrated_probability_upper_bound", None),
+        "model_timestamp": getattr(row, "model_timestamp", None),
+        "probability_publishable": bool(getattr(row, "probability_publishable", False)),
+        "can_execute": False,
+    }
+
+
 def _reject_llp_prop_identity(model_identity: Optional[str]) -> str:
     identity = (model_identity or "WOW_BETTING_ENGINE").strip().upper()
     if identity in LLP_IDENTITIES:
@@ -261,6 +310,7 @@ def score_prop(
                 "governed_probability_status": "NOT_PRODUCED",
                 "capability_evidence": lane.get("evidence") or {},
                 "evidence_hydration": "PASS",
+                "acquisition_evidence": _visible_acquisition_evidence(evidence, req.line),
                 "controlling_specialist": specialist.get("controlling_specialist"),
                 "backend_traversal": {
                     "requester_model": model_identity,
@@ -341,6 +391,8 @@ def score_prop(
     return {
         "ok": True,
         "prediction": persisted,
+        "acquisition_evidence": _visible_acquisition_evidence(evidence, req.line),
+        "model_evidence": _visible_model_evidence(result.row),
         "evidence": evidence,
         "backend_traversal": {
             "requester_model": model_identity,
