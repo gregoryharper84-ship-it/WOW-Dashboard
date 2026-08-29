@@ -24,6 +24,29 @@ jobs:
     defaults:
       run:
         working-directory: artifacts/wow-engine
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wow_agent_ci
+          POSTGRES_PASSWORD: wow_agent_ci
+          POSTGRES_DB: wow_agent_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U wow_agent_ci -d wow_agent_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,6 +66,25 @@ jobs:
 
       - name: Run governed probability backend tests
         run: python -m pytest -q
+
+      - name: Run durable Agent Runtime integration
+        env:
+          WOW_AGENT_RUNTIME_INTEGRATION: "1"
+          SUPABASE_DB_URL: postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci
+          REDIS_URL: redis://localhost:6379/0
+          WOW_CAN_EXECUTE: "false"
+          WOW_DRY_RUN_ONLY: "true"
+        run: |
+          SUPABASE_DB_URL="$SUPABASE_DB_URL" REDIS_URL="$REDIS_URL" \
+            celery -A agent_runtime_v1.celery_app:celery_app worker --loglevel=WARNING --pool=solo --concurrency=1 \
+            > "$RUNNER_TEMP/wow-agent-worker.log" 2>&1 &
+          WORKER_PID=$!
+          trap 'kill "$WORKER_PID" 2>/dev/null || true; cat "$RUNNER_TEMP/wow-agent-worker.log" || true' EXIT
+          sleep 3
+          python -m pytest -q test_agent_runtime_postgres_integration.py
+          kill "$WORKER_PID" 2>/dev/null || true
+          wait "$WORKER_PID" 2>/dev/null || true
+          trap - EXIT
 
       - name: Validate Render, event schema, and Custom GPT Action contracts
         run: |
