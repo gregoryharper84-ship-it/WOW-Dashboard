@@ -111,20 +111,23 @@ def cancel(run_id:str,_authz=Depends(_auth)):
 def agent_live():
     return {"ok":True,"service":"wow-agent-runtime","status":"alive","can_execute":False}
 
-def _registry_ready()->bool:
+def _registry_ready(store)->bool:
     required={
         "wow.parallel-discovery-router","wow.slate-integrity-expert","wow.evidence-hydration","wow.controlling-model",
         "wow.failure-path-framework","wow.dynamic-calibration-expert","wow.exact-line-market-auditor",
         "wow.structure-exposure-governor","wow.final-refresh-governor","wow.terminal-ceiling-reducer",
     }
-    return required.issubset(WORKERS) and all(WORKERS[key].contract_version=="wow.agent-output.v1" for key in required)
+    code_ready=required==set(WORKERS) and all(WORKERS[key].contract_version=="wow.agent-output.v1" for key in required)
+    return code_ready and bool(store.registry_matches(WORKERS))
 
 @router.get("/health/ready",include_in_schema=False)
 def agent_ready():
-    db=False; queue=False; registry=_registry_ready()
+    db=False; queue=False; registry=False; store=None
     try:
         store=get_store(); db=store.get_run("00000000-0000-0000-0000-000000000000") is None
-    except Exception: db=False
+        registry=_registry_ready(store)
+    except Exception:
+        db=False; registry=False
     try:
         import redis
         url=os.getenv("REDIS_URL")
