@@ -38,6 +38,9 @@ class MemoryStore:
         rows=[dict(row) for row in self.candidates.values() if str(row.get("run_id"))==str(run_id)]
         return sorted(rows,key=lambda row:(str(row.get("canonical_key") or ""),str(row.get("candidate_id") or "")))
 
+    def registry_matches(self, workers:dict)->bool:
+        return bool(workers) and all(spec.contract_version=="wow.agent-output.v1" for spec in workers.values())
+
     def transition_run(self,run_id:str,nxt:RunStatus,stage:str|None=None)->dict[str,Any]:
         row=self.runs[run_id]; current=RunStatus(row["status"]); assert_run_transition(current,nxt)
         row["status"]=nxt.value; row["stage"]=stage or nxt.value; row["updated_at"]=datetime.now(timezone.utc).isoformat()
@@ -94,6 +97,13 @@ class PostgresStore:
                            from wow.run_candidates where run_id=%s order by canonical_key,candidate_id""",(run_id,))
             cols=[d.name for d in cur.description]
             return [dict(zip(cols,row)) for row in cur.fetchall()]
+
+    def registry_matches(self,workers:dict)->bool:
+        expected={(worker_id,spec.worker_version,spec.contract_version,spec.implementation_type,spec.authority_ceiling) for worker_id,spec in workers.items()}
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("select worker_id,worker_version,contract_version,implementation_type,authority_ceiling from wow.worker_registry where enabled=true")
+            actual=set(cur.fetchall())
+        return actual==expected
 
     def transition_run(self,run_id:str,nxt:RunStatus,stage:str|None=None)->dict[str,Any]:
         with self._connect() as conn, conn.cursor() as cur:
