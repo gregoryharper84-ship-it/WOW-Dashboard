@@ -196,8 +196,10 @@ create unique index if not exists uq_wow_ncaaf_outcome_prediction
 
 -- One joined calibration ledger with the exact pregame + close + settlement
 -- fields needed for forward trust reviews. This view is evaluation-only;
--- it does not authorize betting or execution.
-create or replace view wow_ncaaf_calibration_ledger as
+-- it does not authorize betting or execution. SECURITY INVOKER ensures that
+-- callers remain subject to the underlying prediction/outcome RLS policies.
+create or replace view wow_ncaaf_calibration_ledger
+with (security_invoker = true) as
 select
     p.event_date as date,
     p.sport,
@@ -241,4 +243,4 @@ alter table wow_ncaaf_outcomes enable row level security;
 
 comment on table wow_ncaaf_predictions is 'NCAAF governed pregame research ledger. can_execute is permanently false.';
 comment on table wow_ncaaf_outcomes is 'NCAAF close/settlement/calibration evidence, including CLV/Brier/log-loss.';
-comment on view wow_ncaaf_calibration_ledger is 'Joined NCAAF forward trust ledger. Evaluation only; no execution authority.';
+comment on view wow_ncaaf_calibration_ledger is 'Joined NCAAF forward trust ledger. SECURITY INVOKER. Evaluation only; no execution authority.';
