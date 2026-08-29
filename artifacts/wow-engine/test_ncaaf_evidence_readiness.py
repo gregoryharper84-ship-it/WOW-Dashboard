@@ -80,11 +80,24 @@ def test_post_kickoff_and_unverified_rows_are_rejected():
     assert "NCAAF_PREGAME_EVIDENCE_ROWS_REJECTED" in result.blocker_codes
 
 
+def test_raw_availability_rows_do_not_satisfy_model_ready_slots():
+    kickoff = datetime(2026, 9, 5, 19, 0, tzinfo=timezone.utc)
+    result = assess_pregame_evidence(
+        official_event_id="cfb-raw",
+        event_start_time=kickoff.isoformat(),
+        rows=[_row("cfb-raw", kickoff, "PLAYER_AVAILABILITY_REPORT", "EVENT")],
+    )
+    assert result.ready is False
+    assert "QB_STATUS:HOME" in result.missing_slots
+    assert "SKILL_AVAILABILITY:AWAY" in result.missing_slots
+
+
 def test_sql_contract_is_service_role_only_pregame_and_provider_governed():
     sql = Path(__file__).with_name("ncaaf_pregame_evidence.sql").read_text()
     lowered = sql.lower()
     assert "create table if not exists public.wow_ncaaf_evidence_sources" in lowered
     assert "create table if not exists public.wow_ncaaf_pregame_evidence" in lowered
+    assert "player_availability_report" in lowered
     assert "create index if not exists idx_wow_ncaaf_pregame_evidence_source_provider" in lowered
     assert "on public.wow_ncaaf_pregame_evidence (source_provider)" in lowered
     assert "enable row level security" in lowered
