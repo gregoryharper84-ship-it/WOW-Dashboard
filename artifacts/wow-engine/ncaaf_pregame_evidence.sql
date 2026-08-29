@@ -65,6 +65,9 @@ create index if not exists idx_wow_ncaaf_pregame_evidence_lookup
     on public.wow_ncaaf_pregame_evidence
     (official_event_id, evidence_kind, scope, evidence_timestamp desc);
 
+create index if not exists idx_wow_ncaaf_pregame_evidence_source_provider
+    on public.wow_ncaaf_pregame_evidence (source_provider);
+
 create or replace function public.wow_ncaaf_assert_evidence_source()
 returns trigger
 language plpgsql
