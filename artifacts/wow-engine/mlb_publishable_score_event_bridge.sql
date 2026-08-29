@@ -33,6 +33,8 @@ declare
   v_current_blockers text[] := '{}';
   v_score_time_blockers text[] := '{}';
   v_internal_valid boolean := false;
+  v_publication_attempt boolean := false;
+  v_lineup_refresh_ok boolean := false;
   v_publishable boolean := false;
 begin
   if p_official_event_id is null or btrim(p_official_event_id)='' then
@@ -113,28 +115,30 @@ begin
   end if;
 
   v_gate:=public.wow_governed_deployment_state();
-  v_publishable :=
+  v_publication_attempt :=
     coalesce(v_gate->>'governed_probability_capability','UNAVAILABLE')='AVAILABLE'
     and coalesce((v_gate->>'probability_publishable')::boolean,false);
 
   -- Publication mode performs a synchronous official-lineup final refresh.
   -- If the batting order changed, the lineup function creates immutable
   -- provenance and re-scores before this bridge can publish anything.
-  if v_publishable then
+  if v_publication_attempt then
     v_lineup_refresh:=public.wow_mlb_forward_confirm_lineup(e.shadow_event_id);
-    if coalesce(v_lineup_refresh->>'status','') not in (
+    if coalesce(v_lineup_refresh->>'status','') in (
       'CONFIRMED','CONFIRMED_LINEUP_CHANGED','CONFIRMED_FROM_EXISTING_SNAPSHOT','UNCHANGED_CONFIRMED_LINEUP'
     ) then
+      v_lineup_refresh_ok:=true;
+    else
       v_current_blockers:=array_append(
         v_current_blockers,
         'OFFICIAL_LINEUP_REFRESH_' || coalesce(v_lineup_refresh->>'reason',v_lineup_refresh->>'status','FAILED')
       );
     end if;
 
-    -- Re-read current state after the refresh/rescore transaction.
-    select * into e
-    from public.wow_mlb_forward_shadow_events
-    where shadow_event_id=e.shadow_event_id;
+    -- Re-read event state after the refresh/rescore transaction.
+    select e1.* into e
+    from public.wow_mlb_forward_shadow_events e1
+    where e1.shadow_event_id=e.shadow_event_id;
   end if;
 
   select * into s
@@ -188,6 +192,17 @@ begin
   where spec_id=e.spec_id
   order by assessed_at desc
   limit 1;
+
+  -- Re-read the multi-latch gate after the external lineup fetch/rescore. A
+  -- revocation, health change, runtime-capability change, or new ratification
+  -- during the request must fail closed. A mid-request promotion also does not
+  -- publish because v_publication_attempt must already have been true.
+  v_gate:=public.wow_governed_deployment_state();
+  v_publishable :=
+    v_publication_attempt
+    and v_lineup_refresh_ok
+    and coalesce(v_gate->>'governed_probability_capability','UNAVAILABLE')='AVAILABLE'
+    and coalesce((v_gate->>'probability_publishable')::boolean,false);
 
   v_score_time_blockers:=coalesce(s.blockers,'{}');
 
