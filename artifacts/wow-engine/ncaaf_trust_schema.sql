@@ -241,6 +241,14 @@ left join wow_ncaaf_outcomes o
 alter table wow_ncaaf_predictions enable row level security;
 alter table wow_ncaaf_outcomes enable row level security;
 
-comment on table wow_ncaaf_predictions is 'NCAAF governed pregame research ledger. can_execute is permanently false.';
-comment on table wow_ncaaf_outcomes is 'NCAAF close/settlement/calibration evidence, including CLV/Brier/log-loss.';
-comment on view wow_ncaaf_calibration_ledger is 'Joined NCAAF forward trust ledger. SECURITY INVOKER. Evaluation only; no execution authority.';
+-- Internal service data only. Remove browser/Data API role grants explicitly;
+-- the server-side service role retains its governed access path.
+revoke all privileges on table
+    wow_ncaaf_predictions,
+    wow_ncaaf_outcomes,
+    wow_ncaaf_calibration_ledger
+from anon, authenticated;
+
+comment on table wow_ncaaf_predictions is 'NCAAF governed pregame research ledger. Internal service data. can_execute is permanently false.';
+comment on table wow_ncaaf_outcomes is 'NCAAF close/settlement/calibration evidence, including CLV/Brier/log-loss. Internal service data.';
+comment on view wow_ncaaf_calibration_ledger is 'Joined NCAAF forward trust ledger. SECURITY INVOKER. Internal service-role evaluation only; no execution authority.';
