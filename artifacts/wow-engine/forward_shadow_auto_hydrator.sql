@@ -72,10 +72,9 @@ begin
   end if;
 
   -- The 38-feature builder needs a timestamped regular-season schedule
-  -- context for prior team/park history. Freeze it under this shadow snapshot
-  -- before any event features are built. materialize_schedule admits Final
-  -- games only and schedule_context further restricts to dates before the
-  -- target event date.
+  -- context for prior team/park history. Freeze only completed history through
+  -- the day before the target slate, matching the two already-proven live
+  -- shadow snapshots and excluding current-day/future schedule state.
   if not exists (
     select 1
     from public.wow_mlb_forward_aux_snapshots
@@ -84,8 +83,8 @@ begin
       and subject_id=v_schedule_subject
   ) then
     v_schedule_url := format(
-      'https://statsapi.mlb.com/api/v1/schedule?sportId=1&season=%s&gameType=R&hydrate=team,venue,linescore',
-      v_schedule_subject
+      'https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=03/25/2026&endDate=%s&hydrate=team,venue,linescore',
+      to_char(v_slate_date - 1, 'MM/DD/YYYY')
     );
     v_schedule_aux_id := public.wow_mlb_forward_cache_url(
       v_snapshot_id,
