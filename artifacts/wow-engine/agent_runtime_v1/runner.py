@@ -7,6 +7,7 @@ from .discovery import merge_discovery, canonical_candidate_key
 from .evidence import seal_evidence
 from .gates import mix_failure_regimes, validate_calibrated, final_refresh
 from .reducer import reduce_candidate
+from .model_bridge import score_mlb_event_bridge, HELD_CODE, PUBLISHED_CODE
 
 TRANSIENT_CODES={"TRANSPORT_429","TRANSPORT_5XX","DATABASE_TEMPORARY","QUEUE_TEMPORARY"}
 
@@ -71,8 +72,25 @@ def _run_controlling_model(env:WorkerEnvelope):
     cap=env.payload.get("capability")
     if not isinstance(cap,dict) or cap.get("status")!="AVAILABLE" or not cap.get("artifact_id") or not cap.get("calibrator_id"):
         return _blocked(env,"MODEL_UNAVAILABLE",output={"probability_publishable":False})
-    # Production probabilities may only come from a server-owned fitted provider.
-    # Envelope payloads are never accepted as model probabilities or artifacts.
+
+    sport=str(env.payload.get("sport") or "").upper()
+    market_family=str(env.payload.get("market_family") or "").upper()
+    period=str(env.payload.get("period") or "").upper()
+    if sport=="MLB" and market_family=="OUTRIGHT_WINNER" and period in {"FULL_GAME","FULL_GAME_INCLUDING_EXTRA_INNINGS"}:
+        try:
+            bridged=score_mlb_event_bridge(env.payload)
+        except Exception as exc:
+            code=getattr(exc,"code",None) or "EVENT_MODEL_BRIDGE_UNAVAILABLE"
+            return _blocked(env,str(code),output={"probability_publishable":False,"error":type(exc).__name__})
+        code=bridged.get("code")
+        if code==HELD_CODE:
+            return _succeeded(env,"MODEL_QUALIFIED_HOLD",bridged,["PROBABILITY_PUBLICATION_HELD"])
+        if code==PUBLISHED_CODE and bridged.get("probability_publishable") is True:
+            return _succeeded(env,"MODEL_QUALIFIED_HOLD",bridged)
+        blockers=list(bridged.get("bridge_blockers") or ["MODEL_UNAVAILABLE"])
+        return _blocked(env,*blockers,output=bridged)
+
+    # No qualitative, market, L5/L10, or caller-provided probability fallback.
     return _blocked(env,"CONTROLLING_MODEL_PROVIDER_NOT_WIRED",output={"probability_publishable":False,"artifact_id":cap.get("artifact_id"),"calibrator_id":cap.get("calibrator_id")})
 
 def _run_failure_paths(env:WorkerEnvelope):
