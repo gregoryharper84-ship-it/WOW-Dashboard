@@ -61,6 +61,11 @@ def _apply_schema() -> None:
         cur.execute("grant all on all sequences in schema public to service_role")
         cur.execute("alter default privileges in schema public grant all on tables to service_role")
         cur.execute("alter default privileges in schema public grant all on sequences to service_role")
+        # The postgrest service container boots (and caches its schema) before
+        # this DDL runs over a side-channel psycopg connection, so it never
+        # sees the new tables until told to reload (PostgREST v12's default
+        # db-channel-enabled=true LISTEN/NOTIFY schema-cache-reload channel).
+        cur.execute("notify pgrst, 'reload schema'")
 
 
 def test_schema_applies_cleanly_to_real_postgres():
@@ -158,7 +163,12 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     import api_ncaaf_acceptance as prod
 
     client = TestClient(prod.app)
-    ready = client.get("/health/ready")
+    ready = None
+    for _ in range(25):
+        ready = client.get("/health/ready")
+        if ready.status_code == 200:
+            break
+        time.sleep(0.2)  # tolerate NOTIFY pgrst schema-cache-reload propagation
     assert ready.status_code == 200, ready.text
     assert ready.json()["worker_registry"] == "ok"
     assert ready.json()["queue"] == "ok"
