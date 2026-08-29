@@ -6,11 +6,16 @@ Thin wrapper around the Supabase client for wow_predictions /
 wow_outcomes. Enforces, at the Python layer (in addition to the SQL
 constraints in schema.sql), the rule that any incomplete/failed
 component sets probability_publishable = false with no silent repair.
+
+Generic player props use the direction-free WOW_PROP_FITTED_MODEL_V1 discrete
+PMF contract. They are validated against explicit model/artifact/distribution
+provenance rather than the legacy pitcher-regime/simulation fields.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
+from math import isfinite
 from typing import Optional
 import os
 import uuid
@@ -23,13 +28,13 @@ _RECOGNIZED_CALIBRATION_STATUSES = {
     CalibrationStatus.ISOTONIC_V1,
 }
 
+_PROP_DISCRETE_MARKET_TYPE = "PROP_DISCRETE_PMF"
+_PROP_PROVIDER_IDENTITY = "WOW_PROP_FITTED_MODEL_V1"
+_PROP_CERTIFIED_STATES = {"PROSPECTIVE_CERTIFIED", "CHAMPION"}
+
 
 def _valid_iso_timestamp(ts) -> bool:
-    """A governed timestamp must represent an absolute instant, not an
-    ambiguous local wall-clock value -- parsing success alone is not
-    enough. "2026-08-27T00:00:00" parses as a valid but timezone-naive
-    datetime; utcoffset() is None for a naive datetime and a (possibly
-    zero) timedelta for an aware one, so it's the correct discriminator."""
+    """A governed timestamp must represent an absolute instant."""
     if not isinstance(ts, str) or not ts:
         return False
     try:
@@ -37,6 +42,10 @@ def _valid_iso_timestamp(ts) -> bool:
     except ValueError:
         return False
     return parsed.utcoffset() is not None
+
+
+def _nonempty_text(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 try:
@@ -65,19 +74,14 @@ class PredictionRow:
     direction: str
     source_snapshot_id: str
 
-    # The scoring run's "as of" time (engine.py's `scored_at`) -- when
-    # this candidate was actually scored, distinct from event_start_time
-    # (the game's start) and created_at (the DB row-insert time). Also
-    # the candidate_as_of value used for market freshness and, for
-    # Phase B/C rows, PREDICTIVE_BOUNDS_V1's historical-row eligibility
-    # filter -- recording it here makes that filter's input auditable
-    # after the fact, not just enforced at scoring time.
     model_timestamp: Optional[str] = None
 
     player: Optional[str] = None
     team: Optional[str] = None
     opponent: Optional[str] = None
 
+    # Legacy regime/simulation provenance. Required for legacy fitted-pitcher
+    # rows, but not for PROP_DISCRETE_PMF rows.
     regime_model_version: Optional[str] = None
     regime_probabilities_json: Optional[dict] = None
     regime_probability_sum: Optional[float] = None
@@ -85,6 +89,25 @@ class PredictionRow:
     failure_cause_tags: list[str] = field(default_factory=list)
     simulation_seed: Optional[int] = None
     simulation_draws: Optional[int] = None
+
+    # Generic discrete-prop model provenance.
+    model_provider_identity: Optional[str] = None
+    model_family: Optional[str] = None
+    model_artifact_version: Optional[str] = None
+    model_artifact_checksum: Optional[str] = None
+    model_bundle_fingerprint: Optional[str] = None
+    model_artifact_lifecycle_state: Optional[str] = None
+    feature_schema_version: Optional[str] = None
+    feature_transform_version: Optional[str] = None
+    feature_snapshot_hash: Optional[str] = None
+    training_dataset_hash: Optional[str] = None
+    training_code_sha: Optional[str] = None
+    specialist_version: Optional[str] = None
+    certification_id: Optional[str] = None
+    distribution_type: Optional[str] = None
+    probability_more: Optional[float] = None
+    probability_less: Optional[float] = None
+    push_probability: Optional[float] = None
 
     raw_model_probability: Optional[float] = None
     independent_model_probability: Optional[float] = None
@@ -118,19 +141,58 @@ class PredictionRow:
     blockers: list[str] = field(default_factory=list)
 
 
-def determine_publishability(row: PredictionRow) -> PredictionRow:
-    """
-    Confidence lane (probability_publishable) and money lane
-    (money_lane_status) are evaluated SEPARATELY. Per the review that
-    caught this: missing Goblin/Demon payout blocks the MONEY lane, it
-    must not erase an otherwise-valid governed CONFIDENCE-lane
-    probability. The two are combined only at the very end, when
-    deriving probability_ceiling / terminal_ceiling — mirroring WOW's
-    existing CONFIDENCE/MARKET/MONEY/SLIP lane-separation pattern.
+def _validate_discrete_prop_provenance(row: PredictionRow, gaps: list[str]) -> None:
+    required_text = {
+        "model_provider_identity": row.model_provider_identity,
+        "model_family": row.model_family,
+        "model_artifact_version": row.model_artifact_version,
+        "model_artifact_checksum": row.model_artifact_checksum,
+        "model_bundle_fingerprint": row.model_bundle_fingerprint,
+        "feature_schema_version": row.feature_schema_version,
+        "feature_transform_version": row.feature_transform_version,
+        "feature_snapshot_hash": row.feature_snapshot_hash,
+        "training_dataset_hash": row.training_dataset_hash,
+        "training_code_sha": row.training_code_sha,
+        "specialist_version": row.specialist_version,
+        "certification_id": row.certification_id,
+        "distribution_type": row.distribution_type,
+    }
+    for name, value in required_text.items():
+        if not _nonempty_text(value):
+            gaps.append(f"{name} missing or empty")
 
-    No silent repair: if any required confidence-lane component is
-    missing/inconsistent, probability_publishable stays False and the
-    gap is recorded, independent of money-lane status.
+    if row.model_provider_identity != _PROP_PROVIDER_IDENTITY:
+        gaps.append("model_provider_identity is not WOW_PROP_FITTED_MODEL_V1")
+    if row.model_artifact_lifecycle_state not in _PROP_CERTIFIED_STATES:
+        gaps.append("model_artifact_lifecycle_state is not prospectively certified/champion")
+    if row.distribution_type != "DISCRETE_PMF":
+        gaps.append("distribution_type must be DISCRETE_PMF")
+    if row.effective_sample_size is None or not isfinite(float(row.effective_sample_size)) or row.effective_sample_size <= 0:
+        gaps.append("effective_sample_size missing, non-finite, or non-positive")
+
+    probs = (row.probability_more, row.probability_less, row.push_probability)
+    if any(v is None or not isfinite(float(v)) or not (0.0 <= float(v) <= 1.0) for v in probs):
+        gaps.append("MORE/LESS/PUSH probabilities missing or outside [0,1]")
+        return
+    total = sum(float(v) for v in probs)
+    if abs(total - 1.0) > 1e-9:
+        gaps.append("MORE/LESS/PUSH probabilities do not normalize to 1")
+    directional = row.probability_more if row.direction == "MORE" else row.probability_less if row.direction == "LESS" else None
+    if directional is None:
+        gaps.append("direction must be MORE or LESS")
+    elif row.raw_model_probability is not None and abs(float(directional) - float(row.raw_model_probability)) > 1e-9:
+        gaps.append("raw_model_probability does not match selected side of discrete PMF")
+
+
+def determine_publishability(row: PredictionRow) -> PredictionRow:
+    """Evaluate confidence publication separately from the money lane.
+
+    Missing confidence/model evidence keeps probability_publishable false.
+    Missing payout/price evidence lowers only the downstream money ceiling.
+    Generic discrete prop rows are never forced through pitcher-regime or
+    simulation-count requirements; they must instead prove certified model
+    provenance, normalized MORE/LESS/PUSH outcomes, positive ESS, calibration,
+    and numerical bounds.
     """
     gaps = list(row.data_gaps)
 
@@ -139,14 +201,16 @@ def determine_publishability(row: PredictionRow) -> PredictionRow:
     if not row.source_snapshot_id:
         gaps.append("source_snapshot_id missing or empty")
     if not _valid_iso_timestamp(row.model_timestamp):
-        # Step 3d BLOCKER-02: a governed probability must have an auditable
-        # scoring timestamp. This was previously optional, and tests proved
-        # rows without one still came back probability_publishable=True.
         gaps.append("model_timestamp missing or not a valid ISO 8601 timestamp (no auditable scoring time)")
-    if row.regime_probability_sum is None or abs(row.regime_probability_sum - 1.0) > 1e-6:
-        gaps.append("regime_probability_sum invalid or missing")
-    if row.simulation_draws is None or row.simulation_draws < 50_000:
-        gaps.append("simulation_draws below 50,000 minimum")
+
+    if row.market_type == _PROP_DISCRETE_MARKET_TYPE:
+        _validate_discrete_prop_provenance(row, gaps)
+    else:
+        if row.regime_probability_sum is None or abs(row.regime_probability_sum - 1.0) > 1e-6:
+            gaps.append("regime_probability_sum invalid or missing")
+        if row.simulation_draws is None or row.simulation_draws < 50_000:
+            gaps.append("simulation_draws below 50,000 minimum")
+
     if row.calibrated_probability is None:
         gaps.append("calibrated_probability not produced")
     else:
@@ -163,8 +227,6 @@ def determine_publishability(row: PredictionRow) -> PredictionRow:
     if not money_resolved and "money_lane_status != RESOLVED (payout unresolved)" not in row.blockers:
         row.blockers = list(row.blockers) + ["money_lane_status != RESOLVED (payout unresolved)"]
 
-    # Confidence-lane ceiling: what the probability itself supports,
-    # independent of money/payout state.
     if not row.probability_publishable:
         confidence_ceiling = "RESEARCH_INTEREST"
     elif row.calibration_status == "PRECALIBRATION_SHRINKAGE":
@@ -172,11 +234,6 @@ def determine_publishability(row: PredictionRow) -> PredictionRow:
     else:
         confidence_ceiling = "MODEL_QUALIFIED_HOLD"
 
-    # Terminal (SLIP-eligible) ceiling additionally requires the money
-    # lane to be resolved before anything can reach a money-qualified
-    # or final-approved label — but a resolved confidence-lane
-    # probability is still recorded and usable for research/CONFIDENCE
-    # reporting even while MONEY remains unresolved.
     if confidence_ceiling == "RESEARCH_INTEREST":
         row.probability_ceiling = "RESEARCH_INTEREST"
     elif not money_resolved:
