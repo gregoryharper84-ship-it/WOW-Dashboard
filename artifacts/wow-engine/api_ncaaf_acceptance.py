@@ -1,23 +1,156 @@
-"""NCAAF evaluation wrapper around the governed production API.
+"""NCAAF research wrapper around the governed production API.
 
-Adds one authenticated research-only maintenance boundary for automatic NCAAF
-closing-line capture. All existing prop/event behavior is inherited unchanged.
-The boundary cannot place or modify wagers; it only reads a configured market
-feed and writes calibration evidence.
+Adds authenticated, non-executable NCAAF maintenance boundaries for closing-line
+capture, readiness inspection, and historical read-only source hydration.
+Existing prop/event scoring behavior is inherited unchanged.
 """
 from __future__ import annotations
 
+import os
 from fastapi import Depends, HTTPException
 
 import api_prod_market_acceptance as base
+from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
+from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_closing_capture import run_from_environment
 
 app = base.app
+_auth = Depends(base.market_api.prod._require_action_api_key)
+
+
+def _db_client():
+    return base.market_api.prod.get_client()
+
+
+def _safe_count(table: str) -> int | None:
+    try:
+        result = _db_client().table(table).select("*", count="exact").limit(1).execute()
+        return int(result.count or 0)
+    except Exception:
+        return None
+
+
+def _artifact_state() -> dict:
+    try:
+        result = _db_client().rpc(
+            "wow_ncaaf_certified_model_artifact",
+            {"p_feature_schema_version": "NCAAF_FEATURES_V1"},
+        ).execute()
+        return result.data if isinstance(result.data, dict) else {"ok": False, "code": "NCAAF_MODEL_REGISTRY_INVALID_RESPONSE"}
+    except Exception:
+        return {"ok": False, "code": "NCAAF_MODEL_REGISTRY_UNAVAILABLE"}
+
+
+def _calibrator_state(model_artifact_version: str | None) -> dict:
+    if not model_artifact_version:
+        return {"ok": False, "code": "NCAAF_MODEL_ARTIFACT_UNAVAILABLE"}
+    try:
+        result = _db_client().rpc(
+            "wow_ncaaf_active_calibrator",
+            {"p_model_artifact_version": model_artifact_version},
+        ).execute()
+        return result.data if isinstance(result.data, dict) else {"ok": False, "code": "NCAAF_CALIBRATOR_REGISTRY_INVALID_RESPONSE"}
+    except Exception:
+        return {"ok": False, "code": "NCAAF_CALIBRATOR_REGISTRY_UNAVAILABLE"}
+
+
+@app.get(
+    "/internal/ncaaf/readiness",
+    dependencies=[_auth],
+    operation_id="getNcaafReadiness",
+)
+def ncaaf_readiness():
+    artifact = _artifact_state()
+    calibrator = _calibrator_state(artifact.get("model_artifact_version") if artifact.get("ok") is True else None)
+    source_n = _safe_count("wow_ncaaf_source_snapshots")
+    game_n = _safe_count("wow_ncaaf_training_games")
+    feature_n = _safe_count("wow_ncaaf_training_features")
+    prediction_n = _safe_count("wow_ncaaf_predictions")
+
+    blockers: list[str] = []
+    if not bool(os.getenv("CFBD_API_KEY")):
+        blockers.append("CFBD_API_KEY_MISSING")
+    if source_n in (None, 0):
+        blockers.append("NCAAF_HISTORICAL_SOURCE_SNAPSHOTS_EMPTY")
+    if game_n in (None, 0):
+        blockers.append("NCAAF_TRAINING_GAMES_EMPTY")
+    if feature_n in (None, 0):
+        blockers.append("NCAAF_TRAINING_FEATURES_EMPTY")
+    if artifact.get("ok") is not True:
+        blockers.append(str(artifact.get("code") or "NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND"))
+    if calibrator.get("ok") is not True:
+        blockers.append(str(calibrator.get("code") or "NCAAF_CERTIFIED_CALIBRATOR_NOT_FOUND"))
+    if prediction_n in (None, 0):
+        blockers.append("NCAAF_FORWARD_SHADOW_EMPTY")
+
+    return {
+        "ok": True,
+        "provider_identity": "WOW_NCAAF_FITTED_MODEL_V1",
+        "cfbd_configured": bool(os.getenv("CFBD_API_KEY")),
+        "historical_source_snapshot_n": source_n,
+        "training_game_n": game_n,
+        "training_feature_n": feature_n,
+        "forward_shadow_n": prediction_n,
+        "artifact_status": artifact.get("code"),
+        "calibrator_status": calibrator.get("code"),
+        "ncaaf_controlling_model": "AVAILABLE" if not blockers else "MODEL_UNAVAILABLE",
+        "ncaaf_trust_state": "NCAAF_TEST_ONLY",
+        "blockers": sorted(set(blockers)),
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+@app.post(
+    "/internal/ncaaf/hydrate-history",
+    dependencies=[_auth],
+    operation_id="hydrateNcaafHistory",
+)
+def hydrate_ncaaf_history(
+    season: int,
+    start_week: int = 1,
+    end_week: int = 15,
+):
+    if season < 2018 or season > 2026:
+        raise HTTPException(status_code=422, detail={"code": "NCAAF_SEASON_OUT_OF_RANGE", "probability_publishable": False, "can_execute": False})
+    if start_week < 0 or end_week > 30 or start_week > end_week:
+        raise HTTPException(status_code=422, detail={"code": "NCAAF_WEEK_RANGE_INVALID", "probability_publishable": False, "can_execute": False})
+    try:
+        client = CFBDClient.from_environment()
+    except CFBDUnavailable as exc:
+        raise HTTPException(status_code=503, detail={"code": exc.code, "probability_publishable": False, "can_execute": False}) from exc
+    try:
+        snapshots = hydrate_cfbd_season(
+            client,
+            season=season,
+            weeks=range(start_week, end_week + 1),
+            rating_families=("elo",),
+            classification="fbs",
+        )
+        persisted_n = persist_source_snapshots(_db_client(), snapshots)
+    except CFBDUnavailable as exc:
+        raise HTTPException(status_code=503, detail={"code": exc.code, "probability_publishable": False, "can_execute": False}) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={"code": "NCAAF_HISTORY_HYDRATION_FAILED", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}) from exc
+
+    blocker_codes = sorted({code for snapshot in snapshots for code in snapshot.blocker_codes})
+    return {
+        "ok": True,
+        "season": season,
+        "weeks": [start_week, end_week],
+        "source_snapshot_n": len(snapshots),
+        "persisted_n": persisted_n,
+        "blocker_codes": blocker_codes,
+        "feature_build_status": "NOT_ATTEMPTED",
+        "model_training_status": "NOT_ATTEMPTED",
+        "probability_publishable": False,
+        "can_execute": False,
+    }
 
 
 @app.post(
     "/internal/ncaaf/capture-closing-lines",
-    dependencies=[Depends(base.market_api.prod._require_action_api_key)],
+    dependencies=[_auth],
     operation_id="captureNcaafClosingLines",
 )
 def capture_ncaaf_closing_lines():
@@ -25,30 +158,10 @@ def capture_ncaaf_closing_lines():
         result = run_from_environment()
     except RuntimeError as exc:
         message = str(exc)
-        code = (
-            "NCAAF_CLOSING_FEED_UNCONFIGURED"
-            if "WOW_NCAAF_MARKET_FEED_URL" in message
-            else "NCAAF_CLOSING_CAPTURE_CONFIGURATION_UNAVAILABLE"
-        )
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": code,
-                "message": message,
-                "probability_publishable": False,
-                "can_execute": False,
-            },
-        ) from exc
+        code = "NCAAF_CLOSING_FEED_UNCONFIGURED" if "WOW_NCAAF_MARKET_FEED_URL" in message else "NCAAF_CLOSING_CAPTURE_CONFIGURATION_UNAVAILABLE"
+        raise HTTPException(status_code=503, detail={"code": code, "message": message, "probability_publishable": False, "can_execute": False}) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "NCAAF_CLOSING_CAPTURE_FAILED",
-                "error_type": type(exc).__name__,
-                "probability_publishable": False,
-                "can_execute": False,
-            },
-        ) from exc
+        raise HTTPException(status_code=503, detail={"code": "NCAAF_CLOSING_CAPTURE_FAILED", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}) from exc
 
     return {
         "ok": True,
