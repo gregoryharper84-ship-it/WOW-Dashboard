@@ -37,6 +37,8 @@ def _run_discovery(env:WorkerEnvelope):
     rows=env.payload.get("rows")
     if not isinstance(rows,list):
         return _blocked(env,"DISCOVERY_INPUT_MISSING")
+    if not rows and env.payload.get("discovery_enabled") is True:
+        return _blocked(env,"DISCOVERY_PROVIDER_UNAVAILABLE",output={"candidate_count":0})
     merged=merge_discovery(rows)
     return _succeeded(env,"RESEARCH_INTEREST",{"candidates":merged,"candidate_count":len(merged),"source_family_dedupe":True})
 
@@ -69,13 +71,14 @@ def _run_evidence(env:WorkerEnvelope):
     return _succeeded(env,"EVIDENCE_VERIFIED",output)
 
 def _run_controlling_model(env:WorkerEnvelope):
-    cap=env.payload.get("capability")
-    if not isinstance(cap,dict) or cap.get("status")!="AVAILABLE" or not cap.get("artifact_id") or not cap.get("calibrator_id"):
-        return _blocked(env,"MODEL_UNAVAILABLE",output={"probability_publishable":False})
-
     sport=str(env.payload.get("sport") or "").upper()
     market_family=str(env.payload.get("market_family") or "").upper()
     period=str(env.payload.get("period") or "").upper()
+
+    # MLB event scoring is already governed by the server-owned G11 bridge. The
+    # bridge is allowed to prove a fitted-model path in HELD mode even while the
+    # separate publication capability remains unavailable. It will not leak a
+    # numeric probability until calibration health + ratification say publish.
     if sport=="MLB" and market_family=="OUTRIGHT_WINNER" and period in {"FULL_GAME","FULL_GAME_INCLUDING_EXTRA_INNINGS"}:
         try:
             bridged=score_mlb_event_bridge(env.payload)
@@ -90,6 +93,9 @@ def _run_controlling_model(env:WorkerEnvelope):
         blockers=list(bridged.get("bridge_blockers") or ["MODEL_UNAVAILABLE"])
         return _blocked(env,*blockers,output=bridged)
 
+    cap=env.payload.get("capability")
+    if not isinstance(cap,dict) or cap.get("status")!="AVAILABLE" or not cap.get("artifact_id") or not cap.get("calibrator_id"):
+        return _blocked(env,"MODEL_UNAVAILABLE",output={"probability_publishable":False})
     # No qualitative, market, L5/L10, or caller-provided probability fallback.
     return _blocked(env,"CONTROLLING_MODEL_PROVIDER_NOT_WIRED",output={"probability_publishable":False,"artifact_id":cap.get("artifact_id"),"calibrator_id":cap.get("calibrator_id")})
 
