@@ -19,6 +19,15 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class _IsNull:
+    """Sentinel for a PostgREST `is null` filter — distinct from any real
+    column value so it can't collide with a row that literally stores this
+    object (which never happens, but keeps the intent explicit)."""
+
+
+_IS_NULL = _IsNull()
+
+
 _PK_COLUMN = {
     "wow_agent_runs": "run_id",
     "wow_agent_run_candidates": "candidate_id",
@@ -59,16 +68,17 @@ def _apply_defaults(table: str, row: dict[str, Any]) -> None:
 
 
 class FakeResult:
-    def __init__(self, data: list[dict[str, Any]]):
+    def __init__(self, data: Any):
         self.data = data
 
 
 class _FakeQuery:
-    def __init__(self, store: dict[str, list[dict]], table: str, mode: str, payload: dict | None = None):
+    def __init__(self, store: dict[str, list[dict]], table: str, mode: str, payload: dict | None = None, on_conflict: str | None = None):
         self.store = store
         self.table_name = table
         self.mode = mode
         self.payload = payload
+        self.on_conflict = on_conflict
         self.filters: list[tuple[str, Any]] = []
         self.order_col: str | None = None
         self.limit_n: int | None = None
@@ -78,6 +88,12 @@ class _FakeQuery:
 
     def eq(self, column: str, value: Any) -> "_FakeQuery":
         self.filters.append((column, value))
+        return self
+
+    def is_(self, column: str, value: Any) -> "_FakeQuery":
+        if value not in (None, "null"):
+            raise NotImplementedError("fake client's is_() only supports null checks")
+        self.filters.append((column, _IS_NULL))
         return self
 
     def order(self, column: str, **_kwargs) -> "_FakeQuery":
@@ -90,7 +106,17 @@ class _FakeQuery:
 
     def _matched(self) -> list[dict]:
         rows = self.store.setdefault(self.table_name, [])
-        return [row for row in rows if all(row.get(col) == val for col, val in self.filters)]
+
+        def _row_matches(row: dict) -> bool:
+            for col, val in self.filters:
+                if val is _IS_NULL:
+                    if row.get(col) is not None:
+                        return False
+                elif row.get(col) != val:
+                    return False
+            return True
+
+        return [row for row in rows if _row_matches(row)]
 
     def execute(self) -> FakeResult:
         if self.mode == "insert":
@@ -98,6 +124,23 @@ class _FakeQuery:
             _apply_defaults(self.table_name, row)
             self.store.setdefault(self.table_name, []).append(row)
             return FakeResult([dict(row)])
+
+        if self.mode == "upsert":
+            rows = self.store.setdefault(self.table_name, [])
+            conflict_cols = [c.strip() for c in (self.on_conflict or "").split(",") if c.strip()]
+            payload = dict(self.payload or {})
+            existing = None
+            if conflict_cols:
+                existing = next(
+                    (row for row in rows if all(row.get(col) == payload.get(col) for col in conflict_cols)),
+                    None,
+                )
+            if existing is not None:
+                existing.update(payload)
+                return FakeResult([dict(existing)])
+            _apply_defaults(self.table_name, payload)
+            rows.append(payload)
+            return FakeResult([dict(payload)])
 
         if self.mode == "update":
             matched = self._matched()
@@ -128,6 +171,9 @@ class _FakeTable:
     def update(self, payload: dict[str, Any]) -> _FakeQuery:
         return _FakeQuery(self.store, self.name, "update", payload)
 
+    def upsert(self, payload: dict[str, Any], on_conflict: str | None = None) -> _FakeQuery:
+        return _FakeQuery(self.store, self.name, "upsert", payload, on_conflict=on_conflict)
+
 
 class FakeSupabaseClient:
     """In-memory stand-in for the real supabase-py Client. One instance per
@@ -139,3 +185,54 @@ class FakeSupabaseClient:
 
     def table(self, name: str) -> _FakeTable:
         return _FakeTable(self._store, name)
+
+    def rpc(self, name: str, params: dict[str, Any]) -> "_FakeRpcCall":
+        if name == "wow_agent_complete_job":
+            return _FakeRpcCall(lambda: self._complete_job(params))
+        raise AssertionError(f"unexpected RPC {name!r}")
+
+    def _complete_job(self, params: dict[str, Any]) -> bool:
+        """Mirrors agent_runtime_schema.sql's wow_agent_complete_job(): a job
+        already in a terminal status is a no-op (duplicate delivery, not an
+        error); otherwise insert the output and transition the job in what
+        this fake treats as one call, matching the real function's single
+        transaction."""
+        jobs = self._store.setdefault("wow_agent_jobs", [])
+        job = next((row for row in jobs if row.get("job_id") == params["p_job_id"]), None)
+        if job is None:
+            raise RuntimeError(f"JOB_NOT_FOUND: {params['p_job_id']}")
+        if job.get("status") in {
+            "SUCCEEDED", "BLOCKED", "REJECTED", "TIMED_OUT", "DEAD_LETTERED", "CANCELED",
+        }:
+            return False
+
+        outputs = self._store.setdefault("wow_agent_job_outputs", [])
+        if any(row.get("job_id") == params["p_job_id"] for row in outputs):
+            return False
+        output_row = {
+            "job_id": params["p_job_id"], "run_id": params["p_run_id"],
+            "candidate_id": params["p_candidate_id"], "worker_id": params["p_worker_id"],
+            "worker_version": params["p_worker_version"],
+            "evidence_snapshot_id": params["p_evidence_snapshot_id"],
+            "contract_version": params["p_contract_version"],
+            "output": params["p_output"], "output_hash": params["p_output_hash"],
+        }
+        _apply_defaults("wow_agent_job_outputs", output_row)
+        outputs.append(output_row)
+
+        job["status"] = params["p_status"]
+        job["output_hash"] = params["p_output_hash"]
+        job["ceiling"] = params["p_ceiling"]
+        job["blockers"] = params.get("p_blockers") or []
+        job["completed_at"] = _now()
+        job["heartbeat_at"] = _now()
+        job["error_code"] = params.get("p_error_code")
+        return True
+
+
+class _FakeRpcCall:
+    def __init__(self, fn):
+        self._fn = fn
+
+    def execute(self) -> FakeResult:
+        return FakeResult(self._fn())
