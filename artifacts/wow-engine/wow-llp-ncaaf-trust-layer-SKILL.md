@@ -175,7 +175,37 @@ wow_ncaaf_calibration_ledger
 
 ## Automatic closing-line capture
 
-For every eligible settled row, capture the final governed pregame moneyline snapshot when available:
+Implementation module:
+
+```text
+ncaaf_closing_capture.py
+```
+
+Recommended scheduler cadence:
+
+```text
+every 5 minutes
+```
+
+The collector only reads a configured, approved two-way moneyline feed and writes calibration evidence. It never sends an order or modifies a market.
+
+Required production configuration:
+
+```text
+SUPABASE_URL
+SUPABASE_SERVICE_KEY
+WOW_NCAAF_MARKET_FEED_URL
+```
+
+Optional authenticated read-only feed token:
+
+```text
+WOW_NCAAF_MARKET_FEED_TOKEN
+```
+
+No default sportsbook provider is hard-coded. Missing feed configuration must fail closed; synthetic or guessed closing prices are prohibited.
+
+For every eligible row, capture the freshest exact governed pregame moneyline snapshot when available:
 
 ```text
 closing_price_american
@@ -183,6 +213,20 @@ closing_opposing_price_american
 closing_no_vig
 closing_snapshot_timestamp
 ```
+
+Required close identity/freshness rules:
+
+```text
+same official_event_id
+same team
+same opponent
+same MONEYLINE market
+quote timestamp < scheduled start
+quote age <= 5 minutes at capture
+both moneyline sides present
+```
+
+The scheduler should repeatedly upsert a valid pregame snapshot inside the final 15-minute window; the latest valid pre-kickoff quote becomes the stored close. After kickoff, an unresolved row is explicitly marked `NO_CLOSE_AVAILABLE` instead of being omitted from calibration.
 
 Compare the selection-side entry no-vig probability with the same selection-side closing no-vig probability.
 
@@ -330,4 +374,4 @@ trusted qualification = false
 can_execute=false
 ```
 
-A completed trust layer does not mean the underlying NCAAF fitted model exists. Production probability publication remains blocked until the real controlling artifact, eligible event calibrator, calibration-health evidence, immutable prediction/outcome cycle, and final Full Model continuation are all proven.
+A completed trust layer does not mean the underlying NCAAF fitted model exists. Production probability publication remains blocked until the real controlling artifact, eligible event calibrator, calibration-health evidence, immutable prediction/outcome cycle, configured read-only closing feed + scheduler, and final Full Model continuation are all proven.
