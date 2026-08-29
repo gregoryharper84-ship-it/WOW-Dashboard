@@ -122,7 +122,7 @@ def resolve_certified_artifact(
     try:
         bundle = CertifiedBundle(
             model_artifact_version=str(payload["model_artifact_version"]),
-            calibrator_version=str(artifact_payload.get("calibrator_version") or "UNBOUND"),
+            calibrator_version=str(payload["calibrator_version"]),
             feature_transform_version=str(payload["feature_transform_version"]),
             specialist_version=str(payload["specialist_version"]),
             certification_id=str(payload["certification_id"]),
@@ -142,10 +142,10 @@ def resolve_certified_artifact(
             "PROP_MODEL_ARTIFACT_METADATA_INVALID",
             "Certified artifact metadata is incomplete or malformed.",
         ) from exc
-    if training_rows <= 0:
+    if training_rows <= 0 or not bundle.calibrator_version.strip():
         raise PropFittedProviderUnavailable(
             "PROP_MODEL_ARTIFACT_METADATA_INVALID",
-            "Certified artifact training_rows must be positive.",
+            "Certified artifact training_rows and calibrator_version must be valid.",
         )
 
     return ResolvedArtifact(
