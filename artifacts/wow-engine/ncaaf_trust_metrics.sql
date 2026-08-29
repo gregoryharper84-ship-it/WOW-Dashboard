@@ -6,7 +6,8 @@
 -- Fees/friction are not inferred; rows lacking a usable entry price do not enter
 -- the unit-ROI denominator.
 
-create or replace view wow_ncaaf_trust_review_metrics as
+create or replace view wow_ncaaf_trust_review_metrics
+with (security_invoker = true) as
 with settled as (
     select
         p.ncaaf_prediction_id,
@@ -67,4 +68,4 @@ select
 from aggregate;
 
 comment on view wow_ncaaf_trust_review_metrics is
-  'Forward NCAAF calibration/trust metrics. ROI is hypothetical unit-risk research ROI, not executed-account ROI. can_execute=false.';
+  'Forward NCAAF calibration/trust metrics. SECURITY INVOKER. ROI is hypothetical unit-risk research ROI, not executed-account ROI. can_execute=false.';
