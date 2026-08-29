@@ -13,6 +13,7 @@ import api_prod_market_acceptance as base
 from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_closing_capture import run_from_environment
+from ncaaf_training_materializer import materialize_training_games
 
 app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
@@ -127,21 +128,26 @@ def hydrate_ncaaf_history(
             rating_families=("elo",),
             classification="fbs",
         )
-        persisted_n = persist_source_snapshots(_db_client(), snapshots)
+        db = _db_client()
+        persisted_n = persist_source_snapshots(db, snapshots)
+        games = materialize_training_games(db, snapshots)
     except CFBDUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": exc.code, "probability_publishable": False, "can_execute": False}) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail={"code": "NCAAF_HISTORY_HYDRATION_FAILED", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}) from exc
 
-    blocker_codes = sorted({code for snapshot in snapshots for code in snapshot.blocker_codes})
+    blocker_codes = sorted({code for snapshot in snapshots for code in snapshot.blocker_codes}.union(games.blocker_codes))
     return {
         "ok": True,
         "season": season,
         "weeks": [start_week, end_week],
         "source_snapshot_n": len(snapshots),
-        "persisted_n": persisted_n,
+        "source_snapshot_persisted_n": persisted_n,
+        "training_game_candidate_n": games.candidate_rows,
+        "training_game_persisted_n": games.persisted_rows,
+        "training_game_skipped_n": games.skipped_rows,
         "blocker_codes": blocker_codes,
-        "feature_build_status": "NOT_ATTEMPTED",
+        "feature_build_status": "BLOCKED_MISSING_FULL_PREGAME_FEATURE_EVIDENCE",
         "model_training_status": "NOT_ATTEMPTED",
         "probability_publishable": False,
         "can_execute": False,
