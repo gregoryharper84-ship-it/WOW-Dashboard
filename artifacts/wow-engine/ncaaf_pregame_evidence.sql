@@ -45,7 +45,7 @@ create table if not exists public.wow_ncaaf_pregame_evidence (
         'TEAM_POWER','OFF_EPA','DEF_EPA','SUCCESS_RATE','EXPLOSIVENESS',
         'QB_STATUS','QB_VALUE','QB_CERTAINTY','OL_HEALTH','DEF_FRONT_HEALTH',
         'SKILL_AVAILABILITY','REST_TRAVEL','TEMPO','TURNOVER_VOLATILITY',
-        'SPECIAL_TEAMS','WEATHER','MARKET_NO_VIG'
+        'SPECIAL_TEAMS','WEATHER','MARKET_NO_VIG','PLAYER_AVAILABILITY_REPORT'
     )),
     constraint wow_ncaaf_evidence_scope check (scope in ('HOME','AWAY','EVENT')),
     constraint wow_ncaaf_evidence_scope_team check (
