@@ -96,6 +96,9 @@ def _ready_evidence():
         "role_status": {"status": "ACTIVE", "role": "STARTER"},
         "role_timestamp": datetime.now(timezone.utc).isoformat(),
         "opportunity_ledger": {"status": "PASS"},
+        "source_timestamps": {"box_score_log": datetime.now(timezone.utc).isoformat()},
+        "evidence_version": "PROP_EVIDENCE_V1",
+        "rate_provenance": "BOX_SCORE_L10_MINUTES_WEIGHTED_PER_MINUTE_V1",
         "probability_publishable": False,
         "can_execute": False,
     }
@@ -152,6 +155,9 @@ def test_prop_lane_unavailable_still_proves_supabase_hydration_before_model_bloc
     }
     assert visible["role_status"]["role"] == "STARTER"
     assert visible["opportunity_ledger"]["status"] == "PASS"
+    assert visible["source_timestamps"]["box_score_log"]
+    assert visible["evidence_version"] == "PROP_EVIDENCE_V1"
+    assert visible["rate_provenance"] == "BOX_SCORE_L10_MINUTES_WEIGHTED_PER_MINUTE_V1"
     assert visible["probability_fields_withheld"] is True
     assert detail["probability_publishable"] is False
     assert fake.rpc_calls[0][0] == "wow_prop_evidence_snapshot"
