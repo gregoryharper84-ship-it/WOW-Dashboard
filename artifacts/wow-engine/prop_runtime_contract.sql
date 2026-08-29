@@ -33,6 +33,13 @@ create table if not exists public.wow_prop_evidence_snapshots (
 create index if not exists wow_prop_evidence_lookup_idx
     on public.wow_prop_evidence_snapshots (sport, event_id, player, stat_type, captured_at desc);
 
+-- The evidence ledger is backend-only. Render uses the Supabase service-role
+-- credential, which bypasses ordinary RLS. anon/authenticated clients must not
+-- be able to read, insert, mutate, or delete governed evidence snapshots.
+alter table public.wow_prop_evidence_snapshots enable row level security;
+revoke all on table public.wow_prop_evidence_snapshots from anon, authenticated;
+grant all on table public.wow_prop_evidence_snapshots to service_role;
+
 create or replace function public.wow_prop_evidence_snapshot(
     p_source_snapshot_id uuid,
     p_event_id text,
@@ -144,6 +151,9 @@ begin
     );
 end;
 $$;
+
+revoke all on function public.wow_prop_evidence_snapshot(uuid,text,text,text,text,numeric) from public, anon, authenticated;
+grant execute on function public.wow_prop_evidence_snapshot(uuid,text,text,text,text,numeric) to service_role;
 
 insert into public.wow_runtime_capabilities (
     capability_key, capability_status, evidence, can_execute, updated_at
