@@ -1,8 +1,9 @@
 """NCAAF research wrapper around the governed production API.
 
 Adds authenticated, non-executable NCAAF maintenance boundaries for closing-line
-capture, readiness inspection, and historical read-only source hydration.
-Existing prop/event scoring behavior is inherited unchanged.
+capture, readiness inspection, historical read-only source hydration, and raw
+reviewed official-conference availability ingestion. Existing prop/event scoring
+behavior is inherited unchanged.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import api_prod_market_acceptance as base
 from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_closing_capture import run_from_environment
+from ncaaf_raw_availability_runtime import install_raw_availability_routes
 from ncaaf_training_materializer import materialize_training_games
 
 app = base.app
@@ -23,6 +25,9 @@ _logger = logging.getLogger("wow.ncaaf.readiness")
 
 def _db_client():
     return base.market_api.prod.get_client()
+
+
+install_raw_availability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
 
 
 def _safe_count(table: str) -> int | None:
