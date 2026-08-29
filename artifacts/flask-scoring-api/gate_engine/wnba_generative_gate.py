@@ -4,7 +4,8 @@ Pipeline gate for the WNBA Generative Probability Engine.
 
 Binding rule: no WNBA probability may be published until the visible Full Model
 evidence packet proves exact-stat L10, contextual box-score L10, fresh role/status,
-role-valid ESS, and opportunity/matchup/game-script readiness.
+role-valid ESS, opportunity/matchup/game-script readiness, and sourced player-specific
+rate hydration for every component of the selected stat.
 
 Market comparison and settlement/money evidence remain separate objectives: missing
 exact market evidence may cap market/money lanes without erasing an otherwise complete
@@ -151,13 +152,7 @@ def _exact_value_from_structured_row(item: dict[str, Any], canonical: str) -> fl
 def _normalize_exact_game_log(
     row: dict[str, Any], enrichment: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
-    """
-    Enforce the pre-model `game_log=list[number]` contract.
-
-    Legacy provider-neutral structured exact-stat rows are normalized into a NEW
-    numeric object. `box_score_log` is never overwritten or backfilled from this
-    normalization, so contextual history remains a separate contract.
-    """
+    """Enforce the pre-model game_log=list[number] contract."""
     out = dict(enrichment)
     raw = out.get("game_log")
     if not isinstance(raw, list):
@@ -277,16 +272,107 @@ def _model_completed(result: dict[str, Any]) -> bool:
     ) or status in {"PASS", "COMPLETE", "COMPLETED", "SCORED"}
 
 
+_COMPONENT_ALIASES: dict[str, tuple[str, ...]] = {
+    "pts": ("points", "PTS", "pts"),
+    "reb": ("rebounds", "REB", "reb", "TRB"),
+    "ast": ("assists", "AST", "ast"),
+    "stl": ("steals", "STL", "stl"),
+    "blk": ("blocks", "BLK", "blk"),
+    "tov": ("turnovers", "TOV", "tov", "TO"),
+    "threepm": ("three_pointers_made", "3PM", "FG3M", "3pm"),
+}
+
+
+def _hydrate_selected_player_rates(
+    canonical: str,
+    enrichment: dict[str, Any],
+    packet: dict[str, Any],
+) -> list[str]:
+    """Hydrate selected-stat player rates from validated box-score L10 only.
+
+    This is the binding anti-neutral-default gate. The generative model may retain
+    experimental league-average constants internally, but governed scoring cannot
+    reach them for any component that controls the selected prop.
+    """
+    components = _gen._STAT_COMPONENTS.get(canonical, [])
+    box_rows = enrichment.get("box_score_log")
+    if not isinstance(box_rows, list) or len(box_rows) < 10:
+        return ["WNBA_EVIDENCE:PLAYER_RATE_SOURCE_BOX_L10_UNAVAILABLE"]
+
+    blockers: list[str] = []
+    audit: dict[str, Any] = {
+        "method": "BOX_SCORE_L10_MINUTES_WEIGHTED_PER_MINUTE_V1",
+        "source_rows": len(box_rows[-10:]),
+        "components": {},
+        "source_timestamps": [],
+        "neutral_or_league_average_fallback_used": False,
+    }
+    for item in box_rows[-10:]:
+        if isinstance(item, dict):
+            ts = item.get("source_timestamp") or item.get("retrieved_at") or item.get("timestamp")
+            if ts is not None:
+                audit["source_timestamps"].append(ts)
+
+    total_minutes = 0.0
+    minute_rows: list[tuple[dict[str, Any], float]] = []
+    for item in box_rows[-10:]:
+        if not isinstance(item, dict):
+            continue
+        minutes = _component_value(item, ("minutes", "MIN", "min", "MP", "min_played"))
+        if minutes is None or minutes <= 0:
+            continue
+        total_minutes += minutes
+        minute_rows.append((item, minutes))
+
+    if total_minutes <= 0 or len(minute_rows) < 10:
+        return ["WNBA_EVIDENCE:PLAYER_RATE_MINUTES_L10_INCOMPLETE"]
+
+    for component in components:
+        aliases = _COMPONENT_ALIASES.get(component)
+        if not aliases:
+            blockers.append(f"WNBA_EVIDENCE:PLAYER_RATE_COMPONENT_UNSUPPORTED:{component}")
+            continue
+        total_stat = 0.0
+        observed = 0
+        for item, _minutes in minute_rows:
+            value = _component_value(item, aliases)
+            if value is None:
+                continue
+            total_stat += value
+            observed += 1
+        if observed < 10:
+            blockers.append(
+                f"WNBA_EVIDENCE:PLAYER_RATE_L10_INCOMPLETE:{component}:n={observed}<10"
+            )
+            continue
+        rate = total_stat / total_minutes
+        enrichment[f"{component}_per_min"] = rate
+        audit["components"][component] = {
+            "per_minute_rate": rate,
+            "observed_games": observed,
+            "total_minutes": total_minutes,
+        }
+
+    if not audit["source_timestamps"]:
+        blockers.append("WNBA_EVIDENCE:PLAYER_RATE_SOURCE_TIMESTAMPS_MISSING")
+
+    opportunity = packet.get("opportunity_ledger") or {}
+    if opportunity.get("projected_minutes") is None:
+        blockers.append("WNBA_EVIDENCE:PLAYER_RATE_PROJECTED_MINUTES_MISSING")
+    if opportunity.get("role_state") in (None, ""):
+        blockers.append("WNBA_EVIDENCE:PLAYER_RATE_ROLE_STATE_MISSING")
+
+    enrichment["player_rate_hydration"] = audit
+    packet["player_rate_hydration"] = audit
+    return blockers
+
+
 def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
     row["can_execute"] = False
 
     if not _opp_engine.is_wnba_row(row):
         return
 
-    # Preserve the long-standing no-op contract for WNBA stat families that
-    # are not governed by this generative specialist. Unsupported rows must
-    # be routed elsewhere; they must not be relabeled as acquisition failures
-    # by a model that does not control them.
     canonical = _canonical_stat(row)
     special_unsupported = {
         "2PM", "2PTM", "TWO_POINTERS_MADE", "TWO_POINT_FIELD_GOALS_MADE"
@@ -325,9 +411,6 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
         blockers.insert(0, "RUN_INVALID_ACQUISITION_INCOMPLETE")
         _append_blockers(row, blockers)
         _clear_publishable_probability(row)
-        # Preserve any lower/stricter terminal ceiling already earned by an
-        # earlier gate (for example market-adverse push/loss). Acquisition
-        # incompleteness may add blockers but must not erase prior provenance.
         if not row.get("terminal_label"):
             row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
         row["gates"]["wnba_generative"] = {
@@ -350,6 +433,30 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
         _clear_publishable_probability(row)
         if not row.get("terminal_label"):
             row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
+        row["can_execute"] = False
+        return
+
+    rate_blockers = _hydrate_selected_player_rates(canonical, effective_enr, packet)
+    if rate_blockers:
+        packet.setdefault("model_blockers", []).extend(rate_blockers)
+        packet["model_input_ready"] = False
+        packet["probability_publication_allowed"] = False
+        packet["terminal_ceiling"] = "REJECT_DATA_QUALITY"
+        blockers = ["RUN_INVALID_ACQUISITION_INCOMPLETE", *rate_blockers]
+        _append_blockers(row, blockers)
+        _clear_publishable_probability(row)
+        if not row.get("terminal_label"):
+            row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
+        row["gates"]["wnba_generative"] = {
+            "can_execute": False,
+            "model_status": "NOT_STARTED",
+            "status": "RUN_INCOMPLETE",
+            "failure_class": "RUN_INVALID_ACQUISITION_INCOMPLETE",
+            "probability_publication_allowed": False,
+            "blockers": blockers,
+            "final_label": "REJECT",
+            "evidence_packet": packet,
+        }
         row["can_execute"] = False
         return
 
