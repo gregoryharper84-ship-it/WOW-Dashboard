@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).parent
 RATIFY_SQL = ROOT / "mlb_publication_ratification.sql"
 BRIDGE_SQL = ROOT / "mlb_publishable_score_event_bridge.sql"
+OPENAPI = ROOT / "openapi.custom-gpt.template.yaml"
 
 
 def _sql(path: Path) -> str:
@@ -109,3 +112,29 @@ def test_held_bridge_still_withholds_all_numeric_probability_fields():
     assert "'can_execute',false" in held
     assert "'raw_home_probability',s.raw_home_probability" not in held
     assert "'calibrated_home_probability',s.calibrated_home_probability" not in held
+
+
+def test_custom_gpt_event_contract_documents_both_safe_200_modes_and_fail_closed_errors():
+    spec = yaml.safe_load(OPENAPI.read_text())
+    operation = spec["paths"]["/score-event"]["post"]
+    responses = operation["responses"]
+    assert {"200", "401", "409", "422", "500", "503"}.issubset(responses)
+    description = operation["description"]
+    assert "REAL_FITTED_MODEL_PATH_PROVEN" in description
+    assert "GOVERNED_PROBABILITY_PUBLISHED" in description
+    assert "can_execute=false" in description
+
+
+def test_custom_gpt_governance_contract_exposes_independent_publication_latches():
+    spec = yaml.safe_load(OPENAPI.read_text())
+    properties = spec["paths"]["/governance"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["properties"]
+    for key in (
+        "deployment_contract_status",
+        "calibration_health_status",
+        "runtime_capability_status",
+        "ratification_status",
+        "production_feature_ready",
+        "probability_publishable",
+        "can_execute",
+    ):
+        assert key in properties
