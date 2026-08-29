@@ -1,12 +1,13 @@
 """NCAAF research wrapper around the governed production API.
 
 Adds authenticated, non-executable NCAAF maintenance boundaries for closing-line
-capture, readiness inspection, historical read-only source hydration, and raw
-reviewed official-conference availability ingestion. Existing prop/event scoring
-behavior is inherited unchanged.
+capture, readiness inspection, historical read-only source hydration, raw reviewed
+official-conference availability ingestion, and fitted-model research inference.
+Existing prop/event scoring behavior is inherited unchanged.
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 import logging
 import os
 from fastapi import Depends, HTTPException
@@ -16,6 +17,7 @@ from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_closing_capture import run_from_environment
 from ncaaf_raw_availability_runtime import install_raw_availability_routes
+from ncaaf_research_inference import NCAAFResearchInferenceUnavailable, run_research_inference
 from ncaaf_training_materializer import materialize_training_games
 
 app = base.app
@@ -40,10 +42,7 @@ def _safe_count(table: str) -> int | None:
 
 def _artifact_state() -> dict:
     try:
-        result = _db_client().rpc(
-            "wow_ncaaf_certified_model_artifact",
-            {"p_feature_schema_version": "NCAAF_FEATURES_V1"},
-        ).execute()
+        result = _db_client().rpc("wow_ncaaf_certified_model_artifact", {"p_feature_schema_version": "NCAAF_FEATURES_V1"}).execute()
         return result.data if isinstance(result.data, dict) else {"ok": False, "code": "NCAAF_MODEL_REGISTRY_INVALID_RESPONSE"}
     except Exception:
         return {"ok": False, "code": "NCAAF_MODEL_REGISTRY_UNAVAILABLE"}
@@ -53,10 +52,7 @@ def _calibrator_state(model_artifact_version: str | None) -> dict:
     if not model_artifact_version:
         return {"ok": False, "code": "NCAAF_MODEL_ARTIFACT_UNAVAILABLE"}
     try:
-        result = _db_client().rpc(
-            "wow_ncaaf_active_calibrator",
-            {"p_model_artifact_version": model_artifact_version},
-        ).execute()
+        result = _db_client().rpc("wow_ncaaf_active_calibrator", {"p_model_artifact_version": model_artifact_version}).execute()
         return result.data if isinstance(result.data, dict) else {"ok": False, "code": "NCAAF_CALIBRATOR_REGISTRY_INVALID_RESPONSE"}
     except Exception:
         return {"ok": False, "code": "NCAAF_CALIBRATOR_REGISTRY_UNAVAILABLE"}
@@ -75,22 +71,14 @@ def ncaaf_readiness():
     blockers: list[str] = []
     if not bool(os.getenv("CFBD_API_KEY")):
         blockers.append("CFBD_API_KEY_MISSING")
-    if source_n in (None, 0):
-        blockers.append("NCAAF_HISTORICAL_SOURCE_SNAPSHOTS_EMPTY")
-    if game_n in (None, 0):
-        blockers.append("NCAAF_TRAINING_GAMES_EMPTY")
-    if feature_n in (None, 0):
-        blockers.append("NCAAF_TRAINING_FEATURES_EMPTY")
-    if evidence_provider_n in (None, 0):
-        blockers.append("NCAAF_EVIDENCE_PROVIDER_REGISTRY_EMPTY")
-    if pregame_evidence_n in (None, 0):
-        blockers.append("NCAAF_PREGAME_EVIDENCE_EMPTY")
-    if artifact.get("ok") is not True:
-        blockers.append(str(artifact.get("code") or "NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND"))
-    if calibrator.get("ok") is not True:
-        blockers.append(str(calibrator.get("code") or "NCAAF_CERTIFIED_CALIBRATOR_NOT_FOUND"))
-    if prediction_n in (None, 0):
-        blockers.append("NCAAF_FORWARD_SHADOW_EMPTY")
+    if source_n in (None, 0): blockers.append("NCAAF_HISTORICAL_SOURCE_SNAPSHOTS_EMPTY")
+    if game_n in (None, 0): blockers.append("NCAAF_TRAINING_GAMES_EMPTY")
+    if feature_n in (None, 0): blockers.append("NCAAF_TRAINING_FEATURES_EMPTY")
+    if evidence_provider_n in (None, 0): blockers.append("NCAAF_EVIDENCE_PROVIDER_REGISTRY_EMPTY")
+    if pregame_evidence_n in (None, 0): blockers.append("NCAAF_PREGAME_EVIDENCE_EMPTY")
+    if artifact.get("ok") is not True: blockers.append(str(artifact.get("code") or "NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND"))
+    if calibrator.get("ok") is not True: blockers.append(str(calibrator.get("code") or "NCAAF_CERTIFIED_CALIBRATOR_NOT_FOUND"))
+    if prediction_n in (None, 0): blockers.append("NCAAF_FORWARD_SHADOW_EMPTY")
 
     return {
         "ok": True,
@@ -112,52 +100,48 @@ def ncaaf_readiness():
     }
 
 
-@app.get(
-    "/internal/ncaaf/readiness",
-    dependencies=[_auth],
-    operation_id="getNcaafReadiness",
-)
+@app.get("/internal/ncaaf/readiness", dependencies=[_auth], operation_id="getNcaafReadiness")
 def get_ncaaf_readiness():
     return ncaaf_readiness()
 
 
+@app.post("/internal/ncaaf/research-inference", dependencies=[_auth], operation_id="runNcaafResearchInference")
+def research_inference(official_event_id: str, home_team: str, away_team: str):
+    try:
+        result = run_research_inference(
+            _db_client(), official_event_id=official_event_id, home_team=home_team, away_team=away_team
+        )
+    except NCAAFResearchInferenceUnavailable as exc:
+        raise HTTPException(status_code=409, detail={
+            "ok": False,
+            "code": exc.code,
+            "ncaaf_controlling_model": "MODEL_UNAVAILABLE",
+            "probability_publishable": False,
+            "can_execute": False,
+        }) from exc
+    body = asdict(result)
+    body["ok"] = True
+    body["code"] = "NCAAF_RESEARCH_INFERENCE_STATIC_CALIBRATION_READY"
+    body["terminal_ceiling"] = "MODEL_QUALIFIED_HOLD"
+    return body
+
+
 @app.on_event("startup")
 async def log_ncaaf_startup_readiness():
-    """Emit non-secret, non-probability readiness evidence after each deploy."""
     try:
         state = ncaaf_readiness()
         _logger.warning(
             "WOW_NCAAF_READINESS cfbd_configured=%s source_n=%s game_n=%s feature_n=%s evidence_provider_n=%s pregame_evidence_n=%s forward_shadow_n=%s artifact_status=%s calibrator_status=%s controlling_model=%s trust_state=%s blockers=%s probability_publishable=false can_execute=false",
-            state["cfbd_configured"],
-            state["historical_source_snapshot_n"],
-            state["training_game_n"],
-            state["training_feature_n"],
-            state["evidence_provider_n"],
-            state["pregame_evidence_n"],
-            state["forward_shadow_n"],
-            state["artifact_status"],
-            state["calibrator_status"],
-            state["ncaaf_controlling_model"],
-            state["ncaaf_trust_state"],
-            ",".join(state["blockers"]),
+            state["cfbd_configured"], state["historical_source_snapshot_n"], state["training_game_n"], state["training_feature_n"],
+            state["evidence_provider_n"], state["pregame_evidence_n"], state["forward_shadow_n"], state["artifact_status"],
+            state["calibrator_status"], state["ncaaf_controlling_model"], state["ncaaf_trust_state"], ",".join(state["blockers"]),
         )
     except Exception as exc:
-        _logger.error(
-            "WOW_NCAAF_READINESS assessment=UNAVAILABLE error_type=%s probability_publishable=false can_execute=false",
-            type(exc).__name__,
-        )
+        _logger.error("WOW_NCAAF_READINESS assessment=UNAVAILABLE error_type=%s probability_publishable=false can_execute=false", type(exc).__name__)
 
 
-@app.post(
-    "/internal/ncaaf/hydrate-history",
-    dependencies=[_auth],
-    operation_id="hydrateNcaafHistory",
-)
-def hydrate_ncaaf_history(
-    season: int,
-    start_week: int = 1,
-    end_week: int = 15,
-):
+@app.post("/internal/ncaaf/hydrate-history", dependencies=[_auth], operation_id="hydrateNcaafHistory")
+def hydrate_ncaaf_history(season: int, start_week: int = 1, end_week: int = 15):
     if season < 2018 or season > 2026:
         raise HTTPException(status_code=422, detail={"code": "NCAAF_SEASON_OUT_OF_RANGE", "probability_publishable": False, "can_execute": False})
     if start_week < 0 or end_week > 30 or start_week > end_week:
@@ -167,13 +151,7 @@ def hydrate_ncaaf_history(
     except CFBDUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": exc.code, "probability_publishable": False, "can_execute": False}) from exc
     try:
-        snapshots = hydrate_cfbd_season(
-            client,
-            season=season,
-            weeks=range(start_week, end_week + 1),
-            rating_families=("elo",),
-            classification="fbs",
-        )
+        snapshots = hydrate_cfbd_season(client, season=season, weeks=range(start_week, end_week + 1), rating_families=("elo",), classification="fbs")
         db = _db_client()
         persisted_n = persist_source_snapshots(db, snapshots)
         games = materialize_training_games(db, snapshots)
@@ -184,27 +162,15 @@ def hydrate_ncaaf_history(
 
     blocker_codes = sorted({code for snapshot in snapshots for code in snapshot.blocker_codes}.union(games.blocker_codes))
     return {
-        "ok": True,
-        "season": season,
-        "weeks": [start_week, end_week],
-        "source_snapshot_n": len(snapshots),
-        "source_snapshot_persisted_n": persisted_n,
-        "training_game_candidate_n": games.candidate_rows,
-        "training_game_persisted_n": games.persisted_rows,
-        "training_game_skipped_n": games.skipped_rows,
-        "blocker_codes": blocker_codes,
-        "feature_build_status": "BLOCKED_MISSING_FULL_PREGAME_FEATURE_EVIDENCE",
-        "model_training_status": "NOT_ATTEMPTED",
-        "probability_publishable": False,
-        "can_execute": False,
+        "ok": True, "season": season, "weeks": [start_week, end_week], "source_snapshot_n": len(snapshots),
+        "source_snapshot_persisted_n": persisted_n, "training_game_candidate_n": games.candidate_rows,
+        "training_game_persisted_n": games.persisted_rows, "training_game_skipped_n": games.skipped_rows,
+        "blocker_codes": blocker_codes, "feature_build_status": "BLOCKED_MISSING_FULL_PREGAME_FEATURE_EVIDENCE",
+        "model_training_status": "NOT_ATTEMPTED", "probability_publishable": False, "can_execute": False,
     }
 
 
-@app.post(
-    "/internal/ncaaf/capture-closing-lines",
-    dependencies=[_auth],
-    operation_id="captureNcaafClosingLines",
-)
+@app.post("/internal/ncaaf/capture-closing-lines", dependencies=[_auth], operation_id="captureNcaafClosingLines")
 def capture_ncaaf_closing_lines():
     try:
         result = run_from_environment()
@@ -216,14 +182,8 @@ def capture_ncaaf_closing_lines():
         raise HTTPException(status_code=503, detail={"code": "NCAAF_CLOSING_CAPTURE_FAILED", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}) from exc
 
     return {
-        "ok": True,
-        "status": result.status,
-        "candidates_checked": result.candidates_checked,
-        "quotes_captured": result.quotes_captured,
-        "no_close_marked": result.no_close_marked,
-        "provider_failures": result.provider_failures,
-        "identity_failures": result.identity_failures,
-        "stale_quote_failures": result.stale_quote_failures,
-        "probability_publishable": False,
-        "can_execute": False,
+        "ok": True, "status": result.status, "candidates_checked": result.candidates_checked,
+        "quotes_captured": result.quotes_captured, "no_close_marked": result.no_close_marked,
+        "provider_failures": result.provider_failures, "identity_failures": result.identity_failures,
+        "stale_quote_failures": result.stale_quote_failures, "probability_publishable": False, "can_execute": False,
     }
