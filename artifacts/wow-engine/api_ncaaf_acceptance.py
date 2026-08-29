@@ -63,6 +63,8 @@ def ncaaf_readiness():
     source_n = _safe_count("wow_ncaaf_source_snapshots")
     game_n = _safe_count("wow_ncaaf_training_games")
     feature_n = _safe_count("wow_ncaaf_training_features")
+    evidence_provider_n = _safe_count("wow_ncaaf_evidence_sources")
+    pregame_evidence_n = _safe_count("wow_ncaaf_pregame_evidence")
     prediction_n = _safe_count("wow_ncaaf_predictions")
 
     blockers: list[str] = []
@@ -74,6 +76,10 @@ def ncaaf_readiness():
         blockers.append("NCAAF_TRAINING_GAMES_EMPTY")
     if feature_n in (None, 0):
         blockers.append("NCAAF_TRAINING_FEATURES_EMPTY")
+    if evidence_provider_n in (None, 0):
+        blockers.append("NCAAF_EVIDENCE_PROVIDER_REGISTRY_EMPTY")
+    if pregame_evidence_n in (None, 0):
+        blockers.append("NCAAF_PREGAME_EVIDENCE_EMPTY")
     if artifact.get("ok") is not True:
         blockers.append(str(artifact.get("code") or "NCAAF_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND"))
     if calibrator.get("ok") is not True:
@@ -88,6 +94,8 @@ def ncaaf_readiness():
         "historical_source_snapshot_n": source_n,
         "training_game_n": game_n,
         "training_feature_n": feature_n,
+        "evidence_provider_n": evidence_provider_n,
+        "pregame_evidence_n": pregame_evidence_n,
         "forward_shadow_n": prediction_n,
         "artifact_status": artifact.get("code"),
         "calibrator_status": calibrator.get("code"),
@@ -114,11 +122,13 @@ async def log_ncaaf_startup_readiness():
     try:
         state = ncaaf_readiness()
         _logger.warning(
-            "WOW_NCAAF_READINESS cfbd_configured=%s source_n=%s game_n=%s feature_n=%s forward_shadow_n=%s artifact_status=%s calibrator_status=%s controlling_model=%s trust_state=%s blockers=%s probability_publishable=false can_execute=false",
+            "WOW_NCAAF_READINESS cfbd_configured=%s source_n=%s game_n=%s feature_n=%s evidence_provider_n=%s pregame_evidence_n=%s forward_shadow_n=%s artifact_status=%s calibrator_status=%s controlling_model=%s trust_state=%s blockers=%s probability_publishable=false can_execute=false",
             state["cfbd_configured"],
             state["historical_source_snapshot_n"],
             state["training_game_n"],
             state["training_feature_n"],
+            state["evidence_provider_n"],
+            state["pregame_evidence_n"],
             state["forward_shadow_n"],
             state["artifact_status"],
             state["calibrator_status"],
