@@ -253,7 +253,10 @@ def _context_value(row: dict[str, Any], enrichment: dict[str, Any], aliases: tup
 
 
 def _opportunity_packet(row: dict[str, Any], enrichment: dict[str, Any], stat_key: str) -> tuple[dict[str, Any], list[str]]:
-    gate = ((row.get("gates") or {}).get("wnba_opportunity_gate") or {})
+    gate = (
+        ((row.get("gates") or {}).get("wnba_opportunity_gate") or {})
+        or (enrichment.get("opportunity_ledger") or {})
+    )
     packet = {
         "gate_label": gate.get("gate_label"),
         "gate_passed": gate.get("gate_passed"),
