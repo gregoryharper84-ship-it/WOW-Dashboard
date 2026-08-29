@@ -72,7 +72,8 @@ def test_ncaaf_cron_contract_is_five_minute_and_vault_backed():
     assert "can_execute',false" in sql
     assert "security invoker" in lowered
     assert "security definer" not in lowered
-    assert "revoke all on function public.wow_ncaaf_trigger_closing_capture() from public" in lowered
+    assert "revoke all privileges on function public.wow_ncaaf_trigger_closing_capture()" in lowered
+    assert "from public, anon, authenticated, service_role" in lowered
 
 
 def test_render_uses_ncaaf_acceptance_wrapper_without_auto_deploy():
