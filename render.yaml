@@ -45,7 +45,7 @@ services:
     region: oregon
     rootDir: artifacts/wow-engine
     buildCommand: pip install -r requirements.txt
-    startCommand: celery -A agent_runtime_v1.queue:celery_app worker --loglevel=INFO --concurrency=2
+    startCommand: celery -A agent_runtime_v1.celery_app:celery_app worker --loglevel=INFO --concurrency=2
     autoDeployTrigger: "off"
     maxShutdownDelaySeconds: 120
     envVars:
