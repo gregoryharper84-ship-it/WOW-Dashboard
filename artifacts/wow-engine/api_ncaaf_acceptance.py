@@ -6,6 +6,7 @@ Existing prop/event scoring behavior is inherited unchanged.
 """
 from __future__ import annotations
 
+import logging
 import os
 from fastapi import Depends, HTTPException
 
@@ -17,6 +18,7 @@ from ncaaf_training_materializer import materialize_training_games
 
 app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
+_logger = logging.getLogger("wow.ncaaf.readiness")
 
 
 def _db_client():
@@ -55,11 +57,6 @@ def _calibrator_state(model_artifact_version: str | None) -> dict:
         return {"ok": False, "code": "NCAAF_CALIBRATOR_REGISTRY_UNAVAILABLE"}
 
 
-@app.get(
-    "/internal/ncaaf/readiness",
-    dependencies=[_auth],
-    operation_id="getNcaafReadiness",
-)
 def ncaaf_readiness():
     artifact = _artifact_state()
     calibrator = _calibrator_state(artifact.get("model_artifact_version") if artifact.get("ok") is True else None)
@@ -100,6 +97,40 @@ def ncaaf_readiness():
         "probability_publishable": False,
         "can_execute": False,
     }
+
+
+@app.get(
+    "/internal/ncaaf/readiness",
+    dependencies=[_auth],
+    operation_id="getNcaafReadiness",
+)
+def get_ncaaf_readiness():
+    return ncaaf_readiness()
+
+
+@app.on_event("startup")
+async def log_ncaaf_startup_readiness():
+    """Emit non-secret, non-probability readiness evidence after each deploy."""
+    try:
+        state = ncaaf_readiness()
+        _logger.warning(
+            "WOW_NCAAF_READINESS cfbd_configured=%s source_n=%s game_n=%s feature_n=%s forward_shadow_n=%s artifact_status=%s calibrator_status=%s controlling_model=%s trust_state=%s blockers=%s probability_publishable=false can_execute=false",
+            state["cfbd_configured"],
+            state["historical_source_snapshot_n"],
+            state["training_game_n"],
+            state["training_feature_n"],
+            state["forward_shadow_n"],
+            state["artifact_status"],
+            state["calibrator_status"],
+            state["ncaaf_controlling_model"],
+            state["ncaaf_trust_state"],
+            ",".join(state["blockers"]),
+        )
+    except Exception as exc:
+        _logger.error(
+            "WOW_NCAAF_READINESS assessment=UNAVAILABLE error_type=%s probability_publishable=false can_execute=false",
+            type(exc).__name__,
+        )
 
 
 @app.post(
