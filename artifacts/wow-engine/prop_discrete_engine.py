@@ -19,11 +19,32 @@ from typing import Any, Callable, Mapping, Optional
 from ledger import PredictionRow, determine_publishability
 from market import MarketQuote, resolve_market_prior
 from prop_distribution_contract import LineProbabilities, PropInferenceRequest, derive_line_probabilities
-from prop_fitted_provider import CertifiedInference, infer_certified_distribution
+from prop_fitted_provider import CertifiedInference, ResolvedArtifact, infer_certified_distribution
 
 
 PROP_PROVIDER_IDENTITY = "WOW_PROP_FITTED_MODEL_V1"
 PROP_MARKET_TYPE = "PROP_DISCRETE_PMF"
+PROP_CALIBRATION_COHORT_VERSION = "PROP_V1"
+
+
+def prop_calibration_parent_cohort(request: PropInferenceRequest, artifact: ResolvedArtifact) -> str:
+    """Stable cohort identity for prospective prop calibration.
+
+    Cohorts are artifact-specific so settled probabilities from a materially
+    different fitted model version cannot silently train the next calibrator.
+    The value is persisted on every immutable prediction row, including Phase A
+    rows, so those settled observations can later become the first legitimate
+    Phase B training cohort.
+    """
+    return "::".join(
+        (
+            PROP_CALIBRATION_COHORT_VERSION,
+            str(request.sport).strip().upper(),
+            str(request.stat_type).strip().upper(),
+            str(artifact.model_family).strip().upper(),
+            str(artifact.bundle.model_artifact_version).strip(),
+        )
+    )
 
 
 class PropCalibrationUnavailable(RuntimeError):
@@ -200,6 +221,7 @@ def score_discrete_prop_end_to_end(
     market_prior = resolve_market_prior(direction, market_side_a, market_side_b, as_of=request.as_of_timestamp)
     artifact = inference.artifact
     bundle = artifact.bundle
+    calibration_parent_cohort = prop_calibration_parent_cohort(request, artifact)
 
     row = PredictionRow(
         event_id=request.event_id,
@@ -231,6 +253,7 @@ def score_discrete_prop_end_to_end(
         calibration_method=calibration.calibration_method,
         calibration_version=bundle.calibrator_version,
         calibration_training_n=artifact.training_rows,
+        calibration_parent_cohort=calibration_parent_cohort,
         bounds_method_version=calibration.bounds_method_version,
         calibrated_probability=calibration.calibrated_probability,
         calibrated_probability_lower_bound=calibration.lower_bound,
