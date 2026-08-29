@@ -283,6 +283,14 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
     if not _opp_engine.is_wnba_row(row):
         return
 
+    # Preserve the long-standing no-op contract for WNBA stat families that
+    # are not governed by this generative specialist. Unsupported rows must
+    # be routed elsewhere; they must not be relabeled as acquisition failures
+    # by a model that does not control them.
+    canonical = _canonical_stat(row)
+    if canonical not in _gen.SUPPORTED_STAT_KEYS:
+        return
+
     row.setdefault("gates", {})
     row.setdefault("blockers", [])
 
@@ -314,7 +322,11 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
         blockers.insert(0, "RUN_INVALID_ACQUISITION_INCOMPLETE")
         _append_blockers(row, blockers)
         _clear_publishable_probability(row)
-        row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
+        # Preserve any lower/stricter terminal ceiling already earned by an
+        # earlier gate (for example market-adverse push/loss). Acquisition
+        # incompleteness may add blockers but must not erase prior provenance.
+        if not row.get("terminal_label"):
+            row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
         row["gates"]["wnba_generative"] = {
             "can_execute": False,
             "model_status": "NOT_STARTED",
@@ -325,16 +337,6 @@ def run(row: dict[str, Any], enr: dict[str, Any] | None = None) -> None:
             "final_label": "REJECT",
             "evidence_packet": packet,
         }
-        row["can_execute"] = False
-        return
-
-    canonical = _canonical_stat(row)
-    if canonical not in _gen.SUPPORTED_STAT_KEYS:
-        result = _unsupported_result(canonical, packet)
-        row["gates"]["wnba_generative"] = result
-        _append_blockers(row, list(result["blockers"]))
-        _clear_publishable_probability(row)
-        row["terminal_label"] = PropLabel.REJECT_DATA_QUALITY.value
         row["can_execute"] = False
         return
 
