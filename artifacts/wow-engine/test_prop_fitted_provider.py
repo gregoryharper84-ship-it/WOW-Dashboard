@@ -40,6 +40,7 @@ def _artifact_payload(**overrides):
         "provider_identity": "WOW_PROP_FITTED_MODEL_V1",
         "model_family": "TEST_DISCRETE_V1",
         "model_artifact_version": "TEST_MODEL_V1",
+        "calibrator_version": "CAL_TEST_V1",
         "sport": "WNBA",
         "stat_type": "POINTS",
         "feature_schema_version": "PROP_FEATURES_V1",
@@ -51,7 +52,7 @@ def _artifact_payload(**overrides):
         "training_code_sha": "b" * 40,
         "artifact_checksum": "c" * 64,
         "artifact_format": "TEST_ONLY",
-        "artifact_payload": {"calibrator_version": "CAL_TEST_V1"},
+        "artifact_payload": {},
         "supported_line_min": 0,
         "supported_line_max": 60,
         "training_rows": 1000,
@@ -119,6 +120,16 @@ def test_uncertified_lifecycle_fails_closed():
     assert exc.value.code == "PROP_BUNDLE_NOT_CERTIFIED"
 
 
+def test_missing_calibrator_version_fails_closed():
+    payload = _artifact_payload()
+    payload.pop("calibrator_version")
+    with pytest.raises(PropFittedProviderUnavailable) as exc:
+        resolve_certified_artifact(
+            FakeClient(payload), sport="WNBA", stat_type="POINTS", feature_schema_version="PROP_FEATURES_V1"
+        )
+    assert exc.value.code == "PROP_MODEL_ARTIFACT_METADATA_INVALID"
+
+
 def test_missing_runtime_adapter_abstains():
     with pytest.raises(PropFittedProviderUnavailable) as exc:
         infer_distribution(
@@ -130,6 +141,7 @@ def test_missing_runtime_adapter_abstains():
 def test_reviewed_adapter_can_return_direction_free_distribution():
     def adapter(artifact, request, features):
         assert artifact.bundle.model_artifact_version == "TEST_MODEL_V1"
+        assert artifact.bundle.calibrator_version == "CAL_TEST_V1"
         assert request.stat_type == "POINTS"
         assert features["minutes"] == 32
         return RawDiscreteDistribution(
