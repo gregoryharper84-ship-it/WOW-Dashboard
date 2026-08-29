@@ -23,6 +23,16 @@ from prop_discrete_engine import PropCalibrationUnavailable, score_discrete_prop
 from prop_distribution_contract import PropDistributionContractError, PropInferenceRequest
 from prop_fitted_provider import PropFittedProviderUnavailable
 
+import prop_calibration_adapters
+import prop_model_adapters
+
+# Production adapter registration is code-controlled: these are the only
+# WOW_PROP_FITTED_MODEL_V1 model-family/calibrator adapters this process
+# will ever serve, and registering them is a required startup side effect,
+# not test-only wiring (see each module's own tests for isolated coverage).
+prop_model_adapters.register()
+prop_calibration_adapters.register()
+
 
 PROP_FEATURE_SCHEMA_VERSION = "PROP_FEATURES_V1"
 
@@ -168,7 +178,14 @@ def _server_owned_inference_request(req: ScorePropRequest, evidence: dict[str, A
 
 
 def _model_features(evidence: dict[str, Any]) -> dict[str, Any]:
-    """Expose only hydrated evidence to the reviewed model-family adapter."""
+    """Expose only hydrated evidence to the reviewed model-family adapter.
+
+    ``opponent_context`` is an additive, optional passthrough: the current
+    wow_prop_evidence_snapshots acquisition contract does not populate it,
+    so it is None until an ingestion pipeline adds it. Adapters that use it
+    (e.g. the MLB pitcher strikeout adapter's opponent factor) must treat a
+    missing value as "no adjustment", never fabricate one.
+    """
     return {
         "game_log": evidence.get("game_log"),
         "box_score_log": evidence.get("box_score_log"),
@@ -179,6 +196,7 @@ def _model_features(evidence: dict[str, Any]) -> dict[str, Any]:
         "evidence_version": evidence.get("evidence_version"),
         "rate_provenance": evidence.get("rate_provenance"),
         "captured_at": evidence.get("captured_at"),
+        "opponent_context": evidence.get("opponent_context"),
     }
 
 
