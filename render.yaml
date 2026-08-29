@@ -5,7 +5,7 @@ services:
     plan: free
     rootDir: artifacts/wow-engine
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn api_prod:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn api_prod_market:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     autoDeployTrigger: "off"
     envVars:
