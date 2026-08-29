@@ -35,15 +35,15 @@ def test_negative_counts_rejected():
 
 
 def test_classify_ceiling_buckets():
-    assert classify_ceiling("VERIFIED") == "completed"
-    assert classify_ceiling("REJECT") == "rejected"
+    assert classify_ceiling("FINAL_APPROVED") == "completed"
     assert classify_ceiling("MODEL_UNAVAILABLE") == "rejected"
+    assert classify_ceiling("NO_SPECIALIST_COVERAGE") == "rejected"
     assert classify_ceiling("MODEL_QUALIFIED_HOLD") == "held"
     assert classify_ceiling("SOME_UNRATIFIED_LABEL") == "held"
 
 
 def test_reconcile_from_ceilings_matches_manual_reconcile():
-    ceilings = ["VERIFIED", "MODEL_QUALIFIED_HOLD", "REJECT", "REJECT"]
+    ceilings = ["FINAL_APPROVED", "MODEL_QUALIFIED_HOLD", "MODEL_UNAVAILABLE", "NO_SPECIALIST_COVERAGE"]
     result = reconcile_from_ceilings(rows_in=4, terminal_ceilings=ceilings)
     assert result == reconcile(rows_in=4, rows_completed=1, rows_held=1, rows_rejected=2)
     assert result.status == BALANCED

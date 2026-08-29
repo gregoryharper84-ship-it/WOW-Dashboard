@@ -15,9 +15,11 @@ UNBALANCED = "UNBALANCED"
 # Ceilings that count as "completed" for reconciliation purposes: a candidate
 # reached a real, non-blocked terminal decision. Everything else that reached
 # a terminal ceiling (holds, rejects, unavailable) is "held" or "rejected" —
-# see classify_ceiling().
-_COMPLETED_CEILINGS = frozenset({"VERIFIED", "MARKET_VERIFIED", "FINAL_APPROVED", "WATCH"})
-_REJECTED_CEILINGS = frozenset({"REJECT", "MODEL_UNAVAILABLE", "NO_SPECIALIST_COVERAGE"})
+# see classify_ceiling(). Matches reducer.CEILING_ORDER's 8-value vocabulary
+# plus reduce_candidate()'s sentinel outcomes (post convergence pass — see
+# reducer.py).
+_COMPLETED_CEILINGS = frozenset({"FINAL_APPROVED"})
+_REJECTED_CEILINGS = frozenset({"MODEL_UNAVAILABLE", "NO_SPECIALIST_COVERAGE"})
 
 
 def classify_ceiling(ceiling: str) -> str:

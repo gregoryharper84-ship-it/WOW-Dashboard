@@ -19,20 +19,24 @@ from agent_runtime.state_machine import JOB_TERMINAL_STATES
 # Explicit ordered enum, strictest first. Never compare ceilings lexically —
 # "MODEL_QUALIFIED_HOLD" sorting before "RESEARCH_INTEREST" alphabetically
 # would silently invert the intended strictness ordering.
+#
+# These 8 values are the packet's own worker authority ceilings (section 6),
+# one per pipeline stage in dependency order, and match PR #33's
+# (feature/wow-agent-runtime-v1) worker_registry exactly — adopted during the
+# convergence pass in place of Phase 1's original invented ladder, which had
+# redundant, ambiguous entries (both HOLD and MODEL_QUALIFIED_HOLD existed
+# with no clear distinction between them). Sentinel outcomes that aren't a
+# worker-reported ceiling at all (RUN_NOT_TERMINAL, NO_SPECIALIST_COVERAGE,
+# MODEL_UNAVAILABLE, GOVERNANCE_LABEL_UNKNOWN) stay outside this enum — see
+# reduce_candidate() below.
 CEILING_ORDER: tuple[str, ...] = (
-    "REJECT",
-    "GOVERNANCE_LABEL_UNKNOWN",
-    "MODEL_UNAVAILABLE",
-    "NO_SPECIALIST_COVERAGE",
-    "RUN_NOT_TERMINAL",
-    "HOLD",
+    "RESEARCH_INTEREST",
+    "IDENTITY_VERIFIED",
+    "EVIDENCE_VERIFIED",
     "MODEL_QUALIFIED_HOLD",
     "MARKET_VERIFIED_HOLD",
-    "ADVISORY",
-    "RESEARCH_INTEREST",
-    "WATCH",
-    "VERIFIED",
-    "MARKET_VERIFIED",
+    "STRUCTURE_VERIFIED_HOLD",
+    "FINAL_REFRESH_HOLD",
     "FINAL_APPROVED",
 )
 
@@ -116,7 +120,12 @@ def reduce_candidate(
             blockers=blockers, probability_publishable=False,
         )
 
-    publishable = ceiling in {"VERIFIED", "MARKET_VERIFIED", "FINAL_APPROVED"} and not blockers
+    # Publishable once the ceiling reaches MODEL_QUALIFIED_HOLD or better
+    # (MODEL_QUALIFIED_HOLD, MARKET_VERIFIED_HOLD, STRUCTURE_VERIFIED_HOLD,
+    # FINAL_REFRESH_HOLD, FINAL_APPROVED) with no blockers — a governed
+    # probability exists at that point even before every downstream audit has
+    # run, matching PR #33's rule.
+    publishable = not blockers and _CEILING_RANK.get(ceiling, -1) >= _CEILING_RANK["MODEL_QUALIFIED_HOLD"]
     return ReducedDecision(
         label=ceiling, ceiling=ceiling, blockers=blockers,
         probability_publishable=publishable,

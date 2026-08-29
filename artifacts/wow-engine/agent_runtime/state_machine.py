@@ -28,18 +28,27 @@ RUN_TERMINAL_STATES = frozenset({"COMPLETED", "COMPLETED_WITH_BLOCKERS", "FAILED
 # CANCELED are reachable from any non-terminal state (an infrastructure
 # failure or an administrative cancel can happen at any stage), and
 # RECONCILING is where COMPLETED vs COMPLETED_WITH_BLOCKERS is decided.
+#
+# The direct-to-RECONCILING edges (ROUTING, EVIDENCE_RUNNING, MODELING_RUNNING,
+# AUDIT_RUNNING) and VALIDATING_REQUEST -> ROUTING exist for the case where a
+# stage produces zero downstream work — e.g. discovery finds no candidates, or
+# discovery is disabled and the caller supplied no candidate_inputs either.
+# Without them a run with nothing to do could never reach a terminal state
+# without an illegal-transition error. Adopted from PR #33
+# (feature/wow-agent-runtime-v1) during the convergence pass, which built the
+# real coordinator that first needed this and found the gap.
 _RUN_TRANSITIONS: dict[str, frozenset[str]] = {
     "CREATED": frozenset({"VALIDATING_REQUEST", "FAILED", "CANCELED"}),
-    "VALIDATING_REQUEST": frozenset({"DISCOVERY_QUEUED", "FAILED", "CANCELED"}),
+    "VALIDATING_REQUEST": frozenset({"DISCOVERY_QUEUED", "ROUTING", "FAILED", "CANCELED"}),
     "DISCOVERY_QUEUED": frozenset({"DISCOVERY_RUNNING", "FAILED", "CANCELED"}),
     "DISCOVERY_RUNNING": frozenset({"ROUTING", "FAILED", "CANCELED"}),
-    "ROUTING": frozenset({"EVIDENCE_QUEUED", "FAILED", "CANCELED"}),
+    "ROUTING": frozenset({"EVIDENCE_QUEUED", "RECONCILING", "FAILED", "CANCELED"}),
     "EVIDENCE_QUEUED": frozenset({"EVIDENCE_RUNNING", "FAILED", "CANCELED"}),
-    "EVIDENCE_RUNNING": frozenset({"MODELING_QUEUED", "FAILED", "CANCELED"}),
+    "EVIDENCE_RUNNING": frozenset({"MODELING_QUEUED", "RECONCILING", "FAILED", "CANCELED"}),
     "MODELING_QUEUED": frozenset({"MODELING_RUNNING", "FAILED", "CANCELED"}),
-    "MODELING_RUNNING": frozenset({"AUDIT_QUEUED", "FAILED", "CANCELED"}),
+    "MODELING_RUNNING": frozenset({"AUDIT_QUEUED", "RECONCILING", "FAILED", "CANCELED"}),
     "AUDIT_QUEUED": frozenset({"AUDIT_RUNNING", "FAILED", "CANCELED"}),
-    "AUDIT_RUNNING": frozenset({"FINAL_REFRESH", "FAILED", "CANCELED"}),
+    "AUDIT_RUNNING": frozenset({"FINAL_REFRESH", "RECONCILING", "FAILED", "CANCELED"}),
     "FINAL_REFRESH": frozenset({"RECONCILING", "FAILED", "CANCELED"}),
     "RECONCILING": frozenset({"COMPLETED", "COMPLETED_WITH_BLOCKERS", "FAILED", "CANCELED"}),
     "COMPLETED": frozenset(),
