@@ -5,7 +5,7 @@ services:
     plan: free
     rootDir: artifacts/wow-engine
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn api_prod_market_acceptance:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     autoDeployTrigger: "off"
     envVars:
@@ -19,3 +19,7 @@ services:
         sync: false
       - key: WOW_PROP_SELF_ACCEPTANCE
         value: "1"
+      - key: WOW_NCAAF_MARKET_FEED_URL
+        sync: false
+      - key: WOW_NCAAF_MARKET_FEED_TOKEN
+        sync: false
