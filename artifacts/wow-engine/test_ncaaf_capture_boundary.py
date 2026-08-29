@@ -62,6 +62,7 @@ def test_ncaaf_capture_boundary_feed_missing_fails_closed(monkeypatch):
 
 def test_ncaaf_cron_contract_is_five_minute_and_vault_backed():
     sql = Path("ncaaf_closing_capture_cron.sql").read_text()
+    lowered = sql.lower()
     assert "wow-ncaaf-closing-line-capture" in sql
     assert "*/5 * * * *" in sql
     assert "vault.decrypted_secrets" in sql
@@ -69,6 +70,9 @@ def test_ncaaf_cron_contract_is_five_minute_and_vault_backed():
     assert "wow_action_api_key" in sql
     assert "/internal/ncaaf/capture-closing-lines" in sql
     assert "can_execute',false" in sql
+    assert "security invoker" in lowered
+    assert "security definer" not in lowered
+    assert "revoke all on function public.wow_ncaaf_trigger_closing_capture() from public" in lowered
 
 
 def test_render_uses_ncaaf_acceptance_wrapper_without_auto_deploy():
