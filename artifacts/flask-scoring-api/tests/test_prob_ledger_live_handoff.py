@@ -123,6 +123,17 @@ def _wnba_enr(line=8.5, market=True, role=True, stage2=None, snapshot_line=None)
                 "projected_minutes": 32,
                 "role_timestamp": _now_iso(),
             },
+            "opportunity_ledger": {
+                "status": "PASS",
+                "gate_passed": True,
+                "gate_label": "PASS",
+                "expected_minutes": 32,
+                "usage_stability_score": 82,
+                "shot_attempt_stability_score": 84,
+                "opportunity_stability_score": 83,
+                "role_state": "STARTER",
+                "role_confidence": 0.9,
+            },
         })
     if market:
         enr["market_no_vig_prob"] = 0.55
