@@ -3,6 +3,8 @@ import os
 from fastapi import APIRouter, Depends, Header, HTTPException
 from .contracts import RunCreateRequest, TERMINAL_RUN_STATES, RunStatus
 from .store import get_store
+from .orchestrator import Orchestrator
+from .registry import WORKERS
 
 router=APIRouter()
 GOVERNANCE_VERSION=os.getenv("WOW_GOVERNANCE_VERSION","WOW-v16-CLEAN-CORE")
@@ -47,8 +49,21 @@ def _manifest_row(candidate:dict):
 
 @router.post("/wow/runs",status_code=202,operation_id="createWowAgentRun")
 def create_run(req:RunCreateRequest,idempotency_key:str=Header(...,alias="Idempotency-Key"),_authz=Depends(_auth)):
-    store=_store_or_503()
-    row=store.create_run(idempotency_key=idempotency_key,request=req.model_dump(mode="json"),governance_version=GOVERNANCE_VERSION)
+    store=_store_or_503(); request=req.model_dump(mode="json")
+    row=store.create_run(idempotency_key=idempotency_key,request=request,governance_version=GOVERNANCE_VERSION)
+    try:
+        started=Orchestrator().start_run(store=store,run=row,request=request)
+        row=started["run"]
+    except Exception as exc:
+        latest=store.get_run(str(row["run_id"])) or row
+        raise HTTPException(status_code=503,detail={
+            "code":"AGENT_RUNTIME_START_FAILED",
+            "run_id":str(row["run_id"]),
+            "status":latest.get("status"),
+            "error":type(exc).__name__,
+            "probability_publishable":False,
+            "can_execute":False,
+        }) from exc
     return {"ok":True,"run_id":str(row["run_id"]),"status":row["status"],"terminal":row["status"] in _terminal_states(),
             "poll_url":f"/wow/runs/{row['run_id']}/manifest","can_execute":False}
 
@@ -96,10 +111,19 @@ def cancel(run_id:str,_authz=Depends(_auth)):
 def agent_live():
     return {"ok":True,"service":"wow-agent-runtime","status":"alive","can_execute":False}
 
+def _registry_ready()->bool:
+    required={
+        "wow.parallel-discovery-router","wow.slate-integrity-expert","wow.evidence-hydration","wow.controlling-model",
+        "wow.failure-path-framework","wow.dynamic-calibration-expert","wow.exact-line-market-auditor",
+        "wow.structure-exposure-governor","wow.final-refresh-governor","wow.terminal-ceiling-reducer",
+    }
+    return required.issubset(WORKERS) and all(WORKERS[key].contract_version=="wow.agent-output.v1" for key in required)
+
 @router.get("/health/ready",include_in_schema=False)
 def agent_ready():
-    db=False; queue=False; registry=True
-    try: db=get_store() is not None
+    db=False; queue=False; registry=_registry_ready()
+    try:
+        store=get_store(); db=store.get_run("00000000-0000-0000-0000-000000000000") is None
     except Exception: db=False
     try:
         import redis
