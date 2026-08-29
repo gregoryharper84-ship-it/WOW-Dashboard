@@ -46,6 +46,10 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     monkeypatch.setenv("WOW_ACTION_API_KEY","ci-agent-key")
     from agent_runtime_entrypoint import app
     client=TestClient(app)
+    ready=client.get("/health/ready")
+    assert ready.status_code==200,ready.text
+    assert ready.json()=={"ok":True,"database":True,"queue":True,"registry":True,"can_execute":False}
+
     body={"as_of":datetime.now(timezone.utc).isoformat(),"user_timezone":"America/Chicago","discovery_enabled":False,"candidate_inputs":[_candidate()],"can_execute":False}
     headers={"Authorization":"Bearer ci-agent-key","Idempotency-Key":"ci-runtime-e2e"}
     first=client.post("/wow/runs",json=body,headers=headers)
