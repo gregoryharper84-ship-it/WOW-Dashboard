@@ -32,8 +32,6 @@ LLP_IDENTITIES = {
     "WOW_LLP_TEAM_BETTING_MODEL",
 }
 
-# Copy the already-proven production routes except the base prop/governance
-# handlers, which are replaced below with lane-scoped versions.
 app = FastAPI(
     title=event_api.app.title,
     version=event_api.app.version,
@@ -209,16 +207,25 @@ def score_prop(
 ):
     """Governed player-prop boundary.
 
-    The route deliberately proves each backend hop before model scoring. A chat
-    analysis, raw L5/L10 trend, or market opinion can never substitute for the
-    Supabase evidence snapshot or controlling specialist.
+    Acquisition is evaluated before specialist/model invocation. Incomplete
+    model evidence therefore cannot trigger the specialist or emit a numeric
+    probability. Market/payout evidence remains a separate downstream lane.
     """
     model_identity = _reject_llp_prop_identity(x_wow_model_identity)
-
-    # Read the prop-lane capability from Supabase, but continue through
-    # specialist/evidence checks even while unavailable so acquisition defects
-    # remain visible rather than being masked by a generic model blocker.
     lane = _runtime_capability(PROP_CAPABILITY_KEY)
+
+    # Mandatory acquisition gate comes first. This preserves the WOW rule that
+    # incomplete exact-stat/box-score/role/opportunity evidence cannot even
+    # invoke the controlling specialist, much less produce a probability.
+    evidence = _prop_evidence(req)
+    if evidence.get("ok") is not True or evidence.get("code") != "PROP_EVIDENCE_READY":
+        detail = dict(evidence)
+        detail.setdefault("code", "RUN_INVALID_ACQUISITION_INCOMPLETE")
+        detail["failure_class"] = "RUN_INVALID_ACQUISITION_INCOMPLETE"
+        detail["specialist_invoked"] = False
+        detail["probability_publishable"] = False
+        detail["can_execute"] = False
+        raise HTTPException(status_code=422, detail=detail)
 
     specialist = base_api._controlling_specialist_provider(req.sport, req.stat_type)
     if specialist is None:
@@ -226,6 +233,7 @@ def score_prop(
             status_code=503,
             detail={
                 "code": "SPECIALIST_ROUTING_UNAVAILABLE",
+                "evidence_hydration": "PASS",
                 "probability_publishable": False,
                 "can_execute": False,
             },
@@ -238,19 +246,11 @@ def score_prop(
                 "controlling_specialist": "MODEL_UNAVAILABLE",
                 "sport": specialist.get("sport"),
                 "canonical_prop_type": specialist.get("canonical_prop_type"),
+                "evidence_hydration": "PASS",
                 "probability_publishable": False,
                 "can_execute": False,
             },
         )
-
-    evidence = _prop_evidence(req)
-    if evidence.get("ok") is not True or evidence.get("code") != "PROP_EVIDENCE_READY":
-        detail = dict(evidence)
-        detail.setdefault("code", "RUN_INVALID_ACQUISITION_INCOMPLETE")
-        detail["failure_class"] = "RUN_INVALID_ACQUISITION_INCOMPLETE"
-        detail["probability_publishable"] = False
-        detail["can_execute"] = False
-        raise HTTPException(status_code=422, detail=detail)
 
     if lane.get("capability_status") != "AVAILABLE":
         raise HTTPException(
@@ -290,8 +290,6 @@ def score_prop(
             },
         )
 
-    # Reuse the proven scoring engine only after backend-owned routing and
-    # hydration have both passed. Server time remains backend-owned.
     from datetime import datetime, timezone
     scored_at = datetime.now(timezone.utc).isoformat()
     draws = max(base_api.MIN_SIMULATION_DRAWS, specialist.get("min_event_tree_simulations") or 0)
@@ -343,6 +341,7 @@ def score_prop(
     return {
         "ok": True,
         "prediction": persisted,
+        "evidence": evidence,
         "backend_traversal": {
             "requester_model": model_identity,
             "render": "PASS",
