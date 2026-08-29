@@ -377,8 +377,11 @@ begin
 end;
 $function$;
 
+-- Poll every five minutes, one minute after each regular hydration slot. Calls
+-- before hydration simply skip non-PASS events; repeated confirmed lineups are
+-- identity-idempotent and do not create another score snapshot.
 select cron.schedule(
   'wow-mlb-forward-shadow-auto-lineup',
-  '8,23,38,53 * * * *',
+  '1,6,11,16,21,26,31,36,41,46,51,56 * * * *',
   $$select public.wow_mlb_forward_auto_confirm_lineups();$$
 );
