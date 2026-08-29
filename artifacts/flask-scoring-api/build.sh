@@ -1,20 +1,25 @@
 #!/bin/bash
 set -euo pipefail
 
-ROOT="/home/runner/workspace"
-APP_DIR="$ROOT/artifacts/flask-scoring-api"
+# Runtime-neutral paths: resolve from this script and the checked-out Git tree.
+# Do not assume Replit, GitHub Actions, or any provider-specific workspace root.
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git -C "$APP_DIR" rev-parse --show-toplevel)"
+export APP_DIR REPO_ROOT
 
 # Capture immutable source provenance while the build workspace still has Git
 # metadata. Production does not rely on .git being packaged into the artifact.
 python - <<'PY'
 import datetime
 import json
+import os
 import pathlib
 import re
 import subprocess
 
-root = pathlib.Path("/home/runner/workspace")
-out = root / "artifacts/flask-scoring-api/runtime_build_info.json"
+root = pathlib.Path(os.environ["REPO_ROOT"])
+app_dir = pathlib.Path(os.environ["APP_DIR"])
+out = app_dir / "runtime_build_info.json"
 
 def git(*args: str) -> str:
     return subprocess.check_output(
