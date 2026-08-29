@@ -90,11 +90,40 @@ def _wnba_enr(line=8.5, market=True, role=True, stage2=None, snapshot_line=None)
         },
     }
     if role:
+        # Complete V1 evidence fixture: exact-stat history and contextual
+        # box-score history are separate objects, with ten role-comparable
+        # games and all required opportunity dimensions.
         enr["box_score_log"] = [
-            {"minutes": 33, "usage": 27.5, "reb_chances": 15, "starter": True},
-            {"minutes": 35, "usage": 28.0, "reb_chances": 14, "starter": True},
-            {"minutes": 31, "usage": 26.0, "reb_chances": 16, "starter": True},
+            {
+                "game_date": f"2026-08-{day:02d}",
+                "opponent": f"OPP{day}",
+                "minutes": 32,
+                "points": 20,
+                "rebounds": 10,
+                "assists": 4,
+                "field_goal_attempts": 15,
+                "usage_rate": 0.275,
+                "starter_flag": True,
+                "role": "STARTER",
+                "source_timestamp": _now_iso(),
+            }
+            for day in range(1, 11)
         ]
+        enr.update({
+            "projected_minutes": 32,
+            "projected_pace": 81.5,
+            "opponent_defense": {"def_rating": 103.5},
+            "rest_days": 2,
+            "blowout_probability": 0.12,
+            "game_script": {"expected_margin": 4.0},
+            "role_status": {
+                "status": "ACTIVE",
+                "usage_role": "STARTER",
+                "starter_flag": True,
+                "projected_minutes": 32,
+                "role_timestamp": _now_iso(),
+            },
+        })
     if market:
         enr["market_no_vig_prob"] = 0.55
         enr["sportsbook_line"] = snapshot_line if snapshot_line is not None else line
