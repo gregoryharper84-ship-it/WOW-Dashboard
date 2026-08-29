@@ -8,10 +8,6 @@ from fastapi.testclient import TestClient
 import api_prod
 
 
-# Keep the same suite-wide governed-backend test credential used by the
-# pre-existing G11 event tests. api._require_action_api_key reads the process
-# environment at request time, so competing module-level values make otherwise
-# independent tests fail based on pytest collection/import order.
 TEST_KEY = "test-g11-action-key"
 os.environ["WOW_ACTION_API_KEY"] = TEST_KEY
 AUTH = {"Authorization": f"Bearer {TEST_KEY}"}
@@ -193,19 +189,26 @@ def test_incomplete_prop_evidence_terminates_before_specialist_or_probability(mo
     assert specialist_calls == []
 
 
-def test_available_prop_lane_without_real_fitted_provider_still_fails_closed(monkeypatch):
+def test_available_prop_lane_can_never_reach_legacy_fitted_params_path(monkeypatch):
     fake = _FakeClient(prop_status="AVAILABLE")
+    legacy_calls = []
     monkeypatch.setattr(api_prod, "get_client", lambda: fake)
     monkeypatch.setattr(api_prod.base_api, "_controlling_specialist_provider", lambda _sport, _stat: _specialist())
-    monkeypatch.setattr(api_prod.base_api, "_fitted_params_provider", lambda _sport, _stat: None)
+    monkeypatch.setattr(
+        api_prod.base_api,
+        "_fitted_params_provider",
+        lambda *_args, **_kwargs: legacy_calls.append(True) or (_ for _ in ()).throw(AssertionError("legacy fitted provider called")),
+    )
 
     response = client.post("/score-prop", json=_request_payload(), headers=AUTH)
-    assert response.status_code == 501
+    assert response.status_code == 409
     detail = response.json()["detail"]
-    assert detail["code"] == "PROP_FITTED_PROVIDER_UNAVAILABLE"
-    assert detail["evidence_hydration"] == "PASS"
+    assert detail["code"] == "PROP_DISCRETE_RUNTIME_ENTRYPOINT_REQUIRED"
+    assert detail["backend_traversal"]["legacy_fitted_params_path"] == "DISABLED"
+    assert detail["prediction_ledger_write"] if "prediction_ledger_write" in detail else "NOT_ATTEMPTED"
     assert detail["probability_publishable"] is False
     assert detail["can_execute"] is False
+    assert legacy_calls == []
 
 
 def test_governance_reports_lane_split(monkeypatch):
