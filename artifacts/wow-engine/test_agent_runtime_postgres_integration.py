@@ -12,11 +12,13 @@ pytestmark=pytest.mark.skipif(os.getenv("WOW_AGENT_RUNTIME_INTEGRATION")!="1",re
 
 def _apply_schema():
     dsn=os.environ["SUPABASE_DB_URL"]
-    sql=Path("agent_runtime_v1/migration.sql").read_text()
+    schema_sql=Path("agent_runtime_v1/migration.sql").read_text()
+    register_sql=Path("agent_runtime_v1/staging_register_mlb_v2d.sql").read_text()
     with psycopg.connect(dsn,autocommit=True) as conn, conn.cursor() as cur:
         for role in ("anon","authenticated"):
             cur.execute(f"do $$ begin if not exists(select 1 from pg_roles where rolname='{role}') then create role {role}; end if; end $$;")
-        cur.execute(sql)
+        cur.execute(schema_sql)
+        cur.execute(register_sql)
 
 
 def _candidate():
@@ -49,6 +51,12 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     ready=client.get("/health/ready")
     assert ready.status_code==200,ready.text
     assert ready.json()=={"ok":True,"database":True,"queue":True,"registry":True,"can_execute":False}
+
+    with psycopg.connect(os.environ["SUPABASE_DB_URL"]) as conn, conn.cursor() as cur:
+        cur.execute("select certification_status from wow.model_artifacts where artifact_id='d233092f-3d73-4986-8d76-33f51a9a4fee'")
+        assert cur.fetchone()[0]=="RESEARCH_FROZEN_NOT_PUBLISHABLE"
+        cur.execute("select status from wow.capability_registry where capability_id='8aa3a1b8-e3c8-4f6e-a9dc-3d9924c89001'")
+        assert cur.fetchone()[0]=="UNAVAILABLE"
 
     body={"as_of":datetime.now(timezone.utc).isoformat(),"user_timezone":"America/Chicago","discovery_enabled":False,"candidate_inputs":[_candidate()],"can_execute":False}
     headers={"Authorization":"Bearer ci-agent-key","Idempotency-Key":"ci-runtime-e2e"}
