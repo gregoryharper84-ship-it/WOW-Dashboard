@@ -17,14 +17,21 @@ from ncaaf_trainer import FEATURES
 CAN_EXECUTE = False
 MODEL_FAMILY = "NCAAF_LOGISTIC_V1"
 ARTIFACT_FORMAT = "STANDARDIZED_LOGISTIC_JSON_V1"
+PROBABILITY_EPSILON = 1e-12
 
 
 def _sigmoid(value: float) -> float:
     if value >= 0:
         z = exp(-value)
-        return 1.0 / (1.0 + z)
-    z = exp(value)
-    return z / (1.0 + z)
+        raw = 1.0 / (1.0 + z)
+    else:
+        z = exp(value)
+        raw = z / (1.0 + z)
+    # Mathematical logistic probabilities are strictly inside (0,1), but
+    # finite-precision arithmetic can round extreme logits to exactly 0/1.
+    # Clamp only that numerical saturation; downstream calibration/bounds still
+    # own probability governance and this is never a confidence uplift.
+    return min(1.0 - PROBABILITY_EPSILON, max(PROBABILITY_EPSILON, raw))
 
 
 def logistic_adapter(artifact: ResolvedNCAAFArtifact, request: NCAAFInferenceRequest, features: Mapping[str, Any]) -> RawNCAAFWinProbability:
