@@ -1,17 +1,27 @@
 -- WOW MLB forward-shadow material-change collector — 2026-08-28
 --
--- Replaces raw-response polling semantics with a stable pregame identity
--- comparison. Dynamic game status, scores, and live linescore state are NOT
--- part of the identity. A new shadow snapshot is created only when at least one
--- still-future game is new/materially changed, or a previously captured
--- still-future game disappears from the current official slate.
+-- Replaces raw-response polling semantics with stable pregame identity
+-- comparison. Dynamic game status, scores, live linescore state, and display
+-- names are NOT part of the material identity.
 --
--- This preserves the immutable raw source response for every meaningful
--- pregame change while preventing live-game status/score churn from creating
--- duplicate calibration observations. Downstream unique-event calibration
--- remains independently enforced.
+-- A new shadow snapshot is created only when at least one still-future game is
+-- new/materially changed, or a previously captured still-future game disappears
+-- from the current official slate. This prevents live-feed churn from creating
+-- duplicate calibration observations while still preserving real starter/time/
+-- venue/team changes.
 --
 -- Safety: research only; probability publication and execution remain false.
+
+-- Raw source bytes are evidence, not an identity key. The old uniqueness rule
+-- could incorrectly collapse a real A->B->A pregame identity reversion back onto
+-- an older snapshot if the official response bytes repeated. Material identity
+-- comparison plus the advisory lock now owns deduplication; retain a normal
+-- lookup index for raw hashes without asserting uniqueness across capture time.
+alter table public.wow_mlb_forward_shadow_source_snapshots
+  drop constraint if exists wow_mlb_forward_shadow_source_snapsho_slate_date_raw_sha256_key;
+
+create index if not exists idx_wow_mlb_forward_shadow_source_slate_raw_sha256
+  on public.wow_mlb_forward_shadow_source_snapshots(slate_date,raw_sha256);
 
 create or replace function public.wow_mlb_forward_pregame_identity(p_game jsonb)
 returns jsonb
@@ -24,17 +34,14 @@ select jsonb_build_object(
   'gameDate', p_game->>'gameDate',
   'officialDate', p_game->>'officialDate',
   'gameType', coalesce(p_game->>'gameType',''),
+  'doubleHeader', coalesce(p_game->>'doubleHeader',''),
+  'gameNumber', coalesce(p_game->>'gameNumber',''),
   'scheduledInnings', coalesce(p_game->>'scheduledInnings',''),
   'homeTeamId', coalesce(p_game#>>'{teams,home,team,id}',''),
-  'homeTeamName', coalesce(p_game#>>'{teams,home,team,name}',''),
   'awayTeamId', coalesce(p_game#>>'{teams,away,team,id}',''),
-  'awayTeamName', coalesce(p_game#>>'{teams,away,team,name}',''),
   'venueId', coalesce(p_game#>>'{venue,id}',''),
-  'venueName', coalesce(p_game#>>'{venue,name}',''),
   'homeStarterId', coalesce(p_game#>>'{teams,home,probablePitcher,id}',''),
-  'homeStarterName', coalesce(p_game#>>'{teams,home,probablePitcher,fullName}',''),
-  'awayStarterId', coalesce(p_game#>>'{teams,away,probablePitcher,id}',''),
-  'awayStarterName', coalesce(p_game#>>'{teams,away,probablePitcher,fullName}','')
+  'awayStarterId', coalesce(p_game#>>'{teams,away,probablePitcher,id}','')
 );
 $function$;
 
@@ -57,7 +64,7 @@ declare
   v_current_identity jsonb;
   v_prior_identity jsonb;
   v_current_future_ids text[] := '{}';
-  v_capture_at timestamptz := clock_timestamp();
+  v_capture_at timestamptz;
   v_future_n integer := 0;
   v_changed_n integer := 0;
   v_missing_n integer := 0;
@@ -73,6 +80,8 @@ begin
     raise exception 'research-frozen spec not found';
   end if;
 
+  -- Serialize captures for the same spec/slate so concurrent cron/manual runs
+  -- cannot create duplicate material-change snapshots.
   perform pg_catalog.pg_advisory_xact_lock(
     pg_catalog.hashtextextended(
       'wow_mlb_forward_capture:' || p_spec_id::text || ':' || p_slate_date::text,
@@ -89,6 +98,12 @@ begin
   end if;
 
   v_body := v_resp.content::jsonb;
+
+  -- Provenance time is the time at which the complete official response is
+  -- already in hand, never the pre-request time. A game that begins while the
+  -- HTTP request is in flight therefore cannot be mislabeled as pregame.
+  v_capture_at := clock_timestamp();
+
   if jsonb_array_length(coalesce(v_body->'dates','[]'::jsonb)) = 0 then
     return jsonb_build_object(
       'status','NO_SLATE_GAMES',
@@ -99,6 +114,8 @@ begin
     );
   end if;
 
+  -- Compare only games that are still future after the response completed.
+  -- Started games cannot trigger a new snapshot merely because live state moved.
   for v_game in
     select value
     from jsonb_array_elements(coalesce(v_body->'dates'->0->'games','[]'::jsonb))
@@ -140,6 +157,9 @@ begin
     );
   end if;
 
+  -- Detect a previously captured game that should still be future according to
+  -- the latest frozen observation but disappeared from the current official
+  -- slate. Normally-started games do not qualify for this missing-game check.
   select count(*)
   into v_missing_n
   from (
@@ -180,6 +200,9 @@ begin
     'hex'
   );
 
+  -- Always create a new immutable source snapshot for a real material change,
+  -- even if raw bytes happen to match an older observation after an A->B->A
+  -- identity reversion. Deduplication already happened above under the lock.
   insert into public.wow_mlb_forward_shadow_source_snapshots(
     captured_at,slate_date,source_url,http_status,raw_body,raw_sha256,
     research_only,probability_publishable,can_execute
@@ -187,16 +210,7 @@ begin
     v_capture_at,p_slate_date,v_url,v_resp.status,v_resp.content,v_raw_sha256,
     true,false,false
   )
-  on conflict(slate_date,raw_sha256) do nothing
   returning snapshot_id into v_snapshot_id;
-
-  if v_snapshot_id is null then
-    select snapshot_id
-    into v_snapshot_id
-    from public.wow_mlb_forward_shadow_source_snapshots
-    where slate_date=p_slate_date and raw_sha256=v_raw_sha256
-    limit 1;
-  end if;
 
   for v_game in
     select value
@@ -288,6 +302,8 @@ begin
 end;
 $function$;
 
+-- Capture finishes ahead of hydration (5,20,35,50) and away from the existing
+-- outcome grader (0,15,30,45).
 select cron.schedule(
   'wow-mlb-forward-shadow-auto-capture',
   '2,17,32,47 * * * *',
