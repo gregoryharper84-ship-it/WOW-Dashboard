@@ -20,6 +20,10 @@ def test_ncaaf_sql_governance_contract():
     assert "log_loss" in lowered
     assert "alter table wow_ncaaf_predictions enable row level security" in lowered
     assert "alter table wow_ncaaf_outcomes enable row level security" in lowered
+    assert "wow_ncaaf_predictions," in lowered
+    assert "wow_ncaaf_outcomes," in lowered
+    assert "wow_ncaaf_calibration_ledger" in lowered
+    assert "from anon, authenticated" in lowered
 
 
 def test_ncaaf_trust_review_metrics_contract():
@@ -35,3 +39,5 @@ def test_ncaaf_trust_review_metrics_contract():
     assert "when not o.won then -1.0" in lowered
     assert "false as can_execute" in lowered
     assert "not executed-account roi" in lowered
+    assert "revoke all privileges on table wow_ncaaf_trust_review_metrics" in lowered
+    assert "from anon, authenticated" in lowered
