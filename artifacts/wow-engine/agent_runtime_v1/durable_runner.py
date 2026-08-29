@@ -31,6 +31,15 @@ def execute_durable(self,envelope:dict):
             raise self.retry(countdown=5,max_retries=1000)
         raise self.retry(countdown=2,max_retries=1000)
 
+    from .coordinator import Coordinator
+    coordinator=Coordinator(repo)
+    try:
+        coordinator.on_job_started(env.worker_id,env.run_id)
+    except Exception:
+        # Starting-state races are expected when sibling candidate jobs begin.
+        # The state CAS in Coordinator/JobRepository remains authoritative.
+        pass
+
     try:
         if spec is None:
             out=_terminal_output(env,JobStatus.DEAD_LETTERED,"RESEARCH_INTEREST",["UNKNOWN_WORKER"],{"error":"UNKNOWN_WORKER"})
@@ -49,5 +58,17 @@ def execute_durable(self,envelope:dict):
             out=_terminal_output(env,JobStatus.DEAD_LETTERED,"RESEARCH_INTEREST",["WORKER_DEAD_LETTERED"],{"error":type(exc).__name__,"code":code})
 
     payload=out.model_dump(mode="json")
-    repo.complete(job_id=env.job_id,output=payload)
+    inserted=repo.complete(job_id=env.job_id,output=payload)
+    if inserted:
+        try:
+            coordinator.on_job_terminal(env,payload)
+        except Exception as exc:
+            run=repo.get_run(env.run_id) or {}
+            current=str(run.get("status") or "")
+            if current not in {"COMPLETED","COMPLETED_WITH_BLOCKERS","FAILED","CANCELED","RECONCILING"}:
+                try:
+                    repo.transition_run(env.run_id,current,"FAILED",f"CONTINUATION_FAILED:{type(exc).__name__}")
+                except Exception:
+                    pass
+            return {**payload,"continuation_status":"FAILED_CLOSED","continuation_error":type(exc).__name__,"can_execute":False}
     return payload
