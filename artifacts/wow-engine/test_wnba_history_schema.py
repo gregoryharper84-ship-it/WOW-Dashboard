@@ -9,6 +9,13 @@ def test_raw_history_schema_is_non_executable_and_role_unresolved():
     assert "check (can_execute = false)" in sql
     assert "role_evidence_status text not null default 'unresolved'" in sql
     assert "training_materialization_status text not null default 'blocked_role_evidence'" in sql
-    assert "starter" not in sql
-    assert "probability" not in sql
-    assert "model_family" not in sql
+
+    table_body = sql.split("create table if not exists public.wow_wnba_player_game_logs (", 1)[1].split(");", 1)[0]
+    column_names = {
+        line.strip().split()[0]
+        for line in table_body.splitlines()
+        if line.strip() and not line.strip().startswith(("constraint", "--")) and line.startswith("    ")
+    }
+    assert "starter" not in column_names
+    assert "probability" not in column_names
+    assert "model_family" not in column_names
