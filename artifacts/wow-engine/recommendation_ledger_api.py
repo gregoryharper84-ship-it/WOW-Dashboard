@@ -95,9 +95,9 @@ class SettlementRow(BaseModel):
     official_result: Optional[str] = None
     settlement_source: str
     settlement_evidence_ref: Optional[str] = None
-    position_reference: Optional[str] = None
-    position_structure: Optional[str] = None
-    underlying_market_count: Optional[int] = None
+    position_reference: str
+    position_structure: str
+    underlying_market_count: int
     entry_cost: Optional[float] = None
     payout: Optional[float] = None
     profit_loss: Optional[float] = None
@@ -109,7 +109,7 @@ class SettlementRow(BaseModel):
         _aware(self.settled_at)
         if self.settled_result not in _ALLOWED_RESULTS:
             raise ValueError("settled_result must be WIN, LOSS, PUSH, or VOID")
-        if self.underlying_market_count is not None and self.underlying_market_count < 1:
+        if self.underlying_market_count < 1:
             raise ValueError("underlying_market_count must be positive")
         if self.entry_cost is not None and self.entry_cost < 0:
             raise ValueError("entry_cost cannot be negative")
@@ -121,6 +121,31 @@ class SettlementRow(BaseModel):
 class SettlementBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rows: list[SettlementRow] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_one_position(self):
+        position_fields = (
+            "position_reference",
+            "position_structure",
+            "underlying_market_count",
+            "settled_at",
+            "settlement_source",
+            "settlement_evidence_ref",
+            "entry_cost",
+            "payout",
+            "profit_loss",
+            "displayed_roi",
+        )
+        first = self.rows[0]
+        for field in position_fields:
+            expected = getattr(first, field)
+            if any(getattr(row, field) != expected for row in self.rows[1:]):
+                raise ValueError(f"{field} must be identical across a settlement batch")
+        if first.underlying_market_count != len(self.rows):
+            raise ValueError("underlying_market_count must equal settlement row count")
+        if len({row.recommendation_record_id for row in self.rows}) != len(self.rows):
+            raise ValueError("recommendation_record_id values must be unique")
+        return self
 
 
 def install_recommendation_ledger_routes(
@@ -227,22 +252,51 @@ def install_recommendation_ledger_routes(
                 },
             )
 
-        payloads = []
+        outcomes = []
+        retrospective = any(
+            existing_by_id[row.recommendation_record_id]["capture_timing"] != "PREGAME"
+            for row in batch.rows
+        )
+        attribution_status = (
+            "RETROSPECTIVE_UNVERIFIED" if retrospective else "MATCHED_PREGAME_RECORD"
+        )
         for row in batch.rows:
-            payload = row.model_dump()
-            payload["excluded_from_calibration"] = (
-                existing_by_id[row.recommendation_record_id]["capture_timing"]
-                != "PREGAME"
+            payload = row.model_dump(
+                exclude={
+                    "entry_cost",
+                    "payout",
+                    "profit_loss",
+                    "displayed_roi",
+                }
             )
-            payload["attribution_status"] = (
-                "MATCHED_PREGAME_RECORD"
-                if not payload["excluded_from_calibration"]
-                else "RETROSPECTIVE_UNVERIFIED"
-            )
+            payload["excluded_from_calibration"] = retrospective
+            payload["attribution_status"] = attribution_status
             payload["can_execute"] = False
-            payloads.append(payload)
+            outcomes.append(payload)
+
+        first = batch.rows[0]
+        position = {
+            "position_reference": first.position_reference,
+            "settled_at": first.settled_at,
+            "settlement_source": first.settlement_source,
+            "settlement_evidence_ref": first.settlement_evidence_ref,
+            "position_structure": first.position_structure,
+            "underlying_market_count": first.underlying_market_count,
+            "recommendation_record_ids": ids,
+            "entry_cost": first.entry_cost,
+            "payout": first.payout,
+            "profit_loss": first.profit_loss,
+            "displayed_roi": first.displayed_roi,
+            "attribution_status": attribution_status,
+            "excluded_from_calibration": retrospective,
+            "can_execute": False,
+        }
         try:
-            result = client.table("wow_recommendation_outcomes").insert(payloads).execute()
+            result = client.rpc(
+                "wow_settle_recommendation_batch",
+                {"p_position": position, "p_outcomes": outcomes},
+            ).execute()
+            persisted = result.data or {}
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
@@ -251,11 +305,16 @@ def install_recommendation_ledger_routes(
                     "can_execute": False,
                 },
             ) from exc
-        persisted = result.data or []
+        if not isinstance(persisted, dict) or persisted.get("reconciliation_pass") is not True:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "RECOMMENDATION_SETTLEMENT_WRITE_UNPROVEN",
+                    "can_execute": False,
+                },
+            )
         return {
             "code": "RECOMMENDATION_SETTLEMENT_WRITE_PASS",
-            "rows_in": len(payloads),
-            "rows_persisted": len(persisted),
-            "reconciliation_pass": len(persisted) == len(payloads),
+            **persisted,
             "can_execute": False,
         }
