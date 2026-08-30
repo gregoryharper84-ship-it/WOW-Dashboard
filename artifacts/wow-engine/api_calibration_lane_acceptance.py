@@ -2,17 +2,17 @@
 
 WOW-PATCH-2026-08-30-CALIBRATION-PUBLICATION-LANE-SEPARATION.
 
-The existing production API historically treated an unavailable aggregate
-PROP_PROBABILITY capability as a pre-model hard stop. That was correct for a
-true specialist/model failure but incorrect when the only blocker is
-FORWARD_SHADOW_NOT_COMPLETED (calibration/publication scope).
+A sport/market runtime capability and the global governed publication latch are
+separate facts. In production today, for example, PROP_PROBABILITY can be
+AVAILABLE while governed probability publication is UNAVAILABLE because
+Calibration Health is blocked by FORWARD_SHADOW_NOT_COMPLETED.
 
 This wrapper keeps every fail-closed model/identity/evidence rule, but lets a
 prospectively certified specialist produce an auditable RAW research result
-when publication alone is blocked. It never calls a calibrator on that path,
-never creates calibrated bounds, never relabels market probability as model
-probability, never writes the result to the governed probability ledger, and
-never authorizes execution.
+when the proven blocker scope is calibration/publication only. It never calls a
+calibrator on that path, never creates calibrated bounds, never relabels market
+probability as model probability, never writes the result to the governed
+probability ledger, and never authorizes execution.
 """
 from __future__ import annotations
 
@@ -25,15 +25,8 @@ import api_ncaaf_acceptance as ncaaf_api
 from calibration_publication_scope import classify_probability_capability
 from market import resolve_market_prior
 from prop_discrete_engine import PropCalibrationUnavailable, _directional_probability
-from prop_distribution_contract import (
-    PropDistributionContractError,
-    derive_line_probabilities,
-)
-from prop_fitted_provider import (
-    CertifiedInference,
-    PropFittedProviderUnavailable,
-    infer_certified_distribution,
-)
+from prop_distribution_contract import PropDistributionContractError, derive_line_probabilities
+from prop_fitted_provider import CertifiedInference, PropFittedProviderUnavailable, infer_certified_distribution
 
 app = ncaaf_api.app
 market_api = ncaaf_api.base.market_api
@@ -44,16 +37,62 @@ _original_runtime_capability = prod._runtime_capability
 _original_score_prop = market_api.score_prop
 
 
+def _global_publication_state() -> tuple[dict[str, Any], dict[str, Any]]:
+    gate = prod.base_api._query_deployment_gate_state()
+    health = prod.base_api._query_calibration_health()
+    return (dict(gate) if isinstance(gate, dict) else {}, dict(health) if isinstance(health, dict) else {})
+
+
+def _capability_context(capability_key: str) -> dict[str, Any]:
+    """Join lane capability with global publication/calibration evidence.
+
+    No state is upgraded here. Missing global evidence stays unavailable and
+    therefore cannot use the publication-only exception unless its scope is
+    affirmatively proven by blocker evidence.
+    """
+    row = dict(_original_runtime_capability(capability_key))
+    gate, health = _global_publication_state()
+    evidence = dict(row.get("evidence") or {})
+
+    health_blockers = health.get("blockers")
+    if isinstance(health_blockers, list):
+        evidence["global_calibration_blockers"] = list(health_blockers)
+
+    publication_blockers: list[str] = []
+    if str(gate.get("ratification_status") or "NOT_RATIFIED") != "RATIFIED":
+        publication_blockers.append("PUBLICATION_NOT_RATIFIED")
+    if gate.get("production_feature_ready") is False:
+        publication_blockers.append("PRODUCTION_FEATURE_READY_FALSE")
+    if gate.get("probability_publishable") is False:
+        publication_blockers.append("GOVERNED_PROBABILITY_NOT_PUBLISHABLE")
+    if publication_blockers:
+        evidence["global_publication_blockers"] = publication_blockers
+
+    row["evidence"] = evidence
+    row["global_governed_probability_capability"] = str(
+        gate.get("governed_probability_capability") or "UNAVAILABLE"
+    )
+    row["governed_probability_capability"] = row["global_governed_probability_capability"]
+    row["governed_publishable"] = bool(gate.get("probability_publishable", False))
+    row["calibration_health_status"] = str(
+        health.get("calibration_health_status")
+        or gate.get("calibration_health_status")
+        or "UNAVAILABLE"
+    )
+    row["calibration_health_assessed_at"] = health.get("assessed_at") or gate.get("calibration_health_assessed_at")
+    return row
+
+
 def _scoped_runtime_capability(capability_key: str) -> dict[str, Any]:
-    """Compatibility mapper: preserve source status while opening research routing.
+    """Compatibility mapper preserving model routing while blocking publication.
 
     Existing batch preflight checks ``capability_status == AVAILABLE``. For an
     explicitly calibration/publication-only lock we expose AVAILABLE on that
-    legacy routing key *only*, while retaining the raw source capability and the
-    separate publication capability in first-class fields. Unknown failures
-    keep the original unavailable status.
+    legacy routing key *only*. The true lane/source state plus the global
+    publication state remain first-class fields and govern all claim labels.
+    Unknown/global/model failures retain their hard-stop semantics.
     """
-    row = dict(_original_runtime_capability(capability_key))
+    row = _capability_context(capability_key)
     separation = classify_probability_capability(row)
     row["source_capability_status"] = separation.source_capability_status
     row["routing_capability_status"] = separation.routing_capability_status
@@ -65,16 +104,16 @@ def _scoped_runtime_capability(capability_key: str) -> dict[str, Any]:
     row["publication_only_lock"] = separation.publication_only_lock
     row["blocker_codes"] = list(separation.blocker_codes)
     if separation.publication_only_lock:
-        # Compatibility alias for legacy PRE-MODEL routing only. It must never
-        # be interpreted as publication availability; consumers must use the
-        # explicit governed_publication_capability/governed_publishable fields.
+        # Compatibility alias for PRE-MODEL routing only. It is not publication
+        # availability and must never be used as such.
         row["capability_status"] = "AVAILABLE"
         row["capability_status_semantics"] = "RESEARCH_ROUTING_COMPATIBILITY_ALIAS"
     return row
 
 
-# Install the mapper globally so the already-installed /score-pick-request
-# closure sees the same classification as /score-prop at request time.
+# The already-installed /score-pick-request closure resolves this function at
+# request time, so batch/screenshot ingress and single-row scoring share one
+# capability mapper.
 prod._runtime_capability = _scoped_runtime_capability
 
 
@@ -106,12 +145,7 @@ def _research_market_lane(req: Any, scored_at: str) -> dict[str, Any]:
     }
 
 
-def _raw_specialist_evidence(
-    *,
-    req: Any,
-    evidence: dict[str, Any],
-    scored_at: str,
-) -> dict[str, Any]:
+def _raw_specialist_evidence(*, req: Any, evidence: dict[str, Any], scored_at: str) -> dict[str, Any]:
     inference_request = market_api._server_owned_inference_request(req, evidence, scored_at)
     inference = infer_certified_distribution(
         prod.get_client(),
@@ -160,9 +194,7 @@ def _raw_specialist_evidence(
         },
         "training_rows": artifact.training_rows,
         "model_timestamp": scored_at,
-        # Deliberately absent/None under publication lock. These values cannot
-        # be invented, backfilled from market data, or copied from a stale
-        # calibrator when Calibration Health is blocked.
+        # No calibration is invoked on this path.
         "calibrated_probability": None,
         "calibrated_probability_lower_bound": None,
         "calibrated_probability_upper_bound": None,
@@ -175,12 +207,7 @@ def _raw_specialist_evidence(
     }
 
 
-def _publication_lock_response(
-    req: Any,
-    *,
-    model_identity: str,
-    lane: dict[str, Any],
-) -> dict[str, Any]:
+def _publication_lock_response(req: Any, *, model_identity: str, lane: dict[str, Any]) -> dict[str, Any]:
     separation = classify_probability_capability(lane)
     if not separation.publication_only_lock:
         raise RuntimeError("publication-lock response requested for a non-publication-only capability")
@@ -213,15 +240,10 @@ def _publication_lock_response(
 
     scored_at = datetime.now(timezone.utc).isoformat()
     try:
-        model_evidence = _raw_specialist_evidence(
-            req=req,
-            evidence=evidence,
-            scored_at=scored_at,
-        )
+        model_evidence = _raw_specialist_evidence(req=req, evidence=evidence, scored_at=scored_at)
     except (PropFittedProviderUnavailable, PropDistributionContractError, PropCalibrationUnavailable) as exc:
-        # This is a genuine model/provider/coverage failure, so MODEL_UNAVAILABLE
-        # semantics remain unchanged. Publication separation never substitutes
-        # a market probability, hit rate, or generic narrative here.
+        # Genuine specialist/model/provider/coverage failure: preserve existing
+        # MODEL_UNAVAILABLE semantics and never substitute market/L10/manual data.
         market_api._raise_model_path_error(exc)
         raise AssertionError("unreachable")
 
@@ -248,7 +270,7 @@ def _publication_lock_response(
         "specialist_model_capability": "AVAILABLE",
         "specialist_model_name": specialist.get("controlling_specialist"),
         "specialist_model_status": "COMPLETED_RESEARCH_ONLY",
-        "calibration_health_status": "BLOCKED_OR_UNKNOWN",
+        "calibration_health_status": lane.get("calibration_health_status") or "BLOCKED_OR_UNKNOWN",
         "calibration_status": "UNKNOWN_OR_BLOCKED",
         "governed_probability_capability": "UNAVAILABLE",
         "governed_publication_capability": "UNAVAILABLE",
@@ -302,6 +324,7 @@ def _publication_lock_response(
             "status": "PASS_RESEARCH_ONLY",
             "certified_artifact_code": route_artifact.get("code"),
             "source_capability_status": separation.source_capability_status,
+            "global_governed_probability_capability": separation.global_governed_probability_capability,
             "routing_capability_status": separation.routing_capability_status,
             "can_execute": False,
         },
@@ -315,24 +338,14 @@ def _publication_lock_response(
     }
 
 
-def score_prop(
-    req: Any,
-    x_wow_model_identity: Optional[str] = None,
-):
-    """Route normally when publishable; preserve raw specialist research when not."""
+def score_prop(req: Any, x_wow_model_identity: Optional[str] = None):
+    """Publish normally only when publication is available; otherwise preserve research."""
     model_identity = prod._reject_llp_prop_identity(x_wow_model_identity)
     lane = prod._runtime_capability(prod.PROP_CAPABILITY_KEY)
     separation = classify_probability_capability(lane)
     if separation.publication_only_lock:
-        return _publication_lock_response(
-            req,
-            model_identity=model_identity,
-            lane=lane,
-        )
-    return _original_score_prop(
-        req,
-        x_wow_model_identity=x_wow_model_identity,
-    )
+        return _publication_lock_response(req, model_identity=model_identity, lane=lane)
+    return _original_score_prop(req, x_wow_model_identity=x_wow_model_identity)
 
 
 # The canonical /score-pick-request closure resolves market_api.score_prop at
@@ -340,9 +353,7 @@ def score_prop(
 market_api.score_prop = score_prop
 
 
-# Replace the already-installed HTTP /score-prop route with the lane-separated
-# boundary. Other routes, startup probes, settlement, traceability, and NCAAF
-# maintenance routes are retained unchanged.
+# Replace the inherited HTTP /score-prop route with the lane-separated boundary.
 app.router.routes[:] = [
     route
     for route in app.router.routes
@@ -365,8 +376,8 @@ def score_prop_http(
     return score_prop(req, x_wow_model_identity=x_wow_model_identity)
 
 
-# Replace governance so the legacy routing alias cannot be mistaken for actual
-# publication availability by a caller.
+# Replace governance so a routing compatibility alias cannot be mistaken for
+# governed publication availability by any caller.
 app.router.routes[:] = [
     route
     for route in app.router.routes
@@ -382,17 +393,19 @@ def governance():
     payload = dict(prod.governance())
     lane_capabilities = dict(payload.get("lane_capabilities") or {})
     for capability_key in (prod.MLB_EVENT_CAPABILITY_KEY, prod.PROP_CAPABILITY_KEY):
-        source = dict(_original_runtime_capability(capability_key))
+        source = _capability_context(capability_key)
         separation = classify_probability_capability(source)
         existing = dict(lane_capabilities.get(capability_key) or {})
         existing.update(
             {
                 "status": separation.source_capability_status,
+                "global_governed_probability_capability": separation.global_governed_probability_capability,
                 "routing_capability_status": separation.routing_capability_status,
                 "specialist_model_capability": separation.specialist_model_capability,
                 "calibration_capability": separation.calibration_capability,
                 "governed_publication_capability": separation.governed_publication_capability,
                 "governed_publishable": separation.governed_publishable,
+                "calibration_health_status": source.get("calibration_health_status"),
                 "failed_contract_scope": list(separation.failed_contract_scope),
                 "blocker_codes": list(separation.blocker_codes),
                 "publication_only_lock": separation.publication_only_lock,
@@ -412,6 +425,6 @@ def governance():
     return payload
 
 
-# Main recently added late-route OpenAPI refresh. This wrapper installs two more
-# final routes, so invalidate the cached schema after replacement as well.
+# This wrapper installs final replacement routes after the inherited OpenAPI
+# schema may have been built, so force a fresh schema.
 app.openapi_schema = None
