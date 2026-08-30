@@ -23,6 +23,8 @@ from prop_discrete_engine import PropCalibrationUnavailable, score_discrete_prop
 from prop_distribution_contract import PropDistributionContractError, PropInferenceRequest
 from prop_evidence_repair import repair_prop_evidence
 from prop_fitted_provider import PropFittedProviderUnavailable
+from qualification_policy_v2 import classify_prop_probability
+from prop_terminal_reducer_v2 import reduce_prop_terminal
 
 import prop_calibration_adapters
 import prop_model_adapters
@@ -106,6 +108,40 @@ def _money_lane(row: Any) -> dict[str, Any]:
         "status": "PASS" if status == "RESOLVED" else "HOLD",
         "money_lane_status": status,
         "blocks_model_probability": False,
+        "can_execute": False,
+    }
+
+
+def _probability_qualification(row: Any, market_lane: dict[str, Any], money_lane: dict[str, Any]) -> dict[str, Any]:
+    qualification = classify_prop_probability(
+        calibrated_probability=getattr(row, "calibrated_probability", None),
+        calibrated_lower_bound=getattr(row, "calibrated_probability_lower_bound", None),
+        calibration_status=getattr(row, "calibration_status", None),
+        blockers=getattr(row, "data_gaps", None) or [],
+        probability_publishable=bool(getattr(row, "probability_publishable", False)),
+    )
+    blockers = list(qualification.blockers)
+    if market_lane.get("status") != "PASS":
+        blockers.append("MARKET_DATA_UNAVAILABLE")
+    if money_lane.get("status") != "PASS":
+        blockers.append("PAYOUT_UNRESOLVED")
+    terminal = reduce_prop_terminal(
+        proposed_label=qualification.terminal_label,
+        blockers=blockers,
+        model_evaluated=True,
+    )
+    return {
+        "terminal_label": terminal.terminal_label,
+        "confidence_tier": qualification.confidence_tier,
+        "rank_eligible": qualification.rank_eligible,
+        "model_supported": qualification.model_supported,
+        "model_evaluated": terminal.model_evaluated,
+        "pick_rejected": terminal.pick_rejected,
+        "verdict_class": terminal.verdict_class,
+        "infrastructure_blocked": terminal.infrastructure_blocked,
+        "downstream_money_evaluation_allowed": qualification.downstream_money_evaluation_allowed,
+        "final_approved_allowed": False,
+        "blockers": list(terminal.blockers),
         "can_execute": False,
     }
 
@@ -267,6 +303,7 @@ def _discrete_model_evidence(result: Any) -> dict[str, Any]:
         "calibration_status": getattr(row, "calibration_status", None),
         "calibration_method": getattr(row, "calibration_method", None),
         "calibration_version": getattr(row, "calibration_version", None),
+        "calibrated_probability": getattr(row, "calibrated_probability", None),
         "bounds_method_version": getattr(row, "bounds_method_version", None),
         "calibrated_probability_lower_bound": getattr(row, "calibrated_probability_lower_bound", None),
         "calibrated_probability_upper_bound": getattr(row, "calibrated_probability_upper_bound", None),
@@ -482,6 +519,7 @@ def score_prop(
 
     market_lane = _market_lane(result.row)
     money_lane = _money_lane(result.row)
+    probability_qualification = _probability_qualification(result.row, market_lane, money_lane)
     return {
         "ok": True,
         "prediction": persisted,
@@ -494,6 +532,9 @@ def score_prop(
             "can_execute": False,
         },
         "model_evidence": _discrete_model_evidence(result),
+        "probability_qualification": probability_qualification,
+        "terminal_label": probability_qualification["terminal_label"],
+        "pick_rejected": probability_qualification["pick_rejected"],
         "evidence": evidence,
         "objective_lanes": {
             "MODEL": {

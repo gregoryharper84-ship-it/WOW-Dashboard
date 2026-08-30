@@ -92,11 +92,28 @@ def _build(monkeypatch, *, unsupported_sports=(), capability="AVAILABLE"):
         scored.append((req, x_wow_model_identity))
         return {
             "ok": True,
-            "prediction": {"prediction_id": "00000000-0000-0000-0000-000000000001"},
-            "model_evidence": {"calibrated_probability_lower_bound": 0.58},
+            "prediction": {
+                "prediction_id": "00000000-0000-0000-0000-000000000001",
+                "calibrated_probability": 0.63,
+                "calibrated_probability_lower_bound": 0.56,
+                "calibration_status": "PRECALIBRATION_SHRINKAGE",
+            },
+            "model_evidence": {
+                "calibrated_probability": 0.63,
+                "calibrated_probability_lower_bound": 0.56,
+            },
+            "probability_qualification": {
+                "terminal_label": "MODEL_QUALIFIED_HOLD",
+                "confidence_tier": "STANDARD",
+                "rank_eligible": True,
+                "model_supported": True,
+                "downstream_money_evaluation_allowed": False,
+                "blockers": ["MARKET_DATA_UNAVAILABLE", "PAYOUT_UNRESOLVED"],
+            },
             "probability_publishable": True,
             "can_execute": False,
         }
+
 
     monkeypatch.setattr(market_api.prod.base_api, "_controlling_specialist_provider", specialist)
     monkeypatch.setattr(
@@ -131,7 +148,7 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
     assert body["rows_held"] == 0
     assert body["rows_rejected"] == 0
     assert body["reconciliation_pass"] is True
-    assert body["rows"][0]["code"] == "MODEL_QUALIFIED"
+    assert body["rows"][0]["code"] == "MODEL_QUALIFIED_HOLD"
     assert body["rows"][0]["acquisition"]["mode"] == "CALLER_SUPPLIED_RAW_EVIDENCE"
     assert len(body["rows"][0]["evidence_fingerprint"]) == 64
     assert body["can_execute"] is False
@@ -208,18 +225,22 @@ def test_bad_row_cannot_erase_good_sibling_and_reconciliation_is_exact(monkeypat
     assert body["run_controller_status"] == "DEGRADED"
     assert body["rows_in"] == 2
     assert body["rows_completed"] == 1
-    assert body["rows_held"] == 0
-    assert body["rows_rejected"] == 1
+    assert body["rows_held"] == 1
+    assert body["rows_rejected"] == 0
     assert body["reconciliation_pass"] is True
     by_key = {row["row_key"]: row for row in body["rows"]}
-    assert by_key["bad"]["terminal_status"] == "REJECTED"
+    assert by_key["bad"]["terminal_status"] == "HELD"
     assert by_key["bad"]["code"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
     assert by_key["bad"]["detail"]["blocker"] == "L10_GAME_LOG_INCOMPLETE"
     assert by_key["good"]["terminal_status"] == "COMPLETED"
-    assert by_key["good"]["code"] == "MODEL_QUALIFIED"
+    assert by_key["good"]["code"] == "MODEL_QUALIFIED_HOLD"
     assert len(persisted) == 1
     assert len(scored) == 1
 
+    assert by_key["bad"]["pick_rejected"] is False
+    assert by_key["bad"]["verdict_class"] == "ACQUISITION_BLOCKED"
+    assert body["pick_rejected_count"] == 0
+    assert body["infrastructure_blocked_count"] >= 1
 
 def test_missing_evidence_auto_hydrates_freezes_and_scores(monkeypatch):
     client, persisted, routed, scored = _build(monkeypatch)
@@ -241,7 +262,7 @@ def test_missing_evidence_auto_hydrates_freezes_and_scores(monkeypatch):
     assert body["run_controller_status"] == "COMPLETE"
     assert body["rows_completed"] == 1
     assert terminal["terminal_status"] == "COMPLETED"
-    assert terminal["code"] == "MODEL_QUALIFIED"
+    assert terminal["code"] == "MODEL_QUALIFIED_HOLD"
     assert terminal["acquisition"]["mode"] == "AUTO_HYDRATION"
     assert terminal["acquisition"]["status"] == "PASS"
     assert terminal["acquisition"]["snapshot_status"] == "FROZEN"
@@ -287,7 +308,7 @@ def test_auto_hydration_failure_is_row_local_and_valid_sibling_completes(monkeyp
     assert by_key["broken"]["code"] == "MLB_STARTER_STATUS_UNRESOLVED"
     assert by_key["broken"]["terminal_status"] == "HELD"
     assert by_key["good-auto"]["terminal_status"] == "COMPLETED"
-    assert by_key["good-auto"]["code"] == "MODEL_QUALIFIED"
+    assert by_key["good-auto"]["code"] == "MODEL_QUALIFIED_HOLD"
     assert body["telemetry"]["auto_hydration_attempted"] == 2
     assert body["telemetry"]["auto_hydration_succeeded"] == 1
     assert body["telemetry"]["acquisition_failures"] == 1

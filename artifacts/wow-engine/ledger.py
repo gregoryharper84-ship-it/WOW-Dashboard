@@ -21,6 +21,7 @@ import os
 import uuid
 
 from calibration import CalibrationStatus
+from qualification_policy_v2 import classify_prop_probability
 
 _RECOGNIZED_CALIBRATION_STATUSES = {
     CalibrationStatus.PRECALIBRATION_SHRINKAGE,
@@ -227,19 +228,16 @@ def determine_publishability(row: PredictionRow) -> PredictionRow:
     if not money_resolved and "money_lane_status != RESOLVED (payout unresolved)" not in row.blockers:
         row.blockers = list(row.blockers) + ["money_lane_status != RESOLVED (payout unresolved)"]
 
-    if not row.probability_publishable:
-        confidence_ceiling = "RESEARCH_INTEREST"
-    elif row.calibration_status == "PRECALIBRATION_SHRINKAGE":
-        confidence_ceiling = "MODEL_QUALIFIED_HOLD_PROHIBITED_PRECALIBRATION"
-    else:
-        confidence_ceiling = "MODEL_QUALIFIED_HOLD"
-
-    if confidence_ceiling == "RESEARCH_INTEREST":
-        row.probability_ceiling = "RESEARCH_INTEREST"
-    elif not money_resolved:
-        row.probability_ceiling = confidence_ceiling + "_MONEY_LANE_UNRESOLVED"
-    else:
-        row.probability_ceiling = confidence_ceiling
+    qualification = classify_prop_probability(
+        calibrated_probability=row.calibrated_probability,
+        calibrated_lower_bound=row.calibrated_probability_lower_bound,
+        calibration_status=row.calibration_status,
+        blockers=row.data_gaps,
+        probability_publishable=row.probability_publishable,
+    )
+    # Probability and money are separate objectives. The immutable
+    # probability ceiling records the model verdict only.
+    row.probability_ceiling = qualification.terminal_label
 
     return row
 

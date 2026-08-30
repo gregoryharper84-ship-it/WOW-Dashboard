@@ -26,6 +26,8 @@ from fastapi import Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_evidence
+from qualification_policy_v2 import classify_prop_probability
+from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
 
 
 PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
@@ -249,17 +251,40 @@ def _terminal(
     snapshot_id: Optional[str] = None,
     acquisition: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    payload = detail or {}
+    blocker_codes = [code]
+    for key in ("blocker_code", "failure_class"):
+        if payload.get(key):
+            blocker_codes.append(str(payload[key]))
+    if payload.get("blocker"):
+        blocker_codes.append(str(payload["blocker"]))
+    model_evaluated = bool(payload.get("model_evaluated") is True or payload.get("model_evidence"))
+    if code in EVENT_BLOCKERS or str(payload.get("blocker") or "") in EVENT_BLOCKERS:
+        proposed_label = "NO_PLAY"
+        blocker_codes.append(str(payload.get("blocker") or code))
+    elif code in TRUE_MODEL_REJECTION_LABELS:
+        proposed_label = code
+    else:
+        proposed_label = str(payload.get("terminal_label") or "MODEL_UNAVAILABLE")
+    decision = reduce_prop_terminal(
+        proposed_label=proposed_label,
+        blockers=blocker_codes,
+        model_evaluated=model_evaluated,
+    )
+    effective_status = "REJECTED" if (decision.pick_rejected or decision.verdict_class == "EVENT_INVALIDATED") else "HELD"
     return {
         "row_key": row_key,
-        "terminal_status": status,
+        "terminal_status": effective_status,
         "code": code,
+        "terminal_label": decision.terminal_label,
+        "verdict_class": decision.verdict_class,
+        "model_evaluated": decision.model_evaluated,
+        "pick_rejected": decision.pick_rejected,
+        "infrastructure_blocked": decision.infrastructure_blocked,
+        "blockers": list(decision.blockers),
         "source_snapshot_id": snapshot_id,
-        "detail": detail or {},
-        "acquisition": acquisition
-        or {
-            "mode": "NOT_COMPLETED",
-            "can_execute": False,
-        },
+        "detail": payload,
+        "acquisition": acquisition or {"mode": "NOT_COMPLETED", "can_execute": False},
         "probability_publishable": False,
         "can_execute": False,
     }
@@ -270,6 +295,69 @@ def _auto_hydration_hold(code: str) -> bool:
         "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
         "PROP_AUTO_HYDRATION_PROVIDER_UNAVAILABLE",
         "MLB_STARTER_STATUS_UNRESOLVED",
+    }
+
+
+def _completed_scored_outcome(
+    *,
+    row_key: str,
+    scored: dict[str, Any],
+    snapshot_id: str,
+    fingerprint: str,
+    acquisition: dict[str, Any],
+) -> dict[str, Any]:
+    prediction = scored.get("prediction") or {}
+    payload = scored.get("probability_qualification")
+    if isinstance(payload, dict) and payload.get("terminal_label"):
+        terminal_label = str(payload["terminal_label"])
+        confidence_tier = str(payload.get("confidence_tier") or "UNKNOWN")
+        rank_eligible = bool(payload.get("rank_eligible"))
+        model_supported = bool(payload.get("model_supported"))
+        money_allowed = bool(payload.get("downstream_money_evaluation_allowed"))
+        blockers = list(payload.get("blockers") or [])
+    else:
+        qualification = classify_prop_probability(
+            calibrated_probability=prediction.get("calibrated_probability"),
+            calibrated_lower_bound=prediction.get("calibrated_probability_lower_bound"),
+            calibration_status=prediction.get("calibration_status"),
+            blockers=prediction.get("data_gaps") or [],
+            probability_publishable=bool(scored.get("probability_publishable")),
+        )
+        terminal_label = qualification.terminal_label
+        confidence_tier = qualification.confidence_tier
+        rank_eligible = qualification.rank_eligible
+        model_supported = qualification.model_supported
+        money_allowed = qualification.downstream_money_evaluation_allowed
+        blockers = list(qualification.blockers)
+        lanes = scored.get("objective_lanes") or {}
+        if (lanes.get("MARKET") or {}).get("status") != "PASS":
+            blockers.append("MARKET_DATA_UNAVAILABLE")
+        if (lanes.get("MONEY") or {}).get("status") != "PASS":
+            blockers.append("PAYOUT_UNRESOLVED")
+    decision = reduce_prop_terminal(
+        proposed_label=terminal_label,
+        blockers=blockers,
+        model_evaluated=True,
+    )
+    return {
+        "row_key": row_key,
+        "terminal_status": "REJECTED" if decision.pick_rejected else "COMPLETED",
+        "code": decision.terminal_label,
+        "terminal_label": decision.terminal_label,
+        "confidence_tier": confidence_tier,
+        "rank_eligible": rank_eligible,
+        "model_supported": model_supported,
+        "model_evaluated": True,
+        "pick_rejected": decision.pick_rejected,
+        "verdict_class": decision.verdict_class,
+        "infrastructure_blocked": decision.infrastructure_blocked,
+        "downstream_money_evaluation_allowed": money_allowed,
+        "source_snapshot_id": snapshot_id,
+        "evidence_fingerprint": fingerprint,
+        "acquisition": acquisition,
+        "result": scored,
+        "probability_publishable": bool(scored.get("probability_publishable")),
+        "can_execute": False,
     }
 
 
@@ -303,7 +391,7 @@ def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
             "PROP_EVIDENCE_PERSISTENCE_UNAVAILABLE",
         }:
             acquisition_failures += 1
-        if outcome.get("terminal_status") == "COMPLETED":
+        if outcome.get("model_evaluated") is True or outcome.get("terminal_status") == "COMPLETED":
             model_completed += 1
     return {
         "auto_hydration_attempted": auto_attempted,
@@ -589,21 +677,13 @@ def install_pick_request_routes(
                 continue
 
             outcomes.append(
-                {
-                    "row_key": row_key,
-                    "terminal_status": "COMPLETED",
-                    "code": "MODEL_QUALIFIED"
-                    if scored.get("probability_publishable") is True
-                    else "MODEL_QUALIFIED_HOLD",
-                    "source_snapshot_id": snapshot_id,
-                    "evidence_fingerprint": fingerprint,
-                    "acquisition": acquisition,
-                    "result": scored,
-                    "probability_publishable": bool(
-                        scored.get("probability_publishable")
-                    ),
-                    "can_execute": False,
-                }
+                _completed_scored_outcome(
+                    row_key=row_key,
+                    scored=scored,
+                    snapshot_id=snapshot_id,
+                    fingerprint=fingerprint,
+                    acquisition=acquisition,
+                )
             )
 
         completed = sum(
@@ -615,6 +695,8 @@ def install_pick_request_routes(
         rejected = sum(
             1 for outcome in outcomes if outcome["terminal_status"] == "REJECTED"
         )
+        pick_rejected_count = sum(1 for outcome in outcomes if outcome.get("pick_rejected") is True)
+        infrastructure_blocked_count = sum(1 for outcome in outcomes if outcome.get("infrastructure_blocked") is True)
         rows_in = len(batch.rows)
         reconciliation_pass = rows_in == completed + held + rejected
         if not reconciliation_pass:
@@ -646,6 +728,8 @@ def install_pick_request_routes(
             "rows_completed": completed,
             "rows_held": held,
             "rows_rejected": rejected,
+            "pick_rejected_count": pick_rejected_count,
+            "infrastructure_blocked_count": infrastructure_blocked_count,
             "reconciliation_pass": reconciliation_pass,
             "telemetry": _telemetry(outcomes),
             "rows": outcomes,
