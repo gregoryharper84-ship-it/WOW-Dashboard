@@ -8,6 +8,10 @@ for per-game role evidence. A player is treated as a starter from the V3
 of exactly five non-empty-position players for every team-game represented in
 the played-player boxscore sample.
 
+LeagueGameLog rows without a player identity are explicitly non-materializable
+under the governed historical-player contract. They are counted and excluded
+before join completeness is measured; no identifiable player row is discarded.
+
 This script does not fit, register, publish, score, or execute anything.
 """
 from __future__ import annotations
@@ -18,7 +22,7 @@ import io
 import json
 import sys
 import urllib.request
-from collections import Counter, defaultdict
+from collections import Counter
 from typing import Iterable
 
 PLAYER_LOG_URL = (
@@ -45,8 +49,7 @@ def _download(url: str, expected_sha256: str) -> bytes:
 
 
 def _rows(payload: bytes) -> tuple[list[str], list[dict[str, str]]]:
-    text = payload.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(io.StringIO(payload.decode("utf-8-sig")))
     return list(reader.fieldnames or []), list(reader)
 
 
@@ -71,7 +74,6 @@ def _positive_minutes(value: object) -> bool:
     if not raw:
         return False
     if raw.upper().startswith("PT"):
-        # ISO 8601 duration from V3. PT0M00.00S is non-playing.
         return raw not in {"PT0M", "PT0M0S", "PT0M00S", "PT0M00.00S"}
     if ":" in raw:
         try:
@@ -93,6 +95,7 @@ def main() -> int:
     log_player = _pick(log_cols, ["player_id", "person_id", "personId"])
     log_team = _pick(log_cols, ["team_id", "teamId"])
     log_date = _pick(log_cols, ["game_date", "gameDate"])
+    log_player_name = _pick(log_cols, ["player_name", "playerName"])
 
     box_game = _pick(box_cols, ["game_id", "gameId"])
     box_player = _pick(box_cols, ["player_id", "person_id", "personId"])
@@ -107,21 +110,13 @@ def main() -> int:
         "three_pm": _pick(log_cols, ["fg3m", "three_pointers_made", "threePointersMade"]),
         "minutes": _pick(log_cols, ["min", "minutes"]),
     }
-
     required = {
-        "log_game": log_game,
-        "log_player": log_player,
-        "log_team": log_team,
-        "log_date": log_date,
-        "box_game": box_game,
-        "box_player": box_player,
-        "box_team": box_team,
-        "box_position": box_position,
-        "box_minutes": box_minutes,
-        **required_stats,
+        "log_game": log_game, "log_player": log_player, "log_team": log_team,
+        "log_date": log_date, "log_player_name": log_player_name,
+        "box_game": box_game, "box_player": box_player, "box_team": box_team,
+        "box_position": box_position, "box_minutes": box_minutes, **required_stats,
     }
     schema_blockers = [f"MISSING_COLUMN:{k}" for k, v in required.items() if not v]
-
     report: dict[str, object] = {
         "source": "WNBA_STATS_PINNED_2026_LEAGUEGAMELOG_PLUS_BOXSCORETRADITIONALV3",
         "player_log_sha256": PLAYER_LOG_SHA256,
@@ -145,7 +140,6 @@ def main() -> int:
     duplicate_box_keys = 0
     team_game_counts: Counter[tuple[str, str]] = Counter()
     team_game_starter_counts: Counter[tuple[str, str]] = Counter()
-
     for row in boxes:
         key = (_norm_id(row[box_game]), _norm_id(row[box_player]))
         if not all(key):
@@ -168,18 +162,28 @@ def main() -> int:
         if team_game_starter_counts.get((g, t), 0) != 5
     ]
 
-    played_logs: list[dict[str, str]] = []
+    identityless_played_n = 0
+    identityless_examples: list[dict[str, str]] = []
+    eligible_played_logs: list[dict[str, str]] = []
     for row in logs:
-        if _positive_minutes(row[required_stats["minutes"]]):
-            played_logs.append(row)
+        if not _positive_minutes(row[required_stats["minutes"]]):
+            continue
+        player_id = _norm_id(row[log_player])
+        if not player_id:
+            identityless_played_n += 1
+            if len(identityless_examples) < 5:
+                identityless_examples.append({
+                    "game_id": _norm_id(row[log_game]),
+                    "team_id": _norm_id(row[log_team]),
+                    "player_name": str(row[log_player_name] or "").strip(),
+                })
+            continue
+        eligible_played_logs.append(row)
 
-    joined_n = 0
-    starter_true_n = 0
+    joined_n = starter_true_n = date_missing_n = stat_invalid_n = 0
     joined_player_counts: Counter[str] = Counter()
     unmatched_examples: list[tuple[str, str]] = []
-    date_missing_n = 0
-    stat_invalid_n = 0
-    for row in played_logs:
+    for row in eligible_played_logs:
         key = (_norm_id(row[log_game]), _norm_id(row[log_player]))
         box = box_index.get(key)
         if box is None:
@@ -198,14 +202,15 @@ def main() -> int:
             stat_invalid_n += 1
             continue
         joined_n += 1
-        player_id = key[1]
-        joined_player_counts[player_id] += 1
+        joined_player_counts[key[1]] += 1
         starter_true_n += int(bool(str(box[box_position] or "").strip()))
 
-    join_rate = joined_n / len(played_logs) if played_logs else 0.0
+    join_rate = joined_n / len(eligible_played_logs) if eligible_played_logs else 0.0
     eligible_players = sum(1 for n in joined_player_counts.values() if n >= 20)
     report.update({
-        "played_player_log_n": len(played_logs),
+        "identityless_played_nonplayer_row_n": identityless_played_n,
+        "identityless_examples": identityless_examples,
+        "eligible_identified_played_player_log_n": len(eligible_played_logs),
         "box_index_n": len(box_index),
         "duplicate_box_key_n": duplicate_box_keys,
         "team_game_n": len(team_game_counts),
