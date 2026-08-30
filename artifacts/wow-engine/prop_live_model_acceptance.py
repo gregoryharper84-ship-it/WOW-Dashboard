@@ -6,10 +6,18 @@ unavailability when the certified specialist can still run. In research-only
 mode the probe requires raw specialist output, null calibrated claims, no
 publishable prediction claim, MODEL_QUALIFIED_HOLD-or-lower ceiling, and
 can_execute=false.
+
+When WOW_PROP_MODEL_SELF_ACCEPTANCE_PICK_JSON is configured, the probe first
+uses the real authenticated /score-pick-request boundary. That path performs
+certified route preflight, official automatic evidence hydration, immutable
+snapshot persistence, and the exact /score-prop call. The bootstrap is intended
+for one-shot production acceptance using a real still-pregame candidate; it does
+not create or imply wager execution.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
@@ -131,16 +139,140 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _bootstrap_pick_payload(raw: str) -> dict[str, Any]:
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("bootstrap JSON must be an object")
+    required = ("event_id", "event_start_time", "sport", "player", "stat_type", "line")
+    missing = [key for key in required if value.get(key) in (None, "")]
+    if missing:
+        raise ValueError("bootstrap JSON missing required fields: " + ",".join(missing))
+    event_start = _aware(value["event_start_time"])
+    if event_start <= datetime.now(timezone.utc):
+        raise ValueError("bootstrap event already started")
+    row = {
+        "row_key": "prop-live-e2e-acceptance",
+        "event_id": str(value["event_id"]),
+        "event_start_time": event_start.isoformat(),
+        "sport": str(value["sport"]).upper(),
+        "player": str(value["player"]),
+        "stat_type": str(value["stat_type"]).upper(),
+        "line": float(value["line"]),
+        "direction": str(value.get("direction") or "MORE").upper(),
+        "source_type": "AUTONOMOUS_DISCOVERY",
+        "platform": "WOW_PRODUCTION_SELF_ACCEPTANCE",
+        "league": str(value.get("league") or value["sport"]).upper(),
+        "opponent": value.get("opponent"),
+        "money_lane_status": "PAYOUT_UNRESOLVED",
+    }
+    return {
+        "request_id": "wow-prop-live-e2e-acceptance",
+        "rows": [row],
+    }
+
+
+def _is_bootstrap_pick_pass(response: httpx.Response) -> tuple[bool, str, str | None, str]:
+    body = _result_body(response)
+    if body is None:
+        return False, "INVALID_BODY", None, "INVALID"
+    rows = body.get("rows") if isinstance(body.get("rows"), list) else []
+    row = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    acquisition = row.get("acquisition") if isinstance(row.get("acquisition"), dict) else {}
+    code = str(row.get("code") or body.get("code") or "MISSING_CODE")
+    snapshot_id = row.get("source_snapshot_id")
+    if response.status_code != 200:
+        return False, code, str(snapshot_id) if snapshot_id else None, "HTTP_FAIL"
+    common = (
+        body.get("rows_in") == 1
+        and body.get("rows_completed") == 1
+        and body.get("rows_held") == 0
+        and body.get("rows_rejected") == 0
+        and body.get("reconciliation_pass") is True
+        and body.get("can_execute") is False
+        and row.get("terminal_status") == "COMPLETED"
+        and acquisition.get("mode") == "AUTO_HYDRATION"
+        and acquisition.get("status") == "PASS"
+        and acquisition.get("snapshot_status") == "FROZEN"
+        and bool(snapshot_id)
+        and row.get("can_execute") is False
+    )
+    if not common:
+        return False, code, str(snapshot_id) if snapshot_id else None, "CONTRACT_FAIL"
+    if row.get("code") == "MODEL_QUALIFIED_HOLD" and _is_research_only_model_path_pass(result):
+        return True, code, str(snapshot_id), "RESEARCH_ONLY_PUBLICATION_LOCK"
+    governed_ok, prediction_id = _is_governed_model_path_pass(result)
+    if row.get("code") == "MODEL_QUALIFIED" and governed_ok:
+        return True, code, str(snapshot_id), "GOVERNED_PUBLISHABLE"
+    return False, code, str(snapshot_id) if snapshot_id else prediction_id, "MODEL_RESULT_FAIL"
+
+
+async def _bootstrap_fresh_snapshot(key: str, port: str, raw: str, log: logging.Logger) -> str | None:
+    try:
+        payload = _bootstrap_pick_payload(raw)
+    except Exception as exc:
+        log.error(
+            "WOW_PROP_MODEL_SELF_ACCEPTANCE result=FAIL mode=AUTO_HYDRATED_E2E reason=BOOTSTRAP_CONFIG_INVALID error_type=%s can_execute=false",
+            type(exc).__name__,
+        )
+        return None
+
+    url = f"http://127.0.0.1:{port}/score-pick-request"
+    last_status: int | None = None
+    last_code = "NO_RESPONSE"
+    last_mode = "NO_RESPONSE"
+    last_snapshot: str | None = None
+    for attempt in range(1, 4):
+        await asyncio.sleep(2.0 if attempt == 1 else 1.0)
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                response = await client.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "X-WOW-Model-Identity": "WOW_BETTING_ENGINE",
+                    },
+                    json=payload,
+                )
+            last_status = response.status_code
+            passed, last_code, last_snapshot, last_mode = _is_bootstrap_pick_pass(response)
+            if passed:
+                log.warning(
+                    "WOW_PROP_MODEL_SELF_ACCEPTANCE result=PASS status=200 mode=AUTO_HYDRATED_E2E_%s snapshot_id=%s acquisition=PASS snapshot=FROZEN specialist_invoked=true governed_publishable=%s terminal=%s can_execute=false",
+                    last_mode,
+                    last_snapshot,
+                    str(last_mode == "GOVERNED_PUBLISHABLE").lower(),
+                    "MODEL_QUALIFIED" if last_mode == "GOVERNED_PUBLISHABLE" else "MODEL_QUALIFIED_HOLD",
+                )
+                return last_snapshot
+        except Exception as exc:
+            last_code = type(exc).__name__
+            last_mode = "EXCEPTION"
+    log.error(
+        "WOW_PROP_MODEL_SELF_ACCEPTANCE result=FAIL status=%s code=%s mode=AUTO_HYDRATED_E2E_%s snapshot_id=%s probability_publishable=false can_execute=false",
+        last_status,
+        last_code,
+        last_mode,
+        last_snapshot,
+    )
+    return None
+
+
 async def run_prop_model_live_self_acceptance(market_api: Any, logger: logging.Logger | None = None) -> None:
-    """Exercise one real pregame snapshot through the deployed /score-prop route."""
+    """Exercise one real pregame snapshot through the deployed prop path."""
     log = logger or logging.getLogger("wow.prop.model_acceptance")
     snapshot_id = str(os.getenv("WOW_PROP_MODEL_SELF_ACCEPTANCE_SNAPSHOT_ID") or "").strip()
-    if not snapshot_id:
+    bootstrap_raw = str(os.getenv("WOW_PROP_MODEL_SELF_ACCEPTANCE_PICK_JSON") or "").strip()
+    if not snapshot_id and not bootstrap_raw:
         return
     key = os.getenv("WOW_ACTION_API_KEY")
     port = os.getenv("PORT")
     if not key or not port:
         log.error("WOW_PROP_MODEL_SELF_ACCEPTANCE result=FAIL reason=RUNTIME_AUTH_OR_PORT_MISSING can_execute=false")
+        return
+
+    if bootstrap_raw and not snapshot_id:
+        await _bootstrap_fresh_snapshot(key, port, bootstrap_raw, log)
         return
 
     try:
