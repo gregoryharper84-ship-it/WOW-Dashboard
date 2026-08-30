@@ -76,11 +76,10 @@ def test_ncaaf_cron_contract_is_five_minute_and_vault_backed():
     assert "from public, anon, authenticated, service_role" in lowered
 
 
-def test_render_layers_live_wrapper_over_ncaaf_acceptance_without_auto_deploy():
+def test_render_keeps_canonical_ncaaf_entrypoint_and_installs_live_routes_without_auto_deploy():
     render = Path("../../render.yaml").read_text()
-    wrapper = Path("api_live_upset.py").read_text()
-    assert "uvicorn api_live_upset:app" in render
-    assert "import api_ncaaf_acceptance as base" in wrapper
-    assert "app = base.app" in wrapper
+    source = Path("api_ncaaf_acceptance.py").read_text()
+    assert "uvicorn api_ncaaf_acceptance:app" in render
+    assert "install_live_probability_routes(app" in source
     assert 'autoDeployTrigger: "off"' in render
     assert "WOW_NCAAF_MARKET_FEED_URL" in render
