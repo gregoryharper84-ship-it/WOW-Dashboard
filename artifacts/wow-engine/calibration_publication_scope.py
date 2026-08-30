@@ -1,10 +1,13 @@
 """Calibration/publication capability lane separation for WOW v16 Clean Core.
 
 Implements WOW-PATCH-2026-08-30-CALIBRATION-PUBLICATION-LANE-SEPARATION.
-This module classifies a governed-probability capability failure without
+This module classifies governed publication/calibration state without
 conflating it with controlling-specialist availability.
 
-Only explicitly publication/calibration-scoped failures are eligible for the
+A sport/market runtime lane may be AVAILABLE while the global governed
+publication latch is UNAVAILABLE. Therefore the classifier consumes both the
+lane status and, when supplied, the global publication/calibration evidence.
+Only explicitly calibration/publication-scoped failures are eligible for the
 research-only continuation path. Unknown, global, confidence/model, provider,
 artifact, or specialist failures remain fail-closed.
 """
@@ -17,10 +20,6 @@ CALIBRATION_SCOPE = "CALIBRATION"
 PUBLICATION_SCOPE = "PUBLICATION"
 _ALLOWED_RESEARCH_SCOPES = {CALIBRATION_SCOPE, PUBLICATION_SCOPE}
 
-# The controlling patch explicitly ratifies FORWARD_SHADOW_NOT_COMPLETED as a
-# calibration/publication blocker. The companion codes below are downstream
-# publication-state descriptions that may legitimately accompany the same
-# blocker; none of them may independently prove model availability.
 _PUBLICATION_ONLY_CODES = {
     "FORWARD_SHADOW_NOT_COMPLETED",
     "CALIBRATION_HEALTH_BLOCKED",
@@ -32,9 +31,6 @@ _PUBLICATION_ONLY_CODES = {
     "PRODUCTION_FEATURE_READY_FALSE",
 }
 
-# Any one of these tokens makes a continuation unsafe. This is intentionally
-# broad and fail-closed: calibration/publication separation must never launder
-# an actual model/provider/evidence failure into a research probability.
 _MODEL_INVALIDATING_TOKENS = (
     "MODEL_UNAVAILABLE",
     "SPECIALIST_ROUTING_UNAVAILABLE",
@@ -45,7 +41,6 @@ _MODEL_INVALIDATING_TOKENS = (
     "MODEL_FAMILY_ADAPTER_UNAVAILABLE",
     "PROVIDER_UNAVAILABLE",
     "DATA_PROVIDER_OUTAGE",
-    "GLOBAL",
     "CONFIDENCE",
 )
 
@@ -53,6 +48,7 @@ _MODEL_INVALIDATING_TOKENS = (
 @dataclass(frozen=True)
 class CapabilitySeparation:
     source_capability_status: str
+    global_governed_probability_capability: str
     routing_capability_status: str
     specialist_model_capability: str
     calibration_capability: str
@@ -102,19 +98,34 @@ def _normalize_explicit_scopes(evidence: Any) -> set[str]:
 
 
 def classify_probability_capability(lane: dict[str, Any] | None) -> CapabilitySeparation:
-    """Classify one raw runtime capability row.
+    """Classify lane capability plus optional global publication state.
 
-    A raw AVAILABLE row remains fully available. A raw unavailable row may
-    continue to specialist research only when either the backend explicitly
-    scopes the failure to CALIBRATION/PUBLICATION, or the evidence contains the
-    ratified FORWARD_SHADOW_NOT_COMPLETED blocker with no model-invalidating
-    evidence. Everything else remains a hard routing block.
+    Expected optional global fields on ``lane``:
+      governed_probability_capability
+      governed_publishable
+      calibration_health_status
+
+    Their blocker evidence belongs under ``evidence`` (for example
+    ``global_calibration_blockers``). A raw lane AVAILABLE result therefore
+    does not automatically mean governed publication is available.
     """
     lane = dict(lane or {})
-    source_status = str(lane.get("source_capability_status") or lane.get("capability_status") or "UNAVAILABLE").upper()
+    source_status = str(
+        lane.get("source_capability_status")
+        or lane.get("capability_status")
+        or "UNAVAILABLE"
+    ).upper()
+    global_capability = str(
+        lane.get("global_governed_probability_capability")
+        or lane.get("governed_probability_capability")
+        or ("AVAILABLE" if source_status == "AVAILABLE" else "UNAVAILABLE")
+    ).upper()
+    governed_publishable_flag = lane.get("governed_publishable")
+    if governed_publishable_flag is None:
+        governed_publishable_flag = lane.get("probability_publishable")
+
     evidence = lane.get("evidence") or {}
     codes = {code for code in _code_strings(evidence)}
-    # Preserve exact canonical blocker tokens even when embedded in a sentence.
     canonical_codes = {
         canonical
         for canonical in _PUBLICATION_ONLY_CODES
@@ -123,28 +134,23 @@ def classify_probability_capability(lane: dict[str, Any] | None) -> CapabilitySe
     codes.update(canonical_codes)
     explicit_scopes = _normalize_explicit_scopes(evidence)
 
-    if source_status == "AVAILABLE":
-        return CapabilitySeparation(
-            source_capability_status=source_status,
-            routing_capability_status="AVAILABLE",
-            specialist_model_capability="ROUTE_DEPENDENT",
-            calibration_capability="AVAILABLE",
-            governed_publication_capability="AVAILABLE",
-            governed_publishable=True,
-            failed_contract_scope=(),
-            blocker_codes=tuple(sorted(codes)),
-            publication_only_lock=False,
-        )
-
     model_invalidating = any(
         token in code
         for code in codes
         for token in _MODEL_INVALIDATING_TOKENS
     )
+    explicit_global = "GLOBAL" in explicit_scopes
     explicit_publication_only = bool(explicit_scopes) and explicit_scopes.issubset(_ALLOWED_RESEARCH_SCOPES)
     forward_shadow_lock = "FORWARD_SHADOW_NOT_COMPLETED" in canonical_codes
+    publication_latch_blocked = (
+        global_capability != "AVAILABLE"
+        or governed_publishable_flag is False
+        or str(lane.get("calibration_health_status") or "").upper() in {"BLOCKED", "UNKNOWN", "UNAVAILABLE"}
+    )
     publication_only = (
-        not model_invalidating
+        publication_latch_blocked
+        and not model_invalidating
+        and not explicit_global
         and (explicit_publication_only or forward_shadow_lock)
     )
 
@@ -152,6 +158,7 @@ def classify_probability_capability(lane: dict[str, Any] | None) -> CapabilitySe
         scopes = explicit_scopes or _ALLOWED_RESEARCH_SCOPES
         return CapabilitySeparation(
             source_capability_status=source_status,
+            global_governed_probability_capability=global_capability,
             routing_capability_status="AVAILABLE_FOR_RESEARCH",
             specialist_model_capability="ROUTE_DEPENDENT",
             calibration_capability="BLOCKED_OR_UNKNOWN",
@@ -162,9 +169,28 @@ def classify_probability_capability(lane: dict[str, Any] | None) -> CapabilitySe
             publication_only_lock=True,
         )
 
+    if source_status == "AVAILABLE" and not publication_latch_blocked:
+        return CapabilitySeparation(
+            source_capability_status=source_status,
+            global_governed_probability_capability=global_capability,
+            routing_capability_status="AVAILABLE",
+            specialist_model_capability="ROUTE_DEPENDENT",
+            calibration_capability="AVAILABLE",
+            governed_publication_capability="AVAILABLE",
+            governed_publishable=True,
+            failed_contract_scope=(),
+            blocker_codes=tuple(sorted(codes)),
+            publication_only_lock=False,
+        )
+
+    # A lane-level AVAILABLE state with an unknown global publication failure
+    # still preserves route identity, but cannot use the special research-only
+    # exception unless the failure scope is proven calibration/publication.
+    routing_status = "AVAILABLE_ROUTE_PUBLICATION_SCOPE_UNRESOLVED" if source_status == "AVAILABLE" else "UNAVAILABLE"
     return CapabilitySeparation(
         source_capability_status=source_status,
-        routing_capability_status="UNAVAILABLE",
+        global_governed_probability_capability=global_capability,
+        routing_capability_status=routing_status,
         specialist_model_capability="ROUTE_DEPENDENT",
         calibration_capability="UNKNOWN_OR_UNAVAILABLE",
         governed_publication_capability="UNAVAILABLE",
