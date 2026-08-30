@@ -38,6 +38,11 @@ class FakeClient:
         return FakeQuery(self.rows)
 
 
+class BrokenClient:
+    def table(self, _name):
+        raise RuntimeError("registry unavailable")
+
+
 def _row(**overrides):
     row = {
         "rule_id": "11111111-1111-1111-1111-111111111111",
@@ -82,10 +87,10 @@ def test_provider_alias_normalization_is_server_owned():
     assert normalize_provider("prizepicks") == "PRIZEPICKS"
 
 
-def test_certified_wildcard_rule_hydrates_exact_candidate():
+def test_certified_db_wildcard_rule_hydrates_exact_candidate():
     result = _resolve([_row()])
     assert result.status == "PASS"
-    assert result.authority == "SERVER_REGISTRY_REVIEWED_CERTIFIED"
+    assert result.authority == "SERVER_DB_REGISTRY_REVIEWED_CERTIFIED"
     assert result.rule is not None
     assert result.rule.boundary_operator == "GT"
     assert result.rule.equality_treatment == "PUSH"
@@ -95,7 +100,27 @@ def test_certified_wildcard_rule_hydrates_exact_candidate():
     assert result.can_execute is False
 
 
-def test_exact_stat_rule_beats_wildcard():
+def test_code_certified_rule_hydrates_when_db_has_no_rule():
+    result = _resolve([])
+    assert result.status == "PASS"
+    assert result.authority == "SERVER_CODE_REGISTRY_REVIEWED_CERTIFIED"
+    assert result.provider == "PRIZEPICKS"
+    assert result.rule_version == "PRIZEPICKS_PLAYER_PICKS_2026_08_11"
+    assert result.rule is not None
+    assert result.rule.money_semantics == "LINEUP_CONTEXT_REQUIRED"
+    assert result.can_execute is False
+
+
+def test_code_certified_rule_hydrates_when_db_registry_is_unreachable():
+    result = _resolve([], client=BrokenClient())
+    assert result.status == "PASS"
+    assert result.authority == "SERVER_CODE_REGISTRY_REVIEWED_CERTIFIED"
+    assert result.rule is not None
+    assert result.source_ref.startswith("https://www.prizepicks.com/")
+    assert result.source_hash
+
+
+def test_exact_stat_db_rule_beats_db_wildcard():
     result = _resolve([
         _row(rule_id="wild"),
         _row(
@@ -117,13 +142,22 @@ def test_missing_provider_fails_closed():
     assert result.rule is None
 
 
-def test_effective_date_miss_fails_closed():
-    result = _resolve([_row(effective_from="2026-09-01T00:00:00+00:00")])
+def test_effective_date_before_any_reviewed_rule_fails_closed():
+    result = _resolve(
+        [_row(effective_from="2026-09-01T00:00:00+00:00")],
+        event_start_time="2026-08-01T23:20:00+00:00",
+    )
     assert result.status == "HOLD"
     assert result.blocker == SETTLEMENT_RULE_UNRESOLVED
 
 
-def test_conflicting_active_certified_rules_fail_closed():
+def test_unknown_provider_without_certified_rule_fails_closed():
+    result = _resolve([], provider="UNKNOWN_BOOK")
+    assert result.status == "HOLD"
+    assert result.blocker == SETTLEMENT_RULE_UNRESOLVED
+
+
+def test_conflicting_active_certified_db_rules_fail_closed():
     result = _resolve([
         _row(rule_id="a"),
         _row(rule_id="b", equality_treatment="LOSS", rule_version="CONFLICT_V2"),
