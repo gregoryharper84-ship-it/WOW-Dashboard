@@ -19,20 +19,32 @@ def test_missing_evidence_is_acquisition_blocked_not_pick_rejected():
         blockers=["PROP_EVIDENCE_SNAPSHOT_NOT_FOUND"],
         model_evaluated=False,
     )
-    assert result.terminal_label == "EVIDENCE_INCOMPLETE"
+    assert result.terminal_label == "MODEL_UNAVAILABLE"
     assert result.verdict_class == "ACQUISITION_BLOCKED"
     assert result.pick_rejected is False
+    assert result.infrastructure_blocked is True
 
 
-def test_missing_market_data_preserves_model_evaluation_without_rejection():
+def test_missing_market_data_preserves_completed_model_terminal_without_rejection():
     result = reduce_prop_terminal(
         proposed_label="MODEL_QUALIFIED_HOLD",
         blockers=["PAYOUT_UNRESOLVED"],
         model_evaluated=True,
     )
-    assert result.terminal_label == "MARKET_DATA_UNAVAILABLE"
+    assert result.terminal_label == "MODEL_QUALIFIED_HOLD"
     assert result.verdict_class == "MARKET_BLOCKED"
     assert result.model_evaluated is True
+    assert result.pick_rejected is False
+
+
+def test_final_refresh_event_invalidation_uses_native_no_play():
+    result = reduce_prop_terminal(
+        proposed_label="MODEL_QUALIFIED_HOLD",
+        blockers=["EVENT_ALREADY_STARTED"],
+        model_evaluated=True,
+    )
+    assert result.terminal_label == "NO_PLAY"
+    assert result.verdict_class == "EVENT_INVALIDATED"
     assert result.pick_rejected is False
 
 
