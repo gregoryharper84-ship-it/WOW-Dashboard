@@ -51,9 +51,13 @@ jobs:
             exit 1
           fi
           echo 'ZERO_TRACKED_LEGACY_REFERENCES=PASS'
-      - name: Validate frontend workspaces
+      - name: Validate affected frontend workspaces
         run: |
-          pnpm -r --if-present run typecheck
+          pnpm --filter @workspace/final-lock run typecheck
+          pnpm --filter @workspace/final-lock run build
+          pnpm --filter @workspace/flask-scoring-api run typecheck
+          pnpm --filter @workspace/flask-scoring-api run build
+          pnpm --filter @workspace/mockup-sandbox run typecheck
           pnpm --filter @workspace/mockup-sandbox run build
       - name: Commit cleanup
         run: |
