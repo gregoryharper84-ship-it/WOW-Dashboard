@@ -1,5 +1,5 @@
 from market import MarketQuote, resolve_market_prior
-from prop_market_audit import MARKET_IDENTITY_MISMATCH, audit_candidate_market
+from prop_market_audit import MARKET_IDENTITY_MISMATCH, MARKET_SIDE_INVALID, audit_candidate_market
 from prop_settlement import LINE_MISMATCH, NO_VIG_UNAVAILABLE, SettlementRule
 
 
@@ -17,7 +17,7 @@ def _rule():
 def _quote(side: str, *, line=5.5, event_id="MLB:CIN-CHC", participant="Chase Burns", stat="PITCHER_STRIKEOUTS", period="FULL_GAME"):
     return MarketQuote(
         side=side,
-        american_odds=-110 if side == "MORE" else -105,
+        american_odds=-110 if side in {"MORE", "OVER"} else -105,
         line=line,
         settlement_basis="FULL_GAME_STAT",
         retrieved_at="2026-08-30T22:00:00+00:00",
@@ -56,6 +56,19 @@ def test_exact_two_way_pair_passes_candidate_audit_and_novig_normalizes():
     assert prior.market_prior_probability + other.market_prior_probability == 1.0
 
 
+def test_over_under_pair_is_canonicalized_for_more_less_candidate_mapping():
+    audit = _audit(_quote("OVER"), _quote("UNDER"))
+    assert audit.status == "PASS"
+    assert audit.side_a.side == "MORE"
+    assert audit.side_b.side == "LESS"
+    prior = resolve_market_prior(
+        "MORE", audit.side_a, audit.side_b,
+        as_of="2026-08-30T22:02:00+00:00",
+    )
+    assert prior.market_prior_available is True
+    assert prior.market_prior_quality == "EXACT_TWO_WAY_NO_VIG"
+
+
 def test_line_mismatch_quarantines_both_quotes():
     audit = _audit(_quote("MORE", line=6.5), _quote("LESS", line=6.5))
     assert audit.status == "HOLD"
@@ -75,3 +88,10 @@ def test_one_sided_market_cannot_claim_no_vig():
     assert audit.status == "HOLD"
     assert audit.blocker == NO_VIG_UNAVAILABLE
     assert audit.can_use_two_way_no_vig is False
+
+
+def test_unknown_market_side_is_quarantined():
+    audit = _audit(_quote("UP"), _quote("DOWN"))
+    assert audit.status == "HOLD"
+    assert audit.blocker == MARKET_SIDE_INVALID
+    assert audit.side_a is None and audit.side_b is None
