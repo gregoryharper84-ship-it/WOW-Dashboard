@@ -6,6 +6,7 @@ on:
       - chatgpt/p1-wnba-prop-offline-fit
     paths:
       - 'artifacts/wow-engine/scripts/probe_wnba_2026_training_join.py'
+      - 'artifacts/wow-engine/scripts/diagnose_wnba_schedule_identity.py'
       - '.github/workflows/wnba-prop-training-readiness.yml'
   workflow_dispatch:
 
@@ -21,5 +22,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Audit exact WNBA Stats to ESPN schedule identities
+        run: python artifacts/wow-engine/scripts/diagnose_wnba_schedule_identity.py
       - name: Verify WNBA Stats-derived 2026 training join
         run: python artifacts/wow-engine/scripts/probe_wnba_2026_training_join.py
