@@ -30,10 +30,11 @@ def test_acceptance_validator_requires_real_model_path_and_immutable_prediction(
         },
         "can_execute": False,
     }
-    passed, code, prediction_id = _is_model_path_pass(_response(body))
+    passed, code, prediction_id, mode = _is_model_path_pass(_response(body))
     assert passed is True
     assert code == "PROP_MODEL_PATH_PASS"
     assert prediction_id == "9c27f85b-2d00-42e1-a801-37b169c2f59a"
+    assert mode == "GOVERNED_PUBLISHABLE"
 
 
 def test_acceptance_validator_rejects_wrong_provider_or_execution_leak():
@@ -56,8 +57,9 @@ def test_acceptance_validator_rejects_wrong_provider_or_execution_leak():
         },
         "can_execute": True,
     }
-    passed, _, _ = _is_model_path_pass(_response(body))
+    passed, _, _, mode = _is_model_path_pass(_response(body))
     assert passed is False
+    assert mode == "UNRECOGNIZED_200"
 
 
 def test_snapshot_payload_is_probability_only_and_server_route_owned():
