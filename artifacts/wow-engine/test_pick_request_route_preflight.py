@@ -1,16 +1,20 @@
 from datetime import datetime, timedelta, timezone
-import os
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 import api_prod_market
 
 
 TEST_KEY = "test-p0-pick-request-key"
-os.environ["WOW_ACTION_API_KEY"] = TEST_KEY
-AUTH = {"Authorization": f"Bearer {TEST_KEY}"}
 client = TestClient(api_prod_market.app)
+
+
+@pytest.fixture
+def auth(monkeypatch):
+    monkeypatch.setenv("WOW_ACTION_API_KEY", TEST_KEY)
+    return {"Authorization": f"Bearer {TEST_KEY}"}
 
 
 def _request_payload():
@@ -55,7 +59,7 @@ def _install_identity_and_capability(monkeypatch):
     )
 
 
-def test_missing_exact_route_terminates_before_evidence_hydration(monkeypatch):
+def test_missing_exact_route_terminates_before_evidence_hydration(monkeypatch, auth):
     called = {"evidence": False}
     _install_identity_and_capability(monkeypatch)
 
@@ -75,7 +79,7 @@ def test_missing_exact_route_terminates_before_evidence_hydration(monkeypatch):
         },
     )
 
-    response = client.post("/score-prop", json=_request_payload(), headers=AUTH)
+    response = client.post("/score-prop", json=_request_payload(), headers=auth)
 
     assert response.status_code == 409
     body = response.json()["detail"]
@@ -90,7 +94,7 @@ def test_missing_exact_route_terminates_before_evidence_hydration(monkeypatch):
     assert called["evidence"] is False
 
 
-def test_missing_specialist_terminates_before_evidence_hydration(monkeypatch):
+def test_missing_specialist_terminates_before_evidence_hydration(monkeypatch, auth):
     called = {"evidence": False}
     _install_identity_and_capability(monkeypatch)
     monkeypatch.setattr(
@@ -105,7 +109,7 @@ def test_missing_specialist_terminates_before_evidence_hydration(monkeypatch):
 
     monkeypatch.setattr(api_prod_market.prod, "_prop_evidence", should_not_hydrate)
 
-    response = client.post("/score-prop", json=_request_payload(), headers=AUTH)
+    response = client.post("/score-prop", json=_request_payload(), headers=auth)
 
     assert response.status_code == 503
     body = response.json()["detail"]
@@ -117,7 +121,7 @@ def test_missing_specialist_terminates_before_evidence_hydration(monkeypatch):
     assert called["evidence"] is False
 
 
-def test_unavailable_aggregate_capability_terminates_before_hydration(monkeypatch):
+def test_unavailable_aggregate_capability_terminates_before_hydration(monkeypatch, auth):
     called = {"evidence": False, "route": False}
     _install_identity_and_capability(monkeypatch)
     monkeypatch.setattr(
@@ -137,7 +141,7 @@ def test_unavailable_aggregate_capability_terminates_before_hydration(monkeypatc
     monkeypatch.setattr(api_prod_market.prod, "_prop_evidence", should_not_hydrate)
     monkeypatch.setattr(api_prod_market, "_prop_route_artifact", should_not_lookup_route)
 
-    response = client.post("/score-prop", json=_request_payload(), headers=AUTH)
+    response = client.post("/score-prop", json=_request_payload(), headers=auth)
 
     assert response.status_code == 409
     body = response.json()["detail"]
