@@ -294,36 +294,28 @@ def _raise_model_path_error(exc: Exception) -> None:
     ) from exc
 
 
-@app.post(
-    "/score-prop",
-    dependencies=[Depends(prod._require_action_api_key)],
-    operation_id="scoreWowProp",
-)
-def score_prop(
+def _preflight_prop_route(
     req: ScorePropRequest,
-    x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
-):
-    """Governed player-prop scoring with explicit objective separation."""
-    model_identity = prod._reject_llp_prop_identity(x_wow_model_identity)
-    lane = prod._runtime_capability(prod.PROP_CAPABILITY_KEY)
+    *,
+    model_identity: str,
+    lane: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Fail closed on unsupported routes before expensive evidence hydration.
 
-    evidence = prod._prop_evidence(req)
-    if evidence.get("ok") is not True or evidence.get("code") != "PROP_EVIDENCE_READY":
-        detail = dict(evidence)
-        detail.setdefault("code", "RUN_INVALID_ACQUISITION_INCOMPLETE")
-        detail["failure_class"] = "RUN_INVALID_ACQUISITION_INCOMPLETE"
-        detail["specialist_invoked"] = False
-        detail["probability_publishable"] = False
-        detail["can_execute"] = False
-        raise HTTPException(status_code=422, detail=detail)
-
+    P0 Pick Request reliability requires route readiness to be resolved first.
+    A row with no controlling specialist, no aggregate capability, or no exact
+    certified fitted-model artifact must terminate without calling the evidence
+    hydrator. This keeps unsupported rows from consuming acquisition work and
+    prevents their failures from masquerading as evidence-contract failures.
+    """
     specialist = prod.base_api._controlling_specialist_provider(req.sport, req.stat_type)
     if specialist is None:
         raise HTTPException(
             status_code=503,
             detail={
                 "code": "SPECIALIST_ROUTING_UNAVAILABLE",
-                "evidence_hydration": "PASS",
+                "evidence_hydration": "NOT_ATTEMPTED_ROUTE_BLOCKED",
+                "specialist_invoked": False,
                 "probability_publishable": False,
                 "can_execute": False,
             },
@@ -336,7 +328,8 @@ def score_prop(
                 "controlling_specialist": "MODEL_UNAVAILABLE",
                 "sport": specialist.get("sport"),
                 "canonical_prop_type": specialist.get("canonical_prop_type"),
-                "evidence_hydration": "PASS",
+                "evidence_hydration": "NOT_ATTEMPTED_ROUTE_BLOCKED",
+                "specialist_invoked": False,
                 "probability_publishable": False,
                 "can_execute": False,
             },
@@ -350,15 +343,16 @@ def score_prop(
                 "governed_probability_capability": "UNAVAILABLE",
                 "governed_probability_status": "NOT_PRODUCED",
                 "capability_evidence": lane.get("evidence") or {},
-                "evidence_hydration": "PASS",
-                "acquisition_evidence": prod._visible_acquisition_evidence(evidence, req.line),
+                "evidence_hydration": "NOT_ATTEMPTED_ROUTE_BLOCKED",
                 "controlling_specialist": specialist.get("controlling_specialist"),
+                "specialist_invoked": False,
                 "backend_traversal": {
                     "requester_model": model_identity,
                     "render": "PASS",
                     "supabase_capability": "PASS",
-                    "supabase_evidence": "PASS",
+                    "supabase_evidence": "NOT_ATTEMPTED",
                     "controlling_specialist": "PASS",
+                    "exact_route_artifact": "NOT_ATTEMPTED",
                     "governed_model": "BLOCKED",
                     "prediction_ledger_write": "NOT_ATTEMPTED",
                 },
@@ -384,15 +378,14 @@ def score_prop(
                     "feature_schema_version": PROP_FEATURE_SCHEMA_VERSION,
                 },
                 "route_artifact_evidence": route_artifact,
-                "evidence_hydration": "PASS",
-                "acquisition_evidence": prod._visible_acquisition_evidence(evidence, req.line),
+                "evidence_hydration": "NOT_ATTEMPTED_ROUTE_BLOCKED",
                 "controlling_specialist": specialist.get("controlling_specialist"),
                 "specialist_invoked": False,
                 "backend_traversal": {
                     "requester_model": model_identity,
                     "render": "PASS",
                     "supabase_capability": "PASS",
-                    "supabase_evidence": "PASS",
+                    "supabase_evidence": "NOT_ATTEMPTED",
                     "controlling_specialist": "PASS",
                     "exact_route_artifact": "BLOCKED",
                     "governed_model": "NOT_INVOKED",
@@ -403,6 +396,39 @@ def score_prop(
                 "can_execute": False,
             },
         )
+    return specialist, route_artifact
+
+
+@app.post(
+    "/score-prop",
+    dependencies=[Depends(prod._require_action_api_key)],
+    operation_id="scoreWowProp",
+)
+def score_prop(
+    req: ScorePropRequest,
+    x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
+):
+    """Governed player-prop scoring with explicit objective separation."""
+    model_identity = prod._reject_llp_prop_identity(x_wow_model_identity)
+    lane = prod._runtime_capability(prod.PROP_CAPABILITY_KEY)
+    specialist, route_artifact = _preflight_prop_route(
+        req,
+        model_identity=model_identity,
+        lane=lane,
+    )
+
+    evidence = prod._prop_evidence(req)
+    if evidence.get("ok") is not True or evidence.get("code") != "PROP_EVIDENCE_READY":
+        detail = dict(evidence)
+        detail.setdefault("code", "RUN_INVALID_ACQUISITION_INCOMPLETE")
+        detail["failure_class"] = "RUN_INVALID_ACQUISITION_INCOMPLETE"
+        detail["route_preflight"] = "PASS"
+        detail["exact_route_artifact"] = route_artifact.get("code")
+        detail["controlling_specialist"] = specialist.get("controlling_specialist")
+        detail["specialist_invoked"] = False
+        detail["probability_publishable"] = False
+        detail["can_execute"] = False
+        raise HTTPException(status_code=422, detail=detail)
 
     scored_at = datetime.now(timezone.utc).isoformat()
     inference_request = _server_owned_inference_request(req, evidence, scored_at)
@@ -473,6 +499,12 @@ def score_prop(
             "exact_route_artifact": "PASS",
             "governed_model": "PASS",
             "prediction_ledger_write": "PASS",
+        },
+        "route_preflight": {
+            "status": "PASS",
+            "certified_artifact_code": route_artifact.get("code"),
+            "evidence_hydration_attempted": True,
+            "can_execute": False,
         },
         "model_path": "WOW_PROP_FITTED_MODEL_V1->RAW_DISCRETE_DISTRIBUTION->CALIBRATION->PERSISTENCE",
         "probability_publishable": True,
