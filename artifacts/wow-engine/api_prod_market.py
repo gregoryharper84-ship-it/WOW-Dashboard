@@ -138,6 +138,42 @@ def _prop_period(stat_type: str) -> str:
     return "FIRST_INNING" if "1IP" in upper or "FIRST_INNING" in upper else "FULL_GAME"
 
 
+def _prop_route_artifact(sport: str, stat_type: str) -> dict[str, Any]:
+    """Resolve the exact certified fitted-model route before model invocation.
+
+    The aggregate PROP_PROBABILITY capability can be AVAILABLE when at least one
+    governed prop family is operational. It must never imply that every
+    sport/stat route is model-ready. Exact route readiness is therefore proven
+    independently through the certified artifact registry.
+    """
+    try:
+        result = prod.get_client().rpc(
+            "wow_prop_certified_model_artifact",
+            {
+                "p_sport": str(sport).upper(),
+                "p_stat_type": str(stat_type).upper(),
+                "p_feature_schema_version": PROP_FEATURE_SCHEMA_VERSION,
+            },
+        ).execute()
+    except Exception:
+        return {
+            "ok": False,
+            "code": "PROP_MODEL_REGISTRY_UNAVAILABLE",
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+
+    payload = result.data
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "code": "PROP_MODEL_REGISTRY_INVALID_RESPONSE",
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+    return payload
+
+
 def _server_owned_inference_request(req: ScorePropRequest, evidence: dict[str, Any], scored_at: str) -> PropInferenceRequest:
     """Build the provider identity without caller-controlled model metadata.
 
@@ -332,6 +368,42 @@ def score_prop(
             },
         )
 
+    route_artifact = _prop_route_artifact(req.sport, req.stat_type)
+    if route_artifact.get("ok") is not True or route_artifact.get("code") != "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "MODEL_UNAVAILABLE",
+                "blocker_code": route_artifact.get("code") or "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+                "governed_probability_capability": "UNAVAILABLE_FOR_EXACT_ROUTE",
+                "governed_probability_status": "NOT_PRODUCED",
+                "aggregate_prop_capability_status": lane.get("capability_status"),
+                "requested_route": {
+                    "sport": str(req.sport).upper(),
+                    "stat_type": str(req.stat_type).upper(),
+                    "feature_schema_version": PROP_FEATURE_SCHEMA_VERSION,
+                },
+                "route_artifact_evidence": route_artifact,
+                "evidence_hydration": "PASS",
+                "acquisition_evidence": prod._visible_acquisition_evidence(evidence, req.line),
+                "controlling_specialist": specialist.get("controlling_specialist"),
+                "specialist_invoked": False,
+                "backend_traversal": {
+                    "requester_model": model_identity,
+                    "render": "PASS",
+                    "supabase_capability": "PASS",
+                    "supabase_evidence": "PASS",
+                    "controlling_specialist": "PASS",
+                    "exact_route_artifact": "BLOCKED",
+                    "governed_model": "NOT_INVOKED",
+                    "prediction_ledger_write": "NOT_ATTEMPTED",
+                },
+                "model_path": "WOW_PROP_FITTED_MODEL_V1->RAW_DISCRETE_DISTRIBUTION->CALIBRATION->PERSISTENCE",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
+
     scored_at = datetime.now(timezone.utc).isoformat()
     inference_request = _server_owned_inference_request(req, evidence, scored_at)
     try:
@@ -398,6 +470,7 @@ def score_prop(
             "supabase_capability": "PASS",
             "supabase_evidence": "PASS",
             "controlling_specialist": "PASS",
+            "exact_route_artifact": "PASS",
             "governed_model": "PASS",
             "prediction_ledger_write": "PASS",
         },
