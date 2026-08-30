@@ -19,10 +19,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.15.1 --activate
+          pnpm --version
       - name: Apply guarded cleanup
         run: |
           python .github/scripts/apply_runtime_platform_cleanup.py
@@ -31,8 +35,8 @@ jobs:
             [ -n "$path" ] && git rm -r -- "$path"
           done < <(git ls-files | grep -i "$needle" || true)
           git rm -f .github/workflows/remove-legacy-platform-audit.yml .github/workflows/legacy-platform-inventory.yml || true
-      - name: Regenerate npm lockfile
-        run: npm install --package-lock-only --ignore-scripts
+      - name: Regenerate workspace lock and install
+        run: pnpm install --no-frozen-lockfile
       - name: Assert zero tracked legacy references
         shell: bash
         run: |
@@ -47,9 +51,8 @@ jobs:
           echo 'ZERO_TRACKED_LEGACY_REFERENCES=PASS'
       - name: Validate frontend workspaces
         run: |
-          npm run check
-          npm --workspace @workspace/mockup-sandbox run typecheck
-          npm --workspace @workspace/mockup-sandbox run build
+          pnpm -r --if-present run typecheck
+          pnpm --filter @workspace/mockup-sandbox run build
       - name: Commit cleanup
         run: |
           git config user.name "WOW CI Integration"
