@@ -37,6 +37,18 @@ def test_missing_market_data_preserves_completed_model_terminal_without_rejectio
     assert result.pick_rejected is False
 
 
+def test_real_low_probability_rejection_survives_market_hold():
+    result = reduce_prop_terminal(
+        proposed_label="NO_LOW_PROBABILITY",
+        blockers=["PAYOUT_UNRESOLVED"],
+        model_evaluated=True,
+    )
+    assert result.terminal_label == "NO_LOW_PROBABILITY"
+    assert result.verdict_class == "MODEL_REJECTED"
+    assert result.pick_rejected is True
+    assert result.infrastructure_blocked is True
+
+
 def test_final_refresh_event_invalidation_uses_native_no_play():
     result = reduce_prop_terminal(
         proposed_label="MODEL_QUALIFIED_HOLD",
