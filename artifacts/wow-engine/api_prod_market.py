@@ -538,3 +538,16 @@ _install_pick_request_routes(
     score_prop_callable=score_prop,
     require_action_api_key=prod._require_action_api_key,
 )
+
+
+# Cross-sport write-before-display traceability. This records every terminal
+# recommendation separately from the governed probability/calibration ledgers.
+from recommendation_ledger_api import (
+    install_recommendation_ledger_routes as _install_recommendation_ledger_routes,
+)
+
+_install_recommendation_ledger_routes(
+    app=app,
+    auth_dependency=Depends(prod._require_action_api_key),
+    get_client_fn=prod.get_client,
+)
