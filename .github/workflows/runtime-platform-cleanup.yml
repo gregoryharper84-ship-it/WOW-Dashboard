@@ -32,7 +32,7 @@ jobs:
           python .github/scripts/apply_runtime_platform_cleanup.py
           needle="$(printf 'rep%s' 'lit')"
           while IFS= read -r path; do
-            [ -n "$path" ] && git rm -r -- "$path"
+            [ -n "$path" ] && git rm -r -f -- "$path"
           done < <(git ls-files | grep -i "$needle" || true)
           git rm -f .github/workflows/remove-legacy-platform-audit.yml .github/workflows/legacy-platform-inventory.yml || true
       - name: Regenerate workspace lock and install
