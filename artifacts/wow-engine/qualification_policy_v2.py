@@ -53,7 +53,12 @@ def classify_prop_probability(
     blockers: Iterable[str] = (),
     probability_publishable: bool,
 ) -> PropQualificationDecision:
-    """Classify only the governed probability lane.
+    """Classify only a completed governed candidate-level probability lane.
+
+    A higher-level deployment-wide publication blocker (for example an incomplete
+    forward-shadow cohort) is owned by the separate calibration/publication lane
+    wrapper and must not be rewritten here as proof that the controlling
+    specialist is unavailable.
 
     Thresholds are terminal-label/ranking gates, not wager approval gates:
 
