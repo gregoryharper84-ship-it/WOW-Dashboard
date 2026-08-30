@@ -2,8 +2,6 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import uuid
 
-import pytest
-
 import api_calibration_lane_acceptance as api
 from calibration_publication_scope import classify_probability_capability
 
@@ -66,20 +64,61 @@ def _evidence(req):
     }
 
 
-def _publication_locked_lane():
+def _lane_available():
     return {
         "capability_key": "PROP_PROBABILITY",
-        "capability_status": "UNAVAILABLE",
+        "capability_status": "AVAILABLE",
         "evidence": {
-            "blocker": "FORWARD_SHADOW_NOT_COMPLETED",
-            "calibration_health_status": "BLOCKED",
+            "reason": "CERTIFIED_PROP_ARTIFACT_AND_REAL_EVIDENCE_READY",
+            "provider_identity": "WOW_PROP_FITTED_MODEL_V1",
         },
         "can_execute": False,
     }
 
 
-def test_forward_shadow_block_is_calibration_publication_scoped():
-    result = classify_probability_capability(_publication_locked_lane())
+def _gate_blocked():
+    return {
+        "governed_probability_capability": "UNAVAILABLE",
+        "probability_publishable": False,
+        "calibration_health_status": "BLOCKED",
+        "ratification_status": "NOT_RATIFIED",
+        "production_feature_ready": False,
+    }
+
+
+def _health_blocked():
+    return {
+        "calibration_health_status": "BLOCKED",
+        "blockers": ["FORWARD_SHADOW_NOT_COMPLETED"],
+        "assessed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _combined_publication_locked_lane():
+    lane = _lane_available()
+    lane["governed_probability_capability"] = "UNAVAILABLE"
+    lane["governed_publishable"] = False
+    lane["calibration_health_status"] = "BLOCKED"
+    lane["evidence"] = {
+        **lane["evidence"],
+        "global_calibration_blockers": ["FORWARD_SHADOW_NOT_COMPLETED"],
+        "global_publication_blockers": [
+            "PUBLICATION_NOT_RATIFIED",
+            "PRODUCTION_FEATURE_READY_FALSE",
+            "GOVERNED_PROBABILITY_NOT_PUBLISHABLE",
+        ],
+    }
+    return lane
+
+
+def _install_global_lock(monkeypatch):
+    monkeypatch.setattr(api, "_global_publication_state", lambda: (_gate_blocked(), _health_blocked()))
+
+
+def test_forward_shadow_block_is_calibration_publication_scoped_even_when_prop_lane_available():
+    result = classify_probability_capability(_combined_publication_locked_lane())
+    assert result.source_capability_status == "AVAILABLE"
+    assert result.global_governed_probability_capability == "UNAVAILABLE"
     assert result.publication_only_lock is True
     assert result.routing_capability_status == "AVAILABLE_FOR_RESEARCH"
     assert result.calibration_capability == "BLOCKED_OR_UNKNOWN"
@@ -90,14 +129,10 @@ def test_forward_shadow_block_is_calibration_publication_scoped():
 
 
 def test_true_model_failure_overrides_forward_shadow_scope():
-    lane = _publication_locked_lane()
-    lane["evidence"] = {
-        "blockers": ["FORWARD_SHADOW_NOT_COMPLETED", "MODEL_UNAVAILABLE"],
-        "failed_contract_scope": ["CALIBRATION", "PUBLICATION"],
-    }
+    lane = _combined_publication_locked_lane()
+    lane["evidence"]["model_blockers"] = ["MODEL_UNAVAILABLE"]
     result = classify_probability_capability(lane)
     assert result.publication_only_lock is False
-    assert result.routing_capability_status == "UNAVAILABLE"
     assert result.governed_publishable is False
 
 
@@ -105,6 +140,8 @@ def test_unknown_unavailable_capability_fails_closed_global():
     result = classify_probability_capability(
         {
             "capability_status": "UNAVAILABLE",
+            "governed_probability_capability": "UNAVAILABLE",
+            "governed_publishable": False,
             "evidence": {"reason": "UNCLASSIFIED_RUNTIME_FAILURE"},
         }
     )
@@ -113,20 +150,24 @@ def test_unknown_unavailable_capability_fails_closed_global():
     assert result.failed_contract_scope == ("GLOBAL",)
 
 
-def test_scoped_runtime_alias_preserves_raw_source_state(monkeypatch):
-    monkeypatch.setattr(api, "_original_runtime_capability", lambda _key: _publication_locked_lane())
+def test_scoped_runtime_mapper_matches_live_split_state(monkeypatch):
+    monkeypatch.setattr(api, "_original_runtime_capability", lambda _key: _lane_available())
+    _install_global_lock(monkeypatch)
     lane = api._scoped_runtime_capability("PROP_PROBABILITY")
-    assert lane["source_capability_status"] == "UNAVAILABLE"
+    assert lane["source_capability_status"] == "AVAILABLE"
     assert lane["capability_status"] == "AVAILABLE"
     assert lane["capability_status_semantics"] == "RESEARCH_ROUTING_COMPATIBILITY_ALIAS"
     assert lane["routing_capability_status"] == "AVAILABLE_FOR_RESEARCH"
+    assert lane["global_governed_probability_capability"] == "UNAVAILABLE"
     assert lane["governed_publication_capability"] == "UNAVAILABLE"
     assert lane["governed_publishable"] is False
+    assert set(lane["failed_contract_scope"]) == {"CALIBRATION", "PUBLICATION"}
 
 
 def test_publication_lock_returns_raw_specialist_research_without_calibration_or_ledger_write(monkeypatch):
     req = _request()
-    monkeypatch.setattr(api, "_original_runtime_capability", lambda _key: _publication_locked_lane())
+    monkeypatch.setattr(api, "_original_runtime_capability", lambda _key: _lane_available())
+    _install_global_lock(monkeypatch)
     monkeypatch.setattr(api.prod, "_reject_llp_prop_identity", lambda _identity: "WOW_BETTING_ENGINE")
     monkeypatch.setattr(api.prod.base_api, "_controlling_specialist_provider", lambda _sport, _stat: _specialist())
     monkeypatch.setattr(api.market_api, "_prop_route_artifact", lambda _sport, _stat: _route())
@@ -177,6 +218,7 @@ def test_publication_lock_returns_raw_specialist_research_without_calibration_or
     assert result["prediction"] is None
     assert result["specialist_model_capability"] == "AVAILABLE"
     assert result["specialist_model_status"] == "COMPLETED_RESEARCH_ONLY"
+    assert result["calibration_health_status"] == "BLOCKED"
     assert result["calibration_status"] == "UNKNOWN_OR_BLOCKED"
     assert result["governed_publishable"] is False
     assert result["probability_claim_status"] == "SPECIALIST_RAW_RESEARCH_ONLY"
@@ -189,10 +231,11 @@ def test_publication_lock_returns_raw_specialist_research_without_calibration_or
     assert result["backend_traversal"]["dynamic_calibration"] == "NOT_INVOKED_PUBLICATION_LOCK"
     assert result["backend_traversal"]["prediction_ledger_write"] == "NOT_ATTEMPTED_PUBLICATION_BLOCKED"
     assert result["objective_lanes"]["MARKET"]["market_prior_weight"] == 0.0
+    assert result["route_preflight"]["global_governed_probability_capability"] == "UNAVAILABLE"
     assert result["can_execute"] is False
 
 
-def test_non_publication_failure_delegates_to_existing_fail_closed_path(monkeypatch):
+def test_non_publication_model_failure_delegates_to_existing_fail_closed_path(monkeypatch):
     req = _request()
     lane = {
         "capability_status": "UNAVAILABLE",
@@ -200,6 +243,7 @@ def test_non_publication_failure_delegates_to_existing_fail_closed_path(monkeypa
         "can_execute": False,
     }
     monkeypatch.setattr(api, "_original_runtime_capability", lambda _key: lane)
+    _install_global_lock(monkeypatch)
     monkeypatch.setattr(api.prod, "_reject_llp_prop_identity", lambda _identity: "WOW_BETTING_ENGINE")
     sentinel = {"delegated": True, "probability_publishable": False, "can_execute": False}
     monkeypatch.setattr(api, "_original_score_prop", lambda *_args, **_kwargs: sentinel)
