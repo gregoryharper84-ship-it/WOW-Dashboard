@@ -175,9 +175,9 @@ jobs:
           assert service["runtime"] == "python"
           assert service["plan"] == "free"
           assert service["rootDir"] == "artifacts/wow-engine"
-          assert service["healthCheckPath"] == "/health/ready"
+          assert service["healthCheckPath"] == "/health"
+          assert service["startCommand"] == "uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT"
           assert service["autoDeployTrigger"] == "off"
-          assert "$PORT" in service["startCommand"]
           secret_vars = {
               item["key"]: item
               for item in service["envVars"]
@@ -224,5 +224,12 @@ jobs:
           assert action["paths"]["/settle"]["post"]["security"] == [{"actionBearer": []}]
           assert action["paths"]["/score-event"]["post"]["operationId"] == "scoreWowEvent"
           assert "REPLACE_WITH_RENDER_SERVICE_HOST" in action["servers"][0]["url"]
+
+          pick_action = yaml.safe_load(Path("openapi.pick-request-action.yaml").read_text())
+          validate_spec(pick_action)
+          assert list(pick_action["paths"]) == ["/score-pick-request"]
+          assert pick_action["paths"]["/score-pick-request"]["post"]["operationId"] == "scoreWowPickRequest"
+          assert pick_action["paths"]["/score-pick-request"]["post"]["security"] == [{"actionBearer": []}]
+          assert "REPLACE_WITH_RENDER_SERVICE_HOST" in pick_action["servers"][0]["url"]
           print("release contracts valid")
           PY
