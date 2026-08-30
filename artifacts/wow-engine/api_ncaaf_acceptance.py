@@ -18,6 +18,7 @@ from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_closing_capture import run_from_environment
 from ncaaf_raw_availability_runtime import install_raw_availability_routes
 from ncaaf_training_materializer import materialize_training_games
+from pick_request_runtime import install_pick_request_routes
 from prop_live_model_acceptance import run_prop_model_live_self_acceptance
 
 app = base.app
@@ -31,6 +32,7 @@ def _db_client():
 
 
 install_raw_availability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
+install_pick_request_routes(app, market_api=base.market_api, auth_dependency=_auth)
 
 
 def _safe_count(table: str) -> int | None:
