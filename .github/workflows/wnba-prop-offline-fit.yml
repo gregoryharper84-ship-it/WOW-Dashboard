@@ -23,6 +23,8 @@ on:
       - 'artifacts/wow-engine/test_wnba_prop_auto_hydration.py'
       - 'artifacts/wow-engine/test_wnba_runtime_registration.py'
       - 'artifacts/wow-engine/test_wnba_prop_training_readiness.py'
+      - 'artifacts/wow-engine/test_wnba_prop_real_artifact_e2e.py'
+      - 'artifacts/wow-engine/data/wow_wnba_prop_artifacts_v1.json'
       - '.github/workflows/wnba-prop-offline-fit.yml'
   workflow_dispatch:
 
@@ -63,6 +65,7 @@ jobs:
           test_wnba_prop_calibration_adapter.py
           test_wnba_prop_auto_hydration.py
           test_wnba_runtime_registration.py
+          test_wnba_prop_real_artifact_e2e.py
 
       - name: Prove pinned historical role and event-time joins
         run: python scripts/probe_wnba_2026_training_join.py > data/wnba_prop_training_readiness_2026.json
