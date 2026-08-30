@@ -271,7 +271,7 @@ async def run_prop_model_live_self_acceptance(market_api: Any, logger: logging.L
         log.error("WOW_PROP_MODEL_SELF_ACCEPTANCE result=FAIL reason=RUNTIME_AUTH_OR_PORT_MISSING can_execute=false")
         return
 
-    if bootstrap_raw and not snapshot_id:
+    if bootstrap_raw and (not snapshot_id or snapshot_id.upper() == "AUTO"):
         await _bootstrap_fresh_snapshot(key, port, bootstrap_raw, log)
         return
 
