@@ -1,9 +1,10 @@
-"""Per-worker execution handlers and the Celery task that runs them (packet
-sections 6-16). Ported from PR #33 (feature/wow-agent-runtime-v1) during the
-convergence pass, adapted to this module's reducer signature (which takes
-the controlling job's status explicitly rather than deriving it by scanning
-required_jobs for a matching worker_id) and registry (agent_runtime.registry
-instead of a private one).
+"""Per-worker execution handlers and the Celery task that runs them.
+
+The 2026-08-30 calibration/publication lane-separation patch keeps model,
+calibration, market, and structure objectives independent. A publication lock
+is represented as a successful research-only calibration-stage handoff with no
+numeric calibrated fields, while market/structure failures preserve the best
+valid upstream research ceiling rather than collapsing the row to discovery.
 """
 from __future__ import annotations
 
@@ -75,10 +76,6 @@ def _run_evidence(env: WorkerEnvelope) -> WorkerOutput:
     payload = env.payload.get("evidence")
     if not isinstance(payload, dict):
         return _blocked(env, "EVIDENCE_SNAPSHOT_MISSING")
-    # No separate evidence_snapshots table — evidence lives in
-    # wow_prop_evidence_snapshots/wow_event_evidence (existing, per Phase 0's
-    # overlap audit) once a real lane wires acquisition; until then the
-    # coordinator folds the sealed result into candidate_payload.
     sealed = seal_evidence(str(env.evidence_snapshot_id or ""), payload)
     blockers = []
     if sealed.missing_required_fields:
@@ -101,11 +98,6 @@ def _run_controlling_model(env: WorkerEnvelope) -> WorkerOutput:
     market_family = str(env.payload.get("market_family") or "").upper()
     period = str(env.payload.get("period") or "").upper()
 
-    # MLB event scoring is already governed by the server-owned G11 bridge.
-    # The bridge is allowed to prove a fitted-model path in HELD mode even
-    # while the separate publication capability remains unavailable. It will
-    # not leak a numeric probability until calibration health + ratification
-    # say publish.
     if sport == "MLB" and market_family == "OUTRIGHT_WINNER" and period in {"FULL_GAME", "FULL_GAME_INCLUDING_EXTRA_INNINGS"}:
         try:
             bridged = score_mlb_event_bridge(env.payload)
@@ -114,7 +106,19 @@ def _run_controlling_model(env: WorkerEnvelope) -> WorkerOutput:
             return _blocked(env, str(code), output={"probability_publishable": False, "error": type(exc).__name__})
         code = bridged.get("code")
         if code == HELD_CODE:
-            return _succeeded(env, "MODEL_QUALIFIED_HOLD", bridged, ["PROBABILITY_PUBLICATION_HELD"])
+            return _succeeded(
+                env,
+                "MODEL_QUALIFIED_HOLD",
+                {
+                    **bridged,
+                    "specialist_model_capability": "AVAILABLE",
+                    "calibration_status": "UNKNOWN_OR_BLOCKED",
+                    "governed_publishable": False,
+                    "failed_contract_scope": ["CALIBRATION", "PUBLICATION"],
+                    "probability_claim_status": "CALIBRATION_BLOCKED_NO_PUBLISH",
+                },
+                ["PROBABILITY_PUBLICATION_HELD"],
+            )
         if code == PUBLISHED_CODE and bridged.get("probability_publishable") is True:
             return _succeeded(env, "MODEL_QUALIFIED_HOLD", bridged)
         blockers = list(bridged.get("bridge_blockers") or ["MODEL_UNAVAILABLE"])
@@ -123,7 +127,6 @@ def _run_controlling_model(env: WorkerEnvelope) -> WorkerOutput:
     cap = env.payload.get("capability")
     if not isinstance(cap, dict) or cap.get("status") != "AVAILABLE" or not cap.get("artifact_id") or not cap.get("calibrator_id"):
         return _blocked(env, "MODEL_UNAVAILABLE", output={"probability_publishable": False})
-    # No qualitative, market, L5/L10, or caller-provided probability fallback.
     return _blocked(env, "CONTROLLING_MODEL_PROVIDER_NOT_WIRED", output={
         "probability_publishable": False, "artifact_id": cap.get("artifact_id"), "calibrator_id": cap.get("calibrator_id"),
     })
@@ -146,6 +149,28 @@ def _run_failure_paths(env: WorkerEnvelope) -> WorkerOutput:
 
 
 def _run_calibration(env: WorkerEnvelope) -> WorkerOutput:
+    # Publication-only continuation: this is explicitly NOT a calibration.
+    # The successful worker status allows independent downstream audits to run;
+    # the blocker is retained so the strict reducer caps at MODEL_QUALIFIED_HOLD.
+    if env.payload.get("publication_lock") is True:
+        return _succeeded(
+            env,
+            "MODEL_QUALIFIED_HOLD",
+            {
+                "calibration_health_status": env.payload.get("calibration_health_status") or "BLOCKED",
+                "calibration_status": "UNKNOWN_OR_BLOCKED",
+                "calibrated_probability": None,
+                "calibrated_probability_lower_bound": None,
+                "calibrated_probability_upper_bound": None,
+                "governed_publishable": False,
+                "probability_publishable": False,
+                "failed_contract_scope": ["CALIBRATION", "PUBLICATION"],
+                "probability_claim_status": "CALIBRATION_BLOCKED_NO_PUBLISH",
+                "can_execute": False,
+            },
+            ["PROBABILITY_PUBLICATION_HELD"],
+        )
+
     try:
         calibrator_id = env.payload.get("calibrator_id")
         point = env.payload.get("point")
@@ -155,8 +180,10 @@ def _run_calibration(env: WorkerEnvelope) -> WorkerOutput:
     except Exception as exc:
         return _blocked(env, (getattr(exc, "args", ["CALIBRATION_INVALID"]) or ["CALIBRATION_INVALID"])[0])
     return _succeeded(env, "MODEL_QUALIFIED_HOLD", {
-        "calibrator_id": calibrator_id, "calibrated_probability": float(point),
-        "calibrated_probability_lower_bound": float(lower), "calibrated_probability_upper_bound": float(upper),
+        "calibrator_id": calibrator_id,
+        "calibrated_probability": float(point),
+        "calibrated_probability_lower_bound": float(lower),
+        "calibrated_probability_upper_bound": float(upper),
         "probability_publishable": True,
     })
 
@@ -170,7 +197,18 @@ def _run_market(env: WorkerEnvelope) -> WorkerOutput:
     }
     blockers = [code for code, ok in checks.items() if not ok]
     if blockers:
-        return _blocked(env, *blockers, output={"market_gate": "HOLD", "blocks_model_probability": False})
+        return _terminal_output(
+            env,
+            "BLOCKED",
+            "MODEL_QUALIFIED_HOLD",
+            blockers,
+            {
+                "market_gate": "HOLD",
+                "failed_contract_scope": ["MARKET"],
+                "blocks_model_probability": False,
+                "can_execute": False,
+            },
+        )
     return _succeeded(env, "MARKET_VERIFIED_HOLD", {"market_gate": "PASS", "blocks_model_probability": False})
 
 
@@ -184,7 +222,13 @@ def _run_structure(env: WorkerEnvelope) -> WorkerOutput:
     }
     blockers = [code for code, ok in checks.items() if not ok]
     if blockers:
-        return _blocked(env, *blockers)
+        return _terminal_output(
+            env,
+            "BLOCKED",
+            "MARKET_VERIFIED_HOLD",
+            blockers,
+            {"structure_gate": "HOLD", "failed_contract_scope": ["SLIP"], "capital_allocation": False},
+        )
     return _succeeded(env, "STRUCTURE_VERIFIED_HOLD", {"structure_gate": "PASS", "capital_allocation": False})
 
 
@@ -229,10 +273,18 @@ def _run_reducer(env: WorkerEnvelope) -> WorkerOutput:
     except Exception:
         return _blocked(env, "REDUCER_FAILED")
     return _succeeded(
-        env, decision.ceiling,
+        env,
+        decision.ceiling,
         {
-            "terminal_label": decision.label, "final_terminal_ceiling": decision.ceiling,
-            "probability_publishable": decision.probability_publishable, "blockers": list(decision.blockers),
+            "terminal_label": decision.label,
+            "final_terminal_ceiling": decision.ceiling,
+            "probability_publishable": decision.probability_publishable,
+            "governed_publishable": decision.governed_publishable,
+            "failed_contract_scope": list(decision.failed_contract_scope),
+            "probability_claim_status": decision.probability_claim_status,
+            "specialist_model_capability": decision.specialist_model_capability,
+            "blockers": list(decision.blockers),
+            "can_execute": False,
         },
         list(decision.blockers),
     )
