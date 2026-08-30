@@ -1,0 +1,398 @@
+name: Prop Qualification Integration
+
+on:
+  push:
+    branches:
+      - chatgpt/prop-qualification-tier-fix-20260830
+    paths:
+      - '.github/workflows/prop-qualification-integration.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/prop-qualification-tier-fix-20260830
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply guarded production integration
+        working-directory: artifacts/wow-engine
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one guarded replacement, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          # 1) Immutable prediction ledger: persist the tiered native probability ceiling.
+          replace_once(
+              "ledger.py",
+              "from calibration import CalibrationStatus\n",
+              "from calibration import CalibrationStatus\nfrom qualification_policy_v2 import classify_prop_probability\n",
+          )
+          old_ledger = '''    money_resolved = (row.money_lane_status == "RESOLVED")
+              if not money_resolved and "money_lane_status != RESOLVED (payout unresolved)" not in row.blockers:
+                  row.blockers = list(row.blockers) + ["money_lane_status != RESOLVED (payout unresolved)"]
+
+              if not row.probability_publishable:
+                  confidence_ceiling = "RESEARCH_INTEREST"
+              elif row.calibration_status == "PRECALIBRATION_SHRINKAGE":
+                  confidence_ceiling = "MODEL_QUALIFIED_HOLD_PROHIBITED_PRECALIBRATION"
+              else:
+                  confidence_ceiling = "MODEL_QUALIFIED_HOLD"
+
+              if confidence_ceiling == "RESEARCH_INTEREST":
+                  row.probability_ceiling = "RESEARCH_INTEREST"
+              elif not money_resolved:
+                  row.probability_ceiling = confidence_ceiling + "_MONEY_LANE_UNRESOLVED"
+              else:
+                  row.probability_ceiling = confidence_ceiling
+
+              return row
+          '''.replace("              ", "")
+          new_ledger = '''    money_resolved = (row.money_lane_status == "RESOLVED")
+              if not money_resolved and "money_lane_status != RESOLVED (payout unresolved)" not in row.blockers:
+                  row.blockers = list(row.blockers) + ["money_lane_status != RESOLVED (payout unresolved)"]
+
+              qualification = classify_prop_probability(
+                  calibrated_probability=row.calibrated_probability,
+                  calibrated_lower_bound=row.calibrated_probability_lower_bound,
+                  calibration_status=row.calibration_status,
+                  blockers=row.data_gaps,
+                  probability_publishable=row.probability_publishable,
+              )
+              # probability_ceiling is probability-objective state only. Market/money
+              # blockers remain separate and may not erase the fitted-model verdict.
+              row.probability_ceiling = qualification.terminal_label
+
+              return row
+          '''.replace("              ", "")
+          replace_once("ledger.py", old_ledger, new_ledger)
+
+          # 2) Canonical /score-prop: expose the actual probability verdict and keep
+          # market/money objective state separate.
+          replace_once(
+              "api_prod_market.py",
+              "from prop_fitted_provider import PropFittedProviderUnavailable\n",
+              "from prop_fitted_provider import PropFittedProviderUnavailable\nfrom qualification_policy_v2 import classify_prop_probability\nfrom prop_terminal_reducer_v2 import reduce_prop_terminal\n",
+          )
+          replace_once(
+              "api_prod_market.py",
+              '        "calibration_version": getattr(row, "calibration_version", None),\n        "bounds_method_version": getattr(row, "bounds_method_version", None),\n',
+              '        "calibration_version": getattr(row, "calibration_version", None),\n        "calibrated_probability": getattr(row, "calibrated_probability", None),\n        "bounds_method_version": getattr(row, "bounds_method_version", None),\n',
+          )
+          marker = '''def _aware_event_start(value: str) -> datetime:
+          '''.replace("          ", "")
+          helper = '''def _probability_qualification(row: Any, market_lane: dict[str, Any], money_lane: dict[str, Any]) -> dict[str, Any]:
+              qualification = classify_prop_probability(
+                  calibrated_probability=getattr(row, "calibrated_probability", None),
+                  calibrated_lower_bound=getattr(row, "calibrated_probability_lower_bound", None),
+                  calibration_status=getattr(row, "calibration_status", None),
+                  blockers=getattr(row, "data_gaps", None) or [],
+                  probability_publishable=bool(getattr(row, "probability_publishable", False)),
+              )
+              terminal_blockers = list(qualification.blockers)
+              if market_lane.get("status") != "PASS":
+                  terminal_blockers.append("MARKET_DATA_UNAVAILABLE")
+              if money_lane.get("status") != "PASS":
+                  terminal_blockers.append("PAYOUT_UNRESOLVED")
+              terminal = reduce_prop_terminal(
+                  proposed_label=qualification.terminal_label,
+                  blockers=terminal_blockers,
+                  model_evaluated=True,
+              )
+              return {
+                  "terminal_label": terminal.terminal_label,
+                  "confidence_tier": qualification.confidence_tier,
+                  "rank_eligible": qualification.rank_eligible,
+                  "model_supported": qualification.model_supported,
+                  "model_evaluated": terminal.model_evaluated,
+                  "pick_rejected": terminal.pick_rejected,
+                  "verdict_class": terminal.verdict_class,
+                  "infrastructure_blocked": terminal.infrastructure_blocked,
+                  "downstream_money_evaluation_allowed": qualification.downstream_money_evaluation_allowed,
+                  "final_approved_allowed": False,
+                  "blockers": list(terminal.blockers),
+                  "can_execute": False,
+              }
+
+
+          def _aware_event_start(value: str) -> datetime:
+          '''.replace("          ", "")
+          replace_once("api_prod_market.py", marker, helper)
+          replace_once(
+              "api_prod_market.py",
+              '''    market_lane = _market_lane(result.row)
+              money_lane = _money_lane(result.row)
+              return {
+          '''.replace("              ", ""),
+              '''    market_lane = _market_lane(result.row)
+              money_lane = _money_lane(result.row)
+              probability_qualification = _probability_qualification(result.row, market_lane, money_lane)
+              return {
+          '''.replace("              ", ""),
+          )
+          replace_once(
+              "api_prod_market.py",
+              '        "model_evidence": _discrete_model_evidence(result),\n        "evidence": evidence,\n',
+              '        "model_evidence": _discrete_model_evidence(result),\n        "probability_qualification": probability_qualification,\n        "terminal_label": probability_qualification["terminal_label"],\n        "pick_rejected": probability_qualification["pick_rejected"],\n        "evidence": evidence,\n',
+          )
+
+          # 3) Pick Request aggregation: infrastructure/acquisition failures are HELD,
+          # only completed model-negative verdicts are pick rejections.
+          replace_once(
+              "pick_request_runtime.py",
+              "from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_evidence\n",
+              "from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_evidence\nfrom qualification_policy_v2 import classify_prop_probability\nfrom prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal\n",
+          )
+          old_terminal = '''def _terminal(
+              row_key: str,
+              status: str,
+              code: str,
+              *,
+              detail: Optional[dict[str, Any]] = None,
+              snapshot_id: Optional[str] = None,
+              acquisition: Optional[dict[str, Any]] = None,
+          ) -> dict[str, Any]:
+              return {
+                  "row_key": row_key,
+                  "terminal_status": status,
+                  "code": code,
+                  "source_snapshot_id": snapshot_id,
+                  "detail": detail or {},
+                  "acquisition": acquisition
+                  or {
+                      "mode": "NOT_COMPLETED",
+                      "can_execute": False,
+                  },
+                  "probability_publishable": False,
+                  "can_execute": False,
+              }
+          '''.replace("          ", "")
+          new_terminal = '''def _terminal(
+              row_key: str,
+              status: str,
+              code: str,
+              *,
+              detail: Optional[dict[str, Any]] = None,
+              snapshot_id: Optional[str] = None,
+              acquisition: Optional[dict[str, Any]] = None,
+          ) -> dict[str, Any]:
+              payload = detail or {}
+              blocker_codes = [code]
+              for key in ("blocker_code", "failure_class"):
+                  if payload.get(key):
+                      blocker_codes.append(str(payload[key]))
+              model_evaluated = bool(payload.get("model_evaluated") is True or payload.get("model_evidence"))
+              if code in EVENT_BLOCKERS:
+                  proposed_label = "NO_PLAY"
+              elif code in TRUE_MODEL_REJECTION_LABELS:
+                  proposed_label = code
+              else:
+                  proposed_label = str(payload.get("terminal_label") or "MODEL_UNAVAILABLE")
+              decision = reduce_prop_terminal(
+                  proposed_label=proposed_label,
+                  blockers=blocker_codes,
+                  model_evaluated=model_evaluated,
+              )
+              if decision.pick_rejected or decision.verdict_class == "EVENT_INVALIDATED":
+                  effective_status = "REJECTED"
+              else:
+                  effective_status = "HELD"
+              return {
+                  "row_key": row_key,
+                  "terminal_status": effective_status,
+                  "code": code,
+                  "terminal_label": decision.terminal_label,
+                  "verdict_class": decision.verdict_class,
+                  "model_evaluated": decision.model_evaluated,
+                  "pick_rejected": decision.pick_rejected,
+                  "infrastructure_blocked": decision.infrastructure_blocked,
+                  "blockers": list(decision.blockers),
+                  "source_snapshot_id": snapshot_id,
+                  "detail": payload,
+                  "acquisition": acquisition
+                  or {
+                      "mode": "NOT_COMPLETED",
+                      "can_execute": False,
+                  },
+                  "probability_publishable": False,
+                  "can_execute": False,
+              }
+          '''.replace("          ", "")
+          replace_once("pick_request_runtime.py", old_terminal, new_terminal)
+
+          marker2 = '''def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
+          '''.replace("          ", "")
+          helper2 = '''def _completed_scored_outcome(
+              *,
+              row_key: str,
+              scored: dict[str, Any],
+              snapshot_id: str,
+              fingerprint: str,
+              acquisition: dict[str, Any],
+          ) -> dict[str, Any]:
+              prediction = scored.get("prediction") or {}
+              qualification_payload = scored.get("probability_qualification")
+              if isinstance(qualification_payload, dict) and qualification_payload.get("terminal_label"):
+                  terminal_label = str(qualification_payload["terminal_label"])
+                  confidence_tier = str(qualification_payload.get("confidence_tier") or "UNKNOWN")
+                  rank_eligible = bool(qualification_payload.get("rank_eligible"))
+                  model_supported = bool(qualification_payload.get("model_supported"))
+                  downstream_money_allowed = bool(qualification_payload.get("downstream_money_evaluation_allowed"))
+                  terminal_blockers = list(qualification_payload.get("blockers") or [])
+              else:
+                  qualification = classify_prop_probability(
+                      calibrated_probability=prediction.get("calibrated_probability"),
+                      calibrated_lower_bound=prediction.get("calibrated_probability_lower_bound"),
+                      calibration_status=prediction.get("calibration_status"),
+                      blockers=prediction.get("data_gaps") or [],
+                      probability_publishable=bool(scored.get("probability_publishable")),
+                  )
+                  terminal_label = qualification.terminal_label
+                  confidence_tier = qualification.confidence_tier
+                  rank_eligible = qualification.rank_eligible
+                  model_supported = qualification.model_supported
+                  downstream_money_allowed = qualification.downstream_money_evaluation_allowed
+                  terminal_blockers = list(qualification.blockers)
+                  lanes = scored.get("objective_lanes") or {}
+                  if (lanes.get("MARKET") or {}).get("status") != "PASS":
+                      terminal_blockers.append("MARKET_DATA_UNAVAILABLE")
+                  if (lanes.get("MONEY") or {}).get("status") != "PASS":
+                      terminal_blockers.append("PAYOUT_UNRESOLVED")
+
+              decision = reduce_prop_terminal(
+                  proposed_label=terminal_label,
+                  blockers=terminal_blockers,
+                  model_evaluated=True,
+              )
+              return {
+                  "row_key": row_key,
+                  "terminal_status": "REJECTED" if decision.pick_rejected else "COMPLETED",
+                  "code": decision.terminal_label,
+                  "terminal_label": decision.terminal_label,
+                  "confidence_tier": confidence_tier,
+                  "rank_eligible": rank_eligible,
+                  "model_supported": model_supported,
+                  "model_evaluated": True,
+                  "pick_rejected": decision.pick_rejected,
+                  "verdict_class": decision.verdict_class,
+                  "infrastructure_blocked": decision.infrastructure_blocked,
+                  "downstream_money_evaluation_allowed": downstream_money_allowed,
+                  "source_snapshot_id": snapshot_id,
+                  "evidence_fingerprint": fingerprint,
+                  "acquisition": acquisition,
+                  "result": scored,
+                  "probability_publishable": bool(scored.get("probability_publishable")),
+                  "can_execute": False,
+              }
+
+
+          def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
+          '''.replace("          ", "")
+          replace_once("pick_request_runtime.py", marker2, helper2)
+          replace_once(
+              "pick_request_runtime.py",
+              '''        if outcome.get("terminal_status") == "COMPLETED":
+                  model_completed += 1
+          '''.replace("          ", ""),
+              '''        if outcome.get("model_evaluated") is True or outcome.get("terminal_status") == "COMPLETED":
+                  model_completed += 1
+          '''.replace("          ", ""),
+          )
+          old_success = '''            outcomes.append(
+                  {
+                      "row_key": row_key,
+                      "terminal_status": "COMPLETED",
+                      "code": "MODEL_QUALIFIED"
+                      if scored.get("probability_publishable") is True
+                      else "MODEL_QUALIFIED_HOLD",
+                      "source_snapshot_id": snapshot_id,
+                      "evidence_fingerprint": fingerprint,
+                      "acquisition": acquisition,
+                      "result": scored,
+                      "probability_publishable": bool(
+                          scored.get("probability_publishable")
+                      ),
+                      "can_execute": False,
+                  }
+              )
+          '''.replace("          ", "")
+          new_success = '''            outcomes.append(
+                  _completed_scored_outcome(
+                      row_key=row_key,
+                      scored=scored,
+                      snapshot_id=snapshot_id,
+                      fingerprint=fingerprint,
+                      acquisition=acquisition,
+                  )
+              )
+          '''.replace("          ", "")
+          replace_once("pick_request_runtime.py", old_success, new_success)
+          replace_once(
+              "pick_request_runtime.py",
+              '''        rejected = sum(
+                  1 for outcome in outcomes if outcome["terminal_status"] == "REJECTED"
+              )
+              rows_in = len(batch.rows)
+          '''.replace("          ", ""),
+              '''        rejected = sum(
+                  1 for outcome in outcomes if outcome["terminal_status"] == "REJECTED"
+              )
+              pick_rejected_count = sum(1 for outcome in outcomes if outcome.get("pick_rejected") is True)
+              infrastructure_blocked_count = sum(1 for outcome in outcomes if outcome.get("infrastructure_blocked") is True)
+              rows_in = len(batch.rows)
+          '''.replace("          ", ""),
+          )
+          replace_once(
+              "pick_request_runtime.py",
+              '            "rows_rejected": rejected,\n            "reconciliation_pass": reconciliation_pass,\n',
+              '            "rows_rejected": rejected,\n            "pick_rejected_count": pick_rejected_count,\n            "infrastructure_blocked_count": infrastructure_blocked_count,\n            "reconciliation_pass": reconciliation_pass,\n',
+          )
+
+          # Expand acquisition-class blocker coverage used by the canonical reducer.
+          replace_once(
+              "prop_terminal_reducer_v2.py",
+              '    "PROP_EVIDENCE_PERSISTENCE_UNAVAILABLE",\n    "STALE_EVIDENCE",\n',
+              '    "PROP_EVIDENCE_PERSISTENCE_UNAVAILABLE",\n    "PROP_PLAYER_IDENTITY_UNRESOLVED",\n    "PROP_EVENT_IDENTITY_CONFLICT",\n    "MLB_RECENT_STARTS_INSUFFICIENT",\n    "MLB_STARTER_STATUS_UNRESOLVED",\n    "STALE_EVIDENCE",\n',
+          )
+          PY
+
+      - name: Run focused integration regressions
+        working-directory: artifacts/wow-engine
+        run: |
+          python -m pytest -q \
+            test_qualification_policy_v2.py \
+            test_prop_terminal_reducer_v2.py \
+            test_prop_live_model_acceptance.py \
+            test_pick_request_runtime.py \
+            test_pick_request_acquisition.py
+
+      - name: Commit integrated production wiring
+        run: |
+          if git diff --quiet; then
+            echo "No integration diff produced"
+            exit 1
+          fi
+          git config user.name "WOW CI Integration"
+          git config user.email "actions@users.noreply.github.com"
+          git add artifacts/wow-engine/ledger.py \
+                  artifacts/wow-engine/api_prod_market.py \
+                  artifacts/wow-engine/pick_request_runtime.py \
+                  artifacts/wow-engine/prop_terminal_reducer_v2.py
+          git commit -m "fix: wire prop qualification and honest terminal semantics"
+          git push origin HEAD:chatgpt/prop-qualification-tier-fix-20260830
