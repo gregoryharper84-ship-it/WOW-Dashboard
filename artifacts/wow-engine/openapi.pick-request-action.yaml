@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: WOW Pick Request Action
-  version: 1.2.0
+  version: 1.2.1
   description: Governed analytical ingress plus immutable write-before-display and settlement traceability. This action never places, routes, modifies, or cancels wagers. can_execute is always false.
 servers:
   - url: https://REPLACE_WITH_RENDER_SERVICE_HOST
@@ -89,7 +89,11 @@ paths:
   /settle-recommendations:
     post:
       operationId: settleWowRecommendations
-      summary: Link settled results and position economics to displayed recommendations
+      summary: Atomically link leg results and one position-level economics record
+      description: >-
+        All rows must belong to one position and repeat identical position metadata.
+        The backend stores portfolio P/L exactly once, preventing combo profit or loss
+        from being multiplied by the number of underlying legs. can_execute=false.
       security:
         - actionBearer: []
       requestBody:
@@ -174,7 +178,7 @@ components:
     RecommendationSettlementRow:
       type: object
       additionalProperties: false
-      required: [recommendation_record_id, settled_at, settled_result, settlement_source]
+      required: [recommendation_record_id, settled_at, settled_result, settlement_source, position_reference, position_structure, underlying_market_count]
       properties:
         recommendation_record_id: {type: string, format: uuid}
         settled_at: {type: string, format: date-time}
