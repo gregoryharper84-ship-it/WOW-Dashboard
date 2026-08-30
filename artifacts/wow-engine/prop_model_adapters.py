@@ -168,7 +168,7 @@ def mlb_pitcher_so_failure_path_nb_v1_adapter(
         except (TypeError, ValueError):
             opp_k_per_pa = None
 
-    ood_score = 1.0 / (1.0 + n_prior)  # thin history -> closer to 1 (less coverage)
+    ood_score = 1.0 / (1.0 + n_prior)
     if not math.isfinite(prior_so_per_out) and total_out > 0:
         coverage_failures.append("PRIOR_RATE_NOT_FINITE")
 
@@ -221,3 +221,5 @@ def mlb_pitcher_so_failure_path_nb_v1_adapter(
 def register() -> None:
     """Production registration seam -- called once at process startup."""
     register_model_family_adapter(MLB_PITCHER_SO_MODEL_FAMILY, mlb_pitcher_so_failure_path_nb_v1_adapter)
+    from wnba_prop_model_adapter import MODEL_FAMILY as WNBA_MODEL_FAMILY, wnba_prop_poisson_logglm_v1_adapter
+    register_model_family_adapter(WNBA_MODEL_FAMILY, wnba_prop_poisson_logglm_v1_adapter)
