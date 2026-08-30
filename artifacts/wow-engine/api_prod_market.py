@@ -23,6 +23,13 @@ from prop_discrete_engine import PropCalibrationUnavailable, score_discrete_prop
 from prop_distribution_contract import PropDistributionContractError, PropInferenceRequest
 from prop_evidence_repair import repair_prop_evidence
 from prop_fitted_provider import PropFittedProviderUnavailable
+from prop_market_audit import audit_candidate_market
+from prop_settlement import (
+    NO_VIG_UNAVAILABLE,
+    SETTLEMENT_RULE_UNRESOLVED,
+    SettlementRule,
+    settle_prop_probability,
+)
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import reduce_prop_terminal
 
@@ -54,9 +61,23 @@ class MarketQuoteInput(BaseModel):
     event_id: str
 
 
+class SettlementRuleInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    settlement_basis: str
+    boundary_operator: str
+    equality_treatment: str
+    void_treatment: str = "RETURN_STAKE"
+    rule_version: str
+    source: str
+    void_probability_mass: float = 0.0
+
+
 class ScorePropRequest(prod.ScorePropRequest):
     market_side_a: Optional[MarketQuoteInput] = None
     market_side_b: Optional[MarketQuoteInput] = None
+    settlement_rule: Optional[SettlementRuleInput] = None
+    line_tolerance: float = 0.0
 
 
 app = FastAPI(
@@ -81,6 +102,71 @@ def _to_market_quote(value: Optional[MarketQuoteInput]) -> Optional[MarketQuote]
     if value is None:
         return None
     return MarketQuote(**value.model_dump())
+
+
+def _to_settlement_rule(value: Optional[SettlementRuleInput]) -> Optional[SettlementRule]:
+    if value is None:
+        return None
+    return SettlementRule(**value.model_dump())
+
+
+def _candidate_american_odds(direction: str, side_a: Optional[MarketQuote], side_b: Optional[MarketQuote]) -> Optional[float]:
+    target = str(direction or "").upper()
+    aliases = {"MORE": {"MORE", "OVER"}, "LESS": {"LESS", "UNDER"}}
+    for quote in (side_a, side_b):
+        if quote is not None and str(quote.side or "").upper() in aliases.get(target, set()):
+            return float(quote.american_odds)
+    return None
+
+
+def _settlement_lane(row: Any, req: ScorePropRequest, rule: Optional[SettlementRule], audited_a: Optional[MarketQuote], audited_b: Optional[MarketQuote]) -> dict[str, Any]:
+    result = settle_prop_probability(
+        direction=req.direction,
+        probability_more=getattr(row, "probability_more", None),
+        probability_less=getattr(row, "probability_less", None),
+        equality_probability=getattr(row, "push_probability", None),
+        rule=rule,
+        american_odds=_candidate_american_odds(req.direction, audited_a, audited_b),
+    )
+    return {
+        "status": result.status,
+        "blocker": result.blocker,
+        "p_win": result.p_win,
+        "p_loss": result.p_loss,
+        "p_push": result.p_push,
+        "p_void": result.p_void,
+        "graded_probability": result.graded_probability,
+        "conditional_win_probability": result.conditional_win_probability,
+        "american_odds": result.american_odds,
+        "profit_multiple": result.profit_multiple,
+        "break_even_unconditional": result.break_even_unconditional,
+        "break_even_conditional_graded": result.break_even_conditional_graded,
+        "expected_profit_per_unit_staked": result.expected_profit_per_unit_staked,
+        "rule_version": result.rule_version,
+        "source": result.source,
+        "blocks_model_probability": False,
+        "can_execute": False,
+    }
+
+
+def _effective_money_lane(row: Any, settlement_lane: dict[str, Any]) -> dict[str, Any]:
+    lane = _money_lane(row)
+    if settlement_lane.get("status") != "PASS":
+        lane = dict(lane)
+        lane["status"] = "HOLD"
+        lane["settlement_blocker"] = settlement_lane.get("blocker") or SETTLEMENT_RULE_UNRESOLVED
+    return lane
+
+
+def _market_lane_with_audit(row: Any, market_audit: Any) -> dict[str, Any]:
+    lane = _market_lane(row)
+    lane["candidate_audit_status"] = market_audit.status
+    lane["candidate_audit_blocker"] = market_audit.blocker
+    if market_audit.status != "PASS":
+        lane["status"] = "HOLD"
+    if lane["status"] != "PASS" and not lane.get("candidate_audit_blocker"):
+        lane["candidate_audit_blocker"] = NO_VIG_UNAVAILABLE
+    return lane
 
 
 def _market_lane(row: Any) -> dict[str, Any]:
@@ -112,7 +198,7 @@ def _money_lane(row: Any) -> dict[str, Any]:
     }
 
 
-def _probability_qualification(row: Any, market_lane: dict[str, Any], money_lane: dict[str, Any]) -> dict[str, Any]:
+def _probability_qualification(row: Any, market_lane: dict[str, Any], money_lane: dict[str, Any], settlement_lane: dict[str, Any]) -> dict[str, Any]:
     qualification = classify_prop_probability(
         calibrated_probability=getattr(row, "calibrated_probability", None),
         calibrated_lower_bound=getattr(row, "calibrated_probability_lower_bound", None),
@@ -125,6 +211,8 @@ def _probability_qualification(row: Any, market_lane: dict[str, Any], money_lane
         blockers.append("MARKET_DATA_UNAVAILABLE")
     if money_lane.get("status") != "PASS":
         blockers.append("PAYOUT_UNRESOLVED")
+    if settlement_lane.get("status") != "PASS":
+        blockers.append("SETTLEMENT_RULE_UNRESOLVED")
     terminal = reduce_prop_terminal(
         proposed_label=qualification.terminal_label,
         blockers=blockers,
@@ -476,6 +564,20 @@ def score_prop(
     scored_at = datetime.now(timezone.utc).isoformat()
     inference_request = _server_owned_inference_request(req, evidence, scored_at)
     effective_snapshot_id = str(evidence.get("source_snapshot_id") or req.source_snapshot_id)
+    raw_market_a = _to_market_quote(req.market_side_a)
+    raw_market_b = _to_market_quote(req.market_side_b)
+    settlement_rule = _to_settlement_rule(req.settlement_rule)
+    market_audit = audit_candidate_market(
+        event_id=req.event_id,
+        participant=str(evidence.get("player") or req.player),
+        stat=req.stat_type,
+        period=_prop_period(req.stat_type),
+        line=req.line,
+        settlement_rule=settlement_rule,
+        side_a=raw_market_a,
+        side_b=raw_market_b,
+        line_tolerance=req.line_tolerance,
+    )
     try:
         result = score_discrete_prop_end_to_end(
             client=prod.get_client(),
@@ -488,8 +590,8 @@ def score_prop(
             features=_model_features(evidence),
             seed=req.seed,
             money_lane_status=req.money_lane_status,
-            market_side_a=_to_market_quote(req.market_side_a),
-            market_side_b=_to_market_quote(req.market_side_b),
+            market_side_a=market_audit.side_a,
+            market_side_b=market_audit.side_b,
         )
     except (PropFittedProviderUnavailable, PropDistributionContractError, PropCalibrationUnavailable) as exc:
         _raise_model_path_error(exc)
@@ -517,9 +619,10 @@ def score_prop(
             },
         )
 
-    market_lane = _market_lane(result.row)
-    money_lane = _money_lane(result.row)
-    probability_qualification = _probability_qualification(result.row, market_lane, money_lane)
+    market_lane = _market_lane_with_audit(result.row, market_audit)
+    settlement_lane = _settlement_lane(result.row, req, settlement_rule, market_audit.side_a, market_audit.side_b)
+    money_lane = _effective_money_lane(result.row, settlement_lane)
+    probability_qualification = _probability_qualification(result.row, market_lane, money_lane, settlement_lane)
     return {
         "ok": True,
         "prediction": persisted,
@@ -543,6 +646,7 @@ def score_prop(
                 "can_execute": False,
             },
             "MARKET": market_lane,
+            "SETTLEMENT": settlement_lane,
             "MONEY": money_lane,
         },
         "backend_traversal": {

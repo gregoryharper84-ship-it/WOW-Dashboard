@@ -27,6 +27,7 @@ from fastapi import Depends, HTTPException
 
 import api_prod_market as market_api
 from ledger import record_outcome
+from prop_settlement import settlement_self_acceptance
 
 app = market_api.app
 
@@ -338,10 +339,14 @@ async def _run_prop_live_self_acceptance() -> None:
             )
             return
 
+    settlement_math = "PROVEN" if settlement_self_acceptance() else "FAILED"
+    if settlement_math != "PROVEN":
+        _logger.error("WOW_PROP_SELF_ACCEPTANCE result=FAIL settlement_math=FAILED can_execute=false")
+        return
     _logger.warning(
         "WOW_PROP_SELF_ACCEPTANCE result=PASS directions=MORE,LESS auth=PASS "
         "acquisition_fail_closed=PASS specialist_invoked=false zero_probability_leak=true "
-        "settlement_math=NOT_PROVEN model_path=NOT_PROVEN can_execute=false"
+        "settlement_math=PROVEN model_path=NOT_PROVEN_IN_THIS_PROBE can_execute=false"
     )
 
 
