@@ -178,6 +178,20 @@ def _load_serving_artifact(db: Any, gate: dict[str, Any]) -> dict[str, Any] | No
     return row
 
 
+def _snapshot_binding_blockers(snapshot: dict[str, Any], artifact: dict[str, Any], gate: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    expected_version = str(gate.get("serving_model_version") or "")
+    if str(snapshot.get("feature_model_family") or "") != MLB_MODEL_FAMILY:
+        blockers.append("LIVE_FEATURE_MODEL_FAMILY_MISMATCH")
+    if str(snapshot.get("feature_model_artifact_version") or "") != expected_version:
+        blockers.append("LIVE_FEATURE_MODEL_VERSION_MISMATCH")
+    if str(snapshot.get("feature_schema_version") or "") != MLB_FEATURE_SCHEMA:
+        blockers.append("LIVE_FEATURE_SCHEMA_VERSION_MISMATCH")
+    if str(snapshot.get("feature_artifact_checksum") or "") != str(artifact.get("artifact_checksum") or ""):
+        blockers.append("LIVE_FEATURE_ARTIFACT_CHECKSUM_MISMATCH")
+    return blockers
+
+
 def _load_calibrator(db: Any, artifact: dict[str, Any]) -> dict[str, Any] | None:
     return _single_row(db.table("wow_calibrators").select("*").eq("calibrator_id", str(artifact["calibrator_id"])).eq("sport", "MLB").eq("market_family", MLB_MARKET_TYPE).eq("model_family", MLB_MODEL_FAMILY).eq("active", True).eq("promoted", True).eq("validation_status", "PASS").eq("health_status", "PASS").limit(1).execute())
 
@@ -281,6 +295,8 @@ def score_live_event(req: LiveScoreRequest, db: Any, now: datetime | None = None
     artifact = _load_serving_artifact(db, gate)
     if artifact is None: base.update(terminal_label="MODEL_UNAVAILABLE", blockers=["CERTIFIED_LIVE_MODEL_ARTIFACT_UNAVAILABLE_OR_SCHEMA_MISMATCH"]); return LiveScoreResponse(**base)
     if artifact.get("model_artifact_version") != gate.get("serving_model_version"): base.update(terminal_label="MODEL_UNAVAILABLE", blockers=["LIVE_SERVING_MODEL_VERSION_MISMATCH"]); return LiveScoreResponse(**base)
+    binding_blockers = _snapshot_binding_blockers(snapshot, artifact, gate)
+    if binding_blockers: base.update(terminal_label="MODEL_UNAVAILABLE", model_version=artifact.get("model_artifact_version"), blockers=binding_blockers); return LiveScoreResponse(**base)
     calibrator = _load_calibrator(db, artifact)
     if calibrator is None or calibrator.get("calibration_version") != gate.get("serving_calibration_version"): base.update(terminal_label="MODEL_UNAVAILABLE", blockers=["SERVING_CALIBRATION_INVALID_OR_UNAVAILABLE"]); return LiveScoreResponse(**base)
     score = _score_mlb(req, state, state_hash)

@@ -3,7 +3,14 @@ from uuid import UUID
 
 import pytest
 
-from live_probability_runtime import LiveScoreRequest, _apply_live_bounds, _request_blockers, _score_mlb, _state_hash
+from live_probability_runtime import (
+    LiveScoreRequest,
+    _apply_live_bounds,
+    _request_blockers,
+    _score_mlb,
+    _snapshot_binding_blockers,
+    _state_hash,
+)
 
 
 def request(**overrides):
@@ -64,3 +71,19 @@ def test_missing_live_bounds_artifact_blocks():
 def test_stale_bound_bin_blocks():
     calibrator={'live_bounds_json':[{'p_min':.40,'p_max':.60,'max_state_age_seconds':5,'lower_delta':.04,'upper_delta':.05}]}
     with pytest.raises(ValueError,match='LIVE_PREDICTIVE_BOUNDS_BIN_UNAVAILABLE'): _apply_live_bounds(calibrator,.50,10)
+
+
+def test_snapshot_feature_binding_must_match_certified_live_artifact():
+    snapshot = {"feature_model_family": "MLB_LIVE_REMAINING_RUNS_V1", "feature_model_artifact_version": "live-v1", "feature_schema_version": "MLB_LIVE_STATE_FEATURES_V1", "feature_artifact_checksum": "abc"}
+    artifact = {"model_artifact_version": "live-v1", "artifact_checksum": "abc"}
+    gate = {"serving_model_version": "live-v1"}
+    assert _snapshot_binding_blockers(snapshot, artifact, gate) == []
+    snapshot["feature_model_artifact_version"] = "other"
+    assert "LIVE_FEATURE_MODEL_VERSION_MISMATCH" in _snapshot_binding_blockers(snapshot, artifact, gate)
+
+
+def test_snapshot_feature_binding_checks_artifact_checksum():
+    snapshot = {"feature_model_family": "MLB_LIVE_REMAINING_RUNS_V1", "feature_model_artifact_version": "live-v1", "feature_schema_version": "MLB_LIVE_STATE_FEATURES_V1", "feature_artifact_checksum": "wrong"}
+    artifact = {"model_artifact_version": "live-v1", "artifact_checksum": "abc"}
+    gate = {"serving_model_version": "live-v1"}
+    assert _snapshot_binding_blockers(snapshot, artifact, gate) == ["LIVE_FEATURE_ARTIFACT_CHECKSUM_MISMATCH"]
