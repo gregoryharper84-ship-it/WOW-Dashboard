@@ -22,6 +22,10 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # Same claude-code-action@v1 requirement as wow-discovery.yml -- see the
+  # comment there. Not yet exercised by a live run of this workflow, but
+  # fixing it now rather than waiting to rediscover it on this path too.
+  id-token: write
 
 jobs:
   implement:

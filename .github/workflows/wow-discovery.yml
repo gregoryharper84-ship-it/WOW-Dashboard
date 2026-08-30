@@ -24,6 +24,14 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
+  # Required by anthropics/claude-code-action@v1 itself, independent of
+  # ANTHROPIC_API_KEY: confirmed on a live run (2026-08-30) -- without
+  # this, the action's own GitHub-token bootstrap fails requesting an
+  # OIDC token ("Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable")
+  # before Claude is ever invoked, so no execution_file is produced at
+  # all. This is unrelated to the anthropic_federation_rule_id/WIF inputs
+  # -- it's needed even when auth is a plain anthropic_api_key.
+  id-token: write
 
 jobs:
   discovery:

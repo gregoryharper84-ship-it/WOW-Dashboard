@@ -107,6 +107,35 @@ or §15-gated, matching WOW's "no self-certification" principle.
    should be at least as capable as the implementer. `claude-opus-5` is
    confirmed current as of 2026-08-30.
 
+## Live run log
+
+**Run 1 — [#33307201156](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/33307201156), 2026-08-30, `wow-discovery.yml`, FAILED before reaching Claude.**
+Real, previously-unseen finding, not a repeat of the docs/issue-tracker
+research above: the job died in ~15s inside `claude-code-action`'s own
+GitHub-token bootstrap, requesting a GitHub Actions OIDC token — this
+happens regardless of Anthropic auth method (`anthropic_api_key` here,
+not a WIF/federation input), and is unrelated to the `ANTHROPIC_API_KEY`
+secret (also confirmed unset on this run, but never reached — a second,
+independent blocker). Actual error, 3 retries:
+
+```
+Requesting OIDC token...
+error: Error message: Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable
+Attempt 1 failed: Could not fetch an OIDC token. Did you remember to add `id-token: write` to your workflow permissions?
+[... 2 more attempts, same error ...]
+##[error]Action failed with error: Could not fetch an OIDC token. Did you remember to add `id-token: write` to your workflow permissions?
+```
+
+Steps 5–10 (extraction, STOP_15 check, artifact upload, issue creation)
+all show `conclusion: "skipped"` — no `execution_file` was produced, so
+none of the four checklist items below were answered by this run. Fixed:
+added `id-token: write` to both `wow-discovery.yml` and
+`wow-closeout-implement.yml`'s `permissions:` blocks (the latter hadn't
+been run yet, but has the same action call, so fixed pre-emptively rather
+than waiting to rediscover it there too). Next run is blocked on the
+`ANTHROPIC_API_KEY` repo secret being added — see item 1 in Setup above —
+before it's worth triggering again.
+
 ## First live run — verification checklist (not yet certified)
 
 The `execution_file` parsing in `wow-discovery.yml` is currently
