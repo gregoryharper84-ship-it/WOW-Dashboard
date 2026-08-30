@@ -8,6 +8,7 @@ from prop_evidence_repair import repair_prop_evidence
 class FakeRequest:
     source_snapshot_id: str
     event_id: str = "WNBA:P0:REPAIR"
+    event_start_time: str = "2026-08-30T02:00:00+00:00"
     sport: str = "WNBA"
     player: str = "Test Player"
     stat_type: str = "REB"
@@ -20,11 +21,16 @@ class FakeRequest:
 class FakeQuery:
     def __init__(self, rows):
         self.rows = rows
+        self.lt_filters = []
 
     def select(self, *_args, **_kwargs):
         return self
 
     def eq(self, *_args, **_kwargs):
+        return self
+
+    def lt(self, *args, **_kwargs):
+        self.lt_filters.append((args, _kwargs))
         return self
 
     def order(self, *_args, **_kwargs):
@@ -42,12 +48,14 @@ class FakeClient:
         self.rows = rows or []
         self.fail = fail
         self.table_calls = 0
+        self.last_query = None
 
     def table(self, _name):
         self.table_calls += 1
         if self.fail:
             raise RuntimeError("ledger unavailable")
-        return FakeQuery(self.rows)
+        self.last_query = FakeQuery(self.rows)
+        return self.last_query
 
 
 def _ready(source_snapshot_id):
@@ -126,6 +134,7 @@ def test_missing_requested_snapshot_recovers_from_newer_governed_snapshot():
     assert result["requested_source_snapshot_id"] == "requested"
     assert result["effective_source_snapshot_id"] == "fallback-1"
     assert [attempt["status"] for attempt in result["acquisition_attempts"]] == ["FAILED", "PASS"]
+    assert client.last_query.lt_filters == [(("captured_at", req.event_start_time), {})]
     assert result["can_execute"] is False
 
 
@@ -151,6 +160,7 @@ def test_incomplete_fallbacks_are_revalidated_and_exhausted_fail_closed():
     assert len(result["acquisition_attempts"]) == 3
     assert all(attempt["status"] == "FAILED" for attempt in result["acquisition_attempts"])
     assert result["effective_source_snapshot_id"] == "requested"
+    assert client.last_query.lt_filters == [(("captured_at", req.event_start_time), {})]
     assert result["can_execute"] is False
 
 
