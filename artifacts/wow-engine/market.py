@@ -37,6 +37,7 @@ class MarketQuote:
     stat: str
     period: str
     event_id: str
+    provider: Optional[str] = None
 
 
 def american_to_implied_prob(odds: float) -> float:
