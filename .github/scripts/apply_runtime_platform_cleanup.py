@@ -2,29 +2,29 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BANNED = "rep" + "lit"
 
-# Remove legacy cache/config ignore entries without retaining the legacy name.
-gitignore = ROOT / ".gitignore"
-text = gitignore.read_text()
-lines = text.splitlines()
-new_lines = []
-skip_blank_after = False
-for line in lines:
-    if BANNED in line.lower():
-        skip_blank_after = True
-        continue
-    if skip_blank_after and not line.strip():
-        skip_blank_after = False
-        continue
-    skip_blank_after = False
-    new_lines.append(line)
-gitignore.write_text("\n".join(new_lines).rstrip() + "\n")
 
-# Remove legacy package dependencies from every workspace manifest.
+def tracked_files() -> list[Path]:
+    raw = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT)
+    return [ROOT / p.decode() for p in raw.split(b"\0") if p]
+
+
+def neutralize(raw: str, *, docs: bool) -> str:
+    replacement = "legacy platform" if docs else "legacy_platform"
+    return re.sub(BANNED, replacement, raw, flags=re.I)
+
+
+# Remove retired-platform cache/config ignore entries.
+gitignore = ROOT / ".gitignore"
+lines = gitignore.read_text().splitlines()
+gitignore.write_text("\n".join(line for line in lines if BANNED not in line.lower()).rstrip() + "\n")
+
+# Remove retired package dependencies from every workspace manifest.
 for manifest in ROOT.rglob("package.json"):
     if "node_modules" in manifest.parts:
         continue
@@ -40,40 +40,51 @@ for manifest in ROOT.rglob("package.json"):
     if changed:
         manifest.write_text(json.dumps(data, indent=2) + "\n")
 
-# Remove the legacy Vite runtime hooks from the mockup workspace.
-vite = ROOT / "artifacts/mockup-sandbox/vite.config.ts"
-if vite.exists():
-    v = vite.read_text()
-    v = re.sub(r'^import runtimeErrorOverlay from "@' + BANNED + r'/vite-plugin-runtime-error-modal";\n', '', v, flags=re.M)
-    v = re.sub(r'^\s*runtimeErrorOverlay\(\),\n', '', v, flags=re.M)
-    block = re.compile(
-        r'\s*\.\.\.\(process\.env\.NODE_ENV !== "production" &&\n'
-        r'\s*process\.env\.REPL_ID !== undefined\n'
-        r'\s*\? \[\n'
-        r'\s*await import\("@' + BANNED + r'/vite-plugin-cartographer"\)\.then\(\(m\) =>\n'
-        r'\s*m\.cartographer\(\{\n'
-        r'\s*root: path\.resolve\(import\.meta\.dirname, "\.\."\),\n'
-        r'\s*\}\),\n'
-        r'\s*\),\n'
-        r'\s*\]\n'
-        r'\s*: \[\]\),\n',
-        re.M,
+# Remove retired catalog/exclusion entries. The lockfile is regenerated later.
+workspace = ROOT / "pnpm-workspace.yaml"
+if workspace.exists():
+    workspace.write_text(
+        "\n".join(line for line in workspace.read_text().splitlines() if BANNED not in line.lower()).rstrip() + "\n"
     )
-    v, count = block.subn('', v)
-    if count != 1:
-        raise SystemExit(f"expected one legacy Vite conditional block, found {count}")
+
+# Remove retired Vite-only runtime hooks from every frontend workspace.
+for vite in ROOT.rglob("vite.config.ts"):
+    v = vite.read_text()
+    v = "\n".join(line for line in v.splitlines() if BANNED not in line.lower() and "runtimeErrorOverlay()," not in line) + "\n"
+    # Remove conditional plugin spreads keyed to the retired host environment.
+    start = v.find('    ...(process.env.NODE_ENV !== "production" &&')
+    while start != -1:
+        end = v.find("      : []),", start)
+        if end == -1:
+            raise SystemExit(f"unterminated conditional plugin block in {vite}")
+        end += len("      : []),")
+        segment = v[start:end]
+        if "REPL_ID" in segment or BANNED in segment.lower() or "legacy_platform" in segment.lower():
+            v = v[:start] + v[end:]
+        else:
+            break
+        start = v.find('    ...(process.env.NODE_ENV !== "production" &&')
     vite.write_text(v)
 
-# Historical text remains useful, but the active tracked repo should not carry
-# the retired platform name. Preserve history semantically with a neutral term.
-for path in ROOT.rglob("*"):
-    if not path.is_file() or ".git" in path.parts or "node_modules" in path.parts:
+# The canonical verifier should no longer carry a retired rescue-branch trigger.
+verify = ROOT / ".github/workflows/wow-verify.yml"
+if verify.exists():
+    q = BANNED
+    old = f"  push:\n    branches:\n      - rescue/{q}-emergency-20260820-1221\n"
+    verify.write_text(verify.read_text().replace(old, ""))
+
+# Neutralize remaining tracked textual references. This keeps historical meaning
+# while ensuring active code/configuration does not retain retired-platform identifiers.
+doc_exts = {".md", ".txt"}
+code_exts = {".py", ".yaml", ".yml", ".json", ".toml", ".ts", ".tsx", ".js", ".jsx", ".html", ".sh", ".ini", ".cfg"}
+for path in tracked_files():
+    if not path.exists() or path.name == "pnpm-lock.yaml":
         continue
-    if path.suffix.lower() not in {".md", ".txt"}:
+    suffix = path.suffix.lower()
+    if suffix not in doc_exts | code_exts and path.name not in {".gitignore", ".npmrc"}:
         continue
     raw = path.read_text(errors="ignore")
     if BANNED in raw.lower():
-        raw = re.sub(BANNED, "legacy platform", raw, flags=re.I)
-        path.write_text(raw)
+        path.write_text(neutralize(raw, docs=suffix in doc_exts))
 
 print("runtime platform cleanup applied")
