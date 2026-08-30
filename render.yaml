@@ -32,6 +32,8 @@ services:
         sync: false
       - key: WOW_PROP_SELF_ACCEPTANCE
         value: "1"
+      - key: WOW_CALIBRATION_PUBLICATION_LANE_SEPARATION
+        value: "1"
       - key: WOW_NCAAF_MARKET_FEED_URL
         sync: false
       - key: WOW_NCAAF_MARKET_FEED_TOKEN

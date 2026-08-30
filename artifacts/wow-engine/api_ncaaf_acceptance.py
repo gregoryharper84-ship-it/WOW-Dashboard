@@ -2,17 +2,21 @@
 
 Adds authenticated, non-executable NCAAF maintenance boundaries for closing-line
 capture, readiness inspection, historical read-only source hydration, and raw
-reviewed official-conference availability ingestion. Existing prop/event scoring
-behavior is inherited unchanged.
+reviewed official-conference availability ingestion. The final production
+entrypoint can enable calibration/publication lane separation without mutating
+lower-layer test/runtime contracts.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-from fastapi import Depends, HTTPException
+from typing import Optional
+
+from fastapi import Depends, Header, HTTPException
 
 import api_prod_market_acceptance as base
+import calibration_publication_api as lane_patch
 from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_closing_capture import run_from_environment
@@ -25,6 +29,68 @@ app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
 _logger = logging.getLogger("wow.ncaaf.readiness")
 _background_tasks: set[asyncio.Task] = set()
+
+# This mutation is intentionally production-gated. The lower api_prod_market app
+# is a shared FastAPI object imported by several contract tests. Unconditionally
+# replacing its route here would leak the final-entrypoint policy into lower-layer
+# unit tests and obscure which boundary owns the behavior.
+if os.getenv("WOW_CALIBRATION_PUBLICATION_LANE_SEPARATION", "0") == "1":
+    app.router.routes[:] = [
+        route
+        for route in app.router.routes
+        if not (
+            getattr(route, "path", None) == "/score-prop"
+            and "POST" in (getattr(route, "methods", set()) or set())
+        )
+    ]
+
+    @app.post(
+        "/score-prop",
+        dependencies=[_auth],
+        operation_id="scoreWowProp",
+    )
+    def score_prop_lane_separated(
+        req: base.market_api.ScorePropRequest,
+        x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
+    ):
+        model_identity = base.market_api.prod._reject_llp_prop_identity(x_wow_model_identity)
+        lane = base.market_api.prod._runtime_capability(base.market_api.prod.PROP_CAPABILITY_KEY)
+        preflight = lane_patch._governed_preflight(base.market_api)
+        blockers = list(dict.fromkeys([
+            *lane_patch._collect_blockers(lane.get("evidence") or {}),
+            *lane_patch._collect_blockers(preflight),
+        ]))
+
+        if preflight.get("governed_publishable") is True or preflight.get("probability_publishable") is True:
+            return base.market_api.score_prop(req, x_wow_model_identity)
+
+        if lane_patch._publication_only(blockers):
+            return lane_patch._raw_specialist_research(
+                base.market_api,
+                req,
+                model_identity=model_identity,
+                lane=lane,
+                preflight=preflight,
+                blockers=blockers,
+            )
+
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PROP_PROBABILITY_UNAVAILABLE",
+                "governed_probability_capability": lane.get("capability_status") or "UNAVAILABLE",
+                "governed_publication_capability": preflight.get("governed_publication_capability") or "UNAVAILABLE",
+                "specialist_model_capability": preflight.get("specialist_model_capability") or "NOT_EVALUATED",
+                "failed_contract_scope": preflight.get("failed_contract_scope") or ["GLOBAL"],
+                "probability_claim_status": preflight.get("probability_claim_status") or "MODEL_UNAVAILABLE",
+                "capability_evidence": lane.get("evidence") or {},
+                "preflight": preflight,
+                "blockers": blockers or ["UNCLASSIFIED_CAPABILITY_FAILURE"],
+                "probability_publishable": False,
+                "governed_publishable": False,
+                "can_execute": False,
+            },
+        )
 
 
 def _db_client():
