@@ -9,14 +9,24 @@ def _schema():
     return yaml.safe_load(path.read_text())
 
 
-def test_pick_request_action_exposes_only_governed_batch_boundary():
+def test_pick_request_action_exposes_governed_scoring_and_traceability_boundaries():
     schema = _schema()
     validate_spec(schema)
     paths = schema["paths"]
-    assert list(paths) == ["/score-pick-request"]
-    operation = paths["/score-pick-request"]["post"]
-    assert operation["operationId"] == "scoreWowPickRequest"
-    assert operation["security"] == [{"actionBearer": []}]
+    assert set(paths) == {
+        "/score-pick-request",
+        "/record-recommendations",
+        "/settle-recommendations",
+    }
+    expected_operations = {
+        "/score-pick-request": "scoreWowPickRequest",
+        "/record-recommendations": "recordWowRecommendations",
+        "/settle-recommendations": "settleWowRecommendations",
+    }
+    for path, operation_id in expected_operations.items():
+        operation = paths[path]["post"]
+        assert operation["operationId"] == operation_id
+        assert operation["security"] == [{"actionBearer": []}]
 
 
 def test_pick_request_action_requires_candidate_identity_but_not_caller_hydration():
@@ -84,3 +94,14 @@ def test_action_description_preserves_fail_closed_model_ownership():
     assert "Missing evidence never authorizes a qualitative or L5/L10 fallback" in description
     assert "Probabilities, model artifacts, calibration outputs, edge, and approval labels are always backend-owned" in description
     assert "can_execute=false" in description
+
+
+def test_recommendation_action_enforces_write_before_display_contract():
+    schema = _schema()
+    operation = schema["paths"]["/record-recommendations"]["post"]
+    assert "must not display" in operation["description"]
+    batch = schema["components"]["schemas"]["RecommendationBatch"]
+    assert {"research_run_id", "host_identity", "model_identity", "source_type", "rows"} <= set(batch["required"])
+    row = schema["components"]["schemas"]["RecommendationRow"]
+    assert {"event_id", "event_start_time", "participant", "selection", "terminal_label"} <= set(row["required"])
+    assert row["properties"]["probability_publishable"]["default"] is False

@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: WOW Pick Request Action
-  version: 1.1.0
-  description: Governed analytical batch ingress for screenshot, PDF, pasted-board, and self-discovered prop candidates. This action never places, routes, modifies, or cancels wagers. can_execute is always false.
+  version: 1.2.0
+  description: Governed analytical ingress plus immutable write-before-display and settlement traceability. This action never places, routes, modifies, or cancels wagers. can_execute is always false.
 servers:
   - url: https://REPLACE_WITH_RENDER_SERVICE_HOST
 paths:
@@ -60,6 +60,53 @@ paths:
           description: Missing, malformed, or incorrect Action credential.
         '422':
           description: Batch request shape is invalid.
+  /record-recommendations:
+    post:
+      operationId: recordWowRecommendations
+      summary: Persist every terminal WOW recommendation before display
+      description: >-
+        Mandatory write-before-display contract for cross-sport recommendations.
+        The caller must not display a recommendation unless display_authorized=true.
+        Research-only and blocked rows are recorded without entering governed
+        probability calibration tables. can_execute=false.
+      security:
+        - actionBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecommendationBatch'
+      responses:
+        '200':
+          description: All rows are durably recorded and may be displayed.
+        '401':
+          description: Missing, malformed, or incorrect Action credential.
+        '422':
+          description: Invalid or non-pregame recommendation contract.
+        '503':
+          description: Ledger write is missing or unproven; display is not authorized.
+  /settle-recommendations:
+    post:
+      operationId: settleWowRecommendations
+      summary: Link settled results and position economics to displayed recommendations
+      security:
+        - actionBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecommendationSettlementBatch'
+      responses:
+        '200':
+          description: Settlement rows were durably linked and reconciled.
+        '401':
+          description: Missing, malformed, or incorrect Action credential.
+        '422':
+          description: A referenced recommendation record does not exist.
+        '503':
+          description: Settlement write failed.
 components:
   securitySchemes:
     actionBearer:
@@ -67,6 +114,81 @@ components:
       scheme: bearer
       bearerFormat: WOW_ACTION_API_KEY
   schemas:
+    RecommendationBatch:
+      type: object
+      additionalProperties: false
+      required: [research_run_id, host_identity, model_identity, source_type, rows]
+      properties:
+        research_run_id: {type: string}
+        request_id: {type: [string, 'null']}
+        host_identity: {type: string}
+        model_identity: {type: string}
+        source_type: {type: string}
+        source_conversation_ref: {type: [string, 'null']}
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/RecommendationRow'
+    RecommendationRow:
+      type: object
+      additionalProperties: false
+      required: [row_key, sport, event_id, event_start_time, participant, selection, terminal_label]
+      properties:
+        row_key: {type: string}
+        sport: {type: string}
+        league: {type: [string, 'null']}
+        event_id: {type: string}
+        event_start_time: {type: string, format: date-time}
+        participant: {type: string}
+        opponent: {type: [string, 'null']}
+        market_family: {type: string, default: OUTRIGHT_WINNER}
+        selection: {type: string}
+        terminal_label: {type: string}
+        probability_publishable: {type: boolean, default: false}
+        model_probability: {type: [number, 'null'], exclusiveMinimum: 0, exclusiveMaximum: 1}
+        calibrated_probability: {type: [number, 'null'], exclusiveMinimum: 0, exclusiveMaximum: 1}
+        calibrated_probability_lower_bound: {type: [number, 'null'], exclusiveMinimum: 0, exclusiveMaximum: 1}
+        governed_prediction_table: {type: [string, 'null']}
+        governed_prediction_id: {type: [string, 'null'], format: uuid}
+        source_snapshot_id: {type: [string, 'null'], format: uuid}
+        evidence_fingerprint: {type: [string, 'null']}
+        blockers:
+          type: array
+          items: {type: string}
+        display_payload:
+          type: object
+          additionalProperties: true
+    RecommendationSettlementBatch:
+      type: object
+      additionalProperties: false
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/RecommendationSettlementRow'
+    RecommendationSettlementRow:
+      type: object
+      additionalProperties: false
+      required: [recommendation_record_id, settled_at, settled_result, settlement_source]
+      properties:
+        recommendation_record_id: {type: string, format: uuid}
+        settled_at: {type: string, format: date-time}
+        settled_result: {type: string, enum: [WIN, LOSS, PUSH, VOID]}
+        official_result: {type: [string, 'null']}
+        settlement_source: {type: string}
+        settlement_evidence_ref: {type: [string, 'null']}
+        position_reference: {type: [string, 'null']}
+        position_structure: {type: [string, 'null']}
+        underlying_market_count: {type: [integer, 'null'], minimum: 1}
+        entry_cost: {type: [number, 'null'], minimum: 0}
+        payout: {type: [number, 'null'], minimum: 0}
+        profit_loss: {type: [number, 'null']}
+        displayed_roi: {type: [number, 'null']}
     PickRequestBatch:
       type: object
       additionalProperties: false
