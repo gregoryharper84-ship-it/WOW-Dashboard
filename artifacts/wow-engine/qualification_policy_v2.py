@@ -1,13 +1,11 @@
 """Tiered probability qualification policy for WOW v16 Clean Core.
 
 This policy separates model-backed research qualification from the much stricter
-money/final approval ceilings. It does not weaken evidence, specialist,
-identity, freshness, calibration-health, or execution gates.
+money/final approval gates. It does not weaken evidence, specialist, identity,
+freshness, calibration-health, probability-validity, market, or execution gates.
 
-Phase-A precalibration is intentionally conservative. Candidates may therefore
-be recognized as model-supported research rows when the fitted specialist,
-evidence, failure paths, and calibrated probability are all valid, while still
-remaining ineligible for MONEY_QUALIFIED / FINAL_APPROVED.
+Only native WOW terminal labels are emitted. Higher confidence is carried as
+metadata, not invented as a new terminal label.
 """
 from __future__ import annotations
 
@@ -18,9 +16,10 @@ from typing import Iterable
 @dataclass(frozen=True)
 class PropQualificationDecision:
     terminal_label: str
+    confidence_tier: str
     rank_eligible: bool
     model_supported: bool
-    money_qualified_allowed: bool
+    downstream_money_evaluation_allowed: bool
     final_approved_allowed: bool
     blockers: tuple[str, ...]
 
@@ -38,6 +37,10 @@ HARD_BLOCKERS = {
 }
 
 
+def _normalized(blockers: Iterable[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(str(b).strip().upper() for b in blockers if str(b).strip()))
+
+
 def _has_hard_blocker(blockers: Iterable[str]) -> bool:
     return any(str(b).upper() in HARD_BLOCKERS for b in blockers)
 
@@ -50,10 +53,9 @@ def classify_prop_probability(
     blockers: Iterable[str] = (),
     probability_publishable: bool,
 ) -> PropQualificationDecision:
-    """Classify a prop probability without conflating research and money gates.
+    """Classify only the governed probability lane.
 
-    Thresholds are deliberately conservative and are only terminal-label
-    thresholds. They never override an upstream blocker.
+    Thresholds are terminal-label/ranking gates, not wager approval gates:
 
     RESEARCH_INTEREST
       calibrated p >= 0.57 and lower bound > 0.50
@@ -61,74 +63,90 @@ def classify_prop_probability(
     MODEL_QUALIFIED_HOLD
       calibrated p >= 0.60 and lower bound >= 0.55
 
-    HIGH_CONFIDENCE_MODEL_QUALIFIED_HOLD
-      calibrated p >= 0.65 and lower bound >= 0.60
+    A stronger p >= 0.65 / lower bound >= 0.60 result remains the same native
+    MODEL_QUALIFIED_HOLD terminal label and receives confidence_tier=HIGH.
 
-    PRECALIBRATION_SHRINKAGE can reach research/model-qualified HOLD labels but
-    remains prohibited from MONEY_QUALIFIED and FINAL_APPROVED.
+    PRECALIBRATION_SHRINKAGE may reach RESEARCH_INTEREST or
+    MODEL_QUALIFIED_HOLD, but it may not advance into the money/final approval
+    gates. This function can never itself emit FINAL_APPROVED.
     """
-    blocker_tuple = tuple(dict.fromkeys(str(b) for b in blockers if b))
+    blocker_tuple = _normalized(blockers)
     if _has_hard_blocker(blocker_tuple):
         return PropQualificationDecision(
             terminal_label="MODEL_UNAVAILABLE",
+            confidence_tier="BLOCKED",
             rank_eligible=False,
             model_supported=False,
-            money_qualified_allowed=False,
+            downstream_money_evaluation_allowed=False,
             final_approved_allowed=False,
             blockers=blocker_tuple,
         )
 
     if not probability_publishable:
         return PropQualificationDecision(
-            terminal_label="RESEARCH_INTEREST" if calibration_status == "PRECALIBRATION_SHRINKAGE" else "MODEL_QUALIFIED_HOLD",
-            rank_eligible=calibration_status == "PRECALIBRATION_SHRINKAGE",
-            model_supported=True,
-            money_qualified_allowed=False,
+            terminal_label="MODEL_UNAVAILABLE",
+            confidence_tier="PUBLICATION_BLOCKED",
+            rank_eligible=False,
+            model_supported=False,
+            downstream_money_evaluation_allowed=False,
             final_approved_allowed=False,
-            blockers=blocker_tuple,
+            blockers=blocker_tuple + ("PROBABILITY_PUBLICATION_BLOCKED",),
         )
 
     if calibrated_probability is None or calibrated_lower_bound is None:
         return PropQualificationDecision(
             terminal_label="MODEL_UNAVAILABLE",
+            confidence_tier="BLOCKED",
             rank_eligible=False,
             model_supported=False,
-            money_qualified_allowed=False,
+            downstream_money_evaluation_allowed=False,
             final_approved_allowed=False,
             blockers=blocker_tuple + ("CALIBRATED_PROBABILITY_OR_BOUND_MISSING",),
         )
 
-    p = float(calibrated_probability)
-    lb = float(calibrated_lower_bound)
+    try:
+        p = float(calibrated_probability)
+        lb = float(calibrated_lower_bound)
+    except (TypeError, ValueError):
+        p = lb = float("nan")
     if not (0.0 < p < 1.0 and 0.0 < lb < 1.0 and lb <= p):
         return PropQualificationDecision(
             terminal_label="MODEL_UNAVAILABLE",
+            confidence_tier="BLOCKED",
             rank_eligible=False,
             model_supported=False,
-            money_qualified_allowed=False,
+            downstream_money_evaluation_allowed=False,
             final_approved_allowed=False,
             blockers=blocker_tuple + ("PROBABILITY_INVALID",),
         )
 
     if p >= 0.65 and lb >= 0.60:
-        label = "HIGH_CONFIDENCE_MODEL_QUALIFIED_HOLD"
+        label = "MODEL_QUALIFIED_HOLD"
+        confidence_tier = "HIGH"
         rank_eligible = True
     elif p >= 0.60 and lb >= 0.55:
         label = "MODEL_QUALIFIED_HOLD"
+        confidence_tier = "STANDARD"
         rank_eligible = True
     elif p >= 0.57 and lb > 0.50:
         label = "RESEARCH_INTEREST"
+        confidence_tier = "RESEARCH"
         rank_eligible = True
     else:
         label = "NO_LOW_PROBABILITY"
+        confidence_tier = "BELOW_THRESHOLD"
         rank_eligible = False
 
-    precalibration = calibration_status == "PRECALIBRATION_SHRINKAGE"
+    precalibration = str(calibration_status or "").upper() == "PRECALIBRATION_SHRINKAGE"
+    downstream_money_evaluation_allowed = (
+        not precalibration and label == "MODEL_QUALIFIED_HOLD"
+    )
     return PropQualificationDecision(
         terminal_label=label,
+        confidence_tier=confidence_tier,
         rank_eligible=rank_eligible,
-        model_supported=label != "NO_LOW_PROBABILITY",
-        money_qualified_allowed=False if precalibration else label in {"MODEL_QUALIFIED_HOLD", "HIGH_CONFIDENCE_MODEL_QUALIFIED_HOLD"},
-        final_approved_allowed=False if precalibration else label == "HIGH_CONFIDENCE_MODEL_QUALIFIED_HOLD",
+        model_supported=label in {"RESEARCH_INTEREST", "MODEL_QUALIFIED_HOLD"},
+        downstream_money_evaluation_allowed=downstream_money_evaluation_allowed,
+        final_approved_allowed=False,
         blockers=blocker_tuple,
     )
