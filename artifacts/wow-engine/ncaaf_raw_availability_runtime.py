@@ -2,6 +2,11 @@
 
 Only raw official-conference PLAYER_AVAILABILITY_REPORT rows may enter here.
 No derived role evidence, model scoring, probability publication, or execution is exposed.
+
+The production wrapper already calls ``install_raw_availability_routes`` with the
+fully assembled governed app. That stable installation seam also mounts the
+sport-agnostic screenshot/self-discovery pick-request bridge; the two route
+families remain logically independent.
 """
 from __future__ import annotations
 
@@ -11,12 +16,18 @@ from fastapi import HTTPException
 
 from ncaaf_evidence_ingestion import NCAAFAcquisitionUnavailable, persist_normalized_evidence
 from ncaaf_official_availability import NCAAvailabilityUnavailable, normalize_report_rows
+from pick_request_runtime import install_pick_request_routes
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
 
 
 def install_raw_availability_routes(app: Any, *, auth_dependency: Any, db_client_fn: Callable[[], Any]) -> None:
+    # api_ncaaf_acceptance is the production entrypoint. Reuse its already
+    # authenticated app rather than creating a second service/topology.
+    import api_prod_market as market_api
+    install_pick_request_routes(app, market_api=market_api, auth_dependency=auth_dependency)
+
     @app.post(
         "/internal/ncaaf/ingest-availability-report",
         dependencies=[auth_dependency],
