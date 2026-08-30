@@ -1,6 +1,6 @@
 from prop_distribution_contract import CertifiedBundle, PropInferenceRequest
 from prop_fitted_provider import ResolvedArtifact
-from wnba_prop_model_adapter import feature_vector, wnba_prop_poisson_logglm_v1_adapter
+from wnba_prop_model_adapter import feature_vector, expected_count, wnba_prop_poisson_logglm_v1_adapter
 
 
 def _artifact():
@@ -25,6 +25,7 @@ def _artifact():
         model_family="WNBA_PROP_POISSON_LOGGLM_V1",
         artifact_format="JSON_POISSON_LOGGLM_V1",
         artifact_payload={
+            "model_kind": "OFFSET_POISSON_BLEND_V1",
             "stat_type": "POINTS",
             "feature_names": [
                 "l10_stat_mean", "l5_stat_mean", "last_stat",
@@ -32,8 +33,13 @@ def _artifact():
             ],
             "feature_mean": [10, 10, 10, 30, 30, 30],
             "feature_scale": [5, 5, 5, 5, 5, 5],
-            "coef": [0.2, 0.1, 0.05, 0.1, 0.05, 0.01],
-            "intercept": 2.2,
+            "correction_feature_names": [
+                "log_l5_to_l10_stat", "log_last_to_l10_stat",
+                "log_l5_to_l10_minutes", "log_last_to_l10_minutes",
+            ],
+            "coef": [0.2, 0.1, 0.05, 0.01],
+            "intercept": 0.02,
+            "blend_weight_glm": 0.4,
             "max_support_k": 50,
             "max_abs_z_for_coverage": 6.0,
             "feature_transform_version": "WNBA_PROP_ROLLING_FORM_V1",
@@ -73,6 +79,15 @@ def test_feature_vector_sorts_chronology_and_is_order_invariant():
     vector = feature_vector(_features())
     assert vector[:3] == (5.5, 8.0, 10.0)
     assert vector[3:] == (25.5, 28.0, 30.0)
+
+
+def test_expected_count_retains_nonzero_fitted_component():
+    artifact = _artifact()
+    vector = feature_vector(_features())
+    mu, max_z = expected_count(artifact.artifact_payload, vector)
+    assert mu > 0
+    assert max_z >= 0
+    assert artifact.artifact_payload["blend_weight_glm"] >= 0.10
 
 
 def test_adapter_returns_normalized_direction_free_pmf():
