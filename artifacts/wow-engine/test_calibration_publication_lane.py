@@ -68,6 +68,23 @@ def test_unclassified_blocker_cannot_use_publication_bypass():
     assert _publication_only(["SOME_UNKNOWN_FAILURE"]) is False
 
 
+def test_preflight_transport_failures_are_global_and_cannot_use_publication_bypass():
+    for blocker in (
+        "GOVERNED_PROBABILITY_PREFLIGHT_UNAVAILABLE",
+        "GOVERNED_PROBABILITY_PREFLIGHT_INVALID_RESPONSE",
+        "GOVERNED_DEPLOYMENT_NOT_READY",
+        "GOVERNED_PROBABILITY_UNAVAILABLE",
+    ):
+        assert blocker_scopes([blocker]) == ("GLOBAL",)
+        assert _publication_only([blocker]) is False
+
+
+def test_known_publication_lock_plus_global_failure_fails_closed():
+    blockers = ["FORWARD_SHADOW_NOT_COMPLETED", "GOVERNED_PROBABILITY_PREFLIGHT_UNAVAILABLE"]
+    assert blocker_scopes(blockers) == ("GLOBAL", "CALIBRATION", "PUBLICATION")
+    assert _publication_only(blockers) is False
+
+
 def test_market_failure_scope_does_not_collapse_other_lanes():
     assert blocker_scopes(["MARKET_EXACT_LINE_UNAVAILABLE"]) == ("MARKET",)
 

@@ -11,14 +11,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
 
+# Only blockers whose owning gate explicitly certifies calibration/publication
+# scope belong here. Do not add transport/preflight/deployment failures: when
+# canonical governance evidence itself is unavailable, scope is not proven and
+# the caller must fail closed rather than enter the raw-research bypass.
 PUBLICATION_SCOPED_BLOCKERS = frozenset({
     "FORWARD_SHADOW_NOT_COMPLETED",
     "CALIBRATION_HEALTH_BLOCKED",
     "CALIBRATION_UNAVAILABLE",
     "GOVERNED_PROBABILITY_PUBLICATION_UNAVAILABLE",
+})
+
+# These failures mean the backend could not establish the canonical governance
+# state. They are GLOBAL evidence failures, not evidence that only calibration
+# or publication is broken.
+GLOBAL_SCOPED_BLOCKERS = frozenset({
     "GOVERNED_PROBABILITY_PREFLIGHT_UNAVAILABLE",
     "GOVERNED_PROBABILITY_PREFLIGHT_INVALID_RESPONSE",
     "GOVERNED_DEPLOYMENT_NOT_READY",
+    "GOVERNED_PROBABILITY_UNAVAILABLE",
 })
 
 MODEL_SCOPED_BLOCKERS = frozenset({
@@ -48,16 +59,18 @@ def _norm(value: Optional[str]) -> str:
 
 
 def blocker_scopes(blockers: Iterable[str]) -> tuple[str, ...]:
-    """Return the union of failed contract scopes for known blockers.
+    """Return the union of failed contract scopes for classified blockers.
 
-    Unknown blockers are deliberately not promoted to GLOBAL. They remain
-    scope-unknown and must be classified by their owning gate instead of
-    collapsing the whole row.
+    Canonical preflight/transport failures are GLOBAL because the backend could
+    not prove a narrower scope. Other unknown blockers remain scope-unknown and
+    must be classified by their owning gate instead of being guessed here.
     """
     scopes: set[str] = set()
     for raw in blockers:
         blocker = _norm(raw)
-        if blocker in PUBLICATION_SCOPED_BLOCKERS or blocker.startswith("FORWARD_SHADOW_"):
+        if blocker in GLOBAL_SCOPED_BLOCKERS:
+            scopes.add("GLOBAL")
+        elif blocker in PUBLICATION_SCOPED_BLOCKERS or blocker.startswith("FORWARD_SHADOW_"):
             scopes.update(("CALIBRATION", "PUBLICATION"))
         elif blocker in MODEL_SCOPED_BLOCKERS:
             scopes.add("CONFIDENCE")
@@ -73,6 +86,8 @@ def blocker_scopes(blockers: Iterable[str]) -> tuple[str, ...]:
 def is_calibration_publication_only(blockers: Iterable[str]) -> bool:
     blockers_tuple = tuple(_norm(x) for x in blockers if _norm(x))
     if not blockers_tuple:
+        return False
+    if any(blocker in GLOBAL_SCOPED_BLOCKERS for blocker in blockers_tuple):
         return False
     if not all(
         blocker in PUBLICATION_SCOPED_BLOCKERS or blocker.startswith("FORWARD_SHADOW_")
