@@ -107,6 +107,49 @@ or §15-gated, matching WOW's "no self-certification" principle.
    should be at least as capable as the implementer. `claude-opus-5` is
    confirmed current as of 2026-08-30.
 
+## First live run — verification checklist (not yet certified)
+
+The `execution_file` parsing in `wow-discovery.yml` is currently
+**INFERENCE, not VERIFIED_FACT**: the event shape (`type`/`subtype`/
+`is_error`/`result`) and the fallback/fail-closed logic built on it were
+confirmed against the Agent SDK's documented Python types and unit-tested
+against synthetic event-log fixtures (success case, an `error_max_turns`
+abort with an early `STOP_15:` marker and later tool-only turns, and a
+run with no `result` event at all) — not against a real `execution_file`
+from a live API call. One specific residual risk: `claude-code-action`'s
+base action is the Node/Bun implementation, so the JSON it actually
+writes is the TypeScript SDK's shape, not the Python one — and the two
+aren't guaranteed to match key-for-key (a partial look at the TS types
+turned up at least one camelCase field, `modelUsage`, sitting alongside
+snake_case `is_error` in the same object family). `subtype`/`is_error`/
+`result` matched across the Python/Go/TS sources checked so far, but that
+was not confirmed against actual bytes on disk.
+
+Before trusting the parser beyond the synthetic fixtures, on the first
+real `wow-discovery` run:
+
+1. `cat` the `execution-file.json` artifact and confirm it's valid JSON
+   and an array of event objects shaped the way the extraction script
+   expects (`{"type": "...", ...}` per element).
+2. Confirm the terminal event's actual keys are `type` / `subtype` /
+   `is_error` / `result`, snake_case as written — not camelCase variants
+   (`isError`, etc.) — since a silent key mismatch would make the
+   extraction step fall through to the assistant-text fallback (or the
+   "no extractable result" placeholder) even on a successful run, without
+   erroring.
+3. On a normal `subtype: "success"` run: confirm `discovery-output.md`
+   reads as a clean evidence packet (not raw JSON, not the fallback
+   placeholder text) and the issue does **not** get the `incomplete-run`
+   label.
+4. If cheap to force — e.g. a throwaway dispatch with a deliberately low
+   `--max-turns` — confirm the `error_max_turns` path actually produces
+   the `incomplete-run` label, and that a `STOP_15:` marker planted early
+   in the packet still shows up in `discovery-output.md` and trips
+   `stop-15` even though the run didn't finish.
+
+Update this section (or just delete it) once a real run has confirmed
+all four — at that point this becomes VERIFIED_FACT instead of INFERENCE.
+
 ## Why the human/§15 gates aren't automated
 
 - **§15 stop conditions** (governance change, unclear authority,
