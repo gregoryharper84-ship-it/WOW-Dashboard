@@ -91,10 +91,12 @@ def reduce_prop_terminal(
     """Reduce one prop row to an honest native WOW terminal state.
 
     Precedence is fail-closed and objective-separated:
-      1. specialist/model capability missing -> MODEL_UNAVAILABLE
-      2. mandatory evidence/hydration missing before model evaluation ->
+      1. an explicit event-state invalidation terminates the pregame row as
+         NO_PLAY; it is not a pick rejection and cannot be disguised as an
+         acquisition hold simply because evidence was also incomplete
+      2. specialist/model capability missing -> MODEL_UNAVAILABLE
+      3. mandatory evidence/hydration missing before model evaluation ->
          MODEL_UNAVAILABLE with ACQUISITION_BLOCKED verdict metadata
-      3. event no longer valid for a pregame row -> NO_PLAY
       4. a genuine model rejection survives downstream market/money blockers
       5. market/money identity failures preserve a completed model-supported
          terminal label and mark only the market lane blocked.
@@ -102,6 +104,16 @@ def reduce_prop_terminal(
     bs = _normalized(blockers)
     bset = set(bs)
     label = str(proposed_label or "").strip().upper() or "MODEL_UNAVAILABLE"
+
+    if bset & EVENT_BLOCKERS:
+        return PropTerminalDecision(
+            terminal_label="NO_PLAY",
+            verdict_class="EVENT_INVALIDATED",
+            model_evaluated=model_evaluated,
+            pick_rejected=False,
+            infrastructure_blocked=False,
+            blockers=bs,
+        )
 
     if bset & MODEL_CAPABILITY_BLOCKERS:
         return PropTerminalDecision(
@@ -120,16 +132,6 @@ def reduce_prop_terminal(
             model_evaluated=False,
             pick_rejected=False,
             infrastructure_blocked=True,
-            blockers=bs,
-        )
-
-    if bset & EVENT_BLOCKERS:
-        return PropTerminalDecision(
-            terminal_label="NO_PLAY",
-            verdict_class="EVENT_INVALIDATED",
-            model_evaluated=model_evaluated,
-            pick_rejected=False,
-            infrastructure_blocked=False,
             blockers=bs,
         )
 
