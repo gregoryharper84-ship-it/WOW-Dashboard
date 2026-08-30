@@ -2,8 +2,10 @@
 
 This module is deliberately orchestration-only. It does not calculate sporting
 probabilities, loosen evidence requirements, or replace controlling specialists.
-It normalizes ingress metadata, invokes the existing governed single-row scorer,
-contains row-local failures, and reconciles every submitted row exactly once.
+It normalizes ingress metadata, acquires governed evidence for currently
+supported automatic-hydration routes when a snapshot is absent, invokes the
+existing governed single-row scorer, contains row-local failures, and
+reconciles every submitted row exactly once.
 
 can_execute is always false.
 """
@@ -14,6 +16,9 @@ from typing import Any, Callable, Literal, Optional, Type
 from fastapi import Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+import api_prod as prod
+from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_candidate
+
 
 PickSourceType = Literal[
     "SCREENSHOT",
@@ -22,6 +27,7 @@ PickSourceType = Literal[
     "PASTED_BOARD",
     "NORMALIZED",
 ]
+SYNTHETIC_VALIDATION_SNAPSHOT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 class PickRequestRow(BaseModel):
@@ -35,6 +41,7 @@ class PickRequestRow(BaseModel):
     league: Optional[str] = None
     opponent: Optional[str] = None
     settlement_operator: Optional[str] = None
+    source_capture_timestamp: Optional[str] = None
     candidate: dict[str, Any]
 
 
@@ -53,7 +60,8 @@ def _norm(value: Any) -> str:
 
 def canonical_candidate_key(row: PickRequestRow, candidate: Any) -> str:
     """Build the stable downstream key shared by upload and discovery ingress."""
-    period = "FIRST_INNING" if "1IP" in _norm(getattr(candidate, "stat_type", "")) or "FIRST_INNING" in _norm(getattr(candidate, "stat_type", "")) else "FULL_GAME"
+    stat_type = _norm(getattr(candidate, "stat_type", ""))
+    period = "FIRST_INNING" if "1IP" in stat_type or "FIRST_INNING" in stat_type else "FULL_GAME"
     return "|".join(
         (
             _norm(getattr(candidate, "sport", "")),
@@ -63,7 +71,7 @@ def canonical_candidate_key(row: PickRequestRow, candidate: Any) -> str:
             _norm(row.opponent),
             "PLAYER_PROP",
             period,
-            _norm(getattr(candidate, "stat_type", "")),
+            stat_type,
             format(float(getattr(candidate, "line")), ".12g"),
             _norm(getattr(candidate, "direction", "")),
             _norm(row.settlement_operator),
@@ -88,32 +96,64 @@ def _bucket_for_http_error(status_code: int, detail: dict[str, Any]) -> str:
         "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
         "PROP_CALIBRATOR_ADAPTER_UNAVAILABLE",
         "PROP_MODEL_FAMILY_ADAPTER_UNAVAILABLE",
+        "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
+        "PROP_AUTO_HYDRATION_PROVIDER_UNAVAILABLE",
+        "PROP_EVIDENCE_WRITE_UNAVAILABLE",
+        "PROP_EVIDENCE_WRITE_UNPROVEN",
+        "MLB_STARTER_STATUS_UNRESOLVED",
     }
     if status_code >= 500 or status_code == 409 or code in hold_codes:
         return "HELD"
     return "REJECTED"
 
 
+def _auto_hydration_detail(exc: PropAutoHydrationError) -> dict[str, Any]:
+    detail = dict(exc.detail)
+    detail.update(
+        {
+            "code": exc.code,
+            "message": str(exc),
+            "evidence_hydration": "AUTO_HYDRATION_FAILED",
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+    )
+    return detail
+
+
 def _telemetry(rows: list[dict[str, Any]]) -> dict[str, int]:
     route_preflight_blocked = 0
     hydration_not_attempted = 0
     acquisition_failures = 0
+    auto_hydration_attempted = 0
+    auto_hydration_succeeded = 0
     row_processing_errors = 0
     model_completed = 0
 
     for row in rows:
         detail = row.get("detail") or {}
+        preparation = row.get("preparation") or {}
         code = str(row.get("termination_code") or "")
         if row.get("row_bucket") == "COMPLETED":
             model_completed += 1
         if detail.get("evidence_hydration") == "NOT_ATTEMPTED_ROUTE_BLOCKED":
             route_preflight_blocked += 1
             hydration_not_attempted += 1
+        if preparation.get("auto_hydration_attempted") is True:
+            auto_hydration_attempted += 1
+        if preparation.get("auto_hydration_status") == "PASS":
+            auto_hydration_succeeded += 1
         if code in {
             "RUN_INVALID_ACQUISITION_INCOMPLETE",
             "PROP_EVIDENCE_SNAPSHOT_NOT_FOUND",
             "PROP_EVIDENCE_INCOMPLETE",
             "PROP_EVIDENCE_STALE",
+            "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
+            "PROP_AUTO_HYDRATION_PROVIDER_UNAVAILABLE",
+            "PROP_EVIDENCE_WRITE_UNAVAILABLE",
+            "PROP_EVIDENCE_WRITE_UNPROVEN",
+            "MLB_RECENT_STARTS_INSUFFICIENT",
+            "MLB_STARTER_STATUS_UNRESOLVED",
         }:
             acquisition_failures += 1
         if code == "ROW_PROCESSING_ERROR":
@@ -122,11 +162,62 @@ def _telemetry(rows: list[dict[str, Any]]) -> dict[str, int]:
     return {
         "route_preflight_blocked": route_preflight_blocked,
         "evidence_hydration_not_attempted_route_blocked": hydration_not_attempted,
+        "auto_hydration_attempted": auto_hydration_attempted,
+        "auto_hydration_succeeded": auto_hydration_succeeded,
         "acquisition_failures": acquisition_failures,
         "model_completed": model_completed,
         "row_processing_errors": row_processing_errors,
         # A row-local failure never aborts another row in this controller.
         "false_global_failure_count": 0,
+    }
+
+
+def _validated_candidate(
+    row: PickRequestRow,
+    score_prop_model: Type[BaseModel],
+) -> tuple[Any, bool]:
+    payload = dict(row.candidate)
+    needs_auto_hydration = not bool(payload.get("source_snapshot_id"))
+    if needs_auto_hydration:
+        # Pydantic validates every other field before any external acquisition.
+        # The sentinel is never scored or persisted; successful auto hydration
+        # replaces it before the existing governed scorer is invoked.
+        payload["source_snapshot_id"] = SYNTHETIC_VALIDATION_SNAPSHOT_ID
+    candidate = score_prop_model.model_validate(payload)
+    return candidate, needs_auto_hydration
+
+
+def _hydrate_candidate_if_needed(
+    row: PickRequestRow,
+    candidate: Any,
+    *,
+    needs_auto_hydration: bool,
+) -> tuple[Any, dict[str, Any]]:
+    if not needs_auto_hydration:
+        return candidate, {
+            "auto_hydration_attempted": False,
+            "auto_hydration_status": "NOT_NEEDED",
+            "source_snapshot_id": getattr(candidate, "source_snapshot_id", None),
+            "can_execute": False,
+        }
+
+    hydration = auto_hydrate_prop_candidate(
+        candidate,
+        client=prod.get_client(),
+        board_source=row.platform or row.source_type,
+        board_capture=row.source_capture_timestamp,
+    )
+    prepared = candidate.model_copy(update={"source_snapshot_id": hydration["source_snapshot_id"]})
+    return prepared, {
+        "auto_hydration_attempted": True,
+        "auto_hydration_status": "PASS",
+        "provider": hydration.get("provider"),
+        "source_snapshot_id": hydration.get("source_snapshot_id"),
+        "official_game_pk": hydration.get("official_game_pk"),
+        "starter_status": hydration.get("starter_status"),
+        "historical_start_count": hydration.get("historical_start_count"),
+        "captured_at": hydration.get("captured_at"),
+        "can_execute": False,
     }
 
 
@@ -137,7 +228,7 @@ def run_pick_request_batch(
     score_prop_callable: Callable[..., dict[str, Any]],
     model_identity: Optional[str],
 ) -> dict[str, Any]:
-    """Validate, score, and terminalize every row independently."""
+    """Validate, hydrate, score, and terminalize every row independently."""
     row_ids = [row.row_id for row in batch.rows]
     if len(row_ids) != len(set(row_ids)):
         raise HTTPException(
@@ -154,7 +245,7 @@ def run_pick_request_batch(
 
     for row in batch.rows:
         try:
-            candidate = score_prop_model.model_validate(row.candidate)
+            candidate, needs_auto_hydration = _validated_candidate(row, score_prop_model)
         except ValidationError as exc:
             terminal_rows.append(
                 {
@@ -164,6 +255,11 @@ def run_pick_request_batch(
                     "row_bucket": "REJECTED",
                     "termination_code": "CANDIDATE_NORMALIZATION_INVALID",
                     "detail": {"validation_errors": exc.errors()},
+                    "preparation": {
+                        "auto_hydration_attempted": False,
+                        "auto_hydration_status": "NOT_ATTEMPTED_INVALID_CANDIDATE",
+                        "can_execute": False,
+                    },
                     "probability_publishable": False,
                     "can_execute": False,
                 }
@@ -171,6 +267,53 @@ def run_pick_request_batch(
             continue
 
         canonical_key = canonical_candidate_key(row, candidate)
+        try:
+            candidate, preparation = _hydrate_candidate_if_needed(
+                row,
+                candidate,
+                needs_auto_hydration=needs_auto_hydration,
+            )
+        except PropAutoHydrationError as exc:
+            detail = _auto_hydration_detail(exc)
+            terminal_rows.append(
+                {
+                    "row_id": row.row_id,
+                    "canonical_key": canonical_key,
+                    "source_type": row.source_type,
+                    "row_bucket": _bucket_for_http_error(409, detail),
+                    "termination_code": exc.code,
+                    "http_status": 409,
+                    "detail": detail,
+                    "preparation": {
+                        "auto_hydration_attempted": True,
+                        "auto_hydration_status": "FAILED",
+                        "can_execute": False,
+                    },
+                    "probability_publishable": False,
+                    "can_execute": False,
+                }
+            )
+            continue
+        except Exception as exc:
+            terminal_rows.append(
+                {
+                    "row_id": row.row_id,
+                    "canonical_key": canonical_key,
+                    "source_type": row.source_type,
+                    "row_bucket": "HELD",
+                    "termination_code": "AUTO_HYDRATION_INTERNAL_ERROR",
+                    "detail": {"message": str(exc), "probability_publishable": False, "can_execute": False},
+                    "preparation": {
+                        "auto_hydration_attempted": True,
+                        "auto_hydration_status": "FAILED",
+                        "can_execute": False,
+                    },
+                    "probability_publishable": False,
+                    "can_execute": False,
+                }
+            )
+            continue
+
         try:
             result = score_prop_callable(
                 candidate,
@@ -188,6 +331,7 @@ def run_pick_request_batch(
                     "termination_code": termination_code,
                     "http_status": exc.status_code,
                     "detail": detail,
+                    "preparation": preparation,
                     "probability_publishable": False,
                     "can_execute": False,
                 }
@@ -202,6 +346,7 @@ def run_pick_request_batch(
                     "row_bucket": "HELD",
                     "termination_code": "ROW_PROCESSING_ERROR",
                     "detail": {"message": str(exc)},
+                    "preparation": preparation,
                     "probability_publishable": False,
                     "can_execute": False,
                 }
@@ -220,6 +365,7 @@ def run_pick_request_batch(
                     if isinstance(prediction, dict) and prediction.get("terminal_label")
                     else "MODEL_COMPLETED"
                 ),
+                "preparation": preparation,
                 "result": result,
                 "probability_publishable": bool(result.get("probability_publishable")) if isinstance(result, dict) else False,
                 "can_execute": False,
