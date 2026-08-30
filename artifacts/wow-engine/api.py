@@ -558,3 +558,12 @@ def settle(prediction_id: str, official_result: str, actual_stat: float, hit: bo
         prediction_id, official_result=official_result, actual_stat=actual_stat, hit=hit,
         settlement_timestamp=datetime.now(timezone.utc).isoformat(),
     )
+
+
+# Agent Runtime V1 (Phase 1): durable run ledger, polling, and health-check
+# endpoints. Imported last so its routes attach to `app` after every route
+# above is already registered — api_g11.py and api_prod.py both copy `app`'s
+# routes wholesale except the specific paths they each override
+# (/score-event, /governance, /score-prop), so anything agent_runtime_api
+# registers propagates through both wrapper layers without either changing.
+import agent_runtime_api  # noqa: E402,F401

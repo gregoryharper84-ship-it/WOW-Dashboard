@@ -24,6 +24,47 @@ jobs:
     defaults:
       run:
         working-directory: artifacts/wow-engine
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wow_agent_ci
+          POSTGRES_PASSWORD: wow_agent_ci
+          POSTGRES_DB: wow_agent_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U wow_agent_ci -d wow_agent_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      postgrest:
+        image: postgrest/postgrest:v12.2.3
+        env:
+          PGRST_DB_URI: postgres://wow_agent_ci:wow_agent_ci@postgres:5432/wow_agent_ci
+          PGRST_DB_SCHEMAS: public
+          PGRST_DB_ANON_ROLE: anon
+          PGRST_JWT_SECRET: wow-agent-runtime-ci-only-jwt-secret-not-a-real-secret-32-bytes
+        ports:
+          # Exposed on 8001, not 3000: bare PostgREST serves tables at its
+          # root path, but the pinned supabase-py client hardcodes every
+          # request under <SUPABASE_URL>/rest/v1/... (the Supabase
+          # Cloud/Kong convention -- see supabase._sync.client.Client:
+          # self.rest_url = self.supabase_url.joinpath("rest", "v1")).
+          # A tiny local reverse proxy below listens on 3000, strips the
+          # /rest/v1 prefix, and forwards here, so SUPABASE_URL can stay
+          # http://localhost:3000 exactly as production sets it against a
+          # real Supabase project (which serves /rest/v1 itself).
+          - 8001:3000
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,10 +80,77 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install PyYAML openapi-spec-validator
+          pip install PyYAML openapi-spec-validator PyJWT
 
       - name: Run governed probability backend tests
         run: python -m pytest -q
+
+      - name: Run durable Agent Runtime integration (real Postgres + Redis + PostgREST + Celery)
+        env:
+          WOW_AGENT_RUNTIME_INTEGRATION: "1"
+          AGENT_RUNTIME_POSTGRES_DSN: postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci
+          SUPABASE_URL: http://localhost:3000
+          REDIS_URL: redis://localhost:6379/0
+          WOW_CAN_EXECUTE: "false"
+          WOW_DRY_RUN_ONLY: "true"
+        run: |
+          SUPABASE_SERVICE_KEY=$(python -c "
+          import jwt
+          print(jwt.encode({'role': 'service_role'}, 'wow-agent-runtime-ci-only-jwt-secret-not-a-real-secret-32-bytes', algorithm='HS256'))
+          ")
+          export SUPABASE_SERVICE_KEY
+
+          python - <<'PY' > "$RUNNER_TEMP/rest-v1-proxy.log" 2>&1 &
+          # Bare PostgREST has no /rest/v1 prefix; supabase-py always requests
+          # one. Strip it and forward to the real postgrest container port.
+          import http.server
+          import urllib.request
+          import urllib.error
+
+          UPSTREAM = "http://127.0.0.1:8001"
+          PREFIX = "/rest/v1"
+          PASS_THROUGH_HEADERS = {"host", "content-length", "connection", "transfer-encoding", "server", "date"}
+
+          class ProxyHandler(http.server.BaseHTTPRequestHandler):
+              def _proxy(self):
+                  path = self.path
+                  if path.startswith(PREFIX):
+                      path = path[len(PREFIX):] or "/"
+                  length = int(self.headers.get("Content-Length", 0) or 0)
+                  body = self.rfile.read(length) if length else None
+                  headers = {k: v for k, v in self.headers.items() if k.lower() not in PASS_THROUGH_HEADERS}
+                  req = urllib.request.Request(UPSTREAM + path, data=body, headers=headers, method=self.command)
+                  try:
+                      resp = urllib.request.urlopen(req)
+                      status, resp_headers, payload = resp.status, resp.getheaders(), resp.read()
+                  except urllib.error.HTTPError as exc:
+                      status, resp_headers, payload = exc.code, exc.headers.items(), exc.read()
+                  self.send_response(status)
+                  for key, value in resp_headers:
+                      if key.lower() not in PASS_THROUGH_HEADERS:
+                          self.send_header(key, value)
+                  self.end_headers()
+                  self.wfile.write(payload)
+
+              do_GET = do_POST = do_PATCH = do_DELETE = do_PUT = do_HEAD = _proxy
+
+              def log_message(self, format, *args):
+                  pass
+
+          http.server.ThreadingHTTPServer(("127.0.0.1", 3000), ProxyHandler).serve_forever()
+          PY
+          PROXY_PID=$!
+
+          celery -A agent_runtime.celery_app:celery_app worker --loglevel=WARNING --pool=solo --concurrency=1 \
+            > "$RUNNER_TEMP/wow-agent-worker.log" 2>&1 &
+          WORKER_PID=$!
+          trap 'kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true; echo "--- worker log ---"; cat "$RUNNER_TEMP/wow-agent-worker.log" || true; echo "--- rest/v1 proxy log ---"; cat "$RUNNER_TEMP/rest-v1-proxy.log" || true' EXIT
+          sleep 3
+          python -m pytest -q test_agent_runtime_postgres_integration.py
+          kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true
+          wait "$WORKER_PID" 2>/dev/null || true
+          wait "$PROXY_PID" 2>/dev/null || true
+          trap - EXIT
 
       - name: Validate Render, event schema, and Custom GPT Action contracts
         run: |
@@ -52,13 +160,22 @@ jobs:
           from openapi_spec_validator import validate_spec
 
           render = yaml.safe_load(Path("../../render.yaml").read_text())
-          assert isinstance(render, dict) and len(render.get("services", [])) == 1
-          service = render["services"][0]
+          assert isinstance(render, dict)
+          services = render.get("services", [])
+          by_name = {item["name"]: item for item in services}
+          assert set(by_name) == {"wow-jobs", "wow-governed-probability-engine", "wow-agent-worker"}
+
+          queue = by_name["wow-jobs"]
+          assert queue["type"] == "keyvalue"
+          assert queue["maxmemoryPolicy"] == "noeviction"
+          assert queue["ipAllowList"] == []
+
+          service = by_name["wow-governed-probability-engine"]
           assert service["type"] == "web"
           assert service["runtime"] == "python"
           assert service["plan"] == "free"
           assert service["rootDir"] == "artifacts/wow-engine"
-          assert service["healthCheckPath"] == "/health"
+          assert service["healthCheckPath"] == "/health/ready"
           assert service["autoDeployTrigger"] == "off"
           assert "$PORT" in service["startCommand"]
           secret_vars = {
@@ -68,6 +185,19 @@ jobs:
           }
           assert set(secret_vars) == {"SUPABASE_URL", "SUPABASE_SERVICE_KEY", "WOW_ACTION_API_KEY"}
           assert all(item.get("sync") is False for item in secret_vars.values())
+          service_env_by_key = {item["key"]: item for item in service["envVars"]}
+          assert service_env_by_key["WOW_CAN_EXECUTE"]["value"] == "false"
+          assert service_env_by_key["WOW_DRY_RUN_ONLY"]["value"] == "true"
+
+          worker = by_name["wow-agent-worker"]
+          assert worker["type"] == "worker"
+          assert worker["runtime"] == "python"
+          assert worker["rootDir"] == "artifacts/wow-engine"
+          assert worker["autoDeployTrigger"] == "off"
+          assert "agent_runtime.celery_app:celery_app" in worker["startCommand"]
+          worker_env_by_key = {item["key"]: item for item in worker["envVars"]}
+          assert worker_env_by_key["WOW_CAN_EXECUTE"]["value"] == "false"
+          assert worker_env_by_key["WOW_DRY_RUN_ONLY"]["value"] == "true"
 
           event_schema = Path("event_schema.sql").read_text()
           assert "create table if not exists wow_event_predictions" in event_schema.lower()

@@ -1,12 +1,25 @@
 services:
+  # WOW Agent Runtime V1 Phase 2 (packet section 17 / PR #33's topology,
+  # ported to public.wow_agent_* during the convergence pass). Definition
+  # only — not provisioned. Creating a paid persistent Key Value instance
+  # and the background worker requires explicit approval; see the
+  # convergence report for what's outstanding before this can be applied.
+  - type: keyvalue
+    name: wow-jobs
+    plan: starter
+    region: oregon
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
   - type: web
     name: wow-governed-probability-engine
     runtime: python
     plan: free
+    region: oregon
     rootDir: artifacts/wow-engine
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
+    healthCheckPath: /health/ready
     autoDeployTrigger: "off"
     envVars:
       - key: PYTHON_VERSION
@@ -25,3 +38,39 @@ services:
         sync: false
       - key: CFBD_API_KEY
         sync: false
+      - key: WOW_CAN_EXECUTE
+        value: "false"
+      - key: WOW_DRY_RUN_ONLY
+        value: "true"
+      - key: REDIS_URL
+        fromService:
+          name: wow-jobs
+          type: keyvalue
+          property: connectionString
+
+  - type: worker
+    name: wow-agent-worker
+    runtime: python
+    plan: starter
+    region: oregon
+    rootDir: artifacts/wow-engine
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A agent_runtime.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: WOW_CAN_EXECUTE
+        value: "false"
+      - key: WOW_DRY_RUN_ONLY
+        value: "true"
+      - key: REDIS_URL
+        fromService:
+          name: wow-jobs
+          type: keyvalue
+          property: connectionString
