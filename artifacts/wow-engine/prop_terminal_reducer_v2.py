@@ -1,8 +1,8 @@
 """Canonical prop terminal reducer for WOW v16 Clean Core.
 
 Infrastructure/capability failures are not pick rejections. This reducer keeps
-those states explicit so downstream reporting cannot misrepresent an unevaluated
-row as a model-negative verdict.
+those states explicit through verdict_class/blocker metadata while emitting only
+native WOW terminal labels.
 """
 from __future__ import annotations
 
@@ -28,6 +28,10 @@ MODEL_CAPABILITY_BLOCKERS = {
     "MODEL_ARTIFACT_NOT_PROMOTED",
     "UNSUPPORTED_COMPOSITE_MODEL",
     "MODEL_CALIBRATION_UNAVAILABLE",
+    "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+    "PROP_MODEL_REGISTRY_UNAVAILABLE",
+    "PROP_MODEL_FAMILY_ADAPTER_UNAVAILABLE",
+    "PROP_CALIBRATOR_ADAPTER_UNAVAILABLE",
 }
 
 EVIDENCE_BLOCKERS = {
@@ -36,8 +40,15 @@ EVIDENCE_BLOCKERS = {
     "ROLE_STATUS_UNAVAILABLE",
     "ROLE_OPPORTUNITY_PACKET_INCOMPLETE",
     "L10_EVIDENCE_INCOMPLETE",
+    "L10_GAME_LOG_INCOMPLETE",
+    "L10_BOX_SCORE_LOG_INCOMPLETE",
     "FAILURE_PATH_CONTRACT_INCOMPLETE",
     "HYDRATION_INCOMPLETE",
+    "RUN_INVALID_ACQUISITION_INCOMPLETE",
+    "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
+    "PROP_AUTO_HYDRATION_PROVIDER_UNAVAILABLE",
+    "PROP_AUTO_HYDRATION_INTERNAL_ERROR",
+    "PROP_EVIDENCE_PERSISTENCE_UNAVAILABLE",
     "STALE_EVIDENCE",
 }
 
@@ -51,6 +62,7 @@ MARKET_BLOCKERS = {
 
 EVENT_BLOCKERS = {
     "EVENT_NOT_PREGAME",
+    "EVENT_ALREADY_STARTED",
     "EVENT_STARTED",
     "EVENT_FINAL",
     "EVENT_CANCELLED",
@@ -76,18 +88,21 @@ def reduce_prop_terminal(
     blockers: Iterable[str] = (),
     model_evaluated: bool,
 ) -> PropTerminalDecision:
-    """Reduce one prop row to an honest terminal state.
+    """Reduce one prop row to an honest native WOW terminal state.
 
-    Precedence is fail-closed and semantic:
-      1. model capability missing -> MODEL_UNAVAILABLE
-      2. evidence/hydration missing -> EVIDENCE_INCOMPLETE
-      3. exact market/money identity missing -> MARKET_DATA_UNAVAILABLE
-      4. event no longer valid for pregame -> NO_PLAY_FINAL_REFRESH
+    Precedence is fail-closed and objective-separated:
+      1. specialist/model capability missing -> MODEL_UNAVAILABLE
+      2. mandatory evidence/hydration missing before model evaluation ->
+         MODEL_UNAVAILABLE with ACQUISITION_BLOCKED verdict metadata
+      3. market/money identity failure never erases a completed probability
+         result; preserve proposed native label and mark MARKET_BLOCKED
+      4. event no longer valid for a pregame row -> NO_PLAY
       5. only after model evaluation may probability/failure-path labels count as
          an actual pick rejection.
     """
     bs = _normalized(blockers)
     bset = set(bs)
+    label = str(proposed_label or "").strip().upper() or "MODEL_UNAVAILABLE"
 
     if bset & MODEL_CAPABILITY_BLOCKERS:
         return PropTerminalDecision(
@@ -99,9 +114,9 @@ def reduce_prop_terminal(
             blockers=bs,
         )
 
-    if bset & EVIDENCE_BLOCKERS:
+    if bset & EVIDENCE_BLOCKERS and not model_evaluated:
         return PropTerminalDecision(
-            terminal_label="EVIDENCE_INCOMPLETE",
+            terminal_label="MODEL_UNAVAILABLE",
             verdict_class="ACQUISITION_BLOCKED",
             model_evaluated=False,
             pick_rejected=False,
@@ -109,19 +124,9 @@ def reduce_prop_terminal(
             blockers=bs,
         )
 
-    if bset & MARKET_BLOCKERS:
-        return PropTerminalDecision(
-            terminal_label="MARKET_DATA_UNAVAILABLE",
-            verdict_class="MARKET_BLOCKED",
-            model_evaluated=model_evaluated,
-            pick_rejected=False,
-            infrastructure_blocked=True,
-            blockers=bs,
-        )
-
     if bset & EVENT_BLOCKERS:
         return PropTerminalDecision(
-            terminal_label="NO_PLAY_FINAL_REFRESH",
+            terminal_label="NO_PLAY",
             verdict_class="EVENT_INVALIDATED",
             model_evaluated=model_evaluated,
             pick_rejected=False,
@@ -129,7 +134,16 @@ def reduce_prop_terminal(
             blockers=bs,
         )
 
-    label = str(proposed_label or "").strip().upper() or "MODEL_UNAVAILABLE"
+    if bset & MARKET_BLOCKERS:
+        return PropTerminalDecision(
+            terminal_label=label if model_evaluated else "MODEL_UNAVAILABLE",
+            verdict_class="MARKET_BLOCKED",
+            model_evaluated=model_evaluated,
+            pick_rejected=False,
+            infrastructure_blocked=True,
+            blockers=bs,
+        )
+
     if label in TRUE_MODEL_REJECTION_LABELS:
         if not model_evaluated:
             return PropTerminalDecision(
