@@ -510,3 +510,17 @@ def score_prop(
         "probability_publishable": True,
         "can_execute": False,
     }
+
+
+# Install the source-agnostic batch ingress only after the governed single-row
+# scorer exists. The batch controller delegates every row back through
+# score_prop; it never bypasses the existing specialist, hydration, model,
+# calibration, persistence, market, or safety gates.
+from pick_request_pipeline import install_pick_request_routes as _install_pick_request_routes
+
+_install_pick_request_routes(
+    app=app,
+    score_prop_model=ScorePropRequest,
+    score_prop_callable=score_prop,
+    require_action_api_key=prod._require_action_api_key,
+)
