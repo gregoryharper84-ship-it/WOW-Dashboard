@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import wnba_prop_auto_hydration as w
+import prop_auto_hydration_router  # noqa: F401 -- installs canonical strict WNBA status parser
 
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
@@ -164,6 +165,18 @@ def test_explicit_questionable_designation_blocks_unconditional_model_path():
     assert exc.value.detail["designation"] == "QUESTIONABLE"
 
 
+def test_available_target_is_not_overread_as_later_player_out():
+    result = w._availability_from_report(
+        submitted_report("Test Player Available Returned To Competition"),
+        player_name="Test Player",
+        team_name="Alpha Aces",
+        matchup="AAA@BBB",
+        game_date="08/30/2026",
+    )
+    assert result["availability"] == "AVAILABLE"
+    assert result["designation"] == "AVAILABLE"
+
+
 def test_not_yet_submitted_blocks_omission_logic():
     with pytest.raises(w.WNBAPropHydrationError) as exc:
         w._availability_from_report(
@@ -205,7 +218,7 @@ def test_full_hydration_returns_exact_l10_minutes_role_and_opportunity(monkeypat
     assert result["opportunity_ledger"]["availability_gate"] == "PASS"
     assert result["evidence_version"] == "PROP_EVIDENCE_V1"
     assert result["hydration_provider"] == w.PROVIDER_ID
-    assert result["can_execute"] if "can_execute" in result else False is False
+    assert "can_execute" not in result
     assert len(calls) == 4  # schedule + two rosters + player log
 
 
