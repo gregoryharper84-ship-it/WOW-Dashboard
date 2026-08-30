@@ -9,8 +9,10 @@ on:
       - 'artifacts/wow-engine/scripts/train_wnba_props_offset.py'
       - 'artifacts/wow-engine/scripts/probe_wnba_2026_training_join.py'
       - 'artifacts/wow-engine/wnba_prop_training_contract.py'
+      - 'artifacts/wow-engine/wnba_prop_model_adapter.py'
       - 'artifacts/wow-engine/test_wnba_prop_trainer.py'
       - 'artifacts/wow-engine/test_wnba_prop_offset_trainer.py'
+      - 'artifacts/wow-engine/test_wnba_prop_model_adapter.py'
       - 'artifacts/wow-engine/test_wnba_prop_training_readiness.py'
       - '.github/workflows/wnba-prop-offline-fit.yml'
   workflow_dispatch:
@@ -40,7 +42,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Run WNBA trainer and readiness unit tests
+      - name: Run WNBA trainer and runtime-parity unit tests
         run: >-
           pytest -q
           test_wnba_prop_training_contract.py
