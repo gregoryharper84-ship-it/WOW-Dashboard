@@ -8,8 +8,10 @@ Uses pinned SportsDataverse release assets:
 
 A player is a starter from the V3 ``position`` field only if the complete
 corpus proves exactly five non-empty-position players per team-game. Exact tip
-time is accepted only through an unambiguous date + exact team-pair join. No
-fuzzy matching or fabricated timestamps are permitted.
+time is accepted only through an unambiguous date + exact canonical team-pair
+join. The only aliases are six provider-specific abbreviations independently
+observed with the same exact team names in both 2026 datasets. No fuzzy matching
+or fabricated timestamps are permitted.
 
 LeagueGameLog rows without a player identity are non-materializable under the
 governed historical-player contract. They are counted and excluded before join
@@ -46,6 +48,17 @@ SCHEDULE_URL = (
 )
 SCHEDULE_SHA256 = "e77056e882e545d891662e41b64a7bf9106bf221ee256bc6d33cf0b7672e000a"
 CAN_EXECUTE = False
+
+# Audited on the pinned 2026 corpora by exact display-name equality.
+# Left values are WNBA Stats abbreviations; right values are ESPN abbreviations.
+WNBA_STATS_TO_CANONICAL = {
+    "GSV": "GS",   # Golden State Valkyries
+    "LAS": "LA",   # Los Angeles Sparks
+    "LVA": "LV",   # Las Vegas Aces
+    "NYL": "NY",   # New York Liberty
+    "PDX": "POR",  # Portland Fire
+    "WAS": "WSH",  # Washington Mystics
+}
 
 
 def _download(url: str, expected_sha256: str) -> bytes:
@@ -101,7 +114,6 @@ def _date_only(value: object) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
-    # Preserve exact calendar date semantics while tolerating ISO timestamps.
     token = raw[:10]
     try:
         return datetime.fromisoformat(token).date().isoformat()
@@ -131,17 +143,22 @@ def _team(value: object) -> str:
     return re.sub(r"[^A-Z0-9]", "", str(value or "").strip().upper())
 
 
+def _canonical_wnba_team(value: object) -> str:
+    raw = _team(value)
+    return WNBA_STATS_TO_CANONICAL.get(raw, raw)
+
+
 def _log_game_key(game_date: object, team_abbr: object, matchup: object) -> tuple[str, tuple[str, str]] | None:
     date_key = _date_only(game_date)
-    team = _team(team_abbr)
+    team = _canonical_wnba_team(team_abbr)
     raw_matchup = " ".join(str(matchup or "").strip().upper().split())
     if not date_key or not team or not raw_matchup:
         return None
-    # WNBA LeagueGameLog uses forms such as "DAL vs. PHO" and "DAL @ PHO".
     match = re.match(r"^([A-Z0-9]+)\s+(?:VS\.?|@)\s+([A-Z0-9]+)$", raw_matchup)
     if not match:
         return None
-    left, right = _team(match.group(1)), _team(match.group(2))
+    left = _canonical_wnba_team(match.group(1))
+    right = _canonical_wnba_team(match.group(2))
     if team != left or not right or left == right:
         return None
     return date_key, tuple(sorted((left, right)))
@@ -200,6 +217,7 @@ def main() -> int:
         "player_log_sha256": PLAYER_LOG_SHA256,
         "player_box_sha256": PLAYER_BOX_SHA256,
         "schedule_sha256": SCHEDULE_SHA256,
+        "team_aliases": WNBA_STATS_TO_CANONICAL,
         "player_log_columns": log_cols,
         "player_box_columns": box_cols,
         "schedule_columns": schedule_cols,
@@ -208,7 +226,7 @@ def main() -> int:
         "schedule_row_n": len(schedules),
         "schema_blockers": schema_blockers,
         "starter_semantics": "NONEMPTY_V3_POSITION_ONLY_IF_EXACTLY_FIVE_PER_TEAM_GAME",
-        "event_time_semantics": "EXACT_DATE_PLUS_EXACT_TEAM_PAIR_ONLY_NO_FUZZY_MATCHING",
+        "event_time_semantics": "EXACT_DATE_PLUS_EXACT_CANONICAL_TEAM_PAIR_NO_FUZZY_MATCHING",
         "probability_publishable": False,
         "runtime_model_status": "MODEL_UNAVAILABLE",
         "can_execute": CAN_EXECUTE,
@@ -219,7 +237,6 @@ def main() -> int:
 
     assert all(required.values())
 
-    # Role evidence gate.
     box_index: dict[tuple[str, str], dict[str, str]] = {}
     duplicate_box_keys = 0
     team_game_counts: Counter[tuple[str, str]] = Counter()
@@ -246,7 +263,6 @@ def main() -> int:
         if team_game_starter_counts.get((g, t), 0) != 5
     ]
 
-    # Exact event-time enrichment gate.
     schedule_index: dict[tuple[str, tuple[str, str]], datetime] = {}
     schedule_duplicate_keys: Counter[tuple[str, tuple[str, str]]] = Counter()
     schedule_invalid_tip_n = 0
