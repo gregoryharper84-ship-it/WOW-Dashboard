@@ -77,7 +77,6 @@ class ScorePropRequest(prod.ScorePropRequest):
     market_side_a: Optional[MarketQuoteInput] = None
     market_side_b: Optional[MarketQuoteInput] = None
     settlement_rule: Optional[SettlementRuleInput] = None
-    line_tolerance: float = 0.0
 
 
 app = FastAPI(
@@ -576,7 +575,8 @@ def score_prop(
         settlement_rule=settlement_rule,
         side_a=raw_market_a,
         side_b=raw_market_b,
-        line_tolerance=req.line_tolerance,
+        # Exact line matching is server-owned. No caller may widen tolerance.
+        line_tolerance=0.0,
     )
     try:
         result = score_discrete_prop_end_to_end(
