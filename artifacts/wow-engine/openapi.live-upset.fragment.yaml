@@ -1,0 +1,32 @@
+# Merge into the WOW Betting Engine Action schema after backend deployment.
+paths:
+  /live-probability/health:
+    get:
+      operationId: getWowLiveProbabilityHealth
+      summary: Read governed live probability capability by sport.
+  /score-live-event:
+    post:
+      operationId: scoreWowLiveEvent
+      summary: Score an authenticated LIVE_UPSET event through the governed live model.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [research_run_id, official_event_id, sport, league, exact_selection, event_status, settlement_rule, source_snapshot_id, live_snapshot_timestamp, latest_material_update_at, market_role, market_role_source, market_role_timestamp, market_role_confidence]
+              properties:
+                research_run_id: {type: string}
+                official_event_id: {type: string}
+                sport: {type: string}
+                league: {type: string}
+                exact_selection: {type: string}
+                event_status: {type: string, enum: [IN_PROGRESS, SCHEDULED, FINAL, CANCELLED, POSTPONED, SUSPENDED]}
+                settlement_rule: {type: string}
+                source_snapshot_id: {type: string, format: uuid}
+                live_snapshot_timestamp: {type: string, format: date-time}
+                latest_material_update_at: {type: string, format: date-time}
+                market_role: {type: string, enum: [UNDERDOG, FAVORITE, EVEN, CONFLICT]}
+                market_role_source: {type: string}
+                market_role_timestamp: {type: string, format: date-time}
+                market_role_confidence: {type: number, minimum: 0, maximum: 1}
