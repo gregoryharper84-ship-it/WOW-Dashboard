@@ -1,0 +1,86 @@
+name: WNBA Prop Offline Fit
+
+on:
+  push:
+    branches:
+      - chatgpt/p1-wnba-prop-offline-fit
+    paths:
+      - 'artifacts/wow-engine/scripts/train_wnba_props.py'
+      - 'artifacts/wow-engine/scripts/train_wnba_props_offset.py'
+      - 'artifacts/wow-engine/scripts/probe_wnba_2026_training_join.py'
+      - 'artifacts/wow-engine/wnba_prop_training_contract.py'
+      - 'artifacts/wow-engine/wnba_prop_model_adapter.py'
+      - 'artifacts/wow-engine/wnba_prop_calibration_adapter.py'
+      - 'artifacts/wow-engine/wnba_prop_auto_hydration.py'
+      - 'artifacts/wow-engine/prop_auto_hydration_router.py'
+      - 'artifacts/wow-engine/prop_model_adapters.py'
+      - 'artifacts/wow-engine/prop_calibration_adapters.py'
+      - 'artifacts/wow-engine/requirements.txt'
+      - 'artifacts/wow-engine/test_wnba_prop_trainer.py'
+      - 'artifacts/wow-engine/test_wnba_prop_offset_trainer.py'
+      - 'artifacts/wow-engine/test_wnba_prop_model_adapter.py'
+      - 'artifacts/wow-engine/test_wnba_prop_calibration_adapter.py'
+      - 'artifacts/wow-engine/test_wnba_prop_auto_hydration.py'
+      - 'artifacts/wow-engine/test_wnba_runtime_registration.py'
+      - 'artifacts/wow-engine/test_wnba_prop_training_readiness.py'
+      - 'artifacts/wow-engine/test_wnba_prop_real_artifact_e2e.py'
+      - 'artifacts/wow-engine/data/wow_wnba_prop_artifacts_v1.json'
+      - '.github/workflows/wnba-prop-offline-fit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run WNBA trainer, calibration, hydration, and runtime-parity tests
+        run: >-
+          pytest -q
+          test_wnba_prop_training_contract.py
+          test_wnba_prop_training_readiness.py
+          test_wnba_stats_client.py
+          test_wnba_prop_trainer.py
+          test_wnba_prop_offset_trainer.py
+          test_wnba_prop_model_adapter.py
+          test_wnba_prop_calibration_adapter.py
+          test_wnba_prop_auto_hydration.py
+          test_wnba_runtime_registration.py
+          test_wnba_prop_real_artifact_e2e.py
+
+      - name: Prove pinned historical role and event-time joins
+        run: python scripts/probe_wnba_2026_training_join.py > data/wnba_prop_training_readiness_2026.json
+
+      - name: Fit chronological WNBA prop artifacts
+        run: PYTHONPATH=. python scripts/train_wnba_props_offset.py
+
+      - name: Upload governed fit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wnba-prop-offline-fit-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            artifacts/wow-engine/data/wnba_prop_training_readiness_2026.json
+            artifacts/wow-engine/data/wow_wnba_prop_artifacts_v1.json
+            artifacts/wow-engine/data/wow_wnba_prop_training_report_v1.json

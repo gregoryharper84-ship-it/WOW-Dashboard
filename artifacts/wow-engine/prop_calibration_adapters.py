@@ -69,7 +69,7 @@ def _mlb_pitcher_so_resample_fn(inference: CertifiedInference, direction_more: b
             out_sample = [outs[j] for j in idx]
             total_out = sum(out_sample)
             if total_out <= 0:
-                total_out = sum(outs)  # degenerate resample guard; falls back to observed total
+                total_out = sum(outs)
                 so_sample, out_sample = game_log, outs
             prior_so_per_out = sum(so_sample) / total_out
             prior_shortened_rate = sum(1 for o in out_sample if o < shortened_outs_threshold) / n
@@ -138,3 +138,5 @@ def mlb_pitcher_so_precalibration_shrinkage_adapter(
 def register() -> None:
     """Production registration seam -- called once at process startup."""
     register_prop_calibration_adapter(MLB_PITCHER_SO_CALIBRATOR_VERSION, mlb_pitcher_so_precalibration_shrinkage_adapter)
+    from wnba_prop_calibration_adapter import CALIBRATOR_VERSION as WNBA_CALIBRATOR_VERSION, wnba_precalibration_bootstrap_adapter
+    register_prop_calibration_adapter(WNBA_CALIBRATOR_VERSION, wnba_precalibration_bootstrap_adapter)

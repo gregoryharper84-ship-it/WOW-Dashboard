@@ -6,6 +6,7 @@ supabase>=2.4
 pydantic>=2.6
 pytest>=8.0
 httpx>=0.27  # required by fastapi.testclient.TestClient (Gate 11 endpoint tests)
+pypdf>=5.0  # parse official WNBA injury-report PDFs during governed pregame hydration
 openapi-spec-validator>=0.7  # required by test_score_event_governance.py::test_33_openapi_validates_with_unique_operations
 celery>=5.4,<6  # WOW Agent Runtime V1 durable worker (agent_runtime/queue.py)
 redis>=5.0,<7  # Celery broker/backend and /health/ready queue check
