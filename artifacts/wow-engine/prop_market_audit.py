@@ -5,13 +5,21 @@ market-prior/no-vig path it must also match the exact model candidate contract.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 from market import MarketQuote
 from prop_settlement import LINE_MISMATCH, NO_VIG_UNAVAILABLE, SETTLEMENT_RULE_UNRESOLVED, SettlementRule, audit_exact_line
 
 MARKET_IDENTITY_MISMATCH = "WOW_HOLD_MARKET_IDENTITY_MISMATCH"
+MARKET_SIDE_INVALID = "WOW_HOLD_MARKET_SIDE_INVALID"
+
+_SIDE_ALIASES = {
+    "MORE": "MORE",
+    "OVER": "MORE",
+    "LESS": "LESS",
+    "UNDER": "LESS",
+}
 
 
 @dataclass(frozen=True)
@@ -26,6 +34,13 @@ class CandidateMarketAudit:
 
 def _norm(value: object) -> str:
     return str(value or "").strip().upper()
+
+
+def _canonical_quote(quote: MarketQuote) -> Optional[MarketQuote]:
+    canonical_side = _SIDE_ALIASES.get(_norm(quote.side))
+    if canonical_side is None:
+        return None
+    return replace(quote, side=canonical_side)
 
 
 def _quote_matches_candidate(
@@ -105,19 +120,39 @@ def audit_candidate_market(
                 can_use_two_way_no_vig=False,
             )
 
-    if side_a is None or side_b is None:
+    canonical_a = _canonical_quote(side_a) if side_a is not None else None
+    canonical_b = _canonical_quote(side_b) if side_b is not None else None
+    if (side_a is not None and canonical_a is None) or (side_b is not None and canonical_b is None):
+        return CandidateMarketAudit(
+            status="HOLD",
+            blocker=MARKET_SIDE_INVALID,
+            side_a=None,
+            side_b=None,
+            can_use_two_way_no_vig=False,
+        )
+
+    if canonical_a is None or canonical_b is None:
         return CandidateMarketAudit(
             status="HOLD",
             blocker=NO_VIG_UNAVAILABLE,
-            side_a=side_a,
-            side_b=side_b,
+            side_a=canonical_a,
+            side_b=canonical_b,
+            can_use_two_way_no_vig=False,
+        )
+
+    if canonical_a.side == canonical_b.side:
+        return CandidateMarketAudit(
+            status="HOLD",
+            blocker=NO_VIG_UNAVAILABLE,
+            side_a=canonical_a,
+            side_b=canonical_b,
             can_use_two_way_no_vig=False,
         )
 
     return CandidateMarketAudit(
         status="PASS",
         blocker=None,
-        side_a=side_a,
-        side_b=side_b,
+        side_a=canonical_a,
+        side_b=canonical_b,
         can_use_two_way_no_vig=True,
     )
