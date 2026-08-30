@@ -52,6 +52,8 @@ jobs:
           fi
           echo 'ZERO_TRACKED_LEGACY_REFERENCES=PASS'
       - name: Validate affected frontend workspaces
+        env:
+          PORT: '3000'
         run: |
           pnpm --filter @workspace/final-lock run typecheck
           pnpm --filter @workspace/final-lock run build
