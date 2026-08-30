@@ -227,9 +227,15 @@ jobs:
 
           pick_action = yaml.safe_load(Path("openapi.pick-request-action.yaml").read_text())
           validate_spec(pick_action)
-          assert list(pick_action["paths"]) == ["/score-pick-request"]
-          assert pick_action["paths"]["/score-pick-request"]["post"]["operationId"] == "scoreWowPickRequest"
-          assert pick_action["paths"]["/score-pick-request"]["post"]["security"] == [{"actionBearer": []}]
+          expected_pick_operations = {
+              "/score-pick-request": "scoreWowPickRequest",
+              "/record-recommendations": "recordWowRecommendations",
+              "/settle-recommendations": "settleWowRecommendations",
+          }
+          assert set(pick_action["paths"]) == set(expected_pick_operations)
+          for path, operation_id in expected_pick_operations.items():
+              assert pick_action["paths"][path]["post"]["operationId"] == operation_id
+              assert pick_action["paths"][path]["post"]["security"] == [{"actionBearer": []}]
           assert "REPLACE_WITH_RENDER_SERVICE_HOST" in pick_action["servers"][0]["url"]
           print("release contracts valid")
           PY
