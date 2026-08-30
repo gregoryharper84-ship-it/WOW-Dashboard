@@ -12,23 +12,24 @@ from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
 
 # Only blockers whose owning gate explicitly certifies calibration/publication
-# scope belong here. Do not add transport/preflight/deployment failures: when
-# canonical governance evidence itself is unavailable, scope is not proven and
-# the caller must fail closed rather than enter the raw-research bypass.
+# scope belong here. Legacy deployment-not-ready is calibration/publication
+# scoped in the current adapter because the canonical preflight is still read
+# independently and must certify the actual forward-shadow blocker. Transport or
+# invalid-preflight failures themselves remain GLOBAL and cannot use the bypass.
 PUBLICATION_SCOPED_BLOCKERS = frozenset({
     "FORWARD_SHADOW_NOT_COMPLETED",
     "CALIBRATION_HEALTH_BLOCKED",
     "CALIBRATION_UNAVAILABLE",
     "GOVERNED_PROBABILITY_PUBLICATION_UNAVAILABLE",
+    "GOVERNED_DEPLOYMENT_NOT_READY",
 })
 
 # These failures mean the backend could not establish the canonical governance
-# state. They are GLOBAL evidence failures, not evidence that only calibration
-# or publication is broken.
+# preflight. They are GLOBAL evidence failures, not evidence that only
+# calibration or publication is broken.
 GLOBAL_SCOPED_BLOCKERS = frozenset({
     "GOVERNED_PROBABILITY_PREFLIGHT_UNAVAILABLE",
     "GOVERNED_PROBABILITY_PREFLIGHT_INVALID_RESPONSE",
-    "GOVERNED_DEPLOYMENT_NOT_READY",
     "GOVERNED_PROBABILITY_UNAVAILABLE",
 })
 
