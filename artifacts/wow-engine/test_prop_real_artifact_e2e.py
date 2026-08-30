@@ -4,15 +4,13 @@ scripts/train_mlb_pitcher_strikeouts.py from real Retrosheet-derived data,
 see that script's module docstring for provenance).
 
 This is not a live production run: it does not reach a real Supabase
-project or a real wow_prop_evidence_snapshots row (this session has no
-production credentials, by design -- see CLAUDE.md Section 9/10). It proves
-that the real, out-of-sample-validated fitted constants flow correctly
-through resolve_certified_artifact -> the registered model-family adapter
--> derive_line_probabilities -> the registered calibration adapter ->
-determine_publishability, end to end in-process, with the exact same code
-path api_prod_market.score_prop calls in production. The evidence snapshot
-below is an illustrative example (a plausible starter's last-10-game log),
-not a real player's real game log.
+project or a real wow_prop_evidence_snapshots row. It proves that the real,
+out-of-sample-validated fitted constants flow correctly through
+resolve_certified_artifact -> the registered model-family adapter ->
+derive_line_probabilities -> the registered calibration adapter ->
+determine_publishability, end to end in-process, with the exact same code path
+api_prod_market.score_prop calls in production. The evidence snapshot below is
+an illustrative example, not a real player's real game log.
 """
 from __future__ import annotations
 
@@ -27,6 +25,7 @@ from prop_discrete_engine import clear_prop_calibration_adapters, score_discrete
 from prop_distribution_contract import PropInferenceRequest
 from prop_fitted_provider import clear_model_family_adapters
 from prop_model_adapters import register as register_model_adapter
+from qualification_policy_v2 import classify_prop_probability
 
 ARTIFACT_JSON_PATH = os.path.join(os.path.dirname(__file__), "data", "wow_mlb_pitcher_strikeouts_artifact_v1.json")
 
@@ -83,7 +82,7 @@ def _rpc_payload(trained: dict) -> dict:
         "lifecycle_state": "PROSPECTIVE_CERTIFIED",
         "training_dataset_hash": trained["training_dataset_hash"],
         "training_code_sha": trained["training_code_sha"],
-        "artifact_checksum": "d" * 64,  # registry-assigned at insertion time; not recomputed here
+        "artifact_checksum": "d" * 64,
         "artifact_format": "JSON_V1",
         "artifact_payload": trained,
         "supported_line_min": trained["supported_line_min"],
@@ -111,8 +110,6 @@ def _request(evidence_snapshot_id="44444444-4444-4444-8444-444444444444"):
 
 
 def _illustrative_features():
-    # A plausible last-10-starts log for a mid-rotation starter: mostly
-    # normal-length outings (~17-18 outs), two shortened outings.
     game_log = [6, 5, 7, 4, 6, 8, 5, 3, 6, 7]
     box_score_log = [{"outs": o} for o in [18, 17, 19, 12, 18, 20, 17, 11, 18, 19]]
     return {"game_log": game_log, "box_score_log": box_score_log, "opponent_context": None}
@@ -144,9 +141,19 @@ def test_real_trained_artifact_scores_more_end_to_end():
     assert row.calibration_status == "PRECALIBRATION_SHRINKAGE"
     assert 0.0 < row.calibrated_probability_lower_bound <= row.calibrated_probability <= row.calibrated_probability_upper_bound < 1.0
     assert row.probability_publishable is True
-    # Phase A shrinkage is never money/final approved, regardless of how
-    # strong the raw model result looks (calibration.py Section 8B.4).
-    assert row.probability_ceiling.startswith("MODEL_QUALIFIED_HOLD_PROHIBITED_PRECALIBRATION")
+
+    expected = classify_prop_probability(
+        calibrated_probability=row.calibrated_probability,
+        calibrated_lower_bound=row.calibrated_probability_lower_bound,
+        calibration_status=row.calibration_status,
+        blockers=row.data_gaps,
+        probability_publishable=row.probability_publishable,
+    )
+    assert row.probability_ceiling == expected.terminal_label
+    # Phase-A may be research-supported or rejected on probability, but it can
+    # never advance into downstream money/final approval.
+    assert expected.downstream_money_evaluation_allowed is False
+    assert expected.final_approved_allowed is False
 
 
 def test_real_trained_artifact_more_and_less_derive_from_same_pmf():
