@@ -17,6 +17,7 @@ from fastapi import Depends, Header, HTTPException
 
 import api_prod_market_acceptance as base
 import calibration_publication_api as lane_patch
+from live_probability_runtime import install_live_probability_routes
 from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_closing_capture import run_from_environment
@@ -99,6 +100,7 @@ def _db_client():
 
 install_raw_availability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
 install_pick_request_routes(app, market_api=base.market_api, auth_dependency=_auth)
+install_live_probability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
 
 
 def _safe_count(table: str) -> int | None:
