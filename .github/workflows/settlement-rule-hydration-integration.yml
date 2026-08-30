@@ -1,0 +1,39 @@
+name: Settlement Rule Hydration Integration
+
+on:
+  push:
+    branches: [chatgpt/prop-settlement-rule-hydration-20260830]
+    paths: ['.github/workflows/settlement-rule-hydration-integration.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/prop-settlement-rule-hydration-20260830
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install backend dependencies
+        working-directory: artifacts/wow-engine
+        run: pip install -r requirements.txt
+      - name: Apply guarded integration
+        working-directory: artifacts/wow-engine
+        run: python scripts/apply_settlement_registry_integration.py
+      - name: Compile and focused regression
+        working-directory: artifacts/wow-engine
+        run: |
+          python -m py_compile api_prod_market.py market.py pick_request_runtime.py prop_settlement.py prop_settlement_registry.py
+          python -m pytest -q test_prop_settlement.py test_prop_settlement_registry.py test_prop_market_audit.py test_api_prod_market.py
+      - name: Commit integrated production code
+        run: |
+          git config user.name "WOW CI Integration"
+          git config user.email "actions@users.noreply.github.com"
+          git add artifacts/wow-engine/api_prod_market.py artifacts/wow-engine/market.py artifacts/wow-engine/pick_request_runtime.py
+          git commit -m "feat: hydrate prop settlement rules server side"
+          git push origin HEAD:chatgpt/prop-settlement-rule-hydration-20260830
