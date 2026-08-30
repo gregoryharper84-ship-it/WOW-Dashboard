@@ -2,6 +2,8 @@
 
 Two quotes matching each other is insufficient. Before a quote can enter the
 market-prior/no-vig path it must also match the exact model candidate contract.
+Market identity and settlement resolution remain separate objectives: a market
+pair can be exact while settlement rules are still held downstream.
 """
 from __future__ import annotations
 
@@ -9,7 +11,7 @@ from dataclasses import dataclass, replace
 from typing import Optional
 
 from market import MarketQuote
-from prop_settlement import LINE_MISMATCH, NO_VIG_UNAVAILABLE, SETTLEMENT_RULE_UNRESOLVED, SettlementRule, audit_exact_line
+from prop_settlement import LINE_MISMATCH, NO_VIG_UNAVAILABLE, SettlementRule, audit_exact_line
 
 MARKET_IDENTITY_MISMATCH = "WOW_HOLD_MARKET_IDENTITY_MISMATCH"
 MARKET_SIDE_INVALID = "WOW_HOLD_MARKET_SIDE_INVALID"
@@ -51,7 +53,7 @@ def _quote_matches_candidate(
     stat: str,
     period: str,
     line: float,
-    settlement_basis: str,
+    settlement_basis: Optional[str],
     line_tolerance: float,
 ) -> tuple[bool, Optional[str]]:
     if not audit_exact_line(candidate_line=line, quote_line=quote.line, tolerance=line_tolerance):
@@ -61,8 +63,12 @@ def _quote_matches_candidate(
         or _norm(quote.participant) != _norm(participant)
         or _norm(quote.stat) != _norm(stat)
         or _norm(quote.period) != _norm(period)
-        or _norm(quote.settlement_basis) != _norm(settlement_basis)
     ):
+        return False, MARKET_IDENTITY_MISMATCH
+    # If a governed settlement rule is already available, market identity must
+    # agree with it. If not, settlement remains a separate downstream HOLD; it
+    # does not erase otherwise exact event/participant/stat/period/line pricing.
+    if settlement_basis is not None and _norm(quote.settlement_basis) != _norm(settlement_basis):
         return False, MARKET_IDENTITY_MISMATCH
     return True, None
 
@@ -79,15 +85,6 @@ def audit_candidate_market(
     side_b: Optional[MarketQuote],
     line_tolerance: float = 0.0,
 ) -> CandidateMarketAudit:
-    if settlement_rule is None:
-        return CandidateMarketAudit(
-            status="HOLD",
-            blocker=SETTLEMENT_RULE_UNRESOLVED,
-            side_a=None,
-            side_b=None,
-            can_use_two_way_no_vig=False,
-        )
-
     supplied = [quote for quote in (side_a, side_b) if quote is not None]
     if not supplied:
         return CandidateMarketAudit(
@@ -98,6 +95,7 @@ def audit_candidate_market(
             can_use_two_way_no_vig=False,
         )
 
+    expected_settlement_basis = settlement_rule.settlement_basis if settlement_rule is not None else None
     for quote in supplied:
         matched, blocker = _quote_matches_candidate(
             quote,
@@ -106,7 +104,7 @@ def audit_candidate_market(
             stat=stat,
             period=period,
             line=line,
-            settlement_basis=settlement_rule.settlement_basis,
+            settlement_basis=expected_settlement_basis,
             line_tolerance=line_tolerance,
         )
         if not matched:
