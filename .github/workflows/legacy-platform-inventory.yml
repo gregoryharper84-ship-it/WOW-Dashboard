@@ -1,0 +1,30 @@
+name: Legacy Platform Inventory
+
+on:
+  push:
+    branches: [chatgpt/remove-replit-20260830]
+    paths: ['.github/workflows/legacy-platform-inventory.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/remove-replit-20260830
+          fetch-depth: 1
+      - name: Compact inventory
+        shell: bash
+        run: |
+          needle="$(printf 'rep%s' 'lit')"
+          echo '=== MATCHING TRACKED PATHS ==='
+          git ls-files | grep -i "$needle" || true
+          echo '=== FILES WITH CONTENT MATCHES ==='
+          git grep -l -i -I "$needle" -- . || true
+          echo '=== PACKAGE / VITE FILES ==='
+          find . -type f \( -name 'package.json' -o -name 'package-lock.json' -o -name 'vite.config.*' \) -print | sort
+          echo '=== DEPENDENCY/IMPORT MATCHES ==='
+          git grep -n -i -I "$needle" -- '*package*.json' '*vite.config.*' 2>/dev/null || true
