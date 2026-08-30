@@ -74,16 +74,48 @@ jobs:
             --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(git push:*),Bash(git commit:*),Bash(git checkout:*)"
             --max-turns 60
 
-      # execution_file is the action's own documented output ("Path to the
-      # Claude Code execution output file"). Its exact internal format
-      # (final message only vs. a full turn-by-turn transcript) was not
-      # independently confirmed beyond "contains Claude's response text" —
-      # spot-check the first real run's artifact, same as the STOP_15
-      # marker discipline itself (see README).
-      - name: Capture evidence output
-        id: evidence
-        run: |
-          cp "${{ steps.claude.outputs.execution_file }}" discovery-output.md
+      # execution_file is a JSON array of Claude Code SDK event objects
+      # (confirmed against anthropics/claude-code-action issue #1296 and
+      # the base-action's documented event shape), not plain text -- the
+      # final answer lives in the last {"type":"result","result":"..."}
+      # event's `result` string. Extract that (falling back to the last
+      # assistant message's text blocks if a run aborts before a result
+      # event) rather than dumping the raw JSON array into the issue body
+      # or grepping it directly, which would both misrepresent the
+      # evidence and silently break the anchored `^STOP_15:` grep below —
+      # in a raw JSON dump, marker text sits mid-line inside an escaped
+      # JSON string, never at the start of a line, so that grep would
+      # never match and the §15 safety net would go dark without error.
+      - name: Extract evidence text from execution_file
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = JSON.parse(fs.readFileSync('${{ steps.claude.outputs.execution_file }}', 'utf8'));
+
+            const resultEvent = log.find(e => e && e.type === 'result' && typeof e.result === 'string');
+            let text = resultEvent ? resultEvent.result : '';
+
+            if (!text) {
+              for (let i = log.length - 1; i >= 0; i--) {
+                const e = log[i];
+                if (e && e.type === 'assistant' && e.message && Array.isArray(e.message.content)) {
+                  text = e.message.content
+                    .filter(c => c && c.type === 'text' && typeof c.text === 'string')
+                    .map(c => c.text)
+                    .join('\n');
+                  if (text) break;
+                }
+              }
+            }
+
+            if (!text) {
+              text = 'Claude Code produced no extractable result or assistant text in execution_file. ' +
+                     'See the wow-discovery-evidence artifact for the raw execution_file to investigate.';
+            }
+
+            fs.writeFileSync('discovery-output.md', text, 'utf8');
+            fs.copyFileSync('${{ steps.claude.outputs.execution_file }}', 'execution-file.json');
 
       - name: Check for §15 stop markers
         id: stop15
@@ -103,6 +135,7 @@ jobs:
           path: |
             discovery-output.md
             stop15-summary.md
+            execution-file.json
           if-no-files-found: ignore
           retention-days: 90
 

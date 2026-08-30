@@ -63,13 +63,22 @@ or §15-gated, matching WOW's "no self-certification" principle.
    - There is no `output_file` input. `wow-closeout-implement.yml` instructs
      Claude (which has Write access there) to write `return-packet.md`
      itself as its last action. `wow-discovery.yml` (read-only, no Write
-     tool) instead copies the action's own `execution_file` output.
-     **`execution_file`'s exact internal format was not independently
-     verified beyond "contains Claude's response text"** — spot-check the
-     first real discovery run's uploaded artifact to confirm the STOP_15
-     grep and issue body come out as expected, and adjust if the format
-     turns out to need extraction (e.g. if it's a structured transcript
-     rather than plain final-message text).
+     tool) instead uses the action's own `execution_file` output.
+     **`execution_file` is a JSON array of Claude Code SDK event objects,
+     not plain text** (confirmed against `anthropics/claude-code-action`
+     issue #1296 and the base-action's documented event shape) — the final
+     answer is the `result` string on the last `{"type":"result",...}`
+     event. An earlier draft of this workflow `cp`'d the raw JSON straight
+     into `discovery-output.md`; besides posting an unreadable JSON blob
+     as the issue body, that silently broke the `^STOP_15:` grep, since
+     inside a raw JSON dump the marker text sits mid-line in an escaped
+     string rather than at the start of a line, so the §15 safety net
+     would go dark with no error. Fixed: a dedicated extraction step
+     parses `execution_file`, takes the last `result` event's text
+     (falling back to the last assistant message's text blocks if a run
+     aborts before a `result` event), and writes that to
+     `discovery-output.md`; the raw `execution_file` is also kept as
+     `execution-file.json` in the uploaded artifact for debugging.
    - This still leaves the `allowedTools`/`disallowedTools` string syntax
      itself (`Bash(git log:*)` etc.) as the actual read-only enforcement —
      confirm it continues to behave as expected on first run; that part
