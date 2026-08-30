@@ -44,11 +44,12 @@ def test_outcomes_are_immutable_and_service_role_cannot_mutate_them():
 
 def test_dispatcher_fails_closed_for_unwired_lanes_and_never_executes():
     sql = _sql()
+    lowered = sql.lower()
     assert "wow_governed_auto_grade_predictions" in sql
     assert "CERTIFIED_OFFICIAL_OUTCOME_ADAPTER_NOT_WIRED" in sql
     assert "'can_execute',false" in sql
-    assert "market order" not in sql.lower()
-    assert "place wager" not in sql.lower()
+    for forbidden_callable in ("place_bet(", "place_wager(", "market_order(", "submit_order(", "cancel_order("):
+        assert forbidden_callable not in lowered
 
 
 def test_dispatcher_is_scheduled_once_for_primary_ledgers():
