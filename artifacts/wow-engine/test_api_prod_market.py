@@ -61,6 +61,21 @@ def _specialist():
     }
 
 
+def _ready_route_artifact():
+    return {
+        "ok": True,
+        "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY",
+        "sport": "WNBA",
+        "stat_type": "REB",
+        "feature_schema_version": "PROP_FEATURES_V1",
+        "model_family": "TEST_DISCRETE_V1",
+        "model_artifact_version": "WNBA_REB_MODEL_V1",
+        "lifecycle_state": "PROSPECTIVE_CERTIFIED",
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
 def _row(*, market_available, market_quality):
     return SimpleNamespace(
         probability_publishable=True,
@@ -118,6 +133,7 @@ def _install_common(monkeypatch, score_fn):
     monkeypatch.setattr(api_prod_market.prod, "_prop_evidence", lambda _req: _ready_evidence())
     monkeypatch.setattr(api_prod_market.prod, "_reject_llp_prop_identity", lambda _identity: "WOW_BETTING_ENGINE")
     monkeypatch.setattr(api_prod_market.prod.base_api, "_controlling_specialist_provider", lambda _sport, _stat: _specialist())
+    monkeypatch.setattr(api_prod_market, "_prop_route_artifact", lambda _sport, _stat: _ready_route_artifact())
     monkeypatch.setattr(api_prod_market.prod, "get_client", lambda: object())
     monkeypatch.setattr(api_prod_market, "score_discrete_prop_end_to_end", score_fn)
     monkeypatch.setattr(
@@ -147,6 +163,7 @@ def test_complete_model_missing_market_keeps_probability_and_holds_market(monkey
     assert body["objective_lanes"]["MONEY"]["status"] == "HOLD"
     assert body["model_path"].startswith("WOW_PROP_FITTED_MODEL_V1")
     assert body["model_evidence"]["distribution_type"] == "DISCRETE_PMF"
+    assert body["backend_traversal"]["exact_route_artifact"] == "PASS"
     assert body["can_execute"] is False
     assert captured["market_side_a"] is None
     assert captured["market_side_b"] is None
@@ -210,3 +227,41 @@ def test_runtime_has_no_legacy_fitted_params_fallback(monkeypatch):
     assert "RAW_DISCRETE_DISTRIBUTION" in body["model_path"]
     assert body["probability_publishable"] is False
     assert body["can_execute"] is False
+
+
+def test_missing_exact_route_artifact_blocks_before_model_invocation(monkeypatch):
+    called = {"score": False}
+
+    def should_not_score(**_kwargs):
+        called["score"] = True
+        raise AssertionError("model must not run without exact certified route")
+
+    _install_common(monkeypatch, should_not_score)
+    monkeypatch.setattr(
+        api_prod_market,
+        "_prop_route_artifact",
+        lambda _sport, _stat: {
+            "ok": False,
+            "code": "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+            "probability_publishable": False,
+            "can_execute": False,
+        },
+    )
+
+    response = client.post("/score-prop", json=_request_payload(), headers=AUTH)
+
+    assert response.status_code == 409
+    body = response.json()["detail"]
+    assert body["code"] == "MODEL_UNAVAILABLE"
+    assert body["blocker_code"] == "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND"
+    assert body["aggregate_prop_capability_status"] == "AVAILABLE"
+    assert body["requested_route"] == {
+        "sport": "WNBA",
+        "stat_type": "REB",
+        "feature_schema_version": "PROP_FEATURES_V1",
+    }
+    assert body["backend_traversal"]["exact_route_artifact"] == "BLOCKED"
+    assert body["backend_traversal"]["governed_model"] == "NOT_INVOKED"
+    assert body["probability_publishable"] is False
+    assert body["can_execute"] is False
+    assert called["score"] is False
