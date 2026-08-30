@@ -60,6 +60,18 @@ def test_final_refresh_event_invalidation_uses_native_no_play():
     assert result.pick_rejected is False
 
 
+def test_event_invalidation_outranks_concurrent_acquisition_gap():
+    result = reduce_prop_terminal(
+        proposed_label="MODEL_UNAVAILABLE",
+        blockers=["RUN_INVALID_ACQUISITION_INCOMPLETE", "EVENT_NOT_PREGAME"],
+        model_evaluated=False,
+    )
+    assert result.terminal_label == "NO_PLAY"
+    assert result.verdict_class == "EVENT_INVALIDATED"
+    assert result.pick_rejected is False
+    assert result.infrastructure_blocked is False
+
+
 def test_true_probability_rejection_requires_model_evaluation():
     result = reduce_prop_terminal(
         proposed_label="NO_LOW_PROBABILITY",
