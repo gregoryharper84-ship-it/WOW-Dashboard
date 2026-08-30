@@ -4,6 +4,19 @@
 -- as CALIBRATION/PUBLICATION scoped without treating a success reason as failure.
 -- Forward-shadow graduation criteria are unchanged. can_execute remains false.
 
+-- Normalize the runtime capability row itself because the production route also
+-- reads this evidence object directly. Generic `reason` keys are parsed as
+-- failure reasons by legacy adapters, so positive readiness evidence must live
+-- under a non-blocker audit key.
+update public.wow_runtime_capabilities
+set evidence = (evidence - 'reason') || jsonb_build_object(
+        'evidence_basis', coalesce(evidence ->> 'evidence_basis', evidence ->> 'reason')
+    ),
+    updated_at = now()
+where capability_key = 'PROP_PROBABILITY'
+  and evidence ? 'reason'
+  and evidence ->> 'reason' = 'CERTIFIED_PROP_ARTIFACT_AND_REAL_EVIDENCE_READY';
+
 create or replace function public.wow_governed_probability_preflight()
 returns jsonb
 language sql
@@ -41,8 +54,8 @@ with latest_health as (
         h.graded_shadow_n,
         h.pending_shadow_n,
         h.assessed_at,
-        case when p.evidence is null then null else p.evidence - 'reason' end as capability_evidence,
-        p.evidence ->> 'reason' as capability_evidence_basis,
+        case when p.evidence is null then null else p.evidence - 'reason' - 'evidence_basis' end as capability_evidence,
+        coalesce(p.evidence ->> 'evidence_basis', p.evidence ->> 'reason') as capability_evidence_basis,
         p.updated_at as capability_updated_at
     from latest_health h
     full join prop_capability p on true
