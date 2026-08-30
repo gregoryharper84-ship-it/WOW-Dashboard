@@ -4,10 +4,10 @@ Ordinary code, exhaustively tested — never an LLM call, never a vote among
 workers. Inputs are the required workers' terminal job results for one
 candidate; output is one immutable native terminal label.
 
-Unknown ceilings fail closed as GOVERNANCE_LABEL_UNKNOWN rather than being
-silently accepted or defaulted to the loosest ceiling — an unrecognized
-ceiling string is far more likely a registry/config typo than a genuinely
-new, unratified state.
+WOW-PATCH-2026-08-30 adds one monotonic rule here: a proven calibration /
+publication-only blocker may cap an otherwise successful controlling model at
+MODEL_QUALIFIED_HOLD, but it may not turn that successful specialist into
+MODEL_UNAVAILABLE. Actual controlling-specialist failure still does.
 """
 from __future__ import annotations
 
@@ -16,19 +16,6 @@ from typing import Optional
 
 from agent_runtime.state_machine import JOB_TERMINAL_STATES
 
-# Explicit ordered enum, strictest first. Never compare ceilings lexically —
-# "MODEL_QUALIFIED_HOLD" sorting before "RESEARCH_INTEREST" alphabetically
-# would silently invert the intended strictness ordering.
-#
-# These 8 values are the packet's own worker authority ceilings (section 6),
-# one per pipeline stage in dependency order, and match PR #33's
-# (feature/wow-agent-runtime-v1) worker_registry exactly — adopted during the
-# convergence pass in place of Phase 1's original invented ladder, which had
-# redundant, ambiguous entries (both HOLD and MODEL_QUALIFIED_HOLD existed
-# with no clear distinction between them). Sentinel outcomes that aren't a
-# worker-reported ceiling at all (RUN_NOT_TERMINAL, NO_SPECIALIST_COVERAGE,
-# MODEL_UNAVAILABLE, GOVERNANCE_LABEL_UNKNOWN) stay outside this enum — see
-# reduce_candidate() below.
 CEILING_ORDER: tuple[str, ...] = (
     "RESEARCH_INTEREST",
     "IDENTITY_VERIFIED",
@@ -41,18 +28,38 @@ CEILING_ORDER: tuple[str, ...] = (
 )
 
 _CEILING_RANK = {name: index for index, name in enumerate(CEILING_ORDER)}
+_PUBLICATION_ONLY_BLOCKERS = {
+    "FORWARD_SHADOW_NOT_COMPLETED",
+    "CALIBRATION_HEALTH_BLOCKED",
+    "CALIBRATION_HEALTH_NOT_PASS",
+    "CALIBRATION_BLOCKED",
+    "PROBABILITY_PUBLICATION_HELD",
+    "GOVERNED_PROBABILITY_NOT_PUBLISHABLE",
+    "PUBLICATION_NOT_RATIFIED",
+    "PRODUCTION_FEATURE_READY_FALSE",
+}
 
 
 def strictest(ceilings: list[str]) -> str:
-    """Return the strictest (lowest-rank) ceiling in the list. An unknown
-    ceiling is treated as maximally strict — see module docstring."""
+    """Return the strictest (lowest-rank) ceiling in the list."""
     if not ceilings:
         return "GOVERNANCE_LABEL_UNKNOWN"
-    ranked = sorted(
-        ceilings,
-        key=lambda c: _CEILING_RANK.get(c, -1),
-    )
+    ranked = sorted(ceilings, key=lambda c: _CEILING_RANK.get(c, -1))
     return ranked[0]
+
+
+def _canonical_publication_blocker(value: str) -> Optional[str]:
+    upper = str(value or "").strip().upper()
+    for code in _PUBLICATION_ONLY_BLOCKERS:
+        if upper == code or code in upper:
+            return code
+    return None
+
+
+def _publication_only(blockers: tuple[str, ...]) -> bool:
+    if not blockers:
+        return False
+    return all(_canonical_publication_blocker(value) is not None for value in blockers)
 
 
 @dataclass(frozen=True)
@@ -69,6 +76,10 @@ class ReducedDecision:
     ceiling: str
     blockers: tuple[str, ...]
     probability_publishable: bool
+    governed_publishable: bool = False
+    failed_contract_scope: tuple[str, ...] = field(default_factory=tuple)
+    probability_claim_status: Optional[str] = None
+    specialist_model_capability: str = "UNKNOWN"
     can_execute: bool = False
 
 
@@ -78,37 +89,50 @@ def reduce_candidate(
     controlling_job_status: Optional[str],
     required_jobs: list[RequiredJobResult],
 ) -> ReducedDecision:
-    """Packet section 16 pseudocode, implemented.
+    """Reduce one candidate while preserving lane-scoped blockers.
 
-    Order of checks matters: a not-yet-terminal required job blocks any
-    decision (RUN_NOT_TERMINAL is not itself a publishable label — callers
-    must not persist it as a terminal_decision row); a candidate with no
-    routed controlling specialist can never reach a probability regardless of
-    what other workers found; a controlling job that didn't succeed means
-    MODEL_UNAVAILABLE even if every other worker passed.
+    A not-yet-terminal job blocks any decision. No controlling specialist means
+    no specialist coverage. Only a controlling job that genuinely did not
+    succeed maps to MODEL_UNAVAILABLE. A successful controlling specialist plus
+    a calibration/publication lock remains a model-qualified research result.
     """
     if any(job.status not in JOB_TERMINAL_STATES for job in required_jobs):
         return ReducedDecision(
-            label="RUN_NOT_TERMINAL", ceiling="RUN_NOT_TERMINAL",
-            blockers=(), probability_publishable=False,
+            label="RUN_NOT_TERMINAL",
+            ceiling="RUN_NOT_TERMINAL",
+            blockers=(),
+            probability_publishable=False,
+            governed_publishable=False,
+            probability_claim_status=None,
+            specialist_model_capability="UNKNOWN",
         )
 
     if controlling_worker_id is None:
         return ReducedDecision(
-            label="NO_SPECIALIST_COVERAGE", ceiling="NO_SPECIALIST_COVERAGE",
-            blockers=(), probability_publishable=False,
+            label="NO_SPECIALIST_COVERAGE",
+            ceiling="NO_SPECIALIST_COVERAGE",
+            blockers=(),
+            probability_publishable=False,
+            governed_publishable=False,
+            probability_claim_status="MODEL_UNAVAILABLE",
+            specialist_model_capability="UNAVAILABLE",
         )
 
     if controlling_job_status != "SUCCEEDED":
         return ReducedDecision(
-            label="MODEL_UNAVAILABLE", ceiling="MODEL_UNAVAILABLE",
-            blockers=(), probability_publishable=False,
+            label="MODEL_UNAVAILABLE",
+            ceiling="MODEL_UNAVAILABLE",
+            blockers=(),
+            probability_publishable=False,
+            governed_publishable=False,
+            failed_contract_scope=("CONFIDENCE",),
+            probability_claim_status="MODEL_UNAVAILABLE",
+            specialist_model_capability="UNAVAILABLE",
         )
 
     all_blockers: list[str] = []
     for job in required_jobs:
         all_blockers.extend(job.blockers)
-    # Stable de-duplication (dict.fromkeys preserves first-seen order).
     blockers = tuple(dict.fromkeys(all_blockers))
 
     known_ceilings = [job.ceiling for job in required_jobs if job.ceiling is not None]
@@ -116,17 +140,44 @@ def reduce_candidate(
 
     if ceiling == "GOVERNANCE_LABEL_UNKNOWN" or ceiling not in _CEILING_RANK:
         return ReducedDecision(
-            label="GOVERNANCE_LABEL_UNKNOWN", ceiling="GOVERNANCE_LABEL_UNKNOWN",
-            blockers=blockers, probability_publishable=False,
+            label="GOVERNANCE_LABEL_UNKNOWN",
+            ceiling="GOVERNANCE_LABEL_UNKNOWN",
+            blockers=blockers,
+            probability_publishable=False,
+            governed_publishable=False,
+            failed_contract_scope=("GLOBAL",),
+            probability_claim_status=None,
+            specialist_model_capability="AVAILABLE",
         )
 
-    # Publishable once the ceiling reaches MODEL_QUALIFIED_HOLD or better
-    # (MODEL_QUALIFIED_HOLD, MARKET_VERIFIED_HOLD, STRUCTURE_VERIFIED_HOLD,
-    # FINAL_REFRESH_HOLD, FINAL_APPROVED) with no blockers — a governed
-    # probability exists at that point even before every downstream audit has
-    # run, matching PR #33's rule.
-    publishable = not blockers and _CEILING_RANK.get(ceiling, -1) >= _CEILING_RANK["MODEL_QUALIFIED_HOLD"]
+    if _publication_only(blockers):
+        # The publication lock is a ceiling, never an upgrade. If an upstream
+        # stage is already stricter than MODEL_QUALIFIED_HOLD, preserve it.
+        ceiling = strictest([ceiling, "MODEL_QUALIFIED_HOLD"])
+        return ReducedDecision(
+            label=ceiling,
+            ceiling=ceiling,
+            blockers=blockers,
+            probability_publishable=False,
+            governed_publishable=False,
+            failed_contract_scope=("CALIBRATION", "PUBLICATION"),
+            probability_claim_status="CALIBRATION_BLOCKED_NO_PUBLISH",
+            specialist_model_capability="AVAILABLE",
+        )
+
+    publishable = (
+        not blockers
+        and _CEILING_RANK.get(ceiling, -1) >= _CEILING_RANK["MODEL_QUALIFIED_HOLD"]
+    )
     return ReducedDecision(
-        label=ceiling, ceiling=ceiling, blockers=blockers,
+        label=ceiling,
+        ceiling=ceiling,
+        blockers=blockers,
         probability_publishable=publishable,
+        governed_publishable=publishable,
+        failed_contract_scope=(),
+        probability_claim_status=(
+            "GOVERNED_CALIBRATED_PUBLISHABLE" if publishable else None
+        ),
+        specialist_model_capability="AVAILABLE",
     )
