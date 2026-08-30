@@ -57,7 +57,7 @@ def _annotate(
 
 
 def _fallback_snapshot_ids(client: Any, req: Any) -> list[str]:
-    """Return newest backend-governed exact-identity snapshot IDs."""
+    """Return newest exact-identity snapshots captured strictly before start."""
     query = (
         client.table("wow_prop_evidence_snapshots")
         .select("source_snapshot_id,captured_at")
@@ -67,6 +67,7 @@ def _fallback_snapshot_ids(client: Any, req: Any) -> list[str]:
         .eq("stat_type", req.stat_type)
         .eq("line", req.line)
         .eq("hydration_status", "PASS")
+        .lt("captured_at", req.event_start_time)
         .order("captured_at", desc=True)
         .limit(MAX_GOVERNED_SNAPSHOT_FALLBACKS)
     )
@@ -91,7 +92,8 @@ def repair_prop_evidence(
     """Attempt requested snapshot, then exact governed-snapshot fallbacks.
 
     Every fallback is passed back through the original evidence validator. The
-    repair layer never treats a raw table row as model-ready evidence.
+    repair layer never treats a raw table row as model-ready evidence, and the
+    lookup excludes snapshots captured at or after event start.
     """
     requested_id = str(req.source_snapshot_id)
     primary = primary_fetch(req)
