@@ -94,11 +94,10 @@ def reduce_prop_terminal(
       1. specialist/model capability missing -> MODEL_UNAVAILABLE
       2. mandatory evidence/hydration missing before model evaluation ->
          MODEL_UNAVAILABLE with ACQUISITION_BLOCKED verdict metadata
-      3. market/money identity failure never erases a completed probability
-         result; preserve proposed native label and mark MARKET_BLOCKED
-      4. event no longer valid for a pregame row -> NO_PLAY
-      5. only after model evaluation may probability/failure-path labels count as
-         an actual pick rejection.
+      3. event no longer valid for a pregame row -> NO_PLAY
+      4. a genuine model rejection survives downstream market/money blockers
+      5. market/money identity failures preserve a completed model-supported
+         terminal label and mark only the market lane blocked.
     """
     bs = _normalized(blockers)
     bset = set(bs)
@@ -134,16 +133,6 @@ def reduce_prop_terminal(
             blockers=bs,
         )
 
-    if bset & MARKET_BLOCKERS:
-        return PropTerminalDecision(
-            terminal_label=label if model_evaluated else "MODEL_UNAVAILABLE",
-            verdict_class="MARKET_BLOCKED",
-            model_evaluated=model_evaluated,
-            pick_rejected=False,
-            infrastructure_blocked=True,
-            blockers=bs,
-        )
-
     if label in TRUE_MODEL_REJECTION_LABELS:
         if not model_evaluated:
             return PropTerminalDecision(
@@ -159,7 +148,17 @@ def reduce_prop_terminal(
             verdict_class="MODEL_REJECTED",
             model_evaluated=True,
             pick_rejected=True,
-            infrastructure_blocked=False,
+            infrastructure_blocked=bool(bset & MARKET_BLOCKERS),
+            blockers=bs,
+        )
+
+    if bset & MARKET_BLOCKERS:
+        return PropTerminalDecision(
+            terminal_label=label if model_evaluated else "MODEL_UNAVAILABLE",
+            verdict_class="MARKET_BLOCKED",
+            model_evaluated=model_evaluated,
+            pick_rejected=False,
+            infrastructure_blocked=True,
             blockers=bs,
         )
 
