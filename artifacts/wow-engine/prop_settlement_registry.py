@@ -79,12 +79,13 @@ def _hold(blocker: str, *, provider: Optional[str], observed_rule_status: str = 
     )
 
 
-def _semantic_tuple(rule: SettlementRule) -> tuple[str, str, str, str]:
+def _semantic_tuple(rule: SettlementRule) -> tuple[str, str, str, str, str]:
     return (
         _norm(rule.settlement_basis),
         _norm(rule.boundary_operator),
         _norm(rule.equality_treatment),
         _norm(rule.void_treatment),
+        _norm(rule.money_semantics),
     )
 
 
