@@ -1,0 +1,122 @@
+name: WOW Closeout Certification
+
+# Runs the independent certification review (scripts/certify.py) against
+# any PR labeled `wow-closeout`. This calls the Anthropic API directly --
+# a single non-agentic review call, not another Claude Code session --
+# so the reviewer has no write tools and cannot "fix" what it's reviewing.
+#
+# The resulting verdict is posted as a PR review and exposed as a required
+# status check ("wow-certification") that branch protection can require.
+# A PASS verdict does NOT auto-merge anything -- merging still requires a
+# human approval, per WOW governance. This workflow only ever blocks or
+# recommends; it never merges.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  certify:
+    if: contains(github.event.pull_request.labels.*.name, 'wow-closeout')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Fetch base for diff
+        run: git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
+
+      - name: Generate diff
+        run: |
+          git diff origin/${{ github.event.pull_request.base.ref }}...HEAD > pr.diff
+
+      - name: Locate packet spec and return packet
+        id: files
+        run: |
+          # Convention: the PR body links the packet spec path; the return
+          # packet is the uploaded artifact from the implementation workflow.
+          # If not found, certify.py will note missing evidence and fail
+          # closed rather than guessing.
+          RETURN_PACKET="return-packet.md"
+          if [ ! -f "$RETURN_PACKET" ]; then
+            echo "No return-packet.md found in repo root at PR head; run will note missing evidence."
+            echo "Return packet was not produced or not committed." > "$RETURN_PACKET"
+          fi
+          # Extract packet spec path from PR body if present, else fall back.
+          PACKET_PATH=$(echo "${{ github.event.pull_request.body }}" | grep -oE 'governance/packets/[A-Za-z0-9._-]+\.md' | head -n1)
+          if [ -z "$PACKET_PATH" ] || [ ! -f "$PACKET_PATH" ]; then
+            PACKET_PATH="governance/packets/UNKNOWN.md"
+            echo "No matching packet spec found; UNVERIFIED evidence will be flagged." > "$PACKET_PATH" || true
+          fi
+          echo "return_packet=$RETURN_PACKET" >> "$GITHUB_OUTPUT"
+          echo "packet_spec=$PACKET_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run certification
+        id: cert
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_DIFF_FILE: pr.diff
+          RETURN_PACKET_FILE: ${{ steps.files.outputs.return_packet }}
+          PACKET_SPEC_FILE: ${{ steps.files.outputs.packet_spec }}
+        run: python scripts/certify.py
+        continue-on-error: true
+
+      - name: Read verdict
+        id: verdict
+        run: |
+          VERDICT=$(python -c "import json; print(json.load(open('certification-result.json'))['verdict'])")
+          echo "value=$VERDICT" >> "$GITHUB_OUTPUT"
+
+      - name: Post certification as PR review
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('certification-summary.md', 'utf8');
+            const verdict = '${{ steps.verdict.outputs.value }}';
+            const event = verdict === 'PASS' ? 'COMMENT' : 'REQUEST_CHANGES';
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              body: summary,
+              event,
+            });
+            if (verdict !== 'PASS') {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: ['certification-failed'],
+              });
+            }
+
+      - name: Upload certification artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-certification-result
+          path: |
+            certification-result.json
+            certification-summary.md
+            certification-raw-output.txt
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Fail check on non-PASS
+        if: steps.verdict.outputs.value != 'PASS'
+        run: |
+          echo "::error::Certification verdict was ${{ steps.verdict.outputs.value }}, not PASS."
+          exit 1

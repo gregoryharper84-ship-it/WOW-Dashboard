@@ -1,0 +1,163 @@
+name: WOW Closeout Implementation
+
+# Runs an APPROVED closeout package (e.g. V16-CLOSEOUT-01) through Claude
+# Code with full read/write/commit tools. This workflow is manual-dispatch
+# ONLY — it never triggers on push, schedule, or automatically after a
+# discovery run. A human decides when a package is ready to implement.
+#
+# Output is always a PR against a work branch, never a direct push to main.
+# The wow-certify workflow picks up that PR automatically once opened.
+
+on:
+  workflow_dispatch:
+    inputs:
+      packet_path:
+        description: "Path to the approved implementation packet"
+        required: true
+      base_branch:
+        description: "Branch to base the work off of"
+        required: true
+        default: "main"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.base_branch }}
+          fetch-depth: 0
+
+      - name: Resolve packet and load prompt
+        id: packet
+        run: |
+          PACKET="${{ github.event.inputs.packet_path }}"
+          if [ ! -f "$PACKET" ]; then
+            echo "Packet file not found: $PACKET"
+            exit 1
+          fi
+          NAME=$(basename "$PACKET" .md)
+          BRANCH="wow-closeout/${NAME,,}-$(date +%Y%m%d%H%M%S)"
+          echo "path=$PACKET" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "content<<PACKET_EOF"
+            cat "$PACKET"
+            echo ""
+            echo "---"
+            echo "After completing this packet, write your full return packet"
+            echo "(what you did, evidence, any STOP_15 lines) to a file named"
+            echo "exactly \`return-packet.md\` in the repository root using your"
+            echo "Write tool, as your final action, before finishing."
+            echo "PACKET_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create work branch
+        run: git checkout -b "${{ steps.packet.outputs.branch }}"
+
+      # Full tool access here — this is the implementation step, not
+      # discovery. §15 stop-condition handling is enforced by instructing
+      # Claude Code (in the packet body, and in the appended instruction
+      # added above) to emit STOP_15 markers and write a return-packet.md
+      # rather than invent governance changes; the workflow below checks
+      # that file for the marker and blocks PR auto-merge eligibility if
+      # found.
+      #
+      # Verified 2026-08-30 against anthropics/claude-code-action's
+      # action.yml, docs/usage.md and docs/configuration.md (same check as
+      # wow-discovery.yml): allowed_tools / max_turns / output_file are
+      # not real top-level `with:` inputs on this action. Tool access and
+      # turn limit move to claude_args; the return packet is written to
+      # disk directly by Claude (it has Write access here, unlike the
+      # discovery workflow) instead of read from a nonexistent output_file.
+      - name: Run Claude Code (implementation)
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: ${{ steps.packet.outputs.content }}
+          claude_args: |
+            --allowedTools "Read,Grep,Glob,Edit,Write,MultiEdit,Bash"
+            --max-turns 120
+
+      - name: Verify return packet was written
+        run: |
+          if [ ! -f return-packet.md ]; then
+            echo "::error::Claude Code did not write return-packet.md — treating as incomplete."
+            echo "Claude Code did not write return-packet.md before finishing. Treat this run as incomplete; check the execution_file artifact/log for what happened." > return-packet.md
+          fi
+
+      - name: Check for §15 stop markers
+        id: stop15
+        run: |
+          if grep -q "^STOP_15:" return-packet.md; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit changes
+        run: |
+          git config user.name "wow-closeout-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "${{ steps.packet.outputs.name }}: automated implementation (unreviewed)" || echo "No changes to commit"
+          git push origin "${{ steps.packet.outputs.branch }}"
+
+      - name: Open PR
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const returnPacket = fs.readFileSync('return-packet.md', 'utf8');
+            const stop15 = '${{ steps.stop15.outputs.found }}' === 'true';
+            const title = stop15
+              ? '⚠️ ${{ steps.packet.outputs.name }} — INCOMPLETE, §15 stop condition hit'
+              : '${{ steps.packet.outputs.name }} — awaiting certification';
+            const truncated = returnPacket.length > 60000
+              ? returnPacket.slice(0, 60000) + '\n\n...[truncated, see workflow artifact]'
+              : returnPacket;
+            const body = [
+              '**This PR was opened by an automated Claude Code run and has NOT been certified or human-reviewed.**',
+              '',
+              'Do not merge until:',
+              '1. `wow-certify` workflow posts a PASS verdict, AND',
+              '2. A human has approved the review.',
+              '',
+              stop15 ? '**⚠️ §15 stop condition(s) were flagged during implementation — this package is incomplete pending governance decision.**' : '',
+              '',
+              '---',
+              '### Return packet',
+              truncated,
+            ].join('\n');
+            const labels = stop15
+              ? ['wow-closeout', 'needs-human-review', 'stop-15', 'do-not-merge']
+              : ['wow-closeout', 'needs-human-review', 'do-not-merge'];
+            const pr = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              head: '${{ steps.packet.outputs.branch }}',
+              base: '${{ github.event.inputs.base_branch }}',
+              body,
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.data.number,
+              labels,
+            });
+
+      - name: Upload return packet artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-closeout-return-packet
+          path: return-packet.md
+          retention-days: 90

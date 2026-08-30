@@ -1,0 +1,139 @@
+name: WOW Discovery (read-only)
+
+# Runs a governance packet (e.g. governance/packets/V16-CLOSEOUT-DISCOVERY-00.md)
+# through Claude Code in READ-ONLY mode: no Edit/Write/git-push tools available
+# to the model. Output is uploaded as an artifact and posted as a PR comment
+# on an auto-created discovery branch/PR — never merged automatically.
+#
+# Trigger: manual (workflow_dispatch) or on push of a new/changed packet file.
+# This is intentionally NOT triggered on a schedule — discovery runs happen
+# when a human decides a closeout package needs fresh evidence.
+
+on:
+  workflow_dispatch:
+    inputs:
+      packet_path:
+        description: "Path to the packet spec file to run"
+        required: true
+        default: "governance/packets/V16-CLOSEOUT-DISCOVERY-00.md"
+  push:
+    paths:
+      - "governance/packets/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  discovery:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve packet path and load prompt
+        id: packet
+        run: |
+          PACKET="${{ github.event.inputs.packet_path || 'governance/packets/V16-CLOSEOUT-DISCOVERY-00.md' }}"
+          if [ ! -f "$PACKET" ]; then
+            echo "Packet file not found: $PACKET"
+            exit 1
+          fi
+          echo "path=$PACKET" >> "$GITHUB_OUTPUT"
+          {
+            echo "content<<PACKET_EOF"
+            cat "$PACKET"
+            echo "PACKET_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Anthropic's official Claude Code GitHub Action. Tool access is
+      # restricted to read-only tools via claude_args (--allowedTools /
+      # --disallowedTools): no Edit, no Write, no git push/commit tools.
+      # This is the actual enforcement mechanism for "read-only" — not
+      # just an instruction in the prompt text.
+      #
+      # Verified 2026-08-30 against anthropics/claude-code-action's
+      # action.yml, docs/usage.md and docs/configuration.md: this action
+      # does NOT expose allowed_tools / disallowed_tools / max_turns /
+      # prompt_file / output_file as top-level `with:` inputs (an earlier
+      # draft of this workflow guessed those names and would have hard-
+      # failed on the very first run with "Unexpected input(s)"). The
+      # real mechanism is `claude_args` for tool restriction and turn
+      # limit, and plain-text `prompt`.
+      - name: Run Claude Code (read-only reconnaissance)
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: ${{ steps.packet.outputs.content }}
+          claude_args: |
+            --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git branch:*),Bash(git diff:*),WebFetch"
+            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(git push:*),Bash(git commit:*),Bash(git checkout:*)"
+            --max-turns 60
+
+      # execution_file is the action's own documented output ("Path to the
+      # Claude Code execution output file"). Its exact internal format
+      # (final message only vs. a full turn-by-turn transcript) was not
+      # independently confirmed beyond "contains Claude's response text" —
+      # spot-check the first real run's artifact, same as the STOP_15
+      # marker discipline itself (see README).
+      - name: Capture evidence output
+        id: evidence
+        run: |
+          cp "${{ steps.claude.outputs.execution_file }}" discovery-output.md
+
+      - name: Check for §15 stop markers
+        id: stop15
+        run: |
+          if grep -q "^STOP_15:" discovery-output.md; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "## §15 stop conditions detected in discovery output:" >> stop15-summary.md
+            grep "^STOP_15:" discovery-output.md >> stop15-summary.md
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload evidence packet artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-discovery-evidence
+          path: |
+            discovery-output.md
+            stop15-summary.md
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Open discovery evidence issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('discovery-output.md', 'utf8');
+            const stop15 = '${{ steps.stop15.outputs.found }}' === 'true';
+            const title = stop15
+              ? '⚠️ WOW Discovery evidence — §15 stop condition(s) flagged'
+              : 'WOW Discovery evidence packet';
+            const labels = stop15
+              ? ['wow-discovery', 'needs-human-review', 'stop-15']
+              : ['wow-discovery', 'needs-human-review'];
+            // GitHub issue bodies cap around 65k chars — truncate defensively.
+            const truncated = body.length > 60000
+              ? body.slice(0, 60000) + '\n\n...[truncated, see workflow artifact for full packet]'
+              : body;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body: truncated,
+              labels,
+            });
+
+      - name: Fail loudly if §15 flagged
+        if: steps.stop15.outputs.found == 'true'
+        run: |
+          echo "::warning::§15 stop condition(s) detected. See the created issue."
+          echo "This is not a workflow failure — it is a required human checkpoint."
+          echo "Discovery data is still valid and uploaded; do not auto-proceed to implementation."
