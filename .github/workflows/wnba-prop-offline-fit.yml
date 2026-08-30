@@ -56,7 +56,7 @@ jobs:
         run: python scripts/probe_wnba_2026_training_join.py > data/wnba_prop_training_readiness_2026.json
 
       - name: Fit chronological WNBA prop artifacts
-        run: python scripts/train_wnba_props_offset.py
+        run: PYTHONPATH=. python scripts/train_wnba_props_offset.py
 
       - name: Upload governed fit evidence
         if: always()
