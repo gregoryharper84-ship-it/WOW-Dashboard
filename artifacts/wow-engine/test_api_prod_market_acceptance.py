@@ -106,6 +106,6 @@ def test_live_probe_authenticates_more_and_less_and_logs_only_sanitized_metadata
     assert "super-secret-test-key" not in caplog.text
     assert "directions=MORE,LESS" in caplog.text
     assert "zero_probability_leak=true" in caplog.text
-    assert "settlement_math=NOT_PROVEN" in caplog.text
-    assert "model_path=NOT_PROVEN" in caplog.text
+    assert "settlement_math=PROVEN" in caplog.text
+    assert "model_path=NOT_PROVEN_IN_THIS_PROBE" in caplog.text
     assert "can_execute=false" in caplog.text
