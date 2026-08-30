@@ -51,7 +51,6 @@ if workspace.exists():
 for vite in ROOT.rglob("vite.config.ts"):
     v = vite.read_text()
     v = "\n".join(line for line in v.splitlines() if BANNED not in line.lower() and "runtimeErrorOverlay()," not in line) + "\n"
-    # Remove conditional plugin spreads keyed to the retired host environment.
     start = v.find('    ...(process.env.NODE_ENV !== "production" &&')
     while start != -1:
         end = v.find("      : []),", start)
@@ -69,9 +68,23 @@ for vite in ROOT.rglob("vite.config.ts"):
 # The canonical verifier should no longer carry a retired rescue-branch trigger.
 verify = ROOT / ".github/workflows/wow-verify.yml"
 if verify.exists():
-    q = BANNED
-    old = f"  push:\n    branches:\n      - rescue/{q}-emergency-20260820-1221\n"
+    old = f"  push:\n    branches:\n      - rescue/{BANNED}-emergency-20260820-1221\n"
     verify.write_text(verify.read_text().replace(old, ""))
+
+# Replace the last host-specific verification URL input with the canonical WOW URL input.
+verify_patch = ROOT / "scripts/wow-verify-patch"
+if verify_patch.exists():
+    s = verify_patch.read_text()
+    env_name = BANNED.upper() + "_APP_URL"
+    s = s.replace(
+        f"    # Try production URL first ({env_name}), fall back to localhost dev server.\n",
+        "    # Try configured production URL first, fall back to localhost dev server.\n",
+    )
+    s = s.replace(
+        f'    _LIVE_URL="${{{env_name}:-http://localhost:25643}}"\n',
+        '    _LIVE_URL="${WOW_PRODUCTION_URL:-http://localhost:25643}"\n',
+    )
+    verify_patch.write_text(s)
 
 # Neutralize remaining tracked textual references. This keeps historical meaning
 # while ensuring active code/configuration does not retain retired-platform identifiers.
@@ -81,7 +94,7 @@ for path in tracked_files():
     if not path.exists() or path.name == "pnpm-lock.yaml":
         continue
     suffix = path.suffix.lower()
-    if suffix not in doc_exts | code_exts and path.name not in {".gitignore", ".npmrc"}:
+    if suffix not in doc_exts | code_exts and path.name not in {".gitignore", ".npmrc", "wow-verify-patch"}:
         continue
     raw = path.read_text(errors="ignore")
     if BANNED in raw.lower():
