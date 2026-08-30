@@ -30,6 +30,7 @@ app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
 _logger = logging.getLogger("wow.ncaaf.readiness")
 _background_tasks: set[asyncio.Task] = set()
+_original_market_score_prop = base.market_api.score_prop
 
 # This mutation is intentionally production-gated. The lower api_prod_market app
 # is a shared FastAPI object imported by several contract tests. Unconditionally
@@ -63,7 +64,7 @@ if os.getenv("WOW_CALIBRATION_PUBLICATION_LANE_SEPARATION", "0") == "1":
         ]))
 
         if preflight.get("governed_publishable") is True or preflight.get("probability_publishable") is True:
-            return base.market_api.score_prop(req, x_wow_model_identity)
+            return _original_market_score_prop(req, x_wow_model_identity)
 
         if lane_patch._publication_only(blockers):
             return lane_patch._raw_specialist_research(
@@ -92,6 +93,11 @@ if os.getenv("WOW_CALIBRATION_PUBLICATION_LANE_SEPARATION", "0") == "1":
                 "can_execute": False,
             },
         )
+
+    # Pick Request and any other in-process caller must traverse the exact same
+    # publication gate as the HTTP /score-prop route. Keep the original scorer
+    # captured above so the healthy governed-publication branch cannot recurse.
+    base.market_api.score_prop = score_prop_lane_separated
 
 
 def _db_client():
