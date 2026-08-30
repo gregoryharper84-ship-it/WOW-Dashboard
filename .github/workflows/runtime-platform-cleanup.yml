@@ -1,0 +1,59 @@
+name: Runtime Platform Cleanup
+
+on:
+  push:
+    branches: [chatgpt/remove-replit-20260830]
+    paths: ['.github/workflows/runtime-platform-cleanup.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/remove-replit-20260830
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply guarded cleanup
+        run: |
+          python .github/scripts/apply_runtime_platform_cleanup.py
+          needle="$(printf 'rep%s' 'lit')"
+          while IFS= read -r path; do
+            [ -n "$path" ] && git rm -r -- "$path"
+          done < <(git ls-files | grep -i "$needle" || true)
+          git rm -f .github/workflows/remove-legacy-platform-audit.yml .github/workflows/legacy-platform-inventory.yml || true
+      - name: Regenerate npm lockfile
+        run: npm install --package-lock-only --ignore-scripts
+      - name: Assert zero tracked legacy references
+        shell: bash
+        run: |
+          needle="$(printf 'rep%s' 'lit')"
+          path_matches="$(git ls-files | grep -i "$needle" || true)"
+          content_matches="$(git grep -n -i -I "$needle" -- . || true)"
+          if [ -n "$path_matches" ] || [ -n "$content_matches" ]; then
+            echo 'Legacy platform residue remains:'
+            printf '%s\n%s\n' "$path_matches" "$content_matches"
+            exit 1
+          fi
+          echo 'ZERO_TRACKED_LEGACY_REFERENCES=PASS'
+      - name: Validate frontend workspaces
+        run: |
+          npm run check
+          npm --workspace @workspace/mockup-sandbox run typecheck
+          npm --workspace @workspace/mockup-sandbox run build
+      - name: Commit cleanup
+        run: |
+          git config user.name "WOW CI Integration"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: remove retired runtime platform"
+          git push origin HEAD:chatgpt/remove-replit-20260830
