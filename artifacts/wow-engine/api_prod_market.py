@@ -25,10 +25,17 @@ from prop_evidence_repair import repair_prop_evidence
 from prop_fitted_provider import PropFittedProviderUnavailable
 from prop_market_audit import audit_candidate_market
 from prop_settlement import (
+    LINEUP_PAYOUT_CONTEXT_REQUIRED,
     NO_VIG_UNAVAILABLE,
     SETTLEMENT_RULE_UNRESOLVED,
     SettlementRule,
     settle_prop_probability,
+)
+from prop_settlement_registry import (
+    SETTLEMENT_RULE_CONFLICT,
+    SettlementRuleResolution,
+    normalize_provider,
+    resolve_prop_settlement_rule,
 )
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import reduce_prop_terminal
@@ -59,6 +66,7 @@ class MarketQuoteInput(BaseModel):
     stat: str
     period: str
     event_id: str
+    provider: Optional[str] = None
 
 
 class SettlementRuleInput(BaseModel):
@@ -71,11 +79,15 @@ class SettlementRuleInput(BaseModel):
     rule_version: str
     source: str
     void_probability_mass: float = 0.0
+    money_semantics: str = "FIXED_ODDS_RETURN_STAKE"
 
 
 class ScorePropRequest(prod.ScorePropRequest):
     market_side_a: Optional[MarketQuoteInput] = None
     market_side_b: Optional[MarketQuoteInput] = None
+    settlement_provider: Optional[str] = None
+    # Backward-compatible caller observation only. This can cross-check but
+    # never becomes the operative server rule.
     settlement_rule: Optional[SettlementRuleInput] = None
 
 
@@ -118,7 +130,7 @@ def _candidate_american_odds(direction: str, side_a: Optional[MarketQuote], side
     return None
 
 
-def _settlement_lane(row: Any, req: ScorePropRequest, rule: Optional[SettlementRule], audited_a: Optional[MarketQuote], audited_b: Optional[MarketQuote]) -> dict[str, Any]:
+def _settlement_lane(row: Any, req: ScorePropRequest, rule: Optional[SettlementRule], resolution: SettlementRuleResolution, audited_a: Optional[MarketQuote], audited_b: Optional[MarketQuote]) -> dict[str, Any]:
     result = settle_prop_probability(
         direction=req.direction,
         probability_more=getattr(row, "probability_more", None),
@@ -129,7 +141,14 @@ def _settlement_lane(row: Any, req: ScorePropRequest, rule: Optional[SettlementR
     )
     return {
         "status": result.status,
-        "blocker": result.blocker,
+        "blocker": resolution.blocker if resolution.status != "PASS" else result.blocker,
+        "rule_resolution_status": resolution.status,
+        "rule_authority": resolution.authority,
+        "provider": resolution.provider,
+        "rule_id": resolution.rule_id,
+        "source_ref": resolution.source_ref,
+        "source_hash": resolution.source_hash,
+        "observed_rule_status": resolution.observed_rule_status,
         "p_win": result.p_win,
         "p_loss": result.p_loss,
         "p_push": result.p_push,
@@ -143,6 +162,9 @@ def _settlement_lane(row: Any, req: ScorePropRequest, rule: Optional[SettlementR
         "expected_profit_per_unit_staked": result.expected_profit_per_unit_staked,
         "rule_version": result.rule_version,
         "source": result.source,
+        "void_treatment": result.void_treatment,
+        "money_semantics": result.money_semantics,
+        "money_context_required": result.money_context_required,
         "blocks_model_probability": False,
         "can_execute": False,
     }
@@ -154,6 +176,10 @@ def _effective_money_lane(row: Any, settlement_lane: dict[str, Any]) -> dict[str
         lane = dict(lane)
         lane["status"] = "HOLD"
         lane["settlement_blocker"] = settlement_lane.get("blocker") or SETTLEMENT_RULE_UNRESOLVED
+    elif settlement_lane.get("money_context_required") is True:
+        lane = dict(lane)
+        lane["status"] = "HOLD"
+        lane["settlement_blocker"] = LINEUP_PAYOUT_CONTEXT_REQUIRED
     return lane
 
 
@@ -565,7 +591,33 @@ def score_prop(
     effective_snapshot_id = str(evidence.get("source_snapshot_id") or req.source_snapshot_id)
     raw_market_a = _to_market_quote(req.market_side_a)
     raw_market_b = _to_market_quote(req.market_side_b)
-    settlement_rule = _to_settlement_rule(req.settlement_rule)
+    observed_rule = _to_settlement_rule(req.settlement_rule)
+
+    provider_candidates = [
+        normalize_provider(req.settlement_provider),
+        normalize_provider(getattr(raw_market_a, "provider", None)),
+        normalize_provider(getattr(raw_market_b, "provider", None)),
+    ]
+    provider_set = {value for value in provider_candidates if value}
+    if len(provider_set) > 1:
+        settlement_resolution = SettlementRuleResolution(
+            status="HOLD", blocker=SETTLEMENT_RULE_CONFLICT, rule=None,
+            authority=None, provider=None, rule_id=None, rule_version=None,
+            source_ref=None, source_hash=None, money_semantics=None,
+            observed_rule_status="NOT_EVALUATED_PROVIDER_CONFLICT", can_execute=False,
+        )
+    else:
+        settlement_resolution = resolve_prop_settlement_rule(
+            client=prod.get_client(),
+            provider=next(iter(provider_set), None),
+            sport=req.sport,
+            stat_type=req.stat_type,
+            period=_prop_period(req.stat_type),
+            direction=req.direction,
+            event_start_time=req.event_start_time,
+            observed_rule=observed_rule,
+        )
+    settlement_rule = settlement_resolution.rule
     market_audit = audit_candidate_market(
         event_id=req.event_id,
         participant=str(evidence.get("player") or req.player),
@@ -620,7 +672,7 @@ def score_prop(
         )
 
     market_lane = _market_lane_with_audit(result.row, market_audit)
-    settlement_lane = _settlement_lane(result.row, req, settlement_rule, market_audit.side_a, market_audit.side_b)
+    settlement_lane = _settlement_lane(result.row, req, settlement_rule, settlement_resolution, market_audit.side_a, market_audit.side_b)
     money_lane = _effective_money_lane(result.row, settlement_lane)
     probability_qualification = _probability_qualification(result.row, market_lane, money_lane, settlement_lane)
     return {

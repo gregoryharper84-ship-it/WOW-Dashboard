@@ -629,6 +629,10 @@ def install_pick_request_routes(
                 "seed": row.seed,
                 "money_lane_status": row.money_lane_status,
             }
+            if row.platform is not None:
+                # Platform identifies which reviewed server rule to hydrate;
+                # it never supplies settlement semantics itself.
+                request_payload["settlement_provider"] = row.platform
             if row.market_side_a is not None:
                 request_payload["market_side_a"] = row.market_side_a
             if row.market_side_b is not None:
