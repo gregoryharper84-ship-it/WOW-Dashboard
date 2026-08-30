@@ -1,290 +1,178 @@
-# WOW Dashboard — Claude Code Engineering Contract
+# WOW Dashboard — Engineering Contract
 
-## 0. Governance ruling — checkpoint-ancestry supersession (2026-08-27)
+## 0. Current authority and phase — 2026-08-30
 
-This ruling reconciles a real contradiction this contract previously contained
-between its original rescue→main ancestry requirement (Section 3, as
-originally written) and the later, separately approved sanitized clean-origin
-reconstruction strategy actually used for the Phase 3/4 migration. It does
-not authorize, and was not used to justify, any history rewrite, force-push,
-or rebase of `main`, and none was performed.
+This repository implements WOW v16 Clean Core.
 
-Verified evidence (this repository, full unshallowed clone):
+The historical Replit rescue/migration workflow is no longer the active engineering phase. The sanitized clean-origin reconstruction is the canonical source-control path used to establish GitHub `main`.
+
+Current state:
 
 ```text
-merge-base(origin/main, origin/rescue/replit-emergency-20260820-1221)
-  = 47d5e4f488af6f18645498321ffca4dcc2a8e9b0  (2026-08-05)
-
-e0ffb040cd7376ade1b7f1861ab99b13de37a72c (preserved Replit checkpoint,
-  2026-08-20) IS an ancestor of origin/rescue/replit-emergency-20260820-1221
-  -- confirmed: git merge-base --is-ancestor ... exit 0
-
-e0ffb040... is NOT reachable from 47d5e4f... -- the checkpoint postdates
-  the main/rescue fork point by 15 days, so it was never possible for it
-  to be an ancestor of a `main` built from that fork point
-
-origin/rescue/replit-emergency-20260820-1221 is exactly 3 commits ahead of
-  e0ffb040..., one of which (b330713, "docs: add Claude Code engineering
-  contract") is this file's own origin -- this contract was authored
-  directly on the rescue branch, on top of the checkpoint, which is why
-  its original ancestry requirement made sense at the time it was written
-
-commit 8c750e9 ("Merge Phase 4 sanitized migration and Task #305 repair"),
-  in origin/main's history, has parents 47d5e4f... (old clean main) and
-  bee7838... (Phase 4 sanitized transfer branch, confirmed present on
-  origin/migration/phase4-transfer-20260825) -- confirming `main` was
-  built by reconstructing the migration content from clean main, not by
-  merging the rescue branch's history
+MIGRATION_A1 = COMPLETE
+MIGRATION_A2 = SUPERSEDED_CLOSED_BY_SANITIZED_RECONSTRUCTION
+MIGRATION_A3 = RECONCILED_INTO_V16_CLOSEOUT
+ACTIVE_ENGINEERING_PHASE = V16_CLOSEOUT
+CANONICAL_SOURCE_CONTROL = GitHub main
+PRODUCTION_WEB_RUNTIME = Render wow-governed-probability-engine
+PERSISTENCE_AUTHORITY = Supabase governed schema
+REPLIT_RUNTIME_AUTHORITY = false
 ```
 
-Ruling:
+Preserved migration evidence remains historical rollback material and must not be rewritten or deleted merely to simplify history:
 
 ```text
-MIGRATION_ANCESTRY_RULING = SUPERSEDED_BY_SANITIZED_RECONSTRUCTION
-
-main_must_descend_from_e0ffb040 = false
-
-checkpoint_preservation_requirement = true
-checkpoint_preservation_location =
-  origin/rescue/replit-emergency-20260820-1221
-  + verified rollback bundle
-
-sanitized_main_authority =
-  clean-origin reconstruction
-  + reviewed migration PR
-  + exact-head CI
-  + PR-only merge
-  + preserved rescue/checkpoint lineage
-
+preserved_checkpoint = e0ffb040cd7376ade1b7f1861ab99b13de37a72c
+preserved_rescue_branch = rescue/replit-emergency-20260820-1221
+main_must_descend_from_preserved_checkpoint = false
 history_rewrite_required = false
 force_push_required = false
 ```
 
-Effective immediately, the required invariant is checkpoint **preservation**
-(the checkpoint remains intact and reachable on the rescue branch and in the
-verified rollback bundle), not checkpoint **ancestry of `main`**. A failed
-`git merge-base --is-ancestor e0ffb040... main` must not be read as
-repository corruption or history loss, and must not be "repaired" by
-merging, grafting, rebasing, reparenting, or force-pushing `main`. Section
-3's original ancestry language is retained below for its historical record
-and because it still correctly governs the rescue branch itself; it no
-longer governs `main`.
+A failed ancestry test between that historical checkpoint and modern `main` is not a defect and must not be repaired by grafting, rebasing, reparenting, merging rescue history into `main`, or force-pushing.
 
-Sections 1 and 4 below still describe the original rescue→main A.2 workflow
-and its "A.2 = ACTIVE" state. That describes a plan superseded by the
-sanitized clean-origin reconstruction actually executed (Phase 3/4 — see
-`origin/migration/phase4-transfer-20260825` and its merge into `main` at
-commit `8c750e9`). Treat those sections' specific migration-phase claims as
-known-stale pending a fuller reconciliation; GitHub `main`'s canonical
-status is not blocked on completing the original A.2 rescue→main merge
-described there, since that specific mechanism was not the one used.
+### Authority order
+
+If instructions conflict, use this precedence:
+
+1. active WOW v16 Clean Core project governance
+2. active approved WOW patches
+3. active controlling sport/market specialist contract
+4. this engineering contract
+5. implementation notes, migration history, READMEs, and older patch documents
+
+Historical A.1/A.2 text, legacy Replit runtime assumptions, and older Full Model summaries are evidence only and must not override current project governance.
 
 ---
 
-## 1. Authority and purpose
+## 1. Engineering role
 
-This repository contains the backend implementation for WOW v16 Clean Core.
-
-Claude Code is an engineering implementation agent.
-
-Claude Code is NOT:
-- the WOW governance authority
-- the betting/model approval authority
-- permitted to execute bets or trades
-- permitted to weaken fail-closed behavior
-- permitted to self-approve governance changes
+Claude Code, ChatGPT coding agents, GitHub automation, Render, Supabase tooling, and any other engineering helper are implementation capabilities. They are not WOW betting/model approval authorities.
 
 Architecture:
 
-ChatGPT / WOW governance
+```text
+WOW governance
 → approved engineering specification
-→ Claude Code implementation
+→ implementation branch
 → automated tests / CI
 → review
 → protected GitHub main
-→ deployment/runtime backend
+→ controlled deployment/runtime
+```
 
-GitHub `main` becomes canonical only after the active A.2 migration is successfully completed.
-
-> See Section 0: the rescue→main ancestry mechanism this sentence originally
-> assumed was superseded by the sanitized clean-origin reconstruction
-> strategy actually used for Phase 3/4.
+No engineering tool may self-approve a probability, bet, trade, market order, governance exception, or weakening of a mandatory gate.
 
 ---
 
 ## 2. Absolute safety invariants
 
-These requirements are binding.
+These requirements are binding everywhere:
 
 ```text
 can_execute=false
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
 ```
 
-No code, test, configuration, API integration, deployment, or agent may:
+No code, test, configuration, API integration, deployment, agent, workflow, or connected service may:
 
 - place a live wager
 - place a market order
 - modify or cancel a live wager/order
 - imply that live execution occurred
+- enable capital allocation
 - bypass approval gates
 - silently weaken a fail-closed condition
 
-Missing required evidence must fail closed.
+Missing required evidence fails closed.
 
 No downstream stage may erase an upstream blocker.
 
-Controlling-model failure must remain `MODEL_UNAVAILABLE` where governed.
+Controlling-model failure remains `MODEL_UNAVAILABLE` where governed.
 
-Do not replace unavailable specialist/model output with trends, L5/L10, market intuition, or qualitative fallback.
+Unavailable specialist/model output must not be replaced with raw L5/L10, trends, market intuition, qualitative fallback, sportsbook-implied probability, or synthetic probability.
 
 ---
 
-## 3. Git rules
+## 3. Active Full Model engineering invariants
+
+Implementations must preserve the active WOW v16 Clean Core workflow and its native terminal semantics.
+
+Required properties include:
+
+- exactly one controlling specialist per modeled row where applicable
+- raw L10 is evidence only; role/opportunity comparability and ESS/discernment remain separate gates
+- two-sided props assess both directions; failure of MORE does not approve LESS and vice versa
+- material failure paths alter unconditional probability
+- Calibration Health and Dynamic Calibration are separate gates
+- published probability requires controlling-model support plus calibrated lower bounds where governed
+- probability domain is strictly `0 < p < 1`
+- multi-outcome markets normalize and preserve material push/draw/void states
+- exact comparisons require matching event/date/period/stat/line/boundary/settlement/push rules
+- probability, edge, settlement, money/EV, and portfolio/slip are separate objectives
+- dependency/correlation and session/directional/duplicate-thesis exposure are separate controls
+- multi-leg cards run weakest-leg removal/replacement and never force a requested count
+- final refresh rechecks event, market, status, critical participants, settlement, price freshness, and conflicts
+- every row terminates exactly once
+- reconciliation must satisfy `rows_in = rows_completed + rows_held + rows_rejected`
+- the final terminal ceiling is the strictest applicable upstream native ceiling
+
+Until global row-level backend enforcement is independently proven:
+
+```text
+backend_global_ceiling_enforcement_status = PARTIAL_OR_PENDING
+```
+
+The stricter project-local ceiling remains authoritative.
+
+---
+
+## 4. Git rules
 
 ### Never write directly to `main`
 
-`main` may change only through an authorized merged pull request after required CI and review gates pass.
+`main` may change only through a focused pull request after required CI/review gates pass.
 
 Do not:
 
 - commit directly to `main`
 - push directly to `main`
-- force-push any protected branch
+- force-push a protected or preserved branch
 - rewrite preserved migration history
-- rebase or squash the preserved Replit history unless explicitly authorized
-- delete the rescue branch during migration
+- delete the rescue/checkpoint lineage as routine cleanup
 
 Normal workflow:
 
 ```text
-feature/rescue branch
-→ focused changes
-→ tests
-→ push
+focused feature/fix branch
+→ smallest viable diff
+→ targeted tests
+→ full required CI
 → pull request
-→ CI
 → review
 → authorized merge
 ```
 
-During Phase A.2, the active migration branch is:
+Before any write, report or determine:
 
 ```text
-rescue/replit-emergency-20260820-1221
+audited_branch
+baseline_commit
+working_branch
+working_head
+intended_change
+relevant_tests
 ```
 
-Preserved Replit checkpoint:
-
-```text
-e0ffb040cd7376ade1b7f1861ab99b13de37a72c
-```
-
-This commit represents the exact preserved Replit source checkpoint and must remain intact in repository history.
-
-HEAD is allowed to advance beyond this checkpoint through authorized migration commits.
-
-Required invariant:
-
-```text
-git merge-base --is-ancestor \
-e0ffb040cd7376ade1b7f1861ab99b13de37a72c \
-HEAD
-```
-
-must return exit code `0`.
-
-Do not require current HEAD to equal the preservation checkpoint.
-
-> Superseded for `main` by the Section 0 ruling (2026-08-27): this invariant
-> still governs `origin/rescue/replit-emergency-20260820-1221` itself
-> (verified ancestor, confirmed exit 0) but no longer governs GitHub `main`,
-> which was built via sanitized clean-origin reconstruction rather than a
-> rescue→main merge. Do not attempt to satisfy this invariant against `main`
-> by merging, grafting, rebasing, reparenting, or force-pushing.
+Do not stage or bundle unrelated cleanup.
 
 ---
 
-## 4. Migration state
+## 5. Test and CI discipline
 
-Current migration:
+A red test is evidence, not permission to weaken production behavior.
 
-```text
-A.1 = COMPLETE
-A.2 = ACTIVE
-A.3 = PENDING
-```
-
-> Superseded in part by the Section 0 ruling (2026-08-27): the rescue→main
-> merge mechanism described in "A.2 purpose" items 4-8 below was not the
-> mechanism actually used to make GitHub `main` canonical — `main` was built
-> via sanitized clean-origin reconstruction (Phase 3/4 migration, merged at
-> commit `8c750e9`). Treat this section's specific mechanism and
-> active-phase claim as known-stale pending a fuller reconciliation of the
-> migration-phase model; see Section 0 for what is currently ruled and
-> verified.
-
-A.1 closed with one knowingly accepted evidence exception:
-
-```text
-literal ancestor_exit=0 shell capture was not obtained during A.1
-```
-
-Closure was accepted because:
-- reported merge base equaled the historical GitHub main SHA
-- reported divergence was 286 ahead / 0 behind
-- the rescue branch was remotely preserved
-- a verified Git bundle independently preserved the repository state
-- A.2 re-tests ancestry by construction
-
-A.2 purpose:
-
-1. bootstrap GitHub Actions CI
-2. run authoritative regression baseline
-3. classify failures
-4. open rescue → main PR
-5. establish branch protection
-6. merge through reviewed/authorized PR
-7. verify the preserved Replit checkpoint remains in ancestry
-8. declare GitHub `main` canonical
-
-Do not perform A.3 governance cleanup during A.2 unless explicitly authorized.
-
----
-
-## 5. A.2 change restrictions
-
-During migration verification:
-
-Allowed:
-- CI/workflow infrastructure
-- CI-local PostgreSQL setup
-- diagnostics
-- logging
-- dependency-resolution evidence
-- minimal infrastructure corrections required to run existing tests
-
-Not allowed without explicit approval:
-- production behavior changes
-- betting/model logic changes
-- probability changes
-- calibration changes
-- governance semantics changes
-- terminal-label changes
-- test expectation changes
-- skip guards added merely to make CI green
-- deletion or weakening of failing tests
-- production credential injection
-
-A red test is evidence, not permission to change application behavior.
-
-First classify the failure.
-
----
-
-## 6. A.2 failure taxonomy
-
-Classify each relevant CI/test failure as one of:
+Classify failures before changing application behavior:
 
 ```text
 APPLICATION_REGRESSION
@@ -296,458 +184,120 @@ PREEXISTING_TEST_FAILURE
 UNKNOWN
 ```
 
-Do not modify application behavior until the failure class is established.
+Do not:
 
-Diagnostic infrastructure failures must not unnecessarily suppress unrelated test execution.
+- delete or weaken failing tests merely to make CI green
+- add skip guards solely to suppress a real regression
+- use production credentials in CI
+- convert a missing fitted model into a qualitative fallback
+- promote a research artifact by changing expected test labels
 
-Current intended failure hierarchy:
+Use ephemeral CI infrastructure for database/queue integration tests.
 
-```text
-dependency installation failure
-    → hard prerequisite; suites cannot run
-
-pip check conflict
-    → diagnostic evidence; continue
-
-DB reachability failure
-    → CI_ENVIRONMENT_GAP; continue where possible
-
-known schema bootstrap failure
-    → DATABASE_SCHEMA_BOOTSTRAP_GAP; continue unrelated suites
-
-collection failure
-    → attributable red; individual suites still run where possible
-
-individual suite failure
-    → attributable red; remaining suites continue
-```
+Legacy Flask regression suites remain historical regression evidence where still exercised, but they are not production runtime authority. New production-path acceptance tests must target `artifacts/wow-engine` and the actual final application entrypoint.
 
 ---
 
-## 7. Test surface
+## 6. Production state is separate from Git state
 
-The regression surface is NOT only `gate_engine/tests`.
+Git source alone does not prove production equivalence.
 
-The five required test surfaces live under:
+Verify independently where relevant:
 
-```text
-artifacts/flask-scoring-api/
-```
+- deployed commit SHA
+- Render service topology
+- environment-variable presence (never expose secret values)
+- Supabase migrations/schema
+- artifact/model registry state
+- calibration cohorts
+- provider credentials/configuration
+- worker/queue topology
+- scheduled graders/hydrators
+- live API route surface
 
-Required suites:
-
-```text
-gate_engine/tests
-kalshi_engine/tests
-services/tests
-tests/
-validation/tests
-```
-
-All five must be represented in migration CI.
-
-Repository documentation that describes only `gate_engine/tests/` as the "full regression suite" is known documentation drift and is deferred to A.3.
-
-Do not silently reduce the regression surface.
+Never claim production is fixed merely because code exists on a branch or in `main`.
 
 ---
 
-## 8. Current Python/dependency baseline
+## 7. Runtime identity
 
-Known Replit environment at migration:
-
-```text
-Python 3.11.14
-pytest 9.1.1
-```
-
-Current install manifest:
+Current normal production runtime is the governed FastAPI service under:
 
 ```text
-artifacts/flask-scoring-api/requirements.txt
+artifacts/wow-engine
 ```
 
-Known dependency-governance state:
-
-- dependencies use `>=` bounds rather than reproducible exact pins
-- pytest is not declared in the current requirements manifest
-- CI dependency resolution may differ from historical Replit resolution
-- `uv.lock` exists but uv is not yet declared the authoritative package manager
-- root `pyproject.toml` does not currently establish the authoritative build/package-management contract
-
-Do not silently convert the project to uv, Poetry, pinned requirements, or another dependency-management system during A.2.
-
-For the A.2 bootstrap CI baseline:
+The historical:
 
 ```text
-pytest = 9.1.1
-Python = 3.11 minor line
-dependencies = requirements.txt resolution
+artifacts/flask-scoring-api
 ```
 
-Record resolved versions so dependency drift is diagnosable.
+is legacy/reference regression material unless a current approved patch explicitly invokes it.
+
+Replit Agent/editor is development-only and is not a normal runtime gate. Its availability or unavailability does not make the WOW model unavailable.
+
+A standalone odds proxy or external market-data service may provide evidence, but it is not a controlling probability specialist.
 
 ---
 
-## 9. CI database policy
+## 8. Persistence and security
 
-Production database credentials must never be used in CI.
+Production writes must use governed server-side/service-role paths.
 
-Migration CI uses an ephemeral CI-local PostgreSQL 16 instance.
+Required patterns:
 
-Disposable CI-local database credentials are allowed.
+- RLS remains enabled on governed tables
+- client roles do not receive mutation authority for governed ledgers
+- sensitive mutation RPCs remain privileged and fail closed
+- prediction/evidence/outcome/recommendation identity is immutable where governed
+- callers do not supply model probabilities, calibrated bounds, approval labels, or settlement hit flags to trusted write boundaries
+- settlement truth is backend-derived from frozen identity plus official outcome evidence
 
-Known special case:
-
-```text
-wow_session_exposure
-```
-
-is not initialized by its own real-PostgreSQL tests.
-
-The existing public helper:
-
-```python
-from gate_engine.pg_session_ledger import ensure_table_exists
-```
-
-is verified to exist and may be used to initialize this known CI schema.
-
-The helper creates the `wow_session_exposure` table and its expiry index idempotently.
-
-Known schema bootstrap is diagnostic/non-gating for the overall five-suite baseline.
-
-A failure in schema bootstrap must not prevent unrelated suites from running.
-
-Do not add skip decorators merely to suppress database failures.
-
-Other identified real-PostgreSQL test groups currently bootstrap their own required schema or persistence tables through their existing test/setup paths.
+Security hardening must reduce privileges; it must never broaden public/anon/authenticated mutation access.
 
 ---
 
-## 10. Production state is not Git state
+## 9. V16 closeout priorities
 
-Preserving Git source does NOT prove production reproducibility.
+The active closeout work is authorized to repair implementation/infrastructure blockers while preserving all model/governance gates.
 
-The following remain separate runtime state:
+Priority order:
 
-- production database contents
-- database migrations already applied to production
-- secrets
-- provider credentials
-- environment variables
-- Replit/deployment configuration
-- external provider state
-- production build/runtime identity
+1. prove the canonical Pick Request route is mounted on the final production entrypoint
+2. establish one consistent strict terminal-ceiling reducer across production row paths without upgrading any row
+3. complete prediction → official outcome → grading/calibration feedback loops
+4. reconcile Render Agent Runtime topology with the declared manifest, or remove/defer the unused topology explicitly
+5. normalize Supabase least-privilege grants and immutability controls
+6. merge/certify fitted-model source work only when tests pass; production artifact registration remains separately gated
+7. close or archive obsolete PR/runtime lines after confirming they are superseded
+8. prove deployed SHA/route/schema state after merge
 
-Never claim that cloning GitHub reproduces production unless these states are independently reconciled.
-
-GitHub becoming canonical source means:
-
-```text
-canonical source-control authority
-```
-
-It does NOT automatically mean:
-
-```text
-production runtime equivalence
-```
-
-### Migration source vs. Replit workspace
-
-```text
-PRESERVED_MIGRATION_SOURCE =
-origin/rescue/replit-emergency-20260820-1221
-checkpoint e0ffb040cd7376ade1b7f1861ab99b13de37a72c
-
-CURRENT_REPLIT_WORKSPACE =
-cef41003841a96459b9d7d4c597e7fabce2cf162
-
-RELATION =
-Replit workspace is 1 preservation-only commit ahead
-(.agents metadata + rescue bundle; no source, governance, or CI changes)
-
-MIGRATION_AUTHORITY =
-rescue branch / e0ffb040 ancestry
-
-REPLIT_WORKSPACE_IS_MIGRATION_AUTHORITY =
-false
-
-provenance =
-externally verified from the Replit workspace;
-not expected to be reachable from the GitHub origin
-```
+Forward-outcome/calibration thresholds may not be fabricated or bypassed. A closeout implementation may make infrastructure ready while leaving probability publication blocked until real evidence matures.
 
 ---
 
-## 11. WOW model/governance invariants
+## 10. Stop conditions
 
-Source authority for this summary:
+Stop and request review only when the requested change cannot be resolved under the authority order above without making a substantive governance/model decision, including when:
 
-```text
-wow-full-model-gatekeeper-SKILL-v2.2-l10-discernment.md
-revision = V2.2_TYPED_HYDRATION_L10_DISCERNMENT
-project_contract = ACTIVE
-```
-
-This section summarizes the active Full Model Gatekeeper contract.
-
-If this summary conflicts with the controlling Gatekeeper specification or a higher-precedence WOW governance authority, the controlling authority wins and the conflict must be reported before implementation proceeds.
-
-Each modeled row routes to exactly one controlling specialist where applicable.
-
-A controlling specialist failure cannot be replaced with:
-- generic reasoning
-- raw L5/L10
-- trends
-- market intuition
-- qualitative fallback
-
-Raw recent history is evidence only and must be role/opportunity comparable where governed.
-
-Published probability requires controlling-model support and dynamic calibration, including a calibrated numerical lower bound where required.
-
-Probability values must remain valid:
-
-```text
-0 < p < 1
-```
-
-Multi-outcome markets must normalize appropriately and preserve material draw/push/void states where applicable.
-
-Two-sided props require both directions to be assessed.
-
-Failure of MORE does not approve LESS.
-
-Failure of LESS does not approve MORE.
-
-A reversal requires applicable gates to rerun.
-
-Material failure paths must alter unconditional probability; narrative-only risk discussion is insufficient.
-
-Probability, market edge, settlement, money/EV, and portfolio/slip objectives remain separate.
-
-Correlation/structure and session/directional exposure remain separate controls.
-
-Multi-leg cards must permit weakest-leg removal or replacement and must never force a requested leg count.
-
-Final refresh must recheck applicable:
-- event identity/status
-- market identity
-- price/timestamp freshness
-- critical participant status
-- settlement identity
-- relevant role/lineup/starter status
-- weather/venue where applicable
-- source conflicts
-
-No downstream stage may upgrade a row past an earlier applicable terminal ceiling.
-
-Until global backend row-level ceiling enforcement is proven:
-
-```text
-backend_global_ceiling_enforcement_status = PARTIAL_OR_PENDING
-```
-
-the strict project-local ceiling applies.
-
-Final approval requires every applicable mandatory gate to pass.
-
----
-
-## 12. Known A.3 carry-forward findings
-
-Do not silently repair these during A.2.
-
-### A3-GOV-001
-
-MLB PATCH-010 through PATCH-013 are implemented/running but are not formally registered in the runtime patch registry.
-
-### A3-GOV-002
-
-PATCH-014 / PATCH-015 historical numbering collision requires formal normalization.
-
-### A3-DOC-001
-
-Repository documentation understates the full regression surface.
-
-### A3-DOC-002
-
-Contract README and registry contain known state drift.
-
-### A3-SPEC-001
-
-WOW-v16 master-spec version is known, but the canonical master-spec file pointer is unresolved.
-
-### A3-DEPS-001
-
-pytest is not declared as a test/development dependency.
-
-### A3-BUILD-001
-
-Root `pyproject.toml` lacks the authoritative build-system/package-management contract.
-
-### A3-DEPS-002
-
-`uv.lock` exists without an explicit decision that uv is authoritative.
-
-### A3-DEPS-003
-
-`requirements.txt` uses non-reproducible `>=` dependency bounds.
-
-CI, Replit, and future production environments may resolve materially different package versions.
-
-### A3-CI-001
-
-Bootstrap GitHub Actions and PostgreSQL service configuration use mutable major-version tags.
-
-Evaluate immutable action SHA and container image version/digest pinning after the A.2 baseline is established.
-
----
-
-## 13. Scope discipline
-
-### Audit provenance
-
-Every repository audit, factual verification, test inventory, migration comparison,
-or implementation report must state the exact Git target inspected.
-
-At minimum report:
-
-    audited_branch = <branch>
-    audited_commit = <full SHA>
-    working_tree_branch = <branch>
-    working_tree_head = <full SHA>
-
-When the requested authority is a branch or preserved commit, verify facts against
-that Git tree rather than assuming the current working directory represents it.
-
-For migration work, do not use stale `main`, an untracked working tree, or the
-current Replit workspace as a substitute for the explicitly designated migration
-source.
-
-If the audit target differs from the current checkout, say so explicitly.
-
-No factual repository claim should be presented without identifying the Git
-branch/commit from which it was derived.
-
-Before changing anything:
-
-1. inspect the requested files
-2. state the intended change
-3. identify affected tests
-4. avoid unrelated cleanup
-5. make the smallest viable diff
-6. run the relevant tests
-7. inspect `git diff`
-8. report exactly what changed
-
-Never bundle unrelated refactoring with a migration fix.
-
-Never stage unrelated files.
-
-Prefer:
-
-```bash
-git add -- exact/path
-```
-
-Do not default to:
-
-```bash
-git add .
-git add -A
-git add --all
-```
-
-If unrelated modifications already exist in the worktree, leave them untouched unless explicitly brought into scope.
-
----
-
-## 14. Commit and push discipline
-
-### Pre-commit branch verification
-
-Before any commit, verify that the currently checked-out branch is the intended
-target branch for the authorized work.
-
-Report:
-
-```text
-current_branch = <branch>
-current_head = <full SHA>
-intended_target_branch = <branch>
-```
-
-Do not commit if these do not match the authorized task.
-Claude Code auto-generated working branches are not automatically governed
-migration or implementation branches.
-The existence of a Claude-generated branch does not authorize work to be
-committed there.
-If branch ownership or target intent is unclear, stop before staging or
-committing.
-
-Commits must be small, descriptive, and auditable.
-
-Examples:
-
-```text
-ci: bootstrap WOW migration verification workflow
-ci: repair CI-local PostgreSQL bootstrap
-test: restore migration regression coverage
-docs: reconcile WOW governance registry
-```
-
-Do not use vague commit messages such as:
-- fix stuff
-- updates
-- cleanup
-- working version
-
-Creating/editing a file does not automatically authorize staging.
-
-Staging does not automatically authorize committing.
-
-Committing does not automatically authorize pushing.
-
-Pushing does not automatically authorize opening or merging a pull request.
-
-Respect the explicit authorization boundary for each operation.
-
-During A.2:
-
-```text
-direct main write = forbidden
-force push = forbidden
-history rewrite = forbidden
-automatic deployment = forbidden
-```
-
----
-
-## 15. Stop conditions
-
-Stop and request review if:
-
-- a change would alter WOW governance
-- a change would alter model probability behavior
+- a change would alter probability behavior rather than repair plumbing/implementation
 - a test would need to be weakened
-- production credentials appear necessary
-- destructive Git history rewriting appears necessary
-- branch ancestry differs from migration assumptions
-- `main` would need a direct write
-- live execution capability appears enabled
+- a missing fitted model would need to be replaced with qualitative or market-implied probability
+- live execution capability could become enabled
 - `can_execute` could become true
-- the correct fix is uncertain between infrastructure and application behavior
-- an instruction conflicts with this `CLAUDE.md` or the current migration phase
-- an instruction references a phase/state that appears already completed, superseded, or inconsistent with repository evidence
-- the authority chain for a requested action is unclear
+- destructive Git history rewriting appears necessary
+- `main` would need a direct write
+- production credentials would need to be exposed
+- two current higher-precedence governance authorities materially conflict
+- the correct implementation cannot be determined without choosing between different probability or calibration semantics
 
-When a stop condition occurs:
+A historical phase label or superseded migration instruction is not, by itself, a stop condition once this contract identifies it as historical.
 
-1. do not guess
-2. do not silently choose an interpretation
-3. preserve the current repository state
-4. report the evidence
-5. wait for explicit resolution
+When a real stop condition occurs:
+
+1. preserve repository/runtime state
+2. report exact evidence
+3. keep affected lanes fail-closed
+4. continue unaffected lanes when allowed by active WOW governance
+5. do not guess or silently relax a gate
