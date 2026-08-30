@@ -1,0 +1,119 @@
+openapi: 3.1.0
+info:
+  title: WOW Pick Request Action
+  version: 1.0.0
+  description: Governed analytical batch ingress for screenshot and self-discovered prop candidates. This action never places, routes, modifies, or cancels wagers. can_execute is always false.
+servers:
+  - url: https://REPLACE_WITH_RENDER_SERVICE_HOST
+paths:
+  /score-pick-request:
+    post:
+      operationId: scoreWowPickRequest
+      summary: Validate, freeze, and score a batch of hydrated prop candidates
+      description: Each row terminates independently as COMPLETED, HELD, or REJECTED. Unsupported model routes fail closed. One invalid row cannot erase valid siblings. The caller supplies evidence only; probabilities, model artifacts, calibration outputs, edge, and approval labels are backend-owned.
+      security:
+        - actionBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PickRequestBatch'
+      responses:
+        '200':
+          description: Row-isolated governed batch result with exact reconciliation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows_in, rows_completed, rows_held, rows_rejected, reconciliation_pass, rows, can_execute]
+                properties:
+                  rows_in: {type: integer}
+                  rows_completed: {type: integer}
+                  rows_held: {type: integer}
+                  rows_rejected: {type: integer}
+                  reconciliation_pass: {type: boolean}
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  can_execute:
+                    type: boolean
+                    const: false
+                additionalProperties: true
+        '401':
+          description: Missing, malformed, or incorrect Action credential.
+        '422':
+          description: Batch request shape is invalid.
+components:
+  securitySchemes:
+    actionBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: WOW_ACTION_API_KEY
+  schemas:
+    PickRequestBatch:
+      type: object
+      additionalProperties: false
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/PickRequestRow'
+    PickRequestRow:
+      type: object
+      additionalProperties: false
+      required: [event_id, event_start_time, sport, player, stat_type, line, direction, evidence]
+      properties:
+        row_key: {type: [string, 'null']}
+        event_id: {type: string}
+        event_start_time: {type: string, format: date-time}
+        sport: {type: string}
+        player: {type: string}
+        stat_type: {type: string}
+        line: {type: number}
+        direction: {type: string, enum: [MORE, LESS]}
+        seed: {type: integer, default: 0}
+        money_lane_status: {type: string, default: PAYOUT_UNRESOLVED}
+        market_side_a: {type: [object, 'null'], additionalProperties: true}
+        market_side_b: {type: [object, 'null'], additionalProperties: true}
+        evidence:
+          $ref: '#/components/schemas/RawPropEvidence'
+    RawPropEvidence:
+      type: object
+      additionalProperties: false
+      required: [captured_at, game_log, box_score_log, role_status, role_timestamp, opportunity_ledger, source_timestamps, rate_provenance]
+      properties:
+        captured_at: {type: string, format: date-time}
+        game_log:
+          type: array
+          minItems: 10
+          items: {type: number}
+        box_score_log:
+          type: array
+          minItems: 10
+          items:
+            type: object
+            minProperties: 1
+            additionalProperties: true
+        role_status:
+          type: object
+          minProperties: 1
+          additionalProperties: true
+        role_timestamp: {type: string, format: date-time}
+        opportunity_ledger:
+          type: object
+          minProperties: 1
+          additionalProperties: true
+        source_timestamps:
+          type: object
+          minProperties: 1
+          additionalProperties:
+            type: string
+            format: date-time
+        evidence_version: {type: string, default: PROP_EVIDENCE_V1}
+        rate_provenance: {type: string}
