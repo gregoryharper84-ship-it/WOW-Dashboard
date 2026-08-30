@@ -1,8 +1,8 @@
 """Governed runtime adapter for WNBA_PROP_POISSON_LOGGLM_V1.
 
 Consumes only immutable certified artifact parameters plus hydrated prior-game
-WNBA evidence. The adapter is direction-free and never calibrates, publishes,
-persists, prices, or executes.
+WNBA evidence. The adapter mirrors the offline OFFSET_POISSON_BLEND_V1 fit,
+is direction-free, and never calibrates, publishes, persists, prices, or executes.
 """
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ from prop_distribution_contract import (
 from prop_fitted_provider import ResolvedArtifact, register_model_family_adapter
 
 MODEL_FAMILY = "WNBA_PROP_POISSON_LOGGLM_V1"
+MODEL_KIND = "OFFSET_POISSON_BLEND_V1"
+MIN_GLM_BLEND_WEIGHT = 0.10
 FEATURE_NAMES = (
     "l10_stat_mean",
     "l5_stat_mean",
@@ -27,6 +29,12 @@ FEATURE_NAMES = (
     "l10_minutes_mean",
     "l5_minutes_mean",
     "last_minutes",
+)
+CORRECTION_FEATURE_NAMES = (
+    "log_l5_to_l10_stat",
+    "log_last_to_l10_stat",
+    "log_l5_to_l10_minutes",
+    "log_last_to_l10_minutes",
 )
 
 
@@ -129,36 +137,63 @@ def feature_vector(features: Mapping[str, Any]) -> tuple[float, ...]:
     )
 
 
+def _correction_vector(vector: tuple[float, ...]) -> tuple[float, ...]:
+    eps = 0.25
+    l10_stat, l5_stat, last_stat, l10_min, l5_min, last_min = vector
+    return (
+        math.log((l5_stat + eps) / (l10_stat + eps)),
+        math.log((last_stat + eps) / (l10_stat + eps)),
+        math.log(max(l5_min, 0.1) / max(l10_min, 0.1)),
+        math.log(max(last_min, 0.1) / max(l10_min, 0.1)),
+    )
+
+
 def expected_count(artifact_payload: Mapping[str, Any], vector: tuple[float, ...]) -> tuple[float, float]:
     try:
+        model_kind = str(artifact_payload["model_kind"])
         names = tuple(str(v) for v in artifact_payload["feature_names"])
+        correction_names = tuple(str(v) for v in artifact_payload["correction_feature_names"])
         mean = [float(v) for v in artifact_payload["feature_mean"]]
         scale = [float(v) for v in artifact_payload["feature_scale"]]
         coef = [float(v) for v in artifact_payload["coef"]]
         intercept = float(artifact_payload["intercept"])
+        blend_weight = float(artifact_payload["blend_weight_glm"])
         max_z = float(artifact_payload["max_abs_z_for_coverage"])
     except (KeyError, TypeError, ValueError) as exc:
         raise PropDistributionContractError(
             "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID", "WNBA Poisson artifact payload is incomplete"
         ) from exc
-    if names != FEATURE_NAMES or not (len(mean) == len(scale) == len(coef) == len(vector) == len(FEATURE_NAMES)):
+    if model_kind != MODEL_KIND or names != FEATURE_NAMES or correction_names != CORRECTION_FEATURE_NAMES:
         raise PropDistributionContractError(
-            "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID", "WNBA feature transform contract does not match the artifact"
+            "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID", "WNBA feature transform contract does not match the certified offset model"
         )
-    if any(not math.isfinite(v) for v in mean + scale + coef + [intercept, max_z]) or any(v <= 0 for v in scale) or max_z <= 0:
+    if not (len(mean) == len(scale) == len(vector) == len(FEATURE_NAMES)) or len(coef) != len(CORRECTION_FEATURE_NAMES):
+        raise PropDistributionContractError(
+            "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID", "WNBA fitted vector dimensions are invalid"
+        )
+    numeric = mean + scale + coef + [intercept, blend_weight, max_z]
+    if any(not math.isfinite(v) for v in numeric) or any(v <= 0 for v in scale) or max_z <= 0:
         raise PropDistributionContractError(
             "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID", "WNBA fitted transform contains invalid numeric parameters"
         )
+    if not MIN_GLM_BLEND_WEIGHT <= blend_weight <= 1.0:
+        raise PropDistributionContractError(
+            "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID", "WNBA fitted model component weight is outside the certified range"
+        )
+
     z = [(value - m) / s for value, m, s in zip(vector, mean, scale)]
     max_abs_z = max(abs(v) for v in z)
-    linear = intercept + sum(c * value for c, value in zip(coef, z))
-    if not math.isfinite(linear):
-        raise PropDistributionContractError("WNBA_PROP_LINEAR_PREDICTOR_INVALID", "WNBA fitted predictor is non-finite")
-    if linear > 20:
-        return math.exp(20), max_abs_z
-    if linear < -20:
-        return math.exp(-20), max_abs_z
-    return math.exp(linear), max_abs_z
+    correction = _correction_vector(vector)
+    eta = intercept + sum(c * value for c, value in zip(coef, correction))
+    eta = min(max(eta, -4.0), 4.0)
+    baseline = max(vector[0], 0.05)
+    glm_mu = baseline * math.exp(eta)
+    mu = (1.0 - blend_weight) * baseline + blend_weight * glm_mu
+    if not math.isfinite(mu) or mu <= 0:
+        raise PropDistributionContractError(
+            "WNBA_PROP_LINEAR_PREDICTOR_INVALID", "WNBA fitted expected count is non-finite"
+        )
+    return mu, max_abs_z
 
 
 def wnba_prop_poisson_logglm_v1_adapter(
