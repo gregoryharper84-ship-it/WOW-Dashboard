@@ -21,6 +21,7 @@ import api_prod as prod
 from market import MarketQuote
 from prop_discrete_engine import PropCalibrationUnavailable, score_discrete_prop_end_to_end
 from prop_distribution_contract import PropDistributionContractError, PropInferenceRequest
+from prop_evidence_repair import repair_prop_evidence
 from prop_fitted_provider import PropFittedProviderUnavailable
 
 import prop_calibration_adapters
@@ -199,13 +200,14 @@ def _server_owned_inference_request(req: ScorePropRequest, evidence: dict[str, A
         )
     )
     market_identity_id = "wow-market:" + sha256(canonical_market.encode("utf-8")).hexdigest()
+    evidence_snapshot_id = str(evidence.get("source_snapshot_id") or req.source_snapshot_id)
     return PropInferenceRequest(
         event_id=req.event_id,
         player_id=player_id,
         sport=req.sport,
         league_season=str(event_start.year),
         stat_type=req.stat_type,
-        evidence_snapshot_id=req.source_snapshot_id,
+        evidence_snapshot_id=evidence_snapshot_id,
         market_identity_id=market_identity_id,
         as_of_timestamp=scored_at,
         request_id=str(uuid.uuid4()),
@@ -417,7 +419,11 @@ def score_prop(
         lane=lane,
     )
 
-    evidence = prod._prop_evidence(req)
+    evidence = repair_prop_evidence(
+        req,
+        primary_fetch=prod._prop_evidence,
+        client=prod.get_client(),
+    )
     if evidence.get("ok") is not True or evidence.get("code") != "PROP_EVIDENCE_READY":
         detail = dict(evidence)
         detail.setdefault("code", "RUN_INVALID_ACQUISITION_INCOMPLETE")
@@ -432,6 +438,7 @@ def score_prop(
 
     scored_at = datetime.now(timezone.utc).isoformat()
     inference_request = _server_owned_inference_request(req, evidence, scored_at)
+    effective_snapshot_id = str(evidence.get("source_snapshot_id") or req.source_snapshot_id)
     try:
         result = score_discrete_prop_end_to_end(
             client=prod.get_client(),
@@ -440,7 +447,7 @@ def score_prop(
             player=str(evidence.get("player") or req.player),
             line=req.line,
             direction=req.direction,
-            source_snapshot_id=req.source_snapshot_id,
+            source_snapshot_id=effective_snapshot_id,
             features=_model_features(evidence),
             seed=req.seed,
             money_lane_status=req.money_lane_status,
@@ -479,6 +486,13 @@ def score_prop(
         "ok": True,
         "prediction": persisted,
         "acquisition_evidence": prod._visible_acquisition_evidence(evidence, req.line),
+        "acquisition_repair": {
+            "status": evidence.get("acquisition_repair_status"),
+            "requested_source_snapshot_id": evidence.get("requested_source_snapshot_id") or str(req.source_snapshot_id),
+            "effective_source_snapshot_id": evidence.get("effective_source_snapshot_id") or effective_snapshot_id,
+            "attempts": evidence.get("acquisition_attempts") or [],
+            "can_execute": False,
+        },
         "model_evidence": _discrete_model_evidence(result),
         "evidence": evidence,
         "objective_lanes": {
