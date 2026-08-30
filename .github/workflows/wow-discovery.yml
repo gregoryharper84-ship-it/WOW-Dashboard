@@ -77,37 +77,44 @@ jobs:
       # execution_file is a JSON array of Claude Code SDK event objects
       # (confirmed against anthropics/claude-code-action issue #1296 and
       # the base-action's documented event shape), not plain text -- the
-      # final answer lives in the last {"type":"result","result":"..."}
-      # event's `result` string. Extract that (falling back to the last
-      # assistant message's text blocks if a run aborts before a result
-      # event) rather than dumping the raw JSON array into the issue body
-      # or grepping it directly, which would both misrepresent the
-      # evidence and silently break the anchored `^STOP_15:` grep below —
-      # in a raw JSON dump, marker text sits mid-line inside an escaped
-      # JSON string, never at the start of a line, so that grep would
-      # never match and the §15 safety net would go dark without error.
+      # final answer lives in the last {"type":"result",...} event's
+      # `result` string.
+      #
+      # Confirmed against the Agent SDK's own ResultMessage definition:
+      # `result` is `str | None` and is ONLY populated when
+      # `subtype == "success"` -- every error subtype (error_max_turns,
+      # error_during_execution, error_interrupted, error_invalid_request)
+      # leaves it None. A 9-section reconnaissance packet hitting
+      # --max-turns is a realistic outcome for this workflow, not a rare
+      # edge case, so the fallback below is load-bearing, not cosmetic:
+      # it concatenates EVERY assistant text block across the whole run,
+      # in order -- not just the last one -- so a STOP_15 marker emitted
+      # in an early turn survives into discovery-output.md (and therefore
+      # into the grep below) even when the run aborts before, or without,
+      # ever reaching a `result` event.
+      #
+      # The run's own completion status is recorded separately
+      # (run_succeeded) and fail-closed on below, independent of what the
+      # grep finds: an aborted/errored run must not be able to read as a
+      # clean "no §15 issues found" just because the partial text it did
+      # produce happened not to contain the marker.
       - name: Extract evidence text from execution_file
+        id: evidence
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const log = JSON.parse(fs.readFileSync('${{ steps.claude.outputs.execution_file }}', 'utf8'));
 
-            const resultEvent = log.find(e => e && e.type === 'result' && typeof e.result === 'string');
-            let text = resultEvent ? resultEvent.result : '';
+            const resultEvent = log.find(e => e && e.type === 'result');
+            const runSucceeded = !!(resultEvent && resultEvent.subtype === 'success' && !resultEvent.is_error);
 
-            if (!text) {
-              for (let i = log.length - 1; i >= 0; i--) {
-                const e = log[i];
-                if (e && e.type === 'assistant' && e.message && Array.isArray(e.message.content)) {
-                  text = e.message.content
-                    .filter(c => c && c.type === 'text' && typeof c.text === 'string')
-                    .map(c => c.text)
-                    .join('\n');
-                  if (text) break;
-                }
-              }
-            }
+            const assistantText = log
+              .filter(e => e && e.type === 'assistant' && e.message && Array.isArray(e.message.content))
+              .flatMap(e => e.message.content.filter(c => c && c.type === 'text' && typeof c.text === 'string').map(c => c.text))
+              .join('\n\n');
+
+            let text = (resultEvent && typeof resultEvent.result === 'string' && resultEvent.result) || assistantText;
 
             if (!text) {
               text = 'Claude Code produced no extractable result or assistant text in execution_file. ' +
@@ -116,6 +123,12 @@ jobs:
 
             fs.writeFileSync('discovery-output.md', text, 'utf8');
             fs.copyFileSync('${{ steps.claude.outputs.execution_file }}', 'execution-file.json');
+
+            const statusNote = resultEvent
+              ? `subtype=${resultEvent.subtype}, is_error=${!!resultEvent.is_error}`
+              : 'no result event found in execution_file (run likely aborted before completion)';
+            core.setOutput('run_succeeded', runSucceeded ? 'true' : 'false');
+            core.setOutput('run_status_note', statusNote);
 
       - name: Check for §15 stop markers
         id: stop15
@@ -146,16 +159,36 @@ jobs:
             const fs = require('fs');
             const body = fs.readFileSync('discovery-output.md', 'utf8');
             const stop15 = '${{ steps.stop15.outputs.found }}' === 'true';
-            const title = stop15
-              ? '⚠️ WOW Discovery evidence — §15 stop condition(s) flagged'
-              : 'WOW Discovery evidence packet';
-            const labels = stop15
-              ? ['wow-discovery', 'needs-human-review', 'stop-15']
-              : ['wow-discovery', 'needs-human-review'];
+            const incomplete = '${{ steps.evidence.outputs.run_succeeded }}' !== 'true';
+            const statusNote = ${{ toJSON(steps.evidence.outputs.run_status_note) }};
+
+            // Fail closed on run completeness itself, independent of the
+            // STOP_15 grep result -- see the comment on the extraction
+            // step above for why a clean grep on an incomplete run can't
+            // be trusted as "no §15 issues found".
+            let title, labels;
+            if (stop15 && incomplete) {
+              title = '⚠️ WOW Discovery evidence — INCOMPLETE run + §15 stop condition(s) flagged';
+              labels = ['wow-discovery', 'needs-human-review', 'stop-15', 'incomplete-run'];
+            } else if (stop15) {
+              title = '⚠️ WOW Discovery evidence — §15 stop condition(s) flagged';
+              labels = ['wow-discovery', 'needs-human-review', 'stop-15'];
+            } else if (incomplete) {
+              title = '⚠️ WOW Discovery evidence — run did not complete (fail-closed, needs review)';
+              labels = ['wow-discovery', 'needs-human-review', 'incomplete-run'];
+            } else {
+              title = 'WOW Discovery evidence packet';
+              labels = ['wow-discovery', 'needs-human-review'];
+            }
+
+            const prefix = incomplete
+              ? `**Run did not complete successfully** (${statusNote}). Evidence below may be partial.\n\n---\n\n`
+              : '';
+            const fullBody = prefix + body;
             // GitHub issue bodies cap around 65k chars — truncate defensively.
-            const truncated = body.length > 60000
-              ? body.slice(0, 60000) + '\n\n...[truncated, see workflow artifact for full packet]'
-              : body;
+            const truncated = fullBody.length > 60000
+              ? fullBody.slice(0, 60000) + '\n\n...[truncated, see workflow artifact for full packet]'
+              : fullBody;
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -170,3 +203,9 @@ jobs:
           echo "::warning::§15 stop condition(s) detected. See the created issue."
           echo "This is not a workflow failure — it is a required human checkpoint."
           echo "Discovery data is still valid and uploaded; do not auto-proceed to implementation."
+
+      - name: Fail loudly if the run did not complete successfully
+        if: steps.evidence.outputs.run_succeeded == 'false'
+        run: |
+          echo "::warning::Discovery run did not finish successfully (${{ steps.evidence.outputs.run_status_note }})."
+          echo "Evidence is partial. Treat the created issue as incomplete, not as a clean 'no §15 issues found' result."

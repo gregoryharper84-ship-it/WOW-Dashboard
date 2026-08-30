@@ -73,12 +73,28 @@ or §15-gated, matching WOW's "no self-certification" principle.
      as the issue body, that silently broke the `^STOP_15:` grep, since
      inside a raw JSON dump the marker text sits mid-line in an escaped
      string rather than at the start of a line, so the §15 safety net
-     would go dark with no error. Fixed: a dedicated extraction step
-     parses `execution_file`, takes the last `result` event's text
-     (falling back to the last assistant message's text blocks if a run
-     aborts before a `result` event), and writes that to
-     `discovery-output.md`; the raw `execution_file` is also kept as
-     `execution-file.json` in the uploaded artifact for debugging.
+     would go dark with no error.
+
+     Fixed: a dedicated extraction step parses `execution_file` and takes
+     the last `result` event's text. Confirmed against the Agent SDK's own
+     `ResultMessage` definition, `result` (`str | None`) is populated ONLY
+     on `subtype == "success"` — every error subtype (`error_max_turns`,
+     `error_during_execution`, `error_interrupted`, `error_invalid_request`)
+     leaves it `None`. A 9-section reconnaissance packet hitting
+     `--max-turns` is a realistic outcome for this workflow, not a rare
+     edge case, so the fallback matters: it concatenates **every**
+     assistant text block across the whole run, in order — not just the
+     last one — so a `STOP_15:` marker emitted in an early turn survives
+     into `discovery-output.md` even if the run aborts before, or
+     without, ever reaching a `result` event. The run's own completion
+     status (`subtype`/`is_error`, or "no result event at all") is
+     recorded and fail-closed on independently of the grep: an
+     aborted/errored run gets `incomplete-run` + `needs-human-review`
+     labels and a "did not complete" note prepended to the issue body
+     regardless of what the STOP_15 grep finds, so a partial run can never
+     read as a clean "no §15 issues found". The raw `execution_file` is
+     also kept as `execution-file.json` in the uploaded artifact for
+     debugging.
    - This still leaves the `allowedTools`/`disallowedTools` string syntax
      itself (`Bash(git log:*)` etc.) as the actual read-only enforcement —
      confirm it continues to behave as expected on first run; that part
