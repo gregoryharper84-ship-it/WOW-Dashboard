@@ -23,7 +23,7 @@ class _Table:
         self.sink = sink
 
     def upsert(self, payload, on_conflict=None):
-        assert on_conflict == "snapshot_id"
+        assert on_conflict == "source_snapshot_id"
         return _Mutation(self.sink, payload)
 
 
@@ -122,11 +122,15 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
     assert body["rows_rejected"] == 0
     assert body["reconciliation_pass"] is True
     assert body["rows"][0]["code"] == "MODEL_QUALIFIED"
+    assert len(body["rows"][0]["evidence_fingerprint"]) == 64
     assert body["can_execute"] is False
     assert routed == [("MLB", "PITCHER_STRIKEOUTS")]
     assert len(persisted) == 1
     assert persisted[0]["stat_type"] == "PITCHER_STRIKEOUTS"
-    assert len(persisted[0]["source_snapshot_hash"]) == 64
+    assert persisted[0]["line"] == 5.5
+    assert persisted[0]["hydration_status"] == "PASS"
+    assert persisted[0]["blockers"] == []
+    assert persisted[0]["source_snapshot_id"] == body["rows"][0]["source_snapshot_id"]
     assert persisted[0]["can_execute"] is False
     assert scored[0][0].stat_type == "PITCHER_STRIKEOUTS"
 
