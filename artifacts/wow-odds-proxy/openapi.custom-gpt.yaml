@@ -7,7 +7,7 @@ info:
     credential remains server-side. This API provides acquisition evidence only;
     it never places, routes, modifies, cancels, or approves wagers. can_execute=false.
 servers:
-  - url: https://REPLACE_WITH_RENDER_ODDS_PROXY_HOST
+  - url: https://wow-odds-proxy.onrender.com
 paths:
   /odds-api/health:
     get:
