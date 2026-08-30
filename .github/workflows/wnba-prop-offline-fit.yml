@@ -11,12 +11,16 @@ on:
       - 'artifacts/wow-engine/wnba_prop_training_contract.py'
       - 'artifacts/wow-engine/wnba_prop_model_adapter.py'
       - 'artifacts/wow-engine/wnba_prop_calibration_adapter.py'
+      - 'artifacts/wow-engine/wnba_prop_auto_hydration.py'
+      - 'artifacts/wow-engine/prop_auto_hydration_router.py'
       - 'artifacts/wow-engine/prop_model_adapters.py'
       - 'artifacts/wow-engine/prop_calibration_adapters.py'
+      - 'artifacts/wow-engine/requirements.txt'
       - 'artifacts/wow-engine/test_wnba_prop_trainer.py'
       - 'artifacts/wow-engine/test_wnba_prop_offset_trainer.py'
       - 'artifacts/wow-engine/test_wnba_prop_model_adapter.py'
       - 'artifacts/wow-engine/test_wnba_prop_calibration_adapter.py'
+      - 'artifacts/wow-engine/test_wnba_prop_auto_hydration.py'
       - 'artifacts/wow-engine/test_wnba_runtime_registration.py'
       - 'artifacts/wow-engine/test_wnba_prop_training_readiness.py'
       - '.github/workflows/wnba-prop-offline-fit.yml'
@@ -47,7 +51,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Run WNBA trainer, calibration, and runtime-parity unit tests
+      - name: Run WNBA trainer, calibration, hydration, and runtime-parity tests
         run: >-
           pytest -q
           test_wnba_prop_training_contract.py
@@ -57,6 +61,7 @@ jobs:
           test_wnba_prop_offset_trainer.py
           test_wnba_prop_model_adapter.py
           test_wnba_prop_calibration_adapter.py
+          test_wnba_prop_auto_hydration.py
           test_wnba_runtime_registration.py
 
       - name: Prove pinned historical role and event-time joins
