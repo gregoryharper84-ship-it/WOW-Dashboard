@@ -19,7 +19,7 @@ services:
     rootDir: artifacts/wow-engine
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health/ready
+    healthCheckPath: /health
     autoDeployTrigger: "off"
     envVars:
       - key: PYTHON_VERSION

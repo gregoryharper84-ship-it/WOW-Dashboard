@@ -1,103 +1,137 @@
 # WOW governed probability backend — Render + Custom GPT Action release runbook
 
-This runbook deploys `artifacts/wow-engine` as the separate
-`EXTERNAL_GOVERNED_BACKEND`. It does **not** replace the existing Replit scoring
-runtime and it does **not** authorize betting/trading execution.
+This runbook describes the current governed WOW production topology. The backend is analytical only: it never places, routes, modifies, or cancels wagers, and `can_execute=false` is invariant.
 
-Hard invariants throughout this runbook:
+## 1. Authoritative Render service
 
-- `governed_probability_capability = UNAVAILABLE` until the full live-host deployment gate passes.
-- `Section_8A = ACTIVE` while that capability is unavailable.
-- `can_execute = false`.
-- No missing fitted sport/stat parameters may be invented or qualitatively substituted.
+Repository: `gregoryharper84-ship-it/WOW-Dashboard`
 
-## 1. Create the Render service from the Blueprint
+Service definition: repository-root `render.yaml`.
 
-Use the repository-root `render.yaml` as the Blueprint and deploy from the default
-`main` branch. The service is intentionally configured with automatic deploys off;
-future releases should follow the same reviewed PR/CI/merge/deploy sequence.
+Production web service contract:
 
-During initial Blueprint creation, Render will prompt for the three `sync: false`
-environment variables. Enter them directly in Render; never place their values in
-Git, issue comments, chat messages, screenshots, or logs:
-
-- `SUPABASE_URL` — validation/production Supabase project URL appropriate for this release.
-- `SUPABASE_SERVICE_KEY` — backend-only Supabase service-role credential.
-- `WOW_ACTION_API_KEY` — independent application-layer credential used only by the Custom GPT Action.
-
-The `WOW_ACTION_API_KEY` and the Supabase service-role key must be different secrets.
-The Custom GPT must never receive the Supabase service-role key.
-
-Expected service configuration is supplied by `render.yaml`:
-
-- service name: `wow-governed-probability-engine`
-- runtime: Python
-- Python version: 3.11.11
+- service: `wow-governed-probability-engine`
+- branch: `main`
+- runtime: Python 3.11
 - root directory: `artifacts/wow-engine`
 - build: `pip install -r requirements.txt`
-- start: `uvicorn api:app --host 0.0.0.0 --port $PORT`
+- start: `uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT`
 - health path: `/health`
-- free instance tier
 - automatic deploys: off
+- `WOW_CAN_EXECUTE=false`
+- `WOW_DRY_RUN_ONLY=true`
 
-Record the exact HTTPS Render service origin after the first successful deploy.
-Do not guess the hostname.
+Required secrets remain backend-only except for the Action credential:
 
-## 2. Live-host validation before enabling governed probability
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_KEY`
+- `WOW_ACTION_API_KEY`
 
-First verify the public endpoints on the deployed Render origin:
+Never place secret values in Git, issue comments, chat messages, screenshots, logs, or command-line arguments. The Supabase service-role key and `WOW_ACTION_API_KEY` must be different credentials. The Custom GPT receives only the Action bearer credential, never the Supabase service-role key.
 
-- `GET /health` returns HTTP 200 and identifies `EXTERNAL_GOVERNED_BACKEND` / Render / Supabase.
-- `GET /governance` returns HTTP 200 and still reports
-  `governed_probability_capability = UNAVAILABLE`.
+Because automatic deploys are off, every release follows:
 
-Then perform the governed live-host validation against the real Supabase project.
-The existing validator documents its own prerequisites and cleanup contract in
-`scripts/live_gate_validation.py`. Credentials belong in environment variables,
-never command-line arguments or chat text.
+1. reviewed PR,
+2. required GitHub CI,
+3. merge to `main`,
+4. manual Render deploy,
+5. exact deployed-SHA verification,
+6. startup and `/health` verification.
 
-Do not flip `governed_probability_capability` based only on host reachability or
-authentication. The patch's complete 11-point deployment gate remains controlling,
-and the fitted sports lane remains a separate Step 6 requirement.
+Do not treat a green GitHub commit as production until Render reports that exact commit live.
 
-## 3. Configure the Custom GPT Action
+## 2. Canonical Pick Request boundary
 
-Start from `openapi.custom-gpt.template.yaml`.
+The governed source-agnostic prop ingress is:
 
-1. Replace only the template server origin with the exact HTTPS Render origin.
-2. In the GPT editor, create a new Action and provide the resulting OpenAPI schema.
-3. Configure authentication as **API key → Bearer**.
-4. Enter the same `WOW_ACTION_API_KEY` value that is stored in Render. Do not enter
-   the Supabase service-role key.
-5. Test `getWowProbabilityHealth` and `getWowProbabilityGovernance` in Preview.
-6. While governance reports `UNAVAILABLE`, the GPT must not call `scoreWowProp` as
-   a way to obtain a probability. A protected test call may return the governed
-   409 hold; that is expected and must not be bypassed.
-7. `settleWowPrediction` is for verified official results on existing prediction
-   IDs only; it is not a betting/trading action.
+`POST /score-pick-request`
 
-The GPT's instructions should explicitly require a governance check before governed
-probability scoring and preserve the manual/fallback lane whenever capability is
-unavailable.
+Operation ID:
 
-If the GPT is later shared publicly, satisfy any current ChatGPT Action-domain and
-privacy-policy requirements before publication.
+`scoreWowPickRequest`
 
-## 4. Promotion boundary
+The endpoint is authenticated with `Authorization: Bearer <WOW_ACTION_API_KEY>` and is designed for normalized candidates originating from screenshots, PDFs, pasted boards, or autonomous discovery.
 
-Only after the live-host deployment gate is independently clean may the project
-consider changing the governed probability capability. Even then, Step 6 remains
-substantive: real per-sport cohort/regime/simulation parameters must be fit from
-actual historical data and validated lane-by-lane. Hosting and authentication do
-not create a fitted model.
+Caller-owned fields are candidate identity and optional auditable raw pregame evidence. Probability, fitted-model identity, calibration output, lower bounds, edge, money qualification, terminal approval labels, and execution are backend-owned.
 
-A valid release may therefore end in this state:
+The current P0 automatic-evidence route is intentionally narrow:
 
-```text
-governed_probability_capability = UNAVAILABLE
-Section_8A = ACTIVE
-Custom GPT Action = CONNECTED
-host/auth = PASS
-real fitted sports lane = NOT YET AVAILABLE
-can_execute = false
-```
+- sport: MLB
+- stat: `PITCHER_STRIKEOUTS`
+- provider: official MLB StatsAPI evidence acquisition
+- required evidence: exact player identity, target event/probable-pitcher confirmation, and ten prior regular-season starts
+- output evidence contract: `PROP_EVIDENCE_V1`
+
+Automatic hydration does not calculate a probability. It validates and freezes governed evidence, then delegates to the same certified `/score-prop` fitted-model path.
+
+Unsupported exact routes remain `MODEL_UNAVAILABLE`. Missing evidence never authorizes a generic model, qualitative fallback, raw L5/L10 hit-rate probability, or market-implied probability to be relabeled as governed model output.
+
+Rows terminate independently and reconcile exactly:
+
+`rows_in = rows_completed + rows_held + rows_rejected`
+
+Run controller status is `COMPLETE`, `DEGRADED`, or `BLOCKED`. One broken row may not erase valid siblings.
+
+## 3. Direct single-row prop boundary
+
+`POST /score-prop` remains available for callers that already have an immutable governed evidence snapshot ID.
+
+Its required ordering is:
+
+1. controlling specialist,
+2. aggregate prop capability,
+3. exact certified fitted-model artifact,
+4. governed evidence hydration/repair,
+5. fitted model,
+6. calibration/bounds,
+7. prediction persistence.
+
+Unsupported model routes must terminate before evidence acquisition. Evidence repair may use only exact-identity governed PASS snapshots captured strictly before event start and must revalidate them through the existing evidence RPC.
+
+## 4. Custom GPT Action schemas
+
+Two reviewed schemas are retained in the backend directory:
+
+### Core governed probability Action
+
+`openapi.custom-gpt.template.yaml`
+
+Includes health/governance, single-row prop scoring, event scoring, and settlement operations.
+
+### Canonical Pick Request Action
+
+`openapi.pick-request-action.yaml`
+
+Includes only `/score-pick-request` and is the preferred prop-ingress contract for screenshot/PDF/self-discovery workflows because evidence may be backend-hydrated on certified routes.
+
+For each schema installed in the GPT editor:
+
+1. replace only `https://REPLACE_WITH_RENDER_SERVICE_HOST` with the exact HTTPS Render service origin,
+2. configure authentication as API key → Bearer,
+3. enter the same `WOW_ACTION_API_KEY` stored in Render,
+4. never enter the Supabase service-role key,
+5. preserve all returned fail-closed statuses and blockers.
+
+Installing or editing a Custom GPT Action is a ChatGPT product configuration step; backend deployment does not silently modify the GPT editor configuration.
+
+## 5. Live acceptance boundary
+
+Minimum release evidence:
+
+- Render build checks out the expected merged SHA.
+- Render reports that deploy `live`.
+- Uvicorn reports `Application startup complete`.
+- repeated `GET /health` requests return 200.
+- unauthenticated `POST /score-pick-request` returns 401, proving the route is mounted and the bearer gate is active without exposing the Action secret.
+- that unauthenticated probe creates zero evidence rows and zero prediction rows.
+- Supabase `PROP_PROBABILITY` capability and all `can_execute=false` invariants remain unchanged unless a separately governed promotion explicitly changes them.
+
+An authenticated scoring call must never be manufactured by rotating or exposing the production Action secret merely for testing. Use the configured GPT Action or another already-authorized client when authenticated live-path evidence is required.
+
+## 6. Model-coverage boundary
+
+Infrastructure readiness is not model coverage.
+
+At the time this runbook was updated, the certified prop artifact registry contains the MLB pitcher-strikeout fitted model. Other sports/stat families, including WNBA props, must remain `MODEL_UNAVAILABLE` until their own fitted artifacts, calibration path, and required governance gates are actually certified.
+
+`can_execute=false` remains invariant regardless of model coverage.
