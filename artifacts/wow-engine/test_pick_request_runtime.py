@@ -5,6 +5,7 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 import api_prod_market as market_api
+import pick_request_runtime as runtime
 from pick_request_runtime import install_pick_request_routes
 
 
@@ -42,7 +43,7 @@ def _evidence(*, l10=True):
     return {
         "captured_at": now.isoformat(),
         "game_log": list(range(1, n + 1)),
-        "box_score_log": [{"minutes": 30 + i, "stat": i} for i in range(n)],
+        "box_score_log": [{"minutes": 30 + i, "stat": i, "outs": 15 + i} for i in range(n)],
         "role_status": {"status": "ACTIVE", "role": "STARTER"},
         "role_timestamp": now.isoformat(),
         "opportunity_ledger": {"status": "PASS", "minutes_projection": 34},
@@ -55,8 +56,8 @@ def _evidence(*, l10=True):
     }
 
 
-def _row(row_key, *, sport="MLB", stat_type="Ks", l10=True):
-    return {
+def _row(row_key, *, sport="MLB", stat_type="Ks", l10=True, include_evidence=True):
+    row = {
         "row_key": row_key,
         "event_id": f"{sport}:TEST:{row_key}",
         "event_start_time": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
@@ -65,11 +66,14 @@ def _row(row_key, *, sport="MLB", stat_type="Ks", l10=True):
         "stat_type": stat_type,
         "line": 5.5,
         "direction": "MORE",
-        "evidence": _evidence(l10=l10),
+        "source_type": "NORMALIZED",
     }
+    if include_evidence:
+        row["evidence"] = _evidence(l10=l10)
+    return row
 
 
-def _build(monkeypatch, *, unsupported_sports=()):
+def _build(monkeypatch, *, unsupported_sports=(), capability="AVAILABLE"):
     app = FastAPI()
     persisted = []
     routed = []
@@ -95,6 +99,11 @@ def _build(monkeypatch, *, unsupported_sports=()):
         }
 
     monkeypatch.setattr(market_api.prod.base_api, "_controlling_specialist_provider", specialist)
+    monkeypatch.setattr(
+        market_api.prod,
+        "_runtime_capability",
+        lambda _key: {"capability_status": capability, "evidence": {}, "can_execute": False},
+    )
     monkeypatch.setattr(market_api, "_prop_route_artifact", route)
     monkeypatch.setattr(market_api.prod, "get_client", lambda: _Client(persisted))
     monkeypatch.setattr(market_api, "score_prop", score)
@@ -116,12 +125,14 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
     )
     assert response.status_code == 200
     body = response.json()
+    assert body["run_controller_status"] == "COMPLETE"
     assert body["rows_in"] == 1
     assert body["rows_completed"] == 1
     assert body["rows_held"] == 0
     assert body["rows_rejected"] == 0
     assert body["reconciliation_pass"] is True
     assert body["rows"][0]["code"] == "MODEL_QUALIFIED"
+    assert body["rows"][0]["acquisition"]["mode"] == "CALLER_SUPPLIED_RAW_EVIDENCE"
     assert len(body["rows"][0]["evidence_fingerprint"]) == 64
     assert body["can_execute"] is False
     assert routed == [("MLB", "PITCHER_STRIKEOUTS")]
@@ -135,17 +146,54 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
     assert scored[0][0].stat_type == "PITCHER_STRIKEOUTS"
 
 
-def test_unsupported_row_is_held_without_model_or_snapshot(monkeypatch):
+def test_unsupported_row_is_held_without_route_hydration_model_or_snapshot(monkeypatch):
     client, persisted, routed, scored = _build(monkeypatch, unsupported_sports={"WNBA"})
-    response = client.post("/score-pick-request", json={"rows": [_row("wnba", sport="WNBA", stat_type="REB")]})
+    hydration_called = {"value": False}
+
+    def should_not_hydrate(**_kwargs):
+        hydration_called["value"] = True
+        raise AssertionError("unsupported route must terminate before acquisition")
+
+    monkeypatch.setattr(runtime, "auto_hydrate_prop_evidence", should_not_hydrate)
+    row = _row("wnba", sport="WNBA", stat_type="REB", include_evidence=False)
+    response = client.post("/score-pick-request", json={"rows": [row]})
     assert response.status_code == 200
-    row = response.json()["rows"][0]
-    assert row["terminal_status"] == "HELD"
-    assert row["code"] == "MODEL_UNAVAILABLE"
-    assert row["probability_publishable"] is False
-    assert row["can_execute"] is False
+    body = response.json()
+    terminal = body["rows"][0]
+    assert body["run_controller_status"] == "BLOCKED"
+    assert terminal["terminal_status"] == "HELD"
+    assert terminal["code"] == "MODEL_UNAVAILABLE"
+    assert terminal["acquisition"]["mode"] == "NOT_ATTEMPTED_ROUTE_BLOCKED"
+    assert terminal["probability_publishable"] is False
+    assert terminal["can_execute"] is False
+    assert hydration_called["value"] is False
     assert persisted == []
     assert routed == []
+    assert scored == []
+
+
+def test_unavailable_aggregate_capability_blocks_before_route_and_auto_hydration(monkeypatch):
+    client, persisted, routed, scored = _build(monkeypatch, capability="UNAVAILABLE")
+    hydration_called = {"value": False}
+
+    def should_not_hydrate(**_kwargs):
+        hydration_called["value"] = True
+        raise AssertionError("unavailable capability must terminate before acquisition")
+
+    monkeypatch.setattr(runtime, "auto_hydrate_prop_evidence", should_not_hydrate)
+    response = client.post(
+        "/score-pick-request",
+        json={"rows": [_row("capability", include_evidence=False)]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    terminal = body["rows"][0]
+    assert body["run_controller_status"] == "BLOCKED"
+    assert terminal["code"] == "PROP_PROBABILITY_UNAVAILABLE"
+    assert terminal["acquisition"]["mode"] == "NOT_ATTEMPTED_ROUTE_BLOCKED"
+    assert hydration_called["value"] is False
+    assert routed == []
+    assert persisted == []
     assert scored == []
 
 
@@ -157,6 +205,7 @@ def test_bad_row_cannot_erase_good_sibling_and_reconciliation_is_exact(monkeypat
     )
     assert response.status_code == 200
     body = response.json()
+    assert body["run_controller_status"] == "DEGRADED"
     assert body["rows_in"] == 2
     assert body["rows_completed"] == 1
     assert body["rows_held"] == 0
@@ -168,6 +217,81 @@ def test_bad_row_cannot_erase_good_sibling_and_reconciliation_is_exact(monkeypat
     assert by_key["bad"]["detail"]["blocker"] == "L10_GAME_LOG_INCOMPLETE"
     assert by_key["good"]["terminal_status"] == "COMPLETED"
     assert by_key["good"]["code"] == "MODEL_QUALIFIED"
+    assert len(persisted) == 1
+    assert len(scored) == 1
+
+
+def test_missing_evidence_auto_hydrates_freezes_and_scores(monkeypatch):
+    client, persisted, routed, scored = _build(monkeypatch)
+    calls = []
+
+    def hydrate(**kwargs):
+        calls.append(kwargs)
+        return _evidence()
+
+    monkeypatch.setattr(runtime, "auto_hydrate_prop_evidence", hydrate)
+    row = _row("auto", include_evidence=False)
+    row["source_type"] = "SCREENSHOT"
+    row["platform"] = "PrizePicks"
+    response = client.post("/score-pick-request", json={"rows": [row]})
+
+    assert response.status_code == 200
+    body = response.json()
+    terminal = body["rows"][0]
+    assert body["run_controller_status"] == "COMPLETE"
+    assert body["rows_completed"] == 1
+    assert terminal["terminal_status"] == "COMPLETED"
+    assert terminal["code"] == "MODEL_QUALIFIED"
+    assert terminal["acquisition"]["mode"] == "AUTO_HYDRATION"
+    assert terminal["acquisition"]["status"] == "PASS"
+    assert terminal["acquisition"]["snapshot_status"] == "FROZEN"
+    assert body["telemetry"]["auto_hydration_attempted"] == 1
+    assert body["telemetry"]["auto_hydration_succeeded"] == 1
+    assert body["telemetry"]["false_global_failure_count"] == 0
+    assert len(calls) == 1
+    assert calls[0]["sport"] == "MLB"
+    assert calls[0]["stat_type"] == "PITCHER_STRIKEOUTS"
+    assert calls[0]["source_label"] == "SCREENSHOT:PrizePicks"
+    assert len(persisted) == 1
+    assert len(scored) == 1
+
+
+def test_auto_hydration_failure_is_row_local_and_valid_sibling_completes(monkeypatch):
+    client, persisted, routed, scored = _build(monkeypatch)
+
+    def hydrate(**kwargs):
+        if kwargs["player"] == "Broken Pitcher":
+            raise runtime.PropAutoHydrationError(
+                "MLB_STARTER_STATUS_UNRESOLVED",
+                "starter not confirmed",
+                detail={"player": kwargs["player"]},
+            )
+        return _evidence()
+
+    monkeypatch.setattr(runtime, "auto_hydrate_prop_evidence", hydrate)
+    broken = _row("broken", include_evidence=False)
+    broken["player"] = "Broken Pitcher"
+    good = _row("good-auto", include_evidence=False)
+    good["player"] = "Good Pitcher"
+
+    response = client.post("/score-pick-request", json={"rows": [broken, good]})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_controller_status"] == "DEGRADED"
+    assert body["rows_in"] == 2
+    assert body["rows_completed"] == 1
+    assert body["rows_held"] == 1
+    assert body["rows_rejected"] == 0
+    assert body["reconciliation_pass"] is True
+    by_key = {row["row_key"]: row for row in body["rows"]}
+    assert by_key["broken"]["code"] == "MLB_STARTER_STATUS_UNRESOLVED"
+    assert by_key["broken"]["terminal_status"] == "HELD"
+    assert by_key["good-auto"]["terminal_status"] == "COMPLETED"
+    assert by_key["good-auto"]["code"] == "MODEL_QUALIFIED"
+    assert body["telemetry"]["auto_hydration_attempted"] == 2
+    assert body["telemetry"]["auto_hydration_succeeded"] == 1
+    assert body["telemetry"]["acquisition_failures"] == 1
+    assert body["telemetry"]["false_global_failure_count"] == 0
     assert len(persisted) == 1
     assert len(scored) == 1
 

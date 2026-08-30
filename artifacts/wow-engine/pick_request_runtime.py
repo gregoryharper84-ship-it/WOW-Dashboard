@@ -1,11 +1,14 @@
 """Governed screenshot/self-discovery -> evidence snapshot -> prop scoring bridge.
 
-This boundary is intentionally acquisition-only. The caller may supply raw,
-auditable pregame evidence gathered from screenshots and approved live sources,
-but may never supply a probability, model artifact, calibration output, edge,
-or approval label. The backend validates and deterministically fingerprints the
-evidence, writes the governed wow_prop_evidence_snapshots row, then delegates to
-the existing certified /score-prop model path.
+This boundary is acquisition/orchestration only. A caller may supply raw,
+auditable pregame evidence, or omit evidence when the exact sport/stat route has
+a certified backend automatic hydrator. The caller may never supply a model
+probability, model artifact, calibration output, edge, or approval label.
+
+Every row is preflighted for specialist, aggregate capability, and exact fitted
+artifact before any expensive automatic acquisition. Evidence then follows one
+canonical path: validate -> deterministic fingerprint -> immutable/idempotent
+snapshot -> existing governed /score-prop model path.
 
 Every row terminates exactly once. A bad/unsupported row cannot erase a sibling
 row. can_execute is false unconditionally.
@@ -17,10 +20,12 @@ import math
 import uuid
 from datetime import datetime, timezone
 from hashlib import sha256
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+
+from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_evidence
 
 
 PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
@@ -32,6 +37,14 @@ PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
     ("MLB", "PITCHER_K"): "PITCHER_STRIKEOUTS",
     ("MLB", "PITCHER_KS"): "PITCHER_STRIKEOUTS",
 }
+
+PickSourceType = Literal[
+    "SCREENSHOT",
+    "PDF",
+    "AUTONOMOUS_DISCOVERY",
+    "PASTED_BOARD",
+    "NORMALIZED",
+]
 
 
 class RawPropEvidence(BaseModel):
@@ -59,7 +72,12 @@ class PickRequestRow(BaseModel):
     stat_type: str
     line: float
     direction: str
-    evidence: RawPropEvidence
+    evidence: Optional[RawPropEvidence] = None
+    source_type: PickSourceType = "NORMALIZED"
+    platform: Optional[str] = None
+    league: Optional[str] = None
+    opponent: Optional[str] = None
+    source_capture_timestamp: Optional[str] = None
     seed: int = 0
     money_lane_status: str = "PAYOUT_UNRESOLVED"
     market_side_a: Optional[dict[str, Any]] = None
@@ -69,6 +87,7 @@ class PickRequestRow(BaseModel):
 class PickRequestBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    request_id: Optional[str] = None
     rows: list[PickRequestRow] = Field(min_length=1, max_length=50)
 
 
@@ -89,6 +108,9 @@ def _canonical_stat(sport: str, stat_type: str) -> str:
 
 
 def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, Any]:
+    if row.evidence is None:
+        raise ValueError("EVIDENCE_MISSING_AFTER_ACQUISITION")
+
     now = datetime.now(timezone.utc)
     event_start = _parse_aware(row.event_start_time, "event_start_time")
     captured = _parse_aware(row.evidence.captured_at, "captured_at")
@@ -107,7 +129,12 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
         raise ValueError("L10_GAME_LOG_INCOMPLETE")
     if len(row.evidence.box_score_log) < 10:
         raise ValueError("L10_BOX_SCORE_LOG_INCOMPLETE")
-    if any(not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(float(v)) for v in row.evidence.game_log):
+    if any(
+        not isinstance(v, (int, float))
+        or isinstance(v, bool)
+        or not math.isfinite(float(v))
+        for v in row.evidence.game_log
+    ):
         raise ValueError("GAME_LOG_NON_NUMERIC")
     if any(not isinstance(v, dict) or not v for v in row.evidence.box_score_log):
         raise ValueError("BOX_SCORE_LOG_INVALID")
@@ -118,7 +145,9 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
         raise ValueError("ROLE_STATUS_MISSING")
 
     opportunity = row.evidence.opportunity_ledger
-    opportunity_status = str(opportunity.get("status") or opportunity.get("gate_label") or "").strip().upper()
+    opportunity_status = str(
+        opportunity.get("status") or opportunity.get("gate_label") or ""
+    ).strip().upper()
     if opportunity_status not in {"PASS", "COMPLETE", "READY"}:
         raise ValueError("OPPORTUNITY_LEDGER_NOT_READY")
 
@@ -152,9 +181,13 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
     }
 
 
-def _snapshot_payload(row: PickRequestRow, normalized: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
-    # Fingerprint includes acquisition provenance even though the legacy snapshot
-    # table stores provenance source names/times rather than a separate hash column.
+def _snapshot_payload(
+    row: PickRequestRow,
+    normalized: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    if row.evidence is None:
+        raise ValueError("EVIDENCE_MISSING_AFTER_ACQUISITION")
+
     fingerprint_input = {
         "event_id": normalized["event_id"],
         "event_start_time": normalized["event_start_time"],
@@ -175,13 +208,15 @@ def _snapshot_payload(row: PickRequestRow, normalized: dict[str, Any]) -> tuple[
         "blockers": [],
         "can_execute": False,
     }
-    canonical = json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    canonical = json.dumps(
+        fingerprint_input,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
     fingerprint = sha256(canonical.encode("utf-8")).hexdigest()
     snapshot_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"wow-prop-evidence:{fingerprint}"))
 
-    # Match the live wow_prop_evidence_snapshots table exactly. The deterministic
-    # source_snapshot_id makes identical acquisitions idempotent without allowing
-    # caller-controlled snapshot identity.
     persisted = {
         "source_snapshot_id": snapshot_id,
         "captured_at": normalized["captured_at"],
@@ -205,19 +240,87 @@ def _snapshot_payload(row: PickRequestRow, normalized: dict[str, Any]) -> tuple[
     return snapshot_id, fingerprint, persisted
 
 
-def _terminal(row_key: str, status: str, code: str, *, detail: Optional[dict[str, Any]] = None, snapshot_id: Optional[str] = None) -> dict[str, Any]:
+def _terminal(
+    row_key: str,
+    status: str,
+    code: str,
+    *,
+    detail: Optional[dict[str, Any]] = None,
+    snapshot_id: Optional[str] = None,
+    acquisition: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     return {
         "row_key": row_key,
         "terminal_status": status,
         "code": code,
         "source_snapshot_id": snapshot_id,
         "detail": detail or {},
+        "acquisition": acquisition
+        or {
+            "mode": "NOT_COMPLETED",
+            "can_execute": False,
+        },
         "probability_publishable": False,
         "can_execute": False,
     }
 
 
-def install_pick_request_routes(app: Any, *, market_api: Any, auth_dependency: Any) -> None:
+def _auto_hydration_hold(code: str) -> bool:
+    return code in {
+        "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
+        "PROP_AUTO_HYDRATION_PROVIDER_UNAVAILABLE",
+        "MLB_STARTER_STATUS_UNRESOLVED",
+    }
+
+
+def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
+    auto_attempted = 0
+    auto_succeeded = 0
+    route_blocked = 0
+    acquisition_failures = 0
+    model_completed = 0
+    for outcome in outcomes:
+        acquisition = outcome.get("acquisition") or {}
+        if acquisition.get("mode") == "AUTO_HYDRATION":
+            auto_attempted += 1
+            if acquisition.get("status") == "PASS":
+                auto_succeeded += 1
+        if outcome.get("code") in {
+            "SPECIALIST_ROUTING_UNAVAILABLE",
+            "MODEL_UNAVAILABLE",
+            "PROP_PROBABILITY_UNAVAILABLE",
+        } and acquisition.get("mode") == "NOT_ATTEMPTED_ROUTE_BLOCKED":
+            route_blocked += 1
+        if outcome.get("code") in {
+            "RUN_INVALID_ACQUISITION_INCOMPLETE",
+            "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
+            "PROP_AUTO_HYDRATION_PROVIDER_UNAVAILABLE",
+            "PROP_PLAYER_IDENTITY_UNRESOLVED",
+            "PROP_EVENT_IDENTITY_CONFLICT",
+            "MLB_RECENT_STARTS_INSUFFICIENT",
+            "MLB_STARTER_STATUS_UNRESOLVED",
+            "EVENT_ALREADY_STARTED",
+            "PROP_EVIDENCE_PERSISTENCE_UNAVAILABLE",
+        }:
+            acquisition_failures += 1
+        if outcome.get("terminal_status") == "COMPLETED":
+            model_completed += 1
+    return {
+        "auto_hydration_attempted": auto_attempted,
+        "auto_hydration_succeeded": auto_succeeded,
+        "route_preflight_blocked": route_blocked,
+        "acquisition_failures": acquisition_failures,
+        "model_completed": model_completed,
+        "false_global_failure_count": 0,
+    }
+
+
+def install_pick_request_routes(
+    app: Any,
+    *,
+    market_api: Any,
+    auth_dependency: Any,
+) -> None:
     """Install one authenticated row-isolated screenshot/discovery scoring route."""
     if any(getattr(route, "path", None) == "/score-pick-request" for route in app.router.routes):
         return
@@ -229,52 +332,175 @@ def install_pick_request_routes(app: Any, *, market_api: Any, auth_dependency: A
     )
     def score_pick_request(
         batch: PickRequestBatch,
-        x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
+        x_wow_model_identity: Optional[str] = Header(
+            default=None,
+            alias="X-WOW-Model-Identity",
+        ),
     ):
         outcomes: list[dict[str, Any]] = []
 
-        for index, row in enumerate(batch.rows):
+        for index, original_row in enumerate(batch.rows):
+            row = original_row
             row_key = row.row_key or f"row-{index + 1}"
             canonical_stat = _canonical_stat(row.sport, row.stat_type)
             sport = str(row.sport).strip().upper()
+            route_blocked_acquisition = {
+                "mode": "NOT_ATTEMPTED_ROUTE_BLOCKED",
+                "status": "NOT_ATTEMPTED",
+                "can_execute": False,
+            }
 
-            specialist = market_api.prod.base_api._controlling_specialist_provider(sport, canonical_stat)
+            specialist = market_api.prod.base_api._controlling_specialist_provider(
+                sport,
+                canonical_stat,
+            )
             if specialist is None:
-                outcomes.append(_terminal(row_key, "HELD", "SPECIALIST_ROUTING_UNAVAILABLE"))
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "HELD",
+                        "SPECIALIST_ROUTING_UNAVAILABLE",
+                        detail={"specialist_invoked": False},
+                        acquisition=route_blocked_acquisition,
+                    )
+                )
                 continue
             if specialist.get("controlling_specialist") == "MODEL_UNAVAILABLE":
-                outcomes.append(_terminal(
-                    row_key,
-                    "HELD",
-                    "MODEL_UNAVAILABLE",
-                    detail={"sport": sport, "stat_type": canonical_stat, "specialist_invoked": False},
-                ))
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "HELD",
+                        "MODEL_UNAVAILABLE",
+                        detail={
+                            "sport": sport,
+                            "stat_type": canonical_stat,
+                            "specialist_invoked": False,
+                        },
+                        acquisition=route_blocked_acquisition,
+                    )
+                )
+                continue
+
+            lane = market_api.prod._runtime_capability(market_api.prod.PROP_CAPABILITY_KEY)
+            if lane.get("capability_status") != "AVAILABLE":
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "HELD",
+                        "PROP_PROBABILITY_UNAVAILABLE",
+                        detail={
+                            "governed_probability_capability": "UNAVAILABLE",
+                            "capability_evidence": lane.get("evidence") or {},
+                            "controlling_specialist": specialist.get("controlling_specialist"),
+                            "specialist_invoked": False,
+                        },
+                        acquisition=route_blocked_acquisition,
+                    )
+                )
                 continue
 
             route = market_api._prop_route_artifact(sport, canonical_stat)
             if route.get("ok") is not True or route.get("code") != "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
-                outcomes.append(_terminal(
-                    row_key,
-                    "HELD",
-                    "MODEL_UNAVAILABLE",
-                    detail={
-                        "blocker_code": route.get("code") or "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
-                        "sport": sport,
-                        "stat_type": canonical_stat,
-                        "specialist_invoked": False,
-                    },
-                ))
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "HELD",
+                        "MODEL_UNAVAILABLE",
+                        detail={
+                            "blocker_code": route.get("code")
+                            or "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+                            "sport": sport,
+                            "stat_type": canonical_stat,
+                            "specialist_invoked": False,
+                        },
+                        acquisition=route_blocked_acquisition,
+                    )
+                )
                 continue
+
+            acquisition: dict[str, Any]
+            if row.evidence is None:
+                try:
+                    raw = auto_hydrate_prop_evidence(
+                        sport=sport,
+                        player=row.player,
+                        stat_type=canonical_stat,
+                        event_start_time=row.event_start_time,
+                        source_capture_timestamp=row.source_capture_timestamp,
+                        source_label=f"{row.source_type}:{row.platform or 'UNKNOWN'}",
+                    )
+                    row = row.model_copy(
+                        update={"evidence": RawPropEvidence.model_validate(raw)}
+                    )
+                    acquisition = {
+                        "mode": "AUTO_HYDRATION",
+                        "status": "PASS",
+                        "provider": "MLB_STATS_API_OFFICIAL_V1",
+                        "source_type": row.source_type,
+                        "platform": row.platform,
+                        "can_execute": False,
+                    }
+                except PropAutoHydrationError as exc:
+                    acquisition = {
+                        "mode": "AUTO_HYDRATION",
+                        "status": "FAILED",
+                        "provider": "MLB_STATS_API_OFFICIAL_V1",
+                        "source_type": row.source_type,
+                        "platform": row.platform,
+                        "can_execute": False,
+                    }
+                    outcomes.append(
+                        _terminal(
+                            row_key,
+                            "HELD" if _auto_hydration_hold(exc.code) else "REJECTED",
+                            exc.code,
+                            detail={**exc.detail, "message": str(exc), "specialist_invoked": False},
+                            acquisition=acquisition,
+                        )
+                    )
+                    continue
+                except Exception as exc:
+                    acquisition = {
+                        "mode": "AUTO_HYDRATION",
+                        "status": "FAILED",
+                        "provider": "MLB_STATS_API_OFFICIAL_V1",
+                        "source_type": row.source_type,
+                        "platform": row.platform,
+                        "can_execute": False,
+                    }
+                    outcomes.append(
+                        _terminal(
+                            row_key,
+                            "HELD",
+                            "PROP_AUTO_HYDRATION_INTERNAL_ERROR",
+                            detail={"error_type": type(exc).__name__, "specialist_invoked": False},
+                            acquisition=acquisition,
+                        )
+                    )
+                    continue
+            else:
+                acquisition = {
+                    "mode": "CALLER_SUPPLIED_RAW_EVIDENCE",
+                    "status": "PASS_PENDING_VALIDATION",
+                    "source_type": row.source_type,
+                    "platform": row.platform,
+                    "can_execute": False,
+                }
 
             try:
                 normalized = _validate_evidence(row, canonical_stat)
+                acquisition["status"] = "PASS"
             except ValueError as exc:
-                outcomes.append(_terminal(
-                    row_key,
-                    "REJECTED",
-                    "RUN_INVALID_ACQUISITION_INCOMPLETE",
-                    detail={"blocker": str(exc), "specialist_invoked": False},
-                ))
+                acquisition["status"] = "FAILED_VALIDATION"
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "REJECTED",
+                        "RUN_INVALID_ACQUISITION_INCOMPLETE",
+                        detail={"blocker": str(exc), "specialist_invoked": False},
+                        acquisition=acquisition,
+                    )
+                )
                 continue
 
             snapshot_id, fingerprint, snapshot = _snapshot_payload(row, normalized)
@@ -284,14 +510,24 @@ def install_pick_request_routes(app: Any, *, market_api: Any, auth_dependency: A
                     on_conflict="source_snapshot_id",
                 ).execute()
             except Exception as exc:
-                outcomes.append(_terminal(
-                    row_key,
-                    "HELD",
-                    "PROP_EVIDENCE_PERSISTENCE_UNAVAILABLE",
-                    detail={"error_type": type(exc).__name__, "specialist_invoked": False},
-                    snapshot_id=snapshot_id,
-                ))
+                acquisition["status"] = "FAILED_PERSISTENCE"
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "HELD",
+                        "PROP_EVIDENCE_PERSISTENCE_UNAVAILABLE",
+                        detail={
+                            "error_type": type(exc).__name__,
+                            "specialist_invoked": False,
+                        },
+                        snapshot_id=snapshot_id,
+                        acquisition=acquisition,
+                    )
+                )
                 continue
+
+            acquisition["snapshot_status"] = "FROZEN"
+            acquisition["source_snapshot_id"] = snapshot_id
 
             request_payload: dict[str, Any] = {
                 "event_id": normalized["event_id"],
@@ -312,53 +548,106 @@ def install_pick_request_routes(app: Any, *, market_api: Any, auth_dependency: A
 
             try:
                 score_req = market_api.ScorePropRequest(**request_payload)
-                scored = market_api.score_prop(score_req, x_wow_model_identity=x_wow_model_identity)
+                scored = market_api.score_prop(
+                    score_req,
+                    x_wow_model_identity=x_wow_model_identity,
+                )
             except HTTPException as exc:
-                raw_detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+                raw_detail = (
+                    exc.detail
+                    if isinstance(exc.detail, dict)
+                    else {"message": str(exc.detail)}
+                )
                 code = str(raw_detail.get("code") or "ROW_SCORING_FAILED")
-                held = exc.status_code >= 500 or exc.status_code == 409 or code == "MODEL_UNAVAILABLE"
-                outcomes.append(_terminal(
-                    row_key,
-                    "HELD" if held else "REJECTED",
-                    code,
-                    detail=raw_detail,
-                    snapshot_id=snapshot_id,
-                ))
+                held_status = (
+                    exc.status_code >= 500
+                    or exc.status_code == 409
+                    or code == "MODEL_UNAVAILABLE"
+                )
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "HELD" if held_status else "REJECTED",
+                        code,
+                        detail=raw_detail,
+                        snapshot_id=snapshot_id,
+                        acquisition=acquisition,
+                    )
+                )
                 continue
             except Exception as exc:
-                outcomes.append(_terminal(
-                    row_key,
-                    "HELD",
-                    "ROW_SCORING_UNAVAILABLE",
-                    detail={"error_type": type(exc).__name__},
-                    snapshot_id=snapshot_id,
-                ))
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "HELD",
+                        "ROW_SCORING_UNAVAILABLE",
+                        detail={"error_type": type(exc).__name__},
+                        snapshot_id=snapshot_id,
+                        acquisition=acquisition,
+                    )
+                )
                 continue
 
-            outcomes.append({
-                "row_key": row_key,
-                "terminal_status": "COMPLETED",
-                "code": "MODEL_QUALIFIED" if scored.get("probability_publishable") is True else "MODEL_QUALIFIED_HOLD",
-                "source_snapshot_id": snapshot_id,
-                "evidence_fingerprint": fingerprint,
-                "result": scored,
-                "probability_publishable": bool(scored.get("probability_publishable")),
-                "can_execute": False,
-            })
+            outcomes.append(
+                {
+                    "row_key": row_key,
+                    "terminal_status": "COMPLETED",
+                    "code": "MODEL_QUALIFIED"
+                    if scored.get("probability_publishable") is True
+                    else "MODEL_QUALIFIED_HOLD",
+                    "source_snapshot_id": snapshot_id,
+                    "evidence_fingerprint": fingerprint,
+                    "acquisition": acquisition,
+                    "result": scored,
+                    "probability_publishable": bool(
+                        scored.get("probability_publishable")
+                    ),
+                    "can_execute": False,
+                }
+            )
 
-        completed = sum(1 for row in outcomes if row["terminal_status"] == "COMPLETED")
-        held = sum(1 for row in outcomes if row["terminal_status"] == "HELD")
-        rejected = sum(1 for row in outcomes if row["terminal_status"] == "REJECTED")
+        completed = sum(
+            1 for outcome in outcomes if outcome["terminal_status"] == "COMPLETED"
+        )
+        held = sum(
+            1 for outcome in outcomes if outcome["terminal_status"] == "HELD"
+        )
+        rejected = sum(
+            1 for outcome in outcomes if outcome["terminal_status"] == "REJECTED"
+        )
         rows_in = len(batch.rows)
-        assert rows_in == completed + held + rejected
+        reconciliation_pass = rows_in == completed + held + rejected
+        if not reconciliation_pass:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "PICK_REQUEST_RECONCILIATION_FAILED",
+                    "rows_in": rows_in,
+                    "rows_completed": completed,
+                    "rows_held": held,
+                    "rows_rejected": rejected,
+                    "probability_publishable": False,
+                    "can_execute": False,
+                },
+            )
+
+        if completed == rows_in:
+            run_controller_status = "COMPLETE"
+        elif completed > 0:
+            run_controller_status = "DEGRADED"
+        else:
+            run_controller_status = "BLOCKED"
 
         return {
-            "ok": True,
+            "ok": completed > 0,
+            "request_id": batch.request_id,
+            "run_controller_status": run_controller_status,
             "rows_in": rows_in,
             "rows_completed": completed,
             "rows_held": held,
             "rows_rejected": rejected,
-            "reconciliation_pass": rows_in == completed + held + rejected,
+            "reconciliation_pass": reconciliation_pass,
+            "telemetry": _telemetry(outcomes),
             "rows": outcomes,
             "probability_objective": "GOVERNED_MODEL_ONLY",
             "can_execute": False,
