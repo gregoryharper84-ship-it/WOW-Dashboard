@@ -168,6 +168,7 @@ def _extract_games(payload: bytes, stat_aliases: tuple[str, ...]) -> tuple[list[
 
     out: list[Game] = []
     rejected = 0
+    nonplayed = 0
     seen: set[tuple[str, str]] = set()
     duplicates = 0
     for row in rows:
@@ -181,10 +182,17 @@ def _extract_games(payload: bytes, stat_aliases: tuple[str, ...]) -> tuple[list[
             continue
         seen.add(key)
         try:
-            minutes = _minutes(row[minutes_col])
+            raw_minutes = str(row[minutes_col] or "").strip()
+            if not raw_minutes:
+                nonplayed += 1
+                continue
+            minutes = _minutes(raw_minutes)
+            if minutes == 0:
+                nonplayed += 1
+                continue
             value = _nonnegative_int(row[stat_col])
             game_date = _date(row[date_col])
-            if not game_date or minutes <= 0 or minutes > 60:
+            if not game_date or minutes < 0 or minutes > 60:
                 raise ValueError("bad chronology/minutes")
         except (TypeError, ValueError):
             rejected += 1
@@ -194,12 +202,13 @@ def _extract_games(payload: bytes, stat_aliases: tuple[str, ...]) -> tuple[list[
     if duplicates:
         raise TrainingUnavailable(f"DUPLICATE_PLAYER_GAME_KEYS:{duplicates}")
     if rejected:
-        raise TrainingUnavailable(f"REJECTED_IDENTIFIABLE_GAME_ROWS:{rejected}")
+        raise TrainingUnavailable(f"REJECTED_IDENTIFIABLE_PLAYED_GAME_ROWS:{rejected}")
     return out, {
         "source_row_n": len(rows),
         "identified_played_game_n": len(out),
+        "identified_nonplayed_game_n": nonplayed,
         "duplicate_player_game_n": duplicates,
-        "rejected_identifiable_game_n": rejected,
+        "rejected_identifiable_played_game_n": rejected,
         "columns": columns,
     }
 
