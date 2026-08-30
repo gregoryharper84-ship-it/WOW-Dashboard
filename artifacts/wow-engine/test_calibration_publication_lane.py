@@ -72,11 +72,18 @@ def test_preflight_transport_failures_are_global_and_cannot_use_publication_bypa
     for blocker in (
         "GOVERNED_PROBABILITY_PREFLIGHT_UNAVAILABLE",
         "GOVERNED_PROBABILITY_PREFLIGHT_INVALID_RESPONSE",
-        "GOVERNED_DEPLOYMENT_NOT_READY",
         "GOVERNED_PROBABILITY_UNAVAILABLE",
     ):
         assert blocker_scopes([blocker]) == ("GLOBAL",)
         assert _publication_only([blocker]) is False
+
+
+def test_legacy_deployment_not_ready_remains_publication_scoped():
+    assert blocker_scopes(["GOVERNED_DEPLOYMENT_NOT_READY"]) == (
+        "CALIBRATION",
+        "PUBLICATION",
+    )
+    assert _publication_only(["GOVERNED_DEPLOYMENT_NOT_READY"]) is True
 
 
 def test_known_publication_lock_plus_global_failure_fails_closed():
