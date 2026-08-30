@@ -6,9 +6,11 @@ on:
       - chatgpt/p1-wnba-prop-offline-fit
     paths:
       - 'artifacts/wow-engine/scripts/train_wnba_props.py'
+      - 'artifacts/wow-engine/scripts/train_wnba_props_offset.py'
       - 'artifacts/wow-engine/scripts/probe_wnba_2026_training_join.py'
       - 'artifacts/wow-engine/wnba_prop_training_contract.py'
       - 'artifacts/wow-engine/test_wnba_prop_trainer.py'
+      - 'artifacts/wow-engine/test_wnba_prop_offset_trainer.py'
       - 'artifacts/wow-engine/test_wnba_prop_training_readiness.py'
       - '.github/workflows/wnba-prop-offline-fit.yml'
   workflow_dispatch:
@@ -45,12 +47,14 @@ jobs:
           test_wnba_prop_training_readiness.py
           test_wnba_stats_client.py
           test_wnba_prop_trainer.py
+          test_wnba_prop_offset_trainer.py
+          test_wnba_prop_model_adapter.py
 
       - name: Prove pinned historical role and event-time joins
         run: python scripts/probe_wnba_2026_training_join.py > data/wnba_prop_training_readiness_2026.json
 
       - name: Fit chronological WNBA prop artifacts
-        run: python scripts/train_wnba_props.py
+        run: python scripts/train_wnba_props_offset.py
 
       - name: Upload governed fit evidence
         if: always()
