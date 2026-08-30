@@ -3,7 +3,9 @@ name: Runtime Platform Cleanup
 on:
   push:
     branches: [chatgpt/remove-replit-20260830]
-    paths: ['.github/workflows/runtime-platform-cleanup.yml']
+    paths:
+      - '.github/workflows/runtime-platform-cleanup.yml'
+      - '.github/scripts/apply_runtime_platform_cleanup.py'
 
 permissions:
   contents: write
