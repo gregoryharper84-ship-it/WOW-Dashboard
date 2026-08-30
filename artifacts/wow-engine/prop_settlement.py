@@ -3,6 +3,10 @@
 Settlement is a downstream objective. It never creates or modifies the sporting
 model probability and can never authorize execution. Missing rules fail closed
 as a settlement hold while preserving any completed model verdict.
+
+Fixed-odds refund semantics and lineup-repricing semantics are intentionally
+separate. A provider such as PrizePicks may resolve win/loss/tie/void behavior
+while still requiring full lineup context before any payout or EV claim.
 """
 from __future__ import annotations
 
@@ -14,10 +18,12 @@ from typing import Optional
 SETTLEMENT_RULE_UNRESOLVED = "WOW_HOLD_SETTLEMENT_RULE_UNRESOLVED"
 LINE_MISMATCH = "WOW_HOLD_LINE_MISMATCH"
 NO_VIG_UNAVAILABLE = "WOW_HOLD_NO_VIG_UNAVAILABLE"
+LINEUP_PAYOUT_CONTEXT_REQUIRED = "WOW_HOLD_LINEUP_PAYOUT_CONTEXT_REQUIRED"
 
 _ALLOWED_BOUNDARIES = {"GT", "GE", "LT", "LE"}
 _ALLOWED_EQUALITY = {"PUSH", "WIN", "LOSS"}
-_ALLOWED_VOID = {"NONE", "RETURN_STAKE"}
+_ALLOWED_VOID = {"NONE", "RETURN_STAKE", "REMOVE_LEG_REPRICE"}
+_ALLOWED_MONEY = {"FIXED_ODDS_RETURN_STAKE", "LINEUP_CONTEXT_REQUIRED"}
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,7 @@ class SettlementRule:
     rule_version: str
     source: str
     void_probability_mass: float = 0.0
+    money_semantics: str = "FIXED_ODDS_RETURN_STAKE"
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,9 @@ class SettlementResult:
     expected_profit_per_unit_staked: Optional[float]
     rule_version: Optional[str]
     source: Optional[str]
+    void_treatment: Optional[str] = None
+    money_semantics: Optional[str] = None
+    money_context_required: bool = False
     can_execute: bool = False
 
 
@@ -68,6 +78,9 @@ def _hold(blocker: str) -> SettlementResult:
         expected_profit_per_unit_staked=None,
         rule_version=None,
         source=None,
+        void_treatment=None,
+        money_semantics=None,
+        money_context_required=False,
         can_execute=False,
     )
 
@@ -99,6 +112,10 @@ def settle_prop_probability(
     decides what happens to equality; market/no-vig values never enter this
     probability mapping. If void mass is non-zero, the non-void model masses
     are scaled by (1 - void_mass), making the unconditional result normalize.
+
+    LINEUP_CONTEXT_REQUIRED means the settlement state may be resolved, but no
+    per-leg break-even or EV is fabricated because the provider reprices the
+    surrounding lineup rather than refunding this leg at fixed odds.
     """
     if rule is None:
         return _hold(SETTLEMENT_RULE_UNRESOLVED)
@@ -106,11 +123,13 @@ def settle_prop_probability(
     boundary = str(rule.boundary_operator or "").upper()
     equality = str(rule.equality_treatment or "").upper()
     void_treatment = str(rule.void_treatment or "").upper()
+    money_semantics = str(rule.money_semantics or "").upper()
     direction = str(direction or "").upper()
     if (
         boundary not in _ALLOWED_BOUNDARIES
         or equality not in _ALLOWED_EQUALITY
         or void_treatment not in _ALLOWED_VOID
+        or money_semantics not in _ALLOWED_MONEY
         or not str(rule.settlement_basis or "").strip()
         or not str(rule.rule_version or "").strip()
         or not str(rule.source or "").strip()
@@ -121,6 +140,8 @@ def settle_prop_probability(
     if direction == "LESS" and boundary not in {"LT", "LE"}:
         return _hold(SETTLEMENT_RULE_UNRESOLVED)
     if direction not in {"MORE", "LESS"}:
+        return _hold(SETTLEMENT_RULE_UNRESOLVED)
+    if void_treatment == "REMOVE_LEG_REPRICE" and money_semantics != "LINEUP_CONTEXT_REQUIRED":
         return _hold(SETTLEMENT_RULE_UNRESOLVED)
 
     try:
@@ -134,7 +155,7 @@ def settle_prop_probability(
         return _hold(SETTLEMENT_RULE_UNRESOLVED)
     if abs((p_more + p_less + p_equal) - 1.0) > 1e-9:
         return _hold(SETTLEMENT_RULE_UNRESOLVED)
-    if p_void > 0 and void_treatment != "RETURN_STAKE":
+    if p_void > 0 and void_treatment not in {"RETURN_STAKE", "REMOVE_LEG_REPRICE"}:
         return _hold(SETTLEMENT_RULE_UNRESOLVED)
 
     p_win = p_more if direction == "MORE" else p_less
@@ -161,16 +182,29 @@ def settle_prop_probability(
     be_unconditional = None
     be_conditional = None
     ev = None
+    normalized_odds = None
+    money_context_required = money_semantics == "LINEUP_CONTEXT_REQUIRED"
+
     if american_odds is not None:
         try:
-            profit_multiple = american_profit_multiple(float(american_odds))
+            normalized_odds = float(american_odds)
+            if not isfinite(normalized_odds) or normalized_odds == 0:
+                normalized_odds = None
         except (TypeError, ValueError):
-            return _hold(SETTLEMENT_RULE_UNRESOLVED)
-        # Push and void return stake; only wins produce profit and losses lose stake.
-        ev = p_win * profit_multiple - p_loss
-        refundable_mass = p_push + p_void
-        be_unconditional = (1.0 - refundable_mass) / (1.0 + profit_multiple)
-        be_conditional = 1.0 / (1.0 + profit_multiple)
+            normalized_odds = None
+
+    if normalized_odds is not None and not money_context_required:
+        try:
+            profit_multiple = american_profit_multiple(normalized_odds)
+        except (TypeError, ValueError):
+            profit_multiple = None
+        if profit_multiple is not None:
+            # Fixed-odds PUSH/RETURN_STAKE semantics only: wins make profit,
+            # losses lose stake, and push/void mass returns stake.
+            ev = p_win * profit_multiple - p_loss
+            refundable_mass = p_push + p_void
+            be_unconditional = (1.0 - refundable_mass) / (1.0 + profit_multiple)
+            be_conditional = 1.0 / (1.0 + profit_multiple)
 
     return SettlementResult(
         status="PASS",
@@ -181,19 +215,22 @@ def settle_prop_probability(
         p_void=p_void,
         graded_probability=graded,
         conditional_win_probability=conditional,
-        american_odds=float(american_odds) if american_odds is not None else None,
+        american_odds=normalized_odds,
         profit_multiple=profit_multiple,
         break_even_unconditional=be_unconditional,
         break_even_conditional_graded=be_conditional,
         expected_profit_per_unit_staked=ev,
         rule_version=rule.rule_version,
         source=rule.source,
+        void_treatment=void_treatment,
+        money_semantics=money_semantics,
+        money_context_required=money_context_required,
         can_execute=False,
     )
 
 
 def settlement_self_acceptance() -> bool:
-    """Deterministic runtime proof for push/void/refund settlement arithmetic."""
+    """Deterministic runtime proof for push/void/refund and lineup semantics."""
     standard = SettlementRule(
         settlement_basis="FULL_GAME_STAT",
         boundary_operator="GT",
@@ -233,10 +270,37 @@ def settlement_self_acceptance() -> bool:
         rule=void_rule,
         american_odds=120,
     )
-    return (
+    if not (
         void_result.status == "PASS"
         and abs((void_result.p_win or 0) - 0.48) < 1e-12
         and abs((void_result.p_loss or 0) - 0.32) < 1e-12
         and abs((void_result.p_void or 0) - 0.20) < 1e-12
         and abs(sum(v or 0 for v in (void_result.p_win, void_result.p_loss, void_result.p_push, void_result.p_void)) - 1.0) < 1e-12
+    ):
+        return False
+
+    lineup_rule = SettlementRule(
+        settlement_basis="PRIZEPICKS_OFFICIAL_SCORING",
+        boundary_operator="GT",
+        equality_treatment="PUSH",
+        void_treatment="REMOVE_LEG_REPRICE",
+        rule_version="SELF_ACCEPTANCE_LINEUP_V1",
+        source="WOW_DETERMINISTIC_FIXTURE",
+        void_probability_mass=0.10,
+        money_semantics="LINEUP_CONTEXT_REQUIRED",
+    )
+    lineup_result = settle_prop_probability(
+        direction="MORE",
+        probability_more=0.55,
+        probability_less=0.40,
+        equality_probability=0.05,
+        rule=lineup_rule,
+        american_odds=-110,
+    )
+    return (
+        lineup_result.status == "PASS"
+        and lineup_result.money_context_required is True
+        and lineup_result.expected_profit_per_unit_staked is None
+        and lineup_result.break_even_unconditional is None
+        and abs(sum(v or 0 for v in (lineup_result.p_win, lineup_result.p_loss, lineup_result.p_push, lineup_result.p_void)) - 1.0) < 1e-12
     )
