@@ -16,6 +16,8 @@ PUBLICATION_SCOPED_BLOCKERS = frozenset({
     "CALIBRATION_HEALTH_BLOCKED",
     "CALIBRATION_UNAVAILABLE",
     "GOVERNED_PROBABILITY_PUBLICATION_UNAVAILABLE",
+    "GOVERNED_PROBABILITY_PREFLIGHT_UNAVAILABLE",
+    "GOVERNED_PROBABILITY_PREFLIGHT_INVALID_RESPONSE",
     "GOVERNED_DEPLOYMENT_NOT_READY",
 })
 
@@ -69,9 +71,16 @@ def blocker_scopes(blockers: Iterable[str]) -> tuple[str, ...]:
 
 
 def is_calibration_publication_only(blockers: Iterable[str]) -> bool:
-    blockers_tuple = tuple(blockers)
+    blockers_tuple = tuple(_norm(x) for x in blockers if _norm(x))
+    if not blockers_tuple:
+        return False
+    if not all(
+        blocker in PUBLICATION_SCOPED_BLOCKERS or blocker.startswith("FORWARD_SHADOW_")
+        for blocker in blockers_tuple
+    ):
+        return False
     scopes = blocker_scopes(blockers_tuple)
-    return bool(blockers_tuple) and set(scopes).issubset({"CALIBRATION", "PUBLICATION"}) and bool(scopes)
+    return bool(scopes) and set(scopes).issubset({"CALIBRATION", "PUBLICATION"})
 
 
 def strictest_ceiling(existing: Optional[str], new_ceiling: str) -> str:
@@ -177,7 +186,6 @@ def resolve_lane_separation(
             blockers=normalized_blockers,
         )
 
-    # Publication/calibration unavailable while the actual specialist remains valid.
     research_complete = specialist_output_complete or (manual_lane_permitted and manual_lane_used)
     ceiling = "MODEL_QUALIFIED_HOLD" if research_complete else "RESEARCH_INTEREST"
     claim = "SPECIALIST_RAW_RESEARCH_ONLY" if specialist_output_complete else (
