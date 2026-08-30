@@ -242,3 +242,9 @@ def capture_ncaaf_closing_lines():
         "probability_publishable": False,
         "can_execute": False,
     }
+
+
+# api.py's startup validation can materialize FastAPI's OpenAPI cache before
+# late production wrappers install their routes. Invalidate only the cached
+# document after this final entrypoint has registered every route.
+app.openapi_schema = None
