@@ -3,9 +3,9 @@
 This boundary is intentionally acquisition-only. The caller may supply raw,
 auditable pregame evidence gathered from screenshots and approved live sources,
 but may never supply a probability, model artifact, calibration output, edge,
-or approval label. The backend validates/freeze-hashes the evidence, writes the
-immutable wow_prop_evidence_snapshots row, then delegates to the existing
-certified /score-prop model path.
+or approval label. The backend validates and deterministically fingerprints the
+evidence, writes the governed wow_prop_evidence_snapshots row, then delegates to
+the existing certified /score-prop model path.
 
 Every row terminates exactly once. A bad/unsupported row cannot erase a sibling
 row. can_execute is false unconditionally.
@@ -111,10 +111,17 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
         raise ValueError("GAME_LOG_NON_NUMERIC")
     if any(not isinstance(v, dict) or not v for v in row.evidence.box_score_log):
         raise ValueError("BOX_SCORE_LOG_INVALID")
-    if not row.evidence.role_status:
+
+    role_status = row.evidence.role_status
+    role_label = str(role_status.get("status") or role_status.get("role") or "").strip()
+    if not role_label:
         raise ValueError("ROLE_STATUS_MISSING")
-    if not row.evidence.opportunity_ledger:
-        raise ValueError("OPPORTUNITY_LEDGER_MISSING")
+
+    opportunity = row.evidence.opportunity_ledger
+    opportunity_status = str(opportunity.get("status") or opportunity.get("gate_label") or "").strip().upper()
+    if opportunity_status not in {"PASS", "COMPLETE", "READY"}:
+        raise ValueError("OPPORTUNITY_LEDGER_NOT_READY")
+
     if not row.evidence.source_timestamps:
         raise ValueError("SOURCE_TIMESTAMPS_MISSING")
     if not str(row.evidence.rate_provenance).strip():
@@ -145,13 +152,16 @@ def _validate_evidence(row: PickRequestRow, canonical_stat: str) -> dict[str, An
     }
 
 
-def _snapshot_payload(row: PickRequestRow, normalized: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    evidence_for_hash = {
+def _snapshot_payload(row: PickRequestRow, normalized: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    # Fingerprint includes acquisition provenance even though the legacy snapshot
+    # table stores provenance source names/times rather than a separate hash column.
+    fingerprint_input = {
         "event_id": normalized["event_id"],
         "event_start_time": normalized["event_start_time"],
         "sport": normalized["sport"],
         "player": normalized["player"],
         "stat_type": normalized["stat_type"],
+        "line": float(row.line),
         "captured_at": normalized["captured_at"],
         "game_log": [float(v) for v in row.evidence.game_log],
         "box_score_log": row.evidence.box_score_log,
@@ -161,12 +171,38 @@ def _snapshot_payload(row: PickRequestRow, normalized: dict[str, Any]) -> tuple[
         "source_timestamps": normalized["source_timestamps"],
         "evidence_version": str(row.evidence.evidence_version).strip(),
         "rate_provenance": str(row.evidence.rate_provenance).strip(),
+        "hydration_status": "PASS",
+        "blockers": [],
         "can_execute": False,
     }
-    canonical = json.dumps(evidence_for_hash, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    snapshot_hash = sha256(canonical.encode("utf-8")).hexdigest()
-    snapshot_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"wow-prop-evidence:{snapshot_hash}"))
-    return snapshot_id, {"snapshot_id": snapshot_id, "source_snapshot_hash": snapshot_hash, **evidence_for_hash}
+    canonical = json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    fingerprint = sha256(canonical.encode("utf-8")).hexdigest()
+    snapshot_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"wow-prop-evidence:{fingerprint}"))
+
+    # Match the live wow_prop_evidence_snapshots table exactly. The deterministic
+    # source_snapshot_id makes identical acquisitions idempotent without allowing
+    # caller-controlled snapshot identity.
+    persisted = {
+        "source_snapshot_id": snapshot_id,
+        "captured_at": normalized["captured_at"],
+        "event_id": normalized["event_id"],
+        "event_start_time": normalized["event_start_time"],
+        "sport": normalized["sport"],
+        "player": normalized["player"],
+        "stat_type": normalized["stat_type"],
+        "line": float(row.line),
+        "game_log": [float(v) for v in row.evidence.game_log],
+        "box_score_log": row.evidence.box_score_log,
+        "role_status": row.evidence.role_status,
+        "role_timestamp": normalized["role_timestamp"],
+        "opportunity_ledger": row.evidence.opportunity_ledger,
+        "source_timestamps": normalized["source_timestamps"],
+        "hydration_status": "PASS",
+        "blockers": [],
+        "evidence_version": str(row.evidence.evidence_version).strip(),
+        "can_execute": False,
+    }
+    return snapshot_id, fingerprint, persisted
 
 
 def _terminal(row_key: str, status: str, code: str, *, detail: Optional[dict[str, Any]] = None, snapshot_id: Optional[str] = None) -> dict[str, Any]:
@@ -183,6 +219,8 @@ def _terminal(row_key: str, status: str, code: str, *, detail: Optional[dict[str
 
 def install_pick_request_routes(app: Any, *, market_api: Any, auth_dependency: Any) -> None:
     """Install one authenticated row-isolated screenshot/discovery scoring route."""
+    if any(getattr(route, "path", None) == "/score-pick-request" for route in app.router.routes):
+        return
 
     @app.post(
         "/score-pick-request",
@@ -239,11 +277,11 @@ def install_pick_request_routes(app: Any, *, market_api: Any, auth_dependency: A
                 ))
                 continue
 
-            snapshot_id, snapshot = _snapshot_payload(row, normalized)
+            snapshot_id, fingerprint, snapshot = _snapshot_payload(row, normalized)
             try:
                 market_api.prod.get_client().table("wow_prop_evidence_snapshots").upsert(
                     snapshot,
-                    on_conflict="snapshot_id",
+                    on_conflict="source_snapshot_id",
                 ).execute()
             except Exception as exc:
                 outcomes.append(_terminal(
@@ -302,6 +340,7 @@ def install_pick_request_routes(app: Any, *, market_api: Any, auth_dependency: A
                 "terminal_status": "COMPLETED",
                 "code": "MODEL_QUALIFIED" if scored.get("probability_publishable") is True else "MODEL_QUALIFIED_HOLD",
                 "source_snapshot_id": snapshot_id,
+                "evidence_fingerprint": fingerprint,
                 "result": scored,
                 "probability_publishable": bool(scored.get("probability_publishable")),
                 "can_execute": False,
