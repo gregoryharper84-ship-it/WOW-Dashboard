@@ -54,6 +54,7 @@ jobs:
       - name: Validate affected frontend workspaces
         env:
           PORT: '3000'
+          BASE_PATH: '/'
         run: |
           pnpm --filter @workspace/final-lock run typecheck
           pnpm --filter @workspace/final-lock run build
