@@ -71,6 +71,21 @@ def test_legacy_replit_cannot_be_primary_v17_route():
     assert c["direct_vendor_actions_terminal_authority"] is False
 
 
+def test_render_and_repository_baseline_are_reconciled():
+    c = _contract()["backend_contract"]
+    assert c["deploy_repo_parity_at_audit"] is True
+    assert c["repository_main_sha_at_audit"] == c["render_live_sha_at_audit"]
+
+
+def test_v17_candidate_has_generic_team_event_ingress_but_no_fake_cross_sport_models():
+    candidate = _contract()["v17_candidate_implementation"]
+    assert candidate["team_event_generic_contract"] == "IMPLEMENTED_CANDIDATE"
+    assert candidate["team_event_mlb_adapter"] == "REUSES_EXISTING_GOVERNED_MLB_EVENT_PATH"
+    assert candidate["unsupported_team_event_sports"] == "FAIL_CLOSED_MODEL_UNAVAILABLE"
+    assert candidate["host_local_terminal_labels"] == "AUDIT_ONLY"
+    assert candidate["canonical_host_identity_enforcement"] == "IMPLEMENTED_CANDIDATE"
+
+
 def test_editor_attestation_is_required_for_both_hosts_before_cutover():
     c = _contract()
     attest = c["editor_attestation"]
