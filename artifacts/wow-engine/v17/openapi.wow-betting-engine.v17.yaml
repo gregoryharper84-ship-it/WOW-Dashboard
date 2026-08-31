@@ -1,0 +1,194 @@
+openapi: 3.1.0
+info:
+  title: WOW Betting Engine v17 Candidate Action
+  version: 17.0.0-phase-a
+  description: >-
+    CANDIDATE ONLY — do not install as a live Custom GPT Action until the v17
+    candidate entrypoint is deployed and editor attestation passes. WOW Betting
+    Engine owns player/prop/scalar intelligence. Team/event requests may originate
+    here but are routed by the backend to LLP_TEAM_BETTING_ENGINE as controlling
+    engine. This API is analytical only and can_execute is always false.
+servers:
+  - url: https://wow-governed-probability-engine.onrender.com
+paths:
+  /health:
+    get:
+      operationId: getWowV17BackendHealth
+      x-openai-isConsequential: false
+      responses:
+        '200': {description: Backend health state}
+  /governance:
+    get:
+      operationId: getWowV17Governance
+      x-openai-isConsequential: false
+      responses:
+        '200': {description: Governed capability state}
+  /v17/host-contract:
+    get:
+      operationId: getWowV17HostContract
+      x-openai-isConsequential: false
+      responses:
+        '200': {description: Canonical v17 host/lane alignment contract}
+  /score-prop:
+    post:
+      operationId: scoreWowV17Prop
+      x-openai-isConsequential: false
+      description: >-
+        WOW player-prop lane only. The X-WOW-Model-Identity header is fixed to
+        WOW_BETTING_ENGINE. Never use this route for team/event winners.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: X-WOW-Model-Identity
+          in: header
+          required: true
+          schema: {type: string, enum: [WOW_BETTING_ENGINE]}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScorePropRequest'}
+      responses:
+        '200': {description: Governed prop model result}
+        '401': {description: Authentication failed}
+        '409': {description: Governed lane/model capability held}
+        '422': {description: Candidate/evidence/model publication contract failed}
+  /score-pick-request:
+    post:
+      operationId: scoreWowV17PickRequest
+      x-openai-isConsequential: false
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PickRequestBatch'}
+      responses:
+        '200': {description: Row-isolated governed prop batch result}
+        '401': {description: Authentication failed}
+        '422': {description: Batch contract invalid}
+  /score-team-event:
+    post:
+      operationId: scoreWowV17TeamEventFromWowHost
+      x-openai-isConsequential: false
+      description: >-
+        Team/event ingress requested by WOW_BETTING_ENGINE. Backend must resolve
+        controlling_engine_identity=LLP_TEAM_BETTING_ENGINE. Unsupported sport
+        adapters fail closed as MODEL_UNAVAILABLE.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WowTeamEventRequest'}
+      responses:
+        '200': {description: Governed team/event result or held model proof}
+        '401': {description: Authentication failed}
+        '409': {description: Controlling model or capability unavailable}
+        '422': {description: Event/evidence/host contract invalid}
+  /record-recommendations:
+    post:
+      operationId: recordWowV17Recommendations
+      x-openai-isConsequential: false
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200': {description: Terminal recommendations durably recorded}
+        '503': {description: Write-before-display not proven}
+  /settle-recommendations:
+    post:
+      operationId: settleWowV17Recommendations
+      x-openai-isConsequential: false
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200': {description: Recommendation outcomes reconciled}
+  /settle:
+    post:
+      operationId: settleWowV17Prop
+      x-openai-isConsequential: false
+      security: [{actionBearer: []}]
+      parameters:
+        - {name: prediction_id, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: official_result, in: query, required: true, schema: {type: string}}
+        - {name: actual_stat, in: query, required: true, schema: {type: number}}
+      responses:
+        '200': {description: Backend-derived prop settlement recorded}
+components:
+  securitySchemes:
+    actionBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: WOW_ACTION_API_KEY
+  schemas:
+    ScorePropRequest:
+      type: object
+      additionalProperties: false
+      required: [event_id, event_start_time, sport, player, stat_type, line, direction, source_snapshot_id]
+      properties:
+        event_id: {type: string}
+        event_start_time: {type: string, format: date-time}
+        sport: {type: string}
+        player: {type: string}
+        stat_type: {type: string}
+        line: {type: number}
+        direction: {type: string, enum: [MORE, LESS]}
+        source_snapshot_id: {type: string}
+        seed: {type: integer, default: 0}
+        money_lane_status: {type: string, default: PAYOUT_UNRESOLVED}
+        market_side_a: {type: [object, 'null'], additionalProperties: true}
+        market_side_b: {type: [object, 'null'], additionalProperties: true}
+        settlement_provider: {type: [string, 'null']}
+        settlement_rule: {type: [object, 'null'], additionalProperties: true}
+    PickRequestBatch:
+      type: object
+      additionalProperties: false
+      required: [rows]
+      properties:
+        request_id: {type: [string, 'null']}
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: true
+            required: [event_id, event_start_time, sport, player, stat_type, line, direction]
+    TeamEventBase:
+      type: object
+      additionalProperties: false
+      required: [requester_host_identity, research_run_id, requested_slate_date, requested_timezone, event_key, official_event_id, event_start_time_utc, sport, league, settlement_basis, home_team, away_team, source_snapshot_id]
+      properties:
+        requester_host_identity: {type: string}
+        research_run_id: {type: string}
+        requested_slate_date: {type: string, format: date}
+        requested_timezone: {type: string}
+        scan_stage: {type: string, enum: [PREGAME], default: PREGAME}
+        candidate_family: {type: string, enum: [TEAM_EVENT, OUTRIGHT_WINNER, MONEYLINE, FAVORITE, UNDERDOG, UPSET, MATCH_WINNER, FIGHT_WINNER], default: TEAM_EVENT}
+        decision_intent: {type: string, enum: [WINNER, FAVORITE, UNDERDOG, UPSET, BEST_SIDE], default: WINNER}
+        event_key: {type: string}
+        official_event_id: {type: string}
+        event_start_time_utc: {type: string, format: date-time}
+        sport: {type: string}
+        league: {type: string}
+        market_family: {type: string, enum: [OUTRIGHT_WINNER], default: OUTRIGHT_WINNER}
+        settlement_basis: {type: string}
+        home_team: {type: string}
+        away_team: {type: string}
+        source_snapshot_id: {type: string}
+        latest_material_update_timestamp: {type: [string, 'null'], format: date-time}
+        market_prior: {type: [object, 'null'], additionalProperties: true}
+        sport_specific_evidence: {type: object, additionalProperties: true}
+    WowTeamEventRequest:
+      allOf:
+        - {$ref: '#/components/schemas/TeamEventBase'}
+        - type: object
+          properties:
+            requester_host_identity: {type: string, const: WOW_BETTING_ENGINE}
