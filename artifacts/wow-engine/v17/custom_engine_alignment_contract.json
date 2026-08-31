@@ -1,28 +1,11 @@
 {
   "schema_version": "WOW_V17_CUSTOM_ENGINE_ALIGNMENT_V1",
   "status": "PHASE_A_BINDING_CANDIDATE",
-  "activation": {
-    "v17_active": false,
-    "v17_cutover_allowed": false,
-    "can_execute": false,
-    "dry_run_only_no_live_trading_no_market_orders": true
-  },
+  "activation": {"v17_active": false, "v17_cutover_allowed": false, "can_execute": false, "dry_run_only_no_live_trading_no_market_orders": true},
   "hosts": {
-    "WOW_BETTING_ENGINE": {
-      "type": "CUSTOM_GPT",
-      "owns": ["PLAYER_PROP", "PLAYER_SCALAR", "PITCHER_PROP", "BATTER_PROP", "WORKLOAD_PROP"],
-      "global_terminal_authority": false
-    },
-    "LLP_TEAM_BETTING_ENGINE": {
-      "type": "CUSTOM_GPT",
-      "owns": ["TEAM_EVENT", "OUTRIGHT_WINNER", "MONEYLINE", "FAVORITE", "UNDERDOG", "UPSET", "MATCH_WINNER", "FIGHT_WINNER"],
-      "global_terminal_authority": false
-    },
-    "PROJECT_CHAT": {
-      "type": "AUTHORIZED_HOST",
-      "nested_custom_gpt_required": false,
-      "global_terminal_authority": false
-    }
+    "WOW_BETTING_ENGINE": {"type": "CUSTOM_GPT", "owns": ["PLAYER_PROP", "PLAYER_SCALAR", "PITCHER_PROP", "BATTER_PROP", "WORKLOAD_PROP"], "global_terminal_authority": false},
+    "LLP_TEAM_BETTING_ENGINE": {"type": "CUSTOM_GPT", "owns": ["TEAM_EVENT", "OUTRIGHT_WINNER", "MONEYLINE", "FAVORITE", "UNDERDOG", "UPSET", "MATCH_WINNER", "FIGHT_WINNER"], "global_terminal_authority": false},
+    "PROJECT_CHAT": {"type": "AUTHORIZED_HOST", "nested_custom_gpt_required": false, "global_terminal_authority": false}
   },
   "shared_core": {
     "single_global_terminal_authority": "V17_TERMINAL_REDUCER",
@@ -36,119 +19,19 @@
     "immutable_pregame_write_required_when_applicable": true,
     "row_reconciliation_required": true
   },
-  "shared_gate_order": [
-    "GOVERNANCE_HOST_SAFETY",
-    "CALIBRATION_HEALTH_PRECHECK",
-    "DISCOVERY",
-    "SLATE_EVENT_IDENTITY",
-    "EXACT_CANDIDATE_MARKET_SETTLEMENT_IDENTITY",
-    "PROVENANCE_FRESHNESS",
-    "TYPED_HYDRATION_OBJECTIVE_READINESS",
-    "ROLE_STARTER_LINEUP_STATUS",
-    "ROLE_VALID_HISTORY_ESS",
-    "PROBABILITY_COMPONENT_LEDGER_SHRINKAGE",
-    "CONTROLLING_SPECIALIST",
-    "MATCHUP_MODEL",
-    "BIDIRECTIONAL_OR_OUTCOME_SPACE_AUDIT",
-    "FAILURE_PATHS_UNCONDITIONAL_PROBABILITY",
-    "DYNAMIC_CALIBRATION_BOUNDS",
-    "PROBABILITY_VALIDITY_NORMALIZATION",
-    "CROSS_MARKET_DRIFT_CAUSE",
-    "EXACT_LINE_PAYOUT_PUSH_SETTLEMENT_NO_VIG_FEES",
-    "OBJECTIVE_SEPARATION",
-    "DEPENDENCY_CORRELATION_STRUCTURE",
-    "SESSION_DIRECTIONAL_DUPLICATE_THESIS_EXPOSURE",
-    "WEAKEST_LEG_ELIMINATION",
-    "FINAL_REFRESH",
-    "RECONCILIATION",
-    "IMMUTABLE_PREGAME_WRITE",
-    "STRICT_GLOBAL_TERMINAL_CEILING",
-    "NATIVE_LABEL_OUTPUT"
-  ],
-  "team_event_contract": {
-    "host": "LLP_TEAM_BETTING_ENGINE",
-    "requires_full_mutually_exclusive_outcome_space": true,
-    "requires_sport_specific_controlling_model": true,
-    "requires_favorite_failure_path": true,
-    "requires_underdog_upset_path": true,
-    "requires_probability_claim_audit": true,
-    "requires_event_decision_governor": true,
-    "event_decision": "ONE_SIDE_OR_NO_PICK",
-    "may_override_shared_blocker": false,
-    "may_emit_global_final_approved": false
-  },
-  "prop_contract": {
-    "host": "WOW_BETTING_ENGINE",
-    "requires_sport_stat_controlling_model": true,
-    "requires_bidirectional_audit": true,
-    "opposite_side_must_be_rerun": true,
-    "generic_reasoning_substitution_allowed": false,
-    "market_probability_substitution_allowed": false
-  },
-  "backend_contract": {
-    "canonical_runtime": "RENDER_SUPABASE_GOVERNED_CORE",
-    "legacy_replit_primary_routing_allowed": false,
-    "direct_vendor_actions_terminal_authority": false,
-    "direct_vendor_actions_require_provenance_and_freshness": true,
-    "current_render_service": "wow-governed-probability-engine",
-    "current_render_service_id": "srv-da7sa9gu01pc73brt80g",
-    "repository_main_sha_at_audit": "4ef39405702ce38682b28733f767206ebf28a2d5",
-    "render_live_sha_at_audit": "4ef39405702ce38682b28733f767206ebf28a2d5",
-    "deploy_repo_parity_at_audit": true
-  },
+  "shared_gate_order": ["GOVERNANCE_HOST_SAFETY", "CALIBRATION_HEALTH_PRECHECK", "DISCOVERY", "SLATE_EVENT_IDENTITY", "EXACT_CANDIDATE_MARKET_SETTLEMENT_IDENTITY", "PROVENANCE_FRESHNESS", "TYPED_HYDRATION_OBJECTIVE_READINESS", "ROLE_STARTER_LINEUP_STATUS", "ROLE_VALID_HISTORY_ESS", "PROBABILITY_COMPONENT_LEDGER_SHRINKAGE", "CONTROLLING_SPECIALIST", "MATCHUP_MODEL", "BIDIRECTIONAL_OR_OUTCOME_SPACE_AUDIT", "FAILURE_PATHS_UNCONDITIONAL_PROBABILITY", "DYNAMIC_CALIBRATION_BOUNDS", "PROBABILITY_VALIDITY_NORMALIZATION", "CROSS_MARKET_DRIFT_CAUSE", "EXACT_LINE_PAYOUT_PUSH_SETTLEMENT_NO_VIG_FEES", "OBJECTIVE_SEPARATION", "DEPENDENCY_CORRELATION_STRUCTURE", "SESSION_DIRECTIONAL_DUPLICATE_THESIS_EXPOSURE", "WEAKEST_LEG_ELIMINATION", "FINAL_REFRESH", "RECONCILIATION", "IMMUTABLE_PREGAME_WRITE", "STRICT_GLOBAL_TERMINAL_CEILING", "NATIVE_LABEL_OUTPUT"],
+  "team_event_contract": {"host": "LLP_TEAM_BETTING_ENGINE", "requires_full_mutually_exclusive_outcome_space": true, "requires_sport_specific_controlling_model": true, "requires_favorite_failure_path": true, "requires_underdog_upset_path": true, "requires_probability_claim_audit": true, "requires_event_decision_governor": true, "event_decision": "ONE_SIDE_OR_NO_PICK", "may_override_shared_blocker": false, "may_emit_global_final_approved": false},
+  "prop_contract": {"host": "WOW_BETTING_ENGINE", "requires_sport_stat_controlling_model": true, "requires_bidirectional_audit": true, "opposite_side_must_be_rerun": true, "generic_reasoning_substitution_allowed": false, "market_probability_substitution_allowed": false},
+  "backend_contract": {"canonical_runtime": "RENDER_SUPABASE_GOVERNED_CORE", "legacy_replit_primary_routing_allowed": false, "direct_vendor_actions_terminal_authority": false, "direct_vendor_actions_require_provenance_and_freshness": true, "current_render_service": "wow-governed-probability-engine", "current_render_service_id": "srv-da7sa9gu01pc73brt80g", "repository_main_sha_at_audit": "4ef39405702ce38682b28733f767206ebf28a2d5", "render_live_sha_at_audit": "4ef39405702ce38682b28733f767206ebf28a2d5", "deploy_repo_parity_at_audit": true},
   "current_v16_action_contracts": {
-    "governed_probability": {
-      "version": "1.2.1",
-      "operations": ["getWowProbabilityHealth", "getWowProbabilityGovernance", "scoreWowProp", "scoreWowEvent", "settleWowProp"],
-      "scoreWowEvent_scope_at_audit": "MLB_ONLY"
-    },
-    "pick_request": {
-      "version": "1.2.1",
-      "operations": ["scoreWowPickRequest", "recordWowRecommendations", "settleWowRecommendations"],
-      "scoreWowPickRequest_scope_at_audit": "PROP_ONLY"
-    }
+    "governed_probability": {"version": "1.2.1", "operations": ["getWowProbabilityHealth", "getWowProbabilityGovernance", "scoreWowProp", "scoreWowEvent", "settleWowProp"], "scoreWowEvent_scope_at_audit": "MLB_ONLY"},
+    "pick_request": {"version": "1.2.1", "operations": ["scoreWowPickRequest", "recordWowRecommendations", "settleWowRecommendations"], "scoreWowPickRequest_scope_at_audit": "PROP_ONLY"}
   },
-  "v17_candidate_implementation": {
-    "candidate_entrypoint": "api_v17_candidate:app",
-    "production_entrypoint_changed": false,
-    "host_routing_module": "v17/host_routing.py",
-    "team_event_ingress_module": "v17/team_event_request_runtime.py",
-    "team_event_operation": "scoreWowTeamEvent",
-    "team_event_generic_contract": "IMPLEMENTED_CANDIDATE",
-    "team_event_mlb_adapter": "REUSES_EXISTING_GOVERNED_MLB_EVENT_PATH",
-    "unsupported_team_event_sports": "FAIL_CLOSED_MODEL_UNAVAILABLE",
-    "host_local_terminal_labels": "AUDIT_ONLY",
-    "canonical_host_identity_enforcement": "IMPLEMENTED_CANDIDATE",
-    "action_schemas": {
-      "WOW_BETTING_ENGINE": "v17/openapi.wow-betting-engine.v17.yaml",
-      "LLP_TEAM_BETTING_ENGINE": "v17/openapi.llp-team-engine.v17.yaml"
-    }
-  },
+  "v17_candidate_implementation": {"candidate_entrypoint": "api_v17_candidate:app", "production_entrypoint_changed": false, "host_routing_module": "v17/host_routing.py", "team_event_ingress_module": "v17/team_event_request_runtime.py", "team_event_operation": "scoreWowTeamEvent", "team_event_generic_contract": "IMPLEMENTED_CANDIDATE", "team_event_mlb_adapter": "REUSES_EXISTING_GOVERNED_MLB_EVENT_PATH", "unsupported_team_event_sports": "FAIL_CLOSED_MODEL_UNAVAILABLE", "host_local_terminal_labels": "AUDIT_ONLY", "canonical_host_identity_enforcement": "IMPLEMENTED_CANDIDATE", "recommendation_ledger_routes": "MOUNTED_CANDIDATE", "candidate_app_isolated_from_v16_app": true, "action_schemas": {"WOW_BETTING_ENGINE": "v17/openapi.wow-betting-engine.v17.yaml", "LLP_TEAM_BETTING_ENGINE": "v17/openapi.llp-team-engine.v17.yaml"}},
   "editor_attestation": {
-    "WOW_BETTING_ENGINE": {
-      "required": true,
-      "status": "BLOCKED_WITH_EXACT_EXTERNAL_REQUIREMENT",
-      "blocker": "LIVE_CUSTOM_GPT_EDITOR_CONFIGURATION_NOT_ACCESSIBLE_FROM_CURRENT_TOOLSET"
-    },
-    "LLP_TEAM_BETTING_ENGINE": {
-      "required": true,
-      "status": "PARTIAL",
-      "latest_available_editor_audit_date": "2026-08-28",
-      "requires_reattestation_after_v17_contract": true
-    }
+    "WOW_BETTING_ENGINE": {"required": true, "status": "BLOCKED_WITH_EXACT_EXTERNAL_REQUIREMENT", "blocker": "LIVE_CUSTOM_GPT_EDITOR_CONFIGURATION_NOT_ACCESSIBLE_FROM_CURRENT_TOOLSET"},
+    "LLP_TEAM_BETTING_ENGINE": {"required": true, "status": "PARTIAL", "latest_available_editor_audit_date": "2026-08-28", "requires_reattestation_after_v17_contract": true}
   },
-  "resolved_phase_a_findings": [
-    "R01_RENDER_DEPLOY_SHA_MATCHES_REPOSITORY_MAIN",
-    "R02_GENERIC_TEAM_EVENT_INGRESS_IMPLEMENTED_ON_V17_CANDIDATE_ENTRYPOINT",
-    "R03_HOST_LOCAL_LABELS_EXPLICITLY_AUDIT_ONLY_UNDER_GLOBAL_TERMINAL_REDUCER",
-    "R04_CANONICAL_WOW_LLP_PROJECT_HOST_IDENTITIES_MACHINE_ENFORCED_IN_CANDIDATE_ROUTER",
-    "R05_LEGACY_REPLIT_PRIMARY_ROUTING_PROHIBITED_BY_V17_CONTRACT"
-  ],
-  "phase_a_blockers": [
-    "B01_WOW_LIVE_EDITOR_PARITY_NOT_CURRENTLY_PROVEN",
-    "B02_LLP_LIVE_EDITOR_PARITY_REQUIRES_REATTESTATION_AFTER_V17_CONTRACT",
-    "B03_V17_CANDIDATE_ENTRYPOINT_NOT_YET_PRODUCTION_OR_SHADOW_ACCEPTANCE_CERTIFIED",
-    "B04_LLP_DIRECT_VENDOR_ACTION_AUTH_AND_EVIDENCE_ONLY_STATUS_REQUIRES_EDITOR_REPROOF",
-    "B05_V17_CANDIDATE_CI_AND_INDEPENDENT_REVIEW_PENDING"
-  ]
+  "resolved_phase_a_findings": ["R01_RENDER_DEPLOY_SHA_MATCHES_REPOSITORY_MAIN", "R02_GENERIC_TEAM_EVENT_INGRESS_IMPLEMENTED_ON_V17_CANDIDATE_ENTRYPOINT", "R03_HOST_LOCAL_LABELS_EXPLICITLY_AUDIT_ONLY_UNDER_GLOBAL_TERMINAL_REDUCER", "R04_CANONICAL_WOW_LLP_PROJECT_HOST_IDENTITIES_MACHINE_ENFORCED_IN_CANDIDATE_ROUTER", "R05_LEGACY_REPLIT_PRIMARY_ROUTING_PROHIBITED_BY_V17_CONTRACT", "R06_CANDIDATE_RECOMMENDATION_LEDGER_ROUTES_MATCH_ACTION_RESPONSIBILITIES", "R07_CANDIDATE_APP_DOES_NOT_MUTATE_ACCEPTED_V16_APP"],
+  "phase_a_blockers": ["B01_WOW_LIVE_EDITOR_PARITY_NOT_CURRENTLY_PROVEN", "B02_LLP_LIVE_EDITOR_PARITY_REQUIRES_REATTESTATION_AFTER_V17_CONTRACT", "B03_V17_CANDIDATE_CI_AND_SHADOW_ACCEPTANCE_PENDING", "B04_LLP_DIRECT_VENDOR_ACTION_AUTH_AND_EVIDENCE_ONLY_STATUS_REQUIRES_EDITOR_REPROOF", "B05_INDEPENDENT_REVIEW_PENDING"]
 }
