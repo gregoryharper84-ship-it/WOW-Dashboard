@@ -66,6 +66,7 @@ jobs:
         run: |
           git config user.name "WOW CI Integration"
           git config user.email "actions@users.noreply.github.com"
+          git restore --staged --worktree -- .github/workflows
           git add -A
           git commit -m "chore: remove retired runtime platform"
           git push origin HEAD:chatgpt/remove-replit-20260830
