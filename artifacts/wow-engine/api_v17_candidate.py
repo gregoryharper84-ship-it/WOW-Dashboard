@@ -22,6 +22,8 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+    on_startup=list(v16.app.router.on_startup),
+    on_shutdown=list(v16.app.router.on_shutdown),
 )
 app.router.routes.extend(list(v16.app.router.routes))
 app.exception_handlers.update(v16.app.exception_handlers)
