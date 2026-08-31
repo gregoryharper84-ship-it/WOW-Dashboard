@@ -3,9 +3,6 @@ name: wow-verify
 on:
   pull_request:
     branches: [main]
-  push:
-    branches:
-      - rescue/replit-emergency-20260820-1221
   workflow_dispatch:
 
 permissions:
