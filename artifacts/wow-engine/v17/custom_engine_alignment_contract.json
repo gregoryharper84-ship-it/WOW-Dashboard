@@ -10,27 +10,12 @@
   "hosts": {
     "WOW_BETTING_ENGINE": {
       "type": "CUSTOM_GPT",
-      "owns": [
-        "PLAYER_PROP",
-        "PLAYER_SCALAR",
-        "PITCHER_PROP",
-        "BATTER_PROP",
-        "WORKLOAD_PROP"
-      ],
+      "owns": ["PLAYER_PROP", "PLAYER_SCALAR", "PITCHER_PROP", "BATTER_PROP", "WORKLOAD_PROP"],
       "global_terminal_authority": false
     },
     "LLP_TEAM_BETTING_ENGINE": {
       "type": "CUSTOM_GPT",
-      "owns": [
-        "TEAM_EVENT",
-        "OUTRIGHT_WINNER",
-        "MONEYLINE",
-        "FAVORITE",
-        "UNDERDOG",
-        "UPSET",
-        "MATCH_WINNER",
-        "FIGHT_WINNER"
-      ],
+      "owns": ["TEAM_EVENT", "OUTRIGHT_WINNER", "MONEYLINE", "FAVORITE", "UNDERDOG", "UPSET", "MATCH_WINNER", "FIGHT_WINNER"],
       "global_terminal_authority": false
     },
     "PROJECT_CHAT": {
@@ -108,29 +93,35 @@
     "current_render_service": "wow-governed-probability-engine",
     "current_render_service_id": "srv-da7sa9gu01pc73brt80g",
     "repository_main_sha_at_audit": "4ef39405702ce38682b28733f767206ebf28a2d5",
-    "render_live_sha_at_audit": "7462f595ebd9db16fbaa54b296c99ce9f58afe58",
-    "deploy_repo_parity_at_audit": false
+    "render_live_sha_at_audit": "4ef39405702ce38682b28733f767206ebf28a2d5",
+    "deploy_repo_parity_at_audit": true
   },
-  "current_action_contracts": {
+  "current_v16_action_contracts": {
     "governed_probability": {
       "version": "1.2.1",
-      "operations": [
-        "getWowProbabilityHealth",
-        "getWowProbabilityGovernance",
-        "scoreWowProp",
-        "scoreWowEvent",
-        "settleWowProp"
-      ],
+      "operations": ["getWowProbabilityHealth", "getWowProbabilityGovernance", "scoreWowProp", "scoreWowEvent", "settleWowProp"],
       "scoreWowEvent_scope_at_audit": "MLB_ONLY"
     },
     "pick_request": {
       "version": "1.2.1",
-      "operations": [
-        "scoreWowPickRequest",
-        "recordWowRecommendations",
-        "settleWowRecommendations"
-      ],
+      "operations": ["scoreWowPickRequest", "recordWowRecommendations", "settleWowRecommendations"],
       "scoreWowPickRequest_scope_at_audit": "PROP_ONLY"
+    }
+  },
+  "v17_candidate_implementation": {
+    "candidate_entrypoint": "api_v17_candidate:app",
+    "production_entrypoint_changed": false,
+    "host_routing_module": "v17/host_routing.py",
+    "team_event_ingress_module": "v17/team_event_request_runtime.py",
+    "team_event_operation": "scoreWowTeamEvent",
+    "team_event_generic_contract": "IMPLEMENTED_CANDIDATE",
+    "team_event_mlb_adapter": "REUSES_EXISTING_GOVERNED_MLB_EVENT_PATH",
+    "unsupported_team_event_sports": "FAIL_CLOSED_MODEL_UNAVAILABLE",
+    "host_local_terminal_labels": "AUDIT_ONLY",
+    "canonical_host_identity_enforcement": "IMPLEMENTED_CANDIDATE",
+    "action_schemas": {
+      "WOW_BETTING_ENGINE": "v17/openapi.wow-betting-engine.v17.yaml",
+      "LLP_TEAM_BETTING_ENGINE": "v17/openapi.llp-team-engine.v17.yaml"
     }
   },
   "editor_attestation": {
@@ -146,13 +137,18 @@
       "requires_reattestation_after_v17_contract": true
     }
   },
+  "resolved_phase_a_findings": [
+    "R01_RENDER_DEPLOY_SHA_MATCHES_REPOSITORY_MAIN",
+    "R02_GENERIC_TEAM_EVENT_INGRESS_IMPLEMENTED_ON_V17_CANDIDATE_ENTRYPOINT",
+    "R03_HOST_LOCAL_LABELS_EXPLICITLY_AUDIT_ONLY_UNDER_GLOBAL_TERMINAL_REDUCER",
+    "R04_CANONICAL_WOW_LLP_PROJECT_HOST_IDENTITIES_MACHINE_ENFORCED_IN_CANDIDATE_ROUTER",
+    "R05_LEGACY_REPLIT_PRIMARY_ROUTING_PROHIBITED_BY_V17_CONTRACT"
+  ],
   "phase_a_blockers": [
     "B01_WOW_LIVE_EDITOR_PARITY_NOT_CURRENTLY_PROVEN",
     "B02_LLP_LIVE_EDITOR_PARITY_REQUIRES_REATTESTATION_AFTER_V17_CONTRACT",
-    "B03_RENDER_DEPLOY_SHA_BEHIND_REPOSITORY_MAIN",
-    "B04_TEAM_EVENT_RENDER_CONTRACT_NOT_YET_CROSS_SPORT",
-    "B05_LLP_DIRECT_VENDOR_ACTION_AUTH_GAPS_REMAIN_FROM_LATEST_EDITOR_AUDIT_UNTIL_REPROVEN",
-    "B06_LEGACY_LLP_HOST_LABELS_MUST_BECOME_AUDIT_FIELDS_UNDER_GLOBAL_TERMINAL_REDUCER",
-    "B07_CANONICAL_LLP_CUSTOM_GPT_HOST_IDENTITY_NOT_YET_MACHINE_ENFORCED_IN_SHARED_HOST_CONTRACT"
+    "B03_V17_CANDIDATE_ENTRYPOINT_NOT_YET_PRODUCTION_OR_SHADOW_ACCEPTANCE_CERTIFIED",
+    "B04_LLP_DIRECT_VENDOR_ACTION_AUTH_AND_EVIDENCE_ONLY_STATUS_REQUIRES_EDITOR_REPROOF",
+    "B05_V17_CANDIDATE_CI_AND_INDEPENDENT_REVIEW_PENDING"
   ]
 }
