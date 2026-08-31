@@ -66,7 +66,7 @@ B05 Independent review of the implementation branch is still required before mer
 
 ## Unsupported sports behavior
 
-A cross-sport ingress does not imply a fitted model exists for every sport. Unsupported team/event sports must terminate as `MODEL_UNAVAILABLE` until a certified adapter/model is registered. No market-implied or qualitative fallback is permitted.
+A cross-sport ingress does not imply a fitted model exists for every sport. Unsupported team/event sports terminate as `MODEL_UNAVAILABLE` until a certified adapter/model is registered. No market-implied or qualitative fallback is permitted.
 
 ## Certification sequence
 
